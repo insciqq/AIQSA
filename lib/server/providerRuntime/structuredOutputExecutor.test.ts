@@ -446,9 +446,9 @@ describe("accepted structured-output executor", () => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(body).toMatchObject({
         model: "gpt-structured",
-        stream: false,
         text: { format: { name: "router_selection", strict: true, type: "json_schema" } }
       });
+      expect(body).not.toHaveProperty("stream");
       return new Response(JSON.stringify({
         output_text: JSON.stringify({ serverIds: ["mcp-a"] }),
         status: "completed"

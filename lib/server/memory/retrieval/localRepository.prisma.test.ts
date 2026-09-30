@@ -35,6 +35,7 @@ import {
   MEMORY_FACT_SOURCE_PROJECTION_VERSION
 } from "../learning/extraction/contract";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../maintenance/policy";
 import { createPrismaLocalMemoryRetrievalRepository } from "./localRepository";
 import { createMemoryNativeFactSearchPlan } from "./nativeFactSearch";
 import { PostgresUnicodeMemoryLexicalCandidateProvider } from
@@ -1355,6 +1356,67 @@ describe("local Memory retrieval on PostgreSQL", () => {
         .toBe(true);
       expect(sourceModes.slice(firstAutomatic).every((mode) => mode === "AUTOMATIC"))
         .toBe(true);
+    }
+  });
+
+  it("keeps unknown usefulness visible, excludes exactly reviewed episodes, and protects pins", async () => {
+    const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
+    const plan = planMemoryRetrieval({ currentUserText: "An unrelated question.", now: fixtureNow });
+    const snapshot = await repository.snapshot({
+      assistantId: null, chatId: fixture.currentChatId, now: fixtureNow,
+      plan, userId: fixture.userId
+    });
+    const versionId = fixture.automaticSensitiveFactVersionId;
+    const version = await prisma.memoryFactVersion.findUniqueOrThrow({
+      select: { factId: true, usefulness: true }, where: { id: versionId }
+    });
+    const latestEvidence = await prisma.memoryEvidence.findFirstOrThrow({
+      orderBy: { createdAt: "desc" }, select: { createdAt: true },
+      where: { factVersionId: versionId, stance: "SUPPORTS", userId: fixture.userId }
+    });
+    const visible = async () => (await repository.loadStandingFacts(snapshot))
+      .some(({ candidate }) => candidate.itemId === versionId);
+    const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+      select: { memoryGeneration: true, memoryRevision: true },
+      where: { userId: fixture.userId }
+    });
+    const reviewJob = await prisma.memoryJob.create({ data: {
+      idempotencyFingerprint: memorySha256({ test: "standing-usefulness", suffix }),
+      kind: "SYNTHESIZE_MEMORIES",
+      memoryGenerationSnapshot: settings.memoryGeneration,
+      memoryRevisionSnapshot: settings.memoryRevision,
+      pipelineVersion: "memory-maintenance-v1",
+      userId: fixture.userId
+    } });
+    const reviewIds: string[] = [];
+    expect(version.usefulness).toBeNull();
+    expect(await visible()).toBe(true);
+    try {
+      const stale = await prisma.memoryMaintenanceReview.create({ data: {
+        disposition: "KEEP", evidenceThrough: new Date(latestEvidence.createdAt.getTime() - 1),
+        factVersionId: versionId, memoryJobId: reviewJob.id,
+        policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION, reviewedAt: fixtureNow,
+        sourceSnapshotHash: "a".repeat(64), usefulness: "EPISODIC",
+        userId: fixture.userId
+      } });
+      reviewIds.push(stale.id);
+      expect(await visible()).toBe(true);
+      const current = await prisma.memoryMaintenanceReview.create({ data: {
+        disposition: "KEEP", evidenceThrough: latestEvidence.createdAt,
+        factVersionId: versionId, memoryJobId: reviewJob.id,
+        policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION,
+        reviewedAt: new Date(fixtureNow.getTime() + 1),
+        sourceSnapshotHash: "b".repeat(64), usefulness: "EPISODIC",
+        userId: fixture.userId
+      } });
+      reviewIds.push(current.id);
+      expect(await visible()).toBe(false);
+      await prisma.memoryFact.update({ data: { pinned: true }, where: { id: version.factId } });
+      expect(await visible()).toBe(true);
+    } finally {
+      await prisma.memoryFact.update({ data: { pinned: false }, where: { id: version.factId } });
+      await prisma.memoryMaintenanceReview.deleteMany({ where: { id: { in: reviewIds } } });
+      await prisma.memoryJob.delete({ where: { id: reviewJob.id } });
     }
   });
 

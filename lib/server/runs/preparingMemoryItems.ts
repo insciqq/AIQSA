@@ -17,6 +17,8 @@ import {
 } from "../memory/persistence/eligibility";
 import { memoryReusableFactAuthorityPredicate } from
   "../memory/synthesis/eligibility";
+import { memorySynthesisIsCombination, MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES } from
+  "../memory/synthesis/policy";
 import {
   memoryChunkConversationFeedbackPredicate,
   memoryFactConversationFeedbackPredicate,
@@ -176,6 +178,7 @@ type FactMessageEvidenceRow = Readonly<{
 }>;
 
 type FactSynthesisRelationRow = Readonly<{
+  targetConfidence: number;
   pipelineVersion: string;
   sourceEligibilityHash: string;
   targetDisplayText: string;
@@ -192,7 +195,7 @@ type FactPatternEvidenceRow = FactMessageEvidenceRow & Readonly<{
 type PatternSupportingEvidenceSnapshot = Readonly<{
   factVersionId: string;
   observedAt: string;
-  sourceAuthority: "learned_from_user" | "user_saved";
+  sourceAuthority: "learned_from_user" | "supporting_observation" | "user_saved";
   sourceRootHash: string;
   textHash: string;
 }>;
@@ -331,6 +334,7 @@ function patternSupportingEvidenceSnapshot(
       item.factVersionId.length > 256 ||
       typeof item.observedAt !== "string" ||
       (item.sourceAuthority !== "learned_from_user" &&
+        item.sourceAuthority !== "supporting_observation" &&
         item.sourceAuthority !== "user_saved") ||
       typeof item.sourceRootHash !== "string" ||
       !/^[a-f0-9]{64}$/u.test(item.sourceRootHash) ||
@@ -345,14 +349,13 @@ function patternSupportingEvidenceSnapshot(
           factVersionId: item.factVersionId,
           observedAt: item.observedAt,
           sourceAuthority: item.sourceAuthority as
-            "learned_from_user" | "user_saved",
+            "learned_from_user" | "supporting_observation" | "user_saved",
           sourceRootHash: item.sourceRootHash,
           textHash: item.textHash
         }];
   });
   if (decoded.length !== value.length ||
-    new Set(decoded.map(({ factVersionId }) => factVersionId)).size !== decoded.length ||
-    new Set(decoded.map(({ sourceRootHash }) => sourceRootHash)).size !== decoded.length) {
+    new Set(decoded.map(({ factVersionId }) => factVersionId)).size !== decoded.length) {
     throw new MemoryPreparingRunConflictError(
       "memory_attempt_item_pattern_support_invalid",
       false
@@ -742,8 +745,14 @@ async function resolveFact(
   ) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
+  const synthesisReason = record(row.structuredValue)?.reasonCode;
+  const combined = row.modality === "PATTERN" && typeof synthesisReason === "string" &&
+    memorySynthesisIsCombination(synthesisReason);
   if (row.modality === "PATTERN") {
-    if (patternSupports.length < MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS) {
+    if (patternSupports.length < (combined
+      ? MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES : MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS) ||
+      (synthesisReason !== "combined_episode_facts" &&
+        new Set(patternSupports.map(({ sourceRootHash }) => sourceRootHash)).size !== patternSupports.length)) {
       throw new MemoryPreparingRunConflictError(
         "memory_attempt_item_pattern_support_invalid",
         false
@@ -801,6 +810,7 @@ async function resolveFact(
         SELECT relation."pipelineVersion", relation."sourceEligibilityHash",
           relation."targetVersionId",
           target_version."displayText" AS "targetDisplayText",
+          target_version."confidence" AS "targetConfidence",
           target_version."observedAt" AS "targetObservedAt",
           target_version."sourceMode"::text AS "targetSourceMode"
         FROM "MemoryFactVersionRelation" AS relation
@@ -815,6 +825,9 @@ async function resolveFact(
         FOR SHARE OF relation, target_version
       `)
     : [];
+  if (combined && synthesisRelations.length !== patternSupports.length) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_item_pattern_support_invalid", false);
+  }
   const automaticPatternSourceIds = patternSupports.flatMap((support) => {
     const relation = synthesisRelations.find(({ targetVersionId }) =>
       targetVersionId === support.factVersionId);
@@ -880,7 +893,7 @@ async function resolveFact(
     const sourceAuthority = relation?.targetSourceMode === "EXPLICIT"
       ? "user_saved"
       : relation?.targetSourceMode === "AUTOMATIC"
-        ? "learned_from_user"
+        ? relation.targetConfidence < 1 ? "supporting_observation" : "learned_from_user"
         : null;
     const primary = relation?.targetSourceMode === "AUTOMATIC"
       ? primaryPatternEvidence.get(support.factVersionId) ?? null

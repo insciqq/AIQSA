@@ -30,6 +30,7 @@ import {
   memorySourceIsInsidePause
 } from "../../persistence/pauseIntervals";
 import { findMatchingMemorySuppressions } from "../../persistence/suppressions";
+import { isMemoryMaintenanceEvidenceSuppressed } from "../../maintenance/suppression";
 import {
   lockMemorySettings,
   type LockedMemorySettings,
@@ -49,6 +50,7 @@ import {
   MEMORY_FACT_MAX_RAW_OBSERVATIONS,
   MEMORY_FACT_MAX_SOURCE_PAGES,
   MEMORY_FACT_MAX_TARGET_CHARACTERS,
+  MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionClaimIsValid,
   memoryFactExtractionJobFingerprint,
@@ -985,6 +987,13 @@ async function candidateIsSuppressed(
   input: MemoryFactExtractionInput,
   candidate: MemoryExtractedCandidate
 ): Promise<boolean> {
+  // Maintenance fences are source-span scoped. They suppress a re-extracted
+  // candidate even when a later model paraphrases it or changes its key, while
+  // preserving independent facts supported by another span in the same turn.
+  if (await isMemoryMaintenanceEvidenceSuppressed(tx, {
+    userId: input.source.userId,
+    evidence: candidate.evidence
+  })) return true;
   const scope = await tx.memoryScope.findFirst({
     select: { id: true },
     where: { scopeType: "GLOBAL_USER", userId: input.source.userId }
@@ -1140,6 +1149,35 @@ function onlyAddsUnreferencedFactContext(
   });
   return memorySha256(stableProjection(plan.input)) ===
     memorySha256(stableProjection(current));
+}
+
+/** A settled pre-v6 extraction may be applied after a policy/schema bump only
+ * when the binding proves that exact retained contract and every source field
+ * that can affect evidence is unchanged. Suppression state is deliberately
+ * rechecked separately at candidate apply, so a later forget fence still wins. */
+function retainedPlanSourceMatchesCurrent(
+  plan: MemoryFactExtractionPlan,
+  current: MemoryFactExtractionInput,
+  adjudication: MemorySemanticAdjudicationPacket | null
+): boolean {
+  if (
+    plan.input.contextRefs.some(({ kind }) => kind === "FACT_VERSION") ||
+    current.contextRefs.some(({ kind }) => kind === "FACT_VERSION") ||
+    adjudication?.decisions.some(({ entityRef, targetRef }) =>
+      entityRef !== null || targetRef !== null) === true
+  ) return false;
+  const sourceProjection = (input: MemoryFactExtractionInput) => ({
+    contextRefs: input.contextRefs.filter(({ kind }) => kind === "MESSAGE"),
+    folderId: input.folderId,
+    identityProfile: input.identityProfile,
+    messages: input.messages,
+    source: input.source,
+    sourceProjectionVersion: input.sourceProjectionVersion,
+    targetPage: input.targetPage,
+    timeZone: input.timeZone
+  });
+  return memorySha256(sourceProjection(plan.input)) ===
+    memorySha256(sourceProjection(current));
 }
 
 function receiptFingerprint(
@@ -1703,9 +1741,30 @@ async function applyPlan(
     return "STALE";
   }
   const current = await prepareWith(tx, claim, now);
+  const executionBinding = await tx.memoryExecutionBinding.findFirst({
+    select: {
+      pipelineVersion: true,
+      policyVersion: true,
+      promptVersion: true,
+      schemaVersion: true
+    },
+    where: {
+      id: bindingId,
+      memoryJobId: claim.id,
+      userId: claim.userId
+    }
+  });
+  const retainedExtractionBinding = executionBinding !== null &&
+    executionBinding.pipelineVersion === MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS.pipelineVersion &&
+    executionBinding.policyVersion === MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS.policyVersion &&
+    executionBinding.promptVersion === MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS.promptVersion &&
+    executionBinding.schemaVersion === MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS.schemaVersion;
+  const retainedSourceProof = retainedExtractionBinding && "input" in current &&
+    retainedPlanSourceMatchesCurrent(plan, current.input, adjudication);
   if (
     "decision" in current ||
     (current.input.inputHash !== plan.input.inputHash &&
+      !retainedSourceProof &&
       !onlyAddsUnreferencedFactContext(plan, current.input, adjudication))
   ) {
     await invalidateMemoryFactExtractionStaging(tx, {

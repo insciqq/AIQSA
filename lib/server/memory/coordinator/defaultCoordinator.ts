@@ -35,6 +35,9 @@ import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/reposit
 import { createPrismaMemorySynthesisHandler } from "../synthesis/handler";
 import { reconcileMemorySynthesisWork } from "../synthesis/reconcile";
 import { MEMORY_SYNTHESIS_VERSIONS } from "../synthesis/provider";
+import { createPrismaMemoryMaintenanceHandler, isMemoryMaintenanceJob } from "../maintenance/handler";
+import { reconcileMemoryMaintenanceWork } from "../maintenance/reconcile";
+import { MEMORY_MAINTENANCE_VERSIONS } from "../maintenance/policy";
 import {
   reconcileMemoryHistoryBackfills,
   resolveMemoryHistoryBackfillWindow
@@ -61,6 +64,7 @@ type DefaultMemoryReconciliationWork = Readonly<{
   reclassification?: () => Promise<unknown>;
   relations?: () => Promise<unknown>;
   synthesis?: () => Promise<unknown>;
+  maintenance?: () => Promise<unknown>;
 }>;
 
 const defaultMemoryEmbeddingSetup = createPrismaMemoryEmbeddingSetup(prisma);
@@ -78,6 +82,11 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
     historyAutoHeal: () => autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: new Date() }),
     reclassification: () => reconcileMemoryFactReclassificationJobs(prisma),
     relations: () => reconcileMemoryFactRelationJobs(prisma),
+    maintenance: () => reconcileMemoryMaintenanceWork(prisma, new Date(), async (userId) => {
+      await probeMemoryStructuredOutputAuthority({ authority: defaultMemoryExecutionAuthority, client: prisma,
+        role: "MEMORY_SYNTHESIZE", userId, versions: MEMORY_MAINTENANCE_VERSIONS });
+      return true;
+    }),
     synthesis: () => reconcileMemorySynthesisWork(
       prisma,
       new Date(),
@@ -106,6 +115,7 @@ export async function reconcileDefaultMemoryWork(
   await work.historyAutoHeal?.();
   await work.reclassification?.();
   await work.relations?.();
+  await work.maintenance?.();
   await work.synthesis?.();
 }
 
@@ -133,7 +143,13 @@ const defaultMemoryRebuildHandler = createPrismaMemoryRebuildHandler(prisma);
 const defaultMemoryReclassificationHandler =
   createPrismaMemoryReclassificationHandler(prisma);
 const defaultMemoryRelationHandler = createPrismaMemoryRelationHandler(prisma);
-const defaultMemorySynthesisHandler = createPrismaMemorySynthesisHandler(prisma);
+const patternSynthesisHandler = createPrismaMemorySynthesisHandler(prisma);
+const maintenanceHandler = createPrismaMemoryMaintenanceHandler(prisma);
+const defaultMemorySynthesisHandler: MemoryJobHandler = Object.freeze({
+  kind: "SYNTHESIZE_MEMORIES",
+  preflight: (job) => (isMemoryMaintenanceJob(job) ? maintenanceHandler : patternSynthesisHandler).preflight(job),
+  execute: (job, context) => (isMemoryMaintenanceJob(job) ? maintenanceHandler : patternSynthesisHandler).execute(job, context)
+});
 
 function getDefaultMemoryCoordinatorRuntime(): Readonly<{
   policy: MemoryCoordinatorPolicy;

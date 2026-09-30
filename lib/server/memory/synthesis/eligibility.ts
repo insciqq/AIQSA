@@ -6,6 +6,8 @@ import {
 } from "../persistence/eligibility";
 import {
   MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES,
+  MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES,
+  MEMORY_SYNTHESIS_COMBINED_REASONS,
   MEMORY_SYNTHESIS_PIPELINE_VERSION,
   MEMORY_SYNTHESIS_POLICY_VERSION
 } from "./policy";
@@ -243,7 +245,8 @@ function sourceAuthorityPredicate(
       lifecycle: "CURRENT"
     })}
     AND ${directAuthorityPredicate(userId, version)}
-    AND ${version}."confidence" = 1.0
+    AND ${version}."confidence" > 0.0
+    AND ${version}."confidence" <= 1.0
     AND ${version}."observedAt" IS NOT NULL
     AND ${settings}."synthesisEnabledAt" IS NOT NULL
     AND ${settings}."synthesisPolicyVersion" = ${MEMORY_SYNTHESIS_POLICY_VERSION}
@@ -320,6 +323,13 @@ export function memorySynthesisPatternAuthorityPredicate(
   const settings = input.settings ?? Prisma.sql`settings`;
   const classification = input.classification ?? "CLASSIFIED";
   const patternVersionId = input.patternVersionId ?? Prisma.sql`${version}."id"`;
+  const combination = Prisma.sql`COALESCE(
+    ${version}."structuredValue"->>'reasonCode' IN (${Prisma.join(MEMORY_SYNTHESIS_COMBINED_REASONS)}),
+    FALSE
+  )`;
+  const episode = Prisma.sql`COALESCE(
+    ${version}."structuredValue"->>'reasonCode' = 'combined_episode_facts', FALSE
+  )`;
   return Prisma.sql`(
     ${commonAuthorityPredicate(userId, { fact, scope, settings, version }, {
       allowLegacySafetyReprojection: input.allowLegacySafetyReprojection,
@@ -356,11 +366,19 @@ export function memorySynthesisPatternAuthorityPredicate(
       WHERE relation."userId" = ${userId}
         AND relation."sourceVersionId" = ${patternVersionId}
         AND relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-    ) >= ${MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES}
+    ) >= CASE WHEN ${combination}
+      THEN ${MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES}
+      ELSE ${MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES} END
+    AND (
+      COALESCE(${version}."structuredValue"->>'reasonCode', '') NOT IN (
+        'combined_refined_facts', 'combined_episode_facts'
+      )
+      OR aiqsa_memory_synthesis_claims_valid(${userId}, ${patternVersionId})
+    )
     AND EXISTS (
       WITH root_support AS (
         SELECT DISTINCT root_source_fact."id" AS "factId",
-          support."messageId" AS "messageId"
+          support."messageId" AS "messageId", support."chatId" AS "chatId"
         FROM "MemoryFactVersionRelation" AS root_relation
         INNER JOIN "MemoryFactVersion" AS root_source_version
           ON root_source_version."userId" = root_relation."userId"
@@ -394,12 +412,39 @@ export function memorySynthesisPatternAuthorityPredicate(
       SELECT 1 FROM root_support AS first
       INNER JOIN root_support AS second
         ON second."factId" <> first."factId"
-       AND second."messageId" <> first."messageId"
-      INNER JOIN root_support AS third
-        ON third."factId" <> first."factId"
-       AND third."factId" <> second."factId"
-       AND third."messageId" <> first."messageId"
-       AND third."messageId" <> second."messageId"
+      WHERE (
+        SELECT COUNT(DISTINCT supported."factId") FROM root_support AS supported
+      ) = (
+        SELECT COUNT(DISTINCT required_source."factId")
+        FROM "MemoryFactVersionRelation" AS required_relation
+        INNER JOIN "MemoryFactVersion" AS required_source
+          ON required_source."userId" = required_relation."userId"
+         AND required_source."id" = required_relation."targetVersionId"
+        WHERE required_relation."userId" = ${userId}
+          AND required_relation."sourceVersionId" = ${patternVersionId}
+          AND required_relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
+      ) AND ((
+        ${episode}
+        AND second."chatId" = first."chatId"
+        AND NOT EXISTS (
+          SELECT 1 FROM root_support AS selected
+          WHERE NOT EXISTS (
+            SELECT 1 FROM root_support AS same_chat
+            WHERE same_chat."factId" = selected."factId"
+              AND same_chat."chatId" = first."chatId"
+          )
+        )
+      ) OR (
+        NOT ${episode}
+        AND second."messageId" <> first."messageId"
+        AND (${combination} OR EXISTS (
+          SELECT 1 FROM root_support AS third
+          WHERE third."factId" <> first."factId"
+            AND third."factId" <> second."factId"
+            AND third."messageId" <> first."messageId"
+            AND third."messageId" <> second."messageId"
+        ))
+      ))
     )
     AND NOT EXISTS (
       SELECT 1
@@ -433,6 +478,8 @@ export function memorySynthesisPatternAuthorityPredicate(
             settings,
             input.forManagement === true
           )}
+          AND (${combination} OR source_version."confidence" = 1.0)
+          AND (NOT ${combination} OR ${version}."confidence" <= source_version."confidence")
         ), FALSE)
     )
   )`;

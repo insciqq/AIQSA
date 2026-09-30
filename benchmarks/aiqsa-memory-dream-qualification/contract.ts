@@ -283,6 +283,7 @@ function makeSource(
   const base = {
     canonicalKey: `${candidate.id}:fact:${index + 1}`,
     category: candidate.category,
+    confidence: 1,
     directness: candidate.modality === "PATTERN" ? "INFERRED" as const : "DIRECT" as const,
     displayText: sourceText(candidate, index),
     entityIds: [],
@@ -295,6 +296,7 @@ function makeSource(
     sourceChatIds: [`${candidate.id}-chat-${index + 1}`],
     sourceMessageIds: [messageId],
     sourceMode: "AUTOMATIC" as const,
+    sensitivityClass: "NORMAL" as const,
     structuredValue: { caseId: candidate.id, ordinal: index + 1 },
     subjectKey: "current-user",
     versionId

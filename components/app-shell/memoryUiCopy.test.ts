@@ -19,6 +19,7 @@ describe("Memory UI copy", () => {
     expect(formatMemoryUiCopy("source.heading", { count: 2 })).toBe("Memory · 2");
     expect(formatMemoryUiCopy("action.matchIndex", { index: 3 })).toBe("Match 3");
     expect(memoryCategoryLabel("about_you")).toBe("About you");
+    expect(memoryCategoryLabel("constraints_routines")).toBe("Constraints and routines");
     expect(memoryCategoryLabel("constraints_and_routines")).toBe("Constraints and routines");
     expect(memoryCategoryLabel("sensitive_information")).toBe("Other");
     expect(memoryCategoryLabel("unknown-category")).toBe("Other");

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { createPrismaAdminRepository } from "../../auth/adminRepository";
 import { createAccountKnowledgeDeletionHook } from "../../knowledge/accountDeletion";
@@ -13,8 +14,11 @@ import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_EXTRACTION_POLICY_VERSION,
   MEMORY_FACT_EXTRACTION_PROMPT_VERSION,
-  MEMORY_FACT_EXTRACTION_SCHEMA_VERSION
+  MEMORY_FACT_EXTRACTION_SCHEMA_VERSION,
+  MEMORY_FACT_SOURCE_PROJECTION_VERSION
 } from "../learning/extraction/contract";
+import { MEMORY_MAINTENANCE_VERSIONS } from "../maintenance/policy";
+import { memoryMaintenanceOutputHash } from "../maintenance/provider";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { createPrismaMemoryFeedbackRepository } from "../review/feedbackRepository";
 import { purgeMemoryFeedbackAccount } from "../review/purge";
@@ -169,6 +173,7 @@ async function cleanupOwner(userId: string): Promise<void> {
     await purgeMemoryFeedbackAccount(tx, userId);
     await tx.usageEvent.deleteMany({ where: { userId } });
     await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
+    await tx.memoryMaintenanceExecution.deleteMany({ where: { userId } });
     await tx.user.deleteMany({ where: { id: userId } });
     // Canonical cascades emit projection delete duties. Test teardown removes
     // the derived rows only after those triggers have finished.
@@ -845,6 +850,118 @@ async function populatePendingFactExtraction(
   });
 }
 
+/** Synthetic DB receipts only: exercise account ownership and database guards,
+ * not provider behavior. Keep an applied cleanup and a later settled, unapplied
+ * result whose source has gone away, as recovery can encounter during deletion. */
+async function populateMaintenanceArtifacts(
+  userId: string,
+  provider: ProviderFixture,
+  now: Date
+) {
+  return prisma.$transaction(async (tx) => {
+    const startedAt = new Date(now.getTime() - 60_000);
+    const scope = await tx.memoryScope.findFirst({ where: { userId, scopeType: "GLOBAL_USER" } }) ??
+      await tx.memoryScope.create({ data: { userId, scopeType: "GLOBAL_USER" } });
+    const chat = await tx.chat.create({ data: { title: "Synthetic cleanup source", userId } });
+    const statement = "The temporary measurement is lower now.";
+    const sourceHash = memorySha256(statement);
+    const message = await tx.message.create({ data: {
+      chatId: chat.id, content: { parts: [{ type: "text", text: statement }], version: 1 },
+      role: "user", status: "complete", createdAt: startedAt, updatedAt: startedAt
+    } });
+    await tx.chat.update({ where: { id: chat.id }, data: { activeLeafMessageId: message.id } });
+    const factId = randomUUID(), versionId = randomUUID(), eventId = randomUUID();
+    await tx.memoryFact.create({ data: {
+      id: factId, userId, scopeId: scope.id, state: "ORPHANED", category: "other",
+      canonicalKey: `prop:v2:${memorySha256({ factId })}`, identityKind: "PROPOSITION", identityVersion: "proposition-v2"
+    } });
+    await tx.memoryEvent.create({ data: {
+      id: eventId, userId, factId, factVersionId: versionId, operation: "AUTO_PROPOSE", actorType: "JOB"
+    } });
+    await tx.memoryFactVersion.create({ data: {
+      id: versionId, userId, factId, createdByEventId: eventId, state: "ACTIVE", category: "other",
+      displayText: statement, normalizedSearchText: normalizeMemorySearchText(statement), structuredValue: { statement },
+      confidence: 0.6, importance: 0.4, languageCode: "en", modality: "STATE", directness: "DIRECT",
+      sensitivityClass: "NORMAL", sourceMode: "AUTOMATIC", pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+      ingestionFingerprint: memorySha256({ versionId }), observedAt: startedAt, systemFrom: startedAt
+    } });
+    await tx.memoryEvidence.create({ data: {
+      userId, factVersionId: versionId, chatId: chat.id, messageId: message.id, sourceType: "MESSAGE", sourceRole: "user",
+      stance: "SUPPORTS", branchGeneration: 0, observedAt: startedAt, safeExcerpt: statement,
+      safeSourceHash: sourceHash, sourceMessageContentHash: sourceHash, sourceStartOffset: 0, sourceEndOffset: statement.length,
+      sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION, safetyClass: "NORMAL",
+      evidenceFingerprint: memorySha256({ versionId, messageId: message.id })
+    } });
+    await tx.memoryFact.update({ where: { id: factId }, data: { state: "ACTIVE", currentVersionId: versionId } });
+    const output = { decisions: [{ sourceRef: "S1", action: "REMOVE_TRANSIENT", usefulness: null, reason: "transient_episode_update" }] };
+    const executions = [];
+    for (const applied of [true, false]) {
+      const jobId = randomUUID(), bindingId = randomUUID();
+      const inputHash = memorySha256({ userId, jobId });
+      const outputHash = memoryMaintenanceOutputHash(inputHash, output);
+      await tx.memoryJob.create({ data: {
+        id: jobId, userId, kind: "SYNTHESIZE_MEMORIES", pipelineVersion: MEMORY_MAINTENANCE_VERSIONS.pipelineVersion,
+        idempotencyFingerprint: memorySha256({ jobId }), memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0,
+        state: applied ? "SUCCEEDED" : "CLAIMED", completedAt: applied ? now : null,
+        acceptedResultHash: applied ? outputHash : null, attemptCount: 1,
+        leaseToken: applied ? null : randomUUID(), leaseExpiresAt: applied ? null : new Date(now.getTime() + 60_000)
+      } });
+      await tx.memoryExecutionBinding.create({ data: {
+        id: bindingId, userId, memoryJobId: jobId, ownerType: "JOB", logicalRole: "MEMORY_SYNTHESIZE", ordinal: 0,
+        pipelineVersion: MEMORY_MAINTENANCE_VERSIONS.pipelineVersion,
+        policyVersion: MEMORY_MAINTENANCE_VERSIONS.policyVersion,
+        promptVersion: MEMORY_MAINTENANCE_VERSIONS.promptVersion,
+        schemaVersion: MEMORY_MAINTENANCE_VERSIONS.schemaVersion,
+        inputHash, acceptedOutputHash: outputHash, state: "SUCCEEDED",
+        providerId: "openai_compatible", providerModelId: provider.modelId, connectionId: provider.connectionId,
+        credentialId: provider.credentialId, credentialVersionId: provider.credentialVersionId,
+        destinationFingerprint: memorySha256({ provider: provider.connectionId }), secretFreeExecutionSnapshot: {},
+        createdAt: startedAt, startedAt, completedAt: now, recoverableUntil: new Date(now.getTime() - 1)
+      } });
+      await tx.usageEvent.create({ data: {
+        userId, memoryExecutionBindingId: bindingId, provider: "openai_compatible",
+        providerModelId: provider.modelId, modelId: embeddingConfiguration.upstreamModelId
+      } });
+      executions.push({ applied, bindingId, inputHash, jobId, outputHash });
+    }
+    const before = await countAccountMemoryOwnedData(tx, userId);
+    const completed = executions[0]!;
+    const review = await tx.memoryMaintenanceReview.create({ data: {
+      userId, factVersionId: versionId, memoryJobId: completed.jobId, policyVersion: MEMORY_MAINTENANCE_VERSIONS.policyVersion,
+      sourceSnapshotHash: memorySha256({ versionId, sourceHash }), evidenceThrough: startedAt
+    } });
+    for (const execution of executions) {
+      await tx.memoryMaintenanceExecution.create({ data: {
+        userId, memoryJobId: execution.jobId, executionBindingId: execution.bindingId, ordinal: 0,
+        inputHash: execution.inputHash, acceptedOutputHash: execution.outputHash, acceptedOutput: output
+      } });
+      if (execution.applied) await tx.memoryMaintenanceExecution.update({
+        where: { userId_executionBindingId: { userId, executionBindingId: execution.bindingId } },
+        data: { acceptedOutput: Prisma.DbNull, appliedAt: now }
+      });
+    }
+    await tx.memoryMaintenanceSuppression.create({ data: {
+      userId, memoryReviewId: review.id, sourceMessageId: message.id, sourceMessageContentHash: sourceHash,
+      sourceStartOffset: 0, sourceEndOffset: statement.length
+    } });
+    await tx.memoryMaintenanceReview.update({ where: { id: review.id }, data: { disposition: "REMOVED", reviewedAt: now } });
+    expect(await countAccountMemoryOwnedData(tx, userId)).toBe(before + 4);
+    await tx.memoryFactVersion.update({ where: { id: versionId }, data: { state: "FORGOTTEN", systemTo: now } });
+    await tx.memoryFact.update({ where: { id: factId }, data: { state: "FORGOTTEN", currentVersionId: null, forgottenAt: now } });
+    await tx.memoryEvidence.deleteMany({ where: { userId, factVersionId: versionId } });
+    await tx.chat.delete({ where: { id: chat.id } });
+    return { pendingBindingId: executions[1]!.bindingId };
+  });
+}
+
+async function maintenanceArtifacts(userId: string) {
+  return {
+    reviews: await prisma.memoryMaintenanceReview.findMany({ where: { userId }, orderBy: { id: "asc" } }),
+    executions: await prisma.memoryMaintenanceExecution.findMany({ where: { userId }, orderBy: { id: "asc" } }),
+    suppressions: await prisma.memoryMaintenanceSuppression.findMany({ where: { userId }, orderBy: { id: "asc" } })
+  };
+}
+
 function coordinatorFor(
   registry: MemoryCoordinatorRegistry,
   now: () => Date
@@ -1202,6 +1319,7 @@ describe("Prisma account Memory deletion", () => {
     let clock = new Date(Date.now() - 60_000);
     const provider = await createProviderFixture(clock);
     const userId = await createOwner();
+    const otherUserId = await createOwner();
     const coordinatorRegistry = new MemoryCoordinatorRegistry();
     const handler = createPrismaAccountMemoryDeletionHandler();
     coordinatorRegistry.registerDeletion(handler);
@@ -1218,6 +1336,14 @@ describe("Prisma account Memory deletion", () => {
     });
     try {
       const fixture = await populateReusableMemory(userId, provider, { now: clock });
+      const maintenance = await populateMaintenanceArtifacts(userId, provider, clock);
+      await populateMaintenanceArtifacts(otherUserId, provider, clock);
+      const otherMaintenance = await maintenanceArtifacts(otherUserId);
+      const otherOwnedCount = await countAccountMemoryOwnedData(prisma, otherUserId);
+      expect(otherMaintenance.reviews).toHaveLength(1);
+      expect(otherMaintenance.executions).toHaveLength(2);
+      expect(otherMaintenance.executions.some((execution) => execution.acceptedOutput !== null)).toBe(true);
+      expect(otherMaintenance.suppressions).toHaveLength(1);
       await prisma.user.update({ data: { status: "disabled" }, where: { id: userId } });
       expect(await countAccountMemoryOwnedData(prisma, userId)).toBeGreaterThan(0);
 
@@ -1262,6 +1388,11 @@ describe("Prisma account Memory deletion", () => {
         .toBe(0);
       expect(await prisma.memorySearchEntry.count({ where: { userId } })).toBe(0);
       expect(await prisma.memoryPauseInterval.count({ where: { userId } })).toBe(0);
+      await expect(maintenanceArtifacts(userId)).resolves.toEqual({ reviews: [], executions: [], suppressions: [] });
+      await expect(maintenanceArtifacts(otherUserId)).resolves.toEqual(otherMaintenance);
+      await expect(countAccountMemoryOwnedData(prisma, otherUserId)).resolves.toBe(otherOwnedCount);
+      await expect(prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: maintenance.pendingBindingId } }))
+        .resolves.toMatchObject({ relationsDetachedAt: clock, connectionId: null, providerModelId: null });
       expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
         where: { id: fixture.bindingId }
       })).toMatchObject({
@@ -1346,9 +1477,12 @@ describe("Prisma account Memory deletion", () => {
       await expect(prisma.memoryExecutionBinding.count({ where: { userId } }))
         .resolves.toBe(0);
       await expect(prisma.usageEvent.count({ where: { userId } })).resolves.toBe(0);
+      await expect(maintenanceArtifacts(otherUserId)).resolves.toEqual(otherMaintenance);
+      await expect(prisma.user.findUnique({ where: { id: otherUserId } })).resolves.toMatchObject({ status: "active" });
     } finally {
       coordinator.stop();
       await cleanupOwner(userId);
+      await cleanupOwner(otherUserId);
       await cleanupProvider(provider);
       if (projectionQueueQuiesced) {
         await resetMemoryLexicalProjection(prisma, {
