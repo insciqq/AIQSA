@@ -8,7 +8,6 @@ import type {
   McpErrorResponse,
   McpSlotValue,
   McpValidationIssue,
-  McpOperationalStatus,
   UserMcpServer,
   UserMcpCatalogResponse
 } from "@/lib/contracts/mcp";
@@ -25,7 +24,6 @@ import type { McpRepository, McpRepositoryResult, McpUserServerState } from "./r
 export type McpHandlerDeps = {
   onActivationRequested?(): void;
   onRuntimeChanged?(userId?: string): void;
-  runtimeOperationalStatus?(generationId: string): McpOperationalStatus;
   repository: McpRepository;
   resolveAuth: RequestAuthResolver;
 };
@@ -438,17 +436,7 @@ export function createAdminMcpGrantHandler(deps: McpHandlerDeps) {
   };
 }
 
-export function userServerProjection(server: McpUserServerState, deps: Pick<McpHandlerDeps, "runtimeOperationalStatus">): UserMcpServer {
-  let operationalStatus: McpOperationalStatus = "inactive";
-  if (server.enabled && server.runtimeGenerationId &&
-    ["ready", "starting", "queued", "restarting"].includes(server.readiness)) {
-    try {
-      operationalStatus = deps.runtimeOperationalStatus?.(server.runtimeGenerationId) ?? "inactive";
-      if (operationalStatus === "active" && server.readiness !== "ready") operationalStatus = "checking";
-    } catch {
-      // A health lookup failure cannot manufacture positive runtime evidence.
-    }
-  }
+export function userServerProjection(server: McpUserServerState): UserMcpServer {
   return {
     accountLabel: server.accountLabel,
     description: server.description,
@@ -464,7 +452,6 @@ export function userServerProjection(server: McpUserServerState, deps: Pick<McpH
     name: server.name,
     oauthAvailable: server.oauthAvailable,
     oauthState: server.oauthState,
-    operationalStatus,
     readiness: server.readiness,
     runtimeErrorCode: server.readiness === "unavailable" ? mcpRuntimeErrorCode(server.errorCode) : null,
     tools: server.tools,
@@ -479,7 +466,7 @@ export function createUserMcpCatalogHandler(deps: McpHandlerDeps) {
     const servers = await safely(() => deps.repository.listUserServers(session.userId));
     if (servers instanceof Response) return servers;
     return Response.json({
-      servers: servers.filter((server) => server.sourceType !== "personal").map((server) => userServerProjection(server, deps))
+      servers: servers.filter((server) => server.sourceType !== "personal").map((server) => userServerProjection(server))
     } satisfies UserMcpCatalogResponse, { headers: { "Cache-Control": "no-store" } });
   };
 }
@@ -506,7 +493,7 @@ export function createUserMcpUpdateHandler(deps: McpHandlerDeps) {
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
     notifyRuntimeChanged(deps, session.userId);
-    return Response.json({ server: userServerProjection(result.value, deps) },
+    return Response.json({ server: userServerProjection(result.value) },
       { headers: { "Cache-Control": "no-store" } });
   };
 }

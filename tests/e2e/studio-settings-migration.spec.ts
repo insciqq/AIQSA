@@ -15,7 +15,7 @@ const server: UserMcpServer = {
   fields: [{ configured: true, label: "Personal API key", minLength: 8, sensitive: true,
     slotKey: "api_key", source: "personal", valueType: "secret" }],
   id: "studio-mcp", knownToolCount: 1, name: "Research service", oauthAvailable: true,
-  oauthState: "disconnected", operationalStatus: "inactive", readiness: "needs_authorization", tools: []
+  oauthState: "disconnected", readiness: "needs_authorization", tools: []
 };
 
 async function prepare(page: Page) {

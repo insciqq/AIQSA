@@ -400,8 +400,6 @@ export type UserMcpConfigurationField = {
   valueType: McpConfigurationSlot["valueType"];
 };
 
-export type McpOperationalStatus = "active" | "checking" | "inactive";
-
 export type UserMcpServer = {
   /** Personal settings inventory, including tools the owner has switched off. */
   availableTools?: { description: string | null; name: string }[];
@@ -421,7 +419,6 @@ export type UserMcpServer = {
   name: string;
   oauthAvailable: boolean;
   oauthState: "disconnected" | "disconnecting" | "ready" | "reauthorization_required" | null;
-  operationalStatus: McpOperationalStatus;
   readiness: McpReadiness;
   tools: { description: string | null; name: string }[];
   /** Tools the ready runtime reports but this user cannot use, each with its reason. */

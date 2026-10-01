@@ -32,7 +32,6 @@ import {
 } from "./mcpSettingsStore";
 import {
   mcpReadinessPresentation,
-  mcpOperationalPresentation,
   mcpSetupAttention,
   type McpReadinessPresentation
 } from "./mcpReadiness";
@@ -285,7 +284,6 @@ function ServerRow({
   const authorizationBlocked = oauthBlockedReason ?? (missingPersonalField
     ? "Add and save the required personal values before connecting." : null);
   const readiness = mcpReadinessPresentation(server.readiness, server.runtimeErrorCode);
-  const operational = mcpOperationalPresentation(server);
   // The catalog count is informational: tool names appear once the runtime
   // reported them, so the fold below lists the exact tools only then.
   const toolCount = server.tools.length || server.knownToolCount;
@@ -344,17 +342,19 @@ function ServerRow({
     else close();
   }
 
+  // Rows speak only about transitions and problems; an enabled idle server is
+  // healthy and starts on demand, so runtime-session warmth is never shown.
+  // The live region stays mounted while empty so later transitions are announced.
+  const progress = readiness.kind === "progress";
+  const problem = readiness.kind === "attention" || readiness.kind === "failed";
   const status = (
     <p aria-live="polite" className="v2-settings-server-status" role="status">
-      <span className="v2-settings-server-readiness" data-tone={readinessTone(operational.kind)}>
-        {operational.kind === "ready" ? <UiV2Icon name="check" />
-          : operational.kind === "progress" ? <Spinner /> : null}
-        {operational.label}
-      </span>
-      {toolCount > 0 ? <><span aria-hidden="true"> · </span><span>{toolCountLabel(toolCount)}</span></> : null}
-      {readiness.kind === "attention" || readiness.kind === "failed" ? <>
-        <span className="v2-settings-server-readiness v2-settings-server-attention" data-tone={readinessTone(readiness.kind)}>{readiness.label}</span>
-      </> : null}
+      {progress ? <span className="v2-settings-server-readiness" data-tone={readinessTone(readiness.kind)}>
+        <Spinner />{readiness.label}
+      </span> : null}
+      {progress && toolCount > 0 ? <span aria-hidden="true"> · </span> : null}
+      {toolCount > 0 ? <span>{toolCountLabel(toolCount)}</span> : null}
+      {problem ? <span className="v2-settings-server-readiness v2-settings-server-attention" data-tone={readinessTone(readiness.kind)}>{readiness.label}</span> : null}
     </p>
   );
 

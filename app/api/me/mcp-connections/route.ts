@@ -1,6 +1,6 @@
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { mcpRepository } from "@/lib/server/mcp/defaultMcp";
-import { defaultMcpOperationalStatus, getDefaultMcpRuntimeCoordinator, kickDefaultMcpRuntime } from "@/lib/server/mcp/defaultRuntime";
+import { getDefaultMcpRuntimeCoordinator, kickDefaultMcpRuntime } from "@/lib/server/mcp/defaultRuntime";
 import { createPersonalMcpCreateHandler, createPersonalMcpListHandler } from "@/lib/server/mcp/personalHandlers";
 import { preparePersonalMcpOAuthDraft } from "@/lib/server/mcp/personalOAuthDiscovery";
 
@@ -13,8 +13,7 @@ const deps = {
   onRuntimeChanged: kickDefaultMcpRuntime,
   prepareOAuthDraft: preparePersonalMcpOAuthDraft,
   repository: mcpRepository,
-  resolveAuth: resolveRequestAuth,
-  runtimeOperationalStatus: defaultMcpOperationalStatus
+  resolveAuth: resolveRequestAuth
 };
 export const GET = createPersonalMcpListHandler(deps);
 export const POST = createPersonalMcpCreateHandler(deps);

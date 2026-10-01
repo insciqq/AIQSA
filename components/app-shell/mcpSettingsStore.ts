@@ -157,10 +157,7 @@ export async function refreshMcpSettings(
   const preserveCurrentState = options.background === true && current.loadState !== "idle";
   useMcpSettingsStore.setState({
     error: null,
-    ...(preserveCurrentState ? {} : { loadState: "loading" }),
-    // Renewal/error state cannot leave stale positive evidence on screen.
-    servers: current.servers.map((server) => server.operationalStatus === "active"
-      ? { ...server, operationalStatus: "checking" } : server)
+    ...(preserveCurrentState ? {} : { loadState: "loading" })
   });
   loadPromise = loadUserMcpServers().then(
     (servers) => {

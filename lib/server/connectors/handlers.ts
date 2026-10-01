@@ -9,7 +9,6 @@ type ConnectorDeps = {
   getConfig?: () => Pick<AuthConfig, "mcpConnectorOAuth">;
   repository: McpRepository;
   resolveAuth: RequestAuthResolver;
-  runtimeOperationalStatus?: (generationId: string) => import("@/lib/contracts/mcp").McpOperationalStatus;
 };
 type RouteContext = { params: Promise<{ connectorId: string }> | { connectorId: string } };
 
@@ -26,7 +25,7 @@ export function createConnectorCatalogHandler(deps: ConnectorDeps) {
     const session = await deps.resolveAuth(request);
     if (!session) return errorJson("unauthorized", 401);
     const personal = await deps.repository.listUserServers(session.userId);
-    const connected = new Map(personal.flatMap((server) => server.connectorKey ? [[server.connectorKey, userServerProjection(server, deps)] as const] : []));
+    const connected = new Map(personal.flatMap((server) => server.connectorKey ? [[server.connectorKey, userServerProjection(server)] as const] : []));
     const config = deps.getConfig?.();
     const configured = deps.getConfig
       ? Object.fromEntries(
@@ -56,7 +55,7 @@ export function createConnectorConnectHandler(deps: ConnectorDeps) {
     if (existing) {
       return Response.json({
         oauthAction: connectorOAuthAction(existing.id),
-      server: userServerProjection(existing, deps)
+      server: userServerProjection(existing)
       }, { headers: { "Cache-Control": "no-store" } });
     }
     const created = await createPersonalServer({
@@ -70,7 +69,7 @@ export function createConnectorConnectHandler(deps: ConnectorDeps) {
     if (created.kind !== "ok") return errorJson(created.kind === "draft_validation_failed" ? "connector_unavailable" : "connector_setup_failed", created.kind === "draft_validation_failed" ? 422 : 503);
     return Response.json({
       oauthAction: connectorOAuthAction(created.value.id),
-      server: userServerProjection(created.value, deps)
+      server: userServerProjection(created.value)
     }, { headers: { "Cache-Control": "no-store" }, status: 201 });
   };
 }
