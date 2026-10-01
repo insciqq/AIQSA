@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { McpDraftConfiguration, UserMcpServer } from "@/lib/contracts/mcp";
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
-import type { McpRepository, McpRepositoryResult, McpUserServerState } from "./repositoryContract";
+import type {
+  McpPersonalCredentialReplacementResult,
+  McpRepository,
+  McpRepositoryResult,
+  McpUserServerState
+} from "./repositoryContract";
 import { createPersonalMcpCreateHandler, createPersonalMcpListHandler, createPersonalMcpUpdateHandler } from "./personalHandlers";
 import { preparePersonalMcpOAuthDraft } from "./personalOAuthDiscovery";
 
@@ -24,10 +29,12 @@ function deps() {
   const createPersonalServer = vi.fn(async () => ({ kind: "ok" as const, value: { ...server, runtimeGenerationId: null, errorCode: null } }));
   const updateUserServer = vi.fn(async (): Promise<McpRepositoryResult<McpUserServerState>> =>
     ({ kind: "ok", value: { ...server, runtimeGenerationId: null, errorCode: null } }));
-  const repository = { createPersonalServer, updateUserServer } as unknown as McpRepository;
+  const replacePersonalCredentials = vi.fn(async (): Promise<McpPersonalCredentialReplacementResult> =>
+    ({ kind: "ok", value: { ...server, authHeaderName: "Authorization", authMode: "static", runtimeGenerationId: null, errorCode: null } }));
+  const repository = { createPersonalServer, replacePersonalCredentials, updateUserServer } as unknown as McpRepository;
   const resolveAuth = (async () => ({ userId: "user-1", user: { id: "user-1", role: "user", status: "active" } })) as unknown as RequestAuthResolver;
   const rateLimiter = { check: vi.fn(async () => ({ allowed: true, retryAfterSeconds: 0 })) };
-  return { repository, resolveAuth, createPersonalServer, rateLimiter, updateUserServer };
+  return { repository, resolveAuth, createPersonalServer, rateLimiter, replacePersonalCredentials, updateUserServer };
 }
 
 /** Discovery against a synthetic MCP origin whose advertised authorization
@@ -336,5 +343,124 @@ describe("personal MCP handlers", () => {
     const response = await createPersonalMcpCreateHandler(input)(oauthCreate());
     expect(response.status).toBe(503);
     expect(input.createPersonalServer).not.toHaveBeenCalled();
+  });
+});
+
+function replacement(body: unknown) {
+  return new Request("https://aiqsa.test/api/me/mcp-connections/personal-1", {
+    body: JSON.stringify(body), headers: { "content-type": "application/json" }, method: "PATCH"
+  });
+}
+
+describe("personal MCP credential replacement", () => {
+  const params = { params: { connectionId: "personal-1" } };
+
+  it("replaces the credential under the create bucket, starts readiness in the background and never returns the secret", async () => {
+    const input = deps();
+    const onConnectionChanged = vi.fn(() => new Promise<void>(() => undefined));
+    const response = await createPersonalMcpUpdateHandler({ ...input, onConnectionChanged })(
+      replacement({ credentials: { authorization: "Bearer rotated-secret", headerName: " X-API-Key " } }), params);
+
+    expect(response.status).toBe(200);
+    expect(input.rateLimiter.check).toHaveBeenCalledWith("personal-mcp:create:user:user-1", { maxAttempts: 10 });
+    expect(input.replacePersonalCredentials).toHaveBeenCalledWith({
+      authorization: "Bearer rotated-secret", headerName: "X-API-Key", serverId: "personal-1", userId: "user-1"
+    });
+    expect(input.updateUserServer).not.toHaveBeenCalled();
+    expect(onConnectionChanged).toHaveBeenCalledWith("user-1", "personal-1");
+    const body = await response.json();
+    expect(body.server).toMatchObject({ authHeaderName: "Authorization", authMode: "static", id: "personal-1" });
+    expect(JSON.stringify(body)).not.toContain("rotated-secret");
+  });
+
+  it.each([
+    [{ credentials: { authorization: "key" }, enabled: true }, 400],
+    [{ credentials: { authorization: "key" }, tool: { enabled: false, name: "echo" } }, 400],
+    [{ credentials: "key" }, 400],
+    [{ credentials: { authorization: "key", url: "https://other.example.test/mcp" } }, 400]
+  ])("rejects a malformed or combined replacement before validation", async (body, status) => {
+    const input = deps();
+    const response = await createPersonalMcpUpdateHandler(input)(replacement(body), params);
+    expect(response.status).toBe(status);
+    expect(input.replacePersonalCredentials).not.toHaveBeenCalled();
+    expect(input.updateUserServer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ headerName: "X-API-Key" }, "authorization_required", "credentials.authorization"],
+    [{ authorization: "   " }, "authorization_required", "credentials.authorization"],
+    [{ authorization: "line\r\nInjected: true" }, "invalid_mcp_values", "credentials.authorization"],
+    [{ authorization: "Bearer tok\u200Ben" }, "invalid_mcp_values", "credentials.authorization"],
+    [{ authorization: "Bearer tok\u0000en" }, "invalid_mcp_values", "credentials.authorization"],
+    [{ authorization: "key", headerName: "Cookie" }, "header_name_invalid", "credentials.headerName"],
+    [{ authorization: "key", headerName: "Bad Header" }, "header_name_invalid", "credentials.headerName"]
+  ])("returns a field error for %j without contacting the endpoint", async (credentials, error, path) => {
+    const input = deps();
+    const response = await createPersonalMcpUpdateHandler(input)(replacement({ credentials }), params);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error, issues: [{ code: error, path }] });
+    expect(input.replacePersonalCredentials).not.toHaveBeenCalled();
+  });
+
+  it("associates validator failures with the form fields and drops upstream detail", async () => {
+    const input = deps();
+    input.replacePersonalCredentials.mockResolvedValueOnce({ kind: "draft_validation_failed", issues: [
+      { code: "mcp_authorization_required", endpoint: "https://mcp.example.test/mcp", httpStatus: 401, operation: "initialize", path: "source" },
+      { code: "mcp_static_header_invalid", path: "slots.0.target.name" },
+      { code: "mcp_connection_failed", httpStatus: 502, path: "source" }
+    ] });
+    const response = await createPersonalMcpUpdateHandler(input)(
+      replacement({ credentials: { authorization: "expired", headerName: "X-API-Key" } }), params);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: "mcp_draft_test_failed", issues: [
+      { code: "mcp_authorization_required", path: "credentials.authorization" },
+      { code: "mcp_static_header_invalid", path: "credentials.headerName" },
+      { code: "mcp_connection_failed", path: "source" }
+    ] });
+
+    input.replacePersonalCredentials.mockResolvedValueOnce({ kind: "invalid_values", issues: [{ code: "slot_value_invalid", path: "oneTimeValues.authorization" }] });
+    const invalid = await createPersonalMcpUpdateHandler(input)(replacement({ credentials: { authorization: "x" } }), params);
+    expect(invalid.status).toBe(422);
+    expect(await invalid.json()).toEqual({ error: "invalid_mcp_values", issues: [{ code: "slot_value_invalid", path: "credentials.authorization" }] });
+  });
+
+  it("reports a header that cannot be set on the secret field when the header name is kept", async () => {
+    const input = deps();
+    const failure = { kind: "draft_validation_failed" as const, issues: [{ code: "mcp_static_header_invalid", path: "slots.0.target.name" }] };
+    input.replacePersonalCredentials.mockResolvedValueOnce(failure).mockResolvedValueOnce(failure);
+    const kept = await createPersonalMcpUpdateHandler(input)(replacement({ credentials: { authorization: "key\u00ff" } }), params);
+    expect(await kept.json()).toEqual({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_static_header_invalid", path: "credentials.authorization" }] });
+    const renamed = await createPersonalMcpUpdateHandler(input)(
+      replacement({ credentials: { authorization: "key", headerName: "X-API-Key" } }), params);
+    expect(await renamed.json()).toEqual({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_static_header_invalid", path: "credentials.headerName" }] });
+  });
+
+  it.each([
+    [{ kind: "auth_mode_invalid" as const }, 422, { error: "auth_mode_invalid", issues: [{ code: "auth_mode_invalid", path: "credentials" }] }],
+    [{ kind: "credentials_changed" as const }, 409, { error: "mcp_draft_changed" }],
+    [{ kind: "not_found" as const }, 404, { error: "mcp_not_found" }]
+  ])("maps the repository outcome %j", async (outcome, status, body) => {
+    const input = deps();
+    input.replacePersonalCredentials.mockResolvedValueOnce(outcome);
+    const onConnectionChanged = vi.fn(async () => undefined);
+    const response = await createPersonalMcpUpdateHandler({ ...input, onConnectionChanged })(
+      replacement({ credentials: { authorization: "key" } }), params);
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual(body);
+    expect(onConnectionChanged).not.toHaveBeenCalled();
+  });
+
+  it("throttles replacements and fails closed without a limiter", async () => {
+    const input = deps();
+    input.rateLimiter.check.mockResolvedValueOnce({ allowed: false, retryAfterSeconds: 30 });
+    const limited = await createPersonalMcpUpdateHandler(input)(replacement({ credentials: { authorization: "key" } }), params);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toBe("30");
+    expect(await limited.json()).toEqual({ error: "personal_mcp_rate_limited" });
+
+    const { rateLimiter: _rateLimiter, ...unlimited } = input;
+    const closed = await createPersonalMcpUpdateHandler(unlimited)(replacement({ credentials: { authorization: "key" } }), params);
+    expect(closed.status).toBe(503);
+    expect(input.replacePersonalCredentials).not.toHaveBeenCalled();
   });
 });

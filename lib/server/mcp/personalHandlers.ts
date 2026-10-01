@@ -3,7 +3,8 @@ import {
   isMcpToolName,
   mcpValidationIssue,
   type McpValidationIssue,
-  type PersonalMcpAuthorizationOriginConfirmationResponse
+  type PersonalMcpAuthorizationOriginConfirmationResponse,
+  type PersonalMcpCredentialReplacementResponse
 } from "@/lib/contracts/mcp";
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "@/lib/server/http/requestBody";
@@ -34,6 +35,12 @@ type PersonalDeps = {
 type PersonalCreateDeps = PersonalDeps & { rateLimiter: PersonalMcpRateLimiter };
 
 const MAX_ACKNOWLEDGED_ORIGINS = 32;
+const MAX_SECRET_LENGTH = 16_384;
+/** Headers the transport owns; a static credential never replaces them. */
+const RESERVED_STATIC_HEADER_NAMES = new Set(["host", "cookie", "connection", "content-length", "transfer-encoding", "upgrade", "proxy-authorization"]);
+const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/u;
+/** A header value is a ByteString without controls other than HTAB. */
+const INVALID_HEADER_VALUE = /[^\t\x20-\x7E\x80-\xFF]/u;
 
 type RouteContext = { params: Promise<{ connectionId?: string; serverId?: string }> | { connectionId?: string; serverId?: string } };
 
@@ -102,7 +109,7 @@ function remoteDraft(input: Record<string, unknown>): { draft: McpDraftConfigura
     return { error: "invalid_mcp_values", path: "values" };
   }
   const headerName = auth.headerName === undefined ? "Authorization" : text(auth.headerName, 128);
-  if (mode === "static" && (!headerName || ["host", "cookie", "connection", "content-length", "transfer-encoding", "upgrade", "proxy-authorization"].includes(headerName.toLowerCase()))) {
+  if (mode === "static" && (!headerName || RESERVED_STATIC_HEADER_NAMES.has(headerName.toLowerCase()))) {
     return { error: "header_name_invalid", path: "auth.headerName" };
   }
   const slot = mode === "static" ? {
@@ -253,7 +260,81 @@ async function authorizationTrust(
   return discovered.draft;
 }
 
-export function createPersonalMcpUpdateHandler(deps: PersonalDeps) {
+type CredentialInput = { authorization: string; headerName?: string };
+
+/** The replacement body's field errors, before any outbound request. */
+function credentialInput(value: unknown): CredentialInput | { error: string; path: string; status: 400 | 422 } {
+  if (!record(value) || Object.keys(value).some((key) => key !== "authorization" && key !== "headerName")) {
+    return { error: "invalid_mcp_values", path: "credentials", status: 400 };
+  }
+  const { authorization, headerName } = value;
+  if (authorization === undefined || (typeof authorization === "string" && !authorization.trim())) {
+    return { error: "authorization_required", path: "credentials.authorization", status: 422 };
+  }
+  if (typeof authorization !== "string" || authorization.length > MAX_SECRET_LENGTH || INVALID_HEADER_VALUE.test(authorization)) {
+    return { error: "invalid_mcp_values", path: "credentials.authorization", status: 422 };
+  }
+  if (headerName === undefined) return { authorization };
+  const name = text(headerName, 128);
+  if (!name || !HEADER_NAME.test(name) || RESERVED_STATIC_HEADER_NAMES.has(name.toLowerCase())) {
+    return { error: "header_name_invalid", path: "credentials.headerName", status: 422 };
+  }
+  return { authorization, headerName: name };
+}
+
+/**
+ * Associates validation issues with the replacement form's fields and drops
+ * upstream detail (HTTP status, endpoint, operation). The validator reports a
+ * header that cannot be set at the header name even when the value caused it;
+ * without a header-name change only the value can be at fault.
+ */
+function credentialIssue(issue: McpValidationIssue, headerNameChanged: boolean): McpValidationIssue {
+  const { code, path } = issue;
+  if (code === "mcp_authorization_required" || /^(?:oneTimeValues|values)\.authorization$/u.test(path) ||
+    (code === "mcp_static_header_invalid" && !headerNameChanged)) {
+    return { code, path: "credentials.authorization" };
+  }
+  if (code === "header_name_invalid" || code.startsWith("mcp_static_header_") || /^slots\.\d+\.target/u.test(path)) {
+    return { code, path: "credentials.headerName" };
+  }
+  return { code, path };
+}
+
+async function replaceCredentials(
+  deps: PersonalUpdateDeps,
+  userId: string,
+  connectionId: string,
+  credentials: unknown
+): Promise<Response> {
+  const replace = deps.repository.replacePersonalCredentials;
+  if (!replace || !deps.rateLimiter) return errorJson("mcp_unavailable", 503);
+  // Replacement contacts the endpoint, so it shares the create bucket.
+  const limited = await personalMcpRateLimitResponse(deps.rateLimiter, "create", userId);
+  if (limited) return limited;
+  const input = credentialInput(credentials);
+  if ("error" in input) return errorJson(input.error, input.status, [{ code: input.error, path: input.path }]);
+  const result = await safely(() => replace({ ...input, serverId: connectionId, userId }));
+  if (result instanceof Response) return result;
+  if (result.kind !== "ok") {
+    if (result.kind === "auth_mode_invalid") return errorJson("auth_mode_invalid", 422, [{ code: "auth_mode_invalid", path: "credentials" }]);
+    if (result.kind === "credentials_changed") return errorJson("mcp_draft_changed", 409);
+    const headerNameChanged = input.headerName !== undefined;
+    const issues = (issue: McpValidationIssue) => credentialIssue(issue, headerNameChanged);
+    if (result.kind === "draft_validation_failed") return errorJson("mcp_draft_test_failed", 422, result.issues.map(issues));
+    if (result.kind === "invalid_values") return errorJson("invalid_mcp_values", 422, result.issues.map(issues));
+    return errorJson("mcp_not_found", 404);
+  }
+  try { deps.onRuntimeChanged?.(userId); } catch { /* persistence is authoritative */ }
+  prepareConnectionInBackground(deps, userId, result.value);
+  return Response.json({ server: userServerProjection(result.value) } satisfies PersonalMcpCredentialReplacementResponse, {
+    headers: { "Cache-Control": "no-store" }
+  });
+}
+
+/** Without a limiter, credential replacement fails closed; other updates need none. */
+type PersonalUpdateDeps = PersonalDeps & { rateLimiter?: PersonalMcpRateLimiter };
+
+export function createPersonalMcpUpdateHandler(deps: PersonalUpdateDeps) {
   return async function PATCH(request: Request, context: RouteContext): Promise<Response> {
     const session = await deps.resolveAuth(request);
     if (!session) return errorJson("unauthorized", 401);
@@ -261,6 +342,13 @@ export function createPersonalMcpUpdateHandler(deps: PersonalDeps) {
     if (request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json") return errorJson("json_required", 415);
     const body = await readJsonBodyOrNull(request, "json");
     if (!record(body)) return requestBodyErrorResponse(body) ?? errorJson("invalid_mcp_values", 400);
+    if (body.credentials !== undefined) {
+      if (body.enabled !== undefined || body.tool !== undefined) return errorJson("invalid_mcp_values", 400);
+      const params = await context.params;
+      const connectionId = params.connectionId ?? params.serverId;
+      if (!connectionId) return errorJson("mcp_not_found", 404);
+      return replaceCredentials(deps, session.userId, connectionId, body.credentials);
+    }
     const tool = record(body.tool) && isMcpToolName(body.tool.name) && typeof body.tool.enabled === "boolean"
       ? { enabled: body.tool.enabled, name: body.tool.name }
       : undefined;

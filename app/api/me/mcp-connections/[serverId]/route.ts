@@ -1,6 +1,7 @@
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { mcpRepository } from "@/lib/server/mcp/defaultMcp";
+import { personalMcpRateLimiter } from "@/lib/server/mcp/defaultPersonalRateLimit";
 import { getDefaultMcpRuntimeCoordinator, kickDefaultMcpRuntime } from "@/lib/server/mcp/defaultRuntime";
 import { createPersonalMcpDeleteHandler, createPersonalMcpUpdateHandler } from "@/lib/server/mcp/personalHandlers";
 
@@ -11,6 +12,7 @@ const deps = {
   onConnectionChanged: (userId: string, serverId: string) => getDefaultMcpRuntimeCoordinator()
     .ensureUserServersReady(userId, [serverId]),
   onRuntimeChanged: kickDefaultMcpRuntime,
+  rateLimiter: personalMcpRateLimiter,
   repository: mcpRepository,
   resolveAuth: resolveRequestAuth
 };

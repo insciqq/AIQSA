@@ -29,6 +29,16 @@ export type McpUserServerState = UserMcpServer & {
   runtimeGenerationId: string | null;
 };
 
+/**
+ * Credential replacement adds two outcomes: the connection does not use a
+ * static credential, or it changed after the new credential was read for
+ * validation (the replacement is refused, never applied out of order).
+ */
+export type McpPersonalCredentialReplacementResult =
+  | McpRepositoryResult<McpUserServerState>
+  | { kind: "auth_mode_invalid" }
+  | { kind: "credentials_changed" };
+
 export type McpRepository = {
   activateDraft(serverId: string): Promise<McpRepositoryResult<AdminMcpServer>>;
   createServer(input: {
@@ -53,6 +63,18 @@ export type McpRepository = {
    * personal connection; creation repeats it under the owner's lock.
    */
   personalCreationLimit?(userId: string): Promise<McpUserLimitKind | null>;
+  /**
+   * Validates a static-auth personal connection's new credential against its
+   * stored URL, then stores it in place; a new header name publishes a new
+   * revision. Identity, switch-offs and the cap slot are kept.
+   */
+  replacePersonalCredentials?(input: {
+    authorization: string;
+    /** Absent keeps the stored header name. */
+    headerName?: string;
+    serverId: string;
+    userId: string;
+  }): Promise<McpPersonalCredentialReplacementResult>;
   listAdminServers(validationUserId?: string): Promise<AdminMcpServer[]>;
   listUserServers(userId: string): Promise<McpUserServerState[]>;
   rebuildRevision(input: {
