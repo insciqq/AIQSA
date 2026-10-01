@@ -439,9 +439,9 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
       entity: ["memory-entity-resolution-v3", "slot-v3"],
       extraction: [
         "memory-fact-extraction-vnext-v8",
-        "memory-fact-extraction-policy-v37",
-        "memory-fact-extraction-prompt-v49",
-        "memory-fact-extraction-schema-v6"
+        "memory-fact-extraction-policy-v38",
+        "memory-fact-extraction-prompt-v50",
+        "memory-fact-extraction-schema-v7"
       ],
       history: "memory-history-incremental-v10",
       relation: [

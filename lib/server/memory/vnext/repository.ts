@@ -852,6 +852,16 @@ async function materializeExpiredCurrent(
   return true;
 }
 
+/** A change-only candidate (a rejected usefulness class passed as a change,
+ * or a terminal product status) may update or withdraw an existing automatic
+ * fact through relation resolution. Without that live target it creates,
+ * reactivates or relearns nothing. Retained v6 plans carry no marker. */
+const changeTargetMissing: MemoryVNextCommitResult = Object.freeze({
+  attachedEvidence: 0,
+  createdVersions: 0,
+  reasonCode: "change_target_missing"
+});
+
 async function createFirstOrReactivatedVersion(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
@@ -865,6 +875,7 @@ async function createFirstOrReactivatedVersion(
   existingFact: LockedFact | null,
   semanticAdjudication: ResolvedSemanticAdjudication | null
 ): Promise<MemoryVNextCommitResult> {
+  if (candidate.changeOnly !== undefined) return changeTargetMissing;
   await advanceMemoryMutation(tx, settings, "AUTOMATIC_ADD_OR_REINFORCE");
   const factId = existingFact?.id ?? randomUUID();
   const factVersionId = versionId(evidence.ingestionFingerprint);
@@ -1499,6 +1510,7 @@ async function createObservation(
     );
   }
   if (fact.state === "FORGOTTEN") {
+    if (candidate.changeOnly !== undefined) return changeTargetMissing;
     if (await automaticForgottenFactCanRelearn(
       tx,
       settings.userId,

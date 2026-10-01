@@ -88,11 +88,12 @@ import { memoryAdmissibleEntityAliasPredicate } from
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryCanonicalFactRootIdSql } from "../persistence/canonicalFact";
 import {
+  memoryAutomaticExplicitRememberPredicate,
   memoryPersonalEvidenceRowPredicate,
   memoryPersonalFactEvidencePredicate
 } from "../persistence/eligibility";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
-import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../maintenance/policy";
+import { MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS } from "../maintenance/policy";
 import {
   memoryHistoryChunkSourceAuthorityPredicate,
   memoryHistoryRoundSourceAuthorityPredicate
@@ -1625,10 +1626,13 @@ function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot, limit: number)
         includePatterns: false,
         lifecycle: "CURRENT"
       })}
-      -- A current episode remains available to targeted and historical reads.
-      -- New automatic versions carry usefulness directly. An older unclassified
-      -- version needs an exact current-policy KEEP review. Explicit and
-      -- owner-touched facts retain standing use.
+      -- Standing keeps only long-term facts. Past events remain in chat history
+      -- search and targeted reads. An automatic version needs a DURABLE or
+      -- ONGOING label: its own, or that of the latest decisive review of any
+      -- supported maintenance policy covering its evidence. A KEEP without a
+      -- label and a decisive removal fall back to the version label; a
+      -- non-decisive review never overrides it. Explicit, pinned, owner-touched
+      -- and explicitly remembered automatic facts are protected.
       AND (
         version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
         OR fact."pinned" = TRUE
@@ -1638,14 +1642,15 @@ function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot, limit: number)
             AND owner_event."factId" = fact."id"
             AND owner_event."actorType" = 'USER'::"MemoryActorType"
         )
+        OR ${memoryAutomaticExplicitRememberPredicate(Prisma.sql`version`)}
         OR COALESCE((
           SELECT CASE WHEN review."disposition" = 'KEEP'
             THEN review."usefulness" ELSE NULL END
           FROM "MemoryMaintenanceReview" AS review
           WHERE review."userId" = version."userId"
             AND review."factVersionId" = version."id"
-            AND review."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION}
-            AND review."disposition" <> 'PENDING'
+            AND review."policyVersion" IN (${Prisma.join(MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS)})
+            AND review."disposition" IN ('KEEP', 'REMOVED', 'REJECTED')
             AND review."reviewedAt" IS NOT NULL
             AND review."evidenceThrough" >= (
               SELECT MAX(evidence."createdAt")
@@ -1656,11 +1661,13 @@ function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot, limit: number)
             )
           ORDER BY review."reviewedAt" DESC, review."id" DESC
           LIMIT 1
-        ), version."usefulness", 'UNKNOWN') <> 'EPISODIC'
+        ), version."usefulness") IN ('DURABLE', 'ONGOING')
       )
       AND ${memoryActiveSuppressionPredicate(snapshot.userId)}
       AND ${memoryFactConversationFeedbackPredicate(snapshot)}
-    ORDER BY (version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode") DESC,
+    ORDER BY fact."pinned" DESC,
+      (version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode") DESC,
+      (${memoryAutomaticExplicitRememberPredicate(Prisma.sql`version`)}) IS TRUE DESC,
       root_fact."lastConfirmedAt" DESC NULLS LAST, root_fact."id", version."id"
     LIMIT ${limit}
   `;

@@ -2404,7 +2404,13 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('version."modality" <> \'PATTERN\'');
     expect(sql).toContain('CASE WHEN review."disposition" = \'KEEP\'');
     expect(sql).toContain('review."evidenceThrough" >=');
-    expect(sql).toContain('version."usefulness", \'UNKNOWN\') <> \'EPISODIC\'');
+    expect(sql).toContain('version."usefulness") IN (\'DURABLE\', \'ONGOING\')');
+    expect(sql).not.toContain("'UNKNOWN'");
+    expect(sql).not.toContain("<> 'EPISODIC'");
+    expect(sql).toContain('review."disposition" IN (\'KEEP\', \'REMOVED\', \'REJECTED\')');
+    expect(sql).toContain('review."policyVersion" IN (');
+    expect(sql).toContain('"semanticFrame"->>\'memoryDirective\' = \'EXPLICIT_REMEMBER\'');
+    expect(sql).toMatch(/ORDER BY fact\."pinned" DESC,\s+\(version\."sourceMode" = 'EXPLICIT'[^)]*\) DESC,\s+\(\(version\."sourceMode" = 'AUTOMATIC'[\s\S]*?\)\) IS TRUE DESC,\s+root_fact\."lastConfirmedAt" DESC NULLS LAST/u);
     expect(sql).toContain('owner_event."actorType" = \'USER\'');
     expect(sql).toContain('FROM "MemorySuppression"');
     expect(sql).toContain('FROM "MemoryFeedback"');
@@ -2414,6 +2420,9 @@ describe("local Memory retrieval repository", () => {
     const legacyQuery = mocked.$queryRaw.mock.calls.find(([query]) =>
       query.strings?.join("?").includes("standing_fact_floor"))?.[0];
     expect(legacyQuery?.values).toContain(21);
+    expect(legacyQuery?.values).toEqual(expect.arrayContaining([
+      "memory-maintenance-policy-v1", "memory-maintenance-policy-v2"
+    ]));
     await repository.loadStandingFacts(snapshot, { standingVersion: 1 });
     const standingQueries = mocked.$queryRaw.mock.calls.filter(([query]) =>
       query.strings?.join("?").includes("standing_fact_floor"));

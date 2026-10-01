@@ -13,11 +13,11 @@ import {
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
   "memory-fact-extraction-vnext-v8";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v37";
+  "memory-fact-extraction-policy-v38";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v49";
+  "memory-fact-extraction-prompt-v50";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
-  "memory-fact-extraction-schema-v6";
+  "memory-fact-extraction-schema-v7";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
   MEMORY_TEMPORAL_RESOLVER_VERSION;
 export const MEMORY_FACT_SOURCE_PROJECTION_VERSION =
@@ -30,6 +30,37 @@ export const MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE =
 
 export const MEMORY_ASSERTED_PLAN_GUIDANCE =
   "A directly stated personal intention or commitment is an ASSERTED plan only when it describes the user's own future activity or durable goal beyond the present assistant task. Preserve its prerequisite and prospective wording in the proposition; the asserted fact is the user's plan, not that its condition is met or its future event has happened. Use PLAN with FUTURE perspective for that activity. A stated need or desired outcome that merely motivates a request for the assistant's immediate deliverable is task context, not an independent personal plan; preparing documents for a change does not establish a lasting plan to make that change. First-person necessity alone is insufficient. In a mixed message, retain an independently asserted scheduled activity or durable goal, including its date, but omit the assistant task and its motivating need. A possible future state never replaces an actual current residence, role, schedule, or ownership. An imagined example, question, or conditional possibility without a stated intention or commitment remains hypothetical; do not invent a plan from it.";
+
+/** Extraction-only plan guidance. The shared asserted-plan wording above is
+ * part of the semantic adjudication prompt and keeps its own version. */
+export const MEMORY_FACT_EXTRACTION_PLAN_GUIDANCE =
+  "A directly stated personal intention or commitment is retained only as a long-term goal or ongoing commitment of the user that lasts months or longer beyond the present assistant task, such as learning a language or completing a degree by a stated year; classify it ONGOING. A single scheduled activity, appointment, meeting, trip, purchase, errand, or deliverable due within days or weeks is SHORT_TERM, and a single dated occurrence is EPISODIC; neither is retained, including a dated vacation. Preserve a retained goal's prerequisite and prospective wording in the proposition; the asserted fact is the user's goal, not that its condition is met or its future event has happened. A stated need or desired outcome that merely motivates a request for the assistant's immediate deliverable is task context, not an independent personal plan; preparing documents for a change does not establish a lasting plan to make that change. First-person necessity alone is insufficient. In a mixed message, retain only the independently asserted long-term goal and omit the assistant task and its motivating need. A possible future state never replaces an actual current residence, role, schedule, or ownership. An imagined example, question, or conditional possibility without a stated intention or commitment remains hypothetical; do not invent a plan from it.";
+
+/** Usefulness classes the extraction schema offers but never persists: they
+ * give the model an honest exit instead of stretching a short matter into
+ * ONGOING. Only DURABLE and ONGOING are stored on a new automatic version. */
+export const MEMORY_FACT_EXTRACTION_REJECTED_USEFULNESS = Object.freeze([
+  "EPISODIC", "SHORT_TERM", "COMMON", "TRANSIENT"
+] as const);
+export type MemoryFactExtractionRejectedUsefulness =
+  (typeof MEMORY_FACT_EXTRACTION_REJECTED_USEFULNESS)[number];
+export const MEMORY_FACT_EXTRACTION_RETAINED_USEFULNESS = Object.freeze([
+  "DURABLE", "ONGOING"
+] as const);
+/** Product states that only describe a passing step toward ownership. */
+export const MEMORY_FACT_TRANSITIONAL_PRODUCT_STATES = Object.freeze([
+  "considering", "planned", "ordered"
+] as const);
+/** Product states that only end an existing ownership-like product fact. */
+export const MEMORY_FACT_TERMINAL_PRODUCT_STATES = Object.freeze([
+  "returned", "sold", "cancelled", "no_longer_owned"
+] as const);
+/** Why a candidate may only change an existing automatic fact: its rejected
+ * usefulness class, or a terminal product status. Commit rejects it without a
+ * live target (`change_target_missing`). Absent on retained v6 plans. */
+export type MemoryFactChangeOnly =
+  | MemoryFactExtractionRejectedUsefulness
+  | "TERMINAL_PRODUCT_STATUS";
 
 // Context is a bounded non-authoritative aid. The final direct-user target is
 // the only evidence source; every admitted prior message is persisted as an
@@ -232,13 +263,14 @@ export const MEMORY_FACT_EXTRACTION_VERSIONS: MemoryExecutionVersions =
   });
 
 /** Only settled outputs and ambiguous calls may retain this exact contract.
- * New dispatches always use the current selective-admission schema. */
+ * New dispatches always use the current long-term schema; a retained staged
+ * plan applies with its recorded semantics and no change-only marker. */
 export const MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS: MemoryExecutionVersions =
   Object.freeze({
     ...MEMORY_FACT_EXTRACTION_VERSIONS,
-    policyVersion: "memory-fact-extraction-policy-v35",
-    promptVersion: "memory-fact-extraction-prompt-v47",
-    schemaVersion: "memory-fact-extraction-schema-v5"
+    policyVersion: "memory-fact-extraction-policy-v37",
+    promptVersion: "memory-fact-extraction-prompt-v49",
+    schemaVersion: "memory-fact-extraction-schema-v6"
   });
 
 export type MemoryFactSourceIdentity = Readonly<{
@@ -370,9 +402,12 @@ export type MemoryExtractedCandidate = Readonly<{
   category: string;
   confidenceBand?: MemoryFactConfidenceBand;
   correction?: boolean;
+  /** Present only on retained outputs predating schema v7. */
   futureUseful?: boolean;
-  /** Absent only on accepted outputs predating selective admission. */
+  /** Absent on outputs predating selective admission and when a v7 candidate
+   * passes with a rejected class (change-only or explicit remember). */
   usefulness?: MemoryUsefulness;
+  changeOnly?: MemoryFactChangeOnly;
   /** Server-derived routing metadata; fallback must retain SLOT adjudication. */
   proposedIdentityKind?: "PROPOSITION" | "SLOT";
   /** Unsupported optional entity metadata was discarded; require HIGH entailment. */
@@ -748,6 +783,7 @@ export function memoryFactCandidateId(
     correction: _correction,
     futureUseful: _futureUseful,
     usefulness: _usefulness,
+    changeOnly: _changeOnly,
     proposedIdentityKind: _proposedIdentityKind,
     entityAnnotationReviewRequired: _entityAnnotationReviewRequired,
     quote: _quote,
