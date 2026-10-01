@@ -3648,6 +3648,7 @@ model McpRevision {
   identityHash       String
   createdAt          DateTime               @default(now())
   activeFor          McpServer?             @relation("ActiveMcpRevision")
+  discoveredBy       McpUserServer[]        @relation("McpUserServerDiscoveredRevision")
   runtimeGenerations McpRuntimeGeneration[]
   server             McpServer              @relation("McpServerRevisions", fields: [serverId], references: [id], onDelete: Restrict)
 
@@ -3724,12 +3725,16 @@ model McpUserServer {
   createdAt                  DateTime               @default(now())
   updatedAt                  DateTime               @updatedAt
   desiredRuntimeGeneration   McpRuntimeGeneration?  @relation("McpDesiredRuntimeGeneration", fields: [desiredRuntimeGenerationId], references: [id], onDelete: SetNull)
+  discoveredOAuthConnection  McpOAuthConnection?    @relation("McpUserServerDiscoveredOAuthConnection", fields: [discoveredOAuthConnectionId], references: [id], onDelete: SetNull)
+  discoveredRevision         McpRevision?           @relation("McpUserServerDiscoveredRevision", fields: [discoveredRevisionId], references: [id], onDelete: SetNull)
   runtimeGenerations         McpRuntimeGeneration[] @relation("McpUserRuntimeGenerations")
   server                     McpServer              @relation(fields: [serverId], references: [id], onDelete: Cascade)
   user                       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, serverId])
   @@index([userId, enabled])
+  @@index([discoveredOAuthConnectionId])
+  @@index([discoveredRevisionId])
 }
 
 /// The installation-owned runtime Project runs use for one server: no user,
@@ -3772,6 +3777,7 @@ model McpOAuthConnection {
   disconnectRequestedAt DateTime?
   createdAt             DateTime                @default(now())
   updatedAt             DateTime                @updatedAt
+  discoveredBy          McpUserServer[]         @relation("McpUserServerDiscoveredOAuthConnection")
   oauthClient           McpOAuthClient?         @relation(fields: [oauthClientId], references: [id], onDelete: Restrict)
   runtimeGenerations    McpRuntimeGeneration[]
   server                McpServer               @relation(fields: [serverId], references: [id], onDelete: Cascade)
