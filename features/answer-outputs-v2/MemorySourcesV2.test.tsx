@@ -61,7 +61,7 @@ describe("compact Personal Context sources", () => {
     expect(facts.open).toBe(false);
   });
 
-  it("keeps forgotten text and navigation removed when Show less and Show all are toggled", async () => {
+  it("removes a forgotten past chat and recounts it across Show less and Show all", async () => {
     vi.mocked(submitMemorySourceAction).mockResolvedValue({ status: "COMMITTED" });
     render(<AnswerProcessV2 memorySources={[pastChat(1), pastChat(2), pastChat(3), pastChat(4)]} />);
     document.querySelectorAll("details").forEach((details) => { details.open = true; });
@@ -69,14 +69,26 @@ describe("compact Personal Context sources", () => {
     const group = visibleGroups()[3]!;
     fireEvent.click(within(group).getByRole("button", { name: "Memory actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Forget" }));
-    await waitFor(() => expect(within(group).getByRole("status")).toHaveTextContent("forgotten"));
-    fireEvent.click(screen.getByRole("button", { name: "Show less" }));
-    expect(group).not.toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Show all 4" }));
-    expect(group).toBeVisible();
-    expect(group.querySelector(".v2-past-chat-preview")).toBeNull();
-    expect(within(group).queryByRole("link", { name: "Same title" })).not.toBeInTheDocument();
-    expect(group).not.toHaveTextContent("A long earlier discussion.");
+    await waitFor(() => expect(group).not.toBeInTheDocument());
+    const process = screen.getByTestId("tool-activity-disclosure");
+    expect(process.querySelector(":scope > summary")).toHaveTextContent("Past chats · 3");
+    expect(screen.getByTestId("past-chats-disclosure").querySelector("summary")).toHaveTextContent("Past chats · 3");
+    expect(screen.queryByRole("button", { name: /Show all/u })).toBeNull();
+    expect(visibleGroups()).toHaveLength(3);
+    expect(screen.queryByText(/Excerpt 4\.0/u)).toBeNull();
+    expect(screen.queryByText(/source unavailable/iu)).toBeNull();
+  });
+
+  it("keeps a past chat with its other excerpts after one is forgotten", async () => {
+    vi.mocked(submitMemorySourceAction).mockResolvedValue({ status: "COMMITTED" });
+    render(<AnswerProcessV2 memorySources={[pastChat(1), pastChat(1, 1)]} />);
+    document.querySelectorAll("details").forEach((details) => { details.open = true; });
+    const group = visibleGroups()[0]!;
+    fireEvent.click(within(group).getAllByRole("button", { name: "Memory actions" })[0]!);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Forget" }));
+    await waitFor(() => expect(within(visibleGroups()[0]!).getAllByTestId("memory-source-card")).toHaveLength(1));
+    expect(screen.getByTestId("past-chats-disclosure").querySelector("summary")).toHaveTextContent("Past chats · 1");
+    expect(visibleGroups()[0]!).toHaveTextContent("Excerpts · 1");
   });
 
   it("keeps unavailable history private and renders no empty disclosure", () => {
@@ -87,6 +99,8 @@ describe("compact Personal Context sources", () => {
     document.querySelectorAll("details").forEach((details) => { details.open = true; });
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Memory actions" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tool-activity-disclosure")).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/unavailable/iu);
     rerender(<AnswerProcessV2 memorySources={[]} />);
     expect(screen.queryByTestId("tool-activity-disclosure")).not.toBeInTheDocument();
   });

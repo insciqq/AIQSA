@@ -564,6 +564,40 @@ describe("message run lifecycle", () => {
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-1").sourceUpdatedAt).toBeNull();
   });
 
+  it.each(["send_failed", "regenerate_failed"])("shows neutral copy for a Memory admission refusal in %s", async (failurePrefix) => {
+    prepareThread();
+    const result = await executeMessageRunLifecycle({
+      activeChatIdRef: { current: "chat-1" },
+      activeStreamAbortRef: { current: new Map() },
+      chatId: "chat-1",
+      consumeRunStream: vi.fn(),
+      createStreamTokenBuffer: () => ({ flush: vi.fn(), push: vi.fn() }),
+      failurePrefix,
+      fetchRun: vi.fn(async () => null),
+      notifyAnswerReady: vi.fn(async () => undefined),
+      optimisticAssistantMessageId: "assistant-optimistic",
+      primeAnswerSound: vi.fn(async () => undefined),
+      reconcileMessageIds: vi.fn(),
+      refreshActiveChat: vi.fn(async () => null),
+      request: async () => Response.json({ error: "memory_attempt_item_stale" }, { status: 409 })
+    });
+
+    // The code still drives reconciliation; the user sees no raw Memory code.
+    expect(result).toMatchObject({
+      failed: true,
+      failureCode: "memory_attempt_item_stale",
+      rejectionMessage: "The answer could not be prepared. Try again."
+    });
+    const visible = JSON.stringify([
+      surfaceEvents(),
+      selectThreadSnapshot(useThreadStore.getState(), "chat-1").messages,
+      result.rejectionMessage,
+      result.failureMessage ?? null
+    ]);
+    expect(visible).toContain("The answer could not be prepared. Try again.");
+    expect(visible).not.toMatch(/memory/iu);
+  });
+
   it("records an inactive HTTP failure only on its owning chat and releases the stream", async () => {
     prepareThread();
     useRunSurfaceStore.getState().appendEvent("chat-2", {

@@ -92,10 +92,12 @@ describe("knowledgeSummaryStatusV2", () => {
 });
 
 describe("memoryManagerErrorCopy", () => {
-  it("keeps internal Memory failure codes out of the Library", () => {
-    expect(memoryManagerErrorCopy("memory_unavailable")).toMatch(/temporarily unavailable/i);
+  it("shows only input validation and keeps Memory failures silent", () => {
     expect(memoryManagerErrorCopy("memory_secret_rejected")).toMatch(/looks like a secret/i);
-    expect(memoryManagerErrorCopy("classifier_internal_code")).not.toContain("classifier_internal_code");
+    expect(memoryManagerErrorCopy("memory_changed")).toMatch(/draft was kept/i);
+    for (const code of ["memory_unavailable", "memory_action_failed", "classifier_internal_code", null]) {
+      expect(memoryManagerErrorCopy(code)).toBeNull();
+    }
   });
 });
 

@@ -33,6 +33,17 @@ describe("Run transport presentation v2", () => {
     expect(present(slice, "Beginning file check.")).toMatchObject({ kind: "terminal_error", failure: { message } });
   });
 
+  it("restores a historical Memory preparation failure with neutral copy and its recovery actions", () => {
+    const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,
+      message: { ...streamingMessage, status: "error",
+        errorMessage: "Memory preparation stopped because a selected Memory item was forgotten." },
+      persistedRunStatus: "error" });
+    expect(slice.failure).toEqual({ message: "The answer could not be prepared. Try again." });
+    expect(present(slice, "")).toMatchObject({ kind: "terminal_error", failure: {
+      code: null, message: "The answer could not be prepared. Try again.", recovery: "change_parameters"
+    } });
+  });
+
   it("restores deterministic Gemini routing rejection without a blind retry after reload", () => {
     const failure = mcpAutoDiscoveryFailure("mcp_router_gemini_invalid_request");
     const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,

@@ -9,13 +9,16 @@ const chatId = "memory-search-activity-chat";
 const chat = { id: chatId, title: "Recall an earlier preference", activeLeafMessageId: null,
   createdAt: timestamp, updatedAt: timestamp, defaultProvider: "openai", defaultModelId: "gpt-5.5",
   folderId: null, pinned: false, messageCount: 0, messages: [] };
+// A limited search reads like any other search and a failed one leaves no
+// step at all: users never see Memory failures or limits.
 const outcomes = [
   { outcome: "results", status: "complete", label: "Searched memory" },
   { outcome: "no_results", status: "complete", label: "No matching memories found" },
-  { outcome: "limited", status: "complete", label: "Memory search returned limited results" },
-  { outcome: "failure", status: "error", label: "Memory search unavailable" },
+  { outcome: "limited", status: "complete", label: "Searched memory" },
+  { outcome: "failure", status: "error", label: null },
   { outcome: "cancelled", status: "cancelled", label: "Memory search stopped" }
 ] as const;
+const hiddenMemoryCopy = /Memory search unavailable|limited results|Failed/u;
 
 for (const viewport of [
   { width: 1440, height: 900, theme: "dark" },
@@ -74,10 +77,16 @@ for (const viewport of [
       await emit(settled);
       await emit(settled);
       await emit({ status: "running" });
-      await expect(disclosure).toContainText(variant.label);
-      await expect(disclosure.locator(".v2-answer-process-steps > li")).toHaveCount(1);
-      await expect(summary).not.toContainText("Searching memory…");
-      await expect(disclosure).not.toContainText("memory_search");
+      if (variant.label === null) {
+        await expect(page.locator(".v2-answer-process-steps")).toHaveCount(0);
+        await expect(page.getByText("Searching memory…")).toHaveCount(0);
+      } else {
+        await expect(disclosure).toContainText(variant.label);
+        await expect(disclosure.locator(".v2-answer-process-steps > li")).toHaveCount(1);
+        await expect(summary).not.toContainText("Searching memory…");
+        await expect(disclosure).not.toContainText("memory_search");
+      }
+      await expect(page.locator("body")).not.toContainText(hiddenMemoryCopy);
       const runStatus = variant.outcome === "cancelled" ? "cancelled" : "complete";
       await stream.emit(page, "token", { delta: "A concise response." });
       await installMatrixCatalogFixture(page, { folders: [], chats: [{ ...chat,
@@ -94,6 +103,15 @@ for (const viewport of [
       await stream.emit(page, "done", { runId, status: runStatus });
       await stream.close(page);
       await page.reload();
+      if (variant.label === null) {
+        // Reopening the chat shows the answer without any Memory step or notice.
+        await expect(page.getByText("A concise response.")).toBeVisible();
+        await expect(disclosure).toHaveCount(0);
+        await expect(page.locator("body")).not.toContainText(hiddenMemoryCopy);
+        await expect(page.locator("[role='alert']:not(#__next-route-announcer__)")).toHaveCount(0);
+        await expectNoHorizontalOverflow(page);
+        continue;
+      }
       await expect(disclosure).toHaveAttribute("open");
       await expect(disclosure).toContainText(variant.label);
       await expect(disclosure.locator(".v2-answer-process-steps > li")).toHaveCount(1);

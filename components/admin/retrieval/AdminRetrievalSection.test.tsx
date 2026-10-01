@@ -190,6 +190,20 @@ describe("AdminRetrievalSection", () => {
     expect(within(memory).getByRole("link", { name: "Open Defaults & roles" })).toHaveAttribute("href", "/admin?section=roles&resource=memory");
     expect(memory).not.toHaveTextContent(/consent|memory_execution_/u);
   });
+  it("lists recent command and search failures as warnings without reading as blocked processing", async () => {
+    server({ memory: memoryStatus({ processing: { enabled: true, issues: [
+      { stage: "COMMAND", reason: "COMMAND_FAILED", severity: "warn", count: 2, oldestAgeSeconds: 7200 },
+      { stage: "SEARCH", reason: "SEARCH_FAILED", severity: "warn", count: 1, oldestAgeSeconds: 600 }
+    ] } }) });
+    renderSection();
+    const memory = await screen.findByTestId("admin-retrieval-memory");
+    await waitFor(() => expect(within(memory).getByTestId("memory-state")).toHaveTextContent("Working"));
+    expect(memory).toHaveTextContent("Memory commands failed recently");
+    expect(memory).toHaveTextContent("2 commands; oldest 2h");
+    expect(memory).toHaveTextContent("Memory search degraded recently");
+    expect(memory).toHaveTextContent("1 search; oldest 10m");
+    expect(memory).not.toHaveTextContent(/Processing blocked|Processing delayed/u);
+  });
   it.each(["RETRYING", "EXHAUSTED"] as const)("shows history auto-heal %s without a repair button or UI-triggered work", async (autoHeal) => {
     const calls = server({ memory: memoryStatus({ queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
       recovery: memoryRecoveryStatusFixture(), processing: { enabled: true, issues: [{

@@ -45,6 +45,7 @@ describe("usePersonalChatDeepLink", () => {
     window.history.replaceState(null, "", "/c/chat-1?message=gone&keep=yes#answer");
     const { props } = renderDeepLink({ revealMessage: vi.fn(async () => false) });
     await waitFor(() => expect(props.onUnavailable).toHaveBeenCalledOnce());
+    expect(props.onUnavailable).toHaveBeenCalledWith("message");
     expect(props.onAnchor).not.toHaveBeenCalled();
     expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe("/c/chat-1?keep=yes#answer");
 
@@ -129,7 +130,7 @@ describe("usePersonalChatDeepLink", () => {
     }
   });
 
-  it("announces and clears the one-shot unavailable marker without exposing details", () => {
+  it("reports the one-shot Memory source marker separately and clears it without details", () => {
     window.history.replaceState(
       null,
       "",
@@ -138,6 +139,7 @@ describe("usePersonalChatDeepLink", () => {
     const { props } = renderDeepLink({ activeChatId: null, ready: false });
 
     expect(props.onUnavailable).toHaveBeenCalledOnce();
+    expect(props.onUnavailable).toHaveBeenCalledWith("memory_source");
     expect(window.location.pathname).toBe("/c/chat-1");
     expect(window.location.search).toBe("?keep=yes");
     expect(window.location.hash).toBe("#answer");

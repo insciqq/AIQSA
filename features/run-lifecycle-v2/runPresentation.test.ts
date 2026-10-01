@@ -7,6 +7,7 @@ import {
   answerProcessLabelV2,
   contextCompactionCopyV2,
   describeToolCallV2,
+  memorySearchCallHiddenV2,
   formatWorkDurationV2,
   presentRunLifecycleV2,
   presentToolActivityV2,
@@ -54,10 +55,24 @@ describe("native Memory search activity", () => {
   });
   it.each([
     ["results", "Searched memory"], ["no_results", "No matching memories found"],
-    ["limited", "Memory search returned limited results"], ["failure", "Memory search unavailable"],
-    ["cancelled", "Memory search stopped"]
-  ])("uses a distinct safe label for %s", (memorySearchOutcome, label) => {
+    ["limited", "Searched memory"], ["cancelled", "Memory search stopped"]
+  ])("uses a safe label without limits for %s", (memorySearchOutcome, label) => {
     expect(describeToolCallV2({ origin: "memory", toolName: "memory_search", memorySearchOutcome }, "settled")).toBe(label);
+  });
+
+  it("drops a failed Memory search step entirely and keeps other calls", () => {
+    const failed = event({ status: "error", outcome: "failure" });
+    expect(presentToolActivityV2([event({ status: "running" }), failed])).toBeNull();
+    const kept = presentToolActivityV2([failed, event({ call: 2, status: "complete", outcome: "results" }),
+      event({ call: 3, status: "cancelled", outcome: "cancelled" })]);
+    expect(kept?.calls.map(call => call.memorySearchOutcome)).toEqual(["results", "cancelled"]);
+    expect(memorySearchCallHiddenV2({ origin: "memory", toolName: "memory_search", status: "complete",
+      memorySearchOutcome: "failure" })).toBe(true);
+    expect(memorySearchCallHiddenV2({ origin: "knowledge", toolName: "search_knowledge", status: "error" })).toBe(false);
+    for (const phase of ["failed", "settled"] as const) {
+      expect(describeToolCallV2({ origin: "memory", toolName: "memory_search", memorySearchOutcome: "failure" }, phase))
+        .not.toMatch(/unavailable|fail|limit/iu);
+    }
   });
 });
 
@@ -463,6 +478,37 @@ describe("run lifecycle v2 presentation", () => {
     }))).toMatchObject({ kind: "recoverable_error", failure: {
       code: "provider_stream_reset", message: "Connection interrupted.", recovery: "retry"
     } });
+  });
+
+  it.each([
+    ["memory_preparing_failed", "Memory preparation failed before provider dispatch."],
+    ["memory_preparing_attempt_expired", "Memory preparation expired before dispatch."],
+    ["memory_preparing_recovery_required", "Memory preparation was interrupted before dispatch."],
+    ["memory_all_reusable_deleted", "Memory preparation stopped because reusable Memory was deleted."],
+    ["memory_item_forgotten", "Memory preparation stopped because a selected Memory item was forgotten."],
+    ["memory_preparing_failed", "The answer could not be prepared. Try again."]
+  ])("neutralizes a Memory run failure %s by code and text", (code, message) => {
+    const live = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code, message, recovery: "change_parameters" } }]
+    }));
+    expect(live).toMatchObject({ kind: "terminal_error", failure: {
+      code: "preparation_failed", message: "The answer could not be prepared. Try again.", recovery: "change_parameters"
+    } });
+    // Historical persisted text without a live code is neutralized too.
+    const persisted = presentRunLifecycleV2(state({ failure: { message }, status: "error" }));
+    expect(persisted.failure?.message).toBe("The answer could not be prepared. Try again.");
+    expect(JSON.stringify([live, persisted])).not.toMatch(/memory/iu);
+  });
+
+  it("neutralizes the settle failure text while keeping its non-Memory code", () => {
+    expect(presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code: "tool_call_settle_conflict", message: "Memory search could not be settled." } }]
+    }))).toMatchObject({ failure: {
+      code: "tool_call_settle_conflict", message: "The answer could not be prepared. Try again."
+    } });
+    expect(presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code: "context_budget_exceeded", message: "Choose a model with a larger context." } }]
+    })).failure).toMatchObject({ code: "context_budget_exceeded", message: "Choose a model with a larger context." });
   });
 
   it("bounds malformed error state and supplies factual fallback copy", () => {

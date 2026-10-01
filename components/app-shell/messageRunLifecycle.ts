@@ -3,6 +3,7 @@ import {
   errorMessage,
   responseErrorMessageDetails
 } from "@/components/app-shell/shellFormatting";
+import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { useThreadStore } from "@/components/app-shell/threadStore";
@@ -255,9 +256,14 @@ export async function executeMessageRunLifecycle({
       // send. Preserve reconciliation until its complete reason is available.
       serverRejectedRequest = true;
       failureCode = details.code ?? null;
-      rejectionMessage = details.message;
-      userFacingFailureMessage = details.preserveForComposer ? details.message : null;
-      throw new Error(details.message);
+      // A Memory admission refusal keeps its code for reconciliation, but the
+      // user sees neutral copy instead of a raw `memory_` code.
+      const message = details.code?.startsWith("memory_")
+        ? memoryUiCopy("answer.preparationFailed")
+        : details.message;
+      rejectionMessage = message;
+      userFacingFailureMessage = details.preserveForComposer ? message : null;
+      throw new Error(message);
     }
 
     if (response.status === 202) {

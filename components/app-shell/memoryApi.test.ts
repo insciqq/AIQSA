@@ -4,8 +4,10 @@ import {
   forgetMemory,
   listMemories,
   loadMemorySettings,
+  MemoryApiError,
   patchMemorySettings,
   resetPersonalMemory,
+  retryMemoryRead,
   searchMemories,
   submitMemorySourceAction,
   updateMemory
@@ -24,6 +26,41 @@ function json(value: unknown, status = 200): Response {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("bounded Memory read retries", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("retries a transient read three times with growing pauses, then settles", async () => {
+    vi.useFakeTimers();
+    const read = vi.fn().mockRejectedValue(new MemoryApiError("memory_action_failed", 500));
+    const settled = expect(retryMemoryRead(read)).rejects.toMatchObject({ status: 500 });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1 + 2_000 + 4_000);
+    await settled;
+    expect(read).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not retry a permanent refusal, an abort or a superseded read", async () => {
+    const refused = vi.fn().mockRejectedValue(new MemoryApiError("unauthorized", 401));
+    await expect(retryMemoryRead(refused)).rejects.toMatchObject({ status: 401 });
+    expect(refused).toHaveBeenCalledOnce();
+
+    const superseded = vi.fn().mockRejectedValue(new TypeError("offline"));
+    await expect(retryMemoryRead(superseded, { current: () => false })).rejects.toThrow("offline");
+    expect(superseded).toHaveBeenCalledOnce();
+
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const aborted = vi.fn().mockRejectedValue(new TypeError("offline"));
+    const pending = expect(retryMemoryRead(aborted, { signal: controller.signal })).rejects.toBeDefined();
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort(new Error("navigation"));
+    await pending;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(aborted).toHaveBeenCalledOnce();
+  });
 });
 
 describe("Memory consumer API", () => {

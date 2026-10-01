@@ -1473,7 +1473,7 @@ describe("Personal Memory v1 run admission", () => {
         memoryActionAnswerResult: {
           operation: "SAVE",
           status: "COMMITTED",
-          version: 2
+          version: 4
         },
         memoryActionAdmissionState: "EXPLICIT_CANDIDATE",
         memoryActionControlRequested: true,
@@ -1737,7 +1737,7 @@ describe("Personal Memory v1 run admission", () => {
           memoryActionAnswerResult: {
             operation: "SAVE",
             status: "COMMITTED",
-            version: 2
+            version: 4
           }
         },
         items: [{ exactItemId: "confirmed-command-answer" }],
@@ -3246,7 +3246,7 @@ describe("Personal Memory v1 run admission", () => {
         plannerFallbackReason: expectedReason
       });
       expect(result.budgetSnapshot.memoryActionAnswerResult).toEqual(ready
-        ? { operation: "SAVE", status: "COMMITTED", version: 2 }
+        ? { operation: "SAVE", status: "COMMITTED", version: 4 }
         : MEMORY_ACTION_NO_COMMIT_RESULT);
       expect(actionExecutor.execute).toHaveBeenCalledTimes(ready ? 1 : 0);
       expect(result.items).toEqual([expect.objectContaining({ exactItemId: "slow-control-answer" })]);
@@ -4183,11 +4183,11 @@ describe("Personal Memory v1 run admission", () => {
     });
     expect(actionExecutor.execute).toHaveBeenCalledOnce();
     expect(first.budgetSnapshot).toMatchObject({
-      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 2 },
+      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 4 },
       memoryActionResult: { operation: "SAVE", status: "REJECTED" }
     });
     expect(retry.budgetSnapshot).toMatchObject({
-      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 2 },
+      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 4 },
       memoryActionResult: { operation: "SAVE", status: "REJECTED" },
       reason: "memory_control_retry_not_reused",
       utilityEgressMode: "LOCAL_ONLY"
@@ -4318,7 +4318,7 @@ describe("Personal Memory v1 run admission", () => {
     }).retrieve(runInput("/memory Remember that I prefer concise answers."));
 
     expect(result.budgetSnapshot).toMatchObject({
-      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 2 },
+      memoryActionAnswerResult: { operation: "SAVE", status: "REJECTED", version: 4 },
       memoryActionResult: { operation: "SAVE", status: "REJECTED" }
     });
   });
@@ -4368,7 +4368,7 @@ describe("Personal Memory v1 run admission", () => {
     }).retrieve(runInput("/memory Remember that I prefer concise answers."));
     expect(result).toMatchObject({
       budgetSnapshot: {
-        memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 2 },
+        memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 4 },
         reason: "memory_action_only"
       },
       outcome: "EMPTY"
@@ -4394,7 +4394,7 @@ describe("Personal Memory v1 run admission", () => {
       querySnapshot: "/memory Remember this and also answer my question."
     });
     expect(result.budgetSnapshot).toMatchObject({
-      memoryActionAnswerResult: { operation: "NONE", status: "UNAVAILABLE", version: 2 },
+      memoryActionAnswerResult: { operation: "NONE", status: "UNAVAILABLE", version: 4 },
       memoryActionAdmissionState: "EXPLICIT_CANDIDATE",
       memoryActionControlRequested: true,
       plan: {
@@ -4756,7 +4756,7 @@ describe("Personal Memory v1 run admission", () => {
       memoryActionAnswerResult: {
         operation: "NONE",
         status: "UNAVAILABLE",
-        version: 2
+        version: 4
       }
     });
   });
@@ -4961,7 +4961,7 @@ describe("Personal Memory v1 run admission", () => {
         memoryActionAnswerResult: {
           operation: "NONE",
           status: "UNAVAILABLE",
-          version: 2
+          version: 4
         }
       });
     }
@@ -6823,7 +6823,7 @@ describe("long current-user turns", () => {
         memoryActionAdmissionState: text.startsWith("/memory")
           ? "EXPLICIT_CANDIDATE"
           : "SEMANTIC_CANDIDATE",
-        memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 2 },
+        memoryActionAnswerResult: { operation: "SAVE", status: "COMMITTED", version: 4 },
         memoryActionControlRequested: true
       },
       outcome: "USED"
