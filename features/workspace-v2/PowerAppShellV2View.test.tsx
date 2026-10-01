@@ -15,6 +15,7 @@ import {
   presentAnswerV2,
   retryAutoMcpDiscoveryV2,
   applyLoadAllAfterMcpDiscoveryFailureV2,
+  settingsBusyMessageV2,
   blankConversationOrientationV2,
   chatLocationCrumbV2,
   BackgroundRunStatusV2,
@@ -61,6 +62,13 @@ describe("Skill Library overlay v2", () => {
 });
 
 describe("MCP discovery failure actions v2", () => {
+  it("reports Settings busy with the owner's message, connections first", () => {
+    expect(settingsBusyMessageV2({ accountBusy: false, connectedAppsBusy: false, connectionsBusyMessage: null })).toBeNull();
+    expect(settingsBusyMessageV2({ accountBusy: true, connectedAppsBusy: false, connectionsBusyMessage: null })).toBe("Updating account…");
+    expect(settingsBusyMessageV2({ accountBusy: false, connectedAppsBusy: true, connectionsBusyMessage: null })).toBe("Revoking app access…");
+    expect(settingsBusyMessageV2({ accountBusy: true, connectedAppsBusy: true, connectionsBusyMessage: "Disconnecting…" })).toBe("Disconnecting…");
+  });
+
   it("preserves Auto on Retry and switches only on explicit Load all", () => {
     const regenerate = vi.fn();
     useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });

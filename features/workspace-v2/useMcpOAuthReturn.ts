@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { consumeMcpOAuthReturn, refreshMcpSettings } from "@/components/app-shell/mcpSettingsStore";
+import { refreshPersonalMcp } from "@/components/app-shell/personalMcpStore";
 
 export function useMcpOAuthReturn(accountId: string, openMcpSettings: () => void, openConnectionsSettings?: () => void): void {
   useEffect(() => {
@@ -14,8 +15,13 @@ export function useMcpOAuthReturn(accountId: string, openMcpSettings: () => void
         (url.searchParams.get("library") === "mcp" && url.searchParams.has("oauth"));
       if (!shouldOpenMcp && !shouldOpenConnections) return;
       consumeMcpOAuthReturn(url);
-      if (shouldOpenConnections) openConnectionsSettings?.();
-      else openMcpSettings();
+      if (shouldOpenConnections) {
+        // A personal outcome refreshes only the personal store; Studio's catalog is unaffected.
+        openConnectionsSettings?.();
+        void refreshPersonalMcp().catch(() => undefined);
+        return;
+      }
+      openMcpSettings();
       void refreshMcpSettings(true).catch(() => undefined);
     });
     return () => { current = false; };
