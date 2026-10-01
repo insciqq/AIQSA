@@ -5,6 +5,7 @@ import {
   crossSitePersonalMcpAuthorizationOrigins,
   preparePersonalMcpOAuthDraft
 } from "./personalOAuthDiscovery";
+import { McpSafeFetchError } from "./safeFetch";
 
 function draftFor(url: string): McpDraftConfiguration {
   return {
@@ -48,6 +49,30 @@ function metadataFetch(input: Readonly<{
 }
 
 describe("personal MCP OAuth discovery", () => {
+  it("keeps a network-policy refusal the SDK swallows as the discovery outcome", async () => {
+    const mcpUrl = "http://nas.lan:8080/mcp";
+    const { fetch: metadata } = metadataFetch({ authorizationServer: "http://nas.lan:8080", mcpUrl });
+    // The protected-resource lookup is refused; the SDK falls back to the
+    // origin's own authorization metadata, which answers.
+    const fetch = vi.fn(async (request: unknown, init?: RequestInit) => {
+      if (new URL(String(request)).pathname.startsWith("/.well-known/oauth-protected-resource")) {
+        throw new McpSafeFetchError("mcp_local_network_disabled");
+      }
+      return metadata(request, init);
+    });
+    await expect(preparePersonalMcpOAuthDraft(draftFor(mcpUrl), { fetch }))
+      .rejects.toMatchObject({ code: "mcp_local_network_disabled", name: "PersonalMcpOAuthDiscoveryError" });
+    expect(fetch.mock.calls.map(([request]) => new URL(String(request)).pathname))
+      .toContain("/.well-known/oauth-authorization-server");
+  });
+
+  it("builds its own transport under the personal address policy", async () => {
+    const addressPolicy = vi.fn(async () => "mcp_internal_address_forbidden" as const);
+    await expect(preparePersonalMcpOAuthDraft(draftFor("http://127.0.0.1:3000/mcp"), { addressPolicy }))
+      .rejects.toMatchObject({ code: "mcp_internal_address_forbidden" });
+    expect(addressPolicy).toHaveBeenCalledWith({ address: "127.0.0.1", family: 4 }, expect.any(URL));
+  });
+
   it("stores the exact discovered origin set and classifies same-site origins as trusted", async () => {
     const mcpUrl = "https://mcp.example.test/mcp";
     const { fetch } = metadataFetch({

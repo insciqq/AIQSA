@@ -153,7 +153,8 @@ function serviceError(error: unknown): Response {
   if (!(error instanceof McpOAuthError)) return errorResponse("mcp_oauth_unavailable", 503);
   if (error.code === "mcp_oauth_not_available") return errorResponse(error.code, 404);
   if (error.code === "mcp_oauth_configuration_changed") return errorResponse(error.code, 409);
-  if (error.code === "mcp_oauth_policy_forbidden") return errorResponse(error.code, 422);
+  if (error.code === "mcp_oauth_policy_forbidden" || error.code === "mcp_internal_address_forbidden" ||
+    error.code === "mcp_local_network_disabled") return errorResponse(error.code, 422);
   return errorResponse(error.code, 502);
 }
 

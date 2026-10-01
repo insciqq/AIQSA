@@ -57,7 +57,10 @@ export type McpRemoteDraftValidationSessionFactory = (
 
 export type McpRemoteDraftValidatorOptions = Readonly<{
   fetch: McpClientSessionOptions["fetch"];
-  fetchForDraft?: (draft: McpDraftConfiguration) => McpClientSessionOptions["fetch"];
+  fetchForDraft?: (
+    draft: McpDraftConfiguration,
+    destination: Readonly<{ personal: boolean }>
+  ) => McpClientSessionOptions["fetch"];
   limits?: Partial<McpClientSessionLimits>;
   oauthProviderForDraft?: (input: McpDraftValidationInput) => Promise<McpValidationOAuthProvider | null>;
   sessionFactory?: McpRemoteDraftValidationSessionFactory;
@@ -255,7 +258,7 @@ export function createRemoteMcpDraftValidator(
       let session: McpRemoteDraftValidationSession | null = null;
       let checkedDraft = input.draft;
       let endpointCorrection: McpEndpointCorrection | undefined;
-      const fetch = options.fetchForDraft?.(input.draft) ?? options.fetch;
+      const fetch = options.fetchForDraft?.(input.draft, { personal: input.personal === true }) ?? options.fetch;
       const openSession = () => sessionFactory({
           ...(authProvider ? { authProvider } : {}),
           fetch,

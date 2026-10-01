@@ -7,6 +7,8 @@ import { getDefaultToolHiveClient, getDefaultToolHiveDriver } from "./defaultToo
 import type { McpDraftValidator } from "./draftValidator";
 import { createLocalMcpDraftValidator } from "./localDraftValidator";
 import { createPrismaMcpRepository } from "./prismaRepository";
+import { personalMcpAddressPolicy } from "./defaultPersonalNetwork";
+import { mcpDestinationSafeFetchOptions } from "./personalNetworkPolicy";
 import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
 import { createMcpSafeFetch } from "./safeFetch";
 import { createToolHiveMcpSessionFactory } from "./toolhiveSessionFactory";
@@ -34,10 +36,11 @@ export function createDefaultMcpRepository(input: { draftValidator?: McpDraftVal
 function createDefaultMcpDraftValidator(): McpDraftValidator {
   const remote = createRemoteMcpDraftValidator({
     fetch: createMcpSafeFetch(),
-    fetchForDraft: (draft) => createMcpSafeFetch({
+    fetchForDraft: (draft, { personal }) => createMcpSafeFetch(mcpDestinationSafeFetchOptions({
       allowInsecureHttp: true,
-      allowPrivateNetwork: draft.source.kind === "remote" && draft.source.allowPrivateNetwork === true
-    }),
+      allowPrivateNetwork: draft.source.kind === "remote" && draft.source.allowPrivateNetwork === true,
+      personal
+    }, personalMcpAddressPolicy)),
     oauthProviderForDraft: async (validation) => {
       if (!validation.serverId || !validation.validationUserId) return null;
       return mcpOAuthService.createValidationProvider({
