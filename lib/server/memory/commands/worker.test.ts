@@ -120,7 +120,7 @@ describe("durable Memory command worker", () => {
 
   it("keeps the precise mapped persistence reason and a committed receipt", async () => {
     const error = new MemoryLifecycleServiceError("memory_action_failed");
-    rememberMemoryPersistenceFailure(error, "memory_partial_forget_ambiguous");
+    rememberMemoryPersistenceFailure(error, "memory_forget_peer_ineligible_after_fence");
     const saved = { ...intent, action: "SAVE" as const, statement: "I prefer green", reasonCode: "save_request" as const };
     const f = fixture("RUNNING", { bindingId: "binding", intent: saved });
     f.client.memoryJob.findFirst.mockResolvedValueOnce({ commandStatus: "RUNNING", commandIntent: { bindingId: "binding", intent: saved } })
@@ -128,7 +128,7 @@ describe("durable Memory command worker", () => {
     mocks.execute.mockRejectedValueOnce(error);
     expect(await f.handler.execute(job, f.context)).toMatchObject({ stage: "command_committed" });
     expect(mocks.attempt).toHaveBeenCalledWith(job, expect.objectContaining({
-      code: "memory_partial_forget_ambiguous", outcome: "degraded", action: "complete"
+      code: "memory_forget_peer_ineligible_after_fence", outcome: "degraded", action: "complete"
     }));
   });
 
