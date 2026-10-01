@@ -2,6 +2,7 @@ import { createAdminAttentionHandler } from "@/lib/server/admin/attention/handle
 import { createAdminAttentionService } from "@/lib/server/admin/attention/service";
 import { adminKnowledgePolicyService } from "@/lib/server/admin/knowledge/policyDefault";
 import { defaultAdminMemoryStatusService } from "@/lib/server/admin/memory/statusDefault";
+import { adminMemoryStatusForAttention } from "@/lib/domain/adminMemoryProcessing";
 import { adminProviderService } from "@/lib/server/admin/providers/defaultProviders";
 import { adminSystemModelPolicyService } from "@/lib/server/admin/providers/systemModelPolicyDefault";
 import { adminSearchService } from "@/lib/server/admin/search/defaultService";
@@ -23,7 +24,8 @@ const service = createAdminAttentionService({
     },
     knowledge: () => adminKnowledgePolicyService.list(),
     mcp: (actingAdminUserId) => mcpRepository.listAdminServers(actingAdminUserId),
-    memory: () => defaultAdminMemoryStatusService.get(),
+    // Recent command/search diagnostics stay on the Memory card only.
+    memory: async () => adminMemoryStatusForAttention(await defaultAdminMemoryStatusService.get()),
     providers: () => adminProviderService.listConnections(),
     search: (actingAdminUserId) => adminSearchService.list({ userId: actingAdminUserId }),
     systemRoles: () => adminSystemModelPolicyService.list(),
