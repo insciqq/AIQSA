@@ -869,6 +869,7 @@ model User {
   mcpToolGrants                       McpToolUserGrant[]
   mcpActivationJobs                   McpActivationJob[]
   mcpOAuthConnections                 McpOAuthConnection[]
+  mcpOwnedServers                     McpServer[]               @relation("McpServerOwner")
   mcpUserServers                      McpUserServer[]
   modelPolicyUpdates                  ModelPolicy[]                      @relation("ModelPolicyUpdater")
   providerCredentialAssignments       ProviderUserCredentialAssignment[]
@@ -3585,6 +3586,8 @@ model ModelRunEvent {
 model McpServer {
   id                   String               @id @default(uuid())
   namespace            String               @unique
+  ownerUserId          String?
+  connectorKey         String?
   displayName          String
   description          String               @default("")
   enabled              Boolean              @default(false)
@@ -3607,8 +3610,11 @@ model McpServer {
   revisions            McpRevision[]        @relation("McpServerRevisions")
   sharedRuntime        McpSharedRuntime?
   userServers          McpUserServer[]
+  owner                User?                @relation("McpServerOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
 
   @@index([enabled, archivedAt])
+  @@index([ownerUserId, enabled, archivedAt])
+  @@index([ownerUserId, connectorKey])
 }
 
 model McpActivationJob {
@@ -3711,6 +3717,11 @@ model McpUserServer {
   enabled                    Boolean                @default(false)
   personalConfigEnvelope     String?
   personalConfigVersion      Int                    @default(0)
+  selectedToolNames          String[]               @default([])
+  toolSelectionEnabled       Boolean                @default(false)
+  discoveredInventory        Json?
+  discoveredRevisionId       String?
+  discoveredOAuthConnectionId String?
   desiredRuntimeGenerationId String?                @unique
   createdAt                  DateTime               @default(now())
   updatedAt                  DateTime               @updatedAt

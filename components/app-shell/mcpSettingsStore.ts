@@ -189,7 +189,7 @@ export async function refreshMcpSettings(
 }
 
 export function consumeMcpOAuthReturn(url: URL): McpOAuthOutcome | null {
-  if (url.searchParams.get("settings") !== "mcp" && url.searchParams.get("library") !== "mcp") return null;
+  if (url.searchParams.get("settings") !== "mcp" && url.searchParams.get("settings") !== "connections" && url.searchParams.get("library") !== "mcp") return null;
   const raw = url.searchParams.get("oauth");
   const kind = raw === "connected" || raw === "cancelled" || raw === "failed" ? raw : null;
   const outcome = kind ? { kind, serverId: url.searchParams.get("server") } as const : null;

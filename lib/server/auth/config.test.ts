@@ -159,6 +159,23 @@ describe("auth config", () => {
     });
   });
 
+  it("keeps first-party MCP connector clients server-side and requires an id/secret pair", () => {
+    const config = getAuthConfig({
+      AIQSA_MCP_CONNECTOR_GMAIL_OAUTH_CLIENT_ID: " gmail-client ",
+      AIQSA_MCP_CONNECTOR_GMAIL_OAUTH_CLIENT_SECRET: "gmail-secret",
+      AIQSA_MCP_CONNECTOR_GITHUB_OAUTH_CLIENT_ID: "github-client",
+      AIQSA_MCP_CONNECTOR_GITHUB_OAUTH_CLIENT_SECRET: "",
+      AIQSA_MCP_CONNECTOR_NOTION_OAUTH_CLIENT_ID: "notion-client",
+      AIQSA_MCP_CONNECTOR_NOTION_OAUTH_CLIENT_SECRET: "notion-secret",
+      AIQSA_AUTH_SESSION_SECRET: "secret"
+    });
+
+    expect(config.mcpConnectorOAuth).toEqual({
+      gmail: { clientId: "gmail-client", clientSecret: "gmail-secret" },
+      notion: { clientId: "notion-client", clientSecret: "notion-secret" }
+    });
+  });
+
   it("enables bootstrap login only when explicitly requested or in allowed test mode", () => {
     expect(
       getAuthConfig({

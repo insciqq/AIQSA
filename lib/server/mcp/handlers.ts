@@ -438,7 +438,7 @@ export function createAdminMcpGrantHandler(deps: McpHandlerDeps) {
   };
 }
 
-function userServerProjection(server: McpUserServerState, deps: McpHandlerDeps): UserMcpServer {
+export function userServerProjection(server: McpUserServerState, deps: Pick<McpHandlerDeps, "runtimeOperationalStatus">): UserMcpServer {
   let operationalStatus: McpOperationalStatus = "inactive";
   if (server.enabled && server.runtimeGenerationId &&
     ["ready", "starting", "queued", "restarting"].includes(server.readiness)) {
@@ -453,6 +453,11 @@ function userServerProjection(server: McpUserServerState, deps: McpHandlerDeps):
     accountLabel: server.accountLabel,
     description: server.description,
     enabled: server.enabled,
+    ...(server.availableTools ? { availableTools: server.availableTools } : {}),
+    ...(server.sourceType ? { sourceType: server.sourceType } : {}),
+    ...(server.endpoint ? { endpoint: server.endpoint } : {}),
+    ...(server.connectorKey !== undefined ? { connectorKey: server.connectorKey } : {}),
+    ...(server.selectedToolNames ? { selectedToolNames: server.selectedToolNames } : {}),
     fields: server.fields,
     id: server.id,
     knownToolCount: server.knownToolCount,
@@ -474,7 +479,7 @@ export function createUserMcpCatalogHandler(deps: McpHandlerDeps) {
     const servers = await safely(() => deps.repository.listUserServers(session.userId));
     if (servers instanceof Response) return servers;
     return Response.json({
-      servers: servers.map((server) => userServerProjection(server, deps))
+      servers: servers.filter((server) => server.sourceType !== "personal").map((server) => userServerProjection(server, deps))
     } satisfies UserMcpCatalogResponse, { headers: { "Cache-Control": "no-store" } });
   };
 }

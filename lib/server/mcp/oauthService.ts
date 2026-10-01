@@ -129,6 +129,11 @@ export type McpOAuthRuntimeProvider = OAuthClientProvider & Readonly<{
   validationBinding(): McpEndpointCorrection["oauthBinding"];
 }>;
 
+export type McpOAuthConfiguredClient = Readonly<{
+  clientId: string;
+  clientSecret: string;
+}>;
+
 type OAuthProviderMode = "callback" | "runtime" | "start";
 
 function clientMetadata(policy: McpOAuthPolicy): OAuthClientMetadata {
@@ -394,6 +399,10 @@ class DurableOAuthProvider implements OAuthClientProvider {
       throw new McpOAuthError("mcp_oauth_authorization_failed");
     }
     this.#authorizationUrl = new URL(authorizationUrl.toString());
+    if (["gmail", "google_calendar", "google_drive"].includes(this.#policy.connectorKey ?? "")) {
+      this.#authorizationUrl.searchParams.set("access_type", "offline");
+      this.#authorizationUrl.searchParams.set("prompt", "consent");
+    }
   }
 
   saveCodeVerifier(codeVerifier: string): void {
@@ -457,6 +466,7 @@ export class McpOAuthService {
   }>>();
   readonly #repository: McpOAuthRepository;
   readonly #requestTimeoutMs: number;
+  readonly #connectorClients: () => Readonly<Partial<Record<string, McpOAuthConfiguredClient>>>;
 
   constructor(input: Readonly<{
     repository: McpOAuthRepository;
@@ -464,6 +474,7 @@ export class McpOAuthService {
     fetchForPolicy?: (policy: McpOAuthPolicy) => FetchLike;
     now?: () => Date;
     requestTimeoutMs?: number;
+    connectorClients?: () => Readonly<Partial<Record<string, McpOAuthConfiguredClient>>>;
   }>) {
     this.#repository = input.repository;
     this.allowInsecureHttp = input.allowInsecureHttp ?? true;
@@ -473,6 +484,7 @@ export class McpOAuthService {
     }));
     this.#now = input.now ?? (() => new Date());
     this.#requestTimeoutMs = input.requestTimeoutMs ?? OAUTH_REQUEST_TIMEOUT_MS;
+    this.#connectorClients = input.connectorClients ?? (() => ({}));
   }
 
   async startAuthorization(input: Readonly<{
@@ -505,7 +517,26 @@ export class McpOAuthService {
       throw new McpOAuthError("mcp_oauth_authorization_failed");
     }
     const registrationKey = mcpOAuthRegistrationKey(policy, discovered.authorizationServerUrl);
-    const client = await this.#repository.findClient(registrationKey);
+    let client = await this.#repository.findClient(registrationKey);
+    if (!client && policy.connectorKey) {
+      const configured = this.#connectorClients()[policy.connectorKey];
+      if (configured) {
+        // Google Workspace and GitHub's hosted MCP servers do not expose DCR.
+        // Their operator-owned OAuth client is persisted through the same
+        // encrypted repository path as a dynamically registered client.
+        client = await this.#repository.saveClient({
+          clientInformation: {
+            ...clientMetadata(policy),
+            client_id: configured.clientId,
+            client_secret: configured.clientSecret,
+            token_endpoint_auth_method: "client_secret_post"
+          },
+          clientMetadata: clientMetadata(policy),
+          discoveryState: discovered,
+          registrationKey
+        });
+      }
+    }
     if (client && !input.forceReconnect) {
       const fingerprint = mcpOAuthPolicyFingerprint(policy, client.clientInformation.client_id);
       if (await this.#repository.findReadyConnection({

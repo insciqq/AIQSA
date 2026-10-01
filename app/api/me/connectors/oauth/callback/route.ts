@@ -1,0 +1,19 @@
+import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
+import { getAuthConfig } from "@/lib/server/auth/config";
+import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
+import { settleDefaultMcpOAuth } from "@/lib/server/mcp/defaultActivation";
+import { mcpOAuthService } from "@/lib/server/mcp/defaultOAuth";
+import { kickDefaultMcpRuntime } from "@/lib/server/mcp/defaultRuntime";
+import { createMcpOAuthCallbackHandler } from "@/lib/server/mcp/oauthHandlers";
+
+export const runtime = "nodejs";
+
+export const GET: AsyncRouteHandler<ReturnType<typeof createMcpOAuthCallbackHandler>> = createMcpOAuthCallbackHandler({
+  callbackPath: () => "/api/me/connectors/oauth/callback",
+  userSettingsSection: "connections",
+  getConfig: getAuthConfig,
+  onRuntimeChanged: kickDefaultMcpRuntime,
+  resolveAuth: resolveRequestAuth,
+  settleAuthorization: settleDefaultMcpOAuth,
+  service: mcpOAuthService
+}, "user", { allowCookieServerId: true });

@@ -1869,6 +1869,7 @@ export function createPrismaProjectRepository(
               activeRevisionId: { not: null },
               archivedAt: null,
               enabled: true,
+              ownerUserId: null,
               id: { in: requiredMcpIds }
             }
           })
@@ -2426,6 +2427,7 @@ export function createPrismaProjectRepository(
             activeRevisionId: { not: null },
             archivedAt: null,
             enabled: true,
+            ownerUserId: null,
             ...(contains ? { displayName: { contains, mode: "insensitive" } } : {})
           }
         });
@@ -3127,6 +3129,7 @@ export function createPrismaProjectRepository(
                 activeRevisionId: { not: null },
                 archivedAt: null,
                 enabled: true,
+                ownerUserId: null,
                 id: input.resourceId
               }
             });

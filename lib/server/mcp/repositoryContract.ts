@@ -34,7 +34,17 @@ export type McpRepository = {
     sharedValues: Record<string, McpSlotValue | null>;
     validationUserId?: string;
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
+  createPersonalServer?(input: {
+    description: string;
+    draft: McpDraftConfiguration;
+    name: string;
+    connectorKey?: string;
+    selectedToolNames?: readonly string[];
+    userId: string;
+    values: Record<string, McpSlotValue>;
+  }): Promise<McpRepositoryResult<McpUserServerState>>;
   deleteServer(serverId: string): Promise<McpRepositoryResult<AdminMcpServer>>;
+  deletePersonalServer?(input: { serverId: string; userId: string }): Promise<McpRepositoryResult<McpUserServerState>>;
   listAdminServers(validationUserId?: string): Promise<AdminMcpServer[]>;
   listUserServers(userId: string): Promise<McpUserServerState[]>;
   rebuildRevision(input: {
@@ -85,8 +95,11 @@ export type McpRepository = {
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   updateUserServer(input: {
     enabled?: boolean;
+    /** Require that the target is owned by this user (personal MCP route). */
+    personalOnly?: boolean;
     serverId: string;
     userId: string;
+    tool?: { enabled: boolean; name: string };
     values?: Record<string, McpSlotValue | null>;
   }): Promise<McpRepositoryResult<McpUserServerState>>;
 };

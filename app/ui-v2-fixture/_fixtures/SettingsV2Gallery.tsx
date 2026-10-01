@@ -19,8 +19,9 @@ import {
   SettingsV2
 } from "@/features/settings-v2/SettingsV2";
 import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV2";
+import { PersonalMcpConnectionsSection } from "@/components/app-shell/PersonalMcpConnectionsSection";
 
-export type SettingsGalleryStateV2 = "appearance" | "archived" | "dirty" | "account";
+export type SettingsGalleryStateV2 = "appearance" | "archived" | "dirty" | "account" | "connections";
 
 const archiveMemorySettings: MemoryConsumerSettingsResponse = {
   capabilities: {
@@ -92,13 +93,14 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
             </div>
           )}
           dirty={dirty}
-          initialSection={state === "appearance" ? "general" : state === "archived" ? "data" : "account"}
+          initialSection={state === "appearance" ? "general" : state === "archived" ? "data" : state === "connections" ? "connections" : "account"}
           obscured={deletionObscuresSettings}
           onClose={() => setOpen(false)}
           onDiscard={() => setDirty(false)}
           onSectionChange={() => setDataSubview(null)}
           onThemeChange={updateTheme}
           panels={{
+            connections: <PersonalMcpConnectionsSection />,
             data: dataSubview === "archived" ? (
               <ArchivedChatsPanelV2 onRestored={() => undefined} />
             ) : (

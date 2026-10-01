@@ -116,12 +116,19 @@ export function mcpRuntimeFingerprint(input: {
   oauthConnectionRevision: string | null;
   plan: EffectiveMcpSlotPlanItem[];
   revisionId: string;
+  toolSelection?: readonly string[] | null;
   userId: string;
 }): string {
   return hashCanonicalMcpValue({
     oauthConnectionRevision: input.oauthConnectionRevision,
     plan: [...input.plan].sort((left, right) => left.slotKey.localeCompare(right.slotKey)),
     revisionId: input.revisionId,
+    // Keep the pre-tool-selection fingerprint for existing runtimes. An
+    // explicit empty selection is different from no selection (it disables
+    // every tool), so only omit null/undefined and retain empty arrays.
+    ...(input.toolSelection !== null && input.toolSelection !== undefined
+      ? { toolSelection: [...input.toolSelection].sort() }
+      : {}),
     userId: input.userId
   });
 }
