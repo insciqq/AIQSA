@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FetchLike } from "@modelcontextprotocol/client";
 import { Prisma } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +29,11 @@ import { createPersonalMcpCreateHandler, createPersonalMcpUpdateHandler } from "
 import { createPrismaMcpRepository } from "./prismaRepository";
 import { namespacedMcpToolName } from "./runPlan";
 import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
+
+/** Runtime and observation bindings carry SHA-256 fingerprints. */
+const hexFingerprint = () => createHash("sha256").update(randomUUID()).digest("hex");
+/** Rate limiting is covered by the handler unit tests; these cases exercise the limits. */
+const allowAll = { check: async () => ({ allowed: true, retryAfterSeconds: 0 }) };
 
 // Synthetic users and servers only; each test removes exactly the rows it made.
 const key = Buffer.alloc(32, 11);
@@ -373,7 +378,7 @@ describe("bounded revocation before finalization", () => {
     const preference = await prisma.mcpUserServer.findUniqueOrThrow({ where: { userId_serverId: { serverId, userId: ownerId } } });
     const generation = await prisma.mcpRuntimeGeneration.create({ data: {
       createdAt: new Date(Date.now() - 5 * 60_000),
-      fingerprint: randomUUID(),
+      fingerprint: hexFingerprint(),
       oauthConnectionId: connectionId,
       revisionId: policy.configurationIdentity,
       state: "ready",
@@ -508,8 +513,8 @@ describe("personal MCP limits", () => {
     expect(await prisma.mcpServer.count({ where: { archivedAt: null, ownerUserId: ownerId } })).toBe(PERSONAL_MCP_CONNECTION_LIMIT);
 
     const validate = okValidator();
-    const prepareOAuthDraft = vi.fn(async (value: McpDraftConfiguration) => value);
-    const response = await createPersonalMcpCreateHandler({
+    const prepareOAuthDraft = vi.fn(async (value: McpDraftConfiguration) => ({ authorizationOrigins: [], draft: value }));
+    const response = await createPersonalMcpCreateHandler({ rateLimiter: allowAll,
       prepareOAuthDraft, repository: storage(validate), resolveAuth: sessionFor(ownerId)
     })(jsonRequest("POST", { auth: { mode: "oauth" }, name: "Over the cap", url: "https://mcp.example.test/mcp" }));
     expect(response.status).toBe(409);
@@ -545,7 +550,7 @@ describe("personal MCP limits", () => {
     await expect(installationPatch.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
 
     const validate = okValidator();
-    const create = await createPersonalMcpCreateHandler({ repository: storage(validate), resolveAuth: sessionFor(userId) })(
+    const create = await createPersonalMcpCreateHandler({ rateLimiter: allowAll, repository: storage(validate), resolveAuth: sessionFor(userId) })(
       jsonRequest("POST", { name: "Over the enabled limit", url: "https://mcp.example.test/mcp" }));
     expect(create.status).toBe(409);
     await expect(create.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
@@ -567,7 +572,7 @@ describe("personal MCP tool observations", () => {
     const server = await prisma.mcpServer.findUniqueOrThrow({ select: { activeRevisionId: true, namespace: true }, where: { id: serverId } });
     const preference = await prisma.mcpUserServer.findUniqueOrThrow({ where: { userId_serverId: { serverId, userId: ownerId } } });
     const generation = await prisma.mcpRuntimeGeneration.create({ data: {
-      fingerprint: randomUUID(), revisionId: server.activeRevisionId!, state: "ready", userServerId: preference.id
+      fingerprint: hexFingerprint(), revisionId: server.activeRevisionId!, state: "ready", userServerId: preference.id
     } });
     const chat = await prisma.chat.create({ data: { title: "Personal MCP observation fixture", userId: ownerId } });
     owned.chats.push(chat.id);
