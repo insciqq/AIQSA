@@ -128,6 +128,7 @@
     "semver": "7.8.5",
     "shiki": "^4.2.0",
     "ssh2": "1.17.0",
+    "tldts": "7.4.10",
     "unpdf": "^1.6.2",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "2.9.0",
