@@ -72,6 +72,8 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "default",
         "error",
         "knowledge",
+        "load-all-refused",
+        "mcp-personal",
         "model",
         "project-knowledge",
         "reasoning",

@@ -297,6 +297,18 @@
   overflow-wrap: anywhere;
 }
 
+.v2-composer-mcp-problem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 0.5rem;
+  margin: 0;
+}
+
+.v2-composer-mcp-problem > span {
+  min-width: 0;
+}
+
 .v2-composer-spacer {
   flex: 1 1 auto;
 }
