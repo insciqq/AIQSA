@@ -34,7 +34,6 @@ import type {
   UserMcpServer
 } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
-import { lockAuthUser } from "@/lib/server/auth/transactionLocks";
 import { resolveEffectiveMcpGrant, resolveEffectiveMcpValues } from "./access";
 import { archivePersonalMcpServers } from "./personalArchive";
 import {
@@ -1203,6 +1202,22 @@ async function lockMcpServer(tx: Prisma.TransactionClient, serverId: string): Pr
 }
 
 /**
+ * Serializes one owner's personal creates, enables and disconnects with each
+ * other and with account deletion and disabling, which hold the row FOR
+ * UPDATE. NO KEY UPDATE leaves foreign-key checks (FOR KEY SHARE) free, so a
+ * writer that locked a server first and then inserts a row referencing this
+ * user cannot deadlock against it. Always taken before any server lock.
+ */
+async function lockMcpOwner(tx: Prisma.TransactionClient, userId: string): Promise<void> {
+  await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id"
+    FROM "User"
+    WHERE "id" = ${userId}
+    FOR NO KEY UPDATE
+  `;
+}
+
+/**
  * A new personal connection is live and enabled at once. Enabled rows count as
  * the run plan counts them: every enabled preference of the user, across
  * installation and personal servers.
@@ -1431,6 +1446,9 @@ export function createPrismaMcpRepository(input: {
 
     deletePersonalServer: async ({ serverId, userId }) => {
       return client.$transaction(async (tx) => {
+        // Same order as creates and enables: the owner, then the server.
+        await lockMcpOwner(tx, userId);
+        if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const server = await tx.mcpServer.findFirst({ where: { archivedAt: null, id: serverId, ownerUserId: userId } });
         if (!server) return { kind: "not_found" as const };
         await archivePersonalMcpServers(tx, { now: new Date(), ownerUserId: userId, serverIds: [serverId] });
@@ -1525,7 +1543,7 @@ export function createPrismaMcpRepository(input: {
       const created = await client.$transaction(async (tx) => {
         // Creates, enables and account deletion of one owner serialize on the
         // user row; only under this lock are the limits authoritative.
-        await lockAuthUser(tx, userId);
+        await lockMcpOwner(tx, userId);
         await tx.user.findFirstOrThrow({ select: { id: true }, where: { id: userId, status: "active" } });
         const limit = await personalCreationLimit(tx, userId);
         if (limit) return limit;
@@ -2649,7 +2667,7 @@ export function createPrismaMcpRepository(input: {
       return client.$transaction(async (tx) => {
         // Lock order: the owner first (serializes enables and personal creates),
         // then the server.
-        await lockAuthUser(tx, userId);
+        await lockMcpOwner(tx, userId);
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const groupIds = await groupIdsForUser(tx, userId);
         if (!groupIds) return { kind: "not_found" as const };
