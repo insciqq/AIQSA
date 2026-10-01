@@ -69,7 +69,6 @@ import {
   refreshMemorySettings,
   useMemorySettingsStore
 } from "@/components/app-shell/memorySettingsStore";
-import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { PowerAppShellV2View } from "@/features/workspace-v2/PowerAppShellV2View";
 import { KnowledgeCitationViewerProvider } from "@/features/citations-v2/KnowledgeCitationViewer";
 import type {
@@ -186,7 +185,8 @@ import { useBranchGraphController } from "./useBranchGraphController";
 import {
   openPersonalChatMessage,
   revealPersonalChatDeepLinkMessage,
-  usePersonalChatDeepLink
+  usePersonalChatDeepLink,
+  type PersonalChatDeepLinkTarget
 } from "./usePersonalChatDeepLink";
 import { useWorkspaceBootstrapController } from "./useWorkspaceBootstrapController";
 import { composerDraftPersistenceAllowed, composerDraftRecoveryBoundary } from "@/components/app-shell/composerDraftPersistence";
@@ -1235,14 +1235,16 @@ export function PowerAppShellV2({
     }
     return opened;
   });
-  const showUnavailableMemorySource = useEventCallback(() => {
-    setNotice({ kind: "error", text: memoryUiCopy("source.unavailableBody") });
+  const showUnavailableDeepLink = useEventCallback((target: PersonalChatDeepLinkTarget) => {
+    // An unavailable Memory source simply opens the chat; only a plain
+    // message link explains that its message is gone.
+    if (target === "message") setNotice({ kind: "error", text: "This message is no longer available." });
   });
   usePersonalChatDeepLink({
     activeChatId,
     detailLoading: activeChatDetailLoading,
     onAnchor: anchorPersonalChatMessage,
-    onUnavailable: showUnavailableMemorySource,
+    onUnavailable: showUnavailableDeepLink,
     ready: workspaceReady,
     revealMessage: revealPersonalChatMessage
   });
@@ -2009,8 +2011,8 @@ export function PowerAppShellV2({
           response.mode === "EXCLUDED" ? "exclude.action" : "resume.action"
         )
       });
-    } catch (error) {
-      setNotice({ kind: "error", text: errorMessage(error) });
+    } catch {
+      // Memory failures stay silent: the switch keeps its committed state.
     } finally {
       memorySourceMutationIdsRef.current.delete(chat.id);
     }
@@ -2036,8 +2038,8 @@ export function PowerAppShellV2({
         return;
       }
       setMemoryResumeTarget(chat);
-    } catch (error) {
-      setNotice({ kind: "error", text: errorMessage(error) });
+    } catch {
+      // Memory failures stay silent: the switch keeps its committed state.
     } finally {
       memorySourceMutationIdsRef.current.delete(chat.id);
     }

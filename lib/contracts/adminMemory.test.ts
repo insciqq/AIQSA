@@ -56,6 +56,20 @@ describe("administrator Memory status contract", () => {
     })).toBeNull();
   });
 
+  it("accepts recent command/search issues only as stages, never as worker stages", () => {
+    const memory = response().memory;
+    const issues = [
+      { stage: "COMMAND", reason: "COMMAND_FAILED", severity: "warn", count: 1, oldestAgeSeconds: 60 },
+      { stage: "SEARCH", reason: "SEARCH_DEGRADED", severity: "warn", count: 2, oldestAgeSeconds: 600 }
+    ];
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true, issues } } }))
+      .toEqual({ memory: { ...memory, processing: { enabled: true, issues } } });
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true,
+      issues: [{ ...issues[0], errorCode: "memory_command_failed" }] } } })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      worker: memoryWorkerStatusFixture({ activeStages: ["COMMAND"] as never }) } })).toBeNull();
+  });
+
   it("keeps queue age and rebuild readiness internally consistent", () => {
     expect(decodeAdminMemoryStatusResponse({ memory: {
       ...response().memory, queue: { inProgress: 2, length: 0, oldestAgeSeconds: null }

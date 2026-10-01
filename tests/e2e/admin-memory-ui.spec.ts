@@ -71,6 +71,41 @@ test("Memory auto-heal needs no administrator action and reports exhausted recov
   await expect(page).toHaveURL(/section=roles&resource=memory/u);
 });
 
+test("Memory card lists recent command and search failures as neutral warnings, not blocked processing", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  const memory: AdminMemoryStatusResponse["memory"] = { ...memoryResponse({ rebuilding: false, timeoutSeconds: 30, timeoutVersion: 1 }).memory,
+    index: { generation: 1, readiness: "READY" as const }, rebuild: { state: "NOT_REQUIRED" as const },
+    queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
+    recovery: memoryRecoveryStatusFixture(), worker: memoryWorkerStatusFixture({ reason: "IDLE" }),
+    processing: { enabled: true, issues: [
+      { stage: "COMMAND", reason: "COMMAND_FAILED", count: 2, oldestAgeSeconds: 7200, severity: "warn" },
+      { stage: "COMMAND", reason: "COMMAND_UNKNOWN", count: 1, oldestAgeSeconds: 600, severity: "warn" },
+      { stage: "SEARCH", reason: "SEARCH_FAILED", count: 3, oldestAgeSeconds: 3600, severity: "warn" },
+      { stage: "SEARCH", reason: "SEARCH_DEGRADED", count: 1, oldestAgeSeconds: 60, severity: "warn" }
+    ] } };
+  await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
+  await page.route("**/api/admin/knowledge", (route) => route.fulfill({ json: { knowledge: adminKnowledgeSettingsFixture() } }));
+  await page.route("**/api/admin/memory", (route) => route.fulfill({ json: { memory } }));
+  await signInWithLocalToken(page);
+  await page.goto("/admin?section=retrieval");
+  const section = page.getByTestId("admin-retrieval-memory");
+  await expect(section.getByTestId("memory-state")).toHaveText("Working");
+  await expect(section.getByText("Memory commands failed recently")).toHaveCount(2);
+  await expect(section.getByText("Memory search degraded recently")).toHaveCount(2);
+  await expect(section).toContainText("2 commands; oldest 2h");
+  await expect(section).toContainText("3 searches; oldest 1h");
+  await expect(section).not.toContainText(/Processing blocked|Processing delayed|memory_command|memory_search_/u);
+  for (const viewport of [
+    { name: "desktop-landscape", width: 1440, height: 900 },
+    { name: "tablet-portrait", width: 768, height: 1024 },
+    { name: "phone-portrait", width: 390, height: 844 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await expectNoHorizontalOverflow(page);
+    await section.screenshot({ path: testInfo.outputPath(`memory-recent-activity-${viewport.name}.png`) });
+  }
+});
+
 test("Memory recovery distinguishes stalled and stopped workers across responsive views", async ({ page }, testInfo) => {
   test.setTimeout(90_000);
   let unavailable = false;

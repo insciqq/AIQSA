@@ -823,36 +823,27 @@ export function MemoryPanelV2({
   searchActive: boolean;
   rowMode: "create" | "edit" | "forget" | null;
 }>) {
-  const statusLabel = memory.loadState === "error"
-    ? mt("library.statusLoadError")
-    : memory.loadState !== "ready"
-      ? mt("settings.loading")
-      : memory.status === "ON"
-      ? mt("library.statusOn")
-      : memory.status === "PREPARING"
-        ? mt("library.statusPreparing")
-        : memory.status === "UNAVAILABLE"
-          ? mt("library.statusUnavailable")
-          : memory.status === "NEEDS_ADMIN_SETUP"
-            ? mt("library.statusNeedsSetup")
-            : memory.status === "PAUSED"
-              ? mt("library.statusPaused")
-              : mt("settings.loading");
-  const statusDescription = memory.loadState === "error"
-    ? mt("library.loadErrorDescription")
-    : memory.loadState !== "ready"
-      ? mt("library.loadingDescription")
-      : memory.status === "ON"
-      ? mt("library.onDescription")
-      : memory.status === "PREPARING"
-        ? mt("library.preparingDescription")
-        : memory.status === "UNAVAILABLE"
-          ? mt("library.unavailableDescription")
-          : memory.status === "NEEDS_ADMIN_SETUP"
-            ? memory.disabledReason ?? mt("library.needsSetupDescription")
-            : memory.status === "PAUSED"
-              ? mt("library.pausedDescription")
-              : mt("library.loadingDescription");
+  // The last known status stays visible during refreshes. Unavailability and
+  // load failures show no status at all; the data and controls stay usable.
+  const loading = memory.status === null && memory.loadState !== "error";
+  const statusLabel = memory.status === "ON"
+    ? mt("library.statusOn")
+    : memory.status === "PREPARING"
+      ? mt("library.statusPreparing")
+      : memory.status === "NEEDS_ADMIN_SETUP"
+        ? mt("library.statusNeedsSetup")
+        : memory.status === "PAUSED"
+          ? mt("library.statusPaused")
+          : loading ? mt("settings.loading") : null;
+  const statusDescription = memory.status === "ON"
+    ? mt("library.onDescription")
+    : memory.status === "PREPARING"
+      ? mt("library.preparingDescription")
+      : memory.status === "NEEDS_ADMIN_SETUP"
+        ? memory.disabledReason ?? mt("library.needsSetupDescription")
+        : memory.status === "PAUSED"
+          ? mt("library.pausedDescription")
+          : loading ? mt("library.loadingDescription") : null;
   const groups = useMemo(() => MEMORY_CONSUMER_CATEGORIES.flatMap((category) => {
     const groupedItems = items.filter((item) => item.category === category);
     return groupedItems.length ? [{ category, items: groupedItems }] : [];
@@ -861,7 +852,7 @@ export function MemoryPanelV2({
   const initialError = (listState === "error" || Boolean(listError)) && items.length === 0;
   const empty = listState === "ready" && items.length === 0 && rowMode !== "create";
   const longFactPresent = items.some((item) => item.statement.length > 240);
-  const summary = memory.loadState === "ready" && memory.status === "ON" && memory.automaticLearning
+  const summary = memory.status === "ON" && memory.automaticLearning
     ? "Learning from your ordinary chats"
     : memory.status === "PAUSED"
       ? "Answers do not read these facts. Nothing was deleted."
@@ -891,20 +882,22 @@ export function MemoryPanelV2({
           </>
         )}
         description={mt("library.description")}
-        meta={<span className="v2-memory-mobile-status" role="status">{statusLabel}</span>}
+        meta={statusLabel ? <span className="v2-memory-mobile-status" role="status">{statusLabel}</span> : undefined}
       >
         {mt("settings.heading")}
       </SectionHeading>
       <div className="v2-memory-layout" data-with-settings={Boolean(settingsContent) || undefined}>
-      {settingsContent ? <MemorySettingsCardV2 status={statusLabel}>{settingsContent}</MemorySettingsCardV2> : null}
+      {settingsContent ? <MemorySettingsCardV2 status={statusLabel ?? ""}>{settingsContent}</MemorySettingsCardV2> : null}
       <div className="v2-memory-main">
       {resetPending ? <p className="v2-resource-empty" role="status">{mt("settings.resetStarted")}</p> : <>
       <div className="v2-memory-toolbar">
-        <span className="v2-memory-state" data-tone={memory.status === "ON" ? "ok" : memory.status === "PAUSED" ? "off" : "warn"}>
-          <UiV2Icon name={memory.status === "ON" ? "check" : "memory"} />
-          {statusLabel}
-        </span>
-        <p>{summary}</p>
+        {statusLabel ? (
+          <span className="v2-memory-state" data-tone={memory.status === "ON" ? "ok" : "off"}>
+            <UiV2Icon name={memory.status === "ON" ? "check" : "memory"} />
+            {statusLabel}
+          </span>
+        ) : null}
+        {summary ? <p>{summary}</p> : null}
         <form
           role="search"
           onSubmit={(event) => {
@@ -943,15 +936,9 @@ export function MemoryPanelV2({
       ) : null}
       {initialLoading ? <p className="v2-resource-empty" role="status">{mt("manager.loading")}</p> : null}
       {initialError ? (
-        <div className="v2-resource-empty" role="alert">
-          <p>{mt("manager.loadError")}</p>
-          <UiV2Button disabled={listControlsDisabled} onClick={onRetry}>{mt("manager.retry")}</UiV2Button>
-        </div>
-      ) : null}
-      {listError && items.length > 0 ? (
-        <div className="v2-memory-error v2-memory-list-error" role="alert">
-          <span>{mt("manager.loadError")}</span>
-          <UiV2Button disabled={listControlsDisabled} onClick={onRetry}>{mt("manager.retry")}</UiV2Button>
+        <div className="v2-resource-empty" data-testid="memory-list-reload">
+          <p>{mt("manager.reloadHint")}</p>
+          <UiV2Button disabled={listControlsDisabled} onClick={onRetry}>{mt("manager.reload")}</UiV2Button>
         </div>
       ) : null}
       {empty ? (
@@ -1111,7 +1098,6 @@ function MemoryListRowV2({
             ? formatMemoryUiCopy("manager.combinedFrom", { count: item.combined.sourceCount })
             : item.provenance === "SAVED" ? mt("manager.savedByYou") : mt("manager.learnedFromChat")}
           {` · ${formatStudioDate(item.updatedAt)}`}
-          {!item.sourceAvailable ? ` · ${mt("manager.sourceUnavailable")}` : ""}
         </small>
         {item.combined ? (
           <>

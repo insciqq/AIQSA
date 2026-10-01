@@ -18,7 +18,7 @@ function t(key: Parameters<typeof memoryUiCopy>[0]): string {
   return memoryUiCopy(key);
 }
 
-type ResetNotice = "complete" | "error" | "started" | null;
+type ResetNotice = "complete" | "started" | null;
 
 /** The Memory page owns its five controls and the confirmed reset. */
 export function MemorySettingsRowsV2({
@@ -30,7 +30,6 @@ export function MemorySettingsRowsV2({
   const busy = useMemorySettingsStore((state) => state.busy);
   const data = useMemorySettingsStore((state) => state.data);
   const loadState = useMemorySettingsStore((state) => state.loadState);
-  const error = useMemorySettingsStore((state) => state.error);
   const [resetBusy, setResetBusy] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetNotice, setResetNotice] = useState<ResetNotice>(null);
@@ -72,11 +71,12 @@ export function MemorySettingsRowsV2({
   }, [managerAccountId, resetBusy, resetPending]);
 
   if (!data) {
+    // A failed read is not an empty or broken state: offer a calm reload.
     return loadState === "error" ? (
-      <div className="v2-settings-note" role="alert">
-        <span>{t("settings.loadError")}</span>
+      <div className="v2-settings-note" data-testid="memory-settings-reload">
+        <span>{t("settings.reloadHint")}</span>
         <UiV2Button onClick={() => void refreshMemorySettings(true).catch(() => undefined)}>
-          {t("settings.retry")}
+          {t("settings.reload")}
         </UiV2Button>
       </div>
     ) : (
@@ -85,25 +85,15 @@ export function MemorySettingsRowsV2({
   }
 
   const managementAvailable = data.capabilities.managementAvailable;
-  const active = data.status === "ON";
-  const statusLabel = data.status === "NEEDS_ADMIN_SETUP"
-    ? t("library.statusNeedsSetup")
+  // On and temporarily unavailable Memory show no status card; the switches
+  // keep their saved values either way.
+  const statusCard = data.status === "NEEDS_ADMIN_SETUP"
+    ? { detail: t("library.needsSetupDescription"), label: t("library.statusNeedsSetup") }
     : data.status === "PAUSED"
-      ? t("library.statusPaused")
-      : data.status === "ON"
-        ? t("library.statusOn")
-        : data.status === "PREPARING"
-          ? t("library.statusPreparing")
-          : t("library.statusUnavailable");
-  const statusDetail = data.status === "ON"
-    ? t("settings.statusOnDescription")
-    : data.status === "PAUSED"
-      ? t("library.pausedDescription")
+      ? { detail: t("library.pausedDescription"), label: t("library.statusPaused") }
       : data.status === "PREPARING"
-        ? t("library.preparingDescription")
-        : data.status === "NEEDS_ADMIN_SETUP"
-          ? t("library.needsSetupDescription")
-          : t("library.unavailableDescription");
+        ? { detail: t("library.preparingDescription"), label: t("library.statusPreparing") }
+        : null;
   const gate = (key: MemorySettingsMutation, value: boolean) => {
     void updateMemoryGate(key, value).catch(() => undefined);
   };
@@ -148,9 +138,7 @@ export function MemorySettingsRowsV2({
     ? t("settings.resetStarted")
     : resetNotice === "complete"
       ? t("settings.resetComplete")
-      : resetNotice === "error"
-        ? t("settings.resetError")
-        : null;
+      : null;
 
   const confirmReset = () => {
     if (resetInFlight.current || managerMutation) return;
@@ -170,11 +158,14 @@ export function MemorySettingsRowsV2({
         if (currentOwner() && result.status === "COMPLETE") await refreshMemoryList().catch(() => undefined);
       },
       async () => {
+        // An unconfirmed reset shows nothing: the current server state decides
+        // whether cleanup is running or the confirmation stays available.
         if (!currentOwner()) return;
-        setResetNotice("error");
         invalidateMemoryManagerData(accountId);
-        await refreshMemorySettingsAfterReset().catch(() => undefined);
-        if (currentOwner()) await refreshMemoryList().catch(() => undefined);
+        const current = await refreshMemorySettingsAfterReset().catch(() => null);
+        if (!currentOwner()) return;
+        if (current?.resetState === "IN_PROGRESS") setResetOpen(false);
+        await refreshMemoryList().catch(() => undefined);
       }
     ).finally(() => {
       resetInFlight.current = false;
@@ -212,35 +203,24 @@ export function MemorySettingsRowsV2({
 
   return (
     <>
-      {!active ? <div
+      {statusCard ? <div
         className="v2-settings-status-card"
-        data-state={active ? "on" : "off"}
+        data-state="off"
         data-testid="settings-memory-status"
       >
         <div className="v2-settings-status-card-copy">
           <span className="v2-settings-status-dot" aria-hidden="true" />
           <div>
-            <strong>{statusLabel}</strong>
-            <small>{statusDetail}</small>
+            <strong>{statusCard.label}</strong>
+            <small>{statusCard.detail}</small>
           </div>
         </div>
       </div> : null}
-      {error ? (
-        <div className="v2-settings-note" role="alert">
-          <span>{t("settings.confirmationError")}</span>
-          <UiV2Button
-            busy={loadState === "loading"}
-            onClick={() => void refreshMemorySettings(true).catch(() => undefined)}
-          >
-            {t("settings.reload")}
-          </UiV2Button>
-        </div>
-      ) : null}
       {rows.map((row) => (
         <SettingsRowV2 description={row.description} key={row.key} title={row.label}>
           <SettingsSwitchV2
             checked={row.value}
-            disabled={busy !== null || Boolean(error) || loadState !== "ready" || !managementAvailable || resetBusy || resetPending}
+            disabled={busy !== null || !managementAvailable || resetBusy || resetPending}
             label={`${row.label}: ${row.value ? "on" : "off"}`}
             onChange={(next) => gate(row.key, next)}
           />
@@ -265,7 +245,6 @@ export function MemorySettingsRowsV2({
         >
           Forget everything…
         </UiV2Button>
-        {resetNotice === "error" ? <span role="alert">{resetStatus}</span> : null}
         {resetPending || resetNotice === "complete" ? (
           <span role="status">{resetStatus}</span>
         ) : null}

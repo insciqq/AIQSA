@@ -1,6 +1,7 @@
-import type {
-  RunLifecycleStateV2,
-  RunLifecycleStatusV2
+import {
+  neutralizeMemoryRunFailureV2,
+  type RunLifecycleStateV2,
+  type RunLifecycleStatusV2
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { canRetryMcpAutoDiscoveryFailure, isToolSynthesisFailure, mcpAutoDiscoveryFailureForMessage, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 
@@ -66,7 +67,7 @@ export function runTransportStateV2(input: Readonly<{
     recovery: canRetryMcpAutoDiscoveryFailure(discoveryFailure.code) ? "retry" as const : "change_parameters" as const }
     : isToolSynthesisFailure(null, input.message.errorMessage)
       ? { ...TOOL_SYNTHESIS_FAILURE, recovery: "regenerate" as const }
-      : input.message.errorMessage ? { message: input.message.errorMessage } : null;
+      : input.message.errorMessage ? neutralizeMemoryRunFailureV2({ message: input.message.errorMessage }) : null;
   return {
     ...(input.message.status === "error" && failure ? { failure } : {}),
     authoritativeMessageStatus:

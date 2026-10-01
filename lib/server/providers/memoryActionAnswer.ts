@@ -1,4 +1,6 @@
-export const MEMORY_ACTION_ANSWER_RESULT_VERSION = 2 as const;
+/** Version 3 is the async PENDING contract, so the next synchronous result
+ * contract is 4. Accepted runs replay versions 1 and 2 exactly. */
+export const MEMORY_ACTION_ANSWER_RESULT_VERSION = 4 as const;
 export const MEMORY_ACTION_ASYNC_ANSWER_RESULT_VERSION = 3 as const;
 
 export const MEMORY_ACTION_ANSWER_OPERATIONS = [
@@ -30,7 +32,7 @@ export type MemoryActionAnswerStatus =
 export type MemoryActionAnswerResult = Readonly<{
   operation: MemoryActionAnswerOperation;
   status: MemoryActionAnswerStatus;
-  version: 1 | typeof MEMORY_ACTION_ANSWER_RESULT_VERSION |
+  version: 1 | 2 | typeof MEMORY_ACTION_ANSWER_RESULT_VERSION |
     typeof MEMORY_ACTION_ASYNC_ANSWER_RESULT_VERSION;
 }>;
 
@@ -87,7 +89,7 @@ export function decodeMemoryActionAnswerResult(
     keys[2] !== "version" ||
     !includes(MEMORY_ACTION_ANSWER_OPERATIONS, record.operation) ||
     !includes(MEMORY_ACTION_ANSWER_STATUSES, record.status) ||
-    (record.version !== 1 && record.version !== MEMORY_ACTION_ANSWER_RESULT_VERSION &&
+    (record.version !== 1 && record.version !== 2 && record.version !== MEMORY_ACTION_ANSWER_RESULT_VERSION &&
       record.version !== MEMORY_ACTION_ASYNC_ANSWER_RESULT_VERSION) ||
     !validPair(record.operation, record.status, record.version)) return null;
   return {
@@ -130,6 +132,23 @@ export function memoryActionAnswerContract(
       "</aiqsa_memory_result>"
     ].join("\n");
   }
+  if (decoded.version === 4) {
+    // Users never see Memory failures: a system UNAVAILABLE result is not
+    // narrated, yet it never authorizes a success claim either.
+    return [
+      '<aiqsa_memory_result version="4">',
+      authority.padEnd(authorityWidth, " "),
+      "Only this server result establishes whether Personal Memory changed. You report the server's completed work; you do not perform the mutation yourself.",
+      "Confirm saving, changing, or forgetting only when the matching operation has status COMMITTED.",
+      "COMMITTED means the server successfully completed that operation: acknowledge it as done, never say it failed or was not saved.",
+      "If this user message asks to save, change, or forget and the result is NONE/UNAVAILABLE, REJECTED, or THIS_CHAT_ONLY, explicitly say it was not done.",
+      "Any other operation with status UNAVAILABLE: never mention a Memory failure, error, limit, or unavailability; answer the rest normally from available information and never claim the operation was done.",
+      "Current-chat context is not saved Memory. Do not expose or paraphrase rejected candidate content or secrets.",
+      "Preserve any separately requested ordinary answer.",
+      "</aiqsa_memory_result>"
+    ].join("\n");
+  }
+  // Accepted runs must reproduce the exact v2 prompt on recovery.
   return [
     '<aiqsa_memory_result version="2">',
     authority.padEnd(authorityWidth, " "),

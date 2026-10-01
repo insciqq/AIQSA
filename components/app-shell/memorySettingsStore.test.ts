@@ -17,6 +17,7 @@ describe("Memory settings store", () => {
   beforeEach(() => resetMemorySettingsStoreForTest());
 
   afterEach(() => {
+    vi.useRealTimers();
     resetMemorySettingsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -84,6 +85,61 @@ describe("Memory settings store", () => {
 
     expect(useMemorySettingsStore.getState().data).toEqual(current);
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the committed value and stays usable after a failed change, reconciling silently", async () => {
+    const initial = memoryConsumerSettingsFixture();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ error: "memory_action_failed" }, 500))
+      .mockResolvedValueOnce(json(initial));
+    vi.stubGlobal("fetch", fetchMock);
+    useMemorySettingsStore.setState({ data: initial, error: null, loadState: "ready" });
+
+    await expect(updateMemoryGate("useMemoryFacts", true)).rejects.toThrow("memory_action_failed");
+
+    expect(useMemorySettingsStore.getState()).toMatchObject({
+      busy: null, data: initial, error: null, loadState: "ready"
+    });
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "GET" });
+    fetchMock.mockResolvedValueOnce(json(initial));
+    await expect(updateMemoryGate("useMemoryFacts", true)).resolves.toEqual(initial);
+  });
+
+  it("keeps last known settings when a reload keeps failing, after three bounded retries", async () => {
+    vi.useFakeTimers();
+    const known = memoryConsumerSettingsFixture();
+    const fetchMock = vi.fn().mockResolvedValue(json({ error: "memory_action_failed" }, 503));
+    vi.stubGlobal("fetch", fetchMock);
+    useMemorySettingsStore.setState({ data: known, error: null, loadState: "ready" });
+
+    const reload = refreshMemorySettings(true);
+    const settled = expect(reload).rejects.toMatchObject({ status: 503 });
+    await vi.advanceTimersByTimeAsync(7_000);
+    await settled;
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(useMemorySettingsStore.getState()).toMatchObject({ data: known, error: null, loadState: "ready" });
+  });
+
+  it("records a neutral load failure only when no settings are known", async () => {
+    vi.useFakeTimers();
+    const settings = memoryConsumerSettingsFixture();
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValueOnce(json(settings));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const load = refreshMemorySettings();
+    expect(useMemorySettingsStore.getState().loadState).toBe("loading");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(load).resolves.toEqual(settings);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    resetMemorySettingsStoreForTest();
+    fetchMock.mockReset().mockResolvedValue(json({ error: "unauthorized" }, 401));
+    await expect(refreshMemorySettings()).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(useMemorySettingsStore.getState()).toMatchObject({ data: null, loadState: "error" });
   });
 
   it("deduplicates concurrent settings loads", async () => {

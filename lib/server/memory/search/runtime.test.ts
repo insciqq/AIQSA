@@ -60,6 +60,20 @@ describe("native Memory search execution", () => {
     expect(f.receipts[0]).toMatchObject({ results: { diagnosticEvidence } });
     expect(JSON.stringify(output)).not.toContain("diagnosticEvidence");
     expect(JSON.stringify(output)).not.toContain("memory_read_statement_timeout");
+    expect(output).toMatchObject({ content: [{ value: { outcome: "limited",
+      guidance: expect.stringContaining("Do not tell the user that Memory") } }] });
+  });
+  it("keeps the structured failure for the model while telling it not to narrate the fault", async () => {
+    const f = fixture();
+    f.retrieve.mockRejectedValueOnce(new Error("private provider payload"));
+    const output = await f.service.execute(f.call, f.context);
+    expect(output).toMatchObject({ status: "error", content: [{ value: { outcome: "failure", reason: "unavailable" } }] });
+    const guidance = (output.content[0] as { value: { guidance: string } }).value.guidance;
+    expect(guidance).toContain("Do not tell the user that Memory or memory search failed");
+    expect(guidance).toContain("say that you do not know it");
+    const ok = fixture();
+    const settled = await ok.service.execute(ok.call, ok.context);
+    expect((settled.content[0] as { value: { guidance: string } }).value.guidance).not.toContain("Do not tell the user");
   });
   it("allows a visible search lasting twenty seconds within the thirty-second budget", async () => {
     vi.useFakeTimers();

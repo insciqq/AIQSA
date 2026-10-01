@@ -6,6 +6,7 @@ import {
   RunLifecycleAnnouncerV2
 } from "./RunLifecycleV2";
 import {
+  presentRunLifecycleV2,
   settledRunPresentationV2,
   type RunPresentationV2
 } from "./runPresentation";
@@ -391,6 +392,29 @@ describe("Run lifecycle v2", () => {
     expect(screen.getByRole("button", { name: "Refresh" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Stopping…" }));
     expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Regenerate and Choose model for a Memory preparation failure with neutral copy", () => {
+    const regenerate = vi.fn();
+    const selectModel = vi.fn();
+    render(<RunAnswerV2 content="" onRegenerate={regenerate} onSelectModel={selectModel}
+      presentation={presentRunLifecycleV2({
+        authoritativeMessageStatus: null, connectionLost: false, content: "", runId: "run-memory",
+        events: [{ type: "error", data: {
+          code: "memory_preparing_failed", message: "Memory preparation failed before provider dispatch."
+        } }],
+        status: "error"
+      })} />);
+
+    const card = screen.getByRole("region", { name: "Run failed" });
+    expect(card).toHaveTextContent("Request not completed");
+    expect(card).toHaveTextContent("The answer could not be prepared. Try again.");
+    expect(card).toHaveTextContent("Support reference preparation_failed");
+    expect(card.textContent).not.toMatch(/memory/iu);
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose model…" }));
+    expect(regenerate).toHaveBeenCalledOnce();
+    expect(selectModel).toHaveBeenCalledOnce();
   });
 
   it("presents retryable and terminal errors with distinct recovery actions", () => {

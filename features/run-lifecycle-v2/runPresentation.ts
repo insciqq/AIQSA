@@ -13,7 +13,7 @@ import {
   type ThreadToolActivityOrigin,
   type ThreadToolBudgetWarning
 } from "@/lib/contracts/chats";
-import { formatMemoryUiCopy } from "@/components/app-shell/memoryUiCopy";
+import { formatMemoryUiCopy, memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { decodeThreadSearchActivitySnapshot, mergeThreadSearchEngineActivity } from "@/lib/contracts/searchActivity";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, terminalContextCompactionStatus, type ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 
@@ -322,11 +322,11 @@ export function describeToolCallV2(
     return running ? "Searching Knowledge" : "Searched Knowledge";
   }
   if (origin === "memory" && call.toolName === "memory_search") {
+    // Failed searches are not listed (memorySearchCallHiddenV2) and limits stay
+    // with the model; neither ever reaches the user as a failure.
     if (phase === "cancelled" || call.memorySearchOutcome === "cancelled") return "Memory search stopped";
-    if (phase === "failed" || call.memorySearchOutcome === "failure") return "Memory search unavailable";
     if (running) return "Searching memory";
     if (call.memorySearchOutcome === "no_results") return "No matching memories found";
-    if (call.memorySearchOutcome === "limited") return "Memory search returned limited results";
     return "Searched memory";
   }
   if (origin === "web_search") {
@@ -351,6 +351,13 @@ export function describeToolCallV2(
   }
   if (human) return `${running ? "Running" : "Ran"} ${human}`;
   return running ? "Running tools" : "Used tools";
+}
+
+/** A failed Memory search is dropped from the process steps entirely. */
+export function memorySearchCallHiddenV2(call: ToolActivityIdentity & Readonly<{ status?: unknown }>): boolean {
+  return toolActivityOriginV2(call) === "memory" && call.toolName === "memory_search" &&
+    call.memorySearchOutcome !== "cancelled" &&
+    (call.status === "error" || call.memorySearchOutcome === "failure");
 }
 
 export type AnswerProcessFactsV2 = Readonly<{
@@ -727,8 +734,9 @@ export function presentToolActivityV2(
     });
   }
   if (terminal) searchEngines = searchEngines.map(row => ({ ...row, settled: row.requested }));
-  return calls.length > 0 || warning || searchEngines.length > 0
-    ? { calls, ...(searchEngines.length ? { searchEngines } : {}), ...(warning ? { warning } : {}) }
+  const visibleCalls = calls.filter(call => !memorySearchCallHiddenV2(call));
+  return visibleCalls.length > 0 || warning || searchEngines.length > 0
+    ? { calls: visibleCalls, ...(searchEngines.length ? { searchEngines } : {}), ...(warning ? { warning } : {}) }
     : null;
 }
 
@@ -745,6 +753,28 @@ function statusActivity(status: RunLifecycleStatusV2 | null | undefined) {
   return null;
 }
 
+const NEUTRAL_RUN_PREPARATION_CODE_V2 = "preparation_failed";
+// Run failures persisted with Memory wording, including historical messages
+// already stored before the neutral server copy.
+const memoryRunFailureMessagePattern = /^Memory (?:preparation|search)\b/u;
+
+/** Users never see Memory failures: a run that failed while preparing or
+ * settling Memory keeps its recovery actions with neutral copy, and its
+ * support reference never carries a `memory_` code. */
+export function neutralizeMemoryRunFailureV2<T extends Readonly<{ code?: string | null; message?: string | null }>>(
+  failure: T
+): T {
+  const memoryCode = typeof failure.code === "string" && failure.code.startsWith("memory_");
+  const memoryMessage = typeof failure.message === "string" &&
+    memoryRunFailureMessagePattern.test(failure.message.trim());
+  if (!memoryCode && !memoryMessage) return failure;
+  return {
+    ...failure,
+    ...(memoryCode ? { code: NEUTRAL_RUN_PREPARATION_CODE_V2 } : {}),
+    message: memoryUiCopy("answer.preparationFailed")
+  };
+}
+
 function failureFromState(
   state: RunLifecycleStateV2,
   eventFailure: RunFailureV2 | null
@@ -759,11 +789,11 @@ function failureFromState(
     ? "The answer was interrupted mid-run. The partial result is kept; you can retry with the same parameters."
     : "The run failed. Change the request parameters and try again.";
 
-  return {
+  return neutralizeMemoryRunFailureV2({
     code: safeErrorCode(failure.code),
     message: boundedText(failure.message, 600) ?? fallback,
     recovery
-  };
+  });
 }
 
 /**
