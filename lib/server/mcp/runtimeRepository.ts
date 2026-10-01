@@ -354,8 +354,7 @@ function effectiveRuntimeCandidate(input: {
         purpose: "user",
         redirectUri: input.oauthRedirectUri(input.record.serverId),
         serverId: input.record.serverId,
-        userId: input.record.userId,
-        connectorKey: input.record.server.connectorKey
+        userId: input.record.userId
       });
       reportSubsystemHealthy("mcp", "preflight", input.record.id);
     } catch (error) {

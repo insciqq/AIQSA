@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PersonalMcpConnectionsSection } from "./PersonalMcpConnectionsSection";
-import { followMcpOAuthStart } from "./mcpSettingsApi";
+import { followMcpOAuthStart, startMcpOAuth } from "./mcpSettingsApi";
 
 vi.mock("./mcpSettingsApi", async (importOriginal) => ({
   ...await importOriginal<typeof import("./mcpSettingsApi")>(),
@@ -12,7 +12,6 @@ vi.mock("./mcpSettingsApi", async (importOriginal) => ({
 function server(overrides: Record<string, unknown> = {}) {
   return {
     accountLabel: null,
-    connectorKey: null,
     description: "A personal test MCP",
     enabled: true,
     fields: [],
@@ -40,52 +39,56 @@ function response(body: unknown, status = 200): Response {
   });
 }
 
-const connectors = [
-  {
-    authOrigins: ["https://accounts.google.com"],
-    description: "Read Gmail messages.",
-    endpoint: "https://gmailmcp.googleapis.com/mcp/v1",
-    id: "gmail",
-    label: "Gmail",
-    scopes: ["openid"],
-    status: "preview"
-  },
-  {
-    authOrigins: ["https://mcp.notion.com"],
-    description: "Read Notion pages.",
-    endpoint: "https://mcp.notion.com/mcp",
-    id: "notion",
-    label: "Notion",
-    scopes: [],
-    status: "available"
-  }
-];
-
 describe("PersonalMcpConnectionsSection", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
     vi.mocked(followMcpOAuthStart).mockClear();
+    vi.mocked(startMcpOAuth).mockClear();
   });
 
-  it("connects a catalog connector in one click and starts OAuth", async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path === "/api/me/mcp-connections") return response({ servers: [] });
-      if (path === "/api/me/connectors" && (!init?.method || init.method === "GET")) return response({ connectors });
-      if (path === "/api/me/connectors/gmail") return response({
-        oauthAction: "/api/me/mcp/gmail-1/oauth/connect",
-        server: server({ connectorKey: "gmail", id: "gmail-1", name: "Gmail", oauthAvailable: true, oauthState: "disconnected" })
-      }, 201);
-      return response({});
+  it("shows only personal connections with the add form and an empty state", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/me/mcp-connections") return response({ servers: [] });
+      return response({ error: "unexpected" }, 404);
     });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<PersonalMcpConnectionsSection />);
-    expect(await screen.findByRole("heading", { name: "Gmail" })).toBeVisible();
-    fireEvent.click(within(screen.getByRole("heading", { name: "Gmail" }).closest("article")!).getByRole("button", { name: "Connect" }));
+    expect(await screen.findByText("No personal connections yet.")).toBeVisible();
+    expect(screen.getByText("Add any remote MCP server by URL above.")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Connect your MCP" })).toBeVisible();
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(["/api/me/mcp-connections"]);
+  });
+
+  it("always offers Disconnect, including for an OAuth connection awaiting authorization", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [
+      server({ id: "oauth-1", name: "Notion", oauthAvailable: true, oauthState: "disconnected", readiness: "needs_authorization" })
+    ] })));
+
+    render(<PersonalMcpConnectionsSection />);
+    const row = (await screen.findByRole("heading", { name: "Notion" })).closest("article")!;
+    expect(within(row).getByRole("button", { name: "Disconnect Notion" })).toBeEnabled();
+    expect(screen.queryByText("No personal connections yet.")).not.toBeInTheDocument();
+  });
+
+  it("creates a personal OAuth connection and starts its authorization", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/me/mcp-connections" && init?.method === "POST") {
+        return response({ server: server({ id: "oauth-1", name: "Notion", oauthAvailable: true, oauthState: "disconnected", readiness: "needs_authorization" }) }, 201);
+      }
+      return response({ servers: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<PersonalMcpConnectionsSection />);
+    await screen.findByText("No personal connections yet.");
+    fireEvent.change(document.getElementById("personal-mcp-url")!, { target: { value: "https://mcp.notion.example/mcp" } });
+    fireEvent.change(document.getElementById("personal-mcp-auth")!, { target: { value: "oauth" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add MCP" }));
     await waitFor(() => expect(followMcpOAuthStart).toHaveBeenCalledWith("https://auth.example.test/authorize?state=test"));
-    expect(fetchMock.mock.calls.some(([input]) => String(input) === "/api/me/connectors/gmail")).toBe(true);
+    expect(startMcpOAuth).toHaveBeenCalledWith("/api/me/mcp-connections/oauth-1/oauth/connect");
   });
 
   it("requires the explicit warning for plain HTTP and keeps deselected tools visible", async () => {
@@ -93,7 +96,6 @@ describe("PersonalMcpConnectionsSection", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path === "/api/me/mcp-connections" && (!init?.method || init.method === "GET")) return response({ servers: [current] });
-      if (path === "/api/me/connectors") return response({ connectors: [] });
       if (path === "/api/me/mcp-connections" && init?.method === "POST") return response({ error: "insecure_http_acknowledgement_required" }, 422);
       if (path.endsWith("/custom-1") && init?.method === "PATCH") {
         current = { ...current, selectedToolNames: [] };
@@ -124,7 +126,6 @@ describe("PersonalMcpConnectionsSection", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path === "/api/me/mcp-connections" && (!init?.method || init.method === "GET")) return response({ servers: [server()] });
-      if (path === "/api/me/connectors") return response({ connectors: [] });
       if (path.endsWith("/custom-1") && init?.method === "DELETE") return response({ error: "mcp_unavailable" }, 503);
       return response({});
     });

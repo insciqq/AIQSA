@@ -456,7 +456,6 @@ export function userServerProjection(server: McpUserServerState, deps: Pick<McpH
     ...(server.availableTools ? { availableTools: server.availableTools } : {}),
     ...(server.sourceType ? { sourceType: server.sourceType } : {}),
     ...(server.endpoint ? { endpoint: server.endpoint } : {}),
-    ...(server.connectorKey !== undefined ? { connectorKey: server.connectorKey } : {}),
     ...(server.selectedToolNames ? { selectedToolNames: server.selectedToolNames } : {}),
     fields: server.fields,
     id: server.id,

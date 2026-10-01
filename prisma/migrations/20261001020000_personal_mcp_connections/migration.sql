@@ -13,6 +13,3 @@ ALTER TABLE "McpServer"
   ADD CONSTRAINT "McpServer_ownerUserId_fkey"
   FOREIGN KEY ("ownerUserId") REFERENCES "User"("id")
   ON DELETE CASCADE ON UPDATE CASCADE;
-ALTER TABLE "McpServer" ADD COLUMN "connectorKey" TEXT;
-CREATE INDEX "McpServer_ownerUserId_connectorKey_idx"
-  ON "McpServer"("ownerUserId", "connectorKey");

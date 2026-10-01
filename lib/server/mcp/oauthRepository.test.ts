@@ -150,7 +150,6 @@ function fakePrisma() {
         server: {
           activeRevision: { configuration: activeDraft, id: "revision-1" },
           archivedAt: eligibility.archivedAt,
-          connectorKey: null,
           draft: activeDraft,
           grants: eligibility.grants,
           ownerUserId: null,
@@ -208,7 +207,6 @@ function fakePrisma() {
     mcpServer: {
       findFirst: vi.fn(async () => ({
         activeRevision: { configuration: draft, id: "revision-1" },
-        connectorKey: null,
         grants: [{ canUse: true, groupId: null, personalSlotKeys: [], userId: USER_ID }],
         ownerUserId: null,
       }))
@@ -255,7 +253,7 @@ describe("Prisma MCP OAuth repository", () => {
         }, KEY, mcpOAuthTokenEnvelopeContext("validation-connection", 1)),
         policyFingerprint: mcpOAuthPolicyFingerprint(validationPolicy, "client-id"),
         oauthClient: { clientId: "client-id" },
-        server: { archivedAt: null, connectorKey: null, draft: changedDraft, testedDraftHash: null, grants: [], ownerUserId: null },
+        server: { archivedAt: null, draft: changedDraft, testedDraftHash: null, grants: [], ownerUserId: null },
         user: { role: "admin", status: "active", groups: [] }
       };
       const updateMany = vi.fn(async () => ({ count: 1 }));
@@ -291,7 +289,6 @@ describe("Prisma MCP OAuth repository", () => {
         draft,
         grants: [{ canUse: true, groupId: null, userId: USER_ID }],
         ownerUserId: null,
-        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       },
       serverId: SERVER_ID,
@@ -310,7 +307,6 @@ describe("Prisma MCP OAuth repository", () => {
         draft,
         grants: [{ canUse: true, groupId: "group-1", userId: null }],
         ownerUserId: null,
-        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       },
       user: { groups: [{ groupId: "group-1" }], role: "user", status: "active" }
@@ -322,7 +318,6 @@ describe("Prisma MCP OAuth repository", () => {
         draft,
         grants: [{ canUse: true, groupId: "group-1", userId: null }],
         ownerUserId: null,
-        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       }
     }))).toBe(false);
@@ -333,7 +328,6 @@ describe("Prisma MCP OAuth repository", () => {
         draft,
         grants: [],
         ownerUserId: null,
-        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       }
     }))).toBe(false);
@@ -344,7 +338,6 @@ describe("Prisma MCP OAuth repository", () => {
         draft,
         grants: [{ canUse: true, groupId: null, userId: USER_ID }],
         ownerUserId: null,
-        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       }
     }))).toBe(false);
@@ -363,7 +356,6 @@ describe("Prisma MCP OAuth repository", () => {
         draft,
         grants: [{ canUse: true, groupId: null, userId: USER_ID }],
         ownerUserId: "another-user",
-        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       }
     }))).toBe(false);
@@ -375,7 +367,6 @@ describe("Prisma MCP OAuth repository", () => {
         draft,
         grants: [],
         ownerUserId: USER_ID,
-        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       },
       user: { groups: [], role: "admin", status: "active" }

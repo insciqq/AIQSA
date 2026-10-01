@@ -15,8 +15,6 @@ export type McpOAuthPolicy = Readonly<{
   serverId: string;
   serverUrl: string;
   userId: string;
-  /** First-party connector key, when this policy is backed by a server-owned client. */
-  connectorKey?: string;
   clientIdMetadataDocumentUrl?: string;
 }>;
 
@@ -79,7 +77,6 @@ export function buildMcpOAuthPolicy(input: Readonly<{
   redirectUri: string;
   serverId: string;
   userId: string;
-  connectorKey?: string | null;
 }>): McpOAuthPolicy {
   if (input.draft.auth.mode !== "oauth" || input.draft.source.kind !== "remote") {
     throw new Error("mcp_oauth_policy_invalid");
@@ -90,16 +87,13 @@ export function buildMcpOAuthPolicy(input: Readonly<{
     allowedAuthorizationServerOrigins: effectiveAuthorizationServerOrigins(input.draft),
     configurationIdentity: input.configurationIdentity,
     purpose: input.purpose,
-    redirectUri: input.connectorKey && input.purpose === "user"
-      ? new URL("/api/me/connectors/oauth/callback", input.redirectUri).toString()
-      : new URL(input.redirectUri).toString(),
+    redirectUri: new URL(input.redirectUri).toString(),
     requestedScopes: sortedUnique(input.draft.auth.scopes),
     resource: normalizedResource(input.draft),
     resourceMode: explicitResource ? "explicit" : "auto_same_origin",
     serverId: input.serverId,
     serverUrl: new URL(input.draft.source.url).toString(),
     userId: input.userId,
-    ...(input.connectorKey ? { connectorKey: input.connectorKey } : {}),
     ...(input.draft.auth.clientIdMetadataDocumentUrl
       ? { clientIdMetadataDocumentUrl: new URL(input.draft.auth.clientIdMetadataDocumentUrl).toString() }
       : {})

@@ -929,8 +929,7 @@ function serializeUserServer(input: {
         purpose: "user",
         redirectUri: input.oauthRedirectUri(input.record.id),
         serverId: input.record.id,
-        userId: input.userId,
-        connectorKey: input.record.connectorKey
+        userId: input.userId
       });
       oauth = input.record.oauthConnections.find((connection) => connection.oauthClient &&
         connection.policyFingerprint === mcpOAuthPolicyFingerprint(
@@ -995,7 +994,6 @@ function serializeUserServer(input: {
       .filter((tool) => input.toolAllowed({ serverId: input.record.id, originalName: tool.name }))
       .sort((left, right) => left.name.localeCompare(right.name)) } : {}),
     ...(input.record.ownerUserId === input.userId ? { sourceType: "personal" as const } : { sourceType: "installation" as const }),
-    ...(input.record.ownerUserId === input.userId ? { connectorKey: input.record.connectorKey ?? null } : {}),
     ...(input.record.ownerUserId === input.userId && draft.source.kind === "remote"
       ? { endpoint: safeMcpEndpoint(draft.source.url) }
       : {}),
@@ -1441,7 +1439,7 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    createPersonalServer: async ({ connectorKey, description, draft, name, selectedToolNames, userId, values }) => {
+    createPersonalServer: async ({ description, draft, name, selectedToolNames, userId, values }) => {
       const definition = validateMcpDraft(draft);
       if (!definition.ok) return { kind: "invalid_values" as const, issues: definition.issues };
       draft = definition.value;
@@ -1497,7 +1495,6 @@ export function createPrismaMcpRepository(input: {
             enabled: true,
             id: serverId,
             namespace: namespace(),
-            ...(connectorKey ? { connectorKey } : {}),
             ownerUserId: userId,
             testedDraftHash: draftHash
           },
