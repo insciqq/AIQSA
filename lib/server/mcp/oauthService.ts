@@ -133,6 +133,27 @@ export type McpOAuthRuntimeProvider = OAuthClientProvider & Readonly<{
 
 type OAuthProviderMode = "callback" | "runtime" | "start";
 
+type OAuthCredentialScope = "all" | "client" | "discovery" | "tokens" | "verifier";
+
+type OAuthSubject = Pick<McpOAuthPolicy, "purpose" | "serverId" | "userId">;
+
+/** The authorization server no longer accepts this client registration. */
+function clientRejected(error: unknown): boolean {
+  return error instanceof OAuthError && (error.code === OAuthErrorCode.InvalidClient ||
+    error.code === OAuthErrorCode.UnauthorizedClient);
+}
+
+/** RFC 7591: a non-zero `client_secret_expires_at` in the past ends the registration. */
+function clientSecretExpired(client: McpOAuthStoredClient, now: Date): boolean {
+  const information = client.clientInformation;
+  const expiresAt = "client_secret_expires_at" in information ? information.client_secret_expires_at : undefined;
+  return typeof expiresAt === "number" && expiresAt > 0 && expiresAt * 1_000 <= now.getTime();
+}
+
+function subjectOf(policy: McpOAuthPolicy): OAuthSubject {
+  return { purpose: policy.purpose, serverId: policy.serverId, userId: policy.userId };
+}
+
 function clientMetadata(policy: McpOAuthPolicy): OAuthClientMetadata {
   return {
     client_name: "AIQSA MCP client",
@@ -355,6 +376,13 @@ class DurableOAuthProvider implements OAuthClientProvider {
 
   async saveClientInformation(clientInformation: OAuthClientInformationMixed): Promise<void> {
     if (this.#mode === "runtime") {
+      // Only the SDK's recovery after the server rejected the bearer reaches
+      // this. Settle the connection instead of leaving it ready: a forced
+      // refresh either rotates usable tokens or marks reauthorization (and
+      // retires a rejected client).
+      if (this.#connection && !this.#invalidated) {
+        await this.#service.recoverRejectedAuthorization(this.#connection.id);
+      }
       throw new McpOAuthError("mcp_oauth_reauthorization_required");
     }
     this.#client = await this.#repository.saveClient({
@@ -424,9 +452,20 @@ class DurableOAuthProvider implements OAuthClientProvider {
     return new URL(this.#policy.resource);
   }
 
-  async invalidateCredentials(): Promise<void> {
-    if (this.#mode === "runtime") await this.#invalidateRuntime();
-    else this.#invalidated = true;
+  async invalidateCredentials(scope: OAuthCredentialScope = "all"): Promise<void> {
+    const rejectedClient = scope === "all" || scope === "client" ? this.#client : null;
+    if (rejectedClient) await this.#service.retireRejectedClient(rejectedClient, subjectOf(this.#policy));
+    if (this.#mode === "runtime") {
+      await this.#invalidateRuntime();
+      // Never register a replacement client from a runtime request.
+      if (rejectedClient) throw new McpOAuthError("mcp_oauth_reauthorization_required");
+      return;
+    }
+    this.#invalidated = true;
+    // An authorization code is bound to the rejected client; do not retry.
+    if (rejectedClient && this.#mode === "callback") throw new McpOAuthError("mcp_oauth_authorization_failed");
+    // A start retries with a fresh registration.
+    if (rejectedClient) this.#client = null;
   }
 
   saveDiscoveryState(state: OAuthDiscoveryState): void {
@@ -518,7 +557,11 @@ export class McpOAuthService {
       throw new McpOAuthError("mcp_oauth_authorization_failed");
     }
     const registrationKey = mcpOAuthRegistrationKey(policy, discovered.authorizationServerUrl);
-    const client = await this.#repository.findClient(registrationKey);
+    let client = await this.#repository.findClient(registrationKey);
+    if (client && clientSecretExpired(client, this.#now())) {
+      await this.retireRejectedClient(client, subjectOf(policy));
+      client = null;
+    }
     if (client && !input.forceReconnect) {
       const fingerprint = mcpOAuthPolicyFingerprint(policy, client.clientInformation.client_id);
       if (await this.#repository.findReadyConnection({
@@ -680,8 +723,60 @@ export class McpOAuthService {
       return created.value;
     } catch (error) {
       if (error instanceof McpOAuthError) throw error;
+      // The manual HTTP token path reports a rejected client directly.
+      if (clientRejected(error)) await this.retireRejectedClient(client, subjectOf(policy));
       throw new McpOAuthError("mcp_oauth_authorization_failed");
     }
+  }
+
+  /**
+   * Stops reusing a registration the authorization server rejected, so the
+   * next start registers again, and takes the subject's ready connection on
+   * that client out of `ready`.
+   */
+  async retireRejectedClient(client: McpOAuthStoredClient, subject?: OAuthSubject): Promise<void> {
+    await this.#repository.retireClient({
+      clientId: client.clientInformation.client_id,
+      id: client.id,
+      registrationKey: client.registrationKey
+    });
+    if (!subject) return;
+    const ready = await this.#repository.findLatestReadyConnection(subject);
+    if (ready && ready.client.id === client.id) {
+      await this.#repository.markReauthorizationRequired({
+        connectionId: ready.id,
+        tokenVersion: ready.tokenVersion
+      });
+    }
+  }
+
+  /**
+   * After the MCP server rejected a stored bearer, refresh once regardless of
+   * the recorded expiry. Success keeps the connection with rotated tokens;
+   * a rejected grant or client, or no refresh token, requires reauthorization.
+   */
+  async recoverRejectedAuthorization(connectionId: string): Promise<void> {
+    const connection = await this.#repository.loadConnection(connectionId);
+    if (!connection || !["ready", "disconnecting"].includes(connection.state)) return;
+    if (!connection.tokens.refresh_token) {
+      await this.#repository.markReauthorizationRequired({
+        connectionId,
+        tokenVersion: connection.tokenVersion
+      });
+      return;
+    }
+    const existing = this.#refreshes.get(connectionId);
+    if (existing) {
+      await existing.promise.catch(() => undefined);
+      return;
+    }
+    const abort = new AbortController();
+    const deadline = this.#deadline(abort.signal);
+    const promise = withinDeadline(deadline, this.#refresh(connection, deadline, { force: true })).finally(() => {
+      if (this.#refreshes.get(connectionId)?.promise === promise) this.#refreshes.delete(connectionId);
+    });
+    this.#refreshes.set(connectionId, { abort, promise });
+    await promise.catch(() => undefined);
   }
 
   async tokensForConnection(connectionId: string): Promise<OAuthTokens> {
@@ -846,12 +941,18 @@ export class McpOAuthService {
     }
   }
 
-  async #refresh(connection: McpOAuthStoredConnection, deadline: AbortSignal): Promise<OAuthTokens> {
+  async #refresh(
+    connection: McpOAuthStoredConnection,
+    deadline: AbortSignal,
+    options: Readonly<{ force?: boolean }> = {}
+  ): Promise<OAuthTokens> {
     const latest = await this.#repository.loadConnection(connection.id);
     if (!latest || !["ready", "disconnecting"].includes(latest.state)) {
       throw new McpOAuthError("mcp_oauth_reauthorization_required");
     }
-    if (!latest.expiresAt || latest.expiresAt.getTime() > this.#now().getTime() + REFRESH_SKEW_MS) {
+    if (options.force && latest.tokenVersion !== connection.tokenVersion) return latest.tokens;
+    if (!options.force &&
+      (!latest.expiresAt || latest.expiresAt.getTime() > this.#now().getTime() + REFRESH_SKEW_MS)) {
       return latest.tokens;
     }
     const refreshToken = latest.tokens.refresh_token;
@@ -903,8 +1004,7 @@ export class McpOAuthService {
         });
         throw new McpOAuthError("mcp_oauth_reauthorization_required");
       }
-      if (error instanceof OAuthError && (error.code === OAuthErrorCode.InvalidClient ||
-        error.code === OAuthErrorCode.UnauthorizedClient)) {
+      if (clientRejected(error)) {
         // The authorization server no longer accepts this registration. The
         // connection needs consent again, and the next start must register a
         // fresh client instead of reusing the dead one.
@@ -912,11 +1012,7 @@ export class McpOAuthService {
           connectionId: latest.id,
           tokenVersion: latest.tokenVersion
         });
-        await this.#repository.retireClient({
-          clientId: latest.client.clientInformation.client_id,
-          id: latest.client.id,
-          registrationKey: latest.client.registrationKey
-        });
+        await this.retireRejectedClient(latest.client);
         throw new McpOAuthError("mcp_oauth_reauthorization_required");
       }
       if (error instanceof McpOAuthError) throw error;
