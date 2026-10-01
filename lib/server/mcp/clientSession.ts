@@ -20,7 +20,7 @@ import packageMetadata from "@/package.json";
 import { MCP_SERVER_TOOL_LIMIT } from "@/lib/contracts/mcp";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
 import { McpResponseGuard } from "./responseGuard";
-import { McpSafeFetchError } from "./safeFetch";
+import { McpSafeFetchError, mcpNetworkPolicyRefusal } from "./safeFetch";
 import { logEvent } from "../observability";
 import { beginMcpToolStage, mcpToolFailure, observeMcpAbort } from "./toolObservability";
 import {
@@ -43,6 +43,7 @@ export type McpClientSessionErrorCode =
   | "mcp_tool_not_available"
   | "mcp_initialize_failed"
   | "mcp_initialize_response_too_large"
+  | "mcp_internal_address_forbidden"
   | "mcp_inventory_cursor_cycle"
   | "mcp_inventory_page_limit"
   | "mcp_inventory_metadata_limit"
@@ -53,6 +54,7 @@ export type McpClientSessionErrorCode =
   | "mcp_inventory_tool_limit"
   | "mcp_inventory_response_too_large"
   | "mcp_list_tools_failed"
+  | "mcp_local_network_disabled"
   | "mcp_ping_failed"
   | "mcp_ping_unsupported"
   | "mcp_authorization_required"
@@ -82,6 +84,7 @@ const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
   mcp_tool_not_available: "The MCP tool is not enabled for this runtime generation.",
   mcp_initialize_failed: "The MCP session could not be initialized.",
   mcp_initialize_response_too_large: "The MCP initialization response exceeds the configured byte limit.",
+  mcp_internal_address_forbidden: "The MCP address belongs to AIQSA or its host services.",
   mcp_inventory_cursor_cycle: "The MCP tool inventory repeated a pagination cursor.",
   mcp_inventory_metadata_limit: "MCP tool metadata exceeds the configured byte limit.",
   mcp_inventory_page_limit: "The MCP tool inventory has more pages than its tool limit allows.",
@@ -92,6 +95,7 @@ const ERROR_MESSAGES: Record<McpClientSessionErrorCode, string> = {
   mcp_inventory_tool_limit: "The MCP tool inventory exceeds the configured tool limit.",
   mcp_inventory_response_too_large: "The MCP tool inventory response exceeds the configured byte limit.",
   mcp_list_tools_failed: "The MCP tool inventory could not be loaded.",
+  mcp_local_network_disabled: "Local network access for personal MCP is turned off.",
   mcp_ping_failed: "The MCP server did not respond.",
   mcp_ping_unsupported: "The MCP server does not support the ping health method.",
   mcp_authorization_required: "The MCP server requires renewed authorization.",
@@ -302,6 +306,10 @@ function requestFailure(
     const status = error.data.status;
     return sessionError(status === 401 || status === 403 ? "mcp_authorization_required" : fallbackCode, operation, status >= 500 || status === 429, status);
   }
+  // The network policy's own reasons reach the user unchanged; other blocked
+  // ranges stay one generic refusal.
+  const refusal = mcpNetworkPolicyRefusal(error);
+  if (refusal) return sessionError(refusal, operation);
   if (error instanceof McpSafeFetchError) {
     const code = error.code === "mcp_http_tls_failed" ? "mcp_tls_failed"
       : error.code === "mcp_http_request_failed" || error.code === "mcp_http_dns_failed" ? "mcp_network_failed" : "mcp_connection_forbidden";

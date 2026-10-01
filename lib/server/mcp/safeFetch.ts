@@ -35,8 +35,26 @@ export type McpPinnedHttpRequest = {
   url: URL;
 };
 
+/** Network-policy refusals that keep their own stable code up to the user. */
+export type McpNetworkPolicyRefusalCode = "mcp_internal_address_forbidden" | "mcp_local_network_disabled";
+
+/** Why an address policy refused one resolved address; other blocked ranges keep the generic code. */
+export type McpAddressDenialCode = McpNetworkPolicyRefusalCode | "mcp_http_address_forbidden";
+
+/**
+ * Decides one resolved address of one request hop: null allows it. It replaces
+ * the default block list and is consulted again for every connection and
+ * redirect hop, so a changed policy or DNS answer applies to the next one.
+ */
+export type McpAddressPolicy = (
+  address: McpResolvedAddress,
+  url: URL
+) => McpAddressDenialCode | null | Promise<McpAddressDenialCode | null>;
+
 export type McpSafeFetchOptions = {
   addressAllowed?: (address: McpResolvedAddress, url: URL) => boolean;
+  /** Reason-returning policy; takes precedence over `addressAllowed` and `allowPrivateNetwork`. */
+  addressPolicy?: McpAddressPolicy;
   allowInsecureHttp?: boolean;
   allowPrivateNetwork?: boolean;
   dispatch?: (request: McpPinnedHttpRequest) => Promise<Response>;
@@ -46,6 +64,7 @@ export type McpSafeFetchOptions = {
 };
 
 export type McpSafeFetchErrorCode =
+  | McpNetworkPolicyRefusalCode
   | "mcp_http_address_forbidden"
   | "mcp_http_dns_failed"
   | "mcp_http_https_required"
@@ -59,6 +78,30 @@ export type McpSafeFetchErrorCode =
   | "mcp_http_too_many_redirects"
   | "mcp_http_url_credentials_forbidden"
   | "mcp_http_url_fragment_forbidden";
+
+const NETWORK_POLICY_REFUSAL_CODES: ReadonlySet<string> = new Set<McpNetworkPolicyRefusalCode>([
+  "mcp_internal_address_forbidden",
+  "mcp_local_network_disabled"
+]);
+
+/** One address the request can never use outranks one only the policy switch closes. */
+const ADDRESS_DENIAL_PRECEDENCE: Readonly<Record<McpAddressDenialCode, number>> = {
+  mcp_http_address_forbidden: 2,
+  mcp_internal_address_forbidden: 3,
+  mcp_local_network_disabled: 1
+};
+
+/**
+ * The network-policy refusal any MCP error carries (safe fetch, client session,
+ * OAuth), or null. Read by code so an error from another bundle still counts.
+ */
+export function mcpNetworkPolicyRefusal(error: unknown): McpNetworkPolicyRefusalCode | null {
+  if (!error || typeof error !== "object") return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && NETWORK_POLICY_REFUSAL_CODES.has(code)
+    ? code as McpNetworkPolicyRefusalCode
+    : null;
+}
 
 // Type-only marker merged into the class: it declares no class field, so the
 // property stays absent until the constructor proves it.
@@ -85,7 +128,8 @@ export class McpSafeFetchError extends Error {
 type Ipv4Cidr = readonly [network: number, prefixLength: number];
 type Ipv6Cidr = readonly [network: bigint, prefixLength: number];
 
-function parseIpv4(address: string): number | null {
+/** Strict dotted-quad IPv4 as an unsigned 32-bit number, or null. */
+export function parseIpv4(address: string): number | null {
   const parts = address.split(".");
   if (parts.length !== 4) return null;
   let value = 0;
@@ -98,7 +142,8 @@ function parseIpv4(address: string): number | null {
   return value;
 }
 
-function parseIpv6(address: string): bigint | null {
+/** IPv6 (optionally bracketed, embedded dotted IPv4 allowed) as a 128-bit value; zone ids are rejected. */
+export function parseIpv6(address: string): bigint | null {
   let normalized = address.toLowerCase();
   if (normalized.startsWith("[") && normalized.endsWith("]")) {
     normalized = normalized.slice(1, -1);
@@ -295,6 +340,34 @@ function awaitWithSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise
   });
 }
 
+/**
+ * Every record must pass, as with the default list. A failing or malformed
+ * policy decision fails closed with the generic code; across records the
+ * most definitive reason wins.
+ */
+async function addressPolicyDenial(
+  policy: McpAddressPolicy,
+  records: readonly McpResolvedAddress[],
+  url: URL
+): Promise<McpAddressDenialCode | null> {
+  const decisions = await Promise.all(records.map(async (record): Promise<McpAddressDenialCode | null> => {
+    try {
+      const decision = await policy(record, url);
+      if (decision === null) return null;
+      return Object.hasOwn(ADDRESS_DENIAL_PRECEDENCE, decision) ? decision : "mcp_http_address_forbidden";
+    } catch {
+      return "mcp_http_address_forbidden";
+    }
+  }));
+  let denial: McpAddressDenialCode | null = null;
+  for (const decision of decisions) {
+    if (decision && (!denial || ADDRESS_DENIAL_PRECEDENCE[decision] > ADDRESS_DENIAL_PRECEDENCE[denial])) {
+      denial = decision;
+    }
+  }
+  return denial;
+}
+
 async function resolvePinnedAddress(
   url: URL,
   options: McpSafeFetchOptions,
@@ -319,6 +392,11 @@ async function resolvePinnedAddress(
     (record.family !== 4 && record.family !== 6) || isIP(record.address) !== record.family
   )) {
     throw new McpSafeFetchError("mcp_http_dns_failed");
+  }
+  if (options.addressPolicy) {
+    const denial = await awaitWithSignal(addressPolicyDenial(options.addressPolicy, records, url), signal);
+    if (denial) throw new McpSafeFetchError(denial);
+    return records[0];
   }
   const addressPolicy = options.addressAllowed;
   const addressForbidden = addressPolicy
