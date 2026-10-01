@@ -30,7 +30,6 @@ function userServer(id: string, name: string): UserMcpServer {
     accountLabel: null,
     description: `${name} team integration`,
     enabled: false,
-    operationalStatus: "inactive" as const,
     fields: id === "mem0" ? [{
       configured: false,
       label: "API key",
@@ -105,17 +104,19 @@ describe("McpSettingsSection", () => {
     const card = heading.closest("article");
     expect(card).not.toBeNull();
     const initial = within(card!);
-    expect(initial.getByText("Inactive")).toBeVisible();
+    const status = () => within(card!).getByRole("status");
+    expect(status()).toHaveTextContent(/^1 tool$/);
     const control = initial.getByRole("switch", { name: "Enable Todoist" });
     expect(control).toHaveAttribute("aria-checked", "false");
     fireEvent.click(control);
     await waitFor(() => expect(todoist.enabled).toBe(true));
     expect(within(card!).getByRole("switch", { name: "Enable Todoist" })).toHaveAttribute("aria-checked", "true");
-    // Persisted ready alone does not make a dormant server active.
-    expect(within(card!).getByText("Inactive")).toBeVisible();
+    // A healthy enabled row presents only its tool count, never runtime-session warmth.
+    expect(status()).toHaveTextContent(/^1 tool$/);
     fireEvent.click(control);
     await waitFor(() => expect(todoist.enabled).toBe(false));
-    expect(within(card!).getByText("Inactive")).toBeVisible();
+    expect(status()).toHaveTextContent(/^1 tool$/);
+    expect(card).not.toHaveTextContent(/Inactive|Active|Checking/);
     expect(control).toHaveAttribute("aria-checked", "false");
   });
 
@@ -278,7 +279,7 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
     const connectToEnable = screen.getByRole("button", { name: "Connect Notion to enable" });
-    expect(screen.getByText("Inactive")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent(/^1 tool$/);
     expect(connectToEnable).toHaveAttribute("data-tone", "primary");
     fireEvent.click(connectToEnable);
 
@@ -364,7 +365,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Mem0" });
-    expect(screen.getByText("Inactive")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent(/^1 tool$/);
     expect(screen.getByRole("button", { name: "Complete setup for Mem0" })).toHaveAttribute("data-tone", "primary");
     fireEvent.click(screen.getByRole("button", { name: "Complete setup for Mem0" }));
 
@@ -447,22 +448,39 @@ describe("McpSettingsSection", () => {
     expect(screen.queryByText(/above the .*tool run limit/)).not.toBeInTheDocument();
   });
 
-  it("shows only server-owned operational labels and keeps idle tools informational", async () => {
+  it("presents tool counts, transitions and problems but never runtime-session warmth", async () => {
     const servers: UserMcpServer[] = [
-      { ...userServer("live", "Live server"), enabled: true, readiness: "ready", operationalStatus: "active" },
-      { ...userServer("renewing", "Renewing server"), enabled: true, readiness: "ready", operationalStatus: "checking" },
-      { ...userServer("idle", "Idle server"), enabled: true, readiness: "idle", operationalStatus: "inactive" }
+      { ...userServer("live", "Live server"), enabled: true, readiness: "ready" },
+      { ...userServer("idle", "Idle server"), enabled: true, readiness: "idle", knownToolCount: 9, tools: [] },
+      { ...userServer("off", "Off server"), knownToolCount: 3, tools: [] },
+      { ...userServer("empty", "Empty server"), enabled: true, readiness: "idle", knownToolCount: 0, tools: [] },
+      { ...userServer("booting", "Booting server"), enabled: true, readiness: "starting" },
+      { ...userServer("queued", "Queued server"), enabled: true, readiness: "queued", knownToolCount: 0, tools: [] },
+      { ...userServer("setup", "Setup server"), enabled: true, readiness: "needs_setup" },
+      { ...userServer("down", "Down server"), enabled: true, readiness: "unavailable", knownToolCount: 0, tools: [],
+        runtimeErrorCode: "mcp_health_check_failed" }
     ];
     vi.stubGlobal("fetch", vi.fn(async () => response({ servers })));
-    render(<McpSettingsSection />);
-    await screen.findByRole("heading", { name: "Idle server" });
-    expect(screen.getByText("Active")).toHaveAttribute("data-tone", "ok");
-    expect(screen.getByText("Checking").querySelector(".v2-spinner")).not.toBeNull();
-    const idle = screen.getByText("Inactive");
-    expect(idle).toHaveAttribute("data-tone", "neutral");
-    expect(idle.closest("p")).toHaveTextContent("Inactive · 1 tool");
-    expect(idle.closest("p")).toHaveAttribute("aria-live", "polite");
-    expect(screen.getAllByRole("switch")).toHaveLength(3);
+    const { container } = render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Down server" });
+    const status = (name: string) => within(screen.getByRole("heading", { name }).closest("article")!).getByRole("status");
+    expect(status("Live server")).toHaveTextContent(/^1 tool$/);
+    expect(status("Idle server")).toHaveTextContent(/^9 tools$/);
+    expect(status("Off server")).toHaveTextContent(/^3 tools$/);
+    // The live region stays mounted while empty so later transitions are announced.
+    expect(status("Empty server")).toBeEmptyDOMElement();
+    expect(status("Empty server")).toHaveAttribute("aria-live", "polite");
+    expect(status("Booting server")).toHaveTextContent(/^Starting runtime · 1 tool$/);
+    expect(within(status("Booting server")).getByText("Starting runtime").querySelector(".v2-spinner")).not.toBeNull();
+    expect(status("Queued server")).toHaveTextContent(/^Activating$/);
+    expect(within(status("Queued server")).getByText("Activating").querySelector(".v2-spinner")).not.toBeNull();
+    expect(status("Setup server")).toHaveTextContent(/^1 toolNeeds setup$/);
+    expect(within(status("Setup server")).getByText("Needs setup")).toHaveAttribute("data-tone", "warn");
+    expect(within(status("Down server")).getByText(/MCP health check failed/)).toHaveAttribute("data-tone", "danger");
+    for (const element of container.querySelectorAll(".v2-settings-server-status")) {
+      expect(element.textContent ?? "").not.toMatch(/^\s*·|·\s*$|·\s*·/);
+    }
+    expect(container).not.toHaveTextContent(/\b(Inactive|Active|Checking)\b/);
   });
 
   it("marks exactly the rows that need setup, authorization or a runtime with the attention signal", async () => {
@@ -472,7 +490,7 @@ describe("McpSettingsSection", () => {
       { ...userServer("reconnect", "Reconnect server"), enabled: true, oauthAvailable: true,
         oauthState: "reauthorization_required", readiness: "reauthorization_required" },
       { ...userServer("down", "Down server"), enabled: true, readiness: "unavailable" },
-      { ...userServer("ready", "Ready server"), enabled: true, readiness: "ready", operationalStatus: "active" },
+      { ...userServer("ready", "Ready server"), enabled: true, readiness: "ready" },
       userServer("off", "Off server")
     ];
     vi.stubGlobal("fetch", vi.fn(async () => response({ servers })));
@@ -490,7 +508,6 @@ describe("McpSettingsSection", () => {
     const server: UserMcpServer = {
       ...userServer("repos", "Repositories"),
       enabled: true,
-      operationalStatus: "active",
       readiness: "ready",
       unavailableTools: [
         { name: "delete_repo", reason: "unpublished_addition" },
@@ -520,7 +537,6 @@ describe("McpSettingsSection", () => {
     const server: UserMcpServer = {
       ...userServer("locked", "Locked"),
       enabled: true,
-      operationalStatus: "active",
       readiness: "ready",
       tools: [],
       unavailableTools: [{ name: "merge", reason: "restricted" }]
@@ -539,7 +555,7 @@ describe("McpSettingsSection", () => {
       readiness: "unavailable", errorCode: "mcp_artifact_missing", artifact: "private-image" };
     vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [server] })));
     const { container } = render(<McpSettingsSection />);
-    await screen.findByText("Inactive");
+    await screen.findByText("Runtime unavailable");
     expect(container).not.toHaveTextContent(/mcp_artifact_missing|private-image|ToolHive|rebuild|container/i);
   });
 
@@ -567,7 +583,7 @@ describe("McpSettingsSection", () => {
     const heading = await screen.findByRole("heading", { name: "Notion" });
     const card = heading.closest<HTMLElement>("article");
     expect(card).not.toBeNull();
-    expect(within(card!).getByText("Inactive")).toBeVisible();
+    expect(within(card!).getByRole("status")).toHaveTextContent(/^1 toolNeeds authorization$/);
     expect(within(card!).getByRole("switch", { name: "Enable Notion" })).toHaveAttribute("aria-checked", "true");
     expect(within(card!).getByText("Needs authorization")).toHaveAttribute("data-tone", "warn");
     const sheet = await openServer("Notion");
@@ -576,7 +592,7 @@ describe("McpSettingsSection", () => {
 
   it("filters the catalog locally, opens details without fetching or starting servers, and keeps Hub lazy", async () => {
     const servers: UserMcpServer[] = [userServer("mem0", "Mem0"), {
-      ...userServer("active", "Active server"), enabled: true, operationalStatus: "active", readiness: "ready"
+      ...userServer("active", "Active server"), enabled: true, readiness: "ready"
     }, { ...userServer("idle", "Idle server"), description: "Search this description" }];
     const fetchMock = vi.fn(async () => response({ servers }));
     vi.stubGlobal("fetch", fetchMock);

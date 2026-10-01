@@ -396,37 +396,40 @@ describe("MCP handler authorization", () => {
     const row = userServer({ readiness: "unavailable", runtimeGenerationId: "private-generation" });
     row.errorCode = "mcp_health_check_failed";
     const list = vi.spyOn(repository, "listUserServers").mockResolvedValue([row]);
-    const get = createUserMcpCatalogHandler({ ...deps(repository), runtimeOperationalStatus: () => "active" });
+    const get = createUserMcpCatalogHandler(deps(repository));
     const body = await (await get(request({ user: "user-1" }))).json();
-    expect(body.servers[0]).toMatchObject({ operationalStatus: "inactive", runtimeErrorCode: "mcp_health_check_failed" });
+    expect(body.servers[0]).toMatchObject({ runtimeErrorCode: "mcp_health_check_failed" });
     expect(JSON.stringify(body)).not.toContain("private-generation");
     list.mockResolvedValue([{ ...row, readiness: "ready", errorCode: null }]);
     expect(await (await get(request({ user: "user-1" }))).json()).toMatchObject({
-      servers: [expect.objectContaining({ operationalStatus: "active", runtimeErrorCode: null })]
+      servers: [expect.objectContaining({ readiness: "ready", runtimeErrorCode: null })]
     });
     list.mockResolvedValue([{ ...row, errorCode: "PRIVATE_RAW_FAILURE" }]);
     const failed = await (await get(request({ user: "user-1" }))).json();
     expect(failed.servers[0].runtimeErrorCode).toBe("mcp_runtime_unavailable");
     expect(JSON.stringify(failed)).not.toContain("PRIVATE_RAW_FAILURE");
   });
-  it.each(["active", "checking", "inactive"] as const)(
-    "projects current health %s without reconciliation or private runtime fields", async (status) => {
+  it.each(["ready", "starting", "idle", "disabled"] as const)(
+    "projects %s readiness without runtime lookups, reconciliation or private runtime fields", async (readiness) => {
       const repository = new MemoryMcpRepository();
       vi.spyOn(repository, "listUserServers").mockResolvedValue([{
-        ...userServer({ fields: [], readiness: "ready", runtimeGenerationId: "generation-1" }),
+        ...userServer({ enabled: readiness !== "disabled", fields: [], readiness, runtimeGenerationId: "generation-1" }),
         errorCode: "mcp_artifact_missing"
       }]);
-      const runtimeOperationalStatus = vi.fn(() => status);
+      const onActivationRequested = vi.fn();
       const onRuntimeChanged = vi.fn();
       const response = await createUserMcpCatalogHandler({
-        ...deps(repository), runtimeOperationalStatus, onRuntimeChanged
+        ...deps(repository), onActivationRequested, onRuntimeChanged
       })(request({ user: "user-1" }));
       const body = await response.json();
-      expect(body.servers[0]).toMatchObject({ enabled: true, operationalStatus: status });
-      expect(body.servers[0]).not.toHaveProperty("errorCode");
+      expect(body.servers[0]).toMatchObject({ enabled: readiness !== "disabled", readiness });
+      expect(Object.keys(body.servers[0]).sort()).toEqual([
+        "accountLabel", "description", "enabled", "fields", "id", "knownToolCount", "name",
+        "oauthAvailable", "oauthState", "readiness", "runtimeErrorCode", "tools"
+      ]);
       expect(JSON.stringify(body)).not.toMatch(/generation-1|runtimeGenerationId|mcp_artifact_missing/);
       expect(response.headers.get("cache-control")).toBe("no-store");
-      expect(runtimeOperationalStatus).toHaveBeenCalledWith("generation-1");
+      expect(onActivationRequested).not.toHaveBeenCalled();
       expect(onRuntimeChanged).not.toHaveBeenCalled();
     }
   );
@@ -443,30 +446,6 @@ describe("MCP handler authorization", () => {
     const body = await (await createUserMcpCatalogHandler(deps(repository))(request({ user: "user-1" }))).json();
     expect(body.servers[0]).toMatchObject({ tools: [{ name: "create_task" }], unavailableTools });
   });
-
-  it("never derives active health from persisted ready state after a restart", async () => {
-    const repository = new MemoryMcpRepository();
-    vi.spyOn(repository, "listUserServers").mockResolvedValue([
-      userServer({ readiness: "ready", runtimeGenerationId: "persisted-ready" })
-    ]);
-    const response = await createUserMcpCatalogHandler(deps(repository))(request({ user: "user-1" }));
-    expect(await response.json()).toMatchObject({ servers: [{ operationalStatus: "inactive" }] });
-  });
-
-  it.each(["disabled", "idle", "needs_setup", "needs_authorization", "reauthorization_required", "unavailable"] as const)(
-    "does not probe or claim active status for %s", async (readiness) => {
-      const repository = new MemoryMcpRepository();
-      vi.spyOn(repository, "listUserServers").mockResolvedValue([
-        userServer({ enabled: readiness !== "disabled", readiness, runtimeGenerationId: "old-generation" })
-      ]);
-      const runtimeOperationalStatus = vi.fn(() => "active" as const);
-      const response = await createUserMcpCatalogHandler({ ...deps(repository), runtimeOperationalStatus })(
-        request({ user: "user-1" })
-      );
-      expect(await response.json()).toMatchObject({ servers: [{ operationalStatus: "inactive" }] });
-      expect(runtimeOperationalStatus).not.toHaveBeenCalled();
-    }
-  );
 
   it("separates anonymous, ordinary-user, inactive-admin, and active-admin catalog access", async () => {
     const repository = new MemoryMcpRepository();

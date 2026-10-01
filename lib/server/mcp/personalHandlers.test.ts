@@ -14,7 +14,6 @@ const server: UserMcpServer = {
   name: "Synthetic personal MCP",
   oauthAvailable: false,
   oauthState: null,
-  operationalStatus: "inactive",
   readiness: "idle",
   sourceType: "personal",
   tools: [{ description: "Echo", name: "echo" }]
@@ -101,7 +100,7 @@ describe("personal MCP handlers", () => {
     expect(onConnectionChanged).toHaveBeenCalledWith("user-1", "personal-1");
     expect(listUserServers).toHaveBeenCalledWith("user-1");
     const body = await response.json();
-    expect(body.server).toMatchObject({ operationalStatus: "inactive", readiness: "ready" });
+    expect(body.server).toMatchObject({ readiness: "ready" });
     expect(body.server).not.toHaveProperty("runtimeGenerationId");
     expect(body.server).not.toHaveProperty("errorCode");
     expect(JSON.stringify(body)).not.toContain("private");

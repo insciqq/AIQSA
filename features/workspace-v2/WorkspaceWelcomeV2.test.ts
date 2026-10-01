@@ -36,11 +36,10 @@ describe("Studio MCP attention", () => {
       name: "Todoist",
       oauthAvailable: true,
       oauthState: "ready",
-      operationalStatus: "active",
       readiness: "ready",
       tools: []
     };
-    let current: UserMcpServer = { ...ready, oauthState: "reauthorization_required", operationalStatus: "inactive",
+    let current: UserMcpServer = { ...ready, oauthState: "reauthorization_required",
       readiness: "reauthorization_required" };
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ servers: [current] })));
     vi.stubGlobal("fetch", fetchMock);

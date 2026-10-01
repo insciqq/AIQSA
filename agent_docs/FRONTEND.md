@@ -48,7 +48,7 @@ Knowledge management shows current documents, readiness, access and product acti
 
 Auto/Off is independent of pins; personal Enabled preferences exclude Projects/Assistants. Assistant Skill links stay read-only in chat; users pin on top. Import needs no review gate. Show limits; omit revision/bundle editors. Archive is reversible; Delete lists consequences.
 
-Connected apps owns external-client permissions; consent and revocation name the resource. Memory consent covers fact read/add/change/delete, excluding chat history; revocation preserves facts. MCP enablement covers chats and authorized Hub clients. Active requires fresh protocol evidence independently of enablement; opening Studio or Settings never wakes idle servers. Admin Test & Save validates before replacement and preserves intentional disablement.
+Connected apps owns external-client permissions; consent and revocation name the resource. Memory consent covers fact read/add/change/delete, excluding chat history; revocation preserves facts. MCP enablement covers chats and authorized Hub clients. MCP rows show enablement, tool counts, transitions and problems, never session warmth; idle servers start on demand; opening Studio or Settings never wakes them. Admin Test & Save validates before replacement and preserves intentional disablement.
 
 ## Interaction And Visual Intent
 

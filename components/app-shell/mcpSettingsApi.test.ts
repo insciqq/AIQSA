@@ -18,7 +18,6 @@ const server = {
   accountLabel: null,
   description: "Team memory",
   enabled: true,
-  operationalStatus: "inactive" as const,
   fields: [{
     configured: false,
     description: "Personal token",
@@ -64,16 +63,12 @@ describe("MCP settings API", () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me/mcp/server%2F1/oauth/disconnect");
   });
 
-  it("drops internal diagnostics and rejects absent or inconsistent operational status", async () => {
+  it("drops internal diagnostics from the decoded catalog", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ servers: [{
       ...server, errorCode: "mcp_artifact_missing", runtimeGenerationId: "private-generation"
     }] }));
     vi.stubGlobal("fetch", fetchMock);
     expect(await loadUserMcpServers()).toEqual([server]);
-    for (const operationalStatus of [undefined, "ready", "active"]) {
-      fetchMock.mockResolvedValueOnce(jsonResponse({ servers: [{ ...server, operationalStatus }] }));
-      await expect(loadUserMcpServers()).rejects.toThrow();
-    }
   });
 
   it("decodes each unavailable tool with its reason and rejects unknown reasons", async () => {
