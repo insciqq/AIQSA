@@ -39,6 +39,8 @@ const MAX_SECRET_LENGTH = 16_384;
 /** Headers the transport owns; a static credential never replaces them. */
 const RESERVED_STATIC_HEADER_NAMES = new Set(["host", "cookie", "connection", "content-length", "transfer-encoding", "upgrade", "proxy-authorization"]);
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/u;
+/** A header value is a ByteString without controls other than HTAB. */
+const INVALID_HEADER_VALUE = /[^\t\x20-\x7E\x80-\xFF]/u;
 
 type RouteContext = { params: Promise<{ connectionId?: string; serverId?: string }> | { connectionId?: string; serverId?: string } };
 
@@ -269,7 +271,7 @@ function credentialInput(value: unknown): CredentialInput | { error: string; pat
   if (authorization === undefined || (typeof authorization === "string" && !authorization.trim())) {
     return { error: "authorization_required", path: "credentials.authorization", status: 422 };
   }
-  if (typeof authorization !== "string" || authorization.length > MAX_SECRET_LENGTH || /[\r\n]/u.test(authorization)) {
+  if (typeof authorization !== "string" || authorization.length > MAX_SECRET_LENGTH || INVALID_HEADER_VALUE.test(authorization)) {
     return { error: "invalid_mcp_values", path: "credentials.authorization", status: 422 };
   }
   if (headerName === undefined) return { authorization };
@@ -282,15 +284,18 @@ function credentialInput(value: unknown): CredentialInput | { error: string; pat
 
 /**
  * Associates validation issues with the replacement form's fields and drops
- * upstream detail (HTTP status, endpoint, operation).
+ * upstream detail (HTTP status, endpoint, operation). The validator reports a
+ * header that cannot be set at the header name even when the value caused it;
+ * without a header-name change only the value can be at fault.
  */
-function credentialIssue(issue: McpValidationIssue): McpValidationIssue {
+function credentialIssue(issue: McpValidationIssue, headerNameChanged: boolean): McpValidationIssue {
   const { code, path } = issue;
+  if (code === "mcp_authorization_required" || /^(?:oneTimeValues|values)\.authorization$/u.test(path) ||
+    (code === "mcp_static_header_invalid" && !headerNameChanged)) {
+    return { code, path: "credentials.authorization" };
+  }
   if (code === "header_name_invalid" || code.startsWith("mcp_static_header_") || /^slots\.\d+\.target/u.test(path)) {
     return { code, path: "credentials.headerName" };
-  }
-  if (code === "mcp_authorization_required" || /^(?:oneTimeValues|values)\.authorization$/u.test(path)) {
-    return { code, path: "credentials.authorization" };
   }
   return { code, path };
 }
@@ -313,8 +318,10 @@ async function replaceCredentials(
   if (result.kind !== "ok") {
     if (result.kind === "auth_mode_invalid") return errorJson("auth_mode_invalid", 422, [{ code: "auth_mode_invalid", path: "credentials" }]);
     if (result.kind === "credentials_changed") return errorJson("mcp_draft_changed", 409);
-    if (result.kind === "draft_validation_failed") return errorJson("mcp_draft_test_failed", 422, result.issues.map(credentialIssue));
-    if (result.kind === "invalid_values") return errorJson("invalid_mcp_values", 400, result.issues.map(credentialIssue));
+    const headerNameChanged = input.headerName !== undefined;
+    const issues = (issue: McpValidationIssue) => credentialIssue(issue, headerNameChanged);
+    if (result.kind === "draft_validation_failed") return errorJson("mcp_draft_test_failed", 422, result.issues.map(issues));
+    if (result.kind === "invalid_values") return errorJson("invalid_mcp_values", 422, result.issues.map(issues));
     return errorJson("mcp_not_found", 404);
   }
   try { deps.onRuntimeChanged?.(userId); } catch { /* persistence is authoritative */ }

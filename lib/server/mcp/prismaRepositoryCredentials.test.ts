@@ -183,6 +183,16 @@ describe("personal MCP credential replacement", () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
+  it("attributes an unsettable header to the value unless the header name changes", async () => {
+    const outcome: McpDraftValidationOutcome = { issues: [{ code: "mcp_static_header_invalid", path: "slots.0.target.name" }], kind: "invalid" };
+    const kept = harness({ outcome });
+    await expect(kept.storage.replacePersonalCredentials!({ authorization: "key", serverId: "server-1", userId: "user-1" }))
+      .resolves.toEqual({ issues: [{ code: "mcp_static_header_invalid", path: "values.authorization" }], kind: "draft_validation_failed" });
+    const renamed = harness({ outcome });
+    await expect(renamed.storage.replacePersonalCredentials!({ authorization: "key", headerName: "X-API-Key", serverId: "server-1", userId: "user-1" }))
+      .resolves.toEqual({ issues: [{ code: "mcp_static_header_invalid", path: "slots.0.target.name" }], kind: "draft_validation_failed" });
+  });
+
   it("keeps the stored credentials when validation fails or would move the endpoint", async () => {
     const rejected = harness({ outcome: { issues: [{ code: "mcp_authorization_required", httpStatus: 401, path: "source" }], kind: "invalid" } });
     await expect(rejected.storage.replacePersonalCredentials!({ authorization: "expired", serverId: "server-1", userId: "user-1" }))

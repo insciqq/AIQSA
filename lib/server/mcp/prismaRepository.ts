@@ -1675,7 +1675,12 @@ export function createPrismaMcpRepository(input: {
       const validation = draftValidationValues({ draft: nextDraft, oneTimeValues: values, sharedValues: {} });
       if (validation.issues.length) return { kind: "invalid_values" as const, issues: validation.issues };
       const outcome = await draftValidator.validate({ draft: nextDraft, serverId, validationUserId: userId, values: validation.values });
-      if (outcome.kind === "invalid") return { kind: "draft_validation_failed" as const, issues: outcome.issues };
+      if (outcome.kind === "invalid") {
+        // With the stored header name kept, a header that cannot be set is
+        // caused by the value, which the validator reports at the slot target.
+        return { kind: "draft_validation_failed" as const, issues: headerChanged ? outcome.issues : outcome.issues.map((issue) =>
+          issue.code === "mcp_static_header_invalid" ? { ...issue, path: `values.${slot.slotKey}` } : issue) };
+      }
       const evidence = jsonObjectFrom(outcome.evidence);
       const resolvedArtifact = outcome.resolvedArtifact === null ? null : jsonObjectFrom(outcome.resolvedArtifact);
       const toolInventory = toolInventoryFrom(outcome.toolInventory);
@@ -1694,9 +1699,9 @@ export function createPrismaMcpRepository(input: {
       const stored = applyStoredValuePatch(emptyStoredValues(), values, now, mcpEndpointBinding(nextDraft));
       try {
         return await client.$transaction(async (tx) => {
-          // Lock order: the owner first (serializes enables and personal
-          // creates), then the server.
-          await lockAuthUser(tx, userId);
+          // Lock order: the owner first (shared with creates, enables and
+          // disconnects), then the server, then its rows.
+          await lockMcpOwner(tx, userId);
           if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
           const [owner, locked, row] = await Promise.all([
             tx.user.findFirst({ select: { id: true }, where: { id: userId, status: "active" } }),

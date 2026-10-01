@@ -390,6 +390,8 @@ describe("personal MCP credential replacement", () => {
     [{ headerName: "X-API-Key" }, "authorization_required", "credentials.authorization"],
     [{ authorization: "   " }, "authorization_required", "credentials.authorization"],
     [{ authorization: "line\r\nInjected: true" }, "invalid_mcp_values", "credentials.authorization"],
+    [{ authorization: "Bearer tok\u200Ben" }, "invalid_mcp_values", "credentials.authorization"],
+    [{ authorization: "Bearer tok\u0000en" }, "invalid_mcp_values", "credentials.authorization"],
     [{ authorization: "key", headerName: "Cookie" }, "header_name_invalid", "credentials.headerName"],
     [{ authorization: "key", headerName: "Bad Header" }, "header_name_invalid", "credentials.headerName"]
   ])("returns a field error for %j without contacting the endpoint", async (credentials, error, path) => {
@@ -407,7 +409,8 @@ describe("personal MCP credential replacement", () => {
       { code: "mcp_static_header_invalid", path: "slots.0.target.name" },
       { code: "mcp_connection_failed", httpStatus: 502, path: "source" }
     ] });
-    const response = await createPersonalMcpUpdateHandler(input)(replacement({ credentials: { authorization: "expired" } }), params);
+    const response = await createPersonalMcpUpdateHandler(input)(
+      replacement({ credentials: { authorization: "expired", headerName: "X-API-Key" } }), params);
     expect(response.status).toBe(422);
     expect(await response.json()).toEqual({ error: "mcp_draft_test_failed", issues: [
       { code: "mcp_authorization_required", path: "credentials.authorization" },
@@ -417,8 +420,19 @@ describe("personal MCP credential replacement", () => {
 
     input.replacePersonalCredentials.mockResolvedValueOnce({ kind: "invalid_values", issues: [{ code: "slot_value_invalid", path: "oneTimeValues.authorization" }] });
     const invalid = await createPersonalMcpUpdateHandler(input)(replacement({ credentials: { authorization: "x" } }), params);
-    expect(invalid.status).toBe(400);
+    expect(invalid.status).toBe(422);
     expect(await invalid.json()).toEqual({ error: "invalid_mcp_values", issues: [{ code: "slot_value_invalid", path: "credentials.authorization" }] });
+  });
+
+  it("reports a header that cannot be set on the secret field when the header name is kept", async () => {
+    const input = deps();
+    const failure = { kind: "draft_validation_failed" as const, issues: [{ code: "mcp_static_header_invalid", path: "slots.0.target.name" }] };
+    input.replacePersonalCredentials.mockResolvedValueOnce(failure).mockResolvedValueOnce(failure);
+    const kept = await createPersonalMcpUpdateHandler(input)(replacement({ credentials: { authorization: "key\u00ff" } }), params);
+    expect(await kept.json()).toEqual({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_static_header_invalid", path: "credentials.authorization" }] });
+    const renamed = await createPersonalMcpUpdateHandler(input)(
+      replacement({ credentials: { authorization: "key", headerName: "X-API-Key" } }), params);
+    expect(await renamed.json()).toEqual({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_static_header_invalid", path: "credentials.headerName" }] });
   });
 
   it.each([
