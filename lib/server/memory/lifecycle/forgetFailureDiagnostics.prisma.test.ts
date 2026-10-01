@@ -10,7 +10,7 @@ import { databaseFailureCode } from "../../observability/databaseFailure";
 import { prisma } from "../../prisma";
 import { createMemoryConsumerService, MemoryConsumerServiceError } from "../consumer/service";
 import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
-import { createExplicitMemoryService } from "../explicit/service";
+import { createExplicitMemoryService, ExplicitMemoryServiceError } from "../explicit/service";
 import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../learning/extraction/contract";
 import { createPrismaMemoryMutationAuthorizationRepository } from "../persistence/authorizations";
 import { loadPersonalEligibleFactVersionIds } from "../persistence/eligibility";
@@ -324,6 +324,106 @@ async function expectForgotten(userId: string, fact: Fact): Promise<void> {
   expect(await prisma.memoryDeletionOutbox.count({ where: { operation: "FORGET_PURGE", targetId: fact.factId, userId } })).toBe(1);
 }
 
+/** Stand-in for the governed reclassification job that classifies a new
+ * owner-authored version before it is listed (as in prismaLifecycle tests). */
+async function classifyFactVersion(userId: string, versionId: string): Promise<void> {
+  const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+    select: { memoryGeneration: true, memoryRevision: true }, where: { userId }
+  });
+  const jobId = randomUUID();
+  const bindingId = randomUUID();
+  const startedAt = new Date();
+  const completedAt = new Date(startedAt.getTime() + 1);
+  await prisma.$transaction(async (tx) => {
+    await tx.memoryJob.create({ data: {
+      acceptedResultHash: memorySha256({ result: "classified", versionId }), completedAt, id: jobId,
+      idempotencyFingerprint: memorySha256({ job: "forget-diagnostics-classification", versionId }),
+      kind: "RECLASSIFY_FACTS", memoryGenerationSnapshot: settings.memoryGeneration,
+      memoryRevisionSnapshot: settings.memoryRevision, pipelineVersion: "memory-forget-diagnostics-classification-v1",
+      state: "SUCCEEDED", userId
+    } });
+    await tx.memoryExecutionBinding.create({ data: {
+      acceptedOutputHash: memorySha256({ decision: "NORMAL", versionId }), completedAt, createdAt: startedAt,
+      destinationFingerprint: memorySha256({ destination: "forget-diagnostics-classifier", versionId }),
+      id: bindingId, inputHash: memorySha256({ input: "forget-diagnostics-classifier", versionId }),
+      logicalRole: "MEMORY_RECLASSIFY", memoryJobId: jobId, ordinal: 0, ownerType: "JOB",
+      pipelineVersion: "memory-forget-diagnostics-classification-v1",
+      policyVersion: "memory-forget-diagnostics-classification-policy-v1",
+      promptVersion: "memory-forget-diagnostics-classification-prompt-v1", providerId: "memory-forget-diagnostics-fixture",
+      recoverableUntil: completedAt, relationsDetachedAt: completedAt,
+      schemaVersion: "memory-forget-diagnostics-classification-schema-v1",
+      secretFreeExecutionSnapshot: { providerExecutionSnapshot: {
+        providerFamily: "memory-forget-diagnostics-fixture", providerModelId: "memory-forget-diagnostics-classifier-v1"
+      }, version: 1 },
+      startedAt, state: "SUCCEEDED", userId
+    } });
+    await tx.memoryFactVersion.update({ data: {
+      safetyClassificationReasonCode: "other_durable", safetyClassificationState: "CLASSIFIED",
+      safetyClassifiedAt: completedAt, safetyClassifierExecutionId: bindingId,
+      safetyClassifierModelId: "memory-forget-diagnostics-classifier-v1",
+      safetyClassifierPolicyVersion: "memory-forget-diagnostics-classification-policy-v1",
+      safetyClassifierProviderId: "memory-forget-diagnostics-fixture"
+    }, where: { id: versionId } });
+  });
+}
+
+/** Owner recovery for a refused Forget: pin the blocking peer through the
+ * ordinary exact-target owner edit (PATCH { pinned: true }). The peer becomes
+ * an owner-authored current version that no longer rests on the inexact or
+ * legacy message evidence, so it is no longer an automatic source peer. */
+async function ownerPinPeer(
+  explicit: ReturnType<typeof services>["explicit"],
+  userId: string,
+  peer: Fact
+): Promise<string> {
+  const authorization = await explicit.mintAuthorization(userId, {
+    action: "EDIT", confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+    expectedTargetVersionId: peer.versionId, requestNonce: randomUUID(), targetFactId: peer.factId
+  });
+  try {
+    await explicit.update(userId, peer.factId, {
+      expectedVersionId: peer.versionId, mutationAuthorizationId: authorization.mutationAuthorizationId, pinned: true
+    });
+  } catch (error) {
+    // The committed edit is listed only after its version is classified.
+    if (!(error instanceof ExplicitMemoryServiceError) || error.code !== "memory_not_found") throw error;
+  }
+  const pinned = await prisma.memoryFact.findUniqueOrThrow({
+    select: { currentVersionId: true, pinned: true, state: true }, where: { id: peer.factId }
+  });
+  expect(pinned).toMatchObject({ pinned: true, state: "ACTIVE" });
+  expect(pinned.currentVersionId).not.toBe(peer.versionId);
+  await classifyFactVersion(userId, pinned.currentVersionId!);
+  return pinned.currentVersionId!;
+}
+
+async function chatInventory(userId: string) {
+  return {
+    chats: await prisma.chat.count({ where: { userId } }),
+    messages: await prisma.message.count({ where: { chat: { userId } } })
+  };
+}
+
+/** After recovery: the target is forgotten, the peer survives as a usable
+ * owner-visible memory, and no other memory or chat content was deleted. */
+async function expectRecovered(
+  explicit: ReturnType<typeof services>["explicit"],
+  userId: string,
+  target: Fact,
+  peer: Fact,
+  pinnedVersionId: string,
+  inventory: Awaited<ReturnType<typeof chatInventory>>
+): Promise<void> {
+  await expectForgotten(userId, target);
+  expect(await prisma.memoryFact.findMany({ select: { id: true }, where: { state: "FORGOTTEN", userId } }))
+    .toEqual([{ id: target.factId }]);
+  await expect(explicit.get(userId, peer.factId)).resolves.toMatchObject({
+    memory: { currentVersionId: pinnedVersionId, factState: "ACTIVE", pinned: true }
+  });
+  expect(await eligibleCount(userId, [pinnedVersionId])).toBe(1);
+  expect(await chatInventory(userId)).toEqual(inventory);
+}
+
 describe("owner-authorized Forget failure diagnostics (#42)", () => {
   it("H1: forgets a fact echoed by more retrieval sources than the former 256 limit", async () => {
     const userId = await createActiveUser("h1-sources");
@@ -469,6 +569,14 @@ describe("owner-authorized Forget failure diagnostics (#42)", () => {
     expect(result.label).toBe("memory_forget_peer_retrieval_inexact/unknown");
     await expectRolledBack(userId, fact);
     expect(await eligibleCount(userId, [peer.versionId])).toBe(1);
+
+    // Recovery: the owner pins the blocking peer, then the same Forget succeeds.
+    const inventory = await chatInventory(userId);
+    const pinnedVersionId = await ownerPinPeer(explicit, userId, peer);
+    const recovered = await forgetFact(lifecycle, explicit, userId, fact);
+    record("h3_recovery", { forget_ms: recovered.durationMs, outcome: recovered.label });
+    expect(recovered.label).toBe("ok");
+    await expectRecovered(explicit, userId, fact, peer, pinnedVersionId, inventory);
   }, 120_000);
 
   it("3b: overlapping and inexact spans of a direct shared source do not block Forget", async () => {
@@ -555,6 +663,14 @@ describe("owner-authorized Forget failure diagnostics (#42)", () => {
     expect(result.label).toBe("memory_forget_peer_ineligible_after_fence/unknown");
     await expectRolledBack(userId, fact);
     expect(await eligibleCount(userId, [legacy.versionId])).toBe(1);
+
+    // Recovery: the owner pins the legacy-supported peer, then Forget succeeds.
+    const inventory = await chatInventory(userId);
+    const pinnedVersionId = await ownerPinPeer(explicit, userId, legacy);
+    const recovered = await forgetFact(lifecycle, explicit, userId, fact);
+    record("h4_unexpected_loss_recovery", { forget_ms: recovered.durationMs, outcome: recovered.label });
+    expect(recovered.label).toBe("ok");
+    await expectRecovered(explicit, userId, fact, legacy, pinnedVersionId, inventory);
   }, 120_000);
 
   it("H5: Forget waits for a background settings lock longer than the Prisma default timeout", async () => {
