@@ -79,6 +79,10 @@ export type MemoryActiveIndex = Readonly<{
 export type MemoryTransactionOptions = Readonly<{
   clock?: () => number;
   deadlineAtMs?: number;
+  /** Opt-in explicit bounds replacing Prisma's interactive defaults (5 s
+   * timeout, 2 s pool wait). A finite `deadlineAtMs` still wins when sooner;
+   * PostgreSQL lock and statement waits stop at the same bound. */
+  interactiveBounds?: Readonly<{ maxWaitMs: number; timeoutMs: number }>;
   requireActiveOwner?: boolean;
   serializationRetryDelay?: (retryOrdinal: number) => Promise<void>;
 }>;
@@ -104,6 +108,24 @@ function remainingTransactionDeadlineMs(
     return memoryPersistenceFailure("memory_admission_deadline_exceeded");
   }
   return remaining;
+}
+
+function boundedTransaction(
+  options: MemoryTransactionOptions,
+  remainingMs: number | null
+): Readonly<{ maxWait: number; timeout: number }> | null {
+  const bounds = options.interactiveBounds;
+  if (!bounds) {
+    return remainingMs === null ? null : { maxWait: remainingMs, timeout: remainingMs };
+  }
+  if (!Number.isSafeInteger(bounds.maxWaitMs) || bounds.maxWaitMs <= 0 ||
+    !Number.isSafeInteger(bounds.timeoutMs) || bounds.timeoutMs <= 0) {
+    return memoryPersistenceFailure("memory_input_invalid");
+  }
+  return {
+    maxWait: Math.min(bounds.maxWaitMs, remainingMs ?? bounds.maxWaitMs),
+    timeout: Math.min(bounds.timeoutMs, remainingMs ?? bounds.timeoutMs)
+  };
 }
 
 async function applyTransactionDeadline(
@@ -198,11 +220,12 @@ export async function withLockedMemoryTransaction<T>(
 ): Promise<T> {
   for (let attempt = 0; attempt < SERIALIZABLE_ATTEMPTS; attempt += 1) {
     const remainingMs = remainingTransactionDeadlineMs(options);
+    const bounds = boundedTransaction(options, remainingMs);
     try {
       let publishEnqueues = () => {};
       const result = await client.$transaction(async (tx) => {
         publishEnqueues = observeMemoryEnqueues(tx);
-        await applyTransactionDeadline(tx, remainingMs);
+        await applyTransactionDeadline(tx, bounds?.timeout ?? null);
         const settings = await lockMemorySettings(
           tx,
           userId,
@@ -211,10 +234,7 @@ export async function withLockedMemoryTransaction<T>(
         return operation(tx, settings);
       }, {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        ...(remainingMs === null ? {} : {
-          maxWait: remainingMs,
-          timeout: remainingMs
-        })
+        ...(bounds ?? {})
       }).catch(retainDatabaseFailure);
       publishEnqueues();
       return result;
