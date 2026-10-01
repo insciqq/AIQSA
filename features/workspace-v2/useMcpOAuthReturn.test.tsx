@@ -64,8 +64,8 @@ describe("MCP OAuth return lifecycle", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("opens the dedicated Connections settings section for connector OAuth", async () => {
-    window.history.replaceState(null, "", "/?settings=connections&oauth=connected&server=connector-1");
+  it("opens the dedicated Connections settings section for personal MCP OAuth", async () => {
+    window.history.replaceState(null, "", "/?settings=connections&oauth=connected&server=personal-1");
     const open = vi.fn();
     renderHook(() => useConnectionsReturn("account-1", open), { wrapper: StrictMode });
     await waitFor(() => expect(open).toHaveBeenCalledOnce());
