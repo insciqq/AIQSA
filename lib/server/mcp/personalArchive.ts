@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 
 type PersonalArchiveClient = Pick<
   Prisma.TransactionClient,
-  "mcpActivationJob" | "mcpOAuthConnection" | "mcpServer" | "mcpUserServer"
+  "$queryRaw" | "mcpActivationJob" | "mcpOAuthConnection" | "mcpServer" | "mcpUserServer"
 >;
 
 /**
@@ -11,19 +11,23 @@ type PersonalArchiveClient = Pick<
  * stored values and discovered inventory, and the server keeps no draft
  * evidence. Revisions and runtime generations leave with finalization, which
  * deletes an archived server only after its tokens were revoked or abandoned.
+ * Callers hold the owner's lock; the server rows are locked here, in id order,
+ * before any of their children change.
  */
 export async function archivePersonalMcpServers(
   tx: PersonalArchiveClient,
   input: Readonly<{ now: Date; ownerUserId: string; serverIds?: readonly string[] }>
 ): Promise<string[]> {
-  const live = await tx.mcpServer.findMany({
-    select: { id: true },
-    where: {
-      archivedAt: null,
-      ownerUserId: input.ownerUserId,
-      ...(input.serverIds ? { id: { in: [...input.serverIds] } } : {})
-    }
-  });
+  if (input.serverIds?.length === 0) return [];
+  const live = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id"
+    FROM "McpServer"
+    WHERE "ownerUserId" = ${input.ownerUserId}
+      AND "archivedAt" IS NULL
+      ${input.serverIds ? Prisma.sql`AND "id" IN (${Prisma.join([...input.serverIds])})` : Prisma.empty}
+    ORDER BY "id"
+    FOR UPDATE
+  `;
   const serverIds = live.map(({ id }) => id);
   if (!serverIds.length) return [];
   await tx.mcpOAuthConnection.updateMany({
