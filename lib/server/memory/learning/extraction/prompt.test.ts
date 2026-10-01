@@ -78,7 +78,9 @@ describe("Memory semantic-frame extraction prompt", () => {
       "classify the resulting state, not the moment of change",
       "memory_directive EXPLICIT_REMEMBER, and its honest usefulness class, even a rejection class",
       "that the earlier restriction or state no longer holds",
-      "copy its ref into dependency_refs"
+      "copy its ref into dependency_refs",
+      "running every morning or learning a language, does qualify",
+      "Every product_status SLOT, whether its state is lasting, passing, or terminal, uses the same shape"
     ]) expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(rule);
   });
 
