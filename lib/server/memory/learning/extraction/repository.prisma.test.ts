@@ -329,7 +329,6 @@ function extractionPlan(
           role: "SUBJECT"
         }],
         evidence: exactTextRef(quote),
-        future_useful: true,
         usefulness: "DURABLE",
         identity: {
           dimension_key: null,
@@ -376,7 +375,9 @@ function preferencePlan(
   correctionTargetRef: string | null = null,
   polarity: "AFFIRMED" | "CORRECTION" | "NEGATED" = "AFFIRMED",
   changeIntent: "NONE" | "CORRECTION" | "STATE_CHANGE" =
-    correctionTargetRef !== null || polarity === "CORRECTION" ? "CORRECTION" : "NONE"
+    correctionTargetRef !== null || polarity === "CORRECTION" ? "CORRECTION" : "NONE",
+  usefulness: "DURABLE" | "ONGOING" | "EPISODIC" | "SHORT_TERM" | "COMMON" | "TRANSIENT" =
+    "DURABLE"
 ): MemoryFactExtractionPlan {
   return decodeMemoryFactExtraction([{
     arguments: {
@@ -386,8 +387,7 @@ function preferencePlan(
         dependency_refs: correctionTargetRef === null ? [] : [correctionTargetRef],
         entities: [],
         evidence: exactTextRef(quote),
-        future_useful: true,
-        usefulness: "DURABLE",
+        usefulness,
         identity: {
           dimension_key: null,
           mode: "PROPOSITION",
@@ -441,7 +441,6 @@ function pureWithdrawalPlan(
         dependency_refs: [],
         entities: [],
         evidence: exactTextRef(quote),
-        future_useful: true,
         usefulness: "DURABLE",
         identity: identityKind === "SLOT" ? {
           dimension_key: "format:layouts",
@@ -540,7 +539,6 @@ function scheduledPropositionPlan(
         dependency_refs: [],
         entities,
         evidence: exactTextRef(quote),
-        future_useful: true,
         usefulness: "DURABLE",
         identity: {
           dimension_key: null,
@@ -598,7 +596,6 @@ function slotPreferencePlan(
         dependency_refs: [],
         entities: [],
         evidence: exactTextRef(quote),
-        future_useful: true,
         usefulness: "DURABLE",
         identity: {
           dimension_key: dimension,
@@ -757,11 +754,11 @@ function contextualProductPlan(
   input: MemoryFactExtractionInput,
   contextRef: string
 ): MemoryFactExtractionPlan {
-  const quote = "Я заказал макбук.";
+  const quote = "Я одолжил макбук.";
   return decodeMemoryFactExtraction([{
     arguments: {
       observations: [{
-        candidate_ref: "C-context-order",
+        candidate_ref: "C-context-borrow",
         confidence_band: "HIGH",
         dependency_refs: [contextRef],
         entities: [{
@@ -779,7 +776,6 @@ function contextualProductPlan(
           role: "SUBJECT"
         }],
         evidence: exactTextRef(quote),
-        future_useful: true,
         usefulness: "DURABLE",
         identity: {
           dimension_key: null,
@@ -792,10 +788,10 @@ function contextualProductPlan(
           }
         },
         memory_type: "EVENT",
-        reason_code: "context_resolved_order",
+        reason_code: "context_resolved_borrow",
         semantic_frame: currentUserAssertion,
         sensitivity: "NORMAL",
-        statement: "Пользователь заказал MacBook Air.",
+        statement: "Пользователь одолжил MacBook Air.",
         temporal: {
           expiration_intent: "NONE",
           normalization: { kind: "NONE" },
@@ -810,7 +806,7 @@ function contextualProductPlan(
           place: null,
           role: null,
           schedule: null,
-          state: "ordered",
+          state: "borrowed",
           strength: null,
           value: null
         }
@@ -856,7 +852,6 @@ function supportingContextPlan(
         dependency_refs: [dependencyRef],
         entities: [],
         evidence: exactTextRef(quote),
-        future_useful: true,
         usefulness: "DURABLE",
         identity: {
           dimension_key: null,
@@ -909,7 +904,6 @@ function relationshipTemporalPlan(
           role: "SUBJECT"
         }],
         evidence: exactTextRef(quote),
-        future_useful: true,
         usefulness: "DURABLE",
         identity: {
           dimension_key: null,
@@ -982,7 +976,6 @@ function relationshipCurrentPlan(
           qualifier_supports: [], role: "SUBJECT"
         }] : [])],
         evidence: exactTextRef(quote),
-        future_useful: true,
         usefulness: "DURABLE",
         identity: {
           dimension_key: null,
@@ -3594,7 +3587,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         createdAt: new Date("2026-08-24T06:01:00.000Z"),
         parentMessageId: null,
         userId,
-        userText: "Я заказал макбук."
+        userText: "Я одолжил макбук."
       });
       await settleChat(userId, contextChat.id, contextTurn);
       const contextClaim = await claimFactJob(userId, contextTurn.userMessage.id);
@@ -3634,7 +3627,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       expect(targetEvidence).toHaveLength(1);
       expect(targetEvidence[0]).toMatchObject({
         messageId: contextTurn.userMessage.id,
-        safeExcerpt: "Я заказал макбук.",
+        safeExcerpt: "Я одолжил макбук.",
         sourceRole: "user"
       });
       await expect(prisma.memoryEntity.count({ where: { userId } })).resolves.toBe(1);
@@ -4629,7 +4622,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         createdAt: new Date("2026-08-24T08:00:00.000Z"),
         parentMessageId: null,
         userId,
-        userText: "I ordered a MacBook Air."
+        userText: "I borrowed a MacBook Air."
       });
       await settleChat(userId, chat.id, ordered);
       const purchased = await createTurn({
@@ -4643,11 +4636,12 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       await settleChat(userId, chat.id, purchased);
       const orderedClaim = await claimFactJob(userId, ordered.userMessage.id);
       const orderedInput = await prepare(orderedClaim);
+      // A passing order is no longer retained; a lasting borrowed state is.
       const orderedPlan = extractionPlan(
         orderedInput,
-        "I ordered a MacBook Air.",
-        "The user ordered a MacBook Air.",
-        "ordered"
+        "I borrowed a MacBook Air.",
+        "The user borrowed a MacBook Air.",
+        "borrowed"
       );
       const orderedBinding = await createSucceededBinding(
         userId,
@@ -5577,6 +5571,334 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       await cleanupOwner(userId);
     }
   });
+  describe("[LTO] long-term change-only commit", () => {
+    const changeOnlyPlan = (
+      input: MemoryFactExtractionInput,
+      quote: string,
+      statement: string,
+      usefulness: "DURABLE" | "COMMON" = "COMMON"
+    ) => preferencePlan(
+      input, quote, statement, false, "HIGH", [], null, "AFFIRMED", "STATE_CHANGE", usefulness
+    );
+
+    async function observedTurn(
+      userId: string,
+      chatId: string,
+      text: string,
+      createdAt: Date,
+      parentMessageId: string | null = null
+    ) {
+      const turn = await createTurn({
+        assistantText: "Noted.", chatId, createdAt, parentMessageId, userId, userText: text
+      });
+      await settleChat(userId, chatId, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      return { claim, input: await prepare(claim), turn };
+    }
+
+    /** The adjudicator found no existing fact for any candidate. */
+    function noRelationPacket(plan: MemoryFactExtractionPlan): MemorySemanticAdjudicationPacket {
+      const input = memorySemanticAdjudicationInput(plan);
+      if (!input) throw new Error("memory_change_only_test_adjudication_missing");
+      const decisions: MemorySemanticAdjudication[] = plan.candidates
+        .filter((candidate) => memoryCandidateRequiresSemanticAdjudication(
+          candidate, plan.input.contextRefs
+        ))
+        .map((candidate) => ({
+          assertionStatus: "ASSERTED", candidateRef: candidate.candidateRef,
+          confidenceBand: "HIGH", entailment: "ENTAILED", entityRef: null,
+          operation: "NO_RELATION", reasonCode: "no_prior_fact",
+          subjectIdentity: "UNRESOLVED", subjectScope: "CURRENT_USER", targetRef: null,
+          temporalPerspective: candidate.semanticFrame.temporalPerspective
+        }));
+      return {
+        decisions, inputHash: input.inputHash,
+        outputHash: memorySemanticAdjudicationOutputHash(input.inputHash, decisions)
+      };
+    }
+
+    async function applyWithoutTarget(
+      userId: string,
+      observed: Awaited<ReturnType<typeof observedTurn>>,
+      plan: MemoryFactExtractionPlan
+    ) {
+      return applyPlan(userId, observed.claim, plan, await createSucceededBinding(
+        userId, observed.claim, observed.input.inputHash, plan.outputHash
+      ), new Date(), noRelationPacket(plan));
+    }
+
+    async function receipts(userId: string, jobId: string) {
+      const execution = await prisma.memoryFactExtractionExecution.findFirstOrThrow({
+        select: { id: true }, where: { memoryJobId: jobId, userId }
+      });
+      return prisma.memoryFactExtractionCandidateReceipt.findMany({
+        orderBy: { candidateOrdinal: "asc" },
+        select: { outcome: true, reasonCode: true },
+        where: { extractionExecutionId: execution.id, userId }
+      });
+    }
+
+    const missingTarget = [{ outcome: "REJECTED", reasonCode: "change_target_missing" }];
+
+    it("creates no first fact from a change-only candidate but keeps a lasting change", async () => {
+      const userId = await createOwner("change-only-first");
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Change only", userId } });
+        const bread = await observedTurn(
+          userId, chat.id, "Я начал есть хлеб.", new Date("2026-08-25T09:00:00.000Z")
+        );
+        const breadPlan = changeOnlyPlan(bread.input, "Я начал есть хлеб.", "Пользователь начал есть хлеб.");
+        expect(breadPlan.candidates[0]).toMatchObject({ changeOnly: "COMMON" });
+        expect(breadPlan.candidates[0]).not.toHaveProperty("usefulness");
+        await expect(applyWithoutTarget(userId, bread, breadPlan)).resolves.toBe("EMPTY");
+        await expect(receipts(userId, bread.claim.id)).resolves.toEqual(missingTarget);
+        await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
+
+        const returned = await observedTurn(
+          userId, chat.id, "I returned the MacBook Air.", new Date("2026-08-25T09:01:00.000Z"),
+          bread.turn.assistantMessage.id
+        );
+        const returnedPlan = extractionPlan(
+          returned.input, "I returned the MacBook Air.", "The user returned the MacBook Air.", "returned"
+        );
+        expect(returnedPlan.candidates[0]).toMatchObject({
+          changeOnly: "TERMINAL_PRODUCT_STATUS", usefulness: "DURABLE"
+        });
+        await expect(applyWithoutTarget(userId, returned, returnedPlan)).resolves.toBe("EMPTY");
+        await expect(receipts(userId, returned.claim.id)).resolves.toEqual(missingTarget);
+        await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
+        await expect(prisma.memoryFactVersion.count({ where: { userId } })).resolves.toBe(0);
+
+        const moved = await observedTurn(
+          userId, chat.id, "I moved to Berlin.", new Date("2026-08-25T09:02:00.000Z"),
+          returned.turn.assistantMessage.id
+        );
+        const movedPlan = changeOnlyPlan(moved.input, "I moved to Berlin.", "The user lives in Berlin.", "DURABLE");
+        expect(movedPlan.candidates[0]).not.toHaveProperty("changeOnly");
+        await expect(applyWithoutTarget(userId, moved, movedPlan)).resolves.toBe("APPLIED");
+        await expect(prisma.memoryFactVersion.findFirstOrThrow({ where: { userId } }))
+          .resolves.toMatchObject({ state: "ACTIVE", usefulness: "DURABLE" });
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
+
+    it("never relearns a forgotten identity from a change-only candidate", async () => {
+      const fixture = await seedAutomaticallyPurgedFact("change-only");
+      try {
+        const observed = await observedTurn(
+          fixture.userId, fixture.chat.id, fixture.text,
+          new Date(fixture.forgottenAt.getTime() + 60_000),
+          fixture.turn.assistantMessage.id
+        );
+        const plan = changeOnlyPlan(observed.input, fixture.text, fixture.text);
+        const forgotten = await prisma.memoryFact.findUniqueOrThrow({
+          where: { userId_id: { id: fixture.factId, userId: fixture.userId } }
+        });
+        expect(plan.candidates[0]?.canonicalKey).toBe(forgotten.canonicalKey);
+        const versionsBefore = await prisma.memoryFactVersion.count({ where: { userId: fixture.userId } });
+        await expect(applyWithoutTarget(fixture.userId, observed, plan)).resolves.toBe("EMPTY");
+        await expect(receipts(fixture.userId, observed.claim.id)).resolves.toEqual(missingTarget);
+        await expect(prisma.memoryFactVersion.count({ where: { userId: fixture.userId } }))
+          .resolves.toBe(versionsBefore);
+        await expect(prisma.memoryFact.findUniqueOrThrow({
+          where: { userId_id: { id: fixture.factId, userId: fixture.userId } }
+        })).resolves.toMatchObject({ currentVersionId: null, state: "FORGOTTEN" });
+      } finally {
+        await cleanupOwner(fixture.userId);
+      }
+    });
+
+    it("never reopens a retracted identity from a change-only candidate", async () => {
+      const userId = await createOwner("change-only-retracted");
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Change only retracted", userId } });
+        const text = "I prefer quiet rooms.";
+        const first = await observedTurn(userId, chat.id, text, new Date("2026-08-25T10:00:00.000Z"));
+        const firstPlan = preferencePlan(first.input, text, text);
+        await expect(applyPlan(userId, first.claim, firstPlan, await createSucceededBinding(
+          userId, first.claim, first.input.inputHash, firstPlan.outputHash
+        ))).resolves.toBe("APPLIED");
+        const original = await prisma.memoryFactVersion.findFirstOrThrow({ where: { userId } });
+        await prisma.$transaction(async (tx) => {
+          await tx.memoryFactVersion.update({
+            data: { state: "RETRACTED", systemTo: new Date() }, where: { id: original.id }
+          });
+          await tx.memoryFact.update({
+            data: { currentVersionId: null, state: "RETRACTED" }, where: { id: original.factId }
+          });
+        });
+        const second = await observedTurn(
+          userId, chat.id, text, new Date("2026-08-25T10:05:00.000Z"),
+          first.turn.assistantMessage.id
+        );
+        const plan = changeOnlyPlan(second.input, text, text);
+        expect(plan.candidates[0]?.canonicalKey).toBe(firstPlan.candidates[0]?.canonicalKey);
+        await expect(applyWithoutTarget(userId, second, plan)).resolves.toBe("EMPTY");
+        await expect(receipts(userId, second.claim.id)).resolves.toEqual(missingTarget);
+        await expect(prisma.memoryFactVersion.findMany({
+          select: { id: true, state: true }, where: { userId }
+        })).resolves.toEqual([{ id: original.id, state: "RETRACTED" }]);
+        await expect(prisma.memoryFact.findUniqueOrThrow({ where: { id: original.factId } }))
+          .resolves.toMatchObject({ currentVersionId: null, state: "RETRACTED" });
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
+
+    it("never reopens an expired identity from a terminal product status", async () => {
+      const userId = await createOwner("change-only-expired");
+      try {
+        const createdAt = new Date();
+        const localDate = new Intl.DateTimeFormat("en-CA", {
+          day: "2-digit", month: "2-digit", timeZone: "Europe/Moscow", year: "numeric"
+        });
+        const untilLocalDate = localDate.format(new Date(createdAt.getTime() + 6 * 86_400_000));
+        const boundaryLocalDate = localDate.format(new Date(createdAt.getTime() + 7 * 86_400_000));
+        const text = `Remember this until ${untilLocalDate}: I bought a MacBook Air.`;
+        const chat = await prisma.chat.create({ data: { title: "Change only expired", userId } });
+        const first = await observedTurn(userId, chat.id, text, createdAt);
+        const firstPlan = extractionPlan(first.input, text, "The user owns a MacBook Air.", "owned", {
+          expiration_intent: "EXPLICIT",
+          normalization: {
+            kind: "ABSOLUTE", local_date: boundaryLocalDate, local_time: null, zone: null
+          },
+          perspective: "CURRENT",
+          raw_expression: exactTextRef(`Remember this until ${untilLocalDate}`)
+        });
+        const expiresAt = new Date(firstPlan.candidates[0]!.expiresAt!);
+        const secondCreatedAt = new Date(expiresAt.getTime() + 60 * 60_000);
+        const secondApplyAt = new Date(secondCreatedAt.getTime() + 60 * 60_000);
+        const leaseExpiresAt = new Date(secondApplyAt.getTime() + 86_400_000);
+        await prisma.memoryJob.update({ data: { leaseExpiresAt }, where: { id: first.claim.id } });
+        await expect(applyPlan(userId, first.claim, firstPlan, await createSucceededBinding(
+          userId, first.claim, first.input.inputHash, firstPlan.outputHash
+        ), new Date(createdAt.getTime() + 60 * 60_000))).resolves.toBe("APPLIED");
+        const original = await prisma.memoryFactVersion.findFirstOrThrow({ where: { userId } });
+        const second = await observedTurn(
+          userId, chat.id, "I returned the MacBook Air.", secondCreatedAt,
+          first.turn.assistantMessage.id
+        );
+        await prisma.memoryJob.update({ data: { leaseExpiresAt }, where: { id: second.claim.id } });
+        const plan = extractionPlan(
+          second.input, "I returned the MacBook Air.", "The user returned the MacBook Air.", "returned"
+        );
+        expect(plan.candidates[0]?.canonicalKey).toBe(firstPlan.candidates[0]?.canonicalKey);
+        await expect(applyPlan(userId, second.claim, plan, await createSucceededBinding(
+          userId, second.claim, second.input.inputHash, plan.outputHash
+        ), secondApplyAt, noRelationPacket(plan))).resolves.toBe("EMPTY");
+        await expect(receipts(userId, second.claim.id)).resolves.toEqual(missingTarget);
+        // Materializing the elapsed TTL is rolled back with the rejected candidate.
+        await expect(prisma.memoryFactVersion.findMany({
+          select: { id: true, state: true }, where: { userId }
+        })).resolves.toEqual([{ id: original.id, state: "ACTIVE" }]);
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
+
+    it("changes an existing automatic fact through the relation path", async () => {
+      const userId = await createOwner("change-only-update");
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Gluten", userId } });
+        const restriction = "I do not eat gluten.";
+        const first = await observedTurn(userId, chat.id, restriction, new Date("2026-08-25T11:00:00.000Z"));
+        const firstPlan = preferencePlan(first.input, restriction, "The user does not eat gluten.");
+        await expect(applyPlan(userId, first.claim, firstPlan, await createSucceededBinding(
+          userId, first.claim, first.input.inputHash, firstPlan.outputHash
+        ))).resolves.toBe("APPLIED");
+        const original = await prisma.memoryFactVersion.findFirstOrThrow({ where: { userId } });
+        const change = "After years without gluten I eat gluten bread again now.";
+        const second = await observedTurn(
+          userId, chat.id, change, new Date("2026-08-25T11:01:00.000Z"), first.turn.assistantMessage.id
+        );
+        const target = second.input.contextRefs.find(({ source }) =>
+          source.factVersionId === original.id);
+        if (!target) throw new Error("memory_change_only_test_target_missing");
+        const plan = changeOnlyPlan(second.input, change, "The user eats gluten again.");
+        expect(plan.candidates[0]).toMatchObject({ changeOnly: "COMMON" });
+        const semanticInput = memorySemanticAdjudicationInput(plan);
+        if (!semanticInput) throw new Error("memory_change_only_test_adjudication_missing");
+        const decisions: MemorySemanticAdjudication[] = [{
+          assertionStatus: "ASSERTED", candidateRef: plan.candidates[0]!.candidateRef,
+          confidenceBand: "HIGH", entailment: "ENTAILED", entityRef: null,
+          operation: "SUPERSEDE_TARGET", reasonCode: "restriction_cancelled",
+          subjectScope: "CURRENT_USER", targetRef: target.ref, temporalPerspective: "CURRENT"
+        }];
+        await expect(applyPlan(userId, second.claim, plan, await createSucceededBinding(
+          userId, second.claim, second.input.inputHash, plan.outputHash
+        ), new Date(), {
+          decisions, inputHash: semanticInput.inputHash,
+          outputHash: memorySemanticAdjudicationOutputHash(semanticInput.inputHash, decisions)
+        })).resolves.toBe("APPLIED");
+        await expect(receipts(userId, second.claim.id)).resolves.toEqual([
+          { outcome: "APPLIED", reasonCode: null }
+        ]);
+        const pending = await prisma.memoryFactVersion.findFirstOrThrow({
+          where: { state: "PENDING_RELATION", userId }
+        });
+        // A rejected class is never persisted as the new version's usefulness.
+        expect(pending.usefulness).toBeNull();
+        const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+        const relationClaim: MemoryJobClaim = {
+          ...second.claim, id: randomUUID(), kind: "RESOLVE_FACT_RELATIONS",
+          memoryGenerationSnapshot: settings.memoryGeneration,
+          memoryRevisionSnapshot: settings.memoryRevision,
+          pipelineVersion: MEMORY_FACT_RELATION_PIPELINE_VERSION, targetFactVersionId: pending.id
+        };
+        const relations = createPrismaMemoryRelationRepository(prisma);
+        const now = new Date();
+        const prepared = await relations.prepare(relationClaim, now);
+        if (prepared.status !== "READY") throw new Error("memory_change_only_test_relation_not_ready");
+        const decision = decideMemoryFactRelation(prepared.prepared.snapshot, now);
+        expect(decision.targetVersionId).toBe(original.id);
+        await prisma.$transaction((tx) => relations.apply(tx, relationClaim, {
+          decision, executionId: null, expectedSnapshotHash: prepared.prepared.snapshotHash
+        }, now));
+        const active = await prisma.memoryFactVersion.findMany({ where: { state: "ACTIVE", userId } });
+        expect(active.map(({ id }) => id)).toEqual([pending.id]);
+        await expect(prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: original.id } }))
+          .resolves.toMatchObject({ state: "SUPERSEDED" });
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
+
+    it("changes an existing product fact with a terminal status", async () => {
+      const userId = await createOwner("change-only-product");
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Product status", userId } });
+        const first = await observedTurn(userId, chat.id, "I bought a MacBook Air.", new Date("2026-08-25T12:00:00.000Z"));
+        const firstPlan = extractionPlan(first.input, "I bought a MacBook Air.");
+        await expect(applyPlan(userId, first.claim, firstPlan, await createSucceededBinding(
+          userId, first.claim, first.input.inputHash, firstPlan.outputHash
+        ))).resolves.toBe("APPLIED");
+        const owned = await prisma.memoryFactVersion.findFirstOrThrow({ where: { userId } });
+        const second = await observedTurn(
+          userId, chat.id, "I returned the MacBook Air.", new Date("2026-08-25T12:01:00.000Z"),
+          first.turn.assistantMessage.id
+        );
+        const plan = extractionPlan(
+          second.input, "I returned the MacBook Air.", "The user returned the MacBook Air.", "returned"
+        );
+        expect(plan.candidates[0]?.changeOnly).toBe("TERMINAL_PRODUCT_STATUS");
+        await expect(applyPlan(userId, second.claim, plan, await createSucceededBinding(
+          userId, second.claim, second.input.inputHash, plan.outputHash
+        ))).resolves.toBe("APPLIED");
+        await expect(receipts(userId, second.claim.id)).resolves.toEqual([
+          { outcome: "APPLIED", reasonCode: null }
+        ]);
+        const pending = await prisma.memoryFactVersion.findFirstOrThrow({
+          where: { state: "PENDING_RELATION", userId }
+        });
+        expect(pending).toMatchObject({ factId: owned.factId, usefulness: "DURABLE" });
+        expect(pending.structuredValue).toMatchObject({ state: "returned" });
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
+  });
+
   describe("[L10] paged fact extraction", () => {
     const filler = "These notes describe ordinary background context. ";
 
@@ -5606,7 +5928,6 @@ describe("Prisma Memory vNext source-message ingestion", () => {
             dependency_refs: [],
             entities: [],
             evidence: exactTextRef(quote),
-            future_useful: true,
             usefulness: "DURABLE",
             identity: {
               dimension_key: null,

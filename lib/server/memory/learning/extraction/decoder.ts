@@ -1,5 +1,4 @@
 import type { ModelToolCall } from "../../../tools/types";
-import { decodeMemoryUsefulness } from "../../../../domain/memory/usefulness";
 import { MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE } from
   "../../../../contracts/memory";
 import {
@@ -22,6 +21,8 @@ import {
 import { memoryLocalDateTimeParts } from
   "../../../../domain/memory/temporal/calendar";
 import {
+  MEMORY_FACT_EXTRACTION_REJECTED_USEFULNESS,
+  MEMORY_FACT_EXTRACTION_RETAINED_USEFULNESS,
   MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
   MEMORY_FACT_MAX_EVIDENCE_CHARACTERS,
   MEMORY_FACT_MAX_PACKET_CANDIDATES,
@@ -32,8 +33,12 @@ import {
   memoryFactPageBoundaryAfter,
   memoryFactTargetSourceHash,
   memoryFactTargetTextOffset,
+  MEMORY_FACT_TERMINAL_PRODUCT_STATES,
+  MEMORY_FACT_TRANSITIONAL_PRODUCT_STATES,
   type MemoryExactTextRef,
   type MemoryExtractedCandidate,
+  type MemoryFactChangeOnly,
+  type MemoryFactExtractionRejectedUsefulness,
   type MemoryFactCandidateDependency,
   type MemoryFactCandidateEntity,
   type MemoryFactCandidateRejection,
@@ -93,12 +98,17 @@ const changeIntents = new Set([
 ]);
 const memoryDirectives = new Set(["NONE", "EXPLICIT_REMEMBER", "UNKNOWN"]);
 
-const legacyObservationKeys = [
+const observationKeys = [
   "candidate_ref", "confidence_band", "dependency_refs", "entities", "evidence",
-  "future_useful", "identity", "memory_type", "reason_code", "semantic_frame",
-  "sensitivity", "statement", "temporal", "temporary", "value"
+  "identity", "memory_type", "reason_code", "semantic_frame", "sensitivity",
+  "statement", "temporal", "temporary", "usefulness", "value"
 ].sort();
-const observationKeys = [...legacyObservationKeys, "usefulness"].sort();
+const retainedUsefulness = new Set<string>(MEMORY_FACT_EXTRACTION_RETAINED_USEFULNESS);
+const rejectedUsefulness = new Set<string>(MEMORY_FACT_EXTRACTION_REJECTED_USEFULNESS);
+const usefulnessClasses = new Set([...retainedUsefulness, ...rejectedUsefulness]);
+const transitionalProductStates = new Set<string>(MEMORY_FACT_TRANSITIONAL_PRODUCT_STATES);
+const terminalProductStates = new Set<string>(MEMORY_FACT_TERMINAL_PRODUCT_STATES);
+const changeIntentsWithTarget = new Set(["STATE_CHANGE", "CORRECTION", "RETRACTION"]);
 const identityKeys = ["dimension_key", "mode", "predicate_key", "subject"].sort();
 const subjectKeys = ["canonical_label", "entity_type", "qualifiers"].sort();
 const qualifierKeys = ["brand", "model"].sort();
@@ -694,15 +704,45 @@ function temporalDisplayText(
   return rendered.length <= 2_000 ? rendered : statement;
 }
 
+type UsefulnessAdmission = Readonly<{
+  changeOnly?: MemoryFactChangeOnly;
+  usefulness?: "DURABLE" | "ONGOING";
+}>;
+
+/** Long-term admission. DURABLE and ONGOING are kept; a rejected class passes
+ * only as a change of an existing fact (marked change-only for commit) or as
+ * an explicit remember directive, and is never persisted as usefulness. A
+ * product status is judged by its closed state token, not by the class. */
+function usefulnessAdmission(
+  rawUsefulness: unknown,
+  frame: MemorySemanticFrame,
+  identity: MemoryIdentityProposal,
+  value: MemoryValueProposal
+): UsefulnessAdmission {
+  const usefulness = enumValue(rawUsefulness, usefulnessClasses, 16);
+  const productState = identity.predicateKey === "product_status" ? value.state : null;
+  if (productState !== null && transitionalProductStates.has(productState)) {
+    fail("memory_fact_not_useful");
+  }
+  const retained = retainedUsefulness.has(usefulness)
+    ? { usefulness: usefulness as "DURABLE" | "ONGOING" }
+    : {};
+  if (productState !== null && terminalProductStates.has(productState)) {
+    return { ...retained, changeOnly: "TERMINAL_PRODUCT_STATUS" };
+  }
+  if (retainedUsefulness.has(usefulness)) return retained;
+  if (frame.memoryDirective === "EXPLICIT_REMEMBER") return {};
+  if (changeIntentsWithTarget.has(frame.changeIntent)) {
+    return { changeOnly: usefulness as MemoryFactExtractionRejectedUsefulness };
+  }
+  fail("memory_fact_not_useful");
+}
+
 function decodeObservation(
   value: unknown,
-  input: MemoryFactExtractionInput,
-  retained = false
+  input: MemoryFactExtractionInput
 ): MemoryExtractedCandidate {
-  if (!isRecord(value) || !hasExactKeys(
-    value,
-    retained ? legacyObservationKeys : observationKeys
-  )) fail();
+  if (!isRecord(value) || !hasExactKeys(value, observationKeys)) fail();
   const source = targetSource(input);
   const candidateRef = boundedString(value.candidate_ref, 64);
   if (!boundedMachineToken.test(candidateRef)) fail();
@@ -735,17 +775,13 @@ function decodeObservation(
   if (sensitivity !== "NORMAL" && sensitivity !== "SENSITIVE") {
     fail("memory_fact_sensitivity_ambiguous");
   }
-  if (!requiredBoolean(value.future_useful)) fail("memory_fact_not_useful");
-  if (value.usefulness === "TRANSIENT") fail("memory_fact_not_useful");
-  const usefulness = value.usefulness === undefined
-    ? undefined
-    : decodeMemoryUsefulness(value.usefulness) ?? fail();
   boundedString(value.reason_code, 64);
   const rawIdentity = parseIdentity(value.identity);
   const valueProposal = parseValue(value.value);
   if (memoryValueContainsRecognizedSecret(valueProposal)) {
     fail("memory_fact_secret");
   }
+  const admission = usefulnessAdmission(value.usefulness, frame, rawIdentity, valueProposal);
   const parsedEntities = parseEntities(
     value.entities,
     input,
@@ -788,7 +824,7 @@ function decodeObservation(
   });
   if (temporalProposal.expirationIntent === "EXPLICIT" &&
     temporal.expiresAt === null) fail("memory_fact_expiration_evidence_invalid");
-  // Limited relevance is not a deletion instruction. Future usefulness has
+  // Limited relevance is not a deletion instruction. Long-term usefulness has
   // already been checked; only a grounded explicit TTL can set expiresAt.
   const identityInput = {
     identity: identityProposal,
@@ -868,8 +904,8 @@ function decodeObservation(
     expectedAt: temporal.expectedAt,
     expirationIntent: temporalProposal.expirationIntent,
     expiresAt: temporal.expiresAt,
-    futureUseful: true,
-    ...(usefulness === undefined ? {} : { usefulness }),
+    ...(admission.usefulness === undefined ? {} : { usefulness: admission.usefulness }),
+    ...(admission.changeOnly === undefined ? {} : { changeOnly: admission.changeOnly }),
     identityProfile: input.identityProfile,
     identityKind: resolvedIdentity.identityKind,
     identityVersion: resolvedIdentity.identityVersion,
@@ -1076,21 +1112,14 @@ function packetPlan(
  * shape, or more observations than receipts can record, fails the output. */
 export function decodeMemoryFactExtraction(
   calls: readonly ModelToolCall[] | undefined,
-  input: MemoryFactExtractionInput,
-  options: Readonly<{ retainedContract?: boolean }> = {}
+  input: MemoryFactExtractionInput
 ): MemoryFactExtractionPlan {
   assertMemoryIdentityWritable(input.identityProfile);
-  const retained = options.retainedContract === true;
   if (!calls || calls.length !== 1 ||
-    (calls[0]?.name !== MEMORY_FACT_EXTRACTION_TOOL_NAME &&
-      !(retained && calls[0]?.name === "submit_memory_fact_observations_v5")) ||
+    calls[0]?.name !== MEMORY_FACT_EXTRACTION_TOOL_NAME ||
     !isRecord(calls[0].arguments) ||
     !hasExactKeys(calls[0].arguments, ["observations"]) ||
     !Array.isArray(calls[0].arguments.observations) ||
     calls[0].arguments.observations.length > MEMORY_FACT_MAX_RAW_OBSERVATIONS) fail();
-  return packetPlan(
-    calls[0].arguments.observations,
-    input,
-    (value, source) => decodeObservation(value, source, retained)
-  );
+  return packetPlan(calls[0].arguments.observations, input, decodeObservation);
 }

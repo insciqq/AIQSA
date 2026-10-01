@@ -115,7 +115,6 @@ function providerOutput(
           dependency_refs: [],
           entities: [],
           evidence: { occurrence_index: 0, text: quote },
-          future_useful: true,
           usefulness: "DURABLE",
           identity: {
             dimension_key: "topic:tea",
@@ -722,6 +721,66 @@ describe("Memory fact extraction handler", () => {
     expect(fixture.run).not.toHaveBeenCalled();
     expect(fixture.bind).not.toHaveBeenCalled();
     expect(fixture.apply).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["retained v6", {
+      policyVersion: "memory-fact-extraction-policy-v37",
+      promptVersion: "memory-fact-extraction-prompt-v49",
+      schemaVersion: "memory-fact-extraction-schema-v6"
+    }, true],
+    ["retired v5", {
+      policyVersion: "memory-fact-extraction-policy-v35",
+      promptVersion: "memory-fact-extraction-prompt-v47",
+      schemaVersion: "memory-fact-extraction-schema-v5"
+    }, false]
+  ] as const)("recovers a %s staged output only by its recorded semantics", async (_label, versions, retained) => {
+    const fixture = dependencies();
+    const { inputHash: _inputHash, ...sourceInput } = fixture.input;
+    const recordedHash = memoryFactExtractionInputHash(sourceInput, versions);
+    const recordedInput = { ...fixture.input, inputHash: recordedHash };
+    const current = decodeMemoryFactExtraction(providerOutput().toolCalls, fixture.input);
+    // A v6 plan carries its own class and never a change-only marker.
+    const candidates = current.candidates.map((candidate) => ({
+      ...candidate, usefulness: "EPISODIC" as const
+    }));
+    const plan: MemoryFactExtractionPlan = {
+      ...current, candidates, input: recordedInput,
+      outputHash: memoryFactExtractionOutputHash(
+        recordedInput, candidates, current.candidateOrdinals, current.rejections
+      )
+    };
+    const discardStale = vi.fn(async () => 0);
+    const handler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: {
+        ...fixture.base.repository,
+        bindings: vi.fn(async () => [{
+          acceptedOutputHash: plan.outputHash, errorCode: null, id: "recorded-binding",
+          inputHash: recordedHash, ordinal: 0,
+          ...storedVersions({ pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION, ...versions }),
+          secretFreeExecutionSnapshot: {}, state: "SUCCEEDED" as const
+        }]),
+        discardStale,
+        staged: vi.fn(async () => plan)
+      }
+    });
+    if (retained) {
+      await expect(handler.execute(claim(), context())).resolves.toMatchObject({
+        acceptedResultHash: plan.outputHash,
+        stage: "fact_observations_committed"
+      });
+      expect(discardStale).not.toHaveBeenCalled();
+      expect(fixture.apply.mock.calls[0]?.[3]).toBe(plan);
+      expect(plan.candidates.every((candidate) => candidate.changeOnly === undefined)).toBe(true);
+    } else {
+      await expect(handler.execute(claim(), context()))
+        .rejects.toMatchObject({ code: "memory_fact_binding_stale" });
+      expect(discardStale).toHaveBeenCalledWith(expect.anything(), "source_stale");
+      expect(fixture.apply).not.toHaveBeenCalled();
+    }
+    expect(fixture.run).not.toHaveBeenCalled();
+    expect(fixture.bind).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("retires fresh legacy decoding but preserves accepted recovery (%s)", async (accepted) => {
