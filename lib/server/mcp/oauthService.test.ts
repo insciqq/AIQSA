@@ -9,6 +9,7 @@ import type {
   OAuthTokens
 } from "@modelcontextprotocol/client";
 import { Server, type ListToolsResult } from "@modelcontextprotocol/server";
+import { auth } from "@modelcontextprotocol/client";
 import { describe, expect, it, vi } from "vitest";
 import {
   bindMcpOAuthPolicyResource,
@@ -263,11 +264,14 @@ class MemoryOAuthRepository implements McpOAuthRepository {
     discoveryState: McpOAuthStoredClient["discoveryState"];
     registrationKey: string;
   }): Promise<McpOAuthStoredClient> {
+    // Like the Prisma repository: an upsert by key keeps the row id, and the
+    // SDK's issuer stamp is not part of the stored client information.
+    const { issuer: _issuer, ...clientInformation } = input.clientInformation as OAuthClientInformationMixed & { issuer?: string };
     const client: McpOAuthStoredClient = {
-      clientInformation: input.clientInformation,
+      clientInformation,
       clientMetadata: input.clientMetadata,
       discoveryState: input.discoveryState,
-      id: `client-${++this.clientSequence}`,
+      id: this.clients.get(input.registrationKey)?.id ?? `client-${++this.clientSequence}`,
       registrationKey: input.registrationKey
     };
     this.clients.set(input.registrationKey, client);
@@ -1910,5 +1914,170 @@ describe("personal MCP OAuth transport, origin and client lifecycle", () => {
     expect(restarted.kind).toBe("redirect");
     expect(fixture.dcrCalls).toBe(2);
     if (restarted.kind === "redirect") expect(restarted.flow.oauthClientId).not.toBe(connection.client.id);
+  });
+});
+
+describe("rejected OAuth client registrations", () => {
+  const KINDS = ["personal", "installation"] as const;
+
+  function setup(kind: (typeof KINDS)[number]) {
+    const repository = new MemoryOAuthRepository(kind === "personal" ? { ...fixturePolicy(), personal: true } : fixturePolicy());
+    const fixture = new StandardsOAuthFixture();
+    const service = new McpOAuthService({ fetchForPolicy: () => fixture.fetch, now: () => repository.now, repository });
+    const start = (state: string) => service.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: REDIRECT_URI,
+      serverId: "server-1",
+      state,
+      userId: "user-1"
+    });
+    const connect = async () => {
+      const started = await start("connect-state");
+      if (started.kind !== "redirect") throw new Error("expected redirect");
+      fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+      return service.completeAuthorization({ authorizationCode: "fixture-code", flow: started.flow });
+    };
+    return { connect, fixture, repository, service, start };
+  }
+
+  function rejectTokenRequests(fixture: StandardsOAuthFixture, grantType: string) {
+    const rejected: string[] = [];
+    fixture.tokenResponseOverride = (body) => {
+      rejected.push(body.get("grant_type") ?? "");
+      return body.get("grant_type") === grantType
+        ? Response.json({ error: "invalid_client" }, { status: 401 })
+        : Response.json({ error: "unexpected_grant" }, { status: 400 });
+    };
+    return rejected;
+  }
+
+  it.each(KINDS)("retires a client rejected at the %s callback and registers a new one on the next start", async (kind) => {
+    const { fixture, repository, service, start } = setup(kind);
+    const started = await start("callback-state");
+    if (started.kind !== "redirect") throw new Error("expected redirect");
+    fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+    rejectTokenRequests(fixture, "authorization_code");
+    await expect(service.completeAuthorization({ authorizationCode: "fixture-code", flow: started.flow }))
+      .rejects.toMatchObject({ code: "mcp_oauth_authorization_failed" });
+    expect(repository.connections.size).toBe(0);
+    expect(repository.retiredClientIds).toEqual([started.flow.oauthClientId]);
+
+    fixture.tokenResponseOverride = null;
+    const restarted = await start("callback-restart-state");
+    expect(restarted.kind).toBe("redirect");
+    expect(fixture.dcrCalls).toBe(2);
+    if (restarted.kind === "redirect") expect(restarted.flow.oauthClientId).not.toBe(started.flow.oauthClientId);
+  });
+
+  it("retires a client rejected on the manual HTTP token path", async () => {
+    const fixture = new StandardsOAuthFixture();
+    const { repository, service, started } = await startMappedHttpAuthorization(fixture);
+    rejectTokenRequests(fixture, "authorization_code");
+    await expect(service.completeAuthorization({ authorizationCode: "fixture-code", flow: started.flow }))
+      .rejects.toMatchObject({ code: "mcp_oauth_authorization_failed" });
+    expect(repository.retiredClientIds).toEqual([started.flow.oauthClientId]);
+  });
+
+  it("retires a client rejected on the personal own-host HTTP token path", async () => {
+    const fixture = new StandardsOAuthFixture();
+    fixture.expectedRedirectUri = HTTP_REDIRECT_URI;
+    fixture.resource = HTTP_SERVER_URL;
+    const repository = new MemoryOAuthRepository(httpPolicy({
+      allowedAuthorizationServerOrigins: [OWN_HOST_HTTP_AUTH_ORIGIN],
+      personal: true
+    }));
+    const service = new McpOAuthService({ fetchForPolicy: () => ownHostHttpFixtureFetch(fixture), repository });
+    const started = await service.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: HTTP_REDIRECT_URI,
+      serverId: "server-1",
+      state: "own-host-callback-state",
+      userId: "user-1"
+    });
+    if (started.kind !== "redirect") throw new Error("expected redirect");
+    fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+    rejectTokenRequests(fixture, "authorization_code");
+    await expect(service.completeAuthorization({ authorizationCode: "fixture-code", flow: started.flow }))
+      .rejects.toMatchObject({ code: "mcp_oauth_authorization_failed" });
+    expect(repository.retiredClientIds).toEqual([started.flow.oauthClientId]);
+  });
+
+  it.each(KINDS)("takes the %s connection out of ready when the MCP server rejects its unexpired bearer and the client is dead", async (kind) => {
+    const { connect, fixture, repository, service, start } = setup(kind);
+    const connection = await connect();
+    // The access token is still valid by its recorded expiry, so the
+    // ordinary refresh never runs.
+    expect(connection.expiresAt!.getTime()).toBeGreaterThan(repository.now.getTime() + 60_000);
+    const rejected = rejectTokenRequests(fixture, "refresh_token");
+    const provider = await service.createRuntimeProvider(connection.id);
+    // What the SDK transport does after a 401 from the MCP server.
+    await expect(auth(provider, { fetchFn: fixture.fetch, serverUrl: SERVER_URL }))
+      .rejects.toMatchObject({ code: "mcp_oauth_reauthorization_required" });
+    expect(rejected).toEqual(["refresh_token"]);
+    expect(repository.connections.get(connection.id)?.state).toBe("reauthorization_required");
+    expect(repository.retiredClientIds).toEqual([connection.client.id]);
+
+    fixture.tokenResponseOverride = null;
+    const restarted = await start("runtime-restart-state");
+    expect(restarted.kind).toBe("redirect");
+    expect(fixture.dcrCalls).toBe(2);
+  });
+
+  it("keeps a connection ready with rotated tokens when the forced refresh after a rejected bearer succeeds", async () => {
+    const { connect, fixture, repository, service } = setup("installation");
+    const connection = await connect();
+    const provider = await service.createRuntimeProvider(connection.id);
+    await expect(auth(provider, { fetchFn: fixture.fetch, serverUrl: SERVER_URL }))
+      .rejects.toMatchObject({ code: "mcp_oauth_reauthorization_required" });
+    expect(repository.connections.get(connection.id)).toMatchObject({
+      state: "ready",
+      tokens: { access_token: "access-refresh-1" }
+    });
+    expect(repository.retiredClientIds).toEqual([]);
+  });
+
+  it("requires reauthorization when a rejected bearer has no refresh token", async () => {
+    const { connect, fixture, repository, service } = setup("personal");
+    fixture.tokenResponseOverride = () => Response.json({
+      access_token: "access-only", expires_in: 3_600, scope: "mcp.read mcp.write", token_type: "Bearer"
+    } satisfies OAuthTokens);
+    const connection = await connect();
+    const provider = await service.createRuntimeProvider(connection.id);
+    await expect(auth(provider, { fetchFn: fixture.fetch, serverUrl: SERVER_URL }))
+      .rejects.toMatchObject({ code: "mcp_oauth_reauthorization_required" });
+    expect(repository.connections.get(connection.id)?.state).toBe("reauthorization_required");
+    expect(fixture.refreshCalls).toBe(0);
+  });
+
+  it.each(KINDS)("registers a new client when the stored client secret has expired (%s server)", async (kind) => {
+    const { connect, fixture, repository, start } = setup(kind);
+    const connection = await connect();
+    const [registrationKey, stored] = [...repository.clients.entries()][0]!;
+    repository.clients.set(registrationKey, {
+      ...stored,
+      clientInformation: {
+        ...stored.clientInformation,
+        client_secret_expires_at: Math.floor(repository.now.getTime() / 1_000) - 60
+      }
+    });
+    const restarted = await start("expired-secret-state");
+    expect(restarted.kind).toBe("redirect");
+    expect(fixture.dcrCalls).toBe(2);
+    expect(repository.retiredClientIds).toEqual([stored.id]);
+    expect(repository.connections.get(connection.id)?.state).toBe("reauthorization_required");
+  });
+
+  it("keeps reusing a client whose secret never expires", async () => {
+    const { connect, fixture, repository, start } = setup("installation");
+    await connect();
+    const [registrationKey, stored] = [...repository.clients.entries()][0]!;
+    repository.clients.set(registrationKey, {
+      ...stored,
+      clientInformation: { ...stored.clientInformation, client_secret_expires_at: 0 }
+    });
+    await expect(start("non-expiring-state")).resolves.toMatchObject({ kind: "already_connected" });
+    expect(fixture.dcrCalls).toBe(1);
   });
 });

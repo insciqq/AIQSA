@@ -4,6 +4,7 @@ import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { prisma } from "../prisma";
 import { createPrismaMcpOAuthRepository } from "./oauthRepository";
 import { mcpOAuthPolicyFingerprint } from "./oauthPolicy";
+import { McpOAuthService } from "./oauthService";
 import { createPrismaMcpRepository } from "./prismaRepository";
 
 const key = Buffer.alloc(32, 11);
@@ -16,6 +17,9 @@ const draft: McpDraftConfiguration = {
   slots: [],
   source: { kind: "remote", url: "https://mcp.example.test/mcp" },
   transport: "streamable_http"
+};
+const oauthDraft: McpDraftConfiguration = {
+  ...draft, auth: { mode: "oauth", allowedAuthorizationServerOrigins: ["https://auth.example.test"], scopes: [] }
 };
 const redirectUri = (serverId: string) => `https://app.example.test/api/me/mcp/${serverId}/oauth/callback`;
 
@@ -36,6 +40,21 @@ async function user() {
   } });
   userIds.push(created.id);
   return created.id;
+}
+
+/** An enabled installation OAuth server with an active revision and a use grant. */
+async function installationServer(granteeId: string) {
+  const server = await prisma.mcpServer.create({ data: {
+    displayName: "Installation OAuth fixture", enabled: true, namespace: `oauth-trust-${randomUUID()}`
+  } });
+  serverIds.push(server.id);
+  const revision = await prisma.mcpRevision.create({ data: {
+    configuration: oauthDraft, draftHash: randomUUID(), identityHash: randomUUID(), revisionNumber: 1,
+    serverId: server.id, validationEvidence: {}
+  } });
+  await prisma.mcpServer.update({ data: { activeRevisionId: revision.id }, where: { id: server.id } });
+  await prisma.mcpGrant.create({ data: { canUse: true, serverId: server.id, userId: granteeId } });
+  return server.id;
 }
 
 function storage() {
@@ -66,9 +85,7 @@ describe("personal MCP OAuth trust persistence", () => {
   it("loads personal policies only for the personal route, derives the transport rule, and retires a rejected client", async () => {
     const ownerId = await user();
     const repository = storage();
-    const created = await repository.createPersonalServer!({ description: "", draft: {
-      ...draft, auth: { mode: "oauth", allowedAuthorizationServerOrigins: ["https://auth.example.test"], scopes: [] }
-    }, name: "OAuth fixture", userId: ownerId, values: {} });
+    const created = await repository.createPersonalServer!({ description: "", draft: oauthDraft, name: "OAuth fixture", userId: ownerId, values: {} });
     if (created.kind !== "ok") throw new Error("fixture_create_failed");
     const serverId = created.value.id;
     serverIds.push(serverId);
@@ -98,5 +115,34 @@ describe("personal MCP OAuth trust persistence", () => {
     await expect(oauth.findClient(registrationKey)).resolves.toBeNull();
     // Existing connections keep their client for revocation.
     await expect(oauth.loadConnection(connection.value.id)).resolves.toMatchObject({ client: { id: client.id } });
+  });
+  it("answers wrong-kind and foreign ids with no policy through the real owner filter", async () => {
+    const callerId = await user();
+    const otherId = await user();
+    const installationId = await installationServer(callerId);
+    const foreign = await storage().createPersonalServer!({ description: "", draft: oauthDraft, name: "Foreign OAuth fixture", userId: otherId, values: {} });
+    if (foreign.kind !== "ok") throw new Error("fixture_create_failed");
+    serverIds.push(foreign.value.id);
+    // A stray grant must not expose another user's personal server.
+    await prisma.mcpGrant.create({ data: { canUse: true, serverId: foreign.value.id, userId: callerId } });
+    const oauth = createPrismaMcpOAuthRepository({ encryptionKey: () => key, prisma });
+    const query = (serverId: string) => ({ purpose: "user" as const, redirectUri: redirectUri(serverId), serverId, userId: callerId });
+
+    await expect(oauth.loadPolicy({ ...query(installationId), sourceKind: "personal" })).resolves.toBeNull();
+    const installation = await oauth.loadPolicy({ ...query(installationId), sourceKind: "installation" });
+    expect(installation).toMatchObject({ serverId: installationId });
+    expect(installation).not.toHaveProperty("personal");
+    await expect(oauth.loadPolicy({ ...query(foreign.value.id), sourceKind: "personal" })).resolves.toBeNull();
+    await expect(oauth.loadPolicy({ ...query(foreign.value.id), sourceKind: "installation" })).resolves.toBeNull();
+    await expect(oauth.loadPolicy(query(foreign.value.id))).resolves.toBeNull();
+
+    // The service maps a missing policy to the privacy-neutral code before any network I/O.
+    const fetch = vi.fn();
+    const service = new McpOAuthService({ fetchForPolicy: () => fetch, repository: oauth });
+    for (const [serverId, sourceKind] of [[installationId, "personal"], [foreign.value.id, "personal"]] as const) {
+      await expect(service.startAuthorization({ ...query(serverId), forceReconnect: false, sourceKind, state: "fixture-state" }))
+        .rejects.toMatchObject({ code: "mcp_oauth_not_available" });
+    }
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
