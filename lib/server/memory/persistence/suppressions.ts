@@ -340,6 +340,81 @@ function suppressionFingerprintData(
   };
 }
 
+type SourceSuppressionInput = Extract<MemorySuppressionCreateInput, { scope: "SOURCE_MESSAGE" }>;
+
+const SOURCE_SUPPRESSION_BATCH = 500;
+
+/**
+ * Set form of `createMemorySuppressionInTransaction` for many fenced source
+ * messages: the same validation, idempotency and ownership checks with a
+ * bounded number of statements instead of four per message.
+ */
+export async function createMemorySourceSuppressionsInTransaction(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  keyring: MemorySuppressionKeyring,
+  inputs: readonly SourceSuppressionInput[],
+  options: Readonly<{ advanceMemory?: boolean }> = {}
+): Promise<number> {
+  const normalizationVersions = inputs.map((input) => validateCreateInput(input));
+  if (new Set(inputs.map(({ suppressionId }) => suppressionId)).size !== inputs.length) {
+    return memoryPersistenceFailure("memory_idempotency_conflict");
+  }
+  const pending: Array<Readonly<{ input: SourceSuppressionInput; normalizationVersion: string }>> = [];
+  for (let offset = 0; offset < inputs.length; offset += SOURCE_SUPPRESSION_BATCH) {
+    const batch = inputs.slice(offset, offset + SOURCE_SUPPRESSION_BATCH);
+    const priors = new Map((await tx.memorySuppression.findMany({
+      where: { id: { in: batch.map(({ suppressionId }) => suppressionId) } }
+    })).map((prior) => [prior.id, prior]));
+    const chats = new Set((await tx.chat.findMany({
+      select: { id: true },
+      where: { id: { in: [...new Set(batch.map(({ chatId }) => chatId))] }, userId: settings.userId }
+    })).map(({ id }) => id));
+    const messages = new Map((await tx.message.findMany({
+      select: { chatId: true, id: true },
+      where: { id: { in: [...new Set(batch.map(({ messageId }) => messageId))] } }
+    })).map((message) => [message.id, message.chatId]));
+    for (const [index, input] of batch.entries()) {
+      const normalizationVersion = normalizationVersions[offset + index]!;
+      const prior = priors.get(input.suppressionId);
+      if (prior) {
+        if (prior.userId !== settings.userId ||
+          !existingSuppressionMatches(keyring, prior, input, normalizationVersion)) {
+          return memoryPersistenceFailure("memory_idempotency_conflict");
+        }
+        continue;
+      }
+      if (!chats.has(input.chatId) || messages.get(input.messageId) !== input.chatId) {
+        return memoryPersistenceFailure("memory_scope_unavailable");
+      }
+      pending.push({ input, normalizationVersion });
+    }
+  }
+  if (pending.length === 0) return 0;
+  if (options.advanceMemory ?? true) {
+    await advanceMemoryMutation(tx, settings, "FORGET_OR_BULK_CLEAR");
+  }
+  for (let offset = 0; offset < pending.length; offset += SOURCE_SUPPRESSION_BATCH) {
+    await tx.memorySuppression.createMany({
+      data: pending.slice(offset, offset + SOURCE_SUPPRESSION_BATCH).map(({ input, normalizationVersion }) => ({
+        ...suppressionFingerprintData(keyring, settings.userId, input, normalizationVersion),
+        deletionGeneration: settings.memoryGeneration,
+        expiresAt: input.expiresAt,
+        explicitOverrideAllowed: input.explicitOverrideAllowed,
+        id: input.suppressionId,
+        normalizationVersion,
+        preservedEvidenceIds: [...(input.preservedEvidenceIds ?? [])],
+        scope: input.scope,
+        sourceBranchGeneration: input.branchGeneration,
+        sourceChatId: input.chatId,
+        sourceMessageId: input.messageId,
+        userId: settings.userId
+      }))
+    });
+  }
+  return pending.length;
+}
+
 export async function createMemorySuppressionInTransaction(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,

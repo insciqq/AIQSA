@@ -83,6 +83,57 @@ describe("Memory transaction admission deadline", () => {
     ]);
   });
 
+  it("applies opt-in interactive bounds without letting them outlive a sooner deadline", async () => {
+    const options: Array<{ maxWait?: number; timeout?: number }> = [];
+    const queries: unknown[] = [];
+    const tx = {
+      $queryRaw: vi.fn(async (query: unknown) => {
+        queries.push(query);
+        return queries.length % 2 === 0 ? [lockedSettings] : [];
+      })
+    };
+    const client = { $transaction: vi.fn(async (
+      operation: (value: typeof tx) => Promise<unknown>,
+      transactionOptions: { maxWait?: number; timeout?: number }
+    ) => {
+      options.push(transactionOptions);
+      return operation(tx);
+    }) } as unknown as PrismaClient;
+    const interactiveBounds = { maxWaitMs: 2_000, timeoutMs: 15_000 };
+
+    await expect(withLockedMemoryTransaction(client, "user-1", async () => "ok",
+      { interactiveBounds })).resolves.toBe("ok");
+    await expect(withLockedMemoryTransaction(client, "user-1", async () => "ok",
+      { clock: () => 0, deadlineAtMs: 10_000, interactiveBounds })).resolves.toBe("ok");
+    await expect(withLockedMemoryTransaction(client, "user-1", async () => "ok",
+      { clock: () => 0, deadlineAtMs: 1_500, interactiveBounds })).resolves.toBe("ok");
+    expect(options).toEqual([
+      expect.objectContaining({ maxWait: 2_000, timeout: 15_000 }),
+      expect.objectContaining({ maxWait: 2_000, timeout: 10_000 }),
+      expect.objectContaining({ maxWait: 1_500, timeout: 1_500 })
+    ]);
+    expect((queries[0] as Prisma.Sql).values).toEqual(["15000ms", "15000ms"]);
+    await expect(withLockedMemoryTransaction(client, "user-1", async () => "ok",
+      { interactiveBounds: { maxWaitMs: 0, timeoutMs: 15_000 } })).rejects.toMatchObject({
+      code: "memory_input_invalid"
+    });
+  });
+
+  it("keeps Prisma interactive defaults for callers without explicit bounds", async () => {
+    const options: unknown[] = [];
+    const tx = { $queryRaw: vi.fn().mockResolvedValue([lockedSettings]) };
+    const client = { $transaction: vi.fn(async (
+      operation: (value: typeof tx) => Promise<unknown>,
+      transactionOptions: unknown
+    ) => {
+      options.push(transactionOptions);
+      return operation(tx);
+    }) } as unknown as PrismaClient;
+    await expect(withLockedMemoryTransaction(client, "user-1", async () => "ok")).resolves.toBe("ok");
+    expect(options).toEqual([{ isolationLevel: Prisma.TransactionIsolationLevel.Serializable }]);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
   it("backs off and survives a sustained serializable conflict burst", async () => {
     const delays: number[] = [];
     let attempts = 0;
