@@ -77,7 +77,7 @@ async function worker(): Promise<Record<string, unknown>> {
         { lockMemorySourceChat, applyMemorySourceMutations }, { defaultMemorySourceMutationHooks },
         { createPrismaMemoryCoordinatorRepository }, { MemoryCoordinatorError },
         { defaultMemoryExecutionAuthority }, { createPrismaMemoryFactExtractionHandler },
-        { createPrismaMemoryRelationHandler }] = await Promise.all([
+        { createPrismaMemoryRelationHandler }, { reconcileMemoryFactRelationJobs }] = await Promise.all([
         import("@prisma/client"), import("../lib/server/prisma"), import("../lib/domain/content"),
         import("../lib/server/auth/provisioning"), import("../lib/server/memory/sourceState"),
         import("../lib/server/memory/sourceHooks"),
@@ -85,7 +85,8 @@ async function worker(): Promise<Record<string, unknown>> {
         import("../lib/server/memory/coordinator/errors"),
         import("../lib/server/memory/execution/defaultAuthority"),
         import("../lib/server/memory/learning/extraction/handler"),
-        import("../lib/server/memory/learning/relations/handler")
+        import("../lib/server/memory/learning/relations/handler"),
+        import("../lib/server/memory/learning/relations/reconcile")
       ]);
       try {
         currentPhase = "database_identity";
@@ -109,16 +110,26 @@ async function worker(): Promise<Record<string, unknown>> {
         const jobStages: string[] = [];
         const ownerIds: string[] = [];
 
-        /** Runs every queued learning job of the owner like one coordinator worker. */
-        const drain = async (userId: string): Promise<void> => {
+        /** Runs queued learning jobs like one coordinator worker, including the
+         * coordinator's relation reconciliation that enqueues RESOLVE_FACT_RELATIONS
+         * for versions an extraction staged as PENDING_RELATION. */
+        const drain = async (): Promise<void> => {
+          // A pending version resolves in one relation job; two passes cover a
+          // relation job that itself leaves another version pending.
+          let reconciles = 0;
           for (let index = 0; index < MAX_JOBS_PER_MESSAGE; index++) {
             const now = new Date();
             const claim: MemoryJobClaim | null = await coordinator.claimJob({
               claimToken: randomUUID(), kinds: ["EXTRACT_FACTS", "RESOLVE_FACT_RELATIONS"],
               leaseExpiresAt: new Date(now.getTime() + JOB_TIMEOUT_MS), now
             });
-            if (!claim) return;
-            if (claim.userId !== userId) throw new Error("memory_extraction_foreign_job_claimed");
+            if (!claim) {
+              if (reconciles >= 2) return;
+              currentPhase = "relation_reconcile";
+              if (await reconcileMemoryFactRelationJobs(prisma) === 0) return;
+              reconciles++;
+              continue;
+            }
             const handler = handlers[claim.kind]!;
             currentPhase = claim.kind === "EXTRACT_FACTS" ? "extraction_job" : "relation_job";
             try {
@@ -202,7 +213,7 @@ async function worker(): Promise<Record<string, unknown>> {
                   terminalSettlement: { assistantMessageId: assistantMessage.id, runId: run.id, status: "complete" } });
             });
           }
-          await drain(userId);
+          await drain();
           return { assistantMessageId: assistantMessage.id, userMessageId: userMessage.id };
         };
 
