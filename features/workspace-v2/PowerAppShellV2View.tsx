@@ -341,6 +341,21 @@ export function retryAutoMcpDiscoveryV2(regenerate: () => void): void {
   regenerate();
 }
 
+/**
+ * Settings blocks closing and navigation while an owner reports busy. The
+ * connections section reports only create, OAuth start and delete, each with
+ * its own message.
+ */
+export function settingsBusyMessageV2(input: Readonly<{
+  accountBusy: boolean;
+  connectedAppsBusy: boolean;
+  connectionsBusyMessage: string | null;
+}>): string | null {
+  if (input.connectionsBusyMessage) return input.connectionsBusyMessage;
+  if (input.connectedAppsBusy) return "Revoking app access…";
+  return input.accountBusy ? "Updating account…" : null;
+}
+
 export function applyLoadAllAfterMcpDiscoveryFailureV2(regenerate: () => void): void {
   useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
   regenerate();
@@ -484,8 +499,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   }, [settings]);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
+  const [connectionsBusyMessage, setConnectionsBusyMessage] = useState<string | null>(null);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
+  const settingsBusyMessage = settingsBusyMessageV2({ accountBusy, connectedAppsBusy, connectionsBusyMessage });
   const [accountDirty, setAccountDirty] = useState(false);
   const [accountKey, setAccountKey] = useState(0);
   const [dataSubview, setDataSubview] = useState<null | "archived">(null);
@@ -1907,8 +1924,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 
       {settings.settings.open ? (
         <SettingsV2
-          busy={accountBusy || connectedAppsBusy}
-          busyMessage={connectedAppsBusy ? "Revoking app access…" : "Updating account…"}
+          busy={settingsBusyMessage !== null}
+          busyMessage={settingsBusyMessage ?? undefined}
           connectedAppsContent={(
             <ConnectedAppsSection
               accountId={session.accountId}
@@ -1970,7 +1987,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onDisplayNameChange={session.updateAccountDisplayName}
               />
             ),
-            connections: <PersonalMcpConnectionsSection />,
+            connections: <PersonalMcpConnectionsSection onBusyChange={setConnectionsBusyMessage} />,
             data: dataSubview === "archived" ? (
               <ArchivedChatsPanelV2 onRestored={workspace.archived.onRestored} />
             ) : (

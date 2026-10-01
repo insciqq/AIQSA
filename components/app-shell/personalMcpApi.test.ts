@@ -1,37 +1,122 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadPersonalMcpConnections, PersonalMcpApiError } from "./personalMcpApi";
+import {
+  createPersonalMcp,
+  loadPersonalMcpConnections,
+  PersonalMcpApiError,
+  personalMcpAuthorizationValue
+} from "./personalMcpApi";
 
 afterEach(() => vi.unstubAllGlobals());
 
+function server(overrides: Record<string, unknown> = {}) {
+  return {
+    accountLabel: null, authHeaderName: null, authMode: "none",
+    availableTools: [{ description: "Echo", name: "echo" }, { description: null, name: "write" }],
+    description: "Synthetic personal MCP", enabled: true, fields: [], id: "personal-1", knownToolCount: 1,
+    name: "Synthetic personal MCP", oauthAvailable: false, oauthState: null, readiness: "ready", runtimeErrorCode: null,
+    sourceType: "personal", tools: [{ description: "Echo", name: "echo" }], userDisabledToolNames: ["write"],
+    ...overrides
+  };
+}
+
+function serve(body: unknown, init: ResponseInit = {}) {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json(body, init)));
+}
+
 describe("Personal MCP API decoding", () => {
   it("rejects a malformed server instead of treating it as an empty catalog", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ servers: [{}] })));
-    await expect(loadPersonalMcpConnections()).rejects.toEqual(new PersonalMcpApiError("mcp_response_invalid", 502));
+    serve({ servers: [{}] });
+    await expect(loadPersonalMcpConnections()).rejects.toMatchObject({ code: "mcp_response_invalid", status: 502 });
   });
 
-  it("accepts a personal server that carries no runtime-session status", async () => {
-    const server = {
-      accountLabel: null, description: "Synthetic personal MCP", enabled: true, fields: [], id: "personal-1",
-      knownToolCount: 1, name: "Synthetic personal MCP", oauthAvailable: false, oauthState: null,
-      readiness: "idle", sourceType: "personal", tools: [{ description: "Echo", name: "echo" }]
-    };
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ servers: [server] })));
-    const [loaded] = await loadPersonalMcpConnections();
-    expect(loaded).toMatchObject({ id: "personal-1", knownToolCount: 1, readiness: "idle", enabled: true });
+  it("decodes readiness, the runtime code, the auth mode and the switched-off tools", async () => {
+    serve({ servers: [server({
+      authHeaderName: "X-API-Key", authMode: "static", readiness: "unavailable", runtimeErrorCode: "mcp_authorization_required"
+    })] });
+    await expect(loadPersonalMcpConnections()).resolves.toEqual([expect.objectContaining({
+      authHeaderName: "X-API-Key",
+      authMode: "static",
+      availableTools: [{ description: "Echo", name: "echo" }, { description: null, name: "write" }],
+      readiness: "unavailable",
+      runtimeErrorCode: "mcp_authorization_required",
+      userDisabledToolNames: ["write"]
+    })]);
   });
 
-  it("decodes the owner's switched-off tools and rejects a malformed set", async () => {
-    const server = {
-      accountLabel: null, availableTools: [{ description: "Echo", name: "echo" }, { description: null, name: "write" }],
-      description: "Synthetic personal MCP", enabled: true, fields: [], id: "personal-1", knownToolCount: 1,
-      name: "Synthetic personal MCP", oauthAvailable: false, oauthState: null, readiness: "ready", sourceType: "personal",
-      tools: [{ description: "Echo", name: "echo" }], userDisabledToolNames: ["write", "gone"]
-    };
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ servers: [server] })));
-    await expect(loadPersonalMcpConnections()).resolves.toEqual([expect.objectContaining({ userDisabledToolNames: ["write", "gone"] })]);
-    for (const userDisabledToolNames of [["bad name"], "write", Array.from({ length: 1_025 }, (_, index) => `tool_${index}`)]) {
-      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ servers: [{ ...server, userDisabledToolNames }] })));
-      await expect(loadPersonalMcpConnections()).rejects.toEqual(new PersonalMcpApiError("mcp_response_invalid", 502));
+  it.each(["mcp_internal_address_forbidden", "mcp_local_network_disabled", "mcp_tool_disabled", "mcp_tool_definition_changed"])(
+    "accepts the registry runtime code %s",
+    async (runtimeErrorCode) => {
+      serve({ servers: [server({ readiness: "unavailable", runtimeErrorCode })] });
+      await expect(loadPersonalMcpConnections()).resolves.toEqual([expect.objectContaining({ runtimeErrorCode })]);
     }
+  );
+
+  it("derives the auth mode of a row that omits it from its projected slot and OAuth availability", async () => {
+    const secret = { configured: true, label: "Authorization header", sensitive: true, slotKey: "authorization", source: "personal", valueType: "secret" };
+    serve({ servers: [
+      server({ authHeaderName: undefined, authMode: undefined, fields: [secret], id: "static-1" }),
+      server({ authHeaderName: undefined, authMode: undefined, id: "oauth-1", oauthAvailable: true, oauthState: "disconnected" }),
+      server({ authHeaderName: undefined, authMode: undefined, id: "none-1" })
+    ] });
+    const loaded = await loadPersonalMcpConnections();
+    expect(loaded.map((item) => [item.id, item.authMode, item.authHeaderName])).toEqual([
+      ["static-1", "static", null], ["oauth-1", "oauth", null], ["none-1", "none", null]
+    ]);
+  });
+
+  it.each([
+    ["an unknown runtime code", { runtimeErrorCode: "mcp_made_up" }],
+    ["an unknown auth mode", { authMode: "basic" }],
+    ["an empty header name", { authHeaderName: "" }],
+    ["a malformed disabled set", { userDisabledToolNames: ["bad name"] }],
+    ["a disabled set that is not a list", { userDisabledToolNames: "write" }],
+    ["an oversized disabled set", { userDisabledToolNames: Array.from({ length: 1_025 }, (_, index) => `tool_${index}`) }],
+    ["a missing inventory", { availableTools: undefined }],
+    ["an installation row", { sourceType: "installation" }]
+  ])("rejects %s", async (_label, overrides) => {
+    serve({ servers: [server(overrides)] });
+    await expect(loadPersonalMcpConnections()).rejects.toMatchObject({ code: "mcp_response_invalid" });
+  });
+});
+
+describe("Personal MCP API errors", () => {
+  it("keeps issue codes and paths but drops upstream status, operation and endpoint", async () => {
+    serve({ error: "mcp_draft_test_failed", issues: [
+      { code: "mcp_authorization_required", endpoint: "https://upstream.example/mcp", httpStatus: 401, operation: "initialize", path: "source" },
+      { code: "Not A Code", path: "source" }
+    ] }, { status: 422 });
+    const failure = await createPersonalMcp({ auth: { mode: "none" }, name: "x", url: "https://x.example/mcp" }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PersonalMcpApiError);
+    expect(failure).toMatchObject({ code: "mcp_draft_test_failed", issues: [{ code: "mcp_authorization_required", path: "source" }], status: 422 });
+    expect(JSON.stringify((failure as PersonalMcpApiError).issues)).not.toContain("upstream.example");
+  });
+
+  it("reads the retry time of a rate-limited create", async () => {
+    serve({ error: "personal_mcp_rate_limited" }, { headers: { "retry-after": "120" }, status: 429 });
+    await expect(createPersonalMcp({ auth: { mode: "none" }, name: "x", url: "https://x.example/mcp" }))
+      .rejects.toMatchObject({ code: "personal_mcp_rate_limited", retryAfterSeconds: 120 });
+  });
+
+  it("returns the exact cross-site origins to confirm and refuses a malformed list", async () => {
+    const body = { authorizationOrigins: ["https://login.example"], error: "oauth_authorization_origin_confirmation_required",
+      issues: [{ code: "oauth_authorization_origin_confirmation_required", path: "authorizationOriginsAcknowledged" }] };
+    serve(body, { status: 422 });
+    await expect(createPersonalMcp({ auth: { mode: "oauth" }, name: "x", url: "https://x.example/mcp" }))
+      .rejects.toMatchObject({ authorizationOrigins: ["https://login.example"], code: "oauth_authorization_origin_confirmation_required" });
+    serve({ ...body, authorizationOrigins: ["https://login.example/path"] }, { status: 422 });
+    await expect(createPersonalMcp({ auth: { mode: "oauth" }, name: "x", url: "https://x.example/mcp" }))
+      .rejects.toMatchObject({ code: "mcp_response_invalid" });
+  });
+});
+
+describe("personalMcpAuthorizationValue", () => {
+  it("prefixes a bare token in the Authorization header only", () => {
+    expect(personalMcpAuthorizationValue("Authorization", " ghp_secret \n")).toBe("Bearer ghp_secret");
+    expect(personalMcpAuthorizationValue("authorization", "token-1")).toBe("Bearer token-1");
+    expect(personalMcpAuthorizationValue("Authorization", "Bearer abc")).toBe("Bearer abc");
+    expect(personalMcpAuthorizationValue("Authorization", "Basic dXNlcjpwYXNz")).toBe("Basic dXNlcjpwYXNz");
+    expect(personalMcpAuthorizationValue("X-API-Key", "raw-key")).toBe("raw-key");
+    expect(personalMcpAuthorizationValue("X-API-Key", "Bearer raw-key")).toBe("Bearer raw-key");
+    expect(personalMcpAuthorizationValue("Authorization", "   ")).toBe("");
   });
 });

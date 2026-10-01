@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useComposerControlStore } from "./composerControlStore";
+import { deactivatePersonalMcp, usePersonalMcpStore } from "./personalMcpStore";
 import { isMcpOAuthAuthorizing, markMcpOAuthAuthorizing, consumeMcpOAuthReturn, observeMcpSettings, refreshMcpSettings, useMcpSettingsStore } from "./mcpSettingsStore";
 import {
   resetComposerControlStoreForTest,
@@ -192,5 +193,16 @@ describe("MCP settings store", () => {
     expect(useMcpSettingsStore.getState().oauthOutcome).toEqual(outcome);
     expect(isMcpOAuthAuthorizing("server-1")).toBe(false);
     expect(window.location.search).toBe("?keep=yes");
+  });
+
+  it("routes a personal connection's OAuth outcome to the personal store only", () => {
+    window.history.replaceState(null, "", "/c/chat-1?settings=connections&oauth=cancelled&server=personal-1");
+    const outcome = consumeMcpOAuthReturn(new URL(window.location.href));
+
+    expect(outcome).toEqual({ kind: "cancelled", serverId: "personal-1" });
+    expect(usePersonalMcpStore.getState().oauthOutcome).toEqual(outcome);
+    expect(useMcpSettingsStore.getState().oauthOutcome).toBeNull();
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/c/chat-1");
+    deactivatePersonalMcp();
   });
 });
