@@ -20,6 +20,11 @@ function useShellReturn(accountId: string, open: () => void) {
   useMcpOAuthReturn(accountId, open);
 }
 
+function useConnectionsReturn(accountId: string, open: () => void) {
+  useEffect(() => () => deactivateMcpSettings(), [accountId]);
+  useMcpOAuthReturn(accountId, vi.fn(), open);
+}
+
 describe("MCP OAuth return lifecycle", () => {
   it.each(["settings", "library"].flatMap(destination => ["connected", "cancelled", "failed"].map(kind => ({ destination, kind }))))("preserves $destination $kind through shell effect replay", async ({ destination, kind }) => {
     window.history.replaceState(null, "", `/?${destination}=mcp&oauth=${kind}&server=server-1&keep=yes#anchor`);
@@ -57,5 +62,13 @@ describe("MCP OAuth return lifecycle", () => {
     expect(window.location.search).toContain("oauth=connected");
     expect(useMcpSettingsStore.getState().oauthOutcome).toBeNull();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("opens the dedicated Connections settings section for connector OAuth", async () => {
+    window.history.replaceState(null, "", "/?settings=connections&oauth=connected&server=connector-1");
+    const open = vi.fn();
+    renderHook(() => useConnectionsReturn("account-1", open), { wrapper: StrictMode });
+    await waitFor(() => expect(open).toHaveBeenCalledOnce());
+    expect(window.location.search).toBe("");
   });
 });

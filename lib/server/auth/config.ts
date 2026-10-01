@@ -1,4 +1,5 @@
 import { hashToken } from "./token";
+import type { ConnectorId } from "@/lib/contracts/connectors";
 import type { OAuthProviderId } from "../../auth/oauth";
 import { isTestAuthAllowedEnv } from "./csrf";
 import { getRuntimePeerSecret, isLoopbackHostname } from "./clientIdentity";
@@ -27,6 +28,8 @@ export type AuthConfig = {
   cookieSecure: boolean;
   configured: boolean;
   oauthProviders: Partial<Record<OAuthProviderId, OAuthProviderConfig>>;
+  /** Server-side OAuth clients used by first-party remote MCP connectors. */
+  mcpConnectorOAuth: Partial<Record<ConnectorId, OAuthProviderConfig>>;
   runtimePeerSecret: string;
   sessionSecret: string;
   testAuthEnabled: boolean;
@@ -192,6 +195,16 @@ export function getAuthConfig(env: Record<string, string | undefined> = process.
     env.AIQSA_YANDEX_OAUTH_CLIENT_ID,
     env.AIQSA_YANDEX_OAUTH_CLIENT_SECRET
   );
+  const connectorOAuth: Partial<Record<ConnectorId, OAuthProviderConfig>> = {};
+  const connectorKeys: readonly ConnectorId[] = ["gmail", "google_calendar", "google_drive", "github", "notion"];
+  for (const connector of connectorKeys) {
+    const envKey = connector.toUpperCase();
+    const configured = oauthProviderConfig(
+      env[`AIQSA_MCP_CONNECTOR_${envKey}_OAUTH_CLIENT_ID`],
+      env[`AIQSA_MCP_CONNECTOR_${envKey}_OAUTH_CLIENT_SECRET`]
+    );
+    if (configured) connectorOAuth[connector] = configured;
+  }
 
   if (
     bootstrapLoginEnabled &&
@@ -217,6 +230,7 @@ export function getAuthConfig(env: Record<string, string | undefined> = process.
       ...(googleOAuth ? { google: googleOAuth } : {}),
       ...(yandexOAuth ? { yandex: yandexOAuth } : {})
     },
+    mcpConnectorOAuth: connectorOAuth,
     runtimePeerSecret: getRuntimePeerSecret(),
     sessionSecret,
     testAuthEnabled,

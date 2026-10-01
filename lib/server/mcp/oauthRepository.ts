@@ -163,10 +163,12 @@ const oauthEligibilitySelect = {
     select: {
       activeRevision: { select: { configuration: true, id: true } },
       archivedAt: true,
+      connectorKey: true,
       draft: true,
       grants: {
         select: { canUse: true, groupId: true, userId: true }
       },
+      ownerUserId: true,
       testedDraftHash: true
     }
   },
@@ -194,7 +196,11 @@ export function isMcpOAuthConnectionEligible(record: OAuthEligibilityRecord): bo
   // Server and personal enablement are intentionally absent: toggling either off
   // pauses use without discarding the user's external authorization.
   if (record.server.archivedAt || record.user.status !== "active") return false;
-  if (record.purpose === "validation") return record.user.role === "admin";
+  if (record.purpose === "validation") return record.user.role === "admin" && record.server.ownerUserId === null;
+
+  // Personal MCP is private to its owner even if a malformed or legacy grant
+  // row happens to exist. Installation MCP uses the ordinary grant rules.
+  if (record.server.ownerUserId !== null) return record.server.ownerUserId === record.userId;
 
   const activeGroupIds = new Set(record.user.groups.map((membership) => membership.groupId));
   return record.server.grants.some((grant) => grant.canUse && (
@@ -238,7 +244,8 @@ function hasCurrentMcpOAuthPolicy(record: OAuthEligibilityRecord, key: Buffer): 
       purpose: record.purpose,
       redirectUri: storedPolicy.redirectUri,
       serverId: record.serverId,
-      userId: record.userId
+      userId: record.userId,
+      connectorKey: record.server.connectorKey
     });
     return mcpOAuthPolicyFingerprint(current, record.oauthClient.clientId) ===
       record.policyFingerprint;
@@ -475,7 +482,7 @@ async function policyForSubject(
     if (user.role !== "admin") return null;
     const server = await client.mcpServer.findFirst({
       select: { archivedAt: true, draft: true },
-      where: { archivedAt: null, id: input.serverId }
+      where: { archivedAt: null, id: input.serverId, ownerUserId: null }
     });
     const draft = server ? draftFrom(server.draft) : null;
     if (!server || !draft || draft.auth.mode !== "oauth") return null;
@@ -493,18 +500,28 @@ async function policyForSubject(
   const groupIds = user.groups.map((membership) => membership.groupId);
   const server = await client.mcpServer.findFirst({
     select: {
+      connectorKey: true,
+      ownerUserId: true,
       activeRevision: { select: { configuration: true, id: true } },
       grants: {
         select: { canUse: true, groupId: true, personalSlotKeys: true, userId: true },
         where: { OR: [{ userId: input.userId }, ...(groupIds.length ? [{ groupId: { in: groupIds } }] : [])] }
       }
     },
-    where: { archivedAt: null, enabled: true, id: input.serverId }
+    where: {
+      archivedAt: null,
+      enabled: true,
+      id: input.serverId,
+      OR: [
+        { ownerUserId: input.userId },
+        { ownerUserId: null }
+      ]
+    }
   });
   if (!server?.activeRevision) return null;
   const direct = server.grants.find((grant) => grant.userId === input.userId) ?? null;
   const groups = server.grants.filter((grant) => grant.groupId && groupIds.includes(grant.groupId));
-  if (!resolveEffectiveMcpGrant({ direct, groups }).canUse) return null;
+  if (server.ownerUserId !== input.userId && !resolveEffectiveMcpGrant({ direct, groups }).canUse) return null;
   const draft = draftFrom(server.activeRevision.configuration);
   if (!draft || draft.auth.mode !== "oauth") return null;
   return buildMcpOAuthPolicy({
@@ -513,7 +530,8 @@ async function policyForSubject(
     purpose: input.purpose,
     redirectUri: input.redirectUri,
     serverId: input.serverId,
-    userId: input.userId
+    userId: input.userId,
+    connectorKey: server.connectorKey
   });
 }
 
@@ -714,7 +732,7 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
         if (!user || user.status !== "active" || user.role !== "admin") return null;
         const server = await tx.mcpServer.findFirst({
           select: { draft: true, testedDraftHash: true, updatedAt: true },
-          where: { archivedAt: null, id: inputValue.serverId }
+          where: { archivedAt: null, id: inputValue.serverId, ownerUserId: null }
         });
         const draft = server ? draftFrom(server.draft) : null;
         if (!server || !draft || draft.auth.mode !== "oauth") return null;
@@ -722,7 +740,7 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
         if (server.testedDraftHash !== draftHash) {
           const pinned = await tx.mcpServer.updateMany({
             data: { testedDraftHash: draftHash },
-            where: { id: inputValue.serverId, updatedAt: server.updatedAt }
+            where: { id: inputValue.serverId, ownerUserId: null, updatedAt: server.updatedAt }
           });
           if (pinned.count !== 1) return null;
         }
@@ -756,6 +774,7 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
             ? {
                 OR: [
                   { server: { archivedAt: { not: null } } },
+                  { server: { ownerUserId: { not: null } } },
                   { user: { status: { not: "active" as const } } },
                   { user: { role: { not: "admin" as const } } }
                 ]
@@ -763,9 +782,11 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
             : {
                 OR: [
                   { server: { archivedAt: { not: null } } },
+                  { server: { ownerUserId: { not: candidate.userId } } },
                   { user: { status: { not: "active" as const } } },
                   {
                     server: {
+                      ownerUserId: null,
                       grants: {
                         none: {
                           canUse: true,

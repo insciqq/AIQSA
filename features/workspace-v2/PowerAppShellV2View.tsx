@@ -37,6 +37,7 @@ import {
   MessageDeleteConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
 import { ConnectedAppsSection } from "@/components/app-shell/ConnectedAppsSection";
+import { PersonalMcpConnectionsSection } from "@/components/app-shell/PersonalMcpConnectionsSection";
 import { PermanentChatDeletionSurface } from "@/components/app-shell/PermanentChatDeletionSurface";
 import { ProjectSettingsDialog } from "@/components/app-shell/ProjectSettingsDialog";
 import { ShareDialog } from "@/components/app-shell/ShareDialog";
@@ -1962,6 +1963,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onDisplayNameChange={session.updateAccountDisplayName}
               />
             ),
+            connections: <PersonalMcpConnectionsSection />,
             data: dataSubview === "archived" ? (
               <ArchivedChatsPanelV2 onRestored={workspace.archived.onRestored} />
             ) : (

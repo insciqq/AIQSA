@@ -16,6 +16,7 @@ import {
 } from "./oauthHandlers";
 import { signMcpOAuthFlow } from "./oauthFlow";
 import type { McpOAuthFlowBinding, McpOAuthService } from "./oauthService";
+import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 
 const NOW = new Date("2026-07-22T15:00:00.000Z");
 const SERVER_ID = "server-1";
@@ -105,6 +106,59 @@ const START_ROUTES = [
 const ADMIN: AuthenticatedSession = { ...USER, user: { ...USER.user, role: "admin" } };
 
 describe("MCP OAuth web handlers", () => {
+  it("returns custom MCP consent to Connections while preserving the canonical runtime callback fingerprint", async () => {
+    const operations = service();
+    const start = createMcpOAuthStartHandler(deps({ service: operations, userSettingsSection: "connections" }), {
+      forceReconnect: false, purpose: "user"
+    });
+    const started = await start(new Request(`https://aiqsa.example.test/api/me/mcp-connections/${SERVER_ID}/oauth/connect`, { method: "POST" }), routeContext());
+    const input = vi.mocked(operations.startAuthorization).mock.calls[0]![0];
+    expect(input.redirectUri).toBe(flow().redirectUri);
+    const policy = (redirectUri: string) => buildMcpOAuthPolicy({
+      configurationIdentity: "revision-1", purpose: "user", redirectUri, serverId: SERVER_ID, userId: USER.userId,
+      draft: {
+        auth: { mode: "oauth", allowedAuthorizationServerOrigins: ["https://auth.example.test"], scopes: [] },
+        source: { kind: "remote", url: "https://mcp.example.test/mcp" },
+        slots: [], runtime: { callTimeoutMs: 30_000, startupTimeoutMs: 15_000 }, transport: "streamable_http"
+      }
+    });
+    expect(mcpOAuthPolicyFingerprint(policy(input.redirectUri), "client"))
+      .toBe(mcpOAuthPolicyFingerprint(policy(flow().redirectUri), "client"));
+    const callback = createMcpOAuthCallbackHandler(deps({ service: operations }), "user");
+    const returned = await callback(new Request(`${flow().redirectUri}?state=fixture-state&code=synthetic-code`, {
+      headers: { cookie: cookieHeader(started) }
+    }), routeContext());
+    expect(operations.completeAuthorization).toHaveBeenCalled();
+    expect(new URL(returned.headers.get("location")!).searchParams.get("settings")).toBe("connections");
+    expect(new URL(returned.headers.get("location")!).searchParams.get("oauth")).toBe("connected");
+  });
+
+  it("uses a stable connector callback and takes its server only from the signed cookie", async () => {
+    const connectorFlow = { ...flow(), redirectUri: "https://aiqsa.example.test/api/me/connectors/oauth/callback" };
+    const operations = service({ startAuthorization: vi.fn(async () => ({
+      kind: "redirect" as const,
+      flow: connectorFlow,
+      authorizationUrl: "https://auth.example.test/authorize?state=fixture-state"
+    })) });
+    const handlerDeps = deps({
+      callbackPath: () => "/api/me/connectors/oauth/callback",
+      service: operations,
+      userSettingsSection: "connections"
+    });
+    const start = createMcpOAuthStartHandler(handlerDeps, { allowQueryServerId: true, forceReconnect: false, purpose: "user" });
+    const response = await start(new Request("https://aiqsa.example.test/api/me/connectors/oauth/connect?server=server-1", { method: "POST" }), { params: {} });
+    expect(operations.startAuthorization).toHaveBeenCalledWith(expect.objectContaining({ redirectUri: connectorFlow.redirectUri, serverId: SERVER_ID }));
+    const callback = createMcpOAuthCallbackHandler(handlerDeps, "user", { allowCookieServerId: true });
+    const result = await callback(new Request(`${connectorFlow.redirectUri}?state=fixture-state&code=secret-code&server=attacker-server`, {
+      headers: { cookie: cookieHeader(response) }
+    }), { params: {} });
+    expect(operations.completeAuthorization).toHaveBeenCalledWith({ authorizationCode: "secret-code", flow: connectorFlow });
+    const location = new URL(result.headers.get("location")!);
+    expect(location.searchParams.get("settings")).toBe("connections");
+    expect(location.searchParams.get("server")).toBe(SERVER_ID);
+    expect(location.searchParams.get("oauth")).toBe("connected");
+  });
+
   it("signs the server-side flow fixture", async () => {
     await expect(signMcpOAuthFlow({
       flow: flow(),

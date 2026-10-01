@@ -19,13 +19,25 @@ type PreferenceFixture = {
     id: string;
     inventory: Record<string, unknown>;
     inventoryUpdatedAt: Date;
+    oauthConnectionId: string | null;
     revisionId: string;
     state: "failed" | "idle" | "ready" | "starting" | "stopping";
     userServerId: string;
   } | null;
   desiredRuntimeGenerationId: string | null;
+  discoveredInventory: Record<string, unknown> | null;
+  discoveredOAuthConnectionId: string | null;
+  discoveredRevisionId: string | null;
   enabled: boolean;
   id: string;
+  runtimeGenerations: {
+    inventory: Record<string, unknown> | null;
+    oauthConnectionId: string | null;
+    revisionId: string;
+    state: "failed" | "idle" | "ready" | "starting" | "stopping";
+  }[];
+  selectedToolNames?: string[];
+  toolSelectionEnabled?: boolean;
   server: {
     activeRevision: {
       configuration: Record<string, unknown>;
@@ -39,6 +51,13 @@ type PreferenceFixture = {
     grants: { canUse: boolean; groupId: string | null; userId: string | null }[];
     id: string;
     namespace: string;
+    oauthConnections: {
+      disconnectRequestedAt: Date | null;
+      id: string;
+      state: "ready" | "reauthorization_required" | "disconnecting" | "disconnected";
+      userId: string;
+    }[];
+    ownerUserId?: string | null;
   };
   user: {
     groups: { groupId: string }[];
@@ -66,11 +85,15 @@ function preference(overrides: Partial<PreferenceFixture> = {}): PreferenceFixtu
         version: 1
       },
       inventoryUpdatedAt: NOW,
+      oauthConnectionId: null,
       revisionId: "revision-1",
       state: "ready",
       userServerId: id
     },
     desiredRuntimeGenerationId: "generation-1",
+    discoveredInventory: null,
+    discoveredOAuthConnectionId: null,
+    discoveredRevisionId: null,
     enabled: true,
     id,
     server: {
@@ -95,13 +118,15 @@ function preference(overrides: Partial<PreferenceFixture> = {}): PreferenceFixtu
       enabled: true,
       grants: [{ canUse: true, groupId: null, userId: "user-1" }],
       id: "server-1",
-      namespace: "example"
+      namespace: "example",
+      oauthConnections: []
     },
     user: {
       groups: [],
       status: "active"
     },
     userId: "user-1",
+    runtimeGenerations: [],
     ...overrides
   };
 }
@@ -115,6 +140,7 @@ function clientWith(records: PreferenceFixture[]) {
 }
 
 type ProjectServerFixture = {
+  ownerUserId: string | null;
   activeRevision: { configuration: Record<string, unknown>; validationEvidence: Record<string, unknown> } | null;
   activeRevisionId: string | null;
   archivedAt: Date | null;
@@ -168,6 +194,7 @@ function projectServer(overrides: Partial<ProjectServerFixture> = {}): ProjectSe
     enabled: true,
     id: "project-server-1",
     namespace: "project_tools",
+    ownerUserId: null,
     sharedConfigEnvelope: null,
     sharedRuntime: { desiredRuntimeGeneration: sharedGeneration() },
     ...overrides
@@ -191,6 +218,91 @@ function projectClientWith(servers: unknown[], restrictedToolNames: readonly str
 }
 
 describe("Prisma MCP run-plan loader", () => {
+  it("offers the owner's personal OAuth inventory to Auto while keeping deselected tools out", async () => {
+    const record = preference({ selectedToolNames: ["echo"], toolSelectionEnabled: true });
+    record.server.ownerUserId = "user-1";
+    record.server.grants = [];
+    record.server.activeRevision!.validationEvidence = { toolInventory: [] };
+    const client = clientWith([record]).client;
+    expect((await loadMcpCapabilityCatalog("user-1", client)).servers[0]?.tools).toMatchObject([{ originalName: "echo" }]);
+    record.selectedToolNames = [];
+    const [disabled] = await loadMcpRunPlanRecords("user-1", client);
+    expect(disabled?.catalogTools).toEqual([]);
+    expect(disabled?.inventory).toMatchObject({ tools: [] });
+  });
+
+  it.each([false, true])("reuses current OAuth catalog after idle generation cleanup=%s", async (drained) => {
+    const record = preference({ desiredRuntimeGeneration: null, desiredRuntimeGenerationId: null });
+    record.server.ownerUserId = "user-1";
+    record.server.grants = [];
+    record.server.activeRevision!.configuration = { auth: { mode: "oauth" } };
+    record.server.activeRevision!.validationEvidence = { toolInventory: [] };
+    record.server.oauthConnections = [{
+      disconnectRequestedAt: null,
+      id: "oauth-current",
+      state: "ready",
+      userId: "user-1"
+    }];
+    record.runtimeGenerations = [{
+      inventory: { tools: [{ description: "Read mail", name: "mail.read" }], version: 1 },
+      oauthConnectionId: "oauth-current",
+      revisionId: "revision-1",
+      state: "ready"
+    }];
+    if (drained) {
+      record.discoveredInventory = record.runtimeGenerations[0]!.inventory;
+      record.discoveredOAuthConnectionId = "oauth-current";
+      record.discoveredRevisionId = "revision-1";
+      record.runtimeGenerations = [];
+    }
+
+    const [loaded] = await loadMcpRunPlanRecords("user-1", clientWith([record]).client);
+    expect(loaded).toMatchObject({ generationId: null, readiness: "queued" });
+    expect(loaded?.catalogTools).toEqual([{ description: "Read mail", name: "mail.read" }]);
+  });
+
+  it.each([false, true])("does not reuse old OAuth catalog after account change with drained=%s", async (drained) => {
+    const record = preference({ desiredRuntimeGeneration: null, desiredRuntimeGenerationId: null });
+    record.server.ownerUserId = "user-1";
+    record.server.grants = [];
+    record.server.activeRevision!.configuration = { auth: { mode: "oauth" } };
+    record.server.activeRevision!.validationEvidence = { toolInventory: [] };
+    record.server.oauthConnections = [{
+      disconnectRequestedAt: null,
+      id: "oauth-new",
+      state: "ready",
+      userId: "user-1"
+    }];
+    record.runtimeGenerations = [{
+      inventory: { tools: [{ description: "Read mail", name: "mail.read" }], version: 1 },
+      oauthConnectionId: "oauth-old",
+      revisionId: "revision-1",
+      state: "ready"
+    }];
+    if (drained) {
+      record.discoveredInventory = record.runtimeGenerations[0]!.inventory;
+      record.discoveredOAuthConnectionId = "oauth-old";
+      record.discoveredRevisionId = "revision-1";
+      record.runtimeGenerations = [];
+    }
+
+    const [loaded] = await loadMcpRunPlanRecords("user-1", clientWith([record]).client);
+    expect(loaded?.catalogTools).toEqual([]);
+  });
+
+  it("rejects a personal server owned by someone else despite an accidental direct grant", async () => {
+    const record = preference();
+    record.server.ownerUserId = "other-user";
+    const [denied] = await loadMcpRunPlanRecords("user-1", clientWith([record]).client);
+    expect(denied).toMatchObject({ catalogTools: [], generationId: null, errorCode: "mcp_access_revoked" });
+  });
+
+  it("rejects a personal server from Project runs even with a shared generation", async () => {
+    const [denied] = await loadMcpRunPlanRecordsForProjectServers("user-1", ["project-server-1"],
+      projectClientWith([projectServer({ ownerUserId: "user-1" })]).client);
+    expect(denied).toMatchObject({ catalogTools: [], enabled: false, generationId: null, errorCode: "mcp_project_credentials_unavailable" });
+  });
+
   it("admits the server's shared Project runtime without a personal grant or a member's runtime", async () => {
     const { client, findMany } = projectClientWith([projectServer()]);
 

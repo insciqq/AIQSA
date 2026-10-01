@@ -403,6 +403,14 @@ export type UserMcpConfigurationField = {
 export type McpOperationalStatus = "active" | "checking" | "inactive";
 
 export type UserMcpServer = {
+  /** Personal settings inventory, including tools the owner has switched off. */
+  availableTools?: { description: string | null; name: string }[];
+  /** Installation servers are administered; personal servers are owned by this account. */
+  sourceType?: "installation" | "personal";
+  connectorKey?: string | null;
+  /** Redacted endpoint projection for personal settings only. */
+  endpoint?: string;
+  selectedToolNames?: string[];
   runtimeErrorCode?: McpRuntimeErrorCode | null;
   accountLabel: string | null;
   description: string;

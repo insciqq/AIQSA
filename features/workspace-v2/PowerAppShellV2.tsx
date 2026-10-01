@@ -1736,7 +1736,10 @@ export function PowerAppShellV2({
     }
   });
   function openMcpSettings() { studio.open("mcp"); }
-  useMcpOAuthReturn(accountId, useEventCallback(openMcpSettings));
+  const openConnectionsSettings = useEventCallback(() => {
+    useSettingsDestinationStore.getState().openSettings("connections");
+  });
+  useMcpOAuthReturn(accountId, useEventCallback(openMcpSettings), openConnectionsSettings);
   const openAssistantLibrary = () => studio.open("assistants");
   const openKnowledgeLibrary = () => studio.open("knowledge");
   const openKnowledgeLibrarySource = (sourceId: string) => {

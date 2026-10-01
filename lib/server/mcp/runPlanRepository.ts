@@ -29,14 +29,30 @@ const runPlanPreferenceSelect = {
       id: true,
       inventory: true,
       inventoryUpdatedAt: true,
+      oauthConnectionId: true,
       revisionId: true,
       state: true,
       userServerId: true
     }
   },
   desiredRuntimeGenerationId: true,
+  discoveredInventory: true,
+  discoveredOAuthConnectionId: true,
+  discoveredRevisionId: true,
   enabled: true,
   id: true,
+  selectedToolNames: true,
+  toolSelectionEnabled: true,
+  runtimeGenerations: {
+    orderBy: { updatedAt: "desc" },
+    take: 8,
+    select: {
+      inventory: true,
+      oauthConnectionId: true,
+      revisionId: true,
+      state: true
+    }
+  },
   server: {
     select: {
       activeRevision: {
@@ -58,7 +74,12 @@ const runPlanPreferenceSelect = {
         }
       },
       id: true,
-      namespace: true
+      ownerUserId: true,
+      namespace: true,
+      oauthConnections: {
+        where: { purpose: "user" },
+        select: { disconnectRequestedAt: true, id: true, state: true, userId: true }
+      }
     }
   },
   user: {
@@ -164,11 +185,24 @@ function revisionCatalogTools(
 function currentCatalogTools(
   validationEvidence: unknown,
   configuration: unknown,
-  inventory: unknown
+  inventory: unknown,
+  selectedToolNames?: readonly string[] | null,
+  allowRuntimeInventory = false
 ): McpToolInventoryEntry[] {
-  const catalog = revisionCatalogTools(validationEvidence, configuration);
+  const revisionCatalog = revisionCatalogTools(validationEvidence, configuration);
+  const catalog = revisionCatalog.length || !allowRuntimeInventory ? revisionCatalog : runtimeInventoryCatalogTools(inventory);
   const excluded = new Set((mcpInventoryExclusions(inventory) ?? []).map(({ name }) => name));
-  return excluded.size ? catalog.filter(({ name }) => !excluded.has(name)) : catalog;
+  const selected = selectedToolNames === null || selectedToolNames === undefined ? null : new Set(selectedToolNames);
+  return catalog.filter(({ name }) => !excluded.has(name) && (selected === null || selected.has(name)));
+}
+
+function runtimeInventoryCatalogTools(value: unknown): McpToolInventoryEntry[] {
+  if (!isRecord(value) || !Array.isArray(value.tools)) return [];
+  return value.tools.flatMap((candidate) => {
+    if (!isRecord(candidate) || typeof candidate.name !== "string" || !candidate.name.trim() ||
+      (candidate.description !== null && typeof candidate.description !== "string")) return [];
+    return [{ description: candidate.description as string | null, name: candidate.name }];
+  });
 }
 
 function revisionServerInstructions(validationEvidence: unknown): string | undefined {
@@ -179,9 +213,36 @@ function revisionServerInstructions(validationEvidence: unknown): string | undef
   return validationEvidence.evidence.server.instructions.trim() || undefined;
 }
 
+/**
+ * Personal OAuth revisions start with an intentionally empty published
+ * inventory. Keep Auto useful after an idle runtime is evicted by reusing only
+ * a bounded ready generation for this revision and this user's current OAuth
+ * connection. This is a projection lookup; it never wakes a runtime.
+ */
+function personalFallbackInventory(preference: RunPlanPreferenceRecord): unknown {
+  if (preference.server.ownerUserId !== preference.userId) return null;
+  const revisionId = preference.server.activeRevisionId;
+  if (!revisionId) return null;
+  const oauthMode = authMode(preference.server.activeRevision?.configuration) === "oauth";
+  const readyOAuthIds = new Set(preference.server.oauthConnections
+    .filter((connection) => connection.userId === preference.userId &&
+      connection.state === "ready" && connection.disconnectRequestedAt === null)
+    .map((connection) => connection.id));
+  if (preference.discoveredRevisionId === revisionId && preference.discoveredInventory !== null &&
+    (!oauthMode || (preference.discoveredOAuthConnectionId !== null && readyOAuthIds.has(preference.discoveredOAuthConnectionId)))) {
+    return preference.discoveredInventory;
+  }
+  const generations = [preference.desiredRuntimeGeneration, ...preference.runtimeGenerations];
+  return generations.find((generation) => generation && generation.state === "ready" &&
+    generation.revisionId === revisionId &&
+    (!oauthMode || (generation.oauthConnectionId !== null && readyOAuthIds.has(generation.oauthConnectionId))))?.inventory ?? null;
+}
+
 function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRunPlanRecord {
   const groupIds = new Set(preference.user.groups.map((membership) => membership.groupId));
-  const canUse = preference.server.grants.some((grant) => grant.canUse && (
+  const canUse = preference.server.ownerUserId != null
+    ? preference.server.ownerUserId === preference.userId
+    : preference.server.grants.some((grant) => grant.canUse && (
     grant.userId === preference.userId || Boolean(grant.groupId && groupIds.has(grant.groupId))
   ));
   if (preference.user.status !== "active" || !canUse) {
@@ -200,18 +261,23 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
   const serverInstructions = revisionServerInstructions(
     preference.server.activeRevision?.validationEvidence
   );
+  const selectedToolNames = preference.toolSelectionEnabled ? preference.selectedToolNames : null;
 
   const generation = preference.desiredRuntimeGeneration;
   if (!generation) {
+    const fallbackInventory = personalFallbackInventory(preference);
     return {
       ...inaccessibleRecord(
         preference,
         preference.desiredRuntimeGenerationId ? "mcp_runtime_stale" : "mcp_runtime_pending"
       ),
       ...runtimeTimeouts(preference.server.activeRevision?.configuration),
-      catalogTools: revisionCatalogTools(
+      catalogTools: currentCatalogTools(
         preference.server.activeRevision?.validationEvidence,
-        preference.server.activeRevision?.configuration
+        preference.server.activeRevision?.configuration,
+        fallbackInventory,
+        selectedToolNames,
+        preference.server.ownerUserId === preference.userId
       ),
       ...(serverInstructions ? { serverInstructions } : {}),
       errorCode: preference.desiredRuntimeGenerationId ? "mcp_runtime_stale" : null,
@@ -231,7 +297,9 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
     catalogTools: currentCatalogTools(
       preference.server.activeRevision?.validationEvidence,
       preference.server.activeRevision?.configuration,
-      generation.inventory
+      generation.inventory,
+      selectedToolNames,
+      preference.server.ownerUserId === preference.userId
     ),
     credentialSources: generation.credentialSources.filter((source): source is "oauth" | "personal" | "shared" =>
       source === "oauth" || source === "personal" || source === "shared"),
@@ -265,6 +333,7 @@ const projectRunServerSelect = {
   displayName: true,
   enabled: true,
   id: true,
+  ownerUserId: true,
   namespace: true,
   sharedConfigEnvelope: true,
   sharedRuntime: {
@@ -336,6 +405,7 @@ function serializeProjectRunServer(server: ProjectRunServerRecord): McpRunPlanRe
   if (!server.enabled || server.archivedAt || !server.activeRevisionId || !server.activeRevision) {
     return unavailable("mcp_server_unavailable");
   }
+  if (server.ownerUserId !== null) return unavailable("mcp_project_credentials_unavailable");
   if (requiresPersonalCredentials(configuration)) return unavailable("mcp_project_credentials_unavailable");
   if (!server.sharedConfigEnvelope && authMode(configuration) !== "none") {
     return unavailable("mcp_runtime_unavailable");
@@ -392,7 +462,8 @@ async function filterRunPlanRecords(
     inventory: isRecord(record.inventory) && Array.isArray(record.inventory.tools)
       ? { ...record.inventory, tools: record.inventory.tools.filter((tool) =>
           !isRecord(tool) || typeof tool.name !== "string" ||
-          allowed({ serverId: record.serverId, originalName: tool.name })) }
+          (record.catalogTools?.some((candidate) => candidate.name === tool.name) !== false &&
+            allowed({ serverId: record.serverId, originalName: tool.name }))) }
       : record.inventory
   }));
 }

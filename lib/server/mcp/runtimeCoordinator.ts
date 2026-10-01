@@ -25,6 +25,7 @@ export type McpRuntimeInventoryTool = {
 
 export type McpRuntimeLaunch = {
   allowPrivateNetwork?: boolean;
+  allowedToolNames?: readonly string[];
   callTimeoutMs: number;
   disabledToolNames?: readonly string[];
   fingerprint: string;
@@ -34,6 +35,7 @@ export type McpRuntimeLaunch = {
   onConnecting?(): Promise<void>;
   redactionValues: readonly string[];
   oauthConnectionId?: string;
+  personalRuntime?: boolean;
   retryAt: Date | null;
   startupTimeoutMs: number;
   trustedInternalHttp?: boolean;
@@ -97,6 +99,8 @@ export type McpRuntimeCoordinatorRepository = {
     fingerprint: string;
     generationId: string;
     inventory: McpRuntimeInventory;
+    /** Schema-free inventory retained for the owner's personal catalog. */
+    discoveredInventory?: { tools: { name: string; description: string | null }[]; version: 1 };
     now: Date;
   }): Promise<boolean>;
   markStarting(input: { fingerprint: string; generationId: string; now: Date }): Promise<boolean>;
@@ -125,6 +129,7 @@ export type McpRuntimeLifecycle = {
 };
 
 type LiveRuntime = {
+  allowedToolNames: ReadonlySet<string> | null;
   healthUsesToolList: boolean;
   toolDefinitionHashes: ReadonlyMap<string, string>;
   disabledToolNames: ReadonlySet<string>;
@@ -133,6 +138,7 @@ type LiveRuntime = {
   fingerprint: string;
   local: boolean;
   lastProtocolSuccessAt: number;
+  allowUnpublishedTools: boolean;
   /** Fixed for the generation: its fingerprint binds the revision. */
   publishedTools: McpPublishedToolDefinitions;
   redactionValues: readonly string[];
@@ -149,9 +155,13 @@ type LiveRuntime = {
 function effectiveRuntimeTools(
   upstream: readonly McpRuntimeInventoryTool[],
   published: McpPublishedToolDefinitions,
-  disabledToolNames: ReadonlySet<string>
+  disabledToolNames: ReadonlySet<string>,
+  allowUnpublishedTools = false,
+  allowedToolNames: ReadonlySet<string> | null = null
 ): Pick<McpRuntimeInventory, "exclusions" | "tools"> {
-  const publishedNames: ReadonlySet<string> = published.kind === "definitions"
+  const publishedNames: ReadonlySet<string> = allowUnpublishedTools
+    ? new Set(upstream.map((tool) => tool.name))
+    : published.kind === "definitions"
     ? new Set(published.hashes.keys())
     : published.kind === "names" ? published.names : new Set<string>();
   const upstreamNames = new Set<string>();
@@ -162,11 +172,12 @@ function effectiveRuntimeTools(
       throw new McpClientSessionError({ code: "mcp_inventory_tool_invalid", operation: "list_tools" });
     }
     upstreamNames.add(tool.name);
-    const reason: McpToolExclusionReason | null = disabledToolNames.has(tool.name)
+    const reason: McpToolExclusionReason | null = disabledToolNames.has(tool.name) ||
+      (allowedToolNames !== null && !allowedToolNames.has(tool.name))
       ? "disabled_by_policy"
       : !publishedNames.has(tool.name)
         ? "unpublished_addition"
-        : published.kind === "definitions" && published.hashes.get(tool.name) !== tool.definitionHash
+        : !allowUnpublishedTools && published.kind === "definitions" && published.hashes.get(tool.name) !== tool.definitionHash
           ? "definition_drift"
           : null;
     if (reason) exclusions.push({ name: tool.name, reason });
@@ -852,11 +863,15 @@ export class McpRuntimeCoordinator {
       if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, launch.redactionValues, session);
       const disabledToolNames = new Set(launch.disabledToolNames ?? []);
-      const effective = effectiveRuntimeTools(tools, publishedTools, disabledToolNames);
+      const allowedToolNames = launch.allowedToolNames ? new Set(launch.allowedToolNames) : null;
+      const effective = effectiveRuntimeTools(tools, publishedTools, disabledToolNames, launch.personalRuntime === true, allowedToolNames);
       const accepted = await this.#write(launch.generationId, "complete", () => this.#repository.markReady({
         fingerprint: launch.fingerprint,
         generationId: launch.generationId,
         inventory: { exclusions: effective.exclusions, tools: effective.tools, version: 1 },
+        ...(launch.personalRuntime ? {
+          discoveredInventory: { tools: tools.map(({ description, name }) => ({ description, name })), version: 1 as const }
+        } : {}),
         now: this.#now()
       }));
       signal.throwIfAborted();
@@ -866,6 +881,8 @@ export class McpRuntimeCoordinator {
       }
       if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       this.#live.set(launch.generationId, {
+        allowedToolNames,
+        allowUnpublishedTools: launch.personalRuntime === true,
         healthUsesToolList: false,
         toolDefinitionHashes: new Map(effective.tools.map((tool) => [tool.name, tool.definitionHash])),
         disabledToolNames,
@@ -973,12 +990,15 @@ export class McpRuntimeCoordinator {
       const protocolSuccessAt = this.#now().getTime();
       if (isClosedSession(live.session)) throw runtimeStateError("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, live.redactionValues, live.session);
-      const effective = effectiveRuntimeTools(tools, live.publishedTools, live.disabledToolNames);
+      const effective = effectiveRuntimeTools(tools, live.publishedTools, live.disabledToolNames, live.allowUnpublishedTools, live.allowedToolNames);
       if (this.#live.get(generationId) !== live) return false;
       const readinessWrite = this.#write(generationId, "complete", () => this.#repository.markReady({
         fingerprint,
         generationId,
         inventory: { exclusions: effective.exclusions, tools: effective.tools, version: 1 },
+        ...(live.allowUnpublishedTools ? {
+          discoveredInventory: { tools: tools.map(({ description, name }) => ({ description, name })), version: 1 as const }
+        } : {}),
         now: this.#now()
       }));
       live.repositoryStateWrite = readinessWrite;

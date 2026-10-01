@@ -202,7 +202,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "settings") {
     const state = fixtureState(
       query.state,
-      ["appearance", "archived", "dirty", "account"] as const,
+      ["appearance", "archived", "dirty", "account", "connections"] as const,
       "appearance"
     );
     const { SettingsV2Gallery } = await import("./_fixtures/SettingsV2Gallery");

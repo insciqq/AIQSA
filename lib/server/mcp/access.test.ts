@@ -169,4 +169,18 @@ describe("MCP runtime fingerprints", () => {
       plan: [{ ...plan[0], valueVersion: 3 }, plan[1]]
     }));
   });
+
+  it("keeps legacy identity without a selection but binds explicit empty selections", () => {
+    const base = {
+      oauthConnectionRevision: null,
+      plan: [{ authorized: true, slotKey: "tool", source: "literal" as const, valueVersion: null }],
+      revisionId: "revision-1",
+      userId: "user-1"
+    };
+
+    expect(mcpRuntimeFingerprint(base)).toBe(mcpRuntimeFingerprint({ ...base, toolSelection: null }));
+    expect(mcpRuntimeFingerprint(base)).not.toBe(mcpRuntimeFingerprint({ ...base, toolSelection: [] }));
+    expect(mcpRuntimeFingerprint({ ...base, toolSelection: ["b", "a"] }))
+      .toBe(mcpRuntimeFingerprint({ ...base, toolSelection: ["a", "b"] }));
+  });
 });

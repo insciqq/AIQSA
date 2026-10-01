@@ -150,8 +150,10 @@ function fakePrisma() {
         server: {
           activeRevision: { configuration: activeDraft, id: "revision-1" },
           archivedAt: eligibility.archivedAt,
+          connectorKey: null,
           draft: activeDraft,
           grants: eligibility.grants,
+          ownerUserId: null,
           testedDraftHash: hashCanonicalMcpValue(activeDraft)
         },
         serverId: connectionRow.serverId,
@@ -206,7 +208,9 @@ function fakePrisma() {
     mcpServer: {
       findFirst: vi.fn(async () => ({
         activeRevision: { configuration: draft, id: "revision-1" },
-        grants: [{ canUse: true, groupId: null, personalSlotKeys: [], userId: USER_ID }]
+        connectorKey: null,
+        grants: [{ canUse: true, groupId: null, personalSlotKeys: [], userId: USER_ID }],
+        ownerUserId: null,
       }))
     },
     mcpUserServer,
@@ -251,7 +255,7 @@ describe("Prisma MCP OAuth repository", () => {
         }, KEY, mcpOAuthTokenEnvelopeContext("validation-connection", 1)),
         policyFingerprint: mcpOAuthPolicyFingerprint(validationPolicy, "client-id"),
         oauthClient: { clientId: "client-id" },
-        server: { archivedAt: null, draft: changedDraft, testedDraftHash: null, grants: [] },
+        server: { archivedAt: null, connectorKey: null, draft: changedDraft, testedDraftHash: null, grants: [], ownerUserId: null },
         user: { role: "admin", status: "active", groups: [] }
       };
       const updateMany = vi.fn(async () => ({ count: 1 }));
@@ -286,6 +290,8 @@ describe("Prisma MCP OAuth repository", () => {
         archivedAt: null,
         draft,
         grants: [{ canUse: true, groupId: null, userId: USER_ID }],
+        ownerUserId: null,
+        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       },
       serverId: SERVER_ID,
@@ -303,6 +309,8 @@ describe("Prisma MCP OAuth repository", () => {
         archivedAt: null,
         draft,
         grants: [{ canUse: true, groupId: "group-1", userId: null }],
+        ownerUserId: null,
+        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       },
       user: { groups: [{ groupId: "group-1" }], role: "user", status: "active" }
@@ -313,6 +321,8 @@ describe("Prisma MCP OAuth repository", () => {
         archivedAt: null,
         draft,
         grants: [{ canUse: true, groupId: "group-1", userId: null }],
+        ownerUserId: null,
+        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       }
     }))).toBe(false);
@@ -322,6 +332,8 @@ describe("Prisma MCP OAuth repository", () => {
         archivedAt: null,
         draft,
         grants: [],
+        ownerUserId: null,
+        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       }
     }))).toBe(false);
@@ -331,6 +343,8 @@ describe("Prisma MCP OAuth repository", () => {
         archivedAt: NOW,
         draft,
         grants: [{ canUse: true, groupId: null, userId: USER_ID }],
+        ownerUserId: null,
+        connectorKey: null,
         testedDraftHash: hashCanonicalMcpValue(draft)
       }
     }))).toBe(false);
@@ -342,6 +356,30 @@ describe("Prisma MCP OAuth repository", () => {
       user: { groups: [], role: "admin", status: "active" }
     }))).toBe(true);
     expect(isMcpOAuthConnectionEligible(record({ purpose: "validation" }))).toBe(false);
+    expect(isMcpOAuthConnectionEligible(record({
+      server: {
+        activeRevision: { configuration: draft, id: "revision-1" },
+        archivedAt: null,
+        draft,
+        grants: [{ canUse: true, groupId: null, userId: USER_ID }],
+        ownerUserId: "another-user",
+        connectorKey: null,
+        testedDraftHash: hashCanonicalMcpValue(draft)
+      }
+    }))).toBe(false);
+    expect(isMcpOAuthConnectionEligible(record({
+      purpose: "validation",
+      server: {
+        activeRevision: { configuration: draft, id: "revision-1" },
+        archivedAt: null,
+        draft,
+        grants: [],
+        ownerUserId: USER_ID,
+        connectorKey: null,
+        testedDraftHash: hashCanonicalMcpValue(draft)
+      },
+      user: { groups: [], role: "admin", status: "active" }
+    }))).toBe(false);
   });
 
   it("encrypts client secrets and rotating tokens while preserving policy fences", async () => {
