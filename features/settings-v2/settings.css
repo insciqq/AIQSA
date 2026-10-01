@@ -1371,7 +1371,6 @@
 }
 
 .v2-settings-section-title,
-.v2-settings-connector-card h3,
 .v2-settings-personal-mcp-form h3,
 .v2-settings-server-row h3 {
   margin: 0;
@@ -1381,7 +1380,6 @@
 }
 
 .v2-settings-section-description,
-.v2-settings-connector-card p,
 .v2-settings-personal-mcp-form p {
   margin: 0.25rem 0 0;
   color: var(--v2-color-text2);
@@ -1389,18 +1387,6 @@
   line-height: 1.45;
 }
 
-.v2-settings-connector-note {
-  color: var(--v2-color-warn) !important;
-}
-
-.v2-settings-connector-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.625rem;
-  padding: 0.75rem 0;
-}
-
-.v2-settings-connector-card,
 .v2-settings-personal-mcp-form,
 .v2-settings-server-row {
   display: grid;
@@ -1412,23 +1398,6 @@
   background: var(--v2-color-surface2);
 }
 
-.v2-settings-connector-card {
-  align-content: space-between;
-}
-
-.v2-settings-connector-card-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.625rem;
-  min-width: 0;
-}
-
-.v2-settings-connector-card-head > .v2-monogram {
-  flex: 0 0 auto;
-  margin-top: 0.0625rem;
-}
-
-.v2-settings-connector-card-title,
 .v2-settings-server-row-title {
   display: flex;
   flex-wrap: wrap;
@@ -1436,7 +1405,6 @@
   gap: 0.375rem 0.5rem;
 }
 
-.v2-settings-connector-status,
 .v2-settings-server-row-title > span {
   color: var(--v2-color-text3);
   font-size: 0.6875rem;
@@ -1444,15 +1412,10 @@
   letter-spacing: 0.01em;
 }
 
-.v2-settings-connector-status[data-tone="preview"] {
-  color: var(--v2-color-warn);
-}
-
 .v2-settings-server-row-title > span[data-tone="ok"] {
   color: var(--v2-color-ok);
 }
 
-.v2-settings-connector-card-actions,
 .v2-settings-server-row-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1460,17 +1423,8 @@
   gap: 0.5rem;
 }
 
-.v2-settings-connector-account {
-  max-width: 14rem;
-  overflow: hidden;
-  color: var(--v2-color-text2);
-  font-size: 0.75rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .v2-settings-personal-mcp-form {
-  margin: 0.25rem 0 1rem;
+  margin: 0.75rem 0 1rem;
 }
 
 .v2-settings-personal-mcp-fields {
@@ -1603,10 +1557,6 @@
 
 @container mcp-page (max-width: 42rem) {
   .v2-settings-personal-mcp-fields {
-    grid-template-columns: 1fr;
-  }
-
-  .v2-settings-connector-grid {
     grid-template-columns: 1fr;
   }
 

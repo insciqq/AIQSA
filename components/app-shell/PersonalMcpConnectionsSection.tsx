@@ -1,16 +1,12 @@
 "use client";
 
-import { UiV2Button, UiV2Monogram, UiV2Switch } from "@/components/ui-v2";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import type { ConnectorCatalogEntry } from "@/lib/contracts/connectors";
+import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import type { UserMcpServer } from "@/lib/contracts/mcp";
 import { followMcpOAuthStart, startMcpOAuth } from "./mcpSettingsApi";
 import {
-  connectConnector,
   createPersonalMcp,
   deletePersonalMcp,
-  disconnectConnector,
-  loadConnectorCatalog,
   loadPersonalMcpConnections,
   PersonalMcpApiError,
   updatePersonalMcp
@@ -24,22 +20,11 @@ function isInsecureHttp(value: string): boolean {
   return /^http:\/\//iu.test(value.trim());
 }
 
-function providerStatus(value: ConnectorCatalogEntry): string {
-  if (value.status === "unavailable") return "Needs setup";
-  return value.status === "preview" ? "Preview" : "Available";
-}
-
-function connectorAuthAction(connection: UserMcpServer | undefined): "Connect" | "Reconnect" | null {
-  if (!connection?.oauthAvailable || connection.oauthState === "ready") return null;
-  return connection.oauthState === "reauthorization_required" ? "Reconnect" : "Connect";
-}
-
 function toolIsSelected(connection: UserMcpServer, name: string): boolean {
   return connection.selectedToolNames === undefined || connection.selectedToolNames.includes(name);
 }
 
 export function PersonalMcpConnectionsSection() {
-  const [connectors, setConnectors] = useState<ConnectorCatalogEntry[]>([]);
   const [connections, setConnections] = useState<UserMcpServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -53,12 +38,7 @@ export function PersonalMcpConnectionsSection() {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [nextConnections, nextConnectors] = await Promise.all([
-        loadPersonalMcpConnections(),
-        loadConnectorCatalog()
-      ]);
-      setConnections(nextConnections);
-      setConnectors(nextConnectors);
+      setConnections(await loadPersonalMcpConnections());
     } catch (cause) {
       setError(cause instanceof PersonalMcpApiError && cause.status === 401
         ? "Sign in to manage personal MCP connections."
@@ -73,13 +53,6 @@ export function PersonalMcpConnectionsSection() {
     return () => window.clearTimeout(timer);
   }, [refresh]);
 
-  const connectorConnections = useMemo(
-    () => new Map(connections.flatMap((connection) => connection.connectorKey
-      ? [[connection.connectorKey, connection] as const]
-      : [])),
-    [connections]
-  );
-
   async function startOAuth(action: string, key: string) {
     setBusy(key);
     setError(null);
@@ -88,22 +61,6 @@ export function PersonalMcpConnectionsSection() {
       followMcpOAuthStart(location);
     } catch {
       setError("Authorization could not be started. Try again.");
-      setBusy(null);
-    }
-  }
-
-  async function connect(id: string) {
-    setBusy(id);
-    setError(null);
-    try {
-      const result = await connectConnector(id);
-      setConnections((current) => [
-        result.server,
-        ...current.filter((connection) => connection.id !== result.server.id)
-      ]);
-      await startOAuth(result.oauthAction, id);
-    } catch {
-      setError("This connector could not be connected. Check its provider setup and try again.");
       setBusy(null);
     }
   }
@@ -177,19 +134,6 @@ export function PersonalMcpConnectionsSection() {
     }
   }
 
-  async function disconnect(id: string) {
-    setBusy(id);
-    setError(null);
-    try {
-      await disconnectConnector(id);
-      setConnections((current) => current.filter((item) => item.connectorKey !== id));
-    } catch {
-      setError("The connector could not be disconnected. Try again.");
-    } finally {
-      setBusy(null);
-    }
-  }
-
   const canSubmitCustom = Boolean(url.trim()) &&
     (!isInsecureHttp(url) || insecureAcknowledged) &&
     (authMode !== "static" || Boolean(token));
@@ -218,69 +162,6 @@ export function PersonalMcpConnectionsSection() {
         </div>
       ) : (
         <>
-          <div className="v2-settings-connector-grid" aria-label="Connectors">
-            {connectors.map((connector) => {
-              const connection = connectorConnections.get(connector.id);
-              const authAction = connectorAuthAction(connection);
-              const unavailable = connector.status === "unavailable";
-              return (
-                <article className="v2-settings-connector-card" key={connector.id}>
-                  <div className="v2-settings-connector-card-head">
-                    <UiV2Monogram label={connector.label} />
-                    <div className="min-w-0">
-                      <div className="v2-settings-connector-card-title">
-                        <h3>{connector.label}</h3>
-                        <span className="v2-settings-connector-status" data-tone={connector.status}>
-                          {providerStatus(connector)}
-                        </span>
-                      </div>
-                      <p>{connector.description}</p>
-                      {unavailable ? <p className="v2-settings-connector-note">This connector is waiting for administrator OAuth setup.</p> : null}
-                    </div>
-                  </div>
-                  {connection ? (
-                    <div className="v2-settings-connector-card-actions">
-                      {authAction ? (
-                        <UiV2Button
-                          busy={busy === connector.id}
-                          disabled={busy !== null}
-                          onClick={() => void startOAuth(`/api/me/connectors/oauth/connect?server=${encodeURIComponent(connection.id)}`, connector.id)}
-                          tone="primary"
-                        >
-                          {authAction}
-                        </UiV2Button>
-                      ) : (
-                        <UiV2Switch
-                          checked={connection.enabled}
-                          disabled={busy !== null}
-                          label={`${connection.enabled ? "Disable" : "Enable"} ${connector.label}`}
-                          onChange={(next) => void toggle(connection, next)}
-                        />
-                      )}
-                      {connection.accountLabel ? <span className="v2-settings-connector-account">{connection.accountLabel}</span> : null}
-                      <UiV2Button
-                        disabled={busy !== null}
-                        onClick={() => void disconnect(connector.id)}
-                        tone="destructive"
-                      >
-                        Disconnect
-                      </UiV2Button>
-                    </div>
-                  ) : (
-                    <UiV2Button
-                      busy={busy === connector.id}
-                      disabled={busy !== null || unavailable}
-                      onClick={() => void connect(connector.id)}
-                      tone="primary"
-                    >
-                      {unavailable ? "Unavailable" : "Connect"}
-                    </UiV2Button>
-                  )}
-                </article>
-              );
-            })}
-          </div>
-
           <form className="v2-settings-personal-mcp-form" onSubmit={(event) => void addCustom(event)}>
             <div>
               <h3>Connect your MCP</h3>
@@ -413,27 +294,24 @@ export function PersonalMcpConnectionsSection() {
                       label={`${connection.enabled ? "Disable" : "Enable"} ${connection.name}`}
                       onChange={(next) => void toggle(connection, next)}
                     />
-                    {connection.connectorKey ? null : (
-                      <UiV2Button
-                        aria-label={`Disconnect ${connection.name}`}
-                        disabled={busy !== null}
-                        onClick={() => void remove(connection)}
-                        tone="destructive"
-                      >
-                        Disconnect
-                      </UiV2Button>
-                    )}
+                    <UiV2Button
+                      aria-label={`Disconnect ${connection.name}`}
+                      disabled={busy !== null}
+                      onClick={() => void remove(connection)}
+                      tone="destructive"
+                    >
+                      Disconnect
+                    </UiV2Button>
                   </div>
                 </article>
               ))}
             </div>
-          ) : null}
-          {!connectors.length && !connections.length ? (
+          ) : (
             <div className="v2-settings-mcp-state" data-tone="neutral">
               <p>No personal connections yet.</p>
-              <span>Connect a service above or add any remote MCP server by URL.</span>
+              <span>Add any remote MCP server by URL above.</span>
             </div>
-          ) : null}
+          )}
         </>
       )}
     </section>

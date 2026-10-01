@@ -163,7 +163,6 @@ const oauthEligibilitySelect = {
     select: {
       activeRevision: { select: { configuration: true, id: true } },
       archivedAt: true,
-      connectorKey: true,
       draft: true,
       grants: {
         select: { canUse: true, groupId: true, userId: true }
@@ -244,8 +243,7 @@ function hasCurrentMcpOAuthPolicy(record: OAuthEligibilityRecord, key: Buffer): 
       purpose: record.purpose,
       redirectUri: storedPolicy.redirectUri,
       serverId: record.serverId,
-      userId: record.userId,
-      connectorKey: record.server.connectorKey
+      userId: record.userId
     });
     return mcpOAuthPolicyFingerprint(current, record.oauthClient.clientId) ===
       record.policyFingerprint;
@@ -500,7 +498,6 @@ async function policyForSubject(
   const groupIds = user.groups.map((membership) => membership.groupId);
   const server = await client.mcpServer.findFirst({
     select: {
-      connectorKey: true,
       ownerUserId: true,
       activeRevision: { select: { configuration: true, id: true } },
       grants: {
@@ -530,8 +527,7 @@ async function policyForSubject(
     purpose: input.purpose,
     redirectUri: input.redirectUri,
     serverId: input.serverId,
-    userId: input.userId,
-    connectorKey: server.connectorKey
+    userId: input.userId
   });
 }
 

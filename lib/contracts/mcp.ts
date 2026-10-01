@@ -407,7 +407,6 @@ export type UserMcpServer = {
   availableTools?: { description: string | null; name: string }[];
   /** Installation servers are administered; personal servers are owned by this account. */
   sourceType?: "installation" | "personal";
-  connectorKey?: string | null;
   /** Redacted endpoint projection for personal settings only. */
   endpoint?: string;
   selectedToolNames?: string[];
