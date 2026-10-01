@@ -3095,7 +3095,7 @@ describe("Prisma Knowledge trash and permanent deletion", () => {
       expect(dashboard.users.find((user) => user.id === ownerUserId)?.deletion)
         .toMatchObject({ canDelete: true, reason: null });
       expect(dashboard.users.find((user) => user.id === ownerUserId)?.deletion.summary)
-        .toMatch(/Memory or Knowledge/u);
+        .toMatch(/Memory, Knowledge or personal MCP/u);
 
       await expect(admin.deleteStaleUser({
         actingAdminUserId: "admin-" + suffix,

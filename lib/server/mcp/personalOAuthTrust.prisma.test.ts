@@ -123,8 +123,8 @@ describe("personal MCP OAuth trust persistence", () => {
     const foreign = await storage().createPersonalServer!({ description: "", draft: oauthDraft, name: "Foreign OAuth fixture", userId: otherId, values: {} });
     if (foreign.kind !== "ok") throw new Error("fixture_create_failed");
     serverIds.push(foreign.value.id);
-    // A stray grant must not expose another user's personal server.
-    await prisma.mcpGrant.create({ data: { canUse: true, serverId: foreign.value.id, userId: callerId } });
+    // The database fence refuses a stray grant that would expose another user's personal server.
+    await expect(prisma.mcpGrant.create({ data: { canUse: true, serverId: foreign.value.id, userId: callerId } })).rejects.toThrow();
     const oauth = createPrismaMcpOAuthRepository({ encryptionKey: () => key, prisma });
     const query = (serverId: string) => ({ purpose: "user" as const, redirectUri: redirectUri(serverId), serverId, userId: callerId });
 
