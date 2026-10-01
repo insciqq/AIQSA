@@ -17,11 +17,13 @@ const draft: McpDraftConfiguration = {
   transport: "streamable_http"
 };
 
-function lockRecorder() {
+/** Records each row lock as "<table> <lock clause>" and answers with one locked row. */
+function lockRecorder(rowId = "locked") {
   const locks: string[] = [];
   const $queryRaw = vi.fn(async (strings: TemplateStringsArray) => {
-    locks.push(/FROM "(\w+)"/u.exec(strings.join("?"))?.[1] ?? "unknown");
-    return [{ id: "locked" }];
+    const sql = strings.join("?");
+    locks.push(`${/FROM "(\w+)"/u.exec(sql)?.[1] ?? "unknown"} ${/FOR (?:NO KEY )?UPDATE/u.exec(sql)?.[0] ?? "no lock"}`);
+    return [{ id: rowId }];
   });
   return { $queryRaw, locks };
 }
@@ -88,7 +90,8 @@ describe("personal MCP creation limits", () => {
 
     await expect(fixture.create()).resolves.toEqual({ kind: "personal_mcp_limit_reached" });
     expect(fixture.validate).toHaveBeenCalledOnce();
-    expect(fixture.locks).toEqual(["User"]);
+    // NO KEY UPDATE: concurrent foreign-key checks on the user row never wait for it.
+    expect(fixture.locks).toEqual(["User FOR NO KEY UPDATE"]);
     expect(fixture.tx.$queryRaw.mock.invocationCallOrder[0])
       .toBeLessThan(fixture.tx.mcpServer.count.mock.invocationCallOrder[1]!);
     expect(fixture.tx.mcpServer.create).not.toHaveBeenCalled();
@@ -154,7 +157,7 @@ describe("server-side enabled-server limit", () => {
     });
     expect(fixture.tx.mcpUserServer.upsert).not.toHaveBeenCalled();
     // Owner before server, the order personal creation and account deletion use.
-    expect(fixture.locks).toEqual(["User", "McpServer"]);
+    expect(fixture.locks).toEqual(["User FOR NO KEY UPDATE", "McpServer FOR UPDATE"]);
   });
 
   it("admits the transition below the limit", async () => {
@@ -169,5 +172,40 @@ describe("server-side enabled-server limit", () => {
 
     await expect(fixture.enable()).rejects.toBe(fixture.upsertReached);
     expect(fixture.tx.mcpUserServer.count).not.toHaveBeenCalled();
+  });
+});
+
+describe("personal MCP disconnect locking", () => {
+  it("locks the owner, then the server rows, before any child of the server changes", async () => {
+    const { $queryRaw, locks } = lockRecorder("server-1");
+    const tx = {
+      $queryRaw,
+      mcpActivationJob: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      mcpOAuthConnection: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      mcpServer: {
+        findFirst: vi.fn(async () => ({ description: "", displayName: "Personal fixture", id: "server-1" })),
+        updateMany: vi.fn(async () => ({ count: 1 }))
+      },
+      mcpUserServer: { updateMany: vi.fn(async () => ({ count: 1 })) }
+    };
+    const client = {
+      $transaction: vi.fn(async (operation: (value: typeof tx) => Promise<unknown>) => operation(tx))
+    };
+    const repository = createPrismaMcpRepository({
+      encryptionKey: () => Buffer.alloc(32, 3),
+      prisma: client as unknown as PrismaClient
+    });
+
+    await expect(repository.deletePersonalServer!({ serverId: "server-1", userId: "user-1" }))
+      .resolves.toMatchObject({ kind: "ok", value: { enabled: false, id: "server-1" } });
+    // The owner, the requested server, then the archive's id-ordered server rows.
+    expect(locks).toEqual(["User FOR NO KEY UPDATE", "McpServer FOR UPDATE", "McpServer FOR UPDATE"]);
+    const lastLock = Math.max(...$queryRaw.mock.invocationCallOrder);
+    for (const write of [tx.mcpOAuthConnection.updateMany, tx.mcpUserServer.updateMany, tx.mcpServer.updateMany]) {
+      expect(write.mock.invocationCallOrder[0]).toBeGreaterThan(lastLock);
+    }
+    expect(tx.mcpServer.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { archivedAt: null, id: { in: ["server-1"] }, ownerUserId: "user-1" }
+    }));
   });
 });
