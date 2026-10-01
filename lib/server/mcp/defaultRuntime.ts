@@ -9,6 +9,8 @@ import {
   createToolHiveRuntimeLifecycle,
   getDefaultToolHiveDriver
 } from "./defaultToolHive";
+import { personalMcpAddressPolicy } from "./defaultPersonalNetwork";
+import { mcpDestinationSafeFetchOptions } from "./personalNetworkPolicy";
 import { McpRuntimeCoordinator } from "./runtimeCoordinator";
 import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
 import { createMcpSafeFetch } from "./safeFetch";
@@ -42,10 +44,13 @@ function createDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
       : undefined,
     fetch: createMcpSafeFetch(),
     async fetchForLaunch(launch) {
-      const baseFetch = createMcpSafeFetch({
+      // Each request of a personal runtime re-checks the personal network
+      // policy; installation runtimes keep their reviewed permission.
+      const baseFetch = createMcpSafeFetch(mcpDestinationSafeFetchOptions({
         allowInsecureHttp: true,
-        allowPrivateNetwork: launch.trustedInternalHttp === true || launch.allowPrivateNetwork === true
-      });
+        allowPrivateNetwork: launch.trustedInternalHttp === true || launch.allowPrivateNetwork === true,
+        personal: launch.personalRuntime === true && launch.trustedInternalHttp !== true
+      }, personalMcpAddressPolicy));
       return launch.oauthConnectionId
         ? mcpOAuthService.createRuntimeFetch(launch.oauthConnectionId, baseFetch, launch.url)
         : baseFetch;

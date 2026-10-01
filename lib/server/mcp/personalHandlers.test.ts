@@ -198,7 +198,7 @@ describe("personal MCP handlers", () => {
     async (limit) => {
       const input = deps();
       const personalCreationLimit = vi.fn(async () => limit);
-      const prepareOAuthDraft = vi.fn(async (draft: McpDraftConfiguration) => draft);
+      const prepareOAuthDraft = vi.fn(async (draft: McpDraftConfiguration) => ({ authorizationOrigins: [], draft }));
       input.repository.personalCreationLimit = personalCreationLimit;
       const response = await createPersonalMcpCreateHandler({ ...input, prepareOAuthDraft })(new Request("https://aiqsa.test/api/me/mcp-connections", {
         method: "POST", headers: { "content-type": "application/json" },

@@ -1501,7 +1501,7 @@ export function createPrismaMcpRepository(input: {
             resolvedArtifact: null,
             toolInventory: [] as McpToolInventoryEntry[]
           }
-        : await draftValidator.validate({ draft, serverId, validationUserId: userId, values: validation.values });
+        : await draftValidator.validate({ draft, personal: true, serverId, validationUserId: userId, values: validation.values });
       if (outcome.kind === "invalid") return { kind: "draft_validation_failed" as const, issues: outcome.issues };
       const evidence = jsonObjectFrom(outcome.evidence);
       const resolvedArtifact = outcome.resolvedArtifact === null ? null : jsonObjectFrom(outcome.resolvedArtifact);
