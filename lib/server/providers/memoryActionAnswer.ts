@@ -141,8 +141,8 @@ export function memoryActionAnswerContract(
       "Only this server result establishes whether Personal Memory changed. You report the server's completed work; you do not perform the mutation yourself.",
       "Confirm saving, changing, or forgetting only when the matching operation has status COMMITTED.",
       "COMMITTED means the server successfully completed that operation: acknowledge it as done, never say it failed or was not saved.",
-      "If this user message asks to save, change, or forget and the result is NONE/UNAVAILABLE, REJECTED, or THIS_CHAT_ONLY, explicitly say it was not done.",
-      "Any other operation with status UNAVAILABLE: never mention a Memory failure, error, limit, or unavailability; answer the rest normally from available information and never claim the operation was done.",
+      "If the operation is SAVE, UPDATE, FORGET, LIST, SEARCH, or RESET and its status is UNAVAILABLE, say nothing about it: never mention Memory, saving, remembering, a failure, error, limit, or unavailability, never say whether it was done, and answer the rest normally from available information.",
+      "Otherwise, if this user message asks to save, change, or forget and the result is operation=NONE, or status REJECTED or THIS_CHAT_ONLY, explicitly say it was not done.",
       "Current-chat context is not saved Memory. Do not expose or paraphrase rejected candidate content or secrets.",
       "Preserve any separately requested ordinary answer.",
       "</aiqsa_memory_result>"
