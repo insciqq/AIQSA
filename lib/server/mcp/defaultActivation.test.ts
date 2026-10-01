@@ -24,16 +24,25 @@ describe("personal OAuth settlement", () => {
     mocks.ensureReady.mockResolvedValue(undefined);
   });
 
-  it("discovers a newly authorized personal connection before reporting ready", async () => {
-    mocks.listUserServers.mockResolvedValueOnce([{ id: "personal", sourceType: "personal", readiness: "starting" }])
-      .mockResolvedValueOnce([{ id: "personal", sourceType: "personal", readiness: "ready" }]);
+  it("reports connected once consent is stored and enabled while the runtime is still starting", async () => {
+    mocks.listUserServers.mockResolvedValue([{ id: "personal", sourceType: "personal", readiness: "starting" }]);
+    // A slow runtime never settles within the callback.
+    mocks.ensureReady.mockReturnValue(new Promise(() => undefined));
     expect(await settleDefaultMcpOAuth(input)).toEqual({ kind: "ok" });
+    expect(mocks.updateUserServer).toHaveBeenCalledWith({ enabled: true, serverId: "personal", userId: "owner" });
     expect(mocks.ensureReady).toHaveBeenCalledWith("owner", ["personal"], expect.any(AbortSignal));
   });
 
-  it("does not report success if initial discovery failed", async () => {
+  it("keeps the connected outcome when the background warm-up fails", async () => {
     mocks.listUserServers.mockResolvedValue([{ id: "personal", sourceType: "personal", readiness: "unavailable" }]);
+    mocks.ensureReady.mockRejectedValue(new Error("runtime unavailable"));
+    expect(await settleDefaultMcpOAuth(input)).toEqual({ kind: "ok" });
+  });
+
+  it("reports failed when the enable step fails", async () => {
+    mocks.updateUserServer.mockResolvedValue({ kind: "invalid_values", issues: [] });
     expect(await settleDefaultMcpOAuth(input)).toEqual({ kind: "failed" });
+    expect(mocks.ensureReady).not.toHaveBeenCalled();
   });
 
   it("keeps installation-managed connections on the existing settlement path", async () => {

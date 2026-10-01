@@ -67,7 +67,10 @@ class MemoryOAuthRepository implements McpOAuthRepository {
   readonly ineligibleConnectionIds = new Set<string>();
   readonly policy: McpOAuthPolicy;
   activeBindings = false;
+  clientSequence = 0;
   connectionSequence = 0;
+  readonly loadPolicyInputs: Array<Parameters<McpOAuthRepository["loadPolicy"]>[0]> = [];
+  readonly retiredClientIds: string[] = [];
   eligibilityReconcileCalls = 0;
   now = new Date("2026-07-22T12:00:00.000Z");
   policyAvailable = true;
@@ -177,8 +180,9 @@ class MemoryOAuthRepository implements McpOAuthRepository {
       : null;
   }
 
-  async loadPolicy(input: { purpose: McpOAuthPurpose; redirectUri: string; serverId: string; userId: string }):
+  async loadPolicy(input: Parameters<McpOAuthRepository["loadPolicy"]>[0]):
     Promise<McpOAuthPolicy | null> {
+    this.loadPolicyInputs.push(input);
     return this.policyAvailable && input.purpose === this.policy.purpose &&
       input.redirectUri === this.policy.redirectUri &&
       input.serverId === this.policy.serverId
@@ -218,6 +222,15 @@ class MemoryOAuthRepository implements McpOAuthRepository {
     return updated;
   }
 
+  async retireClient(input: Parameters<McpOAuthRepository["retireClient"]>[0]): Promise<boolean> {
+    const current = this.clients.get(input.registrationKey);
+    if (!current || current.id !== input.id || current.clientInformation.client_id !== input.clientId) return false;
+    // Existing connections keep their client; only lookup by key stops.
+    this.clients.delete(input.registrationKey);
+    this.retiredClientIds.push(input.id);
+    return true;
+  }
+
   async rotateTokens(input: Parameters<McpOAuthRepository["rotateTokens"]>[0]):
     Promise<McpOAuthStoredConnection | null> {
     const connection = await this.loadConnection(input.connectionId);
@@ -254,7 +267,7 @@ class MemoryOAuthRepository implements McpOAuthRepository {
       clientInformation: input.clientInformation,
       clientMetadata: input.clientMetadata,
       discoveryState: input.discoveryState,
-      id: `client-${this.clients.size + 1}`,
+      id: `client-${++this.clientSequence}`,
       registrationKey: input.registrationKey
     };
     this.clients.set(input.registrationKey, client);
@@ -404,6 +417,31 @@ function insecureHttpFixtureFetch(fixture: StandardsOAuthFixture) {
     if (mapped.pathname === "/token" || mapped.pathname === "/revoke") return response;
     const body = await response.text();
     return new Response(body ? body.replaceAll("https://", "http://") : null, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText
+    });
+  };
+}
+
+const OWN_HOST_HTTP_AUTH_ORIGIN = "http://mcp.fixture.test:9000";
+
+/** An acknowledged http MCP endpoint whose authorization server runs on the
+ * same hostname on another port. */
+function ownHostHttpFixtureFetch(fixture: StandardsOAuthFixture, requested: string[] = []) {
+  return async (input: string | URL, init?: RequestInit): Promise<Response> => {
+    const url = new URL(input.toString());
+    requested.push(url.toString());
+    expect(url.protocol).toBe("http:");
+    const mapped = url.origin === OWN_HOST_HTTP_AUTH_ORIGIN
+      ? new URL(`${url.pathname}${url.search}`, AUTH_ORIGIN)
+      : new URL(url.toString().replace("http:", "https:"));
+    const response = await fixture.fetch(mapped, init);
+    if (mapped.pathname === "/token" || mapped.pathname === "/revoke") return response;
+    const body = await response.text();
+    return new Response(body
+      ? body.replaceAll(AUTH_ORIGIN, OWN_HOST_HTTP_AUTH_ORIGIN).replaceAll("https://", "http://")
+      : null, {
       headers: response.headers,
       status: response.status,
       statusText: response.statusText
@@ -1697,5 +1735,180 @@ describe("bounded MCP OAuth refresh and revocation", () => {
     } finally {
       await tokenServer.close();
     }
+  });
+});
+
+describe("personal MCP OAuth transport, origin and client lifecycle", () => {
+  async function connect(repository: MemoryOAuthRepository, fixture: StandardsOAuthFixture, service: McpOAuthService) {
+    const started = await service.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: repository.policy.redirectUri,
+      serverId: "server-1",
+      state: "lifecycle-state",
+      userId: "user-1"
+    });
+    if (started.kind !== "redirect") throw new Error("expected redirect");
+    fixture.authorizationCodeVerifier = started.flow.codeVerifier;
+    return service.completeAuthorization({ authorizationCode: "fixture-code", flow: started.flow });
+  }
+
+  it("passes the route's server kind to the policy lookup", async () => {
+    const repository = new MemoryOAuthRepository();
+    const fixture = new StandardsOAuthFixture();
+    const service = new McpOAuthService({ fetchForPolicy: () => fixture.fetch, repository });
+    await service.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: REDIRECT_URI,
+      serverId: "server-1",
+      sourceKind: "personal",
+      state: "kind-state",
+      userId: "user-1"
+    });
+    expect(repository.loadPolicyInputs.at(-1)).toMatchObject({ serverId: "server-1", sourceKind: "personal" });
+  });
+
+  it("keeps an https personal server off http OAuth endpoints even inside its stored origin set", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 500 }));
+    const personal = new McpOAuthService({
+      fetchForPolicy: () => fetch,
+      repository: new MemoryOAuthRepository({
+        ...fixturePolicy(),
+        allowedAuthorizationServerOrigins: [AUTH_ORIGIN, HTTP_AUTH_ORIGIN],
+        personal: true
+      })
+    });
+    await expect(personal.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: REDIRECT_URI,
+      serverId: "server-1",
+      state: "transport-state",
+      userId: "user-1"
+    })).rejects.toMatchObject({ code: "mcp_oauth_policy_forbidden" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses http metadata advertised to an https personal server at OAuth start", async () => {
+    const fixture = new StandardsOAuthFixture();
+    const requested: string[] = [];
+    const service = new McpOAuthService({
+      fetchForPolicy: () => async (input, init) => {
+        requested.push(input.toString());
+        const response = await fixture.fetch(input.toString(), init);
+        if (!input.toString().includes("oauth-protected-resource")) return response;
+        const body = await response.text();
+        return new Response(body.replaceAll(AUTH_ORIGIN, HTTP_AUTH_ORIGIN), { headers: response.headers });
+      },
+      repository: new MemoryOAuthRepository({ ...fixturePolicy(), personal: true })
+    });
+    await expect(service.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: REDIRECT_URI,
+      serverId: "server-1",
+      state: "http-metadata-state",
+      userId: "user-1"
+    })).rejects.toMatchObject({ code: "mcp_oauth_policy_forbidden" });
+    expect(requested.every((url) => url.startsWith("https:"))).toBe(true);
+    expect(fixture.dcrCalls).toBe(0);
+  });
+
+  it("lets an acknowledged http personal server use http OAuth on its own hostname through the manual token path", async () => {
+    const fixture = new StandardsOAuthFixture();
+    fixture.expectedRedirectUri = HTTP_REDIRECT_URI;
+    fixture.resource = HTTP_SERVER_URL;
+    const requested: string[] = [];
+    const repository = new MemoryOAuthRepository(httpPolicy({
+      allowedAuthorizationServerOrigins: [OWN_HOST_HTTP_AUTH_ORIGIN],
+      personal: true
+    }));
+    const service = new McpOAuthService({
+      fetchForPolicy: () => ownHostHttpFixtureFetch(fixture, requested),
+      now: () => repository.now,
+      repository
+    });
+    const connection = await connect(repository, fixture, service);
+    expect(connection.state).toBe("ready");
+    expect(requested).toContain(`${OWN_HOST_HTTP_AUTH_ORIGIN}/token`);
+
+    repository.now = new Date(connection.expiresAt!.getTime() - 30_000);
+    await expect(service.tokensForConnection(connection.id)).resolves.toMatchObject({
+      access_token: "access-refresh-1"
+    });
+  });
+
+  it("refuses http OAuth on another hostname for an http personal server but keeps installation behavior", async () => {
+    const fixture = new StandardsOAuthFixture();
+    fixture.expectedRedirectUri = HTTP_REDIRECT_URI;
+    fixture.resource = HTTP_SERVER_URL;
+    const personal = new McpOAuthService({
+      fetchForPolicy: () => insecureHttpFixtureFetch(fixture),
+      repository: new MemoryOAuthRepository(httpPolicy({ personal: true }))
+    });
+    await expect(personal.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: HTTP_REDIRECT_URI,
+      serverId: "server-1",
+      state: "other-host-state",
+      userId: "user-1"
+    })).rejects.toMatchObject({ code: "mcp_oauth_policy_forbidden" });
+    expect(fixture.dcrCalls).toBe(0);
+
+    const { started } = await startMappedHttpAuthorization(fixture);
+    expect(started.kind).toBe("redirect");
+  });
+
+  it("cannot widen the stored origins when metadata changes after creation", async () => {
+    const repository = new MemoryOAuthRepository({ ...fixturePolicy(), personal: true });
+    const fixture = new StandardsOAuthFixture();
+    const service = new McpOAuthService({ fetchForPolicy: () => fixture.fetch, now: () => repository.now, repository });
+    await connect(repository, fixture, service);
+    fixture.foreignTokenEndpoint = true;
+    await expect(service.startAuthorization({
+      forceReconnect: true,
+      purpose: "user",
+      redirectUri: REDIRECT_URI,
+      serverId: "server-1",
+      state: "widen-state",
+      userId: "user-1"
+    })).rejects.toMatchObject({ code: "mcp_oauth_policy_forbidden" });
+    expect(fixture.dcrCalls).toBe(1);
+  });
+
+  it.each([
+    ["invalid_client", "personal"],
+    ["unauthorized_client", "personal"],
+    ["invalid_client", "installation"],
+    ["unauthorized_client", "installation"]
+  ] as const)("turns %s into reauthorization for a %s connection and registers a new client next time", async (code, kind) => {
+    const repository = new MemoryOAuthRepository(kind === "personal" ? { ...fixturePolicy(), personal: true } : fixturePolicy());
+    const fixture = new StandardsOAuthFixture();
+    const service = new McpOAuthService({ fetchForPolicy: () => fixture.fetch, now: () => repository.now, repository });
+    const connection = await connect(repository, fixture, service);
+    expect(fixture.dcrCalls).toBe(1);
+
+    fixture.tokenResponseOverride = () => Response.json({ error: code }, { status: code === "invalid_client" ? 401 : 400 });
+    repository.now = new Date(connection.expiresAt!.getTime() - 10_000);
+    await expect(service.tokensForConnection(connection.id)).rejects.toMatchObject({
+      code: "mcp_oauth_reauthorization_required"
+    });
+    expect(repository.connections.get(connection.id)?.state).toBe("reauthorization_required");
+    expect(repository.retiredClientIds).toEqual([connection.client.id]);
+
+    fixture.tokenResponseOverride = null;
+    const restarted = await service.startAuthorization({
+      forceReconnect: false,
+      purpose: "user",
+      redirectUri: REDIRECT_URI,
+      serverId: "server-1",
+      state: "re-register-state",
+      userId: "user-1"
+    });
+    expect(restarted.kind).toBe("redirect");
+    expect(fixture.dcrCalls).toBe(2);
+    if (restarted.kind === "redirect") expect(restarted.flow.oauthClientId).not.toBe(connection.client.id);
   });
 });

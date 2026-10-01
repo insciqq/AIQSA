@@ -17,8 +17,9 @@ import {
   McpOAuthError,
   type McpOAuthService
 } from "./oauthService";
-import type { McpOAuthPurpose } from "./oauthPolicy";
+import type { McpOAuthPurpose, McpOAuthSourceKind } from "./oauthPolicy";
 import type { McpOAuthSettler } from "./oauthSettlement";
+import { personalMcpRateLimitResponse, type PersonalMcpRateLimiter } from "./personalRateLimit";
 
 type McpOAuthRouteContext = {
   params: Promise<{ serverId: string }> | { serverId: string };
@@ -33,6 +34,8 @@ export type McpOAuthHandlerDeps = Readonly<{
   userSettingsSection?: "connections";
   getConfig(): McpOAuthWebConfig;
   onRuntimeChanged?(userId?: string): void;
+  /** Required by personal start routes; counts every start per user. */
+  rateLimiter?: PersonalMcpRateLimiter;
   resolveAuth: RequestAuthResolver;
   settleAuthorization?: McpOAuthSettler;
   service: Pick<
@@ -156,7 +159,12 @@ function serviceError(error: unknown): Response {
 
 export function createMcpOAuthStartHandler(
   deps: McpOAuthHandlerDeps,
-  options: Readonly<{ forceReconnect: boolean; purpose: McpOAuthPurpose }>
+  options: Readonly<{
+    forceReconnect: boolean;
+    purpose: McpOAuthPurpose;
+    /** A user route addresses only its own kind of server; others are not found. */
+    sourceKind?: McpOAuthSourceKind;
+  }>
 ) {
   return async function POST(request: Request, context: McpOAuthRouteContext): Promise<Response> {
     // Starting can settle an existing connection (enable the server, publish
@@ -174,6 +182,11 @@ export function createMcpOAuthStartHandler(
     const session = auth.session;
     const { serverId } = await context.params;
     if (!validServerId(serverId)) return errorResponse("mcp_not_found", 404);
+    if (options.sourceKind === "personal") {
+      if (!deps.rateLimiter) return errorResponse("mcp_oauth_unavailable", 503);
+      const limited = await personalMcpRateLimitResponse(deps.rateLimiter, "oauth-start", session.userId);
+      if (limited) return limited;
+    }
     const redirectUri = new URL(callbackPath(serverId, options.purpose), config.appBaseUrl).toString();
     const state = (deps.randomState ?? randomState)();
     const returnPath = options.purpose === "user"
@@ -185,6 +198,7 @@ export function createMcpOAuthStartHandler(
         purpose: options.purpose,
         redirectUri,
         serverId,
+        ...(options.sourceKind ? { sourceKind: options.sourceKind } : {}),
         state,
         userId: session.userId
       });

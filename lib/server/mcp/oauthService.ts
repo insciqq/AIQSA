@@ -22,9 +22,11 @@ import {
   bindMcpOAuthPolicyResource,
   mcpOAuthPolicyFingerprint,
   mcpOAuthRegistrationKey,
+  personalMcpOAuthTransportAllowed,
   sanitizeMcpOAuthAccountLabel,
   type McpOAuthPolicy,
-  type McpOAuthPurpose
+  type McpOAuthPurpose,
+  type McpOAuthSourceKind
 } from "./oauthPolicy";
 import type {
   McpOAuthRepository,
@@ -162,6 +164,15 @@ function requireHttps(url: URL, allowInsecureHttp: boolean): void {
   }
 }
 
+/** Installation policies keep the service-wide rule; personal policies add
+ * the endpoint-bound transport rule. */
+function requirePolicyTransport(url: URL, policy: McpOAuthPolicy, allowInsecureHttp: boolean): void {
+  requireHttps(url, allowInsecureHttp);
+  if (policy.personal && !personalMcpOAuthTransportAllowed(policy.serverUrl, url)) {
+    throw new McpOAuthError("mcp_oauth_policy_forbidden");
+  }
+}
+
 function requirePolicyUrl(
   value: string,
   policy: McpOAuthPolicy,
@@ -174,7 +185,7 @@ function requirePolicyUrl(
   } catch {
     throw new McpOAuthError("mcp_oauth_policy_forbidden");
   }
-  requireHttps(url, allowInsecureHttp);
+  requirePolicyTransport(url, policy, allowInsecureHttp);
   const origins = options.authorizationServerOnly
     ? new Set(policy.allowedAuthorizationServerOrigins)
     : allowedOrigins(policy);
@@ -480,6 +491,8 @@ export class McpOAuthService {
     purpose: McpOAuthPurpose;
     redirectUri: string;
     serverId: string;
+    /** Restricts a user route to its own kind of server; absent accepts both. */
+    sourceKind?: McpOAuthSourceKind;
     state: string;
     userId: string;
   }>): Promise<McpOAuthStartResult> {
@@ -828,7 +841,7 @@ export class McpOAuthService {
     }
     for (const origin of policy.allowedAuthorizationServerOrigins) {
       const url = new URL(origin);
-      requireHttps(url, this.allowInsecureHttp);
+      requirePolicyTransport(url, policy, this.allowInsecureHttp);
       if (url.origin !== origin) throw new McpOAuthError("mcp_oauth_policy_forbidden");
     }
   }
@@ -887,6 +900,22 @@ export class McpOAuthService {
         await this.#repository.markReauthorizationRequired({
           connectionId: latest.id,
           tokenVersion: latest.tokenVersion
+        });
+        throw new McpOAuthError("mcp_oauth_reauthorization_required");
+      }
+      if (error instanceof OAuthError && (error.code === OAuthErrorCode.InvalidClient ||
+        error.code === OAuthErrorCode.UnauthorizedClient)) {
+        // The authorization server no longer accepts this registration. The
+        // connection needs consent again, and the next start must register a
+        // fresh client instead of reusing the dead one.
+        await this.#repository.markReauthorizationRequired({
+          connectionId: latest.id,
+          tokenVersion: latest.tokenVersion
+        });
+        await this.#repository.retireClient({
+          clientId: latest.client.clientInformation.client_id,
+          id: latest.client.id,
+          registrationKey: latest.client.registrationKey
         });
         throw new McpOAuthError("mcp_oauth_reauthorization_required");
       }

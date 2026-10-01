@@ -95,6 +95,7 @@ function fakePrisma() {
   let clientRow: ClientRow | null = null;
   let connectionRow: ConnectionRow | null = null;
   let activeDraft = draft;
+  let ownerUserId: string | null = null;
   let eligibility = {
     archivedAt: null as Date | null,
     grants: [{ canUse: true, groupId: null as string | null, userId: USER_ID as string | null }],
@@ -129,6 +130,15 @@ function fakePrisma() {
       if (!clientRow || clientRow.id !== input.where.id) throw new Error("not found");
       clientRow = { ...clientRow, ...input.data, updatedAt: NOW };
       return clientRow;
+    },
+    async updateMany(input: {
+      data: Pick<ClientRow, "registrationKey">;
+      where: { clientId: string; id: string; registrationKey: string };
+    }) {
+      if (!clientRow || clientRow.id !== input.where.id || clientRow.clientId !== input.where.clientId ||
+        clientRow.registrationKey !== input.where.registrationKey) return { count: 0 };
+      clientRow = { ...clientRow, ...input.data, updatedAt: NOW };
+      return { count: 1 };
     }
   };
   const mcpOAuthConnection = {
@@ -205,11 +215,12 @@ function fakePrisma() {
     mcpOAuthConnection,
     mcpRuntimeGeneration: { findFirst: vi.fn(async () => null) },
     mcpServer: {
-      findFirst: vi.fn(async () => ({
+      findFirst: vi.fn(async (_input: unknown) => ({
         activeRevision: { configuration: draft, id: "revision-1" },
-        grants: [{ canUse: true, groupId: null, personalSlotKeys: [], userId: USER_ID }],
-        ownerUserId: null,
-      }))
+        grants: ownerUserId ? [] : [{ canUse: true, groupId: null, personalSlotKeys: [], userId: USER_ID }],
+        ownerUserId
+      })),
+      findUnique: vi.fn(async () => ({ ownerUserId }))
     },
     mcpUserServer,
     user: {
@@ -220,7 +231,9 @@ function fakePrisma() {
     client: dataClient as unknown as PrismaClient,
     getClientRow: () => clientRow,
     getConnectionRow: () => connectionRow,
+    mcpServer: dataClient.mcpServer,
     mcpUserServer,
+    setOwner: (value: string | null) => { ownerUserId = value; },
     setConnectionState: (state: ConnectionRow["state"]) => {
       if (connectionRow) connectionRow = { ...connectionRow, state };
     },
@@ -541,5 +554,74 @@ describe("Prisma MCP OAuth repository", () => {
       tokenEnvelope: null,
       tokenGeneration: tokenGenerationBeforeClear + 1
     });
+  });
+  it.each([
+    ["personal", [{ ownerUserId: USER_ID }]],
+    ["installation", [{ ownerUserId: null }]],
+    [undefined, [{ ownerUserId: USER_ID }, { ownerUserId: null }]]
+  ] as const)("restricts a %s user route to its own kind of server", async (sourceKind, ownerFilter) => {
+    const fake = fakePrisma();
+    const repository = createPrismaMcpOAuthRepository({ encryptionKey: () => KEY, prisma: fake.client });
+    await repository.loadPolicy({
+      purpose: "user", redirectUri: REDIRECT_URI, serverId: SERVER_ID, userId: USER_ID,
+      ...(sourceKind ? { sourceKind } : {})
+    });
+    expect(fake.mcpServer.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: SERVER_ID, OR: ownerFilter })
+    }));
+  });
+
+  it("derives the personal transport rule at load and never stores it in the token envelope", async () => {
+    const fake = fakePrisma();
+    fake.setOwner(USER_ID);
+    const repository = createPrismaMcpOAuthRepository({ encryptionKey: () => KEY, prisma: fake.client });
+    const loaded = await repository.loadPolicy({
+      purpose: "user", redirectUri: REDIRECT_URI, serverId: SERVER_ID, sourceKind: "personal", userId: USER_ID
+    });
+    expect(loaded?.personal).toBe(true);
+    const registrationKey = mcpOAuthRegistrationKey(loaded!, discoveryState.authorizationServerUrl);
+    expect(registrationKey).toBe(mcpOAuthRegistrationKey(policy, discoveryState.authorizationServerUrl));
+    const saved = await repository.saveClient({
+      clientInformation: { client_id: "client-id", redirect_uris: [REDIRECT_URI] },
+      clientMetadata: { client_name: "AIQSA fixture", redirect_uris: [REDIRECT_URI] },
+      discoveryState,
+      registrationKey
+    });
+    const policyFingerprint = mcpOAuthPolicyFingerprint(loaded!, "client-id");
+    expect(policyFingerprint).toBe(mcpOAuthPolicyFingerprint(policy, "client-id"));
+    const created = await repository.createConnection({
+      clientId: "client-id", configurationIdentity: "revision-1", externalAccountLabel: null,
+      oauthClientId: saved.id, policyFingerprint, purpose: "user", redirectUri: REDIRECT_URI,
+      resource: policy.resource, serverId: SERVER_ID,
+      tokens: { access_token: "access-secret", token_type: "Bearer" }, userId: USER_ID
+    });
+    expect(created).toMatchObject({ kind: "ok", value: { policy: { personal: true } } });
+    const raw = fake.getConnectionRow()!;
+    const stored = decryptMcpEnvelope<{ policy: Record<string, unknown> }>(
+      raw.tokenEnvelope!, KEY, mcpOAuthTokenEnvelopeContext(raw.id, raw.tokenGeneration)
+    );
+    expect(stored.policy).not.toHaveProperty("personal");
+
+    fake.setOwner(null);
+    expect((await repository.loadConnection(raw.id))?.policy).not.toHaveProperty("personal");
+  });
+
+  it("retires exactly the rejected registration so the next start registers again", async () => {
+    const fake = fakePrisma();
+    const repository = createPrismaMcpOAuthRepository({ encryptionKey: () => KEY, prisma: fake.client });
+    const registrationKey = mcpOAuthRegistrationKey(policy, discoveryState.authorizationServerUrl);
+    const saved = await repository.saveClient({
+      clientInformation: { client_id: "client-id", redirect_uris: [REDIRECT_URI] },
+      clientMetadata: { client_name: "AIQSA fixture", redirect_uris: [REDIRECT_URI] },
+      discoveryState,
+      registrationKey
+    });
+    await expect(repository.retireClient({ clientId: "replaced-client", id: saved.id, registrationKey })).resolves.toBe(false);
+    await expect(repository.findClient(registrationKey)).resolves.toMatchObject({ id: saved.id });
+
+    await expect(repository.retireClient({ clientId: "client-id", id: saved.id, registrationKey })).resolves.toBe(true);
+    await expect(repository.findClient(registrationKey)).resolves.toBeNull();
+    expect(fake.getClientRow()).toMatchObject({ clientId: "client-id", id: saved.id });
+    expect(fake.getClientRow()?.registrationKey).toMatch(/^retired:/u);
   });
 });
