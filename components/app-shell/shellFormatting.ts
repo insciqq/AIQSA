@@ -1,5 +1,6 @@
 import { WORKSPACE_OPERATION_FAILURE_MESSAGES } from "@/lib/contracts/workspaceFailure";
 import { CHAT_TITLE_MAX_LENGTH, PERSONAL_FOLDER_NAME_MAX_LENGTH } from "@/lib/contracts/chats";
+import { MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type { CatalogModel } from "@/components/app-shell/types";
 
@@ -201,6 +202,20 @@ function actionLabel(action: string): string {
   return labels[action] ?? action.replace(/_/g, " ");
 }
 
+export const MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE =
+  `Load all can offer at most ${MCP_RUN_PLAN_LIMITS.maxTools} MCP tools to one message, and your enabled servers offer more. ` +
+  "Use Auto, or switch tools off in Settings → Connections.";
+
+/**
+ * The run admission refuses Load all over the per-message tool limit with the
+ * shared `mcp_plan_too_large` code; its limit-specific message (or a
+ * structured `limit`) tells it apart from the other plan limits.
+ */
+function isLoadAllToolLimitRefusal(body: Record<string, unknown>): boolean {
+  return body.error === "mcp_plan_too_large" && (body.limit === "maxTools" ||
+    (typeof body.message === "string" && /^Load all can offer at most \d+ MCP tools\b/u.test(body.message)));
+}
+
 export type ResponseErrorMessageDetails = {
   code?: string;
   message: string;
@@ -232,6 +247,9 @@ export async function responseErrorMessageDetails(
         [body.pinnedTokens, body.catalogTokens, body.budgetTokens].every(boundedCount)) {
         return { code: body.error, preserveForComposer: true,
           message: `Skills use approximately ${formatTokenCount(Number(body.pinnedTokens) + Number(body.catalogTokens))} tokens; the model input budget is ${formatTokenCount(Number(body.budgetTokens))}. Unpin Skills or choose a model with a larger context window.` };
+      }
+      if (isLoadAllToolLimitRefusal(body)) {
+        return { code: body.error, message: MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE, preserveForComposer: true };
       }
       const attachmentLimitErrors = new Set([
         "attachment_count_limit_exceeded",

@@ -1,6 +1,7 @@
 import type { UserMcpServer } from "@/lib/contracts/mcp";
 import { loadUserMcpServers } from "./mcpSettingsApi";
 import { hasTransitioningMcpServer } from "./mcpReadiness";
+import { setPersonalMcpOAuthOutcome } from "./personalMcpStore";
 import { create } from "zustand";
 
 export type McpOAuthOutcome = Readonly<{
@@ -185,13 +186,20 @@ export async function refreshMcpSettings(
   return loadPromise;
 }
 
+/**
+ * Consumes an OAuth callback outcome from the address. A personal
+ * connection's outcome (`settings=connections`) belongs to the personal
+ * store; Studio's installation store never receives it.
+ */
 export function consumeMcpOAuthReturn(url: URL): McpOAuthOutcome | null {
-  if (url.searchParams.get("settings") !== "mcp" && url.searchParams.get("settings") !== "connections" && url.searchParams.get("library") !== "mcp") return null;
+  const personal = url.searchParams.get("settings") === "connections";
+  if (url.searchParams.get("settings") !== "mcp" && !personal && url.searchParams.get("library") !== "mcp") return null;
   const raw = url.searchParams.get("oauth");
   const kind = raw === "connected" || raw === "cancelled" || raw === "failed" ? raw : null;
   const outcome = kind ? { kind, serverId: url.searchParams.get("server") } as const : null;
   if (outcome?.serverId) clearMcpOAuthAuthorizing(outcome.serverId);
-  useMcpSettingsStore.getState().setOAuthOutcome(outcome);
+  if (personal) setPersonalMcpOAuthOutcome(outcome);
+  else useMcpSettingsStore.getState().setOAuthOutcome(outcome);
   url.searchParams.delete("settings");
   url.searchParams.delete("library");
   url.searchParams.delete("oauth");

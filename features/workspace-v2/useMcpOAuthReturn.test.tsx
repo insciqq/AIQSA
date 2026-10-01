@@ -2,6 +2,7 @@ import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deactivateMcpSettings, useMcpSettingsStore } from "@/components/app-shell/mcpSettingsStore";
+import { deactivatePersonalMcp, usePersonalMcpStore } from "@/components/app-shell/personalMcpStore";
 import { useMcpOAuthReturn } from "./useMcpOAuthReturn";
 
 beforeEach(() => {
@@ -11,6 +12,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   deactivateMcpSettings();
+  deactivatePersonalMcp();
   window.history.replaceState(null, "", "/");
   vi.unstubAllGlobals();
 });
@@ -64,11 +66,15 @@ describe("MCP OAuth return lifecycle", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("opens the dedicated Connections settings section for personal MCP OAuth", async () => {
-    window.history.replaceState(null, "", "/?settings=connections&oauth=connected&server=personal-1");
+  it("opens Connections over the origin chat and routes the outcome only to the personal store", async () => {
+    window.history.replaceState(null, "", "/c/chat-1?settings=connections&oauth=failed&server=personal-1");
     const open = vi.fn();
     renderHook(() => useConnectionsReturn("account-1", open), { wrapper: StrictMode });
     await waitFor(() => expect(open).toHaveBeenCalledOnce());
-    expect(window.location.search).toBe("");
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/c/chat-1");
+    expect(usePersonalMcpStore.getState().oauthOutcome).toEqual({ kind: "failed", serverId: "personal-1" });
+    expect(useMcpSettingsStore.getState().oauthOutcome).toBeNull();
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    expect(vi.mocked(fetch).mock.calls.map(([input]) => String(input))).toEqual(["/api/me/mcp-connections"]);
   });
 });
