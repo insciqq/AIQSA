@@ -101,7 +101,7 @@ function repository() {
 }
 
 describe("personal MCP persistence and isolation", () => {
-  it("creates an enabled HTTP connection only in its owner's catalog and retains deselected tools for re-enabling", async () => {
+  it("creates an enabled HTTP connection only in its owner's catalog and keeps switched-off tools listed for re-enabling", async () => {
     const ownerId = await user();
     const otherId = await user();
     const { storage, validate } = repository();
@@ -111,9 +111,12 @@ describe("personal MCP persistence and isolation", () => {
     const serverId = created.value.id;
     serverIds.push(serverId);
     expect(validate).toHaveBeenCalledOnce();
-    expect(created.value).toMatchObject({ enabled: true, sourceType: "personal", availableTools: [
+    // The validator's listing seeds discovery: Settings lists tools before any runtime is ready.
+    expect(created.value).toMatchObject({ enabled: true, knownToolCount: 2, sourceType: "personal", userDisabledToolNames: [], availableTools: [
       { name: "read", description: "Read fixture" }, { name: "write", description: "Write fixture" }
     ] });
+    expect(await prisma.mcpUserServer.findUniqueOrThrow({ where: { userId_serverId: { serverId, userId: ownerId } } }))
+      .toMatchObject({ discoveredOAuthConnectionId: null, discoveredRevisionId: expect.any(String), userDisabledToolNames: [] });
     expect(await storage.listAdminServers()).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: serverId })]));
     expect(await storage.listUserServers(otherId)).toEqual([]);
     // Stray grants cannot publish a personal server into another user's catalog.
@@ -126,16 +129,18 @@ describe("personal MCP persistence and isolation", () => {
     expect(await storage.setGrant({ canUse: true, groupId: null, personalSlotKeys: [], serverId, userId: otherId })).toEqual({ kind: "not_found" });
     expect(await storage.activateDraft(serverId)).toEqual({ kind: "not_found" });
     const disabled = await storage.updateUserServer({ personalOnly: true, serverId, tool: { enabled: false, name: "write" }, userId: ownerId });
-    expect(disabled).toMatchObject({ kind: "ok", value: { selectedToolNames: ["read"], availableTools: [
+    expect(disabled).toMatchObject({ kind: "ok", value: { knownToolCount: 1, userDisabledToolNames: ["write"], availableTools: [
       { name: "read" }, { name: "write" }
     ] } });
+    expect(await storage.updateUserServer({ personalOnly: true, serverId, tool: { enabled: false, name: "missing" }, userId: ownerId }))
+      .toMatchObject({ kind: "invalid_values", issues: [{ code: "tool_not_available", path: "tool.name" }] });
     expect(await storage.updateUserServer({ personalOnly: true, serverId, tool: { enabled: true, name: "write" }, userId: ownerId }))
-      .toMatchObject({ kind: "ok", value: { selectedToolNames: ["read", "write"] } });
+      .toMatchObject({ kind: "ok", value: { userDisabledToolNames: [] } });
     expect(await storage.deletePersonalServer!({ serverId, userId: ownerId })).toMatchObject({ kind: "ok" });
     expect(await storage.listUserServers(ownerId)).toEqual([]);
   });
 
-  it("runs a personal HTTP MCP through discovery, Auto and tool selection on a disposable peer", async () => {
+  it("runs a personal HTTP MCP through discovery and Auto, and switches tools on the same runtime generation", async () => {
     const peer = await startPersonalMcpPeer();
     const ownerId = await user();
     const otherId = await user();
@@ -166,30 +171,42 @@ describe("personal MCP persistence and isolation", () => {
         limits: { ...MCP_INVENTORY_SESSION_LIMITS, maxToolArgumentBytes: getMcpRequestMaxBytes() }
       })
     });
+    const desiredGeneration = async () => (await prisma.mcpUserServer.findUniqueOrThrow({
+      where: { userId_serverId: { userId: ownerId, serverId } }
+    })).desiredRuntimeGenerationId;
+    const generationCount = () => prisma.mcpRuntimeGeneration.count({ where: { userServer: { serverId } } });
+    const catalogNames = async () => (await loadMcpCapabilityCatalog(ownerId, prisma)).servers
+      .flatMap((server) => server.tools.map((tool) => tool.originalName));
     try {
       await runtime.ensureUserServersReady(ownerId, [serverId]);
-      const ready = await prisma.mcpUserServer.findUniqueOrThrow({ where: { userId_serverId: { userId: ownerId, serverId } } });
-      const generation = await prisma.mcpRuntimeGeneration.findUniqueOrThrow({ where: { id: ready.desiredRuntimeGenerationId! } });
+      const generationId = await desiredGeneration();
+      const generation = await prisma.mcpRuntimeGeneration.findUniqueOrThrow({ where: { id: generationId! } });
       expect(generation.state).toBe("ready");
       const catalog = await loadMcpCapabilityCatalog(ownerId, prisma);
       expect(catalog.servers).toEqual([expect.objectContaining({ serverId })]);
-      expect(catalog.servers.flatMap((server) => server.tools.map((tool) => tool.originalName))).toEqual(["read", "write"]);
+      expect(await catalogNames()).toEqual(["read", "write"]);
+      const generations = await generationCount();
 
       expect(await storage.updateUserServer({ personalOnly: true, serverId, tool: { enabled: false, name: "write" }, userId: ownerId }))
-        .toMatchObject({ kind: "ok", value: { selectedToolNames: ["read"], availableTools: [{ name: "read" }, { name: "write" }] } });
+        .toMatchObject({ kind: "ok", value: { userDisabledToolNames: ["write"], availableTools: [{ name: "read" }, { name: "write" }] } });
+      // A switch keeps the runtime: the desired generation stays and the on-demand sync selects it again.
+      expect(await desiredGeneration()).toBe(generationId);
       await runtime.ensureUserServersReady(ownerId, [serverId]);
-      const readOnly = await loadMcpCapabilityCatalog(ownerId, prisma);
-      expect(readOnly.servers.flatMap((server) => server.tools.map((tool) => tool.originalName))).toEqual(["read"]);
+      expect(await desiredGeneration()).toBe(generationId);
+      expect(await catalogNames()).toEqual(["read"]);
 
       expect(await storage.updateUserServer({ personalOnly: true, serverId, tool: { enabled: false, name: "read" }, userId: ownerId }))
-        .toMatchObject({ kind: "ok", value: { selectedToolNames: [] } });
+        .toMatchObject({ kind: "ok", value: { userDisabledToolNames: ["read", "write"] } });
       await runtime.ensureUserServersReady(ownerId, [serverId]);
       expect((await loadMcpCapabilityCatalog(ownerId, prisma)).servers.flatMap((server) => server.tools)).toEqual([]);
 
       await storage.updateUserServer({ personalOnly: true, serverId, tool: { enabled: true, name: "read" }, userId: ownerId });
       await storage.updateUserServer({ personalOnly: true, serverId, tool: { enabled: true, name: "write" }, userId: ownerId });
       await runtime.ensureUserServersReady(ownerId, [serverId]);
-      expect((await loadMcpCapabilityCatalog(ownerId, prisma)).servers.flatMap((server) => server.tools.map((tool) => tool.originalName))).toEqual(["read", "write"]);
+      expect(await catalogNames()).toEqual(["read", "write"]);
+      expect(await desiredGeneration()).toBe(generationId);
+      expect(await generationCount()).toBe(generations);
+      expect(runtime.hasLiveGeneration(generationId!)).toBe(true);
       expect(await storage.updateUserServer({ enabled: true, personalOnly: true, serverId, userId: otherId })).toEqual({ kind: "not_found" });
       expect(await storage.deletePersonalServer!({ serverId, userId: ownerId })).toMatchObject({ kind: "ok" });
       expect(await storage.listUserServers(ownerId)).toEqual([]);
@@ -200,7 +217,7 @@ describe("personal MCP persistence and isolation", () => {
     }
   });
 
-  it("allows only owner OAuth, then re-enables a tool from the current OAuth inventory's disabled exclusions", async () => {
+  it("allows only owner OAuth, then re-enables a switched-off tool from the current OAuth inventory", async () => {
     const ownerId = await user();
     const otherId = await user();
     await prisma.user.update({ data: { role: "admin" }, where: { id: otherId } });
@@ -235,15 +252,18 @@ describe("personal MCP persistence and isolation", () => {
     const generation = await prisma.mcpRuntimeGeneration.create({ data: {
       fingerprint: randomUUID(), oauthConnectionId: connection.value.id, revisionId: policy.configurationIdentity,
       userServerId: preference.id, state: "ready", inventory: { version: 1, tools: [
-        { name: "read", description: "Read fixture", inputSchema: { type: "object" }, definitionHash: "a".repeat(64) }
-      ], exclusions: [{ name: "write", reason: "disabled_by_policy" }] }
+        { name: "read", description: "Read fixture", inputSchema: { type: "object" }, definitionHash: "a".repeat(64) },
+        { name: "write", description: "Write fixture", inputSchema: { type: "object" }, definitionHash: "b".repeat(64) }
+      ], exclusions: [] }
     } });
     await prisma.mcpUserServer.update({ where: { id: preference.id }, data: {
-      desiredRuntimeGenerationId: generation.id, selectedToolNames: ["read"], toolSelectionEnabled: true
+      desiredRuntimeGenerationId: generation.id, userDisabledToolNames: ["write"]
     } });
     const updated = await storage.updateUserServer({ personalOnly: true, serverId, tool: { enabled: true, name: "write" }, userId: ownerId });
-    expect(updated).toMatchObject({ kind: "ok", value: { selectedToolNames: ["read", "write"], availableTools: [
+    expect(updated).toMatchObject({ kind: "ok", value: { userDisabledToolNames: [], availableTools: [
       { name: "read" }, { name: "write" }
     ] } });
+    expect((await prisma.mcpUserServer.findUniqueOrThrow({ where: { id: preference.id } })).desiredRuntimeGenerationId)
+      .toBe(generation.id);
   });
 });

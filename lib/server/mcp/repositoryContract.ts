@@ -38,7 +38,6 @@ export type McpRepository = {
     description: string;
     draft: McpDraftConfiguration;
     name: string;
-    selectedToolNames?: readonly string[];
     userId: string;
     values: Record<string, McpSlotValue>;
   }): Promise<McpRepositoryResult<McpUserServerState>>;

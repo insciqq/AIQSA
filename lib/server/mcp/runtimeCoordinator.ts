@@ -5,7 +5,7 @@ import {
   type AiqsaMcpToolCallResult,
   type McpFatalResponseErrorCode
 } from "./clientSession";
-import type { McpToolExclusionReason } from "@/lib/contracts/mcp";
+import { boundMcpToolDescription, type McpToolExclusionReason } from "@/lib/contracts/mcp";
 import type { McpPublishedToolDefinitions } from "./definitions";
 import { redactMcpToolCallResult } from "./resultRedaction";
 import { ToolHiveClientError } from "./toolhiveClient";
@@ -25,7 +25,6 @@ export type McpRuntimeInventoryTool = {
 
 export type McpRuntimeLaunch = {
   allowPrivateNetwork?: boolean;
-  allowedToolNames?: readonly string[];
   callTimeoutMs: number;
   disabledToolNames?: readonly string[];
   fingerprint: string;
@@ -61,6 +60,19 @@ export type McpRuntimeInventory = {
   tools: McpRuntimeInventoryTool[];
   version: 1;
 };
+
+/** Schema-free upstream listing retained for a personal owner's catalog and Settings. */
+export type McpDiscoveredInventory = { tools: { description: string | null; name: string }[]; version: 1 };
+
+function discoveredInventory(tools: readonly McpRuntimeInventoryTool[]): McpDiscoveredInventory {
+  return {
+    tools: tools.map(({ description, name }) => ({
+      description: description === null ? null : boundMcpToolDescription(description),
+      name
+    })),
+    version: 1
+  };
+}
 
 export type McpRuntimeSession = {
   callTool(input: {
@@ -100,7 +112,7 @@ export type McpRuntimeCoordinatorRepository = {
     generationId: string;
     inventory: McpRuntimeInventory;
     /** Schema-free inventory retained for the owner's personal catalog. */
-    discoveredInventory?: { tools: { name: string; description: string | null }[]; version: 1 };
+    discoveredInventory?: McpDiscoveredInventory;
     now: Date;
   }): Promise<boolean>;
   markStarting(input: { fingerprint: string; generationId: string; now: Date }): Promise<boolean>;
@@ -132,7 +144,6 @@ export type McpRuntimeLifecycle = {
 type McpOperationalStatus = "active" | "checking" | "inactive";
 
 type LiveRuntime = {
-  allowedToolNames: ReadonlySet<string> | null;
   healthUsesToolList: boolean;
   toolDefinitionHashes: ReadonlyMap<string, string>;
   disabledToolNames: ReadonlySet<string>;
@@ -159,8 +170,7 @@ function effectiveRuntimeTools(
   upstream: readonly McpRuntimeInventoryTool[],
   published: McpPublishedToolDefinitions,
   disabledToolNames: ReadonlySet<string>,
-  allowUnpublishedTools = false,
-  allowedToolNames: ReadonlySet<string> | null = null
+  allowUnpublishedTools = false
 ): Pick<McpRuntimeInventory, "exclusions" | "tools"> {
   const publishedNames: ReadonlySet<string> = allowUnpublishedTools
     ? new Set(upstream.map((tool) => tool.name))
@@ -175,8 +185,7 @@ function effectiveRuntimeTools(
       throw new McpClientSessionError({ code: "mcp_inventory_tool_invalid", operation: "list_tools" });
     }
     upstreamNames.add(tool.name);
-    const reason: McpToolExclusionReason | null = disabledToolNames.has(tool.name) ||
-      (allowedToolNames !== null && !allowedToolNames.has(tool.name))
+    const reason: McpToolExclusionReason | null = disabledToolNames.has(tool.name)
       ? "disabled_by_policy"
       : !publishedNames.has(tool.name)
         ? "unpublished_addition"
@@ -870,15 +879,12 @@ export class McpRuntimeCoordinator {
       if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, launch.redactionValues, session);
       const disabledToolNames = new Set(launch.disabledToolNames ?? []);
-      const allowedToolNames = launch.allowedToolNames ? new Set(launch.allowedToolNames) : null;
-      const effective = effectiveRuntimeTools(tools, publishedTools, disabledToolNames, launch.personalRuntime === true, allowedToolNames);
+      const effective = effectiveRuntimeTools(tools, publishedTools, disabledToolNames, launch.personalRuntime === true);
       const accepted = await this.#write(launch.generationId, "complete", () => this.#repository.markReady({
         fingerprint: launch.fingerprint,
         generationId: launch.generationId,
         inventory: { exclusions: effective.exclusions, tools: effective.tools, version: 1 },
-        ...(launch.personalRuntime ? {
-          discoveredInventory: { tools: tools.map(({ description, name }) => ({ description, name })), version: 1 as const }
-        } : {}),
+        ...(launch.personalRuntime ? { discoveredInventory: discoveredInventory(tools) } : {}),
         now: this.#now()
       }));
       signal.throwIfAborted();
@@ -888,7 +894,6 @@ export class McpRuntimeCoordinator {
       }
       if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       this.#live.set(launch.generationId, {
-        allowedToolNames,
         allowUnpublishedTools: launch.personalRuntime === true,
         healthUsesToolList: false,
         toolDefinitionHashes: new Map(effective.tools.map((tool) => [tool.name, tool.definitionHash])),
@@ -997,15 +1002,13 @@ export class McpRuntimeCoordinator {
       const protocolSuccessAt = this.#now().getTime();
       if (isClosedSession(live.session)) throw runtimeStateError("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, live.redactionValues, live.session);
-      const effective = effectiveRuntimeTools(tools, live.publishedTools, live.disabledToolNames, live.allowUnpublishedTools, live.allowedToolNames);
+      const effective = effectiveRuntimeTools(tools, live.publishedTools, live.disabledToolNames, live.allowUnpublishedTools);
       if (this.#live.get(generationId) !== live) return false;
       const readinessWrite = this.#write(generationId, "complete", () => this.#repository.markReady({
         fingerprint,
         generationId,
         inventory: { exclusions: effective.exclusions, tools: effective.tools, version: 1 },
-        ...(live.allowUnpublishedTools ? {
-          discoveredInventory: { tools: tools.map(({ description, name }) => ({ description, name })), version: 1 as const }
-        } : {}),
+        ...(live.allowUnpublishedTools ? { discoveredInventory: discoveredInventory(tools) } : {}),
         now: this.#now()
       }));
       live.repositoryStateWrite = readinessWrite;

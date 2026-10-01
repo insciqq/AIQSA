@@ -1,13 +1,12 @@
 import { shellFetch } from "./shellApi";
 import type { UserMcpServer } from "@/lib/contracts/mcp";
-import { isMcpToolName } from "@/lib/contracts/mcp";
+import { isMcpToolName, MCP_SERVER_TOOL_LIMIT } from "@/lib/contracts/mcp";
 
 export type PersonalMcpCreateInput = {
   auth: { headerName?: string; mode: "none" | "oauth" | "static" };
   description?: string;
   insecureHttpAcknowledged?: boolean;
   name: string;
-  selectedToolNames?: string[];
   url: string;
   values?: Record<string, string | number | boolean>;
 };
@@ -58,12 +57,13 @@ function userServer(value: unknown): UserMcpServer | null {
     ? [{ name: tool.name, description: tool.description as string | null }]
     : []);
   if (Array.isArray(value.availableTools) && availableTools?.length !== value.availableTools.length) return null;
-  const selectedToolNames = value.selectedToolNames === undefined
+  const userDisabledToolNames = value.userDisabledToolNames === undefined
     ? undefined
-    : Array.isArray(value.selectedToolNames) && value.selectedToolNames.every(isMcpToolName)
-      ? [...new Set(value.selectedToolNames)]
+    : Array.isArray(value.userDisabledToolNames) && value.userDisabledToolNames.length <= MCP_SERVER_TOOL_LIMIT &&
+      value.userDisabledToolNames.every(isMcpToolName)
+      ? [...new Set(value.userDisabledToolNames)]
       : null;
-  if (selectedToolNames === null) return null;
+  if (userDisabledToolNames === null) return null;
   return {
     accountLabel: value.accountLabel === null || typeof value.accountLabel === "string" ? value.accountLabel : null,
     ...(availableTools ? { availableTools } : {}),
@@ -77,9 +77,9 @@ function userServer(value: unknown): UserMcpServer | null {
     oauthAvailable: typeof value.oauthAvailable === "boolean" ? value.oauthAvailable : false,
     oauthState: value.oauthState === null || typeof value.oauthState === "string" ? value.oauthState as UserMcpServer["oauthState"] : null,
     readiness: value.readiness as UserMcpServer["readiness"],
-    ...(selectedToolNames ? { selectedToolNames } : {}),
     sourceType: "personal",
-    tools
+    tools,
+    ...(userDisabledToolNames ? { userDisabledToolNames } : {})
   };
 }
 

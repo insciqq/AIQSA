@@ -4,6 +4,7 @@ import { loadMcpToolAccess } from "./toolAccess";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
+  boundMcpToolDescription,
   isMcpInventoryDifferenceReason,
   isMcpToolName,
   MCP_INVENTORY_EXCLUSION_LIMIT,
@@ -58,6 +59,7 @@ import { correctedMcpDraft } from "./endpointCorrection";
 import { McpEndpointBindingChangedError, rebindMcpValidationEndpoint } from "./oauthRepository";
 import { parseMcpLocalResolvedArtifact } from "./localArtifact";
 import { mcpInventoryExclusions } from "./runPlan";
+import { nextPersonalMcpDisabledToolNames, personalMcpLiveTools } from "./personalCatalog";
 import type {
   McpActivationClaim,
   McpActivationCoordinatorRepository,
@@ -950,71 +952,75 @@ function serializeUserServer(input: {
     preferenceUpdatedAt: preference?.updatedAt ?? null,
     runtime: preference?.desiredRuntimeGeneration ?? null
   });
-  // OAuth personal MCP starts with a provisional empty revision. Keep the
-  // latest ready inventory for the same revision/connection in the user
-  // projection while a selection change is restarting the runtime, without
-  // ever reusing an inventory from another OAuth identity.
+  const toolAllowed = (name: string) => input.toolAllowed({ serverId: input.record.id, originalName: name });
+  const availability = userToolAvailability(readiness, toolAllowed);
   const personalOwner = input.record.ownerUserId === input.userId;
-  const fallbackRuntime = personalOwner ? preference?.runtimeGenerations?.find((generation) =>
-    generation.state === "ready" && generation.revisionId === input.record.activeRevision!.id &&
-    generation.inventory !== null &&
-    (draft.auth.mode !== "oauth" || (oauth?.state === "ready" && generation.oauthConnectionId === oauth.id))
-  ) : undefined;
-  const currentRuntime = preference?.desiredRuntimeGeneration;
-  const discoveredRuntime = personalOwner && preference?.discoveredRevisionId === input.record.activeRevision.id
-    ? { inventory: preference.discoveredInventory }
-    : undefined;
-  const settingsRuntime = personalOwner && currentRuntime?.revisionId === input.record.activeRevision.id &&
-    (draft.auth.mode !== "oauth" || (oauth?.state === "ready" && currentRuntime.oauthConnectionId === oauth.id)) &&
-    toolInventory(currentRuntime.inventory) !== null
-    ? currentRuntime : fallbackRuntime ?? discoveredRuntime;
-  const settingsTools = new Map<string, UserMcpServer["tools"][number]>();
-  if (personalOwner) {
-    for (const tool of validationEvidenceFrom(input.record.activeRevision.validationEvidence, input.record.activeRevision.createdAt).toolInventory) {
-      settingsTools.set(tool.name, { description: tool.description, name: tool.name });
-    }
-    for (const tool of toolInventory(settingsRuntime?.inventory ?? null) ?? []) settingsTools.set(tool.name, tool);
-    for (const tool of mcpInventoryExclusions(settingsRuntime?.inventory ?? null) ?? []) {
-      if (tool.reason === "disabled_by_policy" && !settingsTools.has(tool.name)) {
-        settingsTools.set(tool.name, { description: null, name: tool.name });
-      }
-    }
-  }
-  const selectedToolNames = preference?.toolSelectionEnabled ? preference.selectedToolNames : null;
-  const selected = selectedToolNames ? new Set(selectedToolNames) : null;
-  const selectedAvailability = userToolAvailability(readiness, (name) =>
-    input.toolAllowed({ serverId: input.record.id, originalName: name }) &&
-    (selected === null || selected.has(name))
-  );
+  const personalTools = personalOwner && preference ? personalSettingsTools(input.record, preference, input.userId, draft) : null;
+  const availableTools = (personalTools?.availableTools ?? []).filter((tool) => toolAllowed(tool.name));
   return {
     accountLabel: oauth?.externalAccountLabel ?? null,
     description: input.record.description,
     enabled: preference?.enabled ?? false,
-    ...(personalOwner ? { availableTools: [...settingsTools.values()]
-      .filter((tool) => input.toolAllowed({ serverId: input.record.id, originalName: tool.name }))
-      .sort((left, right) => left.name.localeCompare(right.name)) } : {}),
-    ...(input.record.ownerUserId === input.userId ? { sourceType: "personal" as const } : { sourceType: "installation" as const }),
-    ...(input.record.ownerUserId === input.userId && draft.source.kind === "remote"
+    ...(personalOwner ? { availableTools } : {}),
+    ...(personalOwner ? { sourceType: "personal" as const } : { sourceType: "installation" as const }),
+    ...(personalOwner && draft.source.kind === "remote"
       ? { endpoint: safeMcpEndpoint(draft.source.url) }
       : {}),
-    ...(selectedToolNames ? { selectedToolNames: [...selectedToolNames] } : {}),
+    ...(personalOwner ? { userDisabledToolNames: [...(personalTools?.disabled ?? [])].sort() } : {}),
     fields,
     id: input.record.id,
-    knownToolCount: deriveKnownMcpToolCount({
-      toolAllowed: (name) => input.toolAllowed({ serverId: input.record.id, originalName: name }) &&
-        (selected === null || selected.has(name)),
-      disabledToolNames: draft.disabledToolNames,
-      revisionCreatedAt: input.record.activeRevision.createdAt,
-      revisionValidationEvidence: input.record.activeRevision.validationEvidence,
-      runtimeInventory: preference?.desiredRuntimeGeneration?.inventory ??
-        fallbackRuntime?.inventory ?? discoveredRuntime?.inventory ?? null
-    }),
+    knownToolCount: personalOwner
+      ? availableTools.filter((tool) => !personalTools?.disabled.has(tool.name)).length
+      : deriveKnownMcpToolCount({
+          toolAllowed,
+          disabledToolNames: draft.disabledToolNames,
+          revisionCreatedAt: input.record.activeRevision.createdAt,
+          revisionValidationEvidence: input.record.activeRevision.validationEvidence,
+          runtimeInventory: preference?.desiredRuntimeGeneration?.inventory ?? null
+        }),
     name: input.record.displayName,
     oauthAvailable: draft.auth.mode === "oauth",
     oauthState: draft.auth.mode === "oauth" ? oauth?.state ?? "disconnected" : null,
     runtimeGenerationId: preference?.desiredRuntimeGeneration?.id ?? null,
     ...readiness,
-    ...selectedAvailability
+    ...availability,
+    // A switched-off tool leaves the owner's runtime projection; Settings
+    // still lists it in availableTools with its switch.
+    ...(personalTools ? { tools: availability.tools.filter((tool) => !personalTools.disabled.has(tool.name)) } : {})
+  };
+}
+
+/**
+ * A personal owner's Settings inventory: the live tools the Auto catalog
+ * offers, under the same OAuth-identity rule, plus the owner's switch-offs.
+ */
+function personalSettingsTools(
+  record: UserServerRecord,
+  preference: UserServerRecord["userServers"][number],
+  userId: string,
+  draft: McpDraftConfiguration
+): { availableTools: UserMcpServer["tools"]; disabled: ReadonlySet<string> } {
+  const current = preference.desiredRuntimeGeneration;
+  const live = personalMcpLiveTools({
+    activeRevisionId: record.activeRevision!.id,
+    current: current?.userServerId === preference.id ? current : null,
+    discovered: {
+      inventory: preference.discoveredInventory,
+      oauthConnectionId: preference.discoveredOAuthConnectionId,
+      revisionId: preference.discoveredRevisionId
+    },
+    disabledByConfiguration: draft.disabledToolNames ?? [],
+    oauthMode: draft.auth.mode === "oauth",
+    readyOAuthConnectionIds: new Set(record.oauthConnections
+      .filter((connection) => connection.userId === userId &&
+        connection.state === "ready" && connection.disconnectRequestedAt === null)
+      .map((connection) => connection.id)),
+    recent: preference.runtimeGenerations
+  });
+  return {
+    availableTools: live.map((tool) => ({ description: tool.description, name: tool.name }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+    disabled: new Set(preference.userDisabledToolNames)
   };
 }
 
@@ -1415,8 +1421,7 @@ export function createPrismaMcpRepository(input: {
           runtimeErrorCode: null,
           runtimeGenerationId: null,
           tools: [],
-          sourceType: "personal" as const,
-          selectedToolNames: []
+          sourceType: "personal" as const
         } satisfies McpUserServerState };
       });
     },
@@ -1439,7 +1444,7 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    createPersonalServer: async ({ description, draft, name, selectedToolNames, userId, values }) => {
+    createPersonalServer: async ({ description, draft, name, userId, values }) => {
       const definition = validateMcpDraft(draft);
       if (!definition.ok) return { kind: "invalid_values" as const, issues: definition.issues };
       draft = definition.value;
@@ -1472,11 +1477,6 @@ export function createPrismaMcpRepository(input: {
       const draftHash = hashCanonicalMcpValue(checkedDraft);
       const identityHash = revisionIdentityHash({ draftHash, evidence, resolvedArtifact, toolInventory });
       const now = new Date();
-      if (selectedToolNames && (new Set(selectedToolNames).size !== selectedToolNames.length ||
-        selectedToolNames.some((toolName) => !toolInventory.some((tool) => tool.name === toolName)))) {
-        return { kind: "invalid_values" as const, issues: [{ code: "tool_not_available", path: "selectedToolNames" }] };
-      }
-      const selected = [...(selectedToolNames ?? toolInventory.map((tool) => tool.name))].sort();
       const key = encryptionKey();
       const preferenceId = randomUUID();
       const stored = applyStoredValuePatch(emptyStoredValues(), values, now, mcpEndpointBinding(checkedDraft));
@@ -1522,8 +1522,19 @@ export function createPrismaMcpRepository(input: {
               ? encryptMcpEnvelope(stored, key, mcpPersonalConfigEnvelopeContext(preferenceId, 1))
               : null,
             personalConfigVersion: Object.keys(stored.values).length ? 1 : 0,
-            selectedToolNames: selected,
-            toolSelectionEnabled: draft.auth.mode !== "oauth",
+            // The validator's listing is the first observation of a non-OAuth
+            // server, so Settings and Auto list its tools before a runtime is ready.
+            ...(checkedDraft.auth.mode !== "oauth" ? {
+              discoveredInventory: {
+                tools: toolInventory.map((tool) => ({
+                  description: tool.description === null ? null : boundMcpToolDescription(tool.description),
+                  name: tool.name
+                })),
+                version: 1
+              },
+              discoveredOAuthConnectionId: null,
+              discoveredRevisionId: revision.id
+            } : {}),
             serverId: server.id,
             userId
           }
@@ -2605,7 +2616,7 @@ export function createPrismaMcpRepository(input: {
         if (!personalOwner && !grant.canUse) return { kind: "not_found" as const };
         const draft = draftFrom(record.activeRevision.configuration);
         const preference = record.userServers[0] ?? null;
-        let selectedToolNames = preference?.toolSelectionEnabled ? preference.selectedToolNames : null;
+        let userDisabledToolNames: string[] | null = null;
         if (tool) {
           if (!personalOwner || !isMcpToolName(tool.name)) {
             return { issues: [{ code: "tool_not_permitted", path: "tool.name" }], kind: "invalid_values" as const };
@@ -2615,13 +2626,11 @@ export function createPrismaMcpRepository(input: {
             groupIds, key, record, userId,
             ...(input.oauthRedirectUri ? { oauthRedirectUri: input.oauthRedirectUri } : {})
           });
-          const inventoryNames = current?.availableTools?.map((candidate) => candidate.name) ?? [];
-          if (!inventoryNames.includes(tool.name)) {
+          const liveToolNames = current?.availableTools?.map((candidate) => candidate.name) ?? [];
+          if (!liveToolNames.includes(tool.name)) {
             return { issues: [{ code: "tool_not_available", path: "tool.name" }], kind: "invalid_values" as const };
           }
-          const selected = new Set(selectedToolNames ?? inventoryNames);
-          if (tool.enabled) selected.add(tool.name); else selected.delete(tool.name);
-          selectedToolNames = [...selected].sort();
+          userDisabledToolNames = nextPersonalMcpDisabledToolNames(preference?.userDisabledToolNames ?? [], tool, liveToolNames);
         }
         if (values) {
           const issues = valueIssues(draft.slots, values, (slot) => grant.personalSlotKeys.has(slot.slotKey) &&
@@ -2686,20 +2695,23 @@ export function createPrismaMcpRepository(input: {
               mcpPersonalConfigEnvelopeContext(preferenceId, personalConfigVersion)
             )
           : null;
+        // Switching a tool is a projection change: the runtime and its desired
+        // generation stay, so accepted runs and the next run keep dispatching.
+        const toolSwitchOnly = tool !== undefined && enabled === undefined && values === undefined;
         await tx.mcpUserServer.upsert({
           create: {
             enabled: enabled ?? false,
             id: preferenceId,
             personalConfigEnvelope,
             personalConfigVersion,
-            ...(selectedToolNames !== null ? { selectedToolNames, toolSelectionEnabled: true } : {}),
+            ...(userDisabledToolNames !== null ? { userDisabledToolNames } : {}),
             serverId,
             userId
           },
           update: {
-            desiredRuntimeGenerationId: null,
+            ...(toolSwitchOnly ? {} : { desiredRuntimeGenerationId: null }),
             ...(enabled !== undefined ? { enabled } : {}),
-            ...(selectedToolNames !== null ? { selectedToolNames, toolSelectionEnabled: true } : {}),
+            ...(userDisabledToolNames !== null ? { userDisabledToolNames } : {}),
             ...(hasValuesPatch ? {
               personalConfigEnvelope,
               personalConfigVersion

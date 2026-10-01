@@ -2,9 +2,11 @@ import type { McpConfigurationSlot } from "@/lib/contracts/mcp";
 import { describe, expect, it } from "vitest";
 import {
   mcpRuntimeFingerprint,
+  mcpSharedRuntimeFingerprint,
   resolveEffectiveMcpGrant,
   resolveEffectiveMcpValues
 } from "./access";
+import { hashCanonicalMcpValue } from "./definitions";
 
 const slots: McpConfigurationSlot[] = [
   {
@@ -170,17 +172,18 @@ describe("MCP runtime fingerprints", () => {
     }));
   });
 
-  it("keeps legacy identity without a selection but binds explicit empty selections", () => {
-    const base = {
-      oauthConnectionRevision: null,
-      plan: [{ authorized: true, slotKey: "tool", source: "literal" as const, valueVersion: null }],
-      revisionId: "revision-1",
-      userId: "user-1"
-    };
+  it("keeps member and shared runtime identities byte-identical to their selection-free shape", () => {
+    const plan = [
+      { authorized: true, slotKey: "tool", source: "literal" as const, valueVersion: null },
+      { authorized: true, slotKey: "auth", source: "personal" as const, valueVersion: 2 }
+    ];
+    const sorted = [plan[1], plan[0]];
 
-    expect(mcpRuntimeFingerprint(base)).toBe(mcpRuntimeFingerprint({ ...base, toolSelection: null }));
-    expect(mcpRuntimeFingerprint(base)).not.toBe(mcpRuntimeFingerprint({ ...base, toolSelection: [] }));
-    expect(mcpRuntimeFingerprint({ ...base, toolSelection: ["b", "a"] }))
-      .toBe(mcpRuntimeFingerprint({ ...base, toolSelection: ["a", "b"] }));
+    // A personal owner's switched-off tools never enter the identity, so a
+    // switch keeps the generation and an unswitched runtime keeps its hash.
+    expect(mcpRuntimeFingerprint({ oauthConnectionRevision: "oauth-1", plan, revisionId: "revision-1", userId: "user-1" }))
+      .toBe(hashCanonicalMcpValue({ oauthConnectionRevision: "oauth-1", plan: sorted, revisionId: "revision-1", userId: "user-1" }));
+    expect(mcpSharedRuntimeFingerprint({ plan, revisionId: "revision-1" }))
+      .toBe(hashCanonicalMcpValue({ owner: "shared", plan: sorted, revisionId: "revision-1" }));
   });
 });

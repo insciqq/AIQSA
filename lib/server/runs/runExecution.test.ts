@@ -1,6 +1,7 @@
 import * as workspaceCheckpoints from "../workspace/checkpoints";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { captureRunObservation } from "@/tests/support/runObservation";
+import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { workspaceCheckpointResult } from "../workspace/checkpointResult";
 import * as workspaceImageViewer from "../workspace/directImageView";
 import { prepareWorkspaceImages } from "../workspace/imageCapture";
@@ -6438,6 +6439,47 @@ describe("run execution", () => {
       expect(prepareProject).not.toHaveBeenCalled();
       expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
     }
+  });
+
+  it("refuses a personal tool its owner switched off after acceptance and dispatches it again once switched on", async () => {
+    const personal = personalMcpFixture({ toolNames: ["read", "write"] });
+    const namespacedName = personal.namespacedName("write");
+    const accepted = await personal.prepare([namespacedName]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(async (_user, options) =>
+      personal.prepare(options?.allowedToolNames));
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["WRITTEN"], unsupportedContentTypes: [] };
+    });
+    const run = async () => {
+      const egress = createMemoryEgressRecorder();
+      const repository = createRepository();
+      let rounds = 0;
+      const adapter = createAdapter(async function* () {
+        if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "write-call", name: namespacedName }] });
+        return providerResult({ finalText: "Write settled" });
+      });
+      await createRunExecutionResponse(executionInput({ adapter, memoryEgress: egress.service, repository: repository.repository,
+        mcp: { filterTools: allowMcpTools, prepare },
+        mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+        prepared: preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai" }) })).text();
+      return { egress, repository };
+    };
+
+    personal.switchTool("write", false);
+    const off = await run();
+    expect(callTool).not.toHaveBeenCalled();
+    expect(off.egress.blocked).toEqual([expect.objectContaining({ errorCode: "mcp_accepted_generation_changed", mode: "TOOL_CALL" })]);
+    expect([...off.repository.toolCalls.values()][0]).toMatchObject({ state: "error" });
+
+    // The switch never replaced the runtime: switching back on dispatches on the accepted generation.
+    personal.switchTool("write", true);
+    const on = await run();
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ generationId: personal.generationId, name: "write" }));
+    expect([...on.repository.toolCalls.values()][0]).toMatchObject({ state: "complete" });
+    expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: [personal.serverId], allowedToolNames: [namespacedName] });
   });
 
   it.each([false, true])("recalls a large MCP original through the public reader, with duplicate representation=%s", async duplicate => {

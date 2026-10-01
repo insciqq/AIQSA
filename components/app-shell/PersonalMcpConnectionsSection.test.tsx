@@ -21,12 +21,12 @@ function server(overrides: Record<string, unknown> = {}) {
     oauthAvailable: false,
     oauthState: null,
     readiness: "ready",
-    selectedToolNames: ["search"],
     sourceType: "personal",
     tools: [
       { description: "Search things", name: "search" },
       { description: "Delete things", name: "delete" }
     ],
+    userDisabledToolNames: ["delete"],
     ...overrides
   };
 }
@@ -90,14 +90,16 @@ describe("PersonalMcpConnectionsSection", () => {
     expect(startMcpOAuth).toHaveBeenCalledWith("/api/me/mcp-connections/oauth-1/oauth/connect");
   });
 
-  it("requires the explicit warning for plain HTTP and keeps deselected tools visible", async () => {
+  it("requires the explicit warning for plain HTTP and keeps switched-off tools visible", async () => {
     let current = server();
+    const patches: unknown[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path === "/api/me/mcp-connections" && (!init?.method || init.method === "GET")) return response({ servers: [current] });
       if (path === "/api/me/mcp-connections" && init?.method === "POST") return response({ error: "insecure_http_acknowledgement_required" }, 422);
       if (path.endsWith("/custom-1") && init?.method === "PATCH") {
-        current = { ...current, selectedToolNames: [] };
+        patches.push(JSON.parse(String(init.body)));
+        current = { ...current, userDisabledToolNames: ["delete", "search"] };
         return response({ server: current });
       }
       return response({});
@@ -112,6 +114,7 @@ describe("PersonalMcpConnectionsSection", () => {
     expect(remove).not.toBeChecked();
     fireEvent.click(search);
     await waitFor(() => expect(search).not.toBeChecked());
+    expect(patches).toEqual([{ tool: { enabled: false, name: "search" } }]);
     expect(screen.getByRole("checkbox", { name: /delete/i })).toBeVisible();
 
     fireEvent.change(document.getElementById("personal-mcp-url")!, { target: { value: "http://127.0.0.1:9000/mcp" } });
