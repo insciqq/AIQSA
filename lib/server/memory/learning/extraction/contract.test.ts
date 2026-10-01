@@ -4,6 +4,8 @@ import { memorySha256 } from "../../persistence/lexical";
 import {
   MEMORY_FACT_EXTRACTION_JOB_PREFIX,
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS,
+  MEMORY_FACT_EXTRACTION_VERSIONS,
   MEMORY_FACT_MAX_SOURCE_PAGES,
   MEMORY_FACT_MAX_TARGET_CHARACTERS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
@@ -72,6 +74,21 @@ function inputFor(text: string, page?: MemoryFactJobPage, unprocessed = false) {
 }
 
 describe("Memory fact extraction pages", () => {
+  it("keeps pipeline v8 job identity and retains exactly the previous v6 contract", () => {
+    expect(MEMORY_FACT_EXTRACTION_VERSIONS).toMatchObject({
+      pipelineVersion: "memory-fact-extraction-vnext-v8",
+      policyVersion: "memory-fact-extraction-policy-v38",
+      promptVersion: "memory-fact-extraction-prompt-v50",
+      schemaVersion: "memory-fact-extraction-schema-v7"
+    });
+    expect(MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS).toEqual({
+      ...MEMORY_FACT_EXTRACTION_VERSIONS,
+      policyVersion: "memory-fact-extraction-policy-v37",
+      promptVersion: "memory-fact-extraction-prompt-v49",
+      schemaVersion: "memory-fact-extraction-schema-v6"
+    });
+  });
+
   it("keeps page 0 on the established job identity and proves later pages", () => {
     const first = memoryFactExtractionJobFingerprint(source, "UNICODE_V2");
     expect(first).toBe(`${MEMORY_FACT_EXTRACTION_JOB_PREFIX}${memorySha256({
