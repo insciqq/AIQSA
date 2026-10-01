@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 
 const deps = {
   onConnectionChanged: (userId: string, serverId: string) => getDefaultMcpRuntimeCoordinator()
-    .ensureUserServersReady(userId, [serverId], AbortSignal.timeout(20_000)),
+    .ensureUserServersReady(userId, [serverId]),
   onRuntimeChanged: kickDefaultMcpRuntime,
   prepareOAuthDraft: preparePersonalMcpOAuthDraft,
   repository: mcpRepository,

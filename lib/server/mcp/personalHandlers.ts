@@ -1,7 +1,10 @@
 import type { McpDraftConfiguration, McpSlotValue } from "@/lib/contracts/mcp";
-import { isMcpToolName, MCP_SERVER_TOOL_LIMIT, mcpValidationIssue, type McpValidationIssue } from "@/lib/contracts/mcp";
+import { isMcpToolName, mcpValidationIssue, type McpValidationIssue } from "@/lib/contracts/mcp";
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "@/lib/server/http/requestBody";
+import { reportSubsystemFailure, runInBackground } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
+import { observedFailureCode } from "../providers/providerObservability";
 import type { McpRepository, McpUserServerState } from "./repositoryContract";
 import { validateMcpDraft } from "./definitions";
 import { userServerProjection } from "./handlers";
@@ -9,6 +12,7 @@ import { McpEncryptionError } from "./encryption";
 import { McpDraftValidationUnavailableError } from "./draftValidator";
 
 type PersonalDeps = {
+  /** On-demand runtime preparation; the handler starts it and never awaits it. */
   onConnectionChanged?(userId: string, serverId: string): Promise<void>;
   onRuntimeChanged?(userId?: string): void;
   prepareOAuthDraft?(draft: McpDraftConfiguration): Promise<McpDraftConfiguration>;
@@ -44,13 +48,6 @@ function values(value: unknown): Record<string, McpSlotValue> | null {
     output[key] = candidate;
   }
   return output;
-}
-
-function selectedTools(value: unknown): string[] | undefined | null {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length > MCP_SERVER_TOOL_LIMIT || value.some((item) => !isMcpToolName(item)) ||
-    new Set(value).size !== value.length) return null;
-  return [...new Set(value)].sort();
 }
 
 function remoteDraft(input: Record<string, unknown>): { draft: McpDraftConfiguration; values: Record<string, McpSlotValue> } | { error: string; path: string } {
@@ -109,11 +106,19 @@ async function safely<T>(operation: () => Promise<T>): Promise<T | Response> {
   }
 }
 
-async function settleConnection(deps: PersonalDeps, userId: string, server: McpUserServerState): Promise<McpUserServerState> {
-  if (!deps.onConnectionChanged || !server.enabled || (server.oauthAvailable && server.oauthState !== "ready")) return server;
-  try { await deps.onConnectionChanged(userId, server.id); }
-  catch { /* Runtime failure is persisted and shown in the refreshed connection. */ }
-  return (await deps.repository.listUserServers(userId)).find((item) => item.id === server.id && item.sourceType === "personal") ?? server;
+/**
+ * Starts the connection's runtime in the background: the request returns the
+ * persisted state at once, and Settings shows readiness on a later read.
+ * Runtime failures are persisted with the generation; this records only a
+ * content-free failure of the preparation call itself.
+ */
+function prepareConnectionInBackground(deps: PersonalDeps, userId: string, server: McpUserServerState): void {
+  const prepare = deps.onConnectionChanged;
+  if (!prepare || !server.enabled || (server.oauthAvailable && server.oauthState !== "ready")) return;
+  void runInBackground(async () => prepare(userId, server.id)).catch((error: unknown) => {
+    reportSubsystemFailure({ subsystem: "mcp", stage: "prepare", scope_id: server.id, code: observedFailureCode(error),
+      prisma_code: databaseFailureCode(error), action: "retry" });
+  });
 }
 
 export function createPersonalMcpListHandler(deps: PersonalDeps) {
@@ -140,8 +145,7 @@ export function createPersonalMcpCreateHandler(deps: PersonalDeps) {
     const name = text(body.name, 120);
     const description = body.description === undefined ? "" : typeof body.description === "string" && body.description.length <= 4_000 ? body.description.trim() : null;
     const draft = remoteDraft(body);
-    const selected = selectedTools(body.selectedToolNames);
-    if (!name || description === null || selected === null) return errorJson("invalid_mcp_values", 400);
+    if (!name || description === null) return errorJson("invalid_mcp_values", 400);
     if ("error" in draft) return errorJson(draft.error, 422, [{ code: draft.error, path: draft.path }]);
     const createPersonalServer = deps.repository.createPersonalServer;
     if (!createPersonalServer) return errorJson("mcp_unavailable", 503);
@@ -154,7 +158,6 @@ export function createPersonalMcpCreateHandler(deps: PersonalDeps) {
       description,
       draft: prepared,
       name,
-      ...(selected !== undefined ? { selectedToolNames: selected } : {}),
       userId: session.userId,
       values: draft.values
     }));
@@ -165,9 +168,8 @@ export function createPersonalMcpCreateHandler(deps: PersonalDeps) {
       return errorJson("mcp_not_found", 404);
     }
     try { deps.onRuntimeChanged?.(session.userId); } catch { /* persistence is authoritative */ }
-    const settled = await safely(() => settleConnection(deps, session.userId, result.value));
-    if (settled instanceof Response) return settled;
-    return Response.json({ server: userServerProjection(settled) }, { headers: { "Cache-Control": "no-store" }, status: 201 });
+    prepareConnectionInBackground(deps, session.userId, result.value);
+    return Response.json({ server: userServerProjection(result.value) }, { headers: { "Cache-Control": "no-store" }, status: 201 });
   };
 }
 
@@ -197,9 +199,8 @@ export function createPersonalMcpUpdateHandler(deps: PersonalDeps) {
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return errorJson(result.kind === "invalid_values" ? "invalid_mcp_values" : "mcp_not_found", result.kind === "invalid_values" ? 400 : 404, result.kind === "invalid_values" ? result.issues : undefined);
     try { deps.onRuntimeChanged?.(session.userId); } catch { /* persistence is authoritative */ }
-    const settled = await safely(() => settleConnection(deps, session.userId, result.value));
-    if (settled instanceof Response) return settled;
-    return Response.json({ server: userServerProjection(settled) }, { headers: { "Cache-Control": "no-store" } });
+    prepareConnectionInBackground(deps, session.userId, result.value);
+    return Response.json({ server: userServerProjection(result.value) }, { headers: { "Cache-Control": "no-store" } });
   };
 }
 

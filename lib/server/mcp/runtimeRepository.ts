@@ -59,8 +59,6 @@ type StoredValues = {
 
 type StoredEffectiveSnapshot = StoredValues & {
   plan: EffectiveMcpSlotPlanItem[];
-  /** Frozen per-user tool allowlist; absent means the legacy/all-tools mode. */
-  toolSelection?: string[];
   /** Frozen ownership boundary for personal remote runtimes. */
   personalRuntime?: boolean;
 };
@@ -137,15 +135,6 @@ function storedEffectiveSnapshot(
       valueVersion: item.valueVersion
     });
   }
-  let toolSelection: string[] | undefined;
-  if ("toolSelection" in decoded) {
-    if (!Array.isArray(decoded.toolSelection) ||
-      decoded.toolSelection.some((name) => typeof name !== "string" || !name.trim()) ||
-      new Set(decoded.toolSelection).size !== decoded.toolSelection.length) {
-      throw runtimeConfigurationError("mcp_values_invalid");
-    }
-    toolSelection = [...decoded.toolSelection];
-  }
   let personalRuntime: boolean | undefined;
   if ("personalRuntime" in decoded) {
     if (typeof decoded.personalRuntime !== "boolean") {
@@ -157,7 +146,6 @@ function storedEffectiveSnapshot(
     plan,
     values,
     version: 1,
-    ...(toolSelection !== undefined ? { toolSelection } : {}),
     ...(personalRuntime !== undefined ? { personalRuntime } : {})
   };
 }
@@ -189,12 +177,10 @@ type SharedRuntimeServerRecord = Prisma.McpServerGetPayload<{ include: { activeR
 
 type RemoteRuntimeFields = {
   allowPrivateNetwork: boolean;
-  allowedToolNames?: readonly string[];
   callTimeoutMs: number;
   effectiveEnvelope: {
     plan: ReturnType<typeof resolveEffectiveMcpValues>["plan"];
     personalRuntime?: boolean;
-    toolSelection?: readonly string[];
     values: Record<string, McpSlotValue>;
     version: 1;
   };
@@ -213,12 +199,10 @@ type RemoteRuntimeFields = {
 };
 
 type LocalRuntimeFields = {
-  allowedToolNames?: readonly string[];
   callTimeoutMs: number;
   effectiveEnvelope: {
     plan: ReturnType<typeof resolveEffectiveMcpValues>["plan"];
     personalRuntime?: boolean;
-    toolSelection?: readonly string[];
     values: Record<string, McpSlotValue>;
     version: 1;
   };
@@ -245,7 +229,6 @@ export type LocalRuntimeCandidate = LocalRuntimeFields & UserRuntimeOwner;
 export type SharedRuntimeCandidate = (RemoteRuntimeFields | LocalRuntimeFields) & { serverId: string };
 
 type EffectiveRuntimeBase = Readonly<{
-  allowedToolNames?: readonly string[];
   configuration: McpDraftConfiguration;
   credentialSources: readonly McpCredentialSource[];
   effectiveEnvelope: RemoteRuntimeFields["effectiveEnvelope"];
@@ -337,11 +320,9 @@ function effectiveRuntimeCandidate(input: {
     slots: configuration.slots
   });
   if (effective.invalidSlotKeys.length || effective.missingSlotKeys.length) return null;
-  const selectedToolNames = input.record.toolSelectionEnabled
-    ? new Set(input.record.selectedToolNames)
-    : null;
+  // A personal runtime keeps the full upstream inventory; the owner's
+  // switched-off tools are filtered from projections, never from the runtime.
   const personalRuntime = input.record.server.ownerUserId === input.record.userId;
-  const selectedToolList = selectedToolNames ? [...selectedToolNames].sort() : undefined;
   let oauthConnectionId: string | null = null;
   let externalAccountLabel: string | null = null;
   if (configuration.auth.mode === "oauth") {
@@ -375,18 +356,15 @@ function effectiveRuntimeCandidate(input: {
     oauthConnectionRevision: oauthConnectionId,
     plan: effective.plan,
     revisionId: revision.id,
-    ...(selectedToolNames ? { toolSelection: [...selectedToolNames] } : {}),
     userId: input.record.userId
   });
   return {
-    ...(selectedToolList ? { allowedToolNames: selectedToolList } : {}),
     configuration,
     credentialSources: safeCredentialSources(configuration, effective.plan, Boolean(oauthConnectionId)),
     effectiveEnvelope: {
       plan: effective.plan,
       values: effective.values,
       version: 1,
-      ...(selectedToolList ? { toolSelection: selectedToolList } : {}),
       ...(personalRuntime ? { personalRuntime: true } : {})
     },
     externalAccountLabel,
@@ -411,7 +389,6 @@ function remoteRuntimeFields(base: EffectiveRuntimeBase): RemoteRuntimeFields | 
   }
   return {
     allowPrivateNetwork: source.allowPrivateNetwork === true,
-    ...(base.allowedToolNames ? { allowedToolNames: base.allowedToolNames } : {}),
     callTimeoutMs: configuration.runtime.callTimeoutMs,
     credentialSources: base.credentialSources,
     ...(configuration.disabledToolNames?.length
@@ -445,7 +422,6 @@ function localRuntimeFields(base: EffectiveRuntimeBase): LocalRuntimeFields | nu
     envVars[slot.target.name] = headerValue(base.effectiveEnvelope.values[slot.slotKey]!);
   }
   return {
-    ...(base.allowedToolNames ? { allowedToolNames: base.allowedToolNames } : {}),
     callTimeoutMs: base.configuration.runtime.callTimeoutMs,
     credentialSources: base.credentialSources,
     ...(base.configuration.disabledToolNames?.length
@@ -541,7 +517,6 @@ function generationLaunch(
   now: Date
 ): McpRuntimeGenerationLaunch {
   const commonLaunch = {
-    ...(candidate.allowedToolNames ? { allowedToolNames: candidate.allowedToolNames } : {}),
     callTimeoutMs: candidate.callTimeoutMs,
     ...(candidate.disabledToolNames?.length
       ? { disabledToolNames: candidate.disabledToolNames }
@@ -635,7 +610,7 @@ export function createPrismaMcpRuntimeRepository(input: {
           encryptionKey(),
           mcpRuntimeGenerationEnvelopeContext(generation.id, generation.fingerprint)
         );
-        if (owner.userId === null && (snapshot.personalRuntime || snapshot.toolSelection !== undefined)) return null;
+        if (owner.userId === null && snapshot.personalRuntime) return null;
         if (snapshot.personalRuntime && configuration.source.kind !== "remote") return null;
         const configuredSlotKeys = new Set(configuration.slots.map((slot) => slot.slotKey));
         if (snapshot.plan.length !== configuration.slots.length ||
@@ -651,14 +626,10 @@ export function createPrismaMcpRuntimeRepository(input: {
               oauthConnectionRevision: generation.oauthConnectionId,
               plan: snapshot.plan,
               revisionId: generation.revision.id,
-              ...(snapshot.toolSelection !== undefined
-                ? { toolSelection: snapshot.toolSelection }
-                : {}),
               userId: owner.userId
             });
         if (fingerprint !== generation.fingerprint) return null;
         const commonLaunch = {
-          ...(snapshot.toolSelection !== undefined ? { allowedToolNames: snapshot.toolSelection } : {}),
           callTimeoutMs: configuration.runtime.callTimeoutMs,
           ...(configuration.disabledToolNames?.length
             ? { disabledToolNames: configuration.disabledToolNames }
@@ -864,10 +835,6 @@ export function createPrismaMcpRuntimeRepository(input: {
             where: {
               enabled: true,
               id: candidate.userServerId,
-              ...(record.toolSelectionEnabled !== undefined ? {
-                selectedToolNames: { equals: record.selectedToolNames },
-                toolSelectionEnabled: record.toolSelectionEnabled
-              } : {}),
               server: {
                 activeRevisionId: candidate.revisionId,
                 archivedAt: null,

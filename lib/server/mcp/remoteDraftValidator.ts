@@ -5,7 +5,7 @@ import type {
   McpToolInventoryEntry,
   McpValidationIssue
 } from "@/lib/contracts/mcp";
-import { MCP_SERVER_TOOL_LIMIT, mcpValidationIssue, safeMcpEndpoint } from "@/lib/contracts/mcp";
+import { boundMcpToolDescription, MCP_SERVER_TOOL_LIMIT, mcpValidationIssue, safeMcpEndpoint } from "@/lib/contracts/mcp";
 import {
   MCP_INVENTORY_SESSION_LIMITS,
   McpClientSession,
@@ -29,7 +29,6 @@ import { getMcpRequestMaxBytes } from "./responseLimits";
 import { discoverGitLabMcpEndpoint, type McpValidationOAuthProvider } from "./endpointCorrection";
 
 const MAX_EVIDENCE_TOOLS = MCP_SERVER_TOOL_LIMIT;
-const MAX_TOOL_DESCRIPTION_LENGTH = 2_048;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,128}$/u;
 const DEFINITION_HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const SDK_OWNED_HEADERS = new Set([
@@ -160,7 +159,7 @@ function sanitizedInventory(
       };
     }
     const description = tool.description && !containsSensitiveValue(tool.description, secrets)
-      ? tool.description.slice(0, MAX_TOOL_DESCRIPTION_LENGTH)
+      ? boundMcpToolDescription(tool.description)
       : null;
     names.add(tool.name);
     inventory.push(compactMcpToolInventoryEntry({
