@@ -235,6 +235,23 @@ function personalCatalogTools(
   );
 }
 
+/**
+ * A personal OAuth connection whose owner holds no ready token lost its
+ * authority. Dispatch and admission name that state instead of a queued
+ * runtime that synchronization can never start.
+ */
+function personalAuthorizationLoss(
+  preference: RunPlanPreferenceRecord
+): { errorCode: string; readiness: "needs_authorization" | "reauthorization_required" } | null {
+  if (authMode(preference.server.activeRevision?.configuration) !== "oauth") return null;
+  const owned = preference.server.oauthConnections.filter((connection) =>
+    connection.userId === preference.userId && connection.disconnectRequestedAt === null);
+  if (owned.some((connection) => connection.state === "ready")) return null;
+  return owned.some((connection) => connection.state === "reauthorization_required")
+    ? { errorCode: "oauth_reauthorization_required", readiness: "reauthorization_required" }
+    : { errorCode: "oauth_required", readiness: "needs_authorization" };
+}
+
 function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRunPlanRecord {
   const groupIds = new Set(preference.user.groups.map((membership) => membership.groupId));
   const canUse = preference.server.ownerUserId != null
@@ -259,6 +276,9 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
     preference.server.activeRevision?.validationEvidence
   );
   const personal = preference.server.ownerUserId === preference.userId;
+  const authorization = personal ? personalAuthorizationLoss(preference) : null;
+  if (authorization) return { ...inaccessibleRecord(preference, authorization.errorCode), readiness: authorization.readiness };
+  const switchedOff = personal ? { userDisabledToolNames: preference.userDisabledToolNames } : {};
 
   const generation = preference.desiredRuntimeGeneration;
   if (!generation) {
@@ -276,6 +296,7 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
             null
           ),
       ...(serverInstructions ? { serverInstructions } : {}),
+      ...switchedOff,
       errorCode: preference.desiredRuntimeGenerationId ? "mcp_runtime_stale" : null,
       readiness: preference.desiredRuntimeGenerationId ? "unavailable" : "queued"
     };
@@ -312,7 +333,8 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
     serverId: preference.server.id,
     serverDescription: preference.server.description,
     ...(serverInstructions ? { serverInstructions } : {}),
-    serverName: preference.server.displayName
+    serverName: preference.server.displayName,
+    ...switchedOff
   };
 }
 

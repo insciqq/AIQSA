@@ -329,6 +329,7 @@ export type RunRecoveryMcpRuntime = Readonly<{
   callTool(input: {
     arguments: Record<string, unknown>;
     beforeDispatch?(): Promise<void>;
+    definitionHash: string;
     generationId: string;
     inputSchema: Record<string, unknown>;
     name: string;
