@@ -636,7 +636,7 @@ describe("Prisma-backed admin dashboard queries", () => {
       expect(inviteFindMany).toHaveBeenCalledOnce();
       expect(mcpServerFindFirst).toHaveBeenCalledWith({
         select: { id: true },
-        where: { archivedAt: null }
+        where: { archivedAt: null, ownerUserId: null }
       });
       expect(smtpControlFindFirst).toHaveBeenCalledWith({
         select: { id: true },
