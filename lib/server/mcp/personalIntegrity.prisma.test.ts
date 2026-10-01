@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { createHash, randomUUID } from "node:crypto";
 import type { FetchLike } from "@modelcontextprotocol/client";
-import { Prisma } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MCP_RUN_PLAN_LIMITS,
@@ -21,6 +21,7 @@ import { createToolObservationRepository } from "../toolObservations/repository"
 import { createToolObservationService } from "../toolObservations/service";
 import { createObservationSourceOwners } from "../toolObservations/sourceOwners";
 import { captureMcpObservation } from "../toolObservations/sourceAdapters";
+import type { McpDraftValidator } from "./draftValidator";
 import { createUserMcpUpdateHandler } from "./handlers";
 import { mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import { createPrismaMcpOAuthRepository, type McpOAuthRepository } from "./oauthRepository";
@@ -113,16 +114,44 @@ async function user(role: "admin" | "user" = "user"): Promise<string> {
   return created.id;
 }
 
-function okValidator() {
-  return vi.fn(async () => ({
+function okOutcome() {
+  return {
     evidence: { protocol: "fixture" },
     kind: "ok" as const,
     resolvedArtifact: null,
     toolInventory: [{ description: "Read fixture", name: "read" }]
-  }));
+  };
 }
 
-function storage(validate = okValidator()) {
+function okValidator() {
+  return vi.fn(async () => okOutcome());
+}
+
+/**
+ * Holds each validation until `parties` creates have arrived. Validation runs
+ * after the advisory limit check, so every create has passed it before any
+ * create transaction starts.
+ */
+function barrierValidator(parties: number) {
+  let arrived = 0;
+  let release!: () => void;
+  const everyone = new Promise<void>((resolve) => { release = resolve; });
+  return vi.fn(async () => {
+    arrived += 1;
+    if (arrived === parties) release();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([everyone, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("fixture_barrier_timeout")), 15_000);
+      })]);
+    } finally {
+      clearTimeout(timer);
+    }
+    return okOutcome();
+  });
+}
+
+function storage(validate: McpDraftValidator["validate"] = okValidator()) {
   return createPrismaMcpRepository({ draftValidator: { validate }, encryptionKey: () => key, oauthRedirectUri: redirectUri, prisma });
 }
 
@@ -169,16 +198,49 @@ async function installationServer(userId?: string): Promise<string> {
 }
 
 /**
- * Runs finalization the way the runtime drain does. It works in batches, so
- * archived rows another run left behind may precede ours: repeat while ours
- * remain and a pass still finalizes something.
+ * The runtime drain's finalization, narrowed to this test's servers: only the
+ * candidate query is filtered; every later step works on those candidates, so
+ * archived rows of other tests stay untouched.
  */
-async function finalizeArchived(serverIds: readonly string[]): Promise<void> {
-  const runtime = createPrismaMcpRuntimeRepository({ encryptionKey: () => key, prisma });
-  for (let pass = 0; pass < 20; pass += 1) {
-    if (!await prisma.mcpServer.count({ where: { id: { in: [...serverIds] } } })) return;
-    if (!await runtime.finalizeDeletedServers()) return;
-  }
+async function finalizeArchived(serverIds: readonly string[]): Promise<number> {
+  const scopedTransaction = (tx: Prisma.TransactionClient) => new Proxy(tx, {
+    get(target, property) {
+      if (property !== "mcpServer") return Reflect.get(target, property);
+      return {
+        deleteMany: (args: Prisma.McpServerDeleteManyArgs) => target.mcpServer.deleteMany(args),
+        findMany: (args: Prisma.McpServerFindManyArgs) => target.mcpServer.findMany({
+          ...args,
+          where: { AND: [args.where ?? {}, { id: { in: [...serverIds] } }] }
+        }),
+        updateMany: (args: Prisma.McpServerUpdateManyArgs) => target.mcpServer.updateMany(args)
+      };
+    }
+  });
+  const scoped = {
+    $transaction: <T>(operation: (tx: Prisma.TransactionClient) => Promise<T>) =>
+      prisma.$transaction((tx) => operation(scopedTransaction(tx)))
+  } as unknown as PrismaClient;
+  return createPrismaMcpRuntimeRepository({ encryptionKey: () => key, prisma: scoped }).finalizeDeletedServers();
+}
+
+/**
+ * Enabled preferences that only count toward the plan bound: their disabled
+ * installation servers have no revision, so no catalog lists them. Callers
+ * remove them as soon as the limit has been probed.
+ */
+async function enabledInstallationRows(userId: string, count: number) {
+  const serverIds = Array.from({ length: count }, () => randomUUID());
+  await prisma.mcpServer.createMany({ data: serverIds.map((id) => ({
+    displayName: "Enabled-limit fixture", enabled: false, id, namespace: namespace()
+  })) });
+  owned.servers.push(...serverIds);
+  await prisma.mcpUserServer.createMany({ data: serverIds.map((serverId) => ({ enabled: true, serverId, userId })) });
+  return {
+    async remove() {
+      await prisma.mcpServer.deleteMany({ where: { id: { in: serverIds } } });
+    },
+    serverIds
+  };
 }
 
 /** Fires the deferred constraint triggers inside the probe's own transaction. */
@@ -290,6 +352,48 @@ describe("personal MCP tenant fence", () => {
     await prisma.mcpToolAccessPolicy.create({ data: { serverId: installationId, toolName: "read" } });
     await prisma.projectMcpBinding.create({ data: { projectId: project.id, serverId: installationId } });
     expect(await prisma.mcpGrant.count({ where: { serverId, OR: [{ groupId: { not: null } }, { userId: { not: ownerId } }] } })).toBe(0);
+  });
+
+  it("rejects moving existing installation rows onto a personal server", async () => {
+    const ownerId = await user();
+    const otherId = await user();
+    const personalId = await personalServer(ownerId);
+    const installationId = await installationServer(otherId);
+    const project = await prisma.project.create({ data: {
+      createdByDisplayName: "Personal MCP integrity fixture",
+      createdByUserId: otherId,
+      grants: { create: { role: "OWNER", userId: otherId } },
+      name: "Personal MCP integrity move fixture"
+    } });
+    owned.projects.push(project.id);
+    const grant = await prisma.mcpGrant.findFirstOrThrow({ where: { serverId: installationId, userId: otherId } });
+    const policy = await prisma.mcpToolAccessPolicy.create({ data: { serverId: installationId, toolName: "read" } });
+    await prisma.projectMcpBinding.create({ data: { projectId: project.id, serverId: installationId } });
+    await prisma.mcpSharedRuntime.create({ data: { serverId: installationId } });
+    const job = await prisma.mcpActivationJob.create({ data: {
+      draftHash: "integrity-move", serverId: installationId, sharedConfigVersion: 0, workloadToken: randomUUID().replaceAll("-", "")
+    } });
+    const preference = await prisma.mcpUserServer.create({ data: { serverId: installationId, userId: otherId } });
+    const connection = await prisma.mcpOAuthConnection.create({ data: {
+      policyFingerprint: "integrity-move", purpose: "user", serverId: installationId, userId: otherId
+    } });
+
+    await expectRejected((tx) => tx.mcpGrant.update({ data: { serverId: personalId }, where: { id: grant.id } }), boundary);
+    await expectRejected((tx) => tx.mcpToolAccessPolicy.update({ data: { serverId: personalId }, where: { id: policy.id } }), boundary);
+    await expectRejected((tx) => tx.projectMcpBinding.update({
+      data: { serverId: personalId }, where: { projectId_serverId: { projectId: project.id, serverId: installationId } }
+    }), boundary);
+    await expectRejected((tx) => tx.mcpSharedRuntime.update({ data: { serverId: personalId }, where: { serverId: installationId } }), boundary);
+    await expectRejected((tx) => tx.mcpActivationJob.update({ data: { serverId: personalId }, where: { id: job.id } }), boundary);
+    await expectRejected((tx) => tx.mcpUserServer.update({ data: { serverId: personalId }, where: { id: preference.id } }), boundary);
+    await expectRejected((tx) => tx.mcpOAuthConnection.update({ data: { serverId: personalId }, where: { id: connection.id } }), boundary);
+
+    // Every probe rolled back: the personal server still has only its owner's rows.
+    expect(await prisma.mcpGrant.findMany({ select: { groupId: true, userId: true }, where: { serverId: personalId } }))
+      .toEqual([{ groupId: null, userId: ownerId }]);
+    expect(await prisma.mcpUserServer.count({ where: { serverId: personalId, userId: { not: ownerId } } })).toBe(0);
+    expect(await prisma.mcpToolAccessPolicy.count({ where: { serverId: personalId } })).toBe(0);
+    expect(await prisma.projectMcpBinding.count({ where: { serverId: personalId } })).toBe(0);
   });
 });
 
@@ -490,6 +594,47 @@ describe("account deletion with personal MCP", () => {
     await expect(admin.deleteStaleUser({ actingAdminUserId, userId: ownerId })).resolves.toBe("deleted");
     expect(await prisma.user.findUnique({ where: { id: ownerId } })).toBeNull();
   });
+
+  it("stays pending while an archived personal server still stores an OAuth token", async () => {
+    const ownerId = await user();
+    const serverId = await personalServer(ownerId, { draft: oauthDraft });
+    const client = await prisma.mcpOAuthClient.create({ data: {
+      clientId: `integrity-${randomUUID()}`, clientMetadata: {}, registrationKey: randomUUID()
+    } });
+    owned.clients.push(client.id);
+    // Undecryptable on purpose: revocation cannot start, so only the bound ends it.
+    const connection = await prisma.mcpOAuthConnection.create({ data: {
+      oauthClientId: client.id, policyFingerprint: "integrity-deletion", purpose: "user", serverId,
+      state: "ready", tokenEnvelope: "synthetic-deletion-envelope", tokenGeneration: 1, userId: ownerId
+    } });
+    await prisma.user.update({ data: { status: "disabled" }, where: { id: ownerId } });
+    const actingAdminUserId = `admin-${randomUUID()}`;
+    const kick = vi.fn();
+    const admin = createPrismaAdminRepository(prisma, { accountMcpDeletionKick: kick });
+
+    await expect(admin.deleteStaleUser({ actingAdminUserId, userId: ownerId })).resolves.toBe("deletion_pending");
+    expect(await prisma.mcpOAuthConnection.findUniqueOrThrow({ where: { id: connection.id } })).toMatchObject({
+      state: "disconnecting", tokenEnvelope: "synthetic-deletion-envelope"
+    });
+    expect(await finalizeArchived([serverId])).toBe(0);
+    await expect(admin.deleteStaleUser({ actingAdminUserId, userId: ownerId })).resolves.toBe("deletion_pending");
+    expect(await prisma.user.findUnique({ where: { id: ownerId } })).not.toBeNull();
+    expect(await prisma.mcpOAuthConnection.findUniqueOrThrow({ where: { id: connection.id } })).toMatchObject({
+      tokenEnvelope: "synthetic-deletion-envelope"
+    });
+    expect(kick).toHaveBeenCalledTimes(2);
+
+    // Past the revocation bound the token is wiped locally; finalization and deletion then complete.
+    const service = new McpOAuthService({
+      fetchForPolicy: () => async () => new Response(null, { status: 503 }),
+      now: () => new Date(Date.now() + MCP_OAUTH_REVOCATION_ABANDON_MS + 60_000),
+      repository: scopedOAuthRepository(createPrismaMcpOAuthRepository({ encryptionKey: () => key, prisma }), [connection.id])
+    });
+    await service.reconcileDisconnecting();
+    expect(await finalizeArchived([serverId])).toBe(1);
+    await expect(admin.deleteStaleUser({ actingAdminUserId, userId: ownerId })).resolves.toBe("deleted");
+    expect(await prisma.user.findUnique({ where: { id: ownerId } })).toBeNull();
+  });
 });
 
 describe("personal MCP limits", () => {
@@ -503,11 +648,14 @@ describe("personal MCP limits", () => {
     ] });
     owned.servers.push(...live, archived);
 
-    const repository = storage();
+    const barrier = barrierValidator(3);
+    const repository = storage(barrier);
     const results = await Promise.all([0, 1, 2].map(() => repository.createPersonalServer!({
       description: "", draft, name: "Concurrent cap fixture", userId: ownerId, values: {}
     })));
     for (const result of results) if (result.kind === "ok") owned.servers.push(result.value.id);
+    // All three passed the advisory check; the two refusals came from the locked recheck.
+    expect(barrier).toHaveBeenCalledTimes(3);
     expect(results.filter((result) => result.kind === "ok")).toHaveLength(1);
     expect(results.filter((result) => result.kind === "personal_mcp_limit_reached")).toHaveLength(2);
     expect(await prisma.mcpServer.count({ where: { archivedAt: null, ownerUserId: ownerId } })).toBe(PERSONAL_MCP_CONNECTION_LIMIT);
@@ -523,6 +671,29 @@ describe("personal MCP limits", () => {
     expect(validate).not.toHaveBeenCalled();
   });
 
+  it("rechecks the enabled-server limit inside the create transaction", async () => {
+    const userId = await user();
+    const rows = await enabledInstallationRows(userId, MCP_RUN_PLAN_LIMITS.maxEnabledServers);
+    try {
+      const lateServerId = rows.serverIds[0]!;
+      await prisma.mcpUserServer.updateMany({ data: { enabled: false }, where: { serverId: lateServerId, userId } });
+      // Another enable commits after the advisory check, while the endpoint is validated.
+      const validate = vi.fn(async () => {
+        await prisma.mcpUserServer.updateMany({ data: { enabled: true }, where: { serverId: lateServerId, userId } });
+        return okOutcome();
+      });
+      const result = await storage(validate).createPersonalServer!({
+        description: "", draft, name: "Late enabled-limit fixture", userId, values: {}
+      });
+      if (result.kind === "ok") owned.servers.push(result.value.id);
+      expect(validate).toHaveBeenCalledOnce();
+      expect(result).toEqual({ kind: "mcp_enabled_server_limit_reached" });
+      expect(await prisma.mcpServer.count({ where: { ownerUserId: userId } })).toBe(0);
+    } finally {
+      await rows.remove();
+    }
+  });
+
   it("enforces the enabled-server limit across installation and personal servers on every route", async () => {
     const userId = await user();
     const enabledPersonal = await personalServer(userId);
@@ -530,38 +701,37 @@ describe("personal MCP limits", () => {
     const repository = storage();
     expect(await repository.updateUserServer({ enabled: false, personalOnly: true, serverId: disabledPersonal, userId }))
       .toMatchObject({ kind: "ok" });
-    const installation = Array.from({ length: MCP_RUN_PLAN_LIMITS.maxEnabledServers - 1 }, () => randomUUID());
-    await prisma.mcpServer.createMany({ data: installation.map((id) => ({
-      displayName: "Enabled installation fixture", enabled: true, id, namespace: namespace()
-    })) });
-    owned.servers.push(...installation);
-    await prisma.mcpUserServer.createMany({ data: installation.map((serverId) => ({ enabled: true, serverId, userId })) });
-    expect(await prisma.mcpUserServer.count({ where: { enabled: true, userId } })).toBe(MCP_RUN_PLAN_LIMITS.maxEnabledServers);
+    const rows = await enabledInstallationRows(userId, MCP_RUN_PLAN_LIMITS.maxEnabledServers - 1);
+    try {
+      expect(await prisma.mcpUserServer.count({ where: { enabled: true, userId } })).toBe(MCP_RUN_PLAN_LIMITS.maxEnabledServers);
 
-    const personalPatch = await createPersonalMcpUpdateHandler({ repository, resolveAuth: sessionFor(userId) })(
-      jsonRequest("PATCH", { enabled: true }), { params: { connectionId: disabledPersonal } });
-    expect(personalPatch.status).toBe(409);
-    await expect(personalPatch.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
+      const personalPatch = await createPersonalMcpUpdateHandler({ repository, resolveAuth: sessionFor(userId) })(
+        jsonRequest("PATCH", { enabled: true }), { params: { connectionId: disabledPersonal } });
+      expect(personalPatch.status).toBe(409);
+      await expect(personalPatch.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
 
-    const grantedId = await installationServer(userId);
-    const installationPatch = await createUserMcpUpdateHandler({ repository, resolveAuth: sessionFor(userId) })(
-      jsonRequest("PATCH", { enabled: true }), { params: { serverId: grantedId } });
-    expect(installationPatch.status).toBe(409);
-    await expect(installationPatch.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
+      const grantedId = await installationServer(userId);
+      const installationPatch = await createUserMcpUpdateHandler({ repository, resolveAuth: sessionFor(userId) })(
+        jsonRequest("PATCH", { enabled: true }), { params: { serverId: grantedId } });
+      expect(installationPatch.status).toBe(409);
+      await expect(installationPatch.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
 
-    const validate = okValidator();
-    const create = await createPersonalMcpCreateHandler({ rateLimiter: allowAll, repository: storage(validate), resolveAuth: sessionFor(userId) })(
-      jsonRequest("POST", { name: "Over the enabled limit", url: "https://mcp.example.test/mcp" }));
-    expect(create.status).toBe(409);
-    await expect(create.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
-    expect(validate).not.toHaveBeenCalled();
+      const validate = okValidator();
+      const create = await createPersonalMcpCreateHandler({ rateLimiter: allowAll, repository: storage(validate), resolveAuth: sessionFor(userId) })(
+        jsonRequest("POST", { name: "Over the enabled limit", url: "https://mcp.example.test/mcp" }));
+      expect(create.status).toBe(409);
+      await expect(create.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
+      expect(validate).not.toHaveBeenCalled();
 
-    // Re-enabling an already-enabled row (the OAuth settle) is no transition.
-    expect(await repository.updateUserServer({ enabled: true, serverId: enabledPersonal, userId })).toMatchObject({ kind: "ok" });
-    await prisma.mcpUserServer.updateMany({ data: { enabled: false }, where: { serverId: installation[0]!, userId } });
-    expect(await repository.updateUserServer({ enabled: true, personalOnly: true, serverId: disabledPersonal, userId }))
-      .toMatchObject({ kind: "ok", value: { enabled: true } });
-    expect(await prisma.mcpUserServer.count({ where: { enabled: true, userId } })).toBe(MCP_RUN_PLAN_LIMITS.maxEnabledServers);
+      // Re-enabling an already-enabled row (the OAuth settle) is no transition.
+      expect(await repository.updateUserServer({ enabled: true, serverId: enabledPersonal, userId })).toMatchObject({ kind: "ok" });
+      await prisma.mcpUserServer.updateMany({ data: { enabled: false }, where: { serverId: rows.serverIds[0]!, userId } });
+      expect(await repository.updateUserServer({ enabled: true, personalOnly: true, serverId: disabledPersonal, userId }))
+        .toMatchObject({ kind: "ok", value: { enabled: true } });
+      expect(await prisma.mcpUserServer.count({ where: { enabled: true, userId } })).toBe(MCP_RUN_PLAN_LIMITS.maxEnabledServers);
+    } finally {
+      await rows.remove();
+    }
   });
 });
 
