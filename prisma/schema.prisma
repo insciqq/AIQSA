@@ -3587,7 +3587,6 @@ model McpServer {
   id                   String               @id @default(uuid())
   namespace            String               @unique
   ownerUserId          String?
-  connectorKey         String?
   displayName          String
   description          String               @default("")
   enabled              Boolean              @default(false)
@@ -3614,7 +3613,6 @@ model McpServer {
 
   @@index([enabled, archivedAt])
   @@index([ownerUserId, enabled, archivedAt])
-  @@index([ownerUserId, connectorKey])
 }
 
 model McpActivationJob {

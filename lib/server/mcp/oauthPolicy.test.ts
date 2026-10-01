@@ -32,15 +32,6 @@ function policyFor(draft: McpDraftConfiguration) {
 }
 
 describe("MCP OAuth policy", () => {
-  it("binds registered connectors to one callback independent of the personal server id", () => {
-    const policy = buildMcpOAuthPolicy({
-      configurationIdentity: "revision", connectorKey: "gmail", draft: oauthDraft([]), purpose: "user",
-      redirectUri: "https://aiqsa.example.test/api/me/mcp/random-id/oauth/callback", serverId: "random-id", userId: "user"
-    });
-    expect(policy.redirectUri).toBe("https://aiqsa.example.test/api/me/connectors/oauth/callback");
-    expect(policy.connectorKey).toBe("gmail");
-  });
-
   it("treats an empty authorization allowlist as same-origin only", () => {
     expect(policyFor(oauthDraft([])).allowedAuthorizationServerOrigins)
       .toEqual(["https://mcp.example.test"]);

@@ -133,32 +133,6 @@ describe("MCP OAuth web handlers", () => {
     expect(new URL(returned.headers.get("location")!).searchParams.get("oauth")).toBe("connected");
   });
 
-  it("uses a stable connector callback and takes its server only from the signed cookie", async () => {
-    const connectorFlow = { ...flow(), redirectUri: "https://aiqsa.example.test/api/me/connectors/oauth/callback" };
-    const operations = service({ startAuthorization: vi.fn(async () => ({
-      kind: "redirect" as const,
-      flow: connectorFlow,
-      authorizationUrl: "https://auth.example.test/authorize?state=fixture-state"
-    })) });
-    const handlerDeps = deps({
-      callbackPath: () => "/api/me/connectors/oauth/callback",
-      service: operations,
-      userSettingsSection: "connections"
-    });
-    const start = createMcpOAuthStartHandler(handlerDeps, { allowQueryServerId: true, forceReconnect: false, purpose: "user" });
-    const response = await start(new Request("https://aiqsa.example.test/api/me/connectors/oauth/connect?server=server-1", { method: "POST" }), { params: {} });
-    expect(operations.startAuthorization).toHaveBeenCalledWith(expect.objectContaining({ redirectUri: connectorFlow.redirectUri, serverId: SERVER_ID }));
-    const callback = createMcpOAuthCallbackHandler(handlerDeps, "user", { allowCookieServerId: true });
-    const result = await callback(new Request(`${connectorFlow.redirectUri}?state=fixture-state&code=secret-code&server=attacker-server`, {
-      headers: { cookie: cookieHeader(response) }
-    }), { params: {} });
-    expect(operations.completeAuthorization).toHaveBeenCalledWith({ authorizationCode: "secret-code", flow: connectorFlow });
-    const location = new URL(result.headers.get("location")!);
-    expect(location.searchParams.get("settings")).toBe("connections");
-    expect(location.searchParams.get("server")).toBe(SERVER_ID);
-    expect(location.searchParams.get("oauth")).toBe("connected");
-  });
-
   it("signs the server-side flow fixture", async () => {
     await expect(signMcpOAuthFlow({
       flow: flow(),

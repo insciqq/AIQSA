@@ -38,7 +38,6 @@ export type McpRepository = {
     description: string;
     draft: McpDraftConfiguration;
     name: string;
-    connectorKey?: string;
     selectedToolNames?: readonly string[];
     userId: string;
     values: Record<string, McpSlotValue>;

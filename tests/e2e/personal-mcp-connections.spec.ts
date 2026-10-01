@@ -10,7 +10,6 @@ const viewports = [
 function customServer(overrides: Record<string, unknown> = {}) {
   return {
     accountLabel: null,
-    connectorKey: null,
     description: "Synthetic MCP for the connection settings check.",
     enabled: true,
     fields: [],
@@ -57,43 +56,6 @@ async function mockPersonalApis(page: PlaywrightPage) {
     }
     await route.fulfill({ contentType: "application/json", json: { server: servers[0] } });
   });
-  await page.route("**/api/me/connectors", async (route: Route) => {
-    await route.fulfill({ contentType: "application/json", json: { connectors: [
-      {
-        authOrigins: ["https://accounts.google.com"],
-        description: "Search and read Gmail messages.",
-        endpoint: "https://gmailmcp.googleapis.com/mcp/v1",
-        id: "gmail",
-        label: "Gmail",
-        scopes: ["openid"],
-        status: "preview"
-      },
-      {
-        authOrigins: ["https://mcp.notion.com"],
-        description: "Search and work with Notion pages.",
-        endpoint: "https://mcp.notion.com/mcp",
-        id: "notion",
-        label: "Notion",
-        scopes: [],
-        status: "available"
-      }
-    ] } });
-  });
-  await page.route("**/api/me/connectors/*", async (route: Route) => {
-    if (route.request().url().includes("/api/me/connectors/oauth/connect")) {
-      await route.fulfill({ contentType: "application/json", json: { location: "/ui-v2-fixture?fixture=settings&state=connections" } });
-      return;
-    }
-    if (route.request().method() === "POST") {
-      const server = customServer({ connectorKey: "gmail", id: "gmail-1", name: "Gmail", oauthAvailable: true, oauthState: "disconnected" });
-      await route.fulfill({ contentType: "application/json", json: { oauthAction: "/api/me/mcp/gmail-1/oauth/connect", server }, status: 201 });
-      return;
-    }
-    await route.fulfill({ contentType: "application/json", json: { status: "disconnected" } });
-  });
-  await page.route("**/api/me/mcp/*/oauth/connect", async (route: Route) => {
-    await route.fulfill({ contentType: "application/json", json: { location: "/ui-v2-fixture?fixture=settings&state=connections" } });
-  });
 }
 
 for (const viewport of viewports) {
@@ -104,7 +66,8 @@ for (const viewport of viewports) {
 
     const panel = page.getByRole("region", { name: "Personal MCP connections" });
     await expect(panel.getByRole("heading", { name: "Personal connections" })).toBeVisible();
-    await expect(panel.getByRole("heading", { name: "Gmail" })).toBeVisible();
+    await expect(panel.getByText("No personal connections yet.", { exact: true })).toBeVisible();
+    await expect(panel.locator("article")).toHaveCount(0);
     await expectNoHorizontalOverflow(page);
 
     const url = page.locator("#personal-mcp-url");
@@ -118,6 +81,7 @@ for (const viewport of viewports) {
     await expect(add).toBeEnabled();
     await add.click();
     await expect(panel.getByRole("heading", { name: "Synthetic MCP" })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Disconnect Synthetic MCP" })).toBeVisible();
 
     const search = panel.getByRole("checkbox", { name: /search synthetic records/i });
     await expect(search).toBeChecked();
@@ -129,13 +93,3 @@ for (const viewport of viewports) {
     await page.screenshot({ path: testInfo.outputPath(`personal-mcp-${viewport.name}.png`), fullPage: true });
   });
 }
-
-test("a connector card starts OAuth directly", async ({ page }) => {
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await mockPersonalApis(page);
-  await page.goto("/ui-v2-fixture?fixture=settings&state=connections");
-  const panel = page.getByRole("region", { name: "Personal MCP connections" });
-  await panel.locator("article").filter({ hasText: "Gmail" }).getByRole("button", { name: "Connect" }).click();
-  await expect(page).toHaveURL(/ui-v2-fixture\?fixture=settings&state=connections/u);
-  await expect(panel.getByLabel("Connectors").getByRole("heading", { name: "Gmail" })).toBeVisible();
-});
