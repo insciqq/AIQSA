@@ -429,6 +429,35 @@ describe("MCP run plans over the runtime's admitted inventory", () => {
     await coordinator.stop();
   });
 
+  it("names the owner's switch-off distinctly from a tool that left the server", async () => {
+    // The loader already filtered the switched-off tool from the projection.
+    const personal = record({ userDisabledToolNames: ["write", "gone"] });
+    const select = (...names: string[]) => prepareMcpRunPlan({
+      allowedServerIds: ["server-1"],
+      allowedToolNames: names.map((name) => namespacedMcpToolName(personal.namespace, name)),
+      isGenerationLive: () => true,
+      load: async () => [personal],
+      now: () => now
+    });
+    const issue = (errorCode: string) => ({
+      code: "mcp_not_ready",
+      issues: [{ errorCode, name: "Selected MCP tool", readiness: "unavailable" }],
+      ok: false
+    });
+
+    await expect(select("write")).resolves.toEqual(issue("mcp_tool_disabled"));
+    await expect(select("echo", "write")).resolves.toEqual(issue("mcp_tool_disabled"));
+    await expect(select("removed")).resolves.toEqual(issue("mcp_tool_not_available"));
+    // Another server's switch-off of the same name is not this tool's cause.
+    await expect(prepareMcpRunPlan({
+      allowedToolNames: [namespacedMcpToolName("other", "write")],
+      isGenerationLive: () => true,
+      load: async () => [personal, record({ namespace: "other", serverId: "server-2", serverName: "Other" })],
+      now: () => now
+    })).resolves.toEqual(issue("mcp_tool_not_available"));
+    await expect(select("echo")).resolves.toMatchObject({ ok: true, snapshot: { tools: [{ originalName: "echo" }] } });
+  });
+
   it("bounds held-back names by one runtime inventory's exclusion limit", () => {
     const exclusions = (count: number) => Array.from({ length: count }, (_, index) => ({
       name: `tool_${index}`, reason: index % 2 ? "unpublished_addition" : "missing_upstream"

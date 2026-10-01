@@ -385,6 +385,8 @@
   "mcp_timeout",
   "mcp_tls_failed",
   "mcp_tool_access_denied",
+  "mcp_tool_definition_changed",
+  "mcp_tool_disabled",
   "mcp_tool_not_available",
   "mcp_validation_unavailable",
   "mcp_values_invalid",

@@ -43,7 +43,9 @@ const MCP_RUNTIME_ERROR_MESSAGES = {
   mcp_runtime_unavailable: "The MCP runtime is unavailable. Check MCP settings and try again.",
   mcp_session_closed: "The MCP session closed. Try again to reconnect the runtime.",
   mcp_timeout: "The MCP server timed out. Check the server and try again.",
-  mcp_tool_access_denied: "You no longer have access to this MCP tool."
+  mcp_tool_access_denied: "You no longer have access to this MCP tool.",
+  mcp_tool_definition_changed: "The MCP tool's definition changed after this request started. Start a new request to use the current definition.",
+  mcp_tool_disabled: "This MCP tool was switched off in MCP settings. Switch it back on to use it."
 } as const;
 
 export type McpRuntimeErrorCode = keyof typeof MCP_RUNTIME_ERROR_MESSAGES;

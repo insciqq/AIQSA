@@ -7661,14 +7661,58 @@ describe("run recovery", () => {
     personal.switchTool("write", false);
     const off = await recover();
     expect(callTool).not.toHaveBeenCalled();
-    expect(off.egress.blocked).toEqual([expect.objectContaining({ errorCode: "mcp_accepted_generation_changed", mode: "TOOL_CALL" })]);
+    expect(off.egress.blocked).toEqual([expect.objectContaining({ errorCode: "mcp_tool_disabled", mode: "TOOL_CALL" })]);
     expect(off.state.calls()[0]).toMatchObject({ state: "error" });
+    expect(JSON.stringify(off.state.calls()[0]?.result)).toContain("mcp_tool_disabled");
 
     personal.switchTool("write", true);
     const on = await recover();
     expect(callTool).toHaveBeenCalledOnce();
-    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ generationId: "generation-1", name: "write" }));
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({
+      definitionHash: accepted.snapshot.tools[0]!.definitionHash, generationId: "generation-1", name: "write"
+    }));
     expect(on.state.calls()[0]).toMatchObject({ state: "complete" });
+  });
+
+  it.each([
+    ["the connection is switched off", "memory_egress_destination_revoked"],
+    ["the connection is deleted", "memory_egress_destination_revoked"],
+    ["its authorization is lost", "mcp_authorization_required"],
+    ["the runtime applied a new definition", "mcp_tool_definition_changed"]
+  ] as const)("refuses a recovered personal tool with its own cause after %s", async (change, errorCode) => {
+    const personal = personalMcpFixture({ fingerprint: recoveryFingerprint, generationId: "generation-1", oauth: true, toolNames: ["write"] });
+    const namespacedName = personal.namespacedName("write");
+    const accepted = await personal.prepare([namespacedName]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    if (change === "the connection is switched off") personal.setEnabled(false);
+    else if (change === "the connection is deleted") personal.delete();
+    else if (change === "its authorization is lost") personal.loseAuthorization();
+    else personal.changeDefinition("write");
+    const callTool = vi.fn<NonNullable<RunRecoveryDeps["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["RECOVERED_WRITE"], unsupportedContentTypes: [] };
+    });
+    const egress = createRecoveryMemoryEgressRecorder();
+    const harness = createHarness({
+      memoryEgress: egress.service,
+      mcp: { filterTools: allowMcpTools, prepare: async (_user, options) => personal.prepare(options?.allowedToolNames) },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+      providers: { openai: { buildRequestPreview: () => ({}), async *stream() {
+        return { ...providerResult, finalText: "Recovered write refused" };
+      } } }
+    });
+    const state = installCheckpointState(harness, {
+      ...checkpointedRun({ calls: [{ ...persistedRecoveryCall(), arguments: {}, toolName: namespacedName }],
+        phase: "tools_pending", providerToolMessages: [{ arguments: "{}", call_id: "provider-call-1",
+          name: namespacedName, type: "function_call" }] }),
+      normalizedRequest: { ...normalizedToolRequest(), mcp: accepted.snapshot }
+    });
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(callTool).not.toHaveBeenCalled();
+    expect(egress.blocked).toEqual([expect.objectContaining({ errorCode, mode: "TOOL_CALL" })]);
+    expect(state.calls()[0]).toMatchObject({ state: "error" });
+    expect(JSON.stringify(state.calls()[0]?.result)).toContain(errorCode);
   });
 
   it("revalidates recovered Project MCP through shared authority only", async () => {

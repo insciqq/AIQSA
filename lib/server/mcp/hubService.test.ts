@@ -3,6 +3,7 @@ import { namespacedMcpToolName, type McpCapabilityCatalog, type McpRunPlanResult
 import { createMcpHubService, McpHubServiceError, type McpHubAuthority, type McpHubServiceDependencies } from "./hubService";
 import { McpSemanticRouterError } from "./router";
 import { McpClientSessionError } from "./clientSession";
+import { mcpDispatchError } from "./dispatchStatus";
 import { getMcpRequestMaxBytes } from "./responseLimits";
 import { personalMcpFixture } from "@/tests/support/personalMcp";
 
@@ -338,6 +339,27 @@ describe("MCP Hub shared discovery and dispatch", () => {
       .catch((failure: unknown) => failure);
     expect(error).toBeInstanceOf(McpHubServiceError);
     expect(error).toMatchObject({ code: "execution_outcome_unknown" });
+  });
+
+  it("settles a runtime refusal of a changed definition as an unsent refusal, not an unknown outcome", async () => {
+    const settle = vi.fn(async () => undefined);
+    const test = fixture({
+      callRuntimeTool: vi.fn(async () => { throw mcpDispatchError("mcp_tool_definition_changed"); }),
+      recordDispatch: async () => ({ settle })
+    });
+    const descriptor = (await test.service.findTools({ authority, goal: "echo" })).tools[0]!;
+    const prepared = await test.service.prepareToolCall({
+      arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
+    });
+
+    const error = await test.service.dispatchPreparedToolCall({ prepared, authority }).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(McpHubServiceError);
+    expect(error).toMatchObject({ code: "tool_definition_changed" });
+    expect((error as McpHubServiceError).refusedBeforeSend).toBe(true);
+    expect(new McpHubServiceError("tool_definition_changed").refusedBeforeSend).toBe(false);
+    expect(settle).toHaveBeenCalledExactlyOnceWith("ERROR", "tool_definition_changed");
+    // The runtime received the accepted definition to compare before sending.
+    expect(test.dependencies.callRuntimeTool).toHaveBeenCalledWith(expect.objectContaining({ definitionHash: "a".repeat(64) }));
   });
 
   it.each([false, true])("retains rejected-response classification across runtime bundles (%s)", async (foreignBundle) => {
