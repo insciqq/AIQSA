@@ -156,6 +156,7 @@ export function AdminMcpList({
         <label className="sr-only" htmlFor={searchId}>Search servers</label>
         <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
         <input
+          autoComplete="off"
           className={`${inputClass} h-8 min-h-0 py-0 pl-9 text-[13px]`}
           id={searchId}
           onChange={(event) => setQuery(event.currentTarget.value)}

@@ -429,7 +429,9 @@ test("administrator adds a server from a pasted configuration, watches the setup
   await expect(sheet.getByLabel("Name")).toBeFocused();
   await expect(sheet.getByLabel("Source")).toHaveValue("npm");
   const importedSecret = sheet.getByLabel("New shared value for API_KEY");
-  await expect(importedSecret).toHaveAttribute("type", "password");
+  await expect(importedSecret).toHaveAttribute("type", "text");
+  await expect(importedSecret).toHaveAttribute("autocomplete", "off");
+  await expect(importedSecret).toHaveCSS("-webkit-text-security", "disc");
   await expect(importedSecret).toHaveValue("browser-write-only-secret");
   await expect(sheet).not.toContainText(bannedWords);
   await expectNoHorizontalOverflow(page);

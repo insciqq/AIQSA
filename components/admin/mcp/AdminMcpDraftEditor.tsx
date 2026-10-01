@@ -597,15 +597,18 @@ function SlotEditor({
               </select>
             ) : (
               <input
-                autoComplete="new-password"
-                className={inputClass}
+                autoCapitalize={slot.sensitive ? "none" : undefined}
+                autoComplete="off"
+                autoCorrect={slot.sensitive ? "off" : undefined}
+                className={slot.sensitive ? `${inputClass} [-webkit-text-security:disc]` : inputClass}
                 disabled={disabled}
                 onChange={(event) => onSharedValueChange(
                   slot.slotKey,
                   event.currentTarget.value === "" ? undefined : valueFromInput(slot, event.currentTarget.value)
                 )}
                 placeholder={configured ? "Configured — leave blank to keep" : "Enter a value before testing"}
-                type={slot.sensitive ? "password" : slot.valueType === "number" ? "number" : "text"}
+                spellCheck={slot.sensitive ? false : undefined}
+                type={!slot.sensitive && slot.valueType === "number" ? "number" : "text"}
                 value={sharedDraft === null || typeof sharedDraft === "undefined" ? "" : String(sharedDraft)}
               />
             )}

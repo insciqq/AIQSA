@@ -108,6 +108,9 @@ function FieldEditor({
   onChange(value: McpSlotValue | null): void;
 }>) {
   const value = fieldValue(field, edits);
+  // Third-party secrets are masked text, never type=password, so browser
+  // password managers cannot fill the AIQSA login here or offer to save a token.
+  const secret = field.sensitive || field.valueType === "secret";
   const status = field.source === "personal"
     ? "Personal value configured"
     : field.source === "shared"
@@ -149,8 +152,10 @@ function FieldEditor({
           </select>
         ) : (
           <input
+            autoCapitalize={secret ? "none" : undefined}
             autoComplete="off"
-            className="v2-settings-input"
+            autoCorrect={secret ? "off" : undefined}
+            className={secret ? "v2-settings-input v2-settings-input-masked" : "v2-settings-input"}
             disabled={disabled}
             id={inputId}
             inputMode={field.valueType === "number" ? "decimal" : undefined}
@@ -162,7 +167,8 @@ function FieldEditor({
                 : event.target.value
             )}
             placeholder={field.sensitive && field.configured ? "Enter a replacement value" : "Enter a value"}
-            type={field.sensitive || field.valueType === "secret" ? "password" : field.valueType === "number" ? "number" : "text"}
+            spellCheck={secret ? false : undefined}
+            type={!secret && field.valueType === "number" ? "number" : "text"}
             value={typeof value === "boolean" ? String(value) : value}
           />
         )}
@@ -234,6 +240,18 @@ function OAuthButton({
       <span>{authorizing ? "Authorizing" : label}</span>
     </button>
   );
+}
+
+/**
+ * Saving the last missing personal value of a disabled server completes the
+ * setup that `Complete setup` asked for, so the row enables it like a
+ * successful `Connect to enable`. A server the user turned off after its setup
+ * was complete never had a missing field and stays off.
+ */
+function completesSetup(before: UserMcpServer, saved: UserMcpServer): boolean {
+  return !before.enabled && before.fields.some((field) => field.source === "missing") &&
+    !saved.enabled && !saved.fields.some((field) => field.source === "missing") &&
+    !(saved.oauthAvailable && saved.oauthState !== "ready");
 }
 
 function ServerRow({
@@ -426,8 +444,16 @@ function ServerRow({
         <UiV2Button disabled={busy !== null || authorizing} onClick={requestClose}>Cancel</UiV2Button>
         {server.fields.length ? <UiV2Button busy={busy === "save"} disabled={!hasEdits || busy !== null || authorizing}
           tone="primary" onClick={() => void run("save", async () => {
-            replaceServer(await updateUserMcpServer(server.id, { values: edits }));
+            const saved = await updateUserMcpServer(server.id, { values: edits });
+            replaceServer(saved);
             for (const slotKey of Object.keys(edits)) onEdit(slotKey, undefined);
+            if (!completesSetup(server, saved)) return;
+            if (enableIssue) {
+              setError(enableIssue);
+              return;
+            }
+            // A separate request: a refused enable must not discard the saved values.
+            replaceServer(await updateUserMcpServer(server.id, { enabled: true }));
           })}>Save personal values</UiV2Button> : null}
       </>}>
       <div className="v2-settings-server-details">
@@ -443,9 +469,9 @@ function ServerRow({
         {refreshError ? <p className="v2-settings-field-note" role="status">Status could not be refreshed. Try again.</p> : null}
       </section>
       {server.fields.length ? (
-        <section className="v2-settings-server-section v2-settings-server-fields" aria-label={`${server.name} personal configuration`}>
+        <section className="v2-settings-server-section v2-settings-server-fields" aria-labelledby={`mcp-personal-values-${server.id}`}>
           <div className="v2-settings-server-section-copy">
-            <h3 className="v2-settings-server-section-title">Personal values</h3>
+            <h3 className="v2-settings-server-section-title" id={`mcp-personal-values-${server.id}`}>Personal values</h3>
             <span className="v2-settings-server-section-note">
               You can change only the fields your administrator made personal. Server endpoints and launch settings remain installation-owned.
             </span>
@@ -644,7 +670,7 @@ export function McpSettingsSection({
           </div>
           <label className="v2-resource-search">
             <UiV2Icon name="search" />
-            <input aria-label="Search MCP servers" placeholder="Search servers…" type="search" value={query}
+            <input aria-label="Search MCP servers" autoComplete="off" placeholder="Search servers…" type="search" value={query}
               onChange={event => setQuery(event.currentTarget.value)} />
           </label>
         </div>
