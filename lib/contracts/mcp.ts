@@ -12,6 +12,19 @@ export const MCP_SERVER_TOOL_LIMIT = 1_024;
  */
 export const MCP_INVENTORY_EXCLUSION_LIMIT = 2 * MCP_SERVER_TOOL_LIMIT;
 
+/**
+ * Characters of one tool description kept by validation evidence, persisted
+ * personal discovery and the personal catalog projections built from them.
+ */
+export const MAX_TOOL_DESCRIPTION_LENGTH = 2_048;
+
+/** Applies MAX_TOOL_DESCRIPTION_LENGTH without splitting a UTF-16 surrogate pair. */
+export function boundMcpToolDescription(description: string): string {
+  if (description.length <= MAX_TOOL_DESCRIPTION_LENGTH) return description;
+  const last = description.charCodeAt(MAX_TOOL_DESCRIPTION_LENGTH - 1);
+  return description.slice(0, MAX_TOOL_DESCRIPTION_LENGTH - (last >= 0xd800 && last <= 0xdbff ? 1 : 0));
+}
+
 const MCP_RUNTIME_ERROR_MESSAGES = {
   mcp_accepted_generation_changed: "The MCP configuration or tool changed. Start a new request to use the current configuration.",
   mcp_authorization_required: "MCP authorization is no longer valid. Reconnect in MCP settings.",
@@ -407,7 +420,8 @@ export type UserMcpServer = {
   sourceType?: "installation" | "personal";
   /** Redacted endpoint projection for personal settings only. */
   endpoint?: string;
-  selectedToolNames?: string[];
+  /** Personal settings only: tools the owner switched off; every other upstream tool is on. */
+  userDisabledToolNames?: string[];
   runtimeErrorCode?: McpRuntimeErrorCode | null;
   accountLabel: string | null;
   description: string;

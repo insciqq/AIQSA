@@ -20,8 +20,9 @@ function isInsecureHttp(value: string): boolean {
   return /^http:\/\//iu.test(value.trim());
 }
 
+/** Opt-out: every tool the server offers is on unless the owner switched it off. */
 function toolIsSelected(connection: UserMcpServer, name: string): boolean {
-  return connection.selectedToolNames === undefined || connection.selectedToolNames.includes(name);
+  return !connection.userDisabledToolNames?.includes(name);
 }
 
 export function PersonalMcpConnectionsSection() {

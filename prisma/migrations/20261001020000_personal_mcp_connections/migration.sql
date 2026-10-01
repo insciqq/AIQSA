@@ -1,7 +1,7 @@
--- Personal remote MCP ownership and per-user tool selection.
+-- Personal remote MCP ownership and per-user tool switch-offs.
 ALTER TABLE "McpServer" ADD COLUMN "ownerUserId" TEXT;
-ALTER TABLE "McpUserServer" ADD COLUMN "selectedToolNames" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
-ALTER TABLE "McpUserServer" ADD COLUMN "toolSelectionEnabled" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "McpUserServer" ADD COLUMN "userDisabledToolNames" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]
+  CONSTRAINT "McpUserServer_userDisabledToolNames_check" CHECK (cardinality("userDisabledToolNames") <= 1024);
 ALTER TABLE "McpUserServer" ADD COLUMN "discoveredInventory" JSONB;
 ALTER TABLE "McpUserServer" ADD COLUMN "discoveredRevisionId" TEXT;
 ALTER TABLE "McpUserServer" ADD COLUMN "discoveredOAuthConnectionId" TEXT;

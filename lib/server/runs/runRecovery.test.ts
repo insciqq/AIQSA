@@ -13,6 +13,7 @@ import { knowledgeAnswerHash } from "../knowledge/answerGroundingV5";
 import { createHash } from "node:crypto";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { captureRunObservation } from "@/tests/support/runObservation";
+import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { searchObservationReceipt } from "../toolObservations/searchReceipt";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
@@ -7624,6 +7625,50 @@ describe("run recovery", () => {
       expect(prepareProject).not.toHaveBeenCalled();
       expect(prepare).toHaveBeenCalledWith(userId, { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
     }
+  });
+
+  it("refuses a recovered personal tool its owner switched off and dispatches it on the same generation once on", async () => {
+    const personal = personalMcpFixture({ fingerprint: recoveryFingerprint, generationId: "generation-1", toolNames: ["read", "write"] });
+    const namespacedName = personal.namespacedName("write");
+    const accepted = await personal.prepare([namespacedName]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    const prepare = vi.fn<NonNullable<RunRecoveryDeps["mcp"]>["prepare"]>(async (_user, options) =>
+      personal.prepare(options?.allowedToolNames));
+    const callTool = vi.fn<NonNullable<RunRecoveryDeps["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["RECOVERED_WRITE"], unsupportedContentTypes: [] };
+    });
+    const recover = async () => {
+      const egress = createRecoveryMemoryEgressRecorder();
+      const harness = createHarness({
+        memoryEgress: egress.service,
+        mcp: { filterTools: allowMcpTools, prepare },
+        mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+        providers: { openai: { buildRequestPreview: () => ({}), async *stream() {
+          return { ...providerResult, finalText: "Recovered write settled" };
+        } } }
+      });
+      const state = installCheckpointState(harness, {
+        ...checkpointedRun({ calls: [{ ...persistedRecoveryCall(), arguments: {}, toolName: namespacedName }],
+          phase: "tools_pending", providerToolMessages: [{ arguments: "{}", call_id: "provider-call-1",
+            name: namespacedName, type: "function_call" }] }),
+        normalizedRequest: { ...normalizedToolRequest(), mcp: accepted.snapshot }
+      });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      return { egress, state };
+    };
+
+    personal.switchTool("write", false);
+    const off = await recover();
+    expect(callTool).not.toHaveBeenCalled();
+    expect(off.egress.blocked).toEqual([expect.objectContaining({ errorCode: "mcp_accepted_generation_changed", mode: "TOOL_CALL" })]);
+    expect(off.state.calls()[0]).toMatchObject({ state: "error" });
+
+    personal.switchTool("write", true);
+    const on = await recover();
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ generationId: "generation-1", name: "write" }));
+    expect(on.state.calls()[0]).toMatchObject({ state: "complete" });
   });
 
   it("revalidates recovered Project MCP through shared authority only", async () => {

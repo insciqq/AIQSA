@@ -444,7 +444,7 @@ export function userServerProjection(server: McpUserServerState): UserMcpServer 
     ...(server.availableTools ? { availableTools: server.availableTools } : {}),
     ...(server.sourceType ? { sourceType: server.sourceType } : {}),
     ...(server.endpoint ? { endpoint: server.endpoint } : {}),
-    ...(server.selectedToolNames ? { selectedToolNames: server.selectedToolNames } : {}),
+    ...(server.userDisabledToolNames ? { userDisabledToolNames: server.userDisabledToolNames } : {}),
     fields: server.fields,
     id: server.id,
     knownToolCount: server.knownToolCount,

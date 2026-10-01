@@ -1,5 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { MAX_TOOL_DESCRIPTION_LENGTH } from "@/lib/contracts/mcp";
+import { namespacedMcpToolName, prepareMcpRunPlan } from "./runPlan";
 import {
   loadMcpCapabilityCatalog,
   loadMcpRunPlanRecords,
@@ -17,7 +19,7 @@ type PreferenceFixture = {
     externalAccountLabel: string | null;
     fingerprint: string;
     id: string;
-    inventory: Record<string, unknown>;
+    inventory: Record<string, unknown> | null;
     inventoryUpdatedAt: Date;
     oauthConnectionId: string | null;
     revisionId: string;
@@ -36,8 +38,7 @@ type PreferenceFixture = {
     revisionId: string;
     state: "failed" | "idle" | "ready" | "starting" | "stopping";
   }[];
-  selectedToolNames?: string[];
-  toolSelectionEnabled?: boolean;
+  userDisabledToolNames: string[];
   server: {
     activeRevision: {
       configuration: Record<string, unknown>;
@@ -127,6 +128,7 @@ function preference(overrides: Partial<PreferenceFixture> = {}): PreferenceFixtu
     },
     userId: "user-1",
     runtimeGenerations: [],
+    userDisabledToolNames: [],
     ...overrides
   };
 }
@@ -218,17 +220,21 @@ function projectClientWith(servers: unknown[], restrictedToolNames: readonly str
 }
 
 describe("Prisma MCP run-plan loader", () => {
-  it("offers the owner's personal OAuth inventory to Auto while keeping deselected tools out", async () => {
-    const record = preference({ selectedToolNames: ["echo"], toolSelectionEnabled: true });
+  it("offers the owner's personal OAuth inventory to Auto and filters a switched-off tool from the projection only", async () => {
+    const record = preference();
     record.server.ownerUserId = "user-1";
     record.server.grants = [];
     record.server.activeRevision!.validationEvidence = { toolInventory: [] };
     const client = clientWith([record]).client;
     expect((await loadMcpCapabilityCatalog("user-1", client)).servers[0]?.tools).toMatchObject([{ originalName: "echo" }]);
-    record.selectedToolNames = [];
+    record.userDisabledToolNames = ["echo"];
     const [disabled] = await loadMcpRunPlanRecords("user-1", client);
     expect(disabled?.catalogTools).toEqual([]);
     expect(disabled?.inventory).toMatchObject({ tools: [] });
+    // The generation keeps its full upstream inventory and identity.
+    expect(disabled).toMatchObject({ fingerprint: "fingerprint-1", generationId: "generation-1" });
+    expect((record.desiredRuntimeGeneration!.inventory as { tools: unknown[] }).tools).toHaveLength(1);
+    expect((await loadMcpCapabilityCatalog("user-1", client)).servers).toEqual([]);
   });
 
   it.each([false, true])("reuses current OAuth catalog after idle generation cleanup=%s", async (drained) => {
@@ -679,5 +685,137 @@ describe("Prisma MCP catalogs over held-back runtime tools", () => {
 
     expect(record?.inventory).toEqual({ exclusions, tools: [], version: 1 });
     expect(record?.catalogTools).toEqual([]);
+  });
+});
+
+describe("Prisma MCP personal live catalog", () => {
+  function runtimeTool(name: string, description: string | null = `${name} live`) {
+    return { definitionHash: HASH, description, inputSchema: { type: "object" }, name };
+  }
+
+  function personal(names: readonly string[], overrides: Partial<PreferenceFixture> = {}) {
+    const record = preference(overrides);
+    record.server.ownerUserId = "user-1";
+    record.server.grants = [];
+    record.server.activeRevision!.configuration = { auth: { mode: "none" } };
+    if (record.desiredRuntimeGeneration) {
+      record.desiredRuntimeGeneration.inventory = { exclusions: [], tools: names.map((name) => runtimeTool(name)), version: 1 };
+    }
+    return record;
+  }
+
+  async function catalogNames(client: PrismaClient) {
+    return (await loadMcpCapabilityCatalog("user-1", client)).servers
+      .flatMap((server) => server.tools.map((tool) => tool.originalName));
+  }
+
+  it("offers an upstream addition and drops an observed removal for a validated server", async () => {
+    const record = personal(["echo", "added"]);
+    const { client } = clientWith([record]);
+
+    expect((await loadMcpCapabilityCatalog("user-1", client)).servers[0]?.tools).toEqual([
+      expect.objectContaining({
+        arguments: [{ description: "Text to echo", name: "text", types: ["string"] }],
+        description: "echo live",
+        originalName: "echo",
+        title: "Echo input"
+      }),
+      { arguments: [], description: "added live", namespacedName: namespacedMcpToolName("example", "added"), originalName: "added" }
+    ]);
+    // The runtime observed the validated tool's removal: Auto stops offering it.
+    record.desiredRuntimeGeneration!.inventory = { exclusions: [], tools: [runtimeTool("added")], version: 1 };
+    expect(await catalogNames(client)).toEqual(["added"]);
+  });
+
+  it("removes a switched-off tool from Load all and the dispatch rebuild on the same generation", async () => {
+    const record = personal(["echo", "write"]);
+    const { client } = clientWith([record]);
+    const write = namespacedMcpToolName("example", "write");
+    const plan = (allowedToolNames?: readonly string[]) => prepareMcpRunPlan({
+      allowedServerIds: ["server-1"],
+      ...(allowedToolNames ? { allowedToolNames } : {}),
+      isGenerationLive: () => true,
+      load: () => loadMcpRunPlanRecordsForServers("user-1", ["server-1"], client),
+      now: () => NOW
+    });
+
+    await expect(plan([write])).resolves.toMatchObject({ ok: true, snapshot: { tools: [{ originalName: "write" }] } });
+    record.userDisabledToolNames = ["write"];
+    await expect(plan([write])).resolves.toMatchObject({
+      code: "mcp_not_ready", issues: [{ errorCode: "mcp_tool_not_available" }], ok: false
+    });
+    const loadAll = await plan();
+    if (!loadAll.ok) throw new Error(loadAll.code);
+    expect(loadAll.snapshot.tools.map((tool) => tool.originalName)).toEqual(["echo"]);
+    expect(loadAll.bindings).toEqual([{ fingerprint: "fingerprint-1", runtimeGenerationId: "generation-1", serverId: "server-1" }]);
+    expect(await catalogNames(client)).toEqual(["echo"]);
+    record.userDisabledToolNames = [];
+    await expect(plan([write])).resolves.toMatchObject({ ok: true });
+  });
+
+  it("lists a validated server's seeded discovery before its first runtime is ready", async () => {
+    const record = personal([], {
+      desiredRuntimeGeneration: null,
+      desiredRuntimeGenerationId: null,
+      discoveredInventory: { tools: [{ description: "Echo", name: "echo" }], version: 1 },
+      discoveredRevisionId: "revision-1"
+    });
+
+    const [loaded] = await loadMcpRunPlanRecords("user-1", clientWith([record]).client);
+    expect(loaded).toMatchObject({ generationId: null, readiness: "queued" });
+    expect(loaded?.catalogTools).toEqual([{
+      arguments: [{ description: "Text to echo", name: "text", types: ["string"] }],
+      description: "Echo",
+      name: "echo",
+      title: "Echo input"
+    }]);
+  });
+
+  it("keeps a same-connection OAuth restart in Auto and holds a re-authorized account back until it is ready", async () => {
+    const record = personal([], {
+      discoveredInventory: { tools: [{ description: "Read mail", name: "mail.read" }], version: 1 },
+      discoveredOAuthConnectionId: "oauth-1",
+      discoveredRevisionId: "revision-1"
+    });
+    record.server.activeRevision!.configuration = { auth: { mode: "oauth" } };
+    record.server.activeRevision!.validationEvidence = { toolInventory: [] };
+    record.server.oauthConnections = [{ disconnectRequestedAt: null, id: "oauth-1", state: "ready", userId: "user-1" }];
+    record.desiredRuntimeGeneration = { ...record.desiredRuntimeGeneration!, inventory: null, oauthConnectionId: "oauth-1", state: "starting" };
+    const { client } = clientWith([record]);
+
+    const [restarting] = await loadMcpRunPlanRecords("user-1", client);
+    expect(restarting).toMatchObject({ catalogTools: [{ description: "Read mail", name: "mail.read" }], readiness: "starting" });
+    expect(await catalogNames(client)).toEqual(["mail.read"]);
+
+    record.server.oauthConnections = [
+      { disconnectRequestedAt: NOW, id: "oauth-1", state: "disconnecting", userId: "user-1" },
+      { disconnectRequestedAt: null, id: "oauth-2", state: "ready", userId: "user-1" }
+    ];
+    record.desiredRuntimeGeneration = { ...record.desiredRuntimeGeneration!, id: "generation-2", oauthConnectionId: "oauth-2" };
+    record.desiredRuntimeGenerationId = "generation-2";
+    record.runtimeGenerations = [{
+      inventory: { tools: [{ description: "Read mail", name: "mail.read" }], version: 1 },
+      oauthConnectionId: "oauth-1",
+      revisionId: "revision-1",
+      state: "ready"
+    }];
+    expect(await catalogNames(client)).toEqual([]);
+
+    record.desiredRuntimeGeneration = {
+      ...record.desiredRuntimeGeneration!,
+      inventory: { exclusions: [], tools: [runtimeTool("drive.read")], version: 1 },
+      state: "ready"
+    };
+    expect(await catalogNames(client)).toEqual(["drive.read"]);
+  });
+
+  it("bounds live descriptions in the personal catalog", async () => {
+    const record = personal([]);
+    record.desiredRuntimeGeneration!.inventory = { exclusions: [], tools: [runtimeTool("echo", "d".repeat(5_000))], version: 1 };
+
+    const [loaded] = await loadMcpRunPlanRecords("user-1", clientWith([record]).client);
+    expect(loaded?.catalogTools?.[0]?.description).toHaveLength(MAX_TOOL_DESCRIPTION_LENGTH);
+    // The runtime inventory used for model-facing definitions keeps the upstream text.
+    expect((loaded?.inventory as { tools: { description: string }[] }).tools[0]?.description).toHaveLength(5_000);
   });
 });
