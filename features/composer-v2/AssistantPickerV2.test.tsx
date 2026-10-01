@@ -153,7 +153,8 @@ describe("Assistant picker v2", () => {
       recentIds: []
     });
     const dialog = screen.getByRole("dialog", { name: "Choose an Assistant" });
-    await waitFor(() => expect(within(dialog).getByRole("searchbox")).toHaveFocus());
+    // No caret in the search field, so no touch keyboard covers the list.
+    await waitFor(() => expect(dialog).toHaveFocus());
     expect(screen.getByTestId("assistant-picker-backdrop")).toHaveAttribute("data-layout", "sheet");
     expect(dialog.getAttribute("style")).toBeNull();
     expect(within(dialog).queryAllByRole("heading")).toHaveLength(0);
@@ -162,6 +163,22 @@ describe("Assistant picker v2", () => {
     expect(within(projectList).getByTestId("assistant-picker-row-assistant-review")).toHaveTextContent("Project “Launch plan”");
     expect(projectList).not.toHaveTextContent("by Project");
     expect(within(dialog).getByRole("button", { name: "Manage in Project settings" })).toBeVisible();
+    anchor.remove();
+  });
+
+  it("opens on itself on a touch tablet and still moves by arrow keys", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      addEventListener: vi.fn(),
+      matches: query === "(hover: none), (pointer: coarse)",
+      media: query,
+      removeEventListener: vi.fn()
+    }));
+    const { anchor } = renderPicker();
+    const dialog = screen.getByRole("dialog", { name: "Choose an Assistant" });
+    await waitFor(() => expect(dialog).toHaveFocus());
+    expect(screen.getByTestId("assistant-picker-backdrop")).toHaveAttribute("data-layout", "popover");
+    fireEvent.keyDown(dialog, { key: "ArrowDown" });
+    expect(within(dialog).getByTestId("assistant-picker-row-assistant-hr")).toHaveFocus();
     anchor.remove();
   });
 

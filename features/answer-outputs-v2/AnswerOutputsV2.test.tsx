@@ -71,6 +71,19 @@ describe("answer outputs v2", () => {
     expect(disclosure).not.toHaveTextContent("memory_search");
   });
 
+  it("marks a live expandable process line with a trailing chevron until it settles", () => {
+    const workspace = { entries: [{ id: "run", kind: "command", phase: "running", command: { preview: "pwd" } }] } as const;
+    const { rerender } = render(<AnswerProcessV2 liveLabel="Working in Workspace…" workspaceActivity={workspace} />);
+    const disclosure = screen.getByTestId("tool-activity-disclosure");
+    expect(disclosure.querySelector("summary")).toContainElement(screen.getByTestId("answer-process-live-chevron"));
+    rerender(<AnswerProcessV2 liveLabel="Thinking…" />);
+    expect(screen.getByTestId("run-status-line")).toHaveTextContent("Thinking…");
+    expect(screen.queryByTestId("answer-process-live-chevron")).not.toBeInTheDocument();
+    rerender(<AnswerProcessV2 workspaceActivity={workspace} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Worked in Workspace");
+    expect(screen.queryByTestId("answer-process-live-chevron")).not.toBeInTheDocument();
+  });
+
   it("shows pending and stopped creation honestly, then replaces it with the authoritative saved card", () => {
     const onOpen = vi.fn();
     const onOpenArtifact = vi.fn();

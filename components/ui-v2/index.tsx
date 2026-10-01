@@ -529,6 +529,12 @@ export const UiV2MenuSurface = forwardRef<
   );
 });
 
+/**
+ * Destructive items keep their place in the menu but read in the danger color;
+ * a status entry (the chat context gauge) reads in its gauge's color.
+ */
+export type UiV2MenuItemTone = "critical" | "destructive" | "warning";
+
 export function UiV2MenuItem({
   children,
   icon,
@@ -541,8 +547,7 @@ export function UiV2MenuItem({
   icon?: UiV2IconName;
   selected?: boolean;
   sub?: string;
-  /** Destructive items keep their place in the menu but read in the danger color. */
-  tone?: "destructive";
+  tone?: UiV2MenuItemTone;
 }) {
   return (
     <button
@@ -605,7 +610,7 @@ export type UiV2MenuAction = Readonly<{
   separatorBefore?: boolean;
   /** Inline disclosure list (folder picker); scrolls locally when long. */
   submenu?: readonly UiV2MenuSubmenuItem[];
-  tone?: "destructive";
+  tone?: UiV2MenuItemTone;
 }>;
 
 /**

@@ -69,6 +69,9 @@ for (const viewport of [
     const summary = disclosure.locator(":scope > summary");
     await expect(summary).toHaveText("Starting workspace…");
     await expect(disclosure).not.toHaveAttribute("open");
+    const liveChevron = summary.getByTestId("answer-process-live-chevron");
+    await expect(liveChevron).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("workspace-live-collapsed.png") });
     await summary.click();
     const initialWidth = await expectStackedTimeline(disclosure);
     await emitActivity({ id: "start", kind: "workspace_start", phase: "succeeded", durationMs: 546 });
@@ -77,6 +80,7 @@ for (const viewport of [
       const entry: ThreadWorkspaceActivityEntry = { id: `command-${index}`, kind: "command", phase: "running", command: { preview } };
       await emitActivity(entry);
       await expect(summary).toContainText(index === 0 ? "Exploring pwd" : "Running ");
+      await expect(liveChevron).toBeInViewport({ ratio: 1 });
       expect(Math.abs(await expectStackedTimeline(disclosure) - initialWidth)).toBeLessThanOrEqual(1);
       await expectNoHorizontalOverflow(page);
       await emitActivity({ ...entry, phase: "succeeded", durationMs: 97, command: { preview, exitCode: 0, stdoutPreview: "Synthetic output" } });
