@@ -38,6 +38,8 @@ import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { syntheticImagePlan } from "@/tests/support/imagePlan";
+import { personalMcpFixture } from "@/tests/support/personalMcp";
+import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import { conversationMessagesFromPathRows } from "./prismaRepository";
 import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import { renderCodexManagedProfile } from "../agents/codexProfile";
@@ -2917,6 +2919,35 @@ describe("run preparation", () => {
     expect(loadAll.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "mcp_team_lookup_1"
     ]);
+  });
+
+  it("refuses Load all over the tool limit before the run while Auto keeps the same personal server", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const personal = personalMcpFixture({
+      toolNames: Array.from({ length: MCP_RUN_PLAN_LIMITS.maxTools + 1 }, (_, index) => `tool_${index}`)
+    });
+    const prepare = vi.fn(async () => personal.prepare());
+    const deps = { ...harness.deps, mcp: { filterTools: allowMcpTools, catalog: personal.catalog, prepare } };
+
+    await expect(prepareRun(deps, sendInput(successBody({
+      mcp: { mode: "load_all" }, modelId: "openai-tool-model", provider: "openai"
+    })))).resolves.toEqual({
+      code: "mcp_plan_too_large",
+      message: `Load all can offer at most ${MCP_RUN_PLAN_LIMITS.maxTools} MCP tools to one message. Use MCP Auto or switch some tools off.`,
+      ok: false,
+      status: 409
+    });
+    const auto = preparedFrom(await prepareRun(deps, sendInput(successBody({ modelId: "openai-tool-model", provider: "openai" }))));
+    expect(auto.normalizedRequest.mcpDiscovery?.catalog.servers[0]?.tools).toHaveLength(MCP_RUN_PLAN_LIMITS.maxTools + 1);
+    expect(prepare).toHaveBeenCalledOnce();
+
+    // Switching tools off brings the same server back under the Load all bound.
+    personal.switchTool("tool_0", false);
+    const loadAll = preparedFrom(await prepareRun(deps, sendInput(successBody({
+      mcp: { mode: "load_all" }, modelId: "openai-tool-model", provider: "openai"
+    }))));
+    expect(loadAll.normalizedRequest.mcp?.tools).toHaveLength(MCP_RUN_PLAN_LIMITS.maxTools);
+    expect(loadAll.normalizedRequest.mcp?.tools.some((tool) => tool.originalName === "tool_0")).toBe(false);
   });
 
   it("names connected Auto services once in the admitted system prompt and freezes them with the run", async () => {

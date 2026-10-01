@@ -18,7 +18,7 @@ import {
   EMPTY_KNOWLEDGE_SELECTION,
   type KnowledgePlan
 } from "../../contracts/knowledge";
-import { decodeMcpRunSelection } from "../../contracts/mcp";
+import { decodeMcpRunSelection, MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_PINNED, SKILL_MAX_AVAILABLE, type SkillBudgetFacts, type SkillValidationError } from "../../contracts/skills";
 import { resolveAssistantChatBaseline, resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
 import { renderAssistantInstructions, renderInstructionPreset } from "../../domain/instructionTemplates";
@@ -1838,6 +1838,14 @@ async function prepareRunWith(
       // Consumers may lack visibility into a required server, so the failure
       // is privacy-neutral and never names the affected servers.
       return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
+    }
+    if (ordinaryMcpSelection?.mode === "load_all" && mcpPlan.code === "mcp_plan_too_large" &&
+      mcpPlan.limit === "maxTools") {
+      return failure(
+        mcpPlan.code,
+        409,
+        `Load all can offer at most ${MCP_RUN_PLAN_LIMITS.maxTools} MCP tools to one message. Use MCP Auto or switch some tools off.`
+      );
     }
     const affected = mcpPlan.issues.map((issue) => issue.name).join(", ");
     return failure(
