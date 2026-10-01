@@ -18,7 +18,6 @@ function customServer(overrides: Record<string, unknown> = {}) {
     name: "Synthetic MCP",
     oauthAvailable: false,
     oauthState: null,
-    operationalStatus: "inactive",
     readiness: "ready",
     selectedToolNames: ["search"],
     sourceType: "personal",

@@ -1095,6 +1095,11 @@
   opacity: 0.6;
 }
 
+/* Third-party secrets: masked text that never engages the password manager. */
+.v2-settings-input-masked {
+  -webkit-text-security: disc;
+}
+
 .v2-settings-form {
   display: grid;
   gap: 0.625rem;

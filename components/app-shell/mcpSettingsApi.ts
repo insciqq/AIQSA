@@ -2,7 +2,6 @@ import { shellFetch } from "@/components/app-shell/shellApi";
 import { isMcpToolName, isMcpUnavailableToolReason, mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
 import type {
   McpReadiness,
-  McpOperationalStatus,
   McpSlotValue,
   McpValidationIssue,
   UserMcpCatalogResponse,
@@ -43,9 +42,7 @@ function userServer(value: unknown): UserMcpServer | null {
       ["disconnected", "disconnecting", "ready", "reauthorization_required"].includes(String(value.oauthState))
     ) ||
     !(value.accountLabel === null || typeof value.accountLabel === "string") ||
-    !["active", "checking", "inactive"].includes(String(value.operationalStatus)) ||
     !Array.isArray(value.fields) || !Array.isArray(value.tools)) return null;
-  if (value.operationalStatus === "active" && (!value.enabled || value.readiness !== "ready")) return null;
 
   const fields = value.fields.flatMap((candidate) => {
     if (!isRecord(candidate) || typeof candidate.slotKey !== "string" ||
@@ -103,7 +100,6 @@ function userServer(value: unknown): UserMcpServer | null {
     name: value.name,
     oauthAvailable: value.oauthAvailable,
     oauthState: value.oauthState as UserMcpServer["oauthState"],
-    operationalStatus: value.operationalStatus as McpOperationalStatus,
     readiness: value.readiness as McpReadiness,
     ...(value.runtimeErrorCode !== undefined ? {
       runtimeErrorCode: value.runtimeErrorCode === null ? null : mcpRuntimeErrorCode(value.runtimeErrorCode)
