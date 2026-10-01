@@ -340,6 +340,8 @@
   "mcp_inventory_tool_limit",
   "mcp_list_tools_failed",
   "mcp_network_failed",
+  "mcp_oauth_revocation_abandoned",
+  "mcp_oauth_revocation_failed",
   "mcp_ping_failed",
   "mcp_ping_unsupported",
   "mcp_request_cancelled",

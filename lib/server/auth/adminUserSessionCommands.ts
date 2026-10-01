@@ -18,6 +18,7 @@ import {
 import { MemoryCoordinatorError } from "../memory/coordinator/errors";
 import { countAccountMemoryOwnedData } from "../memory/accountDeletion/inventory";
 import type { AccountMemoryDeletionHook } from "../memory/accountDeletion/integration";
+import { archivePersonalMcpServers } from "../mcp/personalArchive";
 import {
   revokeAllInboundMcpGrants,
   revokeInboundMcpGrantsForUser
@@ -45,6 +46,8 @@ export function createAdminUserSessionCommands(
   options: Readonly<{
     accountKnowledgeDeletionHook?: () => AccountKnowledgeDeletionHook | null;
     accountMemoryDeletionHook?: () => AccountMemoryDeletionHook | null;
+    /** After commit: wakes MCP runtime revocation and finalization of archived personal servers. */
+    accountMcpDeletionKick?: () => void;
   }> = {}
 ): AdminUserSessionCommands {
   const accountKnowledgeDeletionHook = options.accountKnowledgeDeletionHook ?? (() => null);
@@ -99,6 +102,7 @@ export function createAdminUserSessionCommands(
 
       let admittedKnowledgeDeletion = false;
       let admittedMemoryDeletion = false;
+      let personalMcpPending = false;
       const deletionKicks: {
         knowledge: (() => void) | null;
         memory: (() => void) | null;
@@ -171,7 +175,13 @@ export function createAdminUserSessionCommands(
             knowledgeReady = advanced.readyForUserDeletion;
             deletionKicks.knowledge = knowledgeHook!.kick;
           }
-          if (!knowledgeReady || !memoryReady) {
+          if (ownedData.personalMcp > 0) {
+            // Fence like a user disconnect; runtime finalization revokes the
+            // tokens and removes the archived servers before a later attempt.
+            await archivePersonalMcpServers(tx, { now: new Date(), ownerUserId: user.id });
+            personalMcpPending = true;
+          }
+          if (!knowledgeReady || !memoryReady || personalMcpPending) {
             return "deletion_pending" as const;
           }
 
@@ -188,6 +198,13 @@ export function createAdminUserSessionCommands(
         }
         if (admittedKnowledgeDeletion) {
           deletionKicks.knowledge?.();
+        }
+        if (personalMcpPending) {
+          try {
+            options.accountMcpDeletionKick?.();
+          } catch {
+            // The archive is durable; the runtime's periodic reconcile finalizes it.
+          }
         }
         return result;
       } catch (error) {
@@ -315,7 +332,10 @@ export function createAdminUserSessionCommands(
 async function countUserOwnedAppData(
   tx: Prisma.TransactionClient,
   userId: string
-): Promise<Readonly<{ knowledge: number; memory: number; nonPurgeable: number }>> {
+): Promise<Readonly<{ knowledge: number; memory: number; nonPurgeable: number; personalMcp: number }>> {
+  // Rows of a personal server can name only its owner (database fence); they
+  // leave with its finalization. Installation MCP rows keep the account.
+  const installationMcp = { server: { ownerUserId: null }, userId };
   const [
     accessGrants,
     authSessionsRevoked,
@@ -325,6 +345,7 @@ async function countUserOwnedAppData(
     mcpGrants,
     mcpOAuthConnections,
     mcpUserServers,
+    personalMcp,
     modelRuns,
     assistantDefinitions,
     skillDefinitions,
@@ -360,18 +381,17 @@ async function countUserOwnedAppData(
       }
     }),
     tx.mcpGrant.count({
-      where: {
-        userId
-      }
+      where: installationMcp
     }),
     tx.mcpOAuthConnection.count({
-      where: {
-        userId
-      }
+      where: installationMcp
     }),
     tx.mcpUserServer.count({
+      where: installationMcp
+    }),
+    tx.mcpServer.count({
       where: {
-        userId
+        ownerUserId: userId
       }
     }),
     tx.modelRun.count({
@@ -428,7 +448,7 @@ async function countUserOwnedAppData(
     sharedSnapshots,
     usageEvents
   });
-  return { knowledge, memory, nonPurgeable };
+  return { knowledge, memory, nonPurgeable, personalMcp };
 }
 
 async function lockActiveAdmins(tx: Prisma.TransactionClient): Promise<{ id: string }[]> {

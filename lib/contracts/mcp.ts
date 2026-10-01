@@ -451,11 +451,13 @@ export type McpErrorCode =
   | "invalid_grant"
   | "invalid_mcp_values"
   | "json_required"
+  | "mcp_enabled_server_limit_reached"
   | "mcp_encryption_unavailable"
   | "mcp_not_found"
   | "mcp_revision_required"
   | "mcp_storage_unavailable"
   | "mcp_validation_unavailable"
+  | "personal_mcp_limit_reached"
   | "unauthorized";
 
 export type McpErrorResponse = {
@@ -518,6 +520,12 @@ export const MCP_RUN_PLAN_LIMITS = Object.freeze({
   maxEnabledServers: 64,
   maxTools: 128
 });
+
+/**
+ * Live (non-archived) personal MCP connections one user may own. Their enabled
+ * rows also count toward `maxEnabledServers` together with installation MCP.
+ */
+export const PERSONAL_MCP_CONNECTION_LIMIT = 25;
 
 /** Provider completion allowance includes reasoning and the strict JSON selection. */
 export const MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS = Object.freeze({

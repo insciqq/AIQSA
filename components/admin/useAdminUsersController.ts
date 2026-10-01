@@ -102,7 +102,7 @@ export function useAdminUsersController({
       icon: "trash",
       message: "Account deletion accepted.",
       onSuccess,
-      prompt: `Delete ${userLabel(user)}? Personal Memory and Knowledge are fenced and durably purged before the stale account and auth records are removed. Shared Project data remains. This cannot be undone.`,
+      prompt: `Delete ${userLabel(user)}? Personal Memory, Knowledge and MCP connections are fenced and durably purged before the stale account and auth records are removed. Shared Project data remains. This cannot be undone.`,
       testId: "admin-confirm-delete-user",
       title: "Delete stale user?"
     });

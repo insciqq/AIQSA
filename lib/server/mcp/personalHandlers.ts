@@ -109,6 +109,13 @@ async function safely<T>(operation: () => Promise<T>): Promise<T | Response> {
   }
 }
 
+/** Refuses before any outbound discovery or validation; creation rechecks under the owner's lock. */
+async function personalLimitResponse(deps: PersonalDeps, userId: string): Promise<Response | null> {
+  const limit = await safely(async () => await deps.repository.personalCreationLimit?.(userId) ?? null);
+  if (limit instanceof Response) return limit;
+  return limit ? errorJson(limit, 409) : null;
+}
+
 async function settleConnection(deps: PersonalDeps, userId: string, server: McpUserServerState): Promise<McpUserServerState> {
   if (!deps.onConnectionChanged || !server.enabled || (server.oauthAvailable && server.oauthState !== "ready")) return server;
   try { await deps.onConnectionChanged(userId, server.id); }
@@ -145,6 +152,8 @@ export function createPersonalMcpCreateHandler(deps: PersonalDeps) {
     if ("error" in draft) return errorJson(draft.error, 422, [{ code: draft.error, path: draft.path }]);
     const createPersonalServer = deps.repository.createPersonalServer;
     if (!createPersonalServer) return errorJson("mcp_unavailable", 503);
+    const limited = await personalLimitResponse(deps, session.userId);
+    if (limited) return limited;
     let prepared = draft.draft;
     if (prepared.auth.mode === "oauth" && deps.prepareOAuthDraft) {
       try { prepared = await deps.prepareOAuthDraft(prepared); }
@@ -162,6 +171,9 @@ export function createPersonalMcpCreateHandler(deps: PersonalDeps) {
     if (result.kind !== "ok") {
       if (result.kind === "draft_validation_failed") return errorJson("mcp_draft_test_failed", 422, result.issues);
       if (result.kind === "invalid_values") return errorJson("invalid_mcp_values", 400, result.issues);
+      if (result.kind === "personal_mcp_limit_reached" || result.kind === "mcp_enabled_server_limit_reached") {
+        return errorJson(result.kind, 409);
+      }
       return errorJson("mcp_not_found", 404);
     }
     try { deps.onRuntimeChanged?.(session.userId); } catch { /* persistence is authoritative */ }
@@ -195,6 +207,7 @@ export function createPersonalMcpUpdateHandler(deps: PersonalDeps) {
       userId: session.userId
     }));
     if (result instanceof Response) return result;
+    if (result.kind === "mcp_enabled_server_limit_reached") return errorJson(result.kind, 409);
     if (result.kind !== "ok") return errorJson(result.kind === "invalid_values" ? "invalid_mcp_values" : "mcp_not_found", result.kind === "invalid_values" ? 400 : 404, result.kind === "invalid_values" ? result.issues : undefined);
     try { deps.onRuntimeChanged?.(session.userId); } catch { /* persistence is authoritative */ }
     const settled = await safely(() => settleConnection(deps, session.userId, result.value));

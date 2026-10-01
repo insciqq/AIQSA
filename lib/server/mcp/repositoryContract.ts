@@ -12,8 +12,13 @@ export type McpRepositoryError =
   | { kind: "draft_validation_failed"; issues: readonly McpValidationIssue[] }
   | { kind: "invalid_grant"; issues: readonly McpValidationIssue[] }
   | { kind: "invalid_values"; issues: readonly McpValidationIssue[] }
+  | { kind: "mcp_enabled_server_limit_reached" }
   | { kind: "not_found" }
+  | { kind: "personal_mcp_limit_reached" }
   | { kind: "revision_required" };
+
+/** A user-level limit that blocks one more personal connection or enabled server. */
+export type McpUserLimitKind = "mcp_enabled_server_limit_reached" | "personal_mcp_limit_reached";
 
 export type McpRepositoryResult<T> = { kind: "ok"; value: T } | McpRepositoryError;
 
@@ -44,6 +49,11 @@ export type McpRepository = {
   }): Promise<McpRepositoryResult<McpUserServerState>>;
   deleteServer(serverId: string): Promise<McpRepositoryResult<AdminMcpServer>>;
   deletePersonalServer?(input: { serverId: string; userId: string }): Promise<McpRepositoryResult<McpUserServerState>>;
+  /**
+   * Advisory check before any outbound discovery or validation for a new
+   * personal connection; creation repeats it under the owner's lock.
+   */
+  personalCreationLimit?(userId: string): Promise<McpUserLimitKind | null>;
   listAdminServers(validationUserId?: string): Promise<AdminMcpServer[]>;
   listUserServers(userId: string): Promise<McpUserServerState[]>;
   rebuildRevision(input: {

@@ -126,7 +126,7 @@ export function adminUserDeletionInfo(input: AdminUserDeletionSource): AdminDele
     return {
       canDelete: true,
       reason: null,
-      summary: `${purgeableOwnedDataCount} private Memory or Knowledge record${purgeableOwnedDataCount === 1 ? "" : "s"} will be fenced and durably purged before the account is removed.`
+      summary: `${purgeableOwnedDataCount} private Memory, Knowledge or personal MCP record${purgeableOwnedDataCount === 1 ? "" : "s"} will be fenced and durably purged before the account is removed.`
     };
   }
 

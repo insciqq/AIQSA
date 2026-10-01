@@ -426,6 +426,23 @@ describe("McpSettingsSection", () => {
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
 
+  it("explains a server-side enabled-server limit that personal connections also count toward", async () => {
+    const todoist = userServer("todoist", "Todoist");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => !init?.method || init.method === "GET"
+      ? response({ servers: [todoist] })
+      : response({ error: "mcp_enabled_server_limit_reached" }, 409));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Todoist" });
+    fireEvent.click(screen.getByRole("switch", { name: "Enable Todoist" }));
+
+    expect(await screen.findByText(
+      `You can enable at most ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} MCP servers, including your personal connections. Turn one off first.`
+    )).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Enable Todoist" })).toHaveAttribute("aria-checked", "false");
+  });
+
   it("does not treat the enabled catalog size as schemas loaded into every run", async () => {
     const full = {
       ...userServer("full", "Full catalog"),
