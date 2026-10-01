@@ -22,7 +22,7 @@ import type {
   McpOAuthStoredClient,
   McpOAuthStoredConnection
 } from "./oauthRepository";
-import { McpOAuthError, McpOAuthService } from "./oauthService";
+import { MCP_OAUTH_REVOCATION_ABANDON_MS, McpOAuthError, McpOAuthService } from "./oauthService";
 import { McpClientSession } from "./clientSession";
 import { createMcpSafeFetch } from "./safeFetch";
 
@@ -65,6 +65,7 @@ class MemoryOAuthRepository implements McpOAuthRepository {
   readonly allowedUserIds: ReadonlySet<string>;
   readonly clients = new Map<string, McpOAuthStoredClient>();
   readonly connections = new Map<string, McpOAuthStoredConnection>();
+  readonly disconnectRequestedAt = new Map<string, Date>();
   readonly ineligibleConnectionIds = new Set<string>();
   readonly policy: McpOAuthPolicy;
   activeBindings = false;
@@ -83,6 +84,14 @@ class MemoryOAuthRepository implements McpOAuthRepository {
   ) {
     this.policy = policy;
     this.allowedUserIds = new Set([policy.userId, ...additionalUserIds]);
+  }
+
+  async abandonRevocation(input: Parameters<McpOAuthRepository["abandonRevocation"]>[0]): Promise<boolean> {
+    const connection = this.connections.get(input.connectionId);
+    const requestedAt = this.disconnectRequestedAt.get(input.connectionId);
+    if (connection?.state !== "disconnecting" || !requestedAt || requestedAt >= input.requestedBefore) return false;
+    this.connections.set(input.connectionId, { ...connection, state: "disconnected" });
+    return true;
   }
 
   async createConnection(input: Parameters<McpOAuthRepository["createConnection"]>[0]):
@@ -218,6 +227,7 @@ class MemoryOAuthRepository implements McpOAuthRepository {
       const connection = this.connections.get(id);
       if (!connection || !["ready", "reauthorization_required"].includes(connection.state)) continue;
       this.connections.set(id, { ...connection, state: "disconnecting" });
+      this.disconnectRequestedAt.set(id, this.now);
       updated += 1;
     }
     return updated;
@@ -1738,6 +1748,88 @@ describe("bounded MCP OAuth refresh and revocation", () => {
       });
     } finally {
       await tokenServer.close();
+    }
+  });
+
+  it("keeps a failing revocation's token for 24 h after the request, then wipes it with a content-free event", async () => {
+    const fixture = new StandardsOAuthFixture();
+    const repository = new MemoryOAuthRepository();
+    // Distinct scope ids: failure reporting deduplicates process-wide.
+    repository.connectionSequence = 9_100;
+    const fetchFn: FetchLike = async (input, init) => fetchedUrl(input) === `${AUTH_ORIGIN}/revoke`
+      ? new Response(null, { status: 503 })
+      : fixture.fetch(fetchedUrl(input), init);
+    const { connection, service } = await connectedHttpsService({
+      fetchFn,
+      fixture,
+      repository,
+      requestTimeoutMs: 5_000
+    });
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation((line) => {
+      lines.push(String(line));
+      return true;
+    });
+    try {
+      const requestedAt = repository.now;
+      repository.ineligibleConnectionIds.add(connection.id);
+      await service.reconcileDisconnecting();
+      expect(repository.connections.get(connection.id)?.state).toBe("disconnecting");
+
+      repository.now = new Date(requestedAt.getTime() + MCP_OAUTH_REVOCATION_ABANDON_MS - 1);
+      await service.reconcileDisconnecting();
+      expect(repository.connections.get(connection.id)?.state).toBe("disconnecting");
+
+      repository.now = new Date(requestedAt.getTime() + MCP_OAUTH_REVOCATION_ABANDON_MS + 1);
+      await service.reconcileDisconnecting();
+      expect(repository.connections.get(connection.id)?.state).toBe("disconnected");
+      expect(fixture.revokedHints).toEqual([]);
+      await service.reconcileDisconnecting();
+
+      const events = lines.filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as Record<string, unknown>);
+      const lifecycle = { event: "runtime_lifecycle", outcome: "failed", stage: "cleanup", subsystem: "mcp" };
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ ...lifecycle, action: "retry", code: "mcp_oauth_revocation_failed" }),
+        expect.objectContaining({ ...lifecycle, action: "stop", code: "mcp_oauth_revocation_abandoned" })
+      ]));
+      expect(events.filter((event) => event.code === "mcp_oauth_revocation_abandoned")).toHaveLength(1);
+      expect(lines.join("")).not.toContain(connection.id);
+      expect(lines.join("")).not.toContain("access-1");
+    } finally {
+      writer.mockRestore();
+    }
+  });
+
+  it("records a revocation that fails before any request without its cause and still applies the bound", async () => {
+    const fixture = new StandardsOAuthFixture();
+    const repository = new MemoryOAuthRepository();
+    repository.connectionSequence = 9_200;
+    const { connection, service } = await connectedHttpsService({
+      fetchFn: disposableAuthorizationFetch(fixture, null, []),
+      fixture,
+      repository,
+      requestTimeoutMs: 5_000
+    });
+    vi.spyOn(repository, "loadConnection").mockRejectedValue(new Error("PRIVATE stored-envelope failure"));
+    const lines: string[] = [];
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation((line) => {
+      lines.push(String(line));
+      return true;
+    });
+    try {
+      const requestedAt = repository.now;
+      repository.ineligibleConnectionIds.add(connection.id);
+      await service.reconcileDisconnecting();
+      expect(repository.connections.get(connection.id)?.state).toBe("disconnecting");
+      expect(lines.join("")).toContain("mcp_oauth_revocation_failed");
+      expect(lines.join("")).not.toContain("PRIVATE");
+
+      repository.now = new Date(requestedAt.getTime() + MCP_OAUTH_REVOCATION_ABANDON_MS + 1);
+      await service.reconcileDisconnecting();
+      expect(repository.connections.get(connection.id)?.state).toBe("disconnected");
+      expect(fixture.revokedHints).toEqual([]);
+    } finally {
+      writer.mockRestore();
     }
   });
 });

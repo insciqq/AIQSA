@@ -82,9 +82,11 @@ export async function ensureFullAccessGroup(
     }
   });
 
+  // Personal MCP stays private to its owner; Full access covers installation MCP only.
   const servers = await persistence.mcpServer.findMany({
     orderBy: { id: "asc" },
-    select: { id: true }
+    select: { id: true },
+    where: { ownerUserId: null }
   });
 
   for (const server of servers) {

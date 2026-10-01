@@ -119,8 +119,8 @@ describe("personal MCP persistence and isolation", () => {
       .toMatchObject({ discoveredOAuthConnectionId: null, discoveredRevisionId: expect.any(String), userDisabledToolNames: [] });
     expect(await storage.listAdminServers()).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: serverId })]));
     expect(await storage.listUserServers(otherId)).toEqual([]);
-    // Stray grants cannot publish a personal server into another user's catalog.
-    await prisma.mcpGrant.create({ data: { canUse: true, serverId, userId: otherId } });
+    // The database fence refuses a stray grant that would publish a personal server to another user.
+    await expect(prisma.mcpGrant.create({ data: { canUse: true, serverId, userId: otherId } })).rejects.toThrow();
     expect(await storage.listUserServers(otherId)).toEqual([]);
     expect(await storage.updateUserServer({ enabled: true, personalOnly: true, serverId, userId: otherId })).toEqual({ kind: "not_found" });
     expect(await storage.deletePersonalServer!({ serverId, userId: otherId })).toEqual({ kind: "not_found" });
@@ -235,7 +235,7 @@ describe("personal MCP persistence and isolation", () => {
     if (!policy) throw new Error("fixture_policy_missing");
     await expect(oauth.prepareValidationPolicy({ ...query, userId: otherId })).resolves.toBeNull();
     await expect(oauth.loadPolicy({ ...query, purpose: "validation", userId: otherId })).resolves.toBeNull();
-    await prisma.mcpGrant.create({ data: { canUse: true, serverId, userId: otherId } });
+    await expect(prisma.mcpGrant.create({ data: { canUse: true, serverId, userId: otherId } })).rejects.toThrow();
     await expect(oauth.loadPolicy({ ...query, purpose: "user", userId: otherId })).resolves.toBeNull();
     const client = await oauth.saveClient({
       clientInformation: { client_id: `fixture-${randomUUID()}` }, clientMetadata: { redirect_uris: [query.redirectUri] },

@@ -1049,7 +1049,9 @@ describe("MCP repository error mapping", () => {
     }, 400, {
       error: "invalid_mcp_values",
       issues: [{ code: "slot_value_invalid", path: "values.api-key" }]
-    }]
+    }],
+    [{ kind: "mcp_enabled_server_limit_reached" }, 409, { error: "mcp_enabled_server_limit_reached" }],
+    [{ kind: "personal_mcp_limit_reached" }, 409, { error: "personal_mcp_limit_reached" }]
   ];
 
   it.each(cases)("maps %o to its stable response", async (repositoryError, status, body) => {
@@ -1065,6 +1067,22 @@ describe("MCP repository error mapping", () => {
 
     expect(response.status).toBe(status);
     await expect(response.json()).resolves.toEqual(body);
+  });
+
+  it("refuses enabling one more installation server past the shared enabled-server limit", async () => {
+    const repository = new MemoryMcpRepository();
+    repository.nextError = { kind: "mcp_enabled_server_limit_reached" };
+    const updateUser = createUserMcpUpdateHandler(deps(repository));
+    const response = await updateUser(request({
+      body: { enabled: true },
+      contentType: "application/json",
+      method: "PATCH",
+      user: "user-1"
+    }), routeContext);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
+    expect(repository.userUpdateCalls).toEqual([{ enabled: true, installationOnly: true, serverId: SERVER_ID, userId: "user-1" }]);
   });
 
   it("maps unavailable encryption to a service error without exposing its cause", async () => {

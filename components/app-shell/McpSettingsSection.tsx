@@ -53,6 +53,7 @@ function errorText(error: unknown, server: UserMcpServer): string {
       ? "Add and save the required personal values before enabling this server."
       : "This server needs additional administrator configuration before it can be enabled.";
   }
+  if (error.code === "mcp_enabled_server_limit_reached") return `You can enable at most ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} MCP servers, including your personal connections. Turn one off first.`;
   if (error.code === "invalid_mcp_values") {
     return "The MCP settings could not be saved. Review the values and try again.";
   }

@@ -1189,12 +1189,16 @@ export function createPrismaMcpRuntimeRepository(input: {
     },
 
     finalizeDeletedServers: async () => client.$transaction(async (tx) => {
+      // A stored token, whatever its state, waits for revocation or the
+      // revocation bound; deleting the server would cascade it away.
+      const tokensSettled = { none: { tokenEnvelope: { not: null } } } satisfies Prisma.McpOAuthConnectionListRelationFilter;
       const candidates = await tx.mcpServer.findMany({
         orderBy: { archivedAt: "asc" },
         select: { id: true },
         take: 100,
         where: {
           archivedAt: { not: null },
+          oauthConnections: tokensSettled,
           revisions: { none: { runtimeGenerations: { some: {} } } }
         }
       });
@@ -1227,6 +1231,7 @@ export function createPrismaMcpRuntimeRepository(input: {
         where: {
           archivedAt: { not: null },
           id: { in: serverIds },
+          oauthConnections: tokensSettled,
           revisions: { none: {} }
         }
       });
