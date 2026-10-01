@@ -1096,6 +1096,9 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
       where: {
         enabled: true,
         id: USER_SERVER_ID,
+        // The value version the candidate was derived from: a sync that read
+        // the row before a credential replacement cannot re-desire it.
+        personalConfigVersion: 9,
         server: {
           activeRevisionId: REVISION_ID,
           archivedAt: null,

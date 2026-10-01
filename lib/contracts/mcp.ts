@@ -422,6 +422,10 @@ export type UserMcpServer = {
   endpoint?: string;
   /** Personal settings only: tools the owner switched off; every other upstream tool is on. */
   userDisabledToolNames?: string[];
+  /** Personal settings only: how the connection authenticates upstream. */
+  authMode?: "none" | "oauth" | "static";
+  /** Personal settings only: the static credential's header name; null unless `authMode` is static. */
+  authHeaderName?: string | null;
   runtimeErrorCode?: McpRuntimeErrorCode | null;
   accountLabel: string | null;
   description: string;
@@ -457,6 +461,9 @@ export function decodeMcpRunSelection(value: unknown): McpRunSelection | null {
 }
 
 export type McpErrorCode =
+  | "auth_mode_invalid"
+  | "authorization_required"
+  | "header_name_invalid"
   | "mcp_artifact_missing"
   | "mcp_draft_changed"
   | "mcp_draft_test_failed"
@@ -491,6 +498,21 @@ export type PersonalMcpAuthorizationOriginConfirmationResponse = {
   authorizationOrigins: string[];
   error: "oauth_authorization_origin_confirmation_required";
   issues: McpValidationIssue[];
+};
+
+/**
+ * Personal MCP credential replacement (`PATCH /api/me/mcp-connections/{id}`),
+ * static-auth connections only and never combined with `enabled` or `tool`.
+ * `authorization` is the complete header value; `headerName` absent keeps the
+ * stored header. A header-name change always carries a new secret.
+ */
+export type PersonalMcpCredentialReplacementRequest = {
+  credentials: { authorization: string; headerName?: string };
+};
+
+/** The replaced connection; the secret is write-only and never returned. */
+export type PersonalMcpCredentialReplacementResponse = {
+  server: UserMcpServer;
 };
 
 export type AdminMcpCreateRequest = {
