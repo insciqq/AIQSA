@@ -3,7 +3,7 @@ import {
   forgetMemory,
   listMemories,
   MemoryApiError,
-  memoryMutationOutcomeIsUnknown,
+  retryMemoryRead,
   searchMemories,
   updateMemory
 } from "@/components/app-shell/memoryApi";
@@ -23,6 +23,12 @@ export type MemoryManagerProvenanceFilter = MemoryConsumerListInput["provenance"
 
 export type MemoryDraft = Readonly<{ statement: string }>;
 
+/**
+ * `mutationError` holds only user-input validation codes; other mutation
+ * failures stay silent. `mutationOutcomeUnknown` blocks new mutations only
+ * while a failed action is reconciled by a fresh read. A failed list read
+ * keeps the last known rows.
+ */
 type MemoryManagerStore = {
   accountId: string | null;
   activeMemory: MemoryConsumerItem | null;
@@ -83,7 +89,7 @@ export const useMemoryManagerStore = create<MemoryManagerStore>((set) => ({
       draft: { ...state.draft, ...patch },
       draftDirty: true,
       draftStale: false,
-      mutationError: state.mutationOutcomeUnknown ? state.mutationError : null,
+      mutationError: null,
       notice: null
     }));
   },
@@ -138,11 +144,15 @@ export function memoryDraftIsValid(draft: MemoryDraft): boolean {
     draft.statement.length <= MEMORY_CONSUMER_STATEMENT_MAX_LENGTH;
 }
 
+/** Codes the user can act on by changing the draft; everything else is silent. */
+const MEMORY_VALIDATION_CODES = new Set(["memory_changed", "memory_secret_rejected"]);
+
 export async function refreshMemoryList(
-  options: Readonly<{ append?: boolean; appliedQuery?: string }> = {}
+  options: Readonly<{ append?: boolean; appliedQuery?: string; keepDraft?: boolean }> = {}
 ): Promise<void> {
   const current = useMemoryManagerStore.getState();
-  if (current.resetPending || current.mutationState || holdsDraft(current.screen)) return;
+  if (current.resetPending || current.mutationState ||
+    (holdsDraft(current.screen) && !options.keepDraft)) return;
   const generation = ++listRequestGeneration;
   const append = options.append === true;
   const queryApplied = options.appliedQuery ?? current.queryApplied;
@@ -161,9 +171,11 @@ export async function refreshMemoryList(
     ...(append ? {} : { queryApplied })
   });
   try {
-    const response = queryApplied
-      ? await searchMemories(queryApplied, cursor, undefined, filters)
-      : await listMemories(cursor, undefined, filters);
+    const response = await retryMemoryRead(() => queryApplied
+      ? searchMemories(queryApplied, cursor, undefined, filters)
+      : listMemories(cursor, undefined, filters), {
+      current: () => generation === listRequestGeneration
+    });
     if (generation !== listRequestGeneration) return;
     useMemoryManagerStore.setState((state) => ({
       listError: null,
@@ -182,6 +194,37 @@ export async function refreshMemoryList(
     });
     throw error;
   }
+}
+
+/** A failed mutation shows nothing. While the editor keeps its draft, a fresh
+ * read reconciles the outcome; the block is lifted whatever that read returns. */
+async function reconcileFailedMutation(error: unknown, generation: number): Promise<void> {
+  const code = errorName(error);
+  const validation = MEMORY_VALIDATION_CODES.has(code);
+  useMemoryManagerStore.setState({
+    draftStale: code === "memory_changed",
+    mutationError: validation ? code : null,
+    mutationOutcomeUnknown: !validation,
+    mutationState: null
+  });
+  if (validation) return;
+  await refreshMemoryList({ keepDraft: true }).catch(() => undefined);
+  if (generation !== lifecycleGeneration) return;
+  useMemoryManagerStore.setState((state) => {
+    const target = state.activeMemory;
+    const direct = target ? state.memories.find((item) => item.memoryRef === target.memoryRef) : null;
+    const combined = target && !direct && state.memories.some((item) =>
+      item.combined?.sources.some((source) => source.memoryRef === target.memoryRef));
+    // A target that no longer exists cannot keep an editor open over the list.
+    const targetGone = (state.screen === "edit" || state.screen === "forget") && !direct && !combined;
+    return {
+      mutationOutcomeUnknown: false,
+      ...(targetGone
+        ? { activeMemory: null, draft: emptyDraft, draftDirty: false, draftStale: false, screen: "list" as const }
+        : direct && state.screen === "edit" ? { activeMemory: direct } : {}),
+      ...(state.listLoadState === "loading" ? { listLoadState: "ready" as const } : {})
+    };
+  });
 }
 
 export async function applyMemorySearch(): Promise<void> {
@@ -278,14 +321,14 @@ export function requestForgetMemory(memoryRef: string): void {
 }
 
 export function cancelMemoryDraft(): void {
-  const { activeMemory: memory, mutationError, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
+  const { activeMemory: memory, mutationOutcomeUnknown } = useMemoryManagerStore.getState();
   const topLevel = memory && useMemoryManagerStore.getState().memories.some(
     (item) => item.memoryRef === memory.memoryRef);
   useMemoryManagerStore.setState({
     draft: memory ? draftFromMemory(memory) : emptyDraft,
     draftDirty: false,
     draftStale: false,
-    mutationError: mutationOutcomeUnknown ? mutationError : null,
+    mutationError: null,
     screen: topLevel ? "detail" : "list"
   });
   if (mutationOutcomeUnknown) void refreshMemoryList().catch(() => undefined);
@@ -319,10 +362,7 @@ export async function saveNewMemory(useMemoryFacts: boolean): Promise<void> {
     await refreshMemoryList().catch(() => undefined);
   } catch (error) {
     if (generation !== lifecycleGeneration) return;
-    useMemoryManagerStore.setState({
-      mutationError: errorName(error), mutationOutcomeUnknown: memoryMutationOutcomeIsUnknown(error),
-      mutationState: null
-    });
+    await reconcileFailedMutation(error, generation);
     throw error;
   }
 }
@@ -356,13 +396,7 @@ export async function saveMemoryChanges(): Promise<void> {
     await refreshMemoryList().catch(() => undefined);
   } catch (error) {
     if (generation !== lifecycleGeneration) return;
-    const code = errorName(error);
-    useMemoryManagerStore.setState({
-      draftStale: code === "memory_changed",
-      mutationError: code,
-      mutationOutcomeUnknown: memoryMutationOutcomeIsUnknown(error),
-      mutationState: null
-    });
+    await reconcileFailedMutation(error, generation);
     throw error;
   }
 }
@@ -392,10 +426,7 @@ export async function forgetCurrentMemory(): Promise<void> {
     await refreshMemoryList().catch(() => undefined);
   } catch (error) {
     if (generation !== lifecycleGeneration) return;
-    useMemoryManagerStore.setState({
-      mutationError: errorName(error), mutationOutcomeUnknown: memoryMutationOutcomeIsUnknown(error),
-      mutationState: null
-    });
+    await reconcileFailedMutation(error, generation);
     throw error;
   }
 }

@@ -1,7 +1,8 @@
 import {
   loadMemorySettings,
   MemoryApiError,
-  patchMemorySettings
+  patchMemorySettings,
+  retryMemoryRead
 } from "@/components/app-shell/memoryApi";
 import {
   type MemoryConsumerSettingsPatch,
@@ -17,6 +18,9 @@ export type MemorySettingsMutation =
   | "synthesisEnabled"
   | "useMemoryFacts";
 
+/** Failures are never shown: a failed read keeps the last known settings
+ * (`error` is recorded only while none exist) and a failed change keeps the
+ * committed values, then reconciles them with the server. */
 type MemorySettingsStore = {
   accountId: string | null;
   busy: MemorySettingsMutation | null;
@@ -69,7 +73,11 @@ export async function refreshMemorySettings(
   useMemorySettingsStore.setState({
     loadState: "loading"
   });
-  const promise = loadMemorySettings(controller.signal).then(
+  const promise = retryMemoryRead(() => loadMemorySettings(controller.signal), {
+    current: () => generation === requestGeneration &&
+      useMemorySettingsStore.getState().accountId === accountId,
+    signal: controller.signal
+  }).then(
     (data) => {
       const latest = useMemorySettingsStore.getState();
       if (generation !== requestGeneration || latest.accountId !== accountId) return data;
@@ -79,10 +87,9 @@ export async function refreshMemorySettings(
     (error: unknown) => {
       const latest = useMemorySettingsStore.getState();
       if (generation !== requestGeneration || latest.accountId !== accountId) throw error;
-      useMemorySettingsStore.setState({
-        error: errorName(error),
-        loadState: "error"
-      });
+      useMemorySettingsStore.setState(latest.data
+        ? { error: null, loadState: "ready" }
+        : { error: errorName(error), loadState: "error" });
       throw error;
     }
   ).finally(() => {
@@ -99,7 +106,7 @@ async function mutation(
   ) => Promise<MemoryConsumerSettingsResponse>
 ): Promise<MemoryConsumerSettingsResponse> {
   const initial = useMemorySettingsStore.getState();
-  if (initial.busy || initial.error) throw new Error("memory_settings_confirmation_required");
+  if (initial.busy) throw new Error("memory_settings_confirmation_required");
   const startGeneration = requestGeneration;
   const current = initial.data ?? await refreshMemorySettings(true);
   if (startGeneration !== requestGeneration) throw new Error("memory_settings_account_changed");
@@ -116,14 +123,10 @@ async function mutation(
   } catch (error) {
     const latest = useMemorySettingsStore.getState();
     if (generation !== requestGeneration || latest.accountId !== accountId) throw error;
-    useMemorySettingsStore.setState({ busy: null, error: errorName(error) });
-    if (error instanceof MemoryApiError && error.code === "memory_changed") {
-      try {
-        await refreshMemorySettings(true);
-      } catch {
-        // Preserve the actionable stale error if reconciliation also fails.
-      }
-    }
+    // The switch keeps its committed value and stays usable; an unknown or
+    // stale outcome is reconciled with the server without any message.
+    useMemorySettingsStore.setState({ busy: null, error: null });
+    await refreshMemorySettings(true).catch(() => undefined);
     throw error;
   }
 }

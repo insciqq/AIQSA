@@ -316,8 +316,11 @@ test("an unconfirmed Memory reset reloads the actual list and unlocks its contro
   await library.getByRole("button", { name: "Forget everything…" }).click();
   const confirmation = page.getByRole("alertdialog", { name: "Forget everything?" });
   await confirmation.getByRole("button", { name: "Forget everything", exact: true }).click();
-  await expect(library.getByRole("alert")).toContainText("The reset could not be confirmed.");
   await expect(library.getByText("Still saved on the server", { exact: true })).toBeVisible();
+  // The unconfirmed reset shows no message; the confirmation stays usable.
+  await expect(library.getByRole("alert")).toHaveCount(0);
+  await expect(library.getByText(/could not be confirmed/u)).toHaveCount(0);
+  await expect(confirmation.getByRole("button", { name: "Forget everything", exact: true })).toBeEnabled();
   await confirmation.getByRole("button", { name: "Keep my memories", exact: true }).click();
   await expect(library.getByRole("button", { name: "Add memory", exact: true }).first()).toBeEnabled();
   await expect(library.getByText("Before reset", { exact: true })).toHaveCount(0);

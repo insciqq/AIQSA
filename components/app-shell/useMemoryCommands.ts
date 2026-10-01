@@ -22,6 +22,7 @@ export function useMemoryCommands(input: Readonly<{
     let timer: ReturnType<typeof setTimeout> | undefined;
     let failures = 0;
     let emptyPolls = 0;
+    let latest: ReadonlyMap<string, MemoryCommandFeedback> = EMPTY;
     const currentMessageId = messageKey.split(",").filter(Boolean).at(-1);
     async function poll() {
       try {
@@ -37,7 +38,8 @@ export function useMemoryCommands(input: Readonly<{
         const result = decodeMemoryCommandListResponse(await response.json());
         if (!result) throw new Error("memory_commands_invalid");
         if (controller.signal.aborted) return;
-        setState({ scope, commands: new Map(result.commands.map(({ messageId, feedback }) => [messageId, feedback])) });
+        latest = new Map(result.commands.map(({ messageId, feedback }) => [messageId, feedback]));
+        setState({ scope, commands: latest });
         failures = 0;
         const currentMessageHasCommand = result.commands.some(({ messageId }) =>
           messageId === currentMessageId);
@@ -50,9 +52,15 @@ export function useMemoryCommands(input: Readonly<{
           timer = setTimeout(() => void poll(), 1_500);
         }
       } catch {
-        if (!controller.signal.aborted && ++failures <= 3) {
+        if (controller.signal.aborted) return;
+        if (++failures <= 3) {
           timer = setTimeout(() => void poll(), 3_000);
+          return;
         }
+        // Polling gave up: an unconfirmed pending notice must not linger, and
+        // nothing replaces it with a failure message.
+        latest = new Map([...latest].filter(([, feedback]) => !memoryCommandIsPending(feedback)));
+        setState({ scope, commands: latest });
       }
     }
     void poll();

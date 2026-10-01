@@ -49,11 +49,15 @@ export async function openPersonalChatMessage(input: Readonly<{
   }
 }
 
+/** Which deep link could not be opened: the one-shot Memory source marker or
+ * an addressed chat message. */
+export type PersonalChatDeepLinkTarget = "memory_source" | "message";
+
 /**
  * Anchors `/c/<chat>?message=<id>` once the route owner has opened that
- * personal chat and loaded its thread, and announces the one-shot
+ * personal chat and loaded its thread, and consumes the one-shot
  * `?memorySource=unavailable` marker. A message that cannot be revealed is
- * dropped from the address with the same privacy-neutral notice.
+ * dropped from the address; the caller chooses the privacy-neutral response.
  */
 export function usePersonalChatDeepLink({
   activeChatId,
@@ -66,7 +70,7 @@ export function usePersonalChatDeepLink({
   activeChatId: string | null;
   detailLoading: boolean;
   onAnchor(chatId: string, messageId: string): void;
-  onUnavailable(): void;
+  onUnavailable(target: PersonalChatDeepLinkTarget): void;
   ready: boolean;
   revealMessage(chatId: string, messageId: string): Promise<boolean>;
 }>): void {
@@ -78,7 +82,7 @@ export function usePersonalChatDeepLink({
     if (url.searchParams.get("memorySource") === "unavailable") {
       url.searchParams.delete("memorySource");
       replaceCurrentUrl(url);
-      onUnavailable();
+      onUnavailable("memory_source");
       return;
     }
     const rawMessageId = url.searchParams.get("message");
@@ -102,7 +106,7 @@ export function usePersonalChatDeepLink({
         currentUrl.searchParams.delete("message");
         replaceCurrentUrl(currentUrl);
       }
-      onUnavailable();
+      onUnavailable("message");
     };
     const messageId = boundedRouteId(rawMessageId);
     if (!messageId) {

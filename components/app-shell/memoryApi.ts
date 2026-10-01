@@ -44,6 +44,49 @@ export function memoryMutationOutcomeIsUnknown(error: unknown): boolean {
     [400, 401, 403, 404, 409, 422].includes(error.status));
 }
 
+/** Pauses between bounded background retries of a failed Memory read. */
+export const MEMORY_READ_RETRY_DELAYS_MS = Object.freeze([1_000, 2_000, 4_000] as const);
+
+function pauseMemoryRead(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+/**
+ * Retries a transient Memory read failure at most three times with growing
+ * pauses. Permanent refusals, aborts and superseded reads settle at once; the
+ * caller keeps showing its last known data meanwhile.
+ */
+export async function retryMemoryRead<T>(
+  read: () => Promise<T>,
+  options: Readonly<{ current?(): boolean; signal?: AbortSignal }> = {}
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      const delay = MEMORY_READ_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || options.signal?.aborted || options.current?.() === false ||
+        !memoryMutationOutcomeIsUnknown(error)) throw error;
+      await pauseMemoryRead(delay, options.signal);
+      if (options.current?.() === false) throw error;
+    }
+  }
+}
+
 async function responseJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
