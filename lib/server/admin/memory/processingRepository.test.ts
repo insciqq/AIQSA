@@ -18,6 +18,7 @@ describe("Memory issue aggregation", () => {
     ];
     const read = (ordered: typeof rows) => readAdminMemoryProcessing({
       $queryRaw: vi.fn().mockResolvedValueOnce([{ enabled: 1n, learning: 0n }]).mockResolvedValueOnce(ordered)
+        .mockResolvedValueOnce([])
     } as unknown as PrismaClient, now);
     const result = await read(rows);
     expect(result.issues).toEqual([
@@ -27,5 +28,22 @@ describe("Memory issue aggregation", () => {
       { stage: "INDEXING", reason: "PROCESSING_FAILED", count: 1, oldestAgeSeconds: 120, severity: "warn" }
     ]);
     expect(await read([...rows].reverse())).toEqual(result);
+  });
+
+  it("adds 24-hour command and search outcomes as warn-only allowlisted aggregates", async () => {
+    const now = new Date("2026-09-19T12:00:00Z");
+    const result = await readAdminMemoryProcessing({
+      $queryRaw: vi.fn().mockResolvedValueOnce([{ enabled: 1n, learning: 0n }]).mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          { stage: "SEARCH", reason: "SEARCH_FAILED", count: 2n, oldestAt: new Date(now.getTime() - 3_600_000) },
+          { stage: "COMMAND", reason: "COMMAND_UNKNOWN", count: 1n, oldestAt: new Date(now.getTime() - 60_000) },
+          { stage: "COMMAND", reason: "COMMAND_FAILED", count: 3n, oldestAt: new Date(now.getTime() - 7_200_000) }
+        ])
+    } as unknown as PrismaClient, now);
+    expect(result.issues).toEqual([
+      { stage: "COMMAND", reason: "COMMAND_FAILED", count: 3, oldestAgeSeconds: 7200, severity: "warn" },
+      { stage: "COMMAND", reason: "COMMAND_UNKNOWN", count: 1, oldestAgeSeconds: 60, severity: "warn" },
+      { stage: "SEARCH", reason: "SEARCH_FAILED", count: 2, oldestAgeSeconds: 3600, severity: "warn" }
+    ]);
   });
 });
