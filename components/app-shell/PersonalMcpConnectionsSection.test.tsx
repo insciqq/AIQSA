@@ -375,4 +375,84 @@ describe("PersonalMcpConnectionsSection", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /connection is unencrypted/i }));
     expect(screen.getByRole("button", { name: "Add MCP" })).toBeEnabled();
   });
+
+  describe("replacing a token", () => {
+    function staticServer(overrides: Record<string, unknown> = {}) {
+      return server({ authHeaderName: "Authorization", authMode: "static", id: "gh-1", name: "GitHub", ...overrides });
+    }
+
+    it("offers Replace token only on static rows and points to it when the server rejected the stored token", async () => {
+      stubApi([
+        staticServer({ readiness: "unavailable", runtimeErrorCode: "mcp_authorization_required" }),
+        oauthServer(),
+        server({ id: "none-1", name: "Open MCP" })
+      ]);
+      await renderLoaded();
+      expect(within(row("GitHub")).getByText("The server rejected the stored token. Replace the token to continue.")).toBeVisible();
+      expect(within(row("GitHub")).getByRole("button", { name: "Replace token for GitHub" })).toHaveAttribute("data-tone", "primary");
+      expect(within(row("Notion")).queryByRole("button", { name: /Replace token/ })).not.toBeInTheDocument();
+      expect(within(row("Open MCP")).queryByRole("button", { name: /Replace token/ })).not.toBeInTheDocument();
+    });
+
+    it("replaces a bare token as Bearer, keeps the header unless changed, and returns focus to the action", async () => {
+      const patches: unknown[] = [];
+      stubApi([staticServer({ readiness: "unavailable", runtimeErrorCode: "mcp_authorization_required" })], (path, init) => {
+        if (init?.method !== "PATCH") return undefined;
+        patches.push(JSON.parse(String(init.body)));
+        return response({ server: staticServer({ authHeaderName: (patches.at(-1) as { credentials: { headerName?: string } }).credentials.headerName ?? "Authorization" }) });
+      });
+      await renderLoaded();
+      fireEvent.click(within(row("GitHub")).getByRole("button", { name: "Replace token for GitHub" }));
+      const form = screen.getByRole("form", { name: "Replace token for GitHub" });
+      const token = within(form).getByLabelText(/New token or API key/);
+      expect(token).toHaveFocus();
+      expect(token).toHaveAttribute("type", "text");
+      expect(token).toHaveClass("v2-settings-input-masked");
+      expect(token).toHaveAttribute("autocomplete", "off");
+      expect(within(form).getByLabelText(/^Header name/)).toHaveValue("Authorization");
+      fireEvent.change(token, { target: { value: "ghp_new" } });
+      fireEvent.click(within(form).getByRole("button", { name: "Save token" }));
+      await waitFor(() => expect(screen.queryByRole("form", { name: "Replace token for GitHub" })).not.toBeInTheDocument());
+      expect(within(row("GitHub")).getByRole("button", { name: "Replace token for GitHub" })).toHaveFocus();
+      expect(within(row("GitHub")).getByText("Token replaced. New messages use it.")).toBeVisible();
+      expect(within(row("GitHub")).queryByText(/rejected the stored token/)).not.toBeInTheDocument();
+
+      fireEvent.click(within(row("GitHub")).getByRole("button", { name: "Replace token for GitHub" }));
+      const again = screen.getByRole("form", { name: "Replace token for GitHub" });
+      fireEvent.change(within(again).getByLabelText(/New token or API key/), { target: { value: "raw-key" } });
+      fireEvent.change(within(again).getByLabelText(/^Header name/), { target: { value: "X-API-Key" } });
+      fireEvent.click(within(again).getByRole("button", { name: "Save token" }));
+      await waitFor(() => expect(patches).toHaveLength(2));
+      expect(patches).toEqual([
+        { credentials: { authorization: "Bearer ghp_new" } },
+        { credentials: { authorization: "raw-key", headerName: "X-API-Key" } }
+      ]);
+    });
+
+    it.each([
+      ["a rejected token", response({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_authorization_required", path: "credentials.authorization" }] }, 422), "token", /rejected this token/],
+      ["an invalid header", response({ error: "header_name_invalid", issues: [{ code: "header_name_invalid", path: "credentials.headerName" }] }, 422), "header", /X-API-Key/],
+      ["the rate limit", response({ error: "personal_mcp_rate_limited" }, 429, { "retry-after": "30" }), null, /Try again in 30 seconds/],
+      ["a concurrent replacement", response({ error: "mcp_draft_changed" }, 409), null, /changed meanwhile/],
+      ["a non-static row", response({ error: "auth_mode_invalid", issues: [{ code: "auth_mode_invalid", path: "credentials" }] }, 422), null, /Only token connections/],
+      ["unavailable validation", response({ error: "mcp_validation_unavailable" }, 503), null, /Connection checks are unavailable/],
+      ["unavailable encryption", response({ error: "mcp_encryption_unavailable" }, 503), null, /Credential storage is unavailable/]
+    ])("keeps the form open and explains %s", async (_label, failure, field, copy) => {
+      stubApi([staticServer()], (path, init) => init?.method === "PATCH" ? failure.clone() : undefined);
+      await renderLoaded();
+      fireEvent.click(within(row("GitHub")).getByRole("button", { name: "Replace token for GitHub" }));
+      const form = screen.getByRole("form", { name: "Replace token for GitHub" });
+      fireEvent.change(within(form).getByLabelText(/New token or API key/), { target: { value: "candidate" } });
+      fireEvent.click(within(form).getByRole("button", { name: "Save token" }));
+      const message = await within(form).findByText(copy);
+      if (field) {
+        const input = field === "token" ? within(form).getByLabelText(/New token or API key/) : within(form).getByLabelText(/^Header name/);
+        expect(input).toHaveAttribute("aria-invalid", "true");
+        expect(input.getAttribute("aria-describedby")).toContain(message.id);
+      } else {
+        expect(message).toHaveAttribute("role", "alert");
+      }
+      expect(within(form).getByLabelText(/New token or API key/)).toHaveValue("candidate");
+    });
+  });
 });

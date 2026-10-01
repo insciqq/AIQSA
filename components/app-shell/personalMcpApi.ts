@@ -64,6 +64,14 @@ export type PersonalMcpCreateInput = {
   values?: { authorization: string };
 };
 
+/**
+ * Credential replacement for a static connection (`PATCH`, exclusive with
+ * `enabled` and `tool`). A header-name change always carries a new secret.
+ */
+export type PersonalMcpCredentialsInput = {
+  credentials: { authorization: string; headerName?: string };
+};
+
 export type PersonalMcpIssue = { code: string; path: string };
 
 export class PersonalMcpApiError extends Error {
@@ -270,6 +278,13 @@ export async function updatePersonalMcp(
   id: string,
   body: { enabled: boolean } | { tool: { enabled: boolean; name: string } }
 ): Promise<PersonalMcpConnection> {
+  return serverOf(await request(`/api/me/mcp-connections/${encodeURIComponent(id)}`, {
+    body: JSON.stringify(body), headers: jsonHeaders, method: "PATCH"
+  }));
+}
+
+/** Replaces the write-only secret (and optionally its header) in place; the row keeps its id and switch-offs. */
+export async function replacePersonalMcpCredentials(id: string, body: PersonalMcpCredentialsInput): Promise<PersonalMcpConnection> {
   return serverOf(await request(`/api/me/mcp-connections/${encodeURIComponent(id)}`, {
     body: JSON.stringify(body), headers: jsonHeaders, method: "PATCH"
   }));

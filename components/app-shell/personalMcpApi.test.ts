@@ -3,7 +3,8 @@ import {
   createPersonalMcp,
   loadPersonalMcpConnections,
   PersonalMcpApiError,
-  personalMcpAuthorizationValue
+  personalMcpAuthorizationValue,
+  replacePersonalMcpCredentials
 } from "./personalMcpApi";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -106,6 +107,25 @@ describe("Personal MCP API errors", () => {
     serve({ ...body, authorizationOrigins: ["https://login.example/path"] }, { status: 422 });
     await expect(createPersonalMcp({ auth: { mode: "oauth" }, name: "x", url: "https://x.example/mcp" }))
       .rejects.toMatchObject({ code: "mcp_response_invalid" });
+  });
+});
+
+describe("Personal MCP credential replacement", () => {
+  it("patches only the credentials and decodes the updated row", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ server: server({ authHeaderName: "X-API-Key", authMode: "static" }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(replacePersonalMcpCredentials("personal/1", { credentials: { authorization: "raw", headerName: "X-API-Key" } }))
+      .resolves.toMatchObject({ authHeaderName: "X-API-Key", authMode: "static", userDisabledToolNames: ["write"] });
+    expect(fetchMock).toHaveBeenCalledWith("/api/me/mcp-connections/personal%2F1", expect.objectContaining({
+      body: JSON.stringify({ credentials: { authorization: "raw", headerName: "X-API-Key" } }),
+      method: "PATCH"
+    }));
+  });
+
+  it("keeps the field paths of a refused replacement", async () => {
+    serve({ error: "header_name_invalid", issues: [{ code: "header_name_invalid", path: "credentials.headerName" }] }, { status: 422 });
+    await expect(replacePersonalMcpCredentials("personal-1", { credentials: { authorization: "x", headerName: "Host" } }))
+      .rejects.toMatchObject({ code: "header_name_invalid", issues: [{ code: "header_name_invalid", path: "credentials.headerName" }] });
   });
 });
 

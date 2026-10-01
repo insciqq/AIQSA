@@ -11,6 +11,7 @@ import {
   PersonalMcpApiError,
   personalMcpAuthorizationValue,
   personalMcpOAuthConnectAction,
+  replacePersonalMcpCredentials,
   updatePersonalMcp,
   type PersonalMcpAuthMode,
   type PersonalMcpConnection
@@ -36,6 +37,7 @@ const TOOL_FILTER_THRESHOLD = 12;
 const NAME_MAX_LENGTH = 120;
 const HEADER_NAME_MAX_LENGTH = 128;
 const CREATE_FIELDS: readonly PersonalMcpField[] = ["auth", "headerName", "insecure", "name", "token", "url"];
+const REPLACE_FIELDS: readonly PersonalMcpField[] = ["headerName", "token"];
 
 type Draft = {
   authMode: PersonalMcpAuthMode;
@@ -93,7 +95,7 @@ function rowStatus(connection: PersonalMcpConnection): { hint: string | null; la
   if (presentation.kind === "progress") return { hint: null, label: presentation.label, tone: "neutral" };
   if (connection.runtimeErrorCode === "mcp_authorization_required" && connection.readiness === "unavailable") {
     return connection.authMode === "static"
-      ? { hint: null, label: "The server rejected the stored token.", tone: "danger" }
+      ? { hint: null, label: "The server rejected the stored token. Replace the token to continue.", tone: "danger" }
       : { hint: null, label: "Authorization is no longer valid. Reconnect to continue.", tone: "warn" };
   }
   return {
@@ -123,6 +125,8 @@ export function PersonalMcpConnectionsSection({ onBusyChange }: Readonly<{ onBus
   const [toolFilters, setToolFilters] = useState<Readonly<Record<string, string>>>({});
   const [announcement, setAnnouncement] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [replacingId, setReplacingId] = useState<string | null>(null);
+  const replaceButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingRef = useRef(new Set<string>());
   const mountedRef = useRef(false);
   const headingRefs = useRef(new Map<string, HTMLHeadingElement>());
@@ -290,6 +294,47 @@ export function PersonalMcpConnectionsSection({ onBusyChange }: Readonly<{ onBus
       announce(`${name} turned ${enabled ? "on" : "off"}.`);
     } catch {
       setRowNotice(connection.id, { text: "The tool could not be updated. Try again.", tone: "danger" });
+    } finally {
+      end(key);
+    }
+  }
+
+  /**
+   * Replaces a static connection's token (and header, when changed) in place.
+   * Returns the field-associated failure, or null after success.
+   */
+  async function replaceCredentials(
+    connection: PersonalMcpConnection,
+    input: Readonly<{ headerName: string; token: string }>
+  ): Promise<PersonalMcpErrorPresentation | null> {
+    const key = `${connection.id}:credentials`;
+    if (!begin(key)) return null;
+    setRowNotice(connection.id, null);
+    const headerName = input.headerName.trim() || "Authorization";
+    const currentHeader = connection.authHeaderName ?? "Authorization";
+    try {
+      applyPersonalMcpConnection(await replacePersonalMcpCredentials(connection.id, {
+        credentials: {
+          authorization: personalMcpAuthorizationValue(headerName, input.token),
+          // A secret-only replacement keeps the stored header.
+          ...(headerName !== currentHeader ? { headerName } : {})
+        }
+      }));
+      if (!mountedRef.current) return null;
+      setReplacingId(null);
+      announce(`Token replaced for ${connection.name}.`);
+      setRowNotice(connection.id, { text: "Token replaced. New messages use it.", tone: "ok" });
+      focusAfterRender.current = () => replaceButtonRefs.current.get(connection.id)?.focus();
+      return null;
+    } catch (error) {
+      if (error instanceof PersonalMcpApiError && error.code === "auth_mode_invalid") {
+        return { fields: {}, general: "Only token connections can replace their token. Refresh the list." };
+      }
+      return presentPersonalMcpError(error, {
+        authMode: "static",
+        fallback: "The token could not be replaced. The current token is still in use.",
+        fields: REPLACE_FIELDS
+      });
     } finally {
       end(key);
     }
@@ -576,6 +621,16 @@ export function PersonalMcpConnectionsSection({ onBusyChange }: Readonly<{ onBus
                     onFilterChange={(value) => setToolFilters((current) => ({ ...current, [connection.id]: value }))}
                     onReadd={() => void remove(connection, true)}
                     onRemove={() => void remove(connection)}
+                    onReplace={(input) => replaceCredentials(connection, input)}
+                    onReplaceOpenChange={(open) => {
+                      setReplacingId(open ? connection.id : null);
+                      if (!open) focusAfterRender.current = () => replaceButtonRefs.current.get(connection.id)?.focus();
+                    }}
+                    replaceButtonRef={(node) => {
+                      if (node) replaceButtonRefs.current.set(connection.id, node);
+                      else replaceButtonRefs.current.delete(connection.id);
+                    }}
+                    replaceOpen={replacingId === connection.id}
                     onToggle={(enabled) => void setEnabled(connection, enabled)}
                     onToggleTool={(name, enabled) => void setToolEnabled(connection, name, enabled)}
                     pending={pending}
@@ -626,9 +681,13 @@ function ConnectionRow({
   onFilterChange,
   onReadd,
   onRemove,
+  onReplace,
+  onReplaceOpenChange,
   onToggle,
   onToggleTool,
-  pending
+  pending,
+  replaceButtonRef,
+  replaceOpen
 }: Readonly<{
   connection: PersonalMcpConnection;
   filter: string;
@@ -639,9 +698,13 @@ function ConnectionRow({
   onFilterChange(value: string): void;
   onReadd(): void;
   onRemove(): void;
+  onReplace(input: Readonly<{ headerName: string; token: string }>): Promise<PersonalMcpErrorPresentation | null>;
+  onReplaceOpenChange(open: boolean): void;
   onToggle(enabled: boolean): void;
   onToggleTool(name: string, enabled: boolean): void;
   pending: ReadonlySet<string>;
+  replaceButtonRef(node: HTMLButtonElement | null): void;
+  replaceOpen: boolean;
 }>) {
   const id = connection.id;
   const deleting = pending.has(`${id}:delete`);
@@ -657,6 +720,8 @@ function ConnectionRow({
     : tools;
   const headingId = `personal-mcp-${id}-heading`;
   const oauthLabel = connection.oauthState === "disconnected" || connection.oauthState === null ? "Connect" : "Reconnect";
+  const replacing = pending.has(`${id}:credentials`);
+  const tokenRejected = connection.authMode === "static" && connection.runtimeErrorCode === "mcp_authorization_required";
 
   return (
     <article aria-labelledby={headingId} className="v2-settings-server-row" data-busy={deleting || undefined}>
@@ -685,6 +750,14 @@ function ConnectionRow({
               <UiV2Button disabled={deleting} onClick={onDismissNotice}>Dismiss</UiV2Button>
             </div>
           </div>
+        ) : null}
+        {replaceOpen ? (
+          <ReplaceCredentialsForm
+            busy={replacing}
+            connection={connection}
+            onCancel={() => onReplaceOpenChange(false)}
+            onSubmit={onReplace}
+          />
         ) : null}
         {tools.length ? (
           <fieldset className="v2-settings-tool-selection">
@@ -751,6 +824,19 @@ function ConnectionRow({
             {oauthLabel}
           </UiV2Button>
         ) : null}
+        {connection.authMode === "static" ? (
+          <UiV2Button
+            aria-expanded={replaceOpen}
+            aria-label={`Replace token for ${connection.name}`}
+            disabled={deleting || replacing}
+            icon="lock"
+            onClick={() => onReplaceOpenChange(!replaceOpen)}
+            ref={replaceButtonRef}
+            tone={tokenRejected && !replaceOpen ? "primary" : "ghost"}
+          >
+            Replace token
+          </UiV2Button>
+        ) : null}
         <UiV2Button
           aria-label={`Disconnect ${connection.name}`}
           busy={deleting}
@@ -762,5 +848,98 @@ function ConnectionRow({
         </UiV2Button>
       </div>
     </article>
+  );
+}
+
+/**
+ * Replaces the token or API key of a static connection, and optionally its
+ * header. Values are write-only: the stored token is never shown, and a
+ * refused replacement keeps the current one.
+ */
+function ReplaceCredentialsForm({
+  busy,
+  connection,
+  onCancel,
+  onSubmit
+}: Readonly<{
+  busy: boolean;
+  connection: PersonalMcpConnection;
+  onCancel(): void;
+  onSubmit(input: Readonly<{ headerName: string; token: string }>): Promise<PersonalMcpErrorPresentation | null>;
+}>) {
+  const [token, setToken] = useState("");
+  const [headerName, setHeaderName] = useState(connection.authHeaderName ?? "Authorization");
+  const [errors, setErrors] = useState<PersonalMcpErrorPresentation | null>(null);
+  const tokenRef = useRef<HTMLInputElement | null>(null);
+  const scope = `personal-mcp-${connection.id}-replace`;
+  const tokenId = `${scope}-token`;
+  const headerId = `${scope}-header`;
+
+  useEffect(() => { tokenRef.current?.focus(); }, []);
+
+  return (
+    <form
+      aria-label={`Replace token for ${connection.name}`}
+      className="v2-settings-personal-mcp-replace"
+      noValidate
+      onSubmit={(event: FormEvent) => {
+        event.preventDefault();
+        if (busy || !token.trim()) return;
+        setErrors(null);
+        void onSubmit({ headerName, token }).then((failure) => {
+          if (!failure) return;
+          setErrors(failure);
+          window.requestAnimationFrame(() => {
+            if (failure.fields.headerName && !failure.fields.token) document.getElementById(headerId)?.focus();
+            else tokenRef.current?.focus();
+          });
+        });
+      }}
+    >
+      {errors?.general ? <p className="v2-settings-field-note" data-tone="danger" role="alert">{errors.general}</p> : null}
+      <label htmlFor={tokenId}>
+        New token or API key
+        <input
+          aria-describedby={describedBy(`${tokenId}-help`, errors?.fields.token && errorId("token", scope))}
+          aria-invalid={Boolean(errors?.fields.token) || undefined}
+          autoCapitalize="none"
+          autoComplete="off"
+          autoCorrect="off"
+          className="v2-settings-input v2-settings-input-masked"
+          id={tokenId}
+          onChange={(event) => setToken(event.currentTarget.value)}
+          ref={tokenRef}
+          required
+          spellCheck={false}
+          type="text"
+          value={token}
+        />
+        <FieldError errors={errors} field="token" scope={scope} />
+        <span className="v2-settings-input-help" id={`${tokenId}-help`}>
+          The stored token is never shown. A bare token is sent as “Bearer &lt;token&gt;”; the current token keeps working until the new one is accepted.
+        </span>
+      </label>
+      <label htmlFor={headerId}>
+        Header name
+        <input
+          aria-describedby={describedBy(errors?.fields.headerName && errorId("headerName", scope))}
+          aria-invalid={Boolean(errors?.fields.headerName) || undefined}
+          autoCapitalize="none"
+          autoComplete="off"
+          autoCorrect="off"
+          className="v2-settings-input"
+          id={headerId}
+          maxLength={HEADER_NAME_MAX_LENGTH}
+          onChange={(event) => setHeaderName(event.currentTarget.value)}
+          spellCheck={false}
+          value={headerName}
+        />
+        <FieldError errors={errors} field="headerName" scope={scope} />
+      </label>
+      <div className="v2-settings-personal-mcp-options">
+        <UiV2Button busy={busy} disabled={!token.trim()} tone="primary" type="submit">Save token</UiV2Button>
+        <UiV2Button disabled={busy} onClick={onCancel}>Cancel</UiV2Button>
+      </div>
+    </form>
   );
 }
