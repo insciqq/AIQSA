@@ -134,15 +134,23 @@ function validationIssues(value: unknown): readonly McpValidationIssue[] {
 export class McpSettingsApiError extends Error {
   readonly code: string;
   readonly issues: readonly McpValidationIssue[];
+  /** Seconds from `retry-after` on a rate-limited OAuth start. */
+  readonly retryAfterSeconds: number | null;
   readonly status: number;
 
-  constructor(code: string, status: number, issues: readonly McpValidationIssue[] = []) {
+  constructor(code: string, status: number, issues: readonly McpValidationIssue[] = [], retryAfterSeconds: number | null = null) {
     super(code);
     this.name = "McpSettingsApiError";
     this.code = code;
     this.issues = issues;
+    this.retryAfterSeconds = retryAfterSeconds;
     this.status = status;
   }
+}
+
+function retryAfterSeconds(response: Response): number | null {
+  const raw = response.headers.get("retry-after")?.trim();
+  return response.status === 429 && raw && /^\d{1,6}$/u.test(raw) && Number(raw) > 0 ? Number(raw) : null;
 }
 
 async function responseJson(response: Response): Promise<unknown> {
@@ -234,7 +242,7 @@ export async function startMcpOAuth(action: string): Promise<string> {
   });
   const payload = await responseJson(response);
   if (!response.ok) {
-    throw new McpSettingsApiError(stableError(payload), response.status, validationIssues(payload));
+    throw new McpSettingsApiError(stableError(payload), response.status, validationIssues(payload), retryAfterSeconds(response));
   }
   const location = isRecord(payload) && typeof payload.location === "string" ? payload.location : null;
   let url: URL | null = null;

@@ -28,6 +28,15 @@ describe("MCP readiness presentation", () => {
     expect(mcpReadinessPresentation("idle")).toEqual({ kind: "ready", label: "Available on demand" });
   });
 
+  it("names the registry runtime codes before and after the shared contract carries them", () => {
+    expect(mcpReadinessPresentation("unavailable", "mcp_internal_address_forbidden")).toEqual({
+      kind: "failed", label: "This address belongs to AIQSA itself, so MCP cannot use it."
+    });
+    expect(mcpReadinessPresentation("unavailable", "mcp_local_network_disabled").label).toMatch(/local network/);
+    expect(mcpReadinessPresentation("unavailable", "mcp_tool_disabled").label).toMatch(/switched off/);
+    expect(mcpReadinessPresentation("unavailable", "mcp_tool_definition_changed").label).toMatch(/tool changed/);
+  });
+
   it("polls only enabled servers in a transient readiness state", () => {
     const server = {
       enabled: true,
