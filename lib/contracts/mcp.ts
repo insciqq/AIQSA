@@ -453,14 +453,28 @@ export type McpErrorCode =
   | "json_required"
   | "mcp_encryption_unavailable"
   | "mcp_not_found"
+  | "mcp_oauth_insecure_endpoint"
   | "mcp_revision_required"
   | "mcp_storage_unavailable"
   | "mcp_validation_unavailable"
+  | "oauth_authorization_origin_confirmation_required"
+  | "personal_mcp_rate_limited"
   | "unauthorized";
 
 export type McpErrorResponse = {
   error: McpErrorCode;
   issues?: readonly McpValidationIssue[];
+};
+
+/**
+ * Personal MCP create (HTTP 422): the discovered OAuth authorization origins
+ * that are neither same-origin nor same-site. The client resubmits the create
+ * request with `authorizationOriginsAcknowledged` naming these exact origins.
+ */
+export type PersonalMcpAuthorizationOriginConfirmationResponse = {
+  authorizationOrigins: string[];
+  error: "oauth_authorization_origin_confirmation_required";
+  issues: McpValidationIssue[];
 };
 
 export type AdminMcpCreateRequest = {

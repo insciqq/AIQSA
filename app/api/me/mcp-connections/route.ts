@@ -1,5 +1,6 @@
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
 import { mcpRepository } from "@/lib/server/mcp/defaultMcp";
+import { personalMcpRateLimiter } from "@/lib/server/mcp/defaultPersonalRateLimit";
 import { getDefaultMcpRuntimeCoordinator, kickDefaultMcpRuntime } from "@/lib/server/mcp/defaultRuntime";
 import { createPersonalMcpCreateHandler, createPersonalMcpListHandler } from "@/lib/server/mcp/personalHandlers";
 import { preparePersonalMcpOAuthDraft } from "@/lib/server/mcp/personalOAuthDiscovery";
@@ -12,6 +13,7 @@ const deps = {
     .ensureUserServersReady(userId, [serverId], AbortSignal.timeout(20_000)),
   onRuntimeChanged: kickDefaultMcpRuntime,
   prepareOAuthDraft: preparePersonalMcpOAuthDraft,
+  rateLimiter: personalMcpRateLimiter,
   repository: mcpRepository,
   resolveAuth: resolveRequestAuth
 };

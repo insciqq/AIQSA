@@ -485,6 +485,8 @@ export function createUserMcpUpdateHandler(deps: McpHandlerDeps) {
     const { serverId } = await context.params;
     const result = await safely(() => deps.repository.updateUserServer({
       ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+      // Personal connections change only through their own route.
+      installationOnly: true,
       serverId,
       userId: session.userId,
       ...(values !== undefined ? { values } : {})

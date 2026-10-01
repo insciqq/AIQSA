@@ -27,11 +27,14 @@ import {
   bindMcpOAuthPolicyResource,
   buildMcpOAuthPolicy,
   mcpOAuthPolicyFingerprint,
+  storedMcpOAuthPolicy,
   type McpOAuthPolicy,
-  type McpOAuthPurpose
+  type McpOAuthPurpose,
+  type McpOAuthSourceKind
 } from "./oauthPolicy";
 
 const ACTIVE_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress"] as const;
+const RETIRED_REGISTRATION_KEY_PREFIX = "retired:";
 const MAX_OAUTH_ENVELOPE_JSON_BYTES = 512 * 1_024;
 
 type StoredClientMetadata = {
@@ -120,6 +123,7 @@ export interface McpOAuthRepository {
     purpose: McpOAuthPurpose;
     redirectUri: string;
     serverId: string;
+    sourceKind?: McpOAuthSourceKind;
     userId: string;
   }>): Promise<McpOAuthPolicy | null>;
   markReauthorizationRequired(input: Readonly<{
@@ -131,6 +135,17 @@ export interface McpOAuthRepository {
     serverId: string;
     userId: string;
   }>): Promise<McpOAuthStoredConnection | null>;
+  /**
+   * Stops reusing a registration the authorization server rejected: the row
+   * stays for existing connections and revocation, but `findClient` no longer
+   * returns it, so the next start registers again. Only the exact client id
+   * is retired; a registration replaced meanwhile is kept.
+   */
+  retireClient(input: Readonly<{
+    clientId: string;
+    id: string;
+    registrationKey: string;
+  }>): Promise<boolean>;
   rotateTokens(input: Readonly<{
     connectionId: string;
     expectedTokenVersion: string;
@@ -463,6 +478,7 @@ async function policyForSubject(
     purpose: McpOAuthPurpose;
     redirectUri: string;
     serverId: string;
+    sourceKind?: McpOAuthSourceKind;
     userId: string;
   }>
 ): Promise<McpOAuthPolicy | null> {
@@ -509,10 +525,11 @@ async function policyForSubject(
       archivedAt: null,
       enabled: true,
       id: input.serverId,
-      OR: [
-        { ownerUserId: input.userId },
-        { ownerUserId: null }
-      ]
+      OR: input.sourceKind === "personal"
+        ? [{ ownerUserId: input.userId }]
+        : input.sourceKind === "installation"
+          ? [{ ownerUserId: null }]
+          : [{ ownerUserId: input.userId }, { ownerUserId: null }]
     }
   });
   if (!server?.activeRevision) return null;
@@ -524,6 +541,7 @@ async function policyForSubject(
   return buildMcpOAuthPolicy({
     configurationIdentity: server.activeRevision.id,
     draft,
+    personal: server.ownerUserId !== null,
     purpose: input.purpose,
     redirectUri: input.redirectUri,
     serverId: input.serverId,
@@ -551,6 +569,7 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
     policyFingerprint: string;
     purpose: McpOAuthPurpose;
     scopes: string[];
+    serverId: string;
     state: McpOAuthConnectionState;
     tokenEnvelope: string | null;
     tokenGeneration: number;
@@ -563,12 +582,19 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
       record.id,
       record.tokenGeneration
     );
+    // The personal transport rule is derived from the current owner, never
+    // from the stored envelope.
+    const server = await client.mcpServer.findUnique({
+      select: { ownerUserId: true },
+      where: { id: record.serverId }
+    });
+    const storedPolicy = storedMcpOAuthPolicy(envelope.policy);
     return {
       client: await storedClient(record.oauthClientId),
       expiresAt: record.expiresAt,
       externalAccountLabel: record.externalAccountLabel,
       id: record.id,
-      policy: envelope.policy,
+      policy: server?.ownerUserId != null ? { ...storedPolicy, personal: true } : storedPolicy,
       policyFingerprint: record.policyFingerprint,
       purpose: record.purpose,
       scopes: record.scopes,
@@ -610,7 +636,7 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
         const envelope = encryptMcpEnvelope(
           {
             issuedAt: now.toISOString(),
-            policy,
+            policy: storedMcpOAuthPolicy(policy),
             tokens,
             version: 1
           } satisfies StoredTokenEnvelope,
@@ -879,6 +905,24 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
       });
     },
 
+    async retireClient({ clientId, id, registrationKey }) {
+      if (registrationKey.startsWith(RETIRED_REGISTRATION_KEY_PREFIX)) return false;
+      return client.$transaction(async (tx) => {
+        // Same lock as saveClient, so a concurrent re-registration under this
+        // key is never renamed away.
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtextextended(${`aiqsa:mcp-oauth-client:${registrationKey}`}, 0)
+          )::text AS "lock"
+        `;
+        const retired = await tx.mcpOAuthClient.updateMany({
+          data: { registrationKey: `${RETIRED_REGISTRATION_KEY_PREFIX}${id}:${randomUUID()}` },
+          where: { clientId, id, registrationKey }
+        });
+        return retired.count === 1;
+      });
+    },
+
     async rotateTokens({ connectionId, expectedTokenVersion, tokens: inputTokens }) {
       const record = await client.mcpOAuthConnection.findUnique({ where: { id: connectionId } });
       if (!record?.tokenEnvelope || tokenVersion(record.tokenGeneration) !== expectedTokenVersion) {
@@ -902,7 +946,7 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
       const envelope = encryptMcpEnvelope(
         {
           issuedAt: now.toISOString(),
-          policy: prior.policy,
+          policy: storedMcpOAuthPolicy(prior.policy),
           tokens,
           version: 1
         } satisfies StoredTokenEnvelope,
