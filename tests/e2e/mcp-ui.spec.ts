@@ -384,17 +384,26 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   const sheet = page.getByTestId("mcp-server-sheet");
   await expect(sheet.getByText("Add and save the required personal values before enabling this server.")).toBeVisible();
 
+  // Third-party secrets are masked text so the browser password manager never engages.
   const secret = sheet.getByLabel("Mem0 API key");
-  await expect(secret).toHaveAttribute("type", "password");
+  await expect(secret).toHaveAttribute("type", "text");
+  await expect(secret).toHaveAttribute("autocomplete", "off");
+  await expect(secret).toHaveCSS("-webkit-text-security", "disc");
+  // The sheet isolates the page, so read the search box without the accessibility filter.
+  const search = settings.locator('input[aria-label="Search MCP servers"]');
+  await expect(search).toHaveAttribute("autocomplete", "off");
+  await expect(search).toHaveValue("");
   await secret.fill("personal-mem0-token");
   await sheet.getByRole("button", { name: "Save personal values" }).click();
   await expect(sheet.getByText("Personal value configured")).toBeVisible();
   await expect(secret).toHaveValue("");
+  // Saving the last missing value completes setup, which enables the server.
+  await expect(sheet.getByText("Connection enabled", { exact: true })).toBeVisible();
   await sheet.getByRole("button", { name: "Close", exact: true }).click();
 
-  // Rows toggle with a switch (UX audit 2026-09-02 A13); the switch appears
-  // for Mem0 only after its personal value is saved.
-  await settings.getByRole("switch", { name: "Enable Mem0" }).click();
+  // Rows toggle with a switch (UX audit 2026-09-02 A13); Mem0 shows it,
+  // already on, once its setup is complete.
+  await expect(settings.getByRole("switch", { name: "Enable Mem0" })).toHaveAttribute("aria-checked", "true");
   await settings.getByRole("switch", { name: "Enable Todoist" }).click();
   await expect(settings.getByRole("article", { name: "Todoist", exact: true }).getByRole("status"))
     .toHaveText("Activating · 1 tool");
@@ -411,7 +420,10 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expect(settings.getByRole("switch", { name: "Enable Mem0" })).toHaveAttribute("aria-checked", "true");
   await expect(settings.getByText("2 of 3 servers enabled · 2 tools")).toBeVisible();
   await expect(settings.getByText("How tools use data").locator("xpath=..")).not.toHaveAttribute("open", "");
-  expect(patchBodies).toContainEqual({ id: "mem0", value: { values: { api_key: "personal-mem0-token" } } });
+  expect(patchBodies.filter(({ id }) => id === "mem0")).toEqual([
+    { id: "mem0", value: { values: { api_key: "personal-mem0-token" } } },
+    { id: "mem0", value: { enabled: true } }
+  ]);
 
   await settings.getByRole("button", { name: "Back to chat" }).click();
   await toolsTrigger.click();

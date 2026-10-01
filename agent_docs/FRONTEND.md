@@ -40,7 +40,7 @@ Project surfaces use current Project catalogs; access loss clears stale selectio
 
 Studio owns model behavior and resources: Assistants, Instructions, Skills, Knowledge, Memory, Files, Artifacts, MCP servers, Secrets and Chat defaults. Settings owns appearance, account, external-client permissions and personal data. Lists/editors belong on pages or sheets.
 
-Control Center resources have URLs; add/edit sheets own focus and dirty-discard confirmation. Ordinary navigation has no global save gate. Errors preserve fields; independent saves preserve drafts. Destructive actions name targets/consequences. Secret fields explain preserve/replace without echoing values.
+Control Center resources have URLs; add/edit sheets own focus and dirty-discard confirmation. Ordinary navigation has no global save gate. Errors preserve fields; independent saves preserve drafts. Destructive actions name targets/consequences. Secret fields explain preserve/replace without echoing values; third-party secret inputs are masked text.
 
 Configuration owners: Providers for deployments, Defaults & roles for assignments, Knowledge & Memory for health/limits. Knowledge profile activation/rollback explicitly acknowledges external processing and reindexing; accepted work retains its frozen profile. Reprocess never asks ordinary users to choose infrastructure.
 
@@ -48,7 +48,7 @@ Knowledge management shows current documents, readiness, access and product acti
 
 Auto/Off is independent of pins; personal Enabled preferences exclude Projects/Assistants. Assistant Skill links stay read-only in chat; users pin on top. Import needs no review gate. Show limits; omit revision/bundle editors. Archive is reversible; Delete lists consequences.
 
-Connected apps owns external-client permissions; consent and revocation name the resource. Memory consent covers fact read/add/change/delete, excluding chat history; revocation preserves facts. MCP enablement covers chats and authorized Hub clients. MCP rows show enablement, tool counts, transitions and problems, never session warmth; idle servers start on demand; opening Studio or Settings never wakes them. Admin Test & Save validates before replacement and preserves intentional disablement.
+Connected apps owns external-client permissions; consent and revocation name the resource. Memory consent covers fact read/add/change/delete, excluding chat history; revocation preserves facts. MCP enablement covers chats and authorized Hub clients; rows hide session warmth; viewing never wakes idle servers. Completing setup, including Connect to enable, enables disabled servers; admin Test & Save validates first, and no replacement re-enables intentional disablement.
 
 ## Interaction And Visual Intent
 
