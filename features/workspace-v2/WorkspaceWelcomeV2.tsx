@@ -697,12 +697,11 @@ export function formatLibraryDate(value: string): string {
   return formatStudioDate(value);
 }
 
+/** Only input validation reaches the user; Memory failures stay silent. */
 export function memoryManagerErrorCopy(code: string | null): string | null {
-  if (!code) return null;
   if (code === "memory_secret_rejected") return memoryUiCopy("manager.secretRejected");
   if (code === "memory_changed") return memoryUiCopy("manager.draftStale");
-  if (code === "memory_unavailable") return memoryUiCopy("manager.unavailable");
-  return memoryUiCopy("manager.mutationError");
+  return null;
 }
 
 export { LibrarySurfaceV2 };

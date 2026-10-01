@@ -51,6 +51,24 @@ describe("background command polling", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("silently drops a pending notice once polling gives up, keeping settled receipts", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json({ commands: [
+      { messageId: "older", feedback: { ...feedback, status: "COMMITTED" } },
+      { messageId: "message", feedback }
+    ] })).mockResolvedValue(new Response(null, { status: 503 }));
+    vi.stubGlobal("fetch", fetch);
+    const hook = renderHook(() => useMemoryCommands({ ...props, messageKey: "older,message" }));
+    await settle();
+    expect(hook.result.current.get("message")?.status).toBe("PENDING");
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500 + 3 * 3_000); });
+    expect(fetch).toHaveBeenCalledTimes(5);
+    expect(hook.result.current.has("message")).toBe(false);
+    expect(hook.result.current.get("older")?.status).toBe("COMMITTED");
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(fetch).toHaveBeenCalledTimes(5);
+  });
+
   it("does not read Memory for disabled scopes and stops on access loss", async () => {
     vi.useFakeTimers();
     const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));

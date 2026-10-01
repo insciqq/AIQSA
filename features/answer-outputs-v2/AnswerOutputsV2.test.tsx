@@ -505,23 +505,38 @@ describe("answer outputs v2", () => {
     });
   });
 
-  it("removes forgotten source text and invalidates every source action", async () => {
+  it("removes a forgotten source row and recounts the remaining sources", async () => {
     shellFetch.mockReset();
     shellFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ status: "COMMITTED" }), { status: 200 })
     );
-    render(<AnswerProcessV2 memorySources={[memorySource()]} />);
+    const other: MemoryAnswerSource = {
+      actions: ["CORRECT", "FORGET", "NOT_RELEVANT"], date: "2026-08-21T05:00:00.000Z",
+      memoryRef: "opaque-other-ref", sourceAvailable: true, sourceType: "SAVED_MEMORY", text: "I live in Lisbon."
+    };
+    render(<AnswerProcessV2 memorySources={[memorySource(), other]} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Memory · 2");
     openProcess();
 
     pickMemoryAction("Forget");
 
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("forgotten"));
-    expect(screen.queryByText("I prefer concise answers.")).not.toBeInTheDocument();
-    expect(screen.getByText("Source unavailable")).toBeVisible();
-    expect(screen.getByText("This Memory source is unavailable.")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Memory actions" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Open source" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("I prefer concise answers.")).not.toBeInTheDocument());
+    expect(screen.getByTestId("memories-disclosure").querySelector("summary")).toHaveTextContent("Memory · 1");
+    expect(screen.getByTestId("tool-activity-disclosure").querySelector("summary")).toHaveTextContent("Memory · 1");
+    expect(screen.getByText("I live in Lisbon.")).toBeVisible();
+    expect(screen.queryByText(/source unavailable/iu)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Memory actions" })).toHaveLength(1);
+  });
+
+  it("drops the Memory fold when its last source is forgotten", async () => {
+    shellFetch.mockReset();
+    shellFetch.mockResolvedValueOnce(Response.json({ status: "COMMITTED" }));
+    render(<AnswerProcessV2 memorySources={[memorySource()]} reasoningTexts={["Compared options."]} />);
+    openProcess();
+    pickMemoryAction("Forget");
+
+    await waitFor(() => expect(screen.queryByTestId("memories-disclosure")).not.toBeInTheDocument());
+    expect(screen.getByTestId("tool-activity-disclosure").querySelector("summary")).not.toHaveTextContent("Memory");
   });
 
   it("keeps OPEN_SOURCE server affordances inert until a safe href is ready", async () => {
@@ -551,11 +566,9 @@ describe("answer outputs v2", () => {
     expect(document.body.textContent).not.toContain("opaque-memory-ref");
   });
 
-  it("keeps an unknown mutation visible after cancelling its editor and opening its source", async () => {
+  it("restores source controls silently after an unknown correction outcome", async () => {
     shellFetch.mockReset();
-    const href = "/api/me/memory/source-actions/open?memoryRef=opaque-memory-ref";
-    shellFetch.mockRejectedValueOnce(new TypeError("lost acknowledgement"))
-      .mockResolvedValueOnce(Response.json({ href, status: "READY" }));
+    shellFetch.mockRejectedValueOnce(new TypeError("lost acknowledgement"));
     render(<AnswerProcessV2 memorySources={[{
       actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
       chatGroup: "chat-1", date: "2026-08-21T05:00:00.000Z",
@@ -568,87 +581,105 @@ describe("answer outputs v2", () => {
       target: { value: "A preserved correction." }
     });
     fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("could not be confirmed");
-    expect(screen.getByRole("button", { name: "Save correction" })).toBeDisabled();
 
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save correction" })).toBeEnabled());
+    expect(screen.getByRole("textbox", { name: "Correct this statement" })).toHaveValue("A preserved correction.");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText(/could not|corrected/iu)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("could not be confirmed");
-    fireEvent.click(screen.getByRole("button", { name: "Open source" }));
-    await screen.findByRole("link", { name: "Open source" });
-    expect(screen.getByRole("alert")).toHaveTextContent("could not be confirmed");
-    expect(screen.queryByRole("button", { name: "Memory actions" })).toBeNull();
-    expect(shellFetch).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(String((shellFetch.mock.calls[1]?.[1] as RequestInit).body)))
-      .toMatchObject({ action: "OPEN_SOURCE" });
+    expect(screen.getByRole("button", { name: "Memory actions" })).toBeEnabled();
+    expect(screen.getAllByText("The earlier discussion chose concise answers.").length).toBeGreaterThan(0);
   });
 
-  it("does not show private source text or actions when a source is unavailable", () => {
+  it.each([
+    ["Forget", Response.json({ error: "memory_action_failed" }, { status: 500 })],
+    ["Not relevant", Response.json({ error: "memory_not_found" }, { status: 404 })]
+  ])("keeps the row and its menu after a failed %s", async (action, response) => {
+    shellFetch.mockReset();
+    shellFetch.mockResolvedValueOnce(response);
+    render(<AnswerProcessV2 memorySources={[memorySource()]} />);
+    openProcess();
+    pickMemoryAction(action);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Memory actions" })).toBeEnabled());
+    expect(screen.getByText("I prefer concise answers.")).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByTestId("memories-disclosure").querySelector("summary")).toHaveTextContent("Memory · 1");
+  });
+
+  it("ends a failed Open source quietly and allows another try", async () => {
+    shellFetch.mockReset();
+    shellFetch.mockResolvedValueOnce(Response.json({ error: "memory_not_found" }, { status: 404 }));
+    render(<AnswerProcessV2 memorySources={[{
+      actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"], date: "2026-08-21T05:00:00.000Z",
+      memoryRef: "opaque-memory-ref", sourceAvailable: true, sourceType: "LEARNED_MEMORY",
+      text: "I prefer concise answers."
+    }]} />);
+    openProcess();
+    fireEvent.click(screen.getByRole("button", { name: "Open source" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open source" })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Open source" })).not.toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByRole("link", { name: "Open source" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/could not be opened/iu)).toBeNull();
+  });
+
+  it("lists no unavailable source and counts only the readable ones", () => {
     render(<AnswerProcessV2 memorySources={[{
       actions: [],
       date: "2026-08-21T05:00:00.000Z",
       sourceAvailable: false,
       sourceType: "SAVED_MEMORY"
+    }, memorySource(), {
+      actions: [], chatGroup: "chat-gone", date: "2026-08-21T05:00:00.000Z",
+      sourceAvailable: false, sourceType: "PAST_CHAT"
     }]} />);
+    expect(screen.getByTestId("tool-activity-disclosure")).toHaveTextContent("Memory · 1");
+    expect(screen.getByTestId("tool-activity-disclosure")).not.toHaveTextContent("Past chats");
     openProcess();
 
-    expect(screen.getByText("Source unavailable")).toBeVisible();
-    expect(screen.getByText("This Memory source is unavailable.")).toBeVisible();
-    expect(screen.queryByText("private text that must stay hidden")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Memory actions" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
+    expect(screen.getAllByTestId("memory-source-card")).toHaveLength(1);
+    expect(screen.queryByTestId("past-chats-disclosure")).toBeNull();
+    expect(screen.queryByText(/source unavailable|memory source is unavailable/iu)).not.toBeInTheDocument();
   });
 
-  it("shows a bounded friendly notice when Memory was unavailable for this response", () => {
-    render(<AnswerOutputsV2 artifact={{
-      citations: [],
-      memoryStatus: "UNAVAILABLE",
-      reasoningText: [],
-      sources: []
-    }} />);
-
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Memory was unavailable for this response."
-    );
-    expect(screen.getByTestId("memory-unavailable-status")).not.toHaveTextContent(
-      /FAILED_SAFE|DEGRADED|error|code/i
-    );
+  it("shows no process fold when every delivered source is unavailable", () => {
+    const { container } = render(<AnswerProcessV2 memorySources={[{
+      actions: [], date: "2026-08-21T05:00:00.000Z", sourceAvailable: false, sourceType: "SAVED_MEMORY"
+    }]} />);
+    expect(container).toBeEmptyDOMElement();
   });
 
-  it("says Memory was limited instead of unavailable when a degraded pack was used", () => {
-    render(<AnswerOutputsV2 artifact={{
-      citations: [],
-      memoryStatus: "LIMITED",
-      reasoningText: [],
-      sources: []
-    }} />);
-
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Memory was used with limitations for this response."
-    );
-    expect(screen.getByTestId("memory-limited-status")).not.toHaveTextContent(
-      /FAILED_SAFE|DEGRADED|error|code/i
-    );
-    expect(screen.queryByText("Memory was unavailable for this response."))
-      .not.toBeInTheDocument();
+  it("drops a failed Memory search step without a failure word or alert icon", () => {
+    const failed = { origin: "memory" as const, serverName: "Memory", toolName: "memory_search",
+      memorySearchCall: 1, round: 1, status: "error" as const, memorySearchOutcome: "failure" as const };
+    const { container, rerender } = render(<AnswerProcessV2 toolActivity={{ calls: [failed] }} workDurationMs={12_400} />);
+    expect(container.textContent).not.toMatch(/memory|fail|unavailable/iu);
+    rerender(<AnswerProcessV2 toolActivity={{ calls: [failed, { ...failed, memorySearchCall: 2, status: "complete",
+      memorySearchOutcome: "limited" as const }] }} />);
+    openProcess();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText("Searched memory")).toBeVisible();
+    expect(container.textContent).not.toMatch(/fail|unavailable|limited/iu);
+    expect(container.querySelector("[data-status='error']")).toBeNull();
   });
 
-  it("says a message was too long for Memory instead of a generic unavailable notice", () => {
-    render(<AnswerOutputsV2 artifact={{
-      citations: [],
-      memoryStatus: "INPUT_TOO_LONG",
-      reasoningText: [],
-      sources: []
-    }} />);
+  it.each(["UNAVAILABLE", "LIMITED", "INPUT_TOO_LONG"] as const)(
+    "shows nothing for Memory status %s on the answer", (memoryStatus) => {
+      const { container } = render(<AnswerOutputsV2 artifact={{
+        citations: [],
+        memoryStatus,
+        reasoningText: [],
+        sources: []
+      }} />);
 
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "This message was too long for Memory to process in full. Memory commands in it were not applied."
-    );
-    expect(screen.getByTestId("memory-input-too-long-status")).not.toHaveTextContent(
-      /INPUT_TOO_LONG|FAILED_SAFE|error|code/i
-    );
-    expect(screen.queryByText("Memory was unavailable for this response."))
-      .not.toBeInTheDocument();
-  });
+      expect(container).toBeEmptyDOMElement();
+      expect(screen.queryByRole("status")).toBeNull();
+    }
+  );
 
   it("renders settled generated files with safe metadata and authorized downloads", () => {
     render(<AnswerOutputsV2 artifact={{

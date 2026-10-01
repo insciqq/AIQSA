@@ -191,7 +191,7 @@ describe("client-safe Memory action feedback", () => {
     expect(screen.getByText("No saved memories match this search.")).toBeVisible();
   });
 
-  it("preserves a correction with an unknown outcome and prevents blind replay", async () => {
+  it("keeps a correction draft and restores Save silently after an unknown outcome", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError("connection lost"));
     vi.stubGlobal("fetch", fetchMock);
     render(<MemoryActionConfirmationV2 action={{
@@ -202,12 +202,53 @@ describe("client-safe Memory action feedback", () => {
     fireEvent.change(input, { target: { value: "Revised." } });
     fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("could not be confirmed");
-    expect(screen.getByRole("alert")).not.toHaveTextContent("Nothing was changed");
-    expect(input).toHaveValue("Revised.");
-    expect(screen.getByRole("button", { name: "Save correction" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save correction" })).toBeEnabled());
     expect(fetchMock).toHaveBeenCalledOnce();
+    expect(input).toHaveValue("Revised.");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/could not|Memory updated/iu)).toBeNull();
+    // The receipt still names only the committed save; no success is claimed.
+    expect(screen.getByRole("status")).toHaveTextContent("Memory saved.");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    pickAction("Forget");
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Memory actions" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Memory actions" }));
+    expect(screen.getByRole("menuitem", { name: "Edit" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Forget" })).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps the correction length check visible as input validation", () => {
+    render(<MemoryActionConfirmationV2 action={{
+      memoryRef: "mr1.result", operation: "SAVE", statement: "Original.", status: "COMMITTED"
+    }} />);
+    pickAction("Edit");
+    fireEvent.change(screen.getByRole("textbox", { name: "Correct this memory" }), { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save correction" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a correction");
+  });
+
+  it("re-enables ambiguous candidates after a failed choice without any message", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ error: "memory_action_failed" }, { status: 500 }))
+      .mockResolvedValueOnce(Response.json({ status: "COMMITTED" }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<MemoryActionConfirmationV2 action={{
+      candidates: [resultItem({ memoryRef: "mr1.first" }), resultItem({ memoryRef: "mr1.second", statement: "Other." })],
+      operation: "FORGET",
+      status: "AMBIGUOUS"
+    }} />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Forget this memory" })[0]!);
+    await waitFor(() => {
+      for (const button of screen.getAllByRole("button", { name: "Forget this memory" })) expect(button).toBeEnabled();
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(/No change was made/u)).toBeVisible();
+    fireEvent.click(screen.getAllByRole("button", { name: "Forget this memory" })[1]!);
+    expect(await screen.findByText("Forgotten.")).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("commits only the explicitly selected opaque candidate", async () => {
@@ -303,9 +344,10 @@ describe("client-safe Memory action feedback", () => {
         }}
       />
     );
-    expect(screen.getByText("Memory action was not applied.")).toBeVisible();
-    expect(screen.queryByTestId("memory-action-statement")).not.toBeInTheDocument();
-    expect(screen.getByText("Not applied")).toBeVisible();
+    // A rejection, including a system failure reduced to REJECTED, is silent.
+    expect(screen.queryByTestId("memory-action-confirmation")).toBeNull();
+    expect(screen.queryByText(/not applied/iu)).toBeNull();
+    expect(screen.queryByText("A secret token")).toBeNull();
 
     rerender(
       <MemoryActionConfirmationV2

@@ -6,7 +6,7 @@ import {
   memoryCategoryLabel,
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
-import { memoryMutationOutcomeIsUnknown, submitMemorySourceAction } from "@/components/app-shell/memoryApi";
+import { submitMemorySourceAction } from "@/components/app-shell/memoryApi";
 import {
   UiV2Button,
   UiV2Chip,
@@ -24,6 +24,14 @@ import {
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 type MemoryActionResultItem = NonNullable<MemoryActionFeedback["items"]>[number];
+/** A rejected action, including a system failure reduced to REJECTED, stays silent. */
+type VisibleMemoryAction = MemoryActionFeedback & Readonly<{
+  status: Exclude<MemoryActionFeedback["status"], "REJECTED">;
+}>;
+
+function memoryActionIsVisible(action: MemoryActionFeedback): action is VisibleMemoryAction {
+  return action.status !== "REJECTED";
+}
 
 function t(key: Parameters<typeof memoryUiCopy>[0]): string {
   return memoryUiCopy(key);
@@ -41,33 +49,30 @@ function provenanceLabel(item: MemoryActionResultItem): string {
     : t("manager.learnedFromChat");
 }
 
-function statusLabel(action: MemoryActionFeedback): string {
+function statusLabel(action: VisibleMemoryAction): string {
   switch (action.status) {
     case "COMMITTED": return t("action.statusDone");
     case "COMPLETE": return t("action.statusReady");
     case "AMBIGUOUS": return t("action.statusNeedsChoice");
     case "CONFIRMATION_REQUIRED": return t("action.statusConfirmation");
-    case "REJECTED": return t("action.statusNotApplied");
     case "THIS_CHAT_ONLY": return t("action.statusThisChat");
   }
 }
 
-function statusTone(action: MemoryActionFeedback): "danger" | "neutral" | "ok" | "warn" {
+function statusTone(action: VisibleMemoryAction): "neutral" | "ok" | "warn" {
   switch (action.status) {
     case "COMMITTED":
     case "COMPLETE":
       return "ok";
     case "THIS_CHAT_ONLY":
       return "neutral";
-    case "REJECTED":
-      return "danger";
     case "AMBIGUOUS":
     case "CONFIRMATION_REQUIRED":
       return "warn";
   }
 }
 
-function statusMessage(action: MemoryActionFeedback): string {
+function statusMessage(action: VisibleMemoryAction): string {
   switch (action.status) {
     case "COMMITTED":
       return action.operation === "SAVE"
@@ -83,8 +88,6 @@ function statusMessage(action: MemoryActionFeedback): string {
       return t("action.ambiguousGuidance");
     case "CONFIRMATION_REQUIRED":
       return t("action.resetConfirmation");
-    case "REJECTED":
-      return t("action.rejected");
     case "THIS_CHAT_ONLY":
       return t("action.thisChatOnly");
   }
@@ -152,19 +155,17 @@ function CandidateItems({
   candidates,
   completedRef,
   onChoose,
-  outcomeUncertain,
   pendingRef
 }: Readonly<{
   action: "FORGET" | "UPDATE";
   candidates: readonly MemoryActionResultItem[];
   completedRef: string | null;
   onChoose(item: MemoryActionResultItem): void;
-  outcomeUncertain: boolean;
   pendingRef: string | null;
 }>) {
   return (
     <>
-      {pendingRef === null && completedRef === null && !outcomeUncertain ? (
+      {pendingRef === null && completedRef === null ? (
         <p className="v2-memory-action-guidance">{t("action.ambiguousNoAction")}</p>
       ) : null}
       <ul aria-label={t("action.matchesHeading")} className="v2-memory-action-results">
@@ -173,7 +174,7 @@ function CandidateItems({
             action={(
               <UiV2Button
                 busy={pendingRef === item.memoryRef}
-                disabled={pendingRef !== null || completedRef !== null || outcomeUncertain}
+                disabled={pendingRef !== null || completedRef !== null}
                 onClick={() => onChoose(item)}
                 tone={action === "FORGET" ? "destructive" : "primary"}
                 type="button"
@@ -201,7 +202,7 @@ function MemoryActionConfirmationContent({
   onOpenMemoryReset,
   onOpenMemorySettings
 }: Readonly<{
-  action: MemoryActionFeedback;
+  action: VisibleMemoryAction;
   onOpenMemoryReset?(): void;
   onOpenMemorySettings?(): void;
 }>) {
@@ -211,17 +212,17 @@ function MemoryActionConfirmationContent({
   const [pendingRef, setPendingRef] = useState<string | null>(null);
   const [completedRef, setCompletedRef] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [outcomeUncertain, setOutcomeUncertain] = useState(false);
+  // Only input validation is shown; Memory failures never reach the user.
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   async function mutate(
     memoryRef: string,
     operation: "FORGET" | "UPDATE",
     replacement?: string
   ): Promise<void> {
-    if (pendingRef !== null || completedRef !== null || outcomeUncertain) return;
+    if (pendingRef !== null || completedRef !== null) return;
     setPendingRef(memoryRef);
-    setError(null);
+    setValidationError(null);
     setNotice(null);
     try {
       const response = await submitMemorySourceAction(
@@ -233,9 +234,10 @@ function MemoryActionConfirmationContent({
       setCompletedRef(memoryRef);
       setEditing(false);
       setNotice(t(operation === "UPDATE" ? "action.updated" : "action.forgotten"));
-    } catch (error) {
-      setOutcomeUncertain(memoryMutationOutcomeIsUnknown(error));
-      setError(t("action.mutationError"));
+    } catch {
+      // Success needs a committed receipt. A rejected or unknown outcome shows
+      // nothing and returns the controls to their state before the action;
+      // only a fresh explicit choice can try again.
     } finally {
       setPendingRef(null);
     }
@@ -246,7 +248,7 @@ function MemoryActionConfirmationContent({
     const replacement = statement.trim();
     if (!action.memoryRef || !replacement ||
       replacement.length > MEMORY_STATEMENT_MAX_LENGTH) {
-      setError(formatMemoryUiCopy("action.correctionLength", {
+      setValidationError(formatMemoryUiCopy("action.correctionLength", {
         count: MEMORY_STATEMENT_MAX_LENGTH.toLocaleString(MEMORY_UI_LOCALE)
       }));
       return;
@@ -300,7 +302,7 @@ function MemoryActionConfirmationContent({
       <div className="v2-memory-action-buttons">
         <UiV2Button
           busy={pendingRef === action.memoryRef}
-          disabled={pendingRef !== null || outcomeUncertain}
+          disabled={pendingRef !== null}
           tone="primary"
           type="submit"
         >
@@ -319,13 +321,13 @@ function MemoryActionConfirmationContent({
 
   if (committedNotice) {
     const menuActions: UiV2MenuAction[] = [
-      ...(committedEditable && completedRef === null && !outcomeUncertain ? [
+      ...(committedEditable && completedRef === null ? [
         {
           icon: "edit" as const,
           label: t("manager.edit"),
           onSelect: () => {
             setStatement(action.statement ?? "");
-            setError(null);
+            setValidationError(null);
             setEditing(true);
           }
         },
@@ -387,7 +389,7 @@ function MemoryActionConfirmationContent({
         </div>
         {editForm}
         {notice ? <p aria-live="polite" role="status">{notice}</p> : null}
-        {error ? <p aria-live="assertive" role="alert">{error}</p> : null}
+        {validationError ? <p aria-live="assertive" role="alert">{validationError}</p> : null}
       </section>
     );
   }
@@ -402,12 +404,7 @@ function MemoryActionConfirmationContent({
       <UiV2Icon name="check" />
       <div>
         <div className="v2-memory-action-heading">
-          <p
-            aria-live="polite"
-            className={action.status === "REJECTED" ? "v2-memory-action-error" : undefined}
-            id={headingId}
-            role="status"
-          >
+          <p aria-live="polite" id={headingId} role="status">
             {statusMessage(action)}
           </p>
           <UiV2Chip tone={statusTone(action)}>{statusLabel(action)}</UiV2Chip>
@@ -425,10 +422,9 @@ function MemoryActionConfirmationContent({
               action.operation === "UPDATE" ? action.statement : undefined
             )}
             pendingRef={pendingRef}
-            outcomeUncertain={outcomeUncertain}
           />
         ) : (
-          <Statement statement={action.status === "REJECTED" ? undefined : action.statement} />
+          <Statement statement={action.statement} />
         )}
         {action.status === "CONFIRMATION_REQUIRED" && action.operation === "RESET" &&
           (onOpenMemoryReset || onOpenMemorySettings) ? (
@@ -443,7 +439,7 @@ function MemoryActionConfirmationContent({
             </div>
           ) : null}
         {notice ? <p aria-live="polite" role="status">{notice}</p> : null}
-        {error ? <p aria-live="assertive" role="alert">{error}</p> : null}
+        {validationError ? <p aria-live="assertive" role="alert">{validationError}</p> : null}
       </div>
     </section>
   );
@@ -454,10 +450,13 @@ export function MemoryActionConfirmationV2(props: Readonly<{
   onOpenMemoryReset?(): void;
   onOpenMemorySettings?(): void;
 }>) {
+  const { action } = props;
+  if (!memoryActionIsVisible(action)) return null;
   return (
     <MemoryActionConfirmationContent
       {...props}
-      key={actionIdentity(props.action)}
+      action={action}
+      key={actionIdentity(action)}
     />
   );
 }
