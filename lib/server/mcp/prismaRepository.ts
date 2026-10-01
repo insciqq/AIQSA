@@ -8,9 +8,11 @@ import {
   isMcpInventoryDifferenceReason,
   isMcpToolName,
   MCP_INVENTORY_EXCLUSION_LIMIT,
+  MCP_RUN_PLAN_LIMITS,
   MCP_SERVER_TOOL_LIMIT,
   mcpRuntimeErrorCode,
   mcpValidationIssue,
+  PERSONAL_MCP_CONNECTION_LIMIT,
   safeMcpEndpoint
 } from "@/lib/contracts/mcp";
 import type {
@@ -32,7 +34,9 @@ import type {
   UserMcpServer
 } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
+import { lockAuthUser } from "@/lib/server/auth/transactionLocks";
 import { resolveEffectiveMcpGrant, resolveEffectiveMcpValues } from "./access";
+import { archivePersonalMcpServers } from "./personalArchive";
 import {
   hashCanonicalMcpValue,
   mcpEndpointBinding,
@@ -69,6 +73,7 @@ import type {
   McpRepository,
   McpRepositoryError,
   McpRepositoryResult,
+  McpUserLimitKind,
   McpUserServerState
 } from "./repositoryContract";
 
@@ -1197,6 +1202,35 @@ async function lockMcpServer(tx: Prisma.TransactionClient, serverId: string): Pr
   return rows.length === 1;
 }
 
+/**
+ * A new personal connection is live and enabled at once. Enabled rows count as
+ * the run plan counts them: every enabled preference of the user, across
+ * installation and personal servers.
+ */
+async function personalCreationLimit(
+  client: Pick<Prisma.TransactionClient, "mcpServer" | "mcpUserServer">,
+  userId: string
+): Promise<McpUserLimitKind | null> {
+  const [live, enabled] = await Promise.all([
+    client.mcpServer.count({ where: { archivedAt: null, ownerUserId: userId } }),
+    client.mcpUserServer.count({ where: { enabled: true, userId } })
+  ]);
+  if (live >= PERSONAL_MCP_CONNECTION_LIMIT) return "personal_mcp_limit_reached";
+  return enabled >= MCP_RUN_PLAN_LIMITS.maxEnabledServers ? "mcp_enabled_server_limit_reached" : null;
+}
+
+/** Only this row's false-to-true transition can push the user past the plan bound. */
+async function enabledServerLimitReached(
+  tx: Pick<Prisma.TransactionClient, "mcpUserServer">,
+  userId: string,
+  serverId: string
+): Promise<boolean> {
+  const others = await tx.mcpUserServer.count({
+    where: { enabled: true, serverId: { not: serverId }, userId }
+  });
+  return others >= MCP_RUN_PLAN_LIMITS.maxEnabledServers;
+}
+
 const LIVE_ACTIVATION_STAGES = [
   "queued",
   "resolving",
@@ -1399,13 +1433,7 @@ export function createPrismaMcpRepository(input: {
       return client.$transaction(async (tx) => {
         const server = await tx.mcpServer.findFirst({ where: { archivedAt: null, id: serverId, ownerUserId: userId } });
         if (!server) return { kind: "not_found" as const };
-        await tx.mcpOAuthConnection.updateMany({
-          data: { disconnectRequestedAt: new Date(), state: "disconnecting" },
-          where: { serverId, userId, purpose: "user", state: { in: ["ready", "reauthorization_required"] } }
-        });
-        await tx.mcpUserServer.updateMany({ data: { desiredRuntimeGenerationId: null, enabled: false }, where: { serverId, userId } });
-        await tx.mcpServer.update({ data: { archivedAt: new Date(), enabled: false }, where: { id: serverId, ownerUserId: userId } });
-        await tx.mcpActivationJob.deleteMany({ where: { serverId } });
+        await archivePersonalMcpServers(tx, { now: new Date(), ownerUserId: userId, serverIds: [serverId] });
         return { kind: "ok" as const, value: {
           accountLabel: null,
           description: server.description,
@@ -1429,11 +1457,18 @@ export function createPrismaMcpRepository(input: {
     deleteServer: async (serverId) => {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {
+        const now = new Date();
         const tombstoned = await tx.mcpServer.updateMany({
-          data: { archivedAt: new Date(), enabled: false },
+          data: { archivedAt: now, enabled: false },
           where: { archivedAt: null, id: serverId, ownerUserId: null }
         });
         if (tombstoned.count !== 1) return { kind: "not_found" as const };
+        // Every stored token becomes a revocation obligation before the
+        // archived server can be finalized.
+        await tx.mcpOAuthConnection.updateMany({
+          data: { disconnectRequestedAt: now, state: "disconnecting" },
+          where: { serverId, state: { in: ["ready", "reauthorization_required"] } }
+        });
         await tx.mcpActivationJob.deleteMany({ where: { serverId } });
         await tx.mcpUserServer.updateMany({
           data: { desiredRuntimeGenerationId: null, enabled: false },
@@ -1455,6 +1490,9 @@ export function createPrismaMcpRepository(input: {
       if (!user) return { kind: "not_found" as const };
       const validation = draftValidationValues({ draft, oneTimeValues: values, sharedValues: {} });
       if (validation.issues.length) return { kind: "invalid_values" as const, issues: validation.issues };
+      // Advisory: never contact an endpoint for a connection the owner cannot add.
+      const limited = await personalCreationLimit(client, userId);
+      if (limited) return { kind: limited };
       const serverId = randomUUID();
       const outcome = draft.auth.mode === "oauth"
         ? {
@@ -1485,7 +1523,12 @@ export function createPrismaMcpRepository(input: {
         .map((slot) => slot.slotKey);
       const revisionEvidence: McpValidationEvidence = { evidence, testedAt: now.toISOString(), toolInventory };
       const created = await client.$transaction(async (tx) => {
+        // Creates, enables and account deletion of one owner serialize on the
+        // user row; only under this lock are the limits authoritative.
+        await lockAuthUser(tx, userId);
         await tx.user.findFirstOrThrow({ select: { id: true }, where: { id: userId, status: "active" } });
+        const limit = await personalCreationLimit(tx, userId);
+        if (limit) return limit;
         const server = await tx.mcpServer.create({
           data: {
             description,
@@ -1550,6 +1593,7 @@ export function createPrismaMcpRepository(input: {
           userId
         }) : null;
       });
+      if (typeof created === "string") return { kind: created };
       return created ? { kind: "ok" as const, value: created } : { kind: "not_found" as const };
     },
 
@@ -1666,6 +1710,8 @@ export function createPrismaMcpRepository(input: {
         return serialized ? [serialized] : [];
       });
     },
+
+    personalCreationLimit: (userId) => personalCreationLimit(client, userId),
 
     rebuildRevision: async ({ oneTimeValues, replaceDraft, revisionId, serverId, validationUserId }) => {
       const prepared = await client.$transaction(async (tx) => {
@@ -2601,6 +2647,9 @@ export function createPrismaMcpRepository(input: {
     updateUserServer: async ({ enabled, installationOnly, personalOnly, serverId, tool, userId, values }) => {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {
+        // Lock order: the owner first (serializes enables and personal creates),
+        // then the server.
+        await lockAuthUser(tx, userId);
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const groupIds = await groupIdsForUser(tx, userId);
         if (!groupIds) return { kind: "not_found" as const };
@@ -2650,6 +2699,10 @@ export function createPrismaMcpRepository(input: {
           new Date(),
           endpoint
         );
+        // An already-enabled row (for example the OAuth settle) passes unchanged.
+        if (enabled === true && !preference?.enabled && await enabledServerLimitReached(tx, userId, serverId)) {
+          return { kind: "mcp_enabled_server_limit_reached" as const };
+        }
         if (enabled === true) {
           const shared = readStoredValues(
             record.sharedConfigEnvelope,

@@ -16,6 +16,8 @@ import {
   type OAuthDiscoveryState,
   type OAuthTokens
 } from "@modelcontextprotocol/client";
+import { reportSubsystemFailure, reportSubsystemHealthy } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import { createMcpSafeFetch } from "./safeFetch";
 import type { McpEndpointCorrection } from "./draftValidator";
 import {
@@ -39,6 +41,8 @@ const MAX_AUTHORIZATION_URL_BYTES = 8 * 1_024;
 const MAX_OAUTH_RESPONSE_BYTES = 512 * 1_024;
 const OAUTH_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_REVOCATION_PASSES = 3;
+/** Revocation retries end this long after the disconnect request; the token is then wiped locally. */
+export const MCP_OAUTH_REVOCATION_ABANDON_MS = 24 * 60 * 60_000;
 const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 
 // Every authorization-server response, including the ones the SDK parses with
@@ -83,6 +87,18 @@ async function withinDeadline<T>(signal: AbortSignal, operation: Promise<T>): Pr
   } finally {
     signal.removeEventListener("abort", onAbort);
   }
+}
+
+/** Content-free: a stable code and the server-owned connection scope only. */
+function reportRevocationFailure(connectionId: string, code: string, error?: unknown): void {
+  reportSubsystemFailure({
+    action: code === "mcp_oauth_revocation_abandoned" ? "stop" : "retry",
+    code,
+    ...(error === undefined ? {} : { prisma_code: databaseFailureCode(error) }),
+    scope_id: connectionId,
+    stage: "cleanup",
+    subsystem: "mcp"
+  });
 }
 
 export type McpOAuthErrorCode =
@@ -825,12 +841,15 @@ export class McpOAuthService {
       try {
         await this.#revoke(connection);
       } catch {
+        // The token stays stored; reconcileDisconnecting retries within its bound.
+        reportRevocationFailure(connectionId, "mcp_oauth_revocation_failed");
         return "disconnecting";
       }
       if (await this.#repository.finalizeDisconnected({
         connectionId,
         tokenVersion: connection.tokenVersion
       })) {
+        reportSubsystemHealthy("mcp", "cleanup", connectionId);
         return "disconnected";
       }
       const current = await this.#repository.loadConnection(connectionId);
@@ -844,12 +863,36 @@ export class McpOAuthService {
     return "disconnecting";
   }
 
+  /**
+   * Marks ineligible connections (archived personal or installation servers,
+   * inactive owners, lost grants) disconnecting, retries each revocation and,
+   * 24 h after the disconnect request, wipes the token locally instead, so no
+   * connection stays disconnecting forever and finalization can proceed.
+   */
   async reconcileDisconnecting(): Promise<void> {
     await this.#repository.requestDisconnectForIneligibleConnections();
     const connectionIds = await this.#repository.listDisconnectingConnectionIds();
-    await Promise.allSettled(
-      connectionIds.map((connectionId) => this.revokeConnectionIfDrained(connectionId))
+    const requestedBefore = new Date(this.#now().getTime() - MCP_OAUTH_REVOCATION_ABANDON_MS);
+    const settled = await Promise.allSettled(
+      connectionIds.map((connectionId) => this.#settleDisconnecting(connectionId, requestedBefore))
     );
+    settled.forEach((result, index) => {
+      if (result.status === "rejected") {
+        reportRevocationFailure(connectionIds[index]!, "mcp_oauth_revocation_failed", result.reason);
+      }
+    });
+  }
+
+  async #settleDisconnecting(connectionId: string, requestedBefore: Date): Promise<void> {
+    try {
+      if (await this.revokeConnectionIfDrained(connectionId) === "disconnected") return;
+    } catch (error) {
+      reportRevocationFailure(connectionId, "mcp_oauth_revocation_failed", error);
+    }
+    if (await this.#repository.abandonRevocation({ connectionId, requestedBefore })) {
+      this.#refreshes.get(connectionId)?.abort.abort();
+      reportRevocationFailure(connectionId, "mcp_oauth_revocation_abandoned");
+    }
   }
 
   async createRuntimeProvider(connectionId: string): Promise<McpOAuthRuntimeProvider> {

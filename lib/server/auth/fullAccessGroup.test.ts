@@ -57,7 +57,7 @@ function persistenceFixture(input: Readonly<{
 }
 
 describe("ensureFullAccessGroup", () => {
-  it("creates the system group, installs the initial admin, and grants every existing MCP server", async () => {
+  it("creates the system group, installs the initial admin, and grants every existing installation MCP server", async () => {
     const fixture = persistenceFixture({ mcpServerIds: ["mcp-b", "mcp-a"] });
 
     await expect(ensureFullAccessGroup(fixture.persistence, "initial-admin")).resolves.toEqual({
@@ -85,9 +85,11 @@ describe("ensureFullAccessGroup", () => {
         }
       }
     });
+    // Bootstrap reruns never grant Full access on personal servers.
     expect(fixture.mcpServerFindMany).toHaveBeenCalledWith({
       orderBy: { id: "asc" },
-      select: { id: true }
+      select: { id: true },
+      where: { ownerUserId: null }
     });
     expect(fixture.mcpGrantUpsert).toHaveBeenCalledTimes(2);
     expect(fixture.mcpGrantUpsert).toHaveBeenNthCalledWith(1, {
