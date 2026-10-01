@@ -77,6 +77,14 @@ export type McpOAuthRepositoryResult<T> =
   | { kind: "not_found" };
 
 export interface McpOAuthRepository {
+  /**
+   * Wipes a still-disconnecting token locally once its disconnect request is
+   * older than `requestedBefore`; true when this call gave up the revocation.
+   */
+  abandonRevocation(input: Readonly<{
+    connectionId: string;
+    requestedBefore: Date;
+  }>): Promise<boolean>;
   createConnection(input: Readonly<{
     clientId: string;
     configurationIdentity: string;
@@ -585,6 +593,27 @@ export function createPrismaMcpOAuthRepository(input: Readonly<{
   }
 
   return {
+    async abandonRevocation({ connectionId, requestedBefore }) {
+      const result = await client.mcpOAuthConnection.updateMany({
+        data: {
+          expiresAt: null,
+          state: "disconnected",
+          tokenEnvelope: null,
+          tokenGeneration: { increment: 1 }
+        },
+        where: {
+          id: connectionId,
+          OR: [
+            { disconnectRequestedAt: { lt: requestedBefore } },
+            { disconnectRequestedAt: null, updatedAt: { lt: requestedBefore } }
+          ],
+          state: "disconnecting",
+          tokenEnvelope: { not: null }
+        }
+      });
+      return result.count === 1;
+    },
+
     async createConnection(inputValue) {
       const key = encryptionKey();
       const now = new Date();

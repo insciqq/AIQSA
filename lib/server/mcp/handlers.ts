@@ -132,6 +132,8 @@ function repositoryError<T>(result: Exclude<McpRepositoryResult<T>, { kind: "ok"
     return errorJson("mcp_draft_test_failed", 422, result.issues);
   }
   if (result.kind === "invalid_grant") return errorJson("invalid_grant", 400, result.issues);
+  if (result.kind === "mcp_enabled_server_limit_reached") return errorJson("mcp_enabled_server_limit_reached", 409);
+  if (result.kind === "personal_mcp_limit_reached") return errorJson("personal_mcp_limit_reached", 409);
   return errorJson("invalid_mcp_values", 400, result.issues);
 }
 

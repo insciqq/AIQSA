@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { UserMcpServer } from "@/lib/contracts/mcp";
+import type { McpDraftConfiguration, UserMcpServer } from "@/lib/contracts/mcp";
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import type { McpRepository } from "./repositoryContract";
 import { createPersonalMcpCreateHandler, createPersonalMcpListHandler, createPersonalMcpUpdateHandler } from "./personalHandlers";
@@ -113,6 +113,49 @@ describe("personal MCP handlers", () => {
     const response = await createPersonalMcpListHandler({ ...input, onConnectionChanged })(new Request("https://aiqsa.test/api/me/mcp-connections"));
     expect(response.status).toBe(200);
     expect(onConnectionChanged).not.toHaveBeenCalled();
+  });
+
+  it.each(["personal_mcp_limit_reached", "mcp_enabled_server_limit_reached"] as const)(
+    "refuses %s before any OAuth discovery or validation request",
+    async (limit) => {
+      const input = deps();
+      const personalCreationLimit = vi.fn(async () => limit);
+      const prepareOAuthDraft = vi.fn(async (draft: McpDraftConfiguration) => draft);
+      input.repository.personalCreationLimit = personalCreationLimit;
+      const response = await createPersonalMcpCreateHandler({ ...input, prepareOAuthDraft })(new Request("https://aiqsa.test/api/me/mcp-connections", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Fixture", url: "https://mcp.example.test/mcp", auth: { mode: "oauth" } })
+      }));
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: limit });
+      expect(personalCreationLimit).toHaveBeenCalledWith("user-1");
+      expect(prepareOAuthDraft).not.toHaveBeenCalled();
+      expect(input.createPersonalServer).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["personal_mcp_limit_reached", "mcp_enabled_server_limit_reached"] as const)(
+    "maps the authoritative %s from creation to 409",
+    async (limit) => {
+      const input = deps();
+      input.createPersonalServer.mockResolvedValueOnce({ kind: limit } as never);
+      const response = await createPersonalMcpCreateHandler(input)(new Request("https://aiqsa.test/api/me/mcp-connections", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Fixture", url: "https://mcp.example.test/mcp" })
+      }));
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: limit });
+    }
+  );
+
+  it("maps an enable past the enabled-server limit to 409", async () => {
+    const input = deps();
+    input.updateUserServer.mockResolvedValueOnce({ kind: "mcp_enabled_server_limit_reached" } as never);
+    const response = await createPersonalMcpUpdateHandler(input)(new Request("https://aiqsa.test/api/me/mcp-connections/personal-1", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: true })
+    }), { params: { connectionId: "personal-1" } });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
   });
 
   it.each([{}, { enabled: "yes" }, { tool: { name: "", enabled: true } }])("rejects invalid empty updates", async (body) => {

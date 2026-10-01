@@ -1355,7 +1355,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     });
   });
 
-  it("finalizes only tombstoned server graphs that have no runtime generations", async () => {
+  it("finalizes only tombstoned server graphs without runtime generations or stored tokens", async () => {
     const calls: string[] = [];
     const tx = {
       mcpOAuthClient: {
@@ -1391,16 +1391,20 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     const repository = createPrismaMcpRuntimeRepository({ prisma: client });
 
     await expect(repository.finalizeDeletedServers()).resolves.toBe(1);
+    // Any stored token, ready or disconnecting, keeps the server until it is
+    // revoked or the revocation bound wipes it.
+    const tokensSettled = { none: { tokenEnvelope: { not: null } } };
     expect(tx.mcpServer.findMany).toHaveBeenCalledWith(expect.objectContaining({
       take: 100,
       where: {
         archivedAt: { not: null },
+        oauthConnections: tokensSettled,
         revisions: { none: { runtimeGenerations: { some: {} } } }
       }
     }));
     expect(calls).toEqual(["detach-active-revision", "revisions", "servers", "oauth-clients"]);
     expect(tx.mcpServer.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ archivedAt: { not: null }, revisions: { none: {} } })
+      where: expect.objectContaining({ archivedAt: { not: null }, oauthConnections: tokensSettled, revisions: { none: {} } })
     }));
     expect(tx.mcpOAuthClient.deleteMany).toHaveBeenCalledWith({
       where: { connections: { none: {} }, id: { in: ["oauth-client-1"] } }

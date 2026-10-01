@@ -21,6 +21,10 @@ import { serializeAdminUsageDashboard } from "./adminUsageAggregation";
 import { loadAdminUsageQueryRows } from "./adminUsageQueries";
 import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "./fullAccessGroup";
 
+// Rows of a personal server can name only its owner (database fence), so the
+// installation filter leaves exactly the owner's purgeable personal MCP out.
+const installationMcpRows = { where: { server: { ownerUserId: null } } } as const;
+
 const adminDashboardUserSelect = {
   _count: {
     select: {
@@ -30,9 +34,10 @@ const adminDashboardUserSelect = {
       chats: true,
       folders: true,
       knowledgeBases: true,
-      mcpGrants: true,
-      mcpOAuthConnections: true,
-      mcpUserServers: true,
+      mcpGrants: installationMcpRows,
+      mcpOAuthConnections: installationMcpRows,
+      mcpOwnedServers: true,
+      mcpUserServers: installationMcpRows,
       assistantDefinitions: true,
       skillDefinitions: true,
       sharedSnapshots: true,
@@ -232,7 +237,7 @@ export async function listAdminDashboard(
     loadAdminUsageQueryRows(prisma),
     prisma.mcpServer.findFirst({
       select: { id: true },
-      where: { archivedAt: null }
+      where: { archivedAt: null, ownerUserId: null }
     }),
     prisma.smtpControl.findFirst({
       select: {
@@ -311,7 +316,7 @@ export async function listAdminDashboard(
     return {
       deletion: adminUserDeletionInfo({
         ownedDataCount: Math.max(0, totalCount - user._count.knowledgeBases - memoryOwnedCount),
-        purgeableOwnedDataCount: knowledgeOwnedCount + memoryOwnedCount,
+        purgeableOwnedDataCount: knowledgeOwnedCount + memoryOwnedCount + user._count.mcpOwnedServers,
         status: user.status
       }),
       directGrants: grants.filter((grant) => grant.userId === user.id && grant.groupId === null).map(visibleGrant),
