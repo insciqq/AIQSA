@@ -3,6 +3,8 @@ import { syntheticImagePlan } from "@/tests/support/imagePlan";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as hub from "../mcp/hubService";
+import * as defaultRuntime from "../mcp/defaultRuntime";
+import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { McpSemanticRouterError } from "../mcp/router";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { createAgentRunStore } from "./store";
@@ -216,6 +218,46 @@ describe("Agent MCP discovery surface", () => {
         fields: expect.objectContaining({ code: value.code, stage: kind === "execution_outcome_unknown" ? "result" : "admission" }) });
       expect(JSON.stringify(logs)).not.toContain("PRIVATE_ARGUMENT");
     });
+
+  it("refuses a Load-all personal tool its owner switched off before any dispatch and calls it once on again", async () => {
+    const personal = personalMcpFixture({ toolNames: ["read", "write"], userId: "user" });
+    const toolId = personal.namespacedName("write");
+    const accepted = await personal.prepare([personal.namespacedName("read"), toolId]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    const plan = async (_userId: string, tools: readonly { namespacedName: string }[]) =>
+      personal.prepare(tools.map((tool) => tool.namespacedName));
+    vi.spyOn(defaultRuntime.defaultMcpRunPlan, "filterTools").mockImplementation(async (_userId, tools) => [...tools]);
+    vi.spyOn(defaultRuntime.defaultMcpRunPlan, "inspect").mockImplementation(plan);
+    vi.spyOn(defaultRuntime.defaultMcpRunPlan, "materialize").mockImplementation(plan);
+    const callTool = vi.fn(async ({ beforeDispatch }: { beforeDispatch(): Promise<void> }) => {
+      await beforeDispatch();
+      return { isError: false, structuredContent: null, text: ["WRITTEN"], unsupportedContentTypes: [] };
+    });
+    vi.spyOn(defaultRuntime, "getDefaultMcpRuntimeCoordinator")
+      .mockReturnValue({ callTool } as unknown as ReturnType<typeof defaultRuntime.getDefaultMcpRuntimeCoordinator>);
+    const store = { admitMcpPlan: async () => {}, assertActive: async () => {}, attachMcpCall: vi.fn(async () => {}),
+      mcpTools: async () => [], toolCall: async () => "write-call", settleTool: vi.fn(async () => {}) } as unknown as ReturnType<typeof createAgentRunStore>;
+    const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "all" }, mcp: accepted.snapshot,
+      searchPlan: { options: [] } } as unknown as NormalizedRunRequest, store, runId: "run", userId: "user", incarnation: "incarnation",
+    signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+    const call = async () => rpcResult(await handler(new Request("http://agent.invalid/mcp", { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: toolId, arguments: {} } }) })));
+
+    personal.switchTool("write", false);
+    const off = await call();
+    expect(off.isError).toBe(true);
+    expect(JSON.parse(codexModelOutput(off).body)).toMatchObject({ dispatched: false, recovery: "find_tools" });
+    expect(callTool).not.toHaveBeenCalled();
+    expect(vi.mocked(store.attachMcpCall)).not.toHaveBeenCalled();
+
+    personal.switchTool("write", true);
+    const on = await call();
+    expect(on.isError).not.toBe(true);
+    expect(codexModelOutput(on).body).toContain("WRITTEN");
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ generationId: personal.generationId, name: "write" }));
+  });
 
   it("uses an admission discovered through another gateway handler", async () => {
     const toolId = "arbitrary_delta", version = "a".repeat(64);

@@ -54,8 +54,7 @@ type RecordOptions = {
   sharedValues?: Record<string, McpSlotValue>;
   sharedVersion?: number;
   ownerUserId?: string | null;
-  selectedToolNames?: string[];
-  toolSelectionEnabled?: boolean;
+  userDisabledToolNames?: string[];
 };
 
 /** A revision checked with recorded name/definition pairs. */
@@ -263,10 +262,7 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
       groups: (options.groupIds ?? ["group-1"]).map((groupId) => ({ groupId })),
       id: USER_ID
     },
-    ...(options.selectedToolNames !== undefined ? {
-      selectedToolNames: options.selectedToolNames,
-      toolSelectionEnabled: options.toolSelectionEnabled ?? true
-    } : {}),
+    userDisabledToolNames: options.userDisabledToolNames ?? [],
     userId: USER_ID
   } as unknown as RuntimeRecord;
 }
@@ -284,25 +280,23 @@ describe("remote MCP runtime candidates", () => {
     expect(candidate).toBeNull();
   });
 
-  it("freezes a personal tool allowlist for a remote runtime, including an empty list", () => {
-    const candidate = remoteRuntimeCandidate({
+  it("keeps a personal runtime's identity and full inventory when its owner switches tools off", () => {
+    const candidate = (userDisabledToolNames: string[]) => remoteRuntimeCandidate({
       key: KEY,
       record: runtimeRecord({
         grants: [{ canUse: true, groupId: null, personalSlotKeys: ["authorization", "workspace"], userId: USER_ID }],
         ownerUserId: USER_ID,
-        selectedToolNames: [],
-        toolSelectionEnabled: true
+        userDisabledToolNames
       })
     });
+    const all = candidate([]);
+    const switchedOff = candidate(["echo"]);
 
-    expect(candidate).toMatchObject({
-      allowedToolNames: [],
-      effectiveEnvelope: {
-        personalRuntime: true,
-        toolSelection: []
-      },
-      personalRuntime: true
-    });
+    expect(all).toMatchObject({ effectiveEnvelope: { personalRuntime: true }, personalRuntime: true });
+    expect(switchedOff?.fingerprint).toBe(all?.fingerprint);
+    expect(switchedOff?.effectiveEnvelope).toEqual(all?.effectiveEnvelope);
+    expect(switchedOff).not.toHaveProperty("allowedToolNames");
+    expect(switchedOff?.effectiveEnvelope).not.toHaveProperty("toolSelection");
   });
 
   it("unions group use with direct-only personal permissions and decrypts the effective headers", () => {
@@ -977,8 +971,6 @@ describe("Prisma MCP shared Project runtimes", () => {
     }))).loadAcceptedGeneration("shared-accepted", NOW)).resolves.toBeNull();
     await expect(repository(accepted({ ...expected.effectiveEnvelope, personalRuntime: true }))
       .loadAcceptedGeneration("shared-accepted", NOW)).resolves.toBeNull();
-    await expect(repository(accepted({ ...expected.effectiveEnvelope, toolSelection: ["echo"] }))
-      .loadAcceptedGeneration("shared-accepted", NOW)).resolves.toBeNull();
     // A generation owned by another server's shared runtime is not this revision's.
     await expect(repository({ ...accepted(expected.effectiveEnvelope), sharedServerId: "server-2" })
       .loadAcceptedGeneration("shared-accepted", NOW)).resolves.toBeNull();
@@ -1027,10 +1019,10 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     }));
   });
 
-  it.each([false, true])("persists an encrypted effective snapshot and fences personal selection=%s", async (personal) => {
+  it.each([false, true])("persists an encrypted effective snapshot without the owner's switch-offs, personal=%s", async (personal) => {
     const record = runtimeRecord({
       configuration: { ...configuration, disabledToolNames: ["dangerous_tool"] },
-      ...(personal ? { ownerUserId: USER_ID, selectedToolNames: ["echo"] } : {})
+      ...(personal ? { ownerUserId: USER_ID, userDisabledToolNames: ["echo"] } : {})
     });
     const expected = remoteRuntimeCandidate({ key: KEY, record });
     const createGeneration = vi.fn(async (input: { data: Record<string, unknown> }) => ({
@@ -1072,7 +1064,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
 
     expect(launches).toEqual([{
       allowPrivateNetwork: false,
-      ...(personal ? { allowedToolNames: ["echo"], personalRuntime: true } : {}),
+      ...(personal ? { personalRuntime: true } : {}),
       callTimeoutMs: 28_000,
       disabledToolNames: ["dangerous_tool"],
       fingerprint: expected?.fingerprint,
@@ -1104,7 +1096,6 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
       where: {
         enabled: true,
         id: USER_SERVER_ID,
-        ...(personal ? { selectedToolNames: { equals: ["echo"] }, toolSelectionEnabled: true } : {}),
         server: {
           activeRevisionId: REVISION_ID,
           archivedAt: null,
@@ -1115,14 +1106,12 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     });
   });
 
-  it("restores a personal runtime from its frozen tool selection after the preference changes", async () => {
+  it("restores an accepted personal runtime with its ownership flag after the owner switches tools", async () => {
     const expected = remoteRuntimeCandidate({
       key: KEY,
       record: runtimeRecord({
         grants: [{ canUse: true, groupId: null, personalSlotKeys: ["authorization", "workspace"], userId: USER_ID }],
-        ownerUserId: USER_ID,
-        selectedToolNames: ["echo"],
-        toolSelectionEnabled: true
+        ownerUserId: USER_ID
       })
     });
     if (!expected) throw new Error("expected personal runtime candidate");
@@ -1144,13 +1133,12 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
         validationEvidence: checkedEvidence(CHECKED_TOOLS)
       },
       sharedServerId: null,
-      // Simulate the preference being changed after acceptance. Recovery must
-      // use the encrypted snapshot's selection and ownership flag instead.
+      // A switch after acceptance changes no runtime input: recovery uses the
+      // encrypted snapshot's ownership flag and keeps the full inventory.
       userServer: {
-        selectedToolNames: [],
         server: { ownerUserId: USER_ID },
         serverId: SERVER_ID,
-        toolSelectionEnabled: true,
+        userDisabledToolNames: ["echo"],
         userId: USER_ID
       }
     }));
@@ -1159,12 +1147,13 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
       prisma: { mcpRuntimeGeneration: { findFirst } } as unknown as PrismaClient
     });
 
-    await expect(repository.loadAcceptedGeneration("generation-personal", NOW)).resolves.toMatchObject({
-      allowedToolNames: ["echo"],
+    const restored = await repository.loadAcceptedGeneration("generation-personal", NOW);
+    expect(restored).toMatchObject({
       fingerprint: expected.fingerprint,
       generationId: "generation-personal",
       personalRuntime: true
     });
+    expect(restored).not.toHaveProperty("allowedToolNames");
   });
 
   it("restores an accepted active-run generation from its immutable revision and effective snapshot", async () => {

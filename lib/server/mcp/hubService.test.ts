@@ -4,6 +4,7 @@ import { createMcpHubService, McpHubServiceError, type McpHubAuthority, type Mcp
 import { McpSemanticRouterError } from "./router";
 import { McpClientSessionError } from "./clientSession";
 import { getMcpRequestMaxBytes } from "./responseLimits";
+import { personalMcpFixture } from "@/tests/support/personalMcp";
 
 const authority: McpHubAuthority = {
   assertActive: async () => undefined,
@@ -121,6 +122,29 @@ function fixture(overrides: Partial<McpHubServiceDependencies> = {}) {
 }
 
 describe("MCP Hub shared discovery and dispatch", () => {
+  it("refuses a prepared call whose personal tool was switched off before dispatch, without recording it", async () => {
+    // The shared policy the Agent gateway also uses; the Hub's own filter keeps personal servers out entirely.
+    const personal = personalMcpFixture({ toolNames: ["echo", "write"] });
+    const plan: McpHubServiceDependencies["inspect"] = async (_userId, tools) =>
+      personal.prepare(tools.map(({ namespacedName }) => namespacedName));
+    const test = fixture({ catalog: () => personal.catalog(), inspect: plan, materialize: plan });
+    const toolId = personal.namespacedName("write");
+    const descriptor = (await test.service.findTools({ authority, goal: "Write" })).tools.find((tool) => tool.tool_id === toolId)!;
+    const prepared = await test.service.prepareToolCall({ authority, arguments: {}, toolId, toolVersion: descriptor.tool_version });
+
+    personal.switchTool("write", false);
+    await expect(test.service.dispatchPreparedToolCall({ authority, prepared })).rejects.toMatchObject({ code: "tool_unavailable" });
+    expect(test.dependencies.recordDispatch).not.toHaveBeenCalled();
+    expect(test.dependencies.callRuntimeTool).not.toHaveBeenCalled();
+
+    personal.switchTool("write", true);
+    const again = await test.service.prepareToolCall({ authority, arguments: {}, toolId, toolVersion: descriptor.tool_version });
+    await test.service.dispatchPreparedToolCall({ authority, prepared: again });
+    expect(test.dependencies.callRuntimeTool).toHaveBeenCalledWith(expect.objectContaining({
+      generationId: personal.generationId, name: "write"
+    }));
+  });
+
   it("passes large admitted arguments intact and refuses oversize before recording a dispatch", async () => {
     const test = fixture();
     const descriptor = (await test.service.findTools({ authority, goal: "Echo" })).tools[0]!;

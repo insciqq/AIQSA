@@ -3715,8 +3715,9 @@ model McpUserServer {
   enabled                    Boolean                @default(false)
   personalConfigEnvelope     String?
   personalConfigVersion      Int                    @default(0)
-  selectedToolNames          String[]               @default([])
-  toolSelectionEnabled       Boolean                @default(false)
+  /// Tools the owner switched off; every other upstream tool is available.
+  /// Bounded by a CHECK (cardinality <= 1024) in the migration.
+  userDisabledToolNames      String[]               @default([])
   discoveredInventory        Json?
   discoveredRevisionId       String?
   discoveredOAuthConnectionId String?

@@ -19,12 +19,12 @@ function customServer(overrides: Record<string, unknown> = {}) {
     oauthAvailable: false,
     oauthState: null,
     readiness: "ready",
-    selectedToolNames: ["search"],
     sourceType: "personal",
     tools: [
       { description: "Search synthetic records.", name: "search" },
       { description: "Delete synthetic records.", name: "delete" }
     ],
+    userDisabledToolNames: ["delete"],
     ...overrides
   };
 }
@@ -45,9 +45,9 @@ async function mockPersonalApis(page: PlaywrightPage) {
       if (body.tool) {
         const tool = body.tool;
         servers = servers.map((server) => server.id === "synthetic-mcp"
-          ? { ...server, selectedToolNames: tool.enabled
-            ? ["search", "delete"].filter((name) => name === tool.name || (server.selectedToolNames as string[]).includes(name))
-            : (server.selectedToolNames as string[]).filter((name) => name !== tool.name) }
+          ? { ...server, userDisabledToolNames: tool.enabled
+            ? (server.userDisabledToolNames as string[]).filter((name) => name !== tool.name)
+            : [...new Set([...(server.userDisabledToolNames as string[]), tool.name])].sort() }
           : server);
       }
       await route.fulfill({ contentType: "application/json", json: { server: servers[0] } });

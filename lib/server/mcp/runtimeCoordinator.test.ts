@@ -3,6 +3,7 @@ import {
   McpClientSessionError,
   type McpFatalResponseErrorCode
 } from "./clientSession";
+import { MAX_TOOL_DESCRIPTION_LENGTH } from "@/lib/contracts/mcp";
 import { ToolHiveClientError } from "./toolhiveClient";
 import { getContext, runWithContext, type ObservabilityContext } from "../observability";
 import type { McpPublishedToolDefinitions } from "./definitions";
@@ -593,68 +594,40 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.stop();
   });
 
-  it("enforces a personal OAuth allowlist with no published inventory at startup and after refresh", async () => {
-    const test = harness({ inventory: [tool("read_mail"), tool("send_mail")] });
+  it("keeps a personal runtime's full upstream inventory and follows additions and removals after list_changed", async () => {
+    const long = "d".repeat(MAX_TOOL_DESCRIPTION_LENGTH + 100);
+    const test = harness({ inventory: [tool("read_mail", "hash-read_mail", long), tool("send_mail")] });
     test.setLaunches([launch({
-      allowedToolNames: ["read_mail"],
       personalRuntime: true,
       publishedTools: { kind: "names", names: new Set() }
     })]);
 
     await test.coordinator.reconcileNow();
+    // The owner's switched-off tools are a projection filter: the runtime keeps every upstream tool.
     expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory).toEqual({
-      exclusions: [{ name: "send_mail", reason: "disabled_by_policy" }],
-      tools: [tool("read_mail")],
+      exclusions: [],
+      tools: [tool("read_mail", "hash-read_mail", long), tool("send_mail")],
       version: 1
     });
     expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].discoveredInventory).toEqual({
-      tools: [{ description: null, name: "read_mail" }, { description: null, name: "send_mail" }],
+      tools: [{ description: "d".repeat(MAX_TOOL_DESCRIPTION_LENGTH), name: "read_mail" }, { description: null, name: "send_mail" }],
       version: 1
     });
 
-    test.setInventory([tool("read_mail", "changed-read-definition"), tool("send_mail"), tool("delete_mail")]);
+    test.setInventory([tool("read_mail", "changed-read-definition"), tool("delete_mail")]);
     test.listChanged();
     await vi.waitFor(() => expect(test.repository.markReady).toHaveBeenCalledTimes(2));
-    expect(vi.mocked(test.repository.markReady).mock.calls[1]![0].inventory).toEqual({
-      exclusions: [
-        { name: "delete_mail", reason: "disabled_by_policy" },
-        { name: "send_mail", reason: "disabled_by_policy" }
-      ],
-      tools: [tool("read_mail", "changed-read-definition")],
-      version: 1
-    });
-    for (const name of ["send_mail", "delete_mail"]) {
-      await expect(test.coordinator.callTool({
-        arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name
-      })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
-    }
-    expect(test.session.callTool).not.toHaveBeenCalled();
-    await expect(test.coordinator.callTool({
-      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "read_mail"
-    })).resolves.toMatchObject({ structuredContent: { name: "read_mail" } });
-    await test.coordinator.stop();
-  });
-
-  it("keeps a personal runtime with an explicit empty allowlist ready and unable to dispatch", async () => {
-    const test = harness({ inventory: [tool("read_mail")] });
-    test.setLaunches([launch({
-      allowedToolNames: [],
-      personalRuntime: true,
-      publishedTools: { kind: "names", names: new Set() }
-    })]);
-
-    await test.coordinator.reconcileNow();
-
-    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
-    expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory).toEqual({
-      exclusions: [{ name: "read_mail", reason: "disabled_by_policy" }],
-      tools: [],
-      version: 1
+    expect(vi.mocked(test.repository.markReady).mock.calls[1]![0]).toMatchObject({
+      discoveredInventory: { tools: [{ description: null, name: "read_mail" }, { description: null, name: "delete_mail" }], version: 1 },
+      inventory: { exclusions: [], tools: [tool("read_mail", "changed-read-definition"), tool("delete_mail")], version: 1 }
     });
     await expect(test.coordinator.callTool({
-      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "read_mail"
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "send_mail"
     })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
-    expect(test.session.callTool).not.toHaveBeenCalled();
+    await expect(test.coordinator.callTool({
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "delete_mail"
+    })).resolves.toMatchObject({ structuredContent: { name: "delete_mail" } });
+    expect(test.session.callTool).toHaveBeenCalledOnce();
     await test.coordinator.stop();
   });
 

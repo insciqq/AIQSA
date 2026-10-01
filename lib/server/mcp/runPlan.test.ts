@@ -59,7 +59,28 @@ describe("MCP run plans", () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.snapshot.tools).toHaveLength(8);
     vi.stubEnv("AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES", String(512 * 1024));
-    await expect(prepare()).resolves.toMatchObject({ ok: false, code: "mcp_plan_too_large" });
+    const tooLarge = await prepare();
+    expect(tooLarge).toMatchObject({ ok: false, code: "mcp_plan_too_large" });
+    expect(tooLarge).not.toHaveProperty("limit");
+  });
+
+  it("names the tool bound when a whole plan offers more tools than one request accepts", async () => {
+    const tools = Array.from({ length: MCP_RUN_PLAN_LIMITS.maxTools + 1 }, (_, index) => ({
+      definitionHash: hash, description: null, inputSchema: { type: "object" }, name: `tool_${index}`
+    }));
+    const load = async () => [record({ inventory: { tools, version: 1 } })];
+
+    await expect(prepareMcpRunPlan({ isGenerationLive: () => true, load, now: () => now })).resolves.toEqual({
+      code: "mcp_plan_too_large",
+      issues: [{ errorCode: null, name: "Example", readiness: "ready" }],
+      limit: "maxTools",
+      ok: false
+    });
+    // An exact Auto selection from the same inventory is unaffected.
+    await expect(prepareMcpRunPlan({
+      allowedToolNames: [namespacedMcpToolName("mcp_example", `tool_${MCP_RUN_PLAN_LIMITS.maxTools}`)],
+      isGenerationLive: () => true, load, now: () => now
+    })).resolves.toMatchObject({ ok: true });
   });
 
   it.each(["idle", "queued", "starting", "ready", "restarting"] as const)(
