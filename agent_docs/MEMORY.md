@@ -69,7 +69,7 @@ Freeze search permissions, destinations and budgets at acceptance. Revalidate so
 
 ## Cutover And Deletion
 
-Forget, edit, exclusion, pause and reset fence synchronously before cleanup; old jobs, vectors or unchanged evidence cannot resurrect content. Forget fences owned messages creating or independently reusing facts, not standing-only inclusion, preserving other facts' evidence despite overlapping or inexact spans. Deletion remains retryable. Provider capability failure disables only its stage.
+Forget, edit, exclusion, pause and reset fence synchronously before cleanup; old jobs, vectors or unchanged evidence cannot resurrect content. Forget fences owned messages creating or independently reusing facts, not standing-only inclusion; overlapping/inexact spans never block it. Deletion remains retryable. Provider capability failure disables only its stage, preserving ordinary answers and deletion.
 
 Semantic cutover requires an explicit operator disposition after aggregate-only inventory, including an explicit no-op for zero rows. Retained legacy rows remain excluded from new authority until safely disposed; cutover never upgrades them to direct evidence. Identity migration does not rewrite accepted keys: activation requires its collision preflight, ambiguity disables legacy reuse, and accepted recovery retains exact recorded identity. Retired language-specific profiles cannot admit new calculations; compatibility uses owner-bound recorded mappings. See [semantic cutover](../lib/server/memory/operational/cutover.ts) and [identity cutover](../lib/server/memory/learning/identity/cutover.ts).
 
