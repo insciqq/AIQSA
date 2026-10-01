@@ -835,6 +835,9 @@ export function createPrismaMcpRuntimeRepository(input: {
             where: {
               enabled: true,
               id: candidate.userServerId,
+              // A sync that read the row before a value replacement never
+              // re-desires the generation of the replaced values.
+              personalConfigVersion: record.personalConfigVersion,
               server: {
                 activeRevisionId: candidate.revisionId,
                 archivedAt: null,

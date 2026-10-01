@@ -312,6 +312,18 @@ function draftFrom(value: Prisma.JsonValue): McpDraftConfiguration {
   return result.value;
 }
 
+/** The one header slot a static-auth personal connection stores its credential in. */
+const PERSONAL_AUTHORIZATION_SLOT_KEY = "authorization";
+
+function personalAuthorizationSlot(
+  draft: McpDraftConfiguration
+): (McpConfigurationSlot & { target: { kind: "header"; name: string } }) | null {
+  const slot = draft.slots.find((candidate) => candidate.slotKey === PERSONAL_AUTHORIZATION_SLOT_KEY);
+  return slot && slot.target.kind === "header" && slot.policy.kind === "personal"
+    ? slot as McpConfigurationSlot & { target: { kind: "header"; name: string } }
+    : null;
+}
+
 function draftDefinitionHash(draft: McpDraftConfiguration): string {
   const { disabledToolNames: _disabledToolNames, ...definition } = draft;
   return hashCanonicalMcpValue(definition);
@@ -972,6 +984,10 @@ function serializeUserServer(input: {
       ? { endpoint: safeMcpEndpoint(draft.source.url) }
       : {}),
     ...(personalOwner ? { userDisabledToolNames: [...(personalTools?.disabled ?? [])].sort() } : {}),
+    ...(personalOwner ? {
+      authHeaderName: draft.auth.mode === "static" ? personalAuthorizationSlot(draft)?.target.name ?? null : null,
+      authMode: draft.auth.mode
+    } : {}),
     fields,
     id: input.record.id,
     knownToolCount: personalOwner
@@ -1245,6 +1261,14 @@ function activationToken(): string {
 }
 
 type ActivationEnqueueResult = { kind: "ok" } | McpRepositoryError;
+
+/** Rolls back a credential replacement whose guarded write found a newer version. */
+class PersonalCredentialsChangedError extends Error {
+  constructor() {
+    super("mcp_personal_credentials_changed");
+    this.name = "PersonalCredentialsChangedError";
+  }
+}
 
 export type PrismaMcpRepository = McpRepository & McpActivationCoordinatorRepository;
 
@@ -1595,6 +1619,150 @@ export function createPrismaMcpRepository(input: {
       });
       if (typeof created === "string") return { kind: created };
       return created ? { kind: "ok" as const, value: created } : { kind: "not_found" as const };
+    },
+
+    replacePersonalCredentials: async ({ authorization, headerName, serverId, userId }) => {
+      const user = await client.user.findFirst({ select: { id: true }, where: { id: userId, status: "active" } });
+      if (!user) return { kind: "not_found" as const };
+      // The state this replacement is validated against; the commit below
+      // applies only while the connection is still exactly this state.
+      const current = await client.mcpServer.findFirst({
+        select: {
+          activeRevision: { select: { configuration: true, id: true } },
+          userServers: { select: { id: true, personalConfigVersion: true }, take: 1, where: { userId } }
+        },
+        where: { archivedAt: null, enabled: true, id: serverId, ownerUserId: userId }
+      });
+      const preference = current?.userServers[0];
+      if (!current?.activeRevision || !preference) return { kind: "not_found" as const };
+      const expectedRevisionId = current.activeRevision.id;
+      const draft = draftFrom(current.activeRevision.configuration);
+      const slot = personalAuthorizationSlot(draft);
+      if (draft.auth.mode !== "static" || draft.source.kind !== "remote" || !slot) {
+        return { kind: "auth_mode_invalid" as const };
+      }
+      const nextHeaderName = headerName ?? slot.target.name;
+      const headerChanged = nextHeaderName !== slot.target.name;
+      // Personal servers are exempt from slot lineage: the header and its only
+      // value are replaced together, so no stored value meets a new target.
+      const definition = validateMcpDraft(headerChanged ? {
+        ...draft,
+        slots: draft.slots.map((candidate) => candidate.slotKey === slot.slotKey
+          ? { ...candidate, target: { kind: "header" as const, name: nextHeaderName } }
+          : candidate)
+      } : draft);
+      if (!definition.ok) return { kind: "invalid_values" as const, issues: definition.issues };
+      const nextDraft = definition.value;
+      const values: Record<string, McpSlotValue> = { [slot.slotKey]: authorization };
+      const validation = draftValidationValues({ draft: nextDraft, oneTimeValues: values, sharedValues: {} });
+      if (validation.issues.length) return { kind: "invalid_values" as const, issues: validation.issues };
+      const outcome = await draftValidator.validate({ draft: nextDraft, serverId, validationUserId: userId, values: validation.values });
+      if (outcome.kind === "invalid") return { kind: "draft_validation_failed" as const, issues: outcome.issues };
+      const evidence = jsonObjectFrom(outcome.evidence);
+      const resolvedArtifact = outcome.resolvedArtifact === null ? null : jsonObjectFrom(outcome.resolvedArtifact);
+      const toolInventory = toolInventoryFrom(outcome.toolInventory);
+      // The URL is immutable: a credential that works only at a corrected
+      // endpoint belongs to a new connection.
+      if (!evidence || !toolInventory || outcome.endpointCorrection || (outcome.resolvedArtifact !== null && !resolvedArtifact) ||
+        validationResultContainsSensitiveValue({ draft: nextDraft, evidence, resolvedArtifact, toolInventory, values: validation.values })) {
+        return { kind: "draft_validation_failed" as const, issues: [{ code: "validator_result_invalid", path: "validator" }] };
+      }
+      const draftHash = hashCanonicalMcpValue(nextDraft);
+      const identityHash = revisionIdentityHash({ draftHash, evidence, resolvedArtifact, toolInventory });
+      const now = new Date();
+      const key = encryptionKey();
+      // Personal static connections hold exactly this one value; an unreadable
+      // previous envelope never blocks its replacement.
+      const stored = applyStoredValuePatch(emptyStoredValues(), values, now, mcpEndpointBinding(nextDraft));
+      try {
+        return await client.$transaction(async (tx) => {
+          // Lock order: the owner first (serializes enables and personal
+          // creates), then the server.
+          await lockAuthUser(tx, userId);
+          if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
+          const [owner, locked, row] = await Promise.all([
+            tx.user.findFirst({ select: { id: true }, where: { id: userId, status: "active" } }),
+            tx.mcpServer.findUnique({ select: { activeRevisionId: true, enabled: true, ownerUserId: true }, where: { id: serverId } }),
+            tx.mcpUserServer.findUnique({ select: { id: true, personalConfigVersion: true }, where: { userId_serverId: { serverId, userId } } })
+          ]);
+          if (!owner || !locked || locked.ownerUserId !== userId || !locked.enabled || !row) return { kind: "not_found" as const };
+          // Validated against an older state: never applied out of order.
+          if (locked.activeRevisionId !== expectedRevisionId || row.id !== preference.id ||
+            row.personalConfigVersion !== preference.personalConfigVersion) {
+            return { kind: "credentials_changed" as const };
+          }
+          let revisionId = expectedRevisionId;
+          if (headerChanged) {
+            const existing = await tx.mcpRevision.findUnique({
+              select: { id: true },
+              where: { serverId_identityHash: { identityHash, serverId } }
+            });
+            if (existing) {
+              revisionId = existing.id;
+            } else {
+              const latest = await tx.mcpRevision.aggregate({ _max: { revisionNumber: true }, where: { serverId } });
+              const revisionEvidence: McpValidationEvidence = { evidence, testedAt: now.toISOString(), toolInventory };
+              revisionId = (await tx.mcpRevision.create({
+                data: {
+                  configuration: nextDraft as Prisma.InputJsonValue,
+                  draftHash,
+                  identityHash,
+                  revisionNumber: (latest._max.revisionNumber ?? 0) + 1,
+                  resolvedArtifact: resolvedArtifact ? resolvedArtifact as Prisma.InputJsonValue : Prisma.DbNull,
+                  serverId,
+                  validationEvidence: revisionEvidence as Prisma.InputJsonValue
+                },
+                select: { id: true }
+              })).id;
+            }
+            await tx.mcpServer.update({
+              data: {
+                activeRevisionId: revisionId,
+                draft: nextDraft as Prisma.InputJsonValue,
+                draftTestEvidence: { draftHash, evidence, identityHash, resolvedArtifact, testedAt: now.toISOString(), toolInventory } as Prisma.InputJsonValue,
+                testedDraftHash: draftHash
+              },
+              where: { id: serverId }
+            });
+          }
+          const version = row.personalConfigVersion + 1;
+          const written = await tx.mcpUserServer.updateMany({
+            data: {
+              // A new value version is a new runtime fingerprint: future
+              // messages start the new generation, accepted runs keep theirs.
+              desiredRuntimeGenerationId: null,
+              discoveredInventory: {
+                tools: toolInventory.map((tool) => ({
+                  description: tool.description === null ? null : boundMcpToolDescription(tool.description),
+                  name: tool.name
+                })),
+                version: 1
+              },
+              discoveredOAuthConnectionId: null,
+              discoveredRevisionId: revisionId,
+              personalConfigEnvelope: encryptMcpEnvelope(stored, key, mcpPersonalConfigEnvelopeContext(row.id, version)),
+              personalConfigVersion: version
+            },
+            where: { id: row.id, personalConfigVersion: row.personalConfigVersion }
+          });
+          if (written.count !== 1) throw new PersonalCredentialsChangedError();
+          const groupIds = await groupIdsForUser(tx, userId);
+          if (!groupIds) return { kind: "not_found" as const };
+          const [record] = await listUserServerRecords(tx, userId, groupIds, serverId);
+          const serialized = record ? serializeUserServer({
+            toolAllowed: await loadMcpToolAccess(userId, [serverId], tx),
+            groupIds,
+            key,
+            record,
+            userId,
+            ...(input.oauthRedirectUri ? { oauthRedirectUri: input.oauthRedirectUri } : {})
+          }) : null;
+          return serialized ? { kind: "ok" as const, value: serialized } : { kind: "not_found" as const };
+        });
+      } catch (error) {
+        if (error instanceof PersonalCredentialsChangedError) return { kind: "credentials_changed" as const };
+        throw error;
+      }
     },
 
     createServer: async ({
