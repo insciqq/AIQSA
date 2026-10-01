@@ -144,3 +144,28 @@ for (const viewport of viewports) {
     });
   });
 }
+
+for (const viewport of viewports) {
+  test.describe(`composer personal MCP disclosure at ${viewport.name} size`, () => {
+    test.beforeEach(async ({ page }) => {
+      await page.setViewportSize({ height: viewport.height, width: viewport.width });
+    });
+
+    test("lists personal connections and links one needing attention to Connections", async ({ page }, testInfo) => {
+      await page.goto("/ui-v2-fixture?fixture=composer&state=mcp-personal");
+      const link = page.getByRole("menuitem", { name: "Open Connections in Settings for Notion" });
+      await expect(link).toBeVisible();
+      await expect(page.getByTestId("composer-v2-mcp-servers")).toContainText("Docs search");
+      await expect(page.getByRole("menuitem", { name: "Manage enabled MCP servers" })).toHaveText(/Manage/);
+      await capture(page, testInfo, "composer-disclosure", viewport.name, link);
+    });
+
+    test("keeps the draft and explains a Load all refusal over the tool limit", async ({ page }, testInfo) => {
+      await page.goto("/ui-v2-fixture?fixture=composer&state=load-all-refused");
+      const refusal = page.getByRole("alert").filter({ hasText: "Load all can offer at most" });
+      await expect(refusal).toContainText("Use Auto, or switch tools off in Settings → Connections.");
+      await expect(page.getByRole("textbox", { name: "Message" })).not.toHaveValue("");
+      await capture(page, testInfo, "composer-load-all-refused", viewport.name, refusal);
+    });
+  });
+}

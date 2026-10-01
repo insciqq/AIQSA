@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { resetSkillLibraryStoreForTest } from "@/components/app-shell/skillLibraryStore";
+import { initialSettingsDestinationSnapshot, useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import { resetComposerControlStoreForTest } from "@/tests/support/appShellStores";
 import {
   AnswerSoundSettingsRowV2,
@@ -16,6 +17,8 @@ import {
   retryAutoMcpDiscoveryV2,
   applyLoadAllAfterMcpDiscoveryFailureV2,
   settingsBusyMessageV2,
+  composerMcpServersV2,
+  openPersonalConnectionsSettingsV2,
   blankConversationOrientationV2,
   chatLocationCrumbV2,
   BackgroundRunStatusV2,
@@ -62,6 +65,26 @@ describe("Skill Library overlay v2", () => {
 });
 
 describe("MCP discovery failure actions v2", () => {
+  it("discloses enabled personal connections after installation servers, with their source and readiness", () => {
+    const installation = { accountLabel: null, description: "", enabled: false, fields: [], id: "office", knownToolCount: 2,
+      name: "office", oauthAvailable: false, oauthState: null, readiness: "disabled" as const, runtimeErrorCode: null, tools: [] };
+    const personal = { accountLabel: null, authHeaderName: null, authMode: "oauth" as const, availableTools: [], description: "",
+      enabled: true, fields: [], id: "notion", knownToolCount: 3, name: "Notion", oauthAvailable: true,
+      oauthState: "reauthorization_required" as const, readiness: "reauthorization_required" as const, runtimeErrorCode: null,
+      sourceType: "personal" as const, tools: [], userDisabledToolNames: [] };
+    expect(composerMcpServersV2([installation], [personal, { ...personal, enabled: false, id: "off", name: "Off" }])).toEqual([
+      expect.objectContaining({ enabled: false, id: "office", source: "installation" }),
+      expect.objectContaining({ attention: "reauthorization_required", enabled: true, id: "notion", knownToolCount: 3, source: "personal" })
+    ]);
+  });
+
+  it("opens Settings on Connections for a personal connection", () => {
+    useSettingsDestinationStore.setState(initialSettingsDestinationSnapshot);
+    openPersonalConnectionsSettingsV2();
+    expect(useSettingsDestinationStore.getState()).toMatchObject({ settingsOpen: true, settingsSection: "connections" });
+    useSettingsDestinationStore.setState(initialSettingsDestinationSnapshot);
+  });
+
   it("reports Settings busy with the owner's message, connections first", () => {
     expect(settingsBusyMessageV2({ accountBusy: false, connectedAppsBusy: false, connectionsBusyMessage: null })).toBeNull();
     expect(settingsBusyMessageV2({ accountBusy: true, connectedAppsBusy: false, connectionsBusyMessage: null })).toBe("Updating account…");
