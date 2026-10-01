@@ -115,14 +115,14 @@ describe("Memory action answer result", () => {
     for (const operation of ["SAVE", "UPDATE", "FORGET", "LIST", "SEARCH", "RESET"] as const) {
       const contract = memoryActionAnswerContract({ operation, status: "UNAVAILABLE", version: 4 });
       expect(contract).toContain('<aiqsa_memory_result version="4">');
-      expect(contract).toContain("its status is UNAVAILABLE, say nothing about it: never mention Memory, saving, remembering, a failure, error, limit, or unavailability, never say whether it was done");
+      expect(contract).toContain("SAVE, UPDATE, FORGET, LIST, SEARCH or RESET with UNAVAILABLE: say nothing about it, Memory, saving, failures, errors, limits or availability, never say whether it was done; answer the rest normally.");
       expect(contract).not.toContain("This includes NONE/UNAVAILABLE");
     }
     // NONE keeps the v2 meaning: a requested change that was not recognized is not done.
     expect(memoryActionAnswerContract(MEMORY_ACTION_NO_COMMIT_RESULT))
-      .toContain("Otherwise, if this user message asks to save, change, or forget and the result is operation=NONE, or status REJECTED or THIS_CHAT_ONLY, explicitly say it was not done.");
+      .toContain("Otherwise, if this message asks to save, change, or forget and the result is operation=NONE, REJECTED, or THIS_CHAT_ONLY, say it was not done.");
     expect(memoryActionAnswerContract({ operation: "SAVE", status: "COMMITTED", version: 4 }))
-      .toContain("acknowledge it as done, never say it failed or was not saved");
+      .toContain("COMMITTED: the operation is done; acknowledge it, never call it failed or unsaved.");
   });
 
   it("uses one bounded reservation for the default and every authoritative result", () => {

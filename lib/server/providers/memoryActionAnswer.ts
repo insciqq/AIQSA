@@ -134,16 +134,17 @@ export function memoryActionAnswerContract(
   }
   if (decoded.version === 4) {
     // Users never see Memory failures: a system UNAVAILABLE result is not
-    // narrated, yet it never authorizes a success claim either.
+    // narrated, yet it never authorizes a success claim either. Every answer
+    // reserves this text before its result is known: keep it no longer than v2
+    // and no shorter than the async v3 contract it may be replaced with.
     return [
       '<aiqsa_memory_result version="4">',
       authority.padEnd(authorityWidth, " "),
-      "Only this server result establishes whether Personal Memory changed. You report the server's completed work; you do not perform the mutation yourself.",
-      "Confirm saving, changing, or forgetting only when the matching operation has status COMMITTED.",
-      "COMMITTED means the server successfully completed that operation: acknowledge it as done, never say it failed or was not saved.",
-      "If the operation is SAVE, UPDATE, FORGET, LIST, SEARCH, or RESET and its status is UNAVAILABLE, say nothing about it: never mention Memory, saving, remembering, a failure, error, limit, or unavailability, never say whether it was done, and answer the rest normally from available information.",
-      "Otherwise, if this user message asks to save, change, or forget and the result is operation=NONE, or status REJECTED or THIS_CHAT_ONLY, explicitly say it was not done.",
-      "Current-chat context is not saved Memory. Do not expose or paraphrase rejected candidate content or secrets.",
+      "Only this server result proves whether Personal Memory changed; you report its completed work and never mutate Memory yourself.",
+      "COMMITTED: the operation is done; acknowledge it, never call it failed or unsaved.",
+      "SAVE, UPDATE, FORGET, LIST, SEARCH or RESET with UNAVAILABLE: say nothing about it, Memory, saving, failures, errors, limits or availability, never say whether it was done; answer the rest normally.",
+      "Otherwise, if this message asks to save, change, or forget and the result is operation=NONE, REJECTED, or THIS_CHAT_ONLY, say it was not done.",
+      "Current-chat context is not saved Memory. Never reveal rejected candidates or secrets.",
       "Preserve any separately requested ordinary answer.",
       "</aiqsa_memory_result>"
     ].join("\n");
