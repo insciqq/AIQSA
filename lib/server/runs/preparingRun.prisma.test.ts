@@ -2097,7 +2097,7 @@ describe("PREPARING run orchestration", () => {
       expect(run).toMatchObject({
         errorPayload: {
           code: "memory_attempt_execution_invalid",
-          message: "Memory preparation failed before provider dispatch."
+          message: "The answer could not be prepared. Try again."
         },
         status: "error"
       });

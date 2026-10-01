@@ -15,7 +15,9 @@ describe("Memory action answer result", () => {
     { operation: "SEARCH", status: "COMPLETE", version: 1 },
     { operation: "SAVE", status: "COMMITTED", version: 2 },
     { operation: "NONE", status: "UNAVAILABLE", version: 2 },
-    { operation: "NONE", status: "PENDING", version: 3 }
+    { operation: "NONE", status: "PENDING", version: 3 },
+    { operation: "SAVE", status: "UNAVAILABLE", version: 4 },
+    { operation: "NONE", status: "UNAVAILABLE", version: 4 }
   ] as const)("accepts the bounded authoritative pair %#", (result) => {
     expect(decodeMemoryActionAnswerResult(result)).toEqual(result);
   });
@@ -24,8 +26,9 @@ describe("Memory action answer result", () => {
     { operation: "NONE", status: "COMMITTED", version: 1 },
     { operation: "SEARCH", status: "REJECTED", version: 1 },
     { operation: "SAVE", status: "COMMITTED", statement: "private", version: 1 },
-    { operation: "SAVE", status: "COMMITTED", version: 4 },
+    { operation: "SAVE", status: "COMMITTED", version: 5 },
     { operation: "SAVE", status: "PENDING", version: 3 },
+    { operation: "NONE", status: "PENDING", version: 4 },
     { operation: "NONE", status: "PENDING", version: 2 },
     { operation: "NONE", status: "PENDING", version: 1 }
   ])("rejects invalid or content-bearing bridge %#", (result) => {
@@ -107,9 +110,25 @@ describe("Memory action answer result", () => {
     ].join("\n"));
   });
 
+  it("issues new answers under v4, which never narrates a Memory failure or claims success", () => {
+    expect(MEMORY_ACTION_NO_COMMIT_RESULT.version).toBe(4);
+    for (const operation of ["SAVE", "UPDATE", "FORGET", "LIST", "SEARCH", "RESET"] as const) {
+      const contract = memoryActionAnswerContract({ operation, status: "UNAVAILABLE", version: 4 });
+      expect(contract).toContain('<aiqsa_memory_result version="4">');
+      expect(contract).toContain("never mention a Memory failure, error, limit, or unavailability");
+      expect(contract).toContain("never claim the operation was done");
+      expect(contract).not.toContain("This includes NONE/UNAVAILABLE");
+    }
+    // NONE keeps the v2 meaning: a requested change that was not recognized is not done.
+    expect(memoryActionAnswerContract(MEMORY_ACTION_NO_COMMIT_RESULT))
+      .toContain("the result is NONE/UNAVAILABLE, REJECTED, or THIS_CHAT_ONLY, explicitly say it was not done");
+    expect(memoryActionAnswerContract({ operation: "SAVE", status: "COMMITTED", version: 4 }))
+      .toContain("acknowledge it as done, never say it failed or was not saved");
+  });
+
   it("uses one bounded reservation for the default and every authoritative result", () => {
     const results = [
-      MEMORY_ACTION_NO_COMMIT_RESULT,
+      { operation: "NONE", status: "UNAVAILABLE", version: 2 },
       { operation: "SAVE", status: "COMMITTED", version: 2 },
       { operation: "SAVE", status: "REJECTED", version: 2 },
       { operation: "SAVE", status: "THIS_CHAT_ONLY", version: 2 },
@@ -119,6 +138,12 @@ describe("Memory action answer result", () => {
       { operation: "SEARCH", status: "UNAVAILABLE", version: 2 },
       { operation: "RESET", status: "CONFIRMATION_REQUIRED", version: 2 }
     ] as const;
+    const current = results.map((result) => ({ ...result, version: 4 as const }));
+    const currentCounts = current.map((result) =>
+      estimateApproxTokens(memoryActionAnswerContract(result)));
+    expect(new Set(currentCounts)).toEqual(new Set([
+      estimateApproxTokens(memoryActionAnswerContract(MEMORY_ACTION_NO_COMMIT_RESULT))
+    ]));
     const tokenCounts = results.map((result) =>
       estimateApproxTokens(memoryActionAnswerContract(result)));
 
