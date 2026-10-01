@@ -20,7 +20,6 @@ function server(overrides: Record<string, unknown> = {}) {
     name: "Test MCP",
     oauthAvailable: false,
     oauthState: null,
-    operationalStatus: "inactive",
     readiness: "ready",
     selectedToolNames: ["search"],
     sourceType: "personal",

@@ -33,7 +33,6 @@ function userServer(value: unknown): UserMcpServer | null {
   if (!record(value) || typeof value.id !== "string" || typeof value.name !== "string" ||
     typeof value.description !== "string" || typeof value.enabled !== "boolean" ||
     value.sourceType !== "personal" || !Array.isArray(value.fields) || !Array.isArray(value.tools) ||
-    !["active", "checking", "inactive"].includes(String(value.operationalStatus)) ||
     !["authorizing", "disabled", "idle", "needs_authorization", "needs_setup", "queued", "ready", "reauthorization_required", "restarting", "starting", "unavailable"].includes(String(value.readiness))) {
     return null;
   }
@@ -77,7 +76,6 @@ function userServer(value: unknown): UserMcpServer | null {
     name: value.name,
     oauthAvailable: typeof value.oauthAvailable === "boolean" ? value.oauthAvailable : false,
     oauthState: value.oauthState === null || typeof value.oauthState === "string" ? value.oauthState as UserMcpServer["oauthState"] : null,
-    operationalStatus: value.operationalStatus as UserMcpServer["operationalStatus"],
     readiness: value.readiness as UserMcpServer["readiness"],
     ...(selectedToolNames ? { selectedToolNames } : {}),
     sourceType: "personal",

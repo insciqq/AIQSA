@@ -30,7 +30,6 @@ function userServer(id: string, name: string): UserMcpServer {
     accountLabel: null,
     description: `${name} team integration`,
     enabled: false,
-    operationalStatus: "inactive" as const,
     fields: id === "mem0" ? [{
       configured: false,
       label: "API key",
@@ -54,6 +53,32 @@ async function openServer(name: string) {
   fireEvent.click(await screen.findByRole("button", { name: `Open ${name}` }));
   return screen.findByRole("dialog", { name });
 }
+
+type McpPatch = { enabled?: boolean; values?: Record<string, unknown> };
+
+/** A user catalog whose PATCH applies saved values and enablement like the server does. */
+function patchableCatalog(initial: UserMcpServer[], options: Readonly<{ refuseEnable?: Response }> = {}) {
+  let servers = initial;
+  const patches: Array<{ id: string; body: McpPatch }> = [];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!init?.method || init.method === "GET") return response({ servers });
+    const id = decodeURIComponent(String(input).split("/").at(-1) ?? "");
+    const body = JSON.parse(String(init.body)) as McpPatch;
+    patches.push({ id, body });
+    if (body.enabled === true && options.refuseEnable) return options.refuseEnable.clone();
+    servers = servers.map((server) => server.id !== id ? server : {
+      ...server,
+      ...(body.enabled !== undefined ? { enabled: body.enabled, readiness: body.enabled ? "queued" as const : "disabled" as const } : {}),
+      fields: server.fields.map((field) => body.values && Object.hasOwn(body.values, field.slotKey)
+        ? { ...field, configured: true, source: "personal" as const } : field)
+    });
+    return response({ server: servers.find((server) => server.id === id) });
+  });
+  return { fetchMock, patches, servers: () => servers };
+}
+
+const secondKey = { configured: false, label: "Workspace ID", sensitive: false, slotKey: "workspace_id",
+  source: "missing" as const, valueType: "string" as const };
 
 describe("McpSettingsSection", () => {
   afterEach(() => {
@@ -105,17 +130,19 @@ describe("McpSettingsSection", () => {
     const card = heading.closest("article");
     expect(card).not.toBeNull();
     const initial = within(card!);
-    expect(initial.getByText("Inactive")).toBeVisible();
+    const status = () => within(card!).getByRole("status");
+    expect(status()).toHaveTextContent(/^1 tool$/);
     const control = initial.getByRole("switch", { name: "Enable Todoist" });
     expect(control).toHaveAttribute("aria-checked", "false");
     fireEvent.click(control);
     await waitFor(() => expect(todoist.enabled).toBe(true));
     expect(within(card!).getByRole("switch", { name: "Enable Todoist" })).toHaveAttribute("aria-checked", "true");
-    // Persisted ready alone does not make a dormant server active.
-    expect(within(card!).getByText("Inactive")).toBeVisible();
+    // A healthy enabled row presents only its tool count, never runtime-session warmth.
+    expect(status()).toHaveTextContent(/^1 tool$/);
     fireEvent.click(control);
     await waitFor(() => expect(todoist.enabled).toBe(false));
-    expect(within(card!).getByText("Inactive")).toBeVisible();
+    expect(status()).toHaveTextContent(/^1 tool$/);
+    expect(card).not.toHaveTextContent(/Inactive|Active|Checking/);
     expect(control).toHaveAttribute("aria-checked", "false");
   });
 
@@ -147,18 +174,20 @@ describe("McpSettingsSection", () => {
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "personal-token" } });
     fireEvent.click(screen.getByRole("button", { name: "Save personal values" }));
     await waitFor(() => expect(servers[0]?.fields[0]?.source).toBe("personal"));
+    // Saving the last missing value completes setup, which enables the server.
+    await waitFor(() => expect(servers[0]?.enabled).toBe(true));
     await waitFor(() => expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeEnabled());
     fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
 
-    fireEvent.click(await screen.findByRole("switch", { name: "Enable Mem0" }));
+    expect(await screen.findByRole("switch", { name: "Enable Mem0" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(screen.getByRole("switch", { name: "Enable Todoist" }));
     await waitFor(() => expect(servers.every((server) => server.enabled)).toBe(true));
 
-    const patchBodies = fetchMock.mock.calls
-      .filter(([, init]) => init?.method === "PATCH")
+    const patchBodies = (id: string) => fetchMock.mock.calls
+      .filter(([input, init]) => init?.method === "PATCH" && String(input).endsWith(`/${id}`))
       .map(([, init]) => JSON.parse(String(init?.body)));
-    expect(patchBodies).toContainEqual({ enabled: true });
-    expect(patchBodies).toContainEqual({ values: { api_key: "personal-token" } });
+    expect(patchBodies("mem0")).toEqual([{ values: { api_key: "personal-token" } }, { enabled: true }]);
+    expect(patchBodies("todoist")).toEqual([{ enabled: true }]);
     // The status line counts tools once per enabled server; no separate
     // "available tools" line contradicts the catalog count.
     expect(screen.getAllByText("1 tool")).toHaveLength(2);
@@ -278,7 +307,7 @@ describe("McpSettingsSection", () => {
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Notion" });
     const connectToEnable = screen.getByRole("button", { name: "Connect Notion to enable" });
-    expect(screen.getByText("Inactive")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent(/^1 tool$/);
     expect(connectToEnable).toHaveAttribute("data-tone", "primary");
     fireEvent.click(connectToEnable);
 
@@ -325,6 +354,9 @@ describe("McpSettingsSection", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
     expect(await screen.findByRole("button", { name: "Connect Notion to enable" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Complete setup for Notion" })).not.toBeInTheDocument();
+    // Authorization remains, so saving the values never sends an enable request.
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")
+      .map(([, init]) => JSON.parse(String(init?.body)))).toEqual([{ values: { api_key: "personal-token" } }]);
   });
 
   it("turns a raced OAuth enable rejection into an actionable reconnect path", async () => {
@@ -364,7 +396,7 @@ describe("McpSettingsSection", () => {
 
     render(<McpSettingsSection />);
     await screen.findByRole("heading", { name: "Mem0" });
-    expect(screen.getByText("Inactive")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent(/^1 tool$/);
     expect(screen.getByRole("button", { name: "Complete setup for Mem0" })).toHaveAttribute("data-tone", "primary");
     fireEvent.click(screen.getByRole("button", { name: "Complete setup for Mem0" }));
 
@@ -447,22 +479,39 @@ describe("McpSettingsSection", () => {
     expect(screen.queryByText(/above the .*tool run limit/)).not.toBeInTheDocument();
   });
 
-  it("shows only server-owned operational labels and keeps idle tools informational", async () => {
+  it("presents tool counts, transitions and problems but never runtime-session warmth", async () => {
     const servers: UserMcpServer[] = [
-      { ...userServer("live", "Live server"), enabled: true, readiness: "ready", operationalStatus: "active" },
-      { ...userServer("renewing", "Renewing server"), enabled: true, readiness: "ready", operationalStatus: "checking" },
-      { ...userServer("idle", "Idle server"), enabled: true, readiness: "idle", operationalStatus: "inactive" }
+      { ...userServer("live", "Live server"), enabled: true, readiness: "ready" },
+      { ...userServer("idle", "Idle server"), enabled: true, readiness: "idle", knownToolCount: 9, tools: [] },
+      { ...userServer("off", "Off server"), knownToolCount: 3, tools: [] },
+      { ...userServer("empty", "Empty server"), enabled: true, readiness: "idle", knownToolCount: 0, tools: [] },
+      { ...userServer("booting", "Booting server"), enabled: true, readiness: "starting" },
+      { ...userServer("queued", "Queued server"), enabled: true, readiness: "queued", knownToolCount: 0, tools: [] },
+      { ...userServer("setup", "Setup server"), enabled: true, readiness: "needs_setup" },
+      { ...userServer("down", "Down server"), enabled: true, readiness: "unavailable", knownToolCount: 0, tools: [],
+        runtimeErrorCode: "mcp_health_check_failed" }
     ];
     vi.stubGlobal("fetch", vi.fn(async () => response({ servers })));
-    render(<McpSettingsSection />);
-    await screen.findByRole("heading", { name: "Idle server" });
-    expect(screen.getByText("Active")).toHaveAttribute("data-tone", "ok");
-    expect(screen.getByText("Checking").querySelector(".v2-spinner")).not.toBeNull();
-    const idle = screen.getByText("Inactive");
-    expect(idle).toHaveAttribute("data-tone", "neutral");
-    expect(idle.closest("p")).toHaveTextContent("Inactive · 1 tool");
-    expect(idle.closest("p")).toHaveAttribute("aria-live", "polite");
-    expect(screen.getAllByRole("switch")).toHaveLength(3);
+    const { container } = render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Down server" });
+    const status = (name: string) => within(screen.getByRole("heading", { name }).closest("article")!).getByRole("status");
+    expect(status("Live server")).toHaveTextContent(/^1 tool$/);
+    expect(status("Idle server")).toHaveTextContent(/^9 tools$/);
+    expect(status("Off server")).toHaveTextContent(/^3 tools$/);
+    // The live region stays mounted while empty so later transitions are announced.
+    expect(status("Empty server")).toBeEmptyDOMElement();
+    expect(status("Empty server")).toHaveAttribute("aria-live", "polite");
+    expect(status("Booting server")).toHaveTextContent(/^Starting runtime · 1 tool$/);
+    expect(within(status("Booting server")).getByText("Starting runtime").querySelector(".v2-spinner")).not.toBeNull();
+    expect(status("Queued server")).toHaveTextContent(/^Activating$/);
+    expect(within(status("Queued server")).getByText("Activating").querySelector(".v2-spinner")).not.toBeNull();
+    expect(status("Setup server")).toHaveTextContent(/^1 toolNeeds setup$/);
+    expect(within(status("Setup server")).getByText("Needs setup")).toHaveAttribute("data-tone", "warn");
+    expect(within(status("Down server")).getByText(/MCP health check failed/)).toHaveAttribute("data-tone", "danger");
+    for (const element of container.querySelectorAll(".v2-settings-server-status")) {
+      expect(element.textContent ?? "").not.toMatch(/^\s*·|·\s*$|·\s*·/);
+    }
+    expect(container).not.toHaveTextContent(/\b(Inactive|Active|Checking)\b/);
   });
 
   it("marks exactly the rows that need setup, authorization or a runtime with the attention signal", async () => {
@@ -472,7 +521,7 @@ describe("McpSettingsSection", () => {
       { ...userServer("reconnect", "Reconnect server"), enabled: true, oauthAvailable: true,
         oauthState: "reauthorization_required", readiness: "reauthorization_required" },
       { ...userServer("down", "Down server"), enabled: true, readiness: "unavailable" },
-      { ...userServer("ready", "Ready server"), enabled: true, readiness: "ready", operationalStatus: "active" },
+      { ...userServer("ready", "Ready server"), enabled: true, readiness: "ready" },
       userServer("off", "Off server")
     ];
     vi.stubGlobal("fetch", vi.fn(async () => response({ servers })));
@@ -490,7 +539,6 @@ describe("McpSettingsSection", () => {
     const server: UserMcpServer = {
       ...userServer("repos", "Repositories"),
       enabled: true,
-      operationalStatus: "active",
       readiness: "ready",
       unavailableTools: [
         { name: "delete_repo", reason: "unpublished_addition" },
@@ -520,7 +568,6 @@ describe("McpSettingsSection", () => {
     const server: UserMcpServer = {
       ...userServer("locked", "Locked"),
       enabled: true,
-      operationalStatus: "active",
       readiness: "ready",
       tools: [],
       unavailableTools: [{ name: "merge", reason: "restricted" }]
@@ -539,7 +586,7 @@ describe("McpSettingsSection", () => {
       readiness: "unavailable", errorCode: "mcp_artifact_missing", artifact: "private-image" };
     vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [server] })));
     const { container } = render(<McpSettingsSection />);
-    await screen.findByText("Inactive");
+    await screen.findByText("Runtime unavailable");
     expect(container).not.toHaveTextContent(/mcp_artifact_missing|private-image|ToolHive|rebuild|container/i);
   });
 
@@ -567,7 +614,7 @@ describe("McpSettingsSection", () => {
     const heading = await screen.findByRole("heading", { name: "Notion" });
     const card = heading.closest<HTMLElement>("article");
     expect(card).not.toBeNull();
-    expect(within(card!).getByText("Inactive")).toBeVisible();
+    expect(within(card!).getByRole("status")).toHaveTextContent(/^1 toolNeeds authorization$/);
     expect(within(card!).getByRole("switch", { name: "Enable Notion" })).toHaveAttribute("aria-checked", "true");
     expect(within(card!).getByText("Needs authorization")).toHaveAttribute("data-tone", "warn");
     const sheet = await openServer("Notion");
@@ -576,7 +623,7 @@ describe("McpSettingsSection", () => {
 
   it("filters the catalog locally, opens details without fetching or starting servers, and keeps Hub lazy", async () => {
     const servers: UserMcpServer[] = [userServer("mem0", "Mem0"), {
-      ...userServer("active", "Active server"), enabled: true, operationalStatus: "active", readiness: "ready"
+      ...userServer("active", "Active server"), enabled: true, readiness: "ready"
     }, { ...userServer("idle", "Idle server"), description: "Search this description" }];
     const fetchMock = vi.fn(async () => response({ servers }));
     vi.stubGlobal("fetch", fetchMock);
@@ -643,6 +690,132 @@ describe("McpSettingsSection", () => {
     }
     expect(document.body.style.overflow).toBe("");
     expect(within(await openServer("Mem0")).getByLabelText("API key")).toHaveValue("");
+  });
+
+  it("renders third-party secrets as masked text that the password manager ignores", async () => {
+    const server: UserMcpServer = {
+      ...userServer("mem0", "Mem0"),
+      fields: [
+        userServer("mem0", "Mem0").fields[0]!,
+        { ...secondKey, slotKey: "token", label: "Token", valueType: "secret" },
+        secondKey,
+        { ...secondKey, slotKey: "limit", label: "Limit", valueType: "number" }
+      ]
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [server] })));
+    const { container } = render(<McpSettingsSection />);
+    expect(await screen.findByRole("searchbox", { name: "Search MCP servers" })).toHaveAttribute("autocomplete", "off");
+    const sheet = await openServer("Mem0");
+    for (const label of ["API key", "Token"]) {
+      const input = within(sheet).getByLabelText(label);
+      expect(input).toHaveAttribute("type", "text");
+      expect(input).toHaveAttribute("autocomplete", "off");
+      expect(input).toHaveAttribute("autocapitalize", "none");
+      expect(input).toHaveAttribute("autocorrect", "off");
+      expect(input).toHaveAttribute("spellcheck", "false");
+      expect(input).toHaveClass("v2-settings-input-masked");
+    }
+    expect(within(sheet).getByLabelText("Workspace ID")).toHaveAttribute("type", "text");
+    expect(within(sheet).getByLabelText("Workspace ID")).not.toHaveClass("v2-settings-input-masked");
+    expect(within(sheet).getByLabelText("Limit")).toHaveAttribute("type", "number");
+    expect(container.ownerDocument.querySelector('input[type="password"]')).toBeNull();
+    expect(within(sheet).getByRole("region", { name: "Personal values" })).toBeVisible();
+  });
+
+  it("enables a server once Complete setup saves its last missing value", async () => {
+    const catalog = patchableCatalog([userServer("mem0", "Mem0")]);
+    vi.stubGlobal("fetch", catalog.fetchMock);
+    render(<McpSettingsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Complete setup for Mem0" }));
+    const sheet = await screen.findByRole("dialog", { name: "Mem0" });
+    fireEvent.change(within(sheet).getByLabelText("API key"), { target: { value: "personal-token" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save personal values" }));
+    expect(await within(sheet).findByText("Connection enabled")).toBeVisible();
+    expect(catalog.patches).toEqual([
+      { id: "mem0", body: { values: { api_key: "personal-token" } } },
+      { id: "mem0", body: { enabled: true } }
+    ]);
+    expect(within(sheet).queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeEnabled());
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("switch", { name: "Enable Mem0" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText(/^1 of 1 server enabled/)).toBeVisible();
+  });
+
+  it("never re-enables a server the user turned off after its setup was complete", async () => {
+    const mem0 = userServer("mem0", "Mem0");
+    const catalog = patchableCatalog([{
+      ...mem0, fields: mem0.fields.map((field) => ({ ...field, configured: true, source: "personal" as const }))
+    }]);
+    vi.stubGlobal("fetch", catalog.fetchMock);
+    render(<McpSettingsSection />);
+    const sheet = await openServer("Mem0");
+    fireEvent.change(within(sheet).getByLabelText("API key"), { target: { value: "replacement-token" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save personal values" }));
+    await waitFor(() => expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeEnabled());
+    expect(catalog.patches).toEqual([{ id: "mem0", body: { values: { api_key: "replacement-token" } } }]);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("switch", { name: "Enable Mem0" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("keeps the server off while another personal value is still missing", async () => {
+    const mem0 = userServer("mem0", "Mem0");
+    const catalog = patchableCatalog([{ ...mem0, fields: [...mem0.fields, secondKey] }]);
+    vi.stubGlobal("fetch", catalog.fetchMock);
+    render(<McpSettingsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Complete setup for Mem0" }));
+    const sheet = await screen.findByRole("dialog", { name: "Mem0" });
+    fireEvent.change(within(sheet).getByLabelText("API key"), { target: { value: "personal-token" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save personal values" }));
+    await waitFor(() => expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeEnabled());
+    expect(catalog.patches).toEqual([{ id: "mem0", body: { values: { api_key: "personal-token" } } }]);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("button", { name: "Complete setup for Mem0" })).toBeVisible();
+  });
+
+  it("keeps saved values and explains a refused enable after setup", async () => {
+    const catalog = patchableCatalog([userServer("mem0", "Mem0")], {
+      refuseEnable: response({
+        error: "invalid_mcp_values",
+        issues: [{ code: "slot_value_required", path: "values.admin_endpoint" }]
+      }, 400)
+    });
+    vi.stubGlobal("fetch", catalog.fetchMock);
+    render(<McpSettingsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Complete setup for Mem0" }));
+    const sheet = await screen.findByRole("dialog", { name: "Mem0" });
+    const input = within(sheet).getByLabelText("API key");
+    fireEvent.change(input, { target: { value: "personal-token" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save personal values" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent(
+      "This server needs additional administrator configuration before it can be enabled."
+    );
+    expect(catalog.patches.map(({ body }) => body)).toEqual([{ values: { api_key: "personal-token" } }, { enabled: true }]);
+    expect(within(sheet).getByText("Personal value configured")).toBeVisible();
+    expect(input).toHaveValue("");
+    expect(within(sheet).queryByText("Unsaved personal values")).toBeNull();
+    expect(within(sheet).getByText("Connection disabled")).toBeVisible();
+    expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeEnabled();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByRole("switch", { name: "Enable Mem0" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("saves setup values without enabling past the enabled-server limit", async () => {
+    const enabled = Array.from({ length: MCP_RUN_PLAN_LIMITS.maxEnabledServers }, (_, index) => ({
+      ...userServer(`server-${index}`, `Server ${index}`), enabled: true, readiness: "ready" as const
+    }));
+    const catalog = patchableCatalog([...enabled, userServer("mem0", "Mem0")]);
+    vi.stubGlobal("fetch", catalog.fetchMock);
+    render(<McpSettingsSection />);
+    fireEvent.click(await screen.findByRole("button", { name: "Complete setup for Mem0" }));
+    const sheet = await screen.findByRole("dialog", { name: "Mem0" });
+    fireEvent.change(within(sheet).getByLabelText("API key"), { target: { value: "personal-token" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save personal values" }));
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent(
+      `You can enable at most ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} MCP servers.`
+    );
+    expect(catalog.patches).toEqual([{ id: "mem0", body: { values: { api_key: "personal-token" } } }]);
+    expect(within(sheet).getByText("Connection disabled")).toBeVisible();
   });
 
   it.each(["reauthorization_required", "needs_setup"] as const)("keeps the switch when an enabled server needs %s", async readiness => {

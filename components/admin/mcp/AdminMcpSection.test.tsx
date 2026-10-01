@@ -30,6 +30,16 @@ const tools: McpToolInventoryEntry[] = [
   { description: "Drop a stored note", name: "forget" }
 ];
 
+/** Third-party secrets are masked text fields so the browser password manager never engages. */
+function expectMaskedSecretInput(input: HTMLElement) {
+  expect(input).toHaveAttribute("type", "text");
+  expect(input).toHaveAttribute("autocomplete", "off");
+  expect(input).toHaveAttribute("autocapitalize", "none");
+  expect(input).toHaveAttribute("autocorrect", "off");
+  expect(input).toHaveAttribute("spellcheck", "false");
+  expect(input.className).toContain("[-webkit-text-security:disc]");
+}
+
 function testedDraft(identityHash: string, inventory: McpToolInventoryEntry[] = tools): McpDraftTestSummary {
   return {
     draftHash: `hash-${identityHash}`,
@@ -351,6 +361,7 @@ describe("AdminMcpSection", () => {
     fireEvent.click(within(rows[0]!).getByRole("link", { name: "Open Working Tools · Working" }));
     expect(onSelectResource).toHaveBeenCalledWith("server-1");
 
+    expect(screen.getByRole("searchbox", { name: "Search servers" })).toHaveAttribute("autocomplete", "off");
     fireEvent.change(screen.getByRole("searchbox", { name: "Search servers" }), { target: { value: "workspace" } });
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
   });
@@ -389,7 +400,7 @@ describe("AdminMcpSection", () => {
     expect(within(sheet).getByLabelText("Name")).toHaveValue("browser-mcp");
     expect(within(sheet).getByLabelText("Source")).toHaveValue("npm");
     const secret = within(sheet).getByLabelText("New shared value for API_KEY");
-    expect(secret).toHaveAttribute("type", "password");
+    expectMaskedSecretInput(secret);
     expect(secret).toHaveValue("write-only-secret");
     expect(sheet.textContent).not.toMatch(bannedWords);
 
@@ -497,6 +508,7 @@ describe("AdminMcpSection", () => {
     fireEvent.click(within(page).getByRole("button", { name: "Show fewer" }));
     expect(within(list).getAllByRole("switch")).toHaveLength(6);
     const search = within(page).getByRole("searchbox", { name: "Search tools" });
+    expect(search).toHaveAttribute("autocomplete", "off");
     fireEvent.change(search, { target: { value: "Action 12" } });
     expect(within(list).getAllByRole("switch")).toHaveLength(1);
     fireEvent.click(within(page).getByRole("checkbox", { name: "Only enabled" }));
@@ -528,7 +540,7 @@ describe("AdminMcpSection", () => {
     const page = await screen.findByTestId("mcp-server-page");
 
     const field = within(page).getByLabelText("Workspace key");
-    expect(field).toHaveAttribute("type", "password");
+    expectMaskedSecretInput(field);
     fireEvent.change(field, { target: { value: "one-time-secret" } });
     fireEvent.click(within(page).getByTestId("mcp-test-save"));
     await waitFor(() => expect(calls.at(-1)?.url).toBe("/api/admin/mcp/server-1/test"));

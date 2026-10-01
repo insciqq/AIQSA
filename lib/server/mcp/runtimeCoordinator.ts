@@ -5,7 +5,7 @@ import {
   type AiqsaMcpToolCallResult,
   type McpFatalResponseErrorCode
 } from "./clientSession";
-import type { McpOperationalStatus, McpToolExclusionReason } from "@/lib/contracts/mcp";
+import type { McpToolExclusionReason } from "@/lib/contracts/mcp";
 import type { McpPublishedToolDefinitions } from "./definitions";
 import { redactMcpToolCallResult } from "./resultRedaction";
 import { ToolHiveClientError } from "./toolhiveClient";
@@ -127,6 +127,9 @@ export type McpRuntimeCoordinatorRepository = {
 export type McpRuntimeLifecycle = {
   cleanupOrphans(keepGenerationTokens: readonly string[]): Promise<void>;
 };
+
+/** Session warmth for health scheduling only; never projected to users. */
+type McpOperationalStatus = "active" | "checking" | "inactive";
 
 type LiveRuntime = {
   allowedToolNames: ReadonlySet<string> | null;
@@ -562,7 +565,11 @@ export class McpRuntimeCoordinator {
     return runtime !== undefined && !isClosedSession(runtime.session);
   }
 
-  /** A prompt snapshot; renews only an already-owned session, never starts one. */
+  /**
+   * Coordinator-local session inspection used by the health timer and the reconcile kick:
+   * enqueues a due health probe or evicts a closed session for an already-owned runtime,
+   * never starts one. Not a user-facing projection.
+   */
   operationalStatus(generationId: string): McpOperationalStatus {
     const runtime = this.#live.get(generationId);
     if (!runtime) return this.#starts.has(generationId) ? "checking" : "inactive";

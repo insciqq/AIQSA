@@ -17,8 +17,8 @@ export type McpRepositoryError =
 
 export type McpRepositoryResult<T> = { kind: "ok"; value: T } | McpRepositoryError;
 
-/** Private catalog state; the handler adds current process-owned health. */
-export type McpUserServerState = Omit<UserMcpServer, "operationalStatus"> & {
+/** Private catalog state; the handler strips the internal admission fields. */
+export type McpUserServerState = UserMcpServer & {
   /** Internal admission diagnostics; never serialized to the user catalog. */
   errorCode: string | null;
   runtimeGenerationId: string | null;

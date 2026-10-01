@@ -1,4 +1,4 @@
-import type { McpDraftConfiguration, McpOperationalStatus, McpSlotValue } from "@/lib/contracts/mcp";
+import type { McpDraftConfiguration, McpSlotValue } from "@/lib/contracts/mcp";
 import { isMcpToolName, MCP_SERVER_TOOL_LIMIT, mcpValidationIssue, type McpValidationIssue } from "@/lib/contracts/mcp";
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "@/lib/server/http/requestBody";
@@ -12,7 +12,6 @@ type PersonalDeps = {
   onConnectionChanged?(userId: string, serverId: string): Promise<void>;
   onRuntimeChanged?(userId?: string): void;
   prepareOAuthDraft?(draft: McpDraftConfiguration): Promise<McpDraftConfiguration>;
-  runtimeOperationalStatus?(generationId: string): McpOperationalStatus;
   repository: McpRepository;
   resolveAuth: RequestAuthResolver;
 };
@@ -124,7 +123,7 @@ export function createPersonalMcpListHandler(deps: PersonalDeps) {
     if (session.user.status !== "active") return errorJson("forbidden", 403);
     const servers = await safely(() => deps.repository.listUserServers(session.userId));
     if (servers instanceof Response) return servers;
-    return Response.json({ servers: servers.filter((server) => server.sourceType === "personal").map((server) => userServerProjection(server, deps)) }, {
+    return Response.json({ servers: servers.filter((server) => server.sourceType === "personal").map((server) => userServerProjection(server)) }, {
       headers: { "Cache-Control": "no-store" }
     });
   };
@@ -168,7 +167,7 @@ export function createPersonalMcpCreateHandler(deps: PersonalDeps) {
     try { deps.onRuntimeChanged?.(session.userId); } catch { /* persistence is authoritative */ }
     const settled = await safely(() => settleConnection(deps, session.userId, result.value));
     if (settled instanceof Response) return settled;
-    return Response.json({ server: userServerProjection(settled, deps) }, { headers: { "Cache-Control": "no-store" }, status: 201 });
+    return Response.json({ server: userServerProjection(settled) }, { headers: { "Cache-Control": "no-store" }, status: 201 });
   };
 }
 
@@ -200,7 +199,7 @@ export function createPersonalMcpUpdateHandler(deps: PersonalDeps) {
     try { deps.onRuntimeChanged?.(session.userId); } catch { /* persistence is authoritative */ }
     const settled = await safely(() => settleConnection(deps, session.userId, result.value));
     if (settled instanceof Response) return settled;
-    return Response.json({ server: userServerProjection(settled, deps) }, { headers: { "Cache-Control": "no-store" } });
+    return Response.json({ server: userServerProjection(settled) }, { headers: { "Cache-Control": "no-store" } });
   };
 }
 
@@ -218,6 +217,6 @@ export function createPersonalMcpDeleteHandler(deps: PersonalDeps) {
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return errorJson("mcp_not_found", 404);
     try { deps.onRuntimeChanged?.(session.userId); } catch { /* persistence is authoritative */ }
-    return Response.json({ server: userServerProjection(result.value, deps) }, { headers: { "Cache-Control": "no-store" } });
+    return Response.json({ server: userServerProjection(result.value) }, { headers: { "Cache-Control": "no-store" } });
   };
 }
