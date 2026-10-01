@@ -490,7 +490,7 @@ function tableRowCells(line: string): string[] {
 function isTableDelimiter(line: string): boolean {
   const cells = tableRowCells(line);
 
-  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+  return cells.length > 1 && cells.every((cell) => /^:?-+:?$/.test(cell));
 }
 
 function isTableStart(lines: string[], index: number): boolean {

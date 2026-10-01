@@ -206,6 +206,11 @@ export function AnswerProcessV2({
             {live && liveLabel ? searchSummary ? `${liveLabel} · ${searchSummary}` : liveLabel
               : workspaceOutcome ? `${displayLabel} · ${workspaceOutcome}` : displayLabel}
           </span>
+          {live ? (
+            <span className="v2-answer-process-slot" aria-hidden="true" data-testid="answer-process-live-chevron">
+              <span className="v2-answer-process-chevron" />
+            </span>
+          ) : null}
         </summary>
         <div className="v2-answer-process-body">
           {compactionLabel ? (

@@ -6,19 +6,32 @@ import { UiV2Button } from "@/components/ui-v2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import { isImeCompositionEvent } from "@/components/keyboard";
 import { serializeRenderedMarkdownSelection } from "@/components/chat/renderedMarkdown";
+import type { PendingCommentAnchor, PendingComposerComment } from "@/components/app-shell/composerComments";
+import { captureCommentAnchor } from "./commentAnchors";
+import { useCommentMarks, type CommentMark } from "./useCommentMarks";
 
 export type ConversationQuoteV2 = Readonly<{
+  /** Pending comments of this conversation; anchored ones are marked in the transcript. */
+  comments?: readonly PendingComposerComment[];
   disabled?: boolean;
   dockRef?: RefObject<HTMLElement | null>;
   /** Saves a comment; returns the refusal message, or null when saved. */
-  onComment?(markdown: string, text: string, touch: boolean): string | null;
+  onComment?(markdown: string, text: string, touch: boolean, anchor?: PendingCommentAnchor): string | null;
   /** Returns why no comment on this fragment could be saved now; no form opens then. */
-  onCommentStart?(markdown: string): string | null;
+  onCommentStart?(markdown: string, anchor?: PendingCommentAnchor): string | null;
+  /** Changes a pending comment opened from its mark; returns the refusal message, or null when changed. */
+  onCommentUpdate?(id: string, text: string): string | null;
+  onCommentRemove?(id: string): void;
   onQuote(markdown: string, touch: boolean): string | null;
   scopeKey: string;
 }>;
 
 type CapturedSelection = Readonly<{ markdown: string; range: Range; root: HTMLElement; scopeKey: string }>;
+/** The fragment the comment form is open for: a new selection, or the mark of the pending comment `editId`. */
+type CommentTarget = CapturedSelection & Readonly<{ anchor?: PendingCommentAnchor; editId?: string }>;
+
+/** A click on these keeps its own action even inside a mark. */
+const INTERACTIVE = "a, button, input, textarea, select, summary, label, [role='button'], [contenteditable='true']";
 
 function elementAt(node: Node) {
   return node instanceof Element ? node : node.parentElement;
@@ -47,7 +60,7 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
   scrollRef: RefObject<HTMLDivElement | null>;
 }>) {
   const [captured, setCaptured] = useState<CapturedSelection | null>(null);
-  const [commenting, setCommenting] = useState<CapturedSelection | null>(null);
+  const [commenting, setCommenting] = useState<CommentTarget | null>(null);
   const [commentText, setCommentText] = useState("");
   const [touch, setTouch] = useState(false);
   const [sheet, setSheet] = useState(false);
@@ -57,7 +70,11 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
   const commentSourceRef = useRef<HTMLElement | null>(null);
   const feedbackId = useId();
   const current = captured?.scopeKey === quote.scopeKey && captured.root.isConnected && !quote.disabled ? captured : null;
-  const activeComment = commenting?.scopeKey === quote.scopeKey && commenting.root.isConnected && !quote.disabled ? commenting : null;
+  const editedComment = commenting?.editId ? quote.comments?.find(comment => comment.id === commenting.editId) ?? null : null;
+  // An edited comment that was sent or deleted elsewhere closes its form.
+  const activeComment = commenting?.scopeKey === quote.scopeKey && commenting.root.isConnected && !quote.disabled &&
+    (!commenting.editId || editedComment) ? commenting : null;
+  const markAt = useCommentMarks(scrollRef, quote.comments, activeComment?.editId ?? null);
   const feedback = notice?.scopeKey === quote.scopeKey ? notice : null;
   const closeComment = useCallback(() => {
     setCommenting(null);
@@ -68,14 +85,39 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
   const saveComment = useCallback(() => {
     if (!activeComment) return;
     if (!commentText.trim()) { closeComment(); return; }
-    const error = quote.onComment ? quote.onComment(activeComment.markdown, commentText, touch) : "Comments are unavailable right now.";
+    if (activeComment.editId) {
+      // Like the composer list: an unchanged edit leaves the comment as it was.
+      if (commentText === editedComment?.text) { closeComment(); return; }
+      const refusal = quote.onCommentUpdate ? quote.onCommentUpdate(activeComment.editId, commentText) : "Comments cannot be changed here.";
+      if (refusal) { setNotice({ error: true, text: refusal, scopeKey: quote.scopeKey }); return; }
+      closeComment();
+      return;
+    }
+    const error = quote.onComment
+      ? quote.onComment(activeComment.markdown, commentText, touch, activeComment.anchor)
+      : "Comments are unavailable right now.";
     if (error) {
       setNotice({ error: true, text: error, scopeKey: quote.scopeKey });
       return;
     }
     closeComment();
     window.getSelection()?.removeAllRanges();
-  }, [activeComment, closeComment, commentText, quote, touch]);
+  }, [activeComment, closeComment, commentText, editedComment, quote, touch]);
+  const removeComment = useCallback(() => {
+    if (!activeComment?.editId) return;
+    quote.onCommentRemove?.(activeComment.editId);
+    closeComment();
+  }, [activeComment, closeComment, quote]);
+  const openMark = useCallback((mark: CommentMark) => {
+    mark.root.setAttribute("tabindex", "-1");
+    commentSourceRef.current = mark.root;
+    setCommenting({ markdown: mark.comment.quote, range: mark.range.cloneRange(), root: mark.root,
+      scopeKey: quote.scopeKey, editId: mark.comment.id });
+    setCommentText(mark.comment.text);
+    setCaptured(null);
+    setNotice(null);
+  }, [quote.scopeKey]);
+
   const { dialogRef, onDialogKeyDown } = useModalLayerV2({
     enabled: Boolean(activeComment), onClose: closeComment,
     restoreFocus: () => commentSourceRef.current?.isConnected ? commentSourceRef.current : scrollRef.current
@@ -127,8 +169,48 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
 
   useLayoutEffect(() => {
     if (!activeComment) return;
-    surfaceRef.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+    const field = surfaceRef.current?.querySelector<HTMLTextAreaElement>("textarea");
+    field?.focus();
+    field?.setSelectionRange(field.value.length, field.value.length);
   }, [activeComment]);
+
+  // A mark opens its comment. Clicks that finish a text selection or hit a
+  // link or button inside the mark keep their ordinary behavior.
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container || quote.disabled || !quote.onCommentUpdate || !quote.comments?.some(comment => comment.anchor)) return;
+    const onClick = (event: MouseEvent) => {
+      if (event.button !== 0 || event.defaultPrevented) return;
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed) return;
+      if (event.target instanceof Element && event.target.closest(INTERACTIVE)) return;
+      const mark = markAt(event.clientX, event.clientY);
+      if (!mark) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openMark(mark);
+    };
+    let frame: number | null = null;
+    const onPointerMove = (event: PointerEvent) => {
+      if (frame !== null) return;
+      const { clientX, clientY } = event;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        container.toggleAttribute("data-comment-hover", markAt(clientX, clientY) !== null);
+      });
+    };
+    const onPointerLeave = () => container.removeAttribute("data-comment-hover");
+    container.addEventListener("click", onClick, true);
+    container.addEventListener("pointermove", onPointerMove);
+    container.addEventListener("pointerleave", onPointerLeave);
+    return () => {
+      container.removeEventListener("click", onClick, true);
+      container.removeEventListener("pointermove", onPointerMove);
+      container.removeEventListener("pointerleave", onPointerLeave);
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      container.removeAttribute("data-comment-hover");
+    };
+  }, [markAt, openMark, quote.comments, quote.disabled, quote.onCommentUpdate, scrollRef]);
 
   useEffect(() => {
     if (!notice) return;
@@ -177,12 +259,12 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
     <div className="v2-selection-comment-layer" data-layout={sheet ? "sheet" : "popover"}>
       <button className="v2-selection-comment-scrim" aria-label="Save and close comment" tabIndex={-1} type="button" onClick={saveComment} />
       <section className="v2-selection-comment-form" ref={element => { dialogRef.current = element; surfaceRef.current = element; }}
-        role="dialog" aria-modal="true" aria-label="Add comment" onKeyDown={event => {
+        role="dialog" aria-modal="true" aria-label={activeComment.editId ? "Edit comment" : "Add comment"} onKeyDown={event => {
           if (isImeCompositionEvent(event)) { event.stopPropagation(); return; }
           onDialogKeyDown(event);
         }}
         style={sheet ? undefined : { left: position?.left ?? 8, top: position?.top ?? 8 }}>
-        <strong>Add comment</strong>
+        <strong>{activeComment.editId ? "Edit comment" : "Add comment"}</strong>
         <p className="v2-selection-comment-quote">{activeComment.markdown}</p>
         <textarea aria-label="Comment" value={commentText} rows={3} placeholder="Write a comment…"
           aria-describedby={feedback ? feedbackId : undefined} aria-invalid={feedback?.error || undefined}
@@ -194,6 +276,8 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
         <p className="v2-selection-comment-hint">Enter saves · Shift+Enter adds a line</p>
         {feedback ? <span id={feedbackId} role="alert">{feedback.text}</span> : null}
         <div className="v2-selection-comment-actions">
+          {activeComment.editId && quote.onCommentRemove ? <UiV2Button type="button" tone="destructive"
+            className="v2-selection-comment-delete" onClick={removeComment}>Delete</UiV2Button> : null}
           <UiV2Button type="button" onClick={closeComment}>Cancel</UiV2Button>
           <UiV2Button type="button" tone="primary" disabled={!commentText.trim()} onClick={saveComment}>Save</UiV2Button>
         </div>
@@ -218,8 +302,9 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
         onClick={event => {
           if (!scrollRef.current?.contains(current.root) || !current.root.matches("[data-quote-eligible='true']") ||
             scrollRef.current.querySelector("[data-editing='true']")) { setCaptured(null); return; }
+          const anchor = captureCommentAnchor(current.range, current.root) ?? undefined;
           // Never open a form whose Save is already known to fail.
-          const refusal = quote.onCommentStart?.(current.markdown) ?? null;
+          const refusal = quote.onCommentStart?.(current.markdown, anchor) ?? null;
           if (refusal) {
             setCaptured(null);
             setNotice({ error: true, text: refusal, scopeKey: quote.scopeKey });
@@ -228,7 +313,7 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
           event.currentTarget.focus();
           current.root.setAttribute("tabindex", "-1");
           commentSourceRef.current = current.root;
-          setCommenting(current); setCommentText(""); setCaptured(null);
+          setCommenting({ ...current, anchor }); setCommentText(""); setCaptured(null);
         }}>Comment</UiV2Button> : null}
       {feedback ? <span className="v2-selection-quote-notice" role={feedback.error ? "alert" : "status"}>{feedback.text}</span> : null}
     </div>, document.body

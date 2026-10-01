@@ -270,6 +270,24 @@ describe("MarkdownMessage", () => {
     expect(container.querySelector("blockquote ul")).toHaveTextContent("Quoted bullet");
   });
 
+  it("detects tables whose delimiter cells have fewer than three hyphens", () => {
+    render(
+      <MarkdownMessage
+        content={[
+          "| Item | Qty | Code |",
+          "|-|--:|:-:|",
+          "| Apples | 3 | A1 |",
+          "| Pears | 12 | B2 |"
+        ].join("\n")}
+      />
+    );
+
+    expect(screen.getByRole("table")).toBeVisible();
+    expect(screen.getByRole("columnheader", { name: "Qty" })).toBeVisible();
+    expect(screen.getByRole("cell", { name: "12" })).toBeVisible();
+    expect(screen.queryByText(/\|/)).not.toBeInTheDocument();
+  });
+
   it("preserves numeric answer markers and independent nested list starts", () => {
     const { container } = render(<MarkdownMessage content={[
       "385. Verified using Python.", "386. Checked independently.", "  7. Nested step.",

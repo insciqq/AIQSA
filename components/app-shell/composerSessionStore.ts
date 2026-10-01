@@ -1,7 +1,7 @@
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import { create } from "zustand";
 import { randomUUID } from "@/lib/browser/randomUUID";
-import { MAX_PENDING_COMMENTS, type ComposerCommentRefusal, type PendingComposerComment } from "./composerComments";
+import { MAX_PENDING_COMMENTS, type ComposerCommentRefusal, type PendingCommentAnchor, type PendingComposerComment } from "./composerComments";
 import { composerInputFitsStoredRecord } from "./composerDraftStorage";
 
 type StateUpdate<T> = T | ((current: T) => T);
@@ -130,9 +130,9 @@ type ComposerSessionStore = {
   acceptArtifactIntent(token: ComposerSendToken): boolean;
   activateSession(key: ComposerSessionKey): void;
   /** Adds a pending comment; returns why it was refused, or null when added. */
-  addComment(key: ComposerSessionKey, comment: Pick<PendingComposerComment, "quote" | "text">): ComposerCommentRefusal | null;
+  addComment(key: ComposerSessionKey, comment: Pick<PendingComposerComment, "anchor" | "quote" | "text">): ComposerCommentRefusal | null;
   /** Why a comment on this fragment could not be saved now, before a form opens. */
-  commentRefusal(key: ComposerSessionKey, quote: string): ComposerCommentRefusal | null;
+  commentRefusal(key: ComposerSessionKey, quote: string, anchor?: PendingCommentAnchor): ComposerCommentRefusal | null;
   /** Changes a pending comment; returns why it was refused, or null when changed. */
   updateComment(key: ComposerSessionKey, id: string, text: string): ComposerCommentRefusal | null;
   removeComment(key: ComposerSessionKey, id: string): boolean;
@@ -422,15 +422,17 @@ export const useComposerSessionStore = create<ComposerSessionStore>((set, get) =
   },
   addComment(key, comment) {
     const session = get().sessionsByKey[key];
-    const added = { id: randomUUID(), quote: comment.quote, text: comment.text };
+    const added: PendingComposerComment = { id: randomUUID(), quote: comment.quote, text: comment.text,
+      ...(comment.anchor ? { anchor: comment.anchor } : {}) };
     const refusal = addCommentRefusal(key, session, added);
     if (refusal || !session) return refusal ?? "unavailable";
     return get().updateSession(key, { comments: [...session.comments, added] }) ? null : "unavailable";
   },
-  commentRefusal(key, quote) {
+  commentRefusal(key, quote, anchor) {
     // A placeholder of the real id length and a one-character comment: the
     // smallest comment on this fragment that Save could store.
-    return addCommentRefusal(key, get().sessionsByKey[key], { id: PLACEHOLDER_COMMENT_ID, quote, text: "x" });
+    return addCommentRefusal(key, get().sessionsByKey[key],
+      { id: PLACEHOLDER_COMMENT_ID, quote, text: "x", ...(anchor ? { anchor } : {}) });
   },
   updateComment(key, id, text) {
     const session = get().sessionsByKey[key];

@@ -1638,6 +1638,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             <div className="v2-live-conversation">
             <WorkspaceHeaderV2
               active={Boolean(session.activeChatId)}
+              chatKey={session.activeChatId}
               assistantSelector={(
                 <HeaderAssistantSelectorV2
                   assistant={composer.assistant}
@@ -1755,19 +1756,25 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               messages={conversationMessages}
               olderError={thread.olderMessagesError}
               quote={{
+                comments: composerComments,
                 disabled: Boolean(thread.editingMessageId), dockRef: composerDockRef, scopeKey: uploadSourceKey,
-                onComment: (quote, text) => {
+                onComment: (quote, text, _touch, anchor) => {
                   const store = useComposerSessionStore.getState();
                   if (store.activeSessionKey !== uploadSourceKey) return "Return to this conversation before adding its comment.";
-                  const refusal = store.addComment(uploadSourceKey, { quote, text });
+                  const refusal = store.addComment(uploadSourceKey, { anchor, quote, text });
                   return refusal ? composerCommentRefusalMessage(refusal, "add") : null;
                 },
-                onCommentStart: quote => {
+                onCommentStart: (quote, anchor) => {
                   const store = useComposerSessionStore.getState();
                   if (store.activeSessionKey !== uploadSourceKey) return "Return to this conversation before adding its comment.";
-                  const refusal = store.commentRefusal(uploadSourceKey, quote);
+                  const refusal = store.commentRefusal(uploadSourceKey, quote, anchor);
                   return refusal ? composerCommentRefusalMessage(refusal, "start") : null;
                 },
+                onCommentUpdate: (id, text) => {
+                  const refusal = useComposerSessionStore.getState().updateComment(uploadSourceKey, id, text);
+                  return refusal ? composerCommentRefusalMessage(refusal, "edit") : null;
+                },
+                onCommentRemove: id => { useComposerSessionStore.getState().removeComment(uploadSourceKey, id); },
                 onQuote: (markdown, touch) => {
                   const error = quoteSelectionInComposer({ markdown, sessionKey: uploadSourceKey,
                     followup: thread.activeChatStreaming && !thread.answerComplete && canSubmitFollowup });

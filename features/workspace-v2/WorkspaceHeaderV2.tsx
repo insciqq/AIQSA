@@ -17,7 +17,7 @@ import { NameFieldFormV2, type NameSaveOutcome } from "@/features/navigation-v2/
 import { CHAT_TITLE_MAX_LENGTH, type ChatUsageStats } from "@/lib/contracts/chats";
 import { useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
-import { ChatContextIndicatorV2 } from "./ChatContextIndicatorV2";
+import { ChatContextIndicatorV2, useChatContextPanelV2 } from "./ChatContextIndicatorV2";
 import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
 import type { ChatContinuationControl } from "@/components/app-shell/useChatContinuation";
 
@@ -219,6 +219,7 @@ export type WorkspaceHeaderFolderV2 = Readonly<{
 export function WorkspaceHeaderV2({
   active,
   assistantSelector = null,
+  chatKey = null,
   contextStats,
   usageStats,
   continuation,
@@ -261,6 +262,8 @@ export function WorkspaceHeaderV2({
    * share the centre island.
    */
   assistantSelector?: ReactNode;
+  /** The active chat: its context panel closes when another chat opens. */
+  chatKey?: string | null;
   contextStats?: ComposerContextStats | null;
   usageStats?: ChatUsageStats | null;
   continuation?: ChatContinuationControl | null;
@@ -320,12 +323,14 @@ export function WorkspaceHeaderV2({
 }>) {
   const displayTitle = chatTitleForDisplay(title);
   const renameHintId = useId();
+  const contextPanel = useChatContextPanelV2(chatKey, contextStats);
   // S1 §4.3: the header carries no kicker; for an active chat the right side
   // is Share plus one "⋯" menu. Share additionally joins the menu below
   // 768px, where the Share text button collapses. The complete header menu
   // also owns content-level actions that do not belong in compact row menus.
   const overflowActions = chatMenuActionsV2({
     archiveDisabled,
+    context: contextPanel.menuAction ?? undefined,
     deleteDisabled,
     favorite,
     folders,
@@ -404,7 +409,17 @@ export function WorkspaceHeaderV2({
         ) : null}
       </div>
       <div className="v2-live-header-actions">
-        {contextStats ? <ChatContextIndicatorV2 stats={contextStats} usageStats={usageStats} continuation={continuation} continuationFiles={continuationFiles} /> : null}
+        {contextStats ? (
+          <ChatContextIndicatorV2
+            continuation={continuation}
+            continuationFiles={continuationFiles}
+            open={contextPanel.open}
+            sheet={contextPanel.sheet}
+            stats={contextStats}
+            usageStats={usageStats}
+            onOpenChange={contextPanel.setOpen}
+          />
+        ) : null}
         {temporaryMemory ? <TemporaryChatIndicatorV2 memory={temporaryMemory} /> : null}
         {/* The account menu lives in the sidebar footer (one entry, UX audit
             F11); the header carries only the chat's own actions. */}

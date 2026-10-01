@@ -1,10 +1,23 @@
 import { appendSelectionQuote } from "@/components/chat/renderedMarkdown";
 
+/**
+ * Where a comment's fragment sits in its finished message: offsets into the
+ * rendered content text and a fingerprint of that text. It only draws the
+ * transcript mark; a fragment that no longer matches is simply not marked.
+ */
+export type PendingCommentAnchor = Readonly<{
+  messageId: string;
+  start: number;
+  end: number;
+  fingerprint: string;
+}>;
+
 /** A local annotation queued alongside one composer session. */
 export type PendingComposerComment = Readonly<{
   id: string;
   quote: string;
   text: string;
+  anchor?: PendingCommentAnchor;
 }>;
 
 /**
@@ -14,6 +27,7 @@ export type PendingComposerComment = Readonly<{
  */
 export const MAX_PENDING_COMMENTS = 100;
 const MAX_COMMENT_ID_CHARS = 128;
+const ANCHOR_FINGERPRINT = /^[0-9a-f]{8}$/u;
 
 /** Why a pending comment was not added or changed. Each has its own message. */
 export type ComposerCommentRefusal = "count" | "editing" | "empty" | "missing" | "too-large" | "unavailable";
@@ -41,13 +55,24 @@ export function composerCommentRefusalMessage(refusal: ComposerCommentRefusal, a
   }
 }
 
+export function validCommentAnchor(value: unknown): PendingCommentAnchor | null {
+  if (!value || typeof value !== "object") return null;
+  const { messageId, start, end, fingerprint } = value as Record<string, unknown>;
+  if (typeof messageId !== "string" || !messageId || messageId.length > MAX_COMMENT_ID_CHARS) return null;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || (start as number) < 0 || (end as number) <= (start as number)) return null;
+  if (typeof fingerprint !== "string" || !ANCHOR_FINGERPRINT.test(fingerprint)) return null;
+  return { messageId, start: start as number, end: end as number, fingerprint };
+}
+
 function validComment(value: unknown): PendingComposerComment | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
   const { id, quote, text } = record;
   if (typeof id !== "string" || typeof quote !== "string" || typeof text !== "string") return null;
   if (!id || id.length > MAX_COMMENT_ID_CHARS || !quote.trim() || !text.trim()) return null;
-  return { id, quote, text };
+  // An unusable anchor only loses the transcript mark, never the comment.
+  const anchor = validCommentAnchor(record.anchor);
+  return anchor ? { id, quote, text, anchor } : { id, quote, text };
 }
 
 /**
