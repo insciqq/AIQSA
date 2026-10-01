@@ -1,5 +1,11 @@
 import type { McpDraftConfiguration, McpSlotValue } from "@/lib/contracts/mcp";
-import { isMcpToolName, MCP_SERVER_TOOL_LIMIT, mcpValidationIssue, type McpValidationIssue } from "@/lib/contracts/mcp";
+import {
+  isMcpToolName,
+  MCP_SERVER_TOOL_LIMIT,
+  mcpValidationIssue,
+  type McpValidationIssue,
+  type PersonalMcpAuthorizationOriginConfirmationResponse
+} from "@/lib/contracts/mcp";
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "@/lib/server/http/requestBody";
 import type { McpRepository, McpUserServerState } from "./repositoryContract";
@@ -7,14 +13,24 @@ import { validateMcpDraft } from "./definitions";
 import { userServerProjection } from "./handlers";
 import { McpEncryptionError } from "./encryption";
 import { McpDraftValidationUnavailableError } from "./draftValidator";
+import {
+  crossSitePersonalMcpAuthorizationOrigins,
+  PersonalMcpOAuthDiscoveryError,
+  type PersonalMcpOAuthDraft
+} from "./personalOAuthDiscovery";
+import { personalMcpRateLimitResponse, type PersonalMcpRateLimiter } from "./personalRateLimit";
 
 type PersonalDeps = {
   onConnectionChanged?(userId: string, serverId: string): Promise<void>;
   onRuntimeChanged?(userId?: string): void;
-  prepareOAuthDraft?(draft: McpDraftConfiguration): Promise<McpDraftConfiguration>;
+  prepareOAuthDraft?(draft: McpDraftConfiguration): Promise<PersonalMcpOAuthDraft>;
   repository: McpRepository;
   resolveAuth: RequestAuthResolver;
 };
+
+type PersonalCreateDeps = PersonalDeps & { rateLimiter: PersonalMcpRateLimiter };
+
+const MAX_ACKNOWLEDGED_ORIGINS = 32;
 
 type RouteContext = { params: Promise<{ connectionId?: string; serverId?: string }> | { connectionId?: string; serverId?: string } };
 
@@ -44,6 +60,23 @@ function values(value: unknown): Record<string, McpSlotValue> | null {
     output[key] = candidate;
   }
   return output;
+}
+
+/** Exact origins the user confirmed; anything else is malformed. */
+function acknowledgedOrigins(value: unknown): ReadonlySet<string> | null {
+  if (value === undefined) return new Set();
+  if (!Array.isArray(value) || value.length > MAX_ACKNOWLEDGED_ORIGINS) return null;
+  const origins = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string" || item.length > 2_048) return null;
+    try {
+      if (new URL(item).origin !== item) return null;
+    } catch {
+      return null;
+    }
+    origins.add(item);
+  }
+  return origins;
 }
 
 function selectedTools(value: unknown): string[] | undefined | null {
@@ -129,11 +162,13 @@ export function createPersonalMcpListHandler(deps: PersonalDeps) {
   };
 }
 
-export function createPersonalMcpCreateHandler(deps: PersonalDeps) {
+export function createPersonalMcpCreateHandler(deps: PersonalCreateDeps) {
   return async function POST(request: Request): Promise<Response> {
     const session = await deps.resolveAuth(request);
     if (!session) return errorJson("unauthorized", 401);
     if (session.user.status !== "active") return errorJson("forbidden", 403);
+    const limited = await personalMcpRateLimitResponse(deps.rateLimiter, "create", session.userId);
+    if (limited) return limited;
     if (request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json") return errorJson("json_required", 415);
     const body = await readJsonBodyOrNull(request, "json");
     if (!record(body)) return requestBodyErrorResponse(body) ?? errorJson("invalid_mcp_values", 400);
@@ -141,14 +176,16 @@ export function createPersonalMcpCreateHandler(deps: PersonalDeps) {
     const description = body.description === undefined ? "" : typeof body.description === "string" && body.description.length <= 4_000 ? body.description.trim() : null;
     const draft = remoteDraft(body);
     const selected = selectedTools(body.selectedToolNames);
-    if (!name || description === null || selected === null) return errorJson("invalid_mcp_values", 400);
+    const acknowledged = acknowledgedOrigins(body.authorizationOriginsAcknowledged);
+    if (!name || description === null || selected === null || !acknowledged) return errorJson("invalid_mcp_values", 400);
     if ("error" in draft) return errorJson(draft.error, 422, [{ code: draft.error, path: draft.path }]);
     const createPersonalServer = deps.repository.createPersonalServer;
     if (!createPersonalServer) return errorJson("mcp_unavailable", 503);
     let prepared = draft.draft;
     if (prepared.auth.mode === "oauth" && deps.prepareOAuthDraft) {
-      try { prepared = await deps.prepareOAuthDraft(prepared); }
-      catch { return errorJson("mcp_oauth_discovery_failed", 422); }
+      const discovered = await authorizationTrust(deps.prepareOAuthDraft, prepared, acknowledged);
+      if (discovered instanceof Response) return discovered;
+      prepared = discovered;
     }
     const result = await safely(() => createPersonalServer({
       description,
@@ -169,6 +206,38 @@ export function createPersonalMcpCreateHandler(deps: PersonalDeps) {
     if (settled instanceof Response) return settled;
     return Response.json({ server: userServerProjection(settled) }, { headers: { "Cache-Control": "no-store" }, status: 201 });
   };
+}
+
+/**
+ * Re-runs discovery on every submission. Same-origin and same-site origins
+ * are trusted; every discovered cross-site origin must be among the ones the
+ * user confirmed. The stored set is always the discovered one, never the
+ * client's list.
+ */
+async function authorizationTrust(
+  prepare: NonNullable<PersonalDeps["prepareOAuthDraft"]>,
+  draft: McpDraftConfiguration,
+  acknowledged: ReadonlySet<string>
+): Promise<McpDraftConfiguration | Response> {
+  let discovered: PersonalMcpOAuthDraft;
+  try {
+    discovered = await prepare(draft);
+  } catch (error) {
+    if (error instanceof PersonalMcpOAuthDiscoveryError && error.code === "mcp_oauth_insecure_endpoint") {
+      return errorJson("mcp_oauth_insecure_endpoint", 422);
+    }
+    return errorJson("mcp_oauth_discovery_failed", 422);
+  }
+  const crossSite = crossSitePersonalMcpAuthorizationOrigins(discovered.authorizationOrigins);
+  if (crossSite.some((origin) => !acknowledged.has(origin))) {
+    const code = "oauth_authorization_origin_confirmation_required";
+    return Response.json({
+      authorizationOrigins: crossSite,
+      error: code,
+      issues: [mcpValidationIssue({ code, path: "authorizationOriginsAcknowledged" })]
+    } satisfies PersonalMcpAuthorizationOriginConfirmationResponse, { headers: { "Cache-Control": "no-store" }, status: 422 });
+  }
+  return discovered.draft;
 }
 
 export function createPersonalMcpUpdateHandler(deps: PersonalDeps) {

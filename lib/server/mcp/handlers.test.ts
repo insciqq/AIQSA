@@ -139,6 +139,8 @@ class MemoryMcpRepository implements McpRepository {
   testDraftCalls: Array<Parameters<McpRepository["testDraft"]>[0]> = [];
   updateCalls: Array<Parameters<McpRepository["updateServer"]>[0]> = [];
   userUpdateCalls: Array<Parameters<McpRepository["updateUserServer"]>[0]> = [];
+  /** Server ids that are personal rows owned by `user-1`. */
+  personalServerIds = new Set<string>();
   listAdminCalls = 0;
   listUserCalls: string[] = [];
   nextError: McpRepositoryError | null = null;
@@ -321,6 +323,7 @@ class MemoryMcpRepository implements McpRepository {
     this.userUpdateCalls.push(input);
     const failure = this.consumeFailure<McpUserServerState>();
     if (failure) return failure;
+    if (input.installationOnly && this.personalServerIds.has(input.serverId)) return { kind: "not_found" };
     if (!this.entitledUserIds.has(input.userId) || input.serverId !== SERVER_ID) {
       return { kind: "not_found" };
     }
@@ -589,6 +592,22 @@ describe("MCP handler input validation", () => {
     expect(repository.createCalls).toEqual([]);
     expect(acceptedType.status).toBe(200);
     expect(repository.userUpdateCalls).toHaveLength(1);
+  });
+
+  it("refuses personal connections on the installation PATCH with the privacy-neutral not-found", async () => {
+    const repository = new MemoryMcpRepository();
+    repository.personalServerIds.add(SERVER_ID);
+    const updateUser = createUserMcpUpdateHandler(deps(repository));
+    const response = await updateUser(request({
+      body: { values: { "api-key": "replacement-must-not-apply" } },
+      contentType: "application/json",
+      method: "PATCH",
+      user: "user-1"
+    }), routeContext);
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "mcp_not_found" });
+    expect(repository.userUpdateCalls).toEqual([expect.objectContaining({ installationOnly: true, serverId: SERVER_ID })]);
+    expect(repository.personalValues.get("user-1")).toBeUndefined();
   });
 
   it("returns bounded draft validation issues before calling the repository", async () => {
