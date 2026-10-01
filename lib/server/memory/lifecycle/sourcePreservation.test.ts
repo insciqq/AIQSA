@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../learning/extraction/contract";
+import type { MemoryEvidenceSourceProjections } from "../persistence/eligibility";
 import { memorySha256 } from "../persistence/lexical";
-import { independentForgetEvidence } from "./sourcePreservation";
+import {
+  independentForgetEvidence,
+  memoryForgetPeerCascadeCount,
+  rememberMemoryForgetPeerCascade
+} from "./sourcePreservation";
 
 const first = "My lamp is amber.";
 const second = "My bicycle is silver.";
 const text = `${first} ${second}`;
+const direct = { retrievalOnly: false };
+const echo = { retrievalOnly: true };
 
 function evidence(start: number, end: number) {
   return {
@@ -19,29 +26,41 @@ function evidence(start: number, end: number) {
 }
 
 describe("selective source forget", () => {
-  const forgotten = evidence(0, first.length);
   const peer = evidence(first.length + 1, text.length);
 
-  it("retains the separate exact evidence without authorizing the full message", () => {
-    expect(independentForgetEvidence(peer, [forgotten])).toBe(true);
-    expect(independentForgetEvidence(evidence(0, text.length), [forgotten])).toBe(false);
-    expect(independentForgetEvidence(forgotten, [forgotten])).toBe(false);
+  it("keeps a peer of a direct source even when spans overlap or support is inexact", () => {
+    expect(independentForgetEvidence(peer, direct)).toBe(true);
+    expect(independentForgetEvidence(evidence(0, text.length), direct)).toBe(true);
+    expect(independentForgetEvidence({ ...peer, safeExcerpt: first }, direct)).toBe(true);
+    expect(independentForgetEvidence({ ...peer, sourceMessageContentHash: "b".repeat(64) }, direct)).toBe(true);
+    expect(independentForgetEvidence({ ...peer, sourceProjectionVersion: "historical-projection" }, direct)).toBe(true);
+    expect(independentForgetEvidence({ ...peer, evidenceFingerprint: null, sourceEndOffset: null,
+      sourceMessageContentHash: null, sourceStartOffset: null }, {})).toBe(true);
   });
 
-  it("rejects missing, changed, and overlapping support before broadening deletion", () => {
-    expect(independentForgetEvidence(peer, [])).toBe(false);
-    expect(independentForgetEvidence(peer, [{ ...forgotten, sourceEndOffset: null }])).toBe(false);
-    expect(independentForgetEvidence({ ...peer, safeExcerpt: first }, [forgotten])).toBe(false);
-    expect(independentForgetEvidence(peer, [forgotten, peer])).toBe(false);
-    expect(independentForgetEvidence({ ...peer, sourceMessageContentHash: "b".repeat(64) }, [forgotten])).toBe(false);
-    expect(independentForgetEvidence(peer, [{ ...forgotten, messageId: "another-source" }])).toBe(false);
+  it("keeps only exact current testimony beside a retrieval-only echo", () => {
+    expect(independentForgetEvidence(peer, echo)).toBe(true);
+    expect(independentForgetEvidence({ ...peer, safeExcerpt: first }, echo)).toBe(false);
+    expect(independentForgetEvidence({ ...peer, sourceMessageContentHash: "b".repeat(64) }, echo)).toBe(false);
+    expect(independentForgetEvidence({ ...peer, sourceProjectionVersion: "historical-projection" }, echo)).toBe(false);
+    expect(independentForgetEvidence({ ...peer, sourceEndOffset: null }, echo)).toBe(false);
   });
 
-  it("preserves exact user testimony beside a retrieval-only echo without relaxing direct-source overlap", () => {
-    expect(independentForgetEvidence(peer, [], true)).toBe(true);
-    expect(independentForgetEvidence({ ...peer, safeExcerpt: first }, [], true)).toBe(false);
-    expect(independentForgetEvidence({ ...peer, sourceMessageContentHash: "b".repeat(64) }, [], true)).toBe(false);
-    expect(independentForgetEvidence(forgotten, [forgotten], true)).toBe(false);
-    expect(independentForgetEvidence(peer, [{ ...forgotten, sourceEndOffset: null }], true)).toBe(false);
+  it("projects each retrieval-only message once per Forget", () => {
+    const projections: MemoryEvidenceSourceProjections = new Map();
+    expect(independentForgetEvidence(peer, echo, projections)).toBe(true);
+    expect(projections.size).toBe(1);
+    projections.set("message", { hash: "c".repeat(64), safeText: text });
+    expect(independentForgetEvidence(peer, echo, projections)).toBe(false);
+  });
+
+  it("carries only a positive cascade count beside the committed result", () => {
+    const result = {};
+    rememberMemoryForgetPeerCascade(result, 0);
+    expect(memoryForgetPeerCascadeCount(result)).toBe(0);
+    rememberMemoryForgetPeerCascade(result, 2);
+    expect(memoryForgetPeerCascadeCount(result)).toBe(2);
+    expect(memoryForgetPeerCascadeCount(null)).toBe(0);
+    expect(JSON.stringify(result)).toBe("{}");
   });
 });
