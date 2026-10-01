@@ -111,6 +111,29 @@ for (const viewport of viewports) {
       await capture(page, testInfo, "load-error", viewport.name);
     });
 
+    test("replaces a rejected token in place", async ({ page }, testInfo) => {
+      await page.goto(fixture("connections-rows"));
+      const section = panel(page);
+      const github = section.locator("article", { has: page.getByRole("heading", { name: "GitHub" }) });
+      await expect(github.getByText("The server rejected the stored token. Replace the token to continue.")).toBeVisible();
+      await github.getByRole("button", { name: "Replace token for GitHub" }).click();
+      const form = github.getByRole("form", { name: "Replace token for GitHub" });
+      const token = form.getByLabel(/New token or API key/);
+      await expect(token).toBeFocused();
+      await expect(form.getByLabel(/^Header name/)).toHaveValue("Authorization");
+      await capture(page, testInfo, "replace-token", viewport.name, form);
+
+      await token.fill("reject-this-token");
+      await form.getByRole("button", { name: "Save token" }).click();
+      await expect(token).toHaveAttribute("aria-invalid", "true");
+      await capture(page, testInfo, "replace-token-error", viewport.name, form);
+
+      await token.fill("ghp_synthetic_new");
+      await form.getByRole("button", { name: "Save token" }).click();
+      await expect(github.getByText("Token replaced. New messages use it.")).toBeVisible();
+      await expect(github.getByRole("button", { name: "Replace token for GitHub" })).toBeFocused();
+    });
+
     test("separates failed, reconnect and starting connections and filters a long tool list", async ({ page }, testInfo) => {
       await page.goto(fixture("connections-rows"));
       const section = panel(page);

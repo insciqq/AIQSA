@@ -8,6 +8,8 @@
  * - `internal.example`, `lan.example`: AIQSA-internal address, local network turned off;
  * - `token.example`: the server rejects the token;
  * - `insecure-oauth.example`: an https server that signs in over http.
+ *
+ * A replacement token containing "reject" is refused by the synthetic server.
  */
 export type PersonalMcpFixtureScenario = "empty" | "error" | "rows";
 
@@ -146,6 +148,14 @@ export function installPersonalMcpFixtureApi(scenario: PersonalMcpFixtureScenari
         if (tool.enabled) disabled.delete(tool.name);
         else disabled.add(tool.name);
         next = row({ ...current, userDisabledToolNames: [...disabled].sort() });
+      }
+      const credentials = body.credentials as { authorization: string; headerName?: string } | undefined;
+      if (credentials) {
+        if (current.authMode !== "static") return json({ error: "auth_mode_invalid", issues: [{ code: "auth_mode_invalid", path: "credentials" }] }, 422);
+        if (/reject/iu.test(credentials.authorization)) {
+          return json({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_authorization_required", path: "credentials.authorization" }] }, 422);
+        }
+        next = { ...current, authHeaderName: credentials.headerName ?? current.authHeaderName, readiness: "ready", runtimeErrorCode: null };
       }
       servers = servers.map((item) => item.id === id ? next : item);
       return json({ server: next });
