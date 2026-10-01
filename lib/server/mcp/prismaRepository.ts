@@ -2587,7 +2587,7 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    updateUserServer: async ({ enabled, personalOnly, serverId, tool, userId, values }) => {
+    updateUserServer: async ({ enabled, installationOnly, personalOnly, serverId, tool, userId, values }) => {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
@@ -2599,6 +2599,7 @@ export function createPrismaMcpRepository(input: {
         const groups = record.grants.filter((grant) => grant.groupId && groupIds.includes(grant.groupId));
         const grant = resolveEffectiveMcpGrant({ direct, groups });
         if (record.ownerUserId && record.ownerUserId !== userId) return { kind: "not_found" as const };
+        if (installationOnly && record.ownerUserId) return { kind: "not_found" as const };
         const personalOwner = record.ownerUserId === userId;
         if (personalOnly && !personalOwner) return { kind: "not_found" as const };
         if (!personalOwner && !grant.canUse) return { kind: "not_found" as const };

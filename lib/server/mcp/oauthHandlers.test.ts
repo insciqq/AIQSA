@@ -3,10 +3,24 @@
 import type { AuthenticatedSession } from "@/lib/server/auth/requestAuth";
 import { describe, expect, it, vi } from "vitest";
 
-// The start routes are imported only to inspect their method exports.
-vi.mock("@/lib/server/auth/defaultAuth", () => ({ resolveRequestAuth: vi.fn() }));
+// The start routes are imported to inspect their method exports and wiring.
+const routeMocks = vi.hoisted(() => ({
+  check: vi.fn(),
+  resolveRequestAuth: vi.fn(),
+  startAuthorization: vi.fn()
+}));
+vi.mock("@/lib/server/auth/config", () => ({
+  getAuthConfig: () => ({
+    appBaseUrl: "https://aiqsa.example.test",
+    configured: true,
+    cookieSecure: true,
+    sessionSecret: "mcp-oauth-route-test-session-secret"
+  })
+}));
+vi.mock("@/lib/server/auth/defaultAuth", () => ({ resolveRequestAuth: routeMocks.resolveRequestAuth }));
 vi.mock("@/lib/server/mcp/defaultActivation", () => ({ settleDefaultMcpOAuth: vi.fn() }));
-vi.mock("@/lib/server/mcp/defaultOAuth", () => ({ mcpOAuthService: {} }));
+vi.mock("@/lib/server/mcp/defaultOAuth", () => ({ mcpOAuthService: { startAuthorization: routeMocks.startAuthorization } }));
+vi.mock("@/lib/server/mcp/defaultPersonalRateLimit", () => ({ personalMcpRateLimiter: { check: routeMocks.check } }));
 vi.mock("@/lib/server/mcp/defaultRuntime", () => ({ kickDefaultMcpRuntime: vi.fn() }));
 import {
   createMcpOAuthCallbackHandler,
@@ -15,7 +29,7 @@ import {
   type McpOAuthHandlerDeps
 } from "./oauthHandlers";
 import { signMcpOAuthFlow } from "./oauthFlow";
-import type { McpOAuthFlowBinding, McpOAuthService } from "./oauthService";
+import { McpOAuthError, type McpOAuthFlowBinding, type McpOAuthService } from "./oauthService";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 
 const NOW = new Date("2026-07-22T15:00:00.000Z");
@@ -468,5 +482,73 @@ describe("MCP OAuth web handlers", () => {
     const body = await response.json();
     expect(body).toEqual({ status: "disconnected" });
     expect(JSON.stringify(body)).not.toContain("token");
+  });
+  it.each([
+    ["personal connect", () => import("@/app/api/me/mcp-connections/[serverId]/oauth/connect/route"), "personal"],
+    ["installation connect", () => import("@/app/api/me/mcp/[serverId]/oauth/connect/route"), "installation"],
+    ["installation reconnect", () => import("@/app/api/me/mcp/[serverId]/oauth/reconnect/route"), "installation"]
+  ] as const)("answers a wrong-kind or foreign id on the %s route with the privacy-neutral not-found", async (_label, load, sourceKind) => {
+    routeMocks.resolveRequestAuth.mockResolvedValue(USER);
+    routeMocks.check.mockResolvedValue({ allowed: true, retryAfterSeconds: 0 });
+    routeMocks.startAuthorization.mockReset();
+    routeMocks.startAuthorization.mockRejectedValue(new McpOAuthError("mcp_oauth_not_available"));
+    const route = await load() as { POST(request: Request, context: ReturnType<typeof routeContext>): Promise<Response> };
+    const response = await route.POST(new Request("https://aiqsa.example.test/start", { method: "POST" }), routeContext());
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "mcp_oauth_not_available" });
+    expect(routeMocks.startAuthorization).toHaveBeenCalledWith(expect.objectContaining({ serverId: SERVER_ID, sourceKind }));
+  });
+
+  it("throttles personal OAuth starts per user before any discovery", async () => {
+    const operations = service();
+    const rateLimiter = {
+      check: vi.fn(async () => ({ allowed: false, retryAfterSeconds: 75 }))
+    };
+    const start = createMcpOAuthStartHandler(deps({ rateLimiter, service: operations }), {
+      forceReconnect: false,
+      purpose: "user",
+      sourceKind: "personal"
+    });
+    const response = await start(
+      new Request(`https://aiqsa.example.test/api/me/mcp-connections/${SERVER_ID}/oauth/connect`, { method: "POST" }),
+      routeContext()
+    );
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("75");
+    expect(await response.json()).toEqual({ error: "personal_mcp_rate_limited" });
+    expect(rateLimiter.check).toHaveBeenCalledWith("personal-mcp:oauth-start:user:user-1", { maxAttempts: 20 });
+    expect(operations.startAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a personal start route has no limiter", async () => {
+    const operations = service();
+    const start = createMcpOAuthStartHandler(deps({ service: operations }), {
+      forceReconnect: false,
+      purpose: "user",
+      sourceKind: "personal"
+    });
+    const response = await start(
+      new Request(`https://aiqsa.example.test/api/me/mcp-connections/${SERVER_ID}/oauth/connect`, { method: "POST" }),
+      routeContext()
+    );
+    expect(response.status).toBe(503);
+    expect(operations.startAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("does not rate-limit installation starts", async () => {
+    const operations = service();
+    const rateLimiter = { check: vi.fn(async () => ({ allowed: false, retryAfterSeconds: 75 })) };
+    const start = createMcpOAuthStartHandler(deps({ rateLimiter, service: operations }), {
+      forceReconnect: true,
+      purpose: "user",
+      sourceKind: "installation"
+    });
+    const response = await start(
+      new Request(`https://aiqsa.example.test/api/me/mcp/${SERVER_ID}/oauth/reconnect`, { method: "POST" }),
+      routeContext()
+    );
+    expect(response.status).toBe(200);
+    expect(rateLimiter.check).not.toHaveBeenCalled();
+    expect(operations.startAuthorization).toHaveBeenCalledWith(expect.objectContaining({ sourceKind: "installation" }));
   });
 });

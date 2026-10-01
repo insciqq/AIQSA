@@ -14,6 +14,6 @@ const start: AsyncRouteHandler<ReturnType<typeof createMcpOAuthStartHandler>> = 
   resolveAuth: resolveRequestAuth,
   settleAuthorization: settleDefaultMcpOAuth,
   service: mcpOAuthService
-}, { forceReconnect: false, purpose: "user" });
+}, { forceReconnect: false, purpose: "user", sourceKind: "installation" });
 
 export { start as POST };

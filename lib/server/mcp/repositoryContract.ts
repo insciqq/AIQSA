@@ -94,6 +94,8 @@ export type McpRepository = {
   }): Promise<McpRepositoryResult<AdminMcpServer>>;
   updateUserServer(input: {
     enabled?: boolean;
+    /** Require an installation server; personal rows are not found (installation route). */
+    installationOnly?: boolean;
     /** Require that the target is owned by this user (personal MCP route). */
     personalOnly?: boolean;
     serverId: string;
