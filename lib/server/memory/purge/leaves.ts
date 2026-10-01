@@ -728,19 +728,33 @@ function eventTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
   `;
 }
 
+// The payload plus the complete temporal tuple. The vNext temporal guard
+// admits a change to any temporal column only when a forgotten/retracted
+// content purge clears all of them together, so purge and audit share it.
+const versionResidueCondition = Prisma.sql`
+  num_nonnulls(
+    version."displayText",
+    version."normalizedSearchText",
+    version."structuredValue",
+    version."occurredAt",
+    version."expectedAt",
+    version."expiresAt",
+    version."validFrom",
+    version."validTo",
+    version."rawTemporalExpression",
+    version."sourceTimezone",
+    version."temporalResolverVersion",
+    version."temporalResolutionEvidence"
+  ) > 0
+`;
+
 const versionContentContributor: MemoryDeletionContributor = Object.freeze({
   async audit(tx, target) {
     const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
       SELECT COUNT(*)::integer AS "count"
       FROM "MemoryFactVersion" AS version
       WHERE ${memoryPurgeVersionCondition(target)}
-        AND num_nonnulls(
-          version."displayText",
-          version."normalizedSearchText",
-          version."structuredValue",
-          version."rawTemporalExpression",
-          version."temporalResolutionEvidence"
-        ) > 0
+        AND ${versionResidueCondition}
     `);
     const versionCount = countFrom(rows);
     if (target.kind !== "AUTOMATIC_SET" && target.kind !== "ALL_REUSABLE") {
@@ -776,17 +790,18 @@ const versionContentContributor: MemoryDeletionContributor = Object.freeze({
         "displayText" = NULL,
         "normalizedSearchText" = NULL,
         "structuredValue" = NULL,
+        "occurredAt" = NULL,
+        "expectedAt" = NULL,
+        "expiresAt" = NULL,
+        "validFrom" = NULL,
+        "validTo" = NULL,
         "rawTemporalExpression" = NULL,
+        "sourceTimezone" = NULL,
+        "temporalResolverVersion" = NULL,
         "temporalResolutionEvidence" = NULL,
         "contentPurgedAt" = COALESCE(version."contentPurgedAt", CURRENT_TIMESTAMP)
       WHERE ${memoryPurgeVersionCondition(target)}
-        AND num_nonnulls(
-          version."displayText",
-          version."normalizedSearchText",
-          version."structuredValue",
-          version."rawTemporalExpression",
-          version."temporalResolutionEvidence"
-        ) > 0
+        AND ${versionResidueCondition}
     `);
   },
   version: "v1"
