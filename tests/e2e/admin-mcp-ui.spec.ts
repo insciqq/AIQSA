@@ -223,6 +223,11 @@ test("administrator adds a server from a pasted configuration, watches the setup
       : null;
     requests.push({ body, method, path });
 
+    if (method === "GET" && path === "/api/admin/mcp/policy") {
+      await route.fulfill({ contentType: "application/json", json: { policy: { personalLocalNetworkEnabled: true, version: 1 } } });
+      return;
+    }
+
     if (method === "GET" && path === "/api/admin/mcp") {
       const pending = servers.find((server) => server.activation?.stage === "queued");
       if (pending) {

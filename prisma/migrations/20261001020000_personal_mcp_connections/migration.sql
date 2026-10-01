@@ -184,3 +184,31 @@ ALTER TABLE "McpUserServer"
   ADD CONSTRAINT "McpUserServer_discoveredOAuthConnectionId_fkey"
   FOREIGN KEY ("discoveredOAuthConnectionId") REFERENCES "McpOAuthConnection"("id")
   ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- personal-mcp-local-network
+-- Installation-wide administrator policy for personal MCP. Local network
+-- access (private, CGNAT and host addresses) is on by default; AIQSA's own
+-- services, ports and cloud metadata stay denied regardless.
+CREATE TABLE "McpPolicy" (
+  "id" TEXT NOT NULL,
+  "personalLocalNetworkEnabled" BOOLEAN NOT NULL DEFAULT true,
+  "version" INTEGER NOT NULL DEFAULT 1,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" TIMESTAMP(3) NOT NULL,
+
+  CONSTRAINT "McpPolicy_pkey" PRIMARY KEY ("id"),
+  CONSTRAINT "McpPolicy_singleton_check" CHECK ("id" = 'installation'),
+  CONSTRAINT "McpPolicy_version_check" CHECK ("version" > 0)
+);
+
+INSERT INTO "McpPolicy" (
+  "id",
+  "personalLocalNetworkEnabled",
+  "version",
+  "updatedAt"
+) VALUES (
+  'installation',
+  true,
+  1,
+  CURRENT_TIMESTAMP
+) ON CONFLICT ("id") DO NOTHING;
