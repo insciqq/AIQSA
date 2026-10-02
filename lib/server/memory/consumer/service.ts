@@ -383,31 +383,12 @@ export function projectMemoryConsumerItem(
     return failure("memory_action_failed");
   }
   const sourceAvailable = summary.sourceMode === "EXPLICIT" || summary.sourceCount > 0;
-  const pattern = summary.modality === "PATTERN";
   return {
-    allowedActions: pattern ? ["FORGET"] : ["EDIT", "FORGET"],
+    allowedActions: ["EDIT", "FORGET"],
     category: category(summary.category),
-    ...(summary.combinedSources ? {
-      combined: {
-        sourceCount: summary.combinedSources.length,
-        sources: summary.combinedSources.map((source) => ({
-          category: category(source.category),
-          createdAt: source.createdAt,
-          memoryRef: refs.mintItem(userId, {
-            allowedOperations: ["READ", "FORGET"],
-            factId: source.factId,
-            factVersionId: source.versionId
-          }, now),
-          provenance: source.sourceMode === "EXPLICIT" ? "SAVED" as const : "LEARNED" as const,
-          sourceAvailable: true,
-          statement: source.statement,
-          updatedAt: source.updatedAt
-        }))
-      }
-    } : {}),
     createdAt: summary.createdAt,
     memoryRef: refs.mintItem(userId, {
-      allowedOperations: pattern ? ["READ", "FORGET"] : ["READ", "EDIT", "FORGET"],
+      allowedOperations: ["READ", "EDIT", "FORGET"],
       factId: summary.id,
       factVersionId: versionId
     }, now),
@@ -577,15 +558,14 @@ export function createMemoryConsumerService(input: Readonly<{
       });
     },
 
-    get(userId, memoryRef, context) {
+    get(userId, memoryRef) {
       return safe(async () => {
         const now = clock();
         const target = await itemTarget(userId, memoryRef, "READ", now);
         const detail = await input.explicitService.get(userId, target.factId);
         const currentVersionId = detail.memory.currentVersionId ??
           detail.memory.actionVersionId;
-        if (detail.memory.factState !== "ACTIVE" || !currentVersionId ||
-          (context?.authority === "DELEGATED_MCP" && detail.memory.modality === "PATTERN")) {
+        if (detail.memory.factState !== "ACTIVE" || !currentVersionId) {
           return failure("memory_not_found");
         }
         if (currentVersionId !== target.factVersionId) {
@@ -595,7 +575,7 @@ export function createMemoryConsumerService(input: Readonly<{
       });
     },
 
-    list(userId, listInput, context) {
+    list(userId, listInput) {
       return safe(async () => {
         const now = clock();
         const response = await input.explicitService.list(userId, {
@@ -603,7 +583,6 @@ export function createMemoryConsumerService(input: Readonly<{
             ? storageCategory(listInput.category)
             : undefined,
           cursor: resolvedCursor(refs, userId, listInput.cursor, now),
-          includePatterns: context?.authority !== "DELEGATED_MCP",
           pageSize: listInput.pageSize,
           scope: { type: "GLOBAL_USER" },
           sourceMode: sourceMode(listInput.provenance),
@@ -656,7 +635,7 @@ export function createMemoryConsumerService(input: Readonly<{
       });
     },
 
-    search(userId, searchInput, context) {
+    search(userId, searchInput) {
       return safe(async () => {
         const now = clock();
         const response = await input.explicitService.search(userId, {
@@ -664,7 +643,6 @@ export function createMemoryConsumerService(input: Readonly<{
             ? storageCategory(searchInput.category)
             : undefined,
           cursor: resolvedCursor(refs, userId, searchInput.cursor, now),
-          includePatterns: context?.authority !== "DELEGATED_MCP",
           pageSize: searchInput.pageSize,
           query: searchInput.query,
           scope: { type: "GLOBAL_USER" },

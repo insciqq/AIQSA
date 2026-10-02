@@ -21,14 +21,6 @@ import {
 } from "../persistence/lexical";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryPurgeTargetType } from "../purge/contract";
-import {
-  memorySynthesisPatternAuthorityPredicate,
-  memorySynthesisSourceAuthorityPredicate
-} from "../synthesis/eligibility";
-import {
-  MEMORY_SYNTHESIS_COMBINED_REASONS,
-  memorySynthesisIsCombination
-} from "../synthesis/policy";
 
 const DEFAULT_PAGE_SIZE = 20;
 const SEARCH_OFFSET_MAX = 10_000;
@@ -48,7 +40,6 @@ type SummaryRow = Readonly<{
   lastUsedAt: Date | null;
   modality: MemorySummary["modality"] | null;
   pinned: boolean;
-  reasonCode: string | null;
   searchEntryId: string | null;
   sensitivityClass: MemorySummary["sensitivityClass"] | null;
   sourceCount: number;
@@ -59,17 +50,6 @@ type SummaryRow = Readonly<{
   validFrom: Date | null;
   validTo: Date | null;
   versionState: MemorySummary["versionState"] | null;
-}>;
-
-type CombinedSourceRow = Readonly<{
-  category: string;
-  createdAt: Date;
-  factId: string;
-  patternVersionId: string;
-  sourceMode: MemorySummary["sourceMode"];
-  statement: string;
-  updatedAt: Date;
-  versionId: string;
 }>;
 
 type EvidenceRow = Readonly<{
@@ -304,6 +284,12 @@ function summaryFromRow(row: SummaryRow): MemorySummary {
   };
 }
 
+/** Saved Memory never lists a retired synthesized PATTERN version (patterns
+ * and combinations alike); their former sources are ordinary memories. */
+function retiredPatternExcludedPredicate(): Prisma.Sql {
+  return Prisma.sql`version."modality" <> 'PATTERN'::"MemoryFactModality"`;
+}
+
 async function summariesByIds(
   client: PrismaClient,
   userId: string,
@@ -332,17 +318,7 @@ async function summariesByIds(
       version."validFrom",
       version."validTo",
       version."state"::text AS "versionState",
-      version."structuredValue"->>'reasonCode' AS "reasonCode",
-      CASE WHEN version."modality" = 'PATTERN'::"MemoryFactModality"
-        THEN (
-          SELECT COUNT(*)::integer
-          FROM "MemoryFactVersionRelation" AS relation
-          WHERE relation."userId" = version."userId"
-            AND relation."sourceVersionId" = version."id"
-            AND relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-        )
-        ELSE ${memoryPersonalEvidenceCount(userId)}
-      END AS "sourceCount",
+      ${memoryPersonalEvidenceCount(userId)} AS "sourceCount",
       generation."indexMode",
       search."id" AS "searchEntryId",
       search."embeddingState"
@@ -404,67 +380,10 @@ async function summariesByIds(
       AND fact."id" IN (${Prisma.join(ids)})
       AND ${memoryCanonicalGlobalScopePredicate()}
       AND version."id" IS NOT NULL
-      AND (
-        ${memoryPersonalFactEvidencePredicate(userId)}
-        OR ${memorySynthesisPatternAuthorityPredicate(userId, { forManagement: true })}
-      )
+      AND ${retiredPatternExcludedPredicate()}
+      AND ${memoryPersonalFactEvidencePredicate(userId)}
   `);
-  const combinedVersions = rows.flatMap((row) => row.factState === "ACTIVE" &&
-    row.modality === "PATTERN" &&
-    memorySynthesisIsCombination(row.reasonCode ?? "") &&
-    row.currentVersionId ? [row.currentVersionId] : []);
-  const sources = combinedVersions.length ? await client.$queryRaw<CombinedSourceRow[]>(Prisma.sql`
-    SELECT pattern_version."id" AS "patternVersionId",
-      source_fact."category", source_fact."createdAt",
-      source_version."sourceMode",
-      source_fact."id" AS "factId", source_version."id" AS "versionId",
-      source_version."displayText" AS "statement", source_fact."updatedAt"
-    FROM "MemoryFactVersion" AS pattern_version
-    INNER JOIN "MemoryFactVersionRelation" AS relation
-      ON relation."userId" = pattern_version."userId"
-     AND relation."sourceVersionId" = pattern_version."id"
-     AND relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-    INNER JOIN "MemoryFactVersion" AS source_version
-      ON source_version."userId" = relation."userId"
-     AND source_version."id" = relation."targetVersionId"
-    INNER JOIN "MemoryFact" AS source_fact
-      ON source_fact."userId" = source_version."userId"
-     AND source_fact."id" = source_version."factId"
-    INNER JOIN "MemoryScope" AS source_scope
-      ON source_scope."userId" = source_fact."userId"
-     AND source_scope."id" = source_fact."scopeId"
-    INNER JOIN "UserMemorySettings" AS settings
-      ON settings."userId" = source_version."userId"
-    WHERE pattern_version."userId" = ${userId}
-      AND pattern_version."id" IN (${Prisma.join(combinedVersions)})
-      AND ${memorySynthesisSourceAuthorityPredicate(userId, { forManagement: true })}
-    ORDER BY pattern_version."id", source_version."observedAt" DESC,
-      source_version."id"
-  `) : [];
-  const sourcesByVersion = new Map<string, CombinedSourceRow[]>();
-  for (const source of sources) {
-    const group = sourcesByVersion.get(source.patternVersionId) ?? [];
-    group.push(source);
-    sourcesByVersion.set(source.patternVersionId, group);
-  }
-  return new Map(rows.flatMap((row) => {
-    const combined = memorySynthesisIsCombination(row.reasonCode ?? "") &&
-      row.modality === "PATTERN" && row.currentVersionId
-      ? sourcesByVersion.get(row.currentVersionId) ?? [] : null;
-    if (combined && (combined.length < 2 || combined.length !== row.sourceCount)) return [];
-    return [[row.id, {
-      ...summaryFromRow(row),
-      ...(combined ? { combinedSources: combined.map((source) => ({
-        category: source.category,
-        createdAt: source.createdAt.toISOString(),
-        factId: source.factId,
-        sourceMode: source.sourceMode,
-        statement: source.statement,
-        updatedAt: source.updatedAt.toISOString(),
-        versionId: source.versionId
-      })) } : {})
-    } satisfies MemorySummary] as const];
-  }));
+  return new Map(rows.map((row) => [row.id, summaryFromRow(row)] as const));
 }
 
 function orderedSummaries(
@@ -475,93 +394,6 @@ function orderedSummaries(
     const summary = byId.get(id);
     return summary ? [summary] : [];
   });
-}
-
-function uncollapsedSourcePredicate(
-  userId: string,
-  parentSearchQuery: string | null = null
-): Prisma.Sql {
-  return Prisma.sql`(
-    NOT (
-      version."modality" = 'PATTERN'::"MemoryFactModality"
-      AND version."structuredValue"->>'reasonCode' IN
-        (${Prisma.join(MEMORY_SYNTHESIS_COMBINED_REASONS)})
-      AND NOT EXISTS (
-        SELECT 1 FROM "MemoryFactVersionRelation" AS parent_relation
-        INNER JOIN "MemoryFactVersion" AS source_version
-          ON source_version."userId" = parent_relation."userId"
-          AND source_version."id" = parent_relation."targetVersionId"
-        INNER JOIN "MemoryFact" AS source_fact
-          ON source_fact."userId" = source_version."userId"
-          AND source_fact."id" = source_version."factId"
-        WHERE parent_relation."userId" = ${userId}
-          AND parent_relation."sourceVersionId" = version."id"
-          AND parent_relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-          AND source_version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
-          AND source_fact."pinned" = FALSE
-          AND NOT EXISTS (
-            SELECT 1 FROM "MemoryEvent" AS protected_event
-            WHERE protected_event."userId" = source_fact."userId"
-              AND protected_event."factId" = source_fact."id"
-              AND protected_event."actorType" = 'USER'::"MemoryActorType"
-          )
-      )
-    )
-    AND (
-    version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-    OR fact."pinned" = TRUE
-    OR EXISTS (
-      SELECT 1 FROM "MemoryEvent" AS owner_event
-      WHERE owner_event."userId" = fact."userId"
-        AND owner_event."factId" = fact."id"
-        AND owner_event."actorType" = 'USER'::"MemoryActorType"
-    )
-    OR NOT EXISTS (
-    SELECT 1
-    FROM "MemoryFactVersionRelation" AS combined_relation
-    INNER JOIN "MemoryFactVersion" AS pattern_version
-      ON pattern_version."userId" = combined_relation."userId"
-     AND pattern_version."id" = combined_relation."sourceVersionId"
-     AND pattern_version."structuredValue"->>'reasonCode' IN
-       (${Prisma.join(MEMORY_SYNTHESIS_COMBINED_REASONS)})
-    INNER JOIN "MemoryFact" AS pattern_fact
-      ON pattern_fact."userId" = pattern_version."userId"
-     AND pattern_fact."id" = pattern_version."factId"
-    INNER JOIN "MemoryScope" AS pattern_scope
-      ON pattern_scope."userId" = pattern_fact."userId"
-     AND pattern_scope."id" = pattern_fact."scopeId"
-    WHERE combined_relation."userId" = ${userId}
-      AND combined_relation."targetVersionId" = version."id"
-      AND combined_relation."kind" =
-        'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-      AND ${memorySynthesisPatternAuthorityPredicate(userId, {
-        forManagement: true,
-        fact: Prisma.sql`pattern_fact`,
-        scope: Prisma.sql`pattern_scope`,
-        version: Prisma.sql`pattern_version`
-      })}
-      ${parentSearchQuery === null ? Prisma.empty : Prisma.sql`
-        AND EXISTS (
-          SELECT 1
-          FROM "MemoryIndexGeneration" AS pattern_generation
-          INNER JOIN "MemorySearchEntry" AS pattern_search
-            ON pattern_search."userId" = pattern_generation."userId"
-           AND pattern_search."indexGenerationId" = pattern_generation."id"
-           AND pattern_search."factVersionId" = pattern_version."id"
-          WHERE pattern_generation."userId" = ${userId}
-            AND pattern_generation."id" = settings."activeIndexGenerationId"
-            AND pattern_generation."state" = 'ACTIVE'
-            AND (
-              pattern_search."normalizedSearchText" = ${parentSearchQuery}
-              OR strpos(pattern_search."normalizedSearchText", ${parentSearchQuery}) > 0
-              OR pattern_search."searchVectorSimple" @@
-                plainto_tsquery('simple', ${parentSearchQuery})
-            )
-        )
-      `}
-    )
-    )
-  )`;
 }
 
 export function createPrismaExplicitMemoryRepository(client: PrismaClient = prisma) {
@@ -1044,7 +876,6 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
       const pageSize = input.pageSize ?? DEFAULT_PAGE_SIZE;
       const filterHash = memorySha256({
         category: input.category ?? null,
-        includePatterns: input.includePatterns !== false,
         scope: input.scope ?? null,
         sourceMode: input.sourceMode ?? null,
         state: input.state ?? null,
@@ -1055,20 +886,9 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
         Prisma.sql`fact."userId" = ${userId}`,
         memoryCanonicalGlobalScopePredicate(),
         Prisma.sql`version."id" IS NOT NULL`,
-        input.includePatterns === false
-          ? memoryPersonalFactEvidencePredicate(userId)
-          : Prisma.sql`(
-              ${memoryPersonalFactEvidencePredicate(userId)}
-              OR ${memorySynthesisPatternAuthorityPredicate(userId, { forManagement: true })}
-            )`
+        retiredPatternExcludedPredicate(),
+        memoryPersonalFactEvidencePredicate(userId)
       ];
-      if (input.includePatterns === false) {
-        conditions.push(Prisma.sql`version."modality" <> 'PATTERN'::"MemoryFactModality"`);
-      } else if (!input.category &&
-        (!input.sourceMode || input.sourceMode === "AUTOMATIC") &&
-        (input.state ?? "ACTIVE") === "ACTIVE") {
-        conditions.push(uncollapsedSourcePredicate(userId));
-      }
       if (input.scope) conditions.push(scopeFilter(input.scope));
       if (input.category) {
         conditions.push(Prisma.sql`fact."category" = ${input.category}`);
@@ -1142,7 +962,6 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
       }
       const filterHash = memorySha256({
         category: input.category ?? null,
-        includePatterns: input.includePatterns !== false,
         query: normalizedQuery,
         scope: input.scope ?? null,
         sourceMode: input.sourceMode ?? null,
@@ -1164,6 +983,7 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
           Prisma.sql`version."contentPurgedAt" IS NULL`,
           Prisma.sql`version."safetyClassificationState" =
             'CLASSIFIED'::"MemorySafetyClassificationState"`,
+          retiredPatternExcludedPredicate(),
           memoryPersonalFactEvidencePredicate(userId),
           Prisma.sql`(
             version."normalizedSearchText" = ${normalizedQuery}
@@ -1220,24 +1040,14 @@ export function createPrismaExplicitMemoryRepository(client: PrismaClient = pris
         Prisma.sql`version."safetyClassificationState" =
           'CLASSIFIED'::"MemorySafetyClassificationState"`,
         memoryCanonicalGlobalScopePredicate(),
-        input.includePatterns === false
-          ? memoryPersonalFactEvidencePredicate(userId)
-          : Prisma.sql`(
-              ${memoryPersonalFactEvidencePredicate(userId)}
-              OR ${memorySynthesisPatternAuthorityPredicate(userId, { forManagement: true })}
-            )`,
+        retiredPatternExcludedPredicate(),
+        memoryPersonalFactEvidencePredicate(userId),
         Prisma.sql`(
           search."normalizedSearchText" = ${normalizedQuery}
           OR strpos(search."normalizedSearchText", ${normalizedQuery}) > 0
           OR search."searchVectorSimple" @@ plainto_tsquery('simple', ${normalizedQuery})
         )`
       ];
-      if (input.includePatterns === false) {
-        conditions.push(Prisma.sql`version."modality" <> 'PATTERN'::"MemoryFactModality"`);
-      } else if (!input.category &&
-        (!input.sourceMode || input.sourceMode === "AUTOMATIC")) {
-        conditions.push(uncollapsedSourcePredicate(userId, normalizedQuery));
-      }
       if (input.scope) conditions.push(scopeFilter(input.scope));
       if (input.category) {
         conditions.push(Prisma.sql`fact."category" = ${input.category}`);

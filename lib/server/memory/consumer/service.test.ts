@@ -87,61 +87,24 @@ function dependencies(input: Readonly<{
 }
 
 describe("Memory consumer service", () => {
-  it("projects combined memories with opaque source refs and Forget-only actions", async () => {
+  it("lists every memory with Edit and Forget and never a combination block", async () => {
     const deps = dependencies();
-    const refService = refs();
-    vi.mocked(refService.mintItem).mockImplementation((_userId, target) =>
-      `opaque-${target.factId}`);
-    const summary = memorySummaryFixture({
-      combinedSources: [1, 2, 3].map((index) => ({
-        category: "habits",
-        createdAt: now.toISOString(),
-        factId: `internal-source-${index}`,
-        sourceMode: "AUTOMATIC" as const,
-        statement: `I use a checklist for workflow ${index}.`,
-        updatedAt: now.toISOString(),
-        versionId: `internal-source-version-${index}`
-      })),
-      currentVersionId: "internal-pattern-version",
-      id: "internal-pattern",
-      modality: "PATTERN",
-      sourceMode: "AUTOMATIC"
-    });
-    deps.explicitService.list.mockResolvedValue({ memories: [summary], nextCursor: null });
-    deps.explicitService.get.mockResolvedValue(memoryDetailFixture(summary));
     const service = createMemoryConsumerService({
       clock: () => now,
       explicitService: deps.explicitService as never,
       lifecycleService: deps.lifecycleService as never,
       readResetState: deps.readResetState,
-      refs: refService,
+      refs: refs(),
       settingsService: deps.settingsService as never
     });
     const listed = await service.list("user-1", {});
-    expect(listed.items[0]).toMatchObject({
-      allowedActions: ["FORGET"],
-      combined: {
-        sourceCount: 3,
-        sources: [
-          { memoryRef: "opaque-internal-source-1" },
-          { memoryRef: "opaque-internal-source-2" },
-          { memoryRef: "opaque-internal-source-3" }
-        ]
-      },
-      memoryRef: "opaque-internal-pattern"
-    });
-    expect(JSON.stringify(listed)).not.toMatch(/versionId|factId|PATTERN/u);
-    expect(refService.mintItem).toHaveBeenCalledWith("user-1", {
-      allowedOperations: ["READ", "FORGET"],
-      factId: "internal-source-1",
-      factVersionId: "internal-source-version-1"
-    }, now);
-    await expect(service.get("user-1", "opaque-internal-pattern", {
-      authority: "DELEGATED_MCP"
-    })).rejects.toMatchObject({ code: "memory_not_found" });
+    expect(listed.items[0]).toMatchObject({ allowedActions: ["EDIT", "FORGET"] });
+    expect(listed.items[0]).not.toHaveProperty("combined");
     await service.list("user-1", {}, { authority: "DELEGATED_MCP" });
-    expect(deps.explicitService.list).toHaveBeenLastCalledWith("user-1",
-      expect.objectContaining({ includePatterns: false }));
+    await service.search("user-1", { query: "workflow" }, { authority: "DELEGATED_MCP" });
+    const withoutPatternOptIn = expect.not.objectContaining({ includePatterns: expect.anything() });
+    expect(deps.explicitService.list).toHaveBeenLastCalledWith("user-1", withoutPatternOptIn);
+    expect(deps.explicitService.search).toHaveBeenLastCalledWith("user-1", withoutPatternOptIn);
   });
 
   it("resolves equivalent references before reading or minting exact mutation authority", async () => {
@@ -304,7 +267,6 @@ describe("Memory consumer service", () => {
     expect(deps.explicitService.list).toHaveBeenCalledWith("user-1", {
       category: "constraints_routines",
       cursor: null,
-      includePatterns: true,
       pageSize: 7,
       scope: { type: "GLOBAL_USER" },
       sourceMode: "AUTOMATIC",
@@ -313,7 +275,6 @@ describe("Memory consumer service", () => {
     expect(deps.explicitService.search).toHaveBeenCalledWith("user-1", {
       category: "about_you",
       cursor: null,
-      includePatterns: true,
       pageSize: undefined,
       query: "medical accommodation",
       scope: { type: "GLOBAL_USER" },

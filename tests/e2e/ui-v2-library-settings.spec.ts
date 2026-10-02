@@ -111,7 +111,7 @@ for (const viewport of [
   { width: 390, height: 844, theme: "light" },
   { width: 844, height: 390, theme: "dark" }
 ] as const) {
-  test(`Memory category and combined sources remain readable · ${viewport.width}x${viewport.height}`, async ({ context, page }, info) => {
+  test(`Memory categories list learned rows without a Combined block · ${viewport.width}x${viewport.height}`, async ({ context, page }, info) => {
     await setTheme(context, viewport.theme);
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.goto("/ui-v2-fixture?fixture=library&state=memory");
@@ -121,45 +121,32 @@ for (const viewport of [
     await expect(panel.getByRole("heading", { name: "Constraints and routines 2" })).toBeVisible();
     await expect(routines.locator("li.v2-memory-row")).toHaveCount(2);
     await expect(routines.getByText("Never suggests emoji in commit messages.")).toBeVisible();
-    const combined = panel.locator("li.v2-memory-row").filter({
-      hasText: "Combined from 3 memories"
-    });
-    await expect(combined).toHaveCount(1);
-    const disclosure = combined.getByRole("button", { name: /(?:Show|Hide) source memories/ });
-    await disclosure.scrollIntoViewIfNeeded();
-    await expectWithinViewport(page, disclosure);
-    if (await disclosure.getAttribute("aria-expanded") !== "true") await disclosure.click();
-    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
-    await expect(combined.locator(".v2-memory-combined-sources > li")).toHaveCount(3);
-    await expect(combined.getByText("Uses a written release checklist to review tests.")).toBeVisible();
+    const work = panel.getByRole("list", { name: "Work memories" });
+    await expect(panel.getByRole("heading", { name: "Work 3" })).toBeVisible();
+    await expect(work.locator("li.v2-memory-row")).toHaveCount(3);
+    const formerSource = work.getByText("Uses a written release checklist to review tests.");
+    await formerSource.scrollIntoViewIfNeeded();
+    await expectWithinViewport(page, formerSource);
+    await expect(panel.getByText(/Combined from/)).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: /source memories/ })).toHaveCount(0);
     await expectNoHorizontalOverflow(page);
     await page.screenshot({ path: info.outputPath(
-      `memory-category-combined-${viewport.width}x${viewport.height}-${viewport.theme}.png`
+      `memory-category-rows-${viewport.width}x${viewport.height}-${viewport.theme}.png`
     ), fullPage: true });
   });
 }
 
 for (const theme of ["dark", "light"] as const) {
   for (const mode of modes) {
-    test(`Combined memories expose sources and independent Forget · ${theme} · ${mode.name}`, async ({ context, page }) => {
+    test(`Learned rows forget independently · ${theme} · ${mode.name}`, async ({ context, page }) => {
       await setTheme(context, theme);
       await page.setViewportSize(mode);
       await page.goto("/ui-v2-fixture?fixture=library&state=memory");
       const panel = page.getByTestId("library-memory-panel");
-      const combined = panel.locator("li.v2-memory-row").filter({
-        hasText: "Combined from 3 memories"
-      });
-      await expect(combined).toHaveCount(1);
-      await expect(combined.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0);
-      await combined.getByRole("button", { name: "Show source memories" }).focus();
-      await page.keyboard.press("Enter");
-      const sources = combined.locator(".v2-memory-combined-sources > li");
-      await expect(sources).toHaveCount(3);
-      await sources.first().getByRole("button", { name: "Forget", exact: true }).click();
-      await sources.first().getByRole("button", { name: "Cancel", exact: true }).click();
-      await sources.first().getByRole("button", { name: "Forget", exact: true }).click();
-      await sources.first().getByRole("button", { name: "Forget", exact: true }).click();
-      await expect(combined).toHaveCount(0);
+      await panel.getByRole("button", { name: /Memory actions: Uses a written release checklist to review tests/ }).click();
+      await panel.getByRole("menuitem", { name: "Forget" }).click();
+      const confirmation = panel.getByRole("group", { name: /Forget Uses a written release checklist to review tests/ });
+      await confirmation.getByRole("button", { name: "Forget" }).click();
       await expect(panel.getByText("Uses a written release checklist to review tests.", { exact: true })).toHaveCount(0);
       await expect(panel.getByText("Uses a written release checklist to review migrations.", { exact: true })).toBeVisible();
       await expect(panel.getByText("Uses a written release checklist to review dependencies.", { exact: true })).toBeVisible();
