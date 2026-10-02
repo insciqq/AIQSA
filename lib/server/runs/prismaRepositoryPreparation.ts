@@ -10,7 +10,7 @@ import {
   storeWorkspaceFollowupAdmission, WorkspaceFollowupError
 } from "./workspaceFollowupPersistence";
 import { logEvent, runWithContext } from "../observability";
-import { observedFailure, observedFailureCode } from "../providers/providerObservability";
+import { observedFailure } from "../providers/providerObservability";
 import { logRunPersistence } from "./runObservability";
 import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { randomUUID } from "node:crypto";
