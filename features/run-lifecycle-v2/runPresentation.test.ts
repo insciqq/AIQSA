@@ -511,6 +511,31 @@ describe("run lifecycle v2 presentation", () => {
     })).failure).toMatchObject({ code: "context_budget_exceeded", message: "Choose a model with a larger context." });
   });
 
+  it.each([
+    ["memory_egress_destination_revoked", "Knowledge access changed before answer dispatch", "egress_destination_revoked"],
+    ["memory_egress_receipt_conflict", "Provider dispatch evidence could not be completed.", "egress_receipt_conflict"]
+  ])("keeps the egress-ledger failure %s visible with an egress support code", (code, message, shown) => {
+    const live = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code, message, recovery: "change_parameters" } }]
+    }));
+    expect(live.failure).toMatchObject({ code: shown, message });
+    expect(JSON.stringify(live)).not.toMatch(/memory_/u);
+  });
+
+  it.each([
+    ["memory_egress_receipt_unavailable", "Memory egress evidence is unavailable."],
+    [null, "This run uses a retired answer-model Memory tool contract."],
+    [null, "Checkpointed answer-model Memory tools cannot be replayed."]
+  ])("neutralizes Memory-worded egress and retired-tool text (%s)", (code, message) => {
+    const live = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { ...(code ? { code } : {}), message, recovery: "change_parameters" } }]
+    }));
+    expect(live.failure?.message).toBe("The answer could not be prepared. Try again.");
+    const persisted = presentRunLifecycleV2(state({ failure: { message }, status: "error" }));
+    expect(persisted.failure?.message).toBe("The answer could not be prepared. Try again.");
+    expect(JSON.stringify([live, persisted])).not.toMatch(/memory/iu);
+  });
+
   it("bounds malformed error state and supplies factual fallback copy", () => {
     expect(presentRunLifecycleV2(state({
       events: [{
