@@ -76,7 +76,6 @@ async function insertMaintenanceVersion(tx: Prisma.TransactionClient, input: Rea
   const eventId = randomUUID();
   const start = version.start ?? 0;
   const end = version.end ?? version.source.text.length;
-  const excerpt = version.source.text.slice(start, end);
   await tx.memoryEvent.create({ data: { id: eventId, userId, factId, factVersionId: id, operation: "AUTO_PROPOSE", actorType: "JOB" } });
   await tx.memoryFactVersion.create({ data: { id, factId, userId, createdByEventId: eventId, category: "other",
     displayText: version.statement, normalizedSearchText: normalizeMemorySearchText(version.statement),
@@ -91,14 +90,34 @@ async function insertMaintenanceVersion(tx: Prisma.TransactionClient, input: Rea
     ...(version.frame ? { semanticFrame: version.frame } : {}),
     ...(version.dated ? { occurredAt: createdAt, rawTemporalExpression: "this morning", sourceTimezone: "UTC",
       temporalResolverVersion: "memory-temporal-test-v1", temporalResolutionEvidence: { grounded: true } } : {}) } });
-  await tx.memoryEvidence.create({ data: { userId, factVersionId: id, chatId: version.source.chatId,
-    messageId: version.source.messageId, stance: "SUPPORTS", sourceType: "MESSAGE", sourceRole: "user", branchGeneration: 0,
-    observedAt: createdAt, createdAt, safeExcerpt: excerpt, safetyClass: "NORMAL",
-    ...(version.legacy
+  await insertMaintenanceEvidence(tx, { userId, factVersionId: id, createdAt, source: version.source, start, end,
+    legacy: version.legacy ?? false, fingerprint: memorySha256({ id, start, end }) });
+}
+
+/** One SUPPORTS span of `source`: exact unless legacy. */
+async function insertMaintenanceEvidence(tx: Prisma.TransactionClient, input: Readonly<{
+  userId: string; factVersionId: string; createdAt: Date; source: MaintenanceFixtureMessage;
+  start: number; end: number; legacy: boolean; fingerprint: string;
+}>): Promise<void> {
+  const { source, start, end } = input;
+  const excerpt = source.text.slice(start, end);
+  await tx.memoryEvidence.create({ data: { userId: input.userId, factVersionId: input.factVersionId, chatId: source.chatId,
+    messageId: source.messageId, stance: "SUPPORTS", sourceType: "MESSAGE", sourceRole: "user", branchGeneration: 0,
+    observedAt: input.createdAt, createdAt: input.createdAt, safeExcerpt: excerpt, safetyClass: "NORMAL",
+    ...(input.legacy
       ? { safeSourceHash: memorySha256(excerpt), sourceProjectionVersion: "memory-maintenance-legacy-fixture-v1" }
-      : { safeSourceHash: memorySha256(version.source.text), sourceMessageContentHash: memorySha256(version.source.text),
+      : { safeSourceHash: memorySha256(source.text), sourceMessageContentHash: memorySha256(source.text),
         sourceStartOffset: start, sourceEndOffset: end, sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
-        evidenceFingerprint: memorySha256({ id, start, end }) }) } });
+        evidenceFingerprint: input.fingerprint }) } });
+}
+
+/** Another exact supporting span of an existing version, from a later message. */
+export async function addMaintenanceEvidence(userId: string, factVersionId: string, source: MaintenanceFixtureMessage,
+  span: Readonly<{ start?: number; end?: number }> = {}): Promise<void> {
+  const start = span.start ?? 0;
+  const end = span.end ?? source.text.length;
+  await insertMaintenanceEvidence(prisma, { userId, factVersionId, createdAt: maintenanceFixtureTime(), source, start, end,
+    legacy: false, fingerprint: memorySha256({ factVersionId, messageId: source.messageId, start, end }) });
 }
 
 export async function createAutomaticMaintenanceFact(userId: string, versions: readonly MaintenanceVersionSeed[],

@@ -175,9 +175,11 @@ export async function prepareMemoryForgetSourcePreservation(
 }
 
 /** Peers that lost eligibility only because they depend on the forgotten
- * versions or on a fenced message are a legitimate cascade (the same fence
- * applies silently to dependents outside shared sources). Any other loss is
- * unexpected and refuses the whole Forget. Returns the cascaded peer count. */
+ * versions, on a fenced message, or on a source removed by automatic cleanup
+ * whose cleanup fenced a message this Forget fences, are a legitimate cascade
+ * (the same fence applies silently to dependents outside shared sources). Any
+ * other loss is unexpected and refuses the whole Forget. Returns the cascaded
+ * peer count. */
 export async function assertMemoryForgetPeersRetained(
   tx: MemoryTransaction,
   userId: string,
@@ -187,11 +189,25 @@ export async function assertMemoryForgetPeersRetained(
   const eligible = await loadEligible(tx, userId, peerVersionIds);
   const lost = [...new Set(peerVersionIds)].filter((id) => !eligible.has(id));
   if (lost.length === 0) return 0;
+  const messageBatches = batches([...new Set(fenced.messageIds)]);
   const fencedSources = [
     ...(fenced.versionIds.length > 0
       ? [Prisma.sql`chain."sourceFactVersionId" IN (${Prisma.join([...fenced.versionIds])})`] : []),
-    ...batches([...new Set(fenced.messageIds)]).map((batch) =>
-      Prisma.sql`chain."sourceMessageId" IN (${Prisma.join(batch)})`)
+    ...messageBatches.map((batch) => Prisma.sql`chain."sourceMessageId" IN (${Prisma.join(batch)})`),
+    // A removed source stays a valid hint only while every message its
+    // removal fenced passes the ordinary message fences.
+    ...messageBatches.map((batch) => Prisma.sql`(
+      chain."sourceFactVersionId" IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM "MemoryMaintenanceReview" AS removal
+        INNER JOIN "MemoryMaintenanceSuppression" AS cleanup_fence
+          ON cleanup_fence."userId" = removal."userId" AND cleanup_fence."memoryReviewId" = removal."id"
+        WHERE removal."userId" = ${userId} AND removal."factVersionId" = chain."sourceFactVersionId"
+          AND removal."disposition" = 'REMOVED'
+          AND cleanup_fence."sourceMessageId" IN (${Prisma.join(batch)})
+      )
+      AND aiqsa_memory_dependency_source_removed(${userId}, chain."sourceFactVersionId")
+    )`)
   ];
   if (fencedSources.length === 0) return memoryPersistenceFailure("memory_forget_peer_ineligible_after_fence");
   const cascaded = new Set<string>();
