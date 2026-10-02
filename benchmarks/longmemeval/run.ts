@@ -57,8 +57,6 @@ import { excludeBenchmarkQuestion } from "./queryIsolation";
 import { longMemEvalAnswerParams } from "./answerParams";
 import { defaultMemoryExecutionAuthority } from
   "../../lib/server/memory/execution/defaultAuthority";
-import { probeMemoryStructuredOutputAuthority } from
-  "../../lib/server/memory/execution/structuredClassifier";
 import {
   MEMORY_ITEM_EMBEDDING_VERSIONS,
   memoryItemEmbeddingGenerationMatchesPin
@@ -132,19 +130,10 @@ import {
 import { memorySynthesisSourceAuthorityPredicate } from
   "../../lib/server/memory/synthesis/eligibility";
 import {
-  MEMORY_SYNTHESIS_LOW_ACTIVITY_FALLBACK_MS,
   MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES,
-  MEMORY_SYNTHESIS_POLICY_VERSION,
-  MEMORY_SYNTHESIS_QUIET_PERIOD_MS
+  MEMORY_SYNTHESIS_POLICY_VERSION
 } from
   "../../lib/server/memory/synthesis/policy";
-import { MEMORY_SYNTHESIS_VERSIONS } from
-  "../../lib/server/memory/synthesis/provider";
-import {
-  loadMemorySynthesisScheduleStatus,
-  reconcileMemorySynthesisWork
-} from
-  "../../lib/server/memory/synthesis/reconcile";
 import {
   LONGMEMEVAL_EVALUATOR_SHA256,
   LONGMEMEVAL_MAX_CASE_CONCURRENCY,
@@ -2397,7 +2386,8 @@ async function loadLearningEvidence(
       where: { userId }
     }),
     countEligibleSynthesisSources(prisma, userId),
-    loadMemorySynthesisScheduleStatus(prisma, userId, new Date())
+    // Dream synthesis is retired: nothing is ever scheduled.
+    Promise.resolve({ decision: { due: false, reason: "RETIRED" } })
   ]);
   const versionIds = versions.map(({ id }) => id);
   const patternIds = patterns.map(({ id }) => id);
@@ -2588,65 +2578,14 @@ async function waitForHistoryIndex(
   throw new Error("longmemeval_history_index_timeout");
 }
 
+// Dream synthesis is retired; the forced diagnostic fails closed until the
+// Dream phases are removed from this benchmark.
 async function admitForcedDreamDiagnostic(
-  prisma: PrismaClient,
-  userId: string,
-  questionId: string
+  _prisma: PrismaClient,
+  _userId: string,
+  _questionId: string
 ): Promise<Readonly<{ reason: string; schedulerNow: Date }>> {
-  const wallNow = new Date();
-  let schedulerNow = new Date(
-    wallNow.getTime() + MEMORY_SYNTHESIS_QUIET_PERIOD_MS + 1_000
-  );
-  let status = await loadMemorySynthesisScheduleStatus(
-    prisma,
-    userId,
-    schedulerNow
-  );
-  if (!status.decision.due && status.decision.reason === "ACCUMULATING") {
-    schedulerNow = new Date(
-      wallNow.getTime() + MEMORY_SYNTHESIS_LOW_ACTIVITY_FALLBACK_MS + 1_000
-    );
-    status = await loadMemorySynthesisScheduleStatus(
-      prisma,
-      userId,
-      schedulerNow
-    );
-  }
-  if (!status.decision.due) {
-    throw new Error(
-      `longmemeval_dream_diagnostic_not_due:${diagnosticToken(status.decision.reason)}`
-    );
-  }
-  await reconcileMemorySynthesisWork(
-    prisma,
-    schedulerNow,
-    async (ownerId) => {
-      await probeMemoryStructuredOutputAuthority({
-        authority: defaultMemoryExecutionAuthority,
-        client: prisma,
-        role: "MEMORY_SYNTHESIZE",
-        userId: ownerId,
-        versions: MEMORY_SYNTHESIS_VERSIONS
-      });
-      return true;
-    }
-  );
-  const synthesisJobs = await prisma.memoryJob.count({
-    where: { kind: "SYNTHESIZE_MEMORIES", userId }
-  });
-  if (synthesisJobs < 1) {
-    throw new Error("longmemeval_dream_diagnostic_no_valid_cluster");
-  }
-  emit("dream_diagnostic_admitted", {
-    eligibleSources: status.activity?.eligibleSourceCount ?? 0,
-    questionId,
-    reason: status.decision.reason,
-    schedulerNow: schedulerNow.toISOString()
-  });
-  return Object.freeze({
-    reason: status.decision.reason,
-    schedulerNow
-  });
+  throw new Error("longmemeval_dream_diagnostic_retired");
 }
 
 async function startHybridRebuild(

@@ -13,16 +13,30 @@ const claim = { id: "job", userId: "owner", kind: "SYNTHESIZE_MEMORIES", pipelin
 const result = { output: { decisions: [{ sourceRef: "S1", scopeBasis: "transient_update", action: "REMOVE_TRANSIENT", usefulness: null, reason: "transient_episode_update" }] },
   acceptedOutputHash: "a".repeat(64), executionId: "execution", inputHash: "b".repeat(64), modelId: "model", providerId: "provider", policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION };
 const context = { now: () => new Date(), setStage: vi.fn(async () => {}), signal: new AbortController().signal };
-function setup(options: { staged?: boolean; verified?: boolean; existing?: boolean } = {}) {
+function setup(options: { staged?: boolean; verified?: boolean; existing?: boolean; client?: unknown } = {}) {
   const repository = { snapshot: vi.fn(async () => plan), stagedReview: vi.fn(async () => options.staged ? result : null),
     stagedVerification: vi.fn(async () => options.verified ? { ...result, output: { decisions: [{ sourceRef: "S1", approve: true }] } } : null),
     bindingExists: vi.fn(async () => options.existing ?? false), apply: vi.fn() };
   const provider = { review: vi.fn(async () => result), verify: vi.fn(async () => ({ ...result, output: { decisions: [{ sourceRef: "S1", approve: true }] } })) };
-  const handler = createPrismaMemoryMaintenanceHandler({} as PrismaClient, {
+  const handler = createPrismaMemoryMaintenanceHandler((options.client ?? {}) as PrismaClient, {
     repository: repository as unknown as MemoryMaintenanceRepository, provider: provider as unknown as MemoryMaintenanceProvider
   });
   return { repository, provider, handler };
 }
+describe("maintenance gate", () => {
+  it("follows Memory and automatic learning without reading the retired Dream setting", async () => {
+    const findUnique = vi.fn(async () => ({ useMemoryFacts: true, learnAutomatically: false, memoryGeneration: 1, memoryRevision: 0 }));
+    const { handler } = setup({ client: { userMemorySettings: { findUnique } } });
+    const job = { ...claim, memoryGenerationSnapshot: 0 };
+    await expect(handler.preflight(job)).resolves.toEqual({ status: "CANCELLED", errorCode: "memory_maintenance_disabled" });
+    expect(findUnique).toHaveBeenCalledWith({ where: { userId: "owner" },
+      select: { useMemoryFacts: true, learnAutomatically: true, memoryGeneration: true, memoryRevision: true } });
+    findUnique.mockResolvedValue({ useMemoryFacts: true, learnAutomatically: true, memoryGeneration: 1, memoryRevision: 0 });
+    // Past the settings gate, a changed generation still stales the job.
+    await expect(handler.preflight(job)).resolves.toEqual({ status: "STALE", errorCode: "memory_maintenance_source_stale" });
+  });
+});
+
 describe("maintenance recovery", () => {
   it("consumes durably settled review and verification after a lost lease without another paid call", async () => {
     const { handler, provider } = setup({ staged: true, verified: true, existing: true });

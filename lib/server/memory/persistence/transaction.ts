@@ -50,10 +50,6 @@ export type LockedMemorySettings = {
   referenceChatHistory: boolean;
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY";
   settingsRevision: number;
-  synthesisEnabled: boolean;
-  synthesisEnabledAt: Date | null;
-  synthesisPolicyVersion: string | null;
-  lastSynthesisAt: Date | null;
   useMemoryFacts: boolean;
   userId: string;
 };
@@ -194,10 +190,6 @@ export async function lockMemorySettings(
       settings."acceptedUtilityEgressFingerprint",
       settings."acceptedUtilityPolicyVersion",
       settings."acceptedUtilityEgressAt",
-      settings."synthesisEnabled",
-      settings."synthesisEnabledAt",
-      settings."synthesisPolicyVersion",
-      settings."lastSynthesisAt",
       locked_owner."status" AS "ownerStatus"
     FROM "UserMemorySettings" AS settings
     INNER JOIN locked_owner ON locked_owner."id" = settings."userId"

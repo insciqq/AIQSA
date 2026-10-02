@@ -83,6 +83,24 @@ describe("Memory settings store", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("loads settings with or without the retired Dream fields and never sends them", async () => {
+    const retained = memoryConsumerSettingsFixture({ status: "ON" });
+    const { synthesisAvailable: _available, ...capabilities } = retained.capabilities;
+    const { synthesisEnabled: _enabled, ...settings } = retained.settings;
+    const current = { ...retained, capabilities, settings };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json(retained))
+      .mockResolvedValueOnce(json(current))
+      .mockResolvedValueOnce(json(current));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(refreshMemorySettings(true)).resolves.toEqual(retained);
+    await expect(refreshMemorySettings(true)).resolves.toEqual(current);
+    expect(useMemorySettingsStore.getState()).toMatchObject({ data: current, error: null, loadState: "ready" });
+    await expect(updateMemoryGate("decayEnabled", true)).resolves.toEqual(current);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({ decayEnabled: true });
+  });
+
   it("keeps the committed value and stays usable after a failed change, reconciling silently", async () => {
     const initial = memoryConsumerSettingsFixture();
     const fetchMock = vi.fn()

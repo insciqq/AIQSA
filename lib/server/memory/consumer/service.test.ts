@@ -449,7 +449,6 @@ describe("Memory consumer service", () => {
           decayEnabled: true,
           learnAutomatically: true,
           referenceChatHistory: true,
-          synthesisEnabled: true,
           useMemoryFacts: true
         }
       }));
@@ -494,6 +493,30 @@ describe("Memory consumer service", () => {
       },
       status: "NEEDS_ADMIN_SETUP"
     });
+  });
+
+  it("reports unavailable maintenance only while automatic learning is on", async () => {
+    for (const [learnAutomatically, status] of [[true, "UNAVAILABLE"], [false, "ON"]] as const) {
+      const deps = dependencies();
+      deps.settingsService.get.mockResolvedValue(memorySettingsFixture({
+        capabilities: { synthesisAvailable: false },
+        historyIndexing: { state: "READY" },
+        settings: { learnAutomatically, referenceChatHistory: true, useMemoryFacts: true }
+      }));
+      const service = createMemoryConsumerService({
+        clock: () => now,
+        explicitService: deps.explicitService as never,
+        lifecycleService: deps.lifecycleService as never,
+        readResetState: deps.readResetState,
+        refs: refs(),
+        settingsService: deps.settingsService as never
+      });
+      await expect(service.settings("user-1")).resolves.toMatchObject({
+        capabilities: { synthesisAvailable: false },
+        settings: { synthesisEnabled: false },
+        status
+      });
+    }
   });
 
   it("preserves classifier outages as a consumer-safe unavailable failure", async () => {

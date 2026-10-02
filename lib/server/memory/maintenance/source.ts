@@ -15,7 +15,7 @@ type QueryClient = Pick<PrismaClient, "$queryRaw">;
 export function memoryMaintenanceSourcePredicate(userId: string): Prisma.Sql {
   return Prisma.sql`
     ${memoryReusableFactAuthorityPredicate(userId, { includePatterns: false, lifecycle: "CURRENT" })}
-    AND settings."learnAutomatically" = TRUE AND settings."synthesisEnabled" = TRUE
+    AND settings."learnAutomatically" = TRUE
     AND version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
     AND fact."pinned" = FALSE AND fact."movedToFactId" IS NULL
     AND NOT EXISTS (SELECT 1 FROM "MemoryFactVersion" AS explicit_version

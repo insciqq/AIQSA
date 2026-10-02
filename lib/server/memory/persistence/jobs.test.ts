@@ -17,10 +17,6 @@ const settings = {
   referenceChatHistory: true,
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
   settingsRevision: 0,
-  synthesisEnabled: false,
-  synthesisEnabledAt: null,
-  synthesisPolicyVersion: null,
-  lastSynthesisAt: null,
   useMemoryFacts: true,
   userId: "user-1"
 } satisfies LockedMemorySettings;

@@ -83,7 +83,9 @@ const memoryConsumerSettingsResponseSchema = z.strictObject({
     permanentChatDeletion: z.boolean(),
     pastChatIndexingAvailable: z.boolean(),
     retrievalAvailable: z.boolean(),
-    synthesisAvailable: z.boolean(),
+    // Retained for one release (stale tabs decode strictly) and ignored by the
+    // client: it now reports background maintenance availability.
+    synthesisAvailable: z.boolean().optional(),
     temporaryChats: z.boolean()
   }),
   resetState: z.enum(MEMORY_CONSUMER_RESET_STATES),
@@ -91,7 +93,8 @@ const memoryConsumerSettingsResponseSchema = z.strictObject({
     decayEnabled: z.boolean(),
     learnAutomatically: z.boolean(),
     referenceChatHistory: z.boolean(),
-    synthesisEnabled: z.boolean(),
+    // The retired Dream toggle: always false from this server, ignored here.
+    synthesisEnabled: z.boolean().optional(),
     useMemoryFacts: z.boolean()
   }),
   status: z.enum(MEMORY_CONSUMER_STATUSES)
@@ -111,6 +114,7 @@ const memoryConsumerSettingsPatchSchema = z.strictObject({
   decayEnabled: z.boolean().optional(),
   learnAutomatically: z.boolean().optional(),
   referenceChatHistory: z.boolean().optional(),
+  // Retired Dream toggle from stale tabs: accepted, ignored by the server.
   synthesisEnabled: z.boolean().optional(),
   useMemoryFacts: z.boolean().optional()
 }).refine((value) => Object.keys(value).length > 0, "empty settings patch");

@@ -1,5 +1,6 @@
 import {
   decodeMemorySettingsResponse,
+  MEMORY_SETTINGS_PATCH_KEYS,
   type MemorySettingsPatch,
   type MemorySettingsResponse
 } from "../../../contracts/memory";
@@ -134,7 +135,8 @@ function responseProjection(
       referenceChatHistory: settings.referenceChatHistory,
       sensitiveAutomaticPolicy: settings.sensitiveAutomaticPolicy,
       settingsRevision: settings.settingsRevision,
-      synthesisEnabled: settings.synthesisEnabled,
+      // Dream synthesis is retired; one release keeps the field for stale tabs.
+      synthesisEnabled: false,
       updatedAt: settings.updatedAt.toISOString(),
       useMemoryFacts: settings.useMemoryFacts
     }
@@ -142,6 +144,15 @@ function responseProjection(
   const decoded = decodeMemorySettingsResponse(candidate);
   if (!decoded.ok) return serviceFailure("memory_action_failed");
   return decoded.value;
+}
+
+/** Stale tabs may still send the retired Dream toggle for one release. It is
+ * accepted and ignored; a patch that carries nothing else changes nothing. */
+function withoutRetiredSettings(patch: MemorySettingsPatch): MemorySettingsPatch | null {
+  const { synthesisEnabled: _retired, ...effective } = patch;
+  return MEMORY_SETTINGS_PATCH_KEYS.some((key) => Object.hasOwn(effective, key))
+    ? effective
+    : null;
 }
 
 export function createMemorySettingsService(input: Readonly<{
@@ -199,20 +210,25 @@ export function createMemorySettingsService(input: Readonly<{
     );
   }
 
+  async function get(userId: string): Promise<MemorySettingsResponse> {
+    const settings = await persist(() => input.repository.get(userId));
+    return project(userId, settings);
+  }
+
   return Object.freeze({
-    async get(userId) {
-      const settings = await persist(() => input.repository.get(userId));
-      return project(userId, settings);
-    },
+    get,
 
     async patch(userId, patch) {
-      const settings = await persist(() => input.repository.patch(userId, patch));
+      const effective = withoutRetiredSettings(patch);
+      // No mutation, revision increment or wake: return the current settings.
+      if (!effective) return get(userId);
+      const settings = await persist(() => input.repository.patch(userId, effective));
       // Enabling the subordinate history toggle is allowed to wake ordinary
       // forward work only while the master is already on.  A combined master
       // resume patch must not trigger a retroactive backfill.
       if (
-        (patch.referenceChatHistory === true || patch.synthesisEnabled === true) &&
-        patch.useMemoryFacts !== true &&
+        effective.referenceChatHistory === true &&
+        effective.useMemoryFacts !== true &&
         settings.useMemoryFacts
       ) kick();
       return project(userId, settings);
