@@ -100,7 +100,7 @@ export function createSystemModelRoleResolver(
   };
 }
 
-/** System routing and Memory have independent assignments but require the
+/** The System model and Memory have independent assignments but require the
  * same exact installation credential and verified structured capabilities. */
 export async function resolveInstallationStructuredUtilityRole(
   db: AdmissionPrisma,
