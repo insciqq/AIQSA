@@ -6,17 +6,11 @@ import {
   mcpOneTimeRequest,
   type AdminMcpOneTimeValueDraft
 } from "@/components/admin/mcp/AdminMcpOneTimeValues";
-import { McpStatusPill } from "@/components/admin/mcp/mcpPrimitives";
-import { mcpConfigurationBuild, mcpConfigurationSummary } from "@/components/admin/mcp/mcpServerView";
+import { mcpConfigurationSummary } from "@/components/admin/mcp/mcpServerView";
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import { UiV2Button } from "@/components/ui-v2";
 import type { AdminMcpServer } from "@/lib/contracts/mcp";
 
-/**
- * Earlier configurations (PRD 5.10): every configuration that was applied
- * before, with Restore for a saved build and Rebuild for one that has to be
- * built again. Both close the sheet once the server answered.
- */
 export function AdminMcpConfigurationsSheet({
   controller,
   onClose,
@@ -52,7 +46,6 @@ export function AdminMcpConfigurationsSheet({
   return (
     <UiV2Sheet
       closeBlocked={controller.state.busy}
-      description="Restore puts a saved build back as it was. Rebuild replaces the current settings with that configuration, builds it again, checks it and applies the result."
       onClose={onClose}
       open
       testId="mcp-configurations-sheet"
@@ -69,20 +62,16 @@ export function AdminMcpConfigurationsSheet({
           <ul aria-label="Earlier configurations" className="divide-y divide-trace-subtle rounded-[12px] border border-trace-subtle">
             {configurations.map((configuration) => {
               const current = configuration.id === server.activeRevision?.id;
-              const build = mcpConfigurationBuild(configuration);
               return (
                 <li className="grid gap-2.5 px-4 py-3" data-testid={`mcp-configuration-${configuration.id}`} key={configuration.id}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-ink">
-                        Configuration {configuration.revisionNumber}{current ? " · Current" : ""}
-                      </p>
-                      <p className="text-xs leading-5 text-ink-muted">{mcpConfigurationSummary(configuration)}</p>
-                    </div>
-                    <McpStatusPill label={build.label} testId="mcp-configuration-build" tone={build.tone} />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-ink">
+                      Configuration {configuration.revisionNumber}{current ? " · Current" : ""}
+                    </p>
+                    <p className="text-xs leading-5 text-ink-muted">{mcpConfigurationSummary(configuration)}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {!current && configuration.artifactStatus !== "missing" ? (
+                    {!current ? (
                       <UiV2Button disabled={locked} icon="history" onClick={() => void restore(configuration.id)} tone="ghost" type="button">
                         Restore
                       </UiV2Button>

@@ -291,7 +291,6 @@ export function adminMcpErrorMessage(error: AdminMcpClientError): string {
     json_required: "The MCP request format was not accepted. Refresh and try again.",
     mcp_admin_action_failed: "The MCP action could not be completed.",
     mcp_admin_response_invalid: "The MCP API returned an unexpected response. Refresh and try again.",
-    mcp_artifact_missing: "The saved build of this configuration is no longer cached. Rebuild and apply it instead.",
     mcp_draft_changed: "These settings changed during editing or checking. Reopen the server, review the latest settings, and use Test & Save again.",
     mcp_draft_test_failed: "The MCP check failed. Your changes were not applied; the current configuration keeps running.",
     mcp_encryption_unavailable: "Secret storage is unavailable. Check AIQSA_ENCRYPTION_KEY.",
@@ -344,15 +343,6 @@ export function adminMcpErrorMessage(error: AdminMcpClientError): string {
     }
     if (issue.code === "validation_identity_invalid") {
       return "Your administrator access changed during the check. Sign in again before applying settings.";
-    }
-    if (issue.code === "mcp_local_environment_missing") {
-      const environmentName = /^slots\.([A-Z][A-Z0-9_]{1,127})$/u.exec(issue.path)?.[1];
-      return environmentName
-        ? `The MCP process requires ${environmentName}. Add it under Configuration fields and provide the value needed for testing.`
-        : "The MCP process is missing a required environment variable. Review its setup instructions and Configuration fields.";
-    }
-    if (issue.code === "mcp_local_process_failed") {
-      return "The MCP process exited during startup. Check its documented environment variables and launch arguments.";
     }
     return `${issue.path}: ${issue.code}`;
   }).join("; ");
