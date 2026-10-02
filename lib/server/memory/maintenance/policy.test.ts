@@ -1,21 +1,43 @@
 import { describe, expect, it } from "vitest";
 import { memorySha256 } from "../persistence/lexical";
-import { isSupportedMemoryMaintenancePolicy, memoryMaintenancePlan, MEMORY_MAINTENANCE_POLICY_VERSION,
-  MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS } from "./policy";
+import { isSupportedMemoryMaintenancePolicy, memoryMaintenancePlan, memoryMaintenancePlanHash,
+  memoryMaintenanceReasonDisposition, MEMORY_MAINTENANCE_BLOCKED_REASONS, MEMORY_MAINTENANCE_POLICY_VERSION,
+  MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS, MEMORY_MAINTENANCE_UNREVIEWABLE_REASONS,
+  type MemoryMaintenanceSource } from "./policy";
+
+const source: MemoryMaintenanceSource = {
+  ref: "S1", factId: "fact-1", versionId: "version-1", statement: "Synthetic statement.", category: "other",
+  modality: "STATE", confidence: 0.6, usefulness: null, observedAt: new Date("2026-09-01"),
+  evidenceThrough: new Date("2026-09-01"), sourceSnapshotHash: "a".repeat(64), evidence: []
+};
 
 describe("versioned maintenance provenance", () => {
-  it("retains accepted v1 removal authority without accepting arbitrary historical labels", () => {
-    expect(MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS).toEqual(["memory-maintenance-policy-v1", "memory-maintenance-policy-v2"]);
-    expect(isSupportedMemoryMaintenancePolicy("memory-maintenance-policy-v1")).toBe(true);
-    expect(isSupportedMemoryMaintenancePolicy(MEMORY_MAINTENANCE_POLICY_VERSION)).toBe(true);
-    for (const unsupported of [null, "memory-maintenance-policy-v0", "memory-maintenance-policy-v3", ["memory-maintenance-policy-v1"]]) {
+  it("retains accepted v1 and v2 removal authority without accepting arbitrary historical labels", () => {
+    expect(MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS).toEqual([
+      "memory-maintenance-policy-v1", "memory-maintenance-policy-v2", "memory-maintenance-policy-v3"
+    ]);
+    expect(MEMORY_MAINTENANCE_POLICY_VERSION).toBe("memory-maintenance-policy-v3");
+    for (const supported of MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS) {
+      expect(isSupportedMemoryMaintenancePolicy(supported)).toBe(true);
+    }
+    for (const unsupported of [null, "memory-maintenance-policy-v0", "memory-maintenance-policy-v4", ["memory-maintenance-policy-v1"]]) {
       expect(isSupportedMemoryMaintenancePolicy(unsupported)).toBe(false);
     }
   });
-  it("uses a new plan identity for v2 while keeping unchanged v2 work idempotent", () => {
+  it("uses a new plan identity for v3 that is derivable from reviewed refs, versions and hashes alone", () => {
     const plan = memoryMaintenancePlan([]);
-    const v1 = memorySha256({ policyVersion: "memory-maintenance-policy-v1", sources: [] });
-    expect(plan.sourceSnapshotHash).not.toBe(v1);
+    const v2 = memorySha256({ policyVersion: "memory-maintenance-policy-v2", sources: [] });
+    expect(plan.sourceSnapshotHash).not.toBe(v2);
     expect(memoryMaintenancePlan([]).sourceSnapshotHash).toBe(plan.sourceSnapshotHash);
+    expect(memoryMaintenancePlanHash([{ ref: source.ref, versionId: source.versionId, sourceSnapshotHash: source.sourceSnapshotHash }]))
+      .toBe(memoryMaintenancePlan([source]).sourceSnapshotHash);
+  });
+  it("maps every fixed reason code to exactly one non-final disposition", () => {
+    expect(MEMORY_MAINTENANCE_BLOCKED_REASONS.map(memoryMaintenanceReasonDisposition)).toEqual(["BLOCKED", "BLOCKED", "BLOCKED"]);
+    expect(MEMORY_MAINTENANCE_UNREVIEWABLE_REASONS.map(memoryMaintenanceReasonDisposition))
+      .toEqual(["UNREVIEWABLE", "UNREVIEWABLE", "UNREVIEWABLE"]);
+    expect(new Set([...MEMORY_MAINTENANCE_BLOCKED_REASONS, ...MEMORY_MAINTENANCE_UNREVIEWABLE_REASONS]).size).toBe(6);
+    expect([...MEMORY_MAINTENANCE_BLOCKED_REASONS, ...MEMORY_MAINTENANCE_UNREVIEWABLE_REASONS]
+      .every((reason) => reason.length <= 32 && /^[a-z_]+$/u.test(reason))).toBe(true);
   });
 });
