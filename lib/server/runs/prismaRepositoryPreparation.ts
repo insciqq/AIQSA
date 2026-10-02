@@ -95,6 +95,8 @@ import {
   decodeMemoryInitialChatMode,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
 } from "../../contracts/memory";
+// Users never see Memory failures; the stable error code keeps the reason.
+import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../contracts/runs";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
 import {
   KnowledgeRunAdmissionError,
@@ -185,8 +187,6 @@ const MEMORY_PREPARING_RETRIEVAL_RESERVE_MS = 4_000;
 const MEMORY_PREPARING_COMPLETION_RESERVE_MS = 2_500;
 const MEMORY_PREPARING_FINALIZATION_RESERVE_MS = 1_000;
 const MEMORY_PREPARING_MAX_ATTEMPTS = 3;
-/** Users never see Memory failures; the stable error code keeps the reason. */
-const MEMORY_PREPARATION_USER_MESSAGE = "The answer could not be prepared. Try again.";
 
 function assertWorkspaceAdmissionShape(
   input: PreparingRunAdmissionInput,
@@ -3974,7 +3974,7 @@ export async function recoverPreparingRunWithClient(
         ? "memory_preparing_attempt_expired"
         : "memory_preparing_recovery_required",
       // User-facing text stays neutral; the code keeps the exact reason.
-      message: MEMORY_PREPARATION_USER_MESSAGE,
+      message: RUN_PREPARATION_FAILURE_MESSAGE,
       now: input.now,
       runId: input.runId,
       state: expired ? "EXPIRED" : "FAILED",
@@ -4432,7 +4432,7 @@ async function continuePreparingRunWithClient(
         errorCode: error instanceof MemoryPreparingRunConflictError
           ? error.code
           : "memory_preparing_failed",
-        message: MEMORY_PREPARATION_USER_MESSAGE,
+        message: RUN_PREPARATION_FAILURE_MESSAGE,
         runId: created.runId,
         state: "FAILED",
         userId: admission.userId
