@@ -1,5 +1,4 @@
 import { decodeMemoryActionFeedback, type MemoryActionFeedback } from "../../contracts/memory";
-import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import {
   decodeMemoryActionAnswerResult,
   type MemoryActionAnswerResult
@@ -104,7 +103,8 @@ export function nonMemoryPreparationConflictCode(
   error: unknown,
   stage: MemoryPreparationStage
 ): string | null {
-  if (error instanceof McpToolAccessDeniedError || errorNamed(error, "McpToolAccessDeniedError")) {
+  // Named check: the class module carries the Prisma client.
+  if (errorNamed(error, "McpToolAccessDeniedError")) {
     return "mcp_tool_access_denied";
   }
   if (error instanceof McpRunPlanConflictError || errorNamed(error, "McpRunPlanConflictError")) {

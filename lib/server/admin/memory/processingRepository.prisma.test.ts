@@ -253,4 +253,71 @@ describe("administrator Memory processing aggregates", () => {
         .filter(({ stage }) => stage === "COMMAND" || stage === "SEARCH")).toEqual([]);
     } finally { await f.cleanup(); }
   });
+
+  it("counts 24-hour preparation fallbacks and safe stops by allowlisted codes for active owners only", async () => {
+    const f = await fixture();
+    try {
+      resolution.available = true;
+      const hour = 60 * 60_000;
+      // The aggregate spans every active owner; a future window excludes runs
+      // that concurrent stateful suites settle in real time.
+      const now = new Date(f.now.getTime() + 400 * 24 * hour);
+      const run = async (status: "complete" | "error" | "preparing", code?: string, ageMs = hour) => {
+        const created = await prisma.modelRun.create({ data: { chatId: f.chatId, userId: f.userId,
+          userMessageId: f.sourceMessageId, status, normalizedRequest: {}, modelId: providerTemplateIds.fakeModel,
+          provider: providerTemplateIds.fakeConnection,
+          ...(code ? { errorPayload: { code, message: "private fixture failure text" } } : {}) } });
+        await prisma.$executeRaw`UPDATE "ModelRun" SET "updatedAt" = ${new Date(now.getTime() - ageMs)} WHERE id = ${created.id}`;
+        return created.id;
+      };
+      const receipt = async (degradationCode: string | null, outcome: "FAILED_SAFE" | "EMPTY", ageMs: number) => {
+        const runId = await run("complete");
+        const finalizedAt = new Date(now.getTime() - ageMs);
+        const attempt = await prisma.memoryRetrievalAttempt.create({ data: {
+          admissionKind: "NORMAL_SEND", admittedAssistantLeafMessageId: f.leafMessageId,
+          admittedUserMessageId: f.sourceMessageId, attemptOrdinal: 0, baseRequestHash: "d".repeat(64),
+          boundedPrivateBaseRequestSnapshot: { request: "private fixture base request" }, budgetSnapshot: {},
+          chatId: f.chatId, chatMemoryModeSnapshot: "NORMAL", consumedAt: finalizedAt,
+          expiresAt: new Date(Date.now() + hour), externalRolesUsed: [],
+          memoryGenerationSnapshot: 0, modelRunId: runId, queryHash: "e".repeat(64), retrievalRevisionSnapshot: 0,
+          settingsSnapshot: {}, state: "CONSUMED", outcome, degradationCode, userId: f.userId, utilityEgressMode: "LOCAL_ONLY"
+        } });
+        await prisma.modelRunMemoryBinding.create({ data: { userId: f.userId, modelRunId: runId,
+          retrievalAttemptId: attempt.id, memoryGenerationSnapshot: 0, retrievalRevisionSnapshot: 0,
+          finalizedRevisionSnapshot: 0, settingsSnapshot: {}, queryHash: "e".repeat(64),
+          queryPlannerVersion: "fixture", retrievalPipelineVersion: "fixture", contextTextHash: "f".repeat(64),
+          contextTokenCount: 0, outcome, degradationCode, finalizedAt } });
+      };
+      await receipt("memory_preparation_skipped", "FAILED_SAFE", 2 * hour);
+      await receipt("memory_admission_deadline_exceeded", "FAILED_SAFE", hour);
+      await receipt("memory_admission_settings_changed", "FAILED_SAFE", 30 * 60_000);
+      // Retrieval-level optional fallbacks, ordinary receipts and old receipts are not counted.
+      await receipt(null, "FAILED_SAFE", hour);
+      await receipt(null, "EMPTY", hour);
+      await receipt("memory_preparation_skipped", "FAILED_SAFE", 25 * hour);
+      await run("error", "memory_preparing_failed", 3 * hour);
+      await run("error", "memory_source_stale", hour);
+      await run("error", "memory_source_deleted", hour);
+      await run("error", "memory_item_forgotten", 10 * 60_000);
+      // Post-dispatch, non-Memory, non-terminal and old failures are not preparation failures.
+      await run("error", "memory_answer_model_tools_retired", hour);
+      await run("error", "memory_egress_changed", hour);
+      await run("error", "provider_admission_changed", hour);
+      await run("complete", "memory_preparing_failed", hour);
+      await run("error", "memory_preparing_failed", 25 * hour);
+
+      const result = await readAdminMemoryProcessing(prisma, now);
+      const preparation = result.issues.filter(({ stage }) => stage === "PREPARATION");
+      expect(preparation).toEqual([
+        { stage: "PREPARATION", reason: "PREPARATION_FAILED", severity: "warn", count: 4, oldestAgeSeconds: 10800 },
+        { stage: "PREPARATION", reason: "PREPARATION_SKIPPED", severity: "warn", count: 3, oldestAgeSeconds: 7200 }
+      ]);
+      expect(JSON.stringify(result)).not.toMatch(/private|memory-status|fixture|memory_prep|memory_source/u);
+      const attention = adminMemoryStatusForAttention({ processing: result } as Parameters<typeof adminMemoryStatusForAttention>[0]);
+      expect(attention.processing.issues.some(({ stage }) => stage === "PREPARATION")).toBe(false);
+      await prisma.user.update({ where: { id: f.userId }, data: { status: "disabled" } });
+      expect((await readAdminMemoryProcessing(prisma, now)).issues
+        .filter(({ stage }) => stage === "PREPARATION")).toEqual([]);
+    } finally { await f.cleanup(); }
+  });
 });
