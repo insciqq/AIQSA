@@ -18,14 +18,20 @@ async function main(): Promise<void> {
     input
   );
 
+  if (result.localMcpRemovedCount !== undefined) {
+    logEvent("runtime_lifecycle", { subsystem: "mcp", stage: "cleanup", outcome: "completed",
+      code: "local_mcp_sources_removed", count: result.localMcpRemovedCount });
+  }
   logEvent("runtime_lifecycle", { subsystem: "database", stage: "initialize", outcome: "completed",
     code: result.status === "created" ? "installation_created" : "installation_already_adopted", count: result.catalogModelCount });
 }
 
 main()
   .catch((error: unknown) => {
+    const bootstrapError = error instanceof InstallationBootstrapError ? error : null;
     logEvent("runtime_lifecycle", { subsystem: "database", stage: "initialize", outcome: "failed",
-      code: error instanceof InstallationBootstrapError ? error.code : "installation_bootstrap_failed", action: "stop" });
+      code: bootstrapError?.code ?? "installation_bootstrap_failed", action: "stop",
+      ...(bootstrapError?.count !== undefined ? { count: bootstrapError.count } : {}) });
     process.exitCode = 1;
   })
   .finally(async () => {

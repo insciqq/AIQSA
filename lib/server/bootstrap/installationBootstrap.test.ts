@@ -4,6 +4,7 @@ import { providerConnectionTemplates } from "@/lib/domain/providerTemplates";
 import { automaticRerankerRoutePresets } from "@/lib/domain/rerankerModels";
 import { LOCAL_ORDINARY_USERS } from "@/prisma/local-seed-fixtures";
 import { describe, expect, it, vi } from "vitest";
+import type { LocalMcpLeftovers } from "./localMcpRemoval";
 import {
   bootstrapInstallationDatabase,
   InstallationBootstrapError,
@@ -42,12 +43,36 @@ type AdoptedState = {
 
 type BootstrapTransactionFixture = ReturnType<typeof createBootstrapTransaction>;
 
+const NO_LOCAL_MCP: LocalMcpLeftovers = {
+  localDraftServerIds: [],
+  localServerIds: [],
+  otherLocalRevisionIds: []
+};
+const LOCAL_MCP_LEFTOVERS: LocalMcpLeftovers = {
+  localDraftServerIds: ["remote-with-local-draft"],
+  localServerIds: ["local-a", "local-b"],
+  otherLocalRevisionIds: ["remote-history-local-revision"]
+};
+const ADOPTED: AdoptedState = {
+  identity: {
+    emailVerifiedAt: NOW,
+    normalizedEmail: "admin@example.com",
+    passwordHash: "operator-owned-password-hash",
+    providerAccountId: "admin@example.com",
+    userId: USER_ID
+  },
+  user: {
+    email: "admin@example.com",
+    id: USER_ID
+  }
+};
+
 function createBootstrapTransaction(input: {
   adopted?: Partial<AdoptedState>;
+  localMcp?: LocalMcpLeftovers;
   nonempty: boolean;
 }) {
   const events: string[] = [];
-  let rawQueryIndex = 0;
   const record = <T>(event: string, result: T) =>
     vi.fn(async (_input: unknown) => {
       events.push(event);
@@ -55,14 +80,26 @@ function createBootstrapTransaction(input: {
     });
   const user = input.adopted?.user ?? null;
   const identity = input.adopted?.identity ?? null;
-  const queryRaw = vi.fn(async () => {
-    rawQueryIndex += 1;
-    const event = rawQueryIndex === 1 ? "lock" : "count";
+  const queryRaw = vi.fn(async (sql: TemplateStringsArray) => {
+    const text = sql.join("");
 
-    events.push(event);
-    return rawQueryIndex === 1
-      ? [{ lock: "locked" }]
-      : [{ nonempty: input.nonempty ? "true" : "false" }];
+    if (text.includes("pg_advisory_xact_lock")) {
+      events.push("lock");
+      return [{ lock: "locked" }];
+    }
+    if (text.includes("application_rows")) {
+      events.push("count");
+      return [{ nonempty: input.nonempty ? "true" : "false" }];
+    }
+    if (text.includes("server_state")) {
+      events.push("localMcp.inspect");
+      return [input.localMcp ?? NO_LOCAL_MCP];
+    }
+    throw new Error("Unexpected raw query.");
+  });
+  const executeRaw = vi.fn(async () => {
+    events.push("localMcp.resetDrafts");
+    return 0;
   });
   const spies = {
     accessGrantCreateMany: record("accessGrant.createMany", { count: 0 }),
@@ -75,8 +112,13 @@ function createBootstrapTransaction(input: {
     knowledgeIndexProfileUpsert: record("knowledgeIndexProfile.upsert", { id: "installation" }),
     knowledgeAnswerPolicyUpsert: record("knowledgeAnswerPolicy.upsert", { id: "installation" }),
     memoryEgressAdminPolicyUpsert: record("memoryEgressAdminPolicy.upsert", { id: "installation" }),
+    mcpActivationJobDeleteMany: record("mcpActivationJob.deleteMany", { count: 0 }),
     mcpGrantUpsert: record("mcpGrant.upsert", { id: "mcp-grant-id" }),
+    mcpRevisionDeleteMany: record("mcpRevision.deleteMany", { count: 0 }),
+    mcpRuntimeGenerationDeleteMany: record("mcpRuntimeGeneration.deleteMany", { count: 0 }),
+    mcpServerDeleteMany: record("mcpServer.deleteMany", { count: 0 }),
     mcpServerFindMany: record("mcpServer.findMany", []),
+    projectMcpBindingDeleteMany: record("projectMcpBinding.deleteMany", { count: 0 }),
     modelPolicyUpsert: record("modelPolicy.upsert", { id: "installation" }),
     providerConnectionUpsert: record("providerConnection.upsert", { id: "connection-id" }),
     providerModelCreate: record("providerModel.create", { id: "reranker-model-id" }),
@@ -99,6 +141,7 @@ function createBootstrapTransaction(input: {
     userSettingsCreate: record("userSettings.create", {})
   };
   const tx = {
+    $executeRaw: executeRaw,
     $queryRaw: queryRaw,
     accessGrant: {
       createMany: spies.accessGrantCreateMany
@@ -127,8 +170,21 @@ function createBootstrapTransaction(input: {
     mcpGrant: {
       upsert: spies.mcpGrantUpsert
     },
+    mcpActivationJob: {
+      deleteMany: spies.mcpActivationJobDeleteMany
+    },
+    mcpRevision: {
+      deleteMany: spies.mcpRevisionDeleteMany
+    },
+    mcpRuntimeGeneration: {
+      deleteMany: spies.mcpRuntimeGenerationDeleteMany
+    },
     mcpServer: {
+      deleteMany: spies.mcpServerDeleteMany,
       findMany: spies.mcpServerFindMany
+    },
+    projectMcpBinding: {
+      deleteMany: spies.projectMcpBindingDeleteMany
     },
     modelPolicy: {
       upsert: spies.modelPolicyUpsert
@@ -181,6 +237,7 @@ function createBootstrapTransaction(input: {
 
   return {
     events,
+    executeRaw,
     queryRaw,
     spies,
     tx
@@ -253,6 +310,23 @@ describe("installation bootstrap", () => {
     ).toThrowError(InstallationBootstrapError);
   });
 
+  it("accepts local MCP removal only for the exact acknowledgement value", () => {
+    const email = "admin@example.com";
+
+    for (const value of ["1", " 1 "]) {
+      expect(installationBootstrapInputFromEnv({
+        AIQSA_ACCEPT_LOCAL_MCP_REMOVAL: value,
+        AIQSA_INITIAL_ADMIN_EMAIL: email
+      })).toMatchObject({ acceptLocalMcpRemoval: true });
+    }
+    for (const value of [undefined, "", "0", "true", "yes", "11"]) {
+      expect(installationBootstrapInputFromEnv({
+        AIQSA_ACCEPT_LOCAL_MCP_REMOVAL: value,
+        AIQSA_INITIAL_ADMIN_EMAIL: email
+      })).not.toHaveProperty("acceptLocalMcpRemoval");
+    }
+  });
+
   it("normalizes email and rejects invalid email, password, display-name, and user-id inputs", () => {
     expect(
       validateInstallationBootstrapInput({
@@ -311,6 +385,7 @@ describe("installation bootstrap", () => {
       "count",
       "authIdentity.findFirst"
     ]);
+    expect(fixture.events).not.toContain("localMcp.inspect");
     expect(hashPassword).toHaveBeenCalledOnce();
     expect(hashPassword).toHaveBeenCalledWith(baseInput.password);
     expect(fixture.spies.userCreate).toHaveBeenCalledOnce();
@@ -693,5 +768,66 @@ describe("installation bootstrap", () => {
     for (const mutation of allFoundationMutationSpies(fixture)) {
       expect(mutation).not.toHaveBeenCalled();
     }
+  });
+  it("refuses an adopted installation with local MCP leftovers before any change", async () => {
+    const fixture = createBootstrapTransaction({
+      adopted: ADOPTED,
+      localMcp: LOCAL_MCP_LEFTOVERS,
+      nonempty: true
+    });
+    const { prisma } = createBootstrapClient(fixture);
+
+    const error = await bootstrapInstallationDatabase(prisma, baseInput).catch((caught: unknown) => caught);
+
+    expectBootstrapError(error, "local_mcp_removal_acknowledgement_required");
+    expect((error as InstallationBootstrapError).count).toBe(4);
+    expect(fixture.events).toEqual(["lock", "count", "authIdentity.findFirst", "user.findUnique", "localMcp.inspect"]);
+    expect(fixture.executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("deletes acknowledged local MCP leftovers before repairing the foundation", async () => {
+    const fixture = createBootstrapTransaction({
+      adopted: ADOPTED,
+      localMcp: LOCAL_MCP_LEFTOVERS,
+      nonempty: true
+    });
+    const { prisma } = createBootstrapClient(fixture);
+
+    await expect(bootstrapInstallationDatabase(prisma, { ...baseInput, acceptLocalMcpRemoval: true }))
+      .resolves.toMatchObject({ localMcpRemovedCount: 4, status: "already_adopted" });
+
+    const removal = fixture.events.slice(4, 11);
+    expect(removal).toEqual([
+      "localMcp.inspect",
+      "projectMcpBinding.deleteMany",
+      "mcpRuntimeGeneration.deleteMany",
+      "mcpRevision.deleteMany",
+      "localMcp.resetDrafts",
+      "mcpActivationJob.deleteMany",
+      "mcpServer.deleteMany"
+    ]);
+    expect(fixture.events.indexOf("providerConnection.upsert")).toBeGreaterThan(
+      fixture.events.indexOf("mcpServer.deleteMany")
+    );
+  });
+
+  it("ignores the acknowledgement when no local MCP row is left", async () => {
+    const fixture = createBootstrapTransaction({ adopted: ADOPTED, nonempty: true });
+    const { prisma } = createBootstrapClient(fixture);
+
+    const result = await bootstrapInstallationDatabase(prisma, { ...baseInput, acceptLocalMcpRemoval: true });
+
+    expect(result).not.toHaveProperty("localMcpRemovedCount");
+    expect(fixture.events).toContain("localMcp.inspect");
+    for (const deletion of [
+      fixture.spies.projectMcpBindingDeleteMany,
+      fixture.spies.mcpRuntimeGenerationDeleteMany,
+      fixture.spies.mcpRevisionDeleteMany,
+      fixture.spies.mcpActivationJobDeleteMany,
+      fixture.spies.mcpServerDeleteMany
+    ]) {
+      expect(deletion).not.toHaveBeenCalled();
+    }
+    expect(fixture.executeRaw).not.toHaveBeenCalled();
   });
 });
