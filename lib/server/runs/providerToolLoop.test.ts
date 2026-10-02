@@ -205,7 +205,7 @@ describe("provider tool loop", () => {
       async *stream() {
         return { finalText: "", finalProviderResponsePreview: {}, usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 },
           toolCalls: [
-            { id: "discover", name: "find_tools", arguments: { goal: "Read the synthetic service" } },
+            { id: "discover", name: "find_tools", arguments: { query: "Read the synthetic service" } },
             { id: mode === "duplicate" ? "discover" : "future", name: mode === "duplicate" ? "find_tools" : "mcp_future_tool", arguments: {} }
           ] };
       }
