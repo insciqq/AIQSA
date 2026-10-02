@@ -4,6 +4,7 @@ import {
   decodeMemoryConsumerListResponse,
   decodeMemoryConsumerItemResponse,
   decodeMemoryConsumerSearchInput,
+  decodeMemoryConsumerSettingsPatch,
   decodeMemoryConsumerSettingsResponse
 } from "./memoryConsumer";
 
@@ -57,6 +58,41 @@ describe("Memory consumer contracts", () => {
       ...safe,
       destination: "provider.example"
     })).toEqual({ code: "memory_contract_invalid", ok: false });
+  });
+
+  it("accepts settings with or without the retired Dream fields", () => {
+    const current = {
+      capabilities: {
+        automaticLearningAvailable: true,
+        decayAvailable: true,
+        managementAvailable: true,
+        naturalLanguageActionsAvailable: true,
+        permanentChatDeletion: true,
+        pastChatIndexingAvailable: true,
+        retrievalAvailable: true,
+        temporaryChats: true
+      },
+      resetState: "IDLE",
+      settings: {
+        decayEnabled: false,
+        learnAutomatically: true,
+        referenceChatHistory: true,
+        useMemoryFacts: true
+      },
+      status: "ON"
+    };
+    expect(decodeMemoryConsumerSettingsResponse(current)).toEqual({ ok: true, value: current });
+    const retained = {
+      ...current,
+      capabilities: { ...current.capabilities, synthesisAvailable: false },
+      settings: { ...current.settings, synthesisEnabled: false }
+    };
+    expect(decodeMemoryConsumerSettingsResponse(retained)).toEqual({ ok: true, value: retained });
+    expect(decodeMemoryConsumerSettingsPatch({ synthesisEnabled: true })).toEqual({
+      ok: true,
+      value: { synthesisEnabled: true }
+    });
+    expect(decodeMemoryConsumerSettingsPatch({})).toEqual({ code: "memory_contract_invalid", ok: false });
   });
 
   it("rejects repository IDs, versions, scores, and hashes on managed items", () => {

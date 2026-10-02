@@ -138,7 +138,7 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
       const lease = await tx.memoryJob.findFirst({ where: { id: job.id, userId: job.userId, state: "CLAIMED",
         leaseToken: job.claimToken, leaseExpiresAt: { gt: now } }, select: { id: true } });
       const current = await snapshot(tx, job);
-      if (!lease || !settings.useMemoryFacts || !settings.learnAutomatically || !settings.synthesisEnabled ||
+      if (!lease || !settings.useMemoryFacts || !settings.learnAutomatically ||
         settings.memoryGeneration !== job.memoryGenerationSnapshot ||
         !current || current.sourceSnapshotHash !== expectedPlan.sourceSnapshotHash) throw new Error("memory_maintenance_source_stale");
       const sourceByRef = new Map(current.sources.map((source) => [source.ref, source]));

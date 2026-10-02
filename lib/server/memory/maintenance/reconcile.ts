@@ -7,7 +7,7 @@ import { scanMemoryMaintenanceSources } from "./source";
 
 export async function scheduleOwnerMemoryMaintenance(client: PrismaClient, userId: string, now: Date): Promise<number> {
   return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
-    if (!settings.useMemoryFacts || !settings.learnAutomatically || !settings.synthesisEnabled) return 0;
+    if (!settings.useMemoryFacts || !settings.learnAutomatically) return 0;
     if (await tx.memoryJob.count({ where: { userId, kind: "SYNTHESIZE_MEMORIES", state: { in: ["QUEUED", "CLAIMED", "RETRYABLE_FAILED", "WAITING_FOR_CONFIGURATION"] } } })) return 0;
     const cursor = await tx.userMemorySettings.findUniqueOrThrow({ where: { userId }, select: { maintenanceCursor: true } });
     const scan = await scanMemoryMaintenanceSources(tx, userId, now, cursor.maintenanceCursor);
@@ -64,7 +64,7 @@ export async function reconcileMemoryMaintenanceWork(client: PrismaClient, now: 
   const owners = await client.$queryRaw<Array<{ userId: string }>>(Prisma.sql`
     SELECT settings."userId" FROM "UserMemorySettings" settings
     JOIN "User" owner_user ON owner_user.id = settings."userId" AND owner_user.status = 'active'::"UserStatus"
-    WHERE settings."useMemoryFacts" AND settings."learnAutomatically" AND settings."synthesisEnabled"
+    WHERE settings."useMemoryFacts" AND settings."learnAutomatically"
       AND EXISTS (SELECT 1 FROM "MemoryFactVersion" version JOIN "MemoryFact" fact ON fact."userId" = version."userId" AND fact.id = version."factId"
         WHERE version."userId" = settings."userId" AND version.state = 'ACTIVE'::"MemoryFactVersionState"
           AND fact."currentVersionId" = version.id AND fact.state = 'ACTIVE'::"MemoryFactState" AND NOT fact.pinned

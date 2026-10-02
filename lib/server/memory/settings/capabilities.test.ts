@@ -40,10 +40,6 @@ function settings(
     referenceChatHistory: true,
     sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
     settingsRevision: 1,
-    synthesisEnabled: false,
-    synthesisEnabledAt: null,
-    synthesisPolicyVersion: null,
-    lastSynthesisAt: null,
     updatedAt: NOW,
     useMemoryFacts: true,
     userId: "user-1",
@@ -246,28 +242,36 @@ describe("Memory capability projection", () => {
     expect(derive({ omitted: [role] }).automaticLearningAvailable).toBe(false);
   });
 
-  it("gates opt-in synthesis on its exact strict role and worker", () => {
-    const enabled = { synthesisEnabled: true } as const;
-    expect(derive({ settings: enabled })).toMatchObject({
+  it("ties background maintenance to automatic learning, its strict role and the worker", () => {
+    // `synthesisAvailable` keeps its name for one release and reports maintenance.
+    expect(derive()).toMatchObject({
       administratorSetupRequired: false,
       synthesisAvailable: true
     });
-    expect(derive({
-      omitted: ["MEMORY_SYNTHESIZE"],
-      settings: enabled
-    })).toMatchObject({
+    expect(derive({ omitted: ["MEMORY_SYNTHESIZE"] })).toMatchObject({
+      administratorSetupRequired: true,
+      automaticLearningAvailable: true,
+      synthesisAvailable: false
+    });
+    expect(derive({ operations: { workerAvailable: false } })).toMatchObject({
       administratorSetupRequired: true,
       synthesisAvailable: false
     });
     expect(derive({
-      operations: { workerAvailable: false },
-      settings: enabled
+      omitted: ["MEMORY_SYNTHESIZE"],
+      settings: { learnAutomatically: false }
     })).toMatchObject({
-      administratorSetupRequired: true,
+      administratorSetupRequired: false,
+      synthesisAvailable: false
+    });
+    expect(derive({
+      omitted: ["MEMORY_SYNTHESIZE"],
+      settings: { useMemoryFacts: false }
+    })).toMatchObject({
+      administratorSetupRequired: false,
       synthesisAvailable: false
     });
     expect(derive({ settings: {
-      ...enabled,
       acceptedUtilityEgressAt: null,
       acceptedUtilityEgressFingerprint: null,
       acceptedUtilityPolicyVersion: null
@@ -309,7 +313,7 @@ describe("Memory capability projection", () => {
       { acceptedUtilityEgressAt: null, acceptedUtilityEgressFingerprint: null, acceptedUtilityPolicyVersion: null },
       { acceptedUtilityEgressAt: NOW, acceptedUtilityEgressFingerprint: "old".repeat(22), acceptedUtilityPolicyVersion: "retired-policy" }
     ]) {
-      expect(derive({ settings: { ...accepted, synthesisEnabled: true } })).toMatchObject({
+      expect(derive({ settings: accepted })).toMatchObject({
         administratorSetupRequired: false, automaticLearningAvailable: true,
         naturalLanguageActionsAvailable: true, synthesisAvailable: true, retrievalAvailable: true
       });

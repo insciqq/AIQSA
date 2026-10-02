@@ -40,7 +40,6 @@ export const MEMORY_COUNTER_MUTATIONS = [
   "ASSISTANT_ACCESS_CHANGE",
   "SCOPE_TARGET_DELETE",
   "FACT_SAFETY_RECLASSIFICATION",
-  "SYNTHESIS_PATTERN_CHANGE",
   "MEMORY_VISIBLE_SETTING_CHANGE",
   "MEMORY_MASTER_PAUSE",
   "MEMORY_UI_LOCALE_CHANGE",
@@ -128,13 +127,6 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       sourceRevision: false
     }),
     FACT_SAFETY_RECLASSIFICATION: Object.freeze({
-      branchGeneration: false,
-      check: "VERSION_CURRENT_POINTER",
-      memoryGeneration: false,
-      memoryRevision: true,
-      sourceRevision: false
-    }),
-    SYNTHESIS_PATTERN_CHANGE: Object.freeze({
       branchGeneration: false,
       check: "VERSION_CURRENT_POINTER",
       memoryGeneration: false,

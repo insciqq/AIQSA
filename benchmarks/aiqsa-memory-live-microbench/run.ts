@@ -17,8 +17,6 @@ import { createAuthSession } from "../../lib/server/auth/requestAuth";
 import { provisionActiveUser } from "../../lib/server/auth/provisioning";
 import { defaultMemoryExecutionAuthority } from
   "../../lib/server/memory/execution/defaultAuthority";
-import { probeMemoryStructuredOutputAuthority } from
-  "../../lib/server/memory/execution/structuredClassifier";
 import { MEMORY_ITEM_EMBEDDING_VERSIONS } from
   "../../lib/server/memory/embedding/contract";
 import { probeCurrentMemoryEmbeddingPin } from
@@ -31,20 +29,6 @@ import { createPrismaMemoryRebuildRepository } from
   "../../lib/server/memory/rebuild/repository";
 import { createMemoryRebuildService } from
   "../../lib/server/memory/rebuild/service";
-import {
-  loadMemorySynthesisSnapshot
-} from "../../lib/server/memory/synthesis/repository";
-import {
-  MEMORY_SYNTHESIS_NEW_CHAT_TRIGGER,
-  MEMORY_SYNTHESIS_QUIET_PERIOD_MS
-} from "../../lib/server/memory/synthesis/policy";
-import {
-  MEMORY_SYNTHESIS_VERSIONS
-} from "../../lib/server/memory/synthesis/provider";
-import {
-  loadMemorySynthesisScheduleStatus,
-  reconcileMemorySynthesisWork
-} from "../../lib/server/memory/synthesis/reconcile";
 import {
   AIQSA_MEMORY_LIVE_MICROBENCH_ACK,
   AIQSA_MEMORY_LIVE_DEFAULT_SYSTEM_MODEL_ID,
@@ -793,79 +777,18 @@ async function waitForSourcePipeline(
   throw new Error("aiqsa_memory_live_source_pipeline_timeout");
 }
 
+// Dream synthesis is retired; its benchmark phase fails closed until it is
+// removed from this scenario.
 async function admitDream(
-  prisma: PrismaClient,
-  userId: string
+  _prisma: PrismaClient,
+  _userId: string
 ): Promise<Readonly<{
   clusterSizes: readonly number[];
   eligibleSourceCount: number;
   reason: string;
   schedulerNow: string;
 }>> {
-  const schedulerNow = new Date(
-    Date.now() + MEMORY_SYNTHESIS_QUIET_PERIOD_MS + 1_000
-  );
-  const [status, snapshot] = await Promise.all([
-    loadMemorySynthesisScheduleStatus(prisma, userId, schedulerNow),
-    loadMemorySynthesisSnapshot(prisma, userId)
-  ]);
-  const clusterSizes = snapshot?.plan?.clusters.map(({ sources }) => sources.length) ?? [];
-  emit("dream_schedule_checked", {
-    changedFacts: status.activity?.changedFactCount ?? 0,
-    clusterSizes,
-    decisionDue: status.decision.due,
-    eligibleSourceCount: status.activity?.eligibleSourceCount ?? 0,
-    newEvidenceChats: status.activity?.newEvidenceChatCount ?? 0,
-    reason: status.decision.reason
-  });
-  if (!status.decision.due || status.decision.reason !== "CHAT_ACTIVITY" ||
-    (status.activity?.newEvidenceChatCount ?? 0) < MEMORY_SYNTHESIS_NEW_CHAT_TRIGGER ||
-    (status.activity?.eligibleSourceCount ?? 0) < 3 ||
-    clusterSizes.every((size) => size < 3)) {
-    const rejection = !status.decision.due
-      ? status.decision.reason
-      : status.decision.reason !== "CHAT_ACTIVITY"
-        ? "unexpected_schedule_reason"
-        : (status.activity?.newEvidenceChatCount ?? 0) <
-            MEMORY_SYNTHESIS_NEW_CHAT_TRIGGER
-          ? "insufficient_evidence_chats"
-          : (status.activity?.eligibleSourceCount ?? 0) < 3
-            ? "insufficient_eligible_sources"
-            : "missing_three_source_cluster";
-    throw new Error(
-      `aiqsa_memory_live_dream_not_due:${rejection}`
-    );
-  }
-  const reconciliation = await reconcileMemorySynthesisWork(
-    prisma,
-    schedulerNow,
-    async (ownerId) => {
-      if (ownerId !== userId) return false;
-      await probeMemoryStructuredOutputAuthority({
-        authority: defaultMemoryExecutionAuthority,
-        client: prisma,
-        role: "MEMORY_SYNTHESIZE",
-        userId: ownerId,
-        versions: MEMORY_SYNTHESIS_VERSIONS
-      });
-      return true;
-    }
-  );
-  if (reconciliation.scheduled !== 1) {
-    throw new Error("aiqsa_memory_live_dream_not_scheduled");
-  }
-  emit("dream_scheduled", {
-    clusterSizes,
-    eligibleSourceCount: status.activity?.eligibleSourceCount ?? 0,
-    newEvidenceChats: status.activity?.newEvidenceChatCount ?? 0,
-    reason: status.decision.reason
-  });
-  return Object.freeze({
-    clusterSizes: Object.freeze(clusterSizes),
-    eligibleSourceCount: status.activity?.eligibleSourceCount ?? 0,
-    reason: status.decision.reason,
-    schedulerNow: schedulerNow.toISOString()
-  });
+  throw new Error("aiqsa_memory_live_dream_retired");
 }
 
 async function waitForDream(
@@ -1565,10 +1488,7 @@ async function writeFailureDiagnostic(
   outputDirectory: string,
   error: unknown
 ): Promise<void> {
-  const schedulerNow = new Date(
-    Date.now() + MEMORY_SYNTHESIS_QUIET_PERIOD_MS + 1_000
-  );
-  const [jobs, executions, retrievalAttempts, runBindings, synthesisSchedule] =
+  const [jobs, executions, retrievalAttempts, runBindings] =
     await Promise.all([
       prisma.memoryJob.findMany({
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -1595,9 +1515,7 @@ async function writeFailureDiagnostic(
         orderBy: { createdAt: "asc" },
         select: { degradationCode: true, outcome: true },
         where: { userId }
-      }),
-      loadMemorySynthesisScheduleStatus(prisma, userId, schedulerNow)
-        .catch(() => null)
+      })
     ]);
   await writeJsonAtomic(resolve(outputDirectory, "failure-diagnostic.json"), {
     errorCode: safeCode(error),
@@ -1624,17 +1542,7 @@ async function writeFailureDiagnostic(
       degradationCode: diagnosticCode(binding.degradationCode),
       outcome: binding.outcome
     })),
-    synthesisSchedule: synthesisSchedule === null
-      ? null
-      : {
-          changedFactCount: synthesisSchedule.activity?.changedFactCount ?? 0,
-          decisionDue: synthesisSchedule.decision.due,
-          eligibleSourceCount:
-            synthesisSchedule.activity?.eligibleSourceCount ?? 0,
-          newEvidenceChatCount:
-            synthesisSchedule.activity?.newEvidenceChatCount ?? 0,
-          reason: synthesisSchedule.decision.reason
-        },
+    synthesisSchedule: null,
     version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION
   });
   emit("failure_diagnostic_written", { artifact: "failure-diagnostic.json" });

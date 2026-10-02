@@ -465,10 +465,6 @@ const TEMPORARY_PREPARING_SETTINGS: PreparingSettingsRow = Object.freeze({
   schemaVersion: 2,
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
   settingsRevision: 0,
-  synthesisEnabled: false,
-  synthesisEnabledAt: null,
-  synthesisPolicyVersion: null,
-  lastSynthesisAt: null,
   useMemoryFacts: false,
   userId: "temporary"
 });
@@ -513,10 +509,6 @@ async function loadPreparingSettings(
       referenceChatHistory: true,
       sensitiveAutomaticPolicy: true,
       settingsRevision: true,
-      synthesisEnabled: true,
-      synthesisEnabledAt: true,
-      synthesisPolicyVersion: true,
-      lastSynthesisAt: true,
       useMemoryFacts: true,
       userId: true
     },

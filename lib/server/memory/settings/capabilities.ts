@@ -71,15 +71,14 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
   const controlAvailable = strictRoleAvailable("MEMORY_CONTROL");
   const extractionAvailable = strictRoleAvailable("MEMORY_FACT_EXTRACT");
   const consolidationAvailable = strictRoleAvailable("MEMORY_CONSOLIDATE");
-  const synthesisTargetAvailable = strictRoleAvailable("MEMORY_SYNTHESIZE");
+  // Background maintenance reviews automatic facts with the MEMORY_SYNTHESIZE
+  // role and runs whenever automatic learning does; it has no own switch.
+  const maintenanceAvailable = input.settings.learnAutomatically &&
+    strictRoleAvailable("MEMORY_SYNTHESIZE") && input.operations.workerAvailable;
   const masterOn = input.settings.useMemoryFacts;
   const managementAvailable = true;
-  const administratorSetupRequired = masterOn && !(
-    (!input.settings.learnAutomatically ||
-      extractionAvailable && consolidationAvailable) &&
-    (!input.settings.synthesisEnabled ||
-      synthesisTargetAvailable && input.operations.workerAvailable)
-  );
+  const administratorSetupRequired = masterOn && input.settings.learnAutomatically &&
+    !(extractionAvailable && consolidationAvailable && maintenanceAvailable);
   const naturalLanguageActionsAvailable = masterOn && controlAvailable;
   // Query embeddings and reranking are optional accelerators. The local
   // planner plus the active lexical generation remain a complete read path.
@@ -90,8 +89,8 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
     input.operations.workerAvailable;
   const pastChatIndexingAvailable = masterOn && input.settings.referenceChatHistory &&
     input.operations.retrievalIndexAvailable && input.operations.workerAvailable;
-  const synthesisAvailable = masterOn && input.settings.synthesisEnabled &&
-    synthesisTargetAvailable && input.operations.workerAvailable;
+  // The name is retained for one release; it reports maintenance availability.
+  const synthesisAvailable = masterOn && maintenanceAvailable;
   const decayAvailable = masterOn && input.settings.decayEnabled &&
     input.settings.decayPolicyVersion === MEMORY_DECAY_POLICY_VERSION &&
     retrievalAvailable;

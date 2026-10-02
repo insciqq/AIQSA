@@ -251,6 +251,16 @@ export function decodeMemoryScopeSelection(
   return decode(memoryScopeSelectionSchema, value);
 }
 
+/** Settings a patch can change. */
+export const MEMORY_SETTINGS_PATCH_KEYS = [
+  "decayEnabled",
+  "embeddingDeploymentId",
+  "learnAutomatically",
+  "referenceChatHistory",
+  "sensitiveAutomaticPolicy",
+  "useMemoryFacts"
+] as const;
+
 const memorySettingsPatchSchema = z.strictObject({
   decayEnabled: z.boolean().optional(),
   embeddingDeploymentId: idSchema.nullable().optional(),
@@ -259,18 +269,12 @@ const memorySettingsPatchSchema = z.strictObject({
   learnAutomatically: z.boolean().optional(),
   referenceChatHistory: z.boolean().optional(),
   sensitiveAutomaticPolicy: z.literal("EXPLICIT_ONLY").optional(),
+  // Retired Dream toggle: still accepted from stale tabs for one release and
+  // ignored by the server; a patch carrying only this key is a no-op.
   synthesisEnabled: z.boolean().optional(),
   useMemoryFacts: z.boolean().optional()
 }).superRefine((value, context) => {
-  const mutationKeys = [
-    "decayEnabled",
-    "embeddingDeploymentId",
-    "learnAutomatically",
-    "referenceChatHistory",
-    "sensitiveAutomaticPolicy",
-    "synthesisEnabled",
-    "useMemoryFacts"
-  ] as const;
+  const mutationKeys = [...MEMORY_SETTINGS_PATCH_KEYS, "synthesisEnabled"] as const;
   const changed = mutationKeys.filter((key) => Object.hasOwn(value, key));
   if (changed.length === 0) {
     context.addIssue({ code: "custom", message: "empty settings patch" });
@@ -552,6 +556,8 @@ const memorySettingsResponseSchema = z.strictObject({
     permanentChatDeletion: z.boolean(),
     pastChatIndexingAvailable: z.boolean(),
     retrievalAvailable: z.boolean(),
+    // Name retained for one release so stale tabs keep decoding; it now means
+    // that background maintenance is available.
     synthesisAvailable: z.boolean(),
     temporaryChats: z.boolean()
   }),
@@ -573,7 +579,8 @@ const memorySettingsResponseSchema = z.strictObject({
     referenceChatHistory: z.boolean(),
     sensitiveAutomaticPolicy: z.literal("EXPLICIT_ONLY"),
     settingsRevision: safeInteger,
-    synthesisEnabled: z.boolean(),
+    // Dream synthesis is retired: always false, kept one release for stale tabs.
+    synthesisEnabled: z.literal(false),
     updatedAt: isoTimestampSchema,
     useMemoryFacts: z.boolean()
   })

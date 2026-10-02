@@ -39,7 +39,8 @@ describe("default Memory coordinator composition", () => {
       historyAutoHeal: step("history-heal"),
       reclassification: step("reclassification"),
       relations: step("relations"),
-      synthesis: step("synthesis")
+      maintenance: step("maintenance"),
+      retiredSynthesis: step("retired-synthesis")
     });
 
     expect(maximumActive).toBe(1);
@@ -56,8 +57,10 @@ describe("default Memory coordinator composition", () => {
       "reclassification:end",
       "relations:start",
       "relations:end",
-      "synthesis:start",
-      "synthesis:end"
+      "maintenance:start",
+      "maintenance:end",
+      "retired-synthesis:start",
+      "retired-synthesis:end"
     ]);
   });
 });
