@@ -126,4 +126,11 @@ describe("MCP call display", () => {
     const details = projectMcpCallDetails(row({ state: "error", result: execution }));
     expect(details.response?.text).toContain("tool_call_failed"); expect(details.response?.text).not.toContain("PRIVATE");
   });
+  it.each(["mcp_tool_disabled", "mcp_tool_definition_changed"])("shows the %s dispatch refusal with its own message", (code) => {
+    const refused = { ...row().result as object, status: "error", rawPreview: { finalProviderResponsePreview: { error: "PRIVATE prose" } },
+      content: [{ type: "text", text: JSON.stringify({ ok: false, error: { code, message: "PRIVATE prose" } }) }] };
+    const shown = JSON.parse(projectMcpCallDetails(row({ state: "error", result: refused })).response!.text);
+    expect(shown).toEqual({ error: { code, message: expect.stringMatching(/MCP tool/u) } });
+    expect(JSON.stringify(shown)).not.toContain("PRIVATE");
+  });
 });

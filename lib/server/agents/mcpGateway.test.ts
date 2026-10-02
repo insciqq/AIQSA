@@ -3,6 +3,7 @@ import { syntheticImagePlan } from "@/tests/support/imagePlan";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as hub from "../mcp/hubService";
+import { mcpDispatchError } from "../mcp/dispatchStatus";
 import * as defaultRuntime from "../mcp/defaultRuntime";
 import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { McpSemanticRouterError } from "../mcp/router";
@@ -218,6 +219,32 @@ describe("Agent MCP discovery surface", () => {
         fields: expect.objectContaining({ code: value.code, stage: kind === "execution_outcome_unknown" ? "result" : "admission" }) });
       expect(JSON.stringify(logs)).not.toContain("PRIVATE_ARGUMENT");
     });
+
+  it("reports a runtime refusal of a changed definition as unsent although dispatch had begun", async () => {
+    const version = "a".repeat(64), toolId = "arbitrary_delta";
+    const dispatch = vi.fn(async ({ onDispatch }: { onDispatch(): void }) => {
+      onDispatch();
+      throw new hub.McpHubServiceError("tool_definition_changed", { cause: mcpDispatchError("mcp_tool_definition_changed") });
+    });
+    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ prepareToolCall: vi.fn(async () => ({})),
+      dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
+    const settleTool = vi.fn(async () => {});
+    const store = { mcpTools: async () => [{ toolId, version }], toolCall: async () => "attempt",
+      settleTool } as unknown as ReturnType<typeof createAgentRunStore>;
+    const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "auto" },
+      searchPlan: { options: [] } } as unknown as NormalizedRunRequest, store, runId: "run", userId: "user", incarnation: "incarnation",
+      signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+    const result = await rpcResult(await handler(new Request("http://agent.invalid/mcp", { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "call_tool",
+        arguments: { tool_id: toolId, tool_version: version, arguments: {} } } }) })));
+
+    const value = JSON.parse(codexModelOutput(result).body);
+    expect(value).toMatchObject({ code: "tool_definition_changed", dispatched: false, recovery: "find_tools" });
+    expect(value.message).toContain("No external tool call was sent");
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(settleTool).toHaveBeenCalledWith("attempt", "error", { code: "tool_definition_changed" });
+  });
 
   it("refuses a Load-all personal tool its owner switched off before any dispatch and calls it once on again", async () => {
     const personal = personalMcpFixture({ toolNames: ["read", "write"], userId: "user" });

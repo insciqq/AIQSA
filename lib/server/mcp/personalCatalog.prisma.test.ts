@@ -82,8 +82,8 @@ async function connectedPersonalServer(endpoint: MutableMcpEndpoint) {
     .find((server) => server.id === serverId)?.availableTools?.map((entry) => entry.name);
   /**
    * Every dispatch site rebuilds this plan; without names it is Load all for
-   * the server. A list_changed refresh briefly marks the generation starting,
-   * so only that transient state is waited out.
+   * the server. A refresh keeps the generation ready; only a transient start
+   * or restart is waited out.
    */
   const plan = (namespacedNames?: readonly string[]) => vi.waitFor(async () => {
     const result = await prepareMcpRunPlan({
@@ -136,7 +136,9 @@ describe("personal MCP live catalog on a changing peer", () => {
       expect(await fixture.settingsNames()).toEqual(["added", "read", "write"]);
       const added = await fixture.plan(await fixture.autoTools(["added"]));
       expect(added).toMatchObject({ ok: true, bindings: [{ runtimeGenerationId: generationId }] });
-      await expect(fixture.runtime.callTool({ arguments: {}, generationId, inputSchema: { type: "object" }, name: "added" }))
+      if (!added.ok) throw new Error(added.code);
+      await expect(fixture.runtime.callTool({ arguments: {}, definitionHash: added.snapshot.tools[0]!.definitionHash,
+        generationId, inputSchema: { type: "object" }, name: "added" }))
         .resolves.toMatchObject({ isError: false });
       expect(endpoint.calls("added")).toBe(1);
 
@@ -182,7 +184,7 @@ describe("personal MCP live catalog on a changing peer", () => {
       await fixture.runtime.ensureUserServersReady(fixture.ownerId, [fixture.serverId]);
       expect((await fixture.preference()).desiredRuntimeGenerationId).toBe(generationId);
       expect(await fixture.catalogNames()).toEqual(["read"]);
-      await expect(fixture.plan(write)).resolves.toMatchObject({ ok: false, issues: [{ errorCode: "mcp_tool_not_available" }] });
+      await expect(fixture.plan(write)).resolves.toMatchObject({ ok: false, issues: [{ errorCode: "mcp_tool_disabled" }] });
       await expect(fixture.plan()).resolves.toMatchObject({ ok: true, snapshot: { tools: [{ originalName: "read" }] } });
 
       await expect(fixture.switchTool("write", true)).resolves.toMatchObject({ kind: "ok", value: { userDisabledToolNames: [] } });
