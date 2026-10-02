@@ -146,15 +146,13 @@ describe("persisted independent System Model roles", () => {
       expect((await roles.resolve("knowledgeRelevance")).ok).toBe(true);
       expect((await roles.resolve("memoryRelevance")).ok).toBe(true);
       expect((await roles.resolve("skillSuggestions")).ok).toBe(true);
-      expect((await roles.resolve("toolDiscovery")).ok).toBe(true);
       let current = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       await service.update({ userId: adminId, expectedVersion: current.version,
-        decisionFeatures: { knowledgeRelevance: false, skillSuggestions: false, toolDiscovery: false } });
+        decisionFeatures: { knowledgeRelevance: false, skillSuggestions: false } });
       current = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       expect(await service.adoptDecisionModel({ userId: adminId, expectedVersion: current.version, providerModelId: id })).toBe(false);
       expect(await roles.resolve("knowledgeRelevance")).toMatchObject({ ok: false, code: "decision_feature_disabled" });
       expect(await roles.resolve("skillSuggestions")).toMatchObject({ ok: false, code: "decision_feature_disabled" });
-      expect(await roles.resolve("toolDiscovery")).toMatchObject({ ok: false, code: "decision_feature_disabled" });
       expect((await roles.resolve("memoryRelevance")).ok).toBe(true);
       expect((await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).providerModelId)
         .toBe(before.providerModelId);

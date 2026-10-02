@@ -2,33 +2,39 @@ import { describe, expect, it } from "vitest";
 import {
   decodeCancelModelRunResponse,
   decodeRunOutcomeResponse,
-  canRetryMcpAutoDiscoveryFailure,
+  isMcpAutoDiscoveryFailureCode,
+  MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
+  MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE,
   mcpAutoDiscoveryFailure,
   mcpAutoDiscoveryFailureForMessage
 } from "./runs";
 
-describe("safe MCP routing failures", () => {
-  it.each(["mcp_router_gemini_invalid_request", "mcp_router_gemini_parameter_unknown", "mcp_router_request_rejected"])(
-    "retains the fixed request rejection and recovery policy on reload: %s", (reason) => {
-      const failure = mcpAutoDiscoveryFailure(reason);
-      expect(failure.code).toBe("mcp_auto_discovery_request_rejected");
-      expect(failure.message).toContain("System Model");
-      expect(failure.message).toContain("Gemini HTTP 400");
-      expect(failure.message).toContain("Load all to bypass automatic selection");
-      expect(mcpAutoDiscoveryFailureForMessage(failure.message)).toEqual(failure);
-      expect(canRetryMcpAutoDiscoveryFailure(failure.code)).toBe(false);
-      expect(mcpAutoDiscoveryFailureForMessage(`${failure.message} PRIVATE_BODY`)).toBeNull();
-    }
-  );
-
-  it("keeps transient System Model errors distinct from MCP materialization without retaining unknown data", () => {
-    const transient = mcpAutoDiscoveryFailure("mcp_router_request_failed");
+describe("safe MCP Auto discovery failures", () => {
+  it("keeps the materialization cause and maps everything else to the generic failure", () => {
     const materialization = mcpAutoDiscoveryFailure("mcp_materialization_mcp_not_ready");
-    expect(transient.message).toContain("System Model");
-    expect(canRetryMcpAutoDiscoveryFailure(transient.code)).toBe(true);
+    expect(materialization).toEqual(mcpAutoDiscoveryFailure("mcp_materialization_failed"));
     expect(materialization.message).toContain("activate the selected MCP tools");
-    expect(materialization.code).not.toEqual(transient.code);
+    expect(materialization.message).toContain("Load all");
+    expect(mcpAutoDiscoveryFailureForMessage(materialization.message)).toEqual(materialization);
+    expect(mcpAutoDiscoveryFailure("mcp_discovery_limit_invalid")).toEqual({
+      code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE });
     expect(JSON.stringify(mcpAutoDiscoveryFailure("PRIVATE_PROVIDER_CODE"))).not.toContain("PRIVATE");
+    expect(mcpAutoDiscoveryFailureForMessage(`${materialization.message} PRIVATE_BODY`)).toBeNull();
+    expect(mcpAutoDiscoveryFailureForMessage(null)).toBeNull();
+  });
+
+  it("renders stored codes and copy of the retired System Model selector as the generic failure", () => {
+    for (const code of ["mcp_auto_discovery_request_rejected", "mcp_auto_discovery_timeout", "mcp_auto_discovery_model_unavailable"]) {
+      expect(isMcpAutoDiscoveryFailureCode(code)).toBe(true);
+    }
+    expect(isMcpAutoDiscoveryFailureCode("mcp_auto_discovery_unknown_future")).toBe(false);
+    for (const stored of [
+      "The System Model rejected automatic tool selection (Gemini HTTP 400: invalid_request). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.",
+      "Automatic tool discovery exceeded its time limit. Retry in Auto or use Load all."
+    ]) {
+      expect(mcpAutoDiscoveryFailureForMessage(stored)).toEqual({
+        code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE });
+    }
   });
 });
 

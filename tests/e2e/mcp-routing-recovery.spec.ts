@@ -12,13 +12,14 @@ const chatId = "synthetic-mcp-routing-chat";
 const runId = "synthetic-mcp-routing-run";
 const timestamp = "2026-09-10T10:00:00.000Z";
 const question = "Find tools for reading the requested items.";
-const failure = mcpAutoDiscoveryFailure("mcp_router_gemini_invalid_request");
+// Search is local; activating a selected MCP server is the remaining discovery failure cause.
+const failure = mcpAutoDiscoveryFailure("mcp_materialization_mcp_not_ready");
 
 for (const viewport of [
   { width: 1440, height: 900, theme: "dark" },
   { width: 390, height: 600, theme: "light" }
 ] as const) {
-  test(`System Model rejection keeps one actionable error and requires explicit Load all at ${viewport.width}px`, async ({ page, context }, testInfo) => {
+  test(`MCP activation failure keeps one actionable error and requires explicit Load all at ${viewport.width}px`, async ({ page, context }, testInfo) => {
     test.setTimeout(90_000);
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.emulateMedia({ colorScheme: viewport.theme });
@@ -84,7 +85,8 @@ for (const viewport of [
       const card = answer.getByRole("region", { name: "Automatic tool discovery is unavailable" });
       await expect(card).toHaveCount(1);
       await expect(card.getByText(failure.message, { exact: true })).toBeVisible();
-      await expect(card.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+      // Retry stays in Auto; switching to Load all is a separate explicit choice.
+      await expect(card.getByRole("button", { name: "Retry", exact: true })).toHaveCount(1);
       await expect(card.getByRole("button", { name: "Regenerate", exact: true })).toHaveCount(0);
       const loadAll = card.getByRole("button", { name: "Use Load all" });
       await expect(loadAll).toBeEnabled();
@@ -99,7 +101,7 @@ for (const viewport of [
     await expect(page.getByTestId("app-shell")).toBeVisible();
     const loadAll = await assertRecovery();
     await stream.waitForRequestCount(page, 0);
-    await page.screenshot({ path: testInfo.outputPath("mcp-routing-rejection.png") });
+    await page.screenshot({ path: testInfo.outputPath("mcp-activation-failure.png") });
     if (viewport.width < 500) {
       await loadAll.tap();
     } else {

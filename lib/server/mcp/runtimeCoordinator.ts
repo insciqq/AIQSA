@@ -363,6 +363,10 @@ export class McpRuntimeCoordinator {
   #pendingAll = false;
   readonly #pendingUsers = new Set<string>();
   #runPromise: Promise<void> | null = null;
+  /** The housekeeping drain now running, and the single follow-up queued behind it. */
+  #drainActive: Promise<void> | null = null;
+  #drainQueued: Promise<void> | null = null;
+  #stopped = false;
   #timer: ReturnType<typeof setInterval> | null = null;
   #healthTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -454,6 +458,7 @@ export class McpRuntimeCoordinator {
 
   start(): void {
     if (this.#timer) return;
+    this.#stopped = false;
     this.#timer = runInBackground(() => setInterval(() => this.kick(), this.#intervalMs));
     this.#timer.unref?.();
     this.#scheduleHealthCheck();
@@ -461,11 +466,15 @@ export class McpRuntimeCoordinator {
   }
 
   async stop(): Promise<void> {
+    // A queued housekeeping drain no longer starts; one already running
+    // finishes before the sessions it could touch are closed.
+    this.#stopped = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
     if (this.#healthTimer) clearTimeout(this.#healthTimer);
     this.#healthTimer = null;
     await this.#runPromise?.catch(() => undefined);
+    await (this.#drainQueued ?? this.#drainActive);
     await Promise.allSettled([...this.#starts.values()].map((runtime) => runtime.promise));
     const sessions = [...this.#live.entries()].map(([generationId, runtime]) => ({ generationId, session: runtime.session }));
     this.#live.clear();
@@ -512,7 +521,9 @@ export class McpRuntimeCoordinator {
     signal?.throwIfAborted();
     await this.#reconcileLaunches(launches, signal);
     signal?.throwIfAborted();
-    await this.#drainUnused();
+    // Housekeeping can wait on another user's local runtime start; the
+    // caller's own launches are already reconciled.
+    void this.#requestDrain();
   }
 
   /**
@@ -532,7 +543,9 @@ export class McpRuntimeCoordinator {
     signal?.throwIfAborted();
     await this.#reconcileLaunches(launches, signal);
     signal?.throwIfAborted();
-    await this.#drainUnused();
+    // Housekeeping can wait on another user's local runtime start; the
+    // caller's own launches are already reconciled.
+    void this.#requestDrain();
   }
 
   async callTool(input: {
@@ -801,7 +814,7 @@ export class McpRuntimeCoordinator {
     // a member-scoped kick never touches them.
     const shared = userId ? [] : await this.#repository.synchronizeShared({ now });
     await this.#reconcileLaunches([...personal, ...shared]);
-    await this.#drainUnused();
+    await this.#requestDrain();
     for (const generationId of this.#live.keys()) this.operationalStatus(generationId);
   }
 
@@ -1085,6 +1098,36 @@ export class McpRuntimeCoordinator {
       });
       return false;
     }
+  }
+
+  /**
+   * Runs housekeeping at most once at a time. A request while a drain runs
+   * shares one follow-up drain that starts after it, so no request is lost.
+   * The returned promise settles when a drain started after this request
+   * finishes and never rejects: failures are reported here.
+   */
+  #requestDrain(): Promise<void> {
+    if (this.#stopped) return Promise.resolve();
+    if (this.#drainQueued) return this.#drainQueued;
+    if (!this.#drainActive) return this.#startDrain();
+    const queued = this.#drainActive.then(() => {
+      this.#drainQueued = null;
+      return this.#stopped ? undefined : this.#startDrain();
+    });
+    this.#drainQueued = queued;
+    return queued;
+  }
+
+  #startDrain(): Promise<void> {
+    const run: Promise<void> = Promise.resolve().then(() => this.#drainUnused()).then(
+      () => reportSubsystemHealthy("mcp", "drain"),
+      (error: unknown) => reportSubsystemFailure({ subsystem: "mcp", stage: "drain", code: observedFailure(error).code,
+        prisma_code: databaseFailureCode(error), action: "retry" })
+    ).finally(() => {
+      if (this.#drainActive === run) this.#drainActive = null;
+    });
+    this.#drainActive = run;
+    return run;
   }
 
   #drainUnused(): Promise<void> {

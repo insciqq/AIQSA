@@ -2,11 +2,7 @@ import { logEvent, type LifecycleStage } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
-import {
-  MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS,
-  isMcpAutoDiscoveryOutputTokens,
-  MCP_RUN_PLAN_LIMITS
-} from "../../../contracts/mcp";
+import { MCP_RUN_PLAN_LIMITS } from "../../../contracts/mcp";
 import { isToolObservationPolicy, type ToolObservationPolicy } from "../../../contracts/toolObservationPolicy";
 import {
   AdminModelPolicyServiceError,
@@ -68,10 +64,7 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
-      const limitKeys = [
-        "maxToolCalls", "maxToolRounds", "maxMcpToolsPerDiscovery", "mcpAutoDiscoveryTimeoutSeconds",
-        "mcpAutoDiscoveryMaxOutputTokens"
-      ] as const;
+      const limitKeys = ["maxToolCalls", "maxToolRounds", "maxMcpToolsPerDiscovery"] as const;
       const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "toolObservationPolicy", ...limitKeys];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 &&
@@ -88,10 +81,6 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
           !textOrNull(value.providerModelId, 256) || !textOrNull(value.reasoningEffort, 32) ||
           value.providerModelId === null && value.reasoningEffort !== null) ||
         presentLimits.length > 0 && (presentLimits.length !== limitKeys.length ||
-          value.mcpAutoDiscoveryMaxOutputTokens !== null && !isMcpAutoDiscoveryOutputTokens(value.mcpAutoDiscoveryMaxOutputTokens) ||
-          value.mcpAutoDiscoveryTimeoutSeconds !== null && (!Number.isSafeInteger(value.mcpAutoDiscoveryTimeoutSeconds) ||
-          Number(value.mcpAutoDiscoveryTimeoutSeconds) < MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
-          Number(value.mcpAutoDiscoveryTimeoutSeconds) > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds) ||
           !Number.isSafeInteger(value.maxMcpToolsPerDiscovery) ||
           Number(value.maxMcpToolsPerDiscovery) < 1 ||
           Number(value.maxMcpToolsPerDiscovery) > MCP_RUN_PLAN_LIMITS.maxTools ||
@@ -109,9 +98,7 @@ export function createAdminModelPolicyHandlers(input: Readonly<{
           ...(presentLimits.length > 0 ? {
             maxMcpToolsPerDiscovery: Number(value.maxMcpToolsPerDiscovery),
             maxToolCalls: Number(value.maxToolCalls),
-            maxToolRounds: Number(value.maxToolRounds),
-            mcpAutoDiscoveryTimeoutSeconds: value.mcpAutoDiscoveryTimeoutSeconds === null ? null : Number(value.mcpAutoDiscoveryTimeoutSeconds),
-            mcpAutoDiscoveryMaxOutputTokens: value.mcpAutoDiscoveryMaxOutputTokens === null ? null : Number(value.mcpAutoDiscoveryMaxOutputTokens)
+            maxToolRounds: Number(value.maxToolRounds)
           } : {}),
           ...(hasObservationPolicy ? { toolObservationPolicy: value.toolObservationPolicy as ToolObservationPolicy } : {}),
           userId: auth.session.userId

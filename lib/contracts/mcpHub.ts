@@ -30,9 +30,19 @@ export type McpHubToolDescriptor = Readonly<{
   tool_version: string;
 }>;
 
+/** One server of the connected tool index; every value is untrusted display data. */
+export type McpHubToolIndexEntry = Readonly<{
+  description?: string;
+  name: string;
+  tool_count?: number;
+  tools?: readonly string[];
+}>;
+
 export type McpHubDiscoveryResult = Readonly<{
   incomplete: boolean;
   message: string;
   schema_version: 1;
+  /** Present only when no tool matched: the caller's current authorized index. */
+  tool_index?: readonly McpHubToolIndexEntry[];
   tools: readonly McpHubToolDescriptor[];
 }>;

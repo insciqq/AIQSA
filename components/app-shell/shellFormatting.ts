@@ -95,8 +95,9 @@ export function humanizeErrorCode(code: string): string {
       "Turn off streaming or background mode to use MCP with this model",
     mcp_auto_discovery_unavailable:
       "Automatic tool discovery is unavailable. Retry in Auto or use Load all",
+    // Retired System Model selector code; stored failures render the generic copy.
     mcp_auto_discovery_request_rejected:
-      "The System Model rejected automatic tool selection. Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection",
+      "Automatic tool discovery is unavailable. Retry in Auto or use Load all",
     mcp_not_ready:
       "An enabled MCP server or tool is no longer ready. Review MCP settings and try again",
     mcp_tool_access_denied:
