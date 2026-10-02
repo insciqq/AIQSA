@@ -36,7 +36,7 @@ function sleepingRead(client: Pick<PrismaClient, "$transaction">, seconds: numbe
   return withMemoryReadBudget(client, 2_000, (tx) => tx.$queryRaw<Array<{ active: number }>>(
     Prisma.sql`
       /* aiqsa_read_admission_probe */
-      SELECT pg_sleep(${seconds}), (
+      SELECT (SELECT 1 FROM pg_sleep(${seconds}))::integer AS slept, (
         SELECT count(*)::integer FROM pg_stat_activity
         WHERE state = 'active' AND query LIKE '%aiqsa_read_admission_probe%'
       ) AS active
