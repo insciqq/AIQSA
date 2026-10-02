@@ -1,6 +1,6 @@
 import { resolve, sep } from "node:path";
 
-export const AIQSA_MEMORY_LIVE_MICROBENCH_VERSION = 3 as const;
+export const AIQSA_MEMORY_LIVE_MICROBENCH_VERSION = 4 as const;
 export const AIQSA_MEMORY_LIVE_MICROBENCH_ACK =
   "DISPOSABLE_PAID_AIQSA_MEMORY_LIVE" as const;
 export const AIQSA_MEMORY_LIVE_DEFAULT_SYSTEM_MODEL_ID = "gpt-5.6-sol" as const;
@@ -10,7 +10,7 @@ export const AIQSA_MEMORY_LIVE_SYSTEM_MODEL_IDS = Object.freeze([
 ] as const);
 export const AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT = 13 as const;
 export const AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT = 13 as const;
-export const AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT = 3 as const;
+export const AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT = 2 as const;
 
 export type LiveSystemModelId =
   (typeof AIQSA_MEMORY_LIVE_SYSTEM_MODEL_IDS)[number];
@@ -29,10 +29,9 @@ export type LiveSourceChat = Readonly<{
 }>;
 
 export type LiveRecall = Readonly<{
-  id: "dream-routine" | "team-lead" | "tablecloth";
+  id: "team-lead" | "tablecloth";
   prompt: string;
   requiredAnswerGroups: readonly (readonly string[])[];
-  requiresPatternItem: boolean;
 }>;
 
 export type LiveScenario = Readonly<{
@@ -42,30 +41,17 @@ export type LiveScenario = Readonly<{
 }>;
 
 export const liveScenario: LiveScenario = Object.freeze({
-  id: "market-routine-v2",
+  id: "market-routine-v3",
   recalls: Object.freeze([
     Object.freeze({
       id: "tablecloth",
       prompt: "Use Personal Memory if relevant. What color tablecloth did I say I use at my Riverside Market booth?",
-      requiredAnswerGroups: Object.freeze([Object.freeze(["teal"])]),
-      requiresPatternItem: false
+      requiredAnswerGroups: Object.freeze([Object.freeze(["teal"])])
     }),
     Object.freeze({
       id: "team-lead",
       prompt: "Use Personal Memory if relevant. Who did I say is my team lead?",
-      requiredAnswerGroups: Object.freeze([Object.freeze(["rachel"])]),
-      requiresPatternItem: false
-    }),
-    Object.freeze({
-      id: "dream-routine",
-      prompt: "Use Personal Memory, including recurring patterns if relevant. When do I tend to begin preparing for weekend markets, and which three market routines support that?",
-      requiredAnswerGroups: Object.freeze([
-        Object.freeze(["before 7", "before seven", "early morning", "early in the morning", "6:"]),
-        Object.freeze(["riverside"]),
-        Object.freeze(["harbor"]),
-        Object.freeze(["spring"])
-      ]),
-      requiresPatternItem: true
+      requiredAnswerGroups: Object.freeze([Object.freeze(["rachel"])])
     })
   ]),
   sourceChats: Object.freeze([
@@ -190,7 +176,7 @@ export function validateLiveScenario(scenario: LiveScenario): LiveScenario {
     ...scenario.sourceChats.map(({ id }) => id),
     ...scenario.recalls.map(({ id }) => id)
   ];
-  if (scenario.id !== "market-routine-v2" ||
+  if (scenario.id !== "market-routine-v3" ||
     scenario.sourceChats.length !== AIQSA_MEMORY_LIVE_SOURCE_CHAT_COUNT ||
     sourceSendCount !== AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT ||
     scenario.recalls.length !== AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT ||
