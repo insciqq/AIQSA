@@ -6105,7 +6105,7 @@ model MemoryMaintenanceSuppression {
   createdAt                DateTime @default(now())
 
   @@unique([userId, id])
-  @@unique([userId, sourceMessageId, sourceMessageContentHash, sourceStartOffset, sourceEndOffset], map: "MemoryMaintenanceSuppression_span_key")
+  @@unique([userId, memoryReviewId, sourceMessageId, sourceMessageContentHash, sourceStartOffset, sourceEndOffset], map: "MemoryMaintenanceSuppression_span_key")
   @@index([userId, sourceMessageId])
 }
 
