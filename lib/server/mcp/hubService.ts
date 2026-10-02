@@ -1,14 +1,17 @@
 import type {
   McpHubDiscoveryResult,
-  McpHubToolDescriptor
+  McpHubToolDescriptor,
+  McpHubToolIndexEntry
 } from "@/lib/contracts/mcpHub";
 import { MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
 import { getMcpRequestMaxBytes } from "./responseLimits";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
 import {
+  boundedMcpToolIndex,
   LEGACY_MCP_DISCOVERY_MAX_RESULTS,
   mcpCatalogToolsByNames,
-  mcpFindToolsArguments
+  mcpFindToolsArguments,
+  mcpHubInstructions
 } from "./discovery";
 import { filterMcpCatalog } from "./toolAccessProjection";
 import { MCP_HUB_DISCOVERY_RESPONSE_MAX_BYTES } from "./hubConfiguration";
@@ -16,15 +19,8 @@ import type { McpToolAccessFilter } from "./toolAccess";
 import { McpClientSessionError, validateMcpToolArguments, type AiqsaMcpToolCallResult } from "./clientSession";
 import { isMcpDispatchError } from "./dispatchStatus";
 import { dispatchMcpTool, resolveMcpRunTool, type McpToolRuntimeCall } from "./toolExecutor";
-import { discoverMcpTools, materializeMcpSelection, McpDiscoveryError } from "./discoveryService";
-import type { McpDiscoveryFailure } from "../../contracts/mcpDiscoveryFailure";
+import { discoverMcpTools, materializeMcpSelection } from "./discoveryService";
 import { decodeMcpToolFailure, type McpToolFailure } from "../../contracts/mcpToolFailure";
-import {
-  McpSemanticRouterError,
-  type McpSemanticRouter,
-  type McpRouterAttemptRecorder,
-  type McpRouterUsageAttribution
-} from "./router";
 import type {
   McpCapabilityCatalog,
   McpRunPlanResult,
@@ -46,12 +42,6 @@ export class McpHubServiceError extends Error {
   constructor(readonly code: McpHubServiceErrorCode, options?: ErrorOptions) {
     super(code, options);
     this.name = "McpHubServiceError";
-  }
-
-  get discoveryFailure(): McpDiscoveryFailure | null {
-    if (this.code !== "discovery_unavailable") return null;
-    const cause = this.cause instanceof McpDiscoveryError ? this.cause.cause : this.cause;
-    return cause instanceof McpSemanticRouterError ? cause.diagnostic : null;
   }
 
   get toolFailure(): McpToolFailure | null {
@@ -97,8 +87,6 @@ export type McpHubServiceDependencies = Readonly<{
   ): Promise<McpRunPlanResult>;
   /** Read the current exact definition/authority without starting a runtime. */
   inspect(userId: string, tools: SelectedTools): Promise<McpRunPlanResult>;
-  router: McpSemanticRouter;
-  recordDiscoveryAttempt(authority: McpHubAuthority, role: Parameters<McpRouterAttemptRecorder>[0], maxOutputTokens: number, timeoutMs: number, inputBytes: number): ReturnType<McpRouterAttemptRecorder>;
   recordDispatch(input: Readonly<{
     clientId: string;
     grantId: string;
@@ -118,21 +106,36 @@ type MaterializedTool = Readonly<{
   snapshot: McpRunPlanSnapshot;
 }>;
 
-const MAX_HUB_CONTEXT_CHARACTERS = 8_000;
-
-function discoveryResult(tools: readonly McpHubToolDescriptor[], incomplete: boolean): McpHubDiscoveryResult {
+function discoveryResult(
+  tools: readonly McpHubToolDescriptor[],
+  incomplete: boolean,
+  unknownNames: readonly string[] = [],
+  toolIndex?: readonly McpHubToolIndexEntry[]
+): McpHubDiscoveryResult {
+  // Search bounds the echoed names (count and length).
+  const unknown = unknownNames.length
+    ? ` Unknown names in select (not available): ${JSON.stringify(unknownNames)}.` : "";
+  const indexed = tools.length === 0 && toolIndex?.length ? toolIndex : undefined;
   return {
     incomplete,
-    message: tools.length === 0 ? "No matching enabled MCP tools were found."
+    message: (tools.length === 0
+      ? indexed
+        ? "No matching enabled MCP tools were found. Pick exact names from tool_index with select:<tool name> or select:<server name>/<tool name>, or try other short English keywords (service + action + object)."
+        : "No matching enabled MCP tools were found. Try other short English keywords (service + action + object), or exact tool names with select:name1,name2."
       : incomplete ? "Some matching tools could not be included. Use call_tool with a returned tool_id, tool_version and arguments."
-        : "Use call_tool with a returned tool_id, tool_version and arguments.",
+        : "Use call_tool with a returned tool_id, tool_version and arguments.") + unknown,
     schema_version: 1,
+    ...(indexed ? { tool_index: indexed } : {}),
     tools
   };
 }
 
-function discoveryFits(tools: readonly McpHubToolDescriptor[]): boolean {
-  const value = discoveryResult(tools, true);
+function discoveryFits(
+  tools: readonly McpHubToolDescriptor[],
+  unknownNames: readonly string[],
+  toolIndex?: readonly McpHubToolIndexEntry[]
+): boolean {
+  const value = discoveryResult(tools, true, unknownNames, toolIndex);
   const result = { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
   // Reserve the bounded incoming request's maximum ID plus protocol overhead.
   return Buffer.byteLength(JSON.stringify(result), "utf8") + 129 * 1_024 <= MCP_HUB_DISCOVERY_RESPONSE_MAX_BYTES;
@@ -190,17 +193,21 @@ function mapPreparationFailure(error: unknown): McpHubServiceError {
   return new McpHubServiceError("upstream_unavailable", { cause: error });
 }
 
-export type McpToolAuthority = Readonly<{ userId: string; discoveryOperationKey?: string; assertActive(): Promise<void> }>;
+export type McpToolAuthority = Readonly<{ userId: string; assertActive(): Promise<void> }>;
 
 export type McpToolServiceDependencies<Authority extends McpToolAuthority> =
-  Omit<McpHubServiceDependencies, "recordDispatch" | "recordDiscoveryAttempt"> & Readonly<{
-    recordDiscoveryAttempt(authority: Authority, role: Parameters<McpRouterAttemptRecorder>[0], maxOutputTokens: number, timeoutMs: number, inputBytes: number): ReturnType<McpRouterAttemptRecorder>;
+  Omit<McpHubServiceDependencies, "recordDispatch"> & Readonly<{
     recordDispatch(input: Readonly<{ authority: Authority; toolId: string; toolVersion: string; timeoutMs: number }>):
       ReturnType<McpHubServiceDependencies["recordDispatch"]>;
   }>;
 
-/** Shared discovery/dispatch policy; OAuth Hub and run grants own different lifecycles. */
-export function createMcpToolService<Authority extends McpToolAuthority>(dependencies: McpToolServiceDependencies<Authority>) {
+/** Shared discovery/dispatch policy; OAuth Hub and run grants own different lifecycles.
+ * `emptyResultIndex` adds the authorized tool index to results without matches
+ * for clients that never received it in a system prompt. */
+export function createMcpToolService<Authority extends McpToolAuthority>(
+  dependencies: McpToolServiceDependencies<Authority>,
+  options: Readonly<{ emptyResultIndex?: boolean }> = {}
+) {
   const preparedCalls = new WeakMap<McpHubPreparedToolCall, Authority>();
   const assertActive = async (authority: Authority, signal?: AbortSignal) => {
     if (signal?.aborted) throw new McpHubServiceError("request_cancelled");
@@ -272,19 +279,12 @@ export function createMcpToolService<Authority extends McpToolAuthority>(depende
   return {
     async findTools(input: Readonly<{
       authority: Authority;
-      context?: string;
-      goal: string;
       maxResults?: number;
-      maxOutputTokens?: number | "model" | null;
-      onUsage?(usage: McpRouterUsageAttribution): void;
+      query: string;
       signal?: AbortSignal;
-      timeoutMs?: number;
     }>): Promise<McpHubDiscoveryResult> {
-      const parsed = mcpFindToolsArguments({ goal: input.goal });
-      if (!parsed || (input.context !== undefined &&
-        (typeof input.context !== "string" || input.context.length > MAX_HUB_CONTEXT_CHARACTERS))) {
-        throw new McpHubServiceError("invalid_arguments");
-      }
+      const parsed = mcpFindToolsArguments({ query: input.query });
+      if (!parsed) throw new McpHubServiceError("invalid_arguments");
       const maxResults = input.maxResults ?? LEGACY_MCP_DISCOVERY_MAX_RESULTS;
       if (!Number.isSafeInteger(maxResults) || maxResults < 1 ||
         maxResults > MCP_RUN_PLAN_LIMITS.maxTools) {
@@ -298,20 +298,12 @@ export function createMcpToolService<Authority extends McpToolAuthority>(depende
           catalog: await dependencies.catalog(input.authority.userId),
           filterTools: dependencies.filterTools,
           materialize: dependencies.materialize,
-          onUsage: input.onUsage,
           partial: true,
-          router: dependencies.router,
-          routing: {
-            ...(input.authority.discoveryOperationKey ? { decisionOperationKey: input.authority.discoveryOperationKey } : {}),
+          search: {
             activeToolNames: new Set(),
-            context: input.context ? { messages: [{ role: "user", text: input.context }] } : undefined,
-            goals: [parsed.goal],
             limit: maxResults,
-            maxOutputTokens: input.maxOutputTokens,
-            beforeDispatch: () => assertActive(input.authority, input.signal),
-            recordAttempt: (role, maxOutputTokens, timeoutMs, inputBytes) => dependencies.recordDiscoveryAttempt(input.authority, role, maxOutputTokens, timeoutMs, inputBytes),
-            signal: input.signal,
-            timeoutMs: input.timeoutMs
+            query: parsed.query,
+            signal: input.signal
           },
           userId: input.authority.userId
         });
@@ -337,14 +329,26 @@ export function createMcpToolService<Authority extends McpToolAuthority>(depende
       for (const tool of readyTools) {
         const current = findSelection(currentCatalog, tool.tool_id);
         if (current && selections.some((selected) => selected.namespacedName === tool.tool_id &&
-          selected.revisionId === current.revisionId) && discoveryFits([...tools, tool])) tools.push(tool);
+          selected.revisionId === current.revisionId) && discoveryFits([...tools, tool], discovered.search.unknownNames)) tools.push(tool);
       }
       await assertActive(input.authority, input.signal);
       const incomplete = tools.length !== selections.length;
       if (selections.length > 0 && tools.length === 0) {
         throw new McpHubServiceError("upstream_unavailable");
       }
-      return discoveryResult(tools, incomplete);
+      const unknownNames = discovered.search.unknownNames;
+      const toolIndex = options.emptyResultIndex && tools.length === 0
+        ? boundedMcpToolIndex(currentCatalog, mcpHubInstructions) : null;
+      return discoveryResult(tools, incomplete, unknownNames,
+        toolIndex && discoveryFits(tools, unknownNames, toolIndex) ? toolIndex : undefined);
+    },
+
+    /** The bounded index of the caller's current authorized catalog, or null when it is empty. */
+    async toolIndex(input: Readonly<{ authority: Authority; signal?: AbortSignal }>): Promise<McpHubToolIndexEntry[] | null> {
+      await assertActive(input.authority, input.signal);
+      const catalog = await authorizedCatalog(input.authority.userId);
+      await assertActive(input.authority, input.signal);
+      return boundedMcpToolIndex(catalog, mcpHubInstructions);
     },
 
     async prepareToolCall(input: Readonly<{
@@ -465,5 +469,5 @@ export function createMcpHubService(dependencies: McpHubServiceDependencies) {
       clientId: authority.clientId, grantId: authority.grantId, userId: authority.userId,
       resourcePath: "/mcp/hub", toolId, toolVersion, timeoutMs
     })
-  });
+  }, { emptyResultIndex: true });
 }

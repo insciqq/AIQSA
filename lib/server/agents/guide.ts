@@ -73,7 +73,7 @@ Other clients need Streamable HTTP MCP and browser OAuth support. Add the exact 
 
 ${hubEnabled ? "MCP Hub is enabled on this installation." : "MCP Hub is disabled on this installation. The following workflow applies only after the administrator enables it; do not configure or test it now."}
 
-Call \`find_tools\` with the user's goal. It returns permitted tool descriptions, argument schemas, tool IDs, and versions. Then call \`call_tool\` with a selected tool's ID, version, and arguments. The agent owns the task and final answer; AIQSA supplies tool discovery and execution using the user's existing connections. A known tool can be called directly. Respect each tool's effects and the user's requested scope; authorization is not permission to try arbitrary writes.
+Call \`find_tools\` with a \`query\`: short English keywords naming the service, action and object (for example \`github create issue\`), or \`select:name1,name2\` with exact tool names you already know. The search is local and lexical; if nothing fits, try other words. It returns permitted tool descriptions, argument schemas, tool IDs, and versions. Then call \`call_tool\` with a selected tool's ID, version, and arguments. The agent owns the task and final answer; AIQSA supplies tool discovery and execution using the user's existing connections. A known tool can be called directly. Respect each tool's effects and the user's requested scope; authorization is not permission to try arbitrary writes.
 
 An empty result can mean there are no enabled, permitted tools. Configure those connections in AIQSA Studio → MCP & tools; never substitute an unauthorized integration. Verify a connection with a useful read-only operation appropriate to the user's task.
 

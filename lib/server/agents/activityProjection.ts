@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { mcpDiscoveryFailureMessage } from "../../contracts/mcpDiscoveryFailure";
 import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
 import {
   WORKSPACE_ACTIVITY_MAX_FILE_CHANGES,
@@ -82,7 +81,6 @@ export function createCodexActivityProjection(runId: string, request: ProviderRu
               : request.artifactTool && event.tool === "create_artifact" ? "Create artifact"
                 : request.artifactTool && event.tool === "read_artifact" ? "Read artifact" : null;
             entry = { ...base, kind: "mcp_call",
-              ...(event.discoveryFailure ? { text: mcpDiscoveryFailureMessage(event.discoveryFailure) } : {}),
               ...(event.toolFailure ? { text: mcpToolFailureMessage(event.toolFailure) } : {}),
               mcp: builtin ? { serverName: "AIQSA", toolName: builtin } : descriptor?.origin === "discovery"
               ? { discovery: true, serverName: "Auto tools", toolName: "find_tools" }

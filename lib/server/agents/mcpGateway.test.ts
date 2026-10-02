@@ -6,7 +6,6 @@ import * as hub from "../mcp/hubService";
 import { mcpDispatchError } from "../mcp/dispatchStatus";
 import * as defaultRuntime from "../mcp/defaultRuntime";
 import { personalMcpFixture } from "@/tests/support/personalMcp";
-import { McpSemanticRouterError } from "../mcp/router";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { createAgentRunStore } from "./store";
 import { createAgentMcpGateway } from "./mcpGateway";
@@ -485,11 +484,10 @@ describe("Agent MCP discovery surface", () => {
     }
   });
 
-  it("delivers and persists the exact discovery cause without claiming an unknown business outcome", async () => {
-    const failure = new hub.McpHubServiceError("discovery_unavailable", {
-      cause: new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_unknown_tool", 2)
-    });
-    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ findTools: async () => { throw failure; } } as unknown as ReturnType<typeof hub.createMcpToolService>);
+  it("reports a discovery failure without claiming an unknown business outcome and accepts the legacy goal key", async () => {
+    const failure = new hub.McpHubServiceError("discovery_unavailable", { cause: new Error("PRIVATE_CATALOG_FAILURE") });
+    const findTools = vi.fn(async () => { throw failure; });
+    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ findTools } as unknown as ReturnType<typeof hub.createMcpToolService>);
     const settleTool = vi.fn(async () => {});
     const store = { mcpTools: async () => [], toolCall: async () => "call", settleTool } as unknown as ReturnType<typeof createAgentRunStore>;
     const request = { agent: { mcpMode: "auto" }, searchPlan: { mode: "all_selected", options: [] } } as unknown as NormalizedRunRequest;
@@ -503,10 +501,13 @@ describe("Agent MCP discovery surface", () => {
     const body = JSON.parse(responseText.startsWith("event:") ? responseText.split("\n").find(line => line.startsWith("data: "))!.slice(6) : responseText);
     expect(body.result.isError).toBe(true);
     const value = body.result.structuredContent;
-    expect(value.discoveryFailure).toEqual({ reason: "mcp_router_output_invalid", detail: "mcp_router_unknown_tool", attempt: 2 });
+    expect(findTools).toHaveBeenCalledWith(expect.objectContaining({ query: "Read a record", maxResults: 5 }));
+    expect(value).not.toHaveProperty("discoveryFailure");
     expect(value.message).toContain("No connected tool was called");
     expect(value.message).toContain("does not establish an authorization failure");
-    expect(settleTool).toHaveBeenCalledWith("call", "error", { code: "discovery_unavailable", discoveryFailure: value.discoveryFailure });
+    expect(value.message).toContain("retry find_tools with another query");
+    expect(JSON.stringify(body)).not.toContain("PRIVATE_CATALOG_FAILURE");
+    expect(settleTool).toHaveBeenCalledWith("call", "error", { code: "discovery_unavailable" });
     expect(onFailure).not.toHaveBeenCalled();
   });
 

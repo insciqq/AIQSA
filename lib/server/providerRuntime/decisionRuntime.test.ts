@@ -109,12 +109,12 @@ describe("optional Decisions model role", () => {
     const db = { systemModelPolicy: { findUnique: vi.fn(async () => policy) } };
     const loadRole = vi.fn(async () => { throw new ProviderAdmissionError("model_not_available"); });
     const role = createDecisionModelRoleResolver(db as never, { loadRole });
-    for (const feature of ["memoryRelevance", "knowledgeRelevance", "toolDiscovery", "skillSuggestions"] as const) {
+    for (const feature of ["memoryRelevance", "knowledgeRelevance", "skillSuggestions"] as const) {
       expect(await role.resolve(feature)).toMatchObject({ code: "decision_model_unavailable" });
       policy.decisionFeaturesJson[feature] = false;
       expect(await role.resolve(feature)).toMatchObject({ code: "decision_feature_disabled" });
     }
-    expect(loadRole).toHaveBeenCalledTimes(4);
+    expect(loadRole).toHaveBeenCalledTimes(3);
   });
 
   it.each([null, { decisionProviderModelId: null, decisionFeaturesJson: {}, version: 1 },

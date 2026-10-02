@@ -52,20 +52,6 @@ function activeModel(overrides: Record<string, unknown> = {}) {
 }
 
 describe("administrator model policy service", () => {
-  it.each([null, 32768])("persists Auto or a custom MCP allowance without coercing Auto to zero: %s", async (mcpAutoDiscoveryMaxOutputTokens) => {
-    const update = vi.fn();
-    const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 3 }]), modelPolicy: { update } };
-    const prisma = { $transaction: async (run: (store: typeof tx) => Promise<void>) => run(tx) };
-    await createAdminModelPolicyService(prisma as never).update({
-      expectedVersion: 3, providerModelId: null, reasoningEffort: null,
-      mcpAutoDiscoveryMaxOutputTokens, mcpAutoDiscoveryTimeoutSeconds: 60,
-      maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8, userId: "admin-1"
-    });
-    expect(update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
-      mcpAutoDiscoveryMaxOutputTokens: mcpAutoDiscoveryMaxOutputTokens === null ? null : BigInt(mcpAutoDiscoveryMaxOutputTokens)
-    }) }));
-  });
-
   it.each(["high", "max", null])("saves supported reasoning or Provider default: %s", async (reasoningEffort) => {
     const queryRaw = vi.fn()
       .mockResolvedValueOnce([{ version: 3 }])
@@ -114,6 +100,7 @@ describe("administrator model policy service", () => {
         findUnique: vi.fn().mockResolvedValue({
           defaultProviderModel: unavailableTarget,
           reasoningEffort: null,
+          // Retired storage stays in the row and never reaches the projection.
           mcpAutoDiscoveryTimeoutSeconds: 60n, mcpAutoDiscoveryMaxOutputTokens: 8192n,
           maxMcpToolsPerDiscovery: 10n,
           maxToolCalls: 20n,
@@ -155,7 +142,6 @@ describe("administrator model policy service", () => {
           reasoningEfforts: []
         },
         reasoningEffort: null,
-        mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
         maxMcpToolsPerDiscovery: 10,
         maxToolCalls: 20,
         maxToolRounds: 8,
@@ -267,7 +253,6 @@ describe("administrator model policy service", () => {
 
     await createAdminModelPolicyService(prisma).update({
       expectedVersion: 5,
-      mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 200,
@@ -276,7 +261,6 @@ describe("administrator model policy service", () => {
 
     expect(update).toHaveBeenCalledWith({
       data: {
-        mcpAutoDiscoveryTimeoutSeconds: 60n, mcpAutoDiscoveryMaxOutputTokens: 8192n,
         maxMcpToolsPerDiscovery: 10n,
         maxToolCalls: 200n,
         maxToolRounds: 200n,
@@ -326,7 +310,6 @@ describe("administrator model policy service", () => {
       maxMcpToolsPerDiscovery: 12,
       maxToolCalls: 24,
       maxToolRounds: 8,
-      mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192,
       providerModelId: "model-1",
       reasoningEffort: "high",
       userId: "admin-1"
@@ -340,7 +323,6 @@ describe("administrator model policy service", () => {
         maxMcpToolsPerDiscovery: 12n,
         maxToolCalls: 24n,
         maxToolRounds: 8n,
-        mcpAutoDiscoveryTimeoutSeconds: 20n, mcpAutoDiscoveryMaxOutputTokens: 8192n,
         reasoningEffort: "high",
         updatedByUserId: "admin-1",
         version: { increment: 1 }
