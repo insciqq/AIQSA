@@ -71,6 +71,17 @@ export async function removeLocalMcpLeftovers(
   const localServerIds = [...leftovers.localServerIds];
   const draftServerIds = [...leftovers.localDraftServerIds];
   const otherRevisionIds = [...leftovers.otherLocalRevisionIds];
+  // OAuth clients shared with no other connection go with the servers, as in
+  // ordinary finalization; connections cascade, so collect the clients first.
+  const oauthConnections = localServerIds.length > 0
+    ? await tx.mcpOAuthConnection.findMany({
+      select: { oauthClientId: true },
+      where: { oauthClientId: { not: null }, serverId: { in: localServerIds } }
+    })
+    : [];
+  const oauthClientIds = [...new Set(oauthConnections.flatMap((connection) =>
+    connection.oauthClientId ? [connection.oauthClientId] : []
+  ))];
 
   await tx.projectMcpBinding.deleteMany({ where: { serverId: { in: localServerIds } } });
   // Every generation that would block a revision or OAuth connection removal.
@@ -106,6 +117,9 @@ export async function removeLocalMcpLeftovers(
   // Cascades activation jobs, grants, tool policies, OAuth connections,
   // member preferences and the shared Project runtime.
   await tx.mcpServer.deleteMany({ where: { id: { in: localServerIds } } });
+  if (oauthClientIds.length > 0) {
+    await tx.mcpOAuthClient.deleteMany({ where: { connections: { none: {} }, id: { in: oauthClientIds } } });
+  }
 }
 
 /**

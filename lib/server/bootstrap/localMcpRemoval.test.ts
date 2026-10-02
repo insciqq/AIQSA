@@ -15,6 +15,13 @@ function transaction(leftovers: LocalMcpLeftovers) {
     }),
     $queryRaw: vi.fn(async () => [leftovers]),
     mcpActivationJob: { deleteMany: deleteMany("mcpActivationJob") },
+    mcpOAuthClient: { deleteMany: deleteMany("mcpOAuthClient") },
+    mcpOAuthConnection: {
+      findMany: vi.fn(async (args: unknown) => {
+        calls.push(["mcpOAuthConnection.findMany", args]);
+        return [{ oauthClientId: "client" }, { oauthClientId: "client" }];
+      })
+    },
     mcpRevision: { deleteMany: deleteMany("mcpRevision") },
     mcpRuntimeGeneration: { deleteMany: deleteMany("mcpRuntimeGeneration") },
     mcpServer: { deleteMany: deleteMany("mcpServer") },
@@ -54,6 +61,10 @@ describe("local MCP removal gate", () => {
 
     await expect(applyLocalMcpRemovalGate(tx, { acknowledged: true, refuse })).resolves.toEqual({ removedCount: 3 });
     expect(calls).toEqual([
+      ["mcpOAuthConnection.findMany", {
+        select: { oauthClientId: true },
+        where: { oauthClientId: { not: null }, serverId: { in: ["local"] } }
+      }],
       ["projectMcpBinding", { where: { serverId: { in: ["local"] } } }],
       ["mcpRuntimeGeneration", { where: { OR: [
         { revision: { serverId: { in: ["local"] } } },
@@ -65,7 +76,8 @@ describe("local MCP removal gate", () => {
       ["mcpRevision", { where: { OR: [{ serverId: { in: ["local"] } }, { id: { in: ["revision"] } }] } }],
       ["resetDrafts", [["draft"]]],
       ["mcpActivationJob", { where: { serverId: { in: ["draft"] } } }],
-      ["mcpServer", { where: { id: { in: ["local"] } } }]
+      ["mcpServer", { where: { id: { in: ["local"] } } }],
+      ["mcpOAuthClient", { where: { connections: { none: {} }, id: { in: ["client"] } } }]
     ]);
   });
 
