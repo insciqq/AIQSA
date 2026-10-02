@@ -13,7 +13,6 @@ import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import { loadWorkspaceActivitySnapshot, saveWorkspaceActivitySnapshot, workspaceActivityFingerprint, WORKSPACE_ACTIVITY_RECEIPT } from "./workspaceActivityPersistence";
 import { validNormalizedAgent } from "../agents/config";
 import { decodeAcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
-import { isMcpDiscoveryOutputBudget } from "../../contracts/mcp";
 import {
   Prisma,
   type ModelRunStatus,
@@ -1031,6 +1030,8 @@ function decodeProviderDispatchRecoveryRequest(
     !automaticKnowledgeAnswer &&
       (legacyKnowledgeAnswerContract || currentKnowledgeAnswerContract)) return null;
   const toolBudgets = value.toolBudgets;
+  // The two mcpAutoDiscovery* keys are retired router allowances that older
+  // accepted requests still carry; they decode unchanged and are not used.
   if (toolBudgets !== undefined && (!isRecord(toolBudgets) ||
     !onlyKnownKeys(toolBudgets, new Set([
       "mcpAutoDiscoveryTimeoutSeconds",
@@ -1039,7 +1040,10 @@ function decodeProviderDispatchRecoveryRequest(
       "maxToolCalls",
       "maxToolRounds"
     ])) || toolBudgets.mcpAutoDiscoveryMaxOutputTokens !== undefined &&
-      !isMcpDiscoveryOutputBudget(toolBudgets.mcpAutoDiscoveryMaxOutputTokens) ||
+      toolBudgets.mcpAutoDiscoveryMaxOutputTokens !== "model" &&
+      !(Number.isSafeInteger(toolBudgets.mcpAutoDiscoveryMaxOutputTokens) &&
+        Number(toolBudgets.mcpAutoDiscoveryMaxOutputTokens) >= 1_024 &&
+        Number(toolBudgets.mcpAutoDiscoveryMaxOutputTokens) <= 65_536) ||
     ["maxToolCalls", "maxToolRounds"].some((key) =>
       !Number.isSafeInteger(toolBudgets[key]) || Number(toolBudgets[key]) < 1) ||
     ["mcpAutoDiscoveryTimeoutSeconds", "maxMcpToolsPerDiscovery"].some((key) =>

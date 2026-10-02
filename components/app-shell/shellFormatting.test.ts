@@ -82,7 +82,7 @@ describe("shell error formatting", () => {
       "Automatic tool discovery is unavailable. Retry in Auto or use Load all (mcp_auto_discovery_unavailable)"
     );
     expect(humanizeErrorCode("mcp_auto_discovery_request_rejected")).toBe(
-      "The System Model rejected automatic tool selection. Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection (mcp_auto_discovery_request_rejected)"
+      "Automatic tool discovery is unavailable. Retry in Auto or use Load all (mcp_auto_discovery_request_rejected)"
     );
     expect(humanizeErrorCode("structured_output_not_supported")).toBe(
       "The selected System Model does not have verified structured output (structured_output_not_supported)"

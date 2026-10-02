@@ -29,10 +29,9 @@ import {
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ResolvedEntitlements } from "../auth/entitlements";
 import { McpClientSessionError } from "../mcp/clientSession";
-import { McpSemanticRouterError } from "../mcp/router";
 import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
 import { GeminiInteractionsStreamError } from "../providers/geminiInteractionsStreamError";
-import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanSnapshot } from "../mcp/runPlan";
+import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanResult, type McpRunPlanSnapshot } from "../mcp/runPlan";
 import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import { mcpDispatchError } from "../mcp/dispatchStatus";
@@ -5650,13 +5649,12 @@ describe("run execution", () => {
       message: `No endpoints found that support the provided parameters. ${remotePrivate}`,
       metadata: { failed_routing_step: "parameters", routing_funnel: { raw: remotePrivate } }
     } }, { status: 404 }));
-    const route = vi.fn();
     const materialize = vi.fn();
     const appendMcpDiscoveryEpoch = vi.fn();
     const repository = createRepository();
     const response = await createRunExecutionResponse(executionInput({ prepared,
       adapter: createOpenRouterChatAdapter({ client: createFetchOpenRouterChatClient({ apiKey: "fixture", fetchFn }) }),
-      mcp: { filterTools: allowMcpTools, materialize, prepare: materialize, router: { route } },
+      mcp: { filterTools: allowMcpTools, materialize, prepare: materialize },
       repository: { ...repository.repository, appendMcpDiscoveryEpoch }
     })).text();
     expect(fetchFn).toHaveBeenCalledOnce();
@@ -5670,18 +5668,17 @@ describe("run execution", () => {
     expect(response).toContain("Accepted answer label");
     expect(response + JSON.stringify(repository.failedRuns)).not.toContain(remotePrivate);
     expect(repository.toolCalls.size).toBe(0);
-    expect(route).not.toHaveBeenCalled();
     expect(materialize).not.toHaveBeenCalled();
     expect(appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
     expect(repository.completeRuns).toEqual([]);
   });
 
   it.each([
-    { mode: "single", goals: ["create a Jira issue"], provider: "openai", modelId: "gpt-tool-model" },
-    { mode: "batch", goals: ["a".repeat(400), "create a Jira issue"], provider: "openai", modelId: "gpt-tool-model" },
-    { mode: "OpenRouter DeepSeek", goals: ["create a Jira issue"], provider: "openrouter", modelId: "deepseek/deepseek-v4-pro-0813" },
-    { mode: "OpenRouter Opus batch", goals: ["a".repeat(400), "create a Jira issue"], provider: "openrouter", modelId: "anthropic/claude-opus-5" }
-  ])("discovers and checkpoints MCP schemas for $mode goals", async ({ goals, provider, modelId }) => {
+    { mode: "single", queries: ["create a Jira issue"], provider: "openai", modelId: "gpt-tool-model" },
+    { mode: "batch", queries: ["a".repeat(400), "select:Jira/create_issue"], provider: "openai", modelId: "gpt-tool-model" },
+    { mode: "OpenRouter DeepSeek", queries: ["create a Jira issue"], provider: "openrouter", modelId: "deepseek/deepseek-v4-pro-0813" },
+    { mode: "OpenRouter Opus batch", queries: ["a".repeat(400), "create a Jira issue"], provider: "openrouter", modelId: "anthropic/claude-opus-5" }
+  ])("searches and checkpoints MCP schemas for $mode queries", async ({ queries, provider, modelId }) => {
     const namespacedName = "mcp_jira_create_issue_auto";
     const fingerprint = "fingerprint-auto";
     const snapshot: McpRunPlanSnapshot = {
@@ -5769,8 +5766,8 @@ describe("run execution", () => {
       if (providerRequests.length === 1) {
         return providerResult({
           finalText: "",
-          toolCalls: goals.map((goal, index) => ({
-            arguments: { goal },
+          toolCalls: queries.map((query, index) => ({
+            arguments: index === 0 ? { query } : { goal: query },
             id: `find-call-${index}`,
             name: "find_tools"
           }))
@@ -5798,9 +5795,9 @@ describe("run execution", () => {
         goal: input.goal,
         modelRunToolCallId: input.modelRunToolCallId,
         roundIndex: input.roundIndex,
-        toolIds: [namespacedName]
+        toolIds: [...input.toolIds]
       });
-      return { discovery, snapshot };
+      return { discovery, snapshot: input.toolIds.length ? snapshot : { servers: [], tools: [], version: 1 } };
     });
     const plan = {
       bindings: [{
@@ -5813,14 +5810,6 @@ describe("run execution", () => {
     };
     const materialize = vi.fn(async () => plan);
     const prepare = vi.fn(async () => plan);
-    const route = vi.fn(async () => ({
-      toolNames: [namespacedName],
-      usageAttribution: {
-        modelId: "gpt-router",
-        provider: "openai",
-        usage: { inputTokens: 7, outputTokens: 2, reasoningTokens: 0 }
-      }
-    }));
     const callTool = vi.fn(async () => ({
       isError: false,
       structuredContent: { issue: "AIQSA-42" },
@@ -5830,7 +5819,7 @@ describe("run execution", () => {
 
     await createRunExecutionResponse(executionInput({
       adapter,
-      mcp: { filterTools: allowMcpTools, materialize, prepare, router: { route } },
+      mcp: { filterTools: allowMcpTools, materialize, prepare },
       mcpRuntime: {
         callTool,
         async ensureAcceptedGeneration() { return true; }
@@ -5859,32 +5848,26 @@ describe("run execution", () => {
       revisionId: "revision-jira",
       serverId: "server-jira"
     }], expect.any(AbortSignal));
-    expect(route).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ goals, timeoutMs: 60_000 }));
-    expect(appendMcpDiscoveryEpoch).toHaveBeenCalledTimes(goals.length);
-    expect(discovery.epochs.map((epoch) => epoch.goal)).toEqual(goals);
+    // Every call searches separately; a query without matches checkpoints an empty epoch.
+    expect(materialize).toHaveBeenCalledOnce();
+    expect(appendMcpDiscoveryEpoch).toHaveBeenCalledTimes(queries.length);
+    expect(discovery.epochs.map((epoch) => [epoch.goal, epoch.toolIds])).toEqual(queries.map((query) =>
+      [query, query.startsWith("a") ? [] : [namespacedName]]));
     expect(callTool).toHaveBeenCalledWith(expect.objectContaining({
       generationId: `generation-${fingerprint}`,
       name: "create_issue"
     }));
     expect(repository.completeRuns[0]?.finalText).toBe("Issue created");
-    expect(repository.completeRuns[0]?.usageAttributions).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        modelId: "gpt-router",
-        provider: "openai",
-        usage: expect.objectContaining({ inputTokens: 7, outputTokens: 2 })
-      })
-    ]));
+    // Discovery itself makes no model call and attributes no usage.
+    expect(repository.completeRuns[0]?.usageAttributions?.every((entry) => entry.modelId === modelId)).toBe(true);
   });
 
-  it("completes an Auto run without consulting the router when find_tools is not called", async () => {
+  it("completes an Auto run without discovery work when find_tools is not called", async () => {
     const discovery: McpDiscoveryState = {
       catalog: { servers: [], version: 1 },
       epochs: [],
       version: 2
     };
-    const route = vi.fn(async () => {
-      throw new Error("System Model is unavailable");
-    });
     const materialize = vi.fn(async () => ({
       bindings: [],
       ok: true as const,
@@ -5897,7 +5880,7 @@ describe("run execution", () => {
       adapter: createAdapter(async function* () {
         return providerResult({ finalText: "No integration was needed" });
       }),
-      mcp: { filterTools: allowMcpTools, materialize, prepare: materialize, router: { route } },
+      mcp: { filterTools: allowMcpTools, materialize, prepare: materialize },
       prepared: preparedData({
         mcpDiscovery: discovery,
         modelId: "gpt-tool-model",
@@ -5906,36 +5889,25 @@ describe("run execution", () => {
       repository: { ...repository.repository, appendMcpDiscoveryEpoch }
     })).text();
 
-    expect(route).not.toHaveBeenCalled();
     expect(materialize).not.toHaveBeenCalled();
     expect(appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
     expect(repository.completeRuns[0]?.finalText).toBe("No integration was needed");
     expect(repository.failedRuns).toEqual([]);
   });
 
-  it.each(["unexpected", "reported", "cancelled", "output_limit", "request_rejected"] as const)(
-    "settles Auto discovery %s with safe errors and reported usage", async (outcome) => {
+  it.each(["unexpected", "cancelled"] as const)(
+    "settles an Auto discovery activation %s with a safe error and no checkpoint", async (outcome) => {
     const discovery: McpDiscoveryState = {
       catalog: { servers: [{ namespace: "issues", revisionId: "revision-issues", serverId: "server-issues",
             serverName: "Issues", description: "Manage issues", tools: [{ namespacedName: "mcp_issues_create", originalName: "create", description: "Create an issue" }] }], version: 1 },
       epochs: [],
       version: 2
     };
-    const rawFailure = "PRIVATE_SYSTEM_MODEL_ENDPOINT_FAILURE";
-    const route = vi.fn(async () => {
-      if (outcome === "unexpected") throw new Error(rawFailure);
+    const rawFailure = "PRIVATE_TOOLHIVE_ENDPOINT_FAILURE";
+    const materialize = vi.fn(async (): Promise<McpRunPlanResult> => {
       if (outcome === "cancelled") expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
-      throw new McpSemanticRouterError(
-        outcome === "cancelled" ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_router_output_limit"
-          : outcome === "request_rejected" ? "mcp_router_gemini_invalid_request" : "mcp_router_request_failed",
-        { modelId: "gpt-router", provider: "openai", usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 } }
-      );
+      throw new Error(rawFailure);
     });
-    const materialize = vi.fn(async () => ({
-      bindings: [],
-      ok: true as const,
-      snapshot: { servers: [], tools: [], version: 1 as const }
-    }));
     const appendMcpDiscoveryEpoch = vi.fn(async () => null);
     const repository = createRepository();
 
@@ -5944,43 +5916,31 @@ describe("run execution", () => {
         return providerResult({
           finalText: "",
           toolCalls: [{
-            arguments: { goal: "create an issue" },
+            arguments: { query: "create an issue" },
             id: "provider-find-tools-failure",
             name: "find_tools"
           }]
         });
       }),
-      mcp: { filterTools: allowMcpTools, materialize, prepare: materialize, router: { route } },
+      mcp: { filterTools: allowMcpTools, materialize, prepare: materialize },
       prepared: preparedData({
         mcpDiscovery: discovery,
-        ...(outcome === "output_limit" ? { toolBudgets: { mcpAutoDiscoveryMaxOutputTokens: 32768, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8 } } : {}),
         modelId: "gpt-tool-model",
         provider: "openai"
       }),
       repository: { ...repository.repository, appendMcpDiscoveryEpoch }
     })).text();
 
-    if (outcome !== "cancelled") expect(repository.failedRuns).toEqual([expect.objectContaining({
-      error: {
-        ...mcpAutoDiscoveryFailure(outcome === "output_limit" ? "mcp_router_output_limit"
-          : outcome === "request_rejected" ? "mcp_router_gemini_invalid_request" : "mcp_router_request_failed")
-      }
-    })]);
-    expect(JSON.stringify(repository.failedRuns)).not.toContain(rawFailure);
-    if (outcome === "request_rejected") expect(repository.failedRuns[0]?.options).toEqual({ recoveryTerminal: true });
-    if (outcome !== "cancelled") expect([...repository.toolCalls.values()]).toEqual([
-      expect.objectContaining({ state: "error", toolName: "find_tools" })
-    ]);
-    if (outcome !== "unexpected") {
-      expect(repository.recordedRunUsageEvents.at(-1)?.usageAttributions.filter(
-        (entry) => entry.modelId === "gpt-router"
-      )).toEqual([expect.objectContaining({
-        provider: "openai",
-        usage: expect.objectContaining({ inputTokens: 12, outputTokens: 3, reasoningTokens: 0 })
+    if (outcome === "unexpected") {
+      expect(repository.failedRuns).toEqual([expect.objectContaining({
+        error: { ...mcpAutoDiscoveryFailure("mcp_materialization_failed") }
       })]);
+      expect([...repository.toolCalls.values()]).toEqual([
+        expect.objectContaining({ state: "error", toolName: "find_tools" })
+      ]);
     }
-    expect(route).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ maxOutputTokens: outcome === "output_limit" ? 32768 : null }));
-    expect(materialize).not.toHaveBeenCalled();
+    expect(JSON.stringify(repository.failedRuns)).not.toContain(rawFailure);
+    expect(materialize).toHaveBeenCalledOnce();
     expect(appendMcpDiscoveryEpoch).not.toHaveBeenCalled();
     expect(repository.completeRuns).toEqual([]);
   });
@@ -6023,7 +5983,7 @@ describe("run execution", () => {
           return providerResult({
             finalText: "",
             toolCalls: [{
-              arguments: { goal: "check an AWS quota" },
+              arguments: { query: "check an AWS quota" },
               id: "provider-find-tools-not-ready",
               name: "find_tools"
             }]
@@ -6033,10 +5993,7 @@ describe("run execution", () => {
       }),
       mcp: {
         filterTools: allowMcpTools, materialize,
-        prepare: materialize,
-        router: {
-          route: async () => ({ toolNames: [namespacedName], usageAttribution: null })
-        }
+        prepare: materialize
       },
       prepared: preparedData({
         mcpDiscovery: discovery,
@@ -6193,12 +6150,10 @@ describe("run execution", () => {
       }
     );
 
-    const route = vi.fn(async () => { throw new McpSemanticRouterError("mcp_router_gemini_invalid_request"); });
-
     const events = parseSse(await createRunExecutionResponse(executionInput({
       adapter,
       memoryEgress: egress.service,
-      mcp: { filterTools: allowMcpTools, prepare, router: { route } },
+      mcp: { filterTools: allowMcpTools, prepare },
       mcpRuntime: {
         callTool,
         async ensureAcceptedGeneration(generationId) {
@@ -6209,7 +6164,6 @@ describe("run execution", () => {
       repository: repository.repository
     })).text());
 
-    expect(route).not.toHaveBeenCalled();
     expect(providerRequests).toHaveLength(2);
     const planningWire = JSON.stringify(providerRequests[0]);
     for (const [name, marker] of Object.entries(canaries)) {

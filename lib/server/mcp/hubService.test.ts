@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { namespacedMcpToolName, type McpCapabilityCatalog, type McpRunPlanResult } from "./runPlan";
 import { createMcpHubService, McpHubServiceError, type McpHubAuthority, type McpHubServiceDependencies } from "./hubService";
-import { McpSemanticRouterError } from "./router";
 import { McpClientSessionError } from "./clientSession";
 import { mcpDispatchError } from "./dispatchStatus";
 import { getMcpRequestMaxBytes } from "./responseLimits";
@@ -102,14 +101,6 @@ function fixture(overrides: Partial<McpHubServiceDependencies> = {}) {
     materialize: vi.fn(async (_userId, tools) => materialized(tools[0]!.namespacedName)),
     inspect: vi.fn(async (_userId, tools) => materialized(tools[0]!.namespacedName)),
     recordDispatch: vi.fn(async () => ({ settle: vi.fn(async () => undefined) })),
-    recordDiscoveryAttempt: vi.fn(async () => ({ settle: vi.fn(async () => undefined) })),
-    router: {
-      route: vi.fn(async ({ catalog: allowedCatalog }) => ({
-        toolNames: allowedCatalog.servers.flatMap((server: McpCapabilityCatalog["servers"][number]) =>
-          server.tools.map((tool: McpCapabilityCatalog["servers"][number]["tools"][number]) => tool.namespacedName)),
-        usageAttribution: null
-      }))
-    },
     ...overrides
   };
   const dependencies: McpHubServiceDependencies = {
@@ -130,7 +121,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
       personal.prepare(tools.map(({ namespacedName }) => namespacedName));
     const test = fixture({ catalog: () => personal.catalog(), inspect: plan, materialize: plan });
     const toolId = personal.namespacedName("write");
-    const descriptor = (await test.service.findTools({ authority, goal: "Write" })).tools.find((tool) => tool.tool_id === toolId)!;
+    const descriptor = (await test.service.findTools({ authority, query: "select:write" })).tools.find((tool) => tool.tool_id === toolId)!;
     const prepared = await test.service.prepareToolCall({ authority, arguments: {}, toolId, toolVersion: descriptor.tool_version });
 
     personal.switchTool("write", false);
@@ -148,7 +139,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
 
   it("passes large admitted arguments intact and refuses oversize before recording a dispatch", async () => {
     const test = fixture();
-    const descriptor = (await test.service.findTools({ authority, goal: "Echo" })).tools[0]!;
+    const descriptor = (await test.service.findTools({ authority, query: "Echo" })).tools[0]!;
     const args = { value: "x".repeat(256 * 1024) };
     const prepared = await test.service.prepareToolCall({ authority, arguments: args,
       toolId: echoId, toolVersion: descriptor.tool_version });
@@ -170,7 +161,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
       return result;
     };
     const test = fixture({ catalog: async () => catalog([echoId, otherId]), materialize: load, inspect: load });
-    const result = await test.service.findTools({ authority, goal: "Echo and look up a value" });
+    const result = await test.service.findTools({ authority, query: "Echo and look up a value" });
     expect(result.incomplete).toBe(true);
     expect(result.tools).toHaveLength(1);
     expect(result.tools[0]!.input_schema).toMatchObject({ properties: { value: { description } } });
@@ -178,18 +169,30 @@ describe("MCP Hub shared discovery and dispatch", () => {
       .toBeLessThan(512 * 1_024);
   });
 
-  it("returns an empty result without invoking the System Model or runtime", async () => {
+  it("returns an empty result with a retry hint without preparing any runtime", async () => {
     const test = fixture({ catalog: vi.fn(async () => catalog([])) });
 
-    await expect(test.service.findTools({ goal: "find records", authority }))
+    await expect(test.service.findTools({ query: "find records", authority }))
       .resolves.toEqual({
         incomplete: false,
-        message: "No matching enabled MCP tools were found.",
+        message: "No matching enabled MCP tools were found. Try other short English keywords (service + action + object), or exact tool names with select:name1,name2.",
         schema_version: 1,
         tools: []
       });
-    expect(test.dependencies.router.route).not.toHaveBeenCalled();
     expect(test.dependencies.materialize).not.toHaveBeenCalled();
+  });
+
+  it("loads exact select: names, reports unknown ones and never offers tools outside current grants", async () => {
+    const test = fixture({
+      catalog: vi.fn(async () => catalog([echoId, otherId])),
+      // Withhold the other server's tool from current grants.
+      filterTools: async (_userId, tools) => tools.filter((tool) => tool.serverId !== "server-other")
+    });
+    const result = await test.service.findTools({ authority, query: "select:Example/echo, lookup, missing" });
+    expect(result.tools.map((tool) => tool.tool_id)).toEqual([echoId]);
+    expect(result.message).toContain('Unknown names in select (not available): ["lookup","missing"].');
+    expect(test.dependencies.materialize).toHaveBeenCalledOnce();
+    await expect(test.service.findTools({ authority, query: " " })).rejects.toMatchObject({ code: "invalid_arguments" });
   });
 
   it("returns full versioned schemas for ready matches and marks a partial runtime result", async () => {
@@ -201,7 +204,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
       })
     });
 
-    const result = await test.service.findTools({ goal: "read and echo records", authority });
+    const result = await test.service.findTools({ query: "echo or look up records", authority });
 
     expect(result).toMatchObject({
       incomplete: true,
@@ -227,7 +230,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
       inspect: vi.fn(async (_userId, tools) =>
         materialized(tools[0]!.namespacedName, generation, fingerprint, definitionHash))
     });
-    const first = (await test.service.findTools({ goal: "echo", authority })).tools[0]!;
+    const first = (await test.service.findTools({ query: "echo", authority })).tools[0]!;
     generation = "generation-after-restart";
     const afterRestart = await test.service.prepareToolCall({
       arguments: { value: "x" }, toolId: echoId, toolVersion: first.tool_version, authority
@@ -248,7 +251,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
 
   it("validates arguments before the durable-dispatch hook or business call", async () => {
     const test = fixture();
-    const descriptor = (await test.service.findTools({ goal: "echo", authority })).tools[0]!;
+    const descriptor = (await test.service.findTools({ query: "echo", authority })).tools[0]!;
 
     await expect(test.service.prepareToolCall({
       arguments: {}, toolId: echoId, toolVersion: descriptor.tool_version, authority
@@ -259,7 +262,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
   it("revalidates current catalog and tool policy before marking dispatch", async () => {
     let available = true;
     const test = fixture({ catalog: vi.fn(async () => catalog(available ? [echoId] : [])) });
-    const descriptor = (await test.service.findTools({ goal: "echo", authority })).tools[0]!;
+    const descriptor = (await test.service.findTools({ query: "echo", authority })).tools[0]!;
     const prepared = await test.service.prepareToolCall({
       arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
     });
@@ -287,7 +290,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
       order.push("persisted-dispatch");
       return { settle: async () => undefined };
     }) });
-    const descriptor = (await test.service.findTools({ goal: "echo", authority })).tools[0]!;
+    const descriptor = (await test.service.findTools({ query: "echo", authority })).tools[0]!;
     const prepared = await test.service.prepareToolCall({
       arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
     });
@@ -318,7 +321,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
       unsupportedContentTypes: ["image"]
     }));
     const test = fixture({ callRuntimeTool });
-    const descriptor = (await test.service.findTools({ goal: "echo", authority })).tools[0]!;
+    const descriptor = (await test.service.findTools({ query: "echo", authority })).tools[0]!;
     const prepared = await test.service.prepareToolCall({
       arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
     });
@@ -330,7 +333,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
 
   it("classifies every post-dispatch transport failure as outcome unknown", async () => {
     const test = fixture({ callRuntimeTool: vi.fn(async () => { throw new Error("network lost"); }) });
-    const descriptor = (await test.service.findTools({ goal: "echo", authority })).tools[0]!;
+    const descriptor = (await test.service.findTools({ query: "echo", authority })).tools[0]!;
     const prepared = await test.service.prepareToolCall({
       arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
     });
@@ -347,7 +350,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
       callRuntimeTool: vi.fn(async () => { throw mcpDispatchError("mcp_tool_definition_changed"); }),
       recordDispatch: async () => ({ settle })
     });
-    const descriptor = (await test.service.findTools({ authority, goal: "echo" })).tools[0]!;
+    const descriptor = (await test.service.findTools({ authority, query: "echo" })).tools[0]!;
     const prepared = await test.service.prepareToolCall({
       arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
     });
@@ -371,7 +374,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
     const settle = vi.fn(async () => undefined);
     const callRuntimeTool = vi.fn(async () => { throw failure; });
     const test = fixture({ callRuntimeTool, recordDispatch: async () => ({ settle }) });
-    const descriptor = (await test.service.findTools({ goal: "echo", authority })).tools[0]!;
+    const descriptor = (await test.service.findTools({ query: "echo", authority })).tools[0]!;
     const prepared = await test.service.prepareToolCall({
       arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
     });
@@ -386,7 +389,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
     const settle = vi.fn(async () => undefined);
     const recordDispatch = vi.fn(async () => ({ settle }));
     const test = fixture({ recordDispatch });
-    const descriptor = (await test.service.findTools({ goal: "echo", authority })).tools[0]!;
+    const descriptor = (await test.service.findTools({ query: "echo", authority })).tools[0]!;
     const prepared = await test.service.prepareToolCall({
       arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
     });
@@ -402,16 +405,15 @@ describe("MCP Hub shared discovery and dispatch", () => {
     expect(settle).toHaveBeenCalledOnce();
   });
 
-  it("rejects inactive request authority before reading a catalog or calling a model", async () => {
+  it("rejects inactive request authority before reading a catalog", async () => {
     const denied = { ...authority, assertActive: async () => { throw new McpHubServiceError("authorization_required"); } };
     const test = fixture();
-    await expect(test.service.findTools({ authority: denied, goal: "echo" }))
+    await expect(test.service.findTools({ authority: denied, query: "echo" }))
       .rejects.toMatchObject({ code: "authorization_required" });
     expect(test.dependencies.catalog).not.toHaveBeenCalled();
-    expect(test.dependencies.router.route).not.toHaveBeenCalled();
   });
 
-  it.each(["routing", "preparation", "dispatch_record", "result", "settlement"] as const)(
+  it.each(["search", "preparation", "dispatch_record", "result", "settlement"] as const)(
     "withholds protected data when OAuth is revoked during %s", async (barrier) => {
       let active = true;
       let armed = false;
@@ -421,10 +423,10 @@ describe("MCP Hub shared discovery and dispatch", () => {
       };
       const settle = vi.fn(async () => { if (armed && barrier === "settlement") active = false; });
       const test = fixture({
-        router: { route: vi.fn(async () => {
-          if (armed && barrier === "routing") active = false;
-          return { toolNames: [echoId], usageAttribution: null };
-        }) },
+        catalog: vi.fn(async () => {
+          if (armed && barrier === "search") active = false;
+          return catalog();
+        }),
         materialize: vi.fn(async () => {
           if (armed && barrier === "preparation") active = false;
           return materialized(echoId);
@@ -438,12 +440,12 @@ describe("MCP Hub shared discovery and dispatch", () => {
           return { isError: false, structuredContent: null, text: ["private result"], unsupportedContentTypes: [] };
         })
       });
-      if (barrier === "routing" || barrier === "preparation") {
+      if (barrier === "search" || barrier === "preparation") {
         armed = true;
-        await expect(test.service.findTools({ authority: principal, goal: "echo" }))
+        await expect(test.service.findTools({ authority: principal, query: "echo" }))
           .rejects.toMatchObject({ code: "authorization_required" });
       } else {
-        const descriptor = (await test.service.findTools({ authority: principal, goal: "echo" })).tools[0]!;
+        const descriptor = (await test.service.findTools({ authority: principal, query: "echo" })).tools[0]!;
         const prepared = await test.service.prepareToolCall({
           authority: principal, arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version
         });
@@ -475,7 +477,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
           return { isError: false, structuredContent: null, text: ["private result"], unsupportedContentTypes: [] };
         })
       });
-      const descriptor = (await test.service.findTools({ authority, goal: "echo" })).tools[0]!;
+      const descriptor = (await test.service.findTools({ authority, query: "echo" })).tools[0]!;
       armed = true;
       const operation = async () => {
         const prepared = await test.service.prepareToolCall({
@@ -494,7 +496,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
       if (barrier === "dispatch_record") throw new Error("private database failure");
       return { settle };
     }) });
-    const descriptor = (await test.service.findTools({ authority, goal: "echo" })).tools[0]!;
+    const descriptor = (await test.service.findTools({ authority, query: "echo" })).tools[0]!;
     const prepared = await test.service.prepareToolCall({
       authority, arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version
     });
@@ -508,7 +510,7 @@ describe("MCP Hub shared discovery and dispatch", () => {
 
   it("does not transfer a prepared call to another OAuth principal", async () => {
     const test = fixture();
-    const descriptor = (await test.service.findTools({ authority, goal: "echo" })).tools[0]!;
+    const descriptor = (await test.service.findTools({ authority, query: "echo" })).tools[0]!;
     const prepared = await test.service.prepareToolCall({
       authority, arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version
     });
@@ -518,24 +520,11 @@ describe("MCP Hub shared discovery and dispatch", () => {
     expect(test.dependencies.callRuntimeTool).not.toHaveBeenCalled();
   });
 
-  it("retains a content-free router failure through the shared discovery boundary", async () => {
-    const test = fixture({ router: { route: vi.fn(async () => {
-      throw new McpSemanticRouterError("mcp_router_output_invalid", null, "mcp_router_unknown_tool", 2);
-    }) } });
-    await expect(test.service.findTools({ authority, goal: "echo" })).rejects.toMatchObject({
-      code: "discovery_unavailable", discoveryFailure: {
-        reason: "mcp_router_output_invalid", detail: "mcp_router_unknown_tool", attempt: 2
-      }
-    });
+  it("maps a catalog failure to discovery_unavailable without preparing any runtime", async () => {
+    const test = fixture({ catalog: vi.fn(async () => { throw new Error("PRIVATE_CATALOG_FAILURE"); }) });
+    const failure = await test.service.findTools({ authority, query: "echo" }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "discovery_unavailable" });
     expect(test.dependencies.materialize).not.toHaveBeenCalled();
     expect(test.dependencies.callRuntimeTool).not.toHaveBeenCalled();
-    expect(new McpHubServiceError("discovery_unavailable", { cause: new Error("private") }).discoveryFailure).toBeNull();
-  });
-
-  it("rejects invented router selections before preparing any runtime", async () => {
-    const test = fixture({ router: { route: vi.fn(async () => ({ toolNames: [otherId], usageAttribution: null })) } });
-    await expect(test.service.findTools({ authority, goal: "echo" }))
-      .rejects.toMatchObject({ code: "discovery_unavailable" });
-    expect(test.dependencies.materialize).not.toHaveBeenCalled();
   });
 });

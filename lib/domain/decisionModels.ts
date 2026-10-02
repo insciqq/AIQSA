@@ -8,7 +8,7 @@ export const JEV_SERVED_MODEL_ID = "typesafe/jev-1.13-20260917";
 
 /** Consumers enter the default set only after their independent qualification.
  * Merely installing a capable model never enables an unqualified hypothesis. */
-export const DEFAULT_DECISION_FEATURES: readonly DecisionFeature[] = ["memoryRelevance", "knowledgeRelevance", "toolDiscovery", "skillSuggestions"];
+export const DEFAULT_DECISION_FEATURES: readonly DecisionFeature[] = ["memoryRelevance", "knowledgeRelevance", "skillSuggestions"];
 
 export function decisionFeatureEnabled(overrides: unknown, feature: DecisionFeature): boolean {
   const decoded = decodeDecisionFeatureOverrides(overrides);

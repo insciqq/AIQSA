@@ -18,46 +18,6 @@ export const MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE =
   "Automatic tool discovery is unavailable." as const;
 
 const mcpAutoDiscoveryFailures = {
-  mcp_router_gemini_invalid_request: {
-    code: "mcp_auto_discovery_request_rejected",
-    message: "The System Model rejected automatic tool selection (Gemini HTTP 400: invalid_request). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection."
-  },
-  mcp_router_gemini_parameter_unknown: {
-    code: "mcp_auto_discovery_request_rejected",
-    message: "The System Model rejected automatic tool selection (Gemini HTTP 400: parameter_unknown). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection."
-  },
-  mcp_router_request_rejected: {
-    code: "mcp_auto_discovery_request_rejected",
-    message: "The System Model rejected automatic tool selection (Gemini HTTP 400). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection."
-  },
-  mcp_router_request_failed: {
-    code: "mcp_auto_discovery_unavailable",
-    message: "The System Model could not complete automatic tool selection. Retry in Auto, or use Load all to bypass automatic selection."
-  },
-  mcp_router_output_limit: {
-    code: "mcp_auto_discovery_output_limit",
-    message: "Automatic tool discovery reached its output-token limit before completing the JSON selection. Retry in Auto, use Load all, or ask an administrator to review MCP Auto output tokens."
-  },
-  mcp_router_model_output_limit: {
-    code: "mcp_auto_discovery_model_output_limit",
-    message: "The MCP Auto output-token allowance exceeds the System Model’s declared output limit. Ask an administrator to lower the allowance or select a model with a larger limit."
-  },
-  mcp_router_timeout: {
-    code: "mcp_auto_discovery_timeout",
-    message: "Automatic tool discovery exceeded its time limit. Retry in Auto or use Load all."
-  },
-  mcp_router_output_invalid: {
-    code: "mcp_auto_discovery_output_invalid",
-    message: "Automatic tool discovery returned an invalid selection. Retry in Auto or use Load all."
-  },
-  mcp_router_credential_unavailable: {
-    code: "mcp_auto_discovery_credential_unavailable",
-    message: "Automatic tool discovery could not use the System Model credential. Ask an administrator to check it, or use Load all."
-  },
-  mcp_router_system_model_unavailable: {
-    code: "mcp_auto_discovery_model_unavailable",
-    message: "Automatic tool discovery needs an available, verified System Model. Ask an administrator to check Defaults & roles, or use Load all."
-  },
   mcp_materialization_failed: {
     code: "mcp_auto_discovery_materialization_failed",
     message: "Automatic tool discovery could not activate the selected MCP tools. Review MCP settings, retry in Auto, or use Load all."
@@ -69,28 +29,48 @@ const genericMcpAutoDiscoveryFailure = {
   message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
 } as const;
 
+/** Stored runs may carry codes and copy of the retired System Model tool
+ * selector. They are recognized only to render the generic failure. */
+const RETIRED_MCP_AUTO_DISCOVERY_CODES: ReadonlySet<string> = new Set([
+  "mcp_auto_discovery_request_rejected",
+  "mcp_auto_discovery_output_limit",
+  "mcp_auto_discovery_model_output_limit",
+  "mcp_auto_discovery_timeout",
+  "mcp_auto_discovery_output_invalid",
+  "mcp_auto_discovery_credential_unavailable",
+  "mcp_auto_discovery_model_unavailable"
+]);
+const RETIRED_MCP_AUTO_DISCOVERY_MESSAGES: ReadonlySet<string> = new Set([
+  "The System Model rejected automatic tool selection (Gemini HTTP 400: invalid_request). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.",
+  "The System Model rejected automatic tool selection (Gemini HTTP 400: parameter_unknown). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.",
+  "The System Model rejected automatic tool selection (Gemini HTTP 400). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.",
+  "The System Model could not complete automatic tool selection. Retry in Auto, or use Load all to bypass automatic selection.",
+  "Automatic tool discovery reached its output-token limit before completing the JSON selection. Retry in Auto, use Load all, or ask an administrator to review MCP Auto output tokens.",
+  "The MCP Auto output-token allowance exceeds the System Model’s declared output limit. Ask an administrator to lower the allowance or select a model with a larger limit.",
+  "Automatic tool discovery exceeded its time limit. Retry in Auto or use Load all.",
+  "Automatic tool discovery returned an invalid selection. Retry in Auto or use Load all.",
+  "Automatic tool discovery could not use the System Model credential. Ask an administrator to check it, or use Load all.",
+  "Automatic tool discovery needs an available, verified System Model. Ask an administrator to check Defaults & roles, or use Load all."
+]);
+
 /** Only fixed, content-free causes may reach stored failures and the browser. */
 export function mcpAutoDiscoveryFailure(reason: string): Readonly<{ code: string; message: string }> {
-  const key = reason === "mcp_router_system_model_absent" || reason === "mcp_router_structured_output_unverified"
-    ? "mcp_router_system_model_unavailable"
-    : reason === "mcp_materialization_mcp_not_ready" || reason === "mcp_materialization_mcp_plan_too_large" ||
-        reason === "mcp_materialization_mismatch" ? "mcp_materialization_failed" : reason;
-  return Object.hasOwn(mcpAutoDiscoveryFailures, key)
-    ? mcpAutoDiscoveryFailures[key as keyof typeof mcpAutoDiscoveryFailures]
+  return reason === "mcp_materialization_failed" || reason === "mcp_materialization_mcp_not_ready" ||
+    reason === "mcp_materialization_mcp_plan_too_large" || reason === "mcp_materialization_mismatch"
+    ? mcpAutoDiscoveryFailures.mcp_materialization_failed
     : genericMcpAutoDiscoveryFailure;
 }
 
 export function isMcpAutoDiscoveryFailureCode(code: string | null | undefined): boolean {
-  return code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE ||
-    Object.values(mcpAutoDiscoveryFailures).some((failure) => failure.code === code);
-}
-
-export function canRetryMcpAutoDiscoveryFailure(code: string | null | undefined): boolean {
-  return isMcpAutoDiscoveryFailureCode(code) && code !== "mcp_auto_discovery_request_rejected";
+  return code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE || typeof code === "string" && (
+    RETIRED_MCP_AUTO_DISCOVERY_CODES.has(code) ||
+    Object.values(mcpAutoDiscoveryFailures).some((failure) => failure.code === code));
 }
 
 export function mcpAutoDiscoveryFailureForMessage(message: string | null | undefined) {
-  return message === MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE ? genericMcpAutoDiscoveryFailure
+  if (!message) return null;
+  return message === MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE || RETIRED_MCP_AUTO_DISCOVERY_MESSAGES.has(message)
+    ? genericMcpAutoDiscoveryFailure
     : Object.values(mcpAutoDiscoveryFailures).find((failure) => failure.message === message) ?? null;
 }
 

@@ -3,7 +3,6 @@
  * terminal preview. These private facts must pass through the masked, bounded
  * activity projection before publication. Reasoning and raw results stay out.
  */
-import { decodeMcpDiscoveryFailure, type McpDiscoveryFailure } from "../../contracts/mcpDiscoveryFailure";
 import { decodeMcpToolFailure, type McpToolFailure } from "../../contracts/mcpToolFailure";
 import { getMcpRequestMaxBytes, MCP_RESPONSE_WIRE_LIMIT_CEILINGS } from "../mcp/responseLimits";
 
@@ -22,7 +21,6 @@ export type CodexEvent =
       changes?: readonly Readonly<{ path: string; action: "add" | "update" | "delete" }>[];
       tool?: string;
       toolId?: string;
-      discoveryFailure?: McpDiscoveryFailure;
       toolFailure?: McpToolFailure;
       query?: string;
       source?: string;
@@ -299,18 +297,17 @@ export class CodexJsonlDecoder {
     const args = record(item.arguments) ? item.arguments : null;
     const toolName = typeof item.tool === "string" ? item.tool : typeof item.name === "string" ? item.name : undefined;
     const failurePayload = kind === "mcp" && type === "item.completed" ? failurePayloadFromResult(item.result) : null;
-    const discoveryFailure = toolName === "find_tools" && failurePayload?.code === "discovery_unavailable"
-      ? decodeMcpDiscoveryFailure(failurePayload.discoveryFailure) : null;
+    const discoveryFailed = toolName === "find_tools" && failurePayload?.code === "discovery_unavailable";
     const toolFailure = toolName !== "find_tools" && failurePayload?.code === "result_unsupported"
       ? decodeMcpToolFailure(failurePayload.toolFailure) : null;
     const mcpError = kind === "mcp" && type === "item.completed" && record(item.result) &&
       (item.result.isError === true || item.result.is_error === true);
     // Select only fields needed to resolve an admitted tool/search identity.
     // Never retain the argument object, MCP result, server id or raw errors.
-    // Discovery failures retain only the closed content-free diagnostic codes.
+    // Discovery failures retain only their failed phase; diagnostics are not projected.
     return { ...base,
       ...(mcpError ? { phase: "failed" as const } : {}),
-      ...(discoveryFailure ? { phase: "failed" as const, discoveryFailure } : {}),
+      ...(discoveryFailed ? { phase: "failed" as const } : {}),
       ...(toolFailure ? { phase: "failed" as const, toolFailure } : {}),
       ...(toolName ? { tool: toolName } : {}),
       ...(typeof args?.tool_id === "string" ? { toolId: args.tool_id } : {}),
