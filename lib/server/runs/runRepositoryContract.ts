@@ -800,6 +800,9 @@ export type RunRepository = {
     readers: import("./toolHistoryRecords").ToolHistoryReaders;
     toolHistory: import("./toolHistoryContract").ToolHistorySnapshot;
     cache?: import("./toolHistoryContract").ToolHistoryCache;
+    /** The request's current user message: names the record of its earlier
+     * attempts when the reader's context cannot be read. */
+    currentUserMessageId?: string | null;
   }): Promise<import("./toolHistory").ToolHistoryProjection>;
   /** The authorized record `read_tool_call` returns, or null when unavailable. */
   readToolCall?(

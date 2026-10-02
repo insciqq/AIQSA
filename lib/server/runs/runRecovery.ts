@@ -1005,7 +1005,7 @@ async function recoveredToolHistoryProjection(deps: RunRecoveryDeps, request: Pr
   if (history?.unavailable) return unavailableToolHistoryProjection({ readers, toolHistory: history, currentUserMessageId });
   if (!history?.turns.length || !project) return null;
   try {
-    return await project({ actor, readers, toolHistory: history, ...(state ? { cache: state.cache } : {}) });
+    return await project({ actor, readers, toolHistory: history, currentUserMessageId, ...(state ? { cache: state.cache } : {}) });
   } catch (error) {
     logEvent("run_recovery", { subsystem: "run_recovery", stage: "projection", outcome: "degraded", action: "degrade",
       code: "tool_history_unavailable", prisma_code: databaseFailureCode(error), run_id: actor.runId });

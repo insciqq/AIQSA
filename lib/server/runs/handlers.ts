@@ -856,7 +856,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     const scopeFingerprint = chatPdfFingerprint({ chatId: source.chat.id, project: source.chat.project ?? null,
       memoryMode: source.chat.memoryMode ?? null, userMessage: source.userMessage });
     const preparation = retry ? await preparePdfRetry(deps, { ...retry, signal: request.signal,
-      userMessageId: source.userMessage.id }) : await prepareRun(deps, {
+      userId: auth.userId, userMessageId: source.userMessage.id }) : await prepareRun(deps, {
       body,
       skillCatalogDecision: {
         operationKey: admissionKey,

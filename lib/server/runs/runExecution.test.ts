@@ -7948,7 +7948,7 @@ describe("cross-turn tool history", () => {
     expect(projectToolHistory).toHaveBeenCalledTimes(3);
     expect(projectToolHistory).toHaveBeenCalledWith({ actor: { runId: "run-1", userId: "user-1" },
       readers: { call: true, result: prepared.normalizedRequest.toolObservationVersion === 1 },
-      toolHistory: prepared.normalizedRequest.toolHistory, cache: expect.any(Map) });
+      toolHistory: prepared.normalizedRequest.toolHistory, cache: expect.any(Map), currentUserMessageId: "current-user-message" });
     // The accepted request never carries a record.
     expect(prepared.normalizedRequest.context).toEqual(acceptedContext);
     // The read returns the saved record; its row keeps only a receipt.
@@ -8074,6 +8074,32 @@ describe("cross-turn tool history", () => {
       expect(JSON.stringify(request.context!.messages[2]!.content)).toContain("earlier tool calls of this chat could not be loaded");
     }
     expect(projectToolHistory).not.toHaveBeenCalled();
+  });
+
+  it("fails an Agent run whose records cannot fit the prompt with its own code before any native work", async () => {
+    const base = historyPrepared();
+    const agent = { ...agentLimits(DEFAULT_AGENT_POLICY, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
+      compatibilityHash: "a".repeat(64), mcpMode: "off" as const };
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, agent, workspace: completionWorkspace },
+      providerRequest: { ...base.providerRequest, agent, workspace: completionWorkspace } };
+    // Executed calls whose compact lines alone exceed the Agent prompt limit.
+    const entries = Array.from({ length: 2_600 }, (_, index) => {
+      const ref = `tcr1_${index.toString(16).padStart(32, "0")}`;
+      const compact = `- [${ref}] MCP Tracker › write ${"w".repeat(400)}: executed.`;
+      return { ref, compact, full: compact, details: false, essential: true };
+    });
+    const projectToolHistory = vi.fn(async () => ({ blocks: [{ ...historyProjection().blocks[0]!, entries }] }));
+    const repository = createRepository();
+    const executeAgent = vi.fn<NonNullable<NonNullable<RunExecutionInput["workspace"]>["executeAgent"]>>();
+    await createRunExecutionResponse({
+      ...executionInput({ adapter: createAdapter(vi.fn()), prepared, repository: { ...repository.repository, projectToolHistory } }),
+      agentResponses: {} as NonNullable<RunExecutionInput["agentResponses"]>,
+      workspace: { accepts: () => false, execute: vi.fn(), executeAgent, finalize: vi.fn(), recoverExports: vi.fn(), tools: async () => [],
+        handoff: async () => ({ status: "ready" }), settle: async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }) }
+    }).text();
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "agent_context_too_large",
+      message: "This conversation is too large to start Agent. Continue in a new chat." }) })]);
+    expect(executeAgent).not.toHaveBeenCalled();
   });
 
   it("sends no records and no projection I/O for a run without a frozen history", async () => {

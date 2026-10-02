@@ -805,7 +805,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         if (history?.unavailable) return unavailableToolHistoryProjection({ readers, toolHistory: history, currentUserMessageId });
         if (!history?.turns.length || !project) return null;
         try {
-          return await project({ actor: { runId, userId: input.userId }, readers, toolHistory: history, cache: toolHistoryCache });
+          return await project({ actor: { runId, userId: input.userId }, readers, toolHistory: history, cache: toolHistoryCache,
+            currentUserMessageId });
         } catch (error) {
           signal.throwIfAborted();
           logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
