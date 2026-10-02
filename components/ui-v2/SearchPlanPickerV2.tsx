@@ -35,7 +35,7 @@ export function SearchPlanPickerV2({ options, plan, onChange, disabled = false, 
         const available = !availableIds || availableIds.has(option.strategyId);
         const atLimit = plan.optionIds.length >= MAX_SEARCH_PLAN_OPTIONS;
         const compatible = isSearchCombinationCompatible([...plan.optionIds, option.strategyId], sources, plan.mode);
-        const reason = !available ? "Unavailable for this model" : !selected && atLimit ? "Choose up to 3 sources"
+        const reason = !available ? "Unavailable for this model" : !selected && atLimit ? `Choose up to ${MAX_SEARCH_PLAN_OPTIONS} sources`
           : !selected && !compatible ? "Select “Let the model choose” to combine this source" : option.description;
         return <label key={option.strategyId} className="v2-search-plan-source">
           <input type="checkbox" checked={selected} disabled={!selected && (!available || atLimit || !compatible)}

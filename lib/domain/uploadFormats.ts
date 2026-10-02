@@ -359,6 +359,58 @@ export function uploadFormatFor(
   return format.mimeTypes.includes(normalizedMime) ? format : undefined;
 }
 
+const STATIC_RASTER_FORMAT_IDS: ReadonlySet<string> = new Set(["png", "jpeg", "webp"]);
+
+/**
+ * Whether a chat/Workspace upload admitted as `format` may carry content of
+ * another static PNG/JPEG/WebP format: the server then decodes the bytes fully
+ * and normalizes the name and MIME to the decoded format.
+ */
+export function isNormalizableRasterUploadFormat(
+  format: UploadFormatDefinition,
+  scope: UploadFormatScope
+): boolean {
+  return scope !== "knowledge" && STATIC_RASTER_FORMAT_IDS.has(format.id);
+}
+
+/**
+ * Admission format shared by every chat/Workspace upload gate. It equals
+ * `uploadFormatFor`, except that a static-raster extension also accepts the MIME
+ * of another static raster: content, not the claim, decides that format.
+ */
+export function uploadAdmissionFormatFor(
+  fileName: string,
+  mimeType: string,
+  scope: UploadFormatScope
+): UploadFormatDefinition | undefined {
+  const format = uploadFormatFor(fileName, mimeType, scope);
+  if (format) return format;
+  const byExtension = uploadFormatForExtension(fileName, scope);
+  if (!byExtension || !isNormalizableRasterUploadFormat(byExtension, scope)) return undefined;
+  const normalizedMime = normalizedUploadMimeType(mimeType);
+  return UPLOAD_FORMAT_REGISTRY.some((candidate) =>
+    isNormalizableRasterUploadFormat(candidate, scope) &&
+    normalizedMime !== undefined &&
+    candidate.mimeTypes.includes(normalizedMime)
+  ) ? byExtension : undefined;
+}
+
+/**
+ * File name of a verified raster: kept when its extension already names
+ * `format`, otherwise its last extension becomes the format's first one.
+ * Undefined when the result is not a safe upload name.
+ */
+export function normalizedRasterUploadFileName(
+  fileName: string,
+  format: UploadFormatDefinition
+): string | undefined {
+  const extension = normalizedUploadFileExtension(fileName);
+  if (!extension) return undefined;
+  if (format.extensions.includes(extension)) return fileName;
+  const normalized = `${fileName.slice(0, fileName.length - extension.length)}${format.extensions[0]}`;
+  return isSafeUploadFileName(normalized) ? normalized : undefined;
+}
+
 export function uploadFormatForExtension(
   fileName: string,
   scope: UploadFormatScope
@@ -392,5 +444,10 @@ export const KNOWLEDGE_UPLOAD_ACCEPT = uploadAcceptFor({ scope: "knowledge" });
 export const KNOWLEDGE_UPLOAD_FORMAT_LABELS = Object.freeze(
   UPLOAD_FORMAT_REGISTRY
     .filter((format) => format.scopes.includes("knowledge"))
+    .map((format) => format.label)
+);
+export const ATTACHMENT_UPLOAD_FORMAT_LABELS = Object.freeze(
+  UPLOAD_FORMAT_REGISTRY
+    .filter((format) => format.scopes.includes("attachment"))
     .map((format) => format.label)
 );

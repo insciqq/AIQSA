@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { randomUUID } from "@/lib/browser/randomUUID";
 import { sha256 } from "@/lib/browser/sha256";
+import { IMAGE_MAX_BYTES, IMAGE_MAX_PIXELS } from "@/lib/contracts/imageGeneration";
 import { decodeWorkspaceUpload, decodeWorkspaceUploadConfig, type WorkspaceUploadConfigWire, type WorkspaceUploadWire } from "@/lib/contracts/workspaceUploads";
 import { shellFetch } from "./shellApi";
 import { useComposerSessionStore, type ComposerSessionKey } from "./composerSessionStore";
@@ -18,6 +19,15 @@ export function retryWorkspaceUpload(id: string): boolean {
   const action = actions.get(id); action?.retry(); return !!action;
 }
 
+/** Refusals of an upload whose image content had to be fully decoded; shared by both upload paths. */
+export const IMAGE_UPLOAD_FAILURE_MESSAGES = Object.freeze({
+  image_invalid: "This image could not be verified. Check that it opens correctly, or choose another file.",
+  image_limit_exceeded: `This image is too large to verify (up to ${Number((IMAGE_MAX_BYTES / 1024 / 1024).toFixed(1))} MiB ` +
+    `and ${Number((IMAGE_MAX_PIXELS / 1_000_000).toFixed(1))} megapixels). Reduce it, or rename it with the extension that matches its format.`
+});
+/** Settlement refusals that a retry of the same bytes cannot change. */
+const FINAL_SETTLEMENT_CODES: ReadonlySet<string> = new Set(["unsupported_type", "image_invalid", "image_limit_exceeded"]);
+
 class UploadFailure extends Error {
   constructor(readonly code: string, readonly retryable = true) { super(code); }
 }
@@ -25,6 +35,7 @@ function failureMessage(error: unknown): string {
   const code = error instanceof UploadFailure ? error.code : "upload_unavailable";
   if (code === "file_too_large") return "This file exceeds the upload limit.";
   if (code === "unsupported_type") return "The file type or content could not be validated.";
+  if (code === "image_invalid" || code === "image_limit_exceeded") return IMAGE_UPLOAD_FAILURE_MESSAGES[code];
   if (["upload_checksum_mismatch", "upload_size_mismatch"].includes(code)) return "The file could not be verified. Retry the upload.";
   if (code === "upload_busy") return "Upload capacity is busy. Retry shortly.";
   if (code === "workspace_runtime_unavailable") return "Workspace is unavailable. Retry when it is ready.";
@@ -149,7 +160,7 @@ export async function uploadWorkspaceFile(input: {
           await wait(1_500, controller.signal);
           current = await session(`/api/uploads/sessions/${current.id}`, {}, controller.signal);
         }
-        if (current.state !== "completed" || !current.attachment) throw new UploadFailure(current.errorCode ?? "upload_unavailable", current.errorCode !== "unsupported_type");
+        if (current.state !== "completed" || !current.attachment) throw new UploadFailure(current.errorCode ?? "upload_unavailable", !FINAL_SETTLEMENT_CODES.has(current.errorCode ?? ""));
         controller.signal.throwIfAborted();
         return current.attachment;
       } catch (error) {

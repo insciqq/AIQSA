@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { SearchPlan } from "@/lib/domain/search";
+import { MAX_SEARCH_PLAN_OPTIONS, type SearchPlan } from "@/lib/domain/search";
 import { SearchPlanPickerV2 } from "./SearchPlanPickerV2";
 
 const options = ["One", "Two", "Three", "Four"].map(name => ({ strategyId: name, displayName: name, kind: "web_search" as const }));
@@ -16,6 +16,7 @@ describe("Search source selection", () => {
     render(<Picker />);
     for (const name of ["One", "Two", "Three"]) fireEvent.click(screen.getByRole("checkbox", { name }));
     expect(screen.getByRole("checkbox", { name: /Four/ })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /Four/ }).closest("label")).toHaveTextContent(`Choose up to ${MAX_SEARCH_PLAN_OPTIONS} sources`);
     fireEvent.click(screen.getByRole("checkbox", { name: "Two" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Four" }));
     expect(screen.getByRole("checkbox", { name: "One" })).toBeChecked();

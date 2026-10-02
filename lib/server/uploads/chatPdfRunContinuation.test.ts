@@ -44,6 +44,7 @@ function fixture(workspace = false) {
   const normalized = { attachmentIds: ["file"], chatId: "chat", content,
     ...(workspace ? { workspace: { enabled: true } } : {}),
     context: { messages: [{ id: "user", role: "user", content }], mode: "branch_path" },
+    contextCompactionPolicy: { mode: "hybrid", source: { digest: "a".repeat(64), leafMessageId: "user", messageCount: 1 }, version: 1 },
     knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: true, vision: false, reasoning: false, contextWindow: 32000 },
     modelId: "frozen-answer", params: {}, prompt: { developer: null, system: null }, provider: "fake",
@@ -148,6 +149,21 @@ describe("accepted PDF answer continuation", () => {
     expect(h.deps.repository.continuePdfPreparedRun).not.toHaveBeenCalled();
     expect(h.deps.pdfRepository.markAnswerDispatched).not.toHaveBeenCalled();
     expect(createRunExecutionResponse).not.toHaveBeenCalled();
+  });
+
+  it("ends a snapshot accepted under the retired context policy before any budget or answer side effect", async () => {
+    const h = fixture();
+    delete (h.prepared.normalizedRequest as { contextCompactionPolicy?: unknown }).contextCompactionPolicy;
+    await expect(h.run()).rejects.toThrow("context_compaction_policy_retired");
+    expect(h.deps.repository.continuePdfPreparedRun).not.toHaveBeenCalled();
+    expect(createRunExecutionResponse).not.toHaveBeenCalled();
+    const repository = { settlePreparingRunFailure: vi.fn(async () => true), getRunControlForRecovery: vi.fn(),
+      hasPendingPdfPreparation: vi.fn(), failRun: vi.fn() };
+    await createChatPdfRunFailure({ repository })({ claimToken: "claim", runId: "run", userId: "owner" },
+      new ChatPdfPreparationError("context_compaction_policy_retired"));
+    expect(repository.settlePreparingRunFailure).toHaveBeenCalledWith(expect.objectContaining({
+      errorCode: "context_compaction_policy_retired", retryable: false,
+      message: "This answer was interrupted by an application update. Regenerate to try again." }));
   });
 
   it("stops before any answer side effect when the final document context does not fit", async () => {

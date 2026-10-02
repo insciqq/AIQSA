@@ -8,7 +8,6 @@ import type {
   McpErrorResponse,
   McpSlotValue,
   McpValidationIssue,
-  McpOperationalStatus,
   UserMcpServer,
   UserMcpCatalogResponse
 } from "@/lib/contracts/mcp";
@@ -25,7 +24,6 @@ import type { McpRepository, McpRepositoryResult, McpUserServerState } from "./r
 export type McpHandlerDeps = {
   onActivationRequested?(): void;
   onRuntimeChanged?(userId?: string): void;
-  runtimeOperationalStatus?(generationId: string): McpOperationalStatus;
   repository: McpRepository;
   resolveAuth: RequestAuthResolver;
 };
@@ -134,6 +132,8 @@ function repositoryError<T>(result: Exclude<McpRepositoryResult<T>, { kind: "ok"
     return errorJson("mcp_draft_test_failed", 422, result.issues);
   }
   if (result.kind === "invalid_grant") return errorJson("invalid_grant", 400, result.issues);
+  if (result.kind === "mcp_enabled_server_limit_reached") return errorJson("mcp_enabled_server_limit_reached", 409);
+  if (result.kind === "personal_mcp_limit_reached") return errorJson("personal_mcp_limit_reached", 409);
   return errorJson("invalid_mcp_values", 400, result.issues);
 }
 
@@ -438,28 +438,22 @@ export function createAdminMcpGrantHandler(deps: McpHandlerDeps) {
   };
 }
 
-function userServerProjection(server: McpUserServerState, deps: McpHandlerDeps): UserMcpServer {
-  let operationalStatus: McpOperationalStatus = "inactive";
-  if (server.enabled && server.runtimeGenerationId &&
-    ["ready", "starting", "queued", "restarting"].includes(server.readiness)) {
-    try {
-      operationalStatus = deps.runtimeOperationalStatus?.(server.runtimeGenerationId) ?? "inactive";
-      if (operationalStatus === "active" && server.readiness !== "ready") operationalStatus = "checking";
-    } catch {
-      // A health lookup failure cannot manufacture positive runtime evidence.
-    }
-  }
+export function userServerProjection(server: McpUserServerState): UserMcpServer {
   return {
     accountLabel: server.accountLabel,
     description: server.description,
     enabled: server.enabled,
+    ...(server.availableTools ? { availableTools: server.availableTools } : {}),
+    ...(server.sourceType ? { sourceType: server.sourceType } : {}),
+    ...(server.endpoint ? { endpoint: server.endpoint } : {}),
+    ...(server.userDisabledToolNames ? { userDisabledToolNames: server.userDisabledToolNames } : {}),
+    ...(server.authMode ? { authHeaderName: server.authHeaderName ?? null, authMode: server.authMode } : {}),
     fields: server.fields,
     id: server.id,
     knownToolCount: server.knownToolCount,
     name: server.name,
     oauthAvailable: server.oauthAvailable,
     oauthState: server.oauthState,
-    operationalStatus,
     readiness: server.readiness,
     runtimeErrorCode: server.readiness === "unavailable" ? mcpRuntimeErrorCode(server.errorCode) : null,
     tools: server.tools,
@@ -474,7 +468,7 @@ export function createUserMcpCatalogHandler(deps: McpHandlerDeps) {
     const servers = await safely(() => deps.repository.listUserServers(session.userId));
     if (servers instanceof Response) return servers;
     return Response.json({
-      servers: servers.map((server) => userServerProjection(server, deps))
+      servers: servers.filter((server) => server.sourceType !== "personal").map((server) => userServerProjection(server))
     } satisfies UserMcpCatalogResponse, { headers: { "Cache-Control": "no-store" } });
   };
 }
@@ -494,6 +488,8 @@ export function createUserMcpUpdateHandler(deps: McpHandlerDeps) {
     const { serverId } = await context.params;
     const result = await safely(() => deps.repository.updateUserServer({
       ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+      // Personal connections change only through their own route.
+      installationOnly: true,
       serverId,
       userId: session.userId,
       ...(values !== undefined ? { values } : {})
@@ -501,7 +497,7 @@ export function createUserMcpUpdateHandler(deps: McpHandlerDeps) {
     if (result instanceof Response) return result;
     if (result.kind !== "ok") return repositoryError(result);
     notifyRuntimeChanged(deps, session.userId);
-    return Response.json({ server: userServerProjection(result.value, deps) },
+    return Response.json({ server: userServerProjection(result.value) },
       { headers: { "Cache-Control": "no-store" } });
   };
 }

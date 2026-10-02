@@ -1,6 +1,7 @@
 import { defaultToolObservations } from "../toolObservations/defaultService";
 import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, restoreObservedResult, projectObservationForProvider,
-  OBSERVATION_RESTORE_FAILURE, observationRestoreRefused, observationWholeDeliveryBatches, type ToolObservationService } from "../toolObservations/sourceAdapters";
+  OBSERVATION_RESTORE_FAILURE, observationReadBudget, observationRestoreRefused, observationWholeDeliveryBatches,
+  type ToolObservationService } from "../toolObservations/sourceAdapters";
 import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from "../tools/readToolResult";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
@@ -163,7 +164,7 @@ import {
   type RunTool,
   type ToolExecutionResult
 } from "../tools/types";
-import { measureSessionContext, observationWholeResultTokens } from "./runContextBudget";
+import { measureSessionContext, observationBatchShare, observationWholeResultTokens } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { memorySearchTool, MEMORY_SEARCH_TOOL_NAME } from "../memory/search/contract";
@@ -209,6 +210,8 @@ import {
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
 import { liveToolCallStatus, liveToolLoopStatus } from "./liveToolStatus";
+import { readOnlyRunTool } from "./toolReadOnly";
+import { repeatBlockedRounds, settledRepeatOutcome, ToolCallRepeatHistory } from "./toolCallRepeatGuard";
 import { executeCodexTurn } from "../agents/executor";
 import type { AgentResponsesTransport } from "../providers/agentResponses";
 import { projectRunOutputArtifactEvent } from "./runOutputEvents";
@@ -216,7 +219,12 @@ import { notifyProjectEvent } from "../projects/events";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
 import { mcpResponseOverflowToolExecutionResult } from "./mcpOverflowToolResult";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
-import { contextCompactionCheckpoint, type ContextObservation } from "./contextCompactionContract";
+import {
+  CONTEXT_COMPACTION_POLICY_RETIRED,
+  contextCompactionCheckpoint,
+  contextCompactionPolicyRetired,
+  type ContextObservation
+} from "./contextCompactionContract";
 import {
   contextObservationsFromResults,
   observationCallIdsInProviderMessages,
@@ -233,7 +241,6 @@ import {
   createContextCompactionPublisher
 } from "./contextCompactionEvents";
 import {
-  applyKnowledgeAnswerContextBudget,
   observationSourceAvailability,
   prepareCompactedProviderRequest
 } from "./contextCompactionConsumer";
@@ -352,6 +359,7 @@ export type RunExecutionInput = Readonly<{
     callTool(input: {
       arguments: Record<string, unknown>;
       beforeDispatch?(): Promise<void>;
+      definitionHash: string;
       generationId: string;
       inputSchema: Record<string, unknown>;
       name: string;
@@ -1093,24 +1101,16 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         request: ProviderRunRequest,
         message: ProviderConversationMessage
       ): Promise<ProviderRunRequest> {
-        // Explicit legacy guard: this route has no summary consumer.
-        const budgeted = applyKnowledgeAnswerContextBudget({
-          ...(input.toolBridge ? { bridge: input.toolBridge } : {}),
-          request: withAutomaticKnowledgeEvidence(request, message)
-        });
-        if (!budgeted.ok) {
-          throw new RunPipelineError("context_too_large", budgeted.error.message);
-        }
-        if (budgeted.contextTruncation) {
-          await emit(
-            controller,
-            encoder,
-            input.repository,
-            runId,
-            contextTruncationArtifact(budgeted.contextTruncation)
-          );
-        }
-        const retainedEvidence = budgeted.request.context?.messages.find((candidate) =>
+        // The run's single compaction consumer, outside the tool loop: carried
+        // notes apply, uncovered history over the budget buys notes, and the
+        // pinned evidence (never a summary source, never masked) must survive
+        // byte for byte.
+        const budgeted = await compactAnswerRequest(
+          withAutomaticKnowledgeEvidence(request, message),
+          input.toolBridge,
+          signal
+        );
+        const retainedEvidence = budgeted.context?.messages.find((candidate) =>
           candidate.id === message.id && candidate.purpose === "knowledge_evidence");
         if (!retainedEvidence ||
           textFromContentBlocks(retainedEvidence.content) !== textFromContentBlocks(message.content)) {
@@ -1119,7 +1119,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             "The exact Knowledge evidence manifest did not fit the answer context"
           );
         }
-        return budgeted.request;
+        return budgeted;
       }
 
       async function requestWithAutomaticKnowledgeEvidence(
@@ -1776,8 +1776,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         emitTransient(controller, encoder, event);
       }
 
-      /** The tool-loop round whose dispatch the consumer prepares; null outside the loop. */
-      let compactionRound: number | null = null;
+      /** The tool-loop round whose dispatch the consumer prepares; 0 outside
+       * the loop, where receipts and notes form the notes-only checkpoint. */
+      let compactionRound = 0;
 
       /** Durable claim before each paid summary call and settlement with its
        * usage, through the run's checkpoint/accounting owner. */
@@ -2112,6 +2113,9 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         const persistedCalls = new Map<string, PersistedToolLoopCall>();
+        // The rows this loop persisted and settled: the same basis recovery
+        // reads for repeat decisions.
+        const repeatHistory = new ToolCallRepeatHistory();
         const observationUsageCollected = new Set<string>();
         /** Executed Searches whose accounting receipt could not be recorded. */
         const unrecordedSearches = new Map<string, ToolExecutionResult>();
@@ -2205,6 +2209,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             }
           },
           onToolBatchSettled: async ({ results }) => {
+            for (const settled of results) {
+              const persisted = persistedCalls.get(settled.call.id);
+              if (persisted) repeatHistory.settle(persisted.id, settledRepeatOutcome(settled));
+            }
             for (const entry of contextObservationsFromResults(results.flatMap(settled =>
               settled.result.status === "complete" ? [settled.result.value] : []))) {
               settledObservations.set(entry.callId, entry);
@@ -2275,7 +2283,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             await assertProjectRunAccessCurrent(true);
             if (round === 1) {
               const started = await input.repository.beginToolLoopProviderRound({
-                ...(!normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1
+                ...(!normalizedRequest.agent && normalizedRequest.contextCompactionPolicy
                   ? { contextCompaction: contextCompactionCheckpoint({
                       ownerId: input.userId,
                       request: roundRequest,
@@ -2336,6 +2344,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 runId,
                 userId: input.userId
               });
+              if (claim.kind === "settled" && repeatBlockedRounds(claim.call)) {
+                // A blocked repeat was settled with its batch: nothing runs.
+                const blocked = parsePersistedToolExecutionResult(call, claim.call.result);
+                return blocked ? { status: "complete", value: blocked } : {
+                  error: { code: "tool_call_result_invalid", fatal: true, message: "Persisted tool result is invalid." },
+                  status: "error"
+                };
+              }
               if (isMemoryCall(call.name)) {
                 memoryCallsForDispatch.set(call.id, persisted);
                 if (claim.kind === "claimed") await emit(controller, encoder, input.repository, runId,
@@ -2353,7 +2369,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 return { status: "complete", value: result };
               }
               if (claim.kind === "ambiguous" && isObservationRead(call.name)) {
-                const result = await executeReadToolResult(await observationService(), call, { runId, userId: input.userId }, context.signal);
+                const result = await executeReadToolResult(await observationService(), call, { runId, userId: input.userId }, context.signal,
+                  observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))));
                 const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
                 const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id,
                   result: snapshot, runId, state: result.status, userId: input.userId });
@@ -2446,7 +2463,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   ? await input.memorySearch.revalidate(call, { persistedToolCallId: persisted.id,
                       request, runId, userId: input.userId })
                   : isObservationRead(call.name)
-                  ? await executeReadToolResult(await observationService(), call, { runId, userId: input.userId }, context.signal)
+                  ? await executeReadToolResult(await observationService(), call, { runId, userId: input.userId }, context.signal,
+                      observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))))
                   : parsePersistedToolExecutionResult(call, claim.call.result);
                 if (isMemoryCall(call.name) && stored) await emit(controller, encoder, input.repository, runId,
                   memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex, state: stored.status, result: stored }));
@@ -2695,7 +2713,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   if (!input.images) throw new Error("image_tool_unavailable");
                   result = await input.images.execute(call, executionContext, signal);
                 } else if (isObservationRead(call.name)) {
-                  result = await executeReadToolResult(await observationService(), call, executionContext, context.signal);
+                  result = await executeReadToolResult(await observationService(), call, executionContext, context.signal,
+                    observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))));
                 } else if (isSessionCall(call.name)) {
                   result = executeSessionStatus(call, sessionRequest, toolBridge);
                 } else if (isMcpDiscoveryCall(call.name)) {
@@ -2905,6 +2924,40 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               data: { artifactType: "tool_budget", payload: budget }
             });
           },
+          onFinalSynthesisTransition: async ({ continuation, round }) => {
+            const started = await input.repository.beginToolLoopProviderRound({
+              finalSynthesisOfRound: round,
+              providerContinuation: toolLoopJson(continuation, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+              roundIndex: round + 1,
+              runId,
+              userId: input.userId
+            });
+            if (started === "cancelled") throw abortError();
+            if (started !== "started" && started !== "reused") {
+              throw new RunPipelineError("tool_loop_checkpoint_conflict", "Tool-free synthesis could not start");
+            }
+          },
+          beforeSynthesisDispatch: async ({ continuation, round }) => {
+            const marked = await input.repository.beginToolLoopProviderRound({
+              finalSynthesisOfRound: round - 1,
+              providerContinuation: toolLoopJson(continuation, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+              roundIndex: round,
+              runId,
+              userId: input.userId
+            });
+            if (marked === "cancelled") throw abortError();
+            if (marked !== "started" && marked !== "reused") {
+              throw new RunPipelineError("tool_loop_checkpoint_conflict", "Tool-free synthesis could not be dispatched");
+            }
+          },
+          isRepeatBlockedCall: (call) => {
+            const persisted = persistedCalls.get(call.id);
+            return persisted !== undefined && repeatBlockedRounds(persisted) !== null;
+          },
+          toolResultNoteForProvider: (entry) => {
+            const persisted = persistedCalls.get(entry.call.id);
+            return persisted ? repeatHistory.noteFor(persisted.id) : undefined;
+          },
           onProviderResult: async ({ result }) => {
             if (result.providerResponseId) await publishProviderResponseId(result.providerResponseId);
           },
@@ -2959,7 +3012,12 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             skillResultBudget.begin({ calls, bridge: toolBridge, observations: runObservations(), request: {
               ...sessionRequest, providerToolMessages: [...continuation.providerToolMessages]
             } });
+            // Size this batch's delivery against the request that will carry it.
+            observationBatches.begin(round, observationBatchShare({ bridge: toolBridge, calls, observations: runObservations(),
+              request: { ...sessionRequest, providerToolMessages: [...continuation.providerToolMessages] } }));
             if (normalizedRequest.artifactTool === true) await artifactGeneration.requested(round, calls.map(modelToolCall));
+            const repeatContext = { batch: calls.map(call => ({ arguments: call.arguments, toolName: call.name })),
+              readOnly: readOnlyRunTool({ mcp: activeMcpSnapshot, tools }) };
             const persisted = await input.repository.persistToolLoopCallBatch({
               calls: calls.map((call, ordinal) => {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
@@ -2968,14 +3026,17 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isSkillCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
+                const callArguments = toolLoopJson(
+                  call.arguments,
+                  toolLoopPersistenceLimits.argumentsBytes,
+                  "tool_call_arguments_invalid"
+                ) as Readonly<Record<string, ToolLoopJsonValue>>;
+                const repeatOf = repeatHistory.blockFor({ arguments: callArguments, toolName: call.name }, round, repeatContext);
                 return {
-                  arguments: toolLoopJson(
-                    call.arguments,
-                    toolLoopPersistenceLimits.argumentsBytes,
-                    "tool_call_arguments_invalid"
-                  ) as Readonly<Record<string, ToolLoopJsonValue>>,
+                  arguments: callArguments,
                   ordinal,
                   providerCallId: call.id,
+                  ...(repeatOf ? { repeatBlocked: { repeatOf } } : {}),
                   ...(route ? { runtimeGenerationFingerprint: route.fingerprint } : {}),
                   toolName: call.name,
                   ...(isWorkspaceCall(call.name) ? { workspace: true as const } : {})
@@ -2989,7 +3050,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               roundIndex: round,
               runId,
               userId: input.userId,
-              ...(!normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1 && sessionRequest
+              ...(!normalizedRequest.agent && normalizedRequest.contextCompactionPolicy && sessionRequest
                 ? { contextCompaction: contextCompactionCheckpoint({
                     ownerId: input.userId,
                     request: sessionRequest,
@@ -3007,7 +3068,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             if (persisted.kind !== "persisted" && persisted.kind !== "reused") {
               throw new RunPipelineError("tool_loop_checkpoint_conflict", "Tool batch could not persist");
             }
-            for (const call of persisted.calls) persistedCalls.set(call.providerCallId, call);
+            for (const call of persisted.calls) {
+              persistedCalls.set(call.providerCallId, call);
+              repeatHistory.record(call);
+            }
             if (searchPlanRouter) {
               let changed = false;
               for (const call of persisted.calls) {
@@ -3023,7 +3087,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             const discoveryCalls = calls.flatMap((candidate) => {
               const call = modelToolCall(candidate);
               const persistedCall = persistedCalls.get(call.id);
-              return call.name === MCP_FIND_TOOLS_NAME && persistedCall &&
+              // A blocked repeat never runs, so its goal is never routed or epoched.
+              return call.name === MCP_FIND_TOOLS_NAME && persistedCall && !repeatBlockedRounds(persistedCall) &&
                 mcpFindToolsArguments(call.arguments)
                 ? [{ call, modelRunToolCallId: persistedCall.id }]
                 : [];
@@ -3242,6 +3307,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             "This run uses a retired answer-model Memory tool contract."
           );
         }
+        // Queued or preparing runs accepted under the retired context policy
+        // end before any budget, provider or tool step.
+        if (contextCompactionPolicyRetired(normalizedRequest)) {
+          throw new RunPipelineError(CONTEXT_COMPACTION_POLICY_RETIRED.code, CONTEXT_COMPACTION_POLICY_RETIRED.message);
+        }
         await emit(controller, encoder, input.repository, runId, {
           data: {
             modelId: normalizedRequest.modelId,
@@ -3384,8 +3454,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             providerResult = ordinaryResult;
           }
         } else {
-          // A hybrid request without a tool loop still has exactly one
-          // consumer and is never dispatched while it needs a summary.
+          // A request without a tool loop still has exactly one consumer and
+          // is never dispatched while it needs a summary.
           providerResult = await streamProviderRequest(providerRequest.contextCompactionPolicy?.mode === "hybrid"
             ? await compactAnswerRequest(
               providerRequest,
@@ -3649,7 +3719,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             safetyCode || deadlineExceeded || knowledgeAnswerAttempted || routingCode || isRunPersistenceFailureCode(failureCode) ||
               isToolSynthesisFailure(failureCode) ||
               isMcpAutoDiscoveryFailureCode(failureCode) ||
-              failureCode === "memory_answer_model_tools_retired"
+              failureCode === "memory_answer_model_tools_retired" ||
+              failureCode === CONTEXT_COMPACTION_POLICY_RETIRED.code
               ? { recoveryTerminal: true }
               : undefined
           );

@@ -11,7 +11,7 @@ import { validAcceptedInstructions } from "../instructions/snapshot";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import { loadWorkspaceActivitySnapshot, saveWorkspaceActivitySnapshot, workspaceActivityFingerprint, WORKSPACE_ACTIVITY_RECEIPT } from "./workspaceActivityPersistence";
-import { validNormalizedAgent } from "../agents/config";
+import { validAcceptedAgent } from "../agents/config";
 import { decodeAcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import { isMcpDiscoveryOutputBudget } from "../../contracts/mcp";
 import {
@@ -55,6 +55,7 @@ import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import type { NormalizedRunRequest } from "../providers/types";
 import { CONTEXT_COMPACTION_LIMITS, decodeConversationContextPolicy, type BranchContextCheckpoint } from "./contextCompactionContract";
 import { decodeMemoryActionAnswerResult } from "../providers/memoryActionAnswer";
+import { repeatBlockedRounds, repeatBlockedToolCallResult, validRepeatRounds } from "./toolCallRepeatGuard";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { resolveProjectAccess } from "../projects/access";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
@@ -941,7 +942,7 @@ function decodeProviderDispatchRecoveryRequest(
   identity: Readonly<{ chatId: string; modelId: string; provider: string; runId: string }>
 ): NormalizedRunRequest | null {
   if (!isRecord(value) || !onlyKnownKeys(value, normalizedRequestKeys) ||
-    (value.agent !== undefined && (!value.workspace || !validNormalizedAgent(value.agent))) ||
+    (value.agent !== undefined && (!value.workspace || !validAcceptedAgent(value.agent))) ||
     value.chatId !== identity.chatId || value.modelId !== identity.modelId ||
     value.provider !== identity.provider || !nonBlank(value.chatId) ||
     !nonBlank(value.modelId) || !nonBlank(value.provider) ||
@@ -1206,6 +1207,54 @@ export function createPrismaRunToolLoopOperations(
             await tx.modelRun.update({ data: { providerResponseId: null, toolLoopState: json(correction) }, where: { id: input.runId } });
             return "started" as const;
           }
+          if (input.finalSynthesisOfRound !== undefined) {
+            const round = input.finalSynthesisOfRound;
+            if (!current || !Number.isSafeInteger(round) || round < 1 || input.roundIndex !== round + 1 ||
+              current.phase !== "provider_running" ||
+              !isRecord(input.providerContinuation) || input.providerContinuation.finalSynthesis !== "budget_exhausted") {
+              return "conflict" as const;
+            }
+            // The same claim after an executor loss reuses the started round.
+            if (current.roundIndex === input.roundIndex && isRecord(current.providerContinuation) &&
+              canonicalJson(current.providerContinuation) === canonicalJson(input.providerContinuation)) return "reused" as const;
+            if (input.providerContinuation.synthesisDispatched !== undefined) {
+              // The dispatch mark of the claimed round, written before its
+              // request: recovery re-sends only a round without it.
+              const { synthesisDispatched, ...claimed } = input.providerContinuation;
+              if (synthesisDispatched !== true || current.roundIndex !== input.roundIndex ||
+                !isRecord(current.providerContinuation) || canonicalJson(current.providerContinuation) !== canonicalJson(claimed) ||
+                current.answerRoundUsage.some(entry => entry.roundIndex === input.roundIndex)) return "conflict" as const;
+              const dispatched = toolLoopCheckpoint({
+                answerRoundUsage: current.answerRoundUsage,
+                ...(current.contextCompaction ? { contextCompaction: current.contextCompaction } : {}),
+                phase: "provider_running",
+                providerContinuation: input.providerContinuation,
+                providerCursor: current.providerCursor,
+                roundIndex: input.roundIndex
+              });
+              if (!dispatched) return "conflict" as const;
+              await tx.modelRun.update({ data: { toolLoopState: json(dispatched) }, where: { id: input.runId } });
+              return "started" as const;
+            }
+            // Terminal accounting proves the refused response; no call of it
+            // was persisted, and synthesis is never claimed twice.
+            if (current.roundIndex !== round ||
+              !current.answerRoundUsage.some(entry => entry.roundIndex === round && entry.completeness === "terminal") ||
+              !isRecord(current.providerContinuation) || current.providerContinuation.finalSynthesis !== undefined ||
+              await tx.modelRunToolCall.count({ where: { modelRunId: input.runId, roundIndex: round } }) > 0) {
+              return "conflict" as const;
+            }
+            const synthesis = toolLoopCheckpoint({
+              answerRoundUsage: current.answerRoundUsage,
+              ...(current.contextCompaction ? { contextCompaction: current.contextCompaction } : {}),
+              phase: "provider_running",
+              providerContinuation: input.providerContinuation,
+              roundIndex: input.roundIndex
+            });
+            if (!synthesis) return "conflict" as const;
+            await tx.modelRun.update({ data: { providerResponseId: null, toolLoopState: json(synthesis) }, where: { id: input.runId } });
+            return "started" as const;
+          }
           if (current && sameCheckpoint(current, checkpoint)) return "reused" as const;
           // The round's own compaction may have written summary receipts
           // before this begin; they are kept, never replaced.
@@ -1213,7 +1262,7 @@ export function createPrismaRunToolLoopOperations(
             ? checkpointAdoptingSummaryReceipts(current, checkpoint) : null;
           if (!adopted) return "conflict" as const;
           next = adopted;
-        } else if (input.requiredToolCorrectionOfRound !== undefined) return "conflict" as const;
+        } else if (input.requiredToolCorrectionOfRound !== undefined || input.finalSynthesisOfRound !== undefined) return "conflict" as const;
         await tx.modelRun.update({
           data: {
             providerResponseId: null,
@@ -1471,9 +1520,9 @@ export function createPrismaRunToolLoopOperations(
       // newest answers on it, the bounded compaction projection and accepted
       // policy are read: never message bodies, the provider continuation, the
       // tool transcript or run payloads.
-      // Knowledge runs keep the legacy guard: even a historical checkpoint of
-      // one never supplies notes beside or after citation evidence. Settled
-      // runs qualify; a failure that recovery may still resume qualifies only
+      // Knowledge runs supply notes like any other run (pinned evidence is never
+      // a summary source; Knowledge purge scrubs their notes). Settled runs
+      // qualify; a failure that recovery may still resume qualifies only
       // through its committed receipt for exactly the checkpoint notes:
       // committed notes are final even when the run later failed.
       const rows = await prismaClient.$queryRaw<Array<{
@@ -1505,7 +1554,6 @@ export function createPrismaRunToolLoopOperations(
           WHERE r."chatId" = ${input.chatId} AND r."userId" = ${input.userId}
             AND r."status" IN ('complete', 'cancelled', 'error')
             AND r."toolLoopState" -> 'contextCompaction' -> 'summary' IS NOT NULL
-            AND COALESCE(r."normalizedRequest" #>> '{knowledgePlan,mode}', 'none') = 'none'
             AND (NOT ${activeToolLoopRunSql("r")} OR COALESCE(
               r."toolLoopState" -> 'contextCompaction' -> 'summaryAttempts' @> jsonb_build_array(jsonb_build_object(
                 'state', 'committed',
@@ -1889,6 +1937,7 @@ export function createPrismaRunToolLoopOperations(
         arguments: Readonly<Record<string, ToolLoopJsonValue>>;
         ordinal: number;
         providerCallId: string;
+        repeatOf: readonly [number, number] | null;
         runtimeGenerationFingerprint: string | null;
         toolName: string;
         workspace: boolean;
@@ -1902,7 +1951,8 @@ export function createPrismaRunToolLoopOperations(
           call.toolName.length > toolLoopPersistenceLimits.toolNameLength ||
           (runtimeFingerprint !== null && !/^[a-f0-9]{64}$/u.test(runtimeFingerprint)) ||
           (call.workspace !== undefined && call.workspace !== true) ||
-          (call.workspace === true && runtimeFingerprint !== null)) {
+          (call.workspace === true && runtimeFingerprint !== null) ||
+          call.repeatBlocked !== undefined && !validRepeatRounds(call.repeatBlocked.repeatOf, input.roundIndex)) {
           return { kind: "conflict" as const };
         }
         providerCallIds.add(call.providerCallId);
@@ -1910,6 +1960,7 @@ export function createPrismaRunToolLoopOperations(
           arguments: argumentsValue,
           ordinal: call.ordinal,
           providerCallId: call.providerCallId,
+          repeatOf: call.repeatBlocked ? [call.repeatBlocked.repeatOf[0], call.repeatBlocked.repeatOf[1]] : null,
           runtimeGenerationFingerprint: runtimeFingerprint,
           toolName: call.toolName,
           workspace: call.workspace === true
@@ -1954,6 +2005,7 @@ export function createPrismaRunToolLoopOperations(
               (call.mcpRunBinding?.runtimeGenerationFingerprint ?? null) ===
                 expected.runtimeGenerationFingerprint &&
               (call.workspaceRunBindingId === input.runId) === expected.workspace &&
+              JSON.stringify(repeatBlockedRounds(persistedToolLoopCall(call))) === JSON.stringify(expected.repeatOf) &&
               canonicalJson(argumentsValue!) === canonicalJson(expected.arguments as Record<string, ToolLoopJsonValue>));
           });
           return sameContinuation && sameCalls
@@ -1999,6 +2051,7 @@ export function createPrismaRunToolLoopOperations(
           }
         }
 
+        const settledAt = new Date();
         for (const call of preparedCalls) {
           await tx.modelRunToolCall.create({
             data: {
@@ -2010,7 +2063,13 @@ export function createPrismaRunToolLoopOperations(
               ordinal: call.ordinal,
               providerCallId: call.providerCallId,
               roundIndex: input.roundIndex,
-              state: "pending",
+              // A blocked repeat is settled with its batch and never claimed
+              // for dispatch: no start, no egress receipt, no observation.
+              ...(call.repeatOf ? {
+                completedAt: settledAt,
+                result: json(repeatBlockedToolCallResult({ providerCallId: call.providerCallId, repeatOf: call.repeatOf, toolName: call.toolName })),
+                state: "error" as const
+              } : { state: "pending" as const }),
               toolName: call.toolName,
               workspaceRunBindingId: call.workspace ? input.runId : null
             }
@@ -2079,10 +2138,8 @@ export function createPrismaRunToolLoopOperations(
             // request, authorize paid dispatch: only an active run may write
             // them. Settlement records incurred usage even after Stop.
             if ((receipt.attempt.state === "claim" || receipt.attempt.state === "dispatched") && !activeToolLoopRun(run)) return false;
-            if (receipt.roundIndex !== null) {
-              nextCheckpoint = checkpointWithContextSummaryReceipt(nextCheckpoint ?? null, receipt);
-              if (!nextCheckpoint) return false;
-            }
+            nextCheckpoint = checkpointWithContextSummaryReceipt(nextCheckpoint ?? null, receipt);
+            if (!nextCheckpoint) return false;
           }
         }
 
@@ -2161,8 +2218,13 @@ export function createPrismaRunToolLoopOperations(
         const run = await lockToolLoopRun(tx, input);
         if (!run || !activeToolLoopRun(run) || !run.assistantMessageId) return false;
         const checkpoint = parseToolLoopCheckpoint(run.toolLoopState);
-        if (!checkpoint || checkpoint.roundIndex !== input.roundIndex ||
-          (checkpoint.phase !== "tools_pending" && checkpoint.phase !== "tools_running")) {
+        // A refused batch's text is also reset once its synthesis round is
+        // claimed, before that round has any usage of its own.
+        const refusedBatch = checkpoint?.phase === "provider_running" && checkpoint.roundIndex === input.roundIndex + 1 &&
+          isRecord(checkpoint.providerContinuation) && checkpoint.providerContinuation.finalSynthesis === "budget_exhausted" &&
+          !checkpoint.answerRoundUsage.some(entry => entry.roundIndex === checkpoint.roundIndex);
+        if (!checkpoint || !refusedBatch && (checkpoint.roundIndex !== input.roundIndex ||
+          (checkpoint.phase !== "tools_pending" && checkpoint.phase !== "tools_running"))) {
           return false;
         }
         const reset = await tx.message.updateMany({

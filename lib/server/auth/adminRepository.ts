@@ -51,6 +51,7 @@ export function createPrismaAdminRepository(
   options: Readonly<{
     accountKnowledgeDeletionHook?: () => AccountKnowledgeDeletionHook | null;
     accountMemoryDeletionHook?: () => AccountMemoryDeletionHook | null;
+    accountMcpDeletionKick?: () => void;
   }> = {}
 ): AdminRepository {
   return {

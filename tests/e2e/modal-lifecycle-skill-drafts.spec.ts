@@ -6,6 +6,7 @@ import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { authenticateWithLocalToken, signInWithLocalToken } from "./support/localAuth";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 type Viewport = Readonly<{ width: number; height: number }>;
 const sizes: readonly Viewport[] = [{ width: 1440, height: 900 }, { width: 768, height: 1024 },
@@ -53,7 +54,7 @@ async function withTwoChats(page: Page, run: (titles: { alpha: string; beta: str
     await expect(page.getByTestId("header-title")).toHaveText(titles.beta);
     await run(titles, ids);
   } finally {
-    for (const id of Object.values(ids)) await page.request.delete(`/api/chats/${id}`).catch(() => undefined);
+    for (const id of Object.values(ids)) await deleteOwnedChatPermanently(page.request, id).catch(() => undefined);
   }
 }
 
@@ -65,7 +66,7 @@ for (const size of sizes) {
     const server: UserMcpServer = {
       id: "research", name: "Research", accountLabel: null, description: "Research tools", enabled: false,
       fields: [{ configured: false, label: "Personal API key", sensitive: true, slotKey: "api_key", source: "missing", valueType: "secret" }],
-      knownToolCount: 1, oauthAvailable: false, oauthState: null, operationalStatus: "inactive", readiness: "needs_setup", tools: []
+      knownToolCount: 1, oauthAvailable: false, oauthState: null, readiness: "needs_setup", tools: []
     };
     await authenticateWithLocalToken(page.request);
     await installMatrixCatalogFixture(page);

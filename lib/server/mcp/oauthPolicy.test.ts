@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   bindMcpOAuthPolicyResource,
   buildMcpOAuthPolicy,
-  mcpOAuthPolicyFingerprint
+  mcpOAuthPolicyFingerprint,
+  mcpOAuthRegistrationKey,
+  personalMcpOAuthTransportAllowed,
+  storedMcpOAuthPolicy
 } from "./oauthPolicy";
 
 function oauthDraft(allowedAuthorizationServerOrigins: string[]): McpDraftConfiguration {
@@ -68,5 +71,29 @@ describe("MCP OAuth policy", () => {
     expect(policy.resourceMode).toBe("explicit");
     expect(bindMcpOAuthPolicyResource(policy, "https://mcp.example.test/mcp")).toEqual(policy);
     expect(bindMcpOAuthPolicyResource(policy, "https://mcp.example.test/")).toBeNull();
+  });
+  it.each([
+    ["https endpoint, https OAuth URL", "https://mcp.example.test/mcp", "https://auth.example.test/token", true],
+    ["https endpoint, http OAuth URL on its own host", "https://mcp.example.test/mcp", "http://mcp.example.test/token", false],
+    ["http endpoint, http OAuth URL on its own host and another port", "http://mcp.example.test:8787/mcp", "http://mcp.example.test:9000/token", true],
+    ["http endpoint, http OAuth URL on another host", "http://mcp.example.test/mcp", "http://auth.example.test/token", false],
+    ["http endpoint, https OAuth URL", "http://mcp.example.test/mcp", "https://auth.example.test/token", true]
+  ] as const)("applies the personal transport rule: %s", (_label, endpoint, candidate, allowed) => {
+    expect(personalMcpOAuthTransportAllowed(endpoint, new URL(candidate))).toBe(allowed);
+  });
+
+  it("derives the personal marker without changing fingerprints, registration keys or the stored form", () => {
+    const draft = oauthDraft(["https://login.example.test"]);
+    const installation = policyFor(draft);
+    const personal = buildMcpOAuthPolicy({
+      configurationIdentity: "draft-hash", draft, personal: true, purpose: "validation",
+      redirectUri: installation.redirectUri, serverId: "server-1", userId: "admin-1"
+    });
+    expect(personal.personal).toBe(true);
+    expect(installation).not.toHaveProperty("personal");
+    expect(mcpOAuthPolicyFingerprint(personal, "client")).toBe(mcpOAuthPolicyFingerprint(installation, "client"));
+    expect(mcpOAuthRegistrationKey(personal, "https://login.example.test"))
+      .toBe(mcpOAuthRegistrationKey(installation, "https://login.example.test"));
+    expect(storedMcpOAuthPolicy(personal)).toEqual(installation);
   });
 });

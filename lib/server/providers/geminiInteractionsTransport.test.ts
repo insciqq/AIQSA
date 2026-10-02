@@ -5,6 +5,14 @@ import {
   deriveGeminiInteractionsEndpoint,
   GeminiHttpError
 } from "./geminiInteractionsTransport";
+import {
+  observedFailure,
+  observeProviderFetch,
+  observeProviderOperation,
+  providerContextRejection,
+  providerHttpFailureMessage
+} from "./providerObservability";
+import { ProviderSafeFetchError } from "./providerSafeFetch";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -203,5 +211,200 @@ describe("Gemini Interactions transport", () => {
     }
     expect(failure).toMatchObject({ message: "Gemini request failed with status 503" });
     expect((failure as Error).message).not.toContain(remoteSecret);
+  });
+  describe("opted-in initial-request replay", () => {
+    const sends = ["createInteraction", "streamInteraction"] as const;
+    const body = { input: "PRIVATE_PROMPT_CANARY", model: "gemini-test", store: false };
+    const success = () => new Response(JSON.stringify({ id: "interaction-ok", status: "completed" }));
+    type Step = () => Response | Promise<never>;
+
+    function replayClient(steps: Step[], sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>) {
+      const bodies: string[] = [];
+      const sleeps: number[] = [];
+      const fetchFn = vi.fn<typeof fetch>(async (_request, init) => {
+        bodies.push(String(init?.body));
+        const next = steps.shift();
+        return next ? await next() : success();
+      });
+      const client = createFetchGeminiInteractionsClient({ apiKey: "key", fetchFn, initialRequestRetry: {
+        maxAttempts: 3,
+        random: () => 0,
+        sleep: sleep ?? (async (delayMs) => { sleeps.push(delayMs); })
+      } });
+      return { bodies, client, fetchFn, sleeps };
+    }
+
+    const refusal = (status: number, retryAfter?: string): Step => () => new Response(
+      JSON.stringify({ error: { message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } }),
+      { status, ...(retryAfter ? { headers: { "retry-after": retryAfter } } : {}) });
+    const thrown = (failure: () => unknown): Step => () => Promise.reject(failure());
+
+    it.each<[string, () => Step, readonly number[]]>([
+      ["a DNS failure", () => thrown(() => new ProviderSafeFetchError("provider_http_dns_failed")), [125, 250]],
+      ["a proven-unsent connection failure",
+        () => thrown(() => new ProviderSafeFetchError("provider_http_request_failed", { requestNotSent: true })), [125, 250]],
+      ["HTTP 429", () => refusal(429), [125, 250]],
+      ["HTTP 429 with Retry-After", () => refusal(429, "2"), [2_000, 2_000]],
+      ["HTTP 408 with Retry-After", () => refusal(408, "2"), [2_000, 2_000]],
+      ["HTTP 503 with Retry-After", () => refusal(503, "2"), [2_000, 2_000]],
+      ["HTTP 503 without Retry-After (Gemini-owned admission)", () => refusal(503), [125, 250]]
+    ])("replays %s with a byte-identical body and completes on a later attempt", async (_label, failure, delays) => {
+      for (const send of sends) {
+        const { bodies, client, fetchFn, sleeps } = replayClient([failure(), failure()]);
+        const result = await client[send](body);
+        if (send === "createInteraction") expect(result).toEqual({ id: "interaction-ok", status: "completed" });
+        else expect((result as Response).status).toBe(200);
+        expect(fetchFn).toHaveBeenCalledTimes(3);
+        expect(bodies).toEqual(Array(3).fill(JSON.stringify(body)));
+        expect(sleeps).toEqual(delays);
+      }
+    });
+
+    it("fails three consecutive 503s after three fetches with the value-free status message", async () => {
+      for (const send of sends) {
+        const { client, fetchFn, sleeps } = replayClient([refusal(503), refusal(503), refusal(503), refusal(503)]);
+        const failure = await client[send](body).catch((value: unknown) => value);
+        expect(failure).toBeInstanceOf(GeminiHttpError);
+        expect(failure).toMatchObject({ httpStatus: 503, retryAfterMs: null, message: "Gemini request failed with status 503" });
+        expect(JSON.stringify(failure)).not.toContain("PRIVATE_");
+        expect(fetchFn).toHaveBeenCalledTimes(3);
+        expect(sleeps).toHaveLength(2);
+      }
+    });
+
+    it.each([429, 408, 503])("stops after one fetch when the HTTP %i Retry-After exceeds the shared ceiling", async (status) => {
+      for (const send of sends) {
+        const { client, fetchFn, sleeps } = replayClient([refusal(status, "301")]);
+        await expect(client[send](body)).rejects.toMatchObject({ httpStatus: status, retryAfterMs: 301_000 });
+        expect(fetchFn).toHaveBeenCalledOnce();
+        expect(sleeps).toEqual([]);
+      }
+    });
+
+    it.each(sends)("ends a backoff longer than the remaining deadline as a request timeout (%s)", async (send) => {
+      const fetchFn = vi.fn<typeof fetch>(async () => new Response("rate limited", { status: 429, headers: { "retry-after": "60" } }));
+      const client = createFetchGeminiInteractionsClient({ apiKey: "key", defaultTimeoutMs: 5, fetchFn, initialRequestRetry: {
+        maxAttempts: 3,
+        sleep: async (_delayMs, signal) => new Promise<void>((_resolve, reject) => {
+          const rejectFromSignal = () => reject(signal.reason);
+          if (signal.aborted) rejectFromSignal();
+          else signal.addEventListener("abort", rejectFromSignal, { once: true });
+        })
+      } });
+      await expect(client[send](body)).rejects.toMatchObject({ code: "provider_request_timed_out", timeoutMs: 5 });
+      expect(fetchFn).toHaveBeenCalledOnce();
+    });
+
+    it.each<[number, string | null]>([
+      [400, null], [401, null], [403, null], [404, null], [409, null], [500, null], [502, null], [502, "1"], [504, null], [408, null]
+    ])("never replays HTTP %i (Retry-After %s)", async (status, retryAfter) => {
+      for (const send of sends) {
+        const { client, fetchFn, sleeps } = replayClient([refusal(status, retryAfter ?? undefined)]);
+        const failure = await client[send](body).catch((value: unknown) => value);
+        expect(failure).toBeInstanceOf(GeminiHttpError);
+        expect(failure).toMatchObject({ httpStatus: status, message: `Gemini request failed with status ${status}` });
+        expect(fetchFn).toHaveBeenCalledOnce();
+        expect(sleeps).toEqual([]);
+      }
+    });
+
+    it.each([
+      ["a native fetch TypeError", () => new TypeError("synthetic connection lost after dispatch")],
+      ["a safe-fetch failure without delivery proof", () => new ProviderSafeFetchError("provider_http_request_failed")]
+    ])("reports %s as an unknown outcome without a second POST when replay is owned", async (_label, make) => {
+      for (const send of sends) {
+        const cause = make();
+        const { client, fetchFn } = replayClient([() => Promise.reject(cause)]);
+        const error = await client[send](body).catch((value: unknown) => value);
+        expect(error).toMatchObject({ code: "provider_request_outcome_unknown", message: "provider_request_outcome_unknown", cause });
+        expect(fetchFn).toHaveBeenCalledOnce();
+        expect(providerContextRejection(error)).toBeNull();
+        expect(observedFailure(error)).toEqual({ code: "provider_request_outcome_unknown", reason: "network" });
+        expect(providerHttpFailureMessage(error)).toMatch(/outcome and any provider charge are unknown/u);
+      }
+    });
+
+    it.each([
+      ["without the opt-in", undefined],
+      ["when the caller disables replay", { maxAttempts: 1 }]
+    ] as const)("keeps an unproven transport failure's raw identity %s", async (_label, initialRequestRetry) => {
+      for (const cause of [new TypeError("synthetic connection lost"), new ProviderSafeFetchError("provider_http_request_failed")]) {
+        for (const send of sends) {
+          const fetchFn = vi.fn<typeof fetch>(async () => { throw cause; });
+          const client = createFetchGeminiInteractionsClient({ apiKey: "key", fetchFn, initialRequestRetry });
+          await expect(client[send](body)).rejects.toBe(cause);
+          expect(fetchFn).toHaveBeenCalledOnce();
+        }
+      }
+    });
+
+    it("never replays after a 2xx response, whatever its body later does", async () => {
+      const invalidJson = replayClient([() => new Response("{not json")]);
+      await expect(invalidJson.client.createInteraction(body)).rejects.toThrow("gemini_interactions_response_invalid_json");
+      expect(invalidJson.fetchFn).toHaveBeenCalledOnce();
+
+      const missingBody = replayClient([() => new Response(null)]);
+      await expect(missingBody.client.streamInteraction(body)).rejects.toThrow("gemini_interactions_stream_body_missing");
+      expect(missingBody.fetchFn).toHaveBeenCalledOnce();
+
+      const brokenStream = replayClient([() => new Response(new ReadableStream<Uint8Array>({
+        pull(controller) { controller.error(new TypeError("synthetic stream loss")); }
+      }), { headers: { "content-type": "text/event-stream" } })]);
+      const stream = await brokenStream.client.streamInteraction(body);
+      await expect(stream.text()).rejects.toThrow("synthetic stream loss");
+      expect(brokenStream.fetchFn).toHaveBeenCalledOnce();
+    });
+
+    it("keeps caller cancellation during a fetch distinct from an unknown outcome", async () => {
+      for (const send of sends) {
+        const controller = new AbortController();
+        const cancellation = new Error("caller_cancelled");
+        const { client, fetchFn } = replayClient([() => {
+          controller.abort(cancellation);
+          return Promise.reject(new TypeError("socket closed by abort"));
+        }]);
+        await expect(client[send](body, { signal: controller.signal })).rejects.toBe(cancellation);
+        expect(fetchFn).toHaveBeenCalledOnce();
+      }
+    });
+
+    it("rejects with the caller's reason when cancelled during backoff, without another POST", async () => {
+      for (const send of sends) {
+        const controller = new AbortController();
+        const cancellation = new Error("caller_cancelled_during_backoff");
+        const { client, fetchFn } = replayClient([refusal(503)], async (_delayMs, signal) => new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          controller.abort(cancellation);
+        }));
+        await expect(client[send](body, { signal: controller.signal })).rejects.toBe(cancellation);
+        expect(fetchFn).toHaveBeenCalledOnce();
+      }
+    });
+
+    it("records content-free retry and stop decisions inside an observation scope", async () => {
+      const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      try {
+        const responses = [refusal(503)(), refusal(429, "1")(), refusal(503)()];
+        const fetchFn = observeProviderFetch(vi.fn<typeof fetch>(async () => responses.shift() ?? success()));
+        const client = createFetchGeminiInteractionsClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn,
+          initialRequestRetry: { maxAttempts: 3, random: () => 0, sleep: async () => undefined } });
+        const identity = { adapterKind: "gemini_interactions_native", providerFamily: "gemini",
+          connectionId: "connection-safe", providerModelId: "model-safe" };
+        await expect(observeProviderOperation(identity, "answer", () => client.createInteraction(body), { timeoutMs: 5_000 }))
+          .rejects.toMatchObject({ httpStatus: 503 });
+        const records = writer.mock.calls.flatMap(([chunk]) => {
+          try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
+        });
+        expect(records.filter((entry) => entry.event === "provider_retry")).toMatchObject([
+          { attempt: 1, action: "retry", httpStatus: 503, delay_ms: 125 },
+          { attempt: 2, action: "retry", httpStatus: 429, delay_ms: 1_000 },
+          { attempt: 3, action: "stop", httpStatus: 503 }
+        ]);
+        expect(records.filter((entry) => entry.event === "provider_request").map((entry) => entry.attempt)).toEqual([1, 2, 3]);
+        expect(JSON.stringify(records)).not.toMatch(/PRIVATE_/u);
+      } finally {
+        writer.mockRestore();
+      }
+    });
   });
 });

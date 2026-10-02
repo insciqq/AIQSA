@@ -1,7 +1,9 @@
 // @vitest-environment node
 
+import { createHash } from "node:crypto";
 import { PDFDocument } from "pdf-lib";
 import { describe, expect, it, vi } from "vitest";
+import { IMAGE_MAX_BYTES } from "@/lib/contracts/imageGeneration";
 import { getAuthConfig, TEST_AUTH_TOKEN } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
 import { createUploadPermitGate } from "../http/uploadPermitGate";
@@ -11,6 +13,20 @@ import {
   UploadTargetUnavailableError
 } from "./handlers";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import {
+  syntheticAnimatedWebp,
+  syntheticJpeg,
+  syntheticMpfJpeg,
+  syntheticOversizedPng,
+  syntheticPng,
+  syntheticWebp
+} from "@/tests/support/rasterFixtures";
+import { StaticRasterError, validateStaticRaster } from "./staticRaster";
+
+vi.mock("./staticRaster", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./staticRaster")>();
+  return { ...actual, validateStaticRaster: vi.fn(actual.validateStaticRaster) };
+});
 
 const oneByOnePng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
@@ -442,5 +458,158 @@ describe("upload handler", () => {
     await expect(response.json()).resolves.toEqual({ error: "unsupported_type" });
     expect(createAttachment).not.toHaveBeenCalled();
     expect(storage.objects.size).toBe(0);
+  });
+});
+
+describe("upload handler static-raster normalization", () => {
+  const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+  function rasterUpload(maxBytes?: number) {
+    const storage = createMemoryStorageAdapter();
+    const createAttachment = vi.fn(async (input: Parameters<Parameters<typeof createUploadHandler>[0]["createAttachment"]>[0]) => created(input));
+    const POST = createUploadHandler({
+      createAttachment,
+      ...(maxBytes ? { getMaxBytes: () => maxBytes } : {}),
+      resolveAuth: auth.resolveAuth,
+      storage,
+      workspaceScopeAvailable: async () => true
+    });
+    return { POST, createAttachment, storage };
+  }
+
+  it.each([
+    { mimeType: "image/jpeg", scope: undefined },
+    { mimeType: "image/png", scope: undefined },
+    { mimeType: "", scope: undefined },
+    { mimeType: "application/octet-stream", scope: undefined },
+    { mimeType: "image/jpeg", scope: "workspace" as const },
+    { mimeType: "image/png", scope: "workspace" as const }
+  ])("admits a valid PNG named synthetic.jpeg ($mimeType, scope $scope) as synthetic.png", async ({ mimeType, scope }) => {
+    vi.mocked(validateStaticRaster).mockClear();
+    const png = syntheticPng();
+    const { POST, createAttachment, storage } = rasterUpload();
+
+    const response = await POST(authenticatedUploadRequest(new File([png], "synthetic.jpeg", { type: mimeType }), undefined, undefined, scope));
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).attachment).toMatchObject({ fileName: "synthetic.png", kind: "image", mimeType: "image/png" });
+    const persisted = createAttachment.mock.calls[0]![0];
+    expect(persisted).toMatchObject({ byteSize: png.byteLength, checksum: sha256(png), fileName: "synthetic.png", kind: "image", mimeType: "image/png" });
+    const object = storage.objects.get(persisted.storageKey)!;
+    expect(object.contentType).toBe("image/png");
+    expect(Buffer.compare(object.body, png)).toBe(0);
+    expect(persisted.storageKey).toMatch(/-synthetic\.png$/u);
+    expect(validateStaticRaster).toHaveBeenCalledOnce();
+  });
+
+  it("normalizes JPEG and WebP content and keeps a name that already fits the decoded format", async () => {
+    const jpeg = await syntheticJpeg();
+    const webp = await syntheticWebp();
+    const cases = [
+      { bytes: jpeg, fileName: "photo.png", mimeType: "image/png", expected: { fileName: "photo.jpg", mimeType: "image/jpeg" } },
+      { bytes: jpeg, fileName: "photo.jpeg", mimeType: "image/png", expected: { fileName: "photo.jpeg", mimeType: "image/jpeg" } },
+      { bytes: webp, fileName: "still.png", mimeType: "image/png", expected: { fileName: "still.webp", mimeType: "image/webp" } },
+      { bytes: syntheticPng(), fileName: "still.webp", mimeType: "image/webp", expected: { fileName: "still.png", mimeType: "image/png" } }
+    ];
+    for (const { bytes, fileName, mimeType, expected } of cases) {
+      const { POST, createAttachment, storage } = rasterUpload();
+      const response = await POST(authenticatedUploadRequest(new File([bytes], fileName, { type: mimeType })));
+      expect(response.status).toBe(200);
+      expect((await response.json()).attachment).toMatchObject(expected);
+      const persisted = createAttachment.mock.calls[0]![0];
+      expect(persisted).toMatchObject({ ...expected, checksum: sha256(bytes) });
+      expect(storage.objects.get(persisted.storageKey)?.contentType).toBe(expected.mimeType);
+    }
+  });
+
+  it.each([
+    { label: "truncated PNG", bytes: async () => syntheticPng().subarray(0, 40), error: "image_invalid", status: 400 },
+    { label: "forged PNG signature", bytes: async () => Buffer.concat([syntheticPng().subarray(0, 8), Buffer.from("not an image body at all")]), error: "image_invalid", status: 400 },
+    { label: "image beyond the pixel limit", bytes: syntheticOversizedPng, error: "image_limit_exceeded", status: 413 },
+    { label: "APNG", bytes: async () => syntheticPng({ animated: true }), error: "unsupported_type", status: 400 },
+    { label: "animated WebP", bytes: syntheticAnimatedWebp, error: "unsupported_type", status: 400 },
+    { label: "MPF JPEG", bytes: syntheticMpfJpeg, error: "unsupported_type", status: 400 }
+  ])("refuses a $label under another raster name with $error before storage", async ({ bytes, error, status }) => {
+    const { POST, createAttachment, storage } = rasterUpload();
+    const content = await bytes();
+    const name = content[0] === 0xff ? "synthetic.png" : "synthetic.jpeg";
+
+    const response = await POST(authenticatedUploadRequest(new File([content], name, { type: "image/jpeg" })));
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error });
+    expect(createAttachment).not.toHaveBeenCalled();
+    expect(storage.objects.size).toBe(0);
+  });
+
+  it("reports a decoder timeout as an unverifiable image", async () => {
+    // validateStaticRaster classifies a sharp timeout as raster_invalid.
+    vi.mocked(validateStaticRaster).mockRejectedValueOnce(new StaticRasterError("raster_invalid"));
+    const { POST, createAttachment } = rasterUpload();
+
+    const response = await POST(authenticatedUploadRequest(new File([syntheticPng()], "synthetic.jpeg", { type: "image/jpeg" })));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "image_invalid" });
+    expect(createAttachment).not.toHaveBeenCalled();
+  });
+
+  it("refuses a rename beyond the safe file-name length", async () => {
+    const { POST } = rasterUpload();
+    const fits = await POST(authenticatedUploadRequest(new File([syntheticPng()], `${"a".repeat(251)}.jpg`, { type: "image/jpeg" })));
+    expect(fits.status).toBe(200);
+    const long = await POST(authenticatedUploadRequest(new File([await syntheticWebp()], `${"a".repeat(251)}.png`, { type: "image/png" })));
+    expect(long.status).toBe(400);
+    expect(await long.json()).toEqual({ error: "unsupported_type" });
+  });
+
+  it("refuses an image beyond the decode byte limit with 413 instead of decoding it", async () => {
+    vi.mocked(validateStaticRaster).mockClear();
+    const large = Buffer.concat([syntheticPng(), Buffer.alloc(IMAGE_MAX_BYTES)]);
+    for (const mimeType of ["image/png", "image/jpeg"]) {
+      const { POST, createAttachment } = rasterUpload(32 * 1024 * 1024);
+      const response = await POST(authenticatedUploadRequest(new File([large], "large.jpeg", { type: mimeType })));
+      expect(response.status).toBe(413);
+      expect(await response.json()).toEqual({ error: "image_limit_exceeded" });
+      expect(createAttachment).not.toHaveBeenCalled();
+    }
+    expect(validateStaticRaster).not.toHaveBeenCalled();
+  });
+
+  it("keeps matching uploads on the header-only path without a full decode", async () => {
+    vi.mocked(validateStaticRaster).mockClear();
+    const tailed = Buffer.concat([syntheticPng(), Buffer.from("trailing bytes after IEND")]);
+    const cases = [
+      { bytes: syntheticPng({ animated: true }), fileName: "motion.png", mimeType: "image/png" },
+      { bytes: await syntheticAnimatedWebp(), fileName: "motion.webp", mimeType: "image/webp" },
+      { bytes: await syntheticMpfJpeg(), fileName: "ultra-hdr.jpg", mimeType: "image/jpeg" },
+      { bytes: tailed, fileName: "tailed.png", mimeType: "" },
+      { bytes: await syntheticOversizedPng(), fileName: "huge.png", mimeType: "image/png" },
+      { bytes: Buffer.concat([syntheticPng(), Buffer.alloc(IMAGE_MAX_BYTES)]), fileName: "heavy.png", mimeType: "image/png" }
+    ];
+    for (const { bytes, fileName, mimeType } of cases) {
+      const { POST, createAttachment } = rasterUpload(32 * 1024 * 1024);
+      const response = await POST(authenticatedUploadRequest(new File([bytes], fileName, { type: mimeType })));
+      expect(response.status).toBe(200);
+      expect(createAttachment.mock.calls[0]![0]).toMatchObject({ fileName, checksum: sha256(bytes), status: "processing" });
+    }
+    expect(validateStaticRaster).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: "SVG", bytes: Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><script>1</script></svg>") },
+    { label: "HTML", bytes: Buffer.from("<!doctype html><main>Fixture</main>") },
+    { label: "GIF", bytes: Buffer.from("GIF89a\x01\x00\x01\x00", "binary") },
+    { label: "arbitrary bytes", bytes: Buffer.from([0, 1, 2, 3, 4, 5]) }
+  ])("still refuses $label content under a raster name", async ({ bytes }) => {
+    vi.mocked(validateStaticRaster).mockClear();
+    for (const mimeType of ["image/jpeg", "image/png"]) {
+      const { POST, createAttachment } = rasterUpload();
+      const response = await POST(authenticatedUploadRequest(new File([bytes], "synthetic.jpeg", { type: mimeType })));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "unsupported_type" });
+      expect(createAttachment).not.toHaveBeenCalled();
+    }
+    expect(validateStaticRaster).not.toHaveBeenCalled();
   });
 });

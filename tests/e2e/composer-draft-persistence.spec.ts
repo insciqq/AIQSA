@@ -7,6 +7,7 @@ import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { authenticateWithLocalToken, signInWithLocalToken } from "./support/localAuth";
 import { selectFakeModel, setWorkspaceEnabled, submitPasswordSignIn } from "./support/workspace";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 function composer(page: Page) { return page.getByRole("textbox", { name: "Message", exact: true }); }
 async function storedText(page: Page) {
@@ -118,7 +119,7 @@ test("reload preserves independently scoped drafts and the last tab write, while
     await page.screenshot({ path: testInfo.outputPath("draft-cleared-after-send-desktop.png") });
   } finally {
     await second?.close();
-    for (const id of chatIds) await page.request.delete(`/api/chats/${id}`).catch(() => undefined);
+    for (const id of chatIds) await deleteOwnedChatPermanently(page.request, id).catch(() => undefined);
     if (projectId) await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
   }
 });
@@ -226,12 +227,9 @@ test("sign-out in another tab revokes a login tab's expired-session draft and co
     await page.screenshot({ path: testInfo.outputPath("expired-draft-revoked-after-sign-out.png") });
   } finally {
     await second?.close();
-    let removed = await page.request.delete(`/api/chats/${chatId}`);
-    if (removed.status() === 401) {
-      await authenticateWithLocalToken(page.request);
-      removed = await page.request.delete(`/api/chats/${chatId}`);
-    }
-    expect(removed.ok()).toBe(true);
+    // Sign-out may have ended this session; cleanup re-authenticates first.
+    if ((await page.request.get(`/api/chats/${chatId}`)).status() === 401) await authenticateWithLocalToken(page.request);
+    await deleteOwnedChatPermanently(page.request, chatId);
   }
 });
 
@@ -309,11 +307,8 @@ test("sign-out from a freshly loaded Control Center clears the account's draft a
     expect(await storedText(page)).toEqual([]);
     await page.screenshot({ path: testInfo.outputPath("draft-cleared-after-control-center-sign-out.png") });
   } finally {
-    let removed = await page.request.delete(`/api/chats/${chatId}`);
-    if (removed.status() === 401) {
-      await authenticateWithLocalToken(page.request);
-      removed = await page.request.delete(`/api/chats/${chatId}`);
-    }
-    expect(removed.ok()).toBe(true);
+    // Sign-out may have ended this session; cleanup re-authenticates first.
+    if ((await page.request.get(`/api/chats/${chatId}`)).status() === 401) await authenticateWithLocalToken(page.request);
+    await deleteOwnedChatPermanently(page.request, chatId);
   }
 });

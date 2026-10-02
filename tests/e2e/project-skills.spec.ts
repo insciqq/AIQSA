@@ -4,6 +4,7 @@ import { e2eAssistantRows } from "./support/assistants";
 import { setWorkspaceDefault } from "./support/chatDefaults";
 import { signInWithLocalToken } from "./support/localAuth";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 test("Project Skill selection stays scoped, reaches admission and responds to revocation", async ({ page }) => {
   test.setTimeout(180_000);
@@ -213,7 +214,7 @@ test("Assistant selection preserves manual Skills and permits recovery from the 
     await expect(page.getByRole("button", { name: "Send message" })).toBeVisible({ timeout: 30_000 });
   } finally {
     await setWorkspaceDefault(page.request, workspaceDefault);
-    if (chatId) { const deleted = await page.request.delete(`/api/chats/${chatId}`); expect(deleted.ok() || deleted.status() === 404).toBe(true); }
+    if (chatId) await deleteOwnedChatPermanently(page.request, chatId);
     if (assistantId) {
       const response = await page.request.get(`/api/me/assistants/${assistantId}`);
       expect(response.ok()).toBe(true);

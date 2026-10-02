@@ -365,6 +365,13 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
+  await tx.mcpPolicy.upsert({
+    // Personal MCP local network access is on by default; adoption repairs a
+    // missing singleton but keeps an administrator's saved choice.
+    create: { id: "installation", personalLocalNetworkEnabled: true },
+    update: {},
+    where: { id: "installation" }
+  });
 
   return catalog;
 }

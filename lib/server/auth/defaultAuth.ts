@@ -27,6 +27,7 @@ tryEnsureDefaultMemoryDeletionComposition(kickDefaultMemoryCoordinator);
 export const authMailer = createDispatcherAuthMailer(emailDispatcher);
 export const adminRepository = createPrismaAdminRepository(prisma, {
   accountKnowledgeDeletionHook: getDefaultAccountKnowledgeDeletionHook,
+  accountMcpDeletionKick: () => kickDefaultMcpRuntime(),
   accountMemoryDeletionHook: getDefaultAccountMemoryDeletionHook
 });
 export const oauthIdentityRepository = createPrismaOAuthIdentityRepository(prisma);

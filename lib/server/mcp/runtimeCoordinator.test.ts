@@ -3,6 +3,7 @@ import {
   McpClientSessionError,
   type McpFatalResponseErrorCode
 } from "./clientSession";
+import { MAX_TOOL_DESCRIPTION_LENGTH } from "@/lib/contracts/mcp";
 import { ToolHiveClientError } from "./toolhiveClient";
 import { getContext, runWithContext, type ObservabilityContext } from "../observability";
 import type { McpPublishedToolDefinitions } from "./definitions";
@@ -242,6 +243,7 @@ describe("MCP runtime coordinator", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       await vi.advanceTimersByTimeAsync(30_000);
       await runWithContext(nextRequest, () => test.coordinator.callTool({
+        definitionHash: "hash-echo",
         arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
       }));
 
@@ -327,7 +329,7 @@ describe("MCP runtime coordinator", () => {
       expect(test.coordinator.operationalStatus("generation-1")).toBe("checking");
       await vi.advanceTimersByTimeAsync(0);
       expect(test.coordinator.operationalStatus("generation-1")).toBe("active");
-      await expect(test.coordinator.callTool({ generationId: "generation-1", name: "echo", arguments: {}, inputSchema: { type: "object" } }))
+      await expect(test.coordinator.callTool({ definitionHash: "hash-echo", generationId: "generation-1", name: "echo", arguments: {}, inputSchema: { type: "object" } }))
         .resolves.toMatchObject({ isError: false });
     }
     expect(test.session.ping).toHaveBeenCalledOnce();
@@ -335,7 +337,7 @@ describe("MCP runtime coordinator", () => {
     expect(test.repository.markReady).toHaveBeenCalledOnce();
     expect(test.repository.markFailed).not.toHaveBeenCalled();
     expect(test.session.callTool).toHaveBeenCalledTimes(3);
-    await expect(test.coordinator.callTool({ generationId: "generation-1", name: "new-tool", arguments: {}, inputSchema: { type: "object" } }))
+    await expect(test.coordinator.callTool({ definitionHash: "hash-new-tool", generationId: "generation-1", name: "new-tool", arguments: {}, inputSchema: { type: "object" } }))
       .rejects.toMatchObject({ code: "mcp_tool_not_available" });
     await test.coordinator.stop();
   });
@@ -380,10 +382,46 @@ describe("MCP runtime coordinator", () => {
     ]);
     expect(test.repository.markFailed).not.toHaveBeenCalled();
     expect(test.repository.markReady).toHaveBeenCalledOnce();
-    await expect(test.coordinator.callTool({ generationId: "generation-1", name: "tool_1023", arguments: {}, inputSchema: { type: "object" } }))
+    await expect(test.coordinator.callTool({ definitionHash: "hash-tool_1023", generationId: "generation-1", name: "tool_1023", arguments: {}, inputSchema: { type: "object" } }))
       .resolves.toMatchObject({ isError: false });
-    await expect(test.coordinator.callTool({ generationId: "generation-1", name: "tool_1024", arguments: {}, inputSchema: { type: "object" } }))
+    await expect(test.coordinator.callTool({ definitionHash: "hash-tool_1024", generationId: "generation-1", name: "tool_1024", arguments: {}, inputSchema: { type: "object" } }))
       .rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    await test.coordinator.stop();
+  });
+
+  it("applies a personal runtime's changed health inventory through the refresh instead of evicting it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const test = harness({ inventory: [tool("read"), tool("write")], now: () => new Date() });
+    test.setLaunches([launch({ personalRuntime: true, publishedTools: { kind: "names", names: new Set() } })]);
+    await test.coordinator.reconcileNow();
+    vi.mocked(test.session.ping).mockRejectedValue(new McpClientSessionError({ code: "mcp_ping_unsupported", operation: "ping" }));
+    const call = (name: string, definitionHash = `hash-${name}`) => test.coordinator.callTool({
+      arguments: {}, definitionHash, generationId: "generation-1", inputSchema: { type: "object" }, name
+    });
+
+    // An unchanged inventory only renews liveness.
+    await vi.advanceTimersByTimeAsync(30_000);
+    test.coordinator.operationalStatus("generation-1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(test.session.listTools).toHaveBeenCalledTimes(2);
+    expect(test.repository.markReady).toHaveBeenCalledOnce();
+
+    // An upstream change to another tool and an addition are applied, not evicted.
+    test.setInventory([tool("read"), tool("write", "hash-write-changed"), tool("added")]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    test.coordinator.operationalStatus("generation-1");
+    await vi.waitFor(() => expect(test.repository.markReady).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(test.coordinator.operationalStatus("generation-1")).toBe("active"));
+    expect(vi.mocked(test.repository.markReady).mock.calls[1]![0].inventory.tools)
+      .toEqual([tool("read"), tool("write", "hash-write-changed"), tool("added")]);
+    expect(test.repository.markFailed).not.toHaveBeenCalled();
+    expect(test.repository.markStarting).toHaveBeenCalledOnce();
+    expect(test.createSession).toHaveBeenCalledOnce();
+    await expect(call("read")).resolves.toMatchObject({ structuredContent: { name: "read" } });
+    await expect(call("write")).rejects.toMatchObject({ code: "mcp_tool_definition_changed" });
+    await expect(call("added")).resolves.toMatchObject({ structuredContent: { name: "added" } });
+    expect(test.session.callTool).toHaveBeenCalledTimes(2);
     await test.coordinator.stop();
   });
 
@@ -582,6 +620,7 @@ describe("MCP runtime coordinator", () => {
     });
     for (const name of ["Echo", "new_tool"]) {
       await expect(test.coordinator.callTool({
+        definitionHash: `hash-${name}`,
         arguments: {},
         generationId: "generation-1",
         inputSchema: { type: "object" },
@@ -590,6 +629,45 @@ describe("MCP runtime coordinator", () => {
     }
     expect(test.repository.touchLastUsed).not.toHaveBeenCalled();
     expect(test.session.callTool).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
+  it("keeps a personal runtime's full upstream inventory and follows additions and removals after list_changed", async () => {
+    const long = "d".repeat(MAX_TOOL_DESCRIPTION_LENGTH + 100);
+    const test = harness({ inventory: [tool("read_mail", "hash-read_mail", long), tool("send_mail")] });
+    test.setLaunches([launch({
+      personalRuntime: true,
+      publishedTools: { kind: "names", names: new Set() }
+    })]);
+
+    await test.coordinator.reconcileNow();
+    // The owner's switched-off tools are a projection filter: the runtime keeps every upstream tool.
+    expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].inventory).toEqual({
+      exclusions: [],
+      tools: [tool("read_mail", "hash-read_mail", long), tool("send_mail")],
+      version: 1
+    });
+    expect(vi.mocked(test.repository.markReady).mock.calls[0]![0].discoveredInventory).toEqual({
+      tools: [{ description: "d".repeat(MAX_TOOL_DESCRIPTION_LENGTH), name: "read_mail" }, { description: null, name: "send_mail" }],
+      version: 1
+    });
+
+    test.setInventory([tool("read_mail", "changed-read-definition"), tool("delete_mail")]);
+    test.listChanged();
+    await vi.waitFor(() => expect(test.repository.markReady).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(test.repository.markReady).mock.calls[1]![0]).toMatchObject({
+      discoveredInventory: { tools: [{ description: null, name: "read_mail" }, { description: null, name: "delete_mail" }], version: 1 },
+      inventory: { exclusions: [], tools: [tool("read_mail", "changed-read-definition"), tool("delete_mail")], version: 1 }
+    });
+    await expect(test.coordinator.callTool({
+      definitionHash: "hash-send_mail",
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "send_mail"
+    })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
+    await expect(test.coordinator.callTool({
+      definitionHash: "hash-delete_mail",
+      arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "delete_mail"
+    })).resolves.toMatchObject({ structuredContent: { name: "delete_mail" } });
+    expect(test.session.callTool).toHaveBeenCalledOnce();
     await test.coordinator.stop();
   });
 
@@ -612,10 +690,12 @@ describe("MCP runtime coordinator", () => {
     });
     for (const name of ["delete_repo", "echo", "slow"]) {
       await expect(test.coordinator.callTool({
+        definitionHash: `hash-${name}`,
         arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name
       })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
     }
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-large",
       arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "large"
     })).resolves.toMatchObject({ structuredContent: { name: "large" } });
     expect(test.session.callTool).toHaveBeenCalledOnce();
@@ -626,6 +706,7 @@ describe("MCP runtime coordinator", () => {
     const test = harness();
     await test.coordinator.reconcileNow();
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-echo",
       arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
     })).resolves.toMatchObject({ structuredContent: { name: "echo" } });
 
@@ -644,6 +725,7 @@ describe("MCP runtime coordinator", () => {
     });
     for (const name of ["delete_repo", "echo", "slow"]) {
       await expect(test.coordinator.callTool({
+        definitionHash: `hash-${name}`,
         arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name
       })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
     }
@@ -655,6 +737,7 @@ describe("MCP runtime coordinator", () => {
       exclusions: [], tools: DEFAULT_TOOLS, version: 1
     });
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-echo",
       arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
     })).resolves.toMatchObject({ structuredContent: { name: "echo" } });
     expect(test.session.callTool).toHaveBeenCalledTimes(2);
@@ -702,10 +785,13 @@ describe("MCP runtime coordinator", () => {
       tools: [tool("echo", "hash-echo-changed"), tool("large")],
       version: 1
     });
+    // A run admitted the definition this runtime offers under the published name.
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-echo-changed",
       arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
     })).resolves.toMatchObject({ structuredContent: { name: "echo" } });
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-delete_repo",
       arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "delete_repo"
     })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
     await test.coordinator.stop();
@@ -723,6 +809,7 @@ describe("MCP runtime coordinator", () => {
       version: 1
     });
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-echo",
       arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
     })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
     expect(test.session.callTool).not.toHaveBeenCalled();
@@ -779,6 +866,7 @@ describe("MCP runtime coordinator", () => {
     });
     for (const name of ["echo", "new_tool"]) {
       await expect(test.coordinator.callTool({
+        definitionHash: `hash-${name}`,
         arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name
       })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
     }
@@ -793,9 +881,11 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.reconcileNow();
 
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-new_tool",
       arguments: {}, generationId: "generation-2", inputSchema: { type: "object" }, name: "new_tool"
     })).resolves.toMatchObject({ structuredContent: { name: "new_tool" } });
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-new_tool",
       arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "new_tool"
     })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
     expect(test.session.callTool).toHaveBeenCalledOnce();
@@ -832,6 +922,7 @@ describe("MCP runtime coordinator", () => {
     expect(test.calls).toEqual(["starting", "ready"]);
     expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-echo",
       arguments: { text: "hello" },
       generationId: "generation-1",
       inputSchema: { type: "object" },
@@ -851,6 +942,7 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.reconcileNow();
 
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-echo",
       arguments: { text: 42 },
       generationId: "generation-1",
       inputSchema: {
@@ -874,6 +966,7 @@ describe("MCP runtime coordinator", () => {
     vi.mocked(test.repository.touchLastUsed).mockImplementationOnce(async () => { allowed = false; });
     const beforeDispatch = vi.fn(async () => { if (!allowed) throw new Error("authority_revoked"); });
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-echo",
       arguments: {}, beforeDispatch, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo"
     })).rejects.toThrow("authority_revoked");
     expect(beforeDispatch).toHaveBeenCalledOnce();
@@ -888,6 +981,7 @@ describe("MCP runtime coordinator", () => {
     const controller = new AbortController();
     vi.mocked(test.repository.touchLastUsed).mockImplementationOnce(async () => { controller.abort(); });
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-echo",
       arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "echo", signal: controller.signal
     })).rejects.toMatchObject({ name: "AbortError" });
     expect(test.session.callTool).not.toHaveBeenCalled();
@@ -910,6 +1004,7 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.reconcileNow();
 
     const result = await test.coordinator.callTool({
+      definitionHash: "hash-echo",
       arguments: {},
       generationId: "generation-1",
       inputSchema: { type: "object" },
@@ -967,6 +1062,7 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.reconcileNow();
 
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-slow",
       arguments: {},
       generationId: "generation-1",
       inputSchema: { type: "object" },
@@ -1014,6 +1110,7 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.reconcileNow();
 
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-slow",
       arguments: {},
       generationId: "generation-1",
       inputSchema: { type: "object" },
@@ -1034,6 +1131,7 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.reconcileNow();
 
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-large",
       arguments: {},
       generationId: "generation-1",
       inputSchema: { type: "object" },
@@ -1060,6 +1158,7 @@ describe("MCP runtime coordinator", () => {
     test.setClosed(true);
 
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-large",
       arguments: {},
       generationId: "generation-1",
       inputSchema: { type: "object" },
@@ -1089,6 +1188,7 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.reconcileNow();
 
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-large",
       arguments: {},
       generationId: "generation-1",
       inputSchema: { type: "object" },
@@ -1179,6 +1279,7 @@ describe("MCP runtime coordinator", () => {
       version: 1
     });
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-delete_repo",
       arguments: {}, generationId: "generation-1", inputSchema: { type: "object" }, name: "delete_repo"
     })).rejects.toMatchObject({ code: "mcp_tool_not_available" });
     expect(test.session.callTool).not.toHaveBeenCalled();
@@ -1219,7 +1320,7 @@ describe("MCP runtime coordinator", () => {
     await test.coordinator.stop();
   });
 
-  it("marks list_changed inventory non-ready and serializes burst refreshes", async () => {
+  it("keeps list_changed inventory ready and serializes burst refreshes", async () => {
     const test = harness();
     const firstRefreshStarted = deferred<void>();
     const releaseFirstRefresh = deferred<void>();
@@ -1241,15 +1342,69 @@ describe("MCP runtime coordinator", () => {
 
     test.listChanged();
     await firstRefreshStarted.promise;
-    expect(test.calls).toEqual(["starting", "ready", "starting"]);
+    // A refresh never marks its generation starting: plan rechecks keep passing.
+    expect(test.calls).toEqual(["starting", "ready"]);
     test.listChanged();
     test.listChanged();
     releaseFirstRefresh.resolve();
 
     await vi.waitFor(() => expect(test.session.listTools).toHaveBeenCalledTimes(3));
     await vi.waitFor(() => expect(test.repository.markReady).toHaveBeenCalledTimes(3));
-    expect(test.repository.markStarting).toHaveBeenCalledTimes(3);
+    expect(test.repository.markStarting).toHaveBeenCalledOnce();
     expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    await test.coordinator.stop();
+  });
+
+  it("keeps accepted calls dispatching through a slow refresh and refuses only the definition it changed", async () => {
+    const test = harness({ inventory: [tool("read"), tool("write")] });
+    test.setLaunches([launch({ personalRuntime: true, publishedTools: { kind: "names", names: new Set() } })]);
+    await test.coordinator.reconcileNow();
+    const listed = deferred<McpRuntimeInventoryTool[]>();
+    vi.mocked(test.session.listTools).mockImplementationOnce(() => listed.promise);
+    const call = (name: string, definitionHash = `hash-${name}`) => test.coordinator.callTool({
+      arguments: {}, definitionHash, generationId: "generation-1", inputSchema: { type: "object" }, name
+    });
+
+    test.listChanged();
+    await vi.waitFor(() => expect(test.session.listTools).toHaveBeenCalledTimes(2));
+    // While upstream is re-listed the generation stays ready, live and dispatching.
+    expect(test.calls).toEqual(["starting", "ready"]);
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    await expect(call("read")).resolves.toMatchObject({ structuredContent: { name: "read" } });
+
+    listed.resolve([tool("read"), tool("write", "hash-write-changed")]);
+    await vi.waitFor(() => expect(test.coordinator.operationalStatus("generation-1")).toBe("active"));
+    expect(test.calls).toEqual(["starting", "ready", "ready"]);
+    await expect(call("read")).resolves.toMatchObject({ structuredContent: { name: "read" } });
+    await expect(call("write")).rejects.toMatchObject({ code: "mcp_tool_definition_changed" });
+    await expect(call("write", "hash-write-changed")).resolves.toMatchObject({ structuredContent: { name: "write" } });
+    expect(test.session.callTool).toHaveBeenCalledTimes(3);
+    expect(test.repository.markFailed).not.toHaveBeenCalled();
+    await test.coordinator.stop();
+  });
+
+  it("refuses a definition a refresh changed during the caller's last recheck before sending anything", async () => {
+    const test = harness({ inventory: [tool("read"), tool("write")] });
+    test.setLaunches([launch({ personalRuntime: true, publishedTools: { kind: "names", names: new Set() } })]);
+    await test.coordinator.reconcileNow();
+    test.setInventory([tool("read"), tool("write", "hash-write-changed")]);
+    // The caller's plan recheck passed; the refresh commits before the send.
+    const beforeDispatch = vi.fn(async () => {
+      test.listChanged();
+      await vi.waitFor(() => expect(test.coordinator.operationalStatus("generation-1")).toBe("active"));
+    });
+
+    await expect(test.coordinator.callTool({
+      arguments: {}, beforeDispatch, definitionHash: "hash-write", generationId: "generation-1",
+      inputSchema: { type: "object" }, name: "write"
+    })).rejects.toMatchObject({ code: "mcp_tool_definition_changed" });
+    expect(beforeDispatch).toHaveBeenCalledOnce();
+    expect(test.repository.markReady).toHaveBeenCalledTimes(2);
+    expect(test.session.callTool).not.toHaveBeenCalled();
+    expect(test.coordinator.hasLiveGeneration("generation-1")).toBe(true);
+    await expect(test.coordinator.callTool({
+      arguments: {}, definitionHash: "hash-read", generationId: "generation-1", inputSchema: { type: "object" }, name: "read"
+    })).resolves.toMatchObject({ structuredContent: { name: "read" } });
     await test.coordinator.stop();
   });
 
@@ -1278,6 +1433,7 @@ describe("MCP runtime coordinator", () => {
     });
 
     await expect(test.coordinator.callTool({
+      definitionHash: "hash-large",
       arguments: {},
       generationId: "generation-1",
       inputSchema: { type: "object" },
@@ -1314,6 +1470,7 @@ describe("MCP runtime coordinator", () => {
       });
     });
     const callFailure = expect(test.coordinator.callTool({
+      definitionHash: "hash-large",
       arguments: {},
       generationId: "generation-1",
       inputSchema: { type: "object" },
@@ -1332,47 +1489,6 @@ describe("MCP runtime coordinator", () => {
       generationId: "generation-1",
       now
     });
-  });
-
-  it("orders fatal eviction after an in-flight refresh starting write", async () => {
-    const test = harness();
-    await test.coordinator.reconcileNow();
-    const lateStartingStarted = deferred<void>();
-    const releaseLateStarting = deferred<boolean>();
-    vi.mocked(test.repository.markStarting).mockImplementationOnce(async () => {
-      lateStartingStarted.resolve();
-      return releaseLateStarting.promise;
-    });
-    test.listChanged();
-    await lateStartingStarted.promise;
-    vi.mocked(test.session.callTool).mockImplementationOnce(async () => {
-      test.setFatalResponseErrorCode("mcp_response_too_large");
-      test.setClosed(true);
-      throw new McpClientSessionError({
-        code: "mcp_session_closed",
-        operation: "call_tool"
-      });
-    });
-    const callFailure = expect(test.coordinator.callTool({
-      arguments: {},
-      generationId: "generation-1",
-      inputSchema: { type: "object" },
-      name: "large"
-    })).rejects.toMatchObject({ code: "mcp_session_closed" });
-
-    await vi.waitFor(() => expect(test.session.callTool).toHaveBeenCalledOnce());
-    expect(test.repository.markFailed).not.toHaveBeenCalled();
-    releaseLateStarting.resolve(true);
-    await callFailure;
-
-    expect(test.repository.markFailed).toHaveBeenCalledOnce();
-    expect(test.repository.markFailed).toHaveBeenCalledWith({
-      errorCode: "mcp_response_too_large",
-      fingerprint: "fingerprint-1",
-      generationId: "generation-1",
-      now
-    });
-    expect(test.session.listTools).toHaveBeenCalledOnce();
   });
 
   it("does not leave a late refresh ready after its live session was closed", async () => {

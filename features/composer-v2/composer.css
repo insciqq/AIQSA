@@ -297,6 +297,18 @@
   overflow-wrap: anywhere;
 }
 
+.v2-composer-mcp-problem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 0.5rem;
+  margin: 0;
+}
+
+.v2-composer-mcp-problem > span {
+  min-width: 0;
+}
+
 .v2-composer-spacer {
   flex: 1 1 auto;
 }
@@ -427,14 +439,24 @@
   }
 }
 
-/* Anchored popovers flip below the composer when the space above is short
-   and the space below is larger (blank chat with a centred composer, UX
-   audit 2026-09-02 A11); the flipped layer is capped to that space. */
+/* Anchored popovers open above the composer when the whole layer fits there
+   and otherwise flip below it when it fits there (blank chat with a centred
+   composer, UX audit 2026-09-02 A11); the flipped layer is capped to that
+   space. When it fits on neither side (a tall draft in a blank chat, issue
+   #43) it opens over the draft directly above its own trigger, capped to the
+   room between the trigger and the top of the scroll owner. ComposerV2
+   measures each room; the caps keep 1rem of it free. */
 @media (min-width: 841px) and (min-height: 32.01rem) {
   .v2-composer .v2-composer-layer[data-placement="below"] {
     top: calc(100% + 0.5rem);
     bottom: auto;
     max-height: min(34rem, calc(var(--v2-composer-layer-space-below, 100dvh) - 1rem));
+  }
+
+  .v2-composer .v2-composer-layer[data-placement="over"] {
+    top: auto;
+    bottom: var(--v2-composer-layer-bottom, calc(100% + 0.5rem));
+    max-height: min(34rem, calc(var(--v2-composer-layer-space-over, 100dvh) - 1rem));
   }
 }
 
@@ -476,7 +498,8 @@
 
   /* The blank chat's composer is centred: an upward layer is capped to the
      measured room above it (below the header) rather than a fixed share of
-     the viewport (UX audit 2026-09-02 A11). */
+     the viewport (UX audit 2026-09-02 A11). The "below" and "over"
+     placements above carry their own caps. */
   .v2-conversation-empty-composer .v2-composer-layer {
     max-height: min(34rem, calc(var(--v2-composer-layer-space-above, 50dvh) - 1rem));
   }

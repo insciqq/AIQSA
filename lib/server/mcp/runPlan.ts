@@ -35,6 +35,11 @@ export type McpRunPlanRecord = {
   serverDescription?: string;
   serverInstructions?: string;
   serverName: string;
+  /**
+   * A personal owner's switched-off tools. The loader already filters them
+   * from the projection; the set only names why a requested tool is missing.
+   */
+  userDisabledToolNames?: readonly string[];
 };
 
 export type McpRunPlanBinding = {
@@ -112,6 +117,8 @@ export type McpRunPlanResult =
   | {
       code: "mcp_not_ready" | "mcp_plan_too_large";
       issues: { errorCode: string | null; name: string; readiness: McpReadiness }[];
+      /** The exceeded bound when a whole plan offers more than `MCP_RUN_PLAN_LIMITS.maxTools`. */
+      limit?: "maxTools";
       ok: false;
     };
 
@@ -403,18 +410,27 @@ export function buildMcpRunPlan(
     }
   }
   if (allowedToolNames && tools.length !== allowedToolNames.size) {
+    // The owner's own switch-off is a distinct cause from a tool that left
+    // the server or was filtered for another reason.
+    const offered = new Set(tools.map((tool) => tool.namespacedName));
+    const switchedOff = new Set(records.flatMap((record) => (record.userDisabledToolNames ?? [])
+      .map((name) => namespacedMcpToolName(record.namespace, name))));
     return {
       code: "mcp_not_ready",
       issues: [{
-        errorCode: "mcp_tool_not_available",
+        errorCode: [...allowedToolNames].some((name) => !offered.has(name) && switchedOff.has(name))
+          ? "mcp_tool_disabled"
+          : "mcp_tool_not_available",
         name: "Selected MCP tool",
         readiness: "unavailable"
       }],
       ok: false
     };
   }
-  if (tools.length > MCP_RUN_PLAN_LIMITS.maxTools ||
-    schemaBytes > getMcpResponseWireLimits().listToolsResponseMaxBytes ||
+  if (tools.length > MCP_RUN_PLAN_LIMITS.maxTools) {
+    return { code: "mcp_plan_too_large", issues: issues(records), limit: "maxTools", ok: false };
+  }
+  if (schemaBytes > getMcpResponseWireLimits().listToolsResponseMaxBytes ||
     new Set(tools.map((tool) => tool.namespacedName)).size !== tools.length) {
     return { code: "mcp_plan_too_large", issues: issues(records), ok: false };
   }

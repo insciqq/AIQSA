@@ -15,6 +15,8 @@ export type McpRunToolRoute = Readonly<{
 export type McpToolRuntimeCall = (input: Readonly<{
   arguments: Record<string, unknown>;
   beforeDispatch(): Promise<void>;
+  /** The accepted definition; the runtime refuses a definition it has since seen change. */
+  definitionHash: string;
   generationId: string;
   inputSchema: Record<string, unknown>;
   name: string;
@@ -56,6 +58,7 @@ export async function dispatchMcpTool(input: Readonly<{
         execution = beginMcpToolStage("execution");
         input.onDispatch?.();
       },
+      definitionHash: input.route.tool.definitionHash,
       generationId: input.generationId,
       inputSchema: input.route.tool.inputSchema,
       name: input.route.originalName,

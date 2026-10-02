@@ -1,4 +1,4 @@
-/** Serialize only the known, inert MarkdownMessage DOM. Never copies HTML. */
+/** Serialize only the known, inert MarkdownMessage DOM as plain text that keeps block structure. Never copies HTML. */
 const omitted = "button, [aria-hidden='true'], .sr-only, .v2-sr-only, .katex-html, [data-markdown-chrome], [data-knowledge-citation]";
 const withoutCitations = (text: string) => text.replace(/\[K[1-9]\d{0,3}(?:\.[1-9]\d?)?\]/gu, "");
 const trimEmptyLines = (text: string) => text.replace(/^(?:[\t ]*\n)+|(?:\n[\t ]*)+$/gu, "");
@@ -21,6 +21,24 @@ function table(element: Element): string {
   return `${[format(rows[0]), format(Array<string>(width).fill("---")), ...rows.slice(1).map(format)].join("\n")}\n\n`;
 }
 
+const listItemBlock = "p, div, ul, ol, blockquote, pre, table, hr, h1, h2, h3, h4, h5, h6";
+
+/** Inline runs and block children (nested lists, code, paragraphs) each start their own line. */
+function listItem(item: Element, separator: string): string {
+  const parts: string[] = [];
+  let inline = "";
+  for (const child of item.childNodes) {
+    if (child instanceof Element && child.matches(listItemBlock)) {
+      parts.push(inline.trim(), serialize(child).trim());
+      inline = "";
+    } else {
+      inline += serialize(child);
+    }
+  }
+  parts.push(inline.trim());
+  return parts.filter(Boolean).join(separator);
+}
+
 function serialize(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return withoutCitations(node.textContent ?? "");
   if (!(node instanceof Element)) return children(node);
@@ -37,33 +55,26 @@ function serialize(node: Node): string {
     return `${fence}${node.getAttribute("data-markdown-code-language") ?? ""}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}\n\n`;
   }
   if (node.tagName === "TABLE") return table(node);
-  if (node.tagName === "CODE") {
-    const text = node.textContent ?? "";
-    const marker = "`".repeat(Math.max(1, ...[...text.matchAll(/`+/gu)].map(match => match[0].length + 1)));
-    return text ? `${marker}${text}${marker}` : "";
-  }
+  // Inline code, including inert links, quotes as its raw text: a citation-shaped literal is data, not a citation.
+  if (node.tagName === "CODE") return node.textContent ?? "";
   if (node.tagName === "UL" || node.tagName === "OL") {
     const start = Number(node.getAttribute("start") ?? 1);
-    return [...node.children].filter(child => child.tagName === "LI").map((item, index) => {
+    const items = [...node.children].filter(child => child.tagName === "LI");
+    // Loose items render paragraphs as <p>; blank lines keep them loose when the quote renders again.
+    const loose = items.some(item => [...item.children].some(child => child.tagName === "P"));
+    return items.map((item, index) => {
       const prefix = node.tagName === "OL" ? `${start + index}. ` : "- ";
-      const text = [...item.childNodes].map(child => child instanceof Element && (child.matches("ul, ol") || child.querySelector(":scope > ul, :scope > ol"))
-        ? `\n${serialize(child).trim()}` : serialize(child)).join("").trim();
+      const text = listItem(item, loose ? "\n\n" : "\n");
       return text ? prefix + text.replace(/\n/gu, `\n${" ".repeat(prefix.length)}`) : "";
-    }).filter(Boolean).join("\n") + "\n\n";
+    }).filter(Boolean).join(loose ? "\n\n" : "\n") + "\n\n";
   }
   const text = children(node);
-  if (/^H[1-6]$/u.test(node.tagName)) return `${"#".repeat(Number(node.getAttribute("data-markdown-heading") ?? node.tagName[1]))} ${text.trim()}\n\n`;
+  if (/^H[1-6]$/u.test(node.tagName)) return `${text.trim()}\n\n`;
   if (node.tagName === "P") return `${text}\n\n`;
   if (node.tagName === "BR") return "\n";
   if (node.tagName === "HR") return "---\n\n";
   if (node.tagName === "BLOCKQUOTE") return `${text.trim().split("\n").map(line => line ? `> ${line}` : ">").join("\n")}\n\n`;
-  if (node.tagName === "A") {
-    const href = node.getAttribute("href");
-    return href && text ? `[${text}](${href.replace(/ /gu, "%20").replace(/\(/gu, "%28").replace(/\)/gu, "%29")})` : text;
-  }
-  if (node.tagName === "STRONG" || node.tagName === "B") return text ? `**${text}**` : "";
-  if (node.tagName === "EM" || node.tagName === "I") return text ? `*${text}*` : "";
-  if (node.tagName === "DEL" || node.tagName === "S") return text ? `~~${text}~~` : "";
+  // Links (label only), emphasis, strike and other inline elements quote as their plain text.
   return text;
 }
 

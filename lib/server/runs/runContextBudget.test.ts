@@ -20,18 +20,17 @@ import { readToolResultTool } from "../tools/readToolResult";
 import type { ToolExecutionResult } from "../tools/types";
 import { projectObservationForProvider } from "../toolObservations/projection";
 import type { ContextSummary } from "../../contracts/contextCompaction";
-import { conversationContextPolicy } from "./contextCompactionContract";
-import { contextObservationsFromResults } from "./contextCompactionPlanner";
+import { contextSummaryMessageId, conversationContextPolicy, messageCoverageRef } from "./contextCompactionContract";
+import { contextObservationsFromResults, toolTranscriptUnits, unitCoverageRef } from "./contextCompactionPlanner";
 import {
   applyContextSummaryToRequest,
-  contextSummaryIsCurrent,
-  contextSummarySourceRevision,
   summaryNeedsProvider
 } from "./contextCompactionSummarizer";
 import {
   applyProviderRequestContextBudget,
   measureSessionContext,
   normalizedRequestPersonalContextTokenLimit,
+  observationBatchShare,
   observationWholeResultTokens,
   providerFacingSerializedTools,
   providerRequestContextRebuild,
@@ -81,6 +80,38 @@ describe("provider request context budget", () => {
     expect(observationWholeResultTokens(request({ modelCapabilities: capabilities })).tokens).toBe(Math.floor(budgetTokens / 4));
     const { contextWindow: _window, ...unknownWindow } = capabilities;
     expect(observationWholeResultTokens(request({ modelCapabilities: unknownWindow })).tokens).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("sizes a tool batch's delivery beside the fixed part, the batch's floor and the notes still to come", () => {
+    const messages = [{ content: { blocks: [{ text: "question", type: "text" as const }] }, id: "current", role: "user" as const }];
+    const base = request({ context: { messages, mode: "branch_path" },
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages }),
+      modelCapabilities: { ...request().modelCapabilities, contextWindow: 32_768, defaultMaxOutputTokens: 4_096, toolCalling: true },
+      params: {}, toolObservationVersion: 1 });
+    const { budgetTokens } = calculateContextBudgetLimits({ contextWindow: 32_768, maxOutputTokens: 4_096, provider: "openai" });
+    const calls = (count: number) => Array.from({ length: count }, (_, index) => ({ id: `call-${index}`, name: "mcp_records_details" }));
+    const batch = (count: number, system = "") => {
+      const sent = { ...base, prompt: { developer: null, system }, providerToolMessages: openAIResponsesToolBridge.serializeAssistantToolCalls({
+        calls: calls(count).map((call) => ({ ...call, arguments: { id: call.id } })) }) };
+      return observationBatchShare({ bridge: openAIResponsesToolBridge, calls: calls(count), request: sent }).tokens;
+    };
+    // A small request keeps the quarter share.
+    expect(batch(5)).toBe(Math.floor(budgetTokens / 4));
+    // A large fixed part leaves less, and more parallel calls (each at its floor) leave less still.
+    /** A system prompt that brings the measured request to about `tokens`. */
+    const promptOf = (tokens: number) => {
+      const text = (words: number) => Array.from({ length: words }, (_, index) => `w${index}`).join(" ");
+      for (let words = 100; ; words += 100) {
+        const measured = applyProviderRequestContextBudget({ bridge: openAIResponsesToolBridge,
+          request: { ...base, prompt: { developer: null, system: text(words) } } });
+        if (!measured.ok || measured.request.contextCompaction!.beforeTokens >= tokens) return text(words);
+      }
+    };
+    const fixed = promptOf(19_000);
+    expect(batch(5, fixed)).toBeLessThan(Math.floor(budgetTokens / 4));
+    expect(batch(40, fixed)).toBeLessThan(batch(5, fixed));
+    // When the floor alone cannot fit, nothing is delivered beyond references.
+    expect(batch(40, promptOf(budgetTokens - 2_000))).toBe(0);
   });
 
   it("reserves visual tokens for durable references before admitting the next provider request", () => {
@@ -339,37 +370,44 @@ describe("provider request context budget", () => {
       observation: descriptor(seed),
       status: "complete" as const
     });
+    const transcript = [
+      { call_id: "old", name: "read_record", type: "function_call" },
+      openAIResponsesToolBridge.appendToolResult(undefined, projected("old", "a")),
+      { call_id: "new", name: "read_record", type: "function_call" },
+      openAIResponsesToolBridge.appendToolResult(undefined, projected("new", "b"))
+    ];
+    const covering: ContextSummary = { formatVersion: 1, id: `cs1_${"e".repeat(32)}`, notes: "notes", sourceDigest: "e".repeat(64),
+      sourceRefs: [unitCoverageRef(toolTranscriptUnits(transcript)[0]!)] };
     const planned = applyProviderRequestContextBudget({
       bridge: openAIResponsesToolBridge,
       observations: contextObservationsFromResults([projected("old", "a"), projected("new", "b")]),
       request: request({
         context: {
           messages: [
+            { content: { blocks: [{ text: "notes", type: "text" }] }, id: contextSummaryMessageId(covering), role: "assistant" },
             { content: { blocks: [{ text: "pinned", type: "text" }] }, id: "pinned", purpose: "knowledge_evidence", role: "user" },
             { content: { blocks: [{ text: "current", type: "text" }] }, id: "current", role: "user" }
           ],
           mode: "branch_path"
         },
         contextCompactionPolicy: {
-          mode: "legacy_compatible",
+          mode: "hybrid",
           source: { digest: "a".repeat(64), leafMessageId: "leaf", messageCount: 2 },
           version: 1
         },
+        // Notes this run committed cover the older unit: only then may it be masked.
+        contextCompactionSummary: covering,
         modelCapabilities: { ...request().modelCapabilities, contextWindow: 5_000, toolCalling: true },
-        providerToolMessages: [
-          openAIResponsesToolBridge.appendToolResult(undefined, projected("old", "a")),
-          { call_id: "new", name: "read_record", type: "function_call" },
-          openAIResponsesToolBridge.appendToolResult(undefined, projected("new", "b"))
-        ],
+        providerToolMessages: transcript,
         toolObservationVersion: 1,
         tools: [readToolResultTool]
       })
     });
     expect(planned.ok).toBe(true);
     if (!planned.ok) throw new Error("unexpected context rejection");
-    expect(planned.request.context?.messages.map(message => message.id)).toEqual(["pinned", "current"]);
-    expect(JSON.stringify(planned.request.providerToolMessages?.[0])).not.toContain("rare-old");
-    expect(JSON.stringify(planned.request.providerToolMessages?.[2])).toContain("rare-new");
+    expect(planned.request.context?.messages.map(message => message.id)).toEqual([contextSummaryMessageId(covering), "pinned", "current"]);
+    expect(JSON.stringify(planned.request.providerToolMessages?.[1])).not.toContain("rare-old");
+    expect(JSON.stringify(planned.request.providerToolMessages?.[3])).toContain("rare-new");
     expect(planned.request.contextCompaction).toMatchObject({
       maskedBatches: 1,
       maskedObservations: 1,
@@ -377,45 +415,29 @@ describe("provider request context budget", () => {
     });
   });
 
-  it("drops older turns while keeping the full Skill context directly before current user text", () => {
+  it("keeps history whole beside the full Skill context directly before current user text", () => {
     const skillText = "s".repeat(120);
-    const budgeted = applyProviderRequestContextBudget({
-      request: request({
-        content: { blocks: [{ text: "q".repeat(40), type: "text" }] },
-        context: {
-          messages: [
-            {
-              content: { blocks: [{ text: "h".repeat(240), type: "text" }] },
-              id: "history-user",
-              role: "user"
-            },
-            {
-              content: { blocks: [{ text: skillText, type: "text" }] },
-              id: "skill-context:current",
-              purpose: "skill_context",
-              role: "user"
-            },
-            {
-              content: { blocks: [{ text: "q".repeat(40), type: "text" }] },
-              id: "current",
-              role: "user"
-            }
-          ],
-          mode: "branch_path"
-        }
-      })
+    const messages: ProviderConversationMessage[] = [
+      { content: { blocks: [{ text: "h".repeat(240), type: "text" }] }, id: "history-user", role: "user" },
+      { content: { blocks: [{ text: skillText, type: "text" }] }, id: "skill-context:current", purpose: "skill_context", role: "user" },
+      { content: { blocks: [{ text: "q".repeat(40), type: "text" }] }, id: "current", role: "user" }
+    ];
+    const input = request({
+      content: { blocks: [{ text: "q".repeat(40), type: "text" }] },
+      context: { messages, mode: "branch_path" }
     });
-
+    // Without the conversation policy nothing may leave: the request is refused
+    // (the pinned Skill is what it cannot hold beside the exact history).
+    expect(applyProviderRequestContextBudget({ request: input })).toMatchObject({ ok: false, error: { code: "skills_budget_exceeded" } });
+    // Under it, the uncovered history waits for notes; the pin stays whole before the current text.
+    const budgeted = applyProviderRequestContextBudget({ request: { ...input,
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages }) } });
     expect(budgeted.ok).toBe(true);
     if (!budgeted.ok) throw new Error("unexpected budget rejection");
-    expect(budgeted.request.context?.messages.map(({ id }) => id)).toEqual([
-      "skill-context:current",
-      "current"
-    ]);
-    expect(budgeted.request.context?.messages[0]?.content).toEqual({
-      blocks: [{ text: skillText, type: "text" }]
-    });
-    expect(budgeted.contextTruncation).toMatchObject({ droppedMessages: 1, keptMessages: 2 });
+    expect(budgeted.request.context?.messages.map(({ id }) => id)).toEqual(["history-user", "skill-context:current", "current"]);
+    expect(budgeted.request.context?.messages[1]?.content).toEqual({ blocks: [{ text: skillText, type: "text" }] });
+    expect(budgeted.request.contextCompaction).toMatchObject({ outcome: "needs_summary" });
+    expect(budgeted.contextTruncation).toBeNull();
   });
 
   it("rejects an irreducibly oversized Skill context without truncating it", () => {
@@ -454,42 +476,24 @@ describe("provider request context budget", () => {
 
   it("keeps hidden Knowledge evidence directly before the current user message", () => {
     const evidenceText = "k".repeat(120);
+    const messages: ProviderConversationMessage[] = [
+      { content: { blocks: [{ text: "h".repeat(240), type: "text" }] }, id: "history-user", role: "user" },
+      { content: { blocks: [{ text: evidenceText, type: "text" }] }, id: "knowledge-evidence:v1", purpose: "knowledge_evidence", role: "user" },
+      { content: { blocks: [{ text: "q".repeat(40), type: "text" }] }, id: "current", role: "user" }
+    ];
     const budgeted = applyProviderRequestContextBudget({
       request: request({
         content: { blocks: [{ text: "q".repeat(40), type: "text" }] },
-        context: {
-          messages: [
-            {
-              content: { blocks: [{ text: "h".repeat(240), type: "text" }] },
-              id: "history-user",
-              role: "user"
-            },
-            {
-              content: { blocks: [{ text: evidenceText, type: "text" }] },
-              id: "knowledge-evidence:v1",
-              purpose: "knowledge_evidence",
-              role: "user"
-            },
-            {
-              content: { blocks: [{ text: "q".repeat(40), type: "text" }] },
-              id: "current",
-              role: "user"
-            }
-          ],
-          mode: "branch_path"
-        }
+        context: { messages, mode: "branch_path" },
+        contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages })
       })
     });
 
     expect(budgeted.ok).toBe(true);
     if (!budgeted.ok) throw new Error("unexpected budget rejection");
-    expect(budgeted.request.context?.messages.map(({ id }) => id)).toEqual([
-      "knowledge-evidence:v1",
-      "current"
-    ]);
-    expect(budgeted.request.context?.messages[0]?.content).toEqual({
-      blocks: [{ text: evidenceText, type: "text" }]
-    });
+    expect(budgeted.request.context?.messages.map(({ id }) => id)).toEqual(["history-user", "knowledge-evidence:v1", "current"]);
+    expect(budgeted.request.context?.messages[1]?.content).toEqual({ blocks: [{ text: evidenceText, type: "text" }] });
+    expect(budgeted.request.contextCompaction).toMatchObject({ outcome: "needs_summary" });
   });
 
   it("truncates attachment text before considering the Skill context reducible", () => {
@@ -722,7 +726,7 @@ describe("hybrid context budget boundaries", () => {
   const hybrid = (messages: ProviderConversationMessage[], overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest => request({
     content: messages.at(-1)!.content,
     context: { messages, mode: "branch_path" },
-    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: messages.at(-1)!.id, messages, mode: "hybrid" }),
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: messages.at(-1)!.id, messages }),
     modelCapabilities: capabilities,
     toolObservationVersion: 1,
     tools: [readToolResultTool],
@@ -741,10 +745,14 @@ describe("hybrid context budget boundaries", () => {
     measureSessionContext({ bridge: openAIResponsesToolBridge, request: input }).approximateInputTokens;
   // Fills use "h", which o200k encodes at four characters per token like the
   // character weights these reproductions were measured with.
-  const summaryFor = (source: ProviderRunRequest, notes = "h".repeat(2_000)): ContextSummary => ({
-    formatVersion: 1, id: `cs1_${"c".repeat(32)}`, notes, sourceDigest: "d".repeat(64),
-    sourceRefs: [contextSummarySourceRevision(source)]
-  });
+  /** Notes this run bought over the whole source: every prior message and settled unit. */
+  const summaryFor = (source: ProviderRunRequest, notes = "h".repeat(2_000)): ContextSummary => {
+    const prior = source.context!.messages.filter((message) => message.purpose === undefined).slice(0, -1);
+    return { formatVersion: 1, id: `cs1_${"c".repeat(32)}`, notes, sourceDigest: "d".repeat(64), sourceRefs: [
+      ...(prior.length > 0 ? [messageCoverageRef(prior.at(-1)!.id)] : []),
+      ...toolTranscriptUnits(source.providerToolMessages ?? []).filter((unit) => unit.settled).map(unitCoverageRef)
+    ] };
+  };
   const hex = (seed: string, length: number) => Buffer.from(seed).toString("hex").padEnd(length, "0").slice(0, length);
   const observed = (id: string, chars = 1_000): ToolExecutionResult => projectObservationForProvider({
     callId: id, content: [{ text: `rare ${id} ${"x".repeat(chars)}`, type: "text" }], name: "read_record", status: "complete",
@@ -801,21 +809,18 @@ describe("hybrid context budget boundaries", () => {
         .toBe(observationWholeResultTokens(input).tokens);
     });
 
-    it("trims older legacy turns to the tightened budget and never loosens it", () => {
-      const input = legacyOf(hybrid(history()));
-      const fitting = accepted(budgetOf(input));
-      expect(fitting.contextTruncation).toBeNull();
-      const budgetTokens = Math.floor(assembled(input) * 0.75);
-      const rebuilt = accepted(budgetOf({ ...input, contextCompactionRebuild: { version: 1, round: 1, budgetTokens } }));
-      expect(rebuilt.contextTruncation?.droppedMessages).toBeGreaterThan(0);
-      expect(rebuilt.request.context?.messages.at(-1)?.id).toBe("current");
-      expect(assembled(rebuilt.request)).toBeLessThanOrEqual(budgetTokens);
-      expect(rebuilt.request.contextCompaction?.budgetTokens).toBe(budgetTokens);
-      // A record above the admitted budget is ignored rather than widening it.
-      const loose = accepted(budgetOf({ ...input, contextCompactionRebuild: { version: 1, round: 1, budgetTokens: HYBRID_BUDGET * 2 } }));
-      expect(loose.request.contextCompaction?.budgetTokens).toBe(HYBRID_BUDGET);
-      expect(loose.contextTruncation).toBeNull();
-    });
+  it("never trims a request without the policy under the tightened budget and never loosens it", () => {
+    const input = legacyOf(hybrid(history()));
+    const fitting = accepted(budgetOf(input));
+    expect(fitting.contextTruncation).toBeNull();
+    const budgetTokens = Math.floor(assembled(input) * 0.75);
+    expect(budgetOf({ ...input, contextCompactionRebuild: { version: 1, round: 1, budgetTokens } }))
+      .toMatchObject({ ok: false, error: { code: "context_too_large" } });
+    // A record above the admitted budget is ignored rather than widening it.
+    const loose = accepted(budgetOf({ ...input, contextCompactionRebuild: { version: 1, round: 1, budgetTokens: HYBRID_BUDGET * 2 } }));
+    expect(loose.request.contextCompaction?.budgetTokens).toBe(HYBRID_BUDGET);
+    expect(loose.request.context?.messages).toEqual(input.context?.messages);
+  });
   });
 
   it("rejects an irreducible current message before a run exists, exactly like legacy", () => {
@@ -839,13 +844,12 @@ describe("hybrid context budget boundaries", () => {
   it("accepts a current summary with nothing left to mask at 75-100% without trimming or a second summary", () => {
     const settled = [observed("old-1"), observed("old-2"), observed("new-1")];
     const recent = [turn("u1", "user", 12_500), turn("a1", "assistant", 12_500), turn("u2", "user", 12_500), turn("a2", "assistant", 12_500)];
+    const call = (id: string) => ({ call_id: id, name: "read_record", type: "function_call" });
     const base = hybrid([turn("older", "user", 40_000), ...recent, turn("current", "user", 100)], { providerToolMessages: [
-      reference(settled[0]!), reference(settled[1]!),
-      { call_id: "new-1", name: "read_record", type: "function_call" },
-      openAIResponsesToolBridge.appendToolResult(undefined, settled[2]!)
+      call("old-1"), reference(settled[0]!), call("old-2"), reference(settled[1]!),
+      call("new-1"), openAIResponsesToolBridge.appendToolResult(undefined, settled[2]!)
     ] });
     const summarized = applyContextSummaryToRequest(base, summaryFor(base));
-    expect(contextSummaryIsCurrent(summarized)).toBe(true);
     const observations = contextObservationsFromResults(settled);
     const result = accepted(budgetOf(summarized, observations));
     const measurement = result.request.contextCompaction!;
@@ -855,22 +859,19 @@ describe("hybrid context budget boundaries", () => {
     expect(result.contextTruncation).toBeNull();
     expect(result.request.context?.messages).toEqual(summarized.context?.messages);
     expect(summaryNeedsProvider(result.request)).toBe(false);
-    // Regression oracle: legacy admits the same request unchanged.
-    const legacy = accepted(budgetOf(legacyOf(summarized), observations));
-    expect(legacy.contextTruncation).toBeNull();
-    expect(legacy.request.context?.messages).toEqual(result.request.context?.messages);
-    expect(legacy.request.providerToolMessages).toEqual(result.request.providerToolMessages);
 
-    // A later round that can still mask stays masking-only: the summary
-    // already covers every retained turn, so the 75% trigger cannot buy it again.
+    // A later round over the trigger releases covered material only: the
+    // notes already cover every retained turn and unit, so nothing is bought
+    // again and the covered older units leave whole toward the target.
     const grown = { ...summarized, providerToolMessages: [
-      reference(settled[0]!), openAIResponsesToolBridge.appendToolResult(undefined, observed("old-2", 4_000)),
-      ...summarized.providerToolMessages!.slice(2)
+      call("old-1"), reference(settled[0]!), call("old-2"), openAIResponsesToolBridge.appendToolResult(undefined, observed("old-2", 4_000)),
+      ...summarized.providerToolMessages!.slice(4)
     ] };
-    const masked = accepted(budgetOf(grown, observations));
-    expect(masked.request.contextCompaction).toMatchObject({ maskedObservations: 1, outcome: "masking_applied" });
-    expect(masked.contextTruncation).toBeNull();
-    expect(summaryNeedsProvider(masked.request)).toBe(false);
+    const released = accepted(budgetOf(grown, observations));
+    expect(released.request.contextCompaction).toMatchObject({ outcome: "already_fits" });
+    expect(released.request.providerToolMessages).toEqual(summarized.providerToolMessages!.slice(4));
+    expect(released.contextTruncation).toBeNull();
+    expect(summaryNeedsProvider(released.request)).toBe(false);
   });
 
   it("keeps a short history beside a large attachment without buying a summary", () => {
@@ -883,10 +884,8 @@ describe("hybrid context budget boundaries", () => {
     expect(result.request.context?.messages.map((message) => message.id)).toEqual(["u1", "a1", "u2", "a2", "current"]);
     expect(result.request.attachments[0]!.extractedText).toContain("[truncated for model context]");
     expect(assembled(result.request)).toBeLessThanOrEqual(HYBRID_BUDGET);
-    // Legacy answers too, by dropping the two short turns.
-    const legacy = accepted(budgetOf(legacyOf(input)));
-    expect(legacy.contextTruncation).toMatchObject({ droppedMessages: 4 });
-    expect(legacy.request.contextCompaction).toMatchObject({ legacyFallback: true, outcome: "needs_summary" });
+    // Without the policy the fit check refuses instead of dropping the short turns.
+    expect(budgetOf(legacyOf(input))).toMatchObject({ ok: false, error: { code: "context_too_large" } });
   });
 
   it("fits a large attachment after the summary replaces a long history instead of refusing it", () => {
@@ -974,7 +973,6 @@ describe("hybrid context budget boundaries", () => {
     expect(answer.request.context?.messages.map((message) => message.id)).toEqual([summaryId, "current"]);
     expect(answer.request.contextCompaction).toMatchObject({ legacyFallback: false, outcome: "already_fits" });
     expect(assembled(answer.request)).toBeLessThanOrEqual(HYBRID_BUDGET);
-    expect(budgetOf(legacyOf(summarized)).ok).toBe(true);
   });
 
   it("bounds a covered exact tail after a summary instead of refusing the paid result", () => {
@@ -987,11 +985,10 @@ describe("hybrid context budget boundaries", () => {
     const summaryId = `__context-summary-${summarized.contextCompactionSummary!.id}`;
     expect(answer.contextTruncation).toMatchObject({ droppedMessages: 2 });
     expect(answer.request.context?.messages.map((message) => message.id)).toEqual([summaryId, "t2", "t3", "current"]);
-    expect(answer.request.contextCompaction).toMatchObject({ legacyFallback: true, outcome: "already_fits" });
+    expect(answer.request.contextCompaction).toMatchObject({ legacyFallback: false, outcome: "already_fits" });
     expect(answer.request.contextCompaction!.afterTokens).toBeLessThanOrEqual(HYBRID_BUDGET);
     expect(summaryNeedsProvider(answer.request)).toBe(false);
     expect(assembled(answer.request)).toBeLessThanOrEqual(HYBRID_BUDGET);
-    expect(budgetOf(legacyOf(summarized)).ok).toBe(true);
   });
 });
 
@@ -1043,7 +1040,7 @@ describe("provider-aware context estimate in the run budget", () => {
     const chat = (provider: string, modelId: string) => request({
       content: messages.at(-1)!.content,
       context: { messages, mode: "branch_path" },
-      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages, mode: "hybrid" }),
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages }),
       modelCapabilities: capabilities, modelId, provider, toolObservationVersion: 1, tools: [readToolResultTool]
     });
     const planned = (input: ProviderRunRequest) => {

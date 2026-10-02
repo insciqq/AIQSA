@@ -112,6 +112,10 @@ export function resolveEffectiveMcpValues(input: {
   return { invalidSlotKeys, missingSlotKeys, plan, values };
 }
 
+/**
+ * A member's runtime identity. A personal owner's switched-off tools are a
+ * projection filter, never part of it: switching a tool keeps the generation.
+ */
 export function mcpRuntimeFingerprint(input: {
   oauthConnectionRevision: string | null;
   plan: EffectiveMcpSlotPlanItem[];

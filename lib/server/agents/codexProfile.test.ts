@@ -18,7 +18,7 @@ describe("managed Codex invocation", () => {
     expect(text).not.toContain('"find_tools"');
     expect(renderCodexManagedProfile({ ...profile, mcpMode: "off" })).not.toContain("[mcp_servers.aiqsa]");
   });
-  it("renders the unchanged v7 profile when observations are Off", () => {
+  it("renders the unchanged versioned profile when observations are Off", () => {
     for (const mcpMode of ["off", "auto", "all"] as const) {
       expect(renderCodexManagedProfile({ ...profile, mcpMode, toolObservations: false }))
         .toBe(renderCodexManagedProfile({ ...profile, mcpMode }));
@@ -37,7 +37,7 @@ describe("managed Codex invocation", () => {
     const config = renderCodexManagedProfile(profile);
     expect(config).toContain("stream_max_retries = 2\n");
     expect(config).toContain("request_max_retries = 0\n");
-    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(7);
+    expect(CODEX_MANAGED_PROFILE_VERSION).toBe(8);
   });
   it.each([undefined, 5_000, 3_600_000, 86_400_000])("uses the admitted response budget for native idle reasoning: %s", (responseTimeoutMs) => {
     expect(renderCodexManagedProfile({ ...profile, responseTimeoutMs }))
@@ -61,6 +61,12 @@ describe("managed Codex invocation", () => {
     if (mcpMode === "off") expect(config).toContain('enabled_tools = ["aiqsa_search"]');
     if (mcpMode === "auto") expect(config).toContain('enabled_tools = ["find_tools","call_tool","aiqsa_search"]');
     if (mcpMode === "all") expect(config).not.toContain("enabled_tools");
+  });
+  it.each(["off", "auto", "all"] as const)("keeps AIQSA MCP tools out of Codex deferred tool search with MCP %s", (mcpMode) => {
+    const config = renderCodexManagedProfile({ ...profile, mcpMode, artifacts: true });
+    const server = config.slice(config.indexOf("[mcp_servers.aiqsa]"));
+    expect(server).toContain('\nomit_tools_from = ["deferred"]\n');
+    expect(config.match(/omit_tools_from/gu)).toHaveLength(1);
   });
   it("uses scoped gateway auth and only discovery meta-tools in Auto", () => {
     const config = renderCodexManagedProfile(profile);

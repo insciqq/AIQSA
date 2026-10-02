@@ -6,6 +6,7 @@ import { admittedAgentRequest, createAgentModelGateway } from "./modelGateway";
 import { ProviderSafeFetchError } from "../providers/providerSafeFetch";
 import { AgentExecutionError } from "./failures";
 import { observedFailure } from "../providers/providerObservability";
+import * as observability from "../observability";
 
 const configuration = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
   compatibilityHash: "a".repeat(64), mcpMode: "auto" as const };
@@ -380,6 +381,104 @@ describe("Agent model gateway", () => {
     }
     expect(() => admittedAgentRequest({ ...body, input: [{ type: "additional_tools", tools: Array(256).fill(namespace) }] }, "fixture-model", 2048))
       .toThrow("agent_model_tools_invalid");
+  });
+
+  // Tool list (type, name) of a real Codex gpt-5.5 Agent request with verified native search.
+  const parameters = { type: "object", properties: {} };
+  const codexTools = [
+    ...["exec_command", "write_stdin", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "request_user_input"]
+      .map((name) => ({ type: "function", name, description: "Synthetic", strict: false, parameters })),
+    { type: "custom", name: "apply_patch", description: "Synthetic", format: { type: "grammar", syntax: "lark", definition: "start: /.+/" } },
+    ...["get_goal", "create_goal", "update_goal"].map((name) => ({ type: "function", name, description: "Synthetic", strict: false, parameters })),
+    { type: "tool_search", execution: "client", description: "# Tool discovery\n\nSynthetic",
+      parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"], additionalProperties: false } },
+    { type: "web_search", external_web_access: true }
+  ];
+  const codexRequest = { model: "fixture-model", stream: true, instructions: "Synthetic", tools: codexTools, tool_choice: "auto",
+    parallel_tool_calls: true, input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "Synthetic task" }] }] };
+  const deferredNamespace = { type: "namespace", name: "mcp__aiqsa__", description: "Synthetic", tools: [
+    { type: "function", name: "find_tools", description: "Synthetic", strict: false, defer_loading: true, parameters },
+    { type: "function", name: "call_tool", description: "Synthetic", strict: false, defer_loading: true, parameters }
+  ] };
+  const searchCall = { type: "tool_search_call", call_id: "tsc_fixture", status: "completed", execution: "client",
+    arguments: { query: "synthetic tools", limit: 8 } };
+  const searchOutput = { type: "tool_search_output", call_id: "tsc_fixture", status: "completed", execution: "client", tools: [deferredNamespace] };
+
+  it("admits the Codex client tool search over its own deferred local tools, with or without native search", () => {
+    expect(admittedAgentRequest(codexRequest, "fixture-model", 2048, true)).toMatchObject({ tools: codexTools, input: codexRequest.input });
+    const withoutSearch = { ...codexRequest, tools: codexTools.filter((tool) => tool.type !== "web_search") };
+    expect(admittedAgentRequest(withoutSearch, "fixture-model", 2048)).toMatchObject({ tools: withoutSearch.tools });
+    expect(() => admittedAgentRequest(codexRequest, "fixture-model", 2048)).toThrow("agent_model_tools_invalid");
+    const search = codexTools.find((tool) => tool.type === "tool_search")!;
+    for (const tool of [{ ...search, execution: "server" }, { type: "tool_search" }, { ...search, parameters: "{}" },
+      { ...search, description: 1 }, { ...search, server_url: "http://private.invalid" }, { ...search, tools: [{ type: "mcp" }] }]) {
+      expect(() => admittedAgentRequest({ ...codexRequest, tools: [tool] }, "fixture-model", 2048, true)).toThrow("agent_model_tools_invalid");
+    }
+    // Discovery is a top-level declaration only, never a nested or loaded tool.
+    for (const tools of [[{ type: "namespace", name: "functions", tools: [search] }]]) {
+      expect(() => admittedAgentRequest({ ...codexRequest, tools }, "fixture-model", 2048, true)).toThrow("agent_model_tools_invalid");
+    }
+    expect(() => admittedAgentRequest({ ...codexRequest, input: [{ type: "additional_tools", role: "developer", tools: [search] }] },
+      "fixture-model", 2048, true)).toThrow("agent_model_tools_invalid");
+    expect(() => admittedAgentRequest({ ...codexRequest, input: [{ ...searchOutput, tools: [search] }] }, "fixture-model", 2048, true))
+      .toThrow("agent_model_tools_invalid");
+  });
+
+  it("replays client tool search calls and their loaded local definitions behind the hosted-tool fence", () => {
+    const input = [...codexRequest.input, searchCall, searchOutput,
+      { type: "function_call", call_id: "call_fixture", namespace: "mcp__aiqsa__", name: "find_tools", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_fixture", output: "Synthetic result" },
+      { ...searchCall, call_id: "tsc_empty", internal_chat_message_metadata_passthrough: { turn_id: "turn" } },
+      { ...searchOutput, call_id: "tsc_empty", tools: [] }];
+    expect(admittedAgentRequest({ ...codexRequest, input }, "fixture-model", 2048, true)).toMatchObject({ input });
+    for (const item of [
+      { ...searchCall, execution: "server" }, { ...searchCall, arguments: "{\"query\":\"synthetic\"}" },
+      { ...searchCall, call_id: 1 }, { ...searchCall, server_url: "http://private.invalid" }, { ...searchCall, tools: [] },
+      { ...searchOutput, execution: "server" }, { ...searchOutput, status: 1 }, { ...searchOutput, arguments: {} },
+      { ...searchOutput, content: [{ type: "input_file", file_id: "foreign" }] }
+    ]) expect(() => admittedAgentRequest({ ...codexRequest, input: [item] }, "fixture-model", 2048, true)).toThrow("agent_model_input_invalid");
+    for (const tools of [
+      [{ type: "mcp", server_label: "hosted", server_url: "http://private.invalid" }], [{ type: "file_search", vector_store_ids: ["foreign"] }],
+      [{ type: "web_search" }], [{ ...deferredNamespace, tools: [{ type: "mcp", name: "hosted" }] }], "tools",
+      Array(257).fill({ type: "function", name: "synthetic", parameters })
+    ]) expect(() => admittedAgentRequest({ ...codexRequest, input: [{ ...searchOutput, tools }] }, "fixture-model", 2048, true))
+      .toThrow("agent_model_tools_invalid");
+  });
+
+  it("dispatches the real Codex tool list and fences a streamed client tool search before forwarding it", async () => {
+    const event = { type: "response.output_item.done", item: { ...searchCall, id: "tsc_item" } };
+    const terminal = { type: "response.completed", response: { output: [event.item], usage: { input_tokens: 9, output_tokens: 2, total_tokens: 11 } } };
+    const f = fixture(sse(event, terminal), true);
+    const response = await f.handle(new Request("http://agent.invalid/v1/responses", { method: "POST", body: JSON.stringify(codexRequest) }));
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('"type":"tool_search_call"');
+    expect(f.transport.request).toHaveBeenCalledWith(expect.objectContaining({ tools: codexTools }), expect.any(AbortSignal));
+    expect(f.store.releaseModelTools).toHaveBeenCalled();
+    expect(f.onFailure).not.toHaveBeenCalled();
+  });
+
+  it("logs the exact admission fence while the run keeps the generic provider failure", async () => {
+    const logs: unknown[][] = [];
+    const spy = vi.spyOn(observability, "logEvent").mockImplementation((...args) => { logs.push(args); });
+    try {
+      for (const [value, code] of [
+        [{ ...codexRequest, tools: [{ type: "mcp", server_url: "http://private.invalid" }] }, "agent_model_tools_invalid"],
+        [{ ...codexRequest, input: [{ type: "item_reference", id: "foreign" }] }, "agent_model_input_invalid"],
+        [{ ...codexRequest, previous_response_id: "resp_foreign" }, "agent_model_request_invalid"]
+      ] as const) {
+        logs.length = 0;
+        const f = fixture(sse(), true);
+        const response = await f.handle(new Request("http://agent.invalid/v1/responses", { method: "POST", body: JSON.stringify(value) }));
+        expect(response.status).toBe(502);
+        expect(await response.json()).toMatchObject({ error: { code: "agent_provider_failed" } });
+        expect(f.onFailure).toHaveBeenCalledWith("agent_provider_failed");
+        expect(f.transport.request).not.toHaveBeenCalled();
+        expect(logs).toEqual([["provider_operation", expect.objectContaining({ adapterKind: "openai_responses_compatible",
+          stage: "answer", outcome: "failed", action: "stop", code, reason: "policy" })]]);
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("records an unknown physical outcome when the provider stream has no terminal", async () => {

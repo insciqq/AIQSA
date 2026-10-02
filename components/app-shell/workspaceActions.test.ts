@@ -1840,6 +1840,17 @@ describe("workspace actions", () => {
     expect(state.setSelectedProvider).toHaveBeenCalledWith("saved-provider-a", "system");
   });
 
+  it("opens a personal chat in the saved MCP mode instead of the previous chat's", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const catalog = useWorkspaceStore.getState().catalog!;
+    useWorkspaceStore.setState({ catalog: { ...catalog, defaults: { ...catalog.defaults, mcpMode: "load_all" } } });
+    useComposerControlStore.setState({ mcpSelection: { mode: "off" } });
+
+    await state.actions.activateChat(state.chatB, { resumeRuns: false });
+
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
+  });
+
   it("resolves Knowledge defaults as chat, then project, then Off", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     useWorkspaceStore.setState({

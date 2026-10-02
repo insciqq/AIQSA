@@ -378,6 +378,22 @@ describe("Workspace coordinator", () => {
     expect(f.runtime.collectOutputs).toHaveBeenCalledOnce();
   });
 
+  it("starts a fresh native thread from the full prompt when no compatible thread was armed", async () => {
+    const f = fixture();
+    const startAgent = vi.fn(async () => undefined);
+    const bytes = Buffer.from([{ type: "thread.started", thread_id: randomUUID() }, { type: "turn.started" }, { type: "turn.completed" }]
+      .map(event => JSON.stringify(event)).join("\n") + "\n");
+    const pollAgent = vi.fn(async () => ({ cursor: 0, nextCursor: bytes.length, stdoutBase64: bytes.toString("base64"), done: true, exitCode: 0 }));
+    Object.assign(f.runtime, { startAgent, pollAgent });
+    await f.coordinator.executeAgent!({ runId: f.runId, userId: "user_1", workspace: f.workspace, modelRunToolCallId: randomUUID(),
+      prompt: "Full accepted prompt", resumePrompt: "Resume-only prompt", runToken: "a".repeat(43), signal: new AbortController().signal,
+      timeoutSeconds: 30, onEvent: vi.fn(), threadId: undefined,
+      profile: { gatewayOrigin: "http://agent.invalid", modelId: "synthetic", contextWindowTokens: 128000,
+        maxOutputTokens: 4096, developerInstructions: "Synthetic", mcpMode: "off" as const, mcpTimeoutSeconds: 90 } });
+    expect(startAgent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ prompt: "Full accepted prompt", threadId: undefined }));
+    expect(startAgent).not.toHaveBeenCalledWith(expect.objectContaining({ prompt: "Resume-only prompt" }));
+  });
+
   it("interrupts only after a native command settles and resumes without reinitializing Skills or files", async () => {
     const f = fixture(), threadId = randomUUID(), first = randomUUID(), second = randomUUID();
     const startAgent = vi.fn(async () => undefined), interruptAgent = vi.fn(async () => true);

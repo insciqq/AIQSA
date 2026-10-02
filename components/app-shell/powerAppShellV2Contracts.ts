@@ -26,6 +26,7 @@ import type {
   ComposerConfigKnowledgeSource
 } from "@/lib/contracts/composerConfig";
 import type { KnowledgeBaseSummary, KnowledgeSelection } from "@/lib/contracts/knowledge";
+import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import type { ThemeId } from "@/components/app-shell/theme";
 import type {
@@ -371,6 +372,7 @@ export type ShellComposerView = {
   reasoningMode: string;
   retryCatalog(): void;
   searchPlanMode: SearchPlanMode;
+  selectMcpMode(selection: McpRunSelection): void;
   selectModel(model: CatalogModel): void;
   selectSearchPlan(optionIds: readonly string[], mode: SearchPlanMode): void;
   selectedModelId: string;

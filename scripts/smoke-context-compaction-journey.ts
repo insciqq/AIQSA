@@ -18,7 +18,8 @@
  *    `capabilities.contextWindow` so the 80 % compaction trigger is cheap;
  * 2. signs in with the stand's test bootstrap token (as
  *    tests/e2e/support/localAuth.ts does);
- * 3. creates a personal chat excluded from Memory and sends a bounded
+ * 3. creates a personal chat excluded from Memory (kept in Memory, so Memory
+ *    search is admitted, with AIQSA_JOURNEY_MEMORY=1) and sends a bounded
  *    journey: a long Cyrillic brief, two corrections, a standing three-item
  *    list rule, fillers until the session estimate nears the trigger or a
  *    summary is bought, then one probe that needs the corrections and rule;
@@ -45,6 +46,8 @@
  * - AIQSA_JOURNEY_CONTEXT_WINDOW (default 32768, 16384..65536)
  * - AIQSA_JOURNEY_MAX_TURNS (default 12, 6..12)
  * - AIQSA_JOURNEY_CLEANUP_PROVIDERS=1
+ * - AIQSA_JOURNEY_MEMORY=1: the journey chat stays in Memory (not EXCLUDED), so
+ *   Memory search is admitted for its runs; default unchanged
  * - AIQSA_JOURNEY_DEBUG=1: extra sanitized lines before the result, one per
  *   distinct request (method, path with ids as <id>, HTTP status and the
  *   stable error/code/outcome field of a JSON body) and one per reuse
@@ -442,11 +445,15 @@ type RouteState = {
   stage: JourneyStage;
 };
 
+/** Opt-in: the journey chat stays in Memory, so Memory search is admitted. */
+const journeyMemory = process.env.AIQSA_JOURNEY_MEMORY?.trim() === "1";
+
 async function createJourneyChat(api: Api): Promise<Readonly<{ activeLeafMessageId: string | null; id: string }>> {
   const chat = decodeChatSummaryResponse(await json(api, "chat", "/api/chats", {
     body: { title: "Context compaction journey" }, method: "POST"
   })) ?? fail("chat", "chat_response_invalid");
-  // The synthetic journey never becomes a Memory learning source.
+  if (journeyMemory) return chat;
+  // By default the synthetic journey never becomes a Memory learning source.
   const mode = decodeMemoryConsumerChatModeResponse(await json(api, "chat",
     `/api/me/chats/${encodeURIComponent(chat.id)}/memory-mode`, { body: { mode: "EXCLUDED" }, method: "PATCH" }));
   if (!mode.ok || mode.value.mode !== "EXCLUDED") fail("chat", "memory_exclusion_failed");
@@ -703,7 +710,7 @@ async function main(): Promise<number> {
   }
   const exitCode = journeyExitCode(routes, config.explicitRoutes);
   emit({ status: exitCode === 0 ? "passed" : "failed", contextWindow: config.contextWindow, debug: config.debug,
-    maxTurns: config.maxTurns, routes });
+    maxTurns: config.maxTurns, memory: journeyMemory, routes });
   return exitCode;
 }
 

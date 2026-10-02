@@ -18,7 +18,7 @@ import {
   EMPTY_KNOWLEDGE_SELECTION,
   type KnowledgePlan
 } from "../../contracts/knowledge";
-import { decodeMcpRunSelection } from "../../contracts/mcp";
+import { decodeMcpRunSelection, MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_PINNED, SKILL_MAX_AVAILABLE, type SkillBudgetFacts, type SkillValidationError } from "../../contracts/skills";
 import { resolveAssistantChatBaseline, resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
 import { renderAssistantInstructions, renderInstructionPreset } from "../../domain/instructionTemplates";
@@ -1839,6 +1839,14 @@ async function prepareRunWith(
       // is privacy-neutral and never names the affected servers.
       return failure("assistant_tools_not_available", 409, "Required MCP tools are unavailable.");
     }
+    if (ordinaryMcpSelection?.mode === "load_all" && mcpPlan.code === "mcp_plan_too_large" &&
+      mcpPlan.limit === "maxTools") {
+      return failure(
+        mcpPlan.code,
+        409,
+        `Load all can offer at most ${MCP_RUN_PLAN_LIMITS.maxTools} MCP tools to one message. Use MCP Auto or switch some tools off.`
+      );
+    }
     const affected = mcpPlan.issues.map((issue) => issue.name).join(", ");
     return failure(
       mcpPlan.code,
@@ -2121,13 +2129,12 @@ async function prepareRunWith(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
-    // Knowledge and native Memory search keep the whole-turn guard: summaries
-    // cannot retain private evidence after its source authority is revoked.
-    // The observation store/reader remains available for other tool results.
-    ...(!agent && !knowledgeRequested && !memorySearch && toolObservationVersion === 1 ? { contextCompactionPolicy: conversationContextPolicy({
+    // Every non-Agent run compacts by notes before anything leaves its
+    // context, whatever Knowledge, Memory search, Observation or tool support
+    // it has; Codex owns Agent context.
+    ...(!agent ? { contextCompactionPolicy: conversationContextPolicy({
       leafMessageId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
-      messages: contextMessages,
-      mode: "hybrid"
+      messages: contextMessages
     }) } : {}),
     ...(knowledgeRequested ? {
       knowledgeAnswerWorkflowVersion: 11 as const,
@@ -2352,8 +2359,8 @@ async function prepareRunWith(
     normalizedRequest.followupContextReserveTokens = reserve;
     providerRequest.followupContextReserveTokens = reserve;
   }
-  // The exact branch stays the admitted context. A Knowledge run has no hybrid
-  // policy, so it never carries notes.
+  // The exact branch stays the admitted context; carried notes are frozen
+  // beside it as a candidate the executor applies only when needed.
   const reuse = await carriedContextSummary({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     conversationMessages,

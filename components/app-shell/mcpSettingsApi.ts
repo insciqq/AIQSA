@@ -2,7 +2,6 @@ import { shellFetch } from "@/components/app-shell/shellApi";
 import { isMcpToolName, isMcpUnavailableToolReason, mcpRuntimeErrorCode } from "@/lib/contracts/mcp";
 import type {
   McpReadiness,
-  McpOperationalStatus,
   McpSlotValue,
   McpValidationIssue,
   UserMcpCatalogResponse,
@@ -43,9 +42,7 @@ function userServer(value: unknown): UserMcpServer | null {
       ["disconnected", "disconnecting", "ready", "reauthorization_required"].includes(String(value.oauthState))
     ) ||
     !(value.accountLabel === null || typeof value.accountLabel === "string") ||
-    !["active", "checking", "inactive"].includes(String(value.operationalStatus)) ||
     !Array.isArray(value.fields) || !Array.isArray(value.tools)) return null;
-  if (value.operationalStatus === "active" && (!value.enabled || value.readiness !== "ready")) return null;
 
   const fields = value.fields.flatMap((candidate) => {
     if (!isRecord(candidate) || typeof candidate.slotKey !== "string" ||
@@ -103,7 +100,6 @@ function userServer(value: unknown): UserMcpServer | null {
     name: value.name,
     oauthAvailable: value.oauthAvailable,
     oauthState: value.oauthState as UserMcpServer["oauthState"],
-    operationalStatus: value.operationalStatus as McpOperationalStatus,
     readiness: value.readiness as McpReadiness,
     ...(value.runtimeErrorCode !== undefined ? {
       runtimeErrorCode: value.runtimeErrorCode === null ? null : mcpRuntimeErrorCode(value.runtimeErrorCode)
@@ -138,15 +134,23 @@ function validationIssues(value: unknown): readonly McpValidationIssue[] {
 export class McpSettingsApiError extends Error {
   readonly code: string;
   readonly issues: readonly McpValidationIssue[];
+  /** Seconds from `retry-after` on a rate-limited OAuth start. */
+  readonly retryAfterSeconds: number | null;
   readonly status: number;
 
-  constructor(code: string, status: number, issues: readonly McpValidationIssue[] = []) {
+  constructor(code: string, status: number, issues: readonly McpValidationIssue[] = [], retryAfterSeconds: number | null = null) {
     super(code);
     this.name = "McpSettingsApiError";
     this.code = code;
     this.issues = issues;
+    this.retryAfterSeconds = retryAfterSeconds;
     this.status = status;
   }
+}
+
+function retryAfterSeconds(response: Response): number | null {
+  const raw = response.headers.get("retry-after")?.trim();
+  return response.status === 429 && raw && /^\d{1,6}$/u.test(raw) && Number(raw) > 0 ? Number(raw) : null;
 }
 
 async function responseJson(response: Response): Promise<unknown> {
@@ -238,7 +242,7 @@ export async function startMcpOAuth(action: string): Promise<string> {
   });
   const payload = await responseJson(response);
   if (!response.ok) {
-    throw new McpSettingsApiError(stableError(payload), response.status, validationIssues(payload));
+    throw new McpSettingsApiError(stableError(payload), response.status, validationIssues(payload), retryAfterSeconds(response));
   }
   const location = isRecord(payload) && typeof payload.location === "string" ? payload.location : null;
   let url: URL | null = null;

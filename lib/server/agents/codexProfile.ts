@@ -1,12 +1,13 @@
 import { WORKSPACE_PROJECT_DIRECTORY } from "@/lib/domain/workspace";
 import { providerResponseTimeoutSeconds } from "@/lib/contracts/providerResponseTimeout";
 
-export const CODEX_VERSION = "0.154.0";
+export const CODEX_VERSION = "0.159.3";
 /** Bump when managed profile semantics change; accepted thread compatibility includes it.
  * The optional observation reader changes the profile only for accepted
  * observation-v1 runs, whose identity names that version separately; an
- * Off run keeps the exact v7 profile and can resume a pre-upgrade thread. */
-export const CODEX_MANAGED_PROFILE_VERSION = 7;
+ * Off run keeps the exact profile of its version. v8 exposes AIQSA's MCP
+ * tools directly instead of behind Codex's deferred tool search. */
+export const CODEX_MANAGED_PROFILE_VERSION = 8;
 export const CODEX_PROVIDER_MAX_RETRIES = 2;
 export const CODEX_HOME_DIRECTORY = "/workspace/.aiqsa/codex";
 export const CODEX_RUN_TOKEN_ENV = "AIQSA_AGENT_TOKEN";
@@ -139,6 +140,10 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
       `bearer_token_env_var = ${JSON.stringify(CODEX_RUN_TOKEN_ENV)}`,
       'required = true',
       'startup_timeout_sec = 20',
+      // Search-tool models otherwise defer every MCP tool behind Codex's own
+      // BM25 tool_search, so the model may never see find_tools/call_tool or
+      // the AIQSA built-ins. Keep this server's tools in the initial tool list.
+      'omit_tools_from = ["deferred"]',
       `tool_timeout_sec = ${input.mcpTimeoutSeconds}`,
       ...(input.mcpMode !== "all" ? [`enabled_tools = ${JSON.stringify([
         ...(input.mcpMode === "auto" ? ["find_tools", "call_tool"] : []), ...(input.aiqsaSearch ? ["aiqsa_search"] : []),

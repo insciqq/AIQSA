@@ -38,6 +38,8 @@ import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { syntheticImagePlan } from "@/tests/support/imagePlan";
+import { personalMcpFixture } from "@/tests/support/personalMcp";
+import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import { conversationMessagesFromPathRows } from "./prismaRepository";
 import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import { renderCodexManagedProfile } from "../agents/codexProfile";
@@ -901,7 +903,7 @@ describe("standing Memory and optional search admission", () => {
   const snapshot = { version: "memory-search-v1" as const, maxCalls: 3 as const,
     resultTokens: 6000 as const, comparisonResultTokens: 12000 as const, timeoutSeconds: 30,
     memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
-  it("admits native recall without Workspace or MCP and prevents summary reuse of its evidence", async () => {
+  it("admits native recall without Workspace or MCP under the one conversation policy", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const admit = vi.fn(async () => snapshot);
     const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } }, sendInput()));
@@ -909,7 +911,8 @@ describe("standing Memory and optional search admission", () => {
     expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
     expect(prepared.normalizedRequest.memorySearch).toEqual(snapshot);
     expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search")).toBe(true);
-    expect(prepared.normalizedRequest.contextCompactionPolicy).toBeUndefined();
+    // Memory search no longer disables notes: the one non-Agent policy applies.
+    expect(prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", version: 1 });
   });
   it.each(["none", "no_capability"])("retains standing preparation when search is unavailable (%s)", async mode => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: mode === "none" } });
@@ -919,6 +922,8 @@ describe("standing Memory and optional search admission", () => {
     expect(admit).not.toHaveBeenCalled();
     expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
     expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+    // A model without tools (or tools off) still compacts by notes.
+    expect(prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", version: 1 });
   });
   it("keeps excluded chats outside both Memory contracts", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
@@ -1061,6 +1066,8 @@ describe("run preparation", () => {
         }, sendInput(body)));
         expect(prepared.normalizedRequest.agent).toMatchObject({ limitsEnabled, timeoutSeconds: limitsEnabled ? 3600 : null,
           maxOutputTokens: limitsEnabled ? 256 : 2048, policyVersion: limitsEnabled ? 2 : 1 });
+        // Codex owns Agent context: no conversation policy is frozen.
+        expect(prepared.normalizedRequest.contextCompactionPolicy).toBeUndefined();
         expect(prepared.normalizedRequest.prompt.system).not.toContain("no current message manifest is present");
         expect(prepared.normalizedRequest.prompt.system).toContain(WORKSPACE_GUIDE_PATHS.psd);
         expect(prepared.normalizedRequest.prompt.system).not.toContain(WORKSPACE_PSD_GUIDANCE);
@@ -1075,6 +1082,12 @@ describe("run preparation", () => {
         expect(retry.normalizedRequest.workspace?.guidanceVersion).toBe(1);
         expect(retry.normalizedRequest.prompt.system).toBe(prepared.normalizedRequest.prompt.system);
         configs.push(prepared.normalizedRequest.agent!);
+        // A snapshot accepted under an earlier guest Codex keeps its exact Agent
+        // configuration; the sibling's executor fails it closed before dispatch.
+        const preUpgrade = { ...prepared, normalizedRequest: { ...prepared.normalizedRequest,
+          agent: { ...prepared.normalizedRequest.agent!, codexVersion: "0.158.0" } } };
+        expect(preparedFrom(await preparePdfRetry({ workspace }, { adapter: harness.adapter, prepared: preUpgrade,
+          userMessageId: prepared.workspaceAdmissionPlan!.userMessageId })).normalizedRequest.agent).toEqual(preUpgrade.normalizedRequest.agent);
       }
       expect(load).toHaveBeenCalledWith(expect.objectContaining({ requiresClientSearchRoutes: true }));
       expect(workspace.prepare).toHaveBeenCalledWith(expect.objectContaining({ agentEnabled: true }));
@@ -1171,12 +1184,12 @@ describe("run preparation", () => {
       const off = identities.get("off")!, v1 = identities.get("v1")!;
       // Observation Off introduces no extra identity field. The changed
       // developer contract must nevertheless start a fresh native thread.
-      expect(off.input.managedProfileVersion).toBe(7);
+      expect(off.input.managedProfileVersion).toBe(8);
       expect(off.input).not.toHaveProperty("toolObservationVersion");
       expect(off.input.workspace).toMatchObject({ guidanceVersion: 1 });
       const { guidanceVersion: _guidance, ...legacyWorkspace } = off.input.workspace as Record<string, unknown>;
       expect(hashCanonicalMcpValue({ ...off.input, workspace: legacyWorkspace })).not.toBe(off.hash);
-      expect(v1.input).toMatchObject({ managedProfileVersion: 7, toolObservationVersion: 1 });
+      expect(v1.input).toMatchObject({ managedProfileVersion: 8, toolObservationVersion: 1 });
       const { toolObservationVersion: _version, ...withoutObservation } = v1.input;
       expect(hashCanonicalMcpValue(withoutObservation)).toBe(off.hash);
       expect(v1.hash).not.toBe(off.hash);
@@ -1545,7 +1558,7 @@ describe("run preparation", () => {
     expect(prepare).toHaveBeenCalledOnce();
   });
 
-  it.each([false, true])("discovers the prior opaque source after failure, including trimmed history: %s", async (trimmed) => {
+  it.each([false, true])("discovers the prior opaque source after failure, including long history: %s", async (trimmed) => {
     const source = { ...runAttachment({ id: "source-original", kind: "file", mimeType: "application/octet-stream",
       storageKey: "synthetic/source", checksum: "a".repeat(64) }), fileName: "same.psd" };
     const sibling = { ...source, id: "sibling-source", storageKey: "synthetic/sibling" };
@@ -1573,7 +1586,8 @@ describe("run preparation", () => {
     expect(request.prompt.system).not.toContain("sibling-source");
     expect(request.attachments).toEqual([]);
     expect(request.context?.messages.some(message => message.id === "failed-answer")).toBe(false);
-    expect(request.context?.messages.some(message => message.id === "original-question")).toBe(!trimmed);
+    // History over the window waits for notes; admission never trims it.
+    expect(request.context?.messages.some(message => message.id === "original-question")).toBe(true);
     expect(request.prompt.system).toBe(prepared.normalizedRequest.prompt.system);
     expect(harness.attachmentLoads).toContainEqual({ attachmentIds: ["source-original"], userId: "user-1" });
   });
@@ -2429,10 +2443,14 @@ describe("run preparation", () => {
           resolveStandardChatBaseline({ timeZone: "Europe/Berlin" })
         ] as const
     );
-    const { context: sendContext, ...sendNormalized } = sendPrepared.normalizedRequest;
-    const { context: regenerateContext, ...regenerateNormalized } = regeneratePrepared.normalizedRequest;
+    const { context: sendContext, contextCompactionPolicy: sendPolicy, ...sendNormalized } = sendPrepared.normalizedRequest;
+    const { context: regenerateContext, contextCompactionPolicy: regeneratePolicy, ...regenerateNormalized } =
+      regeneratePrepared.normalizedRequest;
 
     expect(sendNormalized).toEqual(regenerateNormalized);
+    // Each source freezes its own branch identity under the same policy.
+    expect(sendPolicy).toMatchObject({ mode: "hybrid", source: { leafMessageId: "prior-user-message" } });
+    expect(regeneratePolicy).toMatchObject({ mode: "hybrid", source: { leafMessageId: "stored-user-message" } });
     expect(sendContext?.messages.map((message) => ({ content: message.content, role: message.role }))).toEqual(
       regenerateContext?.messages.map((message) => ({ content: message.content, role: message.role }))
     );
@@ -2917,6 +2935,35 @@ describe("run preparation", () => {
     expect(loadAll.providerRequest.tools?.filter((tool) => tool.capability !== "session").map((tool) => tool.name)).toEqual([
       "mcp_team_lookup_1"
     ]);
+  });
+
+  it("refuses Load all over the tool limit before the run while Auto keeps the same personal server", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const personal = personalMcpFixture({
+      toolNames: Array.from({ length: MCP_RUN_PLAN_LIMITS.maxTools + 1 }, (_, index) => `tool_${index}`)
+    });
+    const prepare = vi.fn(async () => personal.prepare());
+    const deps = { ...harness.deps, mcp: { filterTools: allowMcpTools, catalog: personal.catalog, prepare } };
+
+    await expect(prepareRun(deps, sendInput(successBody({
+      mcp: { mode: "load_all" }, modelId: "openai-tool-model", provider: "openai"
+    })))).resolves.toEqual({
+      code: "mcp_plan_too_large",
+      message: `Load all can offer at most ${MCP_RUN_PLAN_LIMITS.maxTools} MCP tools to one message. Use MCP Auto or switch some tools off.`,
+      ok: false,
+      status: 409
+    });
+    const auto = preparedFrom(await prepareRun(deps, sendInput(successBody({ modelId: "openai-tool-model", provider: "openai" }))));
+    expect(auto.normalizedRequest.mcpDiscovery?.catalog.servers[0]?.tools).toHaveLength(MCP_RUN_PLAN_LIMITS.maxTools + 1);
+    expect(prepare).toHaveBeenCalledOnce();
+
+    // Switching tools off brings the same server back under the Load all bound.
+    personal.switchTool("tool_0", false);
+    const loadAll = preparedFrom(await prepareRun(deps, sendInput(successBody({
+      mcp: { mode: "load_all" }, modelId: "openai-tool-model", provider: "openai"
+    }))));
+    expect(loadAll.normalizedRequest.mcp?.tools).toHaveLength(MCP_RUN_PLAN_LIMITS.maxTools);
+    expect(loadAll.normalizedRequest.mcp?.tools.some((tool) => tool.originalName === "tool_0")).toBe(false);
   });
 
   it("names connected Auto services once in the admitted system prompt and freezes them with the run", async () => {
@@ -5293,8 +5340,9 @@ describe("cross-turn compaction reuse", () => {
     expect(edited.loadBranchContextCheckpoints).toHaveBeenCalledWith({
       chatId: "chat-1", leafMessageId: "prior-user-message", userId: "user-1"
     });
+    // Bought notes stand for the history through the newest prior message they read.
     expect(edited.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({
-      coveredMessageId: `u${turn}`, runId: `run-${turn + 1}`
+      coveredMessageId: `a${turn - 1}`, runId: `run-${turn + 1}`
     });
     // Regenerating an answer never sees that answer's own notes.
     const regenerated = await admit({ checkpoints, history: history.slice(0, 2 * turn + 1 - 1),
@@ -5327,7 +5375,7 @@ describe("cross-turn compaction reuse", () => {
     expect(admitted.stream).not.toHaveBeenCalled();
     expect(admitted.prepared.normalizedRequest.context?.messages).toHaveLength(context.length + 1);
     expect(admitted.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({
-      coveredMessageId: `u${turn}`, runId: `run-${turn}`
+      coveredMessageId: `a${turn - 1}`, runId: `run-${turn}`
     });
     // The request fits with the carried notes: nothing is bought.
     const notes = noteTaker();
@@ -5368,7 +5416,7 @@ describe("cross-turn compaction reuse", () => {
     expect(smaller.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeUndefined();
   });
 
-  it("admits clarifications at the planner target for a hybrid branch over its budget; legacy admission is unchanged", async () => {
+  it("admits clarifications at the planner target for a branch over its budget, with or without Observation", async () => {
     const history = Array.from({ length: 10 }, (_, index) => exchange(index + 1)).flat();
     const clarification = "Use the corrected quantity 23 and answer in a table.";
     const hybrid = materializePreparedRunData((await admit({ history })).prepared);
@@ -5381,53 +5429,44 @@ describe("cross-turn compaction reuse", () => {
     expect(hybrid.followupAdmission?.budgetTokens).toBe(Math.min(8_192, Math.floor((plan.budgetTokens! - Math.ceil(plan.budgetTokens! / 2)) / 2)));
     expect(hybrid.followupAdmission!.budgetTokens).toBeGreaterThanOrEqual(followupTokenCost(clarification));
     expect(hybrid.normalizedRequest.followupContextReserveTokens).toBe(hybrid.followupAdmission?.budgetTokens);
-    const legacy = materializePreparedRunData((await admit({ history, policy: "off" })).prepared);
-    expect(legacy.followupAdmission?.budgetTokens).toBe(Math.min(8_192, Math.floor(followupRequestHeadroom(
-      { ...legacy.providerRequest, followupContextReserveTokens: 0 }, openAIResponsesToolBridge) / 2)));
+    const off = materializePreparedRunData((await admit({ history, policy: "off" })).prepared);
+    expect(off.providerRequest.contextCompaction).toMatchObject({ outcome: "needs_summary" });
+    expect(off.followupAdmission?.budgetTokens).toBe(hybrid.followupAdmission?.budgetTokens);
   });
 
-  it("keeps Off and accepted legacy admissions free of carried notes", async () => {
+  it("gives an Observation Off admission the same policy and carried notes", async () => {
     const { checkpoints, history } = await converse(10);
     const off = await admit({ checkpoints, history, policy: "off" });
-    expect(off.loadBranchContextCheckpoints).not.toHaveBeenCalled();
+    expect(off.loadBranchContextCheckpoints).toHaveBeenCalled();
     expect(off.prepared.normalizedRequest.toolObservationVersion).toBe(0);
-    expect(off.prepared.normalizedRequest.contextCompactionPolicy).toBeUndefined();
+    expect(off.prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", reuse: { runId: checkpoints[0]!.runId } });
+    expect(off.prepared.normalizedRequest.context?.messages).toHaveLength(history.length + 1);
   });
 
   const messageIds = (prepared: PreparedRun) =>
     materializePreparedRunData(prepared).normalizedRequest.context?.messages.map((message) => message.id);
 
-  it("admits a v1 Knowledge run with the legacy whole-turn guard and no notes", async () => {
+  it("admits a Knowledge run under the one policy: exact branch, carried notes, no trimming", async () => {
     const { checkpoints, history } = await converse(10);
     const knowledge = await admit({ checkpoints, history, knowledge: true });
-    const legacy = await admit({ checkpoints, history, knowledge: true, policy: "off" });
-    const ordinary = await admit({ checkpoints, history });
+    const off = await admit({ checkpoints, history, knowledge: true, policy: "off" });
     const accepted = materializePreparedRunData(knowledge.prepared);
-    // The store and reader stay; the hybrid policy and carried notes do not.
     expect(accepted.normalizedRequest.toolObservationVersion).toBe(1);
-    expect(accepted.normalizedRequest.contextCompactionPolicy).toBeUndefined();
-    expect(accepted.providerRequest.contextCompactionPolicy).toBeUndefined();
     expect(accepted.providerRequest.tools?.map((tool) => tool.name)).toEqual(
       expect.arrayContaining(["read_tool_result", "search_knowledge"]));
-    expect(knowledge.loadBranchContextCheckpoints).not.toHaveBeenCalled();
-    // Whole prior turns leave exactly as for the legacy (Off) Knowledge request.
-    expect(messageIds(knowledge.prepared)).toEqual(messageIds(legacy.prepared));
-    expect(messageIds(knowledge.prepared)!.length).toBeLessThan(history.length + 1);
-    expect(accepted.normalizedRequest.context?.summary?.truncation?.droppedMessages).toBeGreaterThan(0);
-    // The same branch without Knowledge stays hybrid: exact branch plus a carried candidate.
-    expect(ordinary.prepared.normalizedRequest.contextCompactionPolicy?.mode).toBe("hybrid");
-    expect(ordinary.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeDefined();
-    expect(messageIds(ordinary.prepared)).toHaveLength(history.length + 1);
-    // Above the trigger ratio the answer consumer still buys no summary.
-    const budget = 17_488;
-    const admittedTokens = accepted.providerRequest.context!.messages
-      .reduce((total, message) => total + estimateApproxTokens(message.content), 0);
-    expect(admittedTokens).toBeGreaterThan(budget * 0.75);
+    expect(knowledge.loadBranchContextCheckpoints).toHaveBeenCalled();
+    for (const admitted of [knowledge, off]) {
+      expect(admitted.prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid",
+        reuse: { runId: checkpoints[0]!.runId } });
+      expect(messageIds(admitted.prepared)).toHaveLength(history.length + 1);
+      expect(materializePreparedRunData(admitted.prepared).normalizedRequest.context?.summary).toBeUndefined();
+    }
+    // The answer consumer applies the carried notes instead of trimming or buying the branch again.
     const notes = noteTaker();
     const compacted = await compact(knowledge.prepared, notes);
-    expect(notes.inputs).toEqual([]);
-    expect(compacted.contextCompactionSummary).toBeUndefined();
-    expect(compacted.context?.messages.map((message) => message.id)).toEqual(messageIds(knowledge.prepared));
+    expect(notes.inputs.length).toBeLessThanOrEqual(1);
+    expect(compacted.contextCompactionSummary).toBeDefined();
+    expect(compacted.context?.messages.some((message) => message.id === "u1")).toBe(false);
   });
 
   it("rejects irreducible Knowledge overflow exactly like the legacy request", async () => {

@@ -65,32 +65,34 @@ describe("AuthLogin", () => {
     const container = document.createElement("div");
     container.innerHTML = renderToString(<AuthLogin nextPath="/" />);
     document.body.append(container);
-    // The server markup never claims to be interactive.
-    expect(container.querySelector("form")).not.toHaveAttribute("data-hydrated");
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     let root: Root | null = null;
+    try {
+      // The server markup never claims to be interactive.
+      expect(container.querySelector("form")).not.toHaveAttribute("data-hydrated");
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    await act(async () => {
-      root = hydrateRoot(container, <AuthLogin nextPath="/" />);
-    });
+      await act(async () => {
+        root = hydrateRoot(container, <AuthLogin nextPath="/" />);
+      });
 
-    expect(
-      consoleError.mock.calls.some((call) =>
-        call.some((value) => /hydration|did not match/i.test(String(value)))
-      )
-    ).toBe(false);
-    expect(container.querySelector("form")).toHaveAttribute("data-hydrated", "true");
-    expect(within(container).getByLabelText("Email")).not.toHaveAttribute("style");
-    expect(within(container).getByLabelText("Password")).not.toHaveAttribute("style");
+      expect(
+        consoleError.mock.calls.some((call) =>
+          call.some((value) => /hydration|did not match/i.test(String(value)))
+        )
+      ).toBe(false);
+      expect(container.querySelector("form")).toHaveAttribute("data-hydrated", "true");
+      expect(within(container).getByLabelText("Email")).not.toHaveAttribute("style");
+      expect(within(container).getByLabelText("Password")).not.toHaveAttribute("style");
 
-    fireEvent.click(within(container).getByRole("button", { name: "Request access" }));
-    expect(within(container).getByRole("heading", { level: 1, name: "Request access" })).toBeInTheDocument();
-    expect(within(container).getByTestId("register-form")).toHaveAttribute("data-hydrated", "true");
-
-    await act(async () => {
-      root?.unmount();
-    });
-    container.remove();
+      fireEvent.click(within(container).getByRole("button", { name: "Request access" }));
+      expect(within(container).getByRole("heading", { level: 1, name: "Request access" })).toBeInTheDocument();
+      expect(within(container).getByTestId("register-form")).toHaveAttribute("data-hydrated", "true");
+    } finally {
+      await act(async () => {
+        root?.unmount();
+      });
+      container.remove();
+    }
   });
 
   function expectPostOnlyCredentialForm(scope: HTMLElement) {

@@ -89,6 +89,8 @@ export type AdminProviderAddSheetProps = Readonly<{
   onClose(): void;
   /** The connection now exists on the server; the caller opens its page. */
   onCreated(connectionId: string): void;
+  /** The installation policy assigns Memory: a setup run's Memory hint no longer applies. */
+  memoryAssigned?: boolean;
   /** Opens Defaults & roles at the Memory row; without it the link navigates natively. */
   onOpenMemoryRole?(): void;
   open: boolean;
@@ -205,7 +207,7 @@ function PrivateNetworkField({
   );
 }
 
-function AddSheetBody({ connections, onClose, onCreated, onOpenMemoryRole }: Omit<AdminProviderAddSheetProps, "open">) {
+function AddSheetBody({ connections, memoryAssigned, onClose, onCreated, onOpenMemoryRole }: Omit<AdminProviderAddSheetProps, "open">) {
   const [family, setFamily] = useState<AddProviderFamily>("openai");
   const [builtIn, setBuiltIn] = useState<BuiltInForm>(() => initialBuiltInForm("openai", connections));
   const [custom, setCustom] = useState<CustomForm>(initialCustomForm);
@@ -656,7 +658,7 @@ function AddSheetBody({ connections, onClose, onCreated, onOpenMemoryRole }: Omi
             completed: savedSetup.run.done, total: savedSetup.run.total || null,
             ...(savedSetup.run.capabilityProgress ? { capability: savedSetup.run.capabilityProgress.capability } : {})
           }} /> : null}
-          <AdminProviderSetupMemoryHint onOpenMemoryRole={onOpenMemoryRole} run={savedSetup.run} />
+          <AdminProviderSetupMemoryHint memoryAssigned={memoryAssigned} onOpenMemoryRole={onOpenMemoryRole} run={savedSetup.run} />
           {savedSetup.run ? <AdminProviderSetupResults models={savedSetup.models} run={savedSetup.run} /> : null}
         </section> : null}
 

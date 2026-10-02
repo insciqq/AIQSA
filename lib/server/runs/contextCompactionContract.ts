@@ -42,9 +42,12 @@ export const CONTEXT_COMPACTION_LIMITS = Object.freeze({
   /** Paid summary calls (chunks, reductions and repairs) for one source
    * digest, counted from durable receipts so a restart cannot reset it. */
   summaryCalls: 16,
-  /** Estimated calls one summary plan may use; the rest of `summaryCalls`
-   * covers repairs. A longer source is summarized from its newest span. */
+  /** Estimated calls one summary pass may use; the rest of `summaryCalls`
+   * covers repairs. A longer source is covered by further oldest-first passes. */
   summaryPlannedCalls: 12,
+  /** Summary passes one request may buy before it is dispatched with the
+   * coverage reached (when it fits) or refused (when it does not). */
+  summaryPasses: 4,
   /** Receipts retained in the checkpoint; never fewer than `summaryCalls`. */
   summaryReceipts: 24,
   summaryNotesBytes: 64 * 1024,
@@ -145,12 +148,13 @@ export function contextDigest(value: unknown): string {
   return createHash("sha256").update(canonicalJsonText(value)).digest("hex");
 }
 
+/** The one conversation policy current admission freezes for a non-Agent
+ * run. `legacy_compatible` is only ever decoded, never created. */
 export function conversationContextPolicy(input: {
   leafMessageId: string | null;
   messages: readonly ProviderConversationMessage[];
-  mode?: ConversationContextPolicy["mode"];
 }): ConversationContextPolicy {
-  return { version: 1, mode: input.mode ?? "legacy_compatible", source: {
+  return { version: 1, mode: "hybrid", source: {
     leafMessageId: input.leafMessageId,
     messageCount: input.messages.length,
     digest: contextDigest(input.messages)
@@ -174,20 +178,74 @@ export function decodeConversationContextPolicy(value: unknown): ConversationCon
   return value as ConversationContextPolicy;
 }
 
+/** The retired-policy outcome: a non-Agent run accepted before its policy was
+ * frozen (absent) or under the retired `legacy_compatible` mode or checkpoint
+ * revision. It ends before any budget, provider or tool step. */
+export const CONTEXT_COMPACTION_POLICY_RETIRED = Object.freeze({
+  code: "context_compaction_policy_retired",
+  message: "This answer was interrupted by an application update. Regenerate to try again."
+} as const);
+
+/** The one retired-policy rule. Agent runs never carry a policy: Codex owns
+ * their context. */
+export function contextCompactionPolicyRetired(
+  request: Readonly<{ agent?: unknown; contextCompactionPolicy?: Readonly<{ mode: string }> }>,
+  checkpoint?: Pick<ContextCompactionCheckpoint, "policyRevision"> | null
+): boolean {
+  if (request.agent !== undefined) return false;
+  return request.contextCompactionPolicy?.mode !== "hybrid" || checkpoint?.policyRevision === "legacy-compatible-v1";
+}
+
+const MESSAGE_COVERAGE_PREFIX = "ctxm1_";
+const UNIT_COVERAGE_PREFIX = "ctxu1_";
+
+/** A summary ref naming one covered tool-transcript unit (see the planner's
+ * `unitCoverageRef`). */
+export function isUnitCoverageRef(ref: string): boolean {
+  return ref.startsWith(UNIT_COVERAGE_PREFIX);
+}
+
+/** Summary ref naming the newest prior message its source contained: the
+ * notes stand for the branch prefix through that message. */
+export function messageCoverageRef(messageId: string): string {
+  return `${MESSAGE_COVERAGE_PREFIX}${messageId}`;
+}
+
+export function isMessageCoverageRef(ref: string): boolean {
+  return ref.startsWith(MESSAGE_COVERAGE_PREFIX);
+}
+
 /**
- * The prior messages an applied summary stands for. Notes bought in this run
- * cover every prior message of their request. Notes carried from an earlier
- * turn's checkpoint cover the branch only through their frozen boundary; later
- * messages stay uncovered until a new summary includes them.
+ * The history boundary of notes: the newest prior message they read; null
+ * when notes with coverage refs read no prior message (a pass over tool units
+ * only, for example on a chat's first turn); undefined for notes bought before
+ * coverage refs existed, which stand for every prior message of their request.
+ */
+export function summaryMessageBoundary(summary: Pick<ContextSummary, "sourceRefs">): string | null | undefined {
+  const ref = summary.sourceRefs.find(isMessageCoverageRef);
+  if (ref !== undefined) return ref.slice(MESSAGE_COVERAGE_PREFIX.length);
+  return summary.sourceRefs.some(isUnitCoverageRef) ? null : undefined;
+}
+
+/**
+ * The prior messages an applied summary stands for: the branch prefix through
+ * its boundary. Notes carried from an earlier turn's checkpoint keep their
+ * frozen boundary; notes bought in this run name theirs (`ctxm1_`), and notes
+ * bought before that ref existed cover every prior message of their request.
+ * Messages after the boundary stay uncovered until a new pass includes them.
+ * A boundary no longer in `prior` (it left as covered history) leaves every
+ * remaining message uncovered: only covered messages ever leave first.
  */
 export function contextSummaryCoverage(
   request: Pick<NormalizedRunRequest, "contextCompactionPolicy">,
-  summary: Pick<ContextSummary, "id">,
+  summary: Pick<ContextSummary, "id" | "sourceRefs">,
   prior: readonly ProviderConversationMessage[]
 ): Readonly<{ covered: readonly ProviderConversationMessage[]; uncovered: readonly ProviderConversationMessage[] }> {
   const reuse = request.contextCompactionPolicy?.reuse;
-  if (reuse?.summary.id !== summary.id) return { covered: prior, uncovered: [] };
-  const boundary = prior.findIndex((message) => message.id === reuse.coveredMessageId);
+  const boundaryId = reuse?.summary.id === summary.id ? reuse.coveredMessageId : summaryMessageBoundary(summary);
+  if (boundaryId === undefined) return { covered: prior, uncovered: [] };
+  if (boundaryId === null) return { covered: [], uncovered: prior };
+  const boundary = prior.findIndex((message) => message.id === boundaryId);
   return { covered: prior.slice(0, boundary + 1), uncovered: prior.slice(boundary + 1) };
 }
 
@@ -219,12 +277,13 @@ export type BranchContextCheckpoints = Readonly<{
  * format, and its answer and coverage boundary are prior messages of this
  * branch in that order, so edits, forks and regeneration never see sibling
  * notes. `priorMessageIds` is the branch ancestry, not the provider context:
- * an answer that failed after committing its notes stays a candidate. A run
- * accepted without the hybrid policy (Off, legacy or Knowledge)
- * never supplies notes. Notes a run bought cover its branch through its own
- * user message; notes it carried keep their frozen boundary. Only the notes
- * travel: provider continuations, response ids and receipts of that run
- * never do.
+ * an answer that failed after committing its notes stays a candidate. Runs
+ * accepted under the retired legacy policy never supply notes. Notes a run
+ * bought cover its branch through their `ctxm1_` boundary (notes with coverage
+ * refs but no boundary cover nothing and are never carried; notes bought before
+ * coverage refs existed: through the run's own user message); notes it carried
+ * keep their frozen boundary. Only the notes travel: provider continuations,
+ * response ids and receipts of that run never do.
  */
 export function contextSummaryReuseCandidates(input: Readonly<{
   checkpoints: readonly BranchContextCheckpoint[];
@@ -245,7 +304,11 @@ export function contextSummaryReuseCandidates(input: Readonly<{
       const carried = policy?.reuse?.summary.id === summary.id ? policy.reuse : null;
       const bought = compaction.summaryAttempts?.some((attempt) =>
         attempt.state === "committed" && attempt.sourceDigest === summary.sourceDigest) === true;
-      const coveredMessageId = carried?.coveredMessageId ?? (bought ? candidate.userMessageId : null);
+      // Notes that read no prior message cover none and are never carried;
+      // notes bought before coverage refs existed covered the run's own
+      // user message.
+      const own = bought ? summaryMessageBoundary(summary) : null;
+      const coveredMessageId = carried?.coveredMessageId ?? (own === undefined ? candidate.userMessageId : own);
       const boundary = coveredMessageId === null ? undefined : position.get(coveredMessageId);
       if (boundary === undefined || boundary >= position.get(candidate.assistantMessageId)!) return [];
       return [{ coveredMessageId: coveredMessageId!, runId: candidate.runId, summary }];
@@ -334,7 +397,8 @@ export function contextCompactionCheckpoint(input: Readonly<{
     observationRefs: [...new Set(input.observationRefs ?? [])].slice(0, CONTEXT_COMPACTION_LIMITS.references),
     ownerId: input.ownerId,
     pinDigest: contextPinsDigest(input.request),
-    policyRevision: input.request.contextCompactionPolicy?.mode === "hybrid" ? "hybrid-v1" : "legacy-compatible-v1",
+    // `legacy-compatible-v1` is only ever decoded from historical checkpoints.
+    policyRevision: "hybrid-v1",
     providerProjectionRevision: 1,
     recentTailCallIds: [...new Set(input.recentTailCallIds ?? [])].slice(-64),
     runId: input.runId,

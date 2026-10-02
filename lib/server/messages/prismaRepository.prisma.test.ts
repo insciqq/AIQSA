@@ -2125,6 +2125,10 @@ describe("Prisma-backed message branch repository", () => {
         await expect(prisma.modelRun.count({ where: { id: removed.run.id } })).resolves.toBe(0);
         await expect(prisma.workspaceRunBinding.count({ where: { modelRunId: removed.run.id } })).resolves.toBe(0);
         await expect(prisma.workspaceSelectedCapture.count({ where: { id: removedCapture.id } })).resolves.toBe(0);
+        // The released checkpoint Attachment still holds the key, so the capture
+        // cascade stages no job; orphan retention owns the last reference.
+        await expect(prisma.attachment.count({ where: { storageKey: removedCapture.storageKey } })).resolves.toBe(1);
+        await expect(prisma.attachmentDeletionJob.count({ where: { storageKey: removedCapture.storageKey } })).resolves.toBe(0);
         const released = await prisma.attachment.findMany({
           include: { workspaceCheckpointFile: true, workspaceRunOutput: true },
           where: { id: { in: [removedExport.id, sharedCheckpoint.id, removedCheckpoint.id, late.id] } }
@@ -2169,7 +2173,7 @@ describe("Prisma-backed message branch repository", () => {
         await expect(createPrismaRetentionRepository(prisma).stageOrphanedAttachments({
           cutoff: new Date("1990-01-02T00:00:00.000Z"),
           limit: 10
-        })).resolves.toEqual({ jobsStaged: 2, matched: 4, rowsDeleted: 4, sharedRowsDeleted: 1 });
+        })).resolves.toEqual({ jobsStaged: 3, matched: 4, rowsDeleted: 4, sharedRowsDeleted: 1 });
         await expect(prisma.attachmentDeletionJob.findMany({
           orderBy: { storageKey: "asc" },
           select: { storageKey: true },

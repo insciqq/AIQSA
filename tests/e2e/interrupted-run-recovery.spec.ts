@@ -8,6 +8,7 @@ import { activeChatId, disableMemoryRecall, selectFakeModel, setWorkspaceEnabled
 import { interruptAdmission, releaseLateAdmission, returnAfterAdmissionLoss } from "./support/admissionTransport";
 import type { ChatDetailWire } from "../../lib/contracts/chats";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 const viewports = [
   { width: 1440, height: 900 }, { width: 900, height: 1440 },
@@ -84,7 +85,7 @@ for (const fault of ["headers", "admission-body", "malformed-admission", "confli
       expect(sends).toBe(2);
       expect(documentLoads).toBe(0);
     } finally {
-      await page.request.delete(`/api/chats/${chatId}`);
+      await deleteOwnedChatPermanently(page.request, chatId);
     }
   });
 }
@@ -130,7 +131,7 @@ test("a stale branch refusal refreshes a saved answer without resending the refu
     await expectSettledTurns(page, chatId, 2);
     expect(sends).toBe(1);
   } finally {
-    await page.request.delete(`/api/chats/${chatId}`);
+    await deleteOwnedChatPermanently(page.request, chatId);
   }
 });
 
@@ -200,12 +201,15 @@ test("a Workspace answer recovers from lost acknowledgement across reading viewp
     await expectSettledTurns(page, chatId, 1);
   } finally {
     try {
-      if (chatId) await page.request.delete(`/api/chats/${chatId}`);
-      if (!policy.enabled) {
-        const current = await page.request.get("/api/admin/workspace");
-        const body = await current.json() as { workspace: { version: number } };
-        const restored = await page.request.patch("/api/admin/workspace", { data: { enabled: false, expectedVersion: body.workspace.version } });
-        expect(restored.ok()).toBe(true);
+      try {
+        if (chatId) await deleteOwnedChatPermanently(page.request, chatId);
+      } finally {
+        if (!policy.enabled) {
+          const current = await page.request.get("/api/admin/workspace");
+          const body = await current.json() as { workspace: { version: number } };
+          const restored = await page.request.patch("/api/admin/workspace", { data: { enabled: false, expectedVersion: body.workspace.version } });
+          expect(restored.ok()).toBe(true);
+        }
       }
     } finally {
       try {
@@ -310,7 +314,7 @@ for (const transport of ["suspended", "disconnected"] as const) {
         }
       }
     } finally {
-      await page.request.delete(`/api/chats/${chatId}`);
+      await deleteOwnedChatPermanently(page.request, chatId);
     }
   });
 }
@@ -453,7 +457,7 @@ test("a disconnected accepted answer can be stopped through the real cancellatio
     await page.screenshot({ path: testInfo.outputPath("cancelled-desktop.png") });
   } finally {
     release();
-    if (chatId) await page.request.delete(`/api/chats/${chatId}`);
+    if (chatId) await deleteOwnedChatPermanently(page.request, chatId);
   }
 });
 
@@ -518,7 +522,7 @@ test("a reloaded long run stays stoppable past the polling horizon and releases 
   } finally {
     outcomes.release();
     await context.setOffline(false);
-    await page.request.delete(`/api/chats/${chatId}`);
+    await deleteOwnedChatPermanently(page.request, chatId);
   }
 });
 
@@ -563,8 +567,8 @@ test("a background run is checked on focus and after returning to its chat throu
     await page.screenshot({ path: testInfo.outputPath("background-run-focus-released.png") });
   } finally {
     outcomes.release();
-    await page.request.delete(`/api/chats/${chatId}`);
-    if (otherChatId) await page.request.delete(`/api/chats/${otherChatId}`);
+    await deleteOwnedChatPermanently(page.request, chatId);
+    if (otherChatId) await deleteOwnedChatPermanently(page.request, otherChatId);
   }
 });
 
@@ -586,6 +590,6 @@ test("a second send right after an answer completes leaves the chat free when it
     await expect(page.locator(`[data-navigation-chat-id="${chatId}"] [aria-label="Answer in progress"]`)).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
   } finally {
-    await page.request.delete(`/api/chats/${chatId}`);
+    await deleteOwnedChatPermanently(page.request, chatId);
   }
 });

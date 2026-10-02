@@ -7,6 +7,7 @@ import { observedFailure } from "../providers/providerObservability";
 import { loadProviderAttachments } from "./runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "./attachmentLimits";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
+import { CONTEXT_COMPACTION_POLICY_RETIRED, contextCompactionPolicyRetired } from "./contextCompactionContract";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
 import { createRunExecutionResponse, type RunExecutionInput } from "./runExecution";
 import type { AcceptedRunSnapshot } from "./acceptedRunSnapshot";
@@ -58,6 +59,11 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
         ...(prepared.project ? { projectId: prepared.project.projectId } : {}) });
     const recovered = loaded.modelRun.status === "streaming" && !loaded.modelRun.workspaceWaitPending
       ? loaded.modelRun.normalizedRequest as unknown as NormalizedRunRequest | null : null;
+    // A request accepted under the retired context policy ends before its
+    // budget, provider or tool step.
+    if (contextCompactionPolicyRetired(recovered ?? prepared.normalizedRequest)) {
+      throw new WorkspaceFollowupError(CONTEXT_COMPACTION_POLICY_RETIRED.code);
+    }
     const budget = applyProviderRequestContextBudget({
       request: { ...prepared.providerRequest, ...(recovered ?? {}), attachments },
       ...(runtime.toolBridge ? { bridge: runtime.toolBridge } : {})
@@ -97,11 +103,13 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
 
 export function createWorkspaceFollowupFailure(deps: Pick<Dependencies, "repository" | "workspace">): WorkspaceFollowupCoordinatorDependencies["fail"] {
   return async (claim, error) => {
+    const retired = error.code === CONTEXT_COMPACTION_POLICY_RETIRED.code;
     const message = error.code === "workspace_followup_expired"
       ? "Workspace preparation timed out. Retry this message."
+      : retired ? CONTEXT_COMPACTION_POLICY_RETIRED.message
       : "Workspace could not finish preparing for this message. Retry when the environment is available.";
     let settled = await deps.repository.settlePreparingRunFailure({ workspaceClaimToken: claim.claimToken,
-      errorCode: error.code, message, retryable: true, runId: claim.runId, state: "FAILED", userId: claim.userId });
+      errorCode: error.code, message, retryable: !retired, runId: claim.runId, state: "FAILED", userId: claim.userId });
     if (!settled) {
       const run = await deps.repository.getRunControlForRecovery?.(claim.runId);
       if (run?.status === "streaming" && run.assistantMessageId) settled = await deps.repository.failRun(

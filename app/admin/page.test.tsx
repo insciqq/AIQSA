@@ -197,6 +197,7 @@ describe("AdminPage", () => {
 
     expect(adminPageMocks.adminPanel).toHaveBeenCalledTimes(1);
     expect(adminPageMocks.adminPanel.mock.calls[0]?.[0]).toEqual({
+      accountLabel: "Admin User",
       adminEmail: "admin@example.com",
       adminUserId: "admin-1",
       returnPath: "/"

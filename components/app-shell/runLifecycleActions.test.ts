@@ -23,6 +23,14 @@ import {
 } from "./runSurfaceStore";
 import { useThreadStore } from "./threadStore";
 import type { WorkspaceChatSummary, Notice, ThreadMessage } from "./types";
+import { cancelWorkspaceUpload, useWorkspaceUploadProgress } from "./workspaceUploadClient";
+import { ATTACHMENT_UPLOAD_FORMAT_LABELS } from "@/lib/domain/uploadFormats";
+
+const GENERIC_UPLOAD_FAILURE =
+  "Upload failed. Try again, or choose another file if it keeps failing.";
+const UNSUPPORTED_UPLOAD_FAILURE =
+  "This file type isn't supported, or its extension doesn't match its contents. " +
+  `Supported: ${ATTACHMENT_UPLOAD_FORMAT_LABELS.join(", ")}. Check that the extension matches the file.`;
 
 function message(overrides: Partial<ThreadMessage>): ThreadMessage {
   return {
@@ -1066,6 +1074,200 @@ describe("run lifecycle actions", () => {
     });
   });
 
+  it.each([
+    {
+      body: { error: "file_required", message: "private server detail" },
+      expected: "The file is empty or couldn't be read. Choose a non-empty file and try again.",
+      status: 400
+    },
+    {
+      body: { error: "unsupported_type", message: "private server detail" },
+      expected: UNSUPPORTED_UPLOAD_FAILURE,
+      status: 400
+    },
+    {
+      body: { error: "image_invalid", message: "private server detail" },
+      expected: "This image could not be verified. Check that it opens correctly, or choose another file.",
+      status: 400
+    },
+    {
+      body: { error: "image_limit_exceeded" },
+      expected: "This image is too large to verify (up to 24 MiB and 16.8 megapixels). " +
+        "Reduce it, or rename it with the extension that matches its format.",
+      status: 413
+    },
+    {
+      body: { error: "project_not_found" },
+      expected:
+        "This project is no longer available. Refresh the page or upload the file in another chat.",
+      status: 404
+    },
+    {
+      body: { error: "unauthorized" },
+      expected: "Your session ended. Sign in again to continue.",
+      status: 401
+    }
+  ])("names the direct-upload refusal $body.error", async ({ body, expected, status }) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(body, { status })));
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    await actions.uploadFiles([new File(["synthetic"], "synthetic.jpeg", { type: "image/jpeg" })]);
+
+    expect(composerSession("chat-1")).toMatchObject({
+      attachments: [],
+      operationError: `synthetic.jpeg: ${expected}`,
+      pendingUploadGenerations: []
+    });
+    expect(composerSession("chat-1").operationError).not.toContain("private server detail");
+  });
+
+  it.each([
+    { file: () => new File(["png bytes"], "synthetic.jpeg", { type: "image/png" }), path: "/api/uploads" },
+    { file: () => new File(["png bytes"], "synthetic.jpeg", { type: "image/jpeg" }), path: "/api/uploads" },
+    { file: () => new File(["svg"], "synthetic.jpeg", { type: "image/svg+xml" }), path: "/api/uploads/sessions" },
+    { file: () => new File(["opaque"], "synthetic.bin", { type: "application/octet-stream" }), path: "/api/uploads/sessions" }
+  ])("routes $path for a Workspace selection within the ordinary limit", async ({ file, path }) => {
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      requests.push(`${init?.method ?? "GET"} ${input}`);
+      if (input === "/api/uploads/sessions" && !init?.method) {
+        return Response.json({ available: true, maxBytes: 512 * 1024 * 1024, ordinaryMaxBytes: 25_000_000, partBytes: 8 * 1024 * 1024 });
+      }
+      if (input === "/api/uploads") {
+        return Response.json({ attachment: { fileName: "synthetic.png", id: "attachment-direct", kind: "image", mimeType: "image/png", status: "ready" } });
+      }
+      return Response.json({ error: "upload_busy" }, { status: 400 });
+    }));
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+    useComposerSessionStore.getState().updateSession(composerSessionKey("chat-1"), { workspaceEnabled: true });
+
+    const upload = actions.uploadFiles([file()]);
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    // A refused multipart session waits for Retry or Remove; remove it.
+    for (const item of useWorkspaceUploadProgress.getState().items) cancelWorkspaceUpload(item.id);
+    await upload;
+
+    expect(requests[0]).toBe("GET /api/uploads/sessions");
+    expect(requests[1]).toBe(`POST ${path}`);
+    if (path === "/api/uploads") {
+      expect(composerSession("chat-1").attachments).toEqual([expect.objectContaining({ fileName: "synthetic.png", id: "attachment-direct" })]);
+    }
+  });
+
+  it("lists every registry attachment format in the unsupported-type message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error: "unsupported_type" }, { status: 400 }))
+    );
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    await actions.uploadFiles([new File(["synthetic"], "synthetic.jpeg", { type: "image/jpeg" })]);
+
+    const message = composerSession("chat-1").operationError ?? "";
+    expect(ATTACHMENT_UPLOAD_FORMAT_LABELS.length).toBeGreaterThan(0);
+    for (const label of ATTACHMENT_UPLOAD_FORMAT_LABELS) {
+      expect(message).toContain(label);
+    }
+    expect(message).not.toMatch(/damaged|corrupt/i);
+  });
+
+  it.each([
+    { body: () => Response.json({ error: "storage_failed" }, { status: 400 }), label: "unknown code" },
+    { body: () => Response.json({ error: 400 }, { status: 400 }), label: "malformed body" },
+    {
+      body: () => Response.json({ error: "unsupported_type", limit: 1 }, { status: 400 }),
+      label: "known code with foreign fields"
+    },
+    {
+      body: () => new Response("<html><body>Bad Request object-key-1</body></html>", { status: 400 }),
+      label: "non-JSON 400"
+    },
+    { body: () => new Response("Internal Server Error", { status: 500 }), label: "non-JSON 500" },
+    { body: () => Response.json({ error: "storage_failed" }, { status: 500 }), label: "JSON 500" },
+    { body: () => new Response("<html>Bad Gateway</html>", { status: 502 }), label: "502" },
+    { body: () => new Response("<html>Gateway Timeout</html>", { status: 504 }), label: "504" },
+    { body: () => new Response("", { status: 503 }), label: "503 without a known code" },
+    {
+      body: () => Response.json({ error: "invalid_origin" }, { status: 403 }),
+      label: "invalid_origin 403"
+    }
+  ])("shows the generic upload failure for $label", async ({ body }) => {
+    vi.stubGlobal("fetch", vi.fn(async () => body()));
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    await actions.uploadFiles([new File(["synthetic"], "synthetic.pdf", { type: "application/pdf" })]);
+
+    const message = composerSession("chat-1").operationError;
+    expect(message).toBe(`synthetic.pdf: ${GENERIC_UPLOAD_FAILURE}`);
+    expect(message).not.toMatch(/upload_failed|HTTP|\d{3}|<|invalid_origin|object-key/);
+  });
+
+  it.each([
+    {
+      body: () => new Response("<html>Request Entity Too Large</html>", { status: 413 }),
+      expected: "File exceeds the configured upload size limit."
+    },
+    {
+      body: () => Response.json({ error: "file_too_large", limit: 26_048_576 }, { status: 413 }),
+      expected: "File exceeds the configured upload size limit."
+    },
+    {
+      body: () => new Response("Too Many Requests", { status: 429 }),
+      expected: "Upload capacity is busy. Try again shortly."
+    },
+    {
+      body: () => Response.json({ error: "upload_busy" }, { status: 429 }),
+      expected: "Upload capacity is busy. Try again shortly."
+    },
+    {
+      body: () => Response.json({ error: "workspace_runtime_unavailable" }, { status: 503 }),
+      expected: "Workspace is unavailable. Turn it off or try again later."
+    },
+    {
+      body: () => Response.json({ error: "unsupported_type" }, { status: 429 }),
+      expected: UNSUPPORTED_UPLOAD_FAILURE
+    }
+  ])("keeps decoded-code then status precedence: $expected", async ({ body, expected }) => {
+    vi.stubGlobal("fetch", vi.fn(async () => body()));
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+
+    await actions.uploadFiles([new File(["synthetic"], "synthetic.pdf", { type: "application/pdf" })]);
+
+    expect(composerSession("chat-1").operationError).toBe(`synthetic.pdf: ${expected}`);
+  });
+
+  it("keeps accepted attachments, the draft and the batch when one file is unsupported", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({ attachment: { fileName: "earlier.pdf", id: "attachment-earlier", kind: "pdf" } })
+      )
+      .mockResolvedValueOnce(Response.json({ error: "unsupported_type" }, { status: 400 }))
+      .mockResolvedValueOnce(
+        Response.json({ attachment: { fileName: "second.pdf", id: "attachment-second", kind: "pdf" } })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { actions, composerSession } = useRunLifecycleActionsForTest();
+    useComposerSessionStore.getState().setDraft("Compare these files");
+
+    await actions.uploadFiles([new File(["earlier"], "earlier.pdf", { type: "application/pdf" })]);
+    await actions.uploadFiles([
+      new File(["synthetic"], "synthetic.jpeg", { type: "image/jpeg" }),
+      new File(["second"], "second.pdf", { type: "application/pdf" })
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(composerSession("chat-1")).toMatchObject({
+      attachments: [
+        { fileName: "earlier.pdf", id: "attachment-earlier", kind: "pdf" },
+        { fileName: "second.pdf", id: "attachment-second", kind: "pdf" }
+      ],
+      draft: "Compare these files",
+      operationError: `synthetic.jpeg: ${UNSUPPORTED_UPLOAD_FAILURE}`,
+      pendingUploadGenerations: []
+    });
+  });
+
   it("keeps mixed-selection rejection feedback after a successful upload settles", async () => {
     let resolveUpload!: (response: Response) => void;
     vi.stubGlobal(
@@ -1146,7 +1348,7 @@ describe("run lifecycle actions", () => {
     resolvers[1]!(new Response("newest failed", { status: 500 }));
     await second;
     expect(composerSession("chat-1")).toMatchObject({
-      operationError: expect.stringContaining("upload_failed_500"),
+      operationError: `second.pdf: ${GENERIC_UPLOAD_FAILURE}`,
       pendingUploadGenerations: expect.any(Array)
     });
     expect(composerSession("chat-1").pendingUploadGenerations).toHaveLength(1);
@@ -1163,7 +1365,7 @@ describe("run lifecycle actions", () => {
     await first;
     expect(composerSession("chat-1")).toMatchObject({
       attachments: [{ fileName: "first.pdf", id: "attachment-1", kind: "pdf" }],
-      operationError: expect.stringContaining("upload_failed_500"),
+      operationError: `second.pdf: ${GENERIC_UPLOAD_FAILURE}`,
       pendingUploadGenerations: []
     });
 

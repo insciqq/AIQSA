@@ -26,6 +26,12 @@ export type ComposerConfigKnowledgeSource = Readonly<{
 
 export type ComposerConfigMcpServer = Readonly<{
   runtimeErrorCode?: McpRuntimeErrorCode | null;
+  /**
+   * Personal rows are the account's own connections, managed in Settings →
+   * Connections; installation rows (the default) are managed in Studio.
+   * Project composers never carry personal rows.
+   */
+  source?: "installation" | "personal";
   attention?: "needs_setup" | "needs_authorization" | "reauthorization_required" | "unavailable" | null;
   description: string;
   enabled: boolean;

@@ -65,7 +65,7 @@ async function prepare(page: Page, content = answerText, options: { temporary?: 
   await page.route("**/api/chats/*/messages", route => route.request().method() === "POST"
     ? route.fulfill({ status: 409, json: { error: "unexpected_fixture_run" } }) : route.fallback());
   await signInWithLocalToken(page, `/c/${chatId}`);
-  await expect(markdown(page)).toContainText(content.split("\n")[0]!.replace(/^#+ /u, ""));
+  await expect(markdown(page)).toContainText(content.split("\n")[0]!.replace(/^#+ /u, "").replace(/[*_~`]/gu, ""));
   await expect(composer(page)).toBeVisible();
   return chat;
 }
@@ -105,7 +105,7 @@ async function storedDraftIncludes(page: Page, text: string) {
 }
 
 test("queues comments, edits and deletes, restores on reload, and sends the exact multi-quote once", async ({ page }, testInfo) => {
-  const chat = await prepare(page, "First selected fragment.\n\nSecond selected fragment.\n\nThird selected fragment.");
+  const chat = await prepare(page, "**First** selected fragment.\n\n*Second* selected fragment.\n\nThird selected fragment.");
   await addComment(page, "First comment", 0, "enter");
   await addComment(page, "Second comment", 1, "outside");
   await addComment(page, "Third comment", 2);
@@ -120,6 +120,11 @@ test("queues comments, edits and deletes, restores on reload, and sends the exac
   await expect(list).toContainText("First comment");
   await expect(list).toContainText("Second comment");
   await expect(list).toContainText("Third comment");
+  // Formatted fragments are queued as plain text.
+  const quotes = list.locator(".v2-composer-comment-quote");
+  await expect(quotes.nth(0)).toHaveText("First selected fragment.");
+  await expect(quotes.nth(1)).toHaveText("Second selected fragment.");
+  await expect(list).not.toContainText("**");
   await list.getByRole("button", { name: /Edit/u }).first().click();
   const edit = list.getByRole("textbox", { name: "Comment", exact: true });
   await edit.fill("Edited first comment");

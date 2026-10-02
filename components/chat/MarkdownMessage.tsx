@@ -3,74 +3,19 @@
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { safeExternalHref } from "@/lib/domain/links";
 import { Check, Copy } from "lucide-react";
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { highlightCodeBlock, resolveCodeLanguage } from "./codeHighlighting";
+import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "./markdownParser";
 import { renderMathExpression } from "./mathRendering";
 
-type FencedCodeBlock = {
-  closed: boolean;
-  code: string;
-  language: string;
-  nextIndex: number;
-};
-
-type ListBlock = {
-  items: ListItem[];
-  ordered: boolean;
-  start?: number;
-};
-
-type ListItem = {
-  children: ListBlock[];
-  content: string;
-  literalChildren: string[];
-};
-
-type ListLine = {
-  content: string;
-  indent: number;
-  ordered: boolean;
-  start?: number;
-};
-
-type DisplayMathBlock = {
-  nextIndex: number;
-  raw: string;
-  source: string;
-};
-
-const MAX_NESTING_DEPTH = 32;
 // Deep structures retain their semantics without consuming the whole phone viewport.
 const MAX_INDENT_DEPTH = 8;
 
-function codeFenceStart(line: string): RegExpExecArray | null {
-  const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
-  return match && !(match[2][0] === "`" && match[3].includes("`")) ? match : null;
-}
-
-function parseFencedCode(lines: string[], startIndex: number): FencedCodeBlock | null {
-  const opening = codeFenceStart(lines[startIndex]);
-  if (!opening) return null;
-
-  let endIndex = startIndex + 1;
-  while (endIndex < lines.length) {
-    const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(lines[endIndex]);
-    if (closing && closing[1][0] === opening[2][0] && closing[1].length >= opening[2].length) break;
-    endIndex += 1;
-  }
-
-  const closed = endIndex < lines.length;
-  const indent = new RegExp(`^ {0,${opening[1].length}}`);
-  const codeLines = lines.slice(startIndex + 1, endIndex).map((line) => line.replace(indent, ""));
-  let code = codeLines.join("\n");
-  if ((closed && codeLines.length > 0) || (code && !code.endsWith("\n"))) code += "\n";
-  return {
-    closed,
-    code,
-    language: opening[3].trim().split(/[ \t]+/, 1)[0] ?? "",
-    nextIndex: closed ? endIndex + 1 : endIndex
-  };
-}
+const PARAGRAPH_CLASS = "whitespace-pre-wrap break-words [overflow-wrap:anywhere]";
+const INLINE_CODE_CLASS =
+  "break-words rounded-control bg-control-pressed px-1 py-0.5 font-mono text-[0.9em] text-ink [overflow-wrap:anywhere]";
+const LINK_CLASS =
+  "break-words text-proof underline decoration-proof/40 underline-offset-2 hover:decoration-proof [overflow-wrap:anywhere]";
 
 function MathExpression({ displayMode, raw, source }: { displayMode: boolean; raw: string; source: string }) {
   const [rendered, setRendered] = useState<{ html: string | null; key: string } | null>(null);
@@ -129,164 +74,94 @@ export type MarkdownCitationRenderer = (handle: string, key: string) => ReactNod
 export type MarkdownHrefResolver = (
   href: string
 ) => Readonly<{ download?: string; href: string }> | "text" | null;
-function decodePlainTextEntities(text: string): string {
-  // Decode the literal encoder's entities once, after Markdown recognition.
-  // These remain React text and cannot create HTML or an active citation.
-  return text.replace(/&(amp|lt|gt);/g, (entity) => {
-    if (entity === "&amp;") return "&";
-    return entity === "&lt;" ? "<" : ">";
-  });
+
+type RenderContext = {
+  renderCitation?: MarkdownCitationRenderer;
+  resolveHref?: MarkdownHrefResolver;
+  streaming: boolean;
+};
+
+function plainText(nodes: readonly MarkdownInline[]): string {
+  return nodes.map((node) => {
+    switch (node.type) {
+      case "text":
+        return node.value;
+      case "break":
+        return "\n";
+      case "inlineCode":
+        return node.value;
+      case "citation":
+        return node.source;
+      case "inlineMath":
+        return node.raw;
+      default:
+        return plainText(node.children);
+    }
+  }).join("");
 }
 
-function renderPlainInline(
-  text: string,
-  keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer
-): ReactNode[] {
-  if (!renderCitation) return [decodePlainTextEntities(text)];
-  const nodes: ReactNode[] = [];
-  const citationPattern = /\[(K[1-9]\d{0,3}(?:\.[1-9]\d?)?)\]/gu;
-  let lastIndex = 0;
-  let match = citationPattern.exec(text);
-  while (match) {
-    if (match.index > lastIndex) nodes.push(decodePlainTextEntities(text.slice(lastIndex, match.index)));
-    const nestedLinkLabel = text[match.index - 1] === "[" &&
-      text.slice(match.index + match[0].length, match.index + match[0].length + 2) === "](";
-    const rendered = nestedLinkLabel
-      ? null
-      : renderCitation(match[1], `${keyPrefix}-citation-${match.index}`);
-    nodes.push(rendered ?? match[0]);
-    lastIndex = match.index + match[0].length;
-    match = citationPattern.exec(text);
+function renderLink(node: Extract<MarkdownInline, { type: "link" }>, key: string, context: RenderContext): ReactNode {
+  const resolved = context.resolveHref?.(node.url) ?? null;
+  if (resolved === "text") {
+    return (
+      <code className={INLINE_CODE_CLASS} data-testid="markdown-inert-link" key={key}>
+        {plainText(node.children)}
+      </code>
+    );
   }
-  if (lastIndex < text.length) nodes.push(decodePlainTextEntities(text.slice(lastIndex)));
-  return nodes;
+  // Citations inside link syntax stay inert text.
+  const label = renderInline(node.children, key, context, true);
+  if (resolved) {
+    return (
+      <a
+        className={LINK_CLASS}
+        data-testid="markdown-resolved-link"
+        {...(resolved.download ? { download: resolved.download } : {})}
+        href={resolved.href}
+        key={key}
+      >
+        {label}
+      </a>
+    );
+  }
+  const href = safeExternalHref(node.url);
+  // An unsafe destination keeps rendering as its literal Markdown source.
+  return href ? (
+    <a className={LINK_CLASS} href={href} key={key} rel="noreferrer" target="_blank">
+      {label}
+    </a>
+  ) : node.source;
 }
 
 function renderInline(
-  text: string,
+  nodes: readonly MarkdownInline[],
   keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer,
-  resolveHref?: MarkdownHrefResolver
+  context: RenderContext,
+  inLink = false
 ): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const inlinePattern =
-    /((?<!\\)\\\((?:[^\\\n`]|\\(?!\)))*\\\)|\\[\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u007e]|`[^`]+`|\[[^\]]+\]\(((?:[^()\s]|\([^()\s]*\))+)\)|\*\*[^*]+\*\*|(?<!\\)\$(?![$\s])(?:\\.|[^$\\\n`])*?(?<![\s\\])\$(?!\d)|~~[^~]+~~|\*[^*\n]+\*|(?<![A-Za-z0-9])_[^_\n]+_(?![A-Za-z0-9]))/g;
-  let lastIndex = 0;
-  let match = inlinePattern.exec(text);
-
-  while (match) {
-    if (match.index > lastIndex) {
-      nodes.push(...renderPlainInline(
-        text.slice(lastIndex, match.index),
-        `${keyPrefix}-plain-${lastIndex}`,
-        renderCitation
-      ));
+  return nodes.map((node, index) => {
+    const key = `${keyPrefix}-${index}`;
+    switch (node.type) {
+      case "text":
+        return node.value;
+      case "break":
+        return "\n";
+      case "inlineCode":
+        return <code className={INLINE_CODE_CLASS} key={key}>{node.value}</code>;
+      case "inlineMath":
+        return <MathExpression displayMode={false} key={key} raw={node.raw} source={node.source} />;
+      case "citation":
+        return (!inLink && context.renderCitation?.(node.handle, `${key}-citation`)) || node.source;
+      case "strong":
+        return <strong className={inLink ? "font-semibold" : "font-semibold text-ink"} key={key}>{renderInline(node.children, key, context, inLink)}</strong>;
+      case "emphasis":
+        return <em className={inLink ? "italic" : "italic text-ink"} key={key}>{renderInline(node.children, key, context, inLink)}</em>;
+      case "delete":
+        return <del className="text-ink-muted" key={key}>{renderInline(node.children, key, context, inLink)}</del>;
+      case "link":
+        return inLink ? plainText(node.children) : renderLink(node, key, context);
     }
-
-    const token = match[0];
-
-    if (/^\\[\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u007e]$/.test(token)) {
-      // An escaped marker is a text node, never another parser input.
-      nodes.push(token.slice(1));
-    } else if (token.startsWith("\\(") && token.endsWith("\\)")) {
-      nodes.push(
-        <MathExpression
-          displayMode={false}
-          key={`${keyPrefix}-math-${match.index}`}
-          raw={token}
-          source={token.slice(2, -2)}
-        />
-      );
-    } else if (token.startsWith("$") && token.endsWith("$")) {
-      nodes.push(
-        <MathExpression
-          displayMode={false}
-          key={`${keyPrefix}-math-${match.index}`}
-          raw={token}
-          source={token.slice(1, -1)}
-        />
-      );
-    } else if (token.startsWith("**") && token.endsWith("**")) {
-      nodes.push(
-        <strong className="font-semibold text-ink" key={`${keyPrefix}-strong-${match.index}`}>
-          {renderPlainInline(token.slice(2, -2), `${keyPrefix}-strong-${match.index}`, renderCitation)}
-        </strong>
-      );
-    } else if (token.startsWith("`") && token.endsWith("`")) {
-      nodes.push(
-        <code
-          className="break-words rounded-control bg-control-pressed px-1 py-0.5 font-mono text-[0.9em] text-ink [overflow-wrap:anywhere]"
-          key={`${keyPrefix}-code-${match.index}`}
-        >
-          {token.slice(1, -1)}
-        </code>
-      );
-    } else if (token.startsWith("[") && token.includes("](")) {
-      const label = token.slice(1, token.indexOf("]("));
-      const resolved = resolveHref?.(match[2]) ?? null;
-      const href = resolved ? null : safeExternalHref(match[2]);
-
-      nodes.push(
-        resolved && resolved !== "text" ? (
-          <a
-            className="break-words text-proof underline decoration-proof/40 underline-offset-2 hover:decoration-proof [overflow-wrap:anywhere]"
-            data-testid="markdown-resolved-link"
-            {...(resolved.download ? { download: resolved.download } : {})}
-            href={resolved.href}
-            key={`${keyPrefix}-link-${match.index}`}
-          >
-            {label}
-          </a>
-        ) : resolved === "text" ? (
-          <code
-            className="break-words rounded-control bg-control-pressed px-1 py-0.5 font-mono text-[0.9em] text-ink [overflow-wrap:anywhere]"
-            data-testid="markdown-inert-link"
-            key={`${keyPrefix}-link-${match.index}`}
-          >
-            {label}
-          </code>
-        ) : href ? (
-          <a
-            className="break-words text-proof underline decoration-proof/40 underline-offset-2 hover:decoration-proof [overflow-wrap:anywhere]"
-            href={href}
-            key={`${keyPrefix}-link-${match.index}`}
-            rel="noreferrer"
-            target="_blank"
-          >
-            {label}
-          </a>
-        ) : (
-          token
-        )
-      );
-    } else if (token.startsWith("~~") && token.endsWith("~~")) {
-      nodes.push(
-        <del className="text-ink-muted" key={`${keyPrefix}-del-${match.index}`}>
-          {renderPlainInline(token.slice(2, -2), `${keyPrefix}-del-${match.index}`, renderCitation)}
-        </del>
-      );
-    } else {
-      nodes.push(
-        <em className="italic text-ink" key={`${keyPrefix}-em-${match.index}`}>
-          {renderPlainInline(token.slice(1, -1), `${keyPrefix}-em-${match.index}`, renderCitation)}
-        </em>
-      );
-    }
-
-    lastIndex = match.index + token.length;
-    match = inlinePattern.exec(text);
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(...renderPlainInline(
-      text.slice(lastIndex),
-      `${keyPrefix}-plain-${lastIndex}`,
-      renderCitation
-    ));
-  }
-
-  return nodes;
+  });
 }
 
 function headingClass(level: number): string {
@@ -309,459 +184,122 @@ function headingClass(level: number): string {
   return "pt-1 text-sm leading-6";
 }
 
-function renderHeading(
-  line: string,
-  keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer,
-  resolveHref?: MarkdownHrefResolver
-): ReactNode | null {
-  const heading = /^(#{1,6})\s+(.+)$/.exec(line.trim());
-  if (!heading) {
-    return null;
-  }
-
-  const level = heading[1].length;
+function renderHeading(level: number, children: ReactNode[], key: string): ReactNode {
   const className = `${headingClass(level)} break-words font-semibold text-ink first:pt-0 [overflow-wrap:anywhere]`;
-  const children = renderInline(heading[2], `${keyPrefix}-heading`, renderCitation, resolveHref);
-
+  // Answers never introduce an h1: Markdown levels shift down by one.
   switch (level) {
     case 1:
-      return (
-        <h2 className={className} data-markdown-heading={level} key={keyPrefix}>
-          {children}
-        </h2>
-      );
+      return <h2 className={className} data-markdown-heading={level} key={key}>{children}</h2>;
     case 2:
-      return (
-        <h3 className={className} data-markdown-heading={level} key={keyPrefix}>
-          {children}
-        </h3>
-      );
+      return <h3 className={className} data-markdown-heading={level} key={key}>{children}</h3>;
     case 3:
-      return (
-        <h4 className={className} data-markdown-heading={level} key={keyPrefix}>
-          {children}
-        </h4>
-      );
+      return <h4 className={className} data-markdown-heading={level} key={key}>{children}</h4>;
     case 4:
-      return (
-        <h5 className={className} data-markdown-heading={level} key={keyPrefix}>
-          {children}
-        </h5>
-      );
+      return <h5 className={className} data-markdown-heading={level} key={key}>{children}</h5>;
     default:
-      return (
-        <h6 className={className} data-markdown-heading={level} key={keyPrefix}>
-          {children}
-        </h6>
-      );
+      return <h6 className={className} data-markdown-heading={level} key={key}>{children}</h6>;
   }
 }
 
-function parseListLine(line: string): ListLine | null {
-  const match = /^(\s*)([-*+]|\d{1,9}\.)\s+(.+)$/.exec(line);
-  if (!match) {
-    return null;
-  }
-
-  return {
-    content: match[3],
-    indent: match[1].replace(/\t/g, "  ").length,
-    ordered: /^\d+\.$/.test(match[2]),
-    start: /^\d+\.$/.test(match[2]) ? Number.parseInt(match[2], 10) : undefined
-  };
-}
-
-function parseList(
-  lines: string[],
-  startIndex: number,
-  depth: number,
-  baseIndent?: number
-): { block: ListBlock; nextIndex: number } {
-  const first = parseListLine(lines[startIndex]);
-  if (!first) {
-    return {
-      block: {
-        items: [],
-        ordered: false
-      },
-      nextIndex: startIndex
-    };
-  }
-
-  const indent = baseIndent ?? first.indent;
-  const block: ListBlock = {
-    items: [],
-    ordered: first.ordered,
-    start: first.start
-  };
-  let index = startIndex;
-
-  while (index < lines.length) {
-    const parsed = parseListLine(lines[index]);
-    if (!parsed) {
-      break;
-    }
-
-    if (parsed.indent < indent) {
-      break;
-    }
-
-    if (parsed.indent > indent) {
-      const lastItem = block.items.at(-1);
-      if (!lastItem) {
-        break;
-      }
-
-      if (depth >= MAX_NESTING_DEPTH) {
-        while (index < lines.length) {
-          const nested = parseListLine(lines[index]);
-          if (!nested || nested.indent <= indent) break;
-          lastItem.literalChildren.push(lines[index]);
-          index += 1;
-        }
-        continue;
-      }
-
-      const child = parseList(lines, index, depth + 1, parsed.indent);
-      lastItem.children.push(child.block);
-      index = child.nextIndex;
-      continue;
-    }
-
-    if (parsed.ordered !== block.ordered) {
-      break;
-    }
-
-    block.items.push({
-      children: [],
-      content: parsed.content,
-      literalChildren: []
-    });
-    index += 1;
-  }
-
-  return {
-    block,
-    nextIndex: index
-  };
-}
-
-function renderList(
-  block: ListBlock,
-  keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer,
-  resolveHref?: MarkdownHrefResolver,
-  nestingDepth = 0
-): ReactNode {
-  const Tag = block.ordered ? "ol" : "ul";
-  const className = `${block.ordered ? "list-decimal" : "list-disc"} space-y-1 break-words marker:text-ink-muted [overflow-wrap:anywhere] ${nestingDepth < MAX_INDENT_DEPTH ? "pl-5" : "list-inside pl-0"}`;
-
+function renderTable(block: Extract<MarkdownBlock, { type: "table" }>, key: string, context: RenderContext): ReactNode {
   return (
-    <Tag className={className} key={keyPrefix} start={block.start}>
-      {block.items.map((item, index) => (
-        <li key={`${keyPrefix}-item-${index}`}>
-          {renderInline(item.content, `${keyPrefix}-item-${index}`, renderCitation, resolveHref)}
-          {item.children.map((child, childIndex) => (
-            <div className="mt-1" key={`${keyPrefix}-item-${index}-child-${childIndex}`}>
-              {renderList(child, `${keyPrefix}-item-${index}-child-${childIndex}`, renderCitation, resolveHref, nestingDepth + 1)}
-            </div>
-          ))}
-          {item.literalChildren.length > 0 ? (
-            <div className="mt-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-              {item.literalChildren.join("\n")}
-            </div>
-          ) : null}
-        </li>
-      ))}
-    </Tag>
-  );
-}
-
-function tableRowCells(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
-}
-
-function isTableDelimiter(line: string): boolean {
-  const cells = tableRowCells(line);
-
-  return cells.length > 1 && cells.every((cell) => /^:?-+:?$/.test(cell));
-}
-
-function isTableStart(lines: string[], index: number): boolean {
-  return lines[index]?.includes("|") && isTableDelimiter(lines[index + 1] ?? "");
-}
-
-function renderTable(
-  lines: string[],
-  startIndex: number,
-  keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer,
-  resolveHref?: MarkdownHrefResolver
-): { nextIndex: number; node: ReactNode } {
-  const headerCells = tableRowCells(lines[startIndex]);
-  const rows: string[][] = [];
-  let index = startIndex + 2;
-
-  while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
-    rows.push(tableRowCells(lines[index]));
-    index += 1;
-  }
-
-  return {
-    nextIndex: index,
-    node: (
-      <div
-        className="max-w-full overflow-x-auto rounded-control border border-trace-subtle outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
-        data-testid="markdown-table-scroll"
-        key={keyPrefix}
-        role="region"
-        aria-label="Scrollable table"
-        tabIndex={0}
-      >
-        <table className="min-w-full border-collapse text-left text-xs">
-          <thead className="border-b border-trace-strong text-ink-secondary">
-            <tr>
-              {headerCells.map((cell, cellIndex) => (
-                <th className="border-b border-r border-trace-subtle bg-answer-paper px-3 py-2 font-semibold last:border-r-0" key={`${keyPrefix}-th-${cellIndex}`}>
-                  {renderInline(cell, `${keyPrefix}-th-${cellIndex}`, renderCitation, resolveHref)}
-                </th>
+    <div
+      className="max-w-full overflow-x-auto rounded-control border border-trace-subtle outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
+      data-testid="markdown-table-scroll"
+      key={key}
+      role="region"
+      aria-label="Scrollable table"
+      tabIndex={0}
+    >
+      <table className="min-w-full border-collapse text-left text-xs">
+        <thead className="border-b border-trace-strong text-ink-secondary">
+          <tr>
+            {block.header.map((cell, cellIndex) => (
+              <th className="border-b border-r border-trace-subtle bg-answer-paper px-3 py-2 font-semibold last:border-r-0" key={`${key}-th-${cellIndex}`}>
+                {renderInline(cell, `${key}-th-${cellIndex}`, context)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {block.rows.map((row, rowIndex) => (
+            <tr className="border-b border-trace-subtle last:border-b-0" key={`${key}-tr-${rowIndex}`}>
+              {block.header.map((_header, cellIndex) => (
+                <td className="border-r border-trace-subtle px-3 py-2 align-top last:border-r-0" key={`${key}-td-${rowIndex}-${cellIndex}`}>
+                  {renderInline(row[cellIndex] ?? [], `${key}-td-${rowIndex}-${cellIndex}`, context)}
+                </td>
               ))}
             </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, rowIndex) => (
-              <tr className="border-b border-trace-subtle last:border-b-0" key={`${keyPrefix}-tr-${rowIndex}`}>
-                {headerCells.map((_header, cellIndex) => (
-                  <td className="border-r border-trace-subtle px-3 py-2 align-top last:border-r-0" key={`${keyPrefix}-td-${rowIndex}-${cellIndex}`}>
-                    {renderInline(
-                      row[cellIndex] ?? "",
-                      `${keyPrefix}-td-${rowIndex}-${cellIndex}`,
-                      renderCitation,
-                      resolveHref
-                    )}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    )
-  };
-}
-
-function isHorizontalRule(line: string): boolean {
-  return /^(-{3,}|\*{3,}|_{3,})$/.test(line.trim());
-}
-
-function parseDisplayMath(lines: string[], startIndex: number): DisplayMathBlock | null {
-  const openingLine = lines[startIndex]?.trim() ?? "";
-  const delimiter = openingLine.startsWith("\\[")
-    ? { close: "\\]", open: "\\[" }
-    : openingLine.startsWith("$$") && !openingLine.startsWith("$$$")
-      ? { close: "$$", open: "$$" }
-      : null;
-
-  if (!delimiter) {
-    return null;
-  }
-
-  const sourceLines: string[] = [];
-  let index = startIndex;
-
-  while (index < lines.length) {
-    const candidate = index === startIndex ? openingLine.slice(delimiter.open.length) : lines[index];
-    const closeIndex = candidate.lastIndexOf(delimiter.close);
-
-    if (closeIndex >= 0 && !candidate.slice(closeIndex + delimiter.close.length).trim()) {
-      sourceLines.push(candidate.slice(0, closeIndex));
-
-      const source = sourceLines.join("\n").trim();
-      if (!source) {
-        return null;
-      }
-
-      return {
-        nextIndex: index + 1,
-        raw: lines.slice(startIndex, index + 1).join("\n"),
-        source
-      };
-    }
-
-    sourceLines.push(candidate);
-    index += 1;
-  }
-
-  return null;
-}
-
-function isPotentialDisplayMathStart(line: string): boolean {
-  const trimmed = line.trim();
-  return trimmed.startsWith("\\[") || (trimmed.startsWith("$$") && !trimmed.startsWith("$$$"));
-}
-
-function isBlockStart(lines: string[], index: number): boolean {
-  const line = lines[index] ?? "";
-
-  return Boolean(
-    codeFenceStart(line) ||
-      renderHeading(line, "probe") ||
-      parseListLine(line) ||
-      line.trim().startsWith(">") ||
-      isTableStart(lines, index) ||
-      isHorizontalRule(line) ||
-      isPotentialDisplayMathStart(line)
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-function renderTextLines(
-  markdown: string,
-  keyPrefix: string,
-  renderCitation?: MarkdownCitationRenderer,
-  resolveHref?: MarkdownHrefResolver,
-  streaming = false,
-  nestingDepth = 0
-): ReactNode[] {
-  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
-  const nodes: ReactNode[] = [];
-  let index = 0;
-
-  while (index < lines.length) {
-    if (!lines[index].trim()) {
-      index += 1;
-      continue;
-    }
-
-    const fencedCode = parseFencedCode(lines, index);
-    if (fencedCode) {
-      nodes.push(streaming && !fencedCode.closed ? (
-        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]" key={`${keyPrefix}-code-${index}`}>
-          {lines.slice(index, fencedCode.nextIndex).join("\n")}
-        </p>
-      ) : (
-        <CodeBlock code={fencedCode.code} language={fencedCode.language} streaming={streaming} key={`${keyPrefix}-code-${index}`} />
-      ));
-      index = fencedCode.nextIndex;
-      continue;
-    }
-
-    const displayMath = parseDisplayMath(lines, index);
-    if (displayMath) {
-      nodes.push(
-        <MathExpression
-          displayMode
-          key={`${keyPrefix}-math-${index}`}
-          raw={displayMath.raw}
-          source={displayMath.source}
-        />
-      );
-      index = displayMath.nextIndex;
-      continue;
-    }
-
-    const heading = renderHeading(lines[index], `${keyPrefix}-h-${index}`, renderCitation, resolveHref);
-    if (heading) {
-      nodes.push(heading);
-      index += 1;
-      continue;
-    }
-
-    if (isHorizontalRule(lines[index])) {
-      nodes.push(<hr className="border-trace-subtle" key={`${keyPrefix}-hr-${index}`} />);
-      index += 1;
-      continue;
-    }
-
-    if (lines[index].trim().startsWith(">")) {
-      if (nestingDepth >= MAX_NESTING_DEPTH) {
-        const literalLines: string[] = [];
-        while (index < lines.length && lines[index].trim().startsWith(">")) {
-          literalLines.push(lines[index]);
-          index += 1;
+function renderListItem(
+  children: readonly MarkdownBlock[],
+  loose: boolean,
+  key: string,
+  context: RenderContext,
+  depth: number
+): ReactNode {
+  return (
+    <li className={loose ? "space-y-1" : undefined} key={key}>
+      {children.map((child, index) => {
+        const childKey = `${key}-${index}`;
+        if (child.type === "paragraph") {
+          // Tight items keep their text directly in the list item.
+          return loose ? (
+            <p className={PARAGRAPH_CLASS} key={childKey}>{renderInline(child.children, childKey, context)}</p>
+          ) : renderInline(child.children, childKey, context);
         }
-        nodes.push(
-          <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]" key={`${keyPrefix}-quote-limit-${index}`}>
-            {literalLines.join("\n")}
-          </p>
-        );
-        continue;
-      }
+        return <div className="mt-1" key={childKey}>{renderBlock(child, childKey, context, depth)}</div>;
+      })}
+    </li>
+  );
+}
 
-      const quoteLines: string[] = [];
-      while (index < lines.length && lines[index].trim().startsWith(">")) {
-        quoteLines.push(lines[index].replace(/^\s*>\s?/, ""));
-        index += 1;
-      }
-
-      nodes.push(
-        <blockquote className={`space-y-2 text-ink-secondary ${nestingDepth < MAX_INDENT_DEPTH ? "border-l-2 border-proof/40 pl-4" : "border-0 pl-0"}`} key={`${keyPrefix}-quote-${index}`}>
-          {renderTextLines(
-            quoteLines.join("\n"),
-            `${keyPrefix}-quote-${index}`,
-            renderCitation,
-            resolveHref,
-            streaming,
-            nestingDepth + 1
-          )}
+/** `depth` counts the block quotes and lists around this block. */
+function renderBlock(block: MarkdownBlock, key: string, context: RenderContext, depth: number): ReactNode {
+  switch (block.type) {
+    case "paragraph":
+      return <p className={PARAGRAPH_CLASS} key={key}>{renderInline(block.children, key, context)}</p>;
+    case "heading":
+      return renderHeading(block.level, renderInline(block.children, key, context), key);
+    case "thematicBreak":
+      return <hr className="border-trace-subtle" key={key} />;
+    case "blockquote":
+      return (
+        <blockquote className={`space-y-2 text-ink-secondary ${depth < MAX_INDENT_DEPTH ? "border-l-2 border-proof/40 pl-4" : "border-0 pl-0"}`} key={key}>
+          {block.children.map((child, index) => renderBlock(child, `${key}-${index}`, context, depth + 1))}
         </blockquote>
       );
-      continue;
+    case "list": {
+      const Tag = block.ordered ? "ol" : "ul";
+      const className = `${block.ordered ? "list-decimal" : "list-disc"} space-y-1 break-words marker:text-ink-muted [overflow-wrap:anywhere] ${depth < MAX_INDENT_DEPTH ? "pl-5" : "list-inside pl-0"}`;
+      return (
+        <Tag className={className} key={key} start={block.start ?? undefined}>
+          {block.items.map((item, index) => renderListItem(item, block.loose, `${key}-${index}`, context, depth + 1))}
+        </Tag>
+      );
     }
-
-    if (isTableStart(lines, index)) {
-      const table = renderTable(lines, index, `${keyPrefix}-table-${index}`, renderCitation, resolveHref);
-      nodes.push(table.node);
-      index = table.nextIndex;
-      continue;
-    }
-
-    if (parseListLine(lines[index])) {
-      if (nestingDepth >= MAX_NESTING_DEPTH) {
-        const literalLines: string[] = [];
-        while (index < lines.length && parseListLine(lines[index])) {
-          literalLines.push(lines[index]);
-          index += 1;
-        }
-        nodes.push(
-          <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]" key={`${keyPrefix}-list-limit-${index}`}>
-            {literalLines.join("\n")}
-          </p>
-        );
-        continue;
-      }
-
-      const list = parseList(lines, index, nestingDepth + 1);
-      nodes.push(renderList(list.block, `${keyPrefix}-list-${index}`, renderCitation, resolveHref, nestingDepth));
-      index = list.nextIndex;
-      continue;
-    }
-
-    const paragraphLines = [lines[index]];
-    index += 1;
-    while (index < lines.length && lines[index].trim() && !isBlockStart(lines, index)) {
-      paragraphLines.push(lines[index]);
-      index += 1;
-    }
-
-    nodes.push(
-      <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]" key={`${keyPrefix}-p-${index}`}>
-        {renderInline(
-          paragraphLines.join("\n").trim(),
-          `${keyPrefix}-p-${index}`,
-          renderCitation,
-          resolveHref
-        )}
-      </p>
-    );
+    case "code":
+      // While streaming, an unclosed fence stays partial text with no highlighting.
+      return context.streaming && !block.closed ? (
+        <p className={PARAGRAPH_CLASS} key={key}>
+          {block.code ? `${block.opening}\n${block.code.replace(/\n$/u, "")}` : block.opening}
+        </p>
+      ) : (
+        <CodeBlock code={block.code} key={key} language={block.language} streaming={context.streaming} />
+      );
+    case "math":
+      return <MathExpression displayMode key={key} raw={block.raw} source={block.source} />;
+    case "table":
+      return renderTable(block, key, context);
+    case "literal":
+      return <p className={PARAGRAPH_CLASS} key={key}>{block.value}</p>;
   }
-
-  return nodes;
 }
 
 type MarkdownMessageProps = {
@@ -870,15 +408,36 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
   );
 }
 
+/** Parse and convert without letting a parser or conversion failure reach the caller. */
+function renderMarkdown(content: string, context: RenderContext): ReactNode[] {
+  try {
+    const document = parseMarkdown(content, { streaming: context.streaming });
+    if (document) {
+      const nodes = document.blocks.map((block, index) => renderBlock(block, `markdown-${index}`, context, 0));
+      if (document.overflow) {
+        nodes.push(<p className={PARAGRAPH_CLASS} key="markdown-overflow">{document.overflow}</p>);
+      }
+      return nodes;
+    }
+  } catch {
+    // Fall through to the plain-text rendering below.
+  }
+  return [<p className={PARAGRAPH_CLASS} key="markdown-plain">{content}</p>];
+}
+
 function MarkdownMessageComponent({
   content,
   renderCitation,
   resolveHref,
   streaming = false
 }: MarkdownMessageProps) {
+  const nodes = useMemo(
+    () => renderMarkdown(content, { renderCitation, resolveHref, streaming }),
+    [content, renderCitation, resolveHref, streaming]
+  );
   return (
     <div className="min-w-0 space-y-4">
-      {renderTextLines(content, "markdown", renderCitation, resolveHref, streaming)}
+      {nodes}
     </div>
   );
 }

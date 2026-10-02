@@ -386,6 +386,29 @@ describe("Composer v2", () => {
     expect(chip.querySelector('[data-signal="attention"]')).toBeNull();
     expect(chip).toHaveAccessibleDescription("MCP: Auto");
   });
+  it("discloses personal connections and sends one needing attention to Settings → Connections", () => {
+    const onOpenMcpSettings = vi.fn();
+    const onOpenPersonalMcpSettings = vi.fn();
+    const config: ComposerConfig = {
+      ...composerGalleryConfig,
+      mcpServers: [
+        { ...composerGalleryConfig.mcpServers[0], source: "installation" },
+        { attention: "reauthorization_required", description: "", enabled: true, id: "notion", knownToolCount: 4,
+          name: "Notion", readiness: "reauthorization_required", source: "personal" },
+        { description: "", enabled: true, id: "docs", knownToolCount: 9, name: "Docs search", readiness: "ready", source: "personal" }
+      ]
+    };
+    render(<ComposerV2 {...props({ config, initialLayer: "tools", onOpenMcpSettings, onOpenPersonalMcpSettings })} />);
+    expect(screen.getByTestId("composer-v2-mcp-enabled")).toHaveTextContent("Enabled servers · 3 · 1 needs attention");
+    expect(screen.getByTestId("composer-v2-mcp-servers")).toHaveTextContent("Docs search (your connection)");
+    expect(screen.getByRole("status")).toHaveTextContent("Notion · Reconnect required");
+    // Only installation attention turns Studio's link into Configure.
+    expect(screen.getByRole("menuitem", { name: "Manage enabled MCP servers" })).toHaveTextContent("Manage");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open Connections in Settings for Notion" }));
+    expect(onOpenPersonalMcpSettings).toHaveBeenCalledOnce();
+    expect(onOpenMcpSettings).not.toHaveBeenCalled();
+  });
+
   it("keeps context controls in the header, outside the composer", () => {
     const { container } = render(<ComposerV2 {...props()} />);
     expect(screen.queryByTestId("composer-memory-mode")).toBeNull();

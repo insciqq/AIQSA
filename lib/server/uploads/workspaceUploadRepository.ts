@@ -189,7 +189,8 @@ export function createWorkspaceUploadRepository(db: PrismaClient) {
       }, data: { leaseExpiresAt: new Date(now.getTime() + WORKSPACE_UPLOAD_LEASE_MS) } });
       return result.count === 1;
     },
-    async settle(input: { id: string; claimToken: string; storageKey: string; checksum: string }, now = new Date()) {
+    /** `fileName`/`mimeType` name the verified content; the upload row keeps the declared values. */
+    async settle(input: { id: string; claimToken: string; storageKey: string; checksum: string; fileName?: string; mimeType?: string }, now = new Date()) {
       return db.$transaction(async tx => {
         const row = await lock(tx, input.id);
         if (!row || row.state !== "verifying" || row.claimToken !== input.claimToken || !row.leaseExpiresAt || row.leaseExpiresAt <= now || row.deadlineAt <= now) return false;
@@ -203,8 +204,8 @@ export function createWorkspaceUploadRepository(db: PrismaClient) {
         const user = await tx.user.findUniqueOrThrow({ where: { id: row.userId }, select: { displayName: true } });
         const attachment = await tx.attachment.create({ data: {
           ...(row.projectId ? { projectId: row.projectId, uploaderUserId: row.userId, uploaderDisplayName: user.displayName } : { userId: row.userId }),
-          byteSize: row.byteSize, checksum: input.checksum, fileName: row.fileName, kind: "file",
-          mimeType: row.mimeType, storageKey: input.storageKey, status: "ready", extractedText: null,
+          byteSize: row.byteSize, checksum: input.checksum, fileName: input.fileName ?? row.fileName, kind: "file",
+          mimeType: input.mimeType ?? row.mimeType, storageKey: input.storageKey, status: "ready", extractedText: null,
           metadata: { workspaceOriginalOnly: true }
         } });
         await tx.attachmentUpload.update({ where: { id: row.id }, data: {

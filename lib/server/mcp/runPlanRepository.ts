@@ -7,6 +7,7 @@ import type {
 } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
 import { loadMcpToolAccess } from "./toolAccess";
+import { personalMcpCatalogTools, personalMcpLiveTools } from "./personalCatalog";
 import {
   buildMcpCapabilityCatalog,
   mcpInventoryExclusions,
@@ -29,14 +30,28 @@ const runPlanPreferenceSelect = {
       id: true,
       inventory: true,
       inventoryUpdatedAt: true,
+      oauthConnectionId: true,
       revisionId: true,
       state: true,
       userServerId: true
     }
   },
   desiredRuntimeGenerationId: true,
+  discoveredInventory: true,
+  discoveredOAuthConnectionId: true,
+  discoveredRevisionId: true,
   enabled: true,
   id: true,
+  runtimeGenerations: {
+    orderBy: { updatedAt: "desc" },
+    take: 8,
+    select: {
+      inventory: true,
+      oauthConnectionId: true,
+      revisionId: true,
+      state: true
+    }
+  },
   server: {
     select: {
       activeRevision: {
@@ -58,7 +73,12 @@ const runPlanPreferenceSelect = {
         }
       },
       id: true,
-      namespace: true
+      ownerUserId: true,
+      namespace: true,
+      oauthConnections: {
+        where: { purpose: "user" },
+        select: { disconnectRequestedAt: true, id: true, state: true, userId: true }
+      }
     }
   },
   user: {
@@ -70,6 +90,7 @@ const runPlanPreferenceSelect = {
       status: true
     }
   },
+  userDisabledToolNames: true,
   userId: true
 } satisfies Prisma.McpUserServerSelect;
 
@@ -117,16 +138,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function configurationDisabledToolNames(configuration: unknown): string[] {
+  return isRecord(configuration) && Array.isArray(configuration.disabledToolNames)
+    ? configuration.disabledToolNames.filter((name): name is string => typeof name === "string")
+    : [];
+}
+
 function revisionCatalogTools(
   validationEvidence: unknown,
   configuration: unknown
 ): McpToolInventoryEntry[] {
   if (!isRecord(validationEvidence) || !Array.isArray(validationEvidence.toolInventory)) return [];
-  const disabled = new Set(
-    isRecord(configuration) && Array.isArray(configuration.disabledToolNames)
-      ? configuration.disabledToolNames.filter((name): name is string => typeof name === "string")
-      : []
-  );
+  const disabled = new Set(configurationDisabledToolNames(configuration));
   return validationEvidence.toolInventory.flatMap((candidate) => {
     if (!isRecord(candidate) || typeof candidate.name !== "string" || !candidate.name.trim() ||
       disabled.has(candidate.name) ||
@@ -157,18 +180,18 @@ function revisionCatalogTools(
 }
 
 /**
- * The published catalog minus what the generation's persisted inventory holds
- * back. A malformed inventory subtracts nothing: materialization then fails
- * closed as `mcp_inventory_invalid` instead of the server silently vanishing.
+ * An installation server's published catalog minus what the generation's
+ * persisted inventory holds back. A malformed inventory subtracts nothing:
+ * materialization then fails closed as `mcp_inventory_invalid` instead of the
+ * server silently vanishing.
  */
 function currentCatalogTools(
   validationEvidence: unknown,
   configuration: unknown,
   inventory: unknown
 ): McpToolInventoryEntry[] {
-  const catalog = revisionCatalogTools(validationEvidence, configuration);
   const excluded = new Set((mcpInventoryExclusions(inventory) ?? []).map(({ name }) => name));
-  return excluded.size ? catalog.filter(({ name }) => !excluded.has(name)) : catalog;
+  return revisionCatalogTools(validationEvidence, configuration).filter(({ name }) => !excluded.has(name));
 }
 
 function revisionServerInstructions(validationEvidence: unknown): string | undefined {
@@ -179,9 +202,61 @@ function revisionServerInstructions(validationEvidence: unknown): string | undef
   return validationEvidence.evidence.server.instructions.trim() || undefined;
 }
 
+/**
+ * A personal server's catalog follows its live inventory minus the owner's
+ * switched-off tools; the published revision only lends argument summaries and
+ * titles. This is a projection lookup; it never wakes a runtime.
+ */
+function personalCatalogTools(
+  preference: RunPlanPreferenceRecord,
+  current: RunPlanPreferenceRecord["desiredRuntimeGeneration"]
+): McpToolInventoryEntry[] {
+  const configuration = preference.server.activeRevision?.configuration;
+  const live = personalMcpLiveTools({
+    activeRevisionId: preference.server.activeRevisionId!,
+    current,
+    discovered: {
+      inventory: preference.discoveredInventory,
+      oauthConnectionId: preference.discoveredOAuthConnectionId,
+      revisionId: preference.discoveredRevisionId
+    },
+    disabledByConfiguration: configurationDisabledToolNames(configuration),
+    oauthMode: authMode(configuration) === "oauth",
+    readyOAuthConnectionIds: new Set(preference.server.oauthConnections
+      .filter((connection) => connection.userId === preference.userId &&
+        connection.state === "ready" && connection.disconnectRequestedAt === null)
+      .map((connection) => connection.id)),
+    recent: preference.runtimeGenerations
+  });
+  return personalMcpCatalogTools(
+    live,
+    revisionCatalogTools(preference.server.activeRevision?.validationEvidence, configuration),
+    preference.userDisabledToolNames
+  );
+}
+
+/**
+ * A personal OAuth connection whose owner holds no ready token lost its
+ * authority. Dispatch and admission name that state instead of a queued
+ * runtime that synchronization can never start.
+ */
+function personalAuthorizationLoss(
+  preference: RunPlanPreferenceRecord
+): { errorCode: string; readiness: "needs_authorization" | "reauthorization_required" } | null {
+  if (authMode(preference.server.activeRevision?.configuration) !== "oauth") return null;
+  const owned = preference.server.oauthConnections.filter((connection) =>
+    connection.userId === preference.userId && connection.disconnectRequestedAt === null);
+  if (owned.some((connection) => connection.state === "ready")) return null;
+  return owned.some((connection) => connection.state === "reauthorization_required")
+    ? { errorCode: "oauth_reauthorization_required", readiness: "reauthorization_required" }
+    : { errorCode: "oauth_required", readiness: "needs_authorization" };
+}
+
 function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRunPlanRecord {
   const groupIds = new Set(preference.user.groups.map((membership) => membership.groupId));
-  const canUse = preference.server.grants.some((grant) => grant.canUse && (
+  const canUse = preference.server.ownerUserId != null
+    ? preference.server.ownerUserId === preference.userId
+    : preference.server.grants.some((grant) => grant.canUse && (
     grant.userId === preference.userId || Boolean(grant.groupId && groupIds.has(grant.groupId))
   ));
   if (preference.user.status !== "active" || !canUse) {
@@ -200,6 +275,10 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
   const serverInstructions = revisionServerInstructions(
     preference.server.activeRevision?.validationEvidence
   );
+  const personal = preference.server.ownerUserId === preference.userId;
+  const authorization = personal ? personalAuthorizationLoss(preference) : null;
+  if (authorization) return { ...inaccessibleRecord(preference, authorization.errorCode), readiness: authorization.readiness };
+  const switchedOff = personal ? { userDisabledToolNames: preference.userDisabledToolNames } : {};
 
   const generation = preference.desiredRuntimeGeneration;
   if (!generation) {
@@ -209,11 +288,15 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
         preference.desiredRuntimeGenerationId ? "mcp_runtime_stale" : "mcp_runtime_pending"
       ),
       ...runtimeTimeouts(preference.server.activeRevision?.configuration),
-      catalogTools: revisionCatalogTools(
-        preference.server.activeRevision?.validationEvidence,
-        preference.server.activeRevision?.configuration
-      ),
+      catalogTools: personal
+        ? personalCatalogTools(preference, null)
+        : currentCatalogTools(
+            preference.server.activeRevision?.validationEvidence,
+            preference.server.activeRevision?.configuration,
+            null
+          ),
       ...(serverInstructions ? { serverInstructions } : {}),
+      ...switchedOff,
       errorCode: preference.desiredRuntimeGenerationId ? "mcp_runtime_stale" : null,
       readiness: preference.desiredRuntimeGenerationId ? "unavailable" : "queued"
     };
@@ -228,11 +311,13 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
   const runtime = runtimeReadiness(generation.state, generation.errorCode);
   return {
     ...runtimeTimeouts(preference.server.activeRevision?.configuration),
-    catalogTools: currentCatalogTools(
-      preference.server.activeRevision?.validationEvidence,
-      preference.server.activeRevision?.configuration,
-      generation.inventory
-    ),
+    catalogTools: personal
+      ? personalCatalogTools(preference, generation)
+      : currentCatalogTools(
+          preference.server.activeRevision?.validationEvidence,
+          preference.server.activeRevision?.configuration,
+          generation.inventory
+        ),
     credentialSources: generation.credentialSources.filter((source): source is "oauth" | "personal" | "shared" =>
       source === "oauth" || source === "personal" || source === "shared"),
     enabled: preference.enabled,
@@ -248,7 +333,8 @@ function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRun
     serverId: preference.server.id,
     serverDescription: preference.server.description,
     ...(serverInstructions ? { serverInstructions } : {}),
-    serverName: preference.server.displayName
+    serverName: preference.server.displayName,
+    ...switchedOff
   };
 }
 
@@ -265,6 +351,7 @@ const projectRunServerSelect = {
   displayName: true,
   enabled: true,
   id: true,
+  ownerUserId: true,
   namespace: true,
   sharedConfigEnvelope: true,
   sharedRuntime: {
@@ -336,6 +423,7 @@ function serializeProjectRunServer(server: ProjectRunServerRecord): McpRunPlanRe
   if (!server.enabled || server.archivedAt || !server.activeRevisionId || !server.activeRevision) {
     return unavailable("mcp_server_unavailable");
   }
+  if (server.ownerUserId !== null) return unavailable("mcp_project_credentials_unavailable");
   if (requiresPersonalCredentials(configuration)) return unavailable("mcp_project_credentials_unavailable");
   if (!server.sharedConfigEnvelope && authMode(configuration) !== "none") {
     return unavailable("mcp_runtime_unavailable");
@@ -392,7 +480,8 @@ async function filterRunPlanRecords(
     inventory: isRecord(record.inventory) && Array.isArray(record.inventory.tools)
       ? { ...record.inventory, tools: record.inventory.tools.filter((tool) =>
           !isRecord(tool) || typeof tool.name !== "string" ||
-          allowed({ serverId: record.serverId, originalName: tool.name })) }
+          (record.catalogTools?.some((candidate) => candidate.name === tool.name) !== false &&
+            allowed({ serverId: record.serverId, originalName: tool.name }))) }
       : record.inventory
   }));
 }

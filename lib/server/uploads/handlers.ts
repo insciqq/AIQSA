@@ -6,8 +6,9 @@ import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readBoundedFormData, RequestBodyTooLargeError } from "../http/requestBody";
 import { getRequestBodyConfig, type RequestBodyConfig } from "../http/requestBodyConfig";
 import { resolveUploadPermitGate, type UploadPermitGate } from "../http/uploadPermitGate";
+import { normalizeUploadRaster } from "./rasterNormalization";
 import { createS3StorageAdapter, type StorageAdapter } from "./storage";
-import { defaultUploadMaxBytes, validateUpload, type UploadKind } from "./validation";
+import { defaultUploadMaxBytes, validateUpload, type UploadKind, type UploadValidationResult } from "./validation";
 
 export type CreatedAttachment = {
   byteSize: number;
@@ -67,6 +68,10 @@ export type UploadHandlerDeps = {
 
 function safeFileName(fileName: string): string {
   return fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function refusalStatus(code: Extract<UploadValidationResult, { ok: false }>["code"]): 400 | 413 {
+  return code === "file_too_large" || code === "image_limit_exceeded" ? 413 : 400;
 }
 
 function checksum(buffer: Buffer): string {
@@ -151,10 +156,7 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
       });
 
       if (!initialValidation.ok) {
-        return Response.json(
-          { error: initialValidation.code },
-          { status: initialValidation.code === "file_too_large" ? 413 : 400 }
-        );
+        return Response.json({ error: initialValidation.code }, { status: refusalStatus(initialValidation.code) });
       }
       if (initialValidation.kind === "file") {
         let workspaceAvailable = false;
@@ -179,7 +181,17 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
       });
 
       if (!validation.ok) {
-        return Response.json({ error: validation.code }, { status: validation.code === "file_too_large" ? 413 : 400 });
+        return Response.json({ error: validation.code }, { status: refusalStatus(validation.code) });
+      }
+
+      let fileName = file.name;
+      let mimeType = validation.mimeType;
+      if (validation.rasterCheck) {
+        const normalized = await normalizeUploadRaster(buffer, {
+          fileName: file.name, format: validation.rasterCheck, signal: request.signal
+        });
+        if (!normalized.ok) return Response.json({ error: normalized.code }, { status: normalized.status });
+        ({ fileName, mimeType } = normalized);
       }
 
       let pdfPageCount: number | undefined;
@@ -201,11 +213,11 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
       }
 
       const digest = checksum(buffer);
-      const storageKey = `${target.projectId ? `projects/${target.projectId}` : auth.userId}/${randomUUID()}-${digest.slice(0, 16)}-${safeFileName(file.name)}`;
+      const storageKey = `${target.projectId ? `projects/${target.projectId}` : auth.userId}/${randomUUID()}-${digest.slice(0, 16)}-${safeFileName(fileName)}`;
       const storage = deps.storage ?? createS3StorageAdapter();
       await storage.putObject({
         body: buffer,
-        contentType: validation.mimeType,
+        contentType: mimeType,
         storageKey
       });
 
@@ -216,10 +228,10 @@ export function createUploadHandler(deps: UploadHandlerDeps) {
           byteSize: buffer.byteLength,
           checksum: digest,
           extractedText: null,
-          fileName: file.name,
+          fileName,
           kind: validation.kind,
           metadata: pdfPageCount === undefined ? {} : { pdfPageCount },
-          mimeType: validation.mimeType,
+          mimeType,
           processingErrorCode: null,
           status,
           storageKey,

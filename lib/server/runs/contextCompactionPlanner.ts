@@ -1,15 +1,17 @@
 import { contextTokenEstimator } from "../../domain/tokenEstimate";
-import type { ContextPlanMeasurement, ContextRejectionRebuild } from "../../contracts/contextCompaction";
+import type { ContextPlanMeasurement, ContextRejectionRebuild, ContextSummary } from "../../contracts/contextCompaction";
 import { decodeToolObservationDescriptor, type ToolObservationDescriptor } from "../toolObservations/contract";
 import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
-import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
+import type { ProviderToolBridge, RunTool, RunToolCapability, ToolExecutionResult } from "../tools/types";
 import { READ_TOOL_RESULT_NAME } from "../tools/readToolResult";
+import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
 import {
   CONTEXT_COMPACTION_LIMITS,
   contextDigest,
   contextSummaryCoverage,
   contextSummaryMessageId,
   contextSummaryTail,
+  isUnitCoverageRef,
   type ContextObservation
 } from "./contextCompactionContract";
 
@@ -280,7 +282,9 @@ export function toolTranscriptUnits(messages: readonly unknown[]): ToolTranscrip
 
 const TRANSCRIPT_COVERAGE_PREFIX = "ctxt1_";
 
-/** Opaque summary ref naming the newest provider call its source contained. */
+/** Historical summary ref naming the newest provider call its source
+ * contained. Only notes bought before unit refs existed carry it; it is read
+ * as a prefix of the transcript and never written again. */
 export function transcriptCoverageRef(callId: string): string {
   return `${TRANSCRIPT_COVERAGE_PREFIX}${contextDigest({ callId }).slice(0, 32)}`;
 }
@@ -289,37 +293,103 @@ export function isTranscriptCoverageRef(ref: string): boolean {
   return ref.startsWith(TRANSCRIPT_COVERAGE_PREFIX);
 }
 
-/** The coverage ref of a summary source whose tool transcript is `messages`:
- * the newest call it contains, or null for a transcript without calls. */
-export function transcriptCoverageMarker(messages: readonly unknown[]): string | null {
-  const units = toolTranscriptUnits(messages);
-  for (let index = units.length - 1; index >= 0; index -= 1) {
-    const newest = units[index]!.callIds.at(-1);
-    if (newest) return transcriptCoverageRef(newest);
+/** Opaque summary ref naming one provider protocol unit its source contained,
+ * by the unit's call ids. Coverage is the set of these refs, not a prefix. */
+export function unitCoverageRef(unit: Pick<ToolTranscriptUnit, "callIds">): string {
+  return `ctxu1_${contextDigest({ callIds: unit.callIds }).slice(0, 32)}`;
+}
+
+export { isUnitCoverageRef };
+
+/** Server-owned capabilities whose results AIQSA owns or reauthorizes when
+ * they are read again: their content may enter notes without an observation
+ * handle. External content (MCP, Workspace, web Search) needs a server-minted
+ * handle, so its later revocation remains checkable. */
+const NOTE_CAPABILITIES: ReadonlySet<RunToolCapability> = new Set(["artifact", "image", "knowledge", "memory", "session", "skill"]);
+
+/** Whether one settled result may enter a summary source. The decision uses
+ * only server authority: the run's settled observation for the call id, or
+ * the accepted tool definition the call's name resolves to. A result body can
+ * never supply its handle, capability or name. */
+function noteableResult(
+  callId: string,
+  name: string | null,
+  observations: ObservationIndex,
+  tools: readonly RunTool[] | undefined
+): boolean {
+  if (observations.has(callId)) return true;
+  const tool = name === null ? undefined : tools?.find((candidate) => candidate.name === name);
+  if (!tool) return false;
+  if (NOTE_CAPABILITIES.has(tool.capability)) return true;
+  // MCP discovery returns the frozen snapshot catalog, never external content.
+  return tool.capability === "mcp" && tool.name === MCP_FIND_TOOLS_NAME;
+}
+
+/** Whether every result of a unit may enter notes. One excluded result
+ * excludes the whole unit: units only ever leave or stay whole. */
+function unitNoteable(
+  messages: readonly unknown[],
+  unit: ToolTranscriptUnit,
+  names: ReadonlyMap<string, string>,
+  observations: ObservationIndex,
+  tools: readonly RunTool[] | undefined
+): boolean {
+  if (!unit.settled) return false;
+  for (let index = unit.start; index < unit.end; index += 1) {
+    const value = messages[index];
+    if (!isResultEnvelope(value)) continue;
+    const callId = envelopeCallId(value);
+    if (!callId) return false;
+    const name = names.get(callId) ?? (textId(value.name) ? value.name : null);
+    if (!noteableResult(callId, name, observations, tools)) return false;
   }
-  return null;
+  return true;
+}
+
+function transcriptCallNames(messages: readonly unknown[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const value of messages) recordCallNames(value, names);
+  return names;
+}
+
+/** The applied notes this run bought (carried notes never cover this run's calls). */
+function ownAppliedSummary(request: ProviderRunRequest): ContextSummary | null {
+  const summary = request.contextCompactionSummary;
+  return summary && summary.id !== request.contextCompactionPolicy?.reuse?.summary.id &&
+    request.context?.messages.some((message) => message.id === contextSummaryMessageId(summary)) === true
+    ? summary : null;
 }
 
 export type ToolTranscriptReduction = Readonly<{
+  /** Every unit of the retained transcript, oldest first. */
+  units: readonly ToolTranscriptUnit[];
   /** Settled units strictly older than the newest unit with calls: everything
-   * a summary may stand for. The newest batch, call-less tails and unsettled
+   * that may ever leave. The newest batch, call-less tails and unsettled
    * units always stay exact. */
   older: readonly ToolTranscriptUnit[];
-  /** The part of `older` whose items were in the source of a summary this run
-   * bought and applied. Only these may leave the request directly. */
-  covered: readonly ToolTranscriptUnit[];
+  /** Units whose items were in the source of notes this run bought and
+   * applied, at any position. Only covered units of `older` may leave or be
+   * masked; a covered newest batch is already represented once it ages. */
+  covered: ReadonlySet<ToolTranscriptUnit>;
+  /** Settled units whose every result may enter notes (see `noteableResult`).
+   * An excluded unit is never summarized, covered, masked or removed. */
+  noteable: ReadonlySet<ToolTranscriptUnit>;
 }>;
 
-const NO_TRANSCRIPT_REDUCTION: ToolTranscriptReduction = { covered: [], older: [] };
+const NO_TRANSCRIPT_REDUCTION: ToolTranscriptReduction = { covered: new Set(), noteable: new Set(), older: [], units: [] };
 
 /**
- * Transcript units a hybrid request may reduce. Ordinary runs resend the full
+ * Transcript units a request may reduce. Ordinary runs resend the full
  * transcript every round (masking and this reduction require the absence of a
- * provider continuation), so whole earlier units can leave. Coverage is the
- * prefix through the unit holding the newest call a summary bought in this run
- * recorded; notes carried from an earlier turn never cover this run's calls.
+ * provider continuation), so whole earlier units can leave once covered.
+ * Coverage is the set of `ctxu1_` unit refs of the notes this run bought and
+ * applied. Notes bought before those refs existed name only their newest call
+ * (`ctxt1_`) and cover the transcript prefix through it.
  */
-export function toolTranscriptReduction(request: ProviderRunRequest): ToolTranscriptReduction {
+export function toolTranscriptReduction(
+  request: ProviderRunRequest,
+  observations?: readonly ContextObservation[]
+): ToolTranscriptReduction {
   const messages = request.providerToolMessages ?? [];
   if (request.agent || request.previousProviderResponseId || messages.length === 0) return NO_TRANSCRIPT_REDUCTION;
   const units = toolTranscriptUnits(messages);
@@ -327,44 +397,40 @@ export function toolTranscriptReduction(request: ProviderRunRequest): ToolTransc
   for (let index = units.length - 1; index >= 0; index -= 1) {
     if (units[index]!.callIds.length > 0) { newest = index; break; }
   }
-  const summary = request.contextCompactionSummary;
-  const own = summary && summary.id !== request.contextCompactionPolicy?.reuse?.summary.id &&
-    request.context?.messages.some((message) => message.id === contextSummaryMessageId(summary)) === true
-    ? summary : null;
-  const markers = new Set(own?.sourceRefs.filter(isTranscriptCoverageRef) ?? []);
+  const own = ownAppliedSummary(request);
+  const refs = new Set(own?.sourceRefs ?? []);
+  const unitRefs = own?.sourceRefs.some(isUnitCoverageRef) === true;
   let boundary = -1;
-  if (markers.size > 0) {
-    for (let index = units.length - 1; index >= 0 && boundary < 0; index -= 1) {
+  if (!unitRefs) {
+    const markers = new Set(own?.sourceRefs.filter(isTranscriptCoverageRef) ?? []);
+    for (let index = units.length - 1; index >= 0 && boundary < 0 && markers.size > 0; index -= 1) {
       if (units[index]!.callIds.some((callId) => markers.has(transcriptCoverageRef(callId)))) boundary = index;
     }
   }
+  const names = transcriptCallNames(messages);
+  const index = observationIndex(observations);
   const older: ToolTranscriptUnit[] = [];
-  const covered: ToolTranscriptUnit[] = [];
-  units.forEach((unit, index) => {
-    if (index >= newest || !unit.settled) return;
-    older.push(unit);
-    if (index <= boundary) covered.push(unit);
+  const covered = new Set<ToolTranscriptUnit>();
+  const noteable = new Set<ToolTranscriptUnit>();
+  units.forEach((unit, position) => {
+    if (!unit.settled) return;
+    if (unitRefs ? refs.has(unitCoverageRef(unit)) : position <= boundary) covered.add(unit);
+    if (unitNoteable(messages, unit, names, index, request.tools)) noteable.add(unit);
+    if (position < newest) older.push(unit);
   });
-  return { covered, older };
+  return { covered, noteable, older, units };
 }
 
-function withoutUnits(messages: readonly unknown[], units: readonly ToolTranscriptUnit[]): unknown[] {
+function withoutUnits(messages: readonly unknown[], units: Iterable<ToolTranscriptUnit>): unknown[] {
   const removed = new Set<number>();
   for (const unit of units) for (let index = unit.start; index < unit.end; index += 1) removed.add(index);
   return messages.filter((_value, index) => !removed.has(index));
 }
 
-/** The transcript a new summary must still read: covered older units are
- * already represented by the applied notes, which the source carries. */
-export function uncoveredToolTranscript(request: ProviderRunRequest): readonly unknown[] {
-  const messages = request.providerToolMessages ?? [];
-  const { covered } = toolTranscriptReduction(request);
-  return covered.length > 0 ? withoutUnits(messages, covered) : messages;
-}
-
 /** Covered units leave oldest first, whole, until the excess is released.
  * The estimate is verified on the exact remaining transcript. */
 function trimCoveredTranscript(request: ProviderRunRequest, covered: readonly ToolTranscriptUnit[], excessTokens: number): Readonly<{
+  dropped: readonly ToolTranscriptUnit[];
   droppedTokens: number;
   request: ProviderRunRequest;
 }> {
@@ -385,8 +451,8 @@ function trimCoveredTranscript(request: ProviderRunRequest, covered: readonly To
   }
   remaining = withoutUnits(messages, dropped);
   return dropped.length > 0
-    ? { droppedTokens: total - estimate(remaining), request: { ...request, providerToolMessages: remaining } }
-    : { droppedTokens: 0, request };
+    ? { dropped, droppedTokens: total - estimate(remaining), request: { ...request, providerToolMessages: remaining } }
+    : { dropped, droppedTokens: 0, request };
 }
 
 function measurement(input: Readonly<{
@@ -396,13 +462,14 @@ function measurement(input: Readonly<{
   maskedBatches: number;
   maskedObservations: number;
   outcome: ContextPlanMeasurement["outcome"];
-  legacyFallback?: boolean;
 }>): ContextPlanMeasurement {
   return {
     afterTokens: input.afterTokens,
     beforeTokens: input.beforeTokens,
     budgetTokens: input.budgetTokens ?? null,
-    legacyFallback: input.legacyFallback ?? false,
+    // Historical field: whole-turn truncation of unsummarized history no
+    // longer exists, so every new measurement records false.
+    legacyFallback: false,
     maskedBatches: input.maskedBatches,
     maskedObservations: input.maskedObservations,
     outcome: input.outcome,
@@ -425,8 +492,8 @@ export type ContextHistory = Readonly<{
 
 /** The summary rebuild keeps pins, its note, a token-bounded exact tail (the
  * summarizer's `contextSummaryTail` rule) and the current message. Everything
- * else in the prior branch is reducible. Notes carried from an earlier turn
- * cover only their frozen branch prefix (`contextSummaryCoverage`). */
+ * else in the prior branch is reducible. Applied notes cover the branch prefix
+ * through their boundary (`contextSummaryCoverage`). */
 export function contextHistory(request: ProviderRunRequest, budgetTokens: number | null = null): ContextHistory {
   const messages = request.context?.messages ?? [];
   const current = messages.at(-1);
@@ -493,7 +560,97 @@ function trimCoveredHistory(request: ProviderRunRequest, history: ContextHistory
   };
 }
 
-/** What the irreducible hybrid minimum consists of, for a truthful refusal. */
+/** The part of a hybrid request no reduction can remove: prompt, pins,
+ * current input, tools, an applied summary note, excluded and unsettled
+ * transcript items and the newest batch. */
+function reductionFloor(input: Readonly<{
+  beforeTokens: number;
+  budgetTokens: number;
+  estimate: (value: unknown) => number;
+  observations?: readonly ContextObservation[];
+  providerMessageTokens: number;
+  request: ProviderRunRequest;
+}>) {
+  const { estimate, request } = input;
+  const original = request.providerToolMessages ?? [];
+  const history = contextHistory(request, input.budgetTokens);
+  // The exact minimum keeps an applied summary note: it is never traded away.
+  const summaryTokens = history.summaryMessage ? estimate(history.summaryMessage.content) : 0;
+  const transcript = toolTranscriptReduction(request, input.observations);
+  // Older settled units leave once covered; noteable ones can become covered.
+  // Excluded units, the newest batch and unsettled items always stay exact.
+  const reducibleUnits = transcript.older.filter((unit) => transcript.covered.has(unit) || transcript.noteable.has(unit));
+  const retainedTranscriptTokens = reducibleUnits.length > 0
+    ? estimate(withoutUnits(original, reducibleUnits)) : input.providerMessageTokens;
+  const minimumTokens = input.beforeTokens - history.priorTokens + summaryTokens -
+    (input.providerMessageTokens - retainedTranscriptTokens);
+  return { history, minimumTokens, retainedTranscriptTokens, summaryTokens, transcript };
+}
+
+/**
+ * A hybrid request's irreducible minimum (as `planContextCompaction` measures
+ * it) and the reducible material no committed notes cover yet, which the next
+ * notes would have to stand for.
+ */
+export function contextReductionFloor(input: Readonly<{
+  assembledTokens: number;
+  budgetTokens: number;
+  observations?: readonly ContextObservation[];
+  request: ProviderRunRequest;
+}>): Readonly<{ minimumTokens: number; uncoveredBytes: number; uncoveredTokens: number }> {
+  const estimate = contextTokenEstimator(input.request);
+  const original = input.request.providerToolMessages ?? [];
+  const providerMessageTokens = estimate(original);
+  const floor = reductionFloor({ beforeTokens: Math.max(providerMessageTokens, Math.ceil(input.assembledTokens)),
+    budgetTokens: input.budgetTokens, estimate, observations: input.observations, providerMessageTokens, request: input.request });
+  const { history, transcript } = floor;
+  const uncoveredUnits = transcript.older.filter((unit) => transcript.noteable.has(unit) && !transcript.covered.has(unit));
+  const uncovered = [...history.uncovered.map((message) => message.content),
+    ...uncoveredUnits.flatMap((unit) => original.slice(unit.start, unit.end))];
+  return {
+    minimumTokens: floor.minimumTokens,
+    uncoveredBytes: uncovered.reduce<number>((total, value) => total + Buffer.byteLength(JSON.stringify(value) ?? "", "utf8"), 0),
+    uncoveredTokens: uncovered.reduce<number>((total, value) => total + estimate(value), 0)
+  };
+}
+
+/**
+ * The newest batch with the fewest of its unseen, maskable results replaced
+ * by their references (largest release first) that brings `excessTokens`
+ * down; every one when even that is not enough, so the refusal names the
+ * references-only floor. Null when no result can be replaced.
+ */
+function newestBatchAsReferences(request: ProviderRunRequest, bridge: ProviderToolBridge,
+  observations: readonly ContextObservation[] | undefined, transcript: ToolTranscriptReduction, excessTokens: number
+): Readonly<{ references: number; releasedTokens: number; request: ProviderRunRequest }> | null {
+  const estimate = contextTokenEstimator(request);
+  const original = request.providerToolMessages ?? [];
+  const newest = new Set<number>();
+  for (const unit of transcript.units) {
+    if (!unit.settled || unit.callIds.length === 0 || transcript.older.includes(unit)) continue;
+    for (let index = unit.start; index < unit.end; index += 1) newest.add(index);
+  }
+  const candidates = locatedResults(original, observationIndex(observations)).flatMap((located) =>
+    newest.has(located.index) && !located.masked && located.observation?.descriptor.maskable &&
+      located.observation.descriptor.source !== "knowledge"
+      ? [{ index: located.index, replacement: maskResult(bridge, located.observation) }] : [])
+    .map((candidate) => ({ ...candidate, saved: estimate(original[candidate.index]) - estimate(candidate.replacement) }))
+    .filter((candidate) => candidate.saved > 0)
+    .sort((left, right) => right.saved - left.saved || left.index - right.index);
+  if (candidates.length === 0) return null;
+  const replacements = new Map<number, unknown>();
+  let saved = 0;
+  for (const candidate of candidates) {
+    if (saved >= excessTokens) break;
+    replacements.set(candidate.index, candidate.replacement);
+    saved += candidate.saved;
+  }
+  const messages = original.map((value, index) => replacements.has(index) ? replacements.get(index) : value);
+  return { references: replacements.size, releasedTokens: Math.max(0, estimate(original) - estimate(messages)),
+    request: { ...request, providerToolMessages: messages } };
+}
+
+/** What the irreducible minimum consists of, for a truthful refusal. */
 export type ContextOverflow = Readonly<{
   /** Prompt, pins, current input, tools, attachment minimum and any applied notes. */
   fixedTokens: number;
@@ -506,23 +663,35 @@ export type ContextOverflow = Readonly<{
 export type ContextCompactionPlan = Readonly<{
   measurement: ContextPlanMeasurement;
   request: ProviderRunRequest;
-  /** Present only when covered hybrid history left the projection. */
+  /** Present only when covered history left the projection. */
   historyTrim?: Readonly<{ droppedMessages: number; droppedTokens: number }>;
-  /** Present with `irreducible_overflow` from the hybrid minimum. */
+  /** Present with `irreducible_overflow` from the minimum. */
   overflow?: ContextOverflow;
 }>;
 
 /**
- * Masks only complete, persisted observation result envelopes. It deliberately
- * does not parse or rewrite arbitrary provider messages: an unknown shape stays
- * inline, preserving the old request guard and its exact failure semantics.
+ * Plans one request under its conversation policy. Nothing leaves the
+ * request and no result is masked until notes this run committed cover it:
  *
- * `observations` are the server-minted descriptors of this run's settled calls.
- * Without them only `read_tool_result` responses are recognized, so a result
- * body can never introduce a handle into masking, checkpoints or summaries.
- * Hybrid requests additionally receive a truthful outcome: a summary is
- * requested only when it can remove uncovered history, and a fitting request
- * is never reported as overflow.
+ * 1. At or below the trigger share the request is returned unchanged.
+ * 2. Above it, covered material is released oldest first until the estimate
+ *    reaches the target share: maskable results of covered older units are
+ *    replaced by their reader reference, then covered older units leave whole.
+ * 3. Above the target, uncovered reducible material (prior messages older
+ *    than the exact tail plus noteable older units) larger than the minimum
+ *    release share asks for a headroom summary; over the budget any uncovered
+ *    history or noteable older unit asks for one. Uncovered material is never
+ *    masked or removed here: the consumer commits notes and plans again.
+ * 4. Over the budget with nothing uncovered, covered prior turns leave whole;
+ *    otherwise the request is irreducible overflow.
+ *
+ * Only complete, persisted observation result envelopes are ever masked; an
+ * unknown shape stays inline. `observations` are the server-minted
+ * descriptors of this run's settled calls; without them only
+ * `read_tool_result` responses are recognized, so a result body can never
+ * introduce a handle into masking, checkpoints or summaries. Requests without
+ * the policy (Agent, standalone document guards) and unknown windows are
+ * measured only: nothing is masked, summarized or trimmed.
  */
 export function planContextCompaction(input: Readonly<{
   assembledTokens?: number | null;
@@ -545,49 +714,12 @@ export function planContextCompaction(input: Readonly<{
   let afterTokens = beforeTokens;
   let maskedBatches = 0;
   let maskedObservations = 0;
-  // Agent compaction is owned by Codex. Legacy/off/historical requests and
-  // bridges without client tools keep the existing whole-turn budget guard.
-  // A mask is a promise of recall: the reader must be callable in this round,
-  // and an unknown window has no budget that could justify the loss.
-  const maskingAvailable = !request.agent && request.toolObservationVersion === 1 && input.bridge !== undefined &&
-    request.modelCapabilities.toolCalling === true && request.toolChoice !== "none" &&
-    request.tools?.some(tool => tool.name === READ_TOOL_RESULT_NAME && tool.capability === "session") === true &&
-    input.bridge.supportsToolCalling({ modelId: request.modelId, provider: request.provider }) &&
-    !request.previousProviderResponseId && original.length > 0 && budgetTokens !== null;
-  if (maskingAvailable && beforeTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.triggerRatio) {
-    const results = locatedResults(original, observationIndex(input.observations));
-    const groups = resultGroups(results);
-    const retained = new Set((groups.at(-CONTEXT_COMPACTION_LIMITS.recentBatches) ?? []).map(candidate => candidate.index));
-    // An existing reference is already the smallest projection; masking it
-    // again cannot make progress.
-    // Knowledge evidence is never masked, even under a historical descriptor.
-    const toMask = results.filter(candidate => candidate.observation?.descriptor.maskable &&
-      candidate.observation.descriptor.source !== "knowledge" &&
-      !candidate.masked && !retained.has(candidate.index));
-    if (toMask.length > 0) {
-      const byIndex = new Map(toMask.map(candidate => [candidate.index, candidate.observation!]));
-      const masked = original.map((value, index) => {
-        const candidate = byIndex.get(index);
-        return candidate ? maskResult(input.bridge!, candidate) : value;
-      });
-      const maskedTokens = Math.max(0, beforeTokens - providerMessageTokens) + estimate(masked);
-      if (maskedTokens < beforeTokens) {
-        planned = { ...request, providerToolMessages: masked };
-        afterTokens = maskedTokens;
-        maskedBatches = groups.filter(group => group.some(candidate => byIndex.has(candidate.index))).length;
-        maskedObservations = toMask.length;
-      }
-    }
-  }
   const result = (outcome: ContextPlanMeasurement["outcome"], extra: Partial<Pick<ContextCompactionPlan,
-    "historyTrim" | "overflow">> & {
-    afterTokens?: number; legacyFallback?: boolean; request?: ProviderRunRequest;
-  } = {}): ContextCompactionPlan => ({
+    "historyTrim" | "overflow">> & { afterTokens?: number; request?: ProviderRunRequest } = {}): ContextCompactionPlan => ({
     measurement: measurement({
       afterTokens: extra.afterTokens ?? afterTokens,
       beforeTokens,
       budgetTokens,
-      legacyFallback: extra.legacyFallback ?? false,
       maskedBatches,
       maskedObservations,
       outcome
@@ -596,63 +728,113 @@ export function planContextCompaction(input: Readonly<{
     ...(extra.historyTrim ? { historyTrim: extra.historyTrim } : {}),
     ...(extra.overflow ? { overflow: extra.overflow } : {})
   });
-  const settled = (): ContextPlanMeasurement["outcome"] => maskedObservations > 0 ? "masking_applied" : "already_fits";
-  const aboveTarget = budgetTokens !== null && maskedObservations > 0 &&
-    afterTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.targetRatio;
 
   if (request.agent || request.contextCompactionPolicy?.mode !== "hybrid" || budgetTokens === null) {
-    // Legacy-compatible measurement. An over-budget request is never reported
-    // as fitting; the whole-turn guard owns the remaining reduction.
-    if (budgetTokens !== null && afterTokens > budgetTokens) return result("needs_summary");
-    return result(aboveTarget ? "needs_summary" : settled());
+    // Measurement only. The fit check owns any refusal; it never trims.
+    return result(budgetTokens !== null && beforeTokens > budgetTokens ? "irreducible_overflow" : "already_fits");
   }
 
-  const history = contextHistory(planned, budgetTokens);
-  // The exact minimum keeps an applied summary note: it is never traded away.
-  const summaryTokens = history.summaryMessage ? estimate(history.summaryMessage.content) : 0;
-  // Older settled tool rounds are history too: a summary can stand for them,
-  // after which they leave as whole protocol units. The newest batch stays.
-  const transcript = toolTranscriptReduction(planned);
-  const transcriptMessages = planned.providerToolMessages ?? [];
-  const transcriptTokens = estimate(transcriptMessages);
-  const retainedTranscriptTokens = transcript.older.length > 0
-    ? estimate(withoutUnits(transcriptMessages, transcript.older)) : transcriptTokens;
-  const minimumTokens = afterTokens - history.priorTokens + summaryTokens - (transcriptTokens - retainedTranscriptTokens);
+  const { history, minimumTokens, retainedTranscriptTokens, summaryTokens, transcript } = reductionFloor({
+    beforeTokens, budgetTokens, estimate, observations: input.observations, providerMessageTokens, request });
   const overflow = (): ContextOverflow => ({
     fixedTokens: Math.max(0, minimumTokens - retainedTranscriptTokens),
     notes: summaryTokens > 0,
     transcriptTokens: retainedTranscriptTokens
   });
-  if (minimumTokens > budgetTokens) return result("irreducible_overflow", { overflow: overflow() });
-  if (afterTokens > budgetTokens) {
-    // Covered turns leave first, then covered tool rounds: the note already
-    // stands for them. Only uncovered history or uncovered older rounds that
-    // must still leave require a (new, incremental) summary.
-    const trimmed = trimCoveredHistory(planned, history, afterTokens - budgetTokens);
-    let tokens = afterTokens - trimmed.droppedTokens;
-    let reduced = trimmed.request;
-    if (tokens > budgetTokens && transcript.covered.length > 0) {
-      const dropped = trimCoveredTranscript(reduced, transcript.covered, tokens - budgetTokens);
-      tokens -= dropped.droppedTokens;
-      reduced = dropped.request;
+  // A mask is a promise of recall: the reader must be callable in this
+  // round. Knowledge evidence is never masked, even under a historical
+  // descriptor, and an existing reference cannot shrink further.
+  const maskingAvailable = request.toolObservationVersion === 1 && input.bridge !== undefined &&
+    request.modelCapabilities.toolCalling === true && request.toolChoice !== "none" &&
+    request.tools?.some(tool => tool.name === READ_TOOL_RESULT_NAME && tool.capability === "session") === true &&
+    input.bridge.supportsToolCalling({ modelId: request.modelId, provider: request.provider });
+  if (minimumTokens > budgetTokens) {
+    // The newest batch has never reached the model, so its whole results and
+    // previews may still arrive as their references (nothing it has seen
+    // leaves). Only a minimum those references cannot bring within the
+    // budget is irreducible.
+    const degraded = maskingAvailable
+      ? newestBatchAsReferences(request, input.bridge!, input.observations, transcript, minimumTokens - budgetTokens) : null;
+    if (!degraded) return result("irreducible_overflow", { overflow: overflow() });
+    const plan = planContextCompaction({ ...input, assembledTokens: beforeTokens - degraded.releasedTokens, request: degraded.request });
+    return { ...plan, measurement: plan.measurement.outcome === "irreducible_overflow" ? plan.measurement : {
+      ...plan.measurement,
+      beforeTokens,
+      maskedBatches: plan.measurement.maskedBatches + 1,
+      maskedObservations: plan.measurement.maskedObservations + degraded.references,
+      outcome: plan.measurement.outcome === "already_fits" ? "masking_applied" : plan.measurement.outcome
+    } };
+  }
+  if (beforeTokens <= budgetTokens * CONTEXT_COMPACTION_LIMITS.triggerRatio) return result("already_fits");
+
+  const targetTokens = Math.floor(budgetTokens * CONTEXT_COMPACTION_LIMITS.targetRatio);
+  const coveredOlder = transcript.older.filter((unit) => transcript.covered.has(unit));
+  // (a) Covered older results are replaced by their reader reference.
+  const maskedByIndex = new Map<number, LocatedObservation>();
+  let maskedGroups: LocatedResult[][] = [];
+  if (maskingAvailable && coveredOlder.length > 0) {
+    const coveredIndexes = new Set<number>();
+    for (const unit of coveredOlder) for (let index = unit.start; index < unit.end; index += 1) coveredIndexes.add(index);
+    const results = locatedResults(original, observationIndex(input.observations));
+    const groups = resultGroups(results);
+    const retained = new Set((groups.at(-CONTEXT_COMPACTION_LIMITS.recentBatches) ?? []).map(candidate => candidate.index));
+    const candidates = results.filter(candidate => coveredIndexes.has(candidate.index) &&
+      candidate.observation?.descriptor.maskable && candidate.observation.descriptor.source !== "knowledge" &&
+      !candidate.masked && !retained.has(candidate.index));
+    const byIndex = maskedByIndex;
+    const replacements = new Map<number, unknown>();
+    let released = 0;
+    for (const candidate of candidates) {
+      if (afterTokens - released <= targetTokens) break;
+      const replacement = maskResult(input.bridge!, candidate.observation!);
+      const saved = estimate(original[candidate.index]) - estimate(replacement);
+      if (saved <= 0) continue;
+      byIndex.set(candidate.index, candidate.observation!);
+      replacements.set(candidate.index, replacement);
+      released += saved;
     }
-    const uncovered = history.uncovered.length > 0 || transcript.older.length > transcript.covered.length;
-    if (tokens > budgetTokens) return result(uncovered ? "needs_summary" : "irreducible_overflow", uncovered ? {} : { overflow: overflow() });
+    if (replacements.size > 0) {
+      const masked = original.map((value, index) => replacements.has(index) ? replacements.get(index) : value);
+      const maskedTokens = Math.max(0, beforeTokens - providerMessageTokens) + estimate(masked);
+      if (maskedTokens < beforeTokens) {
+        planned = { ...request, providerToolMessages: masked };
+        afterTokens = maskedTokens;
+        maskedGroups = groups;
+      } else byIndex.clear();
+    }
+  }
+  // (b) Covered older units leave whole, oldest first. Masking replaces items
+  // one for one, so the unit boundaries still hold.
+  if (afterTokens > targetTokens && coveredOlder.length > 0) {
+    const dropped = trimCoveredTranscript(planned, coveredOlder, afterTokens - targetTokens);
+    afterTokens -= dropped.droppedTokens;
+    planned = dropped.request;
+    for (const unit of dropped.dropped) for (let index = unit.start; index < unit.end; index += 1) maskedByIndex.delete(index);
+  }
+  // Only references still in the request count as masked.
+  maskedObservations = maskedByIndex.size;
+  maskedBatches = maskedGroups.filter(group => group.some(candidate => maskedByIndex.has(candidate.index))).length;
+  const settled = (): ContextPlanMeasurement["outcome"] => maskedObservations > 0 ? "masking_applied" : "already_fits";
+  const uncoveredUnits = transcript.older.filter((unit) => transcript.noteable.has(unit) && !transcript.covered.has(unit));
+  if (afterTokens > budgetTokens) {
+    if (history.uncovered.length > 0 || uncoveredUnits.length > 0) return result("needs_summary");
+    // Nothing uncovered remains: covered turns leave; notes already stand for them.
+    const trimmed = trimCoveredHistory(planned, history, afterTokens - budgetTokens);
+    const tokens = afterTokens - trimmed.droppedTokens;
+    if (tokens > budgetTokens) return result("irreducible_overflow", { overflow: overflow() });
     return result(settled(), {
       afterTokens: tokens,
       ...(trimmed.droppedMessages > 0
         ? { historyTrim: { droppedMessages: trimmed.droppedMessages, droppedTokens: trimmed.droppedTokens } } : {}),
-      legacyFallback: trimmed.droppedMessages > 0,
-      request: reduced
+      request: trimmed.request
     });
   }
-  // Above the 75% trigger, a summary buys headroom for later rounds whenever
-  // the history older than the exact tail it keeps is large enough to release
-  // room once replaced by notes, whether or not masking ran; it never turns
-  // this fitting request into overflow.
-  const olderTokens = history.older.reduce((total, message) => total + estimate(message.content), 0);
-  const headroom = beforeTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.triggerRatio &&
-    afterTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.targetRatio &&
+  // A fitting request above the target buys headroom for later rounds only
+  // when enough uncovered material could leave once covered; it never turns
+  // into overflow.
+  const olderTokens = history.older.reduce((total, message) => total + estimate(message.content), 0) +
+    (uncoveredUnits.length > 0 ? estimate(uncoveredUnits.flatMap((unit) => original.slice(unit.start, unit.end))) : 0);
+  const headroom = afterTokens > targetTokens &&
     olderTokens > budgetTokens * CONTEXT_COMPACTION_LIMITS.summaryMinimumReleaseRatio;
   return result(headroom ? "needs_summary" : settled());
 }
@@ -736,19 +918,4 @@ export function contextRejectionRebuild(input: Readonly<{
   const tightened = scaled !== null && scaled < input.requestTokens ? scaled
     : Math.floor(input.requestTokens * CONTEXT_COMPACTION_LIMITS.rejectionRebuildRatio);
   return { version: 1, round: input.round, budgetTokens: Math.min(tightened, input.budgetTokens) };
-}
-
-/** Legacy-compatible budget outcome. The planner already reports overflow as
- * `needs_summary`; this only records whether whole-turn trimming delivered it. */
-export function contextCompactionMeasurementWithBudget(
-  plan: ContextPlanMeasurement,
-  budgetTokens: number | null,
-  accepted: boolean
-): ContextPlanMeasurement {
-  const overBudget = budgetTokens !== null && plan.afterTokens > budgetTokens;
-  return { ...plan,
-    budgetTokens,
-    outcome: overBudget ? accepted ? "needs_summary" : "irreducible_overflow" : plan.outcome,
-    legacyFallback: overBudget && accepted
-  };
 }

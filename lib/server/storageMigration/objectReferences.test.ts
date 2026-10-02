@@ -1,11 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import {
-  databaseHasObjectReferences,
-  durableObjectReferencePage,
-  OBJECT_KEY_COLUMNS
-} from "./objectReferences";
+import { databaseHasObjectReferences, OBJECT_KEY_COLUMNS } from "./objectReferences";
 
 function schemaKeyColumns(): string[] {
   const schema = readFileSync(path.resolve("prisma/schema.prisma"), "utf8");
@@ -53,18 +49,5 @@ describe("object key column registry", () => {
     expect(partial.mock.calls[1]![0]).toBe(
       'SELECT (EXISTS (SELECT 1 FROM "Attachment" WHERE "storageKey" IS NOT NULL)) AS "present"'
     );
-  });
-
-  it("pages only durable references with bound parameters", async () => {
-    const $queryRawUnsafe = vi.fn(async () => [{ key: "a" }, { key: "b" }]);
-    await expect(durableObjectReferencePage({ $queryRawUnsafe } as never, { after: "k", limit: 2 }))
-      .resolves.toEqual(["a", "b"]);
-    const [sql, after, limit] = $queryRawUnsafe.mock.calls[0] as unknown as [string, string, number];
-    expect([after, limit]).toEqual(["k", 2]);
-    expect(sql).not.toContain('"AttachmentDeletionJob"');
-    expect(sql).not.toContain('"KnowledgeUploadItem"');
-    expect(sql).toContain('"Attachment"');
-    await expect(durableObjectReferencePage({ $queryRawUnsafe } as never, { after: null, limit: 0 }))
-      .rejects.toThrow("object_reference_page_limit_invalid");
   });
 });

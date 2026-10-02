@@ -14,7 +14,8 @@ import {
 } from "./network";
 import {
   executeWithProviderRetry,
-  isRetryableProviderNetworkError,
+  initialRequestTransportFailure,
+  ownsInitialRequestReplay,
   type ProviderRetryOptions
 } from "./providerRetry";
 import { providerRequestNotSent } from "./providerSafeFetch";
@@ -44,18 +45,7 @@ export type OpenAIRetryableErrorPayload = {
 
 const retryableHttpStatuses = new Set([408, 409, 429, 500, 502, 503, 504]);
 
-export const PROVIDER_REQUEST_OUTCOME_UNKNOWN = "provider_request_outcome_unknown";
-
-/** A compatible create lost its transport after the provider may have received
- * it. Neither success, zero usage nor a completed replay may be inferred. */
-export class ProviderRequestOutcomeUnknownError extends Error {
-  readonly code = PROVIDER_REQUEST_OUTCOME_UNKNOWN;
-
-  constructor(cause: unknown) {
-    super(PROVIDER_REQUEST_OUTCOME_UNKNOWN, { cause });
-    this.name = "ProviderRequestOutcomeUnknownError";
-  }
-}
+export { PROVIDER_REQUEST_OUTCOME_UNKNOWN, ProviderRequestOutcomeUnknownError } from "./providerRetry";
 
 class OpenAIHttpError extends Error {
   readonly retryAfterMs: number | null;
@@ -182,14 +172,6 @@ function initialRequestRetryDecision(
   return providerRequestNotSent(error) ? { retryAfterMs: null } : null;
 }
 
-/** A transport failure without proof of non-delivery leaves the create's
- * outcome and billing unknown; aborts and deadlines keep their own identity. */
-function initialRequestTransportFailure(error: unknown, signal: AbortSignal): unknown {
-  return signal.aborted || providerRequestNotSent(error) || !isRetryableProviderNetworkError(error)
-    ? error
-    : new ProviderRequestOutcomeUnknownError(error);
-}
-
 export function openAIRetryableErrorPayload(error: unknown): OpenAIRetryableErrorPayload | null {
   if (!(error instanceof OpenAIHttpError) || !error.retryable) {
     return null;
@@ -227,7 +209,7 @@ export function createFetchOpenAIResponsesClient(input: {
   // unknown outcome. Native background create and callers that disable replay
   // (they own dispatch recovery or their own paid-probe policy) receive the
   // raw transport failure and classify it themselves.
-  const transportOwnsReplay = input.initialRequestRetry !== undefined && input.initialRequestRetry.maxAttempts !== 1;
+  const transportOwnsReplay = ownsInitialRequestReplay(input.initialRequestRetry);
   const headers: Record<string, string> = {
     "content-type": "application/json"
   };

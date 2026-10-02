@@ -9,6 +9,7 @@ import { assistantContentWithText } from "./shell/thread";
 import { e2eAssistantRows } from "./support/assistants";
 import { setWorkspaceDefault } from "./support/chatDefaults";
 import { activeChatId } from "./support/workspace";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(60_000);
@@ -149,7 +150,7 @@ async function archiveE2eAssistants(page: Page): Promise<void> {
 
 async function deleteChat(page: Page, chatId: string | null): Promise<void> {
   if (chatId) {
-    await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);
+    await deleteOwnedChatPermanently(page.request, chatId, { timeout: 5_000 }).catch(() => undefined);
   }
 }
 

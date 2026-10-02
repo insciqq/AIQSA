@@ -1,16 +1,31 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { expect, test, type Download, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "@playwright/test";
 import { PDFDocument } from "pdf-lib";
+import type { AdminProviderCustomSetupReadyResult } from "../../lib/contracts/adminProviderCustomSetup";
 import { parseChatRoutePath } from "../../lib/domain/chatRoute";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
+import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
+import { modelPdfPageEndMarker, modelPdfPageStartMarker } from "../../lib/server/parsing/modelPdfOutput";
 import {
   LOCAL_MCP_MEMBER,
   LOCAL_RESTRICTED_MEMBER
 } from "../../prisma/local-seed-fixtures";
-import { selectModel } from "./shell/composer";
-import { signInWithLocalToken } from "./support/localAuth";
-import { disableMemoryRecall } from "./support/workspace";
+import { authenticateWithLocalToken, signInWithLocalToken } from "./support/localAuth";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
+import {
+  activeChatId,
+  bytesFromDownload,
+  loginWithPassword,
+  openWorkspaceDetails,
+  selectFakeModel,
+  sendAndExpect,
+  setWorkspaceEnabled,
+  turnWorkspaceOn
+} from "./support/workspace";
+import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
 
 const prisma = new PrismaClient();
 const RESULT_ZIP = Buffer.from(
@@ -19,6 +34,7 @@ const RESULT_ZIP = Buffer.from(
 );
 
 let originalPolicy: { enabled: boolean; internetEnabled: boolean } | null = null;
+let restoreFakeContext: (() => Promise<void>) | null = null;
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(360_000);
@@ -29,70 +45,6 @@ function sha256(value: Uint8Array): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-async function loginWithPassword(
-  page: Page,
-  user: Readonly<{ email: string; password: string }>
-): Promise<void> {
-  // Sign-in lands on `/`, which always opens a new chat.
-  await page.goto("/login");
-  await page.getByLabel("Email").fill(user.email);
-  await page.getByLabel("Password", { exact: true }).fill(user.password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
-  await disableMemoryRecall(page);
-}
-
-async function selectFakeModel(page: Page): Promise<void> {
-  await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
-  await expect(page.getByTestId("header-model-trigger")).toContainText("Fake QSA");
-}
-
-async function turnWorkspaceOn(page: Page): Promise<void> {
-  const enabled = page.getByRole("button", { name: /^Turn off Workspace/u });
-  if (await enabled.isVisible()) {
-    await expect(enabled).toHaveAttribute("aria-pressed", "true");
-    await expect(enabled).toBeEnabled();
-    return;
-  }
-  const toggle = page.getByRole("button", { name: /^Turn on Workspace/u });
-  await expect(toggle).toBeEnabled({ timeout: 15_000 });
-  await toggle.click();
-  await expect(page.getByRole("button", { name: /^Turn off Workspace/u })).toHaveAttribute(
-    "aria-pressed",
-    "true"
-  );
-}
-
-async function activeChatId(page: Page): Promise<string> {
-  let value: string | null = null;
-  await expect.poll(async () => {
-    value = parseChatRoutePath(await page.evaluate(() => window.location.pathname))?.chatId ?? null;
-    return value;
-  }).not.toBeNull();
-  return value!;
-}
-
-async function sendAndExpect(page: Page, prompt: string, answer: string): Promise<void> {
-  const composer = page.getByRole("textbox", { name: "Message" });
-  await composer.fill(prompt);
-  await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
-  await composer.press("Enter");
-  await expect(page.locator('article[data-role="assistant"]').last()).toContainText(answer, {
-    timeout: 45_000
-  });
-  await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, {
-    timeout: 45_000
-  });
-}
-
-async function bytesFromDownload(download: Download): Promise<Buffer> {
-  const stream = await download.createReadStream();
-  if (!stream) throw new Error("workspace_download_stream_unavailable");
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks);
 }
 
 async function assertGeneratedZip(page: Page): Promise<Readonly<{
@@ -217,15 +169,201 @@ function jsonRecord(value: Prisma.JsonValue): Record<string, unknown> {
   return cloned;
 }
 
-test.afterAll(async () => {
-  if (originalPolicy) {
-    await prisma.workspacePolicy.update({
-      data: originalPolicy,
-      where: { id: "installation" }
-    }).catch(() => undefined);
+/** Overrides Fake QSA capabilities in both its active configuration and its catalog row. */
+async function updateFakeModelCapabilities(patch: Readonly<Record<string, boolean>>): Promise<void> {
+  const current = await prisma.providerModel.findUniqueOrThrow({
+    select: { activeConfig: true, capabilities: true },
+    where: { id: providerTemplateIds.fakeModel }
+  });
+  const activeConfig = jsonRecord(current.activeConfig ?? {});
+  const activeCapabilities = isRecord(activeConfig.capabilities) ? activeConfig.capabilities : {};
+  await prisma.providerModel.update({
+    data: {
+      activeConfig: { ...activeConfig, capabilities: { ...activeCapabilities, ...patch } } as Prisma.InputJsonValue,
+      capabilities: { ...jsonRecord(current.capabilities), ...patch } as Prisma.InputJsonValue
+    },
+    where: { id: providerTemplateIds.fakeModel }
+  });
+}
+
+/** Page sections the PDF reader prompt asks for, in order (a single-page batch here). */
+function requestedPdfPages(serializedRequest: string): number[] {
+  const pages: number[] = [];
+  for (let page = 1; page <= 64; page += 1) {
+    if (serializedRequest.includes(modelPdfPageStartMarker(page))) pages.push(page);
   }
-  await prisma.$disconnect();
+  return pages;
+}
+
+/**
+ * A local Responses endpoint for one synthetic deployment. It passes the
+ * custom-setup checks (including the PDF input receipt probe) and answers the
+ * installation PDF reader's transcription request in the page-marker format.
+ */
+function createPdfReaderServer() {
+  return createServer((request, response) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+      const send = (value: unknown) => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
+      if (request.method === "GET") { send({ data: [{ id: "fixture/pdf-reader" }] }); return; }
+      if (request.url !== "/responses") { response.writeHead(404); response.end(); return; }
+      const wire = JSON.stringify(body.input);
+      const pages = requestedPdfPages(JSON.stringify(body));
+      const text = pages.length > 0
+        ? pages.map((page) => `${modelPdfPageStartMarker(page)}\nSynthetic original evidence, page ${page}.\n${modelPdfPageEndMarker(page)}`).join("\n")
+        : wire.includes("input_image") || wire.includes("input_file") ? "PEARS"
+        : body.text?.format ? JSON.stringify({ ready: true, count: 2, label: "OK", tool_ids: ["alpha", "beta"] }) : "OK";
+      const probe = pages.length > 0 ? undefined : body.tools?.find((item: { name?: string }) => item.name?.startsWith("aiqsa_"));
+      const output = probe
+        ? (probe.name === "aiqsa_parallel_probe" ? ["Oslo", "Rome"] : ["Oslo"]).map((city, index) => ({
+          type: "function_call", id: `function-${index}`, call_id: `call-${index}`, name: probe.name,
+          arguments: JSON.stringify({ city }), status: "completed"
+        })) : [{ type: "message", role: "assistant", content: [{ type: "output_text", text }] }];
+      const completed = { id: randomUUID(), status: "completed", model: body.model, output,
+        usage: { input_tokens: 5, output_tokens: 5, total_tokens: 10 } };
+      if (!body.stream) { send(completed); return; }
+      response.writeHead(200, { "content-type": "text/event-stream", connection: "close" });
+      for (const event of [{ type: "response.created", response: { id: completed.id, status: "in_progress" } },
+        { type: "response.output_text.delta", delta: text }, { type: "response.completed", response: completed }]) {
+        response.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      }
+      response.end();
+    })().catch(() => { response.statusCode = 500; response.end(); });
+  });
+}
+
+/** Removes one synthetic deployment once nothing that RESTRICTs it remains. */
+async function removePdfReaderConnection(connectionId: string, chatIds: readonly string[]): Promise<void> {
+  // The asynchronous permanent chat deletion purges the runs, their PDF
+  // preparations and provider bindings. Rows it has not reached in time,
+  // or of a chat that was only archived, are removed here instead.
+  if (chatIds.length > 0) {
+    await expect.poll(() => prisma.chat.count({ where: { id: { in: [...chatIds] } } }), { timeout: 60_000 })
+      .toBe(0).catch(() => undefined);
+  }
+  await prisma.$transaction(async (tx) => {
+    await tx.chatPdfAttachmentPreparation.deleteMany({ where: { OR: [
+      { providerModel: { connectionId } }, { credentialVersion: { credential: { connectionId } } }
+    ] } });
+    await tx.providerRunBinding.deleteMany({ where: { connectionId } });
+    await tx.accessGrant.deleteMany({ where: { OR: [{ providerConnectionId: connectionId }, { providerModel: { connectionId } }] } });
+    await tx.providerUserCredentialAssignment.deleteMany({ where: { connectionId } });
+    await tx.providerGroupCredentialAssignment.deleteMany({ where: { connectionId } });
+    await tx.providerDraftCheck.deleteMany({ where: { connectionId } });
+    await tx.providerModelCredentialCheck.deleteMany({ where: { connectionId } });
+    await tx.providerConnection.update({ where: { id: connectionId }, data: { defaultCredentialId: null } });
+    await tx.providerCredential.updateMany({ where: { connectionId }, data: { activeVersionId: null } });
+    await tx.providerCredentialVersion.deleteMany({ where: { credential: { connectionId } } });
+    await tx.providerCredential.deleteMany({ where: { connectionId } });
+    await tx.providerModel.deleteMany({ where: { connectionId } });
+    await tx.providerConnection.delete({ where: { id: connectionId } });
+  });
+}
+
+/**
+ * Chat admission needs an explicit PDF route and Fake QSA can never read a PDF
+ * itself, so a synthetic deployment becomes the installation PDF reader. Only
+ * that role changes; every other installation setting is restored at once.
+ */
+async function startPdfReaderFixture(browser: Browser): Promise<Readonly<{
+  remove(chatIds: readonly (string | null)[]): Promise<void>;
+}>> {
+  const priorRoles = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+  const priorPolicy = await prisma.modelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+  const priorAdminSettings = await prisma.userSettings.findUniqueOrThrow({
+    select: { defaultProviderModelId: true }, where: { userId: DEFAULT_BOOTSTRAP_USER_ID }
+  });
+  const roles = {
+    ...priorRoles, id: undefined, createdAt: undefined, updatedAt: undefined,
+    imageParamsJson: priorRoles.imageParamsJson as Prisma.InputJsonValue,
+    decisionFeaturesJson: priorRoles.decisionFeaturesJson as Prisma.InputJsonValue
+  };
+  const restoreInstallation = (pdfReaderModelId?: string) => prisma.$transaction([
+    prisma.systemModelPolicy.update({ where: { id: "installation" }, data: pdfReaderModelId ? {
+      ...roles, chatPdfNativeProviderModelId: pdfReaderModelId, chatPdfNativeReasoningEffort: null,
+      chatPdfProcessingMode: "USE_PDF_READER"
+    } : roles }),
+    prisma.modelPolicy.update({ where: { id: "installation" },
+      data: { ...priorPolicy, id: undefined, createdAt: undefined, updatedAt: undefined } }),
+    prisma.userSettings.update({ where: { userId: DEFAULT_BOOTSTRAP_USER_ID }, data: priorAdminSettings })
+  ]);
+  const server = createPdfReaderServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  let connectionId: string | null = null;
+  const remove = async (chatIds: readonly (string | null)[]) => {
+    try {
+      await restoreInstallation();
+      if (connectionId) await removePdfReaderConnection(connectionId, chatIds.filter((id): id is string => Boolean(id)));
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  };
+  try {
+    const admin = await browser.newContext();
+    try {
+      await authenticateWithLocalToken(admin.request);
+      const response = await admin.request.post("/api/admin/providers/custom-setup", { timeout: 90_000, data: {
+        allowPrivateNetwork: true, apiRoot: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        authenticationMode: "none", confirmPaidRequest: true, connectionDisplayName: "Workspace PDF reader fixture",
+        modelIds: ["fixture/pdf-reader"], protocol: "responses", responseTimeoutSeconds: 30,
+        perModelCapabilities: { "fixture/pdf-reader": { contextWindow: 1_050_000, defaultMaxOutputTokens: 65_536, maxOutputTokens: 65_536 } }
+      } });
+      expect(response.ok(), await response.text()).toBe(true);
+      const setup = await response.json() as AdminProviderCustomSetupReadyResult;
+      connectionId = setup.connectionId;
+      expect(setup.outcome).toBe("ready");
+      await restoreInstallation(setup.providerModelId);
+    } finally {
+      await admin.close();
+    }
+  } catch (error) {
+    await remove([]).catch(() => undefined);
+    throw error;
+  }
+  return { remove };
+}
+
+// A multi-round Workspace turn with tool results and prepared PDF text does
+// not fit Fake QSA's 8k window; like the other Workspace specs, these use
+// the 64k fake context so the tool loop never needs context compaction.
+test.beforeAll(async () => {
+  restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
 });
+
+test.afterAll(async () => {
+  try {
+    if (originalPolicy) {
+      await prisma.workspacePolicy.update({
+        data: originalPolicy,
+        where: { id: "installation" }
+      }).catch(() => undefined);
+    }
+    await restoreFakeContext?.();
+  } finally {
+    await prisma.$disconnect();
+  }
+});
+
+/** Sends like `sendAndExpect`; a missing answer reports the latest run's persisted failure. */
+async function sendAndExpectRun(page: Page, prompt: string, answer: string): Promise<void> {
+  try {
+    await sendAndExpect(page, prompt, answer);
+  } catch (error) {
+    const chatId = parseChatRoutePath(new URL(page.url()).pathname)?.chatId ?? null;
+    const run = chatId ? await prisma.modelRun.findFirst({
+      orderBy: { createdAt: "desc" },
+      select: { errorPayload: true, status: true },
+      where: { chatId }
+    }).catch(() => null) : null;
+    const payload = isRecord(run?.errorPayload) ? run.errorPayload : {};
+    const failure = { status: run?.status ?? null, code: payload.code ?? null, stage: payload.stage ?? null, round: payload.round ?? null };
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}\nLatest run of the chat: ${JSON.stringify(failure)}`, { cause: error });
+  }
+}
 
 test("administrator enables a ready Workspace with public internet", async ({ page }) => {
   originalPolicy = await prisma.workspacePolicy.findUniqueOrThrow({
@@ -271,14 +409,21 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     }
   });
 
+  const workspaceDetails = page.getByRole("button", { name: /^Workspace details\./u });
+  let pdfReader: Awaited<ReturnType<typeof startPdfReaderFixture>> | null = null;
+
   try {
+    pdfReader = await startPdfReaderFixture(browser);
     await loginWithPassword(page, LOCAL_MCP_MEMBER);
     await page.getByRole("complementary", { name: "Chat navigation" })
       .getByRole("button", { name: "New chat", exact: true })
       .click();
     await selectFakeModel(page);
     await turnWorkspaceOn(page);
-    await expect(page.getByLabel("Internet in Workspace is enabled")).toBeVisible();
+    const internetLayer = await openWorkspaceDetails(page);
+    await expect(internetLayer).toContainText("Internet: On. Managed by the administrator.");
+    await page.keyboard.press("Escape");
+    await expect(internetLayer).toBeHidden();
 
     const pdfDocument = await PDFDocument.create();
     pdfDocument.addPage();
@@ -294,19 +439,24 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
         name: "original-evidence.pdf"
       }
     ]);
+    // Files upload one after another: the opaque file takes the resumable
+    // Workspace upload and is verified before the PDF starts, so each file
+    // is awaited until ready rather than counted at once.
     const attachments = page.getByRole("region", { name: "Attachments" });
+    for (const name of ["opaque-input.aiqsa-e2e", "original-evidence.pdf"]) {
+      await expect(attachments.getByRole("listitem").filter({ hasText: name }))
+        .toHaveAttribute("data-attachment-status", "ready", { timeout: 30_000 });
+    }
     await expect(attachments.getByRole("listitem")).toHaveCount(2);
-    const pdf = attachments.getByRole("listitem").filter({ hasText: "original-evidence.pdf" });
-    await expect(pdf).toHaveAttribute("data-attachment-status", "ready");
     await expect(page.getByRole("button", { name: "Send message" })).toBeEnabled();
 
-    await sendAndExpect(
+    await sendAndExpectRun(
       page,
       "[AIQSA_WORKSPACE_E2E:deterministic_prepare]",
       "Workspace read the staged input and created result.zip."
     );
     chatId = await activeChatId(page);
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
+    await expect(workspaceDetails).toHaveAccessibleName(/Workspace stopped$/u, { timeout: 30_000 });
     const activity = page.getByTestId("tool-activity-disclosure").last();
     await activity.locator(":scope > summary").click();
     await expect(activity).toContainText("Worked in Workspace");
@@ -324,7 +474,7 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     const afterReload = await assertGeneratedZip(page);
     expect(afterReload).toEqual(first);
 
-    await sendAndExpect(
+    await sendAndExpectRun(
       page,
       "[AIQSA_WORKSPACE_E2E:state_probe]",
       "Workspace state persisted."
@@ -335,7 +485,7 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     await composer.press("Enter");
     const stop = page.getByRole("button", { name: "Stop answer" });
     await expect(stop).toBeEnabled({ timeout: 15_000 });
-    await expect(page.locator(".v2-composer-workspace-state")).toContainText("Running a command");
+    await expect(workspaceDetails).toHaveAccessibleName(/Running a command…$/u);
     const terminalReadReleased = new Promise<void>((resolve) => { releaseTerminalRead = resolve; });
     let terminalReadWaiting = false;
     await page.route(/\/api\/model-runs\/[^/]+$/u, async (route) => {
@@ -369,7 +519,7 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     releaseTerminalRead();
     await expect(send).toBeEnabled({ timeout: 30_000 });
     await expect(composer).toHaveValue(nextDraft);
-    await sendAndExpect(
+    await sendAndExpectRun(
       page,
       nextDraft,
       "Workspace state persisted."
@@ -387,10 +537,8 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
     await expect(reset).toBeVisible({ timeout: 10_000 });
     await reset.getByRole("button", { name: "Confirm reset workspace" }).click();
     await expect(reset).toHaveCount(0);
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText(
-      "Workspace has not started"
-    );
-    await sendAndExpect(
+    await expect(workspaceDetails).toHaveAccessibleName(/Workspace has not started$/u);
+    await sendAndExpectRun(
       page,
       "[AIQSA_WORKSPACE_E2E:reset_probe]",
       "Workspace reset removed the old state."
@@ -405,38 +553,21 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
       await unauthorizedContext.close();
     }
 
-    await page.getByRole("button", { name: /^Turn off Workspace/u }).click();
-    await expect(page.getByRole("button", { name: /^Turn on Workspace/u })).toHaveAttribute(
-      "aria-pressed",
-      "false"
-    );
+    await setWorkspaceEnabled(page, false);
     modelSnapshot = await prisma.providerModel.findUnique({
       select: { activeConfig: true, capabilities: true },
       where: { id: providerTemplateIds.fakeModel }
     });
     if (!modelSnapshot?.activeConfig) throw new Error("workspace_fake_model_missing");
-    const activeConfig = jsonRecord(modelSnapshot.activeConfig);
-    const activeCapabilities = isRecord(activeConfig.capabilities)
-      ? activeConfig.capabilities
-      : {};
-    await prisma.providerModel.update({
-      data: {
-        activeConfig: {
-          ...activeConfig,
-          capabilities: { ...activeCapabilities, toolCalling: false }
-        } as Prisma.InputJsonValue,
-        capabilities: {
-          ...jsonRecord(modelSnapshot.capabilities),
-          toolCalling: false
-        } as Prisma.InputJsonValue
-      },
-      where: { id: providerTemplateIds.fakeModel }
-    });
+    await updateFakeModelCapabilities({ toolCalling: false });
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
-    const unavailableToggle = page.getByRole("button", { name: /^Turn on Workspace/u });
+    const unavailableLayer = await openWorkspaceDetails(page);
+    const unavailableToggle = unavailableLayer.getByRole("menuitemcheckbox", { name: /Turn on Workspace/u });
     await expect(unavailableToggle).toBeDisabled();
-    await expect(unavailableToggle).toHaveAttribute("title", /requires a model with tool support/iu);
+    await expect(unavailableToggle).toContainText("Workspace requires a model with tool support.");
+    await page.keyboard.press("Escape");
+    await expect(unavailableLayer).toBeHidden();
 
     const messageTemplate = latestMessageBody as Record<string, unknown> | null;
     if (!messageTemplate) throw new Error("workspace_message_admission_template_missing");
@@ -466,8 +597,9 @@ test("personal Workspace runs tools, preserves state, exports bytes, stops, rese
         where: { id: providerTemplateIds.fakeModel }
       }).catch(() => undefined);
     }
-    if (chatId) await page.request.delete(`/api/chats/${chatId}`).catch(() => undefined);
+    if (chatId) await deleteOwnedChatPermanently(page.request, chatId).catch(() => undefined);
     await context.close();
+    await pdfReader?.remove([chatId]);
   }
 });
 
@@ -496,9 +628,11 @@ test("Project Contributor uses Workspace until the owner revokes access", async 
     const projectAttachment = contributorPage.getByRole("region", { name: "Attachments" })
       .getByRole("listitem")
       .filter({ hasText: "project-input.aiqsa-e2e" });
-    await expect(projectAttachment).toContainText("Ready", { timeout: 15_000 });
+    // A Workspace-only original reads "Available in Workspace" once it is ready.
+    await expect(projectAttachment).toHaveAttribute("data-attachment-status", "ready", { timeout: 30_000 });
+    await expect(projectAttachment).toContainText("Available in Workspace");
     await expect(contributorPage.getByRole("button", { name: "Send message" })).toBeEnabled();
-    await sendAndExpect(
+    await sendAndExpectRun(
       contributorPage,
       "[AIQSA_WORKSPACE_E2E:deterministic_prepare]",
       "Workspace read the staged input and created result.zip."

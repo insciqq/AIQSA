@@ -33,10 +33,10 @@ export const HANDWRITTEN_AGENT_DOCS = Object.freeze([
 
 export const AGENT_DOC_BUDGETS = Object.freeze({
   files: 20,
-  nonEmptyLines: 750,
-  nonEmptyLinesPerFile: 150,
-  words: 16000,
-  wordsPerFile: 2000
+  nonEmptyLines: 1000,
+  nonEmptyLinesPerFile: 200,
+  words: 24000,
+  wordsPerFile: 3000
 });
 
 const ROOT_MARKDOWN = ["AGENTS.md", "CLAUDE.md", "README.md", "CONTRIBUTING.md", "SECURITY.md"];

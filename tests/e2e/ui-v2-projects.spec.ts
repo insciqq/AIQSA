@@ -199,3 +199,44 @@ for (const viewport of [
     }
   });
 }
+
+/*
+ * The collapsed-sidebar "Open sidebar" float sits in the topbar's top-left
+ * corner (the compact 768–1023px default and a collapsed desktop): the first
+ * crumb starts past it with a 0.5rem gap instead of underneath it.
+ */
+for (const profile of [
+  { collapse: false, hasTouch: false, name: "compact fine pointer 880×720", viewport: { height: 720, width: 880 } },
+  { collapse: false, hasTouch: true, name: "tablet touch 768×1024", viewport: { height: 1024, width: 768 } },
+  { collapse: true, hasTouch: false, name: "collapsed desktop 1280×800", viewport: { height: 800, width: 1280 } }
+] as const) {
+  test.describe(`Project overview topbar clears the collapsed-sidebar float · ${profile.name}`, () => {
+    test.use({ hasTouch: profile.hasTouch, isMobile: false, viewport: profile.viewport });
+
+    test(`Project overview stays contained with the first crumb clear of the float · ${profile.name}`, async ({ page }) => {
+      await page.goto("/ui-v2-fixture?fixture=projects&state=overview");
+      const overview = page.getByTestId("project-overview-page");
+      await expect(overview).toBeVisible();
+      const shell = page.locator(".v2-workspace-shell");
+      if (profile.collapse) {
+        await page.getByRole("button", { name: "Close sidebar" }).click();
+      }
+      await expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+      const float = page.locator(".v2-sidebar-floats").getByRole("button", { name: "Open sidebar" });
+      await expect(float).toBeVisible();
+      await expect(page.locator(".v2-sidebar-floats")).toHaveCSS("opacity", "1");
+      const crumb = overview.getByRole("navigation", { name: "Projects location" }).locator("span").first();
+      await expect(crumb).toBeVisible();
+      const floatBox = await float.boundingBox();
+      const crumbBox = await crumb.boundingBox();
+      expect(floatBox).not.toBeNull();
+      expect(crumbBox).not.toBeNull();
+      const intersects = crumbBox!.x < floatBox!.x + floatBox!.width && floatBox!.x < crumbBox!.x + crumbBox!.width &&
+        crumbBox!.y < floatBox!.y + floatBox!.height && floatBox!.y < crumbBox!.y + crumbBox!.height;
+      expect(intersects, "the first crumb does not intersect the float").toBe(false);
+      expect(crumbBox!.x - (floatBox!.x + floatBox!.width), "float → first crumb gap").toBeGreaterThanOrEqual(7.5);
+      await expectNoHorizontalOverflow(page);
+      await expectWithinViewport(page, overview.getByRole("button", { name: "Back to chat" }));
+    });
+  });
+}

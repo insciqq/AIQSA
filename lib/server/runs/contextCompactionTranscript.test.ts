@@ -17,7 +17,8 @@ import {
   contextObservationsFromResults,
   toolTranscriptReduction,
   toolTranscriptUnits,
-  transcriptCoverageRef
+  transcriptCoverageRef,
+  unitCoverageRef
 } from "./contextCompactionPlanner";
 import { contextSummarySource, type ContextSummaryReceipts } from "./contextCompactionSummarizer";
 import { applyProviderRequestContextBudget, measureSessionContext } from "./runContextBudget";
@@ -88,7 +89,7 @@ function probeRequest(wire: Wire, providerToolMessages: unknown[]): ProviderRunR
     attachmentIds: [], attachments: [], chatId: "chat-1",
     content: messages[0]!.content,
     context: { messages, mode: "branch_path" },
-    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages, mode: "hybrid" }),
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages }),
     knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { contextWindow: PROBE_WINDOW, defaultMaxOutputTokens: PROBE_OUTPUT, nativePdfInput: false,
       nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },
@@ -227,9 +228,9 @@ describe("hybrid transcript minimum", () => {
       expect(newestWire).toContain("RESULT_11");
       expect(JSON.stringify(kept)).not.toContain("ARGS_1 ");
 
-      // The summary covered every round; its refs keep recall for the dropped calls.
+      // The summary covered every round, one unit ref each; its refs keep recall for the dropped calls.
       const summary = prepared.contextCompactionSummary!;
-      expect(summary.sourceRefs).toContain(transcriptCoverageRef("call_write_11"));
+      for (const unit of toolTranscriptUnits(items)) expect(summary.sourceRefs).toContain(unitCoverageRef(unit));
       for (const result of results) expect(summary.sourceRefs).toContain(result.observation!.handle);
       expect(expectValidWire(wire, prepared)).toEqual(keptCalls);
     });
@@ -245,8 +246,8 @@ describe("hybrid transcript minimum", () => {
     const grown = { ...initial, providerToolMessages: [...initial.providerToolMessages!, ...later.items, ...newest.items] };
     const results = [...first.results, ...later.results, newest.result];
     const reduction = toolTranscriptReduction(grown);
-    expect(reduction.covered.flatMap((unit) => unit.callIds)).toEqual(coveredCalls);
-    expect(reduction.older.length).toBeGreaterThan(reduction.covered.length);
+    expect([...reduction.covered].flatMap((unit) => unit.callIds)).toEqual(coveredCalls);
+    expect(reduction.older.length).toBeGreaterThan(reduction.older.filter((unit) => reduction.covered.has(unit)).length);
 
     const run = compaction(grown, wire, results);
     const prepared = await run.run();
@@ -263,7 +264,7 @@ describe("hybrid transcript minimum", () => {
 
     const summary = prepared.contextCompactionSummary!;
     expect(summary.id).not.toBe(initial.contextCompactionSummary!.id);
-    expect(summary.sourceRefs).toContain(transcriptCoverageRef("call_write_21"));
+    expect(summary.sourceRefs).toContain(unitCoverageRef(toolTranscriptUnits(newest.items)[0]!));
     // Handles of calls that left in the first cycle stay citable for recall.
     for (const result of results) expect(summary.sourceRefs).toContain(result.observation!.handle);
     expect(prepared.contextCompaction!.afterTokens).toBeLessThanOrEqual(PROBE_BUDGET);
@@ -313,10 +314,11 @@ describe("hybrid transcript minimum", () => {
     const reduction = toolTranscriptReduction(summarized);
     // Only the settled parallel batch older than the newest batch may leave, whole.
     expect(reduction.older.map((unit) => unit.callIds)).toEqual([["a1", "a2"]]);
-    expect(reduction.covered.map((unit) => unit.callIds)).toEqual([["a1", "a2"]]);
+    // Historical notes cover the settled prefix through their newest call; unsettled units never.
+    expect([...reduction.covered].map((unit) => unit.callIds)).toEqual([["a1", "a2"], ["d1"]]);
     // Notes carried from an earlier turn, or a provider continuation, cover nothing here.
     expect(toolTranscriptReduction({ ...summarized, contextCompactionPolicy: { ...summarized.contextCompactionPolicy!,
-      reuse: { coveredMessageId: "x", runId: "earlier", summary } } }).covered).toEqual([]);
+      reuse: { coveredMessageId: "x", runId: "earlier", summary } } }).covered.size).toBe(0);
     expect(toolTranscriptReduction({ ...summarized, previousProviderResponseId: "resp_1" }).older).toEqual([]);
   });
 });

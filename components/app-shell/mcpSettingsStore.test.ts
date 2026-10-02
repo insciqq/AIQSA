@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useComposerControlStore } from "./composerControlStore";
+import { deactivatePersonalMcp, usePersonalMcpStore } from "./personalMcpStore";
 import { isMcpOAuthAuthorizing, markMcpOAuthAuthorizing, consumeMcpOAuthReturn, observeMcpSettings, refreshMcpSettings, useMcpSettingsStore } from "./mcpSettingsStore";
 import {
   resetComposerControlStoreForTest,
@@ -10,7 +11,6 @@ const server = {
   accountLabel: null,
   description: "Team tasks",
   enabled: true,
-  operationalStatus: "active" as const,
   fields: [],
   id: "server-1",
   knownToolCount: 1,
@@ -71,7 +71,7 @@ describe("MCP settings store", () => {
 
   it("polls an activating server with backoff until readiness becomes terminal", async () => {
     vi.useFakeTimers();
-    const queued = { ...server, operationalStatus: "checking" as const, readiness: "queued" as const, tools: [] };
+    const queued = { ...server, readiness: "queued" as const, tools: [] };
     const starting = { ...queued, readiness: "starting" as const };
     const responses = [queued, starting, server];
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
@@ -135,7 +135,7 @@ describe("MCP settings store", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it("preserves the list but removes stale active claims while renewal hangs or fails", async () => {
+  it("preserves the listed rows unchanged while renewal hangs or fails", async () => {
     useMcpSettingsStore.setState({ loadState: "ready", servers: [server] });
     let fail!: (error: Error) => void;
     const fetchMock = vi.fn(() => new Promise<Response>((_resolve, reject) => { fail = reject; }));
@@ -143,14 +143,10 @@ describe("MCP settings store", () => {
     const pending = refreshMcpSettings(true, { background: true }).catch(() => undefined);
     const duplicate = refreshMcpSettings(true, { background: true }).catch(() => undefined);
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(useMcpSettingsStore.getState()).toMatchObject({
-      loadState: "ready", servers: [{ id: server.id, operationalStatus: "checking" }]
-    });
+    expect(useMcpSettingsStore.getState()).toMatchObject({ loadState: "ready", servers: [server] });
     fail(new Error("offline"));
     await Promise.all([pending, duplicate]);
-    expect(useMcpSettingsStore.getState()).toMatchObject({
-      loadState: "ready", servers: [{ id: server.id, operationalStatus: "checking" }]
-    });
+    expect(useMcpSettingsStore.getState()).toMatchObject({ error: "offline", loadState: "ready", servers: [server] });
   });
 
   it("ignores a pre-mutation catalog response after the user disables the server", async () => {
@@ -159,12 +155,12 @@ describe("MCP settings store", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
     const pending = refreshMcpSettings(true);
     useMcpSettingsStore.getState().replaceServer({
-      ...server, enabled: false, operationalStatus: "inactive", readiness: "disabled"
+      ...server, enabled: false, readiness: "disabled"
     });
     finish(new Response(JSON.stringify({ servers: [server] })));
     await pending;
     expect(useMcpSettingsStore.getState().loadState).toBe("ready");
-    expect(useMcpSettingsStore.getState().servers[0]).toMatchObject({ enabled: false, operationalStatus: "inactive" });
+    expect(useMcpSettingsStore.getState().servers[0]).toMatchObject({ enabled: false, readiness: "disabled" });
   });
 
   it("never changes the composer mode when the last server disables or readiness changes", () => {
@@ -197,5 +193,16 @@ describe("MCP settings store", () => {
     expect(useMcpSettingsStore.getState().oauthOutcome).toEqual(outcome);
     expect(isMcpOAuthAuthorizing("server-1")).toBe(false);
     expect(window.location.search).toBe("?keep=yes");
+  });
+
+  it("routes a personal connection's OAuth outcome to the personal store only", () => {
+    window.history.replaceState(null, "", "/c/chat-1?settings=connections&oauth=cancelled&server=personal-1");
+    const outcome = consumeMcpOAuthReturn(new URL(window.location.href));
+
+    expect(outcome).toEqual({ kind: "cancelled", serverId: "personal-1" });
+    expect(usePersonalMcpStore.getState().oauthOutcome).toEqual(outcome);
+    expect(useMcpSettingsStore.getState().oauthOutcome).toBeNull();
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/c/chat-1");
+    deactivatePersonalMcp();
   });
 });

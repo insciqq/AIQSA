@@ -521,6 +521,13 @@
   cursor: not-allowed;
 }
 
+/* Held choices ignore the ghost hover: they keep the held colour on the
+   ghost's resting background. */
+.v2-assistant-notice-actions > .v2-button[aria-disabled="true"]:hover {
+  color: var(--v2-color-text3);
+  background: transparent;
+}
+
 /* The notice is the only way out of a blocked chat: its choices keep the
    44px touch targets, 8px apart when they wrap. */
 @media (hover: none), (pointer: coarse) {
@@ -1243,10 +1250,13 @@
  * While the sidebar is collapsed (desktop collapse and compact 768–1023px
  * default), the fixed `.v2-sidebar-floats` group sits inside the header bar's
  * top-left corner. The bar's content starts to its right so the float buttons
- * never overlap the chat title.
+ * never overlap the chat title. Width-scoped: the desktop collapse survives
+ * a resize to phone width, where the islands own the padding.
  */
-.v2-workspace-shell[data-sidebar-collapsed="true"] .v2-live-header {
-  padding-left: max(5.75rem, calc(env(safe-area-inset-left) + 5.75rem));
+@media (min-width: 768px) {
+  .v2-workspace-shell[data-sidebar-collapsed="true"] .v2-live-header {
+    padding-left: max(5.75rem, calc(env(safe-area-inset-left) + 5.75rem));
+  }
 }
 
 @media (min-width: 768px) and (max-width: 1023px) {
@@ -1286,6 +1296,12 @@
     padding-right: 6rem;
   }
 
+  /* The projects section renders no "+" float: a Project chat reserves the
+     right edge for "⋯" alone, so the centre island stays centred. */
+  .v2-workspace-shell[data-shell-section="projects"][data-chat-active="true"] .v2-live-header:not(:has(.v2-live-temporary)) {
+    padding-right: 3rem;
+  }
+
   .v2-live-header:not(:has(.v2-live-model, .v2-live-title > *, .v2-live-header-actions > *)) {
     display: none;
   }
@@ -1309,16 +1325,17 @@
   }
 
   /* The Assistant selector joins the model pill as its right segment: icon
-     or avatar only, no name (PRD 11). */
+     or avatar only, no name (PRD 11). The island's edge is an inset ring,
+     not a layout border, so both segments fill its full (44px touch) height. */
   .v2-live-header-island {
     max-width: 100%;
     height: 2.5rem;
     margin: 0 auto;
     gap: 0;
-    border: 1px solid var(--v2-color-border2);
+    border: 0;
     border-radius: 999px;
     background: color-mix(in srgb, var(--v2-color-surface) 92%, transparent);
-    box-shadow: var(--v2-shadow-float);
+    box-shadow: inset 0 0 0 1px var(--v2-color-border2), var(--v2-shadow-float);
     pointer-events: auto;
   }
 
@@ -1639,9 +1656,11 @@
     display: block;
   }
 
-  /* Share and the title (≥768px) keep the 44px target of the primitives. */
+  /* Share, the title and the context gauge (≥768px) keep the 44px target
+     of the primitives. */
   .v2-live-header-actions > .v2-button,
-  .v2-live-title-button {
+  .v2-live-title-button,
+  .v2-chat-context-trigger {
     min-height: 2.75rem;
   }
 
@@ -1694,5 +1713,9 @@
   /* A Temporary chat hands the right edge to its in-flow indicator. */
   .v2-workspace-shell[data-chat-active="true"] .v2-live-header:not(:has(.v2-live-temporary)) {
     padding-right: 6.5rem;
+  }
+
+  .v2-workspace-shell[data-shell-section="projects"][data-chat-active="true"] .v2-live-header:not(:has(.v2-live-temporary)) {
+    padding-right: 3.25rem;
   }
 }

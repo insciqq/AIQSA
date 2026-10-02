@@ -1,4 +1,4 @@
-import { uploadAcceptFor, uploadFormatFor } from "../../lib/domain/uploadFormats";
+import { uploadAcceptFor, uploadAdmissionFormatFor } from "../../lib/domain/uploadFormats";
 
 export type ComposerAttachmentPolicy = Readonly<{
   documents: boolean;
@@ -15,7 +15,7 @@ export const DEFAULT_COMPOSER_ATTACHMENT_POLICY: ComposerAttachmentPolicy = {
 };
 
 function fileKind(file: File): "document" | "image" | "pdf" | "unsupported" {
-  const kind = uploadFormatFor(file.name, file.type, "attachment")?.kind;
+  const kind = uploadAdmissionFormatFor(file.name, file.type, "attachment")?.kind;
   return kind && kind !== "file" ? kind : "unsupported";
 }
 

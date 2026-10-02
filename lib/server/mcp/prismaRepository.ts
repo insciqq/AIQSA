@@ -4,12 +4,16 @@ import { loadMcpToolAccess } from "./toolAccess";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
+  boundMcpToolDescription,
   isMcpInventoryDifferenceReason,
   isMcpToolName,
   MCP_INVENTORY_EXCLUSION_LIMIT,
+  MCP_RUN_PLAN_LIMITS,
   MCP_SERVER_TOOL_LIMIT,
   mcpRuntimeErrorCode,
-  mcpValidationIssue
+  mcpValidationIssue,
+  PERSONAL_MCP_CONNECTION_LIMIT,
+  safeMcpEndpoint
 } from "@/lib/contracts/mcp";
 import type {
   AdminMcpActivationSummary,
@@ -31,6 +35,7 @@ import type {
 } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
 import { resolveEffectiveMcpGrant, resolveEffectiveMcpValues } from "./access";
+import { archivePersonalMcpServers } from "./personalArchive";
 import {
   hashCanonicalMcpValue,
   mcpEndpointBinding,
@@ -57,6 +62,7 @@ import { correctedMcpDraft } from "./endpointCorrection";
 import { McpEndpointBindingChangedError, rebindMcpValidationEndpoint } from "./oauthRepository";
 import { parseMcpLocalResolvedArtifact } from "./localArtifact";
 import { mcpInventoryExclusions } from "./runPlan";
+import { nextPersonalMcpDisabledToolNames, personalMcpLiveTools } from "./personalCatalog";
 import type {
   McpActivationClaim,
   McpActivationCoordinatorRepository,
@@ -66,6 +72,7 @@ import type {
   McpRepository,
   McpRepositoryError,
   McpRepositoryResult,
+  McpUserLimitKind,
   McpUserServerState
 } from "./repositoryContract";
 
@@ -304,6 +311,18 @@ function draftFrom(value: Prisma.JsonValue): McpDraftConfiguration {
   return result.value;
 }
 
+/** The one header slot a static-auth personal connection stores its credential in. */
+const PERSONAL_AUTHORIZATION_SLOT_KEY = "authorization";
+
+function personalAuthorizationSlot(
+  draft: McpDraftConfiguration
+): (McpConfigurationSlot & { target: { kind: "header"; name: string } }) | null {
+  const slot = draft.slots.find((candidate) => candidate.slotKey === PERSONAL_AUTHORIZATION_SLOT_KEY);
+  return slot && slot.target.kind === "header" && slot.policy.kind === "personal"
+    ? slot as McpConfigurationSlot & { target: { kind: "header"; name: string } }
+    : null;
+}
+
 function draftDefinitionHash(draft: McpDraftConfiguration): string {
   const { disabledToolNames: _disabledToolNames, ...definition } = draft;
   return hashCanonicalMcpValue(definition);
@@ -533,7 +552,7 @@ function namespace(): string {
 }
 
 async function loadAdminServer(client: McpDataClient, serverId: string): Promise<AdminServerRecord | null> {
-  return client.mcpServer.findUnique({ include: adminServerInclude, where: { id: serverId } });
+  return client.mcpServer.findFirst({ include: adminServerInclude, where: { id: serverId, ownerUserId: null } });
 }
 
 const INVENTORY_DIFFERENCE_ORDER: Readonly<Record<AdminMcpInventoryDifference["reason"], number>> = {
@@ -844,7 +863,14 @@ type UserServerRecord = Prisma.McpServerGetPayload<{
     activeRevision: true;
     grants: true;
     oauthConnections: { include: { oauthClient: { select: { clientId: true } } } };
-    userServers: { include: { desiredRuntimeGeneration: true } };
+    userServers: { include: {
+      desiredRuntimeGeneration: true;
+      runtimeGenerations: {
+        orderBy: { updatedAt: "desc" };
+        take: 8;
+        select: { inventory: true; oauthConnectionId: true; revisionId: true; state: true };
+      };
+    } };
   };
 }>;
 
@@ -859,7 +885,8 @@ function serializeUserServer(input: {
   const direct = input.record.grants.find((grant) => grant.userId === input.userId) ?? null;
   const groups = input.record.grants.filter((grant) => grant.groupId && input.groupIds.includes(grant.groupId));
   const grant = resolveEffectiveMcpGrant({ direct, groups });
-  if (!grant.canUse || !input.record.activeRevision) return null;
+  if (input.record.ownerUserId && input.record.ownerUserId !== input.userId) return null;
+  if ((input.record.ownerUserId !== input.userId && !grant.canUse) || !input.record.activeRevision) return null;
 
   const draft = draftFrom(input.record.activeRevision.configuration);
   const preference = input.record.userServers[0] ?? null;
@@ -941,25 +968,79 @@ function serializeUserServer(input: {
     preferenceUpdatedAt: preference?.updatedAt ?? null,
     runtime: preference?.desiredRuntimeGeneration ?? null
   });
+  const toolAllowed = (name: string) => input.toolAllowed({ serverId: input.record.id, originalName: name });
+  const availability = userToolAvailability(readiness, toolAllowed);
+  const personalOwner = input.record.ownerUserId === input.userId;
+  const personalTools = personalOwner && preference ? personalSettingsTools(input.record, preference, input.userId, draft) : null;
+  const availableTools = (personalTools?.availableTools ?? []).filter((tool) => toolAllowed(tool.name));
   return {
     accountLabel: oauth?.externalAccountLabel ?? null,
     description: input.record.description,
     enabled: preference?.enabled ?? false,
+    ...(personalOwner ? { availableTools } : {}),
+    ...(personalOwner ? { sourceType: "personal" as const } : { sourceType: "installation" as const }),
+    ...(personalOwner && draft.source.kind === "remote"
+      ? { endpoint: safeMcpEndpoint(draft.source.url) }
+      : {}),
+    ...(personalOwner ? { userDisabledToolNames: [...(personalTools?.disabled ?? [])].sort() } : {}),
+    ...(personalOwner ? {
+      authHeaderName: draft.auth.mode === "static" ? personalAuthorizationSlot(draft)?.target.name ?? null : null,
+      authMode: draft.auth.mode
+    } : {}),
     fields,
     id: input.record.id,
-    knownToolCount: deriveKnownMcpToolCount({
-      toolAllowed: (name) => input.toolAllowed({ serverId: input.record.id, originalName: name }),
-      disabledToolNames: draft.disabledToolNames,
-      revisionCreatedAt: input.record.activeRevision.createdAt,
-      revisionValidationEvidence: input.record.activeRevision.validationEvidence,
-      runtimeInventory: preference?.desiredRuntimeGeneration?.inventory ?? null
-    }),
+    knownToolCount: personalOwner
+      ? availableTools.filter((tool) => !personalTools?.disabled.has(tool.name)).length
+      : deriveKnownMcpToolCount({
+          toolAllowed,
+          disabledToolNames: draft.disabledToolNames,
+          revisionCreatedAt: input.record.activeRevision.createdAt,
+          revisionValidationEvidence: input.record.activeRevision.validationEvidence,
+          runtimeInventory: preference?.desiredRuntimeGeneration?.inventory ?? null
+        }),
     name: input.record.displayName,
     oauthAvailable: draft.auth.mode === "oauth",
     oauthState: draft.auth.mode === "oauth" ? oauth?.state ?? "disconnected" : null,
     runtimeGenerationId: preference?.desiredRuntimeGeneration?.id ?? null,
     ...readiness,
-    ...userToolAvailability(readiness, (name) => input.toolAllowed({ serverId: input.record.id, originalName: name }))
+    ...availability,
+    // A switched-off tool leaves the owner's runtime projection; Settings
+    // still lists it in availableTools with its switch.
+    ...(personalTools ? { tools: availability.tools.filter((tool) => !personalTools.disabled.has(tool.name)) } : {})
+  };
+}
+
+/**
+ * A personal owner's Settings inventory: the live tools the Auto catalog
+ * offers, under the same OAuth-identity rule, plus the owner's switch-offs.
+ */
+function personalSettingsTools(
+  record: UserServerRecord,
+  preference: UserServerRecord["userServers"][number],
+  userId: string,
+  draft: McpDraftConfiguration
+): { availableTools: UserMcpServer["tools"]; disabled: ReadonlySet<string> } {
+  const current = preference.desiredRuntimeGeneration;
+  const live = personalMcpLiveTools({
+    activeRevisionId: record.activeRevision!.id,
+    current: current?.userServerId === preference.id ? current : null,
+    discovered: {
+      inventory: preference.discoveredInventory,
+      oauthConnectionId: preference.discoveredOAuthConnectionId,
+      revisionId: preference.discoveredRevisionId
+    },
+    disabledByConfiguration: draft.disabledToolNames ?? [],
+    oauthMode: draft.auth.mode === "oauth",
+    readyOAuthConnectionIds: new Set(record.oauthConnections
+      .filter((connection) => connection.userId === userId &&
+        connection.state === "ready" && connection.disconnectRequestedAt === null)
+      .map((connection) => connection.id)),
+    recent: preference.runtimeGenerations
+  });
+  return {
+    availableTools: live.map((tool) => ({ description: tool.description, name: tool.name }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+    disabled: new Set(preference.userDisabledToolNames)
   };
 }
 
@@ -1012,7 +1093,14 @@ async function listUserServerRecords(
         where: { purpose: "user", userId }
       },
       userServers: {
-        include: { desiredRuntimeGeneration: true },
+        include: {
+          desiredRuntimeGeneration: true,
+          runtimeGenerations: {
+            orderBy: { updatedAt: "desc" },
+            take: 8,
+            select: { inventory: true, oauthConnectionId: true, revisionId: true, state: true }
+          }
+        },
         take: 1,
         where: { userId }
       }
@@ -1023,12 +1111,15 @@ async function listUserServerRecords(
       archivedAt: null,
       enabled: true,
       ...(serverId ? { id: serverId } : {}),
-      grants: {
-        some: {
-          canUse: true,
-          OR: [{ userId }, ...(groupIds.length ? [{ groupId: { in: groupIds } }] : [])]
-        }
-      }
+      OR: [
+        { ownerUserId: userId },
+        { ownerUserId: null, grants: {
+          some: {
+            canUse: true,
+            OR: [{ userId }, ...(groupIds.length ? [{ groupId: { in: groupIds } }] : [])]
+          }
+        } }
+      ]
     }
   });
 }
@@ -1126,6 +1217,51 @@ async function lockMcpServer(tx: Prisma.TransactionClient, serverId: string): Pr
   return rows.length === 1;
 }
 
+/**
+ * Serializes one owner's personal creates, enables and disconnects with each
+ * other and with account deletion and disabling, which hold the row FOR
+ * UPDATE. NO KEY UPDATE leaves foreign-key checks (FOR KEY SHARE) free, so a
+ * writer that locked a server first and then inserts a row referencing this
+ * user cannot deadlock against it. Always taken before any server lock.
+ */
+async function lockMcpOwner(tx: Prisma.TransactionClient, userId: string): Promise<void> {
+  await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id"
+    FROM "User"
+    WHERE "id" = ${userId}
+    FOR NO KEY UPDATE
+  `;
+}
+
+/**
+ * A new personal connection is live and enabled at once. Enabled rows count as
+ * the run plan counts them: every enabled preference of the user, across
+ * installation and personal servers.
+ */
+async function personalCreationLimit(
+  client: Pick<Prisma.TransactionClient, "mcpServer" | "mcpUserServer">,
+  userId: string
+): Promise<McpUserLimitKind | null> {
+  const [live, enabled] = await Promise.all([
+    client.mcpServer.count({ where: { archivedAt: null, ownerUserId: userId } }),
+    client.mcpUserServer.count({ where: { enabled: true, userId } })
+  ]);
+  if (live >= PERSONAL_MCP_CONNECTION_LIMIT) return "personal_mcp_limit_reached";
+  return enabled >= MCP_RUN_PLAN_LIMITS.maxEnabledServers ? "mcp_enabled_server_limit_reached" : null;
+}
+
+/** Only this row's false-to-true transition can push the user past the plan bound. */
+async function enabledServerLimitReached(
+  tx: Pick<Prisma.TransactionClient, "mcpUserServer">,
+  userId: string,
+  serverId: string
+): Promise<boolean> {
+  const others = await tx.mcpUserServer.count({
+    where: { enabled: true, serverId: { not: serverId }, userId }
+  });
+  return others >= MCP_RUN_PLAN_LIMITS.maxEnabledServers;
+}
+
 const LIVE_ACTIVATION_STAGES = [
   "queued",
   "resolving",
@@ -1140,6 +1276,14 @@ function activationToken(): string {
 }
 
 type ActivationEnqueueResult = { kind: "ok" } | McpRepositoryError;
+
+/** Rolls back a credential replacement whose guarded write found a newer version. */
+class PersonalCredentialsChangedError extends Error {
+  constructor() {
+    super("mcp_personal_credentials_changed");
+    this.name = "PersonalCredentialsChangedError";
+  }
+}
 
 export type PrismaMcpRepository = McpRepository & McpActivationCoordinatorRepository;
 
@@ -1174,7 +1318,7 @@ export function createPrismaMcpRepository(input: {
         where: { id: validationUserId, role: "admin", status: "active" }
       })
     ]);
-    if (!server || server.archivedAt) return { kind: "not_found" };
+    if (!server || server.archivedAt || server.ownerUserId !== null) return { kind: "not_found" };
     if (!validationUser) {
       return {
         issues: [{ code: "validation_identity_invalid", path: "activation" }],
@@ -1238,7 +1382,7 @@ export function createPrismaMcpRepository(input: {
   ): Promise<McpRepositoryResult<AdminMcpServer>> {
     if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
     const server = await tx.mcpServer.findUnique({ where: { id: serverId } });
-    if (!server || server.archivedAt) return { kind: "not_found" as const };
+    if (!server || server.archivedAt || server.ownerUserId !== null) return { kind: "not_found" as const };
     const draft = draftFrom(server.draft);
     const draftHash = hashCanonicalMcpValue(draft);
     const draftTest = draftTestFrom(server.draftTestEvidence, server.testedDraftHash);
@@ -1324,14 +1468,49 @@ export function createPrismaMcpRepository(input: {
       return client.$transaction((tx) => activateDraftLocked(tx, serverId, key));
     },
 
+    deletePersonalServer: async ({ serverId, userId }) => {
+      return client.$transaction(async (tx) => {
+        // Same order as creates and enables: the owner, then the server.
+        await lockMcpOwner(tx, userId);
+        if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
+        const server = await tx.mcpServer.findFirst({ where: { archivedAt: null, id: serverId, ownerUserId: userId } });
+        if (!server) return { kind: "not_found" as const };
+        await archivePersonalMcpServers(tx, { now: new Date(), ownerUserId: userId, serverIds: [serverId] });
+        return { kind: "ok" as const, value: {
+          accountLabel: null,
+          description: server.description,
+          enabled: false,
+          errorCode: null,
+          fields: [],
+          knownToolCount: 0,
+          id: server.id,
+          name: server.displayName,
+          oauthAvailable: false,
+          oauthState: null,
+          readiness: "disabled" as const,
+          runtimeErrorCode: null,
+          runtimeGenerationId: null,
+          tools: [],
+          sourceType: "personal" as const
+        } satisfies McpUserServerState };
+      });
+    },
+
     deleteServer: async (serverId) => {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {
+        const now = new Date();
         const tombstoned = await tx.mcpServer.updateMany({
-          data: { archivedAt: new Date(), enabled: false },
-          where: { archivedAt: null, id: serverId }
+          data: { archivedAt: now, enabled: false },
+          where: { archivedAt: null, id: serverId, ownerUserId: null }
         });
         if (tombstoned.count !== 1) return { kind: "not_found" as const };
+        // Every stored token becomes a revocation obligation before the
+        // archived server can be finalized.
+        await tx.mcpOAuthConnection.updateMany({
+          data: { disconnectRequestedAt: now, state: "disconnecting" },
+          where: { serverId, state: { in: ["ready", "reauthorization_required"] } }
+        });
         await tx.mcpActivationJob.deleteMany({ where: { serverId } });
         await tx.mcpUserServer.updateMany({
           data: { desiredRuntimeGenerationId: null, enabled: false },
@@ -1340,6 +1519,273 @@ export function createPrismaMcpRepository(input: {
         await releaseSharedRuntime(tx, serverId);
         return adminResult(tx, serverId, key, input.oauthValidationRedirectUri);
       });
+    },
+
+    createPersonalServer: async ({ description, draft, name, userId, values }) => {
+      const definition = validateMcpDraft(draft);
+      if (!definition.ok) return { kind: "invalid_values" as const, issues: definition.issues };
+      draft = definition.value;
+      if (draft.source.kind !== "remote" || draft.transport !== "streamable_http") {
+        return { kind: "invalid_values" as const, issues: [{ code: "personal_remote_required", path: "draft.source" }] };
+      }
+      const user = await client.user.findFirst({ select: { id: true }, where: { id: userId, status: "active" } });
+      if (!user) return { kind: "not_found" as const };
+      const validation = draftValidationValues({ draft, oneTimeValues: values, sharedValues: {} });
+      if (validation.issues.length) return { kind: "invalid_values" as const, issues: validation.issues };
+      // Advisory: never contact an endpoint for a connection the owner cannot add.
+      const limited = await personalCreationLimit(client, userId);
+      if (limited) return { kind: limited };
+      const serverId = randomUUID();
+      const outcome = draft.auth.mode === "oauth"
+        ? {
+            evidence: { endpointHash: hashCanonicalMcpValue({ origin: new URL(draft.source.url).origin, pathname: new URL(draft.source.url).pathname }), transport: "streamable_http" } as McpJsonObject,
+            kind: "ok" as const,
+            resolvedArtifact: null,
+            toolInventory: [] as McpToolInventoryEntry[]
+          }
+        : await draftValidator.validate({ draft, personal: true, serverId, validationUserId: userId, values: validation.values });
+      if (outcome.kind === "invalid") return { kind: "draft_validation_failed" as const, issues: outcome.issues };
+      const evidence = jsonObjectFrom(outcome.evidence);
+      const resolvedArtifact = outcome.resolvedArtifact === null ? null : jsonObjectFrom(outcome.resolvedArtifact);
+      const toolInventory = toolInventoryFrom(outcome.toolInventory);
+      if (!evidence || !toolInventory || (outcome.resolvedArtifact !== null && !resolvedArtifact) ||
+        validationResultContainsSensitiveValue({ draft, evidence, resolvedArtifact, toolInventory, values: validation.values })) {
+        return { kind: "draft_validation_failed" as const, issues: [{ code: "validator_result_invalid", path: "validator" }] };
+      }
+      const checkedDraft = correctedMcpDraft(draft, outcome.endpointCorrection);
+      if (!checkedDraft) return { kind: "draft_validation_failed" as const, issues: [{ code: "validator_result_invalid", path: "validator" }] };
+      const draftHash = hashCanonicalMcpValue(checkedDraft);
+      const identityHash = revisionIdentityHash({ draftHash, evidence, resolvedArtifact, toolInventory });
+      const now = new Date();
+      const key = encryptionKey();
+      const preferenceId = randomUUID();
+      const stored = applyStoredValuePatch(emptyStoredValues(), values, now, mcpEndpointBinding(checkedDraft));
+      const personalKeys = checkedDraft.slots
+        .filter((slot) => slot.policy.kind === "personal" || (slot.policy.kind === "shared" && slot.policy.allowPersonalOverride))
+        .map((slot) => slot.slotKey);
+      const revisionEvidence: McpValidationEvidence = { evidence, testedAt: now.toISOString(), toolInventory };
+      const created = await client.$transaction(async (tx) => {
+        // Creates, enables and account deletion of one owner serialize on the
+        // user row; only under this lock are the limits authoritative.
+        await lockMcpOwner(tx, userId);
+        await tx.user.findFirstOrThrow({ select: { id: true }, where: { id: userId, status: "active" } });
+        const limit = await personalCreationLimit(tx, userId);
+        if (limit) return limit;
+        const server = await tx.mcpServer.create({
+          data: {
+            description,
+            displayName: name,
+            draft: checkedDraft as Prisma.InputJsonValue,
+            draftTestEvidence: { draftHash, evidence, identityHash, resolvedArtifact, testedAt: now.toISOString(), toolInventory } as Prisma.InputJsonValue,
+            enabled: true,
+            id: serverId,
+            namespace: namespace(),
+            ownerUserId: userId,
+            testedDraftHash: draftHash
+          },
+          select: { id: true }
+        });
+        const revision = await tx.mcpRevision.create({
+          data: {
+            configuration: checkedDraft as Prisma.InputJsonValue,
+            draftHash,
+            identityHash,
+            revisionNumber: 1,
+            resolvedArtifact: resolvedArtifact ? resolvedArtifact as Prisma.InputJsonValue : Prisma.DbNull,
+            serverId: server.id,
+            validationEvidence: revisionEvidence as Prisma.InputJsonValue
+          },
+          select: { id: true }
+        });
+        await tx.mcpServer.update({ data: { activeRevisionId: revision.id }, where: { id: server.id } });
+        await tx.mcpGrant.create({ data: { canUse: true, personalSlotKeys: personalKeys, serverId: server.id, userId } });
+        await tx.mcpUserServer.create({
+          data: {
+            enabled: true,
+            id: preferenceId,
+            personalConfigEnvelope: Object.keys(stored.values).length
+              ? encryptMcpEnvelope(stored, key, mcpPersonalConfigEnvelopeContext(preferenceId, 1))
+              : null,
+            personalConfigVersion: Object.keys(stored.values).length ? 1 : 0,
+            // The validator's listing is the first observation of a non-OAuth
+            // server, so Settings and Auto list its tools before a runtime is ready.
+            ...(checkedDraft.auth.mode !== "oauth" ? {
+              discoveredInventory: {
+                tools: toolInventory.map((tool) => ({
+                  description: tool.description === null ? null : boundMcpToolDescription(tool.description),
+                  name: tool.name
+                })),
+                version: 1
+              },
+              discoveredOAuthConnectionId: null,
+              discoveredRevisionId: revision.id
+            } : {}),
+            serverId: server.id,
+            userId
+          }
+        });
+        const groupIds = await groupIdsForUser(tx, userId);
+        if (!groupIds) return null;
+        const [record] = await listUserServerRecords(tx, userId, groupIds, server.id);
+        return record ? serializeUserServer({
+          toolAllowed: () => true,
+          groupIds,
+          key,
+          record,
+          userId
+        }) : null;
+      });
+      if (typeof created === "string") return { kind: created };
+      return created ? { kind: "ok" as const, value: created } : { kind: "not_found" as const };
+    },
+
+    replacePersonalCredentials: async ({ authorization, headerName, serverId, userId }) => {
+      const user = await client.user.findFirst({ select: { id: true }, where: { id: userId, status: "active" } });
+      if (!user) return { kind: "not_found" as const };
+      // The state this replacement is validated against; the commit below
+      // applies only while the connection is still exactly this state.
+      const current = await client.mcpServer.findFirst({
+        select: {
+          activeRevision: { select: { configuration: true, id: true } },
+          userServers: { select: { id: true, personalConfigVersion: true }, take: 1, where: { userId } }
+        },
+        where: { archivedAt: null, enabled: true, id: serverId, ownerUserId: userId }
+      });
+      const preference = current?.userServers[0];
+      if (!current?.activeRevision || !preference) return { kind: "not_found" as const };
+      const expectedRevisionId = current.activeRevision.id;
+      const draft = draftFrom(current.activeRevision.configuration);
+      const slot = personalAuthorizationSlot(draft);
+      if (draft.auth.mode !== "static" || draft.source.kind !== "remote" || !slot) {
+        return { kind: "auth_mode_invalid" as const };
+      }
+      const nextHeaderName = headerName ?? slot.target.name;
+      const headerChanged = nextHeaderName !== slot.target.name;
+      // Personal servers are exempt from slot lineage: the header and its only
+      // value are replaced together, so no stored value meets a new target.
+      const definition = validateMcpDraft(headerChanged ? {
+        ...draft,
+        slots: draft.slots.map((candidate) => candidate.slotKey === slot.slotKey
+          ? { ...candidate, target: { kind: "header" as const, name: nextHeaderName } }
+          : candidate)
+      } : draft);
+      if (!definition.ok) return { kind: "invalid_values" as const, issues: definition.issues };
+      const nextDraft = definition.value;
+      const values: Record<string, McpSlotValue> = { [slot.slotKey]: authorization };
+      const validation = draftValidationValues({ draft: nextDraft, oneTimeValues: values, sharedValues: {} });
+      if (validation.issues.length) return { kind: "invalid_values" as const, issues: validation.issues };
+      const outcome = await draftValidator.validate({ draft: nextDraft, personal: true, serverId, validationUserId: userId, values: validation.values });
+      if (outcome.kind === "invalid") {
+        // With the stored header name kept, a header that cannot be set is
+        // caused by the value, which the validator reports at the slot target.
+        return { kind: "draft_validation_failed" as const, issues: headerChanged ? outcome.issues : outcome.issues.map((issue) =>
+          issue.code === "mcp_static_header_invalid" ? { ...issue, path: `values.${slot.slotKey}` } : issue) };
+      }
+      const evidence = jsonObjectFrom(outcome.evidence);
+      const resolvedArtifact = outcome.resolvedArtifact === null ? null : jsonObjectFrom(outcome.resolvedArtifact);
+      const toolInventory = toolInventoryFrom(outcome.toolInventory);
+      // The URL is immutable: a credential that works only at a corrected
+      // endpoint belongs to a new connection.
+      if (!evidence || !toolInventory || outcome.endpointCorrection || (outcome.resolvedArtifact !== null && !resolvedArtifact) ||
+        validationResultContainsSensitiveValue({ draft: nextDraft, evidence, resolvedArtifact, toolInventory, values: validation.values })) {
+        return { kind: "draft_validation_failed" as const, issues: [{ code: "validator_result_invalid", path: "validator" }] };
+      }
+      const draftHash = hashCanonicalMcpValue(nextDraft);
+      const identityHash = revisionIdentityHash({ draftHash, evidence, resolvedArtifact, toolInventory });
+      const now = new Date();
+      const key = encryptionKey();
+      // Personal static connections hold exactly this one value; an unreadable
+      // previous envelope never blocks its replacement.
+      const stored = applyStoredValuePatch(emptyStoredValues(), values, now, mcpEndpointBinding(nextDraft));
+      try {
+        return await client.$transaction(async (tx) => {
+          // Lock order: the owner first (shared with creates, enables and
+          // disconnects), then the server, then its rows.
+          await lockMcpOwner(tx, userId);
+          if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
+          const [owner, locked, row] = await Promise.all([
+            tx.user.findFirst({ select: { id: true }, where: { id: userId, status: "active" } }),
+            tx.mcpServer.findUnique({ select: { activeRevisionId: true, enabled: true, ownerUserId: true }, where: { id: serverId } }),
+            tx.mcpUserServer.findUnique({ select: { id: true, personalConfigVersion: true }, where: { userId_serverId: { serverId, userId } } })
+          ]);
+          if (!owner || !locked || locked.ownerUserId !== userId || !locked.enabled || !row) return { kind: "not_found" as const };
+          // Validated against an older state: never applied out of order.
+          if (locked.activeRevisionId !== expectedRevisionId || row.id !== preference.id ||
+            row.personalConfigVersion !== preference.personalConfigVersion) {
+            return { kind: "credentials_changed" as const };
+          }
+          let revisionId = expectedRevisionId;
+          if (headerChanged) {
+            const existing = await tx.mcpRevision.findUnique({
+              select: { id: true },
+              where: { serverId_identityHash: { identityHash, serverId } }
+            });
+            if (existing) {
+              revisionId = existing.id;
+            } else {
+              const latest = await tx.mcpRevision.aggregate({ _max: { revisionNumber: true }, where: { serverId } });
+              const revisionEvidence: McpValidationEvidence = { evidence, testedAt: now.toISOString(), toolInventory };
+              revisionId = (await tx.mcpRevision.create({
+                data: {
+                  configuration: nextDraft as Prisma.InputJsonValue,
+                  draftHash,
+                  identityHash,
+                  revisionNumber: (latest._max.revisionNumber ?? 0) + 1,
+                  resolvedArtifact: resolvedArtifact ? resolvedArtifact as Prisma.InputJsonValue : Prisma.DbNull,
+                  serverId,
+                  validationEvidence: revisionEvidence as Prisma.InputJsonValue
+                },
+                select: { id: true }
+              })).id;
+            }
+            await tx.mcpServer.update({
+              data: {
+                activeRevisionId: revisionId,
+                draft: nextDraft as Prisma.InputJsonValue,
+                draftTestEvidence: { draftHash, evidence, identityHash, resolvedArtifact, testedAt: now.toISOString(), toolInventory } as Prisma.InputJsonValue,
+                testedDraftHash: draftHash
+              },
+              where: { id: serverId }
+            });
+          }
+          const version = row.personalConfigVersion + 1;
+          const written = await tx.mcpUserServer.updateMany({
+            data: {
+              // A new value version is a new runtime fingerprint: future
+              // messages start the new generation, accepted runs keep theirs.
+              desiredRuntimeGenerationId: null,
+              discoveredInventory: {
+                tools: toolInventory.map((tool) => ({
+                  description: tool.description === null ? null : boundMcpToolDescription(tool.description),
+                  name: tool.name
+                })),
+                version: 1
+              },
+              discoveredOAuthConnectionId: null,
+              discoveredRevisionId: revisionId,
+              personalConfigEnvelope: encryptMcpEnvelope(stored, key, mcpPersonalConfigEnvelopeContext(row.id, version)),
+              personalConfigVersion: version
+            },
+            where: { id: row.id, personalConfigVersion: row.personalConfigVersion }
+          });
+          if (written.count !== 1) throw new PersonalCredentialsChangedError();
+          const groupIds = await groupIdsForUser(tx, userId);
+          if (!groupIds) return { kind: "not_found" as const };
+          const [record] = await listUserServerRecords(tx, userId, groupIds, serverId);
+          const serialized = record ? serializeUserServer({
+            toolAllowed: await loadMcpToolAccess(userId, [serverId], tx),
+            groupIds,
+            key,
+            record,
+            userId,
+            ...(input.oauthRedirectUri ? { oauthRedirectUri: input.oauthRedirectUri } : {})
+          }) : null;
+          return serialized ? { kind: "ok" as const, value: serialized } : { kind: "not_found" as const };
+        });
+      } catch (error) {
+        if (error instanceof PersonalCredentialsChangedError) return { kind: "credentials_changed" as const };
+        throw error;
+      }
     },
 
     createServer: async ({
@@ -1425,7 +1871,7 @@ export function createPrismaMcpRepository(input: {
       const records = await client.mcpServer.findMany({
         include: adminServerInclude,
         orderBy: { displayName: "asc" },
-        where: { archivedAt: null }
+        where: { archivedAt: null, ownerUserId: null }
       });
       const differences = await loadInventoryDifferences(client, records.map((record) => record.id));
       return records.map((record) => serializeAdminServer(
@@ -1456,11 +1902,13 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
+    personalCreationLimit: (userId) => personalCreationLimit(client, userId),
+
     rebuildRevision: async ({ oneTimeValues, replaceDraft, revisionId, serverId, validationUserId }) => {
       const prepared = await client.$transaction(async (tx) => {
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const [server, revision] = await Promise.all([
-          tx.mcpServer.findUnique({ select: { draft: true }, where: { id: serverId } }),
+          tx.mcpServer.findFirst({ select: { draft: true }, where: { id: serverId, ownerUserId: null } }),
           tx.mcpRevision.findFirst({
             select: { configuration: true },
             where: { id: revisionId, serverId }
@@ -1500,6 +1948,7 @@ export function createPrismaMcpRepository(input: {
         const [candidate] = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id" FROM "McpServer"
           WHERE "legacyToolRecheckPending" = true
+            AND "ownerUserId" IS NULL
           ORDER BY "id"
           FOR UPDATE SKIP LOCKED
           LIMIT 1
@@ -1595,6 +2044,7 @@ export function createPrismaMcpRepository(input: {
           WHERE job."stage" NOT IN ('ready', 'failed')
             AND (job."leaseId" IS NULL OR job."updatedAt" < ${staleBefore})
             AND server."archivedAt" IS NULL
+            AND server."ownerUserId" IS NULL
           ORDER BY job."requestedAt" ASC
           FOR UPDATE OF job SKIP LOCKED
           LIMIT 1
@@ -1624,7 +2074,7 @@ export function createPrismaMcpRepository(input: {
             sharedConfigEnvelope: true,
             sharedConfigVersion: true
           },
-          where: { archivedAt: null, id: claimed.serverId }
+          where: { archivedAt: null, id: claimed.serverId, ownerUserId: null }
         });
         if (!server || hashCanonicalMcpValue(draftFrom(server.draft)) !== claimed.draftHash ||
           server.sharedConfigVersion !== claimed.sharedConfigVersion) {
@@ -1758,7 +2208,7 @@ export function createPrismaMcpRepository(input: {
               },
               sharedConfigVersion: true
             },
-            where: { archivedAt: null, id: claim.serverId }
+            where: { archivedAt: null, id: claim.serverId, ownerUserId: null }
           }),
           claim.validationUserId
             ? tx.user.findFirst({
@@ -1921,7 +2371,7 @@ export function createPrismaMcpRepository(input: {
             },
             validationEvidence: true
           },
-          where: { id: revisionId, serverId }
+          where: { id: revisionId, serverId, server: { ownerUserId: null } }
         });
         if (!revision) return { kind: "not_found" as const };
         if (revisionArtifactStatus(revision) === "missing") {
@@ -1932,7 +2382,7 @@ export function createPrismaMcpRepository(input: {
         if (next.ok) {
           const current = await tx.mcpServer.findUnique({
             select: { activeRevision: { select: { configuration: true } } },
-            where: { id: serverId }
+            where: { id: serverId, ownerUserId: null }
           });
           await pinLegacyEndpointBindings(tx, {
             key,
@@ -1959,7 +2409,7 @@ export function createPrismaMcpRepository(input: {
       return client.$transaction(async (tx) => {
         const server = await tx.mcpServer.findFirst({
           select: { activeRevision: { select: { configuration: true } }, draft: true, id: true },
-          where: { archivedAt: null, id: serverId }
+          where: { archivedAt: null, id: serverId, ownerUserId: null }
         });
         if (!server) return { kind: "not_found" as const };
         const configuration = server.activeRevision?.configuration ?? server.draft;
@@ -2045,7 +2495,7 @@ export function createPrismaMcpRepository(input: {
           sharedConfigVersion: true,
           updatedAt: true
         },
-        where: { archivedAt: null, id: serverId }
+          where: { archivedAt: null, id: serverId, ownerUserId: null }
       });
       if (!server) return { kind: "not_found" as const };
       if (expectedUpdatedAt && server.updatedAt.toISOString() !== expectedUpdatedAt) {
@@ -2140,7 +2590,7 @@ export function createPrismaMcpRepository(input: {
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const current = await tx.mcpServer.findUnique({
           select: { archivedAt: true, draft: true, sharedConfigVersion: true, updatedAt: true },
-          where: { id: serverId }
+          where: { id: serverId, ownerUserId: null }
         });
         if (!current || current.archivedAt) return { kind: "not_found" as const };
         if (hashCanonicalMcpValue(draftFrom(current.draft)) !== storedDraftHash ||
@@ -2211,7 +2661,7 @@ export function createPrismaMcpRepository(input: {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
-        const existing = await tx.mcpServer.findFirst({ where: { archivedAt: null, id: serverId } });
+        const existing = await tx.mcpServer.findFirst({ where: { archivedAt: null, id: serverId, ownerUserId: null } });
         if (!existing) return { kind: "not_found" as const };
         if (expectedUpdatedAt && existing.updatedAt.toISOString() !== expectedUpdatedAt) {
           return { kind: "draft_changed" as const };
@@ -2360,7 +2810,7 @@ export function createPrismaMcpRepository(input: {
             : null;
           data.sharedConfigVersion = sharedConfigVersion;
         }
-        if (Object.keys(data).length) await tx.mcpServer.update({ data, where: { id: serverId } });
+        if (Object.keys(data).length) await tx.mcpServer.update({ data, where: { id: serverId, ownerUserId: null } });
         if (draftChanged || sharedConfigChanged) {
           await tx.mcpActivationJob.deleteMany({ where: { serverId } });
         } else if (enabled === false) {
@@ -2385,9 +2835,12 @@ export function createPrismaMcpRepository(input: {
       });
     },
 
-    updateUserServer: async ({ enabled, serverId, userId, values }) => {
+    updateUserServer: async ({ enabled, installationOnly, personalOnly, serverId, tool, userId, values }) => {
       const key = encryptionKey();
       return client.$transaction(async (tx) => {
+        // Lock order: the owner first (serializes enables and personal creates),
+        // then the server.
+        await lockMcpOwner(tx, userId);
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const groupIds = await groupIdsForUser(tx, userId);
         if (!groupIds) return { kind: "not_found" as const };
@@ -2396,14 +2849,34 @@ export function createPrismaMcpRepository(input: {
         const direct = record.grants.find((grant) => grant.userId === userId) ?? null;
         const groups = record.grants.filter((grant) => grant.groupId && groupIds.includes(grant.groupId));
         const grant = resolveEffectiveMcpGrant({ direct, groups });
-        if (!grant.canUse) return { kind: "not_found" as const };
+        if (record.ownerUserId && record.ownerUserId !== userId) return { kind: "not_found" as const };
+        if (installationOnly && record.ownerUserId) return { kind: "not_found" as const };
+        const personalOwner = record.ownerUserId === userId;
+        if (personalOnly && !personalOwner) return { kind: "not_found" as const };
+        if (!personalOwner && !grant.canUse) return { kind: "not_found" as const };
         const draft = draftFrom(record.activeRevision.configuration);
+        const preference = record.userServers[0] ?? null;
+        let userDisabledToolNames: string[] | null = null;
+        if (tool) {
+          if (!personalOwner || !isMcpToolName(tool.name)) {
+            return { issues: [{ code: "tool_not_permitted", path: "tool.name" }], kind: "invalid_values" as const };
+          }
+          const current = serializeUserServer({
+            toolAllowed: await loadMcpToolAccess(userId, [serverId], tx),
+            groupIds, key, record, userId,
+            ...(input.oauthRedirectUri ? { oauthRedirectUri: input.oauthRedirectUri } : {})
+          });
+          const liveToolNames = current?.availableTools?.map((candidate) => candidate.name) ?? [];
+          if (!liveToolNames.includes(tool.name)) {
+            return { issues: [{ code: "tool_not_available", path: "tool.name" }], kind: "invalid_values" as const };
+          }
+          userDisabledToolNames = nextPersonalMcpDisabledToolNames(preference?.userDisabledToolNames ?? [], tool, liveToolNames);
+        }
         if (values) {
           const issues = valueIssues(draft.slots, values, (slot) => grant.personalSlotKeys.has(slot.slotKey) &&
             (slot.policy.kind === "personal" || (slot.policy.kind === "shared" && slot.policy.allowPersonalOverride)));
           if (issues.length) return { issues, kind: "invalid_values" as const };
         }
-        const preference = record.userServers[0] ?? null;
         const endpoint = mcpEndpointBinding(draft);
         const personal = applyStoredValuePatch(
           readStoredValues(
@@ -2417,6 +2890,10 @@ export function createPrismaMcpRepository(input: {
           new Date(),
           endpoint
         );
+        // An already-enabled row (for example the OAuth settle) passes unchanged.
+        if (enabled === true && !preference?.enabled && await enabledServerLimitReached(tx, userId, serverId)) {
+          return { kind: "mcp_enabled_server_limit_reached" as const };
+        }
         if (enabled === true) {
           const shared = readStoredValues(
             record.sharedConfigEnvelope,
@@ -2462,18 +2939,24 @@ export function createPrismaMcpRepository(input: {
               mcpPersonalConfigEnvelopeContext(preferenceId, personalConfigVersion)
             )
           : null;
+        // Only switching the connection off or new values replace the runtime.
+        // A tool switch is a projection change and an enable of an enabled row
+        // changes nothing, so accepted runs and the next run keep dispatching.
+        const replacesRuntime = enabled === false || hasValuesPatch;
         await tx.mcpUserServer.upsert({
           create: {
             enabled: enabled ?? false,
             id: preferenceId,
             personalConfigEnvelope,
             personalConfigVersion,
+            ...(userDisabledToolNames !== null ? { userDisabledToolNames } : {}),
             serverId,
             userId
           },
           update: {
-            desiredRuntimeGenerationId: null,
+            ...(replacesRuntime ? { desiredRuntimeGenerationId: null } : {}),
             ...(enabled !== undefined ? { enabled } : {}),
+            ...(userDisabledToolNames !== null ? { userDisabledToolNames } : {}),
             ...(hasValuesPatch ? {
               personalConfigEnvelope,
               personalConfigVersion

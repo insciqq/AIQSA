@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
-import { createWorkspaceUploadRepository } from "./workspaceUploadRepository";
+import { syntheticPng } from "@/tests/support/rasterFixtures";
+import { createWorkspaceUploadRepository, workspaceUploadProjection } from "./workspaceUploadRepository";
 import { WorkspaceUploadService } from "./workspaceUploadService";
 import { createFileSystemStorageAdapter } from "./storage";
 import { WORKSPACE_UPLOAD_LEASE_MS } from "./workspaceUploadConfig";
@@ -113,6 +114,29 @@ describe("durable Workspace uploads", () => {
       expect(cleanup?.objects.map(object => object.storageKey)).toContain(first!.output.storageKey);
       expect(cleanup?.objects.map(object => object.storageKey)).not.toContain(second!.output.storageKey);
     } finally { await fixture.cleanup(); }
+  });
+
+  it("settles a PNG declared as .jpeg under the decoded name while the upload row keeps the declared values", async () => {
+    const fixture = await owner();
+    const directory = await mkdtemp(join(tmpdir(), "aiqsa-upload-test-"));
+    const storage = createFileSystemStorageAdapter(directory);
+    const service = new WorkspaceUploadService({ repository, storage, available: async () => true });
+    const png = syntheticPng();
+    const pngChecksum = createHash("sha256").update(png).digest("hex");
+    try {
+      const created = await service.create({ byteSize: png.byteLength, fileName: "synthetic.jpeg", mimeType: "image/png",
+        projectId: null, idempotencyKey: randomUUID() }, fixture.user.id);
+      await service.part(new Request("http://localhost/part", { method: "PUT", body: png,
+        headers: { "content-type": "application/octet-stream", "x-upload-sha256": pngChecksum } }), created.id, fixture.user.id, 1);
+      await service.complete(created.id, fixture.user.id);
+      await service.reconcileNow();
+      const ready = await repository.get(created.id, fixture.user.id);
+      expect(ready).toMatchObject({ state: "completed", fileName: "synthetic.jpeg", mimeType: "image/jpeg" });
+      expect(ready.attachment).toMatchObject({ kind: "file", status: "ready", fileName: "synthetic.png", mimeType: "image/png",
+        checksum: pngChecksum, byteSize: png.byteLength, metadata: { workspaceOriginalOnly: true } });
+      expect(Buffer.compare((await storage.getObject(ready.attachment!.storageKey)).body, png)).toBe(0);
+      expect(workspaceUploadProjection(ready).attachment).toMatchObject({ fileName: "synthetic.png", mimeType: "image/png" });
+    } finally { service.stop(); await service.reconcileNow(); await fixture.cleanup(); await rm(directory, { recursive: true, force: true }); }
   });
 
   it("assembles, verifies and cleans parts through the real filesystem adapter after a worker restart", async () => {
