@@ -1193,6 +1193,11 @@ describe("run preparation", () => {
       const { toolObservationVersion: _version, ...withoutObservation } = v1.input;
       expect(hashCanonicalMcpValue(withoutObservation)).toBe(off.hash);
       expect(v1.hash).not.toBe(off.hash);
+      // The cross-turn history contract and its call reader are part of the
+      // identity (a thread accepted before them starts fresh once), in both modes.
+      for (const identity of [off.input, v1.input]) expect(identity).toMatchObject({ toolHistory: 1, toolCallReader: true });
+      const { toolHistory: _history, toolCallReader: _reader, ...beforeHistory } = off.input;
+      expect(hashCanonicalMcpValue(beforeHistory)).not.toBe(off.hash);
     } finally { vi.unstubAllEnvs(); }
   });
 
@@ -5488,5 +5493,47 @@ describe("cross-turn compaction reuse", () => {
     expect(fromKnowledge.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeUndefined();
     const fromHybrid = await admit({ checkpoints: [latest], history });
     expect(fromHybrid.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({ runId: latest.runId });
+  });
+});
+
+describe("cross-turn tool history admission", () => {
+  const snapshot = { version: 1 as const, turns: [{ turnMessageId: "prior-user-message", callRefs: [`tcr1_${"a".repeat(32)}`],
+    digest: "d".repeat(64) }] };
+
+  it("freezes the branch's call references from the send's leaf, never record text", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const loadToolHistory = vi.fn(async () => snapshot);
+    const projectToolHistory = vi.fn();
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, repository: { ...harness.deps.repository, loadToolHistory,
+      projectToolHistory } }, sendInput(successBody({ provider: "openai", modelId: "openai-tool-model" }))));
+    expect(loadToolHistory).toHaveBeenCalledWith({ chatId: "chat-1", leafMessageId: "prior-user-message", userId: "user-1" });
+    expect(prepared.normalizedRequest.toolHistory).toEqual(snapshot);
+    expect(prepared.providerRequest.toolHistory).toEqual(snapshot);
+    // Records are projected for each answer request; admission persists none.
+    expect(projectToolHistory).not.toHaveBeenCalled();
+    for (const messages of [prepared.normalizedRequest.context!.messages, prepared.providerRequest.context!.messages]) {
+      expect(messages.some((message) => message.historyClass !== undefined || message.id.startsWith("tch1_"))).toBe(false);
+    }
+  });
+
+  it("freezes a regeneration's history from its own user message and an empty history without a loader", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const loadToolHistory = vi.fn(async () => snapshot);
+    await prepareRun({ ...harness.deps, repository: { ...harness.deps.repository, loadToolHistory } },
+      regenerateInput(successBody({ provider: "openai", modelId: "openai-tool-model" })));
+    expect(loadToolHistory).toHaveBeenCalledWith({ chatId: "chat-1", leafMessageId: "stored-user-message", userId: "user-1" });
+    // Every new run is eligible for later turns, with or without earlier calls.
+    const plain = preparedFrom(await prepareRun(harness.deps, sendInput()));
+    expect(plain.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [] });
+  });
+
+  it("admits the call reader only for tool-capable answer models", async () => {
+    const tools = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    expect(preparedFrom(await prepareRun(tools.deps, sendInput(successBody({ provider: "openai", modelId: "openai-tool-model" }))))
+      .normalizedRequest.toolCallReader).toBe(true);
+    const plain = createHarness({ capabilities: { ...baseCapabilities, toolCalling: false } });
+    const prepared = preparedFrom(await prepareRun(plain.deps, sendInput()));
+    expect(prepared.normalizedRequest.toolCallReader).toBeUndefined();
+    expect(prepared.providerRequest.tools?.some((tool) => tool.name === "read_tool_call") ?? false).toBe(false);
   });
 });
