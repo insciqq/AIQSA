@@ -438,12 +438,10 @@ async function createBenchmarkIdentity(
     expectedSettingsRevision: settings.settingsRevision,
     learnAutomatically: true,
     referenceChatHistory: true,
-    synthesisEnabled: true,
     useMemoryFacts: true
   });
   if (configured.embeddingProviderModelId !== roles.qwen.id ||
     !configured.learnAutomatically || !configured.referenceChatHistory ||
-    !configured.synthesisEnabled || !configured.synthesisEnabledAt ||
     !configured.useMemoryFacts) {
     throw new Error("aiqsa_memory_live_memory_settings_invalid");
   }
