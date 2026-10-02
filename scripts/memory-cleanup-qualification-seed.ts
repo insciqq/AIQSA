@@ -43,8 +43,8 @@ export async function materializeMemoryCleanupSyntheticFixture(
       email: `${userId}@example.invalid`, role: "user", status: "active", createdAt: observedAt } });
     await provisionActiveUser(tx, { userId, groups: [{ groupId: group.id, role: "member" }] });
     await tx.userMemorySettings.update({ where: { userId }, data: {
-      useMemoryFacts: true, learnAutomatically: true, synthesisEnabled: true,
-      referenceChatHistory: false, synthesisEnabledAt: observedAt, createdAt: observedAt
+      useMemoryFacts: true, learnAutomatically: true, referenceChatHistory: false,
+      createdAt: observedAt
     } });
     const settings = await tx.userMemorySettings.findUniqueOrThrow({ where: { userId } });
     const scope = await tx.memoryScope.create({ data: { userId, scopeType: "GLOBAL_USER" } });

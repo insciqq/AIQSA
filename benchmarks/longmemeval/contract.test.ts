@@ -197,7 +197,6 @@ describe("LongMemEval adapter contract", () => {
         id: "official",
         label: "official-history-recall",
         officialComparable: true,
-        patternSynthesis: false,
         version: 2
       });
     const product = longMemEvalProfileManifest(
@@ -208,10 +207,11 @@ describe("LongMemEval adapter contract", () => {
       id: "product",
       label: "product-full-memory",
       officialComparable: false,
-      patternSynthesis: true,
       version: 2
     });
     expect(decodeLongMemEvalProfileManifest(product)).toEqual(product);
+    expect(decodeLongMemEvalProfileManifest({ ...product, patternSynthesis: true }))
+      .toEqual(product);
     expect(() => decodeLongMemEvalProfile("benchmark-boost"))
       .toThrow("longmemeval_profile_invalid");
     expect(() => decodeLongMemEvalProfileManifest({
@@ -235,33 +235,19 @@ describe("LongMemEval adapter contract", () => {
       .toThrow("longmemeval_system_model_invalid");
   });
 
-  it("requires a real applied Dream call while accepting a valid empty result", () => {
+  it("requires settled automatic learning with direct-user evidence", () => {
     const evidence = {
-      appliedSynthesisExecutions: 1,
       assistantEvidence: 0,
       automaticFactLearning: true,
       automaticFactVersions: 24,
       classifiedAutomaticFactVersions: 24,
-      classifiedPatternVersions: 0,
       directUserEvidence: 24,
-      eligibleSynthesisSources: 24,
       expectedSettlements: 46,
       extractionJobs: 46,
       factVersionRelations: 2,
-      lastSynthesisAtRecorded: true,
-      patternVersions: 0,
       relationJobs: 2,
-      retainedSynthesisPayloads: 0,
       successfulFactExtractionExecutions: 46,
-      successfulFactExtractionJobs: 46,
-      successfulSynthesisExecutions: 1,
-      successfulSynthesisJobs: 1,
-      synthesizedFromRelations: 0,
-      synthesisDue: false,
-      synthesisEnabled: true,
-      synthesisJobs: 1,
-      synthesisScheduleReason: "NO_NEW_ACTIVITY",
-      synthesisThreshold: 3
+      successfulFactExtractionJobs: 46
     };
     expect(longMemEvalProductMemoryPipelineComplete(evidence)).toBe(true);
     expect(longMemEvalProductMemoryPipelineComplete({
@@ -280,37 +266,7 @@ describe("LongMemEval adapter contract", () => {
     })).toBe(false);
     expect(longMemEvalProductMemoryPipelineComplete({
       ...evidence,
-      successfulSynthesisExecutions: 0
-    })).toBe(false);
-    expect(longMemEvalProductMemoryPipelineComplete({
-      ...evidence,
-      classifiedPatternVersions: 1,
-      patternVersions: 1,
-      synthesizedFromRelations: 2
-    })).toBe(false);
-    expect(longMemEvalProductMemoryPipelineComplete({
-      ...evidence,
-      classifiedPatternVersions: 1,
-      patternVersions: 1,
-      synthesizedFromRelations: 3
-    })).toBe(true);
-    expect(longMemEvalProductMemoryPipelineComplete({
-      ...evidence,
-      appliedSynthesisExecutions: 0,
-      eligibleSynthesisSources: 17,
-      lastSynthesisAtRecorded: false,
-      successfulSynthesisExecutions: 0,
-      successfulSynthesisJobs: 0,
-      synthesisJobs: 0
-    })).toBe(true);
-    expect(longMemEvalProductMemoryPipelineComplete({
-      ...evidence,
-      appliedSynthesisExecutions: 0,
-      lastSynthesisAtRecorded: false,
-      successfulSynthesisExecutions: 0,
-      successfulSynthesisJobs: 0,
-      synthesisDue: true,
-      synthesisJobs: 0
+      assistantEvidence: 1
     })).toBe(false);
   });
 

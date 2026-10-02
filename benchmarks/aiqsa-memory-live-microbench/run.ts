@@ -103,7 +103,6 @@ type SendOutcome = Readonly<{
   memoryItems: number;
   memoryOutcome: string;
   modelRunId: string;
-  patternItemUsed: boolean;
   retrievalAudit: unknown | null;
   retrievalAttemptId: string;
   totalTokens: number;
@@ -117,7 +116,7 @@ type JobAggregate = Readonly<{
   state: MemoryJobState;
 }>;
 
-type PatternAudit = Readonly<{
+type LearningAudit = Readonly<{
   directFacts: readonly Readonly<{
     evidence: readonly Readonly<{
       safeExcerpt: string;
@@ -127,23 +126,6 @@ type PatternAudit = Readonly<{
     id: string;
     modality: string;
     statement: string;
-  }>[];
-  patternIds: readonly string[];
-  patterns: readonly Readonly<{
-    id: string;
-    qualifies: boolean;
-    sourceChatCount: number;
-    sources: readonly Readonly<{
-      statement: string;
-      sourceChatKeys: readonly string[];
-      versionId: string;
-    }>[];
-    statement: string;
-  }>[];
-  synthesisExecutions: readonly Readonly<{
-    applied: boolean;
-    recoveryOutputCleared: boolean;
-    recoverySourceBindingsCleared: boolean;
   }>[];
 }>;
 
@@ -553,10 +535,10 @@ async function sendMessage(
   roles: ProviderRoles,
   model: CatalogModel,
   input: Readonly<{
+    auditRetrieval: boolean;
     chatId: string;
     expectedActiveLeafId: string | null;
     maxOutputTokens: number;
-    patternVersionIds: ReadonlySet<string>;
     previousRunId: string | null;
     text: string;
   }>
@@ -666,10 +648,8 @@ async function sendMessage(
     },
     where: { bindingId: memoryBinding.id, userId: identity.userId }
   });
-  const patternItemUsed = items.some(({ factVersionId }) =>
-    factVersionId !== null && input.patternVersionIds.has(factVersionId));
   let retrievalAudit: unknown | null = null;
-  if (input.patternVersionIds.size > 0) {
+  if (input.auditRetrieval) {
     const factVersionIds = items.flatMap(({ factVersionId }) =>
       factVersionId ? [factVersionId] : []);
     const [attempt, versions] = await Promise.all([
@@ -678,7 +658,7 @@ async function sendMessage(
         where: { id: memoryBinding.retrievalAttemptId }
       }),
       prisma.memoryFactVersion.findMany({
-        select: { id: true, modality: true, sourceMode: true, synthesisDepth: true },
+        select: { id: true, modality: true, sourceMode: true },
         where: { id: { in: factVersionIds }, userId: identity.userId }
       })
     ]);
@@ -695,11 +675,8 @@ async function sendMessage(
           finalScore: item.finalScore,
           itemType: item.itemType,
           modality: version?.modality ?? null,
-          pattern: item.factVersionId !== null &&
-            input.patternVersionIds.has(item.factVersionId),
           selectionReason: item.selectionReason,
-          sourceMode: version?.sourceMode ?? null,
-          synthesisDepth: version?.synthesisDepth ?? null
+          sourceMode: version?.sourceMode ?? null
         };
       })
     });
@@ -712,7 +689,6 @@ async function sendMessage(
     memoryItems: items.length,
     memoryOutcome: memoryBinding.outcome,
     modelRunId: modelRun.id,
-    patternItemUsed,
     retrievalAudit,
     retrievalAttemptId: memoryBinding.retrievalAttemptId,
     totalTokens: modelRun.totalTokens ?? 0
@@ -773,60 +749,6 @@ async function waitForSourcePipeline(
     await sleep(2_000);
   }
   throw new Error("aiqsa_memory_live_source_pipeline_timeout");
-}
-
-// Dream synthesis is retired; its benchmark phase fails closed until it is
-// removed from this scenario.
-async function admitDream(
-  _prisma: PrismaClient,
-  _userId: string
-): Promise<Readonly<{
-  clusterSizes: readonly number[];
-  eligibleSourceCount: number;
-  reason: string;
-  schedulerNow: string;
-}>> {
-  throw new Error("aiqsa_memory_live_dream_retired");
-}
-
-async function waitForDream(
-  prisma: PrismaClient,
-  userId: string,
-  timeoutMs: number
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let nextProgressAt = 0;
-  while (Date.now() < deadline) {
-    const [jobs, executions] = await Promise.all([
-      prisma.memoryJob.findMany({
-        select: { errorCode: true, kind: true, state: true },
-        where: { userId }
-      }),
-      prisma.memorySynthesisExecution.findMany({
-        select: { appliedAt: true },
-        where: { userId }
-      })
-    ]);
-    const synthesis = jobs.filter(({ kind }) => kind === "SYNTHESIZE_MEMORIES");
-    const active = jobs.filter(({ state }) => activeJobStates.has(state));
-    if (jobs.some(unsuccessfulJob)) {
-      throw new Error("aiqsa_memory_live_dream_job_failed");
-    }
-    if (synthesis.length === 1 && synthesis[0]?.state === "SUCCEEDED" &&
-      active.length === 0 && executions.length === 1 && executions[0]?.appliedAt) {
-      return;
-    }
-    if (Date.now() >= nextProgressAt) {
-      emit("dream_progress", {
-        activeJobs: active.length,
-        appliedExecutions: executions.filter(({ appliedAt }) => appliedAt !== null).length,
-        synthesisJobs: synthesis.length
-      });
-      nextProgressAt = Date.now() + 15_000;
-    }
-    await sleep(2_000);
-  }
-  throw new Error("aiqsa_memory_live_dream_timeout");
 }
 
 async function startHybridRebuild(
@@ -931,16 +853,11 @@ async function waitForHybridIndex(
   throw new Error("aiqsa_memory_live_hybrid_timeout");
 }
 
-function normalized(value: string): string {
-  return value.normalize("NFKC").toLocaleLowerCase("en")
-    .replaceAll(/\s+/gu, " ").trim();
-}
-
-async function loadPatternAudit(
+async function loadLearningAudit(
   prisma: PrismaClient,
   userId: string,
   sourceChatKeyById: ReadonlyMap<string, string>
-): Promise<PatternAudit> {
+): Promise<LearningAudit> {
   const facts = await prisma.memoryFact.findMany({
     orderBy: [{ category: "asc" }, { canonicalKey: "asc" }, { id: "asc" }],
     select: { currentVersionId: true },
@@ -948,7 +865,7 @@ async function loadPatternAudit(
   });
   const versionIds = facts.flatMap(({ currentVersionId }) =>
     currentVersionId ? [currentVersionId] : []);
-  const [versions, evidence, relations, executions] = await Promise.all([
+  const [versions, evidence] = await Promise.all([
     prisma.memoryFactVersion.findMany({
       orderBy: [{ modality: "asc" }, { displayText: "asc" }, { id: "asc" }],
       select: { displayText: true, id: true, modality: true },
@@ -963,28 +880,8 @@ async function loadPatternAudit(
         sourceRole: true
       },
       where: { factVersionId: { in: versionIds }, userId }
-    }),
-    prisma.memoryFactVersionRelation.findMany({
-      orderBy: [{ sourceVersionId: "asc" }, { targetVersionId: "asc" }],
-      select: { sourceVersionId: true, targetVersionId: true },
-      where: {
-        kind: "SYNTHESIZED_FROM",
-        sourceVersionId: { in: versionIds },
-        targetVersionId: { in: versionIds },
-        userId
-      }
-    }),
-    prisma.memorySynthesisExecution.findMany({
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: {
-        acceptedOutput: true,
-        appliedAt: true,
-        sourceBindings: true
-      },
-      where: { userId }
     })
   ]);
-  const versionById = new Map(versions.map((version) => [version.id, version]));
   const evidenceByVersionId = new Map<string, typeof evidence>();
   for (const item of evidence) {
     evidenceByVersionId.set(item.factVersionId, [
@@ -992,62 +889,19 @@ async function loadPatternAudit(
       item
     ]);
   }
-  const directFacts = versions.filter(({ modality }) => modality !== "PATTERN")
-    .map((version) => ({
-      evidence: (evidenceByVersionId.get(version.id) ?? []).map((item) => ({
-        safeExcerpt: item.safeExcerpt,
-        sourceChatKey: item.chatId
-          ? sourceChatKeyById.get(item.chatId) ?? null
-          : null,
-        sourceRole: item.sourceRole ?? "unknown"
-      })),
-      id: version.id,
-      modality: version.modality,
-      statement: version.displayText ?? ""
-    }));
-  const patternVersions = versions.filter(({ modality }) => modality === "PATTERN");
-  const patterns = patternVersions.map((pattern) => {
-    const sourceIds = [...new Set(relations
-      .filter(({ sourceVersionId }) => sourceVersionId === pattern.id)
-      .map(({ targetVersionId }) => targetVersionId))];
-    const sources = sourceIds.flatMap((versionId) => {
-      const version = versionById.get(versionId);
-      if (!version || version.modality === "PATTERN") return [];
-      return [{
-        sourceChatKeys: [...new Set((evidenceByVersionId.get(versionId) ?? [])
-          .flatMap(({ chatId }) => chatId
-            ? [sourceChatKeyById.get(chatId) ?? "unknown"]
-            : []))],
-        statement: version.displayText ?? "",
-        versionId
-      }];
-    });
-    const sourceChatCount = new Set(sources.flatMap(({ sourceChatKeys }) =>
-      sourceChatKeys.filter((key) => key !== "unknown"))).size;
-    const statement = normalized(pattern.displayText ?? "");
-    const timeCue = ["early", "morning", "before 7", "before seven", "6:"]
-      .some((candidate) => statement.includes(candidate));
-    return {
-      id: pattern.id,
-      qualifies: sources.length >= 3 && sourceChatCount >= 3 &&
-        statement.includes("market") && timeCue,
-      sourceChatCount,
-      sources,
-      statement: pattern.displayText ?? ""
-    };
-  });
-  return Object.freeze({
-    directFacts: Object.freeze(directFacts),
-    patternIds: Object.freeze(patterns
-      .filter(({ qualifies }) => qualifies)
-      .map(({ id }) => id)),
-    patterns: Object.freeze(patterns),
-    synthesisExecutions: Object.freeze(executions.map((execution) => ({
-      applied: execution.appliedAt !== null,
-      recoveryOutputCleared: execution.acceptedOutput === null,
-      recoverySourceBindingsCleared: execution.sourceBindings === null
-    })))
-  });
+  const directFacts = versions.map((version) => ({
+    evidence: (evidenceByVersionId.get(version.id) ?? []).map((item) => ({
+      safeExcerpt: item.safeExcerpt,
+      sourceChatKey: item.chatId
+        ? sourceChatKeyById.get(item.chatId) ?? null
+        : null,
+      sourceRole: item.sourceRole ?? "unknown"
+    })),
+    id: version.id,
+    modality: version.modality,
+    statement: version.displayText ?? ""
+  }));
+  return Object.freeze({ directFacts: Object.freeze(directFacts) });
 }
 
 async function activeDirectFactVersionIds(
@@ -1065,7 +919,6 @@ async function activeDirectFactVersionIds(
     select: { id: true },
     where: {
       id: { in: currentVersionIds },
-      modality: { not: "PATTERN" },
       state: "ACTIVE",
       systemTo: null,
       userId
@@ -1169,10 +1022,10 @@ async function runLiveScenario(
         total: AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT
       });
       const outcome = await sendMessage(prisma, baseUrl, identity, roles, model, {
+        auditRetrieval: false,
         chatId,
         expectedActiveLeafId: activeLeafId,
         maxOutputTokens: 256,
-        patternVersionIds: new Set(),
         previousRunId,
         text: message
       });
@@ -1202,7 +1055,7 @@ async function runLiveScenario(
       ) ?? "missing_degradation_code"}`
     );
   }
-  const learningAudit = await loadPatternAudit(
+  const learningAudit = await loadLearningAudit(
     prisma,
     identity.userId,
     sourceChatKeyById
@@ -1217,39 +1070,10 @@ async function runLiveScenario(
       warning: "Contains secret-screened synthetic Memory facts. Keep this ignored 0600 artifact local."
     })
   );
-  const schedule = await admitDream(prisma, identity.userId);
-  await waitForDream(prisma, identity.userId, 900_000);
-  const patternAudit = await loadPatternAudit(
-    prisma,
-    identity.userId,
-    sourceChatKeyById
-  );
-  if (patternAudit.patternIds.length < 1 ||
-    patternAudit.synthesisExecutions.length !== 1 ||
-    patternAudit.synthesisExecutions.some((execution) =>
-      !execution.applied || !execution.recoveryOutputCleared ||
-      !execution.recoverySourceBindingsCleared) ||
-    patternAudit.directFacts.some(({ evidence }) =>
-      evidence.some(({ sourceRole }) => sourceRole !== "user"))) {
-    throw new Error("aiqsa_memory_live_dream_quality_failed");
+  if (learningAudit.directFacts.some(({ evidence }) =>
+    evidence.some(({ sourceRole }) => sourceRole !== "user"))) {
+    throw new Error("aiqsa_memory_live_learning_quality_failed");
   }
-  emit("dream_complete", {
-    directFacts: patternAudit.directFacts.length,
-    patterns: patternAudit.patterns.length,
-    qualifiedPatterns: patternAudit.patternIds.length
-  });
-  await writeJsonAtomic(
-    resolve(outputDirectory, "dream-audit.json"),
-    redactedArtifact({
-      benchmark: "aiqsa-memory-live-microbench",
-      directFacts: patternAudit.directFacts,
-      patterns: patternAudit.patterns,
-      scenario: scenario.id,
-      synthesisExecutions: patternAudit.synthesisExecutions,
-      version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION,
-      warning: "Contains secret-screened synthetic Memory facts. Keep this ignored 0600 artifact local."
-    })
-  );
 
   const rebuildJobId = await startHybridRebuild(
     prisma,
@@ -1263,31 +1087,10 @@ async function runLiveScenario(
     roles.qwen.id,
     2_700_000
   );
-  const activeIndex = await prisma.userMemorySettings.findUniqueOrThrow({
-    select: { activeIndexGenerationId: true },
-    where: { userId: identity.userId }
-  });
-  const indexedPatternEntries = activeIndex.activeIndexGenerationId
-    ? await prisma.memorySearchEntry.findMany({
-        select: { embeddingState: true, factVersionId: true },
-        where: {
-          factVersionId: { in: [...patternAudit.patternIds] },
-          indexGenerationId: activeIndex.activeIndexGenerationId,
-          userId: identity.userId
-        }
-      })
-    : [];
-  const indexedPatternIds = new Set(indexedPatternEntries.flatMap(({ factVersionId }) =>
-    factVersionId ? [factVersionId] : []));
-  if (patternAudit.patternIds.some((id) => !indexedPatternIds.has(id)) ||
-    indexedPatternEntries.some(({ embeddingState }) => embeddingState !== "READY")) {
-    throw new Error("aiqsa_memory_live_pattern_index_incomplete");
-  }
   const directFactIdsBeforeRecall = await activeDirectFactVersionIds(
     prisma,
     identity.userId
   );
-  const patternVersionIds = new Set(patternAudit.patternIds);
   const recallResults: Array<Readonly<{
     answer: string;
     answerDigest: string;
@@ -1295,7 +1098,6 @@ async function runLiveScenario(
     id: LiveRecall["id"];
     memoryItems: number;
     memoryOutcome: string;
-    patternItemUsed: boolean;
     retrievalAudit: unknown;
     totalTokens: number;
   }>> = [];
@@ -1307,17 +1109,16 @@ async function runLiveScenario(
       `Memory recall ${recall.id}`
     );
     const outcome = await sendMessage(prisma, baseUrl, identity, roles, model, {
+      auditRetrieval: true,
       chatId,
       expectedActiveLeafId: null,
       maxOutputTokens: 768,
-      patternVersionIds,
       previousRunId: null,
       text: recall.prompt
     });
     const evaluation = evaluateLiveRecall(recall, outcome.answer);
     if (!evaluation.passed || outcome.memoryOutcome !== "USED" ||
-      outcome.memoryItems < 1 ||
-      (recall.requiresPatternItem && !outcome.patternItemUsed)) {
+      outcome.memoryItems < 1) {
       await writeJsonAtomic(
         resolve(outputDirectory, `recall-failure-${recall.id}.json`),
         redactedArtifact({
@@ -1327,10 +1128,8 @@ async function runLiveScenario(
           evaluation,
           memoryItems: outcome.memoryItems,
           memoryOutcome: outcome.memoryOutcome,
-          patternItemUsed: outcome.patternItemUsed,
           recall: recall.id,
           retrievalAudit: outcome.retrievalAudit,
-          requiresPatternItem: recall.requiresPatternItem,
           scenario: scenario.id,
           version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION,
           warning: "Contains a secret-screened synthetic answer. Keep this ignored 0600 artifact local."
@@ -1341,7 +1140,6 @@ async function runLiveScenario(
         matchedGroups: evaluation.matchedGroups,
         memoryItems: outcome.memoryItems,
         memoryOutcome: outcome.memoryOutcome,
-        patternItemUsed: outcome.patternItemUsed,
         recall: recall.id,
         requiredGroups: evaluation.requiredGroups
       });
@@ -1354,7 +1152,6 @@ async function runLiveScenario(
       id: recall.id,
       memoryItems: outcome.memoryItems,
       memoryOutcome: outcome.memoryOutcome,
-      patternItemUsed: outcome.patternItemUsed,
       retrievalAudit: outcome.retrievalAudit,
       totalTokens: outcome.totalTokens
     }));
@@ -1362,7 +1159,6 @@ async function runLiveScenario(
       matchedGroups: evaluation.matchedGroups,
       memoryItems: outcome.memoryItems,
       memoryOutcome: outcome.memoryOutcome,
-      patternItemUsed: outcome.patternItemUsed,
       recall: recall.id
     });
   }
@@ -1408,14 +1204,6 @@ async function runLiveScenario(
   const summary = {
     benchmark: "aiqsa-memory-live-microbench",
     completedAt: completedAt.toISOString(),
-    dream: {
-      clusterSizes: schedule.clusterSizes,
-      directFacts: patternAudit.directFacts.length,
-      eligibleSources: schedule.eligibleSourceCount,
-      patterns: patternAudit.patterns.length,
-      qualifiedPatterns: patternAudit.patternIds.length,
-      scheduleReason: schedule.reason
-    },
     flow: {
       chats: chatCount,
       recallSends: AIQSA_MEMORY_LIVE_RECALL_SEND_COUNT,
@@ -1423,10 +1211,7 @@ async function runLiveScenario(
       sourceSends: AIQSA_MEMORY_LIVE_SOURCE_SEND_COUNT,
       totalSends: expectedTotalSends
     },
-    hybrid: {
-      ...hybrid,
-      indexedPatterns: indexedPatternEntries.length
-    },
+    hybrid,
     jobs: finalJobs,
     models: {
       answer: { provider: "codex-lb", upstreamModelId: roles.system.upstreamModelId },
@@ -1446,7 +1231,6 @@ async function runLiveScenario(
       id: result.id,
       memoryItems: result.memoryItems,
       memoryOutcome: result.memoryOutcome,
-      patternItemUsed: result.patternItemUsed,
       totalTokens: result.totalTokens
     })),
     scenario: scenario.id,
@@ -1456,15 +1240,13 @@ async function runLiveScenario(
   };
   const audit = redactedArtifact({
     benchmark: "aiqsa-memory-live-microbench",
-    directFacts: patternAudit.directFacts,
-    patterns: patternAudit.patterns,
+    directFacts: learningAudit.directFacts,
     recalls: recallResults.map((result) => ({
       answer: result.answer,
       id: result.id,
       retrievalAudit: result.retrievalAudit
     })),
     scenario: scenario.id,
-    synthesisExecutions: patternAudit.synthesisExecutions,
     version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION,
     warning: "Contains secret-screened synthetic Memory facts and answers. Keep this ignored 0600 artifact local."
   });
@@ -1540,7 +1322,6 @@ async function writeFailureDiagnostic(
       degradationCode: diagnosticCode(binding.degradationCode),
       outcome: binding.outcome
     })),
-    synthesisSchedule: null,
     version: AIQSA_MEMORY_LIVE_MICROBENCH_VERSION
   });
   emit("failure_diagnostic_written", { artifact: "failure-diagnostic.json" });

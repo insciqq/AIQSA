@@ -29,7 +29,7 @@ if (process.env.AIQSA_MEMORY_BROWSER_PAID_SMOKE !== "DISPOSABLE") {
   throw new Error("memory_browser_paid_smoke_opt_in_required");
 }
 const scenario = process.env.AIQSA_MEMORY_BROWSER_PAID_SMOKE_SCENARIO?.trim().toUpperCase();
-if (scenario !== "DIRECT" && scenario !== "DREAM") {
+if (scenario !== "DIRECT") {
   throw new Error("memory_browser_paid_smoke_scenario_required");
 }
 const parsedBaseUrl = new URL(
@@ -84,8 +84,6 @@ const corePreference = "soft teal";
 const trackedChatIds = [];
 const trackedMemoryRefs = [];
 let currentStage = "bootstrap";
-const diagnosticDirectRecall = scenario === "DIRECT";
-const dreamOnlyOneShot = scenario === "DREAM";
 
 function emit(stage, details = {}) {
   process.stdout.write(`${JSON.stringify({ stage, ...details })}\n`);
@@ -313,7 +311,6 @@ async function directFactStats(db, userId, chatIds) {
     WHERE version."userId" = $1
       AND evidence."chatId" = ANY($2::text[])
       AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
-      AND version."modality" <> 'PATTERN'::"MemoryFactModality"
       AND version."observedAt" >= $3::timestamptz
   `, [userId, chatIds, runStartedAt.toISOString()]);
   const clusters = new Map();
@@ -350,227 +347,6 @@ async function extractionStats(db, userId, chatIds) {
     pending,
     succeeded: counts.SUCCEEDED ?? 0,
     terminal: counts.TERMINAL_FAILED ?? 0
-  };
-}
-
-async function patternStats(db, userId, chatIds) {
-  const result = await db.query(`
-    SELECT pattern."id", pattern."displayText",
-      pattern."safetyClassificationState"::text AS "safetyState",
-      COUNT(DISTINCT relation."targetVersionId")::integer AS "sourceCount",
-      BOOL_OR(entry."embeddingState" = 'READY'::"MemoryEmbeddingState") AS "embeddingReady"
-    FROM "MemoryFactVersion" AS pattern
-    INNER JOIN "MemoryFact" AS fact
-      ON fact."userId" = pattern."userId"
-     AND fact."id" = pattern."factId"
-     AND fact."currentVersionId" = pattern."id"
-     AND fact."state" = 'ACTIVE'::"MemoryFactState"
-    INNER JOIN "MemoryFactVersionRelation" AS relation
-      ON relation."userId" = pattern."userId"
-     AND relation."sourceVersionId" = pattern."id"
-     AND relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-    INNER JOIN "MemoryEvidence" AS evidence
-      ON evidence."userId" = relation."userId"
-     AND evidence."factVersionId" = relation."targetVersionId"
-     AND evidence."chatId" = ANY($2::text[])
-    LEFT JOIN "UserMemorySettings" AS settings
-      ON settings."userId" = pattern."userId"
-    LEFT JOIN "MemorySearchEntry" AS entry
-      ON entry."userId" = pattern."userId"
-     AND entry."indexGenerationId" = settings."activeIndexGenerationId"
-     AND entry."factVersionId" = pattern."id"
-    WHERE pattern."userId" = $1
-      AND pattern."state" = 'ACTIVE'::"MemoryFactVersionState"
-      AND pattern."modality" = 'PATTERN'::"MemoryFactModality"
-      AND pattern."createdAt" >= $3::timestamptz
-    GROUP BY pattern."id", pattern."displayText", pattern."safetyClassificationState"
-  `, [userId, chatIds, runStartedAt.toISOString()]);
-  return {
-    count: result.rowCount,
-    maxSources: Math.max(0, ...result.rows.map((row) => row.sourceCount)),
-    probeText: result.rows.find((row) =>
-      row.safetyState === "CLASSIFIED" && row.embeddingReady === true)?.displayText ?? null,
-    readyCount: result.rows.filter((row) =>
-      row.safetyState === "CLASSIFIED" && row.embeddingReady === true).length
-  };
-}
-
-async function synthesisJobStats(db, userId) {
-  const [result, patterns] = await Promise.all([
-    db.query(`
-      SELECT job."state"::text AS "state", job."errorCode"
-      FROM "MemoryJob" AS job
-      WHERE job."userId" = $1
-        AND job."kind" = 'SYNTHESIZE_MEMORIES'::"MemoryJobKind"
-        AND job."createdAt" >= $2::timestamptz
-      ORDER BY job."createdAt"
-    `, [userId, runStartedAt.toISOString()]),
-    db.query(`
-      SELECT COUNT(*)::integer AS "count"
-      FROM "MemoryFactVersion"
-      WHERE "userId" = $1
-        AND "modality" = 'PATTERN'::"MemoryFactModality"
-        AND "createdAt" >= $2::timestamptz
-    `, [userId, runStartedAt.toISOString()])
-  ]);
-  return {
-    count: result.rowCount,
-    createdPatterns: patterns.rows[0]?.count ?? 0,
-    states: result.rows.map((row) => row.state),
-    terminalCodes: result.rows
-      .filter((row) => row.state === "TERMINAL_FAILED")
-      .map((row) => row.errorCode ?? "memory_job_failed")
-  };
-}
-
-async function waitForMemoryQuiescence(db, userId, sourceChatId) {
-  let stableRevision = null;
-  let stableSince = 0;
-  return poll(async () => {
-    const [jobs, settings, facts, synthesis] = await Promise.all([
-      db.query(`
-        SELECT COUNT(*)::integer AS "active"
-        FROM "MemoryJob"
-        WHERE "userId" = $1
-          AND "createdAt" >= $2::timestamptz
-          AND "kind" <> 'SYNTHESIZE_MEMORIES'::"MemoryJobKind"
-          AND "state" IN (
-            'QUEUED'::"MemoryJobState",
-            'WAITING_FOR_CONFIGURATION'::"MemoryJobState",
-            'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState",
-            'CLAIMED'::"MemoryJobState",
-            'RETRYABLE_FAILED'::"MemoryJobState"
-          )
-      `, [userId, runStartedAt.toISOString()]),
-      db.query(`
-        SELECT "memoryRevision"
-        FROM "UserMemorySettings"
-        WHERE "userId" = $1
-      `, [userId]),
-      directFactStats(db, userId, [sourceChatId]),
-      synthesisJobStats(db, userId)
-    ]);
-    const active = jobs.rows[0]?.active ?? 0;
-    const revision = settings.rows[0]?.memoryRevision ?? null;
-    ensure(synthesis.count === 0, "dream_scheduler_fence_failed");
-    if (active === 0 && facts.directCount === 20 && facts.readyCount === 20 &&
-      revision === stableRevision) {
-      stableSince ||= Date.now();
-    } else {
-      stableRevision = revision;
-      stableSince = 0;
-    }
-    return {
-      active,
-      directFacts: facts.directCount,
-      readyFacts: facts.readyCount,
-      stableForMs: stableSince === 0 ? 0 : Date.now() - stableSince
-    };
-  }, (value) => value.stableForMs >= 15_000, {
-    code: "memory_quiescence_timeout",
-    intervalMs: 3_000,
-    timeoutMs: 600_000
-  });
-}
-
-async function memoryRunStats(db, userId, runId) {
-  const [result, attempt] = await Promise.all([db.query(`
-    SELECT COUNT(DISTINCT item."id")::integer AS "items",
-      COUNT(DISTINCT item."id") FILTER (
-        WHERE item."decayTouchedAt" IS NOT NULL
-      )::integer AS "decayTouched",
-      COUNT(DISTINCT item."id") FILTER (
-        WHERE version."modality" = 'PATTERN'::"MemoryFactModality"
-      )::integer AS "patternItems",
-      COUNT(DISTINCT item."id") FILTER (
-        WHERE version."modality" = 'PATTERN'::"MemoryFactModality"
-          AND item."decayTouchedAt" IS NOT NULL
-      )::integer AS "patternDecayTouched"
-    FROM "ModelRunMemoryBinding" AS binding
-    INNER JOIN "ModelRunMemoryItem" AS item
-      ON item."userId" = binding."userId"
-     AND item."bindingId" = binding."id"
-    INNER JOIN "MemoryFactVersion" AS version
-      ON version."userId" = item."userId"
-     AND version."id" = item."factVersionId"
-    WHERE binding."userId" = $1
-      AND binding."modelRunId" = $2
-  `, [userId, runId]), db.query(`
-    SELECT attempt."state"::text AS "state",
-      attempt."outcome"::text AS "outcome",
-      COALESCE(attempt."degradationCode", 'none') AS "degradationCode",
-      COALESCE(attempt."errorCode", 'none') AS "errorCode",
-      COALESCE(attempt."budgetSnapshot"->>'reason', 'none') AS "reason",
-      COALESCE((attempt."budgetSnapshot"->'plan'->>'includePatterns')::boolean, false)
-        AS "includePatterns",
-      COALESCE((attempt."budgetSnapshot"->>'candidateCount')::integer, 0)
-        AS "candidateCount",
-      COALESCE((attempt."budgetSnapshot"->>'relevanceCandidateCount')::integer, 0)
-        AS "relevanceCandidateCount",
-      COALESCE((attempt."budgetSnapshot"->>'relevanceAcceptedCount')::integer, 0)
-        AS "relevanceAcceptedCount",
-      COALESCE((attempt."budgetSnapshot"->>'relevanceRejoinedCount')::integer, 0)
-        AS "relevanceRejoinedCount",
-      COALESCE((attempt."budgetSnapshot"->>'laneCount')::integer, 0) AS "laneCount"
-    FROM "MemoryRetrievalAttempt" AS attempt
-    WHERE attempt."userId" = $1
-      AND attempt."modelRunId" = $2
-    ORDER BY attempt."attemptOrdinal" DESC
-    LIMIT 1
-  `, [userId, runId])]);
-  return {
-    ...(result.rows[0] ?? {
-      decayTouched: 0,
-      items: 0,
-      patternDecayTouched: 0,
-      patternItems: 0
-    }),
-    attempt: attempt.rows[0] ?? null
-  };
-}
-
-async function providerStats(db, userId, selectedModel) {
-  const utility = await db.query(`
-    SELECT binding."logicalRole", binding."state"::text AS "state",
-      model."modelId", connection."displayName"
-    FROM "MemoryExecutionBinding" AS binding
-    LEFT JOIN "ProviderModel" AS model ON model."id" = binding."providerModelId"
-    LEFT JOIN "ProviderConnection" AS connection ON connection."id" = binding."connectionId"
-    WHERE binding."userId" = $1
-      AND binding."createdAt" >= $2::timestamptz
-  `, [userId, runStartedAt.toISOString()]);
-  const roles = {};
-  let embeddingWrongDestination = 0;
-  let systemWrongDestination = 0;
-  for (const row of utility.rows) {
-    if (row.state === "SUCCEEDED") roles[row.logicalRole] = (roles[row.logicalRole] ?? 0) + 1;
-    const embedding = row.logicalRole === "MEMORY_DOCUMENT_EMBED" ||
-      row.logicalRole === "MEMORY_QUERY_EMBED";
-    if (embedding && row.state === "SUCCEEDED" && !(
-      typeof row.displayName === "string" && row.displayName.toLowerCase().includes("openrouter") &&
-      typeof row.modelId === "string" && row.modelId.includes("embedding")
-    )) embeddingWrongDestination += 1;
-    if (!embedding && row.state === "SUCCEEDED" && row.logicalRole.startsWith("MEMORY_") && !(
-      typeof row.displayName === "string" && row.displayName.toLowerCase().includes("codex-lb") &&
-      row.modelId === "gpt-5.6-luna"
-    )) systemWrongDestination += 1;
-  }
-  const answerRuns = await db.query(`
-    SELECT COUNT(*)::integer AS "count"
-    FROM "ModelRun" AS run
-    INNER JOIN "Chat" AS chat ON chat."id" = run."chatId" AND chat."userId" = run."userId"
-    WHERE run."userId" = $1
-      AND run."chatId" = ANY($2::text[])
-      AND run."status" = 'complete'::"ModelRunStatus"
-      AND chat."defaultProviderModelId" = $3
-  `, [userId, trackedChatIds, selectedModel.modelId]);
-  return {
-    answerRuns: answerRuns.rows[0]?.count ?? 0,
-    documentEmbeds: roles.MEMORY_DOCUMENT_EMBED ?? 0,
-    embeddingWrongDestination,
-    queryEmbeds: roles.MEMORY_QUERY_EMBED ?? 0,
-    synthesisCalls: roles.MEMORY_SYNTHESIZE ?? 0,
-    systemWrongDestination
   };
 }
 
@@ -736,7 +512,6 @@ const preferenceFixtures = Object.freeze([
     "one concrete improvement owner"
   ]
 ]);
-const INITIAL_PREFERENCE_BATCHES = diagnosticDirectRecall ? 1 : 4;
 const MAX_PREFERENCE_BATCHES = Math.ceil(preferenceFixtures.length / 4);
 
 function preferenceBatch(batch) {
@@ -793,7 +568,7 @@ async function waitForSourceExtraction(db, userId, sourceMessageId, ordinal) {
 }
 
 async function waitForDirectFacts(db, page, userId, sourceChatId, nextBatch) {
-  const requiredFacts = diagnosticDirectRecall ? 3 : 20;
+  const requiredFacts = 3;
   while (nextBatch.value <= MAX_PREFERENCE_BATCHES) {
     const [facts, jobs] = await Promise.all([
       directFactStats(db, userId, [sourceChatId]),
@@ -823,18 +598,6 @@ async function waitForDirectFacts(db, page, userId, sourceChatId, nextBatch) {
         timeoutMs: 600_000
       });
       return { facts: readyFacts, jobs };
-    }
-    if (!diagnosticDirectRecall && nextBatch.value === INITIAL_PREFERENCE_BATCHES) {
-      await poll(
-        () => directFactStats(db, userId, [sourceChatId]),
-        (current) => current.directCount >= 16 && current.readyCount >= 16,
-        {
-          code: "automatic_learning_staging_readiness_timeout",
-          intervalMs: 3_000,
-          timeoutMs: 600_000
-        }
-      );
-      emit("automatic-learning-staged", { directFacts: 16, readyFacts: 16 });
     }
     if (nextBatch.value >= MAX_PREFERENCE_BATCHES) break;
     currentStage = "automatic-learning-extra-batch";
@@ -1120,14 +883,11 @@ async function main() {
     explicitForgotten: 0,
     permanent: 0
   };
-  let restoreLastSynthesisAt;
-  let smokeUserId = null;
   try {
     await db.connect();
     const userId = await authenticate(page);
-    smokeUserId = userId;
     const target = await db.query(`
-      SELECT active_admin."id", settings."lastSynthesisAt"
+      SELECT active_admin."id"
       FROM "User" AS active_admin
       INNER JOIN "UserMemorySettings" AS settings
         ON settings."userId" = active_admin."id"
@@ -1138,7 +898,6 @@ async function main() {
       target.rowCount === 1 && target.rows[0]?.id === userId,
       "memory_browser_paid_smoke_admin_target_ambiguous"
     );
-    restoreLastSynthesisAt = target.rows[0].lastSynthesisAt;
     const existingMemory = await db.query(`
       SELECT COUNT(*)::integer AS "count"
       FROM "MemoryFactVersion"
@@ -1169,30 +928,18 @@ async function main() {
           decayEnabled: true,
           learnAutomatically: true,
           referenceChatHistory: true,
-          synthesisEnabled: true,
           useMemoryFacts: true
         }
       }),
       "memory_settings_read_failed"
     );
     ensure(settings?.status === "ON", "memory_status_not_on");
-    ensure(settings?.settings?.synthesisEnabled === true, "synthesis_not_enabled");
     ensure(settings?.settings?.decayEnabled === true, "decay_not_enabled");
-    emit("settings-proof", { decay: true, status: "ON", synthesis: true });
-    if (dreamOnlyOneShot) {
-      await db.query(`
-        UPDATE "UserMemorySettings"
-        SET "lastSynthesisAt" = CURRENT_TIMESTAMP
-        WHERE "userId" = $1
-      `, [userId]);
-      emit("dream-scheduler-fence", { held: true });
-    }
+    emit("settings-proof", { decay: true, status: "ON" });
 
-    let selectedModel = null;
-    if (!dreamOnlyOneShot) {
-      currentStage = "explicit-save";
-      await newChat(page);
-      selectedModel = await configureLuna(page);
+    currentStage = "explicit-save";
+    await newChat(page);
+    await configureLuna(page);
     const explicitPrompts = [
       `Please remember this stable preference for future chats: in the ${marker} workspace, I prefer ${corePreference} dashboard accents.`,
       `Save this as Personal Memory: my stable dashboard accent preference in the ${marker} workspace is ${corePreference}.`
@@ -1230,34 +977,20 @@ async function main() {
         receiptVisible: false
       });
     }
-      ensure(savedVisible, "explicit_save_receipt_missing");
-      emit("explicit-save", { attempts: explicitAttempts, committed: true });
-    }
+    ensure(savedVisible, "explicit_save_receipt_missing");
+    emit("explicit-save", { attempts: explicitAttempts, committed: true });
 
     currentStage = "automatic-learning";
     await newChat(page);
-    const automaticModel = await configureLuna(page);
-    selectedModel ??= automaticModel;
+    await configureLuna(page);
     const automatic = await sendMessage(page, preferenceBatch(0));
     await waitForSourceExtraction(db, userId, automatic.userMessageId, 1);
-    const nextBatch = { value: 1 };
-    const plannedBatches = dreamOnlyOneShot ? 5 : INITIAL_PREFERENCE_BATCHES;
-    while (nextBatch.value < plannedBatches) {
-      currentStage = `automatic-learning-batch-${nextBatch.value + 1}`;
-      const batch = await sendMessage(page, preferenceBatch(nextBatch.value));
-      await waitForSourceExtraction(db, userId, batch.userMessageId, nextBatch.value + 1);
-      nextBatch.value += 1;
-      emit("automatic-learning-batches", {
-        completed: nextBatch.value,
-        planned: plannedBatches
-      });
-    }
     const learned = await waitForDirectFacts(
       db,
       page,
       userId,
       automatic.chatId,
-      nextBatch
+      { value: 1 }
     );
     emit("automatic-learning", {
       directFacts: learned.facts.directCount,
@@ -1266,49 +999,35 @@ async function main() {
       terminalExtractions: learned.jobs.terminal
     });
 
-    if (dreamOnlyOneShot) {
-      const settled = await waitForMemoryQuiescence(db, userId, automatic.chatId);
-      emit("memory-quiescence", settled);
-      await db.query(`
-        UPDATE "UserMemorySettings"
-        SET "lastSynthesisAt" = NULL
-        WHERE "userId" = $1
-      `, [userId]);
-      emit("dream-scheduler-fence", { held: false });
+    currentStage = "direct-recall-saved";
+    await newChat(page);
+    await configureLuna(page);
+    const savedRecall = await sendMessage(
+      page,
+      "What dashboard accent did I explicitly ask you to remember? Use Personal Memory if relevant."
+    );
+    const savedText = (await savedRecall.article.textContent()) ?? "";
+    ensure(savedText.trim().length > 0, "direct_recall_saved_answer_missing");
+    let savedProof;
+    try {
+      savedProof = await waitForRecallSources(page, savedRecall, "SAVED_MEMORY");
+    } catch (error) {
+      emit("saved-recall-structure", await learnedRecallDiagnostic(
+        db,
+        userId,
+        savedRecall.chatId,
+        savedRecall.runId
+      ));
+      throw error;
     }
+    ensure(savedProof.sourceText.includes(corePreference), "direct_recall_explicit_source_missing");
+    emit("direct-recall-saved", {
+      apiSources: savedProof.apiCount,
+      answerVisible: true,
+      savedSources: savedProof.savedCount,
+      sourceCards: savedProof.uiCount
+    });
 
-    if (!dreamOnlyOneShot) {
-      currentStage = "direct-recall-saved";
-      await newChat(page);
-      await configureLuna(page);
-      const savedRecall = await sendMessage(
-        page,
-        "What dashboard accent did I explicitly ask you to remember? Use Personal Memory if relevant."
-      );
-      const savedText = (await savedRecall.article.textContent()) ?? "";
-      ensure(savedText.trim().length > 0, "direct_recall_saved_answer_missing");
-      let savedProof;
-      try {
-        savedProof = await waitForRecallSources(page, savedRecall, "SAVED_MEMORY");
-      } catch (error) {
-        emit("saved-recall-structure", await learnedRecallDiagnostic(
-          db,
-          userId,
-          savedRecall.chatId,
-          savedRecall.runId
-        ));
-        throw error;
-      }
-      ensure(savedProof.sourceText.includes(corePreference), "direct_recall_explicit_source_missing");
-      emit("direct-recall-saved", {
-        apiSources: savedProof.apiCount,
-        answerVisible: true,
-        savedSources: savedProof.savedCount,
-        sourceCards: savedProof.uiCount
-      });
-    }
-
-    if (!dreamOnlyOneShot) {
     currentStage = "direct-recall-learned";
     await newChat(page);
     await configureLuna(page);
@@ -1340,127 +1059,6 @@ async function main() {
       learnedSources: learnedProof.learnedCount,
       sourceCards: learnedProof.uiCount
     });
-    }
-    if (diagnosticDirectRecall) {
-      currentStage = "cleanup";
-      cleanupReport = await cleanup(page);
-      ensure(cleanupReport.explicitForgetFailed === 0, "cleanup_explicit_memory_failed");
-      ensure(
-        cleanupReport.explicitForgotten === trackedMemoryRefs.length,
-        "cleanup_explicit_memory_incomplete"
-      );
-      emit("cleanup", cleanupReport);
-      emit("passed", { diagnostic: "direct-recall", paidProviders: true });
-      return;
-    }
-
-    currentStage = "dream-synthesis";
-    let lastDreamNotice = 0;
-    const dream = await poll(async () => {
-      const [patterns, jobs] = await Promise.all([
-        patternStats(db, userId, [automatic.chatId]),
-        synthesisJobStats(db, userId)
-      ]);
-      if (jobs.terminalCodes.length > 0) fail(`dream_terminal_${jobs.terminalCodes[0]}`);
-      if (jobs.count > 1) fail("dream_job_count_invalid");
-      if (Date.now() - lastDreamNotice > 60_000) {
-        emit("dream-synthesis", {
-          jobs: jobs.count,
-          patterns: patterns.count,
-          readyPatterns: patterns.readyCount
-        });
-        lastDreamNotice = Date.now();
-      }
-      return { jobs, patterns };
-    }, (value) => value.patterns.readyCount >= 1 || (
-      value.jobs.count === 1 && value.jobs.states[0] === "SUCCEEDED" &&
-      value.jobs.createdPatterns === 0
-    ), {
-      code: "dream_synthesis_timeout",
-      intervalMs: 5_000,
-      timeoutMs: 900_000
-    });
-    emit("dream-synthesis-ready", {
-      outcome: dream.patterns.readyCount >= 1 ? "PATTERN_READY" : "NO_PATTERN",
-      patterns: dream.patterns.count,
-      sourceRelations: dream.patterns.maxSources
-    });
-
-    if (dream.patterns.readyCount >= 1) {
-      ensure(
-        typeof dream.patterns.probeText === "string" && dream.patterns.probeText.length > 0,
-        "pattern_probe_text_missing"
-      );
-      currentStage = "dream-targeted-recall";
-      await newChat(page);
-      await configureLuna(page);
-      const patternRecall = await sendMessage(
-        page,
-        `Which recurring Personal Memory pattern matches this exact statement: ${dream.patterns.probeText}`
-      );
-      const patternSourceCards = await patternRecall.article
-        .getByTestId("memory-source-card").count();
-      if (patternSourceCards < 1) {
-        emit("pattern-recall-diagnostic", await memoryRunStats(
-          db,
-          userId,
-          patternRecall.runId
-        ));
-        fail("pattern_recall_source_card_missing");
-      }
-      const usedPattern = await poll(
-        () => memoryRunStats(db, userId, patternRecall.runId),
-        (value) => value.patternItems >= 1 && value.patternDecayTouched >= 1,
-        { code: "pattern_or_decay_not_used", intervalMs: 2_000, timeoutMs: 60_000 }
-      );
-      emit("dream-targeted-recall", {
-        decayTouched: usedPattern.patternDecayTouched,
-        patternItems: usedPattern.patternItems,
-        sourceCards: await patternRecall.article.getByTestId("memory-source-card").count()
-      });
-    }
-
-    if (dreamOnlyOneShot) {
-      currentStage = "direct-recall-learned";
-      await newChat(page);
-      await configureLuna(page);
-      const learnedRecall = await sendMessage(
-        page,
-        `In the ${marker} workspace, what is my stable format preference for response length? Use Personal Memory if relevant.`
-      );
-      const learnedProof = await waitForRecallSources(page, learnedRecall, "LEARNED_MEMORY");
-      ensure(
-        learnedProof.sourceText.includes(preferenceFixtures[0][1]),
-        "direct_recall_automatic_source_missing"
-      );
-      const learnedUse = await poll(
-        () => memoryRunStats(db, userId, learnedRecall.runId),
-        (value) => value.items >= 1 && value.decayTouched >= 1,
-        { code: "learned_memory_decay_not_used", intervalMs: 2_000, timeoutMs: 60_000 }
-      );
-      emit("direct-recall-learned", {
-        answerVisible: true,
-        apiSources: learnedProof.apiCount,
-        decayTouched: learnedUse.decayTouched,
-        learnedSources: learnedProof.learnedCount,
-        sourceCards: learnedProof.uiCount
-      });
-    }
-
-    currentStage = "provider-receipts";
-    const providers = await providerStats(db, userId, selectedModel);
-    ensure(providers.answerRuns >= trackedChatIds.length - 1, "luna_answer_runs_missing");
-    ensure(providers.documentEmbeds >= 1, "openrouter_document_embedding_missing");
-    ensure(providers.queryEmbeds >= 1, "openrouter_query_embedding_missing");
-    ensure(providers.synthesisCalls >= 1, "luna_synthesis_call_missing");
-    ensure(providers.embeddingWrongDestination === 0, "embedding_destination_mismatch");
-    ensure(providers.systemWrongDestination === 0, "system_model_destination_mismatch");
-    emit("provider-receipts", {
-      answerRuns: providers.answerRuns,
-      documentEmbeds: providers.documentEmbeds,
-      queryEmbeds: providers.queryEmbeds,
-      synthesisCalls: providers.synthesisCalls
-    });
 
     currentStage = "cleanup";
     cleanupReport = await cleanup(page);
@@ -1470,25 +1068,12 @@ async function main() {
       "cleanup_explicit_memory_incomplete"
     );
     emit("cleanup", cleanupReport);
-    emit("passed", {
-      browser: "chromium",
-      paidProviders: true,
-      userVisibleRecall: true,
-      dreaming: true,
-      decay: true
-    });
+    emit("passed", { diagnostic: "direct-recall", paidProviders: true });
   } finally {
     if (currentStage !== "cleanup" &&
       (trackedChatIds.length > 0 || trackedMemoryRefs.length > 0)) {
       cleanupReport = await cleanup(page).catch(() => cleanupReport);
       emit("cleanup-after-failure", cleanupReport);
-    }
-    if (smokeUserId && restoreLastSynthesisAt !== undefined) {
-      await db.query(`
-        UPDATE "UserMemorySettings"
-        SET "lastSynthesisAt" = $2::timestamptz
-        WHERE "userId" = $1
-      `, [smokeUserId, restoreLastSynthesisAt]).catch(() => undefined);
     }
     await db.end().catch(() => undefined);
     await context.close().catch(() => undefined);

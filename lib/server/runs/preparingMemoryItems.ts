@@ -14,7 +14,7 @@ import {
   memoryPersonalEvidenceRowPredicate
 } from "../memory/persistence/eligibility";
 import { memoryReusableFactAuthorityPredicate } from
-  "../memory/synthesis/eligibility";
+  "../memory/persistence/reusableFactAuthority";
 import {
   memoryChunkConversationFeedbackPredicate,
   memoryFactConversationFeedbackPredicate,
