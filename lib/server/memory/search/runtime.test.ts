@@ -8,7 +8,7 @@ vi.mock("../persistence/transaction", () => ({ withLockedMemoryTransaction: (_cl
 vi.mock("./retrieval", () => ({ createMemorySearchRetrieval: () => vi.fn() }));
 vi.mock("../../runs/preparingMemoryItems", () => ({ resolvePreparingMemoryItem: vi.fn(), samePreparingMemoryItemSnapshot: vi.fn(() => true) }));
 import { createPrismaMemorySearchService } from "./runtime";
-import { MemoryReadBudgetError } from "../retrieval/readBudget";
+import { MEMORY_READ_BUDGET_ERROR_CODES, MemoryReadBudgetError } from "../retrieval/readBudget";
 import { resolvePreparingMemoryItem } from "../../runs/preparingMemoryItems";
 
 function fixture() {
@@ -105,6 +105,24 @@ describe("native Memory search execution", () => {
     await other.service.execute(other.call, other.context);
     expect(other.receipts[0]).toMatchObject({ errorCode: "memory_search_retrieval_failed" });
     expect(JSON.stringify(other.receipts)).not.toContain("private provider payload");
+  });
+  it.each(MEMORY_READ_BUDGET_ERROR_CODES)("keeps the distinct read-budget cause %s on the receipt", async (code) => {
+    const f = fixture();
+    f.retrieve.mockRejectedValueOnce(new MemoryReadBudgetError(code));
+    expect(await f.service.execute(f.call, f.context)).toMatchObject({ status: "error" });
+    expect(f.receipts[0]).toMatchObject({ state: "ERROR", errorCode: code });
+  });
+  it("classifies raw pool acquisition and expired transaction failures without their text", async () => {
+    for (const [message, code] of [
+      ["Transaction API error: Unable to start a transaction in the given time.", "memory_read_connection_timeout"],
+      ["Transaction API error: Transaction already closed.", "memory_read_transaction_expired"]
+    ] as const) {
+      const f = fixture();
+      f.retrieve.mockRejectedValueOnce(Object.assign(new Error(message), { code: "P2028" }));
+      await f.service.execute(f.call, f.context);
+      expect(f.receipts[0]).toMatchObject({ errorCode: code });
+      expect(JSON.stringify(f.receipts)).not.toContain("Transaction API");
+    }
   });
   it("rejects an index replacement during search with a distinct private receipt reason", async () => {
     const f = fixture();
