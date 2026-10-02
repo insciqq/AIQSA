@@ -166,12 +166,13 @@ describe("Prisma cross-turn tool history", () => {
 
     // A send after the regenerated answer: every attempt of the first message, readers counted.
     expect(await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: regenerated.answer.id, userId: f.initiatorId })).toEqual({
-      version: 1, turns: [{ turnMessageId: regenerated.answer.id, callRefs: [c1, c2, c3].map(ref),
+      version: 1, turns: [{ turnMessageId: regenerated.answer.id, userMessageId: first.id, callRefs: [c1, c2, c3].map(ref),
         digest: toolHistoryDigest([c1, c2, c3]), readerCalls: 2 }] });
     // A regeneration of the second message lists its earlier attempt under that message.
     const regeneration = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: second.id, userId: f.initiatorId });
     expect(regeneration.turns.map(turn => turn.turnMessageId)).toEqual([regenerated.answer.id, second.id]);
-    expect(regeneration.turns[1]).toEqual({ turnMessageId: second.id, callRefs: [ref(c5)], digest: toolHistoryDigest([c5]) });
+    expect(regeneration.turns[1]).toEqual({ turnMessageId: second.id, userMessageId: second.id, callRefs: [ref(c5)],
+      digest: toolHistoryDigest([c5]) });
     // Other users and drafts freeze nothing.
     expect(await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: regenerated.answer.id, userId: f.strangerId }))
       .toEqual({ version: 1, turns: [] });
@@ -468,6 +469,31 @@ describe("admission listing bounds", () => {
     const whole = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: leaf, userId: f.initiatorId });
     expect(listed(whole)).toEqual(made.map(ref));
     expect(whole.omittedCalls).toBeUndefined();
+  });
+
+  it("never counts calls of runs admitted before the history contract as omitted", async () => {
+    const f = await fixture();
+    const made: Array<Readonly<{ id: string }>> = [];
+    let leaf: string | null = null;
+    // Two turns answered before the contract, then three under it; two calls each.
+    for (let turn = 0; turn < 5; turn += 1) {
+      const answered = await f.answer(await f.question(leaf), { eligible: turn >= 2 });
+      for (let index = 0; index < 2; index += 1) {
+        const created = await f.call(answered, { round: 1, ordinal: index, item: turn * 10 + index });
+        if (turn >= 2) made.push(created);
+      }
+      leaf = answered.answer.id;
+    }
+    const load = (bounds: Parameters<typeof createPrismaToolHistoryOperations>[1]) =>
+      createPrismaToolHistoryOperations(prisma, bounds).loadToolHistory({ chatId: f.chat.id, leafMessageId: leaf, userId: f.initiatorId });
+    // Beyond the scan bound only the eligible runs' calls are counted, unread.
+    const byScan = await load({ scannedRuns: 1 });
+    expect(byScan.turns.flatMap(turn => turn.callRefs)).toEqual(made.slice(-2).map(ref));
+    expect(byScan.omittedCalls).toBe(4);
+    // A scan that reaches them lists every eligible call and counts nothing older.
+    const byTurns = await load({ turns: 3, scanBatchRuns: 4 });
+    expect(byTurns.turns.flatMap(turn => turn.callRefs)).toEqual(made.map(ref));
+    expect(byTurns.omittedCalls).toBeUndefined();
   });
 });
 

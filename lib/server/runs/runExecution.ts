@@ -792,26 +792,25 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       // What never changes between this run's requests (accepted runs'
       // classification); authority is read again for every request.
       const toolHistoryCache: ToolHistoryCache = new Map();
-      /** The first request's projection, which its consumer reuses once
-       * instead of reading the same history twice in a row. */
-      let freshToolHistory: ToolHistoryProjection | null = null;
       /** This request's tool-history records of the accepted history, rebuilt
-       * with the reader's current authority; null without one. A failed or
-       * slow read never fails the run: the records then say the details are
-       * temporarily unavailable. */
+       * with the reader's current authority for every request (never reused
+       * across awaited work); null without one. A failed or slow read, or an
+       * admission that could not read the history, never fails the run: the
+       * records then say the details are unavailable. */
       async function runToolHistoryProjection(): Promise<ToolHistoryProjection | null> {
         const history = normalizedRequest.toolHistory;
         const project = input.repository.projectToolHistory;
-        if (!history?.turns.length || !project) return null;
         const readers = toolHistoryReaders(normalizedRequest);
+        const currentUserMessageId = normalizedRequest.context?.messages.at(-1)?.id ?? null;
+        if (history?.unavailable) return unavailableToolHistoryProjection({ readers, toolHistory: history, currentUserMessageId });
+        if (!history?.turns.length || !project) return null;
         try {
           return await project({ actor: { runId, userId: input.userId }, readers, toolHistory: history, cache: toolHistoryCache });
         } catch (error) {
           signal.throwIfAborted();
           logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
             code: "tool_history_unavailable", prisma_code: runDatabaseFailureCode(error), run_id: runId });
-          return unavailableToolHistoryProjection({ readers, toolHistory: history,
-            currentUserMessageId: normalizedRequest.context?.messages.at(-1)?.id ?? null });
+          return unavailableToolHistoryProjection({ readers, toolHistory: history, currentUserMessageId });
         }
       }
       const toolCallReader: ToolCallReader | undefined = input.repository.readToolCall
@@ -1848,8 +1847,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         // a record covered by notes and released never returns.
         let request = unprojected;
         if (requestHasToolHistory(request)) {
-          const projection = freshToolHistory ?? await runToolHistoryProjection();
-          freshToolHistory = null;
+          const projection = await runToolHistoryProjection();
           if (projection) request = refreshToolHistory(request, projection);
         }
         request = { ...request, toolCallRefs: [...runToolCallRefs.values()] };
@@ -3359,7 +3357,6 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const unprojectedRequest = input.images
           ? await input.images.withConversationPixels(input.prepared.providerRequest, input.userId, signal) : input.prepared.providerRequest;
         const historyProjection = await runToolHistoryProjection();
-        freshToolHistory = historyProjection;
         const preparedProviderRequest = await requestWithAutomaticKnowledgeEvidence(historyProjection
           ? insertToolHistory(unprojectedRequest, historyProjection) : unprojectedRequest);
         const providerRequest = preparedProviderRequest.request;

@@ -34,7 +34,8 @@ import {
   unitCoverageRef
 } from "./contextCompactionPlanner";
 import { contextSummarySource } from "./contextCompactionSummarizer";
-import { observationWholeResultTokens } from "./runContextBudget";
+import { observationWholeResultTokens, providerRequestTokenEstimate } from "./runContextBudget";
+import { insertToolHistory, renderToolHistoryBlock, toolHistoryMessage } from "./toolHistory";
 
 const descriptor = (seed: string, source: "mcp" | "workspace" | "search" | "skill" = "mcp") => ({
   byteSize: 20_000,
@@ -895,29 +896,59 @@ describe("call_ref provenance and the current turn's tool history", () => {
     expect(history.uncovered.map((message) => message.id)).toEqual(["tch1_answer-1", "answer-1"]);
   });
 
-  it("fits that record into the room the irreducible request leaves instead of refusing it", async () => {
-    const { applyProviderRequestContextBudget } = await import("./runContextBudget");
-    const { insertToolHistory } = await import("./toolHistory");
+  describe("the record of earlier attempts under an irreducible overflow", () => {
+    const bridge = openAIResponsesToolBridge;
     const current: ProviderConversationMessage = { content: { blocks: [{ text: "current", type: "text" }] }, id: "current", role: "user" };
-    const entries = Array.from({ length: 40 }, (_, index) => {
+    const entry = (index: number, essential: boolean) => {
       const ref = `tcr1_${String(index).padStart(32, "0")}`;
-      return { ref, details: true, compact: `- [${ref}] write ${index}: executed.`,
-        full: `- [${ref}] write ${index}: executed. Arguments: ${JSON.stringify({ body: "w".repeat(300) })}.` };
+      const outcome = essential ? "executed; the tool reported success" : "not executed: refused before dispatch";
+      return { ref, details: essential, essential, compact: `- [${ref}] write ${index}: ${outcome}.`,
+        full: `- [${ref}] write ${index}: ${outcome}. Arguments: ${JSON.stringify({ body: "w".repeat(240) })}.` };
+    };
+    // Six executed writes and four refused calls of earlier attempts.
+    const entries = Array.from({ length: 10 }, (_, index) => entry(index, index % 5 < 3));
+    const essential = entries.filter((value) => value.essential);
+    const settled = [1, 2].map((index) => result(`newest-${index}`, `newest-${index}`, "mcp", 6_000));
+    const withRecord = (masking: boolean) => {
+      const messages = [...settled.map((value) => call(value.callId)), ...settled.map((value) => bridge.appendToolResult(undefined, value))];
+      const base = { ...request(messages), ...(masking ? {} : { tools: request([]).tools!.filter((tool) => tool.name !== "read_tool_result") }),
+        context: { messages: [current], mode: "branch_path" as const },
+        contextCompactionPolicy: conversationContextPolicy({ leafMessageId: null, messages: [current] }) };
+      return insertToolHistory(base, { blocks: [{ turnMessageId: "current", userMessageId: "current",
+        header: "[earlier attempts of the next message]", footer: null, entries }] });
+    };
+    const recordOf = (value: ProviderRunRequest) => value.context!.messages.find((message) => message.id === "tch1_current")!;
+    const linesOf = (value: ProviderRunRequest) => recordOf(value).content.blocks.map((block) => (block as { text: string }).text);
+    /** The tokens the record can release: down to the compact line of every executed call. */
+    const releasable = (value: ProviderRunRequest) => {
+      const estimate = contextTokenEstimator(value);
+      return estimate(recordOf(value).content) - estimate(toolHistoryMessage(recordOf(value).toolHistory!.block, 0,
+        { keepEssential: true, nameOmittedRefs: true }).content);
+    };
+    const plannedWith = (input: ProviderRunRequest, budgetTokens: number) => planContextCompaction({
+      assembledTokens: providerRequestTokenEstimate(input, bridge), bridge, budgetTokens,
+      observations: contextObservationsFromResults(settled), request: input });
+
+    it("first turns the newest results into references, keeping the record whole", () => {
+      const input = withRecord(true);
+      // An excess either reduction alone could release: the lossless one is taken.
+      const excess = 100;
+      expect(releasable(input)).toBeGreaterThan(excess);
+      const planned = plannedWith(input, providerRequestTokenEstimate(input, bridge) - excess);
+      expect(planned.measurement.outcome).not.toBe("irreducible_overflow");
+      expect(planned.measurement.maskedObservations).toBeGreaterThan(0);
+      expect(recordOf(planned.request).content).toEqual(recordOf(input).content);
     });
-    const base = { ...request([]), tools: [], providerToolMessages: [],
-      modelCapabilities: { ...request([]).modelCapabilities, contextWindow: 3_000, defaultMaxOutputTokens: 256 },
-      context: { messages: [current], mode: "branch_path" as const },
-      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: null, messages: [current] }) };
-    const withRecord = insertToolHistory(base, { blocks: [{ turnMessageId: "current", userMessageId: "current",
-      header: "[earlier attempts of the next message]", footer: null, entries }] });
-    const result = applyProviderRequestContextBudget({ bridge: openAIResponsesToolBridge, request: withRecord });
-    expect(result.ok).toBe(true);
-    const record = result.ok ? result.request.context!.messages.find((message) => message.id === "tch1_current") : undefined;
-    const text = JSON.stringify(record?.content);
-    // Smaller than its full form, it still states what the earlier attempts did.
-    expect(text.length).toBeLessThan(JSON.stringify(withRecord.context!.messages[0]!.content).length);
-    expect(text).toContain("[earlier attempts of the next message]");
-    expect(text).toContain("write 39: executed.");
-    expect(result.ok && result.request.context!.messages.at(-1)!.id).toBe("current");
+
+    it("then renders the record smaller, never below the compact line of every executed call", () => {
+      const input = withRecord(false);
+      const total = providerRequestTokenEstimate(input, bridge);
+      const fitted = plannedWith(input, total - releasable(input) + 10);
+      expect(fitted.measurement.outcome).not.toBe("irreducible_overflow");
+      expect(linesOf(fitted.request)).toEqual(expect.arrayContaining(essential.map((value) => value.compact)));
+      expect(linesOf(fitted.request)[1]).toMatch(/^- \d calls? of this turn that (was|were) not executed (is|are) not listed here/u);
+      // Below that floor the request is refused rather than hide an executed call.
+      expect(plannedWith(input, total - releasable(input) - 50).measurement.outcome).toBe("irreducible_overflow");
+    });
   });
 });

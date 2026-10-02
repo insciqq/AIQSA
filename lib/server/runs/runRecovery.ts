@@ -8,7 +8,7 @@ import { executeReadToolCall, readToolCallReceipt, readToolCallTool, type ToolCa
 import { insertToolHistory, refreshToolHistory, requestHasToolHistory, type ToolHistoryProjection } from "./toolHistory";
 import { READ_TOOL_CALL_NAME, toolCallRefEntry, type ToolCallRefEntry, type ToolHistoryCache } from "./toolHistoryContract";
 import { toolHistoryReaders, unavailableToolHistoryProjection } from "./toolHistoryRecords";
-import { callReadIds, withoutCallReadOutputs, withRereadCallReads } from "./toolCallReadContinuation";
+import { callReadIds, callReadReplayBudgets, withoutCallReadOutputs, withRereadCallReads } from "./toolCallReadContinuation";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
@@ -989,27 +989,27 @@ async function settleRecoveredCallRead(context: RecoveryToolContext, persistedId
   if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "Saved-call read could not be settled.");
 }
 
-/** One recovery's memo of the accepted history: what never changes between
- * its requests, and the projection its first request inserted (which that
- * request's consumer reuses once instead of reading the history again). */
-type RecoveredToolHistory = { cache: ToolHistoryCache; fresh: ToolHistoryProjection | null };
+/** One recovery's memo of what never changes between its requests (accepted
+ * runs' classification). No projection is reused: tools may run between two. */
+type RecoveredToolHistory = { cache: ToolHistoryCache };
 
 /** The accepted history's records under the run's current authority. A
- * failed or slow read never fails recovery: the records then say the details
- * are temporarily unavailable. */
+ * failed or slow read, or an admission that could not read the history,
+ * never fails recovery: the records then say the details are unavailable. */
 async function recoveredToolHistoryProjection(deps: RunRecoveryDeps, request: ProviderRunRequest,
   actor: Readonly<{ runId: string; userId: string }>, state?: RecoveredToolHistory): Promise<ToolHistoryProjection | null> {
   const history = request.toolHistory;
   const project = deps.repository.projectToolHistory;
-  if (!history?.turns.length || !project) return null;
   const readers = toolHistoryReaders(request);
+  const currentUserMessageId = request.context?.messages.at(-1)?.id ?? null;
+  if (history?.unavailable) return unavailableToolHistoryProjection({ readers, toolHistory: history, currentUserMessageId });
+  if (!history?.turns.length || !project) return null;
   try {
     return await project({ actor, readers, toolHistory: history, ...(state ? { cache: state.cache } : {}) });
   } catch (error) {
     logEvent("run_recovery", { subsystem: "run_recovery", stage: "projection", outcome: "degraded", action: "degrade",
       code: "tool_history_unavailable", prisma_code: databaseFailureCode(error), run_id: actor.runId });
-    return unavailableToolHistoryProjection({ readers, toolHistory: history,
-      currentUserMessageId: request.context?.messages.at(-1)?.id ?? null });
+    return unavailableToolHistoryProjection({ readers, toolHistory: history, currentUserMessageId });
   }
 }
 
@@ -1022,8 +1022,7 @@ async function withRecoveredToolHistory(deps: RunRecoveryDeps, request: Provider
   actor: Readonly<{ runId: string; userId: string }>, mode: "insert" | "refresh",
   state?: RecoveredToolHistory): Promise<ProviderRunRequest> {
   if (mode === "refresh" && !requestHasToolHistory(request)) return request;
-  const projection = mode === "refresh" && state?.fresh ? state.fresh : await recoveredToolHistoryProjection(deps, request, actor, state);
-  if (state) state.fresh = mode === "insert" ? projection : null;
+  const projection = await recoveredToolHistoryProjection(deps, request, actor, state);
   if (!projection) return request;
   return mode === "insert" ? insertToolHistory(request, projection) : refreshToolHistory(request, projection);
 }
@@ -2347,7 +2346,7 @@ async function recoverCheckpointedToolLoop(
     const { settled: settledSummaryClaim, unsettled: unsettledSummaryClaim } = lostSummaryAttempt(run.checkpoint);
     const summaryAttempts = run.checkpoint.contextCompaction?.summaryAttempts?.map((attempt) =>
       attempt === unsettledSummaryClaim ? settledSummaryClaim! : attempt);
-    const recoveredHistory: RecoveredToolHistory = { cache: new Map(), fresh: null };
+    const recoveredHistory: RecoveredToolHistory = { cache: new Map() };
     let providerRequest: ProviderRunRequest = {
       ...run.normalizedRequest,
       attachments,
@@ -2513,10 +2512,11 @@ async function recoverCheckpointedToolLoop(
     const savedCallReads = callReadIds(run.calls);
     const rereadCalls = new Map(run.calls.filter(call => savedCallReads.has(call.providerCallId))
       .map(call => [call.providerCallId, call]));
+    const replayBudget = callReadReplayBudgets(run.calls, observationWholeResultTokens(providerRequest));
     const savedToolMessages = await withRereadCallReads(savedContinuation.providerToolMessages, savedCallReads, bridge,
       async (callId) => executeReadToolCall(recoveredToolCallReader(deps), { id: callId, name: READ_TOOL_CALL_NAME,
-        arguments: rereadCalls.get(callId)?.arguments ?? {} }, { runId: run.id, userId: run.userId }, signal, undefined,
-      { resultReader: run.normalizedRequest.toolObservationVersion === 1 }));
+        arguments: rereadCalls.get(callId)?.arguments ?? {} }, { runId: run.id, userId: run.userId }, signal,
+      replayBudget(rereadCalls.get(callId)?.roundIndex ?? 0), { resultReader: run.normalizedRequest.toolObservationVersion === 1 }));
     const context: RecoveryToolContext = {
       skillResultBudget: createSkillToolResultBudget(),
       activeMcpDiscovery,

@@ -92,7 +92,7 @@ import type {
 import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { readToolCallTool } from "../tools/readToolCall";
-import { isToolHistoryMessageId, TOOL_HISTORY_VERSION } from "./toolHistoryContract";
+import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { insertToolHistory } from "./toolHistory";
 import { toolHistoryReaders } from "./toolHistoryRecords";
 import { databaseFailureCode } from "../observability/databaseFailure";
@@ -2121,12 +2121,13 @@ async function prepareRunWith(
     ? input.source.draftProjectChat || input.source.draftPersonalChat ? null : input.source.chat.activeLeafMessageId
     : input.source.source.userMessage.id;
   // A failed or slow history read never refuses the message: the run then
-  // freezes an empty history (content-free log), as a chat without calls.
-  const toolHistory = await (deps.repository.loadToolHistory?.({ chatId: chat.id, leafMessageId: toolHistoryLeafMessageId,
-    userId: input.userId }) ?? null)?.catch((error: unknown) => {
+  // freezes that the history could not be loaded (content-free log), and
+  // every request of it says so instead of implying no earlier calls.
+  const toolHistory: ToolHistorySnapshot = await (deps.repository.loadToolHistory?.({ chatId: chat.id,
+    leafMessageId: toolHistoryLeafMessageId, userId: input.userId }) ?? null)?.catch((error: unknown) => {
     logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
       code: "tool_history_unavailable", prisma_code: databaseFailureCode(error) });
-    return null;
+    return { version: TOOL_HISTORY_VERSION, turns: [], unavailable: true as const };
   }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
   const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
   const memoryStandingEligible = !project && !agent && resolvedChatMode.mode === "NORMAL" &&

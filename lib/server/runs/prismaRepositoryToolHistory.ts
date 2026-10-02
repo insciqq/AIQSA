@@ -60,9 +60,12 @@ class ToolHistoryUnavailable extends Error {
 
 const MANAGED_AGENT_EXEC = namespacedWorkspaceToolName("sandbox_exec_start");
 
-/** Explicit bounds of every history read; the defaults are too short for a
- * long chat and a slower read must degrade, never hold the run. */
-const TRANSACTION = { maxWait: TOOL_HISTORY_LIMITS.transactionWaitMs, timeout: TOOL_HISTORY_LIMITS.transactionMs } as const;
+/** Explicit bounds of every history read: the admission read of a long
+ * chat may take longer than one request's reads, which hold a pooled
+ * connection only briefly; a slower read degrades, never holding the run. */
+const ADMISSION_TRANSACTION = { maxWait: TOOL_HISTORY_LIMITS.transactionWaitMs, timeout: TOOL_HISTORY_LIMITS.transactionMs } as const;
+const REQUEST_TRANSACTION = { maxWait: TOOL_HISTORY_LIMITS.requestTransactionWaitMs,
+  timeout: TOOL_HISTORY_LIMITS.requestTransactionMs } as const;
 
 async function readingContext(tx: Prisma.TransactionClient, actor: ToolHistoryActor,
   options: Readonly<{ unarmedAgent?: boolean }> = {}): Promise<ReadingContext> {
@@ -411,6 +414,10 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
         let omittedCalls = 0;
         let scanned = 0;
         let full = false;
+        // Every run admitted since the history contract carries its version
+        // (a failed read freezes the marker): once an older run is not
+        // eligible, no run older than it is.
+        let reachedIneligible = false;
         const scanLimit = Math.min(candidates.length, listing.scannedRuns);
         while (!full && scanned < scanLimit) {
           const batch = candidates.slice(scanned, Math.min(scanned + listing.scanBatchRuns, scanLimit));
@@ -421,7 +428,10 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
           const calls = eligible.size ? await tx.modelRunToolCall.findMany({ where: { modelRunId: { in: [...eligible] } },
             select: { id: true, modelRunId: true, toolName: true, roundIndex: true, ordinal: true, workspaceRunBindingId: true } }) : [];
           for (const run of batch) {
-            if (!eligible.has(run.id)) continue;
+            if (!eligible.has(run.id)) {
+              reachedIneligible = true;
+              continue;
+            }
             // Newest calls first: the bound keeps the newest listed.
             const runCalls = calls.filter(call => call.modelRunId === run.id &&
               !(call.toolName === MANAGED_AGENT_EXEC && call.workspaceRunBindingId !== null))
@@ -445,11 +455,21 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
           }
           if (remaining <= 0 || turns.size >= listing.turns) full = true;
         }
-        // Older runs the bounds left unread: their calls are counted, unread.
-        const unread = candidates.slice(scanned).map(run => run.id);
+        // Older eligible runs the bounds left unread: their calls are counted
+        // without being read. Runs before the history contract are never
+        // reported (they were never part of it). The oldest unread run
+        // decides: when it is eligible every unread run is, so only a branch
+        // that spans the contract's release reads each unread run's version.
+        const unread = reachedIneligible ? [] : candidates.slice(scanned).map(run => run.id);
         if (unread.length > 0) {
+          const version = String(TOOL_HISTORY_VERSION);
+          const [oldest] = await tx.$queryRaw<Array<{ eligible: boolean | null }>>`SELECT
+            (r."normalizedRequest" -> 'toolHistory' ->> 'version') = ${version} AS "eligible" FROM "ModelRun" r WHERE r."id" = ${unread.at(-1)!}`;
+          const runs = oldest?.eligible === true ? Prisma.sql`c."modelRunId" = ANY(${unread}::text[])`
+            : Prisma.sql`c."modelRunId" IN (SELECT r."id" FROM "ModelRun" r WHERE r."id" = ANY(${unread}::text[])
+                AND r."normalizedRequest" -> 'toolHistory' ->> 'version' = ${version})`;
           const [counted] = await tx.$queryRaw<Array<{ count: number }>>`SELECT COUNT(*)::int AS "count" FROM "ModelRunToolCall" c
-            WHERE c."modelRunId" = ANY(${unread}::text[]) AND NOT (c."toolName" = ANY(${[...TOOL_HISTORY_READER_NAMES]}::text[]))
+            WHERE ${runs} AND NOT (c."toolName" = ANY(${[...TOOL_HISTORY_READER_NAMES]}::text[]))
               AND NOT (c."toolName" = ${MANAGED_AGENT_EXEC} AND c."workspaceRunBindingId" IS NOT NULL)`;
           omittedCalls += counted?.count ?? 0;
         }
@@ -469,13 +489,14 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
           if (turnCalls.length === 0 && readers === 0) continue;
           result.push({
             turnMessageId: answerOf.get(userMessageId) ?? userMessageId,
+            userMessageId,
             callRefs: turnCalls.map(call => toolCallRef(call.id)!),
             digest: toolHistoryDigest(turnCalls),
             ...(readers > 0 ? { readerCalls: Math.min(readers, TOOL_HISTORY_LIMITS.readerCalls) } : {})
           });
         }
         return { version: TOOL_HISTORY_VERSION, turns: result, ...(omittedCalls > 0 ? { omittedCalls } : {}) };
-      }, TRANSACTION).catch(retainRunPrismaCode);
+      }, ADMISSION_TRANSACTION).catch(retainRunPrismaCode);
     },
 
     /**
@@ -543,7 +564,7 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
         }
         return { blocks: turns.map((turn, index) => toolHistoryBlock({
           turnMessageId: turn.turnMessageId,
-          userMessageId: states[index]!.userMessageId,
+          userMessageId: turn.userMessageId ?? states[index]!.userMessageId,
           currentTurn: states[index]!.currentTurn,
           records: states[index]!.records,
           unavailableCalls: states[index]!.unavailableCalls,
@@ -551,7 +572,7 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
           ...(index === 0 && input.toolHistory.omittedCalls ? { omittedCalls: input.toolHistory.omittedCalls } : {}),
           readers: input.readers
         })) };
-      }, TRANSACTION).catch(retainRunPrismaCode);
+      }, REQUEST_TRANSACTION).catch(retainRunPrismaCode);
     },
 
     /** One call's authorized record for `read_tool_call`, or null when it is
@@ -577,7 +598,7 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
         const previousAttempt = call.modelRunId !== context.runId &&
           !(call.modelRun.assistantMessageId !== null && context.pathIds.has(call.modelRun.assistantMessageId));
         return toolHistoryRecord(facts, previousAttempt);
-      }, TRANSACTION).catch(retainRunPrismaCode);
+      }, REQUEST_TRANSACTION).catch(retainRunPrismaCode);
     },
 
     /**
@@ -608,7 +629,7 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
           if (kind === "web_search" && !run.agent && !await searchAvailable(tx, context, call, run)) return false;
         }
         return true;
-      }, TRANSACTION).catch(retainRunPrismaCode);
+      }, REQUEST_TRANSACTION).catch(retainRunPrismaCode);
     }
   };
 }

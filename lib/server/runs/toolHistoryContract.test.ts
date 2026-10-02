@@ -41,9 +41,11 @@ describe("cross-turn tool history contract", () => {
 
   it("decodes exact frozen histories and refuses any other shape", () => {
     const valid = { version: 1, turns: [{ turnMessageId: "answer-1", callRefs: [toolCallRef(callId)!], digest: "a".repeat(64) },
-      { turnMessageId: "answer-2", callRefs: [], digest: "b".repeat(64), readerCalls: 3 }], omittedCalls: 4 };
+      { turnMessageId: "answer-2", userMessageId: "question-2", callRefs: [], digest: "b".repeat(64), readerCalls: 3 }], omittedCalls: 4 };
     expect(decodeToolHistorySnapshot(valid)).toEqual(valid);
     expect(decodeToolHistorySnapshot({ version: 1, turns: [] })).toEqual({ version: 1, turns: [] });
+    // A history admission could not read lists and counts nothing.
+    expect(decodeToolHistorySnapshot({ version: 1, turns: [], unavailable: true })).toEqual({ version: 1, turns: [], unavailable: true });
     for (const invalid of [
       { version: 2, turns: [] },
       { version: 1, turns: [], extra: true },
@@ -53,7 +55,12 @@ describe("cross-turn tool history contract", () => {
       { version: 1, turns: [valid.turns[0], valid.turns[0]] },
       { version: 1, turns: [valid.turns[0], { ...valid.turns[0], turnMessageId: "answer-3" }] },
       { version: 1, turns: [{ turnMessageId: "answer-1", callRefs: [], digest: "a".repeat(64) }] },
-      { version: 1, turns: [{ ...valid.turns[0], digest: "A".repeat(64) }] }
+      { version: 1, turns: [{ ...valid.turns[0], digest: "A".repeat(64) }] },
+      { version: 1, turns: [{ ...valid.turns[0], userMessageId: "" }] },
+      { version: 1, turns: [{ ...valid.turns[0], userMessageId: 7 }] },
+      { version: 1, turns: [], unavailable: false },
+      { version: 1, turns: [valid.turns[0]], unavailable: true },
+      { version: 1, turns: [], omittedCalls: 4, unavailable: true }
     ]) expect(decodeToolHistorySnapshot(invalid)).toBeNull();
     const tooMany = { version: 1, turns: [{ turnMessageId: "answer-1", digest: "a".repeat(64),
       callRefs: Array.from({ length: TOOL_HISTORY_LIMITS.calls + 1 }, (_, index) => `tcr1_${index.toString(16).padStart(32, "0")}`) }] };

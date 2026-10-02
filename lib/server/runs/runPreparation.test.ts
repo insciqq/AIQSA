@@ -5527,13 +5527,14 @@ describe("cross-turn tool history admission", () => {
     expect(plain.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [] });
   });
 
-  it("freezes an empty history instead of refusing the message when the history read fails", async () => {
+  it("freezes that the history could not be loaded instead of refusing the message when the history read fails", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const loadToolHistory = vi.fn(async () => { throw new Error("synthetic_database_timeout"); });
     const prepared = preparedFrom(await prepareRun({ ...harness.deps, repository: { ...harness.deps.repository, loadToolHistory } },
       sendInput(successBody({ provider: "openai", modelId: "openai-tool-model" }))));
     expect(loadToolHistory).toHaveBeenCalledOnce();
-    expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [] });
+    // Never an empty history, which would read as a chat without calls.
+    expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [], unavailable: true });
   });
 
   it("admits the call reader only for tool-capable answer models", async () => {
