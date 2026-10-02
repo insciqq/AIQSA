@@ -213,7 +213,7 @@ for (const theme of ["dark", "light"] as const) {
 
 for (const theme of ["dark", "light"] as const) {
   for (const mode of modes) {
-    test(`Memory settings owns five controls and confirmed reset · ${theme} · ${mode.name}`, async ({ context, page }) => {
+    test(`Memory settings owns four controls and confirmed reset · ${theme} · ${mode.name}`, async ({ context, page }) => {
       let resetRequests = 0;
       await setTheme(context, theme);
       await page.setViewportSize(mode);
@@ -225,7 +225,6 @@ for (const theme of ["dark", "light"] as const) {
               decayEnabled: true,
               learnAutomatically: true,
               referenceChatHistory: true,
-              synthesisEnabled: true,
               useMemoryFacts: true
             },
             status: "ON"
@@ -246,7 +245,7 @@ for (const theme of ["dark", "light"] as const) {
       await expect(page.locator(".v2-memory-state")).toContainText("Memory is on");
       if (mode.name === "mobile") await disclosure.click();
       else await expect(disclosure).toBeHidden();
-      await expect(settings.getByRole("switch")).toHaveCount(5);
+      await expect(settings.getByRole("switch")).toHaveCount(4);
       await expect(settings.getByRole("button", { name: "Pause" })).toHaveCount(0);
       await expect(settings.getByRole("button", { name: "Open in Library" })).toHaveCount(0);
 

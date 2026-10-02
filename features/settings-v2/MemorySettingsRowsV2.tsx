@@ -20,7 +20,7 @@ function t(key: Parameters<typeof memoryUiCopy>[0]): string {
 
 type ResetNotice = "complete" | "started" | null;
 
-/** The Memory page owns its five controls and the confirmed reset. */
+/** The Memory page owns its four controls and the confirmed reset. */
 export function MemorySettingsRowsV2({
   onBusyChange
 }: Readonly<{ onBusyChange?(busy: boolean): void }> = {}) {
@@ -120,12 +120,6 @@ export function MemorySettingsRowsV2({
       key: "learnAutomatically",
       label: t("settings.learnAutomaticallyLabel"),
       value: data.settings.learnAutomatically
-    },
-    {
-      description: t("settings.synthesisDescription"),
-      key: "synthesisEnabled",
-      label: t("settings.synthesisLabel"),
-      value: data.settings.synthesisEnabled
     },
     {
       description: t("settings.decayDescription"),

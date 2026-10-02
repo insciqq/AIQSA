@@ -33,12 +33,10 @@ describe("Memory settings store", () => {
         "useMemoryFacts",
         "referenceChatHistory",
         "learnAutomatically",
-        "synthesisEnabled",
         "decayEnabled"
       ].find(
         (candidate) => typeof body[candidate] === "boolean"
-      ) as "decayEnabled" | "learnAutomatically" | "referenceChatHistory" | "synthesisEnabled" |
-        "useMemoryFacts";
+      ) as "decayEnabled" | "learnAutomatically" | "referenceChatHistory" | "useMemoryFacts";
       server = memoryConsumerSettingsFixture({
         settings: { ...server.settings, [key]: body[key] as boolean },
         status: key === "useMemoryFacts" && body[key] === true ? "ON" : server.status
@@ -50,21 +48,19 @@ describe("Memory settings store", () => {
     await updateMemoryGate("useMemoryFacts", true);
     await updateMemoryGate("referenceChatHistory", true);
     await updateMemoryGate("learnAutomatically", true);
-    await updateMemoryGate("synthesisEnabled", true);
     await updateMemoryGate("decayEnabled", true);
 
     expect(useMemorySettingsStore.getState().data?.settings).toEqual({
       decayEnabled: true,
       learnAutomatically: true,
       referenceChatHistory: true,
-      synthesisEnabled: true,
+      synthesisEnabled: false,
       useMemoryFacts: true
     });
     expect(bodies).toEqual([
       { useMemoryFacts: true },
       { referenceChatHistory: true },
       { learnAutomatically: true },
-      { synthesisEnabled: true },
       { decayEnabled: true }
     ]);
     expect(JSON.stringify(bodies)).not.toMatch(/revision|generation|fingerprint|deployment/iu);
