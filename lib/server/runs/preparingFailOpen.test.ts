@@ -136,7 +136,8 @@ describe("Memory preparation fail-open classification", () => {
     for (const code of [
       "memory_preparing_failed", "memory_preparing_recovery_required", "memory_preparing_attempt_expired",
       "memory_item_forgotten", "memory_all_reusable_deleted", "memory_source_stale", "memory_source_deleted",
-      "memory_admission_dag_changed", "memory_attempt_item_stale", "memory_final_request_invalid"
+      "memory_admission_dag_changed", "memory_attempt_item_stale", "memory_final_request_invalid",
+      "memory_attempt_item_text_invalid", "memory_attempt_item_duplicate", "memory_attempt_item_score_invalid"
     ]) expect(MEMORY_PREPARATION_FAILURE_CODES).toContain(code);
     for (const code of [
       "memory_answer_model_tools_retired", "memory_egress_changed", "provider_admission_changed",

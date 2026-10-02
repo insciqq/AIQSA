@@ -4142,10 +4142,8 @@ async function continuePreparingRunWithClient(
   let attemptBudget: Readonly<Record<string, unknown>> | null = null;
   let stage: MemoryPreparationStage = "guard";
   let fallbackAttempted = false;
-  const currentStageFallbackBudget = (): Readonly<Record<string, unknown>> =>
-    memoryControlCache.settingsDriftFailedSafeAttemptId === currentAttemptId
-      ? memoryControlCache.settingsDriftFailedSafeBudget ?? deadlineFallbackBudget
-      : deadlineFallbackBudget;
+  // Utility and inventory declarations must describe the attempt being
+  // finalized; action evidence comes separately from `deadlineFallbackBudget`.
   const currentAttemptFallbackBudget = (): Readonly<Record<string, unknown>> =>
     attemptBudget ?? (memoryControlCache.settingsDriftFailedSafeAttemptId === currentAttemptId
       ? memoryControlCache.settingsDriftFailedSafeBudget : undefined) ?? {
@@ -4228,9 +4226,11 @@ async function continuePreparingRunWithClient(
   const finalizeDeadlineFallback = async (): Promise<PreparingRunAdmissionResult & Readonly<{
     materializedRequest?: PreparingRunMaterializedRequest;
   }>> => {
+    // Errors from this guarded finalization belong to finalize authority.
+    stage = "finalize";
     const fallback = await finalizeFailedSafe(
       "memory_admission_deadline_exceeded",
-      currentStageFallbackBudget()
+      currentAttemptFallbackBudget()
     );
     if (!fallback) {
       throw new MemoryPreparingRunConflictError(
@@ -4243,9 +4243,11 @@ async function continuePreparingRunWithClient(
   const finalizeSettingsDriftFallback = async (): Promise<PreparingRunAdmissionResult & Readonly<{
     materializedRequest?: PreparingRunMaterializedRequest;
   }>> => {
+    // Errors from this guarded finalization belong to finalize authority.
+    stage = "finalize";
     const fallback = await finalizeFailedSafe(
       "memory_admission_settings_changed",
-      currentStageFallbackBudget()
+      currentAttemptFallbackBudget()
     );
     if (!fallback) {
       throw new MemoryPreparingRunConflictError(
@@ -4494,6 +4496,7 @@ async function continuePreparingRunWithClient(
   } catch (error) {
     // Class (a) failures answer without Memory through one guarded fallback;
     // Stop, deletion, authority and accounting conflicts stay fail-closed.
+    const errorCode = memoryPreparationFailureCode(error, stage);
     const decision = memoryPreparationFailOpen({
       alreadyFallenBack: fallbackAttempted,
       error,
@@ -4515,7 +4518,6 @@ async function continuePreparingRunWithClient(
           code: memoryPreparationFailureCode(fallbackError, "finalize") });
       }
     }
-    const errorCode = memoryPreparationFailureCode(error, stage);
     logEvent("run_preparation", { run_id: created.runId, stage: "preparing",
       outcome: observedFailure(error, admission.signal).reason === "cancelled" ? "cancelled" : "failed",
       code: errorCode });
@@ -4609,8 +4611,12 @@ async function continueDeferredPreparedRunWithClient(
         }));
       // A crash-interrupted standing read is LOCAL_ONLY and executes no
       // synchronous action, so this durable owner may answer without Memory.
+      // It must also own no utility execution: nothing external is settled.
       const interrupted = exactBase && existing.state === "EXECUTING" &&
-        admission.normalizedRequest.memoryStandingVersion === 1;
+        admission.normalizedRequest.memoryStandingVersion === 1 &&
+        await tx.memoryExecutionBinding.count({ where: {
+          retrievalAttemptId: existing.id, userId: admission.userId
+        } }) === 0;
       if ((!interrupted && !["PENDING", "READY"].includes(existing.state)) || !exactBase) {
         // An executing Memory attempt may already own external effects. Its
         // ordinary terminal settlement preserves those receipts; never replay.
