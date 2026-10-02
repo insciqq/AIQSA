@@ -104,8 +104,13 @@ import {
   type MemoryVectorProfile
 } from "./vector";
 import {
+  MEMORY_READ_BUDGET_ERROR_CODES,
   MEMORY_READ_BUDGET_MS,
   MemoryReadBudgetError,
+  isMemoryReadBudgetErrorCode,
+  type MemoryReadAdmissionClass,
+  memoryReadBudgetFailureCode,
+  memoryReadBudgetTimedOut,
   withMemoryReadBudget
 } from "./readBudget";
 import {
@@ -115,6 +120,7 @@ import {
   assertMemoryLexicalSearchResult,
   hasAcceptedCompleteMemoryLexicalVariant,
   memoryLexicalProjectionReadinessScope,
+  memoryLexicalReadSignal,
   type MemoryLexicalCandidateProvider,
   type MemoryLexicalLaneEvidence,
   type MemoryLexicalProviderBackend,
@@ -235,8 +241,13 @@ export type MemoryLocalRetrievalInput = Readonly<{
   baselinePlan?: MemoryRetrievalPlan;
   /** Null admits only the strict global current-FACT plan; it is not a Chat id. */
   chatId: string | null;
+  /** Search-tool callers drop tool observations from the vector item types
+   * they would discard after fusion. Lexical lanes are unchanged. */
+  excludeToolEvents?: true;
   now: Date;
   plan: MemoryRetrievalPlan;
+  /** Settlement signal. It also withdraws reads still waiting for read
+   * admission; started SQL remains bounded only by its server budget. */
   settleSignal?: AbortSignal;
   /** Stable capability issued by this repository for the current admission. */
   sourceSnapshot?: MemoryLocalRetrievalSnapshot;
@@ -271,8 +282,46 @@ export type MemoryLocalRetrievalResult = Readonly<{
   snapshot: MemoryLocalRetrievalSnapshot;
   sourceFamilyEvidence?: MemorySourceFamilyRetrievalEvidence;
   vectorEvidence: readonly MemoryVectorLaneEvidence[];
+  /** Allowlisted source codes of DEGRADED vector work, at most four. */
+  vectorFailureCodes?: readonly MemoryVectorFailureCode[];
   vectorState: "DEGRADED" | "DISABLED" | "NOT_CONFIGURED" | "READY";
 }>;
+
+export const MEMORY_VECTOR_FAILURE_CODES = Object.freeze([
+  "memory_vector_generation_stale",
+  "memory_vector_profile_unsupported",
+  "memory_vector_settle_timeout",
+  "memory_vector_unavailable",
+  ...MEMORY_READ_BUDGET_ERROR_CODES
+] as const);
+
+export type MemoryVectorFailureCode = (typeof MEMORY_VECTOR_FAILURE_CODES)[number];
+
+const MEMORY_VECTOR_FAILURE_CODE_LIMIT = 4;
+const memoryVectorFailureCodeSet = new Set<string>(MEMORY_VECTOR_FAILURE_CODES);
+
+function memoryVectorFailureCode(value: unknown): MemoryVectorFailureCode {
+  const budget = memoryReadBudgetFailureCode(value);
+  if (budget) return budget;
+  return typeof value === "string" && memoryVectorFailureCodeSet.has(value)
+    ? value as MemoryVectorFailureCode
+    : "memory_vector_unavailable";
+}
+
+/** A read withdrawn because its settlement signal fired reports the
+ * settlement, not an unavailable vector index. */
+function recordMemoryVectorFailure(
+  codes: MemoryVectorFailureCode[],
+  value: unknown,
+  settleSignal?: AbortSignal
+): void {
+  const code = settleSignal?.aborted && memoryReadBudgetFailureCode(value) === null
+    ? "memory_vector_settle_timeout"
+    : memoryVectorFailureCode(value);
+  if (!codes.includes(code) && codes.length < MEMORY_VECTOR_FAILURE_CODE_LIMIT) {
+    codes.push(code);
+  }
+}
 
 type SnapshotRow = Readonly<{
   activeIndexGenerationId: string | null;
@@ -929,7 +978,8 @@ async function loadSnapshot(
       AND generation."id" = settings."activeIndexGenerationId"
     WHERE owner."id" = ${input.userId}
     LIMIT 1
-    `)
+    `),
+    { admission: "REQUIRED", signal: input.settleSignal }
   );
   const row = rows[0];
   if (!row || row.ownerStatus !== "active" ||
@@ -1603,7 +1653,8 @@ async function loadStandingFacts(
     client,
     MEMORY_READ_BUDGET_MS.SNAPSHOT_CORE,
     (tx) => tx.$queryRaw<CoreRow[]>(standingFactsSql(snapshot,
-      options.standingVersion === 1 ? MEMORY_STANDING_MAX_FACTS + 1 : MEMORY_LEGACY_STANDING_MAX_FACTS + 1))
+      options.standingVersion === 1 ? MEMORY_STANDING_MAX_FACTS + 1 : MEMORY_LEGACY_STANDING_MAX_FACTS + 1)),
+    { admission: "REQUIRED" }
   );
   return rows.flatMap((row): readonly MemoryCoreCandidate[] => {
     const safeText = safeMemoryProjectionText(row.safeText);
@@ -1654,13 +1705,15 @@ function coreReason(row: CoreRow): string {
 
 async function loadCore(
   client: PrismaClient,
-  snapshot: MemoryLocalRetrievalSnapshot
+  snapshot: MemoryLocalRetrievalSnapshot,
+  signal?: AbortSignal
 ): Promise<readonly MemoryCoreCandidate[]> {
   if (!snapshot.useMemoryFacts || snapshot.status !== "READY") return [];
   const rows = await withMemoryReadBudget(
     client,
     MEMORY_READ_BUDGET_MS.SNAPSHOT_CORE,
-    (tx) => tx.$queryRaw<CoreRow[]>(coreSql(snapshot))
+    (tx) => tx.$queryRaw<CoreRow[]>(coreSql(snapshot)),
+    { admission: "REQUIRED", signal }
   );
   return rows.flatMap((row): readonly MemoryCoreCandidate[] => {
     const safeText = safeMemoryProjectionText(row.safeText);
@@ -2796,7 +2849,8 @@ function entitySql(
 async function hasPotentialEntityAlias(
   client: PrismaClient,
   snapshot: MemoryLocalRetrievalSnapshot,
-  plan: MemoryRetrievalPlan
+  plan: MemoryRetrievalPlan,
+  signal?: AbortSignal
 ): Promise<boolean> {
   const { terms } = plannedEntityTerms(plan);
   if (terms.length === 0) return false;
@@ -2809,7 +2863,9 @@ async function hasPotentialEntityAlias(
         normalizedAlias: { in: [...terms] },
         userId: snapshot.userId
       }
-    })
+    }),
+    // A cheap structural probe that decides whether the entity lane runs.
+    { admission: "REQUIRED", signal }
   ) !== null;
 }
 
@@ -2960,7 +3016,8 @@ function memoryLexicalSearchRequest(
   finalLimit: number,
   admittedLimit: number,
   sourceChatIds?: readonly string[],
-  deadlineAtMs = Date.now() + MEMORY_READ_BUDGET_MS.LEXICAL_CANDIDATE
+  deadlineAtMs = Date.now() + MEMORY_READ_BUDGET_MS.LEXICAL_CANDIDATE,
+  signal?: AbortSignal
 ): MemoryLexicalSearchRequest {
   if (!snapshot.activeGenerationId || !plan.lexicalQuery) {
     throw new Error("memory_retrieval_snapshot_invalid");
@@ -3015,6 +3072,7 @@ function memoryLexicalSearchRequest(
       );
   return Object.freeze({
     [memoryLexicalProjectionReadinessScope]: readinessScope,
+    ...(signal ? { [memoryLexicalReadSignal]: signal } : {}),
     activeGenerationId: snapshot.activeGenerationId,
     analysisProfileVersion: MEMORY_LEXICAL_ANALYSIS_PROFILE,
     candidateLimitPerVariant,
@@ -3397,11 +3455,13 @@ async function queryLane(
   limit: number,
   sql: Prisma.Sql,
   options: Readonly<{
+    deadlineAtMs?: number;
     maximumRows?: number;
     preserveExplicitJoinOrder?: boolean;
     readBudgetMs?: number;
     recordCanonicalEntryIds?: (entryIds: readonly string[]) => void;
     recordCounts?: (rawCandidateCount: number, canonicalAcceptedCount: number) => void;
+    signal?: AbortSignal;
     sourceDiversity?: boolean;
   }> = {}
 ): Promise<MemoryLaneResult> {
@@ -3413,7 +3473,12 @@ async function queryLane(
     client,
     options.readBudgetMs ?? MEMORY_READ_BUDGET_MS.LEXICAL_CANDIDATE,
     (tx) => tx.$queryRaw<CandidateRow[]>(taggedSql),
-    { preserveExplicitJoinOrder: options.preserveExplicitJoinOrder }
+    {
+      admission: "LANE",
+      deadlineAtMs: options.deadlineAtMs,
+      preserveExplicitJoinOrder: options.preserveExplicitJoinOrder,
+      signal: options.signal
+    }
   );
   const maximumRows = options.maximumRows ?? limit;
   if (!Number.isSafeInteger(maximumRows) || maximumRows < limit ||
@@ -3653,7 +3718,9 @@ function lexicalMatchMode(
 type MemoryLexicalEvidenceRecorder = Readonly<{
   complete(entry: MemoryLexicalLaneEvidence): MemoryLexicalLaneEvidence | null;
   counts(rawCandidateCount: number, canonicalAcceptedCount: number): void;
-  failure(error: unknown): MemoryLexicalLaneEvidence | null;
+  /** A lane read withdrawn because its settlement signal fired records the
+   * settlement, whichever of the waiter and the lane runner observed it first. */
+  failure(error: unknown, settleSignal?: AbortSignal): MemoryLexicalLaneEvidence | null;
   settled(): MemoryLexicalLaneEvidence | null;
   success(): MemoryLexicalLaneEvidence | null;
 }>;
@@ -3698,8 +3765,8 @@ function createLexicalEvidenceRecorder(
       rejectedHashCount: 0,
       requestedLimit,
       timedOut: failureCode === "memory_lexical_settle_timeout" ||
-        failureCode === "memory_read_lock_timeout" ||
-        failureCode === "memory_read_statement_timeout"
+        isMemoryReadBudgetErrorCode(failureCode) &&
+          memoryReadBudgetTimedOut(failureCode)
     });
     evidence.push(entry);
     return entry;
@@ -3719,7 +3786,10 @@ function createLexicalEvidenceRecorder(
       rawCandidateCount = raw;
       canonicalAcceptedCount = accepted;
     },
-    failure(error) {
+    failure(error, settleSignal) {
+      if (settleSignal?.aborted && memoryReadBudgetFailureCode(error) === null) {
+        return record("memory_lexical_settle_timeout");
+      }
       return record(error instanceof MemoryReadBudgetError
         ? error.code
         : "memory_lexical_lane_unavailable");
@@ -3759,6 +3829,7 @@ export async function classifyMemoryLexicalCanonicalRejections(input: Readonly<{
   candidates: readonly MemoryLexicalRawCandidate[];
   client: PrismaClient;
   deadlineAtMs: number;
+  signal?: AbortSignal;
   snapshot: MemoryLocalRetrievalSnapshot;
 }>): Promise<MemoryLexicalRejectionCounts> {
   const byEntry = new Map<string, string>();
@@ -3781,16 +3852,9 @@ export async function classifyMemoryLexicalCanonicalRejections(input: Readonly<{
   }
   const values = [...byEntry].map(([searchEntryId, safeContentHash]) =>
     Prisma.sql`(${searchEntryId}::text, ${safeContentHash}::text)`);
-  const remainingMs = Math.min(
-    MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
-    input.deadlineAtMs - Date.now()
-  );
-  if (!Number.isSafeInteger(remainingMs) || remainingMs < 1) {
-    throw new MemoryReadBudgetError("memory_read_statement_timeout");
-  }
   const rows = await withMemoryReadBudget(
     input.client,
-    remainingMs,
+    MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
     (tx) => tx.$queryRaw<MemoryLexicalRejectionRow[]>(Prisma.sql`
       /* aiqsa_memory_retrieval_lane:OPENSEARCH_CANONICAL_REJECTION_AUDIT */
       WITH lexical_candidates (
@@ -3808,7 +3872,8 @@ export async function classifyMemoryLexicalCanonicalRejections(input: Readonly<{
       LEFT JOIN "MemorySearchEntry" AS entry
         ON entry."id" = lexical_candidates."searchEntryId"
       ORDER BY lexical_candidates."searchEntryId"
-    `)
+    `),
+    { admission: "LANE", deadlineAtMs: input.deadlineAtMs, signal: input.signal }
   );
   if (rows.length !== byEntry.size || new Set(rows.map(({ searchEntryId }) =>
     searchEntryId)).size !== rows.length) {
@@ -3847,6 +3912,7 @@ async function queryProviderBackedLexicalLane(input: Readonly<{
   plan: MemoryRetrievalPlan;
   provider: MemoryLexicalCandidateProvider;
   queryLimit: number;
+  signal?: AbortSignal;
   snapshot: MemoryLocalRetrievalSnapshot;
   sourceChatIds?: readonly string[];
   sourceDiversity: boolean;
@@ -3864,7 +3930,8 @@ async function queryProviderBackedLexicalLane(input: Readonly<{
     input.queryLimit,
     input.limit,
     input.sourceChatIds,
-    input.deadlineAtMs
+    input.deadlineAtMs,
+    input.signal
   );
   let searched = await input.provider.search(request);
   assertMemoryLexicalSearchResult(request, searched, input.provider.backend);
@@ -3882,16 +3949,6 @@ async function queryProviderBackedLexicalLane(input: Readonly<{
   }>> => {
     let acceptedCount = 0;
     let acceptedSearchEntryIds: readonly string[] = Object.freeze([]);
-    const readBudgetMs = input.deadlineAtMs === undefined
-      ? MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION
-      : Math.min(
-          MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
-          request.deadlineAtMs - Date.now()
-        );
-    if (current.candidates.length > 0 &&
-      (!Number.isSafeInteger(readBudgetMs) || readBudgetMs < 1)) {
-      throw new MemoryReadBudgetError("memory_read_statement_timeout");
-    }
     const result = current.candidates.length === 0
       ? { candidates: [], lane: input.lane } satisfies MemoryLaneResult
       : await queryLane(
@@ -3907,13 +3964,17 @@ async function queryProviderBackedLexicalLane(input: Readonly<{
             input.sourceChatIds
           ),
           {
+            ...(input.deadlineAtMs === undefined
+              ? {}
+              : { deadlineAtMs: request.deadlineAtMs }),
             maximumRows: Math.max(input.limit, current.candidates.length),
             preserveExplicitJoinOrder: true,
-            readBudgetMs,
+            readBudgetMs: MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
             recordCanonicalEntryIds(entryIds) {
               acceptedSearchEntryIds = entryIds;
               acceptedCount = entryIds.length;
             },
+            signal: input.signal,
             sourceDiversity: input.sourceDiversity
           }
         );
@@ -3930,6 +3991,7 @@ async function queryProviderBackedLexicalLane(input: Readonly<{
         client: input.client,
         deadlineAtMs: input.deadlineAtMs ??
           Date.now() + MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
+        signal: input.signal,
         snapshot: input.snapshot
       })
     : Object.freeze({
@@ -4137,7 +4199,8 @@ function pushLexicalTasks(
   allocation: MemoryRetrievalLaneLimitAllocation,
   evidence: MemoryLexicalLaneEvidence[],
   providerForLane: MemoryLexicalProviderForLane,
-  executionTier: "BASELINE" | "ENRICHED" = "ENRICHED"
+  executionTier: "BASELINE" | "ENRICHED" = "ENRICHED",
+  signal?: AbortSignal
 ): Readonly<{
   completePrimaryLanes(): ReadonlySet<MemoryRetrievalLane>;
   deferredTasks: readonly MemoryRetrievalLaneTask[];
@@ -4180,7 +4243,7 @@ function pushLexicalTasks(
       async execute() {
         try {
           if (lane === "FACT_ENTITY" &&
-            !await hasPotentialEntityAlias(client, snapshot, plan)) {
+            !await hasPotentialEntityAlias(client, snapshot, plan, signal)) {
             const recorded = recorder.success();
             if (recorded) executionEvidence.push(recorded);
             return { candidates: [], lane };
@@ -4193,6 +4256,7 @@ function pushLexicalTasks(
               plan,
               provider,
               queryLimit,
+              signal,
               snapshot,
               sourceDiversity
             });
@@ -4205,13 +4269,14 @@ function pushLexicalTasks(
           const result = await queryLane(client, lane, limit, sql, {
             maximumRows: queryLimit,
             recordCounts: recorder.counts,
+            signal,
             sourceDiversity
           });
           const recorded = recorder.success();
           if (recorded) executionEvidence.push(recorded);
           return result;
         } catch (error) {
-          const recorded = recorder.failure(error);
+          const recorded = recorder.failure(error, signal);
           if (recorded) {
             executionEvidence.push(recorded);
             failures.push(lane);
@@ -4328,18 +4393,26 @@ function pushVectorTasks(
   evidence: MemoryVectorLaneEvidence[],
   allocation: MemoryRetrievalLaneLimitAllocation,
   executionTier: "BASELINE" | "ENRICHED" = "ENRICHED"
-): Readonly<{ state(): MemoryLocalRetrievalResult["vectorState"] }> {
+): Readonly<{
+  failureCodes(): readonly MemoryVectorFailureCode[];
+  state(): MemoryLocalRetrievalResult["vectorState"];
+}> {
+  const failureCodes: MemoryVectorFailureCode[] = [];
   if (!input.vector || snapshot.indexMode !== "HYBRID") {
-    return { state: () => input.vector ? "DISABLED" : "NOT_CONFIGURED" };
+    return {
+      failureCodes: () => failureCodes,
+      state: () => input.vector ? "DISABLED" : "NOT_CONFIGURED"
+    };
   }
   const lanes = localVectorLanes(snapshot, input);
-  if (lanes.length === 0) return { state: () => "DISABLED" };
+  if (lanes.length === 0) return { failureCodes: () => failureCodes, state: () => "DISABLED" };
   const itemTypes = [...new Set(lanes.flatMap((lane) =>
     lane === "FACT_VECTOR"
       ? ["FACT_VERSION" as const]
       : [
           "RECALL_CHUNK" as const,
-          ...(input.plan.filters.sourceKinds.includes("HISTORY")
+          ...(input.plan.filters.sourceKinds.includes("HISTORY") &&
+            input.excludeToolEvents !== true
             ? ["TOOL_EVENT" as const]
             : []),
           snapshot.roundSegmentProjectionVersion ===
@@ -4378,12 +4451,15 @@ function pushVectorTasks(
     profile: input.vector.profile,
     userId: snapshot.userId,
     vector: input.vector.vector
-  }).then((value) => {
-    if (value.status === "DEGRADED") state = "DEGRADED";
-    else evidence.push(...value.lanes);
+  }, { admission: "LANE", signal: input.settleSignal }).then((value) => {
+    if (value.status === "DEGRADED") {
+      state = "DEGRADED";
+      recordMemoryVectorFailure(failureCodes, value.reason);
+    } else evidence.push(...value.lanes);
     return value;
-  }).catch(() => {
+  }).catch((error: unknown) => {
     state = "DEGRADED";
+    recordMemoryVectorFailure(failureCodes, error, input.settleSignal);
     return { hits: [], lanes: [], reason: "memory_vector_unavailable" as const,
       status: "DEGRADED" as const };
   });
@@ -4400,21 +4476,31 @@ function pushVectorTasks(
           ? hit.itemType === "FACT_VERSION"
           : hit.itemType === "RECALL_CHUNK" || hit.itemType === "RECALL_ROUND" ||
             hit.itemType === "RECALL_ROUND_SEGMENT" || hit.itemType === "TOOL_EVENT");
-        return hits.length === 0 ? { candidates: [], lane }
-          : queryLane(client, lane, laneLimit,
-              vectorMetadataSql(snapshot, input.plan, itemType, hits, laneLimit), {
-                readBudgetMs: MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
-                sourceDiversity: input.plan.aggregationRequested &&
-                  lane === "HISTORY_RECALL_VECTOR"
-              });
+        if (hits.length === 0) return { candidates: [], lane };
+        try {
+          return await queryLane(client, lane, laneLimit,
+            vectorMetadataSql(snapshot, input.plan, itemType, hits, laneLimit), {
+              readBudgetMs: MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
+              signal: input.settleSignal,
+              sourceDiversity: input.plan.aggregationRequested &&
+                lane === "HISTORY_RECALL_VECTOR"
+            });
+        } catch (error) {
+          // Like the focused stage, an optional vector rejoin failure keeps
+          // the healthy lanes of this retrieval instead of failing all of it.
+          state = "DEGRADED";
+          recordMemoryVectorFailure(failureCodes, error, input.settleSignal);
+          return { candidates: [], lane };
+        }
       },
       lane,
       onUnavailable() {
         state = "DEGRADED";
+        recordMemoryVectorFailure(failureCodes, "memory_vector_settle_timeout");
       }
     });
   }
-  return { state: () => state };
+  return { failureCodes: () => failureCodes, state: () => state };
 }
 
 type MemoryIntraChatRawSelection = Readonly<{
@@ -4544,6 +4630,7 @@ type MemoryDigestIntraChatStageResult = Readonly<{
   laneResults: readonly MemoryLaneResult[];
   lexicalFailures: readonly MemoryRetrievalLane[];
   lexicalState: MemoryLocalRetrievalResult["lexicalState"];
+  vectorFailureCodes: readonly MemoryVectorFailureCode[];
   vectorState: MemoryLocalRetrievalResult["vectorState"];
 }>;
 
@@ -4581,6 +4668,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
       laneResults: input.laneResults,
       lexicalFailures: [],
       lexicalState: "DISABLED",
+      vectorFailureCodes: [],
       vectorState: "DISABLED"
     };
   }
@@ -4632,6 +4720,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
               plan: input.retrievalInput.plan,
               provider,
               queryLimit,
+              signal: input.settleSignal,
               snapshot: input.snapshot,
               sourceChatIds: selectedSourceChatIds,
               sourceDiversity: true
@@ -4655,6 +4744,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
             {
               maximumRows: queryLimit,
               recordCounts: recorder.counts,
+              signal: input.settleSignal,
               sourceDiversity: true
             }
           );
@@ -4662,7 +4752,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
           if (recorded) executionEvidence.push(recorded);
           return result;
         } catch (error) {
-          const recorded = recorder.failure(error);
+          const recorded = recorder.failure(error, input.settleSignal);
           if (recorded) {
             executionEvidence.push(recorded);
             lexicalFailures.push(lane);
@@ -4685,6 +4775,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
 
   let vectorState: MemoryLocalRetrievalResult["vectorState"] =
     input.retrievalInput.vector ? "DISABLED" : "NOT_CONFIGURED";
+  const vectorFailureCodes: MemoryVectorFailureCode[] = [];
   if (input.retrievalInput.vector && input.snapshot.indexMode === "HYBRID") {
     vectorState = "READY";
     const vector = input.retrievalInput.vector;
@@ -4719,12 +4810,16 @@ async function executeDigestIntraChatStage(input: Readonly<{
       profile: vector.profile,
       userId: input.snapshot.userId,
       vector: vector.vector
-    }).then((result) => {
+    }, { admission: "LANE", signal: input.settleSignal }).then((result) => {
       if (result.status === "READY") input.vectorEvidence.push(...result.lanes);
-      else vectorState = "DEGRADED";
+      else {
+        vectorState = "DEGRADED";
+        recordMemoryVectorFailure(vectorFailureCodes, result.reason);
+      }
       return result;
-    }).catch(() => {
+    }).catch((error: unknown) => {
       vectorState = "DEGRADED";
+      recordMemoryVectorFailure(vectorFailureCodes, error, input.settleSignal);
       return { hits: [], lanes: [], reason: "memory_vector_unavailable" as const,
         status: "DEGRADED" as const };
     });
@@ -4757,11 +4852,13 @@ async function executeDigestIntraChatStage(input: Readonly<{
             {
               maximumRows: rawLimit,
               readBudgetMs: MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
+              signal: input.settleSignal,
               sourceDiversity: true
             }
           );
-        } catch {
+        } catch (error) {
           vectorState = "DEGRADED";
+          recordMemoryVectorFailure(vectorFailureCodes, error, input.settleSignal);
           return { candidates: [], lane: "HISTORY_RECALL_VECTOR" };
         }
       },
@@ -4870,6 +4967,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
     laneResults: Object.freeze(laneResults),
     lexicalFailures: Object.freeze(distinctLexicalFailures),
     lexicalState,
+    vectorFailureCodes: Object.freeze([...vectorFailureCodes]),
     vectorState
   };
 }
@@ -6040,6 +6138,7 @@ function emptyResult(
     snapshot,
     sourceFamilyEvidence: emptySourceFamilyEvidence,
     vectorEvidence: [],
+    vectorFailureCodes: [],
     vectorState
   };
 }
@@ -6166,11 +6265,16 @@ export function createPrismaLocalMemoryRetrievalRepository(
       return false;
     }
   };
-  const canonicalRead = <Row>(sql: Prisma.Sql): Promise<Row[]> =>
+  const canonicalRead = <Row>(
+    sql: Prisma.Sql,
+    admission: MemoryReadAdmissionClass,
+    signal?: AbortSignal
+  ): Promise<Row[]> =>
     withMemoryReadBudget(
       client,
       MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
-      (tx) => tx.$queryRaw<Row[]>(sql)
+      (tx) => tx.$queryRaw<Row[]>(sql),
+      { admission, signal }
     );
   const repository = {
     async loadStandingFacts(
@@ -6187,7 +6291,8 @@ export function createPrismaLocalMemoryRetrievalRepository(
     async expand(
       snapshot: MemoryLocalRetrievalSnapshot,
       plan: MemoryRetrievalPlan,
-      candidates: readonly MemoryRankedCandidate[]
+      candidates: readonly MemoryRankedCandidate[],
+      options: Readonly<{ signal?: AbortSignal }> = {}
     ): Promise<readonly MemoryExpandedCandidate[]> {
       if (
         snapshot.status !== "READY" ||
@@ -6233,24 +6338,24 @@ export function createPrismaLocalMemoryRetrievalRepository(
             NULL::text AS "supportingItemId", NULL::timestamp AS "occurredFrom",
             NULL::timestamp AS "occurredTo"
           FROM eligible WHERE eligible."itemId" IN (${valuesSql(coreIds)})
-        `));
+        `, "REQUIRED", options.signal));
       }
       if (factIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
-        currentFactExpansionSql(snapshot, plan, factIds)));
+        currentFactExpansionSql(snapshot, plan, factIds), "REQUIRED", options.signal));
       if (digestChunkIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
-        digestExpansionSql(snapshot, plan, digestChunkIds)));
+        digestExpansionSql(snapshot, plan, digestChunkIds), "REQUIRED", options.signal));
       if (rawChunkIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
         plan.mode === "HISTORY_OVERVIEW"
           ? digestExpansionSql(snapshot, plan, rawChunkIds)
-          : chunkExpansionSql(snapshot, plan, rawChunkIds)));
+          : chunkExpansionSql(snapshot, plan, rawChunkIds), "REQUIRED", options.signal));
       if (toolEventIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
-        toolEventExpansionSql(snapshot, plan, toolEventIds)));
+        toolEventExpansionSql(snapshot, plan, toolEventIds), "REQUIRED", options.signal));
       if (roundSelections.legacyIds.length > 0) {
         queries.push(canonicalRead<ExpandedRow>(rawRoundExpansionSql(
           snapshot,
           plan,
           roundSelections.legacyIds
-        )).then((rows) => rows.map((row) => ({
+        ), "REQUIRED", options.signal).then((rows) => rows.map((row) => ({
           ...row,
           safeText: boundedMemoryRecallRoundEvidenceText(row.safeText)
         }))));
@@ -6260,7 +6365,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
           snapshot,
           plan,
           roundSelections.segments
-        )));
+        ), "REQUIRED", options.signal));
       }
       if (roundSelections.userSegments.length > 0) {
         // Containment needs the provenance of the rendered user excerpt, not
@@ -6271,7 +6376,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
           plan,
           roundSelections.userSegments,
           true
-        )).then((rows) => rows.flatMap((row) => {
+        ), "REQUIRED", options.signal).then((rows) => rows.flatMap((row) => {
           const projected = projectUserTestimonyExpandedRow(row);
           return projected ? [projected] : [];
         })));
@@ -6297,7 +6402,8 @@ export function createPrismaLocalMemoryRetrievalRepository(
       if (representatives.length === 0) return facts;
       const sourceChatIds = representatives.map(({ metadata }) => metadata.sourceChatId!);
       const rows = await canonicalRead<CandidateRow>(
-        aggregationDigestCandidatesSql(snapshot, plan, sourceChatIds)
+        aggregationDigestCandidatesSql(snapshot, plan, sourceChatIds),
+        "REQUIRED"
       );
       const bySource = new Map<string, MemoryLaneCandidate>();
       for (const row of rows) {
@@ -6413,7 +6519,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
           profile: options.vector.profile,
           userId: snapshot.userId,
           vector: options.vector.vector
-        });
+        }, { admission: "LANE" });
         if (vectorResult.status !== "READY") {
           throw new Error("memory_session_completion_vector_unavailable");
         }
@@ -6435,7 +6541,10 @@ export function createPrismaLocalMemoryRetrievalRepository(
               sourceChatIds,
               queryRankedRoundIds,
               selectedSeeds
-            )
+            ),
+        // Optional session completion: its failure only marks the stage
+        // unavailable, so it must not overtake required reads.
+        "LANE"
       );
       if (rows.length > sourceChatIds.length * perSourceLimit) {
         throw new Error("memory_session_completion_result_invalid");
@@ -6478,7 +6587,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
       const core = !denseOnly && input.plan.applyResponsePreferences
         ? await settleMemoryLocalRead(
             input.settleSignal,
-            () => loadCore(client, snapshot),
+            () => loadCore(client, snapshot, input.settleSignal),
             []
           )
         : [];
@@ -6512,7 +6621,8 @@ export function createPrismaLocalMemoryRetrievalRepository(
             baselineAllocation,
             lexicalEvidence,
             providerForLane,
-            "BASELINE"
+            "BASELINE",
+            input.settleSignal
           );
           lexicalExecutions.push(baselineLexicalExecution);
           vectorExecutions.push(pushVectorTasks(
@@ -6544,7 +6654,8 @@ export function createPrismaLocalMemoryRetrievalRepository(
             enrichedAllocation,
             lexicalEvidence,
             providerForLane,
-            "ENRICHED"
+            "ENRICHED",
+            input.settleSignal
           );
           lexicalExecutions.push(enrichedLexicalExecution);
         }
@@ -6648,6 +6759,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
       }
       const stageLexicalStates: MemoryLocalRetrievalResult["lexicalState"][] = [];
       const stageVectorStates: MemoryLocalRetrievalResult["vectorState"][] = [];
+      const stageVectorFailureCodes: MemoryVectorFailureCode[] = [];
       const stageLexicalFailures: MemoryRetrievalLane[] = [];
       if (separateBaseline) {
         const baselineStage = await executeDigestIntraChatStage({
@@ -6665,6 +6777,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
         if (baselineStage.digestEvidence.secondStageQueryCount > 0) {
           stageLexicalStates.push(baselineStage.lexicalState);
           stageVectorStates.push(baselineStage.vectorState);
+          stageVectorFailureCodes.push(...baselineStage.vectorFailureCodes);
           stageLexicalFailures.push(...baselineStage.lexicalFailures);
         }
       }
@@ -6686,6 +6799,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
       if (enrichedStage.digestEvidence.secondStageQueryCount > 0) {
         stageLexicalStates.push(enrichedStage.lexicalState);
         stageVectorStates.push(enrichedStage.vectorState);
+        stageVectorFailureCodes.push(...enrichedStage.vectorFailureCodes);
         stageLexicalFailures.push(...enrichedStage.lexicalFailures);
       }
       const sourceFamily = input.baselinePlan
@@ -6722,6 +6836,13 @@ export function createPrismaLocalMemoryRetrievalRepository(
         ...lexicalExecutions.flatMap((execution) => execution.failures()),
         ...stageLexicalFailures
       ])].sort((left, right) => left.localeCompare(right));
+      const vectorFailureCodes: MemoryVectorFailureCode[] = [];
+      if (vectorState === "DEGRADED") {
+        for (const code of [
+          ...vectorExecutions.flatMap((execution) => execution.failureCodes()),
+          ...stageVectorFailureCodes
+        ]) recordMemoryVectorFailure(vectorFailureCodes, code);
+      }
       const distinctVectorEvidence = [...new Map(vectorEvidence.map((entry) => [
         JSON.stringify(entry),
         entry
@@ -6736,6 +6857,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
         snapshot,
         sourceFamilyEvidence: sourceFamily.evidence,
         vectorEvidence: distinctVectorEvidence,
+        vectorFailureCodes: Object.freeze(vectorFailureCodes),
         vectorState
       };
     }
