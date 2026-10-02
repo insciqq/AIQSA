@@ -125,11 +125,7 @@ describe("Memory operational PostgreSQL contracts", () => {
             historyRoundSegmentsReused: 7,
             historyRoundsBuilt: 6,
             historyRoundsReplaced: 7,
-            historyRoundsReused: 8,
-            synthesisClusterCount: 3,
-            synthesisEligibleSourceCount: 9,
-            synthesisEmptyOutputCount: 1,
-            synthesisProposalCount: 2
+            historyRoundsReused: 8
           },
           state: "SUCCEEDED"
         },
@@ -172,12 +168,7 @@ describe("Memory operational PostgreSQL contracts", () => {
         roundsReplaced: 7,
         roundsReused: 8
       });
-      expect(snapshot.patterns).toMatchObject({
-        clusters: 3,
-        eligibleSources: 9,
-        emptyOutputs: 1,
-        proposals: 2
-      });
+      expect(snapshot).not.toHaveProperty("patterns");
       expect(snapshot.embeddings).toEqual({
         batchItems: 16,
         failedItems: 1,

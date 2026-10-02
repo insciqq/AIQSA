@@ -45,8 +45,7 @@ describe("account deletion command retention", () => {
       $executeRaw: vi.fn(async () => 1),
       $queryRaw: vi.fn(async () => [{ activeIndexGenerationId: null, decayEnabled: false,
         embeddingProviderModelId: null, learnAutomatically: false, memoryRevision: 3,
-        ownerStatus: "disabled", referenceChatHistory: false, synthesisEnabled: false,
-        useMemoryFacts: false }]),
+        ownerStatus: "disabled", referenceChatHistory: false, useMemoryFacts: false }]),
       chat: { count: vi.fn(async () => 0) }, modelRun: { count: vi.fn(async () => 0) },
       attachment: { count: vi.fn(async () => 0) }, sharedChatSnapshot: { count: vi.fn(async () => 0) },
       memoryJob: { updateMany: vi.fn(async () => { throw stopAfterCancellation; }) }
