@@ -92,16 +92,16 @@ try {
 `;
 
 try {
-  for (const name of ["compose.yaml", ".env.example"]) await copyFile(path.join(source, name), path.join(root, name));
-  await command("sh", [path.join(source, "scripts/configure.sh")]);
+  for (const name of ["compose.yaml", ".env.example", "aiqsa.sh"]) await copyFile(path.join(source, name), path.join(root, name));
+  const appPort = await freePort();
+  // The operator CLI owns .env creation; the project name pins every later CLI call.
+  await command("bash", ["aiqsa.sh", "configure", "--yes", "--workspace", "off", "--base-url", `http://localhost:${appPort}`,
+    "--admin-email", "release-check@example.invalid"]);
   let configuration = await readFile(path.join(root, ".env"), "utf8");
   for (const line of configuration.split("\n")) {
     if (/^AIQSA_.*(?:SECRET|PASSWORD|KEY)/u.test(line)) secrets.push(line.slice(line.indexOf("=") + 1));
   }
-  const appPort = await freePort();
-  configuration = configuration.replace("AIQSA_INITIAL_ADMIN_EMAIL=\n", "AIQSA_INITIAL_ADMIN_EMAIL=release-check@example.invalid\n")
-    .replace("AIQSA_APP_BASE_URL=http://localhost:3000", `AIQSA_APP_BASE_URL=http://localhost:${appPort}`);
-  configuration += `\nAIQSA_PORT=${appPort}\nAIQSA_BIND_ADDRESS=127.0.0.1\n`;
+  configuration += `\nAIQSA_PORT=${appPort}\nAIQSA_BIND_ADDRESS=127.0.0.1\nCOMPOSE_PROJECT_NAME=${project}\n`;
   for (const [name, key] of Object.entries(imageKeys)) {
     configuration += `${key}=${images[name]}\n`;
   }
@@ -112,9 +112,7 @@ try {
     assert.equal(service.build, undefined, `${name} must use a prebuilt image`);
     assert.ok(!service.container_name, "Service names must belong to the disposable project");
     if (name !== "app") assert.ok(!service.ports?.length, "Data services must have no published ports");
-    for (const volume of service.volumes ?? []) {
-      if (volume.type === "bind") assert.equal(volume.source, "/var/run/docker.sock");
-    }
+    assert.ok(!(service.volumes ?? []).some((volume) => volume.type === "bind"), `${name} must not bind-mount host paths`);
     for (const key of ["AIQSA_TEST_MODE", "PLAYWRIGHT_TEST_AUTH", "AIQSA_BOOTSTRAP_LOGIN_ENABLED"]) {
       assert.ok(!service.environment?.[key], `${key} must not be enabled`);
     }
@@ -139,7 +137,7 @@ try {
   configuration = configuration.replace(/^AIQSA_IMAGE=.+$/mu, `AIQSA_IMAGE=${upgradeImage}`);
   await writeFile(path.join(root, ".env"), configuration, { mode: 0o600 });
   console.log("production smoke: starting a fresh production installation");
-  await compose("up", "-d", "--wait", "--wait-timeout", "600");
+  await command("bash", ["aiqsa.sh", "up", "--timeout", "600"]);
   assert.equal(await inApp("console.log((await fetch('http://127.0.0.1:3000/api/health/ready')).status)"), "200");
   await assertWorkersRunning();
   await inApp(`
