@@ -996,6 +996,12 @@ async function withRecoveredToolHistory(deps: RunRecoveryDeps, request: Provider
   return mode === "insert" ? insertToolHistory(request, projection) : refreshToolHistory(request, projection);
 }
 
+/** The saved-call availability check of carried or referenced notes. */
+function recoveredCallsAvailable(deps: RunRecoveryDeps) {
+  const available = deps.repository.toolCallsAvailable;
+  return available ? (actor: Readonly<{ runId: string; userId: string }>, refs: readonly string[]) => available(actor, refs) : undefined;
+}
+
 /** Server-minted references of a run's persisted calls. */
 function recoveredToolCallRefs(calls: Iterable<PersistedToolLoopCall>): ToolCallRefEntry[] {
   return [...calls].flatMap(call => toolCallRefEntry(call) ?? []);
@@ -2846,7 +2852,8 @@ async function recoverCheckpointedToolLoop(
         receipts: recoveredSummaryReceipts(requestForBudget, round),
         request: requestForBudget,
         signal,
-        sourceAvailable: observationSourceAvailability(() => recoveredObservations(context), { runId: run.id, userId: run.userId }),
+        sourceAvailable: observationSourceAvailability(() => recoveredObservations(context), { runId: run.id, userId: run.userId },
+          recoveredCallsAvailable(deps)),
         summaryAdapter: { reportsDispatch: true, stream: (summaryRequest, options) =>
           streamRecoveredProviderRequest(summaryRequest, options?.signal ?? signal, options?.beforeDispatch) }
       });
@@ -3770,7 +3777,7 @@ async function recoveredGroundedAnswerRequest(input: Readonly<{
     request: await withRecoveredToolHistory(input.deps, input.request, { runId: input.runId, userId: input.userId }, "insert"),
     signal: input.signal,
     sourceAvailable: observationSourceAvailability(async () => input.deps.observations ?? defaultToolObservations(),
-      { runId: input.runId, userId: input.userId })
+      { runId: input.runId, userId: input.userId }, recoveredCallsAvailable(input.deps))
   });
 }
 

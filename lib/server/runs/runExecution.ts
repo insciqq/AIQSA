@@ -285,6 +285,7 @@ export type RunExecutionRepository = Pick<
   | "prepareAutomaticKnowledgeCallBatch"
   | "projectToolHistory"
   | "readToolCall"
+  | "toolCallsAvailable"
   | "recordRunUsageEvents"
   | "resetToolLoopAssistantDraft"
   | "settleToolLoopCall"
@@ -1849,7 +1850,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           receipts: summaryReceipts(request),
           request,
           signal: dispatchSignal,
-          sourceAvailable: observationSourceAvailability(observationService, { runId, userId: input.userId }),
+          sourceAvailable: observationSourceAvailability(observationService, { runId, userId: input.userId },
+            input.repository.toolCallsAvailable ? (actor, refs) => input.repository.toolCallsAvailable!(actor, refs) : undefined),
           // Reuse the authorized egress, without treating this internal request
           // as a steerable answer, the session context or a follow-up gate.
           summaryAdapter: { reportsDispatch: true, stream: (summaryRequest, options) => streamAnswerProviderDispatch(
@@ -3318,7 +3320,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.sessionStatusTool === true || hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;

@@ -7882,3 +7882,116 @@ describe("tool-free synthesis under the context budget", () => {
       error: expect.objectContaining({ code: expect.stringMatching(/^context_compaction_/u) }) })]);
   });
 });
+
+describe("cross-turn tool history", () => {
+  const writeCallId = "0f8fad5b-d9cb-469f-a165-70867728950e";
+  const writeRef = toolCallRefForTest(writeCallId);
+  function toolCallRefForTest(id: string) { return `tcr1_${id.replaceAll("-", "")}`; }
+
+  function historyPrepared() {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const messages: ProviderConversationMessage[] = [
+      { content: textMessageContent("Create the synthetic issue"), id: "question-1", role: "user" },
+      { content: textMessageContent("Done."), id: "answer-1", role: "assistant" },
+      { content: textMessageContent("Did you create it?"), id: "current-user-message", role: "user" }
+    ];
+    const toolHistory = { version: 1 as const, turns: [{ turnMessageId: "answer-1", callRefs: [writeRef], digest: "a".repeat(64) }] };
+    const normalizedRequest: NormalizedRunRequest = { ...base.normalizedRequest, content: messages.at(-1)!.content,
+      context: { messages, mode: "branch_path" }, toolCallReader: true, toolHistory,
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "answer-1", messages }) };
+    return { ...base, normalizedRequest, providerRequest: { ...normalizedRequest, attachments: [], tools: [readToolCallToolForTest] } };
+  }
+
+  const readToolCallToolForTest = { capability: "session" as const, description: "Read a saved call record.",
+    inputSchema: { type: "object" }, name: "read_tool_call" };
+
+  function historyProjection(argumentsText = "{\"title\":\"Synthetic issue 7\"}") {
+    return { blocks: [{ turnMessageId: "answer-1", userMessageId: "question-1", footer: null,
+      header: "[AIQSA record of tool calls made while answering the user message above.]",
+      entries: [{ ref: writeRef, details: true, compact: `- [${writeRef}] MCP Tracker › create_issue: executed; the tool reported success.`,
+        full: `- [${writeRef}] MCP Tracker › create_issue: executed; the tool reported success. Arguments: ${argumentsText}. Result: "created #7".` }] }] };
+  }
+
+  it("projects the records before their answer for every answer request and never into the accepted request", async () => {
+    const prepared = historyPrepared();
+    const acceptedContext = structuredClone(prepared.normalizedRequest.context);
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const projectToolHistory = vi.fn(async () => historyProjection());
+    const readToolCall = vi.fn(async () => ({ ref: writeRef, kind: "mcp" as const, toolName: "mcp_tracker_create_issue_abc",
+      label: "MCP Tracker › create_issue", previousAttempt: false, roundIndex: 1, ordinal: 0,
+      outcome: { status: "succeeded" as const, dispatched: true }, arguments: { state: "available" as const, text: "{\"title\":\"Synthetic issue 7\"}" },
+      result: { state: "inline" as const, text: "created #7" } }));
+    const adapter = createAdapter(async function* (request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: { call_ref: writeRef }, id: "read-1",
+        name: "read_tool_call" }] });
+      return providerResult({ finalText: "Yes: the earlier turn created issue #7." });
+    });
+    const events = await createRunExecutionResponse(executionInput({ adapter, prepared,
+      repository: { ...repository.repository, projectToolHistory, readToolCall } })).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.context!.messages.map((message) => message.id)).toEqual(["question-1", "tch1_answer-1", "answer-1", "current-user-message"]);
+      const record = request.context!.messages[1]!;
+      expect(record).toMatchObject({ role: "assistant", historyClass: "tool_history" });
+      expect(record.purpose).toBeUndefined();
+      const text = record.content.blocks.map((block) => (block as { text: string }).text).join("\n");
+      expect(text).toContain("MCP Tracker › create_issue");
+      expect(text).toContain("Synthetic issue 7");
+      expect(text).toContain(writeRef);
+    }
+    // Every answer request re-projects with the run's own authority.
+    expect(projectToolHistory.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(projectToolHistory).toHaveBeenCalledWith({ actor: { runId: "run-1", userId: "user-1" }, reader: true,
+      toolHistory: prepared.normalizedRequest.toolHistory });
+    // The accepted request never carries a record.
+    expect(prepared.normalizedRequest.context).toEqual(acceptedContext);
+    // The read returns the saved record; its row keeps only a receipt.
+    expect(readToolCall).toHaveBeenCalledWith({ runId: "run-1", userId: "user-1" }, writeRef);
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain("Synthetic issue 7");
+    const row = [...repository.toolCalls.values()].find((call) => call.toolName === "read_tool_call")!;
+    expect(row.state).toBe("complete");
+    expect(JSON.stringify(row.result)).not.toContain("Synthetic issue 7");
+    expect(JSON.stringify(row.result)).toContain("output_sha256");
+    // Nothing of the record or the read reaches the browser stream.
+    expect(events).not.toContain("Synthetic issue 7");
+    expect(events).not.toContain(writeRef);
+  });
+
+  it("drops a record a later projection no longer discloses and never re-adds a released one", async () => {
+    const prepared = historyPrepared();
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    let call = 0;
+    // The first two projections serve round one (its start and its consumer).
+    const projectToolHistory = vi.fn(async () => ++call <= 2 ? historyProjection()
+      : historyProjection("withheld (their secret values cannot be verified as redacted)"));
+    const adapter = createAdapter(async function* (request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: { call_ref: writeRef }, id: "read-1",
+        name: "read_tool_call" }] });
+      return providerResult({ finalText: "Answer." });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, prepared,
+      repository: { ...repository.repository, projectToolHistory } })).text();
+    expect(JSON.stringify(requests[0]!.context)).toContain("Synthetic issue 7");
+    // A revocation between rounds hides the details in the next request.
+    expect(JSON.stringify(requests[1]!.context)).not.toContain("Synthetic issue 7");
+    // Without the reader the read is unavailable, never a business call.
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain("tool_call_unavailable");
+  });
+
+  it("sends no records and no projection I/O for a run without a frozen history", async () => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const projectToolHistory = vi.fn();
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) { requests.push(request); return providerResult({ finalText: "Answer." }); });
+    await createRunExecutionResponse(executionInput({ adapter, prepared: base,
+      repository: { ...repository.repository, projectToolHistory } })).text();
+    expect(projectToolHistory).not.toHaveBeenCalled();
+    expect(requests[0]!.context!.messages.some((message) => message.historyClass)).toBe(false);
+  });
+});

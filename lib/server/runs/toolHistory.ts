@@ -15,58 +15,69 @@ export function omittedEntriesLine(count: number): string {
   return `- ${count} earlier call${count === 1 ? "" : "s"} of this turn ${count === 1 ? "is" : "are"} not listed here (record size limit); this does not mean ${count === 1 ? "it" : "they"} did not happen.`;
 }
 
+const NAMED_PREFIX = " read_tool_call reads them by call_ref:";
+
+/** The omission line, naming `refs` (newest first) when given. */
+function omissionLine(count: number, refs: readonly string[]): string {
+  return omittedEntriesLine(count) + (refs.length ? `${NAMED_PREFIX} ${refs.join(", ")}` : "");
+}
+
 /**
- * The lines of one record within `budgetBytes`, chronological: the newest
- * entries keep their full line while it fits, older ones their compact line,
- * and entries older than that are named by one omission line. The header and
- * the footer are always kept.
+ * The lines of one record within `budgetBytes`, chronological. As many of
+ * the newest entries as fit stay listed by their compact line, the newest of
+ * them upgraded to their full line while room remains; older entries are
+ * counted on one omission line that (with `nameOmittedRefs`) names as many of
+ * their call_refs, newest first, as still fit. The header and the footer are
+ * always kept.
  */
 export function renderToolHistoryBlock(block: ToolHistoryBlock, budgetBytes: number = TOOL_HISTORY_LIMITS.blockBytes,
   options: Readonly<{ nameOmittedRefs?: boolean }> = {}): Readonly<{
   lines: readonly string[];
   detailRefs: readonly string[];
 }> {
-  const fixed = [block.header, ...(block.footer ? [block.footer] : [])];
-  let remaining = Math.max(0, budgetBytes) - fixed.reduce((total, line) => total + bytes(line) + 1, 0);
-  const forms = new Array<"full" | "compact" | "omitted">(block.entries.length).fill("omitted");
-  let mode: "full" | "compact" | "omitted" = "full";
-  for (let index = block.entries.length - 1; index >= 0; index -= 1) {
-    const entry = block.entries[index]!;
-    const omissionReserve = index > 0 ? bytes(omittedEntriesLine(index)) + 1 : 0;
-    if (mode === "full" && bytes(entry.full) + 1 + omissionReserve <= remaining) {
-      forms[index] = "full";
-      remaining -= bytes(entry.full) + 1;
-      continue;
-    }
-    if (mode !== "omitted" && bytes(entry.compact) + 1 + omissionReserve <= remaining) {
-      mode = "compact";
-      forms[index] = "compact";
-      remaining -= bytes(entry.compact) + 1;
-      continue;
-    }
-    mode = "omitted";
+  const { entries } = block;
+  const fixed = bytes(block.header) + 1 + (block.footer ? bytes(block.footer) + 1 : 0);
+  // Naming omitted calls for the reader may take up to a quarter of the room.
+  const namingReserve = options.nameOmittedRefs ? Math.floor(Math.max(0, budgetBytes) / 4) : 0;
+  const refBytes: number[] = [0];
+  for (const entry of entries) refBytes.push(refBytes.at(-1)! + bytes(entry.ref) + 2);
+  const omissionBytes = (count: number) => count > 0
+    ? bytes(omittedEntriesLine(count)) + 1 + Math.min(namingReserve, namingReserve ? bytes(NAMED_PREFIX) + refBytes[count]! : 0) : 0;
+  // Compact bytes of the listed suffix, from the oldest listed entry on.
+  let listedBytes = entries.reduce((total, entry) => total + bytes(entry.compact) + 1, 0);
+  let first = 0;
+  while (first < entries.length && fixed + listedBytes + omissionBytes(first) > budgetBytes) {
+    listedBytes -= bytes(entries[first]!.compact) + 1;
+    first += 1;
   }
-  const omitted = forms.filter(form => form === "omitted").length;
-  let omission = omitted > 0 ? omittedEntriesLine(omitted) : null;
+  let remaining = budgetBytes - fixed - listedBytes - (first > 0 ? bytes(omittedEntriesLine(first)) + 1 : 0);
+  let omission = first > 0 ? omittedEntriesLine(first) : null;
   if (omission && options.nameOmittedRefs) {
-    // What still fits names the omitted calls, newest first, for the reader.
-    const refs = block.entries.flatMap((entry, index) => forms[index] === "omitted" ? [entry.ref] : []).reverse();
-    omission = withRefs(omission, refs, Math.max(bytes(omission), remaining - 1));
+    const base = bytes(omission);
+    omission = withRefs(omission, entries.slice(0, first).map(entry => entry.ref).reverse(),
+      base + Math.min(Math.max(0, remaining), namingReserve));
+    remaining -= bytes(omission) - base;
+  }
+  const full = new Set<number>();
+  for (let index = entries.length - 1; index >= first; index -= 1) {
+    const extra = bytes(entries[index]!.full) - bytes(entries[index]!.compact);
+    if (extra <= remaining) {
+      full.add(index);
+      remaining -= extra;
+    }
   }
   const lines = [block.header, ...(omission ? [omission] : []),
-    ...block.entries.flatMap((entry, index) => forms[index] === "full" ? [entry.full]
-      : forms[index] === "compact" ? [entry.compact] : []),
+    ...entries.slice(first).map((entry, offset) => full.has(first + offset) ? entry.full : entry.compact),
     ...(block.footer ? [block.footer] : [])];
-  return { lines, detailRefs: block.entries.flatMap((entry, index) => forms[index] === "full" && entry.details ? [entry.ref] : []) };
+  return { lines, detailRefs: entries.flatMap((entry, index) => full.has(index) && entry.details ? [entry.ref] : []) };
 }
 
 /** `line` naming as many of `refs` as fit within `budgetBytes`. */
 function withRefs(line: string, refs: readonly string[], budgetBytes: number): string {
-  const prefix = " read_tool_call reads them by call_ref:";
   let text = line;
   let named = 0;
   for (const ref of refs) {
-    const next = `${named === 0 ? text + prefix : text + ","} ${ref}`;
+    const next = `${named === 0 ? text + NAMED_PREFIX : text + ","} ${ref}`;
     if (bytes(next) > budgetBytes) break;
     text = next;
     named += 1;

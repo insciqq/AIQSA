@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ToolObservationDescriptor } from "../toolObservations/contract";
+import { toolHistoryTurnMessageId } from "./toolHistoryContract";
 import type { ProviderConversationMessage, NormalizedRunRequest } from "../providers/types";
 import type {
   ContextCompactionCheckpoint,
@@ -290,7 +291,17 @@ export function contextSummaryReuseCandidates(input: Readonly<{
   priorMessageIds: readonly string[];
   userId: string;
 }>): ContextSummaryReuse[] {
-  const position = new Map(input.priorMessageIds.map((messageId, order) => [messageId, order]));
+  const ancestry = new Map(input.priorMessageIds.map((messageId, order) => [messageId, order]));
+  // A tool-history record (provider-only) sits just before the answer of its
+  // turn, so notes bounded by one cover up to that answer's position.
+  const position = { has: (messageId: string) => at(messageId) !== undefined, get: (messageId: string) => at(messageId) };
+  function at(messageId: string): number | undefined {
+    const direct = ancestry.get(messageId);
+    if (direct !== undefined) return direct;
+    const turn = toolHistoryTurnMessageId(messageId);
+    const answer = turn === null ? undefined : ancestry.get(turn);
+    return answer === undefined ? undefined : answer - 0.5;
+  }
   return [...input.checkpoints]
     .filter((candidate) => position.has(candidate.assistantMessageId))
     .sort((left, right) => position.get(right.assistantMessageId)! - position.get(left.assistantMessageId)!)
