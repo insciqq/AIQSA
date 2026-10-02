@@ -242,7 +242,7 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
       "system",
       "System model",
       policy.systemModel,
-      "MCP routing and structured helpers need a checked model",
+      "chat summaries for continuing in a new chat and Memory ranking without a reranker need a checked model",
       "warn"
     ),
     roleItem(

@@ -132,7 +132,7 @@ export function AdminSystemRolesTable({
       </div>
 
       <RoleRow
-        description="Handles MCP routing and structured helpers. Needs strict JSON output and forced tool calls. Memory has its own assignment below."
+        description="Writes the summary when a chat continues in a new chat and ranks Memory results when no reranker is assigned. Needs strict JSON output and forced tool calls. Memory has its own assignment below."
         menu={[{
           disabled: !policy.systemModel || busy,
           label: "Clear assignment",
