@@ -1076,7 +1076,7 @@ describe("run preparation", () => {
         expect(prepared.normalizedRequest.workspace?.guidanceVersion).toBe(1);
         expect(prepared.normalizedRequest.prompt.system).not.toContain("Read messageManifestPath");
         const retry = preparedFrom(await preparePdfRetry({ workspace }, { adapter: harness.adapter, prepared,
-          userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }));
+          userId: "user-1", userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }));
         expect(retry.normalizedRequest.agent?.compatibilityHash).toBe(prepared.normalizedRequest.agent?.compatibilityHash);
         expect(retry.workspaceAdmissionPlan!.runId).not.toBe(prepared.workspaceAdmissionPlan!.runId);
         expect(retry.normalizedRequest.workspace?.guidanceVersion).toBe(1);
@@ -1087,7 +1087,7 @@ describe("run preparation", () => {
         const preUpgrade = { ...prepared, normalizedRequest: { ...prepared.normalizedRequest,
           agent: { ...prepared.normalizedRequest.agent!, codexVersion: "0.158.0" } } };
         expect(preparedFrom(await preparePdfRetry({ workspace }, { adapter: harness.adapter, prepared: preUpgrade,
-          userMessageId: prepared.workspaceAdmissionPlan!.userMessageId })).normalizedRequest.agent).toEqual(preUpgrade.normalizedRequest.agent);
+          userId: "user-1", userMessageId: prepared.workspaceAdmissionPlan!.userMessageId })).normalizedRequest.agent).toEqual(preUpgrade.normalizedRequest.agent);
       }
       expect(load).toHaveBeenCalledWith(expect.objectContaining({ requiresClientSearchRoutes: true }));
       expect(workspace.prepare).toHaveBeenCalledWith(expect.objectContaining({ agentEnabled: true }));
@@ -1475,7 +1475,7 @@ describe("run preparation", () => {
     prepared.providerRequest.attachments = []; // persisted preparation snapshot
     const buildRequestPreview = vi.fn((request: ProviderRunRequest) => ({ workspace: request.workspace, prompt: request.prompt, tools: request.tools }));
     return { deps, input: { ...result, adapter: { ...result.adapter, buildRequestPreview }, prepared,
-      userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }, buildRequestPreview,
+      userId: "user-1", userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }, buildRequestPreview,
       changeWorkspace: () => { revision = 2; }, workspace };
   }
 
@@ -5535,6 +5535,42 @@ describe("cross-turn tool history admission", () => {
     expect(loadToolHistory).toHaveBeenCalledOnce();
     // Never an empty history, which would read as a chat without calls.
     expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [], unavailable: true });
+  });
+
+  it("refuses an Agent admission and its document retry whose history records cannot fit the prompt", async () => {
+    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+    try {
+      const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async (input) => ({ ok: true, tools: [], plan: {
+        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
+        normalized: { enabled: true, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
+          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
+          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+      } })) };
+      const turn = { turnMessageId: "prior-answer", userMessageId: "prior-user-message", callRefs: [`tcr1_${"a".repeat(32)}`], digest: "d".repeat(64) };
+      // One earlier turn whose 2,600 calls take 1.2 MB as compact lines.
+      const records = (executed: boolean) => ({ blocks: [{ turnMessageId: turn.turnMessageId, userMessageId: turn.userMessageId, footer: null,
+        header: "[AIQSA record of tool calls made while answering the user message above.]",
+        entries: Array.from({ length: 2_600 }, (_, index) => {
+          const ref = `tcr1_${index.toString(16).padStart(32, "0")}`;
+          const compact = `- [${ref}] MCP Tracker › write ${"w".repeat(400)}: ${executed ? "executed" : "not executed: refused before dispatch"}.`;
+          return { ref, compact, full: compact, details: false, essential: executed };
+        }) }] });
+      const admit = (executed: boolean) => prepareRun({ ...harness.deps, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) },
+        repository: { ...harness.deps.repository, loadToolHistory: vi.fn(async () => ({ version: 1 as const, turns: [turn] })),
+          projectToolHistory: vi.fn(async () => records(executed)) } },
+      sendInput(successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" })));
+      // Calls that were not executed are only counted: the prompt fits.
+      const admitted = preparedFrom(await admit(false));
+      // Executed calls keep their lines, so the prompt cannot fit: refused before acceptance.
+      await expect(admit(true)).resolves.toMatchObject({ ok: false, code: "agent_context_too_large", status: 413 });
+      // A document retry of the admitted run checks the records again.
+      const retry = (executed: boolean) => preparePdfRetry({ workspace, repository: { projectToolHistory: vi.fn(async () => records(executed)) } },
+        { adapter: harness.adapter, prepared: admitted, userId: "user-1", userMessageId: admitted.workspaceAdmissionPlan!.userMessageId });
+      expect((await retry(false)).ok).toBe(true);
+      await expect(retry(true)).resolves.toMatchObject({ ok: false, code: "agent_context_too_large", status: 413 });
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("admits the call reader only for tool-capable answer models", async () => {

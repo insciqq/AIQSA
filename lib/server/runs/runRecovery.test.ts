@@ -6364,7 +6364,7 @@ describe("run recovery", () => {
       // no projection is reused across awaited work.
       expect(projected.project).toHaveBeenCalledTimes(2);
       expect(projected.project).toHaveBeenCalledWith({ actor: { runId, userId }, readers: { call: true, result: false },
-        toolHistory: expect.objectContaining({ version: 1 }), cache: expect.any(Map) });
+        toolHistory: expect.objectContaining({ version: 1 }), cache: expect.any(Map), currentUserMessageId: "question-1" });
       const [first] = projected.requests;
       expect(first!.context!.messages.map(message => message.id)).toEqual(["question-0", "tch1_answer-0", "answer-0", "question-1"]);
       expect(first!.context!.messages[1]).toMatchObject({ role: "assistant", historyClass: "tool_history" });

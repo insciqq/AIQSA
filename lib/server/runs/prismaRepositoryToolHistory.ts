@@ -511,6 +511,9 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
       toolHistory: ToolHistorySnapshot;
       /** The reading run's memo of what never changes between its requests. */
       cache?: ToolHistoryCache;
+      /** The request's current user message, for a reader whose context
+       * cannot be read: its earlier attempts keep their own record. */
+      currentUserMessageId?: string | null;
     }>): Promise<ToolHistoryProjection> {
       const turns = input.toolHistory.turns;
       if (turns.length === 0) return { blocks: [] };
@@ -525,10 +528,11 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: 
         const byId = new Map(heads.map(call => [call.id, call]));
         const runs = await acceptedRuns(tx, [...new Set(heads.map(call => call.modelRunId))], input.cache);
         const mcp = context ? mcpAuthority(tx, context) : null;
+        const currentUserMessageId = context ? context.currentUserMessageId : input.currentUserMessageId ?? null;
         const states = turns.map(turn => ({ records: [] as ToolHistoryRecord[], unavailableCalls: 0, userMessageId: null as string | null,
           // Earlier attempts of the current message form their own record;
           // in a past turn they are marked beside the current branch's calls.
-          currentTurn: context !== null && turn.turnMessageId === context.currentUserMessageId }));
+          currentTurn: currentUserMessageId !== null && turn.turnMessageId === currentUserMessageId }));
         const describableCalls: Array<Readonly<{ turn: number; call: CallHead; run: AcceptedRun; previousAttempt: boolean }>> = [];
         for (const [index, turn] of turns.entries()) {
           const state = states[index]!;

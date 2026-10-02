@@ -173,6 +173,12 @@ describe("Prisma cross-turn tool history", () => {
     expect(regeneration.turns.map(turn => turn.turnMessageId)).toEqual([regenerated.answer.id, second.id]);
     expect(regeneration.turns[1]).toEqual({ turnMessageId: second.id, userMessageId: second.id, callRefs: [ref(c5)],
       digest: toolHistoryDigest([c5]) });
+    // A reader whose context cannot be read keeps the current message's record as its earlier attempts.
+    const refused = await operations.projectToolHistory({ actor: { chatId: f.chat.id, leafMessageId: second.id, userId: f.strangerId },
+      readers, toolHistory: regeneration, currentUserMessageId: second.id });
+    expect(refused.blocks.map(block => block.entries.length)).toEqual([0, 0]);
+    expect(refused.blocks[0]!.header).toContain("made while answering the user message above");
+    expect(refused.blocks[1]!.header).toContain("earlier attempts to answer the next user message");
     // Other users and drafts freeze nothing.
     expect(await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: regenerated.answer.id, userId: f.strangerId }))
       .toEqual({ version: 1, turns: [] });

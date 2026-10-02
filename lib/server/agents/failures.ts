@@ -11,7 +11,8 @@ const messages = {
   agent_search_failed: "The admitted search request could not complete.",
   agent_provider_interrupted: "The model request was interrupted.",
   agent_authority_expired: "Agent execution was interrupted because its workspace authorization expired.",
-  agent_execution_interrupted: "Agent execution was interrupted. Its unfinished actions were not replayed."
+  agent_execution_interrupted: "Agent execution was interrupted. Its unfinished actions were not replayed.",
+  agent_context_too_large: "This conversation is too large to start Agent. Continue in a new chat."
 } as const;
 
 export type AgentFailureCode = keyof typeof messages;

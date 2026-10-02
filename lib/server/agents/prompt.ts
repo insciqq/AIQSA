@@ -6,6 +6,7 @@ import { AGENT_PROMPT_MAX_BYTES } from "./guest";
 import { WORKSPACE_GUIDANCE_VERSION } from "../workspace/promptContract";
 import { boundedToolHistoryTexts } from "../runs/toolHistory";
 import { isToolHistoryMessage } from "../runs/toolHistoryContract";
+import { AgentExecutionError } from "./failures";
 
 /** The native prompt is user-level. Selected Skills are never developer instructions. */
 export function agentPrompts(request: ProviderRunRequest) {
@@ -72,7 +73,7 @@ export function agentPrompts(request: ProviderRunRequest) {
     const withTexts = (texts: readonly string[]) => compose(currentOnly, new Map(ids.map((id, index) => [id, texts[index]!])));
     const whole = withTexts(boundedToolHistoryTexts(blocks, Number.POSITIVE_INFINITY));
     if (Buffer.byteLength(whole) <= AGENT_PROMPT_MAX_BYTES) return whole;
-    if (records.length === 0) throw new Error("agent_context_too_large");
+    if (records.length === 0) throw new AgentExecutionError("agent_context_too_large");
     let budget = AGENT_PROMPT_MAX_BYTES - Buffer.byteLength(compose(currentOnly, new Map(ids.map(id => [id, " "])))) - 2048;
     for (let attempt = 0; attempt < 4 && budget > 0; attempt += 1) {
       const bounded = withTexts(boundedToolHistoryTexts(blocks, budget));
@@ -80,7 +81,7 @@ export function agentPrompts(request: ProviderRunRequest) {
       if (overflow <= 0) return bounded;
       budget -= overflow + 2048;
     }
-    throw new Error("agent_context_too_large");
+    throw new AgentExecutionError("agent_context_too_large");
   };
   return {
     prompt: render(false), resumePrompt: render(true),
