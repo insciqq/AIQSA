@@ -20,8 +20,7 @@ export function createMcpClientSessionFactory(input: Readonly<{
       launch.signal?.throwIfAborted();
       let url: URL;
       try {
-        if (!launch.url || launch.toolHive) throw new Error("invalid direct launch");
-        if (launch.oauthConnectionId && launch.trustedInternalHttp) throw new Error("invalid local oauth launch");
+        if (!launch.url) throw new Error("invalid direct launch");
         url = new URL(launch.url);
       } catch {
         throw new McpClientSessionError({

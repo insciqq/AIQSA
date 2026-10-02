@@ -119,15 +119,13 @@ function sensitiveStrings(input: McpDraftValidationInput, includeEndpoint = true
     const value = input.values[slot.slotKey];
     return slot.sensitive && typeof value === "string" && value.length > 0 ? [value] : [];
   });
-  if (input.draft.source.kind === "remote") {
-    const endpoint = new URL(input.draft.source.url);
-    if (includeEndpoint) values.push(endpoint.toString());
-    for (const value of endpoint.searchParams.values()) {
-      if (value) values.push(value);
-    }
-    // Ordinary route components are not credentials. Sensitive slots and the
-    // OAuth provider identify exact secrets, including any also used in a path.
+  const endpoint = new URL(input.draft.source.url);
+  if (includeEndpoint) values.push(endpoint.toString());
+  for (const value of endpoint.searchParams.values()) {
+    if (value) values.push(value);
   }
+  // Ordinary route components are not credentials. Sensitive slots and the
+  // OAuth provider identify exact secrets, including any also used in a path.
   return [...new Set(values)];
 }
 
@@ -176,7 +174,7 @@ function sanitizedInventory(
 function safeFailure(error: unknown, input: McpDraftValidationInput, authProvider: McpValidationOAuthProvider | null): McpDraftValidationOutcome {
   if (error instanceof McpClientSessionError) {
     const path = error.operation === "list_tools" ? "tools" : "source";
-    let endpoint = input.draft.source.kind === "remote" ? safeMcpEndpoint(input.draft.source.url) : undefined;
+    let endpoint = safeMcpEndpoint(input.draft.source.url);
     try {
       const secrets = [...sensitiveStrings(input, false), ...(authProvider?.exactKnownSecrets?.() ?? [])].filter(Boolean);
       if (endpoint && containsSensitiveValue(decodeURIComponent(endpoint), secrets)) endpoint = undefined;
@@ -194,7 +192,6 @@ function successfulOutcome(input: {
   tools: readonly AiqsaMcpToolDefinition[];
 }): McpDraftValidationOutcome {
   const source = input.draft.source;
-  if (source.kind !== "remote") return invalid("mcp_local_runtime_unavailable", "source.kind");
   const endpoint = new URL(source.url);
   const endpointHash = hashCanonicalMcpValue({
     origin: endpoint.origin,
@@ -232,9 +229,6 @@ export function createRemoteMcpDraftValidator(
 
   return {
     async validate(input) {
-      if (input.draft.source.kind !== "remote") {
-        return invalid("mcp_local_runtime_unavailable", "source.kind");
-      }
       if (input.draft.transport !== "streamable_http") {
         return invalid("mcp_remote_transport_required", "transport");
       }
@@ -265,7 +259,7 @@ export function createRemoteMcpDraftValidator(
           headers: headerResult.headers,
           limits,
           requestTimeoutMs: input.draft.runtime.callTimeoutMs,
-          url: new URL(checkedDraft.source.kind === "remote" ? checkedDraft.source.url : "")
+          url: new URL(checkedDraft.source.url)
         });
       try {
         session = openSession();
