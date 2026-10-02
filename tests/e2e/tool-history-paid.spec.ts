@@ -27,7 +27,15 @@ import type { AdminMcpServer } from "../../lib/contracts/mcp";
 import { textFromContentBlocks } from "../../lib/domain/modelRunEvents";
 import { namespacedMcpToolName } from "../../lib/server/mcp/runPlan";
 import { toolCallRef } from "../../lib/server/runs/toolHistoryContract";
-import { codexLbSetupBody, journeyRunParams, modelInConnection, readConnections } from "../../scripts/context-compaction-journey-support";
+import { decodeAdminProviderModelSaveReceipt } from "../../lib/contracts/adminProviderModelSave";
+import {
+  catalogReadiness,
+  codexLbSetupBody,
+  contextWindowUpdate,
+  journeyRunParams,
+  modelInConnection,
+  readConnections
+} from "../../scripts/context-compaction-journey-support";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { signInWithLocalToken } from "./support/localAuth";
 import {
@@ -70,11 +78,17 @@ function runParams(model: CatalogModel): Record<string, unknown> {
 }
 
 async function catalogModel(request: APIRequestContext, provider: string, modelId: string, contextWindow?: number): Promise<AnswerModel> {
+  let state = "catalog_model_missing";
   const model = await poll(SETUP_TIMEOUT_MS, async () => {
     const catalog = decodeCatalogResponse(await (await request.get("/api/me/catalog")).json());
     const entry = catalog?.models.find((candidate) => candidate.provider === provider && candidate.modelId === modelId);
-    return entry && entry.capabilities.toolCalling && (contextWindow === undefined || entry.contextWindow === contextWindow)
-      ? entry : null;
+    state = contextWindow === undefined
+      ? !entry ? "catalog_model_missing" : entry.capabilities.toolCalling ? "ready" : "catalog_tool_calling_unavailable"
+      : catalogReadiness(entry, contextWindow);
+    return state === "ready" ? entry! : null;
+  }).catch((error: unknown) => {
+    // The timeout names the last observed catalog state.
+    throw error instanceof Error && error.message === "tool_history_poll_timeout" ? new Error(`tool_history_${state}`) : error;
   });
   return { contextWindow: model.contextWindow, modelId, params: runParams(model), provider };
 }
@@ -103,6 +117,18 @@ async function codexLbModel(request: APIRequestContext): Promise<AnswerModel> {
       ?.find((candidate) => candidate.id === connectionId);
     return connection && !connection.checkRunning ? modelInConnection(connection, upstream)?.id ?? null : null;
   });
+  // A discovered model keeps the upstream catalog's window; publish the check window as the administrator's value.
+  const configured = readConnections(await (await request.get("/api/admin/providers")).json())
+    ?.find((candidate) => candidate.id === connectionId);
+  const configuredModel = configured ? modelInConnection(configured, upstream) : null;
+  const windowUpdate = configuredModel ? contextWindowUpdate(configuredModel, contextWindow) : null;
+  if (windowUpdate) {
+    const saved = await request.patch(
+      `/api/admin/providers/${encodeURIComponent(connectionId)}/models/${encodeURIComponent(providerModelId)}`,
+      { data: windowUpdate, timeout: SETUP_TIMEOUT_MS });
+    const receipt = decodeAdminProviderModelSaveReceipt(saved.ok() ? (await saved.json() as { receipt?: unknown }).receipt : null);
+    expect(receipt?.publication, "the check context window is published").toBe("active");
+  }
   return catalogModel(request, connectionId, providerModelId, contextWindow);
 }
 
