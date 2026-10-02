@@ -308,6 +308,7 @@ export type ExtractionQualificationReport = Readonly<{
   groups: Record<ExtractionQualificationGroup, ExtractionQualificationGroupReport>;
   degraded: number;
   degradedCodes: Counts;
+  jobRetries: Counts;
   jobStages: Counts;
   providerCalls: Counts;
   inputTokens: number;
@@ -322,6 +323,8 @@ export type ExtractionQualificationReport = Readonly<{
 export function summarizeExtractionQualification(input: Readonly<{
   results: readonly ExtractionQualificationResult[];
   degradedCodes: readonly string[];
+  /** Retryable job failures the coordinator policy retried. */
+  jobRetries?: readonly string[];
   jobStages: readonly string[];
   usage: readonly ExtractionQualificationUsage[];
 }>): ExtractionQualificationReport {
@@ -352,13 +355,16 @@ export function summarizeExtractionQualification(input: Readonly<{
   }
   const degradedCodes: Counts = {};
   for (const code of input.degradedCodes) increment(degradedCodes, code);
+  const jobRetries: Counts = {};
+  for (const code of input.jobRetries ?? []) increment(jobRetries, code);
   const jobStages: Counts = {};
   for (const stage of input.jobStages) increment(jobStages, stage);
   const providerCalls: Counts = {};
   let degraded = input.degradedCodes.length;
   for (const row of input.usage) {
     increment(providerCalls, `${row.role}:${row.state}`);
-    if (row.state !== "SUCCEEDED") degraded++;
+    // RETRIED: a replay-safe transient call whose job then succeeded.
+    if (row.state !== "SUCCEEDED" && row.state !== "RETRIED") degraded++;
   }
   const sum = (key: "inputTokens" | "outputTokens" | "totalTokens" | "estimatedCostMicros") =>
     input.usage.reduce((total, row) => total + (row[key] ?? 0), 0);
@@ -374,6 +380,7 @@ export function summarizeExtractionQualification(input: Readonly<{
     estimatedCostMicros: sum("estimatedCostMicros"),
     groups,
     inputTokens: sum("inputTokens"),
+    jobRetries,
     jobStages,
     outputTokens: sum("outputTokens"),
     providerCalls,
@@ -407,7 +414,7 @@ export function sanitizeExtractionQualificationMessage(message: unknown): Record
     "estimatedCostMicros", "reportedTokenCalls", "reportedCostCalls"]) {
     if (count(raw[key])) safe[key] = raw[key];
   }
-  for (const key of ["degradedCodes", "jobStages", "providerCalls"]) {
+  for (const key of ["degradedCodes", "jobRetries", "jobStages", "providerCalls"]) {
     const projected = counts(raw[key]);
     if (projected) safe[key] = projected;
   }

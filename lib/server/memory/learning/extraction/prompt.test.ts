@@ -74,7 +74,13 @@ describe("Memory semantic-frame extraction prompt", () => {
       "considering, planned, and ordered are passing steps",
       "returned, sold, cancelled, and no_longer_owned only update an existing product fact",
       "a short task or deliverable is SHORT_TERM and gets no lifecycle SLOT",
-      "only the profession qualifies"
+      "only the profession qualifies",
+      "classify the resulting state, not the moment of change",
+      "memory_directive EXPLICIT_REMEMBER, and its honest usefulness class, even a rejection class",
+      "that the earlier restriction or state no longer holds",
+      "copy its ref into dependency_refs",
+      "running every morning or learning a language, does qualify",
+      "Every product_status SLOT, whether its state is lasting, passing, or terminal, uses the same shape"
     ]) expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(rule);
   });
 

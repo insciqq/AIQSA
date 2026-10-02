@@ -87,6 +87,9 @@ import {
   MEMORY_FACT_RELATION_PIPELINE_VERSION
 } from "../relations/policy";
 import { createPrismaMemoryRelationRepository } from "../relations/repository";
+import { createPrismaMemoryRelationHandler } from "../relations/handler";
+import { reconcileMemoryFactRelationJobs } from "../relations/reconcile";
+import { createPrismaMemoryCoordinatorRepository } from "../../coordinator/prismaRepository";
 import { commitMemoryVNextExtractionPlan } from "../../vnext/repository";
 import { loadMemoryFactContextRefs } from "../dependencies/context";
 import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../../maintenance/policy";
@@ -5893,6 +5896,43 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         });
         expect(pending).toMatchObject({ factId: owned.factId, usefulness: "DURABLE" });
         expect(pending.structuredValue).toMatchObject({ state: "returned" });
+
+        // The coordinator's relation reconciliation queues the resolution job;
+        // the ordinary relation handler then replaces the owned state.
+        await reconcileMemoryFactRelationJobs(prisma);
+        const queued = await prisma.memoryJob.findFirstOrThrow({
+          where: { kind: "RESOLVE_FACT_RELATIONS", state: "QUEUED", targetFactVersionId: pending.id, userId }
+        });
+        const claimToken = randomUUID();
+        const leaseExpiresAt = new Date(Date.now() + 120_000);
+        const claimed = await prisma.memoryJob.update({
+          data: { attemptCount: { increment: 1 }, leaseExpiresAt, leaseToken: claimToken, state: "CLAIMED" },
+          where: { id: queued.id }
+        });
+        const relationClaim: MemoryJobClaim = {
+          activeLeafMessageId: claimed.activeLeafMessageId, attemptCount: claimed.attemptCount,
+          branchGeneration: claimed.branchGeneration, chatId: claimed.chatId, claimToken,
+          id: claimed.id, idempotencyFingerprint: claimed.idempotencyFingerprint, kind: claimed.kind,
+          leaseExpiresAt, memoryGenerationSnapshot: claimed.memoryGenerationSnapshot,
+          memoryRevisionSnapshot: claimed.memoryRevisionSnapshot,
+          pipelineVersion: claimed.pipelineVersion, recoveredLease: false,
+          sourceHash: claimed.sourceHash, sourceMessageId: claimed.sourceMessageId,
+          sourceRevision: claimed.sourceRevision, stage: claimed.stage,
+          targetFactVersionId: claimed.targetFactVersionId, userId: claimed.userId
+        };
+        const handler = createPrismaMemoryRelationHandler(prisma);
+        await expect(handler.preflight(relationClaim)).resolves.toMatchObject({ status: "READY" });
+        const result = await handler.execute(relationClaim, {
+          now: () => new Date(), setStage: async () => undefined, signal: new AbortController().signal
+        });
+        await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
+          acceptedResultHash: result.acceptedResultHash, apply: result.apply, claim: relationClaim,
+          now: new Date(), stage: result.stage ?? null
+        })).resolves.toBe(true);
+        await expect(prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: pending.id } }))
+          .resolves.toMatchObject({ state: "ACTIVE" });
+        await expect(prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: owned.id } }))
+          .resolves.toMatchObject({ state: "SUPERSEDED" });
       } finally {
         await cleanupOwner(userId);
       }
