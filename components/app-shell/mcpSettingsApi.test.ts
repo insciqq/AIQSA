@@ -65,7 +65,7 @@ describe("MCP settings API", () => {
 
   it("drops internal diagnostics from the decoded catalog", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ servers: [{
-      ...server, errorCode: "mcp_artifact_missing", runtimeGenerationId: "private-generation"
+      ...server, errorCode: "mcp_private_runtime_failure", runtimeGenerationId: "private-generation"
     }] }));
     vi.stubGlobal("fetch", fetchMock);
     expect(await loadUserMcpServers()).toEqual([server]);
