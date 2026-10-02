@@ -132,7 +132,7 @@ describe("personal MCP credential replacement", () => {
     } });
     expect(JSON.stringify(result)).not.toContain("rotated");
     expect(validate).toHaveBeenCalledWith({
-      draft: staticDraft(), serverId: "server-1", validationUserId: "user-1", values: { authorization: "Bearer rotated" }
+      draft: staticDraft(), personal: true, serverId: "server-1", validationUserId: "user-1", values: { authorization: "Bearer rotated" }
     });
     expect(revisionCreate).not.toHaveBeenCalled();
     expect(serverUpdate).not.toHaveBeenCalled();

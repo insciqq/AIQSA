@@ -91,6 +91,7 @@ function createBootstrapTransaction(input: {
     agentPolicyUpsert: record("agentPolicy.upsert", { id: "installation" }),
     memoryUtilityModelPolicyUpsert: record("memoryUtilityModelPolicy.upsert", { id: "installation" }),
     workspacePolicyUpsert: record("workspacePolicy.upsert", { id: "installation" }),
+    mcpPolicyUpsert: record("mcpPolicy.upsert", { id: "installation" }),
     userMemorySettingsUpsert: record("userMemorySettings.upsert", {}),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
@@ -162,6 +163,7 @@ function createBootstrapTransaction(input: {
     workspacePolicy: {
       upsert: spies.workspacePolicyUpsert
     },
+    mcpPolicy: { upsert: spies.mcpPolicyUpsert },
     user: {
       create: spies.userCreate,
       findUnique: spies.userFindUnique
@@ -411,6 +413,12 @@ describe("installation bootstrap", () => {
         id: "installation",
         internetEnabled: true
       },
+      update: {},
+      where: { id: "installation" }
+    });
+    // Personal MCP local network access starts on and adoption keeps a saved choice.
+    expect(fixture.spies.mcpPolicyUpsert).toHaveBeenCalledWith({
+      create: { id: "installation", personalLocalNetworkEnabled: true },
       update: {},
       where: { id: "installation" }
     });

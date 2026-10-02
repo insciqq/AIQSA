@@ -161,7 +161,7 @@ for (const viewport of viewports) {
       await capture(page, testInfo, "tool-filter", viewport.name, filter);
 
       const changed = section.locator("article", { has: page.getByRole("heading", { name: "Changed sign-in" }) });
-      await changed.getByRole("button", { name: "Connect Changed sign-in" }).click();
+      await changed.getByRole("button", { exact: true, name: "Connect Changed sign-in" }).click();
       await expect(changed.getByRole("button", { name: "Disconnect and add again" })).toBeVisible();
       await capture(page, testInfo, "reconnect-refused", viewport.name, changed);
     });

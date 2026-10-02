@@ -9,6 +9,7 @@ import { boundMcpToolDescription, type McpToolExclusionReason } from "@/lib/cont
 import type { McpPublishedToolDefinitions } from "./definitions";
 import { mcpDispatchError } from "./dispatchStatus";
 import { redactMcpToolCallResult } from "./resultRedaction";
+import { mcpNetworkPolicyRefusal } from "./safeFetch";
 import { ToolHiveClientError } from "./toolhiveClient";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, type LifecycleStage } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
@@ -287,6 +288,9 @@ async function mapLimit<Value>(
 }
 
 function stableRuntimeError(error: unknown): string {
+  // A network-policy refusal keeps its reason through launch, health and refresh.
+  const refusal = mcpNetworkPolicyRefusal(error);
+  if (refusal) return refusal;
   if (error instanceof ToolHiveClientError && error.code === "toolhive_artifact_missing") {
     return "mcp_artifact_missing";
   }

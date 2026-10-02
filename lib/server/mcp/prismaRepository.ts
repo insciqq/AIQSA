@@ -1543,7 +1543,7 @@ export function createPrismaMcpRepository(input: {
             resolvedArtifact: null,
             toolInventory: [] as McpToolInventoryEntry[]
           }
-        : await draftValidator.validate({ draft, serverId, validationUserId: userId, values: validation.values });
+        : await draftValidator.validate({ draft, personal: true, serverId, validationUserId: userId, values: validation.values });
       if (outcome.kind === "invalid") return { kind: "draft_validation_failed" as const, issues: outcome.issues };
       const evidence = jsonObjectFrom(outcome.evidence);
       const resolvedArtifact = outcome.resolvedArtifact === null ? null : jsonObjectFrom(outcome.resolvedArtifact);
@@ -1674,7 +1674,7 @@ export function createPrismaMcpRepository(input: {
       const values: Record<string, McpSlotValue> = { [slot.slotKey]: authorization };
       const validation = draftValidationValues({ draft: nextDraft, oneTimeValues: values, sharedValues: {} });
       if (validation.issues.length) return { kind: "invalid_values" as const, issues: validation.issues };
-      const outcome = await draftValidator.validate({ draft: nextDraft, serverId, validationUserId: userId, values: validation.values });
+      const outcome = await draftValidator.validate({ draft: nextDraft, personal: true, serverId, validationUserId: userId, values: validation.values });
       if (outcome.kind === "invalid") {
         // With the stored header name kept, a header that cannot be set is
         // caused by the value, which the validator reports at the slot target.

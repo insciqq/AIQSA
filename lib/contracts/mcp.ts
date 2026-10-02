@@ -30,6 +30,7 @@ const MCP_RUNTIME_ERROR_MESSAGES = {
   mcp_authorization_required: "MCP authorization is no longer valid. Reconnect in MCP settings.",
   mcp_connect_failed: "The MCP connection failed. Check the server and try again.",
   mcp_health_check_failed: "The MCP health check failed. Check the server and try again.",
+  mcp_internal_address_forbidden: "This address belongs to AIQSA or its host services, so MCP cannot use it.",
   mcp_inventory_invalid: "The MCP server returned an invalid tool inventory. Ask an administrator to check the server.",
   mcp_inventory_changed: "The MCP tool inventory changed. Refresh the connection before trying again.",
   mcp_inventory_cursor_cycle: "The MCP server repeated a tool-list page, so its inventory could not be read completely. Ask an administrator to check the server.",
@@ -39,6 +40,7 @@ const MCP_RUNTIME_ERROR_MESSAGES = {
   mcp_inventory_schema_limit: "An MCP tool schema exceeds the size limit. Ask an administrator to check the server.",
   mcp_inventory_time_limit: "The MCP server's tool list could not be read within its time limit. Check the server and try again.",
   mcp_inventory_tool_limit: `The MCP server offers more than ${MCP_SERVER_TOOL_LIMIT} tools. Ask an administrator to reduce the server's tools.`,
+  mcp_local_network_disabled: "Local network access for personal MCP connections is turned off. Ask an administrator.",
   mcp_response_too_large: "The MCP server response exceeded its size limit. Ask an administrator to check the server.",
   mcp_runtime_unavailable: "The MCP runtime is unavailable. Check MCP settings and try again.",
   mcp_session_closed: "The MCP session closed. Try again to reconnect the runtime.",
@@ -476,6 +478,8 @@ export type McpErrorCode =
   | "json_required"
   | "mcp_enabled_server_limit_reached"
   | "mcp_encryption_unavailable"
+  | "mcp_internal_address_forbidden"
+  | "mcp_local_network_disabled"
   | "mcp_not_found"
   | "mcp_oauth_insecure_endpoint"
   | "mcp_revision_required"

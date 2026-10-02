@@ -5,6 +5,7 @@ import { AdminTopbarMenu, useAdminSectionTopbar, type AdminShellTopbar } from "@
 import { AdminMcpConfigurationsSheet } from "@/components/admin/mcp/AdminMcpConfigurationsSheet";
 import { AdminMcpList } from "@/components/admin/mcp/AdminMcpList";
 import { mcpOneTimeRequest, type AdminMcpOneTimeValueDraft } from "@/components/admin/mcp/AdminMcpOneTimeValues";
+import { AdminMcpPolicyPanel } from "@/components/admin/mcp/AdminMcpPolicyPanel";
 import { AdminMcpServerPage } from "@/components/admin/mcp/AdminMcpServerPage";
 import { AdminMcpSettingsSheet } from "@/components/admin/mcp/AdminMcpSettingsSheet";
 import {
@@ -62,10 +63,11 @@ function Crumbs({ current, onBack }: Readonly<{ current: string; onBack(): void 
 }
 
 /**
- * MCP servers section (PRD 5.10): the list, one server page per
- * `?resource=`, the Settings and Earlier configurations sheets, and the
- * validation OAuth return. The section owns the topbar; the panel owns the
- * controller because the Users and Groups pages share it.
+ * MCP servers section (PRD 5.10): the list with the personal connection
+ * policy, one server page per `?resource=`, the Settings and Earlier
+ * configurations sheets, and the validation OAuth return. The section owns
+ * the topbar; the panel owns the controller because the Users and Groups
+ * pages share it.
  */
 export function AdminMcpSection({
   controller,
@@ -279,6 +281,7 @@ export function AdminMcpSection({
         <p className="text-xs leading-5 text-ink-muted">
           People use a server&apos;s tools in chat once a group or a direct grant includes them; servers with OAuth also ask each person to connect their own account.
         </p>
+        <AdminMcpPolicyPanel reportNotice={feedback.reportNotice} />
       </div>
       <AdminMcpSettingsSheet
         controller={controller}

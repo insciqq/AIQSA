@@ -17,6 +17,8 @@ services:
       AIQSA_ARTIFACT_IMAGE_HOSTS: ${AIQSA_ARTIFACT_IMAGE_HOSTS-}
       AIQSA_AUTH_SESSION_SECRET: ${AIQSA_AUTH_SESSION_SECRET:?Set AIQSA_AUTH_SESSION_SECRET in .env}
       AIQSA_BIND_ADDRESS: ${AIQSA_BIND_ADDRESS:-127.0.0.1}
+      # Published application port: personal MCP never reaches it through the host gateway.
+      AIQSA_PORT: ${AIQSA_PORT:-3000}
       AIQSA_BOOTSTRAP_AUTH_TOKEN: ${AIQSA_BOOTSTRAP_AUTH_TOKEN:-}
       AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256: ${AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256:-}
       AIQSA_BOOTSTRAP_LOGIN_ENABLED: ${AIQSA_BOOTSTRAP_LOGIN_ENABLED:-}
@@ -130,6 +132,10 @@ services:
       S3_REGION: ${AIQSA_S3_REGION:-us-east-1}
       S3_SECRET_ACCESS_KEY: ${AIQSA_S3_SECRET_ACCESS_KEY:?Set AIQSA_S3_SECRET_ACCESS_KEY in .env}
     cpus: ${AIQSA_APP_CPU_LIMIT:-2.0}
+    # Personal MCP reaches services on the Docker host through this name while
+    # the administrator allows local network access; AIQSA's ports stay denied.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health/ready').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 10s
