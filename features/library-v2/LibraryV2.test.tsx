@@ -624,42 +624,21 @@ describe("Library resource panels", () => {
     expect(onForget).toHaveBeenCalledWith(editable.memoryRef);
   });
 
-  it("shows a combined memory's sources and routes nested Forget without Edit", () => {
+  it("lists former combination sources as ordinary memories without a Combined block", () => {
     const onEdit = vi.fn();
-    const onForget = vi.fn();
-    const combined = memoryConsumerItemFixture({
-      allowedActions: ["FORGET"],
-      combined: {
-        sourceCount: 3,
-        sources: [1, 2, 3].map((index) => ({
-          category: "WORK",
-          createdAt: "2026-08-21T05:00:00.000Z",
-          memoryRef: `opaque-source-${index}`,
-          provenance: "LEARNED" as const,
-          sourceAvailable: true,
-          statement: `I use review step ${index}.`,
-          updatedAt: "2026-08-21T05:00:00.000Z"
-        }))
-      },
-      memoryRef: "opaque-combined",
-      statement: "I use a weekly review workflow."
-    });
-    const { rerender } = render(<MemoryPanelV2 {...memoryPanelProps({
-      items: [combined], onEdit, onForget
-    })} />);
-    expect(screen.getByText(/Combined from 3 memories/)).toBeVisible();
-    expect(screen.queryByText("I use review step 1.")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show source memories" }));
-    expect(screen.getByText("I use review step 1.")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
-    fireEvent.click(screen.getAllByRole("button", { name: "Forget" })[0]!);
-    expect(onForget).toHaveBeenCalledWith("opaque-source-1");
-    expect(onEdit).not.toHaveBeenCalled();
-    rerender(<MemoryPanelV2 {...memoryPanelProps({
-      activeRef: "opaque-source-1", items: [combined], onEdit, onForget,
-      rowMode: "forget"
-    })} />);
-    expect(screen.getAllByRole("button", { name: "Forget" })).toHaveLength(3);
+    const items = [1, 2, 3].map((index) => memoryConsumerItemFixture({
+      category: "WORK",
+      memoryRef: `opaque-source-${index}`,
+      provenance: "LEARNED",
+      statement: `I use review step ${index}.`
+    }));
+    render(<MemoryPanelV2 {...memoryPanelProps({ items, onEdit })} />);
+    for (const item of items) expect(screen.getByText(item.statement)).toBeVisible();
+    expect(screen.getAllByText(/Learned from chat/)).toHaveLength(3);
+    expect(screen.queryByText(/Combined from/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /source memories/ })).toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]!);
+    expect(onEdit).toHaveBeenCalledWith("opaque-source-1");
   });
 
   it("keeps all six server categories in contract order and omits empty groups", () => {
