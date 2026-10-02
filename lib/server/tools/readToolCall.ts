@@ -105,6 +105,8 @@ function argumentsSection(record: ToolHistoryRecord, offset: number, maxBytes: n
       ? "Their secret values cannot be verified as redacted." : "This run cannot read them." };
     case "not_retained": return { state: "not_retained" };
     case "unavailable": return { state: "unavailable", reason: value.reason };
+    // Records name oversized values by size; the reader itself loads them whole.
+    case "omitted": return { state: "not_loaded", total_bytes: value.bytes };
     case "not_applicable": return { state: "not_available_for_this_tool" };
   }
 }
@@ -123,6 +125,7 @@ function resultSection(record: ToolHistoryRecord, offset: number, maxBytes: numb
     }
     case "withheld": return { state: "withheld", reason: "This run cannot read it." };
     case "unavailable": return { state: "unavailable", reason: value.reason };
+    case "omitted": return { state: "not_loaded", total_bytes: value.bytes };
     case "not_applicable": return { state: "none" };
   }
 }

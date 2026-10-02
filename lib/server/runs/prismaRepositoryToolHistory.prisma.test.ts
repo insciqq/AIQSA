@@ -303,6 +303,31 @@ describe("Prisma cross-turn tool history", () => {
     expect(await operations.toolCallsAvailable(regenerated.actor, [ref(calls[4]!)])).toBe(false);
   });
 
+  it("names saved values too large for a record by size, keeps their outcome and reads them whole on request", async () => {
+    const f = await fixture();
+    const answered = await f.answer(await f.question(null));
+    const large = await f.call(answered, { round: 1, ordinal: 0, item: 1 });
+    await prisma.modelRunToolCall.update({ where: { id: large.id }, data: {
+      arguments: { query: "item 1", body: "x".repeat(40_000) },
+      result: { callId: large.providerCallId, name: large.toolName, status: "error",
+        content: [{ type: "text", text: "e".repeat(40_000) }], rawPreview: { isError: true, unsupportedContentTypes: [] } } } });
+    await f.call(answered, { round: 1, ordinal: 1, item: 2 });
+    const current = await f.answer(await f.question(answered.answer.id), { status: "in_progress" });
+    const toolHistory = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: answered.answer.id, userId: f.initiatorId });
+    const [omitted, whole] = (await operations.projectToolHistory({ actor: current.actor, reader: true, toolHistory })).blocks[0]!.entries;
+    expect(omitted!.ref).toBe(ref(large));
+    // The envelope still proves the tool's own error; the values are named by size.
+    expect(omitted!.full).toContain("executed; the tool reported an error");
+    expect(omitted!.full).toMatch(/Arguments: about \d+ bytes, not shown here; read_tool_call returns them/u);
+    expect(omitted!.full).toMatch(/Result: about \d+ bytes, not shown here; read_tool_call returns it/u);
+    expect(omitted!.full).not.toContain("xxxx");
+    expect(whole!.full).toContain('Arguments: {"query":"item 2"}');
+    // The reader loads the one call whole and pages it.
+    const read = await operations.readToolCall(current.actor, ref(large));
+    expect(read).toMatchObject({ outcome: { status: "tool_error" }, arguments: { state: "available" }, result: { state: "inline" } });
+    expect(read?.arguments.state === "available" ? read.arguments.text.length : 0).toBeGreaterThan(40_000);
+  });
+
   it("treats a Search call of an option that is no longer available as unavailable", async () => {
     const f = await fixture();
     const answered = await f.answer(await f.question(null));
