@@ -114,6 +114,7 @@ function createBootstrapTransaction(input: {
     memoryEgressAdminPolicyUpsert: record("memoryEgressAdminPolicy.upsert", { id: "installation" }),
     mcpActivationJobDeleteMany: record("mcpActivationJob.deleteMany", { count: 0 }),
     mcpGrantUpsert: record("mcpGrant.upsert", { id: "mcp-grant-id" }),
+    mcpOAuthConnectionFindMany: record("mcpOAuthConnection.findMany", []),
     mcpRevisionDeleteMany: record("mcpRevision.deleteMany", { count: 0 }),
     mcpRuntimeGenerationDeleteMany: record("mcpRuntimeGeneration.deleteMany", { count: 0 }),
     mcpServerDeleteMany: record("mcpServer.deleteMany", { count: 0 }),
@@ -172,6 +173,9 @@ function createBootstrapTransaction(input: {
     },
     mcpActivationJob: {
       deleteMany: spies.mcpActivationJobDeleteMany
+    },
+    mcpOAuthConnection: {
+      findMany: spies.mcpOAuthConnectionFindMany
     },
     mcpRevision: {
       deleteMany: spies.mcpRevisionDeleteMany
@@ -796,9 +800,10 @@ describe("installation bootstrap", () => {
     await expect(bootstrapInstallationDatabase(prisma, { ...baseInput, acceptLocalMcpRemoval: true }))
       .resolves.toMatchObject({ localMcpRemovedCount: 4, status: "already_adopted" });
 
-    const removal = fixture.events.slice(4, 11);
+    const removal = fixture.events.slice(4, 12);
     expect(removal).toEqual([
       "localMcp.inspect",
+      "mcpOAuthConnection.findMany",
       "projectMcpBinding.deleteMany",
       "mcpRuntimeGeneration.deleteMany",
       "mcpRevision.deleteMany",

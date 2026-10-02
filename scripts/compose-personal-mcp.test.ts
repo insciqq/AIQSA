@@ -5,7 +5,14 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
-type Service = { environment?: Record<string, string>; extra_hosts?: string[]; ports?: string[] };
+type Service = {
+  environment?: Record<string, string>;
+  extra_hosts?: string[];
+  networks?: string[] | Record<string, unknown>;
+  ports?: string[];
+  profiles?: string[];
+  volumes?: Array<string | { source?: string; type?: string }>;
+};
 
 const load = (file: string) =>
   (parse(readFileSync(path.resolve(file), "utf8")) as { services: Record<string, Service> }).services;
@@ -38,5 +45,21 @@ describe("personal MCP host gateway topology", () => {
       expect(fallback, service).toBeDefined();
       expect(environment[variable]).toBe(`\${${variable}:-${fallback}}`);
     }
+  });
+
+  it("production stack runs no Docker-socket controller and mounts no host path", () => {
+    const services = load("compose.yaml");
+    for (const [name, service] of Object.entries(services)) {
+      for (const volume of service.volumes ?? []) {
+        const source = typeof volume === "string" ? volume.split(":")[0] : volume.type === "bind" ? volume.source : undefined;
+        expect(source ?? "", `${name} volume`).not.toMatch(/^[./~]/u);
+      }
+      const networks = Array.isArray(service.networks) ? service.networks : Object.keys(service.networks ?? {});
+      expect(networks, name).not.toContain("mcp-control");
+      expect(service.profiles ?? [], name).not.toContain("maintenance");
+    }
+    // The bootstrap gate reads the operator's acknowledgement only through this passthrough.
+    expect(services["migrate-bootstrap"]?.environment?.AIQSA_ACCEPT_LOCAL_MCP_REMOVAL)
+      .toBe("${AIQSA_ACCEPT_LOCAL_MCP_REMOVAL:-}");
   });
 });
