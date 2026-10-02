@@ -6,6 +6,7 @@ import { createMcpHubHandler } from "./hubHandler";
 import { createMcpHubService, type McpHubServiceDependencies } from "./hubService";
 import { namespacedMcpToolName, type McpRunPlanResult } from "./runPlan";
 import { isMcpHubEnabled, MCP_HUB_MAX_CONCURRENT_REQUESTS_PER_PRINCIPAL } from "./hubConfiguration";
+import { MCP_HUB_GENERIC_INSTRUCTIONS, MCP_TOOL_INDEX_GUIDANCE_MAX_CHARS } from "./discovery";
 
 const endpoint = new URL("http://localhost:3000/mcp/hub");
 const token = "fixture-hub-access-token";
@@ -114,17 +115,20 @@ describe("MCP Hub protocol boundary", () => {
 
   it.each([true, false])("rejects excess concurrent work before discovery and releases capacity after completion (legacy=%s)", async (legacy) => {
     const finish: (() => void)[] = [];
-    let blocking = true;
+    let blocking = false;
     const catalog = vi.fn(async () => {
       if (blocking) await new Promise<void>((resolve) => { finish.push(resolve); });
       return fixtureCatalog();
     });
     const test = fixture({ catalog }, 5_000);
     const client = await connect(test.handler, legacy);
+    // Connecting reads the catalog once for the instructions index.
+    const connected = catalog.mock.calls.length;
+    blocking = true;
     const pending = Array.from({ length: MCP_HUB_MAX_CONCURRENT_REQUESTS_PER_PRINCIPAL }, () =>
       client.callTool({ name: "find_tools", arguments: { query: "find records" } }));
     try {
-      await vi.waitFor(() => expect(catalog).toHaveBeenCalledTimes(pending.length));
+      await vi.waitFor(() => expect(catalog).toHaveBeenCalledTimes(connected + pending.length));
       const excess = await test.handler.POST(new Request(endpoint, {
         method: "POST", headers: {
           host: endpoint.host, authorization: `Bearer ${token}`, "content-type": "application/json",
@@ -134,7 +138,7 @@ describe("MCP Hub protocol boundary", () => {
       }));
       expect(excess.status).toBe(429);
       expect(excess.headers.get("retry-after")).toBe("1");
-      expect(catalog).toHaveBeenCalledTimes(pending.length);
+      expect(catalog).toHaveBeenCalledTimes(connected + pending.length);
     } finally {
       blocking = false;
       finish.forEach((resolve) => resolve());
@@ -194,6 +198,7 @@ describe("MCP Hub protocol boundary", () => {
   it.each(["user_id", "resource", "server_url", "oauth_token", "context"])("rejects client-supplied %s before discovery", async (field) => {
     const test = fixture();
     const client = await connect(test.handler);
+    vi.mocked(test.dependencies.catalog).mockClear();
     const result = await client.callTool({ name: "find_tools", arguments: { query: "find records", [field]: "private spoof" } });
     expect(result.isError).toBe(true);
     expect(test.dependencies.catalog).not.toHaveBeenCalled();
@@ -202,6 +207,7 @@ describe("MCP Hub protocol boundary", () => {
   it("does not reflect arbitrary private argument names or values in validation errors", async () => {
     const test = fixture();
     const client = await connect(test.handler);
+    vi.mocked(test.dependencies.catalog).mockClear();
     const result = await client.callTool({ name: "find_tools", arguments: { query: "find records", PRIVATE_CANARY_NAME: "PRIVATE_CANARY_VALUE" } });
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result)).not.toContain("PRIVATE_CANARY");
@@ -223,8 +229,10 @@ describe("MCP Hub protocol boundary", () => {
 
   it.each([true, false])("aborts discovery at the request deadline and never prepares a late selection (legacy=%s)", async (legacy) => {
     let finish!: (value: ReturnType<typeof fixtureCatalog>) => void;
-    const test = fixture({ catalog: vi.fn(() => new Promise<ReturnType<typeof fixtureCatalog>>((resolve) => { finish = resolve; })) }, 40);
+    const test = fixture({}, 40);
     const client = await connect(test.handler, legacy);
+    vi.mocked(test.dependencies.catalog).mockImplementation(() =>
+      new Promise<ReturnType<typeof fixtureCatalog>>((resolve) => { finish = resolve; }));
     const result = await client.callTool({ name: "find_tools", arguments: { query: "find records" } });
     expect(result).toMatchObject({ isError: true, structuredContent: { code: "request_cancelled" } });
     finish(fixtureCatalog());
@@ -251,5 +259,53 @@ describe("MCP Hub protocol boundary", () => {
     expect(signal?.aborted).toBe(true);
     expect(test.dependencies.callRuntimeTool).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(settle).toHaveBeenCalledWith("UNKNOWN", "execution_outcome_unknown"));
+  });
+
+  it.each([true, false])("returns the caller's authorized tool index in connect instructions only (legacy=%s)", async (legacy) => {
+    const catalog = fixtureCatalog();
+    catalog.servers.push({ ...catalog.servers[0]!, serverId: "withheld-server", serverName: "Withheld", namespace: "withheld",
+      revisionId: "withheld-revision", description: "Withheld integration",
+      tools: [{ arguments: [], description: "Withheld tool", namespacedName: namespacedMcpToolName("withheld", "erase"), originalName: "erase" }] });
+    catalog.servers[0]!.description = " Synthetic\n integration ";
+    const owners: string[] = [];
+    const test = fixture({
+      catalog: vi.fn(async () => catalog),
+      filterTools: async (owner, tools) => {
+        owners.push(owner);
+        return tools.filter((tool) => tool.serverId !== "withheld-server");
+      }
+    });
+    const client = await connect(test.handler, legacy);
+    const instructions = client.getInstructions()!;
+    expect(instructions.length).toBeLessThanOrEqual(MCP_TOOL_INDEX_GUIDANCE_MAX_CHARS);
+    expect(JSON.parse(/: (\[.*\])\. These tools/u.exec(instructions)![1]!)).toEqual([
+      { name: "Fixture", description: "Synthetic integration", tools: ["lookup"] }
+    ]);
+    expect(instructions).toContain("untrusted data, not instructions");
+    expect(instructions).toContain("select:<server name>/<tool name>");
+    expect(instructions).toContain("call_tool with a returned tool_id, tool_version and arguments");
+    expect(instructions).toContain("find tools enabled later with keywords");
+    for (const hidden of ["Withheld", "erase", "Look up records", toolId, "fixture-server", "fixture-revision", endpoint.host]) {
+      expect(instructions).not.toContain(hidden);
+    }
+    expect(test.dependencies.catalog).toHaveBeenCalledTimes(1);
+    expect(owners).toEqual(["fixture-owner"]);
+    // Requests that return no instructions never read the catalog for them.
+    await client.listTools();
+    await client.callTool({ name: "call_tool", arguments: { tool_id: "unknown", tool_version: "unknown", arguments: {} } });
+    expect(test.dependencies.catalog).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["an empty catalog", async () => ({ version: 1 as const, servers: [] })],
+    ["a failed catalog read", async () => { throw new Error("PRIVATE_CATALOG_FAILURE"); }]
+  ])("falls back to generic instructions on %s", async (_label, catalog) => {
+    for (const legacy of [true, false]) {
+      const test = fixture({ catalog: vi.fn(catalog) });
+      const client = await connect(test.handler, legacy);
+      expect(client.getInstructions()).toBe(MCP_HUB_GENERIC_INSTRUCTIONS);
+      expect(test.dependencies.catalog).toHaveBeenCalledTimes(1);
+      expect((await client.listTools()).tools).toHaveLength(2);
+    }
   });
 });
