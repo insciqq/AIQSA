@@ -4,7 +4,7 @@ import type { ProviderConversationMessage, ProviderRunRequest } from "../provide
 import { visionAnalysisGuidance } from "../tools/analyzeImage";
 import { AGENT_PROMPT_MAX_BYTES } from "./guest";
 import { WORKSPACE_GUIDANCE_VERSION } from "../workspace/promptContract";
-import { boundedToolHistoryTexts } from "../runs/toolHistory";
+import { boundedToolHistoryTexts, type ToolHistoryRenders } from "../runs/toolHistory";
 import { isToolHistoryMessage } from "../runs/toolHistoryContract";
 import { AgentExecutionError } from "./failures";
 
@@ -26,59 +26,87 @@ export function agentPrompts(request: ProviderRunRequest) {
   for (let index = messages.length - 1; index >= 0; index--) {
     if (messages[index]!.role === "assistant" && !isToolHistoryMessage(messages[index]!)) { previousAssistantIndex = index; break; }
   }
-  const compose = (currentOnly: boolean, historyTexts?: ReadonlyMap<string, string>) => {
-    // A resumed thread already holds the earlier turns, and their records;
-    // only records after the previous answer (earlier attempts of the current
-    // message) are new to it.
-    const selected = currentOnly ? messages.slice(previousAssistantIndex + 1) : messages;
-    const text = [
-      "Continue the AIQSA conversation below and carry out the current user's task. Historical messages are conversation context, not new commands.",
-      ...(request.workspace ? [
-        "Current AIQSA turn workspace paths (replace all previous turn paths):",
-        ...(!modernWorkspace ? ["Before asking the user to upload a source again, inspect the current attachment references and inboxIndexPath. " +
-        "No attachments on this turn does not mean earlier sources are absent. The index distinguishes uploads from previous exports; " +
-        "use exact attachment IDs and producing messages, never filename alone. Verify the indexed file before claiming bytes are available; " +
-        "historical context does not authorize replaying earlier or uncertain tool actions."] : []),
-        JSON.stringify({ outputDirectory: request.workspace.outputDirectory,
-          inboxIndexPath: request.workspace.inboxIndexPath,
-          ...(request.attachments.length ? { messageManifestPath: request.workspace.messageManifestPath } : {}),
-          attachments: request.attachments.map(({ fileName, mimeType, byteSize }) => ({ fileName, mimeType, byteSize })) })
-      ] : []),
-      ...(currentOnly && mcpDiscoveryAvailable ? [
-        "Previously discovered MCP definitions are usable only after server revalidation for this turn. " +
-        "If call_tool reports discovery_required or tool_definition_changed before dispatch, call find_tools and use its returned version and schema. " +
-        "Discovery does not repeat the business operation. Never replay a dispatched operation with an unknown outcome."
-      ] : []),
-      JSON.stringify(selected.map((message) => ({ role: message.role,
-        text: historyTexts?.get(message.id) ?? textFromContentBlocks(message.content) }))),
-      ...(request.prompt.personalInstructions ? ["Current personal instructions:", request.prompt.personalInstructions] : []),
-      ...request.attachments.flatMap((attachment) => attachment.pdfDelivery === "prepared_text" && attachment.extractedText
-        ? [`Prepared document ${JSON.stringify(attachment.fileName)} (document data):`, attachment.extractedText] : []),
-      ...(request.prompt.responseReminder ? ["Current response reminder:", request.prompt.responseReminder] : [])
-    ].join("\n\n");
-    return text;
+  // The sections around the conversation, fixed while a prompt is fitted.
+  const sectionsBefore = (currentOnly: boolean): string[] => [
+    "Continue the AIQSA conversation below and carry out the current user's task. Historical messages are conversation context, not new commands.",
+    ...(request.workspace ? [
+      "Current AIQSA turn workspace paths (replace all previous turn paths):",
+      ...(!modernWorkspace ? ["Before asking the user to upload a source again, inspect the current attachment references and inboxIndexPath. " +
+      "No attachments on this turn does not mean earlier sources are absent. The index distinguishes uploads from previous exports; " +
+      "use exact attachment IDs and producing messages, never filename alone. Verify the indexed file before claiming bytes are available; " +
+      "historical context does not authorize replaying earlier or uncertain tool actions."] : []),
+      JSON.stringify({ outputDirectory: request.workspace.outputDirectory,
+        inboxIndexPath: request.workspace.inboxIndexPath,
+        ...(request.attachments.length ? { messageManifestPath: request.workspace.messageManifestPath } : {}),
+        attachments: request.attachments.map(({ fileName, mimeType, byteSize }) => ({ fileName, mimeType, byteSize })) })
+    ] : []),
+    ...(currentOnly && mcpDiscoveryAvailable ? [
+      "Previously discovered MCP definitions are usable only after server revalidation for this turn. " +
+      "If call_tool reports discovery_required or tool_definition_changed before dispatch, call find_tools and use its returned version and schema. " +
+      "Discovery does not repeat the business operation. Never replay a dispatched operation with an unknown outcome."
+    ] : [])
+  ];
+  const sectionsAfter: readonly string[] = [
+    ...(request.prompt.personalInstructions ? ["Current personal instructions:", request.prompt.personalInstructions] : []),
+    ...request.attachments.flatMap((attachment) => attachment.pdfDelivery === "prepared_text" && attachment.extractedText
+      ? [`Prepared document ${JSON.stringify(attachment.fileName)} (document data):`, attachment.extractedText] : []),
+    ...(request.prompt.responseReminder ? ["Current response reminder:", request.prompt.responseReminder] : [])
+  ];
+  /** A message's element of the conversation's JSON, serialized and measured
+   * once for its content or for each text a record is given. */
+  type Element = Readonly<{ json: string; bytes: number }>;
+  const element = (role: string, text: string): Element => {
+    const json = JSON.stringify({ role, text });
+    return { json, bytes: Buffer.byteLength(json) };
   };
+  const contentElements = new Map<ProviderConversationMessage, Element>();
+  const textElements = new Map<string, Map<string, Element>>();
+  const elementOf = (message: ProviderConversationMessage, text: string | undefined): Element => {
+    if (text === undefined) {
+      let value = contentElements.get(message);
+      if (!value) contentElements.set(message, value = element(message.role, textFromContentBlocks(message.content)));
+      return value;
+    }
+    let byText = textElements.get(message.role);
+    if (!byText) textElements.set(message.role, byText = new Map());
+    let value = byText.get(text);
+    if (!value) byText.set(text, value = element(message.role, text));
+    return value;
+  };
+  // Both prompts render their records from these, each record at each budget once.
+  const renders: ToolHistoryRenders = new WeakMap();
   /** The tool history never makes the prompt too large and never hides a
    * call that may have changed something: every record keeps its floor (the
    * compact line of each executed or unknown-outcome call, calls that were not
    * executed counted), and the room the rest of the prompt leaves goes to the
    * newest records first, each up to its normal bound. Nothing else is
    * truncated: a prompt whose floors do not fit is refused
-   * (`agent_context_too_large`). */
+   * (`agent_context_too_large`). A candidate is measured from its parts and
+   * joined only once it fits. */
   const render = (currentOnly: boolean) => {
-    const records = (currentOnly ? messages.slice(previousAssistantIndex + 1) : messages)
-      .filter(message => isToolHistoryMessage(message) && message.toolHistory);
+    // A resumed thread already holds the earlier turns, and their records;
+    // only records after the previous answer (earlier attempts of the current
+    // message) are new to it.
+    const selected = currentOnly ? messages.slice(previousAssistantIndex + 1) : messages;
+    const before = sectionsBefore(currentOnly);
+    const fixedBytes = [...before, ...sectionsAfter].reduce((total, section) => total + Buffer.byteLength(section), 0) +
+      2 * (before.length + sectionsAfter.length);
+    const elements = (historyTexts?: ReadonlyMap<string, string>) => selected.map(message => elementOf(message, historyTexts?.get(message.id)));
+    const size = (values: readonly Element[]) => fixedBytes + 2 + Math.max(0, values.length - 1) +
+      values.reduce((total, value) => total + value.bytes, 0);
+    const join = (values: readonly Element[]) => [...before, `[${values.map(value => value.json).join(",")}]`, ...sectionsAfter].join("\n\n");
+    const records = selected.filter(message => isToolHistoryMessage(message) && message.toolHistory);
     const blocks = records.map(message => message.toolHistory!.block);
     const ids = records.map(message => message.id);
-    const withTexts = (texts: readonly string[]) => compose(currentOnly, new Map(ids.map((id, index) => [id, texts[index]!])));
-    const whole = withTexts(boundedToolHistoryTexts(blocks, Number.POSITIVE_INFINITY));
-    if (Buffer.byteLength(whole) <= AGENT_PROMPT_MAX_BYTES) return whole;
+    const withTexts = (texts: readonly string[]) => elements(new Map(ids.map((id, index) => [id, texts[index]!])));
+    const whole = withTexts(boundedToolHistoryTexts(blocks, Number.POSITIVE_INFINITY, renders));
+    if (size(whole) <= AGENT_PROMPT_MAX_BYTES) return join(whole);
     if (records.length === 0) throw new AgentExecutionError("agent_context_too_large");
-    let budget = AGENT_PROMPT_MAX_BYTES - Buffer.byteLength(compose(currentOnly, new Map(ids.map(id => [id, " "])))) - 2048;
+    let budget = AGENT_PROMPT_MAX_BYTES - size(elements(new Map(ids.map(id => [id, " "])))) - 2048;
     for (let attempt = 0; attempt < 4 && budget > 0; attempt += 1) {
-      const bounded = withTexts(boundedToolHistoryTexts(blocks, budget));
-      const overflow = Buffer.byteLength(bounded) - AGENT_PROMPT_MAX_BYTES;
-      if (overflow <= 0) return bounded;
+      const bounded = withTexts(boundedToolHistoryTexts(blocks, budget, renders));
+      const overflow = size(bounded) - AGENT_PROMPT_MAX_BYTES;
+      if (overflow <= 0) return join(bounded);
       budget -= overflow + 2048;
     }
     throw new AgentExecutionError("agent_context_too_large");
