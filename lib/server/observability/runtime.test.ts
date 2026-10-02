@@ -167,6 +167,25 @@ describe("bounded observability runtime", () => {
     expect(record("process.failure", { stage: "uncaught_exception", outcome: "terminated" }).level).toBe("fatal");
   });
 
+  it("reports a preparation that continued without Memory as a content-free warning", () => {
+    const line = serializeEvent("run_preparation", { run_id: "run-1", stage: "preparing", outcome: "degraded",
+      code: "memory_attempt_item_stale", message: "PRIVATE_FACT", statement: "PRIVATE_STATEMENT" } as never)!;
+    expect(JSON.parse(line)).toMatchObject({ event: "run_preparation", level: "warn", outcome: "degraded",
+      code: "memory_attempt_item_stale", stage: "preparing" });
+    expect(line).not.toContain("PRIVATE_");
+    expect(record("run_preparation", { run_id: "run-1", stage: "preparing", outcome: "failed",
+      code: "memory_preparing_failed" })).toMatchObject({ level: "error", outcome: "failed" });
+    expect(record("run_preparation", { run_id: "run-1", stage: "preparing", outcome: "completed" }).level).toBe("info");
+    for (const code of ["memory_preparation_skipped", "memory_preparation_interrupted", "memory_search_admission_skipped",
+      "memory_utility_egress_changed", "memory_final_request_invalid"]) {
+      expect(record("run_preparation", { run_id: "run-1", stage: "preparing", outcome: "degraded", code }).code).toBe(code);
+    }
+    // Other accepted-operation events keep their outcome set.
+    for (const event of ["run_execution", "provider_operation", "transport_stage"] as const) {
+      expect(record(event, { run_id: "run-1", stage: "execution", outcome: "degraded" } as never)).not.toHaveProperty("outcome");
+    }
+  });
+
   it("keeps the bounded provider cause separately from the public run failure", () => {
     const fields = { run_id: "run-1", stage: "execution", outcome: "failed", code: "knowledge_answer_failed" } as const;
     expect(record("run_execution", { ...fields, provider_code: "provider_http_invalid_request" }))
