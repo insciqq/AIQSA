@@ -67,11 +67,7 @@ export const MEMORY_OPERATIONAL_COUNTER_KEYS = Object.freeze([
   "historyRoundsBuilt",
   "historyRoundsReplaced",
   "historyRoundsReused",
-  ...contextualCounterKeys,
-  "synthesisClusterCount",
-  "synthesisEligibleSourceCount",
-  "synthesisEmptyOutputCount",
-  "synthesisProposalCount"
+  ...contextualCounterKeys
 ] as const);
 
 export type MemoryOperationalCounterKey =
