@@ -10,7 +10,7 @@ export type PersonalMcpErrorPresentation = Readonly<{
 }>;
 
 export const PERSONAL_MCP_LOCAL_ADDRESS_HINT =
-  "Here, localhost means the AIQSA server itself. Reach your own computer through host.docker.internal or its LAN IP address.";
+  "Here, localhost means the AIQSA server itself. Reach other services on the AIQSA host through host.docker.internal or the host's LAN IP address.";
 
 const unreachable = "AIQSA could not reach this server. Check the URL and that the server is running.";
 const headerName = "Use a header name such as X-API-Key. Host, Cookie and connection headers are not allowed.";
@@ -33,7 +33,7 @@ const COPY: Readonly<Record<string, readonly [PersonalMcpField | null, string]>>
   mcp_draft_test_failed: [null, "AIQSA could not connect to this server with these details. Check the URL and authorization."],
   mcp_enabled_server_limit_reached: [null, `At most ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} MCP servers can be on at once, including Studio's MCP servers. Turn one off first.`],
   mcp_encryption_unavailable: [null, "Credential storage is unavailable right now. Ask the administrator to check it."],
-  mcp_internal_address_forbidden: ["url", `This address belongs to AIQSA's own services, so it cannot be used. ${PERSONAL_MCP_LOCAL_ADDRESS_HINT}`],
+  mcp_internal_address_forbidden: ["url", "This address belongs to AIQSA's own services, so it cannot be used."],
   mcp_local_network_disabled: ["url", "The administrator turned off connections to the local network. Use a public address or ask the administrator."],
   mcp_network_failed: ["url", unreachable],
   mcp_not_found: [null, "This connection no longer exists. Refresh the list."],
