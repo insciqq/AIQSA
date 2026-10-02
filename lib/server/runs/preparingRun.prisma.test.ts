@@ -21,7 +21,8 @@ import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import {
   MEMORY_ACTION_NO_COMMIT_RESULT,
-  MEMORY_ACTION_PENDING_RESULT
+  MEMORY_ACTION_PENDING_RESULT,
+  type MemoryActionAnswerResult
 } from "../providers/memoryActionAnswer";
 import type { NormalizedRunRequest } from "../providers/types";
 import { MemorySuppressionKeyring } from "../memory/suppressionKeyring";
@@ -88,6 +89,10 @@ import {
   MemoryPreparingRunConflictError,
   dormantMemoryAttemptResult
 } from "./preparingRun";
+import { finalizePreparingRunWithClient } from "./prismaRepositoryPreparation";
+import type { PreparingRunMemoryMaterializer } from "./runRepositoryContract";
+import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../contracts/runs";
+import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 
 const suppressionKeyring = MemorySuppressionKeyring.parse(
   `current=preparing-test-v1,preparing-test-v1=${Buffer.from(
@@ -4980,6 +4985,349 @@ describe("PREPARING run orchestration", () => {
       expect(attempt).toMatchObject({
         errorCode: "memory_preparing_attempt_expired",
         state: "EXPIRED"
+      });
+    });
+  });
+  describe("fail-open Memory preparation", () => {
+    const committedSave = { operation: "SAVE", status: "COMMITTED", version: 4 } as const;
+    const savedFeedback = { memoryRef: "fail-open-memory-ref", operation: "SAVE",
+      statement: "The user lives in Rostov.", status: "COMMITTED" } as const;
+    const emptyResult = Object.freeze({
+      budgetSnapshot: { memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT, utilityEgressMode: "LOCAL_ONLY" },
+      items: [], outcome: "EMPTY", preparedContext: null, querySnapshot: null
+    });
+    const baseRequest = (chatId: string, text: string): NormalizedRunRequest => {
+      const initial = normalizedRequest(chatId, text);
+      return { ...initial, prompt: { ...initial.prompt, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT } };
+    };
+    const materializerFor = (
+      request: NormalizedRunRequest,
+      reject: (answer: MemoryActionAnswerResult | undefined) => boolean = () => false
+    ): PreparingRunMemoryMaterializer => (personalContext, memoryActionAnswerResult) => {
+      if (reject(memoryActionAnswerResult)) return null;
+      const finalRequest: NormalizedRunRequest = {
+        ...request,
+        ...(personalContext ? { personalContext } : {}),
+        prompt: { ...request.prompt, ...(memoryActionAnswerResult ? { memoryActionAnswerResult } : {}) }
+      };
+      return { contextTruncation: null, normalizedRequest: finalRequest,
+        providerRequest: { ...finalRequest, attachments: [] }, providerRequestPreview: { request: "final" } };
+    };
+    const send = (
+      repository: ReturnType<typeof createPrismaRunRepository>,
+      userId: string,
+      request: NormalizedRunRequest,
+      extra: Partial<Parameters<ReturnType<typeof createPrismaRunRepository>["createRun"]>[0]> = {}
+    ) => repository.createRun({
+      chatId: request.chatId, content: request.content, expectedActiveLeafId: null,
+      memoryMaterializer: materializerFor(request), modelId: request.modelId, normalizedRequest: request,
+      provider: request.provider, providerRequestPreview: { request: "base" }, userId, ...extra
+    });
+    const receipts = async (userId: string) => {
+      const run = await prisma.modelRun.findFirstOrThrow({ orderBy: { createdAt: "desc" }, where: { userId } });
+      const [attempts, binding] = await Promise.all([
+        prisma.memoryRetrievalAttempt.findMany({ orderBy: { attemptOrdinal: "asc" }, where: { modelRunId: run.id } }),
+        prisma.modelRunMemoryBinding.findUnique({ where: { modelRunId: run.id } })
+      ]);
+      const attemptItems = await prisma.memoryRetrievalAttemptItem.count({
+        where: { attemptId: { in: attempts.map(({ id }) => id) }, userId } });
+      const bindingItems = binding
+        ? await prisma.modelRunMemoryItem.count({ where: { bindingId: binding.id } }) : 0;
+      return { attemptItems, attempts, binding, bindingItems, run };
+    };
+    /** A disposable-database fault scoped to one synthetic owner. */
+    const injectInsertFailure = async (
+      userId: string,
+      table: "MemoryRetrievalAttemptItem" | "ModelRunMemoryBinding",
+      body: "RAISE EXCEPTION 'synthetic preparation fault'; RETURN NEW;" | "PERFORM pg_sleep(8); RETURN NEW;",
+      condition = "TRUE"
+    ) => {
+      const name = `aiqsa_fail_open_${randomUUID().replaceAll("-", "")}`;
+      if (!/^preparing-run-[0-9a-f-]+$/u.test(userId)) throw new Error("fault_owner_invalid");
+      await prisma.$executeRawUnsafe(
+        `CREATE FUNCTION "${name}"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN ${body} END $$`);
+      await prisma.$executeRawUnsafe(`CREATE TRIGGER "${name}" BEFORE INSERT ON "${table}" FOR EACH ROW ` +
+        `WHEN (NEW."userId" = '${userId}' AND ${condition}) EXECUTE FUNCTION "${name}"()`);
+      return async () => {
+        await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS "${name}" ON "${table}"`);
+        await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS "${name}"()`);
+      };
+    };
+    const expectSkipped = (state: Awaited<ReturnType<typeof receipts>>, cause: string) => {
+      expect(state.run).toMatchObject({ status: "streaming", errorPayload: null });
+      expect(state.run.normalizedRequest).not.toHaveProperty("personalContext");
+      expect(state.binding).toMatchObject({ contextTokenCount: 0, degradationCode: "memory_preparation_skipped",
+        outcome: "FAILED_SAFE" });
+      expect(state.bindingItems).toBe(0);
+      expect(state.attemptItems).toBe(0);
+      const consumed = state.attempts.find((attempt) => attempt.state === "CONSUMED");
+      expect(consumed).toMatchObject({ degradationCode: "memory_preparation_skipped", outcome: "FAILED_SAFE",
+        preparedContextText: null, id: state.binding!.retrievalAttemptId });
+      expect(consumed!.budgetSnapshot).toMatchObject({ itemCount: 0, preparationFailureCode: cause,
+        reason: "memory_preparation_skipped" });
+    };
+    const expectFailClosed = (state: Awaited<ReturnType<typeof receipts>>, code: string) => {
+      expect(state.run).toMatchObject({ status: "error",
+        errorPayload: { code, message: RUN_PREPARATION_FAILURE_MESSAGE } });
+      expect(state.binding).toBeNull();
+    };
+
+    it("(1) answers without Memory after the preparer twice finds a forgotten fact, never sending its text", async () => {
+      await withPreparingUser(async ({ userId }) => {
+        await createPrismaMemorySettingsRepository(prisma).patch(userId, {
+          expectedMemoryRevision: 0, expectedSettingsRevision: 0, useMemoryFacts: true
+        });
+        const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+        const factText = "My synthetic fail-open editor is Helix.";
+        const fact = await saveExplicitFact(userId, scope.id, factText);
+        await classifyExplicitFact(userId, fact.versionId);
+        const authorizationRepository = createPrismaMemoryMutationAuthorizationRepository(prisma);
+        const readRepository = createPrismaExplicitMemoryRepository(prisma);
+        const forget = async () => {
+          const authorization = await createExplicitMemoryService({
+            authorizationRepository, factRepository: createPrismaMemoryFactRepository(suppressionKeyring, prisma),
+            readRepository, scopeRepository: createPrismaMemoryScopeRepository(prisma)
+          }).mintAuthorization(userId, { action: "FORGET", confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+            expectedTargetVersionId: fact.versionId, requestNonce: "fail-open-forget-race", targetFactId: fact.factId });
+          await createMemoryLifecycleService({ authorizationRepository, readRepository,
+            mutationRepository: createPrismaMemoryLifecycleRepository(suppressionKeyring, preparingForgetRegistry(), prisma)
+          }).forget(userId, fact.factId, { expectedVersionId: fact.versionId,
+            mutationAuthorizationId: authorization.mutationAuthorizationId });
+        };
+        const chat = await prisma.chat.create({ data: { title: "Forget race", userId } });
+        const request = baseRequest(chat.id, "Which editor do I use?");
+        const retrieve = vi.fn(async () => {
+          if (retrieve.mock.calls.length === 1) await forget();
+          return {
+            budgetSnapshot: { hardCapTokens: 2_500, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+              schemaVersion: 1, utilityEgressMode: "LOCAL_ONLY" },
+            items: [{ exactSafeText: factText, factVersionId: fact.versionId, featureSnapshot: currentCoreRetrievalFeature,
+              finalScore: 0.9, laneRanks: { exact: 1 }, selectionReason: "exact" }],
+            outcome: "USED",
+            preparedContext: { approxTokens: 12, text: `User memory: ${factText}` }
+          };
+        });
+        const created = await send(createPrismaRunRepository(prisma, { memoryRetrieval: { retrieve } as never }),
+          userId, request);
+        expect(retrieve).toHaveBeenCalledTimes(2);
+        const state = await receipts(userId);
+        expectSkipped(state, "memory_attempt_item_stale");
+        expect(state.attempts.map(({ state: attemptState }) => attemptState)).toEqual(["STALE", "CONSUMED"]);
+        expect(JSON.stringify([state.run.normalizedRequest, created.materializedRequest ?? null,
+          state.attempts.map(({ budgetSnapshot, preparedContextText }) => [budgetSnapshot, preparedContextText])]))
+          .not.toContain("Helix");
+        await expect(prisma.memoryExecutionBinding.count({ where: { userId,
+          retrievalAttemptId: { in: state.attempts.map(({ id }) => id) } } })).resolves.toBe(0);
+      });
+    });
+
+    it.each(["retrieve", "complete", "finalize"] as const)(
+      "(2) answers without Memory after an unexpected %s failure",
+      async (stage) => {
+        await withPreparingUser(async ({ userId }) => {
+          const scope = await createPrismaMemoryScopeRepository(prisma).ensureGlobal(userId);
+          const fact = await saveExplicitFact(userId, scope.id, "My synthetic fault editor is Kakoune.");
+          await classifyExplicitFact(userId, fact.versionId);
+          const chat = await prisma.chat.create({ data: { title: `Fault at ${stage}`, userId } });
+          const request = baseRequest(chat.id, "An ordinary question");
+          const retrieve = vi.fn(async () => {
+            if (stage === "retrieve") throw new Error("PRIVATE_RETRIEVAL_FAILURE");
+            return stage === "complete" ? {
+              budgetSnapshot: { hardCapTokens: 2_500, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+                schemaVersion: 1, utilityEgressMode: "LOCAL_ONLY" },
+              items: [{ exactSafeText: "My synthetic fault editor is Kakoune.", factVersionId: fact.versionId,
+                featureSnapshot: currentCoreRetrievalFeature, finalScore: 0.9, laneRanks: { exact: 1 },
+                selectionReason: "exact" }],
+              outcome: "USED",
+              preparedContext: { approxTokens: 12, text: "User memory: My synthetic fault editor is Kakoune." }
+            } : emptyResult;
+          });
+          const drop = stage === "retrieve" ? async () => undefined
+            : await injectInsertFailure(userId, stage === "complete" ? "MemoryRetrievalAttemptItem" : "ModelRunMemoryBinding",
+              "RAISE EXCEPTION 'synthetic preparation fault'; RETURN NEW;",
+              stage === "complete" ? "TRUE" : 'NEW."degradationCode" IS NULL');
+          try {
+            await send(createPrismaRunRepository(prisma, { memoryRetrieval: { retrieve } as never }), userId, request);
+          } finally {
+            await drop();
+          }
+          expect(retrieve).toHaveBeenCalledOnce();
+          const state = await receipts(userId);
+          expectSkipped(state, "memory_preparing_failed");
+          expect(JSON.stringify(state.run.normalizedRequest)).not.toContain("Kakoune");
+        });
+      }
+    );
+
+    it("(3) lets Stop win without any fallback receipt", async () => {
+      await withPreparingUser(async ({ userId }) => {
+        const chat = await prisma.chat.create({ data: { title: "Stop during preparation", userId } });
+        const request = baseRequest(chat.id, "An ordinary question");
+        const repository: ReturnType<typeof createPrismaRunRepository> = createPrismaRunRepository(prisma, {
+          memoryRetrieval: { retrieve: async (input: { modelRunId: string }) => {
+            await repository.cancelRun({ runId: input.modelRunId, userId,
+              payload: { code: "model_run_cancelled", message: "Model run cancelled" } });
+            activeRunControllerRegistry.abort(input.modelRunId);
+            throw new Error("PRIVATE_FAILURE_AFTER_STOP");
+          } } as never
+        });
+        await expect(send(repository, userId, request)).rejects.toThrow();
+        const state = await receipts(userId);
+        expect(state.run.status).toBe("cancelled");
+        expect(state.binding).toBeNull();
+        expect(state.attempts.some(({ state: attemptState }) => attemptState === "CONSUMED")).toBe(false);
+      });
+    });
+
+    it("(4) stays fail-closed when the branch changed", async () => {
+      await withPreparingUser(async ({ userId }) => {
+        const chat = await prisma.chat.create({ data: { title: "Branch change", userId } });
+        const request = baseRequest(chat.id, "An ordinary question");
+        const retrieve = vi.fn(async () => {
+          await prisma.chat.update({ where: { id: chat.id }, data: { memorySourceRevision: { increment: 1 } } });
+          return emptyResult;
+        });
+        await expect(send(createPrismaRunRepository(prisma, { memoryRetrieval: { retrieve } as never }), userId, request))
+          .rejects.toMatchObject({ code: "memory_admission_dag_changed" });
+        expectFailClosed(await receipts(userId), "memory_admission_dag_changed");
+      });
+    });
+
+    it("(5) settles a provider authority change with its own code", async () => {
+      await withPreparingUser(async ({ userId }) => {
+        await prisma.accessGrant.create({ data: { userId, providerConnectionId: providerTemplateIds.fakeConnection } });
+        const chat = await prisma.chat.create({ data: { title: "Provider change", userId } });
+        const request = baseRequest(chat.id, "An ordinary question");
+        const providerAdmissionPlan = { ...await loadProviderAdmissionPlan(prisma, { userId,
+          providerConnectionId: providerTemplateIds.fakeConnection, providerModelId: providerTemplateIds.fakeModel,
+          searchPlan: { mode: "all_selected", optionIds: [] } }) };
+        const retrieve = vi.fn(async () => {
+          // The accepted plan no longer matches current provider authority.
+          (providerAdmissionPlan as { fingerprint: string }).fingerprint = "f".repeat(64);
+          return emptyResult;
+        });
+        await expect(send(createPrismaRunRepository(prisma, { memoryRetrieval: { retrieve } as never }), userId, request,
+          { providerAdmissionPlan })).rejects.toThrow();
+        expectFailClosed(await receipts(userId), "provider_admission_changed");
+      });
+    });
+
+    it("(6) keeps a durable command without its PENDING request fail-closed", async () => {
+      await withPreparingUser(async ({ userId }) => {
+        await prisma.userMemorySettings.update({ data: { referenceChatHistory: false, useMemoryFacts: true },
+          where: { userId } });
+        const chat = await prisma.chat.create({ data: { title: "Durable command guard", userId } });
+        const request = baseRequest(chat.id, "Please remember that I use Vim.");
+        const retrieve = vi.fn();
+        await expect(send(createPrismaRunRepository(prisma, { memoryRetrieval: { retrieve } as never }), userId, request,
+          { memoryMaterializer: materializerFor(request, (answer) => answer?.status === "PENDING") }))
+          .rejects.toMatchObject({ code: "memory_final_request_invalid" });
+        expect(retrieve).not.toHaveBeenCalled();
+        expectFailClosed(await receipts(userId), "memory_final_request_invalid");
+      });
+    });
+
+    it.each(["finalize failure", "deadline", "missing evidence"] as const)(
+      "(7) keeps a committed /memory SAVE exact or fails closed: %s",
+      async (variation) => {
+        await withPreparingUser(async ({ userId }) => {
+          const chat = await prisma.chat.create({ data: { title: `Committed SAVE ${variation}`, userId } });
+          const request = baseRequest(chat.id, "/memory remember that I live in Rostov.");
+          const retrieve = vi.fn(async (input: { attemptId: string; controlCache: MemoryRunControlCache }) => {
+            // The synchronous executor committed in this process before the failure.
+            input.controlCache.actionResolved = true;
+            input.controlCache.actionResult = savedFeedback;
+            input.controlCache.actionAttemptId = input.attemptId;
+            if (variation === "missing evidence") throw new Error("PRIVATE_FAILURE_AFTER_COMMIT");
+            return { budgetSnapshot: { memoryActionAnswerResult: committedSave, memoryActionResult: savedFeedback,
+              reason: "memory_action_only", utilityEgressMode: "LOCAL_ONLY" },
+            items: [], outcome: "EMPTY", preparedContext: null, querySnapshot: null };
+          });
+          const drop = variation === "missing evidence" ? async () => undefined
+            : await injectInsertFailure(userId, "ModelRunMemoryBinding", variation === "deadline"
+              ? "PERFORM pg_sleep(8); RETURN NEW;" : "RAISE EXCEPTION 'synthetic preparation fault'; RETURN NEW;",
+            'NEW."degradationCode" IS NULL');
+          let created: Awaited<ReturnType<typeof send>> | null = null;
+          try {
+            const pending = send(createPrismaRunRepository(prisma, { memoryAdmissionDeadlineMs: 4_000,
+              memoryRetrieval: { retrieve } as never }), userId, request);
+            if (variation === "missing evidence") await expect(pending).rejects.toThrow();
+            else created = await pending;
+          } finally {
+            await drop();
+          }
+          const state = await receipts(userId);
+          if (variation === "missing evidence") {
+            expectFailClosed(state, "memory_preparing_failed");
+            return;
+          }
+          const degradationCode = variation === "deadline" ? "memory_admission_deadline_exceeded" : "memory_preparation_skipped";
+          expect(state.run).toMatchObject({ status: "streaming",
+            normalizedRequest: { prompt: { memoryActionAnswerResult: committedSave } } });
+          expect(created?.materializedRequest?.normalizedRequest.prompt.memoryActionAnswerResult).toEqual(committedSave);
+          expect(state.binding).toMatchObject({ degradationCode, outcome: "FAILED_SAFE" });
+          const consumed = state.attempts.find(({ state: attemptState }) => attemptState === "CONSUMED");
+          // The confirmation projection reads exactly this feedback.
+          expect(consumed?.budgetSnapshot).toMatchObject({ memoryActionAnswerResult: committedSave,
+            memoryActionResult: savedFeedback, reason: degradationCode,
+            ...(variation === "finalize failure" ? { preparationFailureCode: "memory_preparing_failed" } : {}) });
+        });
+      },
+      20_000
+    );
+
+    it("(8) leaves a deletion-fence settlement untouched", async () => {
+      await withPreparingUser(async ({ userId }) => {
+        const chat = await prisma.chat.create({ data: { title: "Forget purge race", userId } });
+        const request = baseRequest(chat.id, "An ordinary question");
+        const repository: ReturnType<typeof createPrismaRunRepository> = createPrismaRunRepository(prisma, {
+          memoryRetrieval: { retrieve: async (input: { attemptId: string; modelRunId: string }) => {
+            // The terminal state a Forget purge leaf commits for a selected item,
+            // in its own guarded transaction, before this owner continues.
+            await expect(repository.settlePreparingRunFailure({ attemptId: input.attemptId,
+              errorCode: "memory_item_forgotten", message: RUN_PREPARATION_FAILURE_MESSAGE,
+              runId: input.modelRunId, state: "STALE", userId })).resolves.toBe(true);
+            return emptyResult;
+          } } as never
+        });
+        await expect(send(repository, userId, request))
+          .rejects.toMatchObject({ code: "memory_preparing_attempt_unavailable" });
+        const state = await receipts(userId);
+        expectFailClosed(state, "memory_item_forgotten");
+        expect(state.attempts).toEqual([expect.objectContaining({ state: "STALE" })]);
+      });
+    });
+
+    it("(11) has one guarded winner between concurrent fallbacks and Stop", async () => {
+      await withPreparingUser(async ({ userId }) => {
+        const chat = await prisma.chat.create({ data: { title: "Fallback race", userId } });
+        const request = baseRequest(chat.id, "An ordinary question");
+        const repository = createPrismaRunRepository(prisma);
+        const admitted = await repository.admitPreparingRun({ admissionKind: "NORMAL_SEND", chatId: chat.id,
+          content: request.content, expectedActiveLeafId: null, modelId: request.modelId, normalizedRequest: request,
+          provider: request.provider, providerRequestPreview: { request: "base" }, userId });
+        await repository.beginPreparingRunAttempt({ attemptId: admitted.attemptId, now: new Date(),
+          runId: admitted.runId, userId });
+        const fallback = (budgetSnapshot: Record<string, unknown>) => finalizePreparingRunWithClient(prisma, {
+          attemptId: admitted.attemptId, failedSafeFallback: { budgetSnapshot,
+            degradationCode: "memory_preparation_skipped" },
+          normalizedRequest: request, providerRequestPreview: { request: "base" }, runId: admitted.runId, userId
+        }, {});
+        // A committed claim without its exact feedback is never reported as not done.
+        await expect(fallback({ memoryActionAnswerResult: committedSave }))
+          .rejects.toMatchObject({ code: "memory_attempt_result_invalid" });
+        const budget = { itemCount: 0, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          preparationFailureCode: "memory_preparing_failed", schemaVersion: 2 };
+        const [first, second, cancelled] = await Promise.all([fallback(budget), fallback(budget),
+          repository.cancelRun({ runId: admitted.runId, userId,
+            payload: { code: "model_run_cancelled", message: "Model run cancelled" } })]);
+        const bindings = await prisma.modelRunMemoryBinding.count({ where: { modelRunId: admitted.runId } });
+        expect([first, second].filter(Boolean).length).toBe(bindings);
+        expect(bindings).toBeLessThanOrEqual(1);
+        expect(cancelled).toMatchObject({ kind: "cancelled" });
+        await expect(prisma.modelRun.findUniqueOrThrow({ where: { id: admitted.runId } }))
+          .resolves.toMatchObject({ status: "cancelled" });
+        await expect(fallback(budget)).resolves.toBe(false);
       });
     });
   });
