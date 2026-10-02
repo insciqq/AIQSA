@@ -3,7 +3,7 @@ import { cleanupQualificationDatabase } from "./memory-cleanup-qualification-sup
 
 /** Deterministic part of the paid long-term extraction qualification. */
 export const MEMORY_EXTRACTION_QUALIFICATION_ACK = "DISPOSABLE_PAID_MEMORY_EXTRACTION";
-export const MEMORY_EXTRACTION_QUALIFICATION_VERSION = 1;
+export const MEMORY_EXTRACTION_QUALIFICATION_VERSION = 2;
 
 export type ExtractionQualificationOptions = Readonly<{ output: string; runId: string }>;
 
@@ -264,7 +264,8 @@ export function judgeExtractionScenario(
   return verdict("PASSED");
 }
 
-const CODE = /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,63}$/u;
+// Keys are bounded codes, optionally prefixed by a stage ("adjudication:<code>").
+const CODE = /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,127}$/u;
 type Counts = Record<string, number>;
 
 function increment(counts: Counts, key: string, by = 1): void {
@@ -286,13 +287,46 @@ export type ExtractionQualificationGroupReport = {
 };
 
 export type ExtractionQualificationUsage = Readonly<{
-  role: string;
+  /** Provider-call stage: extraction or semantic adjudication. */
+  stage: "extraction" | "adjudication";
   state: string;
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
   estimatedCostMicros: number | null;
 }>;
+
+export type ExtractionQualificationBinding = Readonly<{
+  errorCode: string | null;
+  memoryJobId: string | null;
+  stage: ExtractionQualificationUsage["stage"];
+  state: string;
+}>;
+
+/** Reported state per provider-call binding. RETRIED marks a settled
+ * retryable failure the job recovered from: a transient extraction call whose
+ * job then succeeded, or a retryable adjudication failure whose job then
+ * succeeded with an adjudication. A degraded (unadjudicated) apply, a terminal
+ * job or an unretried failure keeps its state and counts as degraded. */
+export function extractionQualificationCallStates(
+  bindings: readonly ExtractionQualificationBinding[],
+  context: Readonly<{
+    retryableAdjudicationCodes: ReadonlySet<string>;
+    succeededJobs: ReadonlySet<string>;
+  }>
+): string[] {
+  const adjudicatedJobs = new Set(bindings.flatMap(({ memoryJobId, stage, state }) =>
+    stage === "adjudication" && state === "SUCCEEDED" && memoryJobId ? [memoryJobId] : []));
+  return bindings.map((row) => {
+    if (row.state !== "FAILED" || row.memoryJobId === null ||
+      !context.succeededJobs.has(row.memoryJobId)) return row.state;
+    const code = row.errorCode ?? "";
+    const retried = row.stage === "extraction"
+      ? /_transient$/u.test(code)
+      : context.retryableAdjudicationCodes.has(code) && adjudicatedJobs.has(row.memoryJobId);
+    return retried ? "RETRIED" : row.state;
+  });
+}
 
 export type ExtractionQualificationResult = Readonly<{
   scenario: ExtractionQualificationScenario;
@@ -311,6 +345,10 @@ export type ExtractionQualificationReport = Readonly<{
   jobRetries: Counts;
   jobStages: Counts;
   providerCalls: Counts;
+  /** `<stage>:<errorCode>` of every unsuccessful provider-call binding. */
+  bindingFailures: Counts;
+  /** Server-owned normalization reason codes of accepted adjudications. */
+  adjudicationNormalized: Counts;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -322,6 +360,8 @@ export type ExtractionQualificationReport = Readonly<{
 
 export function summarizeExtractionQualification(input: Readonly<{
   results: readonly ExtractionQualificationResult[];
+  adjudicationNormalized?: readonly string[];
+  bindingFailures?: readonly string[];
   degradedCodes: readonly string[];
   /** Retryable job failures the coordinator policy retried. */
   jobRetries?: readonly string[];
@@ -359,11 +399,15 @@ export function summarizeExtractionQualification(input: Readonly<{
   for (const code of input.jobRetries ?? []) increment(jobRetries, code);
   const jobStages: Counts = {};
   for (const stage of input.jobStages) increment(jobStages, stage);
+  const bindingFailures: Counts = {};
+  for (const key of input.bindingFailures ?? []) increment(bindingFailures, key);
+  const adjudicationNormalized: Counts = {};
+  for (const code of input.adjudicationNormalized ?? []) increment(adjudicationNormalized, code);
   const providerCalls: Counts = {};
   let degraded = input.degradedCodes.length;
   for (const row of input.usage) {
-    increment(providerCalls, `${row.role}:${row.state}`);
-    // RETRIED: a replay-safe transient call whose job then succeeded.
+    increment(providerCalls, `${row.stage}:${row.state}`);
+    // RETRIED: a retryable failure whose job then succeeded on retry.
     if (row.state !== "SUCCEEDED" && row.state !== "RETRIED") degraded++;
   }
   const sum = (key: "inputTokens" | "outputTokens" | "totalTokens" | "estimatedCostMicros") =>
@@ -375,6 +419,8 @@ export function summarizeExtractionQualification(input: Readonly<{
       : group.misses > 1 || group.passed + group.misses < group.scenarios;
   });
   return {
+    adjudicationNormalized,
+    bindingFailures,
     degraded,
     degradedCodes,
     estimatedCostMicros: sum("estimatedCostMicros"),
@@ -414,7 +460,8 @@ export function sanitizeExtractionQualificationMessage(message: unknown): Record
     "estimatedCostMicros", "reportedTokenCalls", "reportedCostCalls"]) {
     if (count(raw[key])) safe[key] = raw[key];
   }
-  for (const key of ["degradedCodes", "jobRetries", "jobStages", "providerCalls"]) {
+  for (const key of ["degradedCodes", "jobRetries", "jobStages", "providerCalls", "bindingFailures",
+    "adjudicationNormalized"]) {
     const projected = counts(raw[key]);
     if (projected) safe[key] = projected;
   }

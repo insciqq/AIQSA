@@ -1808,16 +1808,27 @@ async function applyPlan(
     }
     if (receipt.outcome !== "PENDING") continue;
     const semanticDecision = decisions.get(candidate.candidateRef) ?? null;
+    const requiresAdjudication = memoryCandidateRequiresSemanticAdjudication(
+      candidate,
+      plan.input.contextRefs
+    );
+    // Without a packet the dependent candidate is rejected for the missing
+    // authority itself, distinct from a decision that did not admit it.
+    if (adjudication === null && requiresAdjudication) {
+      await rejectCandidate(
+        tx,
+        claim.userId,
+        receipt.id,
+        "semantic_adjudication_unavailable",
+        now
+      );
+      continue;
+    }
     if (!memorySemanticAuthorityAdmitsCandidate(
       candidate,
       semanticDecision,
       plan.input.contextRefs
-    ) ||
-      (memoryCandidateRequiresSemanticAdjudication(
-        candidate,
-        plan.input.contextRefs
-      ) &&
-        semanticDecision === null)) {
+    ) || (requiresAdjudication && semanticDecision === null)) {
       await rejectCandidate(
         tx,
         claim.userId,
