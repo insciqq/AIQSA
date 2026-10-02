@@ -17,6 +17,12 @@ describe("administrator Memory recent-activity diagnostics", () => {
     expect(search.detail).toContain("3 searches; oldest 1h.");
   });
 
+  it("names background maintenance as its own stage", () => {
+    expect(adminMemoryProcessingCopy({ stage: "MAINTENANCE", reason: "PROCESSING_FAILED",
+      severity: "bad", count: 2, oldestAgeSeconds: 120 })).toMatchObject({
+      section: "retrieval", title: "Memory maintenance needs attention" });
+  });
+
   it("keeps command and search diagnostics out of Overview attention", () => {
     const status = { processing: { enabled: true, issues } } as AdminMemoryStatus;
     expect(adminMemoryStatusForAttention(status).processing.issues).toEqual([issues[0]]);

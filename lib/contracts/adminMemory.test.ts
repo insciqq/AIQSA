@@ -70,6 +70,18 @@ describe("administrator Memory status contract", () => {
       worker: memoryWorkerStatusFixture({ activeStages: ["COMMAND"] as never }) } })).toBeNull();
   });
 
+  it("reports maintenance under its own stage and has no retired synthesis stage", () => {
+    const memory = response().memory;
+    const maintenance = { stage: "MAINTENANCE", reason: "PROCESSING_FAILED", severity: "bad",
+      count: 1, oldestAgeSeconds: 60 };
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      processing: { enabled: true, issues: [maintenance] } } })).not.toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      processing: { enabled: true, issues: [{ ...maintenance, stage: "SYNTHESIS" }] } } })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      worker: memoryWorkerStatusFixture({ activeStages: ["SYNTHESIS"] as never }) } })).toBeNull();
+  });
+
   it("keeps queue age and rebuild readiness internally consistent", () => {
     expect(decodeAdminMemoryStatusResponse({ memory: {
       ...response().memory, queue: { inProgress: 2, length: 0, oldestAgeSeconds: null }

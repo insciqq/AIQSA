@@ -101,6 +101,25 @@ describe("administrator Memory processing aggregates", () => {
     } finally { await f.cleanup(); }
   });
 
+  it("reports background maintenance under its own stage and never retired Dream synthesis", async () => {
+    const f = await fixture();
+    try {
+      resolution.available = true;
+      // Maintenance is the only SYNTHESIZE_MEMORIES pipeline; it owns no chat source.
+      const synthesizeJob = (pipelineVersion: string) => prisma.memoryJob.create({ data: {
+        userId: f.userId, state: "TERMINAL_FAILED", kind: "SYNTHESIZE_MEMORIES", pipelineVersion,
+        memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0, idempotencyFingerprint: randomUUID(),
+        createdAt: new Date(f.now.getTime() - 1865 * 1000), completedAt: new Date(f.now.getTime() - 60_000)
+      } });
+      await synthesizeJob("memory-synthesis-v2");
+      expect((await readAdminMemoryProcessing(prisma, f.now)).issues).toEqual([]);
+      await synthesizeJob("memory-maintenance-v1");
+      expect((await readAdminMemoryProcessing(prisma, f.now)).issues).toEqual([
+        expect.objectContaining({ stage: "MAINTENANCE", reason: "PROCESSING_FAILED", severity: "bad", count: 1 })
+      ]);
+    } finally { await f.cleanup(); }
+  });
+
   it("detects a missing current model before queueing and clears only after authoritative readiness", async () => {
     const f = await fixture();
     try {
