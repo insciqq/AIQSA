@@ -269,7 +269,7 @@ describe("PersonalMcpConnectionsSection", () => {
   it.each([
     ["the connection limit", response({ error: "personal_mcp_limit_reached" }, 409), /25 personal connections/, null],
     ["the rate limit", response({ error: "personal_mcp_rate_limited" }, 429, { "retry-after": "90" }), /Try again in 2 minutes/, null],
-    ["an AIQSA-internal address", response({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_internal_address_forbidden", path: "source" }] }, 422), /localhost means/, "personal-mcp-url"],
+    ["an AIQSA-internal address", response({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_internal_address_forbidden", path: "source" }] }, 422), /belongs to AIQSA's own services/, "personal-mcp-url"],
     ["a disabled local network", response({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_local_network_disabled", path: "source" }] }, 422), /local network/, "personal-mcp-url"],
     ["a rejected token", response({ error: "mcp_draft_test_failed", issues: [{ code: "mcp_authorization_required", endpoint: "https://up.example", httpStatus: 401, path: "oneTimeValues.authorization" }] }, 422), /rejected this token/, "personal-mcp-token"]
   ])("explains %s next to the right field without upstream detail", async (_label, failure, copy, fieldId) => {

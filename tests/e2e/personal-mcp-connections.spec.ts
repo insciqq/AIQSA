@@ -74,7 +74,7 @@ for (const viewport of viewports) {
       const scenarios = [
         { copy: /25 personal connections/, name: "limit", url: "https://limit.example/mcp" },
         { copy: /Try again in 2 minutes/, name: "rate-limit", url: "https://rate.example/mcp" },
-        { copy: /localhost means the AIQSA server itself/, name: "internal-address", url: "https://internal.example/mcp" },
+        { copy: /belongs to AIQSA's own services/, name: "internal-address", url: "https://internal.example/mcp" },
         { copy: /turned off connections to the local network/, name: "local-network", url: "https://lan.example/mcp" }
       ];
       for (const scenario of scenarios) {

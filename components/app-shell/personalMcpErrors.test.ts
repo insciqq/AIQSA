@@ -21,7 +21,7 @@ describe("personal MCP error copy", () => {
   });
 
   it.each([
-    ["mcp_internal_address_forbidden", /localhost means the AIQSA server itself/],
+    ["mcp_internal_address_forbidden", /belongs to AIQSA's own services/],
     ["mcp_local_network_disabled", /turned off connections to the local network/],
     ["mcp_static_header_reserved", /X-API-Key/]
   ])("maps the validation issue %s inside a failed draft test", (code, copy) => {
