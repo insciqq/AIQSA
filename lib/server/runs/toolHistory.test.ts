@@ -79,12 +79,23 @@ describe("tool history rendering within a byte budget", () => {
     const all = renderToolHistoryBlock(value, 1_000_000);
     expect(all.lines).toHaveLength(41);
     expect(all.detailRefs).toHaveLength(40);
-    const bounded = renderToolHistoryBlock(value, 4096);
-    expect(Buffer.byteLength(bounded.lines.join("\n"))).toBeLessThanOrEqual(4096);
-    expect(bounded.lines.at(-1)).toContain("call 39: executed. Arguments");
-    expect(bounded.lines.some(line => line.includes("not listed here"))).toBe(true);
-    expect(bounded.detailRefs.length).toBeLessThan(40);
-    expect(bounded.detailRefs).toContain(value.entries.at(-1)!.ref);
+    // Older entries become compact first: every call stays listed.
+    const compact = renderToolHistoryBlock(value, 4096);
+    expect(Buffer.byteLength(compact.lines.join("\n"))).toBeLessThanOrEqual(4096);
+    expect(compact.lines.at(-1)).toContain("call 39: executed. Arguments");
+    expect(compact.lines).toHaveLength(41);
+    expect(compact.lines[1]).toBe(value.entries[0]!.compact);
+    expect(compact.detailRefs.length).toBeLessThan(40);
+    expect(compact.detailRefs).toContain(value.entries.at(-1)!.ref);
+    // Below that, the oldest are counted, or named for the reader.
+    const counted = renderToolHistoryBlock(value, 1500);
+    expect(Buffer.byteLength(counted.lines.join("\n"))).toBeLessThanOrEqual(1500);
+    expect(counted.lines[1]).toMatch(/^- \d+ earlier calls of this turn are not listed here/u);
+    expect(counted.lines[1]).not.toContain("read_tool_call");
+    const named = renderToolHistoryBlock(value, 1500, { nameOmittedRefs: true });
+    expect(Buffer.byteLength(named.lines.join("\n"))).toBeLessThanOrEqual(1500);
+    expect(named.lines[1]).toContain("read_tool_call reads them by call_ref: ");
+    expect(named.lines.at(-1)).toContain("call 39: executed.");
     const tiny = renderToolHistoryBlock(value, 10);
     expect(tiny.lines[0]).toBe("[record a1]");
     expect(tiny.detailRefs).toEqual([]);

@@ -5,6 +5,8 @@ import type { ProviderConversationMessage, ProviderRunRequest } from "../provide
 import type { ProviderToolBridge, RunTool, RunToolCapability, ToolExecutionResult } from "../tools/types";
 import { READ_TOOL_RESULT_NAME } from "../tools/readToolResult";
 import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
+import type { ToolCallRefEntry } from "../../contracts/toolHistory";
+import { isCurrentTurnToolHistory, toolCallRefIndex } from "./toolHistoryContract";
 import {
   CONTEXT_COMPACTION_LIMITS,
   contextDigest,
@@ -109,6 +111,12 @@ function resultCarrier(value: Record<string, unknown>): unknown {
   if ("output" in value) return value.output;
   if ("result" in value) return value.result;
   return value.content;
+}
+
+/** The provider call id of one result envelope, or null for any other item.
+ * Envelope-level identity only: a result body never supplies it. */
+export function providerResultCallId(value: unknown): string | null {
+  return isResultEnvelope(value) ? envelopeCallId(value) : null;
 }
 
 /** Envelope-level identity only; a result body can never supply its call id. */
@@ -304,25 +312,29 @@ export { isUnitCoverageRef };
 /** Server-owned capabilities whose results AIQSA owns or reauthorizes when
  * they are read again: their content may enter notes without an observation
  * handle. External content (MCP, Workspace, web Search) needs a server-minted
- * handle, so its later revocation remains checkable. */
+ * handle or call reference, so its later revocation remains checkable. */
 const NOTE_CAPABILITIES: ReadonlySet<RunToolCapability> = new Set(["artifact", "image", "knowledge", "memory", "session", "skill"]);
 
 /** Whether one settled result may enter a summary source. The decision uses
- * only server authority: the run's settled observation for the call id, or
- * the accepted tool definition the call's name resolves to. A result body can
- * never supply its handle, capability or name. */
+ * only server authority: the run's settled observation for the call id, the
+ * accepted tool definition the call's name resolves to, and the persisted
+ * call's reference (`call_ref`), which names external content without an
+ * observation so its availability is rechecked before notes travel. A result
+ * body can never supply its handle, capability, name or reference. */
 function noteableResult(
   callId: string,
   name: string | null,
   observations: ObservationIndex,
-  tools: readonly RunTool[] | undefined
+  tools: readonly RunTool[] | undefined,
+  callRefs: ReadonlyMap<string, ToolCallRefEntry>
 ): boolean {
   if (observations.has(callId)) return true;
   const tool = name === null ? undefined : tools?.find((candidate) => candidate.name === name);
   if (!tool) return false;
   if (NOTE_CAPABILITIES.has(tool.capability)) return true;
   // MCP discovery returns the frozen snapshot catalog, never external content.
-  return tool.capability === "mcp" && tool.name === MCP_FIND_TOOLS_NAME;
+  if (tool.capability === "mcp" && tool.name === MCP_FIND_TOOLS_NAME) return true;
+  return callRefs.get(callId)?.name === tool.name;
 }
 
 /** Whether every result of a unit may enter notes. One excluded result
@@ -332,7 +344,8 @@ function unitNoteable(
   unit: ToolTranscriptUnit,
   names: ReadonlyMap<string, string>,
   observations: ObservationIndex,
-  tools: readonly RunTool[] | undefined
+  tools: readonly RunTool[] | undefined,
+  callRefs: ReadonlyMap<string, ToolCallRefEntry>
 ): boolean {
   if (!unit.settled) return false;
   for (let index = unit.start; index < unit.end; index += 1) {
@@ -341,7 +354,7 @@ function unitNoteable(
     const callId = envelopeCallId(value);
     if (!callId) return false;
     const name = names.get(callId) ?? (textId(value.name) ? value.name : null);
-    if (!noteableResult(callId, name, observations, tools)) return false;
+    if (!noteableResult(callId, name, observations, tools, callRefs)) return false;
   }
   return true;
 }
@@ -409,13 +422,14 @@ export function toolTranscriptReduction(
   }
   const names = transcriptCallNames(messages);
   const index = observationIndex(observations);
+  const callRefs = toolCallRefIndex(request.toolCallRefs);
   const older: ToolTranscriptUnit[] = [];
   const covered = new Set<ToolTranscriptUnit>();
   const noteable = new Set<ToolTranscriptUnit>();
   units.forEach((unit, position) => {
     if (!unit.settled) return;
     if (unitRefs ? refs.has(unitCoverageRef(unit)) : position <= boundary) covered.add(unit);
-    if (unitNoteable(messages, unit, names, index, request.tools)) noteable.add(unit);
+    if (unitNoteable(messages, unit, names, index, request.tools, callRefs)) noteable.add(unit);
     if (position < newest) older.push(unit);
   });
   return { covered, noteable, older, units };
@@ -497,7 +511,10 @@ export type ContextHistory = Readonly<{
 export function contextHistory(request: ProviderRunRequest, budgetTokens: number | null = null): ContextHistory {
   const messages = request.context?.messages ?? [];
   const current = messages.at(-1);
-  const prior = messages.filter((message) => message.purpose === undefined && message !== current);
+  // The record of earlier attempts of the current message belongs to the
+  // current turn, which never leaves a request.
+  const prior = messages.filter((message) => message.purpose === undefined && message !== current &&
+    !isCurrentTurnToolHistory(message, current));
   const summary = request.contextCompactionSummary;
   const summaryId = summary ? contextSummaryMessageId(summary) : null;
   const summaryMessage = summaryId ? prior.find((message) => message.id === summaryId) ?? null : null;

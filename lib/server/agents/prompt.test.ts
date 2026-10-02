@@ -241,3 +241,67 @@ describe("Codex conversation delivery", () => {
     expect(result.developerInstructions).not.toContain("/workspace/output/current");
   });
 });
+
+describe("Agent delivery of the cross-turn tool history", () => {
+  const entry = (index: number) => {
+    const ref = `tcr1_${index.toString(16).padStart(32, "0")}`;
+    return { ref, details: true, compact: `- [${ref}] MCP Tracker › write: executed.`,
+      full: `- [${ref}] MCP Tracker › write: executed. Arguments: ${JSON.stringify({ index, body: "x".repeat(1_400) })}.` };
+  };
+  const record = (turnMessageId: string, entries: number, start = 0) => {
+    const block = { turnMessageId, userMessageId: null, header: `[AIQSA record ${turnMessageId}]`, footer: null,
+      entries: Array.from({ length: entries }, (_, index) => entry(start + index)) };
+    return { id: `tch1_${turnMessageId}`, contextTurnId: `tch1_${turnMessageId}`, role: "assistant" as const, historyClass: "tool_history" as const,
+      content: { blocks: [block.header, ...block.entries.map((value) => value.full)].map((text) => ({ text, type: "text" })) },
+      toolHistory: { block, detailRefs: block.entries.map((value) => value.ref) } };
+  };
+  const request = (messages: unknown[]) => ({ content: textMessageContent("current"), attachments: [], prompt: { system: "baseline" },
+    context: { messages } }) as unknown as ProviderRunRequest;
+
+  it("resumes from the real previous answer and sends only records the native thread lacks", () => {
+    const result = agentPrompts(request([
+      { id: "q1", role: "user", content: textMessageContent("first") },
+      record("a1", 1),
+      { id: "a1", role: "assistant", content: textMessageContent("first answer") },
+      // Earlier attempts of the current message: not in the native thread.
+      record("q2", 1, 50),
+      { id: "q2", role: "user", content: textMessageContent("current") }
+    ]));
+    expect(result.previousAssistantMessageId).toBe("a1");
+    expect(result.resumePrompt).toContain(entry(50).ref);
+    expect(result.resumePrompt).not.toContain(entry(0).ref);
+    expect(result.prompt).toContain(entry(0).ref);
+    expect(result.prompt).toContain(entry(50).ref);
+  });
+
+  it("never names a record as the native predecessor", () => {
+    const result = agentPrompts(request([
+      { id: "q1", role: "user", content: textMessageContent("first") },
+      // The answer failed without text: its record stands in its place.
+      record("a1", 1),
+      { id: "q2", role: "user", content: textMessageContent("current") }
+    ]));
+    expect(result.previousAssistantMessageId).toBeNull();
+  });
+
+  it("bounds a long history to the prompt limit, keeping the newest entries and naming the older ones", () => {
+    const long = (turn: number) => {
+      const value = record(`a${turn}`, 30, turn * 30);
+      const entries = value.toolHistory.block.entries.map((item) => ({ ...item, compact: `${item.compact} ${"c".repeat(1_100)}` }));
+      return { ...value, toolHistory: { ...value.toolHistory, block: { ...value.toolHistory.block, entries } } };
+    };
+    const messages = Array.from({ length: 40 }, (_, turn) => [
+      { id: `q${turn}`, role: "user", content: textMessageContent(`question ${turn}`) },
+      long(turn),
+      { id: `a${turn}`, role: "assistant", content: textMessageContent(`answer ${turn}`) }
+    ]).flat();
+    const result = agentPrompts(request([...messages, { id: "current", role: "user", content: textMessageContent("current") }]));
+    expect(Buffer.byteLength(result.prompt)).toBeLessThanOrEqual(1024 * 1024);
+    // The newest entry keeps its full line; the oldest records are counted and named.
+    expect(result.prompt).toContain(entry(1_199).full.slice(0, 80));
+    expect(result.prompt).toContain("omitted from this prompt for size");
+    expect(result.prompt).toContain("read_tool_call reads them by call_ref");
+    expect(result.prompt).toContain('"answer 0"'.slice(1, -1));
+    expect(result.previousAssistantMessageId).toBe("a39");
+  });
+});

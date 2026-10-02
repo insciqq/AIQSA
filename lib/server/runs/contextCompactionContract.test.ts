@@ -130,6 +130,19 @@ describe("carried compaction notes", () => {
       ]);
   });
 
+  it("places a boundary at a tool-history record just before the answer of its turn", () => {
+    const base = checkpoint({ answer: "a3", seed: "d", userMessageId: "u3" });
+    // The record of turn two stands where its answer a2 sits; the notes' own
+    // answer a3 is later, so they are carried with that boundary.
+    const notes = { ...base.compaction.summary!, sourceRefs: [messageCoverageRef("tch1_a2")] };
+    const bounded = { ...base, compaction: { ...base.compaction, summary: notes } };
+    expect(contextSummaryReuseCandidates({ checkpoints: [bounded], priorMessageIds: branch, userId: "user-1" }))
+      .toEqual([{ coveredMessageId: "tch1_a2", runId: "run-a3", summary: notes }]);
+    // A record of an answer off the branch is never a carried boundary.
+    const other = { ...base, compaction: { ...base.compaction, summary: { ...notes, sourceRefs: [messageCoverageRef("tch1_sibling")] } } };
+    expect(contextSummaryReuseCandidates({ checkpoints: [other], priorMessageIds: branch, userId: "user-1" })).toEqual([]);
+  });
+
   it("bounds notes bought with a history boundary by that boundary, not the run's user message", () => {
     const base = checkpoint({ answer: "a3", seed: "d", userMessageId: "u3" });
     const notes = { ...base.compaction.summary!, sourceRefs: [messageCoverageRef("a1")] };

@@ -848,3 +848,50 @@ describe("context rejection rebuild", () => {
     ]) expect(contextRejectionRebuild(input)).toBeNull();
   });
 });
+
+describe("call_ref provenance and the current turn's tool history", () => {
+  it("makes an external result without an observation noteable once its persisted call has a reference", () => {
+    const observed = [result("first", "t"), result("newest-x", "v", "mcp", 40)];
+    const external: ToolExecutionResult = { callId: "second", content: [{ text: `external ${"w".repeat(900)}`, type: "text" }],
+      name: "read_record", status: "complete" };
+    const messages = [
+      call("first"), openAIResponsesToolBridge.appendToolResult(undefined, observed[0]!),
+      call("second"), openAIResponsesToolBridge.appendToolResult(undefined, external),
+      call("newest-x"), openAIResponsesToolBridge.appendToolResult(undefined, observed[1]!)
+    ];
+    const settled = contextObservationsFromResults(observed);
+    const ref = `tcr1_${"5".repeat(32)}`;
+    const without = toolTranscriptReduction(request(messages), settled);
+    expect(without.noteable.has(without.units[1]!)).toBe(false);
+    const withRef = toolTranscriptReduction({ ...request(messages), toolCallRefs: [{ callId: "second", name: "read_record", ref }] }, settled);
+    expect(withRef.noteable.has(withRef.units[1]!)).toBe(true);
+    // A reference must name this exact accepted call; a body or another name never qualifies.
+    const mismatched = toolTranscriptReduction({ ...request(messages), toolCallRefs: [{ callId: "second", name: "other", ref }] }, settled);
+    expect(mismatched.noteable.has(mismatched.units[1]!)).toBe(false);
+    // An unknown tool stays excluded whatever reference it has.
+    const unknown = toolTranscriptReduction({ ...request(messages), tools: [readToolResultTool],
+      toolCallRefs: [{ callId: "second", name: "read_record", ref }] }, settled);
+    expect(unknown.noteable.has(unknown.units[1]!)).toBe(false);
+    // The summary source names the reference of that result.
+    const source = contextSummarySource({ ...request(messages), toolCallRefs: [{ callId: "second", name: "read_record", ref }],
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages: request([]).context!.messages }) }, settled);
+    expect(source.refs).toContain(ref);
+    expect(source.units.map((unit) => unit.text).join("\n")).toContain(`<tool-item call_ref="${ref}">`);
+  });
+
+  it("keeps the record of earlier attempts of the current message out of reducible history", async () => {
+    const { contextHistory } = await import("./contextCompactionPlanner");
+    const current: ProviderConversationMessage = { content: { blocks: [{ text: "current", type: "text" }] }, id: "question-2", role: "user" };
+    const record: ProviderConversationMessage = { content: { blocks: [{ text: "earlier attempt wrote X", type: "text" }] },
+      historyClass: "tool_history", id: "tch1_question-2", role: "assistant" };
+    const past: ProviderConversationMessage = { content: { blocks: [{ text: "past record", type: "text" }] },
+      historyClass: "tool_history", id: "tch1_answer-1", role: "assistant" };
+    const answer: ProviderConversationMessage = { content: { blocks: [{ text: "answer", type: "text" }] }, id: "answer-1", role: "assistant" };
+    const input = { ...request([]), context: { messages: [past, answer, record, current], mode: "branch_path" as const } };
+    const history = contextHistory(input);
+    // A past turn's record is ordinary reducible history (never a pin); the
+    // current turn's record never leaves.
+    expect(history.prior.map((message) => message.id)).toEqual(["tch1_answer-1", "answer-1"]);
+    expect(history.uncovered.map((message) => message.id)).toEqual(["tch1_answer-1", "answer-1"]);
+  });
+});
