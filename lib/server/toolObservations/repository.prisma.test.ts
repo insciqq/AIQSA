@@ -302,8 +302,16 @@ describe("durable tool observation ownership", () => {
     const next = await f.makeRun(f.run.assistantMessageId);
     expect((await f.repository.read(next.actor, saved.id)).checksum).toBe(saved.result.observation.checksum);
     await prisma.modelRun.update({ where: { id: next.id }, data: { status: "complete" } });
-    const sibling = await f.makeRun(f.run.userMessageId);
+    // Another edit of the question never reads the original branch.
+    const sibling = await f.makeRun(null);
     await expect(f.repository.read(sibling.actor, saved.id)).rejects.toThrow("tool_observation_unavailable");
+    await prisma.modelRun.update({ where: { id: sibling.id }, data: { status: "complete" } });
+    // A regeneration of the same question reads its earlier attempt's results.
+    const regenerated = await prisma.message.create({ data: { chatId: f.chat.id, role: "assistant", status: "streaming",
+      parentMessageId: f.run.userMessageId, content: textMessageContent("") } });
+    const attempt = await prisma.modelRun.create({ data: { chatId: f.chat.id, userId: f.user.id, userMessageId: f.run.userMessageId,
+      assistantMessageId: regenerated.id, provider: "fake", modelId: "fake-qsa", normalizedRequest: {}, status: "in_progress" } });
+    expect((await f.repository.read({ runId: attempt.id, userId: f.user.id }, saved.id)).checksum).toBe(saved.result.observation.checksum);
   });
 
   it("rejects copied handles in another chat/owner and suppresses revoked source access", async () => {
@@ -341,7 +349,7 @@ describe("durable tool observation ownership", () => {
     await prisma.modelRunToolCall.update({ where: { id: external.producer.toolCallId }, data: { state: "complete" } });
     await expect(f.service.available(next.actor, handles)).resolves.toBe(true);
     await prisma.modelRun.update({ where: { id: next.id }, data: { status: "complete" } });
-    const sibling = await f.makeRun(f.run.userMessageId);
+    const sibling = await f.makeRun(null);
     await expect(f.service.available(sibling.actor, handles)).resolves.toBe(false);
   });
 

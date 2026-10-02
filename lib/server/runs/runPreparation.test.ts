@@ -1096,7 +1096,7 @@ describe("run preparation", () => {
         expect(prepared.normalizedRequest.workspace?.guidanceVersion).toBe(1);
         expect(prepared.normalizedRequest.prompt.system).not.toContain("Read messageManifestPath");
         const retry = preparedFrom(await preparePdfRetry({ workspace }, { adapter: harness.adapter, prepared,
-          userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }));
+          userId: "user-1", userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }));
         expect(retry.normalizedRequest.agent?.compatibilityHash).toBe(prepared.normalizedRequest.agent?.compatibilityHash);
         expect(retry.workspaceAdmissionPlan!.runId).not.toBe(prepared.workspaceAdmissionPlan!.runId);
         expect(retry.normalizedRequest.workspace?.guidanceVersion).toBe(1);
@@ -1107,7 +1107,7 @@ describe("run preparation", () => {
         const preUpgrade = { ...prepared, normalizedRequest: { ...prepared.normalizedRequest,
           agent: { ...prepared.normalizedRequest.agent!, codexVersion: "0.158.0" } } };
         expect(preparedFrom(await preparePdfRetry({ workspace }, { adapter: harness.adapter, prepared: preUpgrade,
-          userMessageId: prepared.workspaceAdmissionPlan!.userMessageId })).normalizedRequest.agent).toEqual(preUpgrade.normalizedRequest.agent);
+          userId: "user-1", userMessageId: prepared.workspaceAdmissionPlan!.userMessageId })).normalizedRequest.agent).toEqual(preUpgrade.normalizedRequest.agent);
       }
       expect(load).toHaveBeenCalledWith(expect.objectContaining({ requiresClientSearchRoutes: true }));
       expect(workspace.prepare).toHaveBeenCalledWith(expect.objectContaining({ agentEnabled: true }));
@@ -1213,6 +1213,11 @@ describe("run preparation", () => {
       const { toolObservationVersion: _version, ...withoutObservation } = v1.input;
       expect(hashCanonicalMcpValue(withoutObservation)).toBe(off.hash);
       expect(v1.hash).not.toBe(off.hash);
+      // The cross-turn history contract and its call reader are part of the
+      // identity (a thread accepted before them starts fresh once), in both modes.
+      for (const identity of [off.input, v1.input]) expect(identity).toMatchObject({ toolHistory: 1, toolCallReader: true });
+      const { toolHistory: _history, toolCallReader: _reader, ...beforeHistory } = off.input;
+      expect(hashCanonicalMcpValue(beforeHistory)).not.toBe(off.hash);
     } finally { vi.unstubAllEnvs(); }
   });
 
@@ -1490,7 +1495,7 @@ describe("run preparation", () => {
     prepared.providerRequest.attachments = []; // persisted preparation snapshot
     const buildRequestPreview = vi.fn((request: ProviderRunRequest) => ({ workspace: request.workspace, prompt: request.prompt, tools: request.tools }));
     return { deps, input: { ...result, adapter: { ...result.adapter, buildRequestPreview }, prepared,
-      userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }, buildRequestPreview,
+      userId: "user-1", userMessageId: prepared.workspaceAdmissionPlan!.userMessageId }, buildRequestPreview,
       changeWorkspace: () => { revision = 2; }, workspace };
   }
 
@@ -2932,7 +2937,9 @@ describe("run preparation", () => {
     expect(off.normalizedRequest.mcp).toBeUndefined();
     expect(off.normalizedRequest.sessionStatusTool).toBe(true);
     expect(off.normalizedRequest.toolObservationVersion).toBe(0);
-    expect(off.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status"]);
+    // The call reader is admitted independently of the observation policy.
+    expect(off.normalizedRequest.toolCallReader).toBe(true);
+    expect(off.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "read_tool_call"]);
     expect(off.normalizedRequest.mcpDiscovery).toBeUndefined();
     expect(off.providerRequest.tools?.filter((tool) => tool.capability !== "session") ?? []).toEqual([]);
     expect(catalog).not.toHaveBeenCalled();
@@ -4183,7 +4190,7 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
       "provider_model_client"
     );
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "search_engine_1"]);
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "read_tool_call", "search_engine_1"]);
   });
 
   it("routes a provider-admitted multi-engine plan", async () => {
@@ -5506,5 +5513,93 @@ describe("cross-turn compaction reuse", () => {
     expect(fromKnowledge.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toBeUndefined();
     const fromHybrid = await admit({ checkpoints: [latest], history });
     expect(fromHybrid.prepared.normalizedRequest.contextCompactionPolicy?.reuse).toMatchObject({ runId: latest.runId });
+  });
+});
+
+describe("cross-turn tool history admission", () => {
+  const snapshot = { version: 1 as const, turns: [{ turnMessageId: "prior-user-message", callRefs: [`tcr1_${"a".repeat(32)}`],
+    digest: "d".repeat(64) }] };
+
+  it("freezes the branch's call references from the send's leaf, never record text", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const loadToolHistory = vi.fn(async () => snapshot);
+    const projectToolHistory = vi.fn();
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, repository: { ...harness.deps.repository, loadToolHistory,
+      projectToolHistory } }, sendInput(successBody({ provider: "openai", modelId: "openai-tool-model" }))));
+    expect(loadToolHistory).toHaveBeenCalledWith({ chatId: "chat-1", leafMessageId: "prior-user-message", userId: "user-1" });
+    expect(prepared.normalizedRequest.toolHistory).toEqual(snapshot);
+    expect(prepared.providerRequest.toolHistory).toEqual(snapshot);
+    // Records are projected for each answer request; admission persists none.
+    expect(projectToolHistory).not.toHaveBeenCalled();
+    for (const messages of [prepared.normalizedRequest.context!.messages, prepared.providerRequest.context!.messages]) {
+      expect(messages.some((message) => message.historyClass !== undefined || message.id.startsWith("tch1_"))).toBe(false);
+    }
+  });
+
+  it("freezes a regeneration's history from its own user message and an empty history without a loader", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const loadToolHistory = vi.fn(async () => snapshot);
+    await prepareRun({ ...harness.deps, repository: { ...harness.deps.repository, loadToolHistory } },
+      regenerateInput(successBody({ provider: "openai", modelId: "openai-tool-model" })));
+    expect(loadToolHistory).toHaveBeenCalledWith({ chatId: "chat-1", leafMessageId: "stored-user-message", userId: "user-1" });
+    // Every new run is eligible for later turns, with or without earlier calls.
+    const plain = preparedFrom(await prepareRun(harness.deps, sendInput()));
+    expect(plain.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [] });
+  });
+
+  it("freezes that the history could not be loaded instead of refusing the message when the history read fails", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const loadToolHistory = vi.fn(async () => { throw new Error("synthetic_database_timeout"); });
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, repository: { ...harness.deps.repository, loadToolHistory } },
+      sendInput(successBody({ provider: "openai", modelId: "openai-tool-model" }))));
+    expect(loadToolHistory).toHaveBeenCalledOnce();
+    // Never an empty history, which would read as a chat without calls.
+    expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [], unavailable: true });
+  });
+
+  it("refuses an Agent admission and its document retry whose history records cannot fit the prompt", async () => {
+    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+    try {
+      const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+      const workspace: NonNullable<RunPreparationDeps["workspace"]> = { prepare: vi.fn<NonNullable<RunPreparationDeps["workspace"]>["prepare"]>(async (input) => ({ ok: true, tools: [], plan: {
+        ...input, expiresAt: new Date(Date.now() + 60000).toISOString(), policyRevision: 1, sandboxName: "fixture", sessionId: "ws_fixture", toolDefinitions: [],
+        normalized: { enabled: true, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+          maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "0.6.16", messageManifestPath: "/workspace/inbox/messages/fixture.json",
+          outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "0.6.16", sessionId: "ws_fixture",
+          syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+      } })) };
+      const turn = { turnMessageId: "prior-answer", userMessageId: "prior-user-message", callRefs: [`tcr1_${"a".repeat(32)}`], digest: "d".repeat(64) };
+      // One earlier turn whose 2,600 calls take 1.2 MB as compact lines.
+      const records = (executed: boolean) => ({ blocks: [{ turnMessageId: turn.turnMessageId, userMessageId: turn.userMessageId, footer: null,
+        header: "[AIQSA record of tool calls made while answering the user message above.]",
+        entries: Array.from({ length: 2_600 }, (_, index) => {
+          const ref = `tcr1_${index.toString(16).padStart(32, "0")}`;
+          const compact = `- [${ref}] MCP Tracker › write ${"w".repeat(400)}: ${executed ? "executed" : "not executed: refused before dispatch"}.`;
+          return { ref, compact, full: compact, details: false, essential: executed };
+        }) }] });
+      const admit = (executed: boolean) => prepareRun({ ...harness.deps, workspace, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) },
+        repository: { ...harness.deps.repository, loadToolHistory: vi.fn(async () => ({ version: 1 as const, turns: [turn] })),
+          projectToolHistory: vi.fn(async () => records(executed)) } },
+      sendInput(successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" })));
+      // Calls that were not executed are only counted: the prompt fits.
+      const admitted = preparedFrom(await admit(false));
+      // Executed calls keep their lines, so the prompt cannot fit: refused before acceptance.
+      await expect(admit(true)).resolves.toMatchObject({ ok: false, code: "agent_context_too_large", status: 413 });
+      // A document retry of the admitted run checks the records again.
+      const retry = (executed: boolean) => preparePdfRetry({ workspace, repository: { projectToolHistory: vi.fn(async () => records(executed)) } },
+        { adapter: harness.adapter, prepared: admitted, userId: "user-1", userMessageId: admitted.workspaceAdmissionPlan!.userMessageId });
+      expect((await retry(false)).ok).toBe(true);
+      await expect(retry(true)).resolves.toMatchObject({ ok: false, code: "agent_context_too_large", status: 413 });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("admits the call reader only for tool-capable answer models", async () => {
+    const tools = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    expect(preparedFrom(await prepareRun(tools.deps, sendInput(successBody({ provider: "openai", modelId: "openai-tool-model" }))))
+      .normalizedRequest.toolCallReader).toBe(true);
+    const plain = createHarness({ capabilities: { ...baseCapabilities, toolCalling: false } });
+    const prepared = preparedFrom(await prepareRun(plain.deps, sendInput()));
+    expect(prepared.normalizedRequest.toolCallReader).toBeUndefined();
+    expect(prepared.providerRequest.tools?.some((tool) => tool.name === "read_tool_call") ?? false).toBe(false);
   });
 });

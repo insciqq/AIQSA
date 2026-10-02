@@ -687,6 +687,16 @@ describe("single compaction consumer", () => {
       expect(compaction.events[0]!.beforeTokens).toBeGreaterThan(3_200 + 2_000);
     });
 
+    it("rechecks the saved calls the notes rest on and never carries them after access to one was revoked", async () => {
+      const callRef = `tcr1_${"f".repeat(32)}`;
+      const sourceAvailable = vi.fn(async (refs: readonly string[]) => !refs.includes(callRef));
+      const compaction = consumer(carriedRequest({ refs: ["u1", handle, callRef] }), { sourceAvailable });
+      const prepared = await compaction.run();
+      expect(sourceAvailable).toHaveBeenCalledWith([handle, callRef], expect.any(AbortSignal));
+      expect(prepared.contextCompactionSummary?.id).not.toBe(carriedNotes().id);
+      expect(bought(compaction).some((envelope) => envelope.includes("Carried turn-one"))).toBe(false);
+    });
+
     it("takes a fresh bounded plan without the notes when a covered source is no longer readable", async () => {
       const compaction = consumer(carriedRequest(), { sourceAvailable: async () => false });
       const prepared = await compaction.run();
@@ -824,6 +834,21 @@ describe("observation source availability", () => {
     await expect(available(handles)).rejects.toMatchObject({ code: "context_compaction_source_check_failed", cause });
     const unobtainable = observationSourceAvailability(async () => { throw cause; }, actor);
     await expect(unobtainable(handles)).rejects.toMatchObject({ code: "context_compaction_source_check_failed" });
+  });
+
+  it("checks saved call references with the call reader's authority and fails closed without it", async () => {
+    const callRefs = [`tcr1_${"1".repeat(32)}`];
+    const observations = vi.fn(async () => true);
+    const calls = vi.fn(async () => true);
+    const available = observationSourceAvailability(async () => ({ available: observations }), actor, calls);
+    await expect(available([...handles, ...callRefs])).resolves.toBe(true);
+    expect(calls).toHaveBeenCalledWith(actor, callRefs);
+    expect(observations).toHaveBeenCalledWith(actor, handles, undefined);
+    calls.mockResolvedValueOnce(false);
+    await expect(available([...handles, ...callRefs])).resolves.toBe(false);
+    await expect(observationSourceAvailability(async () => ({ available: observations }), actor)(callRefs)).resolves.toBe(false);
+    const failing = observationSourceAvailability(async () => ({ available: observations }), actor, async () => { throw new Error("db"); });
+    await expect(failing(callRefs)).rejects.toMatchObject({ code: "context_compaction_source_check_failed" });
   });
 
   it("keeps Stop as the cancellation", async () => {

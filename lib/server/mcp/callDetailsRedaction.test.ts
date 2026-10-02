@@ -2,7 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { encryptMcpEnvelope, mcpOAuthClientSecretEnvelopeContext, mcpOAuthTokenEnvelopeContext, mcpPersonalConfigEnvelopeContext,
   mcpRuntimeGenerationEnvelopeContext, mcpSharedConfigEnvelopeContext } from "./encryption";
-import { mcpCallDisplayRedaction } from "./callDetailsRedaction";
+import { mcpCallDisplayRedaction, mcpCallRedactionEvidence } from "./callDetailsRedaction";
 import { projectMcpCallDetails, type McpCallDetailRecord } from "./callDetails";
 
 const key = Buffer.alloc(32, 7);
@@ -141,5 +141,56 @@ describe("MCP display redaction by the secret values known now", () => {
     expect(await read(f, null, null)).toEqual({ values: [] });
     expect(f.calls.generation).not.toHaveBeenCalled();
     expect(f.calls.personal).not.toHaveBeenCalled();
+  });
+});
+
+describe("MCP redaction evidence for provider projections", () => {
+  const evidence = (f: ReturnType<typeof fixture>, projectId: string | null = null, generationId: string | null = "generation") =>
+    mcpCallRedactionEvidence(f.tx, identity, generationId, "user", projectId);
+
+  it("needs nothing for a server without sensitive slots or OAuth", async () => {
+    const f = fixture({ revision: { configuration: { ...configuration, auth: { mode: "none" }, slots: [] } } });
+    expect(await evidence(f, null, null)).toEqual({ state: "none_needed", values: [] });
+  });
+
+  it("is complete when a current source decrypted every sensitive slot", async () => {
+    expect(await evidence(fixture())).toEqual({ state: "complete", values: ["synthetic-secret"] });
+    const shared = fixture({ generation: null, server: sharedServer("current-shared") });
+    expect(await evidence(shared)).toEqual({ state: "complete", values: ["current-shared"] });
+  });
+
+  it("stays complete without a deleted runtime generation or rotated OAuth tokens", async () => {
+    // A deleted generation alone: the shared envelope still proves the slot.
+    expect((await evidence(fixture({ generation: null, server: sharedServer("current-shared") }))).state).toBe("complete");
+    // OAuth only: headers and tokens are never arguments, whatever rotated away.
+    const oauth = fixture({ revision: { configuration: oauthConfiguration }, generation: null, connections: [] });
+    expect(await evidence(oauth)).toEqual({ state: "complete", values: [] });
+    vi.stubEnv("AIQSA_ENCRYPTION_KEY", "");
+    expect((await evidence(fixture({ revision: { configuration: oauthConfiguration }, generation: null }))).state).toBe("complete");
+  });
+
+  it("is incomplete when a sensitive slot's only sources cannot be decrypted", async () => {
+    const f = fixture({ generation: { ...generation, effectiveConfigEnvelope: "invalid" }, server: sharedServer(null) });
+    expect(await evidence(f)).toEqual({ state: "incomplete", values: [] });
+    // The UI keeps its fail-open display of the same row.
+    expect(await read(f)).toEqual({ values: [] });
+  });
+
+  it("is incomplete without the key or without any current source of a sensitive slot", async () => {
+    const keyless = fixture();
+    vi.stubEnv("AIQSA_ENCRYPTION_KEY", "");
+    expect((await evidence(keyless)).state).toBe("incomplete");
+    const sourceless = fixture({ generation: null, server: sharedServer(null) });
+    expect((await evidence(sourceless)).state).toBe("incomplete");
+  });
+
+  it("is incomplete when the accepted configuration is unknown", async () => {
+    expect((await evidence(fixture({ revision: null, server: null, generation: null }))).state).toBe("incomplete");
+  });
+
+  it("treats a decrypted source that never set the slot as complete", async () => {
+    const f = fixture({ generation: null, server: { ...sharedServer(null), sharedConfigEnvelope: encryptMcpEnvelope(
+      { version: 1, values: { other: "x" } }, key, mcpSharedConfigEnvelopeContext("server", 1)) } });
+    expect((await evidence(f)).state).toBe("complete");
   });
 });

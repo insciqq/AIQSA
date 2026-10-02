@@ -11,6 +11,7 @@ import {
   type ContextObservation
 } from "./contextCompactionContract";
 import { contextCompactionFailureOutcome, type ContextCompactionPublisher } from "./contextCompactionEvents";
+import { isToolCallRef } from "./toolHistoryContract";
 import {
   applyContextSummaryToRequest,
   applyReusedContextSummary,
@@ -132,7 +133,8 @@ async function withCarriedSummary(
   const projected = applyReusedContextSummary(exact.request);
   const fitted = projected ? budget(projected) : null;
   if (!projected || !fitted?.ok) return null;
-  const handles = reuse.summary.sourceRefs.filter((ref) => ref.startsWith("tor1_"));
+  // Retained originals and saved calls the notes rest on, rechecked for this run.
+  const handles = reuse.summary.sourceRefs.filter((ref) => ref.startsWith("tor1_") || isToolCallRef(ref));
   if (handles.length > 0 && input.sourceAvailable) {
     input.signal.throwIfAborted();
     if (!(await input.sourceAvailable(handles, input.signal))) return null;
@@ -356,19 +358,26 @@ export async function rebuiltCompactedProviderRequest(input: Readonly<{
 }
 
 /** Availability of retained originals by one authorization-only check of the
- * whole handle set (no object reads; integrity is verified at actual recall).
+ * whole handle set (no object reads; integrity is verified at actual recall),
+ * and of saved calls (`tcr1_`) by the call reader's authority and their
+ * owners' live checks; without such a check a call reference is unavailable.
  * Only an authorization or row-state refusal makes a source unavailable. Any
  * other failure, including obtaining the service, is a transient
  * `context_compaction_source_check_failed`: never a silent refusal of carried
  * notes and never `source_unavailable`. */
 export function observationSourceAvailability(
   service: () => Promise<Pick<ToolObservationService, "available">>,
-  actor: ObservationActor
+  actor: ObservationActor,
+  callsAvailable?: (actor: ObservationActor, refs: readonly string[]) => Promise<boolean>
 ): (handles: readonly string[], signal?: AbortSignal) => Promise<boolean> {
   return async (handles, signal) => {
     signal?.throwIfAborted();
     try {
-      return await (await service()).available(actor, handles, signal);
+      const calls = handles.filter(isToolCallRef);
+      const observations = handles.filter((handle) => !isToolCallRef(handle));
+      if (calls.length > 0 && (!callsAvailable || !await callsAvailable(actor, calls))) return false;
+      signal?.throwIfAborted();
+      return observations.length === 0 || await (await service()).available(actor, observations, signal);
     } catch (error) {
       signal?.throwIfAborted();
       throw new ContextSummaryError("context_compaction_source_check_failed",

@@ -264,6 +264,13 @@ export type NormalizedRunRequest = {
   searchPlan: NormalizedSearchPlan;
   /** Server-owned admission marker; old runs retain their accepted tool set. */
   sessionStatusTool?: true;
+  /** Server-owned admission marker for `read_tool_call`, independent of the
+   * observation policy. Old runs retain their accepted tool set. */
+  toolCallReader?: true;
+  /** Cross-turn tool history frozen at admission: references and digests of
+   * the branch's eligible calls only, never their arguments or results. Its
+   * presence also makes this run's own calls eligible for later turns. */
+  toolHistory?: import("../../contracts/toolHistory").ToolHistorySnapshot;
   /** Frozen store/reader policy. Absent on accepted historical runs; 0 is a
    * newly accepted explicit Off mode and 1 is the observation-store contract. */
   toolObservationVersion?: 0 | 1;
@@ -332,9 +339,15 @@ export type ProviderConversationMessage = {
     blocks: unknown[];
   };
   id: string;
+  /** Provider-only third class: a server-rendered tool-call record of its
+   * turn. Neither a pin (`purpose`) nor a chat message; never persisted in
+   * the frozen context, previews, Memory control or utility prompts. */
+  historyClass?: "tool_history";
   /** Internal provider-facing context that is never rendered as a chat message. */
   purpose?: "knowledge_evidence" | "skill_context" | "skill_catalog";
   role: "assistant" | "user";
+  /** Ephemeral render data of a `tool_history` message. */
+  toolHistory?: import("../../contracts/toolHistory").ToolHistoryMessageData;
 };
 
 export type ProviderRunRequest = NormalizedRunRequest & {
@@ -361,6 +374,10 @@ export type ProviderRunRequest = NormalizedRunRequest & {
   parallelToolCalls?: boolean;
   previousProviderResponseId?: string;
   providerToolMessages?: unknown[];
+  /** Ephemeral server-minted index of this run's persisted calls by provider
+   * call id: the only authority for a summary's `call_ref` provenance of a
+   * transcript result. Never accepted from a browser or persisted. */
+  toolCallRefs?: readonly import("../../contracts/toolHistory").ToolCallRefEntry[];
   toolChoice?: "auto" | "none" | "required";
   tools?: RunTool[];
 };

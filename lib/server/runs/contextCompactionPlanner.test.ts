@@ -34,7 +34,8 @@ import {
   unitCoverageRef
 } from "./contextCompactionPlanner";
 import { contextSummarySource } from "./contextCompactionSummarizer";
-import { observationWholeResultTokens } from "./runContextBudget";
+import { observationWholeResultTokens, providerRequestTokenEstimate } from "./runContextBudget";
+import { insertToolHistory, renderToolHistoryBlock, toolHistoryMessage } from "./toolHistory";
 
 const descriptor = (seed: string, source: "mcp" | "workspace" | "search" | "skill" = "mcp") => ({
   byteSize: 20_000,
@@ -846,5 +847,108 @@ describe("context rejection rebuild", () => {
       { budgetTokens: -1, requestTokens: 500, round: 1 },
       { budgetTokens: 1_000, requestTokens: Number.NaN, round: 1 }
     ]) expect(contextRejectionRebuild(input)).toBeNull();
+  });
+});
+
+describe("call_ref provenance and the current turn's tool history", () => {
+  it("makes an external result without an observation noteable once its persisted call has a reference", () => {
+    const observed = [result("first", "t"), result("newest-x", "v", "mcp", 40)];
+    const external: ToolExecutionResult = { callId: "second", content: [{ text: `external ${"w".repeat(900)}`, type: "text" }],
+      name: "read_record", status: "complete" };
+    const messages = [
+      call("first"), openAIResponsesToolBridge.appendToolResult(undefined, observed[0]!),
+      call("second"), openAIResponsesToolBridge.appendToolResult(undefined, external),
+      call("newest-x"), openAIResponsesToolBridge.appendToolResult(undefined, observed[1]!)
+    ];
+    const settled = contextObservationsFromResults(observed);
+    const ref = `tcr1_${"5".repeat(32)}`;
+    const without = toolTranscriptReduction(request(messages), settled);
+    expect(without.noteable.has(without.units[1]!)).toBe(false);
+    const withRef = toolTranscriptReduction({ ...request(messages), toolCallRefs: [{ callId: "second", name: "read_record", ref }] }, settled);
+    expect(withRef.noteable.has(withRef.units[1]!)).toBe(true);
+    // A reference must name this exact accepted call; a body or another name never qualifies.
+    const mismatched = toolTranscriptReduction({ ...request(messages), toolCallRefs: [{ callId: "second", name: "other", ref }] }, settled);
+    expect(mismatched.noteable.has(mismatched.units[1]!)).toBe(false);
+    // An unknown tool stays excluded whatever reference it has.
+    const unknown = toolTranscriptReduction({ ...request(messages), tools: [readToolResultTool],
+      toolCallRefs: [{ callId: "second", name: "read_record", ref }] }, settled);
+    expect(unknown.noteable.has(unknown.units[1]!)).toBe(false);
+    // The summary source names the reference of that result.
+    const source = contextSummarySource({ ...request(messages), toolCallRefs: [{ callId: "second", name: "read_record", ref }],
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages: request([]).context!.messages }) }, settled);
+    expect(source.refs).toContain(ref);
+    expect(source.units.map((unit) => unit.text).join("\n")).toContain(`<tool-item call_ref="${ref}">`);
+  });
+
+  it("keeps the record of earlier attempts of the current message out of reducible history", async () => {
+    const { contextHistory } = await import("./contextCompactionPlanner");
+    const current: ProviderConversationMessage = { content: { blocks: [{ text: "current", type: "text" }] }, id: "question-2", role: "user" };
+    const record: ProviderConversationMessage = { content: { blocks: [{ text: "earlier attempt wrote X", type: "text" }] },
+      historyClass: "tool_history", id: "tch1_question-2", role: "assistant" };
+    const past: ProviderConversationMessage = { content: { blocks: [{ text: "past record", type: "text" }] },
+      historyClass: "tool_history", id: "tch1_answer-1", role: "assistant" };
+    const answer: ProviderConversationMessage = { content: { blocks: [{ text: "answer", type: "text" }] }, id: "answer-1", role: "assistant" };
+    const input = { ...request([]), context: { messages: [past, answer, record, current], mode: "branch_path" as const } };
+    const history = contextHistory(input);
+    // A past turn's record is ordinary reducible history (never a pin); the
+    // current turn's record never leaves.
+    expect(history.prior.map((message) => message.id)).toEqual(["tch1_answer-1", "answer-1"]);
+    expect(history.uncovered.map((message) => message.id)).toEqual(["tch1_answer-1", "answer-1"]);
+  });
+
+  describe("the record of earlier attempts under an irreducible overflow", () => {
+    const bridge = openAIResponsesToolBridge;
+    const current: ProviderConversationMessage = { content: { blocks: [{ text: "current", type: "text" }] }, id: "current", role: "user" };
+    const entry = (index: number, essential: boolean) => {
+      const ref = `tcr1_${String(index).padStart(32, "0")}`;
+      const outcome = essential ? "executed; the tool reported success" : "not executed: refused before dispatch";
+      return { ref, details: essential, essential, compact: `- [${ref}] write ${index}: ${outcome}.`,
+        full: `- [${ref}] write ${index}: ${outcome}. Arguments: ${JSON.stringify({ body: "w".repeat(240) })}.` };
+    };
+    // Six executed writes and four refused calls of earlier attempts.
+    const entries = Array.from({ length: 10 }, (_, index) => entry(index, index % 5 < 3));
+    const essential = entries.filter((value) => value.essential);
+    const settled = [1, 2].map((index) => result(`newest-${index}`, `newest-${index}`, "mcp", 6_000));
+    const withRecord = (masking: boolean) => {
+      const messages = [...settled.map((value) => call(value.callId)), ...settled.map((value) => bridge.appendToolResult(undefined, value))];
+      const base = { ...request(messages), ...(masking ? {} : { tools: request([]).tools!.filter((tool) => tool.name !== "read_tool_result") }),
+        context: { messages: [current], mode: "branch_path" as const },
+        contextCompactionPolicy: conversationContextPolicy({ leafMessageId: null, messages: [current] }) };
+      return insertToolHistory(base, { blocks: [{ turnMessageId: "current", userMessageId: "current",
+        header: "[earlier attempts of the next message]", footer: null, entries }] });
+    };
+    const recordOf = (value: ProviderRunRequest) => value.context!.messages.find((message) => message.id === "tch1_current")!;
+    const linesOf = (value: ProviderRunRequest) => recordOf(value).content.blocks.map((block) => (block as { text: string }).text);
+    /** The tokens the record can release: down to the compact line of every executed call. */
+    const releasable = (value: ProviderRunRequest) => {
+      const estimate = contextTokenEstimator(value);
+      return estimate(recordOf(value).content) - estimate(toolHistoryMessage(recordOf(value).toolHistory!.block, 0,
+        { keepEssential: true, nameOmittedRefs: true }).content);
+    };
+    const plannedWith = (input: ProviderRunRequest, budgetTokens: number) => planContextCompaction({
+      assembledTokens: providerRequestTokenEstimate(input, bridge), bridge, budgetTokens,
+      observations: contextObservationsFromResults(settled), request: input });
+
+    it("first turns the newest results into references, keeping the record whole", () => {
+      const input = withRecord(true);
+      // An excess either reduction alone could release: the lossless one is taken.
+      const excess = 100;
+      expect(releasable(input)).toBeGreaterThan(excess);
+      const planned = plannedWith(input, providerRequestTokenEstimate(input, bridge) - excess);
+      expect(planned.measurement.outcome).not.toBe("irreducible_overflow");
+      expect(planned.measurement.maskedObservations).toBeGreaterThan(0);
+      expect(recordOf(planned.request).content).toEqual(recordOf(input).content);
+    });
+
+    it("then renders the record smaller, never below the compact line of every executed call", () => {
+      const input = withRecord(false);
+      const total = providerRequestTokenEstimate(input, bridge);
+      const fitted = plannedWith(input, total - releasable(input) + 10);
+      expect(fitted.measurement.outcome).not.toBe("irreducible_overflow");
+      expect(linesOf(fitted.request)).toEqual(expect.arrayContaining(essential.map((value) => value.compact)));
+      expect(linesOf(fitted.request)[1]).toMatch(/^- \d calls? of this turn that (was|were) not executed (is|are) not listed here/u);
+      // Below that floor the request is refused rather than hide an executed call.
+      expect(plannedWith(input, total - releasable(input) - 50).measurement.outcome).toBe("irreducible_overflow");
+    });
   });
 });

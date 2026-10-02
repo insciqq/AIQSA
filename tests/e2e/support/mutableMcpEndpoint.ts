@@ -1,10 +1,22 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { Server, type CallToolResult, type ListToolsResult, type Tool } from "@modelcontextprotocol/server";
 
 export type MutableMcpTool = Tool;
+
+/** One received `tools/call`: the tool name and its arguments as canonical JSON. */
+export type MutableMcpDispatch = Readonly<{ name: string; arguments: string }>;
+
+/** Sorted-key JSON, so equal arguments compare equal whatever their key order. */
+function canonicalArguments(value: unknown): string {
+  const canonical = (entry: unknown): unknown => Array.isArray(entry) ? entry.map(canonical)
+    : entry !== null && typeof entry === "object"
+      ? Object.fromEntries(Object.keys(entry).sort().map((key) => [key, canonical((entry as Record<string, unknown>)[key])]))
+      : entry;
+  return JSON.stringify(canonical(value)) ?? "null";
+}
 
 export type MutableMcpEndpointOptions = Readonly<{
   /** Answers `tools/call`; the default returns one fixed synthetic text. */
@@ -23,6 +35,7 @@ export type MutableMcpEndpointOptions = Readonly<{
 export async function startMutableMcpEndpoint(initial: readonly MutableMcpTool[], options: MutableMcpEndpointOptions = {}) {
   let tools = [...initial];
   const calls = new Map<string, number>();
+  const dispatched: MutableMcpDispatch[] = [];
   const counts = { initialize: 0, list: 0 };
   const sessions = new Map<string, { server: Server; transport: NodeStreamableHTTPServerTransport }>();
 
@@ -37,6 +50,7 @@ export async function startMutableMcpEndpoint(initial: readonly MutableMcpTool[]
     });
     server.setRequestHandler("tools/call", async (request): Promise<CallToolResult> => {
       calls.set(request.params.name, (calls.get(request.params.name) ?? 0) + 1);
+      dispatched.push({ name: request.params.name, arguments: canonicalArguments(request.params.arguments ?? {}) });
       return options.callTool
         ? options.callTool(request.params.name, request.params.arguments ?? {})
         : { content: [{ type: "text", text: "Synthetic fixture result" }] };
@@ -95,6 +109,13 @@ export async function startMutableMcpEndpoint(initial: readonly MutableMcpTool[]
         : calls.get(name) ?? 0;
     },
     counts,
+    /** `tools/call` requests of `name`, only those with exactly `args` when given. */
+    dispatches(name: string, args?: Readonly<Record<string, unknown>>): number {
+      const key = args === undefined ? null : canonicalArguments(args);
+      return dispatched.filter((entry) => entry.name === name && (key === null || entry.arguments === key)).length;
+    },
+    /** Every `tools/call` request in arrival order. */
+    dispatched: (): readonly MutableMcpDispatch[] => [...dispatched],
     async close() {
       await Promise.allSettled([...sessions.values()].map(({ server }) => server.close()));
       http.closeAllConnections();
@@ -113,3 +134,72 @@ export async function startMutableMcpEndpoint(initial: readonly MutableMcpTool[]
 }
 
 export type MutableMcpEndpoint = Awaited<ReturnType<typeof startMutableMcpEndpoint>>;
+
+export const TOOL_HISTORY_FIXTURE = Object.freeze({
+  writeTool: "create_record",
+  readTool: "get_item",
+  /** Distinguishable read results, items 1..items. */
+  items: 10
+});
+
+/** The code only the end of item `index`'s report carries: an answer naming it
+ * read past any short excerpt of that exact call. Synthetic, deterministic. */
+export function toolHistoryItemCode(index: number): string {
+  return `ITEM-${String(index).padStart(2, "0")}-${createHash("sha256").update(`aiqsa-tool-history-item-${index}`).digest("hex").slice(0, 8).toUpperCase()}`;
+}
+
+/** About 2 KB of neutral report lines with the item's code only at the end. */
+export function toolHistoryItemReport(index: number): string {
+  const lines = Array.from({ length: 36 }, (_, line) =>
+    `Item ${index}, report line ${line + 1}: synthetic status text, nothing to verify here.`);
+  return `${lines.join("\n")}\nVerification code of item ${index}: ${toolHistoryItemCode(index)}`;
+}
+
+/**
+ * The synthetic peer of the cross-turn tool-history scenarios: one write tool
+ * whose every call creates a new record (no read-only hint), and one read
+ * tool with ten distinguishable reports. Oracles read the endpoint's
+ * `dispatches(name, args)` and `records()`, never the model's wording.
+ */
+export function createToolHistoryFixture() {
+  const records: Array<Readonly<{ id: string; title: string }>> = [];
+  let readDelayMs = 0;
+  const tools: MutableMcpTool[] = [
+    {
+      annotations: { destructiveHint: false, idempotentHint: false, readOnlyHint: false },
+      description: "Create one new synthetic record with the given title. Every call creates another record.",
+      inputSchema: { additionalProperties: false, properties: { title: { maxLength: 200, type: "string" } },
+        required: ["title"], type: "object" },
+      name: TOOL_HISTORY_FIXTURE.writeTool
+    },
+    {
+      annotations: { readOnlyHint: true },
+      description: `Return the full report of one synthetic item, 1 to ${TOOL_HISTORY_FIXTURE.items}. A report ends with the item's verification code.`,
+      inputSchema: { additionalProperties: false,
+        properties: { index: { maximum: TOOL_HISTORY_FIXTURE.items, minimum: 1, type: "integer" } },
+        required: ["index"], type: "object" },
+      name: TOOL_HISTORY_FIXTURE.readTool
+    }
+  ];
+  const callTool = async (name: string, args: Readonly<Record<string, unknown>>): Promise<CallToolResult> => {
+    if (name === TOOL_HISTORY_FIXTURE.writeTool && typeof args.title === "string") {
+      const record = { id: `rec-${String(records.length + 1).padStart(3, "0")}`, title: args.title };
+      records.push(record);
+      return { content: [{ text: JSON.stringify({ created: record.id, title: record.title }), type: "text" }] };
+    }
+    const index = args.index;
+    if (name === TOOL_HISTORY_FIXTURE.readTool && typeof index === "number" && Number.isInteger(index) &&
+      index >= 1 && index <= TOOL_HISTORY_FIXTURE.items) {
+      if (readDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, readDelayMs));
+      return { content: [{ text: toolHistoryItemReport(index), type: "text" }] };
+    }
+    return { content: [{ text: "Unknown synthetic tool or arguments.", type: "text" }], isError: true };
+  };
+  return {
+    callTool,
+    records: (): readonly Readonly<{ id: string; title: string }>[] => [...records],
+    /** Slows every later read, so a Stop can land while a run still reads. */
+    setReadDelayMs(value: number) { readDelayMs = Math.max(0, value); },
+    tools: tools as readonly MutableMcpTool[]
+  };
+}
