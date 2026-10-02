@@ -56,8 +56,8 @@ import {
   normalizeMemorySearchText
 } from "../persistence/lexical";
 import { loadMemoryReusableFactSourceSnapshots } from
-  "../synthesis/authoritySnapshots";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+  "../persistence/reusableFactSourceSnapshots";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import {
   memoryHistoryChunkSourceAuthorityPredicate,
   memoryHistoryRoundSourceAuthorityPredicate

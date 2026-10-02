@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { loadPersonalMemoryEvidenceSnapshots } from "../persistence/eligibility";
 import { memorySha256 } from "../persistence/lexical";
 import { redactMemorySecrets } from "../explicit/safety";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { loadMemoryMaintenanceContext } from "./context";
 import { MEMORY_MAINTENANCE_BATCH_SIZE, MEMORY_MAINTENANCE_POLICY_VERSION, MEMORY_MAINTENANCE_QUIET_MS,
   memoryMaintenancePlan, type MemoryMaintenanceEvidence, type MemoryMaintenancePlan, type MemoryMaintenanceSource,

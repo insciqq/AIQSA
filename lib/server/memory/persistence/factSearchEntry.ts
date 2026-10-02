@@ -1,8 +1,8 @@
 import { Prisma, type MemoryEmbeddingState } from "@prisma/client";
 import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "./reusableFactAuthority";
 import { loadMemoryReusableFactSourceSnapshots } from
-  "../synthesis/authoritySnapshots";
+  "./reusableFactSourceSnapshots";
 import { buildMemoryFactSearchIdentity } from "./factSearchIdentity";
 import {
   requireActiveMemoryIndex,

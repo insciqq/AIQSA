@@ -36,12 +36,6 @@ import {
 } from "../learning/relations/policy";
 import { MEMORY_TEMPORAL_RESOLVER_VERSION } from
   "../learning/temporal/resolver";
-import {
-  MEMORY_SYNTHESIS_PIPELINE_VERSION,
-  MEMORY_SYNTHESIS_POLICY_VERSION,
-  MEMORY_SYNTHESIS_PROMPT_VERSION,
-  MEMORY_SYNTHESIS_SCHEMA_VERSION
-} from "../synthesis/policy";
 
 type ScenarioId = `E0${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8}`;
 type EvidenceKind =
@@ -385,12 +379,6 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         MEMORY_FACT_RELATION_SCHEMA_VERSION
       ],
       retrieval: MEMORY_RETRIEVAL_PIPELINE_VERSION,
-      synthesis: [
-        MEMORY_SYNTHESIS_PIPELINE_VERSION,
-        MEMORY_SYNTHESIS_POLICY_VERSION,
-        MEMORY_SYNTHESIS_PROMPT_VERSION,
-        MEMORY_SYNTHESIS_SCHEMA_VERSION
-      ],
       temporal: MEMORY_TEMPORAL_RESOLVER_VERSION
     }).toEqual({
       adjudication: [
@@ -420,12 +408,6 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-relation-schema-v1"
       ],
       retrieval: "memory-personal-retrieval-v70",
-      synthesis: [
-        "memory-synthesis-v2",
-        "memory-synthesis-policy-v6",
-        "memory-synthesis-prompt-v9",
-        "memory-synthesis-schema-v4"
-      ],
       temporal: "memory-temporal-resolution-v3"
     });
   });

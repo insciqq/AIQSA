@@ -1,5 +1,5 @@
 import type { Prisma } from "@prisma/client";
-import { loadPersonalMemoryEvidenceSnapshots } from "../persistence/eligibility";
+import { loadPersonalMemoryEvidenceSnapshots } from "./eligibility";
 
 export type MemoryReusableFactSnapshotTarget = Readonly<{
   modality: string;
@@ -24,16 +24,11 @@ export type MemoryReusableFactSourceSnapshot =
       messageId: string;
       safeSourceHash: string;
       sourceProjectionVersion: string;
-    }>
-  | Readonly<{
-      kind: "SYNTHESIZED_FROM";
-      pipelineVersion: string;
-      sourceEligibilityHash: string;
-      targetVersionId: string;
     }>;
 
 /** Produces one deterministic provenance shape for incremental indexing and a
- * full rebuild. It deliberately exposes no provider-facing entity identity. */
+ * full rebuild. It deliberately exposes no provider-facing entity identity.
+ * Retired synthesized PATTERN versions have no reusable provenance. */
 export async function loadMemoryReusableFactSourceSnapshots(
   tx: Prisma.TransactionClient,
   userId: string,
@@ -95,39 +90,6 @@ export async function loadMemoryReusableFactSourceSnapshots(
         kind: "EXPLICIT_ACTION",
         safeSourceHash: evidence.safeSourceHash,
         sourceProjectionVersion: evidence.sourceProjectionVersion
-      }));
-    }
-  }
-
-  const patternIds = unique.flatMap((target) =>
-    target.modality === "PATTERN" ? [target.versionId] : []);
-  if (patternIds.length > 0) {
-    const relations = await tx.memoryFactVersionRelation.findMany({
-      orderBy: [
-        { sourceVersionId: "asc" },
-        { targetVersionId: "asc" },
-        { id: "asc" }
-      ],
-      select: {
-        pipelineVersion: true,
-        sourceEligibilityHash: true,
-        sourceVersionId: true,
-        targetVersionId: true
-      },
-      where: {
-        kind: "SYNTHESIZED_FROM",
-        sourceEligibilityHash: { not: null },
-        sourceVersionId: { in: patternIds },
-        userId
-      }
-    });
-    for (const relation of relations) {
-      if (!relation.sourceEligibilityHash) continue;
-      result.get(relation.sourceVersionId)?.push(Object.freeze({
-        kind: "SYNTHESIZED_FROM",
-        pipelineVersion: relation.pipelineVersion,
-        sourceEligibilityHash: relation.sourceEligibilityHash,
-        targetVersionId: relation.targetVersionId
       }));
     }
   }

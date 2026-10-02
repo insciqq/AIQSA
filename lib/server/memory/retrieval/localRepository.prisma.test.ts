@@ -34,7 +34,7 @@ import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION
 } from "../learning/extraction/contract";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../maintenance/policy";
 import { createPrismaLocalMemoryRetrievalRepository } from "./localRepository";
 import { createMemoryNativeFactSearchPlan } from "./nativeFactSearch";
