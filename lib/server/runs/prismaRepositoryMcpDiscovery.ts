@@ -105,7 +105,7 @@ export function createPrismaMcpDiscoveryOperations(
         : null;
       if (!persistedCall || persistedCall.toolName !== MCP_FIND_TOOLS_NAME ||
         persistedCall.roundIndex !== input.roundIndex ||
-        persistedArguments?.goal !== input.goal) return null;
+        persistedArguments?.query !== input.goal) return null;
       const snapshotServers = new Map(
         input.snapshot.servers.map((server) => [server.serverId, server] as const)
       );
@@ -132,12 +132,12 @@ export function createPrismaMcpDiscoveryOperations(
       } catch {
         return null;
       }
+      // The epoch lists newly loaded and already-active matches; only the
+      // newly loaded ones arrive in the added snapshot.
       const addedToolIds = input.snapshot.tools.map((tool) => tool.namespacedName);
       const mergedToolIds = new Set(merged.tools.map((tool) => tool.namespacedName));
-      if ((addedToolIds.length > 0 && (
-        addedToolIds.length !== input.toolIds.length ||
-        addedToolIds.some((toolId) => !input.toolIds.includes(toolId))
-      )) || input.toolIds.some((toolId) => !mergedToolIds.has(toolId))) return null;
+      if (addedToolIds.some((toolId) => !input.toolIds.includes(toolId)) ||
+        input.toolIds.some((toolId) => !mergedToolIds.has(toolId))) return null;
       const existingFingerprints = new Set((await tx.mcpRunBinding.findMany({
         select: { runtimeGenerationFingerprint: true },
         where: { modelRunId: input.runId }

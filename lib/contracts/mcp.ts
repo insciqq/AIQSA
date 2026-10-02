@@ -583,33 +583,6 @@ export const MCP_RUN_PLAN_LIMITS = Object.freeze({
  */
 export const PERSONAL_MCP_CONNECTION_LIMIT = 25;
 
-/** Provider completion allowance includes reasoning and the strict JSON selection. */
-export const MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS = Object.freeze({
-  fallbackTokens: 65_536,
-  maxTokens: 65_536,
-  minTokens: 1_024
-});
-
-/** New admissions use the System Model; null remains the legacy routing marker. */
-export type McpDiscoveryOutputBudget = number | "model" | null;
-
-export function isMcpDiscoveryOutputBudget(value: unknown): value is number | "model" {
-  return value === "model" || isMcpAutoDiscoveryOutputTokens(value);
-}
-
-export function isMcpAutoDiscoveryOutputTokens(value: unknown): value is number {
-  return Number.isSafeInteger(value) &&
-    Number(value) >= MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.minTokens &&
-    Number(value) <= MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.maxTokens;
-}
-
-export const MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS = Object.freeze({
-  defaultSeconds: 300,
-  // Node timer capacity; administrator overrides may exceed a provider default.
-  maxSeconds: 2_147_483,
-  minSeconds: 1
-});
-
 export const MCP_RUNTIME_TIMEOUT_LIMITS = Object.freeze({ minimumMs: 1_000, maximumMs: 2_147_483_647,
   defaultCallMs: 300_000, defaultStartupMs: 60_000 });
 export type McpRuntimeTimeouts = Readonly<{ callTimeoutMs: number; startupTimeoutMs: number }>;

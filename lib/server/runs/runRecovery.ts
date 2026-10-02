@@ -51,16 +51,13 @@ import { validateRunAccess } from "../auth/entitlements";
 import { getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
 import {
   MCP_FIND_TOOLS_NAME,
-  mcpFindToolsArguments,
   mcpFindToolsTool
 } from "../mcp/discovery";
 import { decodeMcpDiscoveryState } from "../mcp/discoveryState";
 import {
   executeDurableMcpDiscovery,
-  executeDurableMcpDiscoveryBatch,
   McpAutoDiscoveryUnavailableError
 } from "../mcp/durableDiscovery";
-import type { McpSemanticRouter } from "../mcp/router";
 import { mcpRunTools, mcpToolExecutionResult, resolveMcpRunTool } from "../mcp/toolExecutor";
 import type {
   ProviderAdapter,
@@ -394,8 +391,6 @@ export type RunRecoveryDeps = Readonly<{
       options?: Readonly<{ allowedServerIds?: readonly string[]; allowedToolNames?: readonly string[] }>
     ): Promise<McpRunPlanResult>;
     prepareProject?(userId: string, serverIds: readonly string[], options?: Readonly<{ allowedToolNames?: readonly string[] }>): Promise<McpRunPlanResult>;
-    router?: McpSemanticRouter;
-    routerForRun?(owner: Readonly<{ runId: string; userId: string }>): McpSemanticRouter;
   }>;
   providerAdmission?: Readonly<{
     load(input: {
@@ -911,9 +906,6 @@ type RecoveryToolContext = {
   activeMcpSnapshot: McpRunPlanSnapshot | undefined;
   deps: RunRecoveryDeps;
   knowledgeResults: Map<string, ToolExecutionResult>;
-  mcpDiscoveryBatches: Map<string, Readonly<{
-    execute(signal: AbortSignal): Promise<ReadonlyMap<string, ToolExecutionResult>>;
-  }>>;
   mcpDiscoveryQueue: Promise<void>;
   /** Server-minted observations of the run's settled calls, by provider call
    * id: the only authority for masking a recovered result or citing its handle. */
@@ -1310,23 +1302,17 @@ async function settleRecoveredKnowledgeEgress(input: Readonly<{
   }
 }
 
+/** Settled epochs replay by call id (legacy coalesced batches included);
+ * a pending call repeats the deterministic search on its own. */
 async function executeRecoveredMcpDiscovery(
   call: ModelToolCall,
   persisted: PersistedToolLoopCall,
   context: RecoveryToolContext,
   signal: AbortSignal
 ): Promise<ToolExecutionResult> {
-  const batch = context.mcpDiscoveryBatches.get(call.id);
-  if (batch) {
-    const results = await batch.execute(signal);
-    const coalesced = results.get(call.id);
-    if (!coalesced) throw new Error("mcp_discovery_checkpoint_conflict");
-    return coalesced;
-  }
   const operation = async (): Promise<ToolExecutionResult> => {
     const discovery = context.activeMcpDiscovery;
     const materialize = context.deps.mcp?.materialize;
-    const router = context.deps.mcp?.routerForRun?.({ runId: context.run.id, userId: context.run.userId }) ?? context.deps.mcp?.router;
     const appendEpoch = context.deps.repository.appendMcpDiscoveryEpoch;
     if (!discovery || !materialize || !appendEpoch) {
       throw new Error("mcp_discovery_arguments_invalid");
@@ -1342,19 +1328,10 @@ async function executeRecoveredMcpDiscovery(
       materialize,
       maxResults: toolRunBudgetsForRequest(context.run.normalizedRequest)
         .maxMcpToolsPerDiscovery,
-      maxOutputTokens: toolRunBudgetsForRequest(context.run.normalizedRequest)
-        .mcpAutoDiscoveryMaxOutputTokens,
       modelRunToolCallId: persisted.id,
-      onUsage(attribution) {
-        context.usageAttributions.push(attribution);
-      },
-      request: context.providerRequest,
       roundIndex: persisted.roundIndex,
-      router,
       runId: context.run.id,
       signal,
-      timeoutMs: toolRunBudgetsForRequest(context.run.normalizedRequest)
-        .mcpAutoDiscoveryTimeoutSeconds * 1_000,
       userId: context.run.userId
     });
     context.activeMcpSnapshot = executed.snapshot;
@@ -1371,79 +1348,6 @@ async function executeRecoveredMcpDiscovery(
   const result = context.mcpDiscoveryQueue.then(operation, operation);
   context.mcpDiscoveryQueue = result.then(() => undefined, () => undefined);
   return result;
-}
-
-function registerRecoveredMcpDiscoveryBatch(
-  calls: readonly PersistedToolLoopCall[],
-  context: RecoveryToolContext
-): void {
-  const discoveryCalls = [...calls]
-    .sort((left, right) => left.ordinal - right.ordinal)
-    .flatMap((persisted) => {
-      const call = modelToolCall(persisted);
-      // A blocked repeat never runs, so its goal is never routed or epoched.
-      return call.name === MCP_FIND_TOOLS_NAME && mcpFindToolsArguments(call.arguments) && !repeatBlockedRounds(persisted)
-        ? [{ call, modelRunToolCallId: persisted.id }]
-        : [];
-    });
-  if (discoveryCalls.length < 2) return;
-
-  let execution: Promise<ReadonlyMap<string, ToolExecutionResult>> | null = null;
-  const batch = {
-    execute(signal: AbortSignal) {
-      execution ??= (() => {
-        const operation = async (): Promise<ReadonlyMap<string, ToolExecutionResult>> => {
-          const discovery = context.activeMcpDiscovery;
-          const materialize = context.deps.mcp?.materialize;
-          const router = context.deps.mcp?.routerForRun?.({ runId: context.run.id, userId: context.run.userId }) ?? context.deps.mcp?.router;
-          const appendEpoch = context.deps.repository.appendMcpDiscoveryEpoch;
-          if (!discovery || !materialize || !appendEpoch) {
-            throw new Error("mcp_discovery_arguments_invalid");
-          }
-          const budgets = toolRunBudgetsForRequest(context.run.normalizedRequest);
-          const executed = await executeDurableMcpDiscoveryBatch({
-            activeDiscovery: discovery,
-            ...(context.activeMcpSnapshot
-              ? { activeSnapshot: context.activeMcpSnapshot }
-              : {}),
-            appendEpoch,
-            calls: discoveryCalls,
-            filterTools: context.deps.mcp!.filterTools,
-            materialize,
-            maxResults: budgets.maxMcpToolsPerDiscovery,
-            maxOutputTokens: budgets.mcpAutoDiscoveryMaxOutputTokens,
-            onUsage(attribution) {
-              context.usageAttributions.push(attribution);
-            },
-            request: context.providerRequest,
-            roundIndex: calls[0]!.roundIndex,
-            router,
-            runId: context.run.id,
-            signal,
-            timeoutMs: budgets.mcpAutoDiscoveryTimeoutSeconds * 1_000,
-            userId: context.run.userId
-          });
-          context.activeMcpSnapshot = executed.snapshot;
-          context.activeMcpDiscovery = executed.discovery;
-          const knownToolNames = new Set(context.tools.map((tool) => tool.name));
-          for (const tool of mcpRunTools(executed.snapshot)) {
-            if (!knownToolNames.has(tool.name)) {
-              context.tools.push(tool);
-              knownToolNames.add(tool.name);
-            }
-          }
-          return executed.toolResults;
-        };
-        const result = context.mcpDiscoveryQueue.then(operation, operation);
-        context.mcpDiscoveryQueue = result.then(() => undefined, () => undefined);
-        return result;
-      })();
-      return execution;
-    }
-  } as const;
-  for (const candidate of discoveryCalls) {
-    context.mcpDiscoveryBatches.set(candidate.call.id, batch);
-  }
 }
 
 async function executePersistedToolCall(
@@ -2159,7 +2063,6 @@ async function executePersistedToolBatch(
   if (ordered.some((call) => call.state === "cancelled")) {
     throw new ToolLoopRecoveryStopped();
   }
-  registerRecoveredMcpDiscoveryBatch(ordered, context);
 
   const results = new Array<ToolLoopSettledCall<ToolExecutionResult> | undefined>(ordered.length);
   const immediate = ordered.map((call, index) => ({ call, index })).filter(({ call }) => !isSkillToolName(call.toolName));
@@ -2503,7 +2406,6 @@ async function recoverCheckpointedToolLoop(
       activeMcpSnapshot: run.normalizedRequest.mcp,
       deps,
       knowledgeResults: new Map(),
-      mcpDiscoveryBatches: new Map(),
       mcpDiscoveryQueue: Promise.resolve(),
       observations: persistedContextObservations(run.calls),
       sessionToolBridge: bridge,
@@ -3086,7 +2988,6 @@ async function recoverCheckpointedToolLoop(
         persistedCalls.set(call.providerCallId, call);
         repeatHistory.record(call);
       }
-      registerRecoveredMcpDiscoveryBatch(persisted.calls, context);
       return persisted.calls;
     }
 

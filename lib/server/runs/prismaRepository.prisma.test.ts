@@ -2180,7 +2180,8 @@ describe("Prisma-backed run repository", () => {
             providerCallId: "provider-find-tools-call",
             toolName: "find_tools"
           }, {
-            arguments: { goal: "echo a value" }, ordinal: 1,
+            // Calls persisted before lexical search used the legacy goal key.
+            arguments: { query: "echo a value" }, ordinal: 1,
             providerCallId: "provider-find-tools-call-2", toolName: "find_tools"
           }],
           providerContinuation: null,

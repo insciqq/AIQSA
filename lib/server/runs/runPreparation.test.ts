@@ -1981,9 +1981,10 @@ describe("run preparation", () => {
     expect(harness.mcpPrepareCalls).toEqual([]);
   });
 
-  it("freezes the installation tool budgets into the accepted request", async () => {
+  it("freezes the installation tool budgets, without retired router allowances, into the accepted request", async () => {
     const harness = createHarness();
     const load = vi.fn().mockResolvedValue({
+      // A loader built before local search still returned the retired allowances.
       mcpAutoDiscoveryTimeoutSeconds: 60,
       mcpAutoDiscoveryMaxOutputTokens: 4096,
       maxMcpToolsPerDiscovery: 10,
@@ -1997,15 +1998,11 @@ describe("run preparation", () => {
 
     expect(load).toHaveBeenCalledOnce();
     expect(prepared.normalizedRequest.toolBudgets).toEqual({
-      mcpAutoDiscoveryTimeoutSeconds: 60,
-      mcpAutoDiscoveryMaxOutputTokens: 4096,
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 17
     });
     expect(prepared.providerRequest.toolBudgets).toEqual({
-      mcpAutoDiscoveryTimeoutSeconds: 60,
-      mcpAutoDiscoveryMaxOutputTokens: 4096,
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 17
@@ -2966,7 +2963,7 @@ describe("run preparation", () => {
     expect(loadAll.normalizedRequest.mcp?.tools.some((tool) => tool.originalName === "tool_0")).toBe(false);
   });
 
-  it("names connected Auto services once in the admitted system prompt and freezes them with the run", async () => {
+  it("discloses the connected Auto tool index once in the admitted system prompt and freezes it with the run", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const server = (serverName: string, serverId: string) => ({
       description: "ADMIN_DESCRIPTION_CANARY", instructions: "SERVER_INSTRUCTIONS_CANARY", namespace: serverId,
@@ -2978,20 +2975,21 @@ describe("run preparation", () => {
     const catalog = vi.fn(async () => ({ servers, version: 1 as const }));
     const deps = { ...harness.deps, mcp: { filterTools: allowMcpTools, catalog, prepare } };
     const body = successBody({ modelId: "openai-tool-model", provider: "openai" });
-    const hint = "Connected MCP services for this run";
+    const hint = "Connected MCP tool index for this run";
 
     const accepted = materializePreparedRunData(preparedFrom(await prepareRun(deps, sendInput(body))));
     const system = accepted.normalizedRequest.prompt.system ?? "";
     expect(system.split(hint)).toHaveLength(2);
-    expect(system).toContain('["GitLab","Jira"]');
+    expect(system).toContain('[{"name":"GitLab","description":"ADMIN_DESCRIPTION_CANARY","tools":["read_issue"]},' +
+      '{"name":"Jira","description":"ADMIN_DESCRIPTION_CANARY","tools":["read_issue"]}]');
     expect(system).toContain("Requests unrelated to these services do not need find_tools.");
-    expect(system).not.toMatch(/ADMIN_DESCRIPTION_CANARY|SERVER_INSTRUCTIONS_CANARY|TOOL_DESCRIPTION_CANARY|read_issue/u);
+    expect(system).not.toMatch(/SERVER_INSTRUCTIONS_CANARY|TOOL_DESCRIPTION_CANARY|mcp_gitlab_read_1/u);
     expect(accepted.providerRequest.prompt.system).toBe(system);
 
     // Execution and recovery reuse the persisted prompt; only a new admission reads the current catalog.
     servers = [server("Linear", "linear")];
     const later = preparedFrom(await prepareRun(deps, sendInput(body)));
-    expect(later.normalizedRequest.prompt.system).toContain('["Linear"]');
+    expect(later.normalizedRequest.prompt.system).toContain('"name":"Linear"');
     expect(accepted.normalizedRequest.prompt.system).toBe(system);
     expect(accepted.normalizedRequest.mcpDiscovery?.catalog.servers.map((entry) => entry.serverName)).toEqual(["GitLab", "Jira"]);
 
@@ -3039,7 +3037,7 @@ describe("run preparation", () => {
     expect(catalog).toHaveBeenCalledTimes(3);
   });
 
-  it("gives an Auto Agent the connected-services hint once and no find_tools instruction without a catalog", async () => {
+  it("gives an Auto Agent the connected tool index once and no find_tools instruction without a catalog", async () => {
     vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
     try {
       const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
@@ -3057,9 +3055,9 @@ describe("run preparation", () => {
         mcp: { filterTools: allowMcpTools, catalog: async () => ({ servers, version: 1 as const }), prepare: async () => readyMcpPlan() } };
       const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" });
       const connected = agentPrompts(materializePreparedRunData(preparedFrom(await prepareRun(deps, sendInput(body)))).providerRequest);
-      expect(connected.developerInstructions.split("Connected MCP services for this run")).toHaveLength(2);
-      expect(connected.developerInstructions).toContain('["GitLab"]');
-      expect(connected.developerInstructions).toContain("Use find_tools to discover the relevant capabilities.");
+      expect(connected.developerInstructions.split("Connected MCP tool index for this run")).toHaveLength(2);
+      expect(connected.developerInstructions).toContain('{"name":"GitLab","description":"Code hosting","tools":["read_issue"]}');
+      expect(connected.developerInstructions).toContain("Use find_tools to load the relevant capabilities");
       expect(connected.resumePrompt).toContain("discovery_required");
       expect(connected.prompt).not.toContain("GitLab");
 
@@ -3069,7 +3067,7 @@ describe("run preparation", () => {
       const empty = agentPrompts(materializePreparedRunData(prepared).providerRequest);
       for (const text of [empty.developerInstructions, empty.prompt, empty.resumePrompt]) {
         expect(text).not.toContain("find_tools");
-        expect(text).not.toContain("Connected MCP services");
+        expect(text).not.toContain("Connected MCP tool index");
       }
       expect(empty.developerInstructions).toContain("not an authorization denial");
     } finally { vi.unstubAllEnvs(); }

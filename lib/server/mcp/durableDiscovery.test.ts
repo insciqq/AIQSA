@@ -1,14 +1,12 @@
 const allowMcpTools: import("./toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelToolCall } from "../tools/types";
 import { mergeMcpRunPlanSnapshots } from "./discovery";
 import {
   executeDurableMcpDiscovery,
-  executeDurableMcpDiscoveryBatch,
   McpAutoDiscoveryUnavailableError
 } from "./durableDiscovery";
-import { McpSemanticRouterError } from "./router";
-import { mcpAutoDiscoveryFailure } from "../../contracts/runs";
+import { searchMcpCatalog } from "./toolSearch";
 import type {
   McpCapabilityCatalog,
   McpDiscoveryState,
@@ -37,14 +35,19 @@ const catalog: McpCapabilityCatalog = {
   version: 1
 };
 
-const request = {
-  content: { blocks: [{ text: "Complete the requested action", type: "text" as const }] },
-  context: { messages: [], mode: "branch_path" as const }
-};
+vi.mock("./toolSearch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./toolSearch")>();
+  return { ...actual, searchMcpCatalog: vi.fn(actual.searchMcpCatalog) };
+});
 
-function call(id: string, goal = "perform the action"): ModelToolCall {
-  return { arguments: { goal }, id, name: "find_tools" };
+beforeEach(() => { vi.mocked(searchMcpCatalog).mockClear(); });
+
+function call(id: string, query = "select:action_0"): ModelToolCall {
+  return { arguments: { query }, id, name: "find_tools" };
 }
+
+const text = (result: Awaited<ReturnType<typeof executeDurableMcpDiscovery>>) =>
+  (result.toolResult.content[0] as { text: string }).text;
 
 function addedSnapshot(selectedToolIds: readonly string[]): McpRunPlanSnapshot {
   if (selectedToolIds.length === 0) return { servers: [], tools: [], version: 1 };
@@ -118,191 +121,94 @@ function harness(activeCatalog: McpCapabilityCatalog = catalog) {
 }
 
 describe("durable MCP discovery", () => {
-  it("filters current rights from an old discovery catalog and immutable replay without rerouting", async () => {
+  const base = (state: ReturnType<typeof harness>) => ({
+    filterTools: allowMcpTools,
+    activeDiscovery: state.discovery(),
+    activeSnapshot: state.snapshot(),
+    appendEpoch: state.appendEpoch,
+    materialize: state.materialize,
+    roundIndex: 0,
+    runId: "run-1",
+    userId: "user-1"
+  });
+
+  it("filters current rights from an old discovery catalog and replays without searching", async () => {
     const state = harness();
     let granted = true;
     const filterTools: import("./toolAccess").McpToolAccessFilter = async (_userId, tools) => tools.filter(() => granted);
-    const route = vi.fn<import("./router").McpSemanticRouter["route"]>(async () => ({ toolNames: [toolIds[0]!], usageAttribution: null }));
-    const input = () => ({ filterTools, activeDiscovery: state.discovery(), activeSnapshot: state.snapshot(),
-      appendEpoch: state.appendEpoch, materialize: state.materialize, call: call("current-access"),
-      modelRunToolCallId: "access-call", request, roundIndex: 0, router: { route }, runId: "run-1", userId: "user-1" });
+    const input = () => ({ ...base(state), filterTools, call: call("current-access"), modelRunToolCallId: "access-call" });
     const initial = await executeDurableMcpDiscovery(input());
-    expect(JSON.stringify(initial.toolResult)).toContain(toolIds[0]);
+    expect(text(initial)).toContain(toolIds[0]);
     const saved = structuredClone(state.snapshot());
     granted = false;
     const replay = await executeDurableMcpDiscovery(input());
-    expect(JSON.stringify(replay.toolResult)).not.toContain(toolIds[0]);
+    expect(text(replay)).not.toContain(toolIds[0]);
     expect(replay.snapshot).toEqual(saved);
-    expect(route).toHaveBeenCalledOnce();
+    expect(searchMcpCatalog).toHaveBeenCalledOnce();
     expect(state.materialize).toHaveBeenCalledOnce();
-    route.mockResolvedValue({ toolNames: [], usageAttribution: null });
-    await executeDurableMcpDiscovery({ ...input(), call: call("next-access"), modelRunToolCallId: "next-call" });
-    expect(route).toHaveBeenCalledOnce();
+    // Without current access the search sees no candidates and loads nothing.
+    const next = await executeDurableMcpDiscovery({ ...input(), call: call("next-access"), modelRunToolCallId: "next-call" });
+    expect(text(next)).toContain("No enabled MCP tool matched this query");
     expect(state.materialize).toHaveBeenCalledOnce();
   });
 
-  it.each(["mcp_router_gemini_invalid_request", "mcp_router_gemini_parameter_unknown", "mcp_router_request_rejected"] as const)(
-    "preserves %s safely without tool materialization, checkpoint or retry", async (reason) => {
-      const state = harness();
-      const route = vi.fn(async () => { throw new McpSemanticRouterError(reason); });
-      await expect(executeDurableMcpDiscovery({
-        filterTools: allowMcpTools,
-      activeDiscovery: state.discovery(), appendEpoch: state.appendEpoch, call: call("provider-rejected"),
-        materialize: state.materialize, modelRunToolCallId: "persisted-rejected", request, roundIndex: 0,
-        router: { route }, runId: "run-1", userId: "user-1"
-      })).rejects.toMatchObject({ ...mcpAutoDiscoveryFailure(reason), internalReason: reason });
-      expect(route).toHaveBeenCalledOnce();
-      expect(state.appendEpoch).not.toHaveBeenCalled();
-      expect(state.materialize).not.toHaveBeenCalled();
-    }
-  );
-  it("routes every full batch goal once and replays the shared selection without charging again", async () => {
+  it("stores the query in the epoch and accepts a legacy goal call", async () => {
     const state = harness();
-    const goals = ["a".repeat(400), "Find an unrelated calendar action"];
-    const usageAttribution = {
-      modelId: "router-model",
-      provider: "openai",
-      usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 }
-    };
-    const onUsage = vi.fn();
-    const route = vi.fn(async () => ({ toolNames: toolIds.slice(0, 2), usageAttribution }));
-    const input = () => ({
-      filterTools: allowMcpTools,
-      activeDiscovery: state.discovery(),
-      activeSnapshot: state.snapshot(),
-      appendEpoch: state.appendEpoch,
-      calls: goals.map((goal, index) => ({
-        call: call(`provider-${index}`, goal),
-        modelRunToolCallId: `persisted-${index}`
-      })),
-      materialize: state.materialize,
-      onUsage,
-      request,
-      roundIndex: 0,
-      router: { route },
-      runId: "run-1",
-      userId: "user-1"
-    });
+    await executeDurableMcpDiscovery({ ...base(state), call: { arguments: { goal: " select:action_2 " }, id: "legacy",
+      name: "find_tools" }, modelRunToolCallId: "persisted-legacy" });
+    expect(state.discovery().epochs).toEqual([{ epoch: 1, goal: "select:action_2", modelRunToolCallId: "persisted-legacy",
+      roundIndex: 0, toolIds: [toolIds[2]] }]);
+  });
 
-    const executed = await executeDurableMcpDiscoveryBatch(input());
-    const replayed = await executeDurableMcpDiscoveryBatch(input());
+  it("lists already-active matches in rank order without materializing them again", async () => {
+    const state = harness();
+    await executeDurableMcpDiscovery({ ...base(state), call: call("first"), modelRunToolCallId: "persisted-first" });
+    const second = await executeDurableMcpDiscovery({ ...base(state), call: call("second", "select:action_1, action_0, nope"),
+      modelRunToolCallId: "persisted-second" });
+    expect(state.materialize).toHaveBeenLastCalledWith("user-1", [expect.objectContaining({ namespacedName: toolIds[1] })], undefined);
+    expect(state.discovery().epochs[1]).toMatchObject({ toolIds: [toolIds[1], toolIds[0]] });
+    expect(text(second)).toContain(`Loaded 1 MCP tool for the next step:\n- ${toolIds[1]} (Catalog)`);
+    expect(text(second)).toContain(`Already available (no need to load again):\n- ${toolIds[0]} (Catalog)`);
+    expect(text(second)).toContain('["nope"]');
+    // Replay derives the same split from earlier epochs, without searching.
+    const replay = await executeDurableMcpDiscovery({ ...base(state), call: call("second", "select:action_1, action_0, nope"),
+      modelRunToolCallId: "persisted-second" });
+    expect(text(replay)).toContain(`Already available (no need to load again):\n- ${toolIds[0]} (Catalog)`);
+    expect(searchMcpCatalog).toHaveBeenCalledTimes(2);
+  });
 
-    expect(route).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ goals }));
-    expect(onUsage).toHaveBeenCalledExactlyOnceWith(usageAttribution);
+  it("limits keyword results to the per-call budget", async () => {
+    const state = harness();
+    await executeDurableMcpDiscovery({ ...base(state), call: call("keywords", "perform action"),
+      maxResults: 3, modelRunToolCallId: "persisted-keywords" });
+    expect(state.discovery().epochs[0]!.toolIds).toHaveLength(3);
+    expect(state.snapshot().tools).toHaveLength(3);
+  });
+
+  it("keys epochs by persisted tool-call ID and replays legacy coalesced epochs per call", async () => {
+    const state = harness();
+    await executeDurableMcpDiscovery({ ...base(state), call: call("provider-a"), modelRunToolCallId: "persisted-a" });
+    // A coalesced batch persisted one shared selection for every call of the batch.
+    const legacy = { ...state.discovery(), epochs: [...state.discovery().epochs, {
+      epoch: 2, goal: "perform the action", modelRunToolCallId: "persisted-b", roundIndex: 0, toolIds: [toolIds[0]!]
+    }] };
+    const replay = await executeDurableMcpDiscovery({ ...base(state), activeDiscovery: legacy,
+      call: { arguments: { goal: "perform the action" }, id: "provider-b", name: "find_tools" },
+      modelRunToolCallId: "persisted-b" });
+    expect(text(replay)).toContain(`Already available (no need to load again):\n- ${toolIds[0]}`);
+    await expect(executeDurableMcpDiscovery({ ...base(state), activeDiscovery: legacy, call: call("provider-b", "other"),
+      modelRunToolCallId: "persisted-b" })).rejects.toThrow("mcp_discovery_checkpoint_conflict");
+    expect(searchMcpCatalog).toHaveBeenCalledOnce();
     expect(state.materialize).toHaveBeenCalledOnce();
-    expect(state.discovery().epochs).toEqual(goals.map((goal, index) => ({
-      epoch: index + 1,
-      goal,
-      modelRunToolCallId: `persisted-${index}`,
-      roundIndex: 0,
-      toolIds: toolIds.slice(0, 2)
-    })));
-    expect(replayed.toolResults).toEqual(executed.toolResults);
-    for (const result of executed.toolResults.values()) {
-      for (const toolId of toolIds.slice(0, 2)) {
-        expect(JSON.stringify(result.content)).toContain(toolId);
-      }
-    }
   });
 
-  it.each(["failure", "cancelled", "output_limit"] as const)("reports failed routing usage once: %s", async (outcome) => {
-    const cancelled = outcome === "cancelled";
+  it("checkpoints an empty selection and replays it without searching or materializing", async () => {
     const state = harness();
-    const controller = new AbortController();
-    const usageAttribution = {
-      modelId: "router-model",
-      provider: "openai",
-      usage: { inputTokens: 12, outputTokens: 3, reasoningTokens: 0 }
-    };
-    const onUsage = vi.fn();
-    const failure = new McpSemanticRouterError(
-      cancelled ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_router_output_limit" : "mcp_router_request_failed",
-      usageAttribution
-    );
-
-    await expect(executeDurableMcpDiscovery({
-      filterTools: allowMcpTools,
-      activeDiscovery: state.discovery(),
-      appendEpoch: state.appendEpoch,
-      call: call("provider-failure"),
-      materialize: state.materialize,
-      modelRunToolCallId: "persisted-failure",
-      onUsage,
-      request,
-      roundIndex: 0,
-      router: { route: async () => {
-        if (cancelled) controller.abort();
-        throw failure;
-      } },
-      runId: "run-1",
-      signal: controller.signal,
-      userId: "user-1"
-    })).rejects.toMatchObject({
-      code: cancelled ? "mcp_router_cancelled" : outcome === "output_limit" ? "mcp_auto_discovery_output_limit" : "mcp_auto_discovery_unavailable"
-    });
-    expect(onUsage).toHaveBeenCalledExactlyOnceWith(usageAttribution);
-    expect(state.appendEpoch).not.toHaveBeenCalled();
-    expect(state.materialize).not.toHaveBeenCalled();
-  });
-
-  it("keys epochs by persisted tool-call ID and replays without rerouting", async () => {
-    const state = harness();
-    const route = vi.fn()
-      .mockResolvedValueOnce({ toolNames: [toolIds[0]], usageAttribution: null })
-      .mockResolvedValueOnce({ toolNames: [toolIds[1]], usageAttribution: null });
-    const execute = (modelRunToolCallId: string, providerCallId: string) =>
-      executeDurableMcpDiscovery({
-        filterTools: allowMcpTools,
-      activeDiscovery: state.discovery(),
-        activeSnapshot: state.snapshot(),
-        appendEpoch: state.appendEpoch,
-        call: call(providerCallId, "same goal"),
-        materialize: state.materialize,
-        modelRunToolCallId,
-        request,
-        roundIndex: 0,
-        router: { route },
-        runId: "run-1",
-        userId: "user-1"
-      });
-
-    await execute("persisted-call-a", "provider-call-a");
-    await execute("persisted-call-b", "provider-call-b");
-    const replay = await execute("persisted-call-a", "provider-call-a-replayed");
-
-    expect(route).toHaveBeenCalledTimes(2);
-    expect(state.materialize).toHaveBeenCalledTimes(2);
-    expect(state.discovery().epochs.map((epoch) => epoch.modelRunToolCallId)).toEqual([
-      "persisted-call-a",
-      "persisted-call-b"
-    ]);
-    expect(replay.toolResult.content).toEqual([
-      expect.objectContaining({ text: expect.stringContaining(toolIds[0]!) })
-    ]);
-  });
-
-  it("checkpoints an empty selection and replays it without the router or materializer", async () => {
-    const state = harness();
-    const route = vi.fn(async () => ({ toolNames: [], usageAttribution: null }));
-    const input = () => ({
-      filterTools: allowMcpTools,
-      activeDiscovery: state.discovery(),
-      activeSnapshot: state.snapshot(),
-      appendEpoch: state.appendEpoch,
-      call: call("provider-empty", "no external action needed"),
-      materialize: state.materialize,
-      modelRunToolCallId: "persisted-empty",
-      request,
-      roundIndex: 2,
-      router: { route },
-      runId: "run-1",
-      userId: "user-1"
-    });
-
+    const input = () => ({ ...base(state), call: call("provider-empty", "unrelated weather"),
+      modelRunToolCallId: "persisted-empty", roundIndex: 2 });
     await executeDurableMcpDiscovery(input());
     await executeDurableMcpDiscovery(input());
-
-    expect(route).toHaveBeenCalledOnce();
+    expect(searchMcpCatalog).toHaveBeenCalledOnce();
     expect(state.materialize).not.toHaveBeenCalled();
     expect(state.appendEpoch).toHaveBeenCalledOnce();
     expect(state.discovery().epochs).toEqual([expect.objectContaining({
@@ -329,25 +235,8 @@ describe("durable MCP discovery", () => {
       }],
       version: 1
     });
-    const route = vi.fn(async () => ({
-      toolNames: [toolIds[0]!],
-      usageAttribution: null
-    }));
-
-    await expect(executeDurableMcpDiscovery({
-      filterTools: allowMcpTools,
-      activeDiscovery: state.discovery(),
-      activeSnapshot: state.snapshot(),
-      appendEpoch: state.appendEpoch,
-      call: call("provider-relevant"),
-      materialize: state.materialize,
-      modelRunToolCallId: "persisted-relevant",
-      request,
-      roundIndex: 0,
-      router: { route },
-      runId: "run-1",
-      userId: "user-1"
-    })).resolves.toMatchObject({
+    await expect(executeDurableMcpDiscovery({ ...base(state), call: call("provider-relevant"),
+      modelRunToolCallId: "persisted-relevant" })).resolves.toMatchObject({
       snapshot: { tools: [{ namespacedName: toolIds[0] }] }
     });
     expect(state.materialize).toHaveBeenCalledWith("user-1", [{
@@ -360,55 +249,28 @@ describe("durable MCP discovery", () => {
 
   it("accumulates more than twelve tools under the general MCP run-plan limit", async () => {
     const state = harness();
-    let selectionIndex = 0;
-    const route = vi.fn(async () => ({
-      toolNames: [toolIds[selectionIndex++]!],
-      usageAttribution: null
-    }));
-
     for (let index = 0; index < 13; index += 1) {
-      await executeDurableMcpDiscovery({
-        filterTools: allowMcpTools,
-      activeDiscovery: state.discovery(),
-        activeSnapshot: state.snapshot(),
-        appendEpoch: state.appendEpoch,
-        call: call(`provider-${index}`),
-        materialize: state.materialize,
-        modelRunToolCallId: `persisted-${index}`,
-        request,
-        roundIndex: index,
-        router: { route },
-        runId: "run-1",
-        userId: "user-1"
-      });
+      await executeDurableMcpDiscovery({ ...base(state), call: call(`provider-${index}`, `select:action_${index}`),
+        modelRunToolCallId: `persisted-${index}`, roundIndex: index });
     }
-
     expect(state.snapshot().tools).toHaveLength(13);
     expect(state.discovery().epochs).toHaveLength(13);
   });
 
-  it("maps router failures to one safe public error", async () => {
+  it("rethrows cancellation without a checkpoint", async () => {
     const state = harness();
-    const rawFailure = "upstream-secret-endpoint-failed";
+    const controller = new AbortController();
+    controller.abort();
+    await expect(executeDurableMcpDiscovery({ ...base(state), call: call("cancelled"),
+      modelRunToolCallId: "persisted-cancelled", signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(state.appendEpoch).not.toHaveBeenCalled();
+  });
 
-    await expect(executeDurableMcpDiscovery({
-      filterTools: allowMcpTools,
-      activeDiscovery: state.discovery(),
-      activeSnapshot: state.snapshot(),
-      appendEpoch: state.appendEpoch,
-      call: call("provider-failure"),
-      materialize: state.materialize,
-      modelRunToolCallId: "persisted-failure",
-      request,
-      roundIndex: 0,
-      router: { route: async () => { throw new Error(rawFailure); } },
-      runId: "run-1",
-      userId: "user-1"
-    })).rejects.toMatchObject({
-      code: "mcp_auto_discovery_unavailable",
-      internalReason: "mcp_router_request_failed",
-      message: mcpAutoDiscoveryFailure("mcp_router_request_failed").message
-    } satisfies Partial<McpAutoDiscoveryUnavailableError>);
+  it("rejects malformed arguments before searching", async () => {
+    const state = harness();
+    await expect(executeDurableMcpDiscovery({ ...base(state), call: { arguments: { query: "x", goal: "x" }, id: "bad",
+      name: "find_tools" }, modelRunToolCallId: "persisted-bad" })).rejects.toThrow("mcp_discovery_arguments_invalid");
+    expect(searchMcpCatalog).not.toHaveBeenCalled();
   });
 
   it("treats a selected tool that is not ready as a fatal discovery failure", async () => {
@@ -418,28 +280,12 @@ describe("durable MCP discovery", () => {
       issues: [{ errorCode: "private-runtime-detail", name: "Catalog", readiness: "unavailable" as const }],
       ok: false as const
     }));
-
-    await expect(executeDurableMcpDiscovery({
-      filterTools: allowMcpTools,
-      activeDiscovery: state.discovery(),
-      activeSnapshot: state.snapshot(),
-      appendEpoch: state.appendEpoch,
-      call: call("provider-materialization-failure"),
-      materialize,
-      modelRunToolCallId: "persisted-materialization-failure",
-      request,
-      roundIndex: 0,
-      router: {
-        route: async () => ({ toolNames: [toolIds[0]!], usageAttribution: null })
-      },
-      runId: "run-1",
-      userId: "user-1"
-    })).rejects.toMatchObject({
+    await expect(executeDurableMcpDiscovery({ ...base(state), call: call("provider-materialization-failure"), materialize,
+      modelRunToolCallId: "persisted-materialization-failure" })).rejects.toMatchObject({
       code: "mcp_auto_discovery_materialization_failed",
       internalReason: "mcp_materialization_mcp_not_ready",
       message: expect.stringContaining("could not activate")
     } satisfies Partial<McpAutoDiscoveryUnavailableError>);
-
     expect(materialize).toHaveBeenCalledOnce();
     expect(state.appendEpoch).not.toHaveBeenCalled();
     expect(state.discovery().epochs).toEqual([]);
@@ -448,29 +294,14 @@ describe("durable MCP discovery", () => {
   it("redacts unexpected materialization errors and does not checkpoint them", async () => {
     const state = harness();
     const rawFailure = "PRIVATE_TOOLHIVE_ENDPOINT_FAILURE";
-
     let failure: unknown;
     try {
-      await executeDurableMcpDiscovery({
-        filterTools: allowMcpTools,
-      activeDiscovery: state.discovery(),
-        activeSnapshot: state.snapshot(),
-        appendEpoch: state.appendEpoch,
-        call: call("provider-materialization-exception"),
+      await executeDurableMcpDiscovery({ ...base(state), call: call("provider-materialization-exception"),
         materialize: async () => { throw new Error(rawFailure); },
-        modelRunToolCallId: "persisted-materialization-exception",
-        request,
-        roundIndex: 0,
-        router: {
-          route: async () => ({ toolNames: [toolIds[0]!], usageAttribution: null })
-        },
-        runId: "run-1",
-        userId: "user-1"
-      });
+        modelRunToolCallId: "persisted-materialization-exception" });
     } catch (error) {
       failure = error;
     }
-
     expect(failure).toMatchObject({
       code: "mcp_auto_discovery_materialization_failed",
       internalReason: "mcp_materialization_failed",
