@@ -75,6 +75,21 @@ export async function filterMcpToolsForUser<T extends McpToolIdentity>(
   return tools.filter(allowed);
 }
 
+/** A Hub grant covers installation MCPs only, never a user's own connections. */
+export async function filterMcpToolsForHub<T extends McpToolIdentity>(
+  userId: string,
+  tools: readonly T[],
+  client: ToolAccessClient & Pick<Prisma.TransactionClient, "mcpServer"> = prisma
+): Promise<T[]> {
+  if (!tools.length) return [];
+  const servers = await client.mcpServer.findMany({
+    select: { id: true },
+    where: { archivedAt: null, enabled: true, id: { in: [...new Set(tools.map(({ serverId }) => serverId))] }, ownerUserId: null }
+  });
+  const ids = new Set(servers.map(({ id }) => id));
+  return filterMcpToolsForUser(userId, tools.filter(({ serverId }) => ids.has(serverId)), client);
+}
+
 export async function assertMcpToolAccess(
   client: ToolAccessClient,
   userId: string,

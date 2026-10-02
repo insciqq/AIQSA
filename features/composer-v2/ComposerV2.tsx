@@ -290,7 +290,10 @@ export type ComposerV2Props = Readonly<{
   onMakeModelDefault?(model: CatalogModel): void;
   /** Opens the Knowledge section ("Manage Knowledge ›"). */
   onOpenKnowledgeLibrary?(): void;
+  /** Studio's MCP servers ("Manage"/"Configure"). */
   onOpenMcpSettings?(): void;
+  /** Settings → Connections, for a personal connection that needs attention. */
+  onOpenPersonalMcpSettings?(): void;
   onOpenSkillLibrary?(): void;
   /** Detaches an inherited Project plan before manual selection. */
   onOverrideKnowledgePlan?(): void;
@@ -517,6 +520,7 @@ export function ComposerV2({
   onMakeModelDefault,
   onOpenKnowledgeLibrary,
   onOpenMcpSettings,
+  onOpenPersonalMcpSettings,
   onOpenModelParameters,
   onOpenSkillLibrary,
   onOverrideKnowledgePlan,
@@ -1166,6 +1170,8 @@ export function ComposerV2({
     return (server.enabled || server.attention) && (kind === "attention" || kind === "failed");
   });
   const mcpServersNeedingAttention = mcpAttentionServers.length;
+  // Studio configures installation servers; personal ones link to Connections.
+  const mcpInstallationAttention = mcpAttentionServers.some((server) => server.source !== "personal");
   const mcpAttentionLabel = mcpServersNeedingAttention
     ? `${mcpServersNeedingAttention} MCP ${mcpServersNeedingAttention === 1 ? "server needs" : "servers need"} attention. Open MCP settings.`
     : undefined;
@@ -1752,7 +1758,25 @@ export function ComposerV2({
                       <div className="v2-composer-mcp-problems" role="status">
                         <p>MCP servers need attention</p>
                         {mcpAttentionServers.map((server) => (
-                          <p key={server.id}>{server.name} · {mcpReadinessPresentation(server.attention ?? server.readiness, server.runtimeErrorCode).label}</p>
+                          <p className="v2-composer-mcp-problem" key={server.id}>
+                            <span>{server.name} · {mcpReadinessPresentation(server.attention ?? server.readiness, server.runtimeErrorCode).label}</span>
+                            {server.source === "personal" && onOpenPersonalMcpSettings ? (
+                              <button
+                                className="v2-composer-layer-link v2-composer-mcp-connections v2-focusable"
+                                data-v2-composer-option="true"
+                                type="button"
+                                role="menuitem"
+                                aria-label={`Open Connections in Settings for ${server.name}`}
+                                onClick={() => {
+                                  onOpenPersonalMcpSettings();
+                                  closeLayer();
+                                }}
+                              >
+                                Connections
+                                <UiV2Icon name="chevron-right" />
+                              </button>
+                            ) : null}
+                          </p>
                         ))}
                       </div>
                     ) : null}
@@ -1779,7 +1803,7 @@ export function ComposerV2({
                             closeLayer();
                           }}
                         >
-                          {mcpServersNeedingAttention ? "Configure" : "Manage"}
+                          {mcpInstallationAttention ? "Configure" : "Manage"}
                           <UiV2Icon name="chevron-right" />
                         </button>
                       ) : null}
@@ -1787,7 +1811,10 @@ export function ComposerV2({
                     {!mcpAssistantList && enabledMcpServers.length > 0 ? (
                       <div className="v2-composer-tags" data-testid="composer-v2-mcp-servers">
                         {enabledMcpServers.map((server) => (
-                          <span className="v2-composer-tag" key={server.id}>{server.name}</span>
+                          <span className="v2-composer-tag" data-source={server.source ?? "installation"} key={server.id}>
+                            {server.name}
+                            {server.source === "personal" ? <span className="sr-only"> (your connection)</span> : null}
+                          </span>
                         ))}
                       </div>
                     ) : null}

@@ -59,7 +59,28 @@ describe("MCP run plans", () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.snapshot.tools).toHaveLength(8);
     vi.stubEnv("AIQSA_MCP_LIST_TOOLS_RESPONSE_MAX_BYTES", String(512 * 1024));
-    await expect(prepare()).resolves.toMatchObject({ ok: false, code: "mcp_plan_too_large" });
+    const tooLarge = await prepare();
+    expect(tooLarge).toMatchObject({ ok: false, code: "mcp_plan_too_large" });
+    expect(tooLarge).not.toHaveProperty("limit");
+  });
+
+  it("names the tool bound when a whole plan offers more tools than one request accepts", async () => {
+    const tools = Array.from({ length: MCP_RUN_PLAN_LIMITS.maxTools + 1 }, (_, index) => ({
+      definitionHash: hash, description: null, inputSchema: { type: "object" }, name: `tool_${index}`
+    }));
+    const load = async () => [record({ inventory: { tools, version: 1 } })];
+
+    await expect(prepareMcpRunPlan({ isGenerationLive: () => true, load, now: () => now })).resolves.toEqual({
+      code: "mcp_plan_too_large",
+      issues: [{ errorCode: null, name: "Example", readiness: "ready" }],
+      limit: "maxTools",
+      ok: false
+    });
+    // An exact Auto selection from the same inventory is unaffected.
+    await expect(prepareMcpRunPlan({
+      allowedToolNames: [namespacedMcpToolName("mcp_example", `tool_${MCP_RUN_PLAN_LIMITS.maxTools}`)],
+      isGenerationLive: () => true, load, now: () => now
+    })).resolves.toMatchObject({ ok: true });
   });
 
   it.each(["idle", "queued", "starting", "ready", "restarting"] as const)(
@@ -406,6 +427,35 @@ describe("MCP run plans over the runtime's admitted inventory", () => {
     await expect(select("large")).resolves.toMatchObject({ ok: true, snapshot: { tools: [{ originalName: "large" }] } });
     expect(session.callTool).not.toHaveBeenCalled();
     await coordinator.stop();
+  });
+
+  it("names the owner's switch-off distinctly from a tool that left the server", async () => {
+    // The loader already filtered the switched-off tool from the projection.
+    const personal = record({ userDisabledToolNames: ["write", "gone"] });
+    const select = (...names: string[]) => prepareMcpRunPlan({
+      allowedServerIds: ["server-1"],
+      allowedToolNames: names.map((name) => namespacedMcpToolName(personal.namespace, name)),
+      isGenerationLive: () => true,
+      load: async () => [personal],
+      now: () => now
+    });
+    const issue = (errorCode: string) => ({
+      code: "mcp_not_ready",
+      issues: [{ errorCode, name: "Selected MCP tool", readiness: "unavailable" }],
+      ok: false
+    });
+
+    await expect(select("write")).resolves.toEqual(issue("mcp_tool_disabled"));
+    await expect(select("echo", "write")).resolves.toEqual(issue("mcp_tool_disabled"));
+    await expect(select("removed")).resolves.toEqual(issue("mcp_tool_not_available"));
+    // Another server's switch-off of the same name is not this tool's cause.
+    await expect(prepareMcpRunPlan({
+      allowedToolNames: [namespacedMcpToolName("other", "write")],
+      isGenerationLive: () => true,
+      load: async () => [personal, record({ namespace: "other", serverId: "server-2", serverName: "Other" })],
+      now: () => now
+    })).resolves.toEqual(issue("mcp_tool_not_available"));
+    await expect(select("echo")).resolves.toMatchObject({ ok: true, snapshot: { tools: [{ originalName: "echo" }] } });
   });
 
   it("bounds held-back names by one runtime inventory's exclusion limit", () => {

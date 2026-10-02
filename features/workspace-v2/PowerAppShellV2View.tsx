@@ -37,6 +37,7 @@ import {
   MessageDeleteConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
 import { ConnectedAppsSection } from "@/components/app-shell/ConnectedAppsSection";
+import { PersonalMcpConnectionsSection } from "@/components/app-shell/PersonalMcpConnectionsSection";
 import { PermanentChatDeletionSurface } from "@/components/app-shell/PermanentChatDeletionSurface";
 import { ProjectSettingsDialog } from "@/components/app-shell/ProjectSettingsDialog";
 import { ShareDialog } from "@/components/app-shell/ShareDialog";
@@ -61,6 +62,9 @@ import {
   useMcpSettingsStore
 } from "@/components/app-shell/mcpSettingsStore";
 import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
+import type { PersonalMcpConnection } from "@/components/app-shell/personalMcpApi";
+import { ensurePersonalMcpLoaded, usePersonalMcpStore } from "@/components/app-shell/personalMcpStore";
+import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import {
   useSkillLibraryStore
 } from "@/components/app-shell/skillLibraryStore";
@@ -165,7 +169,8 @@ import {
 import { attachmentItemsForV2, uploadProgressBytes } from "@/features/attachments-v2/attachmentPresentation";
 import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
-import type { ComposerConfig } from "@/lib/contracts/composerConfig";
+import type { ComposerConfig, ComposerConfigMcpServer } from "@/lib/contracts/composerConfig";
+import type { McpRuntimeErrorCode, UserMcpServer } from "@/lib/contracts/mcp";
 import { isMcpAutoDiscoveryFailureCode } from "@/lib/contracts/runs";
 import type {
   ChatNavigationFolderWire,
@@ -340,6 +345,60 @@ export function retryAutoMcpDiscoveryV2(regenerate: () => void): void {
   regenerate();
 }
 
+/**
+ * Settings blocks closing and navigation while an owner reports busy. The
+ * connections section reports only create, OAuth start and delete, each with
+ * its own message.
+ */
+export function settingsBusyMessageV2(input: Readonly<{
+  accountBusy: boolean;
+  connectedAppsBusy: boolean;
+  connectionsBusyMessage: string | null;
+}>): string | null {
+  if (input.connectionsBusyMessage) return input.connectionsBusyMessage;
+  if (input.connectedAppsBusy) return "Revoking app access…";
+  return input.accountBusy ? "Updating account…" : null;
+}
+
+/**
+ * The personal chat composer's MCP disclosure: installation servers, then the
+ * account's enabled personal connections. A snapshot; Settings owns polling.
+ */
+export function composerMcpServersV2(
+  installation: readonly UserMcpServer[],
+  personal: readonly PersonalMcpConnection[]
+): ComposerConfigMcpServer[] {
+  return [
+    ...installation.map((server) => ({
+      attention: mcpSetupAttention(server),
+      description: server.description,
+      enabled: server.enabled,
+      id: server.id,
+      knownToolCount: server.knownToolCount,
+      name: server.name,
+      readiness: server.readiness,
+      runtimeErrorCode: server.runtimeErrorCode,
+      source: "installation" as const
+    })),
+    ...personal.filter((connection) => connection.enabled).map((connection) => ({
+      attention: mcpSetupAttention(connection),
+      description: connection.description,
+      enabled: true,
+      id: connection.id,
+      knownToolCount: connection.knownToolCount,
+      name: connection.name,
+      readiness: connection.readiness,
+      // The registry codes join `McpRuntimeErrorCode` with the server contract.
+      runtimeErrorCode: connection.runtimeErrorCode as McpRuntimeErrorCode | null,
+      source: "personal" as const
+    }))
+  ];
+}
+
+export function openPersonalConnectionsSettingsV2(): void {
+  useSettingsDestinationStore.getState().openSettings("connections");
+}
+
 export function applyLoadAllAfterMcpDiscoveryFailureV2(regenerate: () => void): void {
   useComposerControlStore.getState().setMcpSelection({ mode: "load_all" });
   regenerate();
@@ -483,8 +542,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   }, [settings]);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
+  const [connectionsBusyMessage, setConnectionsBusyMessage] = useState<string | null>(null);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
+  const settingsBusyMessage = settingsBusyMessageV2({ accountBusy, connectedAppsBusy, connectionsBusyMessage });
   const [accountDirty, setAccountDirty] = useState(false);
   const [accountKey, setAccountKey] = useState(0);
   const [dataSubview, setDataSubview] = useState<null | "archived">(null);
@@ -499,6 +560,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     panelFits: () => (liveWorkspaceRef.current?.getBoundingClientRect().width ?? 0) >= 896
   });
   const mcpServers = useMcpSettingsStore((state) => state.servers);
+  const personalConnections = usePersonalMcpStore((state) => state.connections);
   const skillCatalog = useSkillLibraryStore((state) => state.data);
   const mcpSelection = useComposerControlStore((state) => state.mcpSelection);
   const selectedSkills = useComposerControlStore((state) => state.selectedSkills);
@@ -743,6 +805,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   useEffect(() => {
     if (!projectContext) return observeMcpSettings();
   }, [projectContext]);
+  // Personal connections join the composer disclosure of personal chats only;
+  // Settings mutations and OAuth returns update the same store.
+  useEffect(() => {
+    if (!projectContext) ensurePersonalMcpLoaded();
+  }, [projectContext]);
   useEffect(() => {
     if (projectContext) {
       const available = new Map((activeProject?.resources ?? []).flatMap((resource) =>
@@ -841,16 +908,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       ? activeProject?.policy.externalToolsEnabled
         ? activeProject.composer?.mcpServers ?? []
         : []
-      : mcpServers.map((server) => ({
-          attention: mcpSetupAttention(server),
-          description: server.description,
-          enabled: server.enabled,
-          id: server.id,
-          knownToolCount: server.knownToolCount,
-          name: server.name,
-          readiness: server.readiness,
-          runtimeErrorCode: server.runtimeErrorCode
-        })),
+      : composerMcpServersV2(mcpServers, personalConnections),
     skills: projectContext
       ? (activeProject?.resources ?? []).flatMap((resource) =>
           resource.type === "skill" && resource.available
@@ -870,7 +928,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             : []
         )
       : skillCatalog?.skills ?? []
-  }) : null, [activeProject, composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, composer.knowledge.documentTotal, composer.knowledge.sources, mcpServers, projectContext, skillCatalog?.skills]);
+  }) : null, [activeProject, composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, composer.knowledge.documentTotal, composer.knowledge.sources, mcpServers, personalConnections, projectContext, skillCatalog?.skills]);
   const pdfRoutePreview = useChatPdfRoutePreview(composer.currentModel && composer.attachments.some((item) => item.kind === "pdf") ? {
     projectId: activeProject?.id ?? null, providerConnectionId: composer.currentModel.provider, providerModelId: composer.currentModel.modelId
   } : null);
@@ -1006,6 +1064,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onMakeModelDefault={composer.makeModelDefault}
       onOpenKnowledgeLibrary={projectContext ? undefined : settings.openKnowledge}
       onOpenMcpSettings={projectContext ? workspace.projects.actions.openSettings : settings.openMcp}
+      onOpenPersonalMcpSettings={projectContext ? undefined : openPersonalConnectionsSettingsV2}
       onOpenModelParameters={() => setRunSetupOpen(true)}
       onOpenSkillLibrary={openSkillLibrary}
       onOverrideKnowledgePlan={composer.knowledge.override}
@@ -1906,8 +1965,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
 
       {settings.settings.open ? (
         <SettingsV2
-          busy={accountBusy || connectedAppsBusy}
-          busyMessage={connectedAppsBusy ? "Revoking app access…" : "Updating account…"}
+          busy={settingsBusyMessage !== null}
+          busyMessage={settingsBusyMessage ?? undefined}
           connectedAppsContent={(
             <ConnectedAppsSection
               accountId={session.accountId}
@@ -1969,6 +2028,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onDisplayNameChange={session.updateAccountDisplayName}
               />
             ),
+            connections: <PersonalMcpConnectionsSection onBusyChange={setConnectionsBusyMessage} />,
             data: dataSubview === "archived" ? (
               <ArchivedChatsPanelV2 onRestored={workspace.archived.onRestored} />
             ) : (

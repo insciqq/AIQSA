@@ -9,6 +9,8 @@ import type {
 export type McpDraftValidationInput = Readonly<{
   draft: McpDraftConfiguration;
   onProgress?(stage: McpDraftValidationStage): Promise<void>;
+  /** A personal (user-owned) connection: its transport follows the personal network policy. */
+  personal?: true;
   serverId?: string;
   validationUserId?: string;
   values: Readonly<Record<string, McpSlotValue>>;

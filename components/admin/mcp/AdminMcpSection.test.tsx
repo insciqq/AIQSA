@@ -22,6 +22,14 @@ vi.mock("@/components/app-shell/mcpSettingsApi", async (importOriginal) => ({
   followMcpOAuthStart: vi.fn()
 }));
 
+const policyApi = vi.hoisted(() => ({ get: vi.fn(), update: vi.fn() }));
+
+vi.mock("@/components/admin/adminMcpPolicyApi", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/components/admin/adminMcpPolicyApi")>(),
+  getAdminMcpPolicy: policyApi.get,
+  updateAdminMcpPolicy: policyApi.update
+}));
+
 const NOW = "2026-09-07T10:00:00.000Z";
 const bannedWords = /\bdraft\b|revision|pending|probe|evidence|adapter|fingerprint|\bversion\b|\bCAS\b|tuple/iu;
 
@@ -29,6 +37,16 @@ const tools: McpToolInventoryEntry[] = [
   { description: "Store a note for the team", name: "remember" },
   { description: "Drop a stored note", name: "forget" }
 ];
+
+/** Third-party secrets are masked text fields so the browser password manager never engages. */
+function expectMaskedSecretInput(input: HTMLElement) {
+  expect(input).toHaveAttribute("type", "text");
+  expect(input).toHaveAttribute("autocomplete", "off");
+  expect(input).toHaveAttribute("autocapitalize", "none");
+  expect(input).toHaveAttribute("autocorrect", "off");
+  expect(input).toHaveAttribute("spellcheck", "false");
+  expect(input.className).toContain("[-webkit-text-security:disc]");
+}
 
 function testedDraft(identityHash: string, inventory: McpToolInventoryEntry[] = tools): McpDraftTestSummary {
   return {
@@ -327,6 +345,8 @@ describe("AdminMcpSection", () => {
     state.failNextCheck = false;
     state.servers = [workingServer(), oauthServer()];
     window.history.replaceState(null, "", "/admin?section=mcp");
+    policyApi.get.mockReset().mockResolvedValue({ data: { personalLocalNetworkEnabled: true, version: 1 }, ok: true });
+    policyApi.update.mockReset();
   });
 
   afterEach(() => {
@@ -351,6 +371,7 @@ describe("AdminMcpSection", () => {
     fireEvent.click(within(rows[0]!).getByRole("link", { name: "Open Working Tools · Working" }));
     expect(onSelectResource).toHaveBeenCalledWith("server-1");
 
+    expect(screen.getByRole("searchbox", { name: "Search servers" })).toHaveAttribute("autocomplete", "off");
     fireEvent.change(screen.getByRole("searchbox", { name: "Search servers" }), { target: { value: "workspace" } });
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
   });
@@ -389,7 +410,7 @@ describe("AdminMcpSection", () => {
     expect(within(sheet).getByLabelText("Name")).toHaveValue("browser-mcp");
     expect(within(sheet).getByLabelText("Source")).toHaveValue("npm");
     const secret = within(sheet).getByLabelText("New shared value for API_KEY");
-    expect(secret).toHaveAttribute("type", "password");
+    expectMaskedSecretInput(secret);
     expect(secret).toHaveValue("write-only-secret");
     expect(sheet.textContent).not.toMatch(bannedWords);
 
@@ -497,6 +518,7 @@ describe("AdminMcpSection", () => {
     fireEvent.click(within(page).getByRole("button", { name: "Show fewer" }));
     expect(within(list).getAllByRole("switch")).toHaveLength(6);
     const search = within(page).getByRole("searchbox", { name: "Search tools" });
+    expect(search).toHaveAttribute("autocomplete", "off");
     fireEvent.change(search, { target: { value: "Action 12" } });
     expect(within(list).getAllByRole("switch")).toHaveLength(1);
     fireEvent.click(within(page).getByRole("checkbox", { name: "Only enabled" }));
@@ -528,7 +550,7 @@ describe("AdminMcpSection", () => {
     const page = await screen.findByTestId("mcp-server-page");
 
     const field = within(page).getByLabelText("Workspace key");
-    expect(field).toHaveAttribute("type", "password");
+    expectMaskedSecretInput(field);
     fireEvent.change(field, { target: { value: "one-time-secret" } });
     fireEvent.click(within(page).getByTestId("mcp-test-save"));
     await waitFor(() => expect(calls.at(-1)?.url).toBe("/api/admin/mcp/server-1/test"));
@@ -749,5 +771,73 @@ describe("AdminMcpSection", () => {
 
     rerender("missing-server");
     expect(await screen.findByRole("alert")).toHaveTextContent("This MCP server no longer exists.");
+  });
+});
+
+describe("AdminMcpSection personal connection policy", () => {
+  const state: ApiState = { failNextCheck: false, servers: [] };
+  const label = "Allow personal connections to the local network";
+
+  beforeEach(() => {
+    state.servers = [workingServer()];
+    window.history.replaceState(null, "", "/admin?section=mcp");
+    policyApi.get.mockReset().mockResolvedValue({ data: { personalLocalNetworkEnabled: true, version: 4 }, ok: true });
+    policyApi.update.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows the switch on by default with the accepted risk and saves a change at the version it read", async () => {
+    policyApi.update.mockResolvedValueOnce({ data: { personalLocalNetworkEnabled: false, version: 5 }, ok: true });
+    const { feedback, view } = renderSection(state);
+    const panel = await screen.findByTestId("admin-mcp-policy");
+    const toggle = await within(panel).findByRole("switch", { name: label });
+    expect(toggle).toBeChecked();
+    expect(toggle).toHaveAccessibleDescription(/anyone who can add a personal connection can send requests to devices on this network/u);
+    expect(panel).toHaveTextContent("AIQSA's services and cloud metadata always stay blocked");
+    expect(view.container.textContent).not.toMatch(bannedWords);
+
+    fireEvent.click(toggle);
+    expect(toggle).toBeDisabled();
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(policyApi.update).toHaveBeenCalledExactlyOnceWith({ personalLocalNetworkEnabled: false, version: 4 });
+    expect(feedback.reportNotice).toHaveBeenCalledWith("Personal connections can no longer reach the local network.");
+    expect(toggle).toBeEnabled();
+  });
+
+  it("explains a concurrent change and shows the current value", async () => {
+    policyApi.update.mockResolvedValueOnce({ error: "mcp_policy_stale", ok: false });
+    policyApi.get
+      .mockResolvedValueOnce({ data: { personalLocalNetworkEnabled: true, version: 4 }, ok: true })
+      .mockResolvedValueOnce({ data: { personalLocalNetworkEnabled: false, version: 6 }, ok: true });
+    renderSection(state);
+    const panel = await screen.findByTestId("admin-mcp-policy");
+    fireEvent.click(await within(panel).findByRole("switch", { name: label }));
+
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("This setting changed in another session.");
+    await waitFor(() => expect(within(panel).getByRole("switch", { name: label })).not.toBeChecked());
+    expect(policyApi.get).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not present a failed read as a setting and retries on request", async () => {
+    policyApi.get
+      .mockResolvedValueOnce({ error: "mcp_policy_unavailable", ok: false })
+      .mockResolvedValueOnce({ data: { personalLocalNetworkEnabled: false, version: 2 }, ok: true });
+    renderSection(state);
+    const panel = await screen.findByTestId("admin-mcp-policy");
+    expect(await within(panel).findByRole("alert")).toHaveTextContent("temporarily unavailable");
+    expect(within(panel).queryByRole("switch")).toBeNull();
+
+    fireEvent.click(within(panel).getByRole("button", { name: "Try again" }));
+    expect(await within(panel).findByRole("switch", { name: label })).not.toBeChecked();
+  });
+
+  it("stays on the list only", async () => {
+    renderSection(state, "server-1");
+    await screen.findByTestId("admin-mcp-section");
+    expect(screen.queryByTestId("admin-mcp-policy")).toBeNull();
+    expect(policyApi.get).not.toHaveBeenCalled();
   });
 });

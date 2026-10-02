@@ -2,9 +2,11 @@ import type { McpConfigurationSlot } from "@/lib/contracts/mcp";
 import { describe, expect, it } from "vitest";
 import {
   mcpRuntimeFingerprint,
+  mcpSharedRuntimeFingerprint,
   resolveEffectiveMcpGrant,
   resolveEffectiveMcpValues
 } from "./access";
+import { hashCanonicalMcpValue } from "./definitions";
 
 const slots: McpConfigurationSlot[] = [
   {
@@ -168,5 +170,20 @@ describe("MCP runtime fingerprints", () => {
       ...base,
       plan: [{ ...plan[0], valueVersion: 3 }, plan[1]]
     }));
+  });
+
+  it("keeps member and shared runtime identities byte-identical to their selection-free shape", () => {
+    const plan = [
+      { authorized: true, slotKey: "tool", source: "literal" as const, valueVersion: null },
+      { authorized: true, slotKey: "auth", source: "personal" as const, valueVersion: 2 }
+    ];
+    const sorted = [plan[1], plan[0]];
+
+    // A personal owner's switched-off tools never enter the identity, so a
+    // switch keeps the generation and an unswitched runtime keeps its hash.
+    expect(mcpRuntimeFingerprint({ oauthConnectionRevision: "oauth-1", plan, revisionId: "revision-1", userId: "user-1" }))
+      .toBe(hashCanonicalMcpValue({ oauthConnectionRevision: "oauth-1", plan: sorted, revisionId: "revision-1", userId: "user-1" }));
+    expect(mcpSharedRuntimeFingerprint({ plan, revisionId: "revision-1" }))
+      .toBe(hashCanonicalMcpValue({ owner: "shared", plan: sorted, revisionId: "revision-1" }));
   });
 });

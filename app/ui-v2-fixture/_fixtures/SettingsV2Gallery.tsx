@@ -13,14 +13,34 @@ import {
 } from "@/components/app-shell/memorySettingsStore";
 import { applyThemeId, type ThemeId } from "@/components/app-shell/theme";
 import type { MemoryConsumerSettingsResponse } from "@/lib/contracts/memoryConsumer";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   SettingsRowV2,
   SettingsV2
 } from "@/features/settings-v2/SettingsV2";
 import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV2";
+import { PersonalMcpConnectionsSection } from "@/components/app-shell/PersonalMcpConnectionsSection";
+import { consumeMcpOAuthReturn } from "@/components/app-shell/mcpSettingsStore";
+import { deactivatePersonalMcp } from "@/components/app-shell/personalMcpStore";
+import { installPersonalMcpFixtureApi, type PersonalMcpFixtureScenario } from "./personalMcpFixtureApi";
 
-export type SettingsGalleryStateV2 = "appearance" | "archived" | "dirty" | "account";
+export type SettingsGalleryStateV2 =
+  | "appearance"
+  | "archived"
+  | "dirty"
+  | "account"
+  | "connections"
+  | "connections-empty"
+  | "connections-error"
+  | "connections-rows";
+
+/**
+ * `connections` reads the real routes (browser tests mock them); the other
+ * connection states answer from the in-browser fixture API.
+ */
+function connectionsScenario(state: SettingsGalleryStateV2): PersonalMcpFixtureScenario | null {
+  return state === "connections-empty" ? "empty" : state === "connections-error" ? "error" : state === "connections-rows" ? "rows" : null;
+}
 
 const archiveMemorySettings: MemoryConsumerSettingsResponse = {
   capabilities: {
@@ -46,6 +66,21 @@ const archiveMemorySettings: MemoryConsumerSettingsResponse = {
 };
 
 export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGalleryStateV2 }) {
+  const scenario = connectionsScenario(state);
+  const [fixtureApiReady, setFixtureApiReady] = useState(scenario === null);
+  useEffect(() => {
+    if (!scenario) return;
+    deactivatePersonalMcp();
+    const restore = installPersonalMcpFixtureApi(scenario);
+    // `?settings=connections&oauth=…&server=…` previews an OAuth return.
+    consumeMcpOAuthReturn(new URL(window.location.href));
+    const frame = window.requestAnimationFrame(() => setFixtureApiReady(true));
+    return () => {
+      window.cancelAnimationFrame(frame);
+      restore();
+      deactivatePersonalMcp();
+    };
+  }, [scenario]);
   const [open, setOpen] = useState(true);
   const [dirty, setDirty] = useState(state === "dirty");
   const [dataSubview, setDataSubview] = useState<"archived" | null>(null);
@@ -83,7 +118,7 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
       <h1>Quarterly product brief</h1>
       <p>Settings is a temporary layer over the conversation, not a separate dashboard.</p>
       <UiV2Button onClick={() => setOpen(true)}>Open settings</UiV2Button>
-      {open ? (
+      {open && fixtureApiReady ? (
         <SettingsV2
           connectedAppsContent={(
             <div className="v2-settings-fixture-dirty">
@@ -92,13 +127,14 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
             </div>
           )}
           dirty={dirty}
-          initialSection={state === "appearance" ? "general" : state === "archived" ? "data" : "account"}
+          initialSection={state === "appearance" ? "general" : state === "archived" ? "data" : state.startsWith("connections") ? "connections" : "account"}
           obscured={deletionObscuresSettings}
           onClose={() => setOpen(false)}
           onDiscard={() => setDirty(false)}
           onSectionChange={() => setDataSubview(null)}
           onThemeChange={updateTheme}
           panels={{
+            connections: <PersonalMcpConnectionsSection />,
             data: dataSubview === "archived" ? (
               <ArchivedChatsPanelV2 onRestored={() => undefined} />
             ) : (

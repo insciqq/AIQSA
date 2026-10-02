@@ -87,11 +87,14 @@ export function AdminMcpOneTimeValues({
               </select>
             ) : (
               <input
-                autoComplete="new-password"
-                className={inputClass}
+                autoCapitalize={slot.sensitive ? "none" : undefined}
+                autoComplete="off"
+                autoCorrect={slot.sensitive ? "off" : undefined}
+                className={slot.sensitive ? `${inputClass} [-webkit-text-security:disc]` : inputClass}
                 disabled={disabled}
                 onChange={(event) => set(slot.slotKey, event.currentTarget.value)}
-                type={slot.sensitive ? "password" : slot.valueType === "number" ? "number" : "text"}
+                spellCheck={slot.sensitive ? false : undefined}
+                type={!slot.sensitive && slot.valueType === "number" ? "number" : "text"}
                 value={values[slot.slotKey] ?? ""}
               />
             )}

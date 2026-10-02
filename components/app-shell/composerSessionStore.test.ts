@@ -59,6 +59,20 @@ describe("composer session store", () => {
     expect(session(key)).toMatchObject({ draft: "", comments: [] });
   });
 
+  it("keeps the draft and shows the refusal when Load all is refused before a run exists", () => {
+    const store = useComposerSessionStore.getState();
+    const key = composerSessionKey("load-all-refused");
+    store.activateSession(key);
+    store.setDraft("Summarize every open issue");
+    const token = store.beginSend(key)!;
+    expect(session(key).draft).toBe("");
+    store.finishSend(token, "failed", "Load all can offer at most 128 MCP tools to one message.", true, null);
+    expect(session(key)).toMatchObject({
+      draft: "Summarize every open issue",
+      operationError: "Load all can offer at most 128 MCP tools to one message."
+    });
+  });
+
   it("keeps comment-only continuation input and reserves the bound for a rejected pending send", () => {
     const store = useComposerSessionStore.getState();
     const source = composerSessionKey("source-comments"), target = composerSessionKey("continuation-comments");

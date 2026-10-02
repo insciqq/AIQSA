@@ -139,6 +139,8 @@ class MemoryMcpRepository implements McpRepository {
   testDraftCalls: Array<Parameters<McpRepository["testDraft"]>[0]> = [];
   updateCalls: Array<Parameters<McpRepository["updateServer"]>[0]> = [];
   userUpdateCalls: Array<Parameters<McpRepository["updateUserServer"]>[0]> = [];
+  /** Server ids that are personal rows owned by `user-1`. */
+  personalServerIds = new Set<string>();
   listAdminCalls = 0;
   listUserCalls: string[] = [];
   nextError: McpRepositoryError | null = null;
@@ -321,6 +323,7 @@ class MemoryMcpRepository implements McpRepository {
     this.userUpdateCalls.push(input);
     const failure = this.consumeFailure<McpUserServerState>();
     if (failure) return failure;
+    if (input.installationOnly && this.personalServerIds.has(input.serverId)) return { kind: "not_found" };
     if (!this.entitledUserIds.has(input.userId) || input.serverId !== SERVER_ID) {
       return { kind: "not_found" };
     }
@@ -396,37 +399,40 @@ describe("MCP handler authorization", () => {
     const row = userServer({ readiness: "unavailable", runtimeGenerationId: "private-generation" });
     row.errorCode = "mcp_health_check_failed";
     const list = vi.spyOn(repository, "listUserServers").mockResolvedValue([row]);
-    const get = createUserMcpCatalogHandler({ ...deps(repository), runtimeOperationalStatus: () => "active" });
+    const get = createUserMcpCatalogHandler(deps(repository));
     const body = await (await get(request({ user: "user-1" }))).json();
-    expect(body.servers[0]).toMatchObject({ operationalStatus: "inactive", runtimeErrorCode: "mcp_health_check_failed" });
+    expect(body.servers[0]).toMatchObject({ runtimeErrorCode: "mcp_health_check_failed" });
     expect(JSON.stringify(body)).not.toContain("private-generation");
     list.mockResolvedValue([{ ...row, readiness: "ready", errorCode: null }]);
     expect(await (await get(request({ user: "user-1" }))).json()).toMatchObject({
-      servers: [expect.objectContaining({ operationalStatus: "active", runtimeErrorCode: null })]
+      servers: [expect.objectContaining({ readiness: "ready", runtimeErrorCode: null })]
     });
     list.mockResolvedValue([{ ...row, errorCode: "PRIVATE_RAW_FAILURE" }]);
     const failed = await (await get(request({ user: "user-1" }))).json();
     expect(failed.servers[0].runtimeErrorCode).toBe("mcp_runtime_unavailable");
     expect(JSON.stringify(failed)).not.toContain("PRIVATE_RAW_FAILURE");
   });
-  it.each(["active", "checking", "inactive"] as const)(
-    "projects current health %s without reconciliation or private runtime fields", async (status) => {
+  it.each(["ready", "starting", "idle", "disabled"] as const)(
+    "projects %s readiness without runtime lookups, reconciliation or private runtime fields", async (readiness) => {
       const repository = new MemoryMcpRepository();
       vi.spyOn(repository, "listUserServers").mockResolvedValue([{
-        ...userServer({ fields: [], readiness: "ready", runtimeGenerationId: "generation-1" }),
+        ...userServer({ enabled: readiness !== "disabled", fields: [], readiness, runtimeGenerationId: "generation-1" }),
         errorCode: "mcp_artifact_missing"
       }]);
-      const runtimeOperationalStatus = vi.fn(() => status);
+      const onActivationRequested = vi.fn();
       const onRuntimeChanged = vi.fn();
       const response = await createUserMcpCatalogHandler({
-        ...deps(repository), runtimeOperationalStatus, onRuntimeChanged
+        ...deps(repository), onActivationRequested, onRuntimeChanged
       })(request({ user: "user-1" }));
       const body = await response.json();
-      expect(body.servers[0]).toMatchObject({ enabled: true, operationalStatus: status });
-      expect(body.servers[0]).not.toHaveProperty("errorCode");
+      expect(body.servers[0]).toMatchObject({ enabled: readiness !== "disabled", readiness });
+      expect(Object.keys(body.servers[0]).sort()).toEqual([
+        "accountLabel", "description", "enabled", "fields", "id", "knownToolCount", "name",
+        "oauthAvailable", "oauthState", "readiness", "runtimeErrorCode", "tools"
+      ]);
       expect(JSON.stringify(body)).not.toMatch(/generation-1|runtimeGenerationId|mcp_artifact_missing/);
       expect(response.headers.get("cache-control")).toBe("no-store");
-      expect(runtimeOperationalStatus).toHaveBeenCalledWith("generation-1");
+      expect(onActivationRequested).not.toHaveBeenCalled();
       expect(onRuntimeChanged).not.toHaveBeenCalled();
     }
   );
@@ -443,30 +449,6 @@ describe("MCP handler authorization", () => {
     const body = await (await createUserMcpCatalogHandler(deps(repository))(request({ user: "user-1" }))).json();
     expect(body.servers[0]).toMatchObject({ tools: [{ name: "create_task" }], unavailableTools });
   });
-
-  it("never derives active health from persisted ready state after a restart", async () => {
-    const repository = new MemoryMcpRepository();
-    vi.spyOn(repository, "listUserServers").mockResolvedValue([
-      userServer({ readiness: "ready", runtimeGenerationId: "persisted-ready" })
-    ]);
-    const response = await createUserMcpCatalogHandler(deps(repository))(request({ user: "user-1" }));
-    expect(await response.json()).toMatchObject({ servers: [{ operationalStatus: "inactive" }] });
-  });
-
-  it.each(["disabled", "idle", "needs_setup", "needs_authorization", "reauthorization_required", "unavailable"] as const)(
-    "does not probe or claim active status for %s", async (readiness) => {
-      const repository = new MemoryMcpRepository();
-      vi.spyOn(repository, "listUserServers").mockResolvedValue([
-        userServer({ enabled: readiness !== "disabled", readiness, runtimeGenerationId: "old-generation" })
-      ]);
-      const runtimeOperationalStatus = vi.fn(() => "active" as const);
-      const response = await createUserMcpCatalogHandler({ ...deps(repository), runtimeOperationalStatus })(
-        request({ user: "user-1" })
-      );
-      expect(await response.json()).toMatchObject({ servers: [{ operationalStatus: "inactive" }] });
-      expect(runtimeOperationalStatus).not.toHaveBeenCalled();
-    }
-  );
 
   it("separates anonymous, ordinary-user, inactive-admin, and active-admin catalog access", async () => {
     const repository = new MemoryMcpRepository();
@@ -610,6 +592,22 @@ describe("MCP handler input validation", () => {
     expect(repository.createCalls).toEqual([]);
     expect(acceptedType.status).toBe(200);
     expect(repository.userUpdateCalls).toHaveLength(1);
+  });
+
+  it("refuses personal connections on the installation PATCH with the privacy-neutral not-found", async () => {
+    const repository = new MemoryMcpRepository();
+    repository.personalServerIds.add(SERVER_ID);
+    const updateUser = createUserMcpUpdateHandler(deps(repository));
+    const response = await updateUser(request({
+      body: { values: { "api-key": "replacement-must-not-apply" } },
+      contentType: "application/json",
+      method: "PATCH",
+      user: "user-1"
+    }), routeContext);
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "mcp_not_found" });
+    expect(repository.userUpdateCalls).toEqual([expect.objectContaining({ installationOnly: true, serverId: SERVER_ID })]);
+    expect(repository.personalValues.get("user-1")).toBeUndefined();
   });
 
   it("returns bounded draft validation issues before calling the repository", async () => {
@@ -1051,7 +1049,9 @@ describe("MCP repository error mapping", () => {
     }, 400, {
       error: "invalid_mcp_values",
       issues: [{ code: "slot_value_invalid", path: "values.api-key" }]
-    }]
+    }],
+    [{ kind: "mcp_enabled_server_limit_reached" }, 409, { error: "mcp_enabled_server_limit_reached" }],
+    [{ kind: "personal_mcp_limit_reached" }, 409, { error: "personal_mcp_limit_reached" }]
   ];
 
   it.each(cases)("maps %o to its stable response", async (repositoryError, status, body) => {
@@ -1067,6 +1067,22 @@ describe("MCP repository error mapping", () => {
 
     expect(response.status).toBe(status);
     await expect(response.json()).resolves.toEqual(body);
+  });
+
+  it("refuses enabling one more installation server past the shared enabled-server limit", async () => {
+    const repository = new MemoryMcpRepository();
+    repository.nextError = { kind: "mcp_enabled_server_limit_reached" };
+    const updateUser = createUserMcpUpdateHandler(deps(repository));
+    const response = await updateUser(request({
+      body: { enabled: true },
+      contentType: "application/json",
+      method: "PATCH",
+      user: "user-1"
+    }), routeContext);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "mcp_enabled_server_limit_reached" });
+    expect(repository.userUpdateCalls).toEqual([{ enabled: true, installationOnly: true, serverId: SERVER_ID, userId: "user-1" }]);
   });
 
   it("maps unavailable encryption to a service error without exposing its cause", async () => {

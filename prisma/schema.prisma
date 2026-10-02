@@ -869,6 +869,7 @@ model User {
   mcpToolGrants                       McpToolUserGrant[]
   mcpActivationJobs                   McpActivationJob[]
   mcpOAuthConnections                 McpOAuthConnection[]
+  mcpOwnedServers                     McpServer[]               @relation("McpServerOwner")
   mcpUserServers                      McpUserServer[]
   modelPolicyUpdates                  ModelPolicy[]                      @relation("ModelPolicyUpdater")
   providerCredentialAssignments       ProviderUserCredentialAssignment[]
@@ -3582,9 +3583,20 @@ model ModelRunEvent {
   @@unique([modelRunId, sequence])
 }
 
+/// Installation-wide MCP policy; one row, id `installation`.
+model McpPolicy {
+  id                          String   @id
+  /// Personal MCP may reach private, CGNAT and host addresses (never AIQSA's own services).
+  personalLocalNetworkEnabled Boolean  @default(true)
+  version                     Int      @default(1)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+}
+
 model McpServer {
   id                   String               @id @default(uuid())
   namespace            String               @unique
+  ownerUserId          String?
   displayName          String
   description          String               @default("")
   enabled              Boolean              @default(false)
@@ -3607,8 +3619,10 @@ model McpServer {
   revisions            McpRevision[]        @relation("McpServerRevisions")
   sharedRuntime        McpSharedRuntime?
   userServers          McpUserServer[]
+  owner                User?                @relation("McpServerOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
 
   @@index([enabled, archivedAt])
+  @@index([ownerUserId, enabled, archivedAt])
 }
 
 model McpActivationJob {
@@ -3644,6 +3658,7 @@ model McpRevision {
   identityHash       String
   createdAt          DateTime               @default(now())
   activeFor          McpServer?             @relation("ActiveMcpRevision")
+  discoveredBy       McpUserServer[]        @relation("McpUserServerDiscoveredRevision")
   runtimeGenerations McpRuntimeGeneration[]
   server             McpServer              @relation("McpServerRevisions", fields: [serverId], references: [id], onDelete: Restrict)
 
@@ -3711,16 +3726,26 @@ model McpUserServer {
   enabled                    Boolean                @default(false)
   personalConfigEnvelope     String?
   personalConfigVersion      Int                    @default(0)
+  /// Tools the owner switched off; every other upstream tool is available.
+  /// Bounded by a CHECK (cardinality <= 1024) in the migration.
+  userDisabledToolNames      String[]               @default([])
+  discoveredInventory        Json?
+  discoveredRevisionId       String?
+  discoveredOAuthConnectionId String?
   desiredRuntimeGenerationId String?                @unique
   createdAt                  DateTime               @default(now())
   updatedAt                  DateTime               @updatedAt
   desiredRuntimeGeneration   McpRuntimeGeneration?  @relation("McpDesiredRuntimeGeneration", fields: [desiredRuntimeGenerationId], references: [id], onDelete: SetNull)
+  discoveredOAuthConnection  McpOAuthConnection?    @relation("McpUserServerDiscoveredOAuthConnection", fields: [discoveredOAuthConnectionId], references: [id], onDelete: SetNull)
+  discoveredRevision         McpRevision?           @relation("McpUserServerDiscoveredRevision", fields: [discoveredRevisionId], references: [id], onDelete: SetNull)
   runtimeGenerations         McpRuntimeGeneration[] @relation("McpUserRuntimeGenerations")
   server                     McpServer              @relation(fields: [serverId], references: [id], onDelete: Cascade)
   user                       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, serverId])
   @@index([userId, enabled])
+  @@index([discoveredOAuthConnectionId])
+  @@index([discoveredRevisionId])
 }
 
 /// The installation-owned runtime Project runs use for one server: no user,
@@ -3763,6 +3788,7 @@ model McpOAuthConnection {
   disconnectRequestedAt DateTime?
   createdAt             DateTime                @default(now())
   updatedAt             DateTime                @updatedAt
+  discoveredBy          McpUserServer[]         @relation("McpUserServerDiscoveredOAuthConnection")
   oauthClient           McpOAuthClient?         @relation(fields: [oauthClientId], references: [id], onDelete: Restrict)
   runtimeGenerations    McpRuntimeGeneration[]
   server                McpServer               @relation(fields: [serverId], references: [id], onDelete: Cascade)

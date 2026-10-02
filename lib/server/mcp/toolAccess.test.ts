@@ -5,13 +5,28 @@ import type { ProviderRunRequest } from "../providers/types";
 import type { McpRunPlanSnapshot } from "./runPlan";
 import { describe, expect, it, vi } from "vitest";
 import { decodeMcpToolAccessPolicy } from "@/lib/contracts/mcp";
-import { assertMcpToolAccess, filterMcpToolsForUser, resolveMcpToolAccess } from "./toolAccess";
+import { assertMcpToolAccess, filterMcpToolsForHub, filterMcpToolsForUser, resolveMcpToolAccess } from "./toolAccess";
 
 const tool = { serverId: "tracker", originalName: "issue_update" };
 const actor = { id: "alice", active: true, groupIds: ["editors", "full-access"] };
 const policy = { serverId: "tracker", toolName: "issue_update", restricted: true, users: [], groups: [] };
 
 describe("optional MCP tool access", () => {
+  it("keeps personal connections out of Hub discovery and dispatch even for their owner", async () => {
+    const findMany = vi.fn(async () => [{ id: "installation" }]);
+    const client = {
+      mcpServer: { findMany },
+      user: { findUnique: vi.fn(async () => ({ status: "active", groups: [] })) },
+      mcpToolAccessPolicy: { findMany: vi.fn(async () => []) }
+    } as unknown as NonNullable<Parameters<typeof filterMcpToolsForHub>[2]>;
+    const tools = ["installation", "personal"].map((serverId) => ({ serverId, originalName: "search" }));
+    expect(await filterMcpToolsForHub("alice", tools, client)).toEqual([tools[0]]);
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ ownerUserId: null, archivedAt: null, enabled: true })
+    }));
+    findMany.mockResolvedValueOnce([]);
+    expect(await filterMcpToolsForHub("alice", tools, client)).toEqual([]);
+  });
   it("inherits by default and when disabled, while restricted + empty denies everyone", () => {
     expect(resolveMcpToolAccess(actor, [])(tool)).toBe(true);
     expect(resolveMcpToolAccess(actor, [{ ...policy, restricted: false }])(tool)).toBe(true);

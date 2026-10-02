@@ -3,6 +3,9 @@ import { hashCanonicalMcpValue } from "./definitions";
 
 export type McpOAuthPurpose = "user" | "validation";
 
+/** Which servers a user OAuth route may address: installation rows or the caller's own personal rows. */
+export type McpOAuthSourceKind = "installation" | "personal";
+
 export type McpOAuthPolicy = Readonly<{
   allowPrivateNetwork: boolean;
   allowedAuthorizationServerOrigins: readonly string[];
@@ -16,6 +19,12 @@ export type McpOAuthPolicy = Readonly<{
   serverUrl: string;
   userId: string;
   clientIdMetadataDocumentUrl?: string;
+  /**
+   * Personal (user-owned) server. Derived from the server owner whenever a
+   * policy is loaded; never stored in token envelopes, fingerprints or
+   * registration keys. It selects the personal transport rule.
+   */
+  personal?: true;
 }>;
 
 function normalizedResource(draft: McpDraftConfiguration): string {
@@ -70,9 +79,28 @@ function effectiveAuthorizationServerOrigins(draft: McpDraftConfiguration): stri
   );
 }
 
+/**
+ * Personal OAuth transport rule: an https MCP endpoint uses https for every
+ * OAuth URL; an acknowledged http endpoint may use http only on its own
+ * hostname (any port).
+ */
+export function personalMcpOAuthTransportAllowed(endpoint: string | URL, candidate: URL): boolean {
+  if (candidate.protocol === "https:") return true;
+  const server = new URL(endpoint);
+  return candidate.protocol === "http:" && server.protocol === "http:" &&
+    candidate.hostname === server.hostname;
+}
+
+/** The stored form of a policy: derived fields never enter the token envelope. */
+export function storedMcpOAuthPolicy(policy: McpOAuthPolicy): McpOAuthPolicy {
+  const { personal: _personal, ...stored } = policy;
+  return stored;
+}
+
 export function buildMcpOAuthPolicy(input: Readonly<{
   configurationIdentity: string;
   draft: McpDraftConfiguration;
+  personal?: boolean;
   purpose: McpOAuthPurpose;
   redirectUri: string;
   serverId: string;
@@ -96,7 +124,8 @@ export function buildMcpOAuthPolicy(input: Readonly<{
     userId: input.userId,
     ...(input.draft.auth.clientIdMetadataDocumentUrl
       ? { clientIdMetadataDocumentUrl: new URL(input.draft.auth.clientIdMetadataDocumentUrl).toString() }
-      : {})
+      : {}),
+    ...(input.personal ? { personal: true as const } : {})
   };
 }
 
