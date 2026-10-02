@@ -401,7 +401,8 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         apiKey: clientSecret,
         apiRoot: baseUrl,
         defaultTimeoutMs: responseTimeoutMs,
-        fetchFn
+        fetchFn,
+        initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 }
       });
       return {
         adapter: createGeminiInteractionsAdapter({

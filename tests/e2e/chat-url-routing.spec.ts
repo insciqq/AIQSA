@@ -15,6 +15,7 @@ import { signInWithLocalToken } from "./support/localAuth";
 import { startMcpOAuth } from "./support/mcpOAuthStart";
 import { startOAuthMcpEndpoint } from "./support/oauthMcpEndpoint";
 import { selectFakeModel, setWorkspaceEnabled, submitPasswordSignIn } from "./support/workspace";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 type Viewport = Readonly<{ width: number; height: number }>;
 type Credentials = Readonly<{ email: string; password: string }>;
@@ -39,7 +40,7 @@ async function createChat(page: Page, title: string): Promise<string> {
 
 async function deleteChats(page: Page, chatIds: readonly (string | null | undefined)[]): Promise<void> {
   for (const chatId of chatIds) {
-    if (chatId) await page.request.delete(`/api/chats/${chatId}`).catch(() => undefined);
+    if (chatId) await deleteOwnedChatPermanently(page.request, chatId).catch(() => undefined);
   }
 }
 
@@ -592,7 +593,8 @@ test.describe("MCP authorization", () => {
       expect(endpoint.counts.errors).toBe(0);
     } finally {
       await page.goto("about:blank");
-      await deleteChats(page, [chatId]);
+      // Deleting the synthetic owner removes its chat. A permanent chat
+      // deletion would queue Memory cleanup for this user and block that.
       if (serverId) {
         const clients = await prisma.mcpOAuthConnection.findMany({ where: { serverId }, select: { oauthClientId: true } });
         await page.request.delete(`/api/admin/mcp/${serverId}`).catch(() => undefined);

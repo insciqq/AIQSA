@@ -72,6 +72,20 @@ describe("saved file lifecycle in PostgreSQL", () => {
     } finally { await value.cleanup(); }
   });
 
+  it("refuses a new reference to an existing upload whose object has a pending deletion job", async () => {
+    const value = await fixture();
+    const repository = createSavedFileRepository(prisma);
+    try {
+      await prisma.attachmentDeletionJob.create({ data: { storageKey: value.source.storageKey } });
+      for (const save of [true, false]) {
+        expect(await repository.copy({ attachmentId: value.source.id, save, userId: value.user.id })).toBeNull();
+      }
+      expect(await prisma.attachment.count({ where: { storageKey: value.source.storageKey } })).toBe(1);
+      expect(await prisma.attachmentDeletionJob.findUnique({ where: { storageKey: value.source.storageKey } }))
+        .toMatchObject({ claimToken: null, claimedAt: null });
+    } finally { await value.cleanup(); }
+  });
+
   it.each(["save", "prune"] as const)("serializes %s first against concurrent orphan cleanup", async (first) => {
     const value = await fixture();
     const repository = createSavedFileRepository(prisma);

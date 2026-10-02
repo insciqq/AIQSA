@@ -1451,6 +1451,37 @@
   color: var(--v2-color-text3);
 }
 
+/*
+ * While the sidebar is collapsed (desktop collapse and the compact 768–1023px
+ * default) the fixed "Open sidebar" float sits in the topbar's top-left
+ * corner; the projects section renders only that one button. The crumb
+ * starts past it: the float's inset, its width and a 0.5rem gap. Phones keep
+ * their own menu-island offset below.
+ */
+@media (min-width: 768px) {
+  .v2-workspace-shell[data-sidebar-collapsed="true"] .v2-project-page-topbar {
+    padding-left: calc(max(0.75rem, env(safe-area-inset-left)) + 2.5rem);
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+  .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) .v2-project-page-topbar {
+    padding-left: calc(max(0.75rem, env(safe-area-inset-left)) + 2.5rem);
+  }
+}
+
+@media (min-width: 768px) and ((hover: none) or (pointer: coarse)) {
+  .v2-workspace-shell[data-sidebar-collapsed="true"] .v2-project-page-topbar {
+    padding-left: calc(max(0.75rem, env(safe-area-inset-left)) + 3.25rem);
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023px) and ((hover: none) or (pointer: coarse)) {
+  .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) .v2-project-page-topbar {
+    padding-left: calc(max(0.75rem, env(safe-area-inset-left)) + 3.25rem);
+  }
+}
+
 .v2-project-page-scroll {
   min-height: 0;
   overflow-y: auto;

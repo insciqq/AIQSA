@@ -4,12 +4,12 @@ import { fixtureCheckRun, fixtureConnection, fixtureModel } from "../providerFix
 import { AdminProviderCheckBanner } from "./AdminProviderCheckBanner";
 import type { AdminProviderCheckRun } from "@/lib/contracts/adminProviders";
 
-function fixture(results: AdminProviderCheckRun["results"], failed: string[] = [], overrides: Partial<AdminProviderCheckRun> = {}) {
+function fixture(results: AdminProviderCheckRun["results"], failed: string[] = [], overrides: Partial<AdminProviderCheckRun> = {}, memoryAssigned?: boolean) {
   const model = fixtureModel({ id: "m", displayName: "Fixture model", connectionId: "c" });
   const restart = vi.fn(async () => true);
   const onOpenMemoryRole = vi.fn();
   const props = { disabled: false, connection: fixtureConnection({ id: "c", displayName: "Fixture provider", models: [model] }),
-    onOpenMemoryRole,
+    memoryAssigned, onOpenMemoryRole,
     checks: { interrupted: null, dismissInterrupted: vi.fn(), restart, stop: vi.fn(async () => true),
       run: fixtureCheckRun({ id: "run", credentialId: "key", state: "completed", done: 1, total: 1, failed, results, ...overrides }) } };
   render(<AdminProviderCheckBanner {...props} />);
@@ -87,6 +87,15 @@ describe("independent model check feedback", () => {
     fireEvent.click(link);
     expect(onOpenMemoryRole).toHaveBeenCalledOnce();
     expect(restart).not.toHaveBeenCalled();
+  });
+
+  it("drops the stale Memory hint once the installation policy assigns Memory", () => {
+    fixture(saved, [], { reason: "setup", setup: {
+      defaults: ["Chat: Fixture model"], needsConfiguration: ["memory"], search: "ready", state: "completed"
+    } }, true);
+    expect(screen.getByText("Automatic setup finished.")).toBeVisible();
+    expect(screen.queryByTestId("provider-setup-memory-hint")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retry/u })).not.toBeInTheDocument();
   });
 
   it("keeps Retry for a real setup failure next to the Memory hint", () => {

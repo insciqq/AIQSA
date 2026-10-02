@@ -1,6 +1,7 @@
 "use client";
 
 import { AssistantAvatarV2 } from "@/components/ui-v2/AssistantAvatarV2";
+import { useMobileLayoutV2 } from "@/components/ui-v2/ResponsiveMenuV2";
 import { UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
 import { touchInputPrimaryV2 } from "@/components/ui-v2/touchInputV2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
@@ -11,7 +12,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type KeyboardEvent,
   type RefObject
 } from "react";
@@ -21,27 +21,6 @@ import "./assistant-picker.css";
 const VIEWPORT_GUTTER_PX = 8;
 const ANCHOR_GAP_PX = 6;
 const POPOVER_WIDTH_PX = 384;
-
-/**
- * The picker is a bottom sheet on phones and on short touch screens (a phone
- * on its side), where an anchored popover under the header would show only a
- * couple of rows.
- */
-const SHEET_QUERY = "(max-width: 767px), (hover: none) and (max-height: 30rem), (pointer: coarse) and (max-height: 30rem)";
-
-function sheetSnapshot(): boolean {
-  return typeof window.matchMedia === "function" ? window.matchMedia(SHEET_QUERY).matches : window.innerWidth < 768;
-}
-
-function subscribeToSheetLayout(change: () => void): () => void {
-  if (typeof window.matchMedia !== "function") {
-    window.addEventListener("resize", change);
-    return () => window.removeEventListener("resize", change);
-  }
-  const media = window.matchMedia(SHEET_QUERY);
-  media.addEventListener?.("change", change);
-  return () => media.removeEventListener?.("change", change);
-}
 
 export type AssistantPickerSectionV2 = Readonly<{
   items: readonly AssistantSummary[];
@@ -145,7 +124,9 @@ export function AssistantPickerV2({
 }>) {
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
-  const mobile = useSyncExternalStore(subscribeToSheetLayout, sheetSnapshot, () => false);
+  // A bottom sheet on phones and on short touch screens (a phone on its side),
+  // where an anchored popover under the header would show only a couple of rows.
+  const mobile = useMobileLayoutV2();
   const { dialogRef, onDialogKeyDown, portalReady } = useModalLayerV2({ onClose });
 
   const place = useCallback(() => {

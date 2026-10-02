@@ -1,5 +1,6 @@
 import { MODEL_PRICES_MIGRATION, modelPricesFixtureSql, modelPricesProofSql, modelPricesGuardProofSql } from "./model-prices-adoption";
 import { WORKSPACE_CHECKPOINT_MIGRATION, workspaceCheckpointFixtureSql, workspaceCheckpointProofSql } from "./workspace-checkpoint-adoption";
+import { WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION, workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql } from "./workspace-checkpoint-deletion-job-repair-adoption";
 import { TOOL_OBSERVATION_MIGRATION, toolObservationFixtureSql, toolObservationProofSql } from "./tool-observation-adoption";
 import { TOOL_OBSERVATION_ROLLOUT_POLICY_MIGRATION, toolObservationRolloutPolicyFixtureSql, toolObservationRolloutPolicyProofSql } from "./tool-observation-rollout-policy-adoption";
 import { VISION_ANALYSIS_MIGRATION, visionAnalysisFixtureSql, visionAnalysisProofSql } from "./vision-analysis-adoption";
@@ -7644,6 +7645,8 @@ function main(
      END $$;`);
   runForwardAdoptionProof(shadowDatabase, migrations, MODEL_PRICES_MIGRATION,
     modelPricesFixtureSql, modelPricesProofSql + modelPricesGuardProofSql, modelPricesProofSql + modelPricesGuardProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION,
+    workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

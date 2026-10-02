@@ -17,17 +17,18 @@ import {
   CONTEXT_SUMMARY_REFS_INCOMPLETE,
   contextCompactionCheckpoint,
   conversationContextPolicy,
+  messageCoverageRef,
   type ContextObservation
 } from "./contextCompactionContract";
-import { contextObservationsFromResults } from "./contextCompactionPlanner";
+import { contextObservationsFromResults, toolTranscriptUnits, unitCoverageRef } from "./contextCompactionPlanner";
 import {
-  applyKnowledgeAnswerContextBudget,
   headroomSummaryDeclined,
   observationSourceAvailability,
-  prepareCompactedProviderRequest
+  prepareCompactedProviderRequest,
+  rebuiltCompactedProviderRequest
 } from "./contextCompactionConsumer";
 import { contextCompactionFailureOutcome, createContextCompactionPublisher } from "./contextCompactionEvents";
-import { contextSummarySource, contextSummarySourceRevision, type ContextSummaryReceipts } from "./contextCompactionSummarizer";
+import { contextSummarySource, type ContextSummaryReceipts } from "./contextCompactionSummarizer";
 import { applyProviderRequestContextBudget } from "./runContextBudget";
 import { requestWithRunFollowups } from "./runFollowupExecution";
 import {
@@ -43,6 +44,10 @@ const measured = (beforeTokens: number, afterTokens: number): ContextPlanMeasure
 });
 
 const bridge = openAIResponsesToolBridge;
+
+/** Current-message size of the headroom fixture (estimated tokens). */
+const HEADROOM_CURRENT = 1_500;
+const SMALL_SUMMARY_WINDOW = { version: 1 as const, contextWindow: 3_000, maxOutputTokens: 256, timeoutMs: 30_000 };
 
 function text(value: string, id: string, role: "assistant" | "user" = "user"): ProviderConversationMessage {
   return { content: { blocks: [{ text: value, type: "text" }] }, id, role };
@@ -68,7 +73,7 @@ function hybridRequest(input: Readonly<{
     attachmentIds: [], attachments: [], chatId: "chat-1",
     content: messages.at(-1)!.content,
     context: { messages, mode: "branch_path" },
-    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages, mode: "hybrid" }),
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages }),
     ...(input.stale ? { contextCompaction: { ...measured(10, 10), outcome: input.stale } } : {}),
     ...(input.summary ? { contextCompactionSummary: input.summary } : {}),
     knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
@@ -96,6 +101,16 @@ function observationBatch(callId: string, seed: string, chars: number): unknown[
   return [
     { arguments: "{}", call_id: callId, name: "read_record", type: "function_call" },
     bridge.appendToolResult(undefined, observedResult(callId, seed, chars))
+  ];
+}
+
+/** A result an earlier round replaced by its reader reference. */
+function maskedBatch(callId: string, seed: string, chars: number): unknown[] {
+  const result = observedResult(callId, seed, chars);
+  return [
+    { arguments: "{}", call_id: callId, name: "read_record", type: "function_call" },
+    bridge.appendToolResult(undefined, { callId, name: result.name, status: result.status,
+      content: [{ type: "json", value: { observation: result.observation, reader: "read_tool_result" } }] })
   ];
 }
 
@@ -191,12 +206,12 @@ describe("single compaction consumer", () => {
     expect(prepared.contextCompaction?.outcome).toBe("already_fits");
   });
 
-  it("reports masking in its own round with its numbers even when a summary is carried", async () => {
-    const summary: ContextSummary = { formatVersion: 1, id: "cs1_carried", notes: "Carried notes.",
-      sourceDigest: "d".repeat(64), sourceRefs: ["old"] };
-    const compaction = consumer(hybridRequest({ summary, stale: "needs_summary", providerToolMessages: [
-      ...observationBatch("older", "a", 8_000), ...observationBatch("newest", "b", 1_200)
-    ] }), { observations: contextObservationsFromResults([observedResult("older", "a", 8_000), observedResult("newest", "b", 1_200)]) });
+  it("reports masking in its own round with its numbers when notes of this run cover the masked unit", async () => {
+    const transcript = [...observationBatch("older", "a", 8_000), ...observationBatch("newest", "b", 1_200)];
+    const summary: ContextSummary = { formatVersion: 1, id: "cs1_covering", notes: "Covering notes.",
+      sourceDigest: "d".repeat(64), sourceRefs: ["old", unitCoverageRef(toolTranscriptUnits(transcript)[0]!)] };
+    const compaction = consumer(hybridRequest({ summary, stale: "needs_summary", providerToolMessages: transcript }),
+      { observations: contextObservationsFromResults([observedResult("older", "a", 8_000), observedResult("newest", "b", 1_200)]) });
     const prepared = await compaction.run();
     expect(compaction.summaryRequests).toHaveLength(0);
     expect(prepared.contextCompaction).toMatchObject({ outcome: "masking_applied", maskedObservations: 1 });
@@ -208,12 +223,25 @@ describe("single compaction consumer", () => {
     })]);
   });
 
+  it("never masks a result before notes cover it: the same round buys notes first", async () => {
+    const results = [observedResult("older", "a", 8_000), observedResult("newest", "b", 1_200)];
+    const request = hybridRequest({ providerToolMessages: [...observationBatch("older", "a", 8_000), ...observationBatch("newest", "b", 1_200)] });
+    const compaction = consumer(request, { observations: contextObservationsFromResults(results) });
+    const prepared = await compaction.run();
+    // The pass reads the unmasked result; only the notes committed for it let it go.
+    expect(compaction.summaryRequests).toHaveLength(1);
+    expect(JSON.stringify(compaction.summaryRequests[0]!.content)).toContain("k".repeat(2_000));
+    expect(compaction.settle).toHaveBeenLastCalledWith(expect.objectContaining({ state: "committed" }), expect.anything(),
+      prepared.contextCompactionSummary);
+    expect(prepared.contextCompactionSummary!.sourceRefs).toContain(unitCoverageRef(toolTranscriptUnits(request.providerToolMessages!)[0]!));
+    expect(JSON.stringify(prepared.providerToolMessages)).not.toContain("k".repeat(2_000));
+    expect(JSON.stringify(prepared.providerToolMessages)).toContain("newest-" + "k".repeat(1_000));
+  });
+
   it("fails a committed summary that cannot fit without buying again or trimming", async () => {
     const summary: ContextSummary = { formatVersion: 1, id: "cs1_committed", notes: "Committed notes.",
-      sourceDigest: "d".repeat(64), sourceRefs: [] };
-    const request = hybridRequest({ summary, current: 3_600 });
-    const current = { ...summary, sourceRefs: [contextSummarySourceRevision(request)] };
-    const compaction = consumer({ ...request, contextCompactionSummary: current });
+      sourceDigest: "d".repeat(64), sourceRefs: [messageCoverageRef("recent-3")] };
+    const compaction = consumer(hybridRequest({ summary, current: 3_600 }));
     await expect(compaction.run()).rejects.toMatchObject({ code: "context_too_large" });
     expect(compaction.summaryRequests).toHaveLength(0);
     expect(compaction.events).toEqual([]);
@@ -245,21 +273,39 @@ describe("single compaction consumer", () => {
     expect(prepared.contextCompaction!.afterTokens).toBeLessThanOrEqual(3_200);
   });
 
-  it("keeps the newest span of an over-long history and reports the older turns as truncation", async () => {
-    const recent = Array.from({ length: 60 }, (_, index) =>
+  it("covers an over-long history in oldest-first passes and dispatches it once it fits", async () => {
+    const recent = Array.from({ length: 16 }, (_, index) =>
       text(`TURN_${index} ${"t".repeat(2_000)}`, `turn-${index}`, index % 2 ? "assistant" : "user"));
     const compaction = consumer(hybridRequest({ recent }));
     const prepared = await compaction.run();
-    expect(compaction.summaryRequests.length).toBeLessThanOrEqual(12);
-    expect(JSON.stringify(compaction.summaryRequests.map(request => request.content))).not.toContain('id=\\"old\\"');
-    const truncation = prepared.context?.summary?.truncation;
-    expect(truncation?.droppedMessages).toBeGreaterThan(0);
-    expect(compaction.onTruncation).toHaveBeenCalledWith(truncation);
-    expect(prepared.contextCompaction).toMatchObject({ legacyFallback: true });
+    const committed = compaction.settle.mock.calls.filter(([attempt]) => attempt.state === "committed");
+    expect(committed.length).toBeGreaterThan(1);
+    expect(committed.length).toBeLessThanOrEqual(CONTEXT_COMPACTION_LIMITS.summaryPasses);
+    // The first pass starts at the oldest message; nothing leaves before its notes.
+    expect(JSON.stringify(compaction.summaryRequests[0]!.content)).toContain('id=\\"old\\"');
+    expect(prepared.context?.summary).toBeUndefined();
+    expect(compaction.onTruncation).not.toHaveBeenCalled();
+    expect(prepared.contextCompaction).toMatchObject({ legacyFallback: false });
     expect(prepared.contextCompaction!.afterTokens).toBeLessThanOrEqual(3_200);
-    expect(prepared.contextCompactionSummary?.sourceRefs).not.toContain("old");
+    // One cycle covers every pass.
     expect(compaction.events.map(({ outcome, state }) => [state, outcome])).toEqual([
       ["running", "pending"], ["complete", "summary_applied"]
+    ]);
+  });
+
+  it("refuses a request that still does not fit after its bounded passes, without truncating it", async () => {
+    const recent = Array.from({ length: 60 }, (_, index) =>
+      text(`TURN_${index} ${"t".repeat(2_000)}`, `turn-${index}`, index % 2 ? "assistant" : "user"));
+    const compaction = consumer(hybridRequest({ recent }));
+    const failure = await failureOf(compaction.run());
+    expect(failure.code).toBe("context_too_large");
+    const committed = compaction.settle.mock.calls.filter(([attempt]) => attempt.state === "committed");
+    expect(committed).toHaveLength(CONTEXT_COMPACTION_LIMITS.summaryPasses);
+    expect(compaction.summaryRequests.length).toBeLessThanOrEqual(
+      CONTEXT_COMPACTION_LIMITS.summaryPasses * CONTEXT_COMPACTION_LIMITS.summaryPlannedCalls);
+    expect(compaction.onTruncation).not.toHaveBeenCalled();
+    expect(compaction.events.map(({ outcome, state }) => [state, outcome])).toEqual([
+      ["running", "pending"], ["failed", "irreducible_overflow"]
     ]);
   });
 
@@ -293,9 +339,11 @@ describe("single compaction consumer", () => {
     });
 
     it("a removed original is source_unavailable without a paid call", async () => {
+      // An earlier round already replaced the older result by its reference:
+      // the source only names it, so its original must still be readable.
       const settled = [observedResult("older", "a", 8_000), observedResult("newest", "b", 1_200)];
       const compaction = consumer(hybridRequest({ history: 3_400, providerToolMessages: [
-        ...observationBatch("older", "a", 8_000), ...observationBatch("newest", "b", 1_200)
+        ...maskedBatch("older", "a", 8_000), ...observationBatch("newest", "b", 1_200)
       ] }), { observations: contextObservationsFromResults(settled), sourceAvailable: async () => false });
       const failure = await failureOf(compaction.run());
       expect(failure.code).toBe("context_compaction_source_unavailable");
@@ -352,16 +400,25 @@ describe("single compaction consumer", () => {
   });
 
   describe("a summary bought only for headroom", () => {
-    // Three settled rounds: the older two are masked, the newest stays whole.
-    // The masked request fits the 3,200 budget but stays above the 75% trigger.
-    const results = [observedResult("call_one", "a", 6_000), observedResult("call_two", "b", 6_000),
-      observedResult("call_three", "c", 1_200)];
-    const headroomRequest = () => hybridRequest({ history: 340, current: 1_900, providerToolMessages: [
-      ...observationBatch("call_one", "a", 6_000), ...observationBatch("call_two", "b", 6_000),
-      ...observationBatch("call_three", "c", 1_200)
+    // Three settled rounds, the oldest masked by an earlier round. The exact
+    // request fits the 3,200 budget above the 80% trigger with uncovered older
+    // material: its notes are bought only for headroom.
+    const results = [observedResult("call_one", "a", 6_000), observedResult("call_two", "b", 1_200),
+      observedResult("call_three", "c", 400)];
+    const headroomRequest = () => hybridRequest({ history: 340, current: HEADROOM_CURRENT, providerToolMessages: [
+      ...maskedBatch("call_one", "a", 6_000), ...observationBatch("call_two", "b", 1_200),
+      ...observationBatch("call_three", "c", 400)
     ] });
     const observations = contextObservationsFromResults(results);
     const invalidJson = "not a JSON object";
+
+    it("uses a fixture that fits above the trigger and asks for headroom notes", () => {
+      const measured = applyProviderRequestContextBudget({ bridge, observations, request: headroomRequest() });
+      expect(measured.ok && measured.request.contextCompaction).toMatchObject({ outcome: "needs_summary", maskedObservations: 0 });
+      const measurement = measured.ok ? measured.request.contextCompaction! : null;
+      expect(measurement!.afterTokens).toBeLessThanOrEqual(3_200);
+      expect(measurement!.afterTokens).toBeGreaterThan(3_200 * 0.8);
+    });
 
     it("accepts notes citing provider call ids on the first reply and applies them", async () => {
       const compaction = consumer(headroomRequest(), {
@@ -394,21 +451,19 @@ describe("single compaction consumer", () => {
       expect(compaction.events.map(({ outcome, state }) => [state, outcome])).toEqual([
         ["running", "pending"], ["failed", "summary_failed"]
       ]);
-      // The exact masked request: no notes, no trimmed history, no truncation.
+      // The exact request: no notes, no new masks, no trimmed history, no truncation.
       expect(prepared.contextCompactionSummary).toBeUndefined();
       expect(prepared.context?.messages.map((message) => message.id)).toEqual(
         headroomRequest().context!.messages.map((message) => message.id));
       expect(JSON.stringify(prepared.context)).toContain("h".repeat(64));
       expect(prepared.context?.summary).toBeUndefined();
       expect(compaction.onTruncation).not.toHaveBeenCalled();
-      // Masked, fitting and above the trigger: the summary was for headroom only.
-      expect(prepared.contextCompaction).toMatchObject({ budgetTokens: 3_200, legacyFallback: false, maskedObservations: 2,
+      // Fitting and above the trigger: the summary was for headroom only.
+      expect(prepared.contextCompaction).toMatchObject({ budgetTokens: 3_200, legacyFallback: false, maskedObservations: 0,
         outcome: "needs_summary" });
       expect(prepared.contextCompaction!.afterTokens).toBeLessThanOrEqual(3_200);
-      expect(prepared.contextCompaction!.beforeTokens).toBeGreaterThan(3_200 * 0.75);
-      const transcript = JSON.stringify(prepared.providerToolMessages);
-      expect(transcript).not.toContain("k".repeat(2_000));
-      expect(transcript).toContain("call_three-" + "k".repeat(1_000));
+      expect(prepared.contextCompaction!.beforeTokens).toBeGreaterThan(3_200 * 0.8);
+      expect(prepared.providerToolMessages).toEqual(headroomRequest().providerToolMessages);
       // The request carries the cycle's settled receipts into every later checkpoint.
       expect(prepared.contextCompactionSummaryAttempts?.map(({ errorCode, state }) => [state, errorCode])).toEqual([
         ["invalid", "context_compaction_summary_invalid"], ["invalid", "context_compaction_summary_invalid"]
@@ -445,9 +500,11 @@ describe("single compaction consumer", () => {
         // Final CJK notes within their byte bound cost more estimated tokens
         // (one per character) than the older history they would replace.
         () => ({ request: headroomRequest(), options: { output: (next: ProviderRunRequest) => JSON.stringify({ sourceRefs: [],
-          notes: next.prompt.system!.includes("one consecutive part") ? "part" : "界".repeat(500) }) } })],
+          notes: next.prompt.system!.includes("one consecutive part") ? "part" : "界".repeat(1_300) }) } })],
       ["an exhausted call budget", "context_compaction_summary_failed", false,
-        () => ({ request: { ...headroomRequest(), contextCompactionSummaryAttempts: spentCallBudget(headroomRequest()) }, options: {} })],
+        // A smaller summary window makes this source a multi-call plan.
+        () => ({ request: { ...headroomRequest(), generationBudget: SMALL_SUMMARY_WINDOW,
+          contextCompactionSummaryAttempts: spentCallBudget(headroomRequest()) }, options: {} })],
       ["a transient source check failure", "context_compaction_source_check_failed", false,
         () => ({ request: headroomRequest(), options: { sourceAvailable: observationSourceAvailability(
           async () => { throw new Error("connection reset"); }, { runId: "run-1", userId: "user-1" }) } })]
@@ -508,10 +565,10 @@ describe("single compaction consumer", () => {
         request = { ...request, providerToolMessages: [...request.providerToolMessages!, ...smallBatch(round)] };
       }
       // One cycle in round one (an invalid reply and its repair); later rounds
-      // only report the masking they did.
+      // decline headroom and, with nothing covered, mask nothing.
       expect(paid).toBe(2);
       expect(published[0]).toEqual(["running:pending", "failed:summary_failed"]);
-      expect(published.slice(1).flat()).toEqual(["complete:masking_applied"]);
+      expect(published.slice(1).flat()).toEqual([]);
 
       // A delivered clarification re-enters the consumer with the round's request.
       const delivered = await run(requestWithRunFollowups(request, [{ author: "user-1", createdAt: "2026-09-26T00:00:00.000Z",
@@ -532,13 +589,13 @@ describe("single compaction consumer", () => {
       await run({ ...headroomRequest(), contextCompaction: stored.measurement,
         contextCompactionSummaryAttempts: stored.summaryAttempts!, providerToolMessages: request.providerToolMessages! });
       expect(paid).toBe(2);
-      expect(published.slice(1).flat()).toEqual(["complete:masking_applied"]);
+      expect(published.slice(1).flat()).toEqual([]);
 
       // A request over its budget still buys within the caps, and still fails precisely.
       const overBudget: ProviderRunRequest = { ...request, providerToolMessages: [...request.providerToolMessages!,
-        { arguments: "{}", call_id: "call_large", name: "read_record", type: "function_call" },
-        { call_id: "call_large", output: `LARGE ${"l".repeat(8_000)}`, type: "function_call_output" }, ...smallBatch(7)] };
-      const buying = consumer(overBudget, { observations, output: invalidJson, receipts: durable.receipts });
+        ...observationBatch("call_large", "f", 8_000), ...smallBatch(7)] };
+      const buying = consumer(overBudget, { observations: [...observations,
+        ...contextObservationsFromResults([observedResult("call_large", "f", 8_000)])], output: invalidJson, receipts: durable.receipts });
       const failure = await failureOf(buying.run());
       expect(failure.code).toBe("context_compaction_summary_invalid");
       expect(buying.summaryRequests).toHaveLength(2);
@@ -589,7 +646,7 @@ describe("single compaction consumer", () => {
         text("Current question.", "current")
       ];
       const base = hybridRequest();
-      const policy = conversationContextPolicy({ leafMessageId: "a3", messages, mode: "hybrid" });
+      const policy = conversationContextPolicy({ leafMessageId: "a3", messages });
       return { ...base, content: messages.at(-1)!.content, context: { messages, mode: "branch_path" },
         contextCompactionPolicy: { ...policy, reuse: { coveredMessageId: "u2", runId: "run-2", summary: carriedNotes(input.notes, input.refs) } },
         ...(input.window ? { modelCapabilities: { ...base.modelCapabilities, contextWindow: input.window } } : {}) };
@@ -722,15 +779,27 @@ describe("single compaction consumer", () => {
     });
   });
 
-  it("keeps Knowledge answers on the legacy guard: trims prior turns and never needs a summary", () => {
-    const request = hybridRequest({ history: 3_400 });
-    const legacy = applyKnowledgeAnswerContextBudget({ bridge, request });
-    expect(legacy.ok).toBe(true);
-    if (!legacy.ok) return;
-    expect(legacy.request.contextCompactionPolicy).toBeUndefined();
-    expect(legacy.request.context?.messages.some(message => message.id === "old")).toBe(false);
-    expect(legacy.request.context?.messages.at(-1)?.id).toBe("current");
-    expect(legacy.contextTruncation).not.toBeNull();
+  it("compacts Knowledge answers like any run: notes for the history, pinned evidence byte for byte and never a source", async () => {
+    const base = hybridRequest({ history: 3_400 });
+    const evidence = text(`EXACT_EVIDENCE ${"v".repeat(400)}`, "knowledge-evidence:v1");
+    const messages = [...base.context!.messages.slice(0, -1), { ...evidence, purpose: "knowledge_evidence" as const },
+      base.context!.messages.at(-1)!];
+    const request = { ...base, context: { ...base.context!, messages } };
+    const compaction = consumer(request);
+    const prepared = await compaction.run();
+    expect(compaction.summaryRequests.length).toBeGreaterThan(0);
+    expect(JSON.stringify(compaction.summaryRequests.map((next) => next.content))).not.toContain("EXACT_EVIDENCE");
+    expect(prepared.contextCompactionPolicy?.mode).toBe("hybrid");
+    expect(prepared.context?.messages.some((message) => message.id === "old")).toBe(false);
+    expect(prepared.context?.messages.at(-2)).toEqual({ ...evidence, purpose: "knowledge_evidence" });
+    expect(prepared.context?.messages.at(-1)?.id).toBe("current");
+    expect(prepared.context?.summary).toBeUndefined();
+    // Recovery rebuilds the same request from the committed notes and never buys.
+    const recovered = await rebuiltCompactedProviderRequest({ bridge, checkpoint: { summary: prepared.contextCompactionSummary!,
+      summaryAttempts: prepared.contextCompactionSummaryAttempts! }, request, signal: new AbortController().signal });
+    expect(recovered.ok && recovered.request.context).toEqual(prepared.context);
+    expect(await rebuiltCompactedProviderRequest({ bridge, request, signal: new AbortController().signal }))
+      .toMatchObject({ ok: false, error: { code: "context_too_large" } });
   });
 });
 

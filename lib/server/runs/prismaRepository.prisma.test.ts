@@ -1649,6 +1649,89 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
+  it("claims tool-free synthesis after a refused batch only from that round's terminal usage without calls", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Refused tool batch");
+      expect(await repository.beginToolLoopProviderRound({ providerContinuation: INITIAL_PROVIDER_CONTINUATION,
+        roundIndex: 1, runId: active.runId, userId })).toBe("started");
+      await repository.updateRunProviderResponseId(active.runId, "refused-response");
+      const synthesis: Parameters<RunRepository["beginToolLoopProviderRound"]>[0] = {
+        finalSynthesisOfRound: 1, roundIndex: 2, runId: active.runId, userId,
+        providerContinuation: { finalSynthesis: "budget_exhausted", providerResponseId: null, providerToolMessages: [] }
+      };
+      const usage = normalizeTokenUsage({ inputTokens: 3, outputTokens: 2, totalTokens: 5 });
+      const recordUsage = (runId: string, chatId: string, completeness: "partial" | "terminal") => repository.recordRunUsageEvents({
+        chatId, runId, userId, answerRoundUsage: { completeness, roundIndex: 1, usage },
+        usageAttributions: [{ modelId: "fake-qsa", provider: "fake", usage }]
+      });
+      expect(await recordUsage(active.runId, active.chatId, "partial")).toBe(true);
+      expect(await repository.beginToolLoopProviderRound(synthesis)).toBe("conflict");
+      expect(await recordUsage(active.runId, active.chatId, "terminal")).toBe(true);
+      // A replayed claim reuses the started round.
+      expect((await Promise.all([repository.beginToolLoopProviderRound(synthesis), repository.beginToolLoopProviderRound(synthesis)])).sort())
+        .toEqual(["reused", "started"]);
+      expect(await repository.loadCheckpointedToolLoopRun({ runId: active.runId, userId })).toMatchObject({
+        providerResponseId: null, calls: [], checkpoint: { roundIndex: 2, phase: "provider_running",
+          answerRoundUsage: [{ completeness: "terminal", roundIndex: 1, usage }],
+          providerContinuation: { finalSynthesis: "budget_exhausted" } } });
+      await repository.appendAssistantText(active.assistantMessageId, "refused draft", { runId: active.runId });
+      expect(await repository.resetToolLoopAssistantDraft({ roundIndex: 1, runId: active.runId, userId })).toBe(true);
+      // The dispatch mark precedes the synthesis request; recovery never re-sends a marked round.
+      const mark = { ...synthesis, providerContinuation: { ...(synthesis.providerContinuation as Record<string, ToolLoopJsonValue>),
+        synthesisDispatched: true } };
+      expect(await repository.beginToolLoopProviderRound(mark)).toBe("started");
+      expect(await repository.beginToolLoopProviderRound(mark)).toBe("reused");
+      expect(await repository.loadCheckpointedToolLoopRun({ runId: active.runId, userId })).toMatchObject({
+        checkpoint: { roundIndex: 2, providerContinuation: { finalSynthesis: "budget_exhausted", synthesisDispatched: true } } });
+      expect(await repository.beginToolLoopProviderRound({ ...synthesis, finalSynthesisOfRound: 2, roundIndex: 3 })).toBe("conflict");
+
+      const persistedRound = await createActiveRun(repository, userId, "Persisted tool batch");
+      expect(await repository.beginToolLoopProviderRound({ providerContinuation: INITIAL_PROVIDER_CONTINUATION,
+        roundIndex: 1, runId: persistedRound.runId, userId })).toBe("started");
+      expect(await recordUsage(persistedRound.runId, persistedRound.chatId, "terminal")).toBe(true);
+      await expect(repository.persistToolLoopCallBatch({ calls: [{ arguments: { query: "one" }, ordinal: 0, providerCallId: "call-1",
+        toolName: "local_search" }], providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1,
+      runId: persistedRound.runId, userId })).resolves.toMatchObject({ kind: "persisted" });
+      expect(await repository.beginToolLoopProviderRound({ ...synthesis, runId: persistedRound.runId })).toBe("conflict");
+    });
+  });
+
+  it("persists a blocked repeat already settled with its batch, without dispatch evidence", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Blocked repeat");
+      expect(await repository.beginToolLoopProviderRound({ providerContinuation: INITIAL_PROVIDER_CONTINUATION,
+        roundIndex: 3, runId: active.runId, userId })).toBe("started");
+      const batch: Parameters<RunRepository["persistToolLoopCallBatch"]>[0] = {
+        calls: [
+          { arguments: { query: "same" }, ordinal: 0, providerCallId: "repeat", repeatBlocked: { repeatOf: [1, 2] }, toolName: "local_search" },
+          { arguments: { query: "other" }, ordinal: 1, providerCallId: "other", toolName: "local_search" }
+        ],
+        providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 3, runId: active.runId, userId
+      };
+      const persisted = await repository.persistToolLoopCallBatch(batch);
+      if (persisted.kind !== "persisted") throw new Error("expected persisted tool batch");
+      expect(persisted.calls).toEqual([
+        expect.objectContaining({ providerCallId: "repeat", startedAt: null, state: "error", completedAt: expect.any(String),
+          result: { callId: "repeat", name: "local_search", status: "error",
+            content: [{ type: "json", value: { error: "tool_call_repeat_blocked", repeatOf: [1, 2] } }] } }),
+        expect.objectContaining({ providerCallId: "other", state: "pending", result: null })
+      ]);
+      await expect(repository.persistToolLoopCallBatch(batch)).resolves.toMatchObject({ kind: "reused" });
+      await expect(repository.claimToolLoopCall({ callId: persisted.calls[0]!.id, runId: active.runId, userId }))
+        .resolves.toMatchObject({ kind: "settled", call: { startedAt: null, state: "error" } });
+      await expect(repository.advanceToolLoopCallBatch({ roundIndex: 3, runId: active.runId, userId })).resolves.toBe("incomplete");
+      await expect(repository.claimToolLoopCall({ callId: persisted.calls[1]!.id, runId: active.runId, userId }))
+        .resolves.toMatchObject({ kind: "claimed" });
+      await expect(repository.settleToolLoopCall({ callId: persisted.calls[1]!.id, result: { content: "other" },
+        runId: active.runId, state: "complete", userId })).resolves.toBe("settled");
+      await expect(repository.advanceToolLoopCallBatch({ roundIndex: 3, runId: active.runId, userId })).resolves.toBe("advanced");
+      await expect(prisma.memoryToolEgressReceipt.count({ where: { modelRunToolCallId: persisted.calls[0]!.id } })).resolves.toBe(0);
+      await expect(prisma.toolObservation.count({ where: { toolCallId: persisted.calls[0]!.id } })).resolves.toBe(0);
+    });
+  });
+
   it("checkpoints tool batches before dispatch and resumes every call state deterministically", async () => {
     await withRunUser(async ({ userId }) => {
       await prisma.user.update({ data: { status: "active" }, where: { id: userId } });
@@ -4161,11 +4244,11 @@ describe("Prisma-backed run repository", () => {
       const sibling = await prisma.message.create({ data: { chatId: settled.chatId, content: textMessageContent("Edited question"),
         role: "user" } });
       await expect(load(sibling.id)).resolves.toEqual({ ancestorMessageIds: [sibling.id], checkpoints: [] });
-      // A Knowledge run keeps the legacy guard: even its historical notes are never read.
+      // A Knowledge run's notes are read like any other run's (Knowledge purge scrubs them).
       const accepted = await prisma.modelRun.findUniqueOrThrow({ select: { normalizedRequest: true }, where: { id: settled.runId } });
       await prisma.modelRun.update({ data: { normalizedRequest: { ...(accepted.normalizedRequest as Prisma.JsonObject),
         knowledgePlan: { baseIds: ["knowledge-base-1"], mode: "explicit", sourceIds: [], version: 1 } } }, where: { id: settled.runId } });
-      await expect(load(next.id)).resolves.toMatchObject({ checkpoints: [] });
+      await expect(load(next.id)).resolves.toMatchObject({ checkpoints: [expect.objectContaining({ runId: settled.runId })] });
     });
   });
 

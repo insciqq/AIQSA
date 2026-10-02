@@ -202,9 +202,10 @@ describe("in-run clarification execution", () => {
     const hybrid = {
       ...request(),
       context: { messages, mode: "branch_path" as const },
-      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "message-current", messages, mode: "hybrid" }),
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "message-current", messages }),
       modelCapabilities: { ...request().modelCapabilities, contextWindow: 2_000, toolCalling: true },
       providerToolMessages: [
+        { call_id: "old", name: "read_record", type: "function_call" },
         openAIResponsesToolBridge.appendToolResult(undefined, settled[0]!),
         { call_id: "new", name: "read_record", type: "function_call" },
         openAIResponsesToolBridge.appendToolResult(undefined, settled[1]!)
@@ -246,9 +247,11 @@ describe("in-run clarification execution", () => {
       adapter, signal: new AbortController().signal, timeoutMs: 10_000, closeOnFinal: true, compact: consumer
     }));
     expect(answer.result.finalText).toBe("final");
-    // One purchase: the replacement re-enters the same consumer with the
-    // committed summary already carried, so it is not bought again.
-    expect(summaries).toHaveLength(1);
+    // One pass (two parts of the unmasked source and their reduction): the
+    // replacement re-enters the same consumer with the committed summary
+    // already carried, so it is not bought again.
+    expect(summaries).toHaveLength(3);
+    expect(summaries.at(-1)?.prompt.system).toContain("notes of consecutive parts");
     expect(consumer).toHaveBeenCalledTimes(2);
     expect(consumer.mock.calls[1]?.[0].contextCompactionSummary?.notes).toContain("correction");
     expect(JSON.stringify(consumer.mock.calls[1]?.[0].providerToolMessages?.slice(-2))).toContain("second correction");
@@ -258,7 +261,7 @@ describe("in-run clarification execution", () => {
       expect(dispatched.contextCompaction?.outcome).not.toBe("needs_summary");
     }
     expect(JSON.stringify(answers[1]?.providerToolMessages)).toContain("Keep the exact correction");
-    // The older observation reached the model only as its server-owned reference.
+    // The older observation reached the model only once notes covered it.
     for (const dispatched of answers) expect(JSON.stringify(dispatched.providerToolMessages)).not.toContain("x".repeat(2_000));
     expect(statuses.map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
       [1, "running", "pending"], [1, "complete", "summary_applied"]

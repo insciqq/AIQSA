@@ -9,6 +9,7 @@ import { createAgentMcpGateway } from "./mcpGateway";
 import { validNormalizedAgent, type NormalizedRunAgent } from "./config";
 import { agentFailureCode } from "./failures";
 import { withAgentLease } from "./lease";
+import { runWithContext } from "../observability";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { usageAttributionsWithEstimatedCost } from "../runs/runFinalization";
 
@@ -46,8 +47,8 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
       if (!runtime.agentResponses || runtime.agentResponses.snapshot.model.upstreamModelId !== normalized.modelId) throw new Error("denied");
       const transport = runtime.agentResponses;
       const createGateway = path === "v1/alpha/search" ? createAgentSearchGateway : createAgentModelGateway;
-      return await withAgentLease(request, store.assertLeaseActive, (signal) =>
-        createGateway({ configuration, transport, store, signal, onFailure, onUsage })(request));
+      return await runWithContext({ run_id: binding.modelRunId }, () => withAgentLease(request, store.assertLeaseActive, (signal) =>
+        createGateway({ configuration, transport, store, signal, onFailure, onUsage })(request)));
     }
     if (request.method === "POST" && path === "mcp") {
       return await withAgentLease(request, store.assertLeaseActive, async (signal) => {

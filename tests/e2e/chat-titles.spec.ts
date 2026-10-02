@@ -5,12 +5,16 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { expect, test } from "@playwright/test";
 import type { AdminProviderCustomSetupReadyResult } from "../../lib/contracts/adminProviderCustomSetup";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
+import { UNKNOWN_MODEL_OUTPUT_ALLOWANCE } from "../../lib/server/providers/modelOutputAllowance";
+import { setWorkspaceDefault } from "./support/chatDefaults";
 import { signInWithLocalToken } from "./support/localAuth";
 import { activeChatId, disableMemoryRecall, sendAndExpect, startNewChat } from "./support/workspace";
 import { chooseSearchStrategy, selectModel } from "./shell/composer";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 
 const prisma = new PrismaClient();
+/** The fixture connection's per-request timeout; it also bounds a title request. */
+const FIXTURE_RESPONSE_TIMEOUT_SECONDS = 30;
 test.afterAll(() => prisma.$disconnect());
 
 test("independent background titles release the composer, survive navigation and respect rename, timeout and clear", async ({ page }, testInfo) => {
@@ -68,7 +72,7 @@ test("independent background titles release the composer, survive navigation and
     const response = await page.request.post("/api/admin/providers/custom-setup", { timeout: 90_000, data: {
       allowPrivateNetwork: true, apiRoot: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
       authenticationMode: "none", confirmPaidRequest: true, connectionDisplayName: "Title fixture provider",
-      modelIds: ["fixture/answer", "fixture/title"], protocol: "responses", responseTimeoutSeconds: 30
+      modelIds: ["fixture/answer", "fixture/title"], protocol: "responses", responseTimeoutSeconds: FIXTURE_RESPONSE_TIMEOUT_SECONDS
     } });
     expect(response.ok()).toBe(true);
     setup = await response.json() as AdminProviderCustomSetupReadyResult;
@@ -99,11 +103,16 @@ test("independent background titles release the composer, survive navigation and
       await page.screenshot({ path: testInfo.outputPath(`chat-titles-${theme}.png`) });
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
+    // These chats exercise the custom provider, not Workspace: with the
+    // Workspace default on, each send would open a Workspace session that the
+    // Prisma cleanup below cannot remove.
+    await setWorkspaceDefault(page.request, false);
     await page.goto("/");
     const start = async () => {
       await startNewChat(page);
       await selectModel(page, setup!.connectionId, answer.displayName);
-      await chooseSearchStrategy(page, "Off");
+      // Installations without configured Search omit its chip entirely.
+      if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
     };
     await start();
     await sendAndExpect(page, "Title fixture first", "Title fixture answer.");
@@ -124,7 +133,11 @@ test("independent background titles release the composer, survive navigation and
     expect(await prisma.usageEvent.findUniqueOrThrow({ where: { chatTitleGenerationId: firstJob.runId } })).toMatchObject({
       modelId: "fixture/title", providerModelId: title.id, totalTokens: 10
     });
-    expect(titleCalls[0]).toMatchObject({ model: "fixture/title", maximum: 64 });
+    // Model-aware runtime limits: the fixture title model declares neither an
+    // output ceiling nor a context window, so it gets the unknown-model allowance.
+    expect(title.capabilities).not.toHaveProperty("maxOutputTokens");
+    expect(title.capabilities).not.toHaveProperty("contextWindow");
+    expect(titleCalls[0]).toMatchObject({ model: "fixture/title", maximum: UNKNOWN_MODEL_OUTPUT_ALLOWANCE });
 
     await start();
     await sendAndExpect(page, "Title fixture manual", "Title fixture answer.");
@@ -142,8 +155,10 @@ test("independent background titles release the composer, survive navigation and
     await sendAndExpect(page, "Title fixture timeout", "Title fixture answer.");
     const timeoutId = await activeChatId(page);
     await expect.poll(() => titleCalls.length, { timeout: 20_000 }).toBe(3);
+    // The held title request ends at the connection's response timeout
+    // (effectiveProviderResponseTimeoutMs); allow the worker a short margin.
     await expect.poll(async () => (await prisma.chatTitleGeneration.findUnique({ where: { chatId: timeoutId } }))?.status,
-      { timeout: 15_000 }).toBe("settled");
+      { timeout: FIXTURE_RESPONSE_TIMEOUT_SECONDS * 1_000 + 15_000 }).toBe("settled");
     releaseTitle = undefined;
     await expect(page.getByTestId("header-title")).toHaveText("Title fixture timeout");
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0);
@@ -173,7 +188,8 @@ test("independent background titles release the composer, survive navigation and
       const connectionId = setup.connectionId;
       await prisma.$transaction(async (tx) => {
         await tx.userSettings.update({ where: { userId }, data: { defaultProviderModelId: priorSettings.defaultProviderModelId,
-          defaultControlValues: priorSettings.defaultControlValues as Prisma.InputJsonValue } });
+          defaultControlValues: priorSettings.defaultControlValues as Prisma.InputJsonValue,
+          defaultWorkspaceEnabled: priorSettings.defaultWorkspaceEnabled } });
         await tx.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: priorPolicy.defaultProviderModelId,
           reasoningEffort: priorPolicy.reasoningEffort, version: priorPolicy.version } });
         await tx.systemModelPolicy.update({ where: { id: "installation" }, data: { providerModelId: priorRoles.providerModelId,

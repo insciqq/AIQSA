@@ -8,7 +8,8 @@ export const WORKSPACE_FOLLOWUP_LEASE_MS = 30_000;
 
 export class WorkspaceFollowupError extends Error {
   constructor(readonly code: "workspace_followup_invalid" | "workspace_followup_unavailable" |
-    "workspace_followup_expired" | "workspace_followup_predecessor_failed" | "workspace_followup_interrupted") {
+    "workspace_followup_expired" | "workspace_followup_predecessor_failed" | "workspace_followup_interrupted" |
+    "context_compaction_policy_retired") {
     super(code);
     this.name = "WorkspaceFollowupError";
   }

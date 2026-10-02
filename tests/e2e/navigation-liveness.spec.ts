@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { PrismaClient } from "@prisma/client";
 import { expect, test, type Page, type Route } from "@playwright/test";
-import { signInWithLocalToken } from "./support/localAuth";
+import { authenticateWithLocalToken, signInWithLocalToken } from "./support/localAuth";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 // Sidebar and branch-graph loading must stay bounded when a request fails or
 // the browser summary lags a server revision (bugfix wave N22/N23).
@@ -51,7 +52,9 @@ async function expectSteadyError(page: Page, durationMs: number) {
 for (const viewport of viewports) {
   test(`chat navigation stays bounded after HTTP 500 and recovers on Retry (${viewport.label})`, async ({ page }, testInfo) => {
     test.setTimeout(90_000);
-    await signInWithLocalToken(page);
+    // Authenticate without opening the shell: a still-hydrating sign-in page
+    // would request the chat list through the route below and skew the count.
+    await authenticateWithLocalToken(page.request);
     await page.setViewportSize({ height: viewport.height, width: viewport.width });
     const compact = await routeCompactNavigation(page, "fail");
     await page.goto("/");
@@ -147,8 +150,8 @@ test.describe("branch graph request liveness", () => {
         owned.push(first);
         const second = await seedChat(page, `Liveness second ${viewport.label}`);
         owned.push(second);
-        await page.evaluate((id) => localStorage.setItem("aiqsa.activeChatId", id), first);
-        await page.goto("/");
+        // The address names the active chat; `/` always opens a new chat.
+        await page.goto(`/c/${first}`);
         await expect(page.getByText(`Liveness first ${viewport.label} answer`)).toBeVisible();
         await expect.poll(() => count(first)).toBeGreaterThanOrEqual(1);
         await page.waitForTimeout(2_000);
@@ -185,8 +188,12 @@ test.describe("branch graph request liveness", () => {
           else await route.continue();
         });
         await page.reload();
+        // The reloaded shell first restores the addressed chat from its chat
+        // list; a row chosen before that list arrives only reloads the list.
+        await expect(page.getByText(`Liveness first ${viewport.label} answer`)).toBeVisible({ timeout: 15_000 });
         await select(third);
-        await expect(page.getByText(`Liveness third ${viewport.label} answer`)).toBeVisible();
+        await expect(page).toHaveURL(new RegExp(`/c/${third}(?:[?#]|$)`, "u"));
+        await expect(page.getByText(`Liveness third ${viewport.label} answer`)).toBeVisible({ timeout: 15_000 });
         await page.getByTestId("header-more-trigger").click();
         await page.getByRole("menuitem", { name: "Branches" }).click();
         const branches = page.getByRole("dialog", { name: "Conversation branches" });
@@ -204,7 +211,7 @@ test.describe("branch graph request liveness", () => {
         await page.waitForTimeout(3_000);
         expect(count(third)).toBe(failed + 1);
       } finally {
-        for (const id of owned) await page.request.delete(`/api/chats/${id}`);
+        for (const id of owned) await deleteOwnedChatPermanently(page.request, id);
       }
     });
   }

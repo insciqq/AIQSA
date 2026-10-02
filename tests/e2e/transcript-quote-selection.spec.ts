@@ -12,6 +12,8 @@ const answerId = "quote-selection-answer";
 const questionId = "quote-selection-question";
 const timestamp = "2026-09-30T00:00:00.000Z";
 const answerText = "Finished answer to quote.";
+/** The same answer with inline Markdown; Quote must insert `answerText`. */
+const formattedAnswer = "**Finished** answer to quote.";
 const questionText = "Finished question to quote.";
 
 test.setTimeout(60_000);
@@ -57,7 +59,7 @@ async function prepare(page: Page, content = answerText): Promise<ChatDetailWire
   await page.route("**/api/chats/*/messages", route => route.request().method() === "POST"
     ? route.fulfill({ status: 409, json: { error: "unexpected_fixture_run" } }) : route.fallback());
   await signInWithLocalToken(page, `/c/${chatId}`);
-  await expect(markdown(page)).toContainText(content.split("\n")[0]!.replace(/^#+ /u, ""));
+  await expect(markdown(page)).toContainText(content.split("\n")[0]!.replace(/^#+ /u, "").replace(/[*_~`]/gu, ""));
   await expect(composer(page)).toBeVisible();
   return chat;
 }
@@ -99,7 +101,8 @@ for (const viewport of viewports) {
     for (const theme of ["light", "dark"] as const) {
       test(`Quote appends answer and question without replacing the draft in ${theme}`, async ({ page, context }, testInfo) => {
         await context.addCookies([{ name: "aiqsa.theme", value: theme, url: testInfo.project.use.baseURL! }]);
-        await prepare(page);
+        await prepare(page, formattedAnswer);
+        await expect(markdown(page).locator("strong")).toHaveText("Finished");
         expect(await page.evaluate(() => matchMedia("(hover: none), (pointer: coarse)").matches)).toBe(viewport.touch);
         const input = composer(page);
         const firstDraft = `Existing draft\n\n> ${answerText}\n\n`;
@@ -144,9 +147,10 @@ for (const viewport of viewports) {
   });
 }
 
-test("rich selections retain code, lists, tables, links and TeX, and send as one block quote", async ({ page }, testInfo) => {
+test("rich selections quote prose as plain text, keep code, lists, tables and TeX, and send as one block quote", async ({ page }, testInfo) => {
   const richText = [
-    "## Selected details", "", "First paragraph.", "", "Second paragraph with [reference](https://example.com/reference).",
+    "## Selected details", "", "First paragraph with **bold**, *em*, ~~del~~ and `code`.", "",
+    "Second paragraph with [reference](https://example.com/reference).",
     "", "- First item", "- Second item", "", "1. Ordered item", "2. Next item", "",
     "| Name | Value |", "| --- | --- |", "| Alpha | Beta |", "",
     "Inline $x^2$ and a display formula:", "", "$$", "E = mc^2", "$$", "",
@@ -167,22 +171,28 @@ test("rich selections retain code, lists, tables, links and TeX, and send as one
   await selectContents(markdown(page));
   await quoteButton(page).click();
   const draft = await composer(page).inputValue();
-  for (const fragment of ["> ## Selected details", "> First paragraph.\n>\n> Second paragraph",
-    "[reference](https://example.com/reference)", "> - First item", "> - Second item", "> 1. Ordered item",
+  for (const fragment of ["> Selected details", "> First paragraph with bold, em, del and code.\n>\n> Second paragraph with reference.",
+    "> - First item", "> - Second item", "> 1. Ordered item",
     "> 2. Next item", "| Name | Value |", "| --- | --- |", "| Alpha | Beta |", "$x^2$", "$$",
     "E = mc^2", "> ```typescript\n> const answer = 42;"]) expect(draft).toContain(fragment);
   expect(draft).not.toMatch(/Copy|Thinking|Private reasoning|<annotation|<math/u);
+  expect(draft).not.toMatch(/^> #|\*\*|~~|`code`|\]\(|example\.com/mu);
   expect(draft.match(/x\^2/gu)).toHaveLength(1);
   expect(draft.match(/E = mc\^2/gu)).toHaveLength(1);
   await composer(page).press("Enter");
   await stream.waitForRequestCount(page, 1);
   const sent = page.locator('article[data-role="user"]').last().locator(".v2-conversation-markdown");
   await expect(sent.locator("blockquote")).toHaveCount(1);
-  await expect(sent.locator("blockquote h3")).toHaveText("Selected details");
+  await expect(sent.locator("blockquote h3")).toHaveCount(0);
+  await expect(sent.locator("blockquote strong, blockquote em, blockquote del, blockquote a, blockquote p code")).toHaveCount(0);
+  await expect(sent.locator("blockquote")).toContainText("Selected details");
   await expect(sent.locator("blockquote table")).toContainText("Alpha");
   await expect(sent.locator("blockquote pre code")).toContainText("const answer = 42;");
-  await expect(sent.locator("blockquote")).toContainText("First paragraph.");
-  await expect(sent.locator("blockquote")).toContainText("Second paragraph");
+  await expect(sent.locator("blockquote ul li")).toHaveCount(2);
+  await expect(sent.locator("blockquote ol li")).toHaveCount(2);
+  await expect(sent.locator("blockquote .katex")).toHaveCount(2);
+  await expect(sent.locator("blockquote")).toContainText("First paragraph with bold, em, del and code.");
+  await expect(sent.locator("blockquote")).toContainText("Second paragraph with reference.");
   await sent.scrollIntoViewIfNeeded();
   await expectNoHorizontalOverflow(page);
   await page.screenshot({ path: testInfo.outputPath("quote-sent-rich-markdown.png") });

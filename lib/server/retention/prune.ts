@@ -557,50 +557,6 @@ async function releaseLockedKnowledgeUploadSessions(
   return { itemsReleased, jobsStaged, multipartSessionsReleased };
 }
 
-/**
- * Object-store replacement: an in-progress direct multipart upload holds an
- * upload ID that the new store does not know, so it cannot resume. Release
- * every such session regardless of expiry, in PostgreSQL only, so the client
- * starts a new upload. Completed, settled and already failed items keep their
- * state; the staged abort tolerates the unknown ID on the new store.
- */
-export async function releaseInProgressMultipartKnowledgeUploads(
-  prisma: PrismaClient,
-  input: Readonly<{ limit: number; now: Date }>
-): Promise<number> {
-  let total = 0;
-  for (;;) {
-    const released = await prisma.$transaction(async (tx) => {
-      const candidates = await tx.$queryRaw<LockedKnowledgeUploadSession[]>`
-        SELECT item."id", item."batchId", item."storageKey", item."multipartUploadId"
-        FROM "KnowledgeUploadItem" AS item
-        WHERE item."transport" = 'MULTIPART'::"KnowledgeUploadTransport"
-          AND item."state" IN (
-            'QUEUED'::"KnowledgeUploadItemState",
-            'UPLOADING'::"KnowledgeUploadItemState"
-          )
-          AND item."multipartUploadId" IS NOT NULL
-          AND item."storageKey" IS NOT NULL
-        ORDER BY item."id"
-        FOR UPDATE SKIP LOCKED
-        LIMIT ${input.limit}
-      `;
-      if (candidates.length === 0) return null;
-      return (await releaseLockedKnowledgeUploadSessions(tx, candidates, input.now, (candidate) => ({
-        id: candidate.id,
-        state: { in: ["QUEUED", "UPLOADING"] },
-        storageKey: candidate.storageKey,
-        transport: "MULTIPART"
-      }))).itemsReleased;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
-    if (released === null) return total;
-    // Writers are stopped during the replacement; a candidate that cannot be
-    // released means another writer is still active.
-    if (released === 0) throw new Error("knowledge_upload_settlement_incomplete");
-    total += released;
-  }
-}
-
 export function createPrismaRetentionRepository(prisma: PrismaClient): RetentionRepository {
   return {
     async claimAttachmentDeletionJobs({ claimableBefore, limit, now }) {

@@ -5,11 +5,15 @@ import {
   canonicalJsonText,
   contextCompactionCheckpoint,
   contextDigest,
+  CONTEXT_COMPACTION_POLICY_RETIRED,
   CONTEXT_SUMMARY_REFS_INCOMPLETE,
+  contextCompactionPolicyRetired,
+  contextSummaryCoverage,
   contextSummaryReuseCandidates,
   conversationContextPolicy,
   decodeContextRejectionRebuild,
   decodeConversationContextPolicy,
+  messageCoverageRef,
   summaryBindingDigest,
   type BranchContextCheckpoint
 } from "./contextCompactionContract";
@@ -32,7 +36,7 @@ function request(): ProviderRunRequest {
   return {
     attachmentIds: [], attachments: [], chatId: "chat-1", content: messages.at(-1)!.content,
     context: { messages, mode: "branch_path" },
-    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "a3", messages, mode: "hybrid" }),
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "a3", messages }),
     knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { contextWindow: 4_000, nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false,
       toolCalling: true, vision: false },
@@ -71,6 +75,41 @@ function checkpoint(input: Readonly<{
   };
 }
 
+describe("the one conversation policy", () => {
+  it("is the only policy admission creates, and checkpoints carry only its revision", () => {
+    const accepted = request();
+    expect(accepted.contextCompactionPolicy).toMatchObject({ mode: "hybrid", version: 1 });
+    expect(contextCompactionCheckpoint({ ownerId: "user-1", request: accepted, runId: "run-1" }).policyRevision).toBe("hybrid-v1");
+    // A historical legacy policy still decodes, so old checkpoints and requests stay readable.
+    expect(decodeConversationContextPolicy({ ...accepted.contextCompactionPolicy!, mode: "legacy_compatible" })).not.toBeNull();
+  });
+
+  it("retires a non-Agent run without the policy, under the legacy mode or with a legacy checkpoint", () => {
+    const accepted = request();
+    const { contextCompactionPolicy: _policy, ...absent } = accepted;
+    void _policy;
+    expect(contextCompactionPolicyRetired(accepted)).toBe(false);
+    expect(contextCompactionPolicyRetired(absent)).toBe(true);
+    expect(contextCompactionPolicyRetired({ ...accepted, contextCompactionPolicy: { ...accepted.contextCompactionPolicy!,
+      mode: "legacy_compatible" } })).toBe(true);
+    expect(contextCompactionPolicyRetired(accepted, { policyRevision: "legacy-compatible-v1" })).toBe(true);
+    expect(contextCompactionPolicyRetired(accepted, { policyRevision: "hybrid-v1" })).toBe(false);
+    // Agent runs never carry a policy: Codex owns their context.
+    expect(contextCompactionPolicyRetired({ ...absent, agent: {} })).toBe(false);
+    expect(CONTEXT_COMPACTION_POLICY_RETIRED).toEqual({ code: "context_compaction_policy_retired",
+      message: "This answer was interrupted by an application update. Regenerate to try again." });
+  });
+
+  it("reads own notes by their history boundary and notes bought before it as covering every prior message", () => {
+    const prior = request().context!.messages.slice(0, -1);
+    const bounded = { ...summary("b"), sourceRefs: [messageCoverageRef("a1")] };
+    expect(contextSummaryCoverage(request(), bounded, prior)).toEqual({ covered: prior.slice(0, 2), uncovered: prior.slice(2) });
+    expect(contextSummaryCoverage(request(), summary("c"), prior)).toEqual({ covered: prior, uncovered: [] });
+    // A boundary that already left the request leaves every remaining message uncovered.
+    expect(contextSummaryCoverage(request(), bounded, prior.slice(2))).toEqual({ covered: [], uncovered: prior.slice(2) });
+  });
+});
+
 describe("carried compaction notes", () => {
   it("decodes a frozen reuse only for a hybrid policy", () => {
     const accepted = request().contextCompactionPolicy!;
@@ -89,6 +128,27 @@ describe("carried compaction notes", () => {
         { coveredMessageId: "u2", runId: "run-a2", summary: newer.compaction.summary },
         { coveredMessageId: "u1", runId: "run-a1", summary: older.compaction.summary }
       ]);
+  });
+
+  it("bounds notes bought with a history boundary by that boundary, not the run's user message", () => {
+    const base = checkpoint({ answer: "a3", seed: "d", userMessageId: "u3" });
+    const notes = { ...base.compaction.summary!, sourceRefs: [messageCoverageRef("a1")] };
+    const bounded = { ...base, compaction: { ...base.compaction, summary: notes } };
+    expect(contextSummaryReuseCandidates({ checkpoints: [bounded], priorMessageIds: branch, userId: "user-1" }))
+      .toEqual([{ coveredMessageId: "a1", runId: "run-a3", summary: notes }]);
+  });
+
+  it("never carries or applies notes that read no prior message as covering the run's own user message", () => {
+    // A first-turn pass over tool units only: unit refs, no history boundary.
+    const base = checkpoint({ answer: "a3", seed: "e", userMessageId: "u3" });
+    const notes = { ...base.compaction.summary!, sourceRefs: [`ctxu1_${"1".repeat(32)}`] };
+    const unitsOnly = { ...base, compaction: { ...base.compaction, summary: notes } };
+    expect(contextSummaryReuseCandidates({ checkpoints: [unitsOnly], priorMessageIds: branch, userId: "user-1" })).toEqual([]);
+    const prior = request().context!.messages.slice(0, -1);
+    expect(contextSummaryCoverage(request(), notes, prior)).toEqual({ covered: [], uncovered: prior });
+    // Notes bought before coverage refs existed keep their historical reading.
+    expect(contextSummaryReuseCandidates({ checkpoints: [checkpoint({ answer: "a3", seed: "f", userMessageId: "u3" })],
+      priorMessageIds: branch, userId: "user-1" })).toEqual([expect.objectContaining({ coveredMessageId: "u3" })]);
   });
 
   it("keeps the frozen boundary of notes a run carried from an earlier turn", () => {

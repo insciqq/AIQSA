@@ -75,7 +75,7 @@ function allowedFlags(args: readonly string[], allowed: Flags): boolean {
   return true;
 }
 
-/** Pinned Codex 0.154 exec emits `/usr/bin/bash -lc pwd` or a quoted command argument. */
+/** Pinned Codex 0.159 exec emits `/usr/bin/bash -lc pwd` or a quoted command argument. */
 export function isExploredWorkspaceCommand(preview: string, truncated = false): boolean {
   if (truncated || preview.includes("•••")) return false;
   let tokens = words(preview);

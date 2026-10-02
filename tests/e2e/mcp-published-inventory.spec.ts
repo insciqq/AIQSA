@@ -14,6 +14,7 @@ import {
   type MutableMcpTool
 } from "./support/mutableMcpEndpoint";
 import { disableMemoryRecall, setWorkspaceEnabled } from "./support/workspace";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
@@ -251,7 +252,7 @@ test("MCP tools changed on the server stay unavailable with a reason until Test 
     });
   } finally {
     await page.goto("about:blank").catch(() => undefined);
-    for (const chatId of chatIds) await page.request.delete(`/api/chats/${chatId}`).catch(() => undefined);
+    for (const chatId of chatIds) await deleteOwnedChatPermanently(page.request, chatId).catch(() => undefined);
     if (serverId) await page.request.delete(`/api/admin/mcp/${serverId}`).catch(() => undefined);
     if (memoryRecall) await page.request.patch("/api/me/memory/settings", { data: memoryRecall }).catch(() => undefined);
     await endpoint.close();

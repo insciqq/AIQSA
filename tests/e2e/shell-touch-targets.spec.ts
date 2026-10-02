@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { providerTemplateIds } from "../../lib/domain/providerTemplates";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { runAccountMenuAction } from "./shell/page";
 
@@ -26,6 +28,19 @@ async function expectTarget(locator: Locator, name: string): Promise<Box> {
   return box;
 }
 
+async function expectTouchHeight(locator: Locator, name: string): Promise<Box> {
+  const box = await boxOf(locator, name);
+  expect(box.height, `${name} height`).toBeGreaterThanOrEqual(43.99);
+  return box;
+}
+
+function expectInside(box: Box, frame: Box, name: string): void {
+  expect(box.x, `${name} left`).toBeGreaterThanOrEqual(frame.x - 0.5);
+  expect(box.y, `${name} top`).toBeGreaterThanOrEqual(frame.y - 0.5);
+  expect(box.x + box.width, `${name} right`).toBeLessThanOrEqual(frame.x + frame.width + 0.5);
+  expect(box.y + box.height, `${name} bottom`).toBeLessThanOrEqual(frame.y + frame.height + 0.5);
+}
+
 async function expectSize(locator: Locator, name: string, size: Readonly<{ height: number; width?: number }>) {
   const box = await boxOf(locator, name);
   expect(Math.abs(box.height - size.height), `${name} height ${box.height}`).toBeLessThanOrEqual(0.5);
@@ -48,9 +63,18 @@ async function createOwnedChat(page: Page): Promise<Readonly<{ chatId: string; t
   return { chatId, title };
 }
 
-async function deleteOwnedChat(page: Page, chatId: string): Promise<void> {
-  const response = await page.request.delete(`/api/chats/${chatId}`, { maxRetries: 2 });
-  expect([200, 204, 404], "the owned chat is cleaned up").toContain(response.status());
+/** A Project with one shared chat; the caller deletes the Project. */
+async function createOwnedProjectChat(page: Page): Promise<Readonly<{ chatId: string; projectId: string }>> {
+  await authenticateWithLocalToken(page.request);
+  const suffix = randomUUID().slice(0, 8);
+  const project = await page.request.post("/api/projects", {
+    data: { name: `Touch geometry Project ${suffix}`, preferredModelId: providerTemplateIds.fakeModel }
+  });
+  expect(project.status(), await project.text()).toBe(201);
+  const projectId = ((await project.json()) as { project: { id: string } }).project.id;
+  const chat = await page.request.post(`/api/projects/${projectId}/chats`, { data: { title: `Touch geometry Project chat ${suffix}` } });
+  expect(chat.status(), await chat.text()).toBe(201);
+  return { chatId: ((await chat.json()) as { chat: { id: string } }).chat.id, projectId };
 }
 
 async function openChat(page: Page, path: string): Promise<Locator> {
@@ -92,6 +116,7 @@ async function expectCompactTouchHeader(page: Page, model: Locator, title: strin
   const titleBox = await expectTarget(titleButton, "chat title button");
   await expectTarget(header.getByRole("button", { exact: true, name: "Share" }), "Share");
   await expectTarget(page.getByTestId("header-more-trigger"), "Chat actions");
+  await expectTouchHeight(page.getByTestId("header-context-indicator"), "context gauge");
 
   const floats = sidebarFloats(page);
   for (const [name, float] of [["Show list float", floats.showList], ["New chat float", floats.newChat]] as const) {
@@ -129,6 +154,78 @@ async function expectPhoneIslandGaps(page: Page, withChatActions: boolean): Prom
   const actionsGap = more.x - (plus.x + plus.width);
   expect(Math.abs(actionsGap - 8), `New chat → Chat actions gap ${actionsGap}`).toBeLessThanOrEqual(1);
   expect(Math.abs(more.y - menu.y), "Chat actions island row").toBeLessThanOrEqual(1);
+}
+
+/**
+ * Phone touch: the model button and the Assistant segment (when rendered)
+ * fill the 44px model island instead of its border-reduced content box.
+ */
+async function expectPhoneIslandSegments(page: Page): Promise<void> {
+  const island = await expectTouchHeight(page.locator(".v2-live-header-island"), "model island");
+  const model = await expectTouchHeight(page.getByTestId("header-model-trigger"), "header model button");
+  expectInside(model, island, "header model button inside the island");
+  const assistant = page.locator(".v2-live-header-island > .v2-live-assistant");
+  if (await assistant.count() && await assistant.isVisible()) {
+    expectInside(await expectTouchHeight(assistant, "Assistant segment"), island, "Assistant segment inside the island");
+  }
+}
+
+/**
+ * Phone touch in a Project chat: the projects section has no "+" float, so
+ * the header row (the model island, then the Project chip pill) sits centred
+ * between the menu island and "⋯" instead of reserving room for "+".
+ */
+async function expectProjectChatIslandGaps(page: Page): Promise<void> {
+  await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-shell-section", "projects");
+  const header = page.locator(".v2-live-header");
+  // The loaded Project chat: "⋯" and the Project chip are both in the row.
+  const more = page.getByTestId("header-more-trigger");
+  await expect(more).toBeVisible({ timeout: 30_000 });
+  await expect(header.getByRole("complementary", { name: "Shared project context" })).toBeVisible({ timeout: 30_000 });
+  await expect(sidebarFloats(page).newChat).toHaveCount(0);
+  const menu = await expectTarget(sidebarFloats(page).showList, "menu island");
+  const island = await boxOf(page.locator(".v2-live-header-island"), "model island");
+  const titlePill = header.locator(".v2-live-title");
+  const last = await titlePill.isVisible() ? await boxOf(titlePill, "Project chip pill") : island;
+  const moreBox = await expectTarget(more, "Chat actions island");
+  const left = island.x - (menu.x + menu.width);
+  const right = moreBox.x - (last.x + last.width);
+  expect(left, "menu → model gap").toBeGreaterThanOrEqual(7.5);
+  expect(right, "header row → Chat actions gap").toBeGreaterThanOrEqual(7.5);
+  expect(Math.abs(left - right), `Project chat header row gaps ${left} / ${right}`).toBeLessThanOrEqual(1);
+}
+
+/**
+ * Settings on touch: the header row is 56px, so the 44px Close and Back
+ * controls keep room above and below inside it, and the content starts
+ * under the header.
+ */
+async function expectSettingsHeaderRoom(page: Page): Promise<void> {
+  await runAccountMenuAction(page, "Settings");
+  const settings = page.getByRole("dialog", { exact: true, name: "Settings" });
+  await expect(settings).toBeVisible();
+  const header = settings.locator(".v2-settings-header");
+  const close = settings.getByRole("button", { exact: true, name: "Close settings" });
+  const expectRoom = async (control: Locator, name: string) => {
+    const headerBox = await boxOf(header, "Settings header");
+    expect(headerBox.height, "Settings header height").toBeGreaterThanOrEqual(55.99);
+    const box = await expectTarget(control, name);
+    expect(box.y - headerBox.y, `${name} room above`).toBeGreaterThanOrEqual(5.49);
+    expect(headerBox.y + headerBox.height - (box.y + box.height), `${name} room below`).toBeGreaterThanOrEqual(5.49);
+    const scroll = await boxOf(settings.locator(".v2-settings-scroll"), "Settings content");
+    expect(scroll.y, "Settings content starts under the header").toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 0.5);
+  };
+  await expectRoom(close, "Close settings");
+
+  await settings.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { exact: true, name: "Data" }).click();
+  await settings.getByRole("button", { exact: true, name: "Manage" }).click();
+  const back = settings.getByRole("button", { exact: true, name: "Back to Data" });
+  await expect(back).toBeFocused();
+  await expectRoom(back, "Back to Data");
+  await expectRoom(close, "Close settings");
+  await back.click();
+  await close.click();
+  await expect(settings).toHaveCount(0);
 }
 
 /** Studio: the Back controls and the instruction variables are 44px targets. */
@@ -174,8 +271,8 @@ async function expectComposerLinkTargets(page: Page): Promise<void> {
 }
 
 const compactTouchProfiles = [
-  { height: 1024, isMobile: false, label: "tablet portrait 768×1024", width: 768 },
-  { height: 390, isMobile: true, label: "phone landscape 844×390", width: 844 }
+  { height: 1024, isMobile: false, label: "tablet portrait 768×1024", settings: true, width: 768 },
+  { height: 390, isMobile: true, label: "phone landscape 844×390", settings: false, width: 844 }
 ] as const;
 
 for (const profile of compactTouchProfiles) {
@@ -194,10 +291,11 @@ for (const profile of compactTouchProfiles) {
         expect(await page.evaluate((rule) => matchMedia(rule).matches, touchRule)).toBe(true);
         await expectRailTargets(page, profile.height);
         await expectCompactTouchHeader(page, model, title);
+        if (profile.settings) await expectSettingsHeaderRoom(page);
         await expectStudioTargets(page, true);
         await expectComposerLinkTargets(page);
       } finally {
-        await deleteOwnedChat(page, chatId);
+        await deleteOwnedChatPermanently(page.request, chatId);
       }
     });
   });
@@ -207,22 +305,35 @@ test.describe("shell touch targets · phone portrait 390×844", () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { height: 844, width: 390 } });
 
   test("phone islands keep equal gaps and Studio and composer links are 44px touch targets · phone portrait 390×844", async ({ page }) => {
-    test.setTimeout(120_000);
+    test.setTimeout(150_000);
     const { chatId } = await createOwnedChat(page);
+    let projectId: string | null = null;
     try {
       await openChat(page, "/");
       expect(await page.evaluate((rule) => matchMedia(rule).matches, touchRule)).toBe(true);
       await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-sidebar-composition", "mobile");
       await expectPhoneIslandGaps(page, false);
+      await expectPhoneIslandSegments(page);
 
       await openChat(page, `/c/${chatId}`);
       await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-chat-active", "true");
       await expectPhoneIslandGaps(page, true);
+      await expectPhoneIslandSegments(page);
+      // Account Settings from a personal chat (a Project chat's menu opens Project settings).
+      await expectSettingsHeaderRoom(page);
 
+      const project = await createOwnedProjectChat(page);
+      projectId = project.projectId;
+      await openChat(page, `/p/${project.projectId}/c/${project.chatId}`);
+      await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-chat-active", "true");
+      await expectProjectChatIslandGaps(page);
+
+      await openChat(page, `/c/${chatId}`);
       await expectStudioTargets(page, false);
       await expectComposerLinkTargets(page);
     } finally {
-      await deleteOwnedChat(page, chatId);
+      if (projectId) await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
+      await deleteOwnedChatPermanently(page.request, chatId);
     }
   });
 });
@@ -260,7 +371,21 @@ test("fine pointer keeps the 40px rail, compact header controls and 48px Studio 
 
     await page.getByTestId("workspace-rail").getByRole("button", { name: "Studio" }).click();
     await expectSize(page.getByTestId("library-v2").locator(".v2-library-heading-row"), "Studio crumb row", { height: 48 });
+
+    // A desktop collapse that survives a resize to phone width leaves the
+    // phone header its own left padding, as on a fresh phone load.
+    await openChat(page, `/c/${chatId}`);
+    await page.getByRole("button", { name: "Close sidebar" }).click();
+    await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-sidebar-collapsed", "true");
+    await page.setViewportSize({ height: 844, width: 390 });
+    await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-sidebar-composition", "mobile");
+    await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-sidebar-collapsed", "true");
+    const headerPadding = () => page.locator(".v2-live-header").evaluate((element) => getComputedStyle(element).paddingLeft);
+    const resized = await headerPadding();
+    await openChat(page, `/c/${chatId}`);
+    await expect(page.locator(".v2-workspace-shell")).not.toHaveAttribute("data-sidebar-collapsed", "true");
+    expect(resized, "phone header padding after a collapsed desktop resize").toBe(await headerPadding());
   } finally {
-    await deleteOwnedChat(page, chatId);
+    await deleteOwnedChatPermanently(page.request, chatId);
   }
 });

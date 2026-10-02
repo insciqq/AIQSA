@@ -4,6 +4,7 @@ import {
   checkpointAdoptingSummaryReceipts,
   checkpointWithContextSummaryReceipt,
   INITIAL_PROVIDER_CONTINUATION,
+  isNotesOnlyCheckpoint,
   mergeContextCompactionReceipts,
   mergeAnswerRoundUsage,
   parseToolLoopCheckpoint,
@@ -377,9 +378,25 @@ describe("context summary receipts", () => {
     }
   });
 
-  it("keeps a dispatch outside the tool loop out of checkpoint state", () => {
-    const current = round(2);
-    expect(checkpointWithContextSummaryReceipt(current, { attempt: attempt(1, "claim"), compaction, roundIndex: null })).toBe(current);
+  it("keeps notes bought outside the tool loop in a notes-only checkpoint that never becomes a loop round", () => {
+    // A dispatch outside the loop seeds round 0 without a provider continuation.
+    const claimed = write(null, attempt(1, "claim"), 0)!;
+    expect(claimed).toMatchObject({ phase: "provider_running", providerContinuation: null, roundIndex: 0 });
+    expect(isNotesOnlyCheckpoint(claimed)).toBe(true);
+    expect(isNotesOnlyCheckpoint(round(1))).toBe(false);
+    const dispatched = write(claimed, attempt(1, "dispatched"), 0)!;
+    const committed = write(dispatched, attempt(1, "committed"), 0, summary)!;
+    expect(committed.contextCompaction).toMatchObject({ summary, summaryAttempts: [attempt(1, "committed")] });
+    // The call cap counts these receipts after a restart: a second claim waits for none.
+    expect(write(committed, attempt(2, "claim"), 0)?.contextCompaction?.summaryAttempts).toHaveLength(2);
+    // A loop round never writes into it, and it never claims beside a loop round.
+    expect(write(committed, attempt(2, "claim"), 1)).toBeNull();
+    expect(write(round(2), attempt(1, "claim"), 0)).toBeNull();
+    // The first loop round may still begin over it, keeping every receipt and the notes.
+    const begun = checkpointAdoptingSummaryReceipts(committed, round(1, "provider_running", compaction))!;
+    expect(begun).toMatchObject({ roundIndex: 1 });
+    expect(begun.contextCompaction).toMatchObject({ summary, summaryAttempts: [attempt(1, "committed")] });
+    expect(checkpointAdoptingSummaryReceipts(committed, round(2, "provider_running", compaction))).toBeNull();
   });
 
   it("merges receipts forward only and never lets an older projection replace the committed summary", () => {

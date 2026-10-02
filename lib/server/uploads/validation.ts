@@ -1,4 +1,8 @@
+import { IMAGE_MAX_BYTES } from "../../contracts/imageGeneration";
 import {
+  UPLOAD_FORMAT_REGISTRY,
+  isNormalizableRasterUploadFormat,
+  uploadAdmissionFormatFor,
   uploadFormatFor,
   uploadFormatForExtension,
   isSafeUploadFileName,
@@ -30,9 +34,14 @@ export type UploadValidationResult =
       kind: UploadKind;
       mimeType: string;
       ok: true;
+      /**
+       * Set when the content is a static raster other than the declared one:
+       * the caller must fully decode it as this format before admission.
+       */
+      rasterCheck?: UploadFormatDefinition;
     }
   | {
-      code: "file_required" | "file_too_large" | "unsupported_type";
+      code: "file_required" | "file_too_large" | "image_limit_exceeded" | "unsupported_type";
       ok: false;
     };
 
@@ -237,58 +246,76 @@ export function defaultUploadMaxBytes(env: Record<string, string | undefined> = 
     : DEFAULT_UPLOAD_MAX_BYTES;
 }
 
-export function validateUpload(input: UploadValidationInput): UploadValidationResult {
+type UploadAdmission =
+  | Readonly<{ format: UploadFormatDefinition; mimeDisagrees: boolean; type: "format" }>
+  | Readonly<{ result: UploadValidationResult; type: "result" }>;
+
+function uploadAdmission(input: UploadValidationInput): UploadAdmission {
   if (!input.fileName || input.byteSize <= 0) {
-    return { code: "file_required", ok: false };
+    return { result: { code: "file_required", ok: false }, type: "result" };
   }
-  if (!isSafeUploadFileName(input.fileName)) return { code: "unsupported_type", ok: false };
-  if (input.byteSize > input.maxBytes) {
-    return { code: "file_too_large", ok: false };
-  }
+  if (!isSafeUploadFileName(input.fileName)) return { result: { code: "unsupported_type", ok: false }, type: "result" };
+  if (input.byteSize > input.maxBytes) return { result: { code: "file_too_large", ok: false }, type: "result" };
 
   const scope = input.scope ?? "attachment";
-  const format = uploadFormatFor(input.fileName, input.mimeType, scope);
+  const format = uploadAdmissionFormatFor(input.fileName, input.mimeType, scope);
   if (!format && scope === "workspace") {
     if (uploadFormatForExtension(input.fileName, scope)) {
-      return { code: "unsupported_type", ok: false };
+      return { result: { code: "unsupported_type", ok: false }, type: "result" };
     }
     return {
-      kind: "file",
-      mimeType: normalizedUploadMimeType(input.mimeType) ?? "application/octet-stream",
-      ok: true
+      result: {
+        kind: "file",
+        mimeType: normalizedUploadMimeType(input.mimeType) ?? "application/octet-stream",
+        ok: true
+      },
+      type: "result"
     };
   }
-  if (!format || (input.bytes && !uploadContentMatchesFormat(format, input.bytes))) {
-    return { code: "unsupported_type", ok: false };
-  }
+  if (!format) return { result: { code: "unsupported_type", ok: false }, type: "result" };
+  // Only a static-raster pair can be admitted while its MIME names another raster.
+  return { format, mimeDisagrees: !uploadFormatFor(input.fileName, input.mimeType, scope), type: "format" };
+}
 
-  return {
-    kind: format.kind,
-    mimeType: format.canonicalMimeType,
-    ok: true
-  };
+/**
+ * Admits content that matches the declared format unchanged. A static-raster
+ * pair whose content is another static raster, or whose extension and MIME name
+ * different rasters, is admitted only pending a full decode by the caller.
+ */
+function admittedContent(
+  input: UploadValidationInput,
+  admission: Readonly<{ format: UploadFormatDefinition; mimeDisagrees: boolean }>,
+  matches: (format: UploadFormatDefinition) => boolean
+): UploadValidationResult {
+  const { format } = admission;
+  if (!admission.mimeDisagrees && matches(format)) {
+    return { kind: format.kind, mimeType: format.canonicalMimeType, ok: true };
+  }
+  const scope = input.scope ?? "attachment";
+  const detected = isNormalizableRasterUploadFormat(format, scope)
+    ? UPLOAD_FORMAT_REGISTRY.find((candidate) => isNormalizableRasterUploadFormat(candidate, scope) && matches(candidate))
+    : undefined;
+  if (!detected) return { code: "unsupported_type", ok: false };
+  if (input.byteSize > IMAGE_MAX_BYTES) return { code: "image_limit_exceeded", ok: false };
+  return { kind: detected.kind, mimeType: detected.canonicalMimeType, ok: true, rasterCheck: detected };
+}
+
+export function validateUpload(input: UploadValidationInput): UploadValidationResult {
+  const admission = uploadAdmission(input);
+  if (admission.type === "result") return admission.result;
+  const { format, mimeDisagrees } = admission;
+  if (!input.bytes) {
+    // Extension and MIME naming different rasters always require a full decode.
+    if (mimeDisagrees && input.byteSize > IMAGE_MAX_BYTES) return { code: "image_limit_exceeded", ok: false };
+    return { kind: format.kind, mimeType: format.canonicalMimeType, ok: true };
+  }
+  const bytes = input.bytes;
+  return admittedContent(input, admission, (candidate) => uploadContentMatchesFormat(candidate, bytes));
 }
 
 export function validateUploadInspection(input: UploadInspectionInput): UploadValidationResult {
-  if (!input.fileName || input.byteSize <= 0) {
-    return { code: "file_required", ok: false };
-  }
-  if (!isSafeUploadFileName(input.fileName)) return { code: "unsupported_type", ok: false };
-  if (input.byteSize > input.maxBytes) return { code: "file_too_large", ok: false };
-  const scope = input.scope ?? "attachment";
-  const format = uploadFormatFor(input.fileName, input.mimeType, scope);
-  if (!format && scope === "workspace") {
-    if (uploadFormatForExtension(input.fileName, scope)) {
-      return { code: "unsupported_type", ok: false };
-    }
-    return {
-      kind: "file",
-      mimeType: normalizedUploadMimeType(input.mimeType) ?? "application/octet-stream",
-      ok: true
-    };
-  }
-  if (!format || !uploadInspectionMatchesFormat(format, { ...input, partial: input.byteSize > input.sample.byteLength })) {
-    return { code: "unsupported_type", ok: false };
-  }
-  return { kind: format.kind, mimeType: format.canonicalMimeType, ok: true };
+  const admission = uploadAdmission(input);
+  if (admission.type === "result") return admission.result;
+  const inspection = { ...input, partial: input.byteSize > input.sample.byteLength };
+  return admittedContent(input, admission, (candidate) => uploadInspectionMatchesFormat(candidate, inspection));
 }

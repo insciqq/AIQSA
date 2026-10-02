@@ -1,4 +1,4 @@
-import { expect, type Download, type Page } from "@playwright/test";
+import { expect, type Download, type Locator, type Page } from "@playwright/test";
 import { parseChatRoutePath } from "../../../lib/domain/chatRoute";
 import { providerTemplateIds } from "../../../lib/domain/providerTemplates";
 import { selectModel } from "../shell/composer";
@@ -88,6 +88,16 @@ export async function setWorkspaceEnabled(page: Page, enabled: boolean): Promise
   await toggle.click();
   await expect(details).toHaveAccessibleName(expected);
   await page.keyboard.press("Escape");
+}
+
+/** Opens the composer's Workspace layer from its "Workspace details" chip and returns the layer. */
+export async function openWorkspaceDetails(page: Page): Promise<Locator> {
+  const details = page.getByRole("button", { name: /^Workspace details\./u });
+  await expect(details).toBeEnabled({ timeout: 15_000 });
+  await details.click();
+  const layer = page.getByRole("menu", { name: "Workspace", exact: true });
+  await expect(layer).toBeVisible();
+  return layer;
 }
 
 /** The chat the address names: `/c/<id>` or `/p/<project>/c/<id>`, once a first send is under way. */

@@ -1,7 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { RunOutcome } from "../../lib/contracts/runs";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { chooseSearchStrategy, selectModel } from "./shell/composer";
 import { activeChatId } from "./support/workspace";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 test.describe.configure({ mode: "serial" });
 test.setTimeout(60_000);
@@ -28,12 +30,21 @@ type ChatDetailBody = {
 };
 
 type RunBody = {
-  run: {
-    id: string;
-    status: string;
-  };
+  run: RunOutcome;
   version: 1;
 };
+
+/** Every field the owner-authorized run read may carry (`RunOutcome`). */
+const RUN_OUTCOME_FIELDS: ReadonlySet<string> = new Set<keyof RunOutcome>([
+  "answerComplete", "followups", "id", "pdfPreparation", "status", "workspacePreparation"
+]);
+
+/** The run read is the bounded outcome projection: answer content arrives only through the chat. */
+function expectCompleteRunOutcome(run: RunOutcome | null, answer: string): void {
+  expect(run?.status).toBe("complete");
+  expect(Object.keys(run ?? {}).filter((key) => !RUN_OUTCOME_FIELDS.has(key))).toEqual([]);
+  expect(JSON.stringify(run)).not.toContain(answer);
+}
 
 const testTitlePrefix = "E2E unmocked";
 
@@ -59,7 +70,7 @@ async function cleanupUnmockedChats(page: Page) {
 
   const body = (await response.json()) as WorkspaceBody;
   for (const chat of body.chats.filter((candidate) => candidate.title.startsWith(testTitlePrefix))) {
-    await page.request.delete(`/api/chats/${chat.id}`);
+    await deleteOwnedChatPermanently(page.request, chat.id);
   }
 }
 
@@ -70,8 +81,19 @@ async function prepareFakeBlankChat(page: Page) {
     .click();
   await expect(page.getByTestId("conversation-empty")).toBeVisible();
   await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
-  await chooseSearchStrategy(page, "Off");
+  // Installations without configured Search omit its chip entirely.
+  if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
   await expect(page.getByTestId("header-model-trigger")).toContainText("Fake QSA");
+}
+
+/** A fake answer can fill most of the small fake window, so the product
+ * suggests a continuation by opening the Chat context panel. Stay here. */
+async function stayInChat(page: Page): Promise<void> {
+  await expect(page.getByTestId("header-context-indicator")).toHaveAttribute("data-context-estimate", "snapshot", { timeout: 20_000 });
+  const context = page.getByRole("dialog", { name: "Chat context", exact: true });
+  if (!await context.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false)) return;
+  await context.getByRole("button", { name: "Stay here", exact: true }).click();
+  await expect(context).toHaveCount(0);
 }
 
 async function latestRunForChat(page: Page, chatId: string): Promise<RunBody["run"] | null> {
@@ -170,9 +192,7 @@ test("runs a fake-provider chat through real routes, Prisma, SSE, and answer out
     await expect(answer.getByRole("button", { name: /^Run details/u })).toHaveCount(0);
     await expect(answer).not.toContainText(/fake-qsa|search-disabled|fake-provider/);
 
-    const run = await latestRunForChat(page, chatId);
-    expect(run?.status).toBe("complete");
-    expect(Object.keys(run ?? {}).sort()).toEqual(["id", "status"]);
+    expectCompleteRunOutcome(await latestRunForChat(page, chatId), `Fake answer: ${prompt}`);
 
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
@@ -181,7 +201,7 @@ test("runs a fake-provider chat through real routes, Prisma, SSE, and answer out
     await expect(reloadedAnswer.getByRole("button", { name: /^Run details/u })).toHaveCount(0);
   } finally {
     if (chatId) {
-      await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);
+      await deleteOwnedChatPermanently(page.request, chatId, { timeout: 5_000 }).catch(() => undefined);
     }
   }
 });
@@ -200,6 +220,7 @@ test("streams a new answer on the branch created by editing an answered question
     await expect(page.getByTestId("conversation-thread")).toContainText(`Fake answer: ${prompt}`, {
       timeout: 20_000
     });
+    await stayInChat(page);
 
     const question = page.locator('article[data-role="user"]').last();
     await question.hover();
@@ -216,9 +237,7 @@ test("streams a new answer on the branch created by editing an answered question
     await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, {
       timeout: 20_000
     });
-    const run = await latestRunForChat(page, chatId);
-    expect(run?.status).toBe("complete");
-    expect(Object.keys(run ?? {}).sort()).toEqual(["id", "status"]);
+    expectCompleteRunOutcome(await latestRunForChat(page, chatId), `Fake answer: ${editedPrompt}`);
 
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
@@ -240,7 +259,7 @@ test("streams a new answer on the branch created by editing an answered question
     await expect(page.getByTestId("conversation-thread")).not.toContainText(editedPrompt);
   } finally {
     if (chatId) {
-      await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);
+      await deleteOwnedChatPermanently(page.request, chatId, { timeout: 5_000 }).catch(() => undefined);
     }
   }
 });
@@ -283,7 +302,7 @@ test("cancels an in-flight fake-provider stream without leaving the shell stuck"
 
   } finally {
     if (chatId) {
-      await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);
+      await deleteOwnedChatPermanently(page.request, chatId, { timeout: 5_000 }).catch(() => undefined);
     }
   }
 });
@@ -293,6 +312,7 @@ test("shows a rejected send once at the composer with a Retry action", async ({ 
   let chatId: string | null = null;
 
   await page.route("**/api/chats/*/messages", async (route) => {
+    chatId = new URL(route.request().url()).pathname.split("/")[3] ?? null;
     await route.fulfill({
       contentType: "application/json",
       json: { error: "provider_unavailable" },
@@ -304,10 +324,11 @@ test("shows a rejected send once at the composer with a Retry action", async ({ 
     await prepareFakeBlankChat(page);
     await page.getByRole("textbox", { name: "Message" }).fill(prompt);
     await page.getByRole("textbox", { name: "Message" }).press("Enter");
-    chatId = await activeChatId(page);
 
     const composerError = page.locator(".v2-live-composer-error");
     await expect(composerError).toHaveCount(1);
+    // A rejected first send keeps the new chat's address (chat-url-routing).
+    await expect.poll(() => new URL(page.url()).pathname).toBe("/");
     await expect(composerError).toContainText(/provider is unavailable/iu);
     await expect(composerError.getByRole("button", { name: "Retry" })).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue(prompt);
@@ -318,7 +339,7 @@ test("shows a rejected send once at the composer with a Retry action", async ({ 
   } finally {
     await page.unroute("**/api/chats/*/messages");
     if (chatId) {
-      await page.request.delete(`/api/chats/${chatId}`, { timeout: 5_000 }).catch(() => undefined);
+      await deleteOwnedChatPermanently(page.request, chatId, { timeout: 5_000 }).catch(() => undefined);
     }
   }
 });

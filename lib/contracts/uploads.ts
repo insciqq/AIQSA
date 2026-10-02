@@ -73,16 +73,39 @@ export type PdfUploadErrorCode =
   | "pdf_page_limit_exceeded"
   | "pdf_password_required";
 
+/** Direct-upload refusals the client names by code alone; server text is never shown. */
+type UploadCodeOnlyErrorCode =
+  | "file_required"
+  | "image_invalid"
+  | "image_limit_exceeded"
+  | "project_not_found"
+  | "unauthorized"
+  | "unsupported_type"
+  | "upload_busy"
+  | "workspace_runtime_unavailable";
+
+const UPLOAD_CODE_ONLY_ERROR_CODES: ReadonlySet<unknown> = new Set<UploadCodeOnlyErrorCode>([
+  "file_required",
+  "image_invalid",
+  "image_limit_exceeded",
+  "project_not_found",
+  "unauthorized",
+  "unsupported_type",
+  "upload_busy",
+  "workspace_runtime_unavailable"
+]);
+
+function isUploadCodeOnlyErrorCode(value: unknown): value is UploadCodeOnlyErrorCode {
+  return UPLOAD_CODE_ONLY_ERROR_CODES.has(value);
+}
+
 export type UploadErrorResponseWire =
   | {
       error: "file_too_large";
       limit?: number;
     }
   | {
-      error: "upload_busy";
-    }
-  | {
-      error: "workspace_runtime_unavailable";
+      error: UploadCodeOnlyErrorCode;
     }
   | {
       error: Exclude<PdfUploadErrorCode, "pdf_page_limit_exceeded">;
@@ -328,8 +351,7 @@ export function decodeUploadErrorResponse(value: unknown): UploadErrorResponseWi
       value.error !== "pdf_invalid" &&
       value.error !== "pdf_page_limit_exceeded" &&
       value.error !== "pdf_password_required" &&
-      value.error !== "upload_busy" &&
-      value.error !== "workspace_runtime_unavailable")
+      !isUploadCodeOnlyErrorCode(value.error))
   ) {
     return null;
   }
@@ -351,7 +373,7 @@ export function decodeUploadErrorResponse(value: unknown): UploadErrorResponseWi
     };
   }
 
-  if (value.error === "upload_busy" || value.error === "workspace_runtime_unavailable") {
+  if (isUploadCodeOnlyErrorCode(value.error)) {
     return { error: value.error };
   }
 

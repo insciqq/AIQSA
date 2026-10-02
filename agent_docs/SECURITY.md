@@ -19,7 +19,7 @@ Exceptional operator-controlled Nginx error diagnostics may contain public-share
 
 ## Untrusted Files, Providers, And Content
 
-Bound multipart envelopes, concurrency, bytes, parsing resources and remote responses before parsing; forwarding limits accommodate admitted envelopes without overriding route limits. Validate extension/MIME/content evidence; reject SVG. Errors omit object locations, filenames, integrity metadata, content and adapter diagnostics.
+Bound multipart envelopes, concurrency, bytes, parsing resources and remote responses before parsing; forwarding limits accommodate admitted envelopes without overriding route limits. Validate extension/MIME/content evidence; reject SVG. A chat upload whose name or MIME disagrees with static PNG/JPEG/WebP content is admitted only after full bounded decoding and takes the decoded format's MIME and extension without re-encoding; other mismatches are rejected. Errors omit object locations, filenames, integrity metadata, content and adapter diagnostics.
 
 Attachment previews use server allowlists: fully decode raster inputs within byte/pixel/frame bounds; preserve originals, reencode thumbnails. Serve bounded UTF-8 as `text/plain`, with `nosniff` and sandbox CSP. HTML/SVG remain inert source.
 
@@ -81,9 +81,10 @@ Review this npm-only tree's dependency manifests/locks, registry sources and lif
 | --- | --- |
 | MCP SDK packages | The pinned official SDKs own protocol/OAuth behavior; Node adapter is test/build-only. The Hono override enforces the reviewed advisory floor despite no exposed static server. |
 | `deepmerge-ts` | Patched-major override prevents recursive-object stack exhaustion in Prisma config/CLI; Map-merge behavior is outside current operator/repository config. Remove when supported Prisma carries the fix. |
-| `sharp` | Handles untrusted raster uploads, image-provider output and PDF rendering; keep byte/pixel/frame limits and full decoding at input boundaries; reject SVG and MIME mismatches. |
+| `sharp` | Handles untrusted raster uploads and image-provider output as well as PDF rendering. Keep byte, pixel and frame limits plus full decoding at input boundaries; reject SVG and MIME mismatches except fully decoded static PNG/JPEG/WebP uploads, which are normalized to their decoded format. |
 | `pdfjs-dist` | Standard-font assets only; adopting its engine or optional canvas requires compatibility/security review. |
 | `nanoid` | Patched compatible override addresses zero-size custom-generator denial of service; current use is transitive build tooling, not affected APIs. |
 | `postcss`, `acorn` | Bound untrusted CSS/JavaScript parsing; retain structural checks and hostile-input tests. PostCSS override enforces the advisory floor. |
+| `markdown-it` | Parses untrusted model/user Markdown. Input, node and depth bounds hold before and while rendering; the dialect is limited at the tokenizer; raw HTML and images never reach the DOM, and link policy stays in the React renderer. Real-library hostile-input tests protect it. |
 
 Keep overrides only while focused hostile-input/build/hermetic verification passes and their reasons hold.

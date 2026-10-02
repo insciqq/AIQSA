@@ -7,7 +7,16 @@ import {
   readBoundedResponseText,
   withTimeoutSignal
 } from "./network";
+import {
+  executeWithProviderRetry,
+  initialRequestTransportFailure,
+  ownsInitialRequestReplay,
+  type ProviderRetryDecision,
+  type ProviderRetryOptions
+} from "./providerRetry";
+import { providerRequestNotSent } from "./providerSafeFetch";
 import { providerContextLengthRejection, type ProviderContextLengthCounts } from "./responseFailure";
+import { parseRetryAfterMs } from "../retryAfter";
 
 export type GeminiInteractionObject = Record<string, unknown>;
 
@@ -32,13 +41,48 @@ export interface GeminiHttpError {
 
 /** Only reviewed error identities cross the transport boundary; never retain
  * provider messages, arguments or the error envelope. A context-length
- * identity also carries the token counts the provider stated. */
+ * identity also carries the token counts the provider stated, and
+ * `retryAfterMs` is the parsed Retry-After header (null when absent). */
 export class GeminiHttpError extends Error {
-  constructor(readonly httpStatus: number, readonly code?: GeminiHttpErrorCode, counts?: ProviderContextLengthCounts) {
+  constructor(
+    readonly httpStatus: number,
+    readonly code?: GeminiHttpErrorCode,
+    counts?: ProviderContextLengthCounts,
+    readonly retryAfterMs: number | null = null
+  ) {
     super(providerHttpErrorMessage("Gemini", httpStatus));
     this.name = "GeminiHttpError";
     if (code === "context_length_exceeded" && counts) Object.assign(this, counts);
   }
+}
+
+/**
+ * Initial-request replay classification owned by the native Gemini
+ * Interactions path. Every Interactions body is sent with `store: false` and
+ * without `previous_interaction_id`, so a replay cannot duplicate stored
+ * interaction state; the only remaining risk is a duplicate billed generation.
+ *
+ * - Proven-unsent transport failures (`providerRequestNotSent`) never reached
+ *   Google.
+ * - 429 RESOURCE_EXHAUSTED and 503 UNAVAILABLE, with or without Retry-After,
+ *   are the errors Google names to retry with exponential backoff
+ *   (https://ai.google.dev/gemini-api/docs/troubleshooting), and a request that
+ *   fails with a 400 or 500 error is not charged for tokens, although it counts
+ *   against quota (https://ai.google.dev/gemini-api/docs/billing); the bounded
+ *   attempt limit keeps that quota cost small. Both pages rechecked 2026-10-02.
+ * - 408 is replayed only when its Retry-After explicitly asks for a new attempt.
+ *
+ * 500, 502 and 504 are not named retry-eligible (a 500 from an oversized
+ * context is usually deterministic), and 4xx rejections are final: none of them
+ * is replayed. An aborted signal is never replayed.
+ */
+function geminiInitialRequestRetryDecision(error: unknown, signal: AbortSignal): ProviderRetryDecision | null {
+  if (signal.aborted) return null;
+  if (error instanceof GeminiHttpError) {
+    if (error.httpStatus === 429 || error.httpStatus === 503) return { retryAfterMs: error.retryAfterMs };
+    return error.httpStatus === 408 && error.retryAfterMs !== null ? { retryAfterMs: error.retryAfterMs } : null;
+  }
+  return providerRequestNotSent(error) ? { retryAfterMs: null } : null;
 }
 
 function geminiHttpErrorIdentity(text: string, httpStatus: number): Readonly<{
@@ -131,6 +175,7 @@ async function parseJsonResponse(
 }
 
 async function throwHttpError(response: Response, signal: AbortSignal): Promise<never> {
+  const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
   let identity: ReturnType<typeof geminiHttpErrorIdentity> = {};
   try {
     identity = geminiHttpErrorIdentity(await readBoundedResponseText(response, {
@@ -142,7 +187,7 @@ async function throwHttpError(response: Response, signal: AbortSignal): Promise<
     }
   }
 
-  throw new GeminiHttpError(response.status, identity.code, identity.counts);
+  throw new GeminiHttpError(response.status, identity.code, identity.counts, retryAfterMs);
 }
 
 export function createFetchGeminiInteractionsClient(input: Readonly<{
@@ -150,12 +195,22 @@ export function createFetchGeminiInteractionsClient(input: Readonly<{
   apiRoot?: string;
   defaultTimeoutMs?: number;
   fetchFn?: typeof fetch;
+  /**
+   * Opt-in bounded replay of the initial POST. It replays only failures that
+   * prove Google did not accept the request (`geminiInitialRequestRetryDecision`)
+   * and, unless `maxAttempts` is 1, reports any other transport loss as
+   * `provider_request_outcome_unknown`. Without it every request is sent once
+   * and transport failures keep their raw identity. A 2xx response is never
+   * replayed, whatever its body or stream later does.
+   */
+  initialRequestRetry?: ProviderRetryOptions;
 }>): GeminiInteractionsClient {
   const endpoint = deriveGeminiInteractionsEndpoint(
     input.apiRoot?.trim() || "https://generativelanguage.googleapis.com/v1"
   );
   const apiKey = requiredApiKey(input.apiKey);
   const fetchFn = input.fetchFn ?? fetch;
+  const transportOwnsReplay = ownsInitialRequestReplay(input.initialRequestRetry);
   const headers = {
     accept: "application/json, text/event-stream",
     "content-type": "application/json",
@@ -171,13 +226,35 @@ export function createFetchGeminiInteractionsClient(input: Readonly<{
       options?.timeoutMs ?? input.defaultTimeoutMs
     );
     try {
-      const response = await fetchFn(endpoint, {
-        body: JSON.stringify(body),
-        headers,
-        method: "POST",
-        redirect: "error",
-        signal: timeout.signal
-      });
+      // One serialization: every attempt, including an admitted replay, sends
+      // byte-identical content under the one request deadline above.
+      const requestBody = JSON.stringify(body);
+      const operation = async () => {
+        let response: Response;
+        try {
+          response = await fetchFn(endpoint, {
+            body: requestBody,
+            headers,
+            method: "POST",
+            redirect: "error",
+            signal: timeout.signal
+          });
+        } catch (error) {
+          throw transportOwnsReplay ? initialRequestTransportFailure(error, timeout.signal) : error;
+        }
+        if (!response.ok) {
+          return await throwHttpError(response, timeout.signal);
+        }
+        return response;
+      };
+      const response = input.initialRequestRetry
+        ? await executeWithProviderRetry({
+            operation,
+            options: input.initialRequestRetry,
+            shouldRetry: (error) => geminiInitialRequestRetryDecision(error, timeout.signal),
+            signal: timeout.signal
+          })
+        : await operation();
       return { response, timeout };
     } catch (error) {
       timeout.clear();
@@ -189,9 +266,6 @@ export function createFetchGeminiInteractionsClient(input: Readonly<{
     async createInteraction(body, options) {
       const exchange = await post(body, options);
       try {
-        if (!exchange.response.ok) {
-          return await throwHttpError(exchange.response, exchange.timeout.signal);
-        }
         return await parseJsonResponse(exchange.response, exchange.timeout.signal);
       } finally {
         exchange.timeout.clear();
@@ -200,9 +274,6 @@ export function createFetchGeminiInteractionsClient(input: Readonly<{
     async streamInteraction(body, options) {
       const exchange = await post(body, options);
       try {
-        if (!exchange.response.ok) {
-          return await throwHttpError(exchange.response, exchange.timeout.signal);
-        }
         if (!exchange.response.body) {
           throw new GeminiInteractionsStreamError("gemini_interactions_stream_body_missing");
         }

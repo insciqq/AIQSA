@@ -2,16 +2,25 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
-import { Server, type ListToolsResult, type Tool } from "@modelcontextprotocol/server";
+import { Server, type CallToolResult, type ListToolsResult, type Tool } from "@modelcontextprotocol/server";
 
 export type MutableMcpTool = Tool;
+
+export type MutableMcpEndpointOptions = Readonly<{
+  /** Answers `tools/call`; the default returns one fixed synthetic text. */
+  callTool?(name: string, args: Readonly<Record<string, unknown>>): CallToolResult | Promise<CallToolResult>;
+  /** Listen address; loopback by default. */
+  host?: string;
+  /** Host placed in `url`, for a stand that reaches the fixture by another name. */
+  publicHost?: string;
+}>;
 
 /**
  * A real loopback MCP peer on the official SDK whose tool list changes while
  * clients stay connected. Every connection gets its own session; a mutation
  * notifies each open session through `notifications/tools/list_changed`.
  */
-export async function startMutableMcpEndpoint(initial: readonly MutableMcpTool[]) {
+export async function startMutableMcpEndpoint(initial: readonly MutableMcpTool[], options: MutableMcpEndpointOptions = {}) {
   let tools = [...initial];
   const calls = new Map<string, number>();
   const counts = { initialize: 0, list: 0 };
@@ -26,9 +35,11 @@ export async function startMutableMcpEndpoint(initial: readonly MutableMcpTool[]
       counts.list += 1;
       return { tools };
     });
-    server.setRequestHandler("tools/call", async (request) => {
+    server.setRequestHandler("tools/call", async (request): Promise<CallToolResult> => {
       calls.set(request.params.name, (calls.get(request.params.name) ?? 0) + 1);
-      return { content: [{ type: "text", text: "Synthetic fixture result" }] };
+      return options.callTool
+        ? options.callTool(request.params.name, request.params.arguments ?? {})
+        : { content: [{ type: "text", text: "Synthetic fixture result" }] };
     });
     const transport: NodeStreamableHTTPServerTransport = new NodeStreamableHTTPServerTransport({
       onsessionclosed: (sessionId) => { sessions.delete(sessionId); },
@@ -69,7 +80,7 @@ export async function startMutableMcpEndpoint(initial: readonly MutableMcpTool[]
   });
   await new Promise<void>((resolve, reject) => {
     http.once("error", reject);
-    http.listen(0, "127.0.0.1", () => resolve());
+    http.listen(0, options.host ?? "127.0.0.1", () => resolve());
   });
 
   const notify = async () => {
@@ -97,7 +108,7 @@ export async function startMutableMcpEndpoint(initial: readonly MutableMcpTool[]
       tools = [...next];
       await notify();
     },
-    url: `http://127.0.0.1:${(http.address() as AddressInfo).port}/mcp`
+    url: `http://${options.publicHost ?? options.host ?? "127.0.0.1"}:${(http.address() as AddressInfo).port}/mcp`
   };
 }
 

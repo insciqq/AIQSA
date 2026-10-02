@@ -1,9 +1,11 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { AdminProviderCheckRun } from "@/lib/contracts/adminProviders";
+import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import { fixtureCheckRun } from "../providerFixtures";
 import {
-  AdminProviderSetupMemoryHint, AdminProviderSetupResults, capabilityAttemptDescription, providerSetupNeedsMemory, providerSetupNeedsRecovery
+  AdminProviderSetupMemoryHint, AdminProviderSetupResults, capabilityAttemptDescription, providerSetupNeedsMemory, providerSetupNeedsRecovery,
+  systemModelPolicyAssignsMemory
 } from "./AdminProviderSetupResults";
 
 function completed(overrides: Partial<AdminProviderCheckRun> = {}) {
@@ -86,6 +88,25 @@ describe("compact setup results", () => {
     expect(screen.getByTestId("provider-setup-memory-hint")).toHaveTextContent("Memory needs a model. Choose one in Defaults & roles");
     const link = screen.getByRole("link", { name: "Choose one in Defaults & roles" });
     expect(link.getAttribute("href")).toMatch(/\?section=roles&resource=memory$/u);
+  });
+
+  it.each([
+    { assignmentSource: "operator" as const, assigned: true },
+    { assignmentSource: "inherited" as const, assigned: true },
+    { assignmentSource: "bootstrap" as const, assigned: true },
+    { assignmentSource: "unassigned" as const, assigned: false }
+  ])("reads Memory as assigned from the installation policy: $assignmentSource", ({ assignmentSource, assigned }) => {
+    const policy = { memoryPolicy: { assignmentSource, model: null, reasoningEffort: null, version: 1 } } as unknown as AdminSystemModelPolicyCatalog;
+    expect(systemModelPolicyAssignsMemory(policy)).toBe(assigned);
+    const run = completed({ setup: { state: "completed", search: "skipped", defaults: [], needsConfiguration: ["memory"] } });
+    const { container } = render(<AdminProviderSetupMemoryHint memoryAssigned={systemModelPolicyAssignsMemory(policy)} run={run} />);
+    if (assigned) expect(container).toBeEmptyDOMElement();
+    else expect(screen.getByTestId("provider-setup-memory-hint")).toBeVisible();
+  });
+
+  it("keeps the Memory hint while the installation policy is not loaded", () => {
+    expect(systemModelPolicyAssignsMemory(null)).toBe(false);
+    expect(systemModelPolicyAssignsMemory(undefined)).toBe(false);
   });
 
   it("does not ask to retry settled unsupported access but preserves unknown access failures", () => {

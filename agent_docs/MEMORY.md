@@ -65,7 +65,7 @@ Trusted reader instructions surround bounded untrusted evidence with authority, 
 
 Digests and contextual keys navigate to supported raw excerpts, never proving whole-chat relevance or exact facts. Missing enrichment uses safe raw history. Settled output/schema failures permit three attempts per source and repair/Memory-role revision. Preserve successful stages, bindings and usage. Never replay ambiguous dispatches; expose exhaustion. Preserve roles, message boundaries, provenance and timestamps. Recall admits only allowlisted sanitized settled tool observations, never raw arguments/results. Digests, observations and assistant speech cannot supply automatic facts/patterns.
 
-Freeze search permissions, destinations and budgets at acceptance. Revalidate source versions and authority before every model disclosure, including replay. Settled receipts/accounting replay without I/O; crash-ambiguous calls settle as failures. Only delivered evidence supports browser sources/actions through opaque references. Presentation grants no authority. [Run contracts](RUN_CONTRACTS.md) owns settlement.
+Freeze search permissions, destinations and budgets at acceptance. Revalidate source versions and authority before every model disclosure, including replay. Exception: a run's or branch's model-derived context notes may hold Memory search results; like assistant answers in history, they are neither revalidated on reuse nor scrubbed by Forget, edit, exclusion or reset. Settled receipts/accounting replay without I/O; crash-ambiguous calls settle as failures. Only delivered evidence supports browser sources/actions through opaque references. Presentation grants no authority. [Run contracts](RUN_CONTRACTS.md) owns settlement.
 
 ## Cutover And Deletion
 

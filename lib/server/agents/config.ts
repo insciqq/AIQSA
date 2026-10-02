@@ -33,6 +33,21 @@ export function agentLimits(policy: AgentPolicyWire, env: Readonly<Record<string
   };
 }
 
+/** True for an accepted Agent run whose guest Codex version is no longer installed. */
+export function agentCodexVersionRetired(agent: Pick<NormalizedRunAgent, "codexVersion"> | undefined): boolean {
+  return agent !== undefined && agent.codexVersion !== CODEX_VERSION;
+}
+
+/** Recovery reads an accepted Agent configuration from an earlier guest Codex
+ * only to settle that run without execution. Execution, the gateway and Skills
+ * keep the exact {@link validNormalizedAgent} check. */
+export function validAcceptedAgent(value: unknown): value is NormalizedRunAgent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const version = (value as Record<string, unknown>).codexVersion;
+  return typeof version === "string" && /^\d{1,4}\.\d{1,4}\.\d{1,4}$/u.test(version) &&
+    validNormalizedAgent({ ...value, codexVersion: CODEX_VERSION });
+}
+
 export const AGENT_GRANT_LEASE_MS = 30_000;
 export const AGENT_REQUEST_MAX_BYTES = 8 * 1024 * 1024;
 

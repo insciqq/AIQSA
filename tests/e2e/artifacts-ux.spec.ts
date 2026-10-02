@@ -6,6 +6,7 @@ import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { createGatedRunStreamFixture } from "./support/gatedRunStream";
 import { expectCenterUnobscured, expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { authenticateWithLocalToken } from "./support/localAuth";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 const sizes = [
   { width: 1440, height: 900 }, { width: 1280, height: 640 },
@@ -41,9 +42,8 @@ async function createFixture(page: Page): Promise<Fixture> {
     versionNumber: version.versionNumber, title, kind: "game", entrypoint: "index.html" };
   return { chatId, artifact, cleanup: async () => {
     const artifactResponse = await page.request.delete(`/api/artifacts/${artifact.artifactId}`, { maxRetries: 2 });
-    const chatCleanupResponse = await page.request.delete(`/api/chats/${chatId}`, { maxRetries: 2 });
-    expect([artifactResponse, chatCleanupResponse].filter(response => !response.ok() && response.status() !== 404)
-      .map(response => response.status()), "Every owned artifact fixture is cleaned up").toEqual([]);
+    await deleteOwnedChatPermanently(page.request, chatId);
+    expect(artifactResponse.ok() || artifactResponse.status() === 404, "Every owned artifact fixture is cleaned up").toBe(true);
   } };
 }
 

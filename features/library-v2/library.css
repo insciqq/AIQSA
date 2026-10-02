@@ -325,6 +325,16 @@
   }
 }
 
+/* A short touch screen (a phone held sideways, at any width) keeps the
+   stacked header. While a sub-view is open the crumb row's "Back to …" leads
+   back to the list, so the section strip yields its height to the editor;
+   leaving the sub-view restores it and focus returns to the selected tab. */
+@media (hover: none) and (max-height: 30rem), (pointer: coarse) and (max-height: 30rem) {
+  .v2-library-header:has(.v2-library-crumb[data-subview]) .v2-library-tabs-scroll {
+    display: none;
+  }
+}
+
 @media (min-width: 1024px) and (min-height: 30.01rem) and ((hover: none) or (pointer: coarse)) {
   .v2-library {
     grid-template-rows: 3.5rem minmax(0, 1fr);

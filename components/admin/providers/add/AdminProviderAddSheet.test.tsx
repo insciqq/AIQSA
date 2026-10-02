@@ -59,10 +59,10 @@ function mockFetch(router: Router = () => null) {
   return calls;
 }
 
-function renderSheet(connections: AdminProviderConnection[] = []) {
+function renderSheet(connections: AdminProviderConnection[] = [], memoryAssigned?: boolean) {
   const onClose = vi.fn();
   const onCreated = vi.fn();
-  render(<AdminProviderAddSheet connections={connections} onClose={onClose} onCreated={onCreated} open />);
+  render(<AdminProviderAddSheet connections={connections} memoryAssigned={memoryAssigned} onClose={onClose} onCreated={onCreated} open />);
   return { onClose, onCreated };
 }
 
@@ -203,6 +203,33 @@ describe("AdminProviderAddSheet", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "View provider" }));
     expect(onCreated).toHaveBeenCalledWith(connection.id);
     expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+  });
+
+  it.each([
+    { memoryAssigned: undefined, shown: true },
+    { memoryAssigned: false, shown: true },
+    { memoryAssigned: true, shown: false }
+  ])("shows the Memory hint after setup only while Memory is unassigned (memoryAssigned=$memoryAssigned)", async ({ memoryAssigned, shown }) => {
+    const connection = workingConnection();
+    const run: AdminProviderCheckRun = {
+      credentialId: connection.defaultCredentialId!, current: null, done: 2, failed: [], finishedAt: checkedAt,
+      id: "memory-run", inFlight: [], reason: "setup", startedAt: checkedAt, state: "completed", total: 2,
+      results: connection.models.map((model) => ({ providerModelId: model.id, state: "saved", checks: { modelAccess: "verified" } })),
+      setup: { defaults: [], needsConfiguration: ["memory"], search: "skipped", state: "completed" }
+    };
+    mockFetch(({ url, method }) => {
+      if (url === "/api/admin/providers/quick-setup" && method === "POST") return Response.json({ ...ready(connection.id), outcome: "partial", checkRun: run });
+      if (url === "/api/admin/providers") return Response.json({ connections: [{ ...connection, checkRun: run }] });
+      return null;
+    });
+    renderSheet([], memoryAssigned);
+    const dialog = await sheet();
+    await within(dialog).findByText(/GPT-5.6 Terra, GPT-5.6 Luna/);
+    fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "test-key" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Test & Save" }));
+    expect(await within(dialog).findByRole("heading", { name: "Setup finished" })).toBeVisible();
+    if (shown) expect(within(dialog).getByTestId("provider-setup-memory-hint")).toHaveTextContent("Memory needs a model.");
+    else expect(within(dialog).queryByTestId("provider-setup-memory-hint")).not.toBeInTheDocument();
   });
 
   it("stops the setup stream and recovers saved ids for retry instead of submitting Add again", async () => {
