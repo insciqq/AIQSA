@@ -102,7 +102,6 @@ function floorMetadata(
     sourceFolderId: null,
     sourceMode: history ? null : "EXPLICIT",
     subjectKey: null,
-    synthesisDepth: 0,
     systemFrom: now,
     temperatureClass: null,
     temperatureScore: 0,
@@ -333,7 +332,6 @@ describe("local Memory retrieval repository", () => {
         itemType: "RECALL_ROUND",
         occurredFrom: now,
         occurredTo: new Date(now.getTime() + 60_000),
-        patternSupportingEvidence: [],
         projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
         retrievalHint: null,
         safeText: "User: The fourth trip covered a total of 1,200 miles.\n\nAssistant: Noted.",
@@ -472,7 +470,6 @@ describe("local Memory retrieval repository", () => {
       itemType: "RECALL_ROUND",
       occurredFrom: now,
       occurredTo: new Date(now.getTime() + 60_000),
-      patternSupportingEvidence: [],
       projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
       retrievalHint: null,
       safeText: rawSafeText,
@@ -605,7 +602,6 @@ describe("local Memory retrieval repository", () => {
         applyResponsePreferences: true,
         currentUserText: query,
         filters: { sourceKinds: ["FACT", "EVENT"] },
-        includePatterns: true,
         now,
         temporalIntent: "ANY"
       }),
@@ -631,16 +627,11 @@ describe("local Memory retrieval repository", () => {
     const sql = mocked.laneSql.join("\n");
     expect(sql).toContain('FROM "MemoryFactVersion" AS version');
     expect(sql).toContain('INNER JOIN "MemoryRecallChunk" AS chunk');
-    expect(sql).toContain('version."synthesisGeneration" = settings."memoryGeneration"');
-    expect(sql).toContain('settings."synthesisEnabledAt" IS NOT NULL');
-    expect(sql).not.toContain('settings."synthesisEnabled" = TRUE');
-    expect(sql).toContain('relation."executionId" IS NOT NULL');
-    expect(sql).toContain('COUNT(DISTINCT relation_source_fact."id")');
-    expect(sql).toContain('WITH root_support AS');
-    expect(sql).toContain('evidence_message."role" = \'user\'');
-    expect(sql).toContain('second."messageId" <> first."messageId"');
-    expect(sql).toContain('third."messageId" <> first."messageId"');
-    expect(sql).toContain('third."messageId" <> second."messageId"');
+    // Retired synthesized patterns have no retrieval authority.
+    expect(sql).toContain('version."modality" <> \'PATTERN\'');
+    expect(sql).not.toContain("SYNTHESIZED_FROM");
+    expect(sql).not.toContain("synthesisEnabledAt");
+    expect(sql).not.toContain("'SYNTHESIS'");
   });
 
   it("recovers planner-excluded families through bounded original-query lanes", () => {
@@ -1827,13 +1818,12 @@ describe("local Memory retrieval repository", () => {
     expect(expansionSql).not.toContain('round."contextualNarrativeText" AS "safeText"');
   });
 
-  it("expands a PATTERN with three distinct direct source projections", async () => {
+  it("expands facts without synthesized-pattern supports", async () => {
     const mocked = mockClient(snapshotRow({ referenceChatHistory: false }));
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
     const plan = planMemoryRetrieval({
-      currentUserText: "What recurring workflow do I follow?",
+      currentUserText: "What workflow do I follow?",
       filters: { sourceKinds: ["FACT"] },
-      includePatterns: true,
       now
     });
     const retrieved = await repository.retrieve({
@@ -1843,60 +1833,34 @@ describe("local Memory retrieval repository", () => {
       plan,
       userId: "user-1"
     });
-    const base = sessionCandidate("pattern-1", "unused-chat", 0.8, { FACT_VECTOR: 1 });
+    const base = sessionCandidate("fact-1", "unused-chat", 0.8, { FACT_VECTOR: 1 });
     const candidate: MemoryRankedCandidate = {
       ...base,
       itemType: "FACT_VERSION",
-      metadata: {
-        ...floorMetadata("pattern-1", "FACT"),
-        directness: "INFERRED",
-        modality: "PATTERN",
-        sourceAuthority: "SYNTHESIS",
-        sourceChatId: null,
-        sourceMode: "AUTOMATIC",
-        synthesisDepth: 1
-      }
+      metadata: { ...floorMetadata("fact-1", "FACT"), sourceChatId: null }
     };
-    const patternSupportingEvidence = Array.from({ length: 3 }, (_, index) => ({
-      confidence: index === 0 ? 0.6 : 1,
-      itemId: `source-version-${index + 1}`,
-      observedAt: `2026-08-${10 + index}T10:00:00.000Z`,
-      safeText: `The user directly described workflow occurrence ${index + 1}.`,
-      sourceAuthority: "DIRECT_AUTOMATIC",
-      sourceChatId: `source-chat-${index + 1}`,
-      sourceRootHash: String(index + 1).repeat(64)
-    }));
     mocked.setNextExpansionRows([{
-      itemId: "pattern-1",
+      itemId: "fact-1",
       itemType: "FACT_VERSION",
       occurredFrom: null,
       occurredTo: null,
-      patternSupportingEvidence,
       projectionKind: "FACT_DISPLAY_TEXT",
       retrievalHint: null,
-      safeText: "The user tends to follow a recurring workflow.",
+      safeText: "The user follows a written release checklist.",
       sourceChatId: null,
       supportingEvidence: [],
       supportingItemId: null
     }]);
 
-    await expect(repository.expand(retrieved.snapshot, plan, [candidate]))
-      .resolves.toMatchObject([{
-        itemId: "pattern-1",
-        patternSupportingEvidence: patternSupportingEvidence.map((support) => ({
-          ...support,
-          observedAt: new Date(support.observedAt)
-        }))
-      }]);
+    const [expanded] = await repository.expand(retrieved.snapshot, plan, [candidate]);
+    expect(expanded).toMatchObject({ itemId: "fact-1", supportingEvidence: [] });
+    expect(expanded).not.toHaveProperty("patternSupportingEvidence");
     const expansionSql = mocked.$queryRaw.mock.calls.at(-1)?.[0]
       .strings?.join("?") ?? "";
-    expect(expansionSql).toContain('FROM "MemoryFactVersionRelation" AS relation');
-    expect(expansionSql).toContain('PARTITION BY support_source."sourceRootHash"');
-    expect(expansionSql).toContain('AS "patternSourceCount"');
-    expect(expansionSql).toContain('source_version."confidence"');
-    expect(expansionSql).toContain('combined_episode_facts');
-    expect(expansionSql).toContain('AS "patternSupportingEvidence"');
-    expect(expansionSql).toContain('support."messageId"');
+    expect(expansionSql).toContain('version."displayText" AS "safeText"');
+    expect(expansionSql).not.toContain("MemoryFactVersionRelation");
+    expect(expansionSql).not.toContain("patternSupportingEvidence");
+    expect(expansionSql).not.toContain("patternSourceCount");
   });
 
   it("expands a segment hit to the exact private child selected for its public round", async () => {

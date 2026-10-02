@@ -61,7 +61,6 @@ export async function ensureClassifiedSearchEntry(
       AND version."id" = ${factVersionId}
       AND (version."expiresAt" IS NULL OR version."expiresAt" > ${now})
       AND ${memoryReusableFactAuthorityPredicate(settings.userId, {
-        includePatterns: true,
         lifecycle: "CURRENT_OR_HISTORICAL"
       })}
   `);

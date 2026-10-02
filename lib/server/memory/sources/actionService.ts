@@ -507,8 +507,7 @@ export function createMemorySourceActionService(input: Readonly<{
       const eligibleVersionIds = await loadMemoryReusableFactVersionIds(
         input.client,
         userId,
-        [version.id],
-        { includePatterns: true }
+        [version.id]
       );
       if (fact.state !== "ACTIVE" || fact.currentVersionId !== version.id ||
         version.state !== "ACTIVE" || version.contentPurgedAt !== null ||

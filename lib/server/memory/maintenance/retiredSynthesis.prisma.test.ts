@@ -5,12 +5,16 @@ import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import type { MemoryDeletionClaim, MemoryJobClaim } from "../coordinator/types";
+import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
 import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION, MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../learning/extraction/contract";
+import { loadMemorySemanticCutoverInventory } from "../operational/cutover";
+import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
 import { memorySha256 } from "../persistence/lexical";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import { ensureActiveLexicalGeneration, withLockedMemoryTransaction } from "../persistence/transaction";
 import { defaultMemoryDeletionContributorRegistry } from "../purge/defaultPurge";
 import { memorySafetyLiteFactClassification } from "../safetyLite";
+import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
 import { createPrismaMemoryMaintenanceHandler } from "./handler";
 import { scheduleOwnerMemoryMaintenance } from "./reconcile";
 import { createMemorySynthesizeJobDispatcher, reconcileRetiredMemorySynthesis } from "./retiredSynthesis";
@@ -333,6 +337,65 @@ describe("retired Dream synthesis", () => {
         statement: "The user writes things down." });
       await expect(reconcileRetiredMemorySynthesis(prisma, new Date())).resolves.toMatchObject({ forgottenFacts: 1, pinnedFacts: 1 });
       await expectForgotten(late);
+    } finally {
+      await cleanup(userId);
+    }
+  });
+
+  it("keeps derivatives out of every read, shows their sources as ordinary memories and leaves cutover clean", async () => {
+    const userId = await owner("reads");
+    const explicit = createPrismaExplicitMemoryRepository(prisma);
+    const project = (versionId: string) => withLockedMemoryTransaction(prisma, userId,
+      (tx, settings) => ensureClassifiedSearchEntry(tx, settings, versionId, `trigger:${versionId}`, new Date()));
+    const listed = async () => (await explicit.list(userId, { scope: { type: "GLOBAL_USER" }, state: "ACTIVE" }))
+      .memories.map(({ id }) => id).sort();
+    try {
+      const sources = await Promise.all([
+        "I review the release checklist before each deploy.",
+        "I run the test suite before each release.",
+        "I write release notes on Fridays."
+      ].map((text) => source(userId, text)));
+      for (const ref of sources) await project(ref.versionId);
+      await expect(prisma.memorySearchEntry.count({ where: { userId, factVersionId: { in: sources.map(({ versionId }) => versionId) } } }))
+        .resolves.toBe(3);
+      const job = await retiredJob(userId, "SUCCEEDED");
+      const bindingId = await succeededBinding(userId, job.id);
+      const baseline = await loadMemorySemanticCutoverInventory(prisma);
+      const [s1, s2, s3] = sources as [Ref, Ref, Ref];
+      const combination = await pattern(userId, { bindingId, reasonCode: "combined_overlapping_facts", searchable: true,
+        sources: [s1, s2], statement: "The user reviews the release checklist and runs the tests before each release." });
+      const generalization = await pattern(userId, { bindingId, reasonCode: "repeated_habit_pattern",
+        sources: [s1, s2, s3], statement: "The user prepares releases carefully." });
+
+      // Live derivatives are not reusable, listed, searched or projected;
+      // their sources are ordinary memories, never collapsed under them.
+      const sourceFactIds = sources.map(({ factId }) => factId).sort();
+      await expect(listed()).resolves.toEqual(sourceFactIds);
+      const page = await explicit.list(userId, { scope: { type: "GLOBAL_USER" }, state: "ACTIVE" });
+      expect(page.memories.every((memory) => memory.modality !== "PATTERN" && !("combinedSources" in memory))).toBe(true);
+      const searched = await explicit.search(userId, { query: "release checklist" });
+      expect(searched.memories.map(({ id }) => id)).toContain(s1.factId);
+      expect(searched.memories.map(({ id }) => id)).not.toContain(combination.factId);
+      await expect(explicit.get(userId, combination.factId)).resolves.toBeNull();
+      await expect(loadMemoryReusableFactVersionIds(prisma, userId,
+        [combination.versionId, generalization.versionId, s1.versionId])).resolves.toEqual(new Set([s1.versionId]));
+      await expect(prisma.memorySearchEntry.count({ where: { factVersionId: combination.versionId } })).resolves.toBe(1);
+      await project(combination.versionId);
+      await expect(prisma.memorySearchEntry.count({ where: { factVersionId: combination.versionId } })).resolves.toBe(0);
+      // Still-active derivatives await the retired-synthesis reconcile, not a
+      // cutover disposition.
+      const live = await loadMemorySemanticCutoverInventory(prisma);
+      expect(live.unsupportedAutomaticPipelineVersions).toBe(baseline.unsupportedAutomaticPipelineVersions);
+      expect(live.activeCurrentMissingExactAuthority).toBe(baseline.activeCurrentMissingExactAuthority);
+      expect(live.total).toBe(baseline.total);
+
+      await reconcileRetiredMemorySynthesis(prisma, new Date());
+      for (const ref of [combination, generalization]) await expectForgotten(ref);
+      await expect(listed()).resolves.toEqual(sourceFactIds);
+      const retired = await loadMemorySemanticCutoverInventory(prisma);
+      expect(retired.unsupportedAutomaticPipelineVersions).toBe(baseline.unsupportedAutomaticPipelineVersions);
+      expect(retired.activeCurrentMissingExactAuthority).toBe(baseline.activeCurrentMissingExactAuthority);
+      expect(retired.total).toBe(baseline.total);
     } finally {
       await cleanup(userId);
     }

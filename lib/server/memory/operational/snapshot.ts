@@ -112,17 +112,6 @@ export type MemoryOperationalSnapshot = Readonly<{
     rejected: number;
     rejectionReasons: readonly MemoryOperationalCodeCount[];
   }>;
-  patterns: Readonly<{
-    clusters: number;
-    indexed: number;
-    rebuilt: number;
-    eligibleSources: number;
-    emptyOutputs: number;
-    proposals: number;
-    rejected: number;
-    rejoined: number;
-    replaced: number;
-  }>;
   pendingAge: Readonly<{
     relation: MemoryOperationalDistribution;
     safety: MemoryOperationalDistribution;
@@ -338,54 +327,6 @@ export async function loadMemoryOperationalSnapshot(
               WHERE support."userId" = alias."userId"
                 AND support."aliasId" = alias."id")
           )::text AS "aliasesZeroSupport",
-          (SELECT COUNT(*) FROM "MemorySearchEntry" search
-            INNER JOIN "MemoryFactVersion" version
-              ON version."userId" = search."userId"
-              AND version."id" = search."factVersionId"
-            WHERE version."modality" = 'PATTERN'::"MemoryFactModality"
-              AND search."createdAt" >= ${input.from}
-              AND search."createdAt" < ${input.to}
-          )::text AS "patternsIndexed",
-          (SELECT COUNT(*) FROM "MemorySearchEntry" search
-            INNER JOIN "MemoryFactVersion" version
-              ON version."userId" = search."userId"
-              AND version."id" = search."factVersionId"
-            INNER JOIN "MemoryIndexGeneration" generation
-              ON generation."userId" = search."userId"
-              AND generation."id" = search."indexGenerationId"
-            WHERE version."modality" = 'PATTERN'::"MemoryFactModality"
-              AND generation."sourceIndexGenerationId" IS NOT NULL
-              AND search."createdAt" >= ${input.from}
-              AND search."createdAt" < ${input.to}
-          )::text AS "patternsRebuilt",
-          (SELECT COUNT(*) FROM "ModelRunMemoryItem" item
-            INNER JOIN "MemoryFactVersion" version
-              ON version."userId" = item."userId"
-              AND version."id" = item."factVersionId"
-            WHERE version."modality" = 'PATTERN'::"MemoryFactModality"
-              AND item."createdAt" >= ${input.from} AND item."createdAt" < ${input.to}
-          )::text AS "patternsRejoined",
-          (SELECT COUNT(*) FROM "MemoryFactVersion"
-            WHERE "modality" = 'PATTERN'::"MemoryFactModality"
-              AND "createdAt" >= ${input.from} AND "createdAt" < ${input.to}
-              AND ("safetyClassificationState" <> 'CLASSIFIED'::
-                "MemorySafetyClassificationState" OR "state" IN (
-                  'CONFLICTING'::"MemoryFactVersionState",
-                  'FORGOTTEN'::"MemoryFactVersionState",
-                  'RETRACTED'::"MemoryFactVersionState"
-                ))
-          )::text AS "patternsRejected",
-          (SELECT COUNT(*) FROM "MemoryEvent" event
-            INNER JOIN "MemoryFactVersion" version
-              ON version."userId" = event."userId"
-              AND version."id" = event."factVersionId"
-            WHERE version."modality" = 'PATTERN'::"MemoryFactModality"
-              AND event."createdAt" >= ${input.from} AND event."createdAt" < ${input.to}
-              AND event."operation" IN (
-                'SUPERSEDE'::"MemoryEventOperation",
-                'RETRACT'::"MemoryEventOperation"
-              )
-          )::text AS "patternsReplaced",
           (SELECT COUNT(*) FROM "MemoryRetrievalAttempt"
             WHERE "createdAt" >= ${input.from} AND "createdAt" < ${input.to}
               AND "outcome" = 'DEGRADED'::"MemoryReceiptOutcome"
@@ -514,27 +455,7 @@ export async function loadMemoryOperationalSnapshot(
               'embeddingStaleItems')::NUMERIC), 0)
             FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
               AND "completedAt" < ${input.to}
-          )::text AS "embeddingStaleItems",
-          (SELECT COALESCE(SUM(("operationalCounters" ->>
-              'synthesisClusterCount')::NUMERIC), 0)
-            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
-              AND "completedAt" < ${input.to}
-          )::text AS "synthesisClusterCount",
-          (SELECT COALESCE(SUM(("operationalCounters" ->>
-              'synthesisEligibleSourceCount')::NUMERIC), 0)
-            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
-              AND "completedAt" < ${input.to}
-          )::text AS "synthesisEligibleSourceCount",
-          (SELECT COALESCE(SUM(("operationalCounters" ->>
-              'synthesisEmptyOutputCount')::NUMERIC), 0)
-            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
-              AND "completedAt" < ${input.to}
-          )::text AS "synthesisEmptyOutputCount",
-          (SELECT COALESCE(SUM(("operationalCounters" ->>
-              'synthesisProposalCount')::NUMERIC), 0)
-            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
-              AND "completedAt" < ${input.to}
-          )::text AS "synthesisProposalCount"
+          )::text AS "embeddingStaleItems"
       `),
       client.$queryRaw<GroupedCountRow[]>(Prisma.sql`
         SELECT family, code, SUM(quantity)::text AS count
@@ -711,17 +632,6 @@ export async function loadMemoryOperationalSnapshot(
       accepted: safeCount(counts.observationsAccepted),
       rejected: safeCount(counts.observationsRejected),
       rejectionReasons: codeCounts(groupedRows, "observation_rejection")
-    }),
-    patterns: Object.freeze({
-      clusters: safeCount(counts.synthesisClusterCount),
-      eligibleSources: safeCount(counts.synthesisEligibleSourceCount),
-      emptyOutputs: safeCount(counts.synthesisEmptyOutputCount),
-      indexed: safeCount(counts.patternsIndexed),
-      proposals: safeCount(counts.synthesisProposalCount),
-      rebuilt: safeCount(counts.patternsRebuilt),
-      rejected: safeCount(counts.patternsRejected),
-      rejoined: safeCount(counts.patternsRejoined),
-      replaced: safeCount(counts.patternsReplaced)
     }),
     pendingAge: Object.freeze({
       relation: pending.get("pending.relation") ?? emptyPending("pending.relation"),

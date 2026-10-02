@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  formatMemoryUiCopy,
   memoryCategoryLabel,
   memoryUiCopy
 } from "@/components/app-shell/memoryUiCopy";
@@ -996,17 +995,11 @@ export function MemoryPanelV2({
               }
               return (
                 <MemoryListRowV2
-                  activeRef={activeRef}
-                  busy={busy}
                   disabled={!memory.explicitCrudAvailable || mutationOutcomeUnknown || listControlsDisabled || listState === "loading"}
                   item={item}
                   key={item.memoryRef}
-                  mutationOutcomeUnknown={mutationOutcomeUnknown}
-                  onCancelRow={onCancelRow}
-                  onConfirmForget={onConfirmForget}
                   onEdit={onEdit}
                   onForget={onForget}
-                  rowMode={rowMode}
                 />
               );
             })}
@@ -1036,32 +1029,18 @@ export function MemoryPanelV2({
 }
 
 function MemoryListRowV2({
-  activeRef,
-  busy,
   disabled,
   item,
-  mutationOutcomeUnknown,
-  onCancelRow,
-  onConfirmForget,
   onEdit,
-  onForget,
-  rowMode
+  onForget
 }: Readonly<{
-  activeRef: string | null;
-  busy: "forgetting" | "saving" | null;
   disabled: boolean;
   item: MemoryConsumerItem;
-  mutationOutcomeUnknown: boolean;
-  onCancelRow(): void;
-  onConfirmForget(): void;
   onEdit(memoryRef: string): void;
   onForget(memoryRef: string): void;
-  rowMode: "create" | "edit" | "forget" | null;
 }>) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [sourcesExpanded, setSourcesExpanded] = useState(false);
-  const sourcesId = useId();
   const { menuRef, triggerRef } = useMenuDismissalV2({
     onClose: () => setMenuOpen(false),
     open: menuOpen
@@ -1094,56 +1073,9 @@ function MemoryListRowV2({
           </button>
         ) : null}
         <small>
-          {item.combined
-            ? formatMemoryUiCopy("manager.combinedFrom", { count: item.combined.sourceCount })
-            : item.provenance === "SAVED" ? mt("manager.savedByYou") : mt("manager.learnedFromChat")}
+          {item.provenance === "SAVED" ? mt("manager.savedByYou") : mt("manager.learnedFromChat")}
           {` · ${formatStudioDate(item.updatedAt)}`}
         </small>
-        {item.combined ? (
-          <>
-            <button
-              aria-controls={sourcesId}
-              aria-expanded={sourcesExpanded}
-              className="v2-memory-expand v2-focusable"
-              type="button"
-              onClick={() => setSourcesExpanded((value) => !value)}
-            >
-              {sourcesExpanded ? mt("manager.hideCombinedSources") : mt("manager.showCombinedSources")}
-            </button>
-            {sourcesExpanded ? (
-              <ul className="v2-memory-combined-sources" id={sourcesId}>
-                {item.combined.sources.map((source) => (
-                  <li key={source.memoryRef}>
-                    <span>{source.statement}</span>
-                    {activeRef === source.memoryRef && rowMode === "forget" ? (
-                      <span className="v2-memory-combined-confirm">
-                        <UiV2Button disabled={busy === "forgetting"} onClick={onCancelRow}>
-                          {mt("manager.cancel")}
-                        </UiV2Button>
-                        <UiV2Button
-                          busy={busy === "forgetting"}
-                          disabled={mutationOutcomeUnknown}
-                          tone="destructive"
-                          onClick={onConfirmForget}
-                        >
-                          {mt("manager.forget")}
-                        </UiV2Button>
-                      </span>
-                    ) : (
-                      <UiV2Button
-                        disabled={disabled}
-                        icon="trash"
-                        onClick={() => onForget(source.memoryRef)}
-                      >
-                        {mt("manager.forget")}
-                      </UiV2Button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </>
-        ) : null}
       </div>
       <div className="v2-memory-row-actions">
         {canEdit ? (

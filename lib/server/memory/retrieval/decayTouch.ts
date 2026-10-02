@@ -253,7 +253,6 @@ export async function touchDirectMemoryFactAccess(
       AND settings."decayPolicyVersion" = ${MEMORY_DECAY_POLICY_VERSION}
       AND ${memoryReusableFactAuthorityPredicate(input.userId, {
         fact: Prisma.sql`fact`,
-        includePatterns: false,
         lifecycle: "CURRENT",
         scope: Prisma.sql`scope`,
         settings: Prisma.sql`settings`,

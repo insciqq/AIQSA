@@ -99,10 +99,7 @@ export async function loadMemorySemanticCutoverInventory(
         ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
       INNER JOIN "UserMemorySettings" AS settings
         ON settings."userId" = version."userId"
-      WHERE ${memoryReusableFactAuthorityPredicate(
-        Prisma.sql`version."userId"`,
-        { includePatterns: true }
-      )}
+      WHERE ${memoryReusableFactAuthorityPredicate(Prisma.sql`version."userId"`)}
     ), duplicate_identities AS (
       SELECT COUNT(*) - 1 AS duplicates
       FROM authorized_current
@@ -135,6 +132,8 @@ export async function loadMemorySemanticCutoverInventory(
             OR evidence."sourceEndOffset" <= evidence."sourceStartOffset"
           )
       )::text AS "automaticEvidenceMissingExactProvenance",
+      -- Retired synthesized PATTERN rows keep their own pipeline version,
+      -- which the synthesis shape CHECK pins, also once forgotten and purged.
       (SELECT COUNT(*) FROM "MemoryFactVersion"
         WHERE "sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
           AND (
@@ -153,13 +152,16 @@ export async function loadMemorySemanticCutoverInventory(
           ON settings."userId" = version."userId"
         WHERE settings."useMemoryFacts" = TRUE
           AND version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+          -- A still-active retired PATTERN (an inactive owner's, a pinned one,
+          -- or one the previous release wrote during replacement) belongs to
+          -- the retired-synthesis reconcile, not to an operator disposition.
+          AND version."modality" <> 'PATTERN'::"MemoryFactModality"
           AND version."state" = 'ACTIVE'::"MemoryFactVersionState"
           AND version."systemTo" IS NULL
           AND fact."state" = 'ACTIVE'::"MemoryFactState"
           AND fact."currentVersionId" = version."id"
           AND NOT (${memoryReusableFactAuthorityPredicate(
-            Prisma.sql`version."userId"`,
-            { includePatterns: true }
+            Prisma.sql`version."userId"`
           )})
       )::text AS "activeCurrentMissingExactAuthority",
       (SELECT COUNT(*) FROM "MemoryCandidate")::text AS "legacyCandidates",

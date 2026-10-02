@@ -143,7 +143,6 @@ export async function enqueueMemoryJob(
           input.source?.sourceMessageId === undefined)
     )) ||
     (input.kind !== "RESOLVE_FACT_RELATIONS" &&
-      input.kind !== "SYNTHESIZE_MEMORIES" &&
       input.targetFactVersionId !== undefined)
   ) {
     return memoryPersistenceFailure("memory_input_invalid");

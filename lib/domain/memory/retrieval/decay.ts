@@ -50,9 +50,6 @@ function policyShape(metadata: MemoryCandidateMetadata): Readonly<{
   floor: number;
   halfLifeDays: number;
 }> {
-  if (metadata.sourceAuthority === "SYNTHESIS" || metadata.modality === "PATTERN") {
-    return { floor: 0.3, halfLifeDays: 90 };
-  }
   if (metadata.sourceAuthority === "EXPLICIT") {
     return { floor: 0.8, halfLifeDays: 720 };
   }

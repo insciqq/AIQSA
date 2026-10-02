@@ -14,7 +14,7 @@ type QueryClient = Pick<PrismaClient, "$queryRaw">;
  * lineage, including an explicit owner action on an automatic current row. */
 export function memoryMaintenanceSourcePredicate(userId: string): Prisma.Sql {
   return Prisma.sql`
-    ${memoryReusableFactAuthorityPredicate(userId, { includePatterns: false, lifecycle: "CURRENT" })}
+    ${memoryReusableFactAuthorityPredicate(userId, { lifecycle: "CURRENT" })}
     AND settings."learnAutomatically" = TRUE
     AND version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
     AND fact."pinned" = FALSE AND fact."movedToFactId" IS NULL

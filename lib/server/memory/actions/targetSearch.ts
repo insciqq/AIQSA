@@ -319,7 +319,6 @@ export function createMemoryActionTargetSearchService(input: Readonly<{
               factMode: "CURRENT",
               factTemporalAsOf: null,
               folderId: null,
-              includePatterns: false,
               occurredFrom: null,
               occurredTo: null,
               sourceAssistantId: null,

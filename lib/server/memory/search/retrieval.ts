@@ -64,10 +64,10 @@ function itemsFor(pack: MemoryContextPack, ranked: readonly MemoryRankedCandidat
         contextualSupportingEvidenceHashes: (item.supportingEvidence ?? []).map(value => memorySha256(value.rawSafeText)),
         contextualSupportingRoundIds: (item.supportingEvidence ?? []).map(value => value.itemId),
         finalScore: candidate.finalScore, lastConfirmedAt: item.lastConfirmedAt, observedAt: item.observedAt,
-        patternSupportingEvidence: [], projectionKind: item.projectionKind, retrievalReason: item.retrievalReason,
+        projectionKind: item.projectionKind, retrievalReason: item.retrievalReason,
         rrfScore: candidate.rrfScore, sourceAuthority: item.sourceAuthority, sourceSessionHandle: item.sourceSessionHandle,
         speakerScope: item.speakerScope, status: item.recordStatus, supportingItemId: item.supportingItemId,
-        temporalReason: item.temporalReason, historical: candidate.metadata.historical, includePatterns: false,
+        temporalReason: item.temporalReason, historical: candidate.metadata.historical,
         lifecycleState: candidate.metadata.lifecycleState, matchedSegmentId: candidate.matchedSegmentId ?? null,
         matchedSegmentPosition: candidate.matchedSegmentPosition ?? null, retrievalMode: plan.mode,
         temporalIntent: plan.temporalIntent, tier: item.tier, validFrom: item.validFrom, validTo: item.validTo }
@@ -172,7 +172,7 @@ export function createMemorySearchRetrieval(client: PrismaClient, dependencies: 
     const cap = (input.comparison && history ? input.accepted.comparisonResultTokens : input.accepted.resultTokens) - 384;
     const selected = ranked.slice(0, input.comparison ? 30 : 15);
     const packSelected = () => packMemoryPersonalContext({ expanded, ranked: selected,
-      plan, factPlan, questionDirectedTemporalFallback: history, now,
+      plan, questionDirectedTemporalFallback: history, now,
       targetTokens: Math.min(cap, history && input.comparison ? cap : 6000), hardCapTokens: cap });
     let pack = packSelected();
     const resultLimit = input.comparison ? input.accepted.comparisonResultTokens : input.accepted.resultTokens;

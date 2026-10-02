@@ -213,10 +213,8 @@ async function reconcileFailedMutation(error: unknown, generation: number): Prom
   useMemoryManagerStore.setState((state) => {
     const target = state.activeMemory;
     const direct = target ? state.memories.find((item) => item.memoryRef === target.memoryRef) : null;
-    const combined = target && !direct && state.memories.some((item) =>
-      item.combined?.sources.some((source) => source.memoryRef === target.memoryRef));
     // A target that no longer exists cannot keep an editor open over the list.
-    const targetGone = (state.screen === "edit" || state.screen === "forget") && !direct && !combined;
+    const targetGone = (state.screen === "edit" || state.screen === "forget") && !direct;
     return {
       mutationOutcomeUnknown: false,
       ...(targetGone
@@ -297,16 +295,9 @@ export function beginEditMemory(): void {
 export function requestForgetMemory(memoryRef: string): void {
   if (useMemoryManagerStore.getState().resetPending) return;
   if (useMemoryManagerStore.getState().mutationOutcomeUnknown) return;
-  const memories = useMemoryManagerStore.getState().memories;
-  const direct = memories.find(
+  const memory = useMemoryManagerStore.getState().memories.find(
     (item) => item.memoryRef === memoryRef
   );
-  const source = direct ? null : memories.flatMap((item) =>
-    item.combined?.sources ?? []).find((item) => item.memoryRef === memoryRef);
-  const memory: MemoryConsumerItem | null = direct ?? (source ? {
-    ...source,
-    allowedActions: ["FORGET"]
-  } : null);
   if (!memory?.allowedActions.includes("FORGET")) return;
   retainDraftList();
   useMemoryManagerStore.setState({
@@ -415,9 +406,7 @@ export async function forgetCurrentMemory(): Promise<void> {
       activeMemory: null,
       draft: emptyDraft,
       draftDirty: false,
-      memories: state.memories.filter((item) =>
-        item.memoryRef !== memory.memoryRef &&
-        !item.combined?.sources.some((source) => source.memoryRef === memory.memoryRef)),
+      memories: state.memories.filter((item) => item.memoryRef !== memory.memoryRef),
       mutationError: null,
       mutationState: null,
       notice: "forgotten",

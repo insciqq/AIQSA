@@ -34,7 +34,6 @@ function input(overrides: Partial<MemoryVectorSearchInput> = {}): MemoryVectorSe
       factMode: "CURRENT",
       factTemporalAsOf: null,
       folderId: "folder-1",
-      includePatterns: false,
       occurredFrom: null,
       occurredTo: null,
       sourceAssistantId: null,

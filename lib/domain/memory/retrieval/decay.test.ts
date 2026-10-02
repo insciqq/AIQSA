@@ -54,7 +54,6 @@ function metadata(
     sourceFolderId: null,
     sourceMode: "AUTOMATIC",
     subjectKey: null,
-    synthesisDepth: 0,
     systemFrom: new Date("2025-08-24T12:00:00.000Z"),
     temperatureClass: "WARM",
     temperatureScore: 0,
@@ -112,10 +111,10 @@ describe("Memory ranking decay v1", () => {
   it("stays within policy bounds for bounded age and retained-use combinations", () => {
     for (const ageDays of [0, 1, 30, 180, 1_000, 100_000]) {
       for (const temperatureScore of [0, 0.05, 0.5, 1]) {
-        for (const sourceAuthority of ["DIRECT_AUTOMATIC", "EXPLICIT", "SYNTHESIS"] as const) {
+        for (const sourceAuthority of ["DIRECT_AUTOMATIC", "EXPLICIT"] as const) {
           const result = memoryDecayFactor(metadata({
             lastUsedAt: new Date(NOW.getTime() - ageDays * 86_400_000),
-            modality: sourceAuthority === "SYNTHESIS" ? "PATTERN" : "PREFERENCE",
+            modality: "PREFERENCE",
             sourceAuthority,
             temperatureScore
           }), { historical: false, now: NOW });

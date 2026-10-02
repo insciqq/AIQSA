@@ -127,8 +127,6 @@ import {
   applyMemorySourceMutations,
   lockMemorySourceChat
 } from "../../lib/server/memory/sourceState";
-import { memorySynthesisSourceAuthorityPredicate } from
-  "../../lib/server/memory/synthesis/eligibility";
 import {
   MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES,
   MEMORY_SYNTHESIS_POLICY_VERSION
@@ -2290,31 +2288,6 @@ function diagnosticToken(value: string | null): string {
     .slice(0, 48) || "none";
 }
 
-async function countEligibleSynthesisSources(
-  prisma: PrismaClient,
-  userId: string
-): Promise<number> {
-  const rows = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
-    SELECT COUNT(DISTINCT source_fact."id")::bigint AS count
-    FROM "MemoryFactVersion" AS source_version
-    INNER JOIN "MemoryFact" AS source_fact
-      ON source_fact."userId" = source_version."userId"
-     AND source_fact."id" = source_version."factId"
-    INNER JOIN "MemoryScope" AS source_scope
-      ON source_scope."userId" = source_fact."userId"
-     AND source_scope."id" = source_fact."scopeId"
-    INNER JOIN "UserMemorySettings" AS settings
-      ON settings."userId" = source_version."userId"
-    WHERE source_version."userId" = ${userId}
-      AND ${memorySynthesisSourceAuthorityPredicate(userId)}
-  `);
-  const count = Number(rows[0]?.count ?? -1n);
-  if (!Number.isSafeInteger(count) || count < 0) {
-    throw new Error("longmemeval_synthesis_source_count_invalid");
-  }
-  return count;
-}
-
 async function loadLearningEvidence(
   prisma: PrismaClient,
   userId: string,
@@ -2382,8 +2355,9 @@ async function loadLearningEvidence(
       select: { lastSynthesisAt: true, synthesisEnabled: true },
       where: { userId }
     }),
-    countEligibleSynthesisSources(prisma, userId),
-    // Dream synthesis is retired: nothing is ever scheduled.
+    // Dream synthesis is retired: no source is eligible and nothing is ever
+    // scheduled.
+    Promise.resolve(0),
     Promise.resolve({ decision: { due: false, reason: "RETIRED" } })
   ]);
   const versionIds = versions.map(({ id }) => id);

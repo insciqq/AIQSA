@@ -314,7 +314,7 @@ async function recoverEligibleMemoryJobs(
       const row = rows[0];
       if (!row) return false;
       const sourceMatches = await memorySourceJobSnapshotMatches(tx, row,
-        row.kind === "RECLASSIFY_FACTS" || (row.kind === "SYNTHESIZE_MEMORIES" && row.pipelineVersion !== "memory-maintenance-v1")
+        row.kind === "RECLASSIFY_FACTS"
           ? { memoryRevisionSnapshot: row.memoryRevisionSnapshot } : undefined);
       if (!sourceMatches) {
         // Retire proven obsolete work so it cannot occupy every bounded
@@ -718,8 +718,7 @@ async function commitJobSuccessWithAuthority(
   const sourceMatches = await memorySourceJobSnapshotMatches(
     tx,
     input.claim,
-    input.claim.kind === "RECLASSIFY_FACTS" ||
-      (input.claim.kind === "SYNTHESIZE_MEMORIES" && input.claim.pipelineVersion !== "memory-maintenance-v1")
+    input.claim.kind === "RECLASSIFY_FACTS"
       ? { memoryRevisionSnapshot: input.claim.memoryRevisionSnapshot }
       : undefined
   );

@@ -44,7 +44,6 @@ export const MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR = -1;
 // still reaches the reranker, exact deterministic anchors remain admissible,
 // and an unavailable or structurally incomplete rerank keeps the full RRF set.
 export const MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR: number | null = 0.01;
-export const MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER = 0.5;
 export const MEMORY_RETRIEVAL_SUPPORTING_AUTHORITY_MULTIPLIER = 0.65;
 
 export const MEMORY_RETRIEVAL_LANE_WEIGHTS = Object.freeze({
@@ -96,8 +95,6 @@ export const MEMORY_CONTEXT_MAX_ITEMS = 20;
 export const MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS = MEMORY_ANSWER_SOURCE_MAX_ITEMS;
 export const MEMORY_CONTEXT_MAX_DYNAMIC_FACTS = 6;
 export const MEMORY_CONTEXT_PROFILE_MAX_FACTS = 12;
-export const MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS = 3;
-export const MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS = 8;
 export const MEMORY_CONTEXT_MAX_HISTORY_SNIPPETS = 20;
 export const MEMORY_CONTEXT_MAX_SOURCE_CHATS = 20;
 export const MEMORY_CONTEXT_AGGREGATION_MAX_HISTORY_SNIPPETS = 40;
