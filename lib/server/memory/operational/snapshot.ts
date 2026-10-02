@@ -2,12 +2,13 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { memoryAdmissibleEntityAliasPredicate } from
   "../learning/entities/authority";
+import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../maintenance/policy";
 import {
   MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS,
   MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS
 } from "./counters";
 
-const SNAPSHOT_VERSION = "memory-operational-snapshot-v6";
+const SNAPSHOT_VERSION = "memory-operational-snapshot-v7";
 const codePattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 const contextualFallbackCounterKeys = Object.values(
   MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS
@@ -22,7 +23,7 @@ type GroupedCountRow = Readonly<{
   code: string;
   count: string;
   family: "contextual_fallback" | "contextual_language" | "degradation" |
-    "observation_rejection";
+    "maintenance_blocked" | "maintenance_unreviewable" | "observation_rejection";
 }>;
 type DistributionRow = Readonly<{
   p50Ms: number | null;
@@ -30,6 +31,11 @@ type DistributionRow = Readonly<{
   samples: string;
   stage: string;
 }>;
+type MaintenanceRow = Readonly<Record<
+  "blocked" | "kept" | "paused" | "pending" | "rejected" | "removed" |
+  "reviewed" | "stale" | "unknown" | "unreviewable",
+  string
+>>;
 type UsageRow = Readonly<{
   cachedInputTokens: string;
   costMicros: string;
@@ -107,6 +113,24 @@ export type MemoryOperationalSnapshot = Readonly<{
     roundsReused: number;
   }>;
   latencies: readonly MemoryOperationalDistribution[];
+  /** Current-policy cleanup. `pending` and `paused` are open reviews of
+   * active owners with learning on and off; the rest are settled in the
+   * window. `reviewed` counts provider decisions only: blocked and
+   * unreviewable sources are reported by reason, never as reviewed. */
+  maintenance: Readonly<{
+    blocked: number;
+    blockedReasons: readonly MemoryOperationalCodeCount[];
+    kept: number;
+    paused: number;
+    pending: number;
+    rejected: number;
+    removed: number;
+    reviewed: number;
+    stale: number;
+    unknown: number;
+    unreviewable: number;
+    unreviewableReasons: readonly MemoryOperationalCodeCount[];
+  }>;
   observations: Readonly<{
     accepted: number;
     rejected: number;
@@ -196,7 +220,7 @@ export async function loadMemoryOperationalSnapshot(
   if (!validWindow(input.from, input.to)) {
     throw new Error("memory_operational_window_invalid");
   }
-  const [countRows, groupedRows, latencyRows, pendingRows, usageRows] =
+  const [countRows, groupedRows, latencyRows, pendingRows, usageRows, maintenanceRows] =
     await Promise.all([
       client.$queryRaw<CountRow[]>(Prisma.sql`
         SELECT
@@ -493,6 +517,15 @@ export async function loadMemoryOperationalSnapshot(
           WHERE job."completedAt" >= ${input.from}
             AND job."completedAt" < ${input.to}
             AND entry.key IN (${Prisma.join(contextualLanguageCounterKeys)})
+          UNION ALL
+          SELECT CASE WHEN review."disposition" = 'BLOCKED' THEN 'maintenance_blocked'
+              ELSE 'maintenance_unreviewable' END AS family,
+            review."reasonCode" AS code, 1::numeric AS quantity
+          FROM "MemoryMaintenanceReview" review
+          WHERE review."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION}
+            AND review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}
+            AND review."disposition" IN ('BLOCKED', 'UNREVIEWABLE')
+            AND review."reasonCode" IS NOT NULL
         ) grouped
         GROUP BY family, code
         ORDER BY family, code
@@ -563,12 +596,42 @@ export async function loadMemoryOperationalSnapshot(
         FROM "MemoryExecutionBinding"
         WHERE "createdAt" >= ${input.from} AND "createdAt" < ${input.to}
           AND "usageCompleteness" = 'COMPLETE'::"MemoryUsageCompleteness"
+      `),
+      client.$queryRaw<MaintenanceRow[]>(Prisma.sql`
+        SELECT
+          COUNT(*) FILTER (WHERE review."disposition" = 'PENDING' AND owner_user."status" = 'active'
+            AND settings."useMemoryFacts" AND settings."learnAutomatically")::text AS pending,
+          COUNT(*) FILTER (WHERE review."disposition" = 'PENDING' AND owner_user."status" = 'active'
+            AND NOT (settings."useMemoryFacts" AND settings."learnAutomatically"))::text AS paused,
+          COUNT(*) FILTER (WHERE review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}
+            AND review."disposition" IN ('KEEP', 'REMOVED', 'REJECTED'))::text AS reviewed,
+          COUNT(*) FILTER (WHERE review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}
+            AND review."disposition" = 'KEEP')::text AS kept,
+          COUNT(*) FILTER (WHERE review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}
+            AND review."disposition" = 'REMOVED')::text AS removed,
+          COUNT(*) FILTER (WHERE review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}
+            AND review."disposition" = 'REJECTED')::text AS rejected,
+          COUNT(*) FILTER (WHERE review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}
+            AND review."disposition" = 'BLOCKED')::text AS blocked,
+          COUNT(*) FILTER (WHERE review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}
+            AND review."disposition" = 'UNREVIEWABLE')::text AS unreviewable,
+          COUNT(*) FILTER (WHERE review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}
+            AND review."disposition" = 'STALE')::text AS stale,
+          COUNT(*) FILTER (WHERE review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}
+            AND review."disposition" = 'UNKNOWN')::text AS unknown
+        FROM "MemoryMaintenanceReview" AS review
+        INNER JOIN "UserMemorySettings" AS settings ON settings."userId" = review."userId"
+        INNER JOIN "User" AS owner_user ON owner_user."id" = review."userId"
+        WHERE review."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION}
+          AND (review."disposition" = 'PENDING'
+            OR (review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}))
       `)
     ]);
 
   const counts = countRows[0];
   const usage = usageRows[0];
-  if (!counts || !usage) throw new Error("memory_operational_snapshot_unavailable");
+  const maintenance = maintenanceRows[0];
+  if (!counts || !usage || !maintenance) throw new Error("memory_operational_snapshot_unavailable");
   const pending = new Map(pendingRows.map((row) => [row.stage, distribution(row)]));
   const emptyPending = (stage: string): MemoryOperationalDistribution =>
     Object.freeze({ p50Ms: null, p95Ms: null, samples: 0, stage });
@@ -628,6 +691,20 @@ export async function loadMemoryOperationalSnapshot(
       roundsReused: safeCount(counts.historyRoundsReused)
     }),
     latencies: Object.freeze(latencyRows.map(distribution)),
+    maintenance: Object.freeze({
+      blocked: safeCount(maintenance.blocked),
+      blockedReasons: codeCounts(groupedRows, "maintenance_blocked"),
+      kept: safeCount(maintenance.kept),
+      paused: safeCount(maintenance.paused),
+      pending: safeCount(maintenance.pending),
+      rejected: safeCount(maintenance.rejected),
+      removed: safeCount(maintenance.removed),
+      reviewed: safeCount(maintenance.reviewed),
+      stale: safeCount(maintenance.stale),
+      unknown: safeCount(maintenance.unknown),
+      unreviewable: safeCount(maintenance.unreviewable),
+      unreviewableReasons: codeCounts(groupedRows, "maintenance_unreviewable")
+    }),
     observations: Object.freeze({
       accepted: safeCount(counts.observationsAccepted),
       rejected: safeCount(counts.observationsRejected),
