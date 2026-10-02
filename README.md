@@ -48,13 +48,24 @@ The stack uses prebuilt images and persistent Docker volumes. Keep `.env` with y
 
 **Installations on v0.2.0–v0.2.30 (bundled MinIO):** back up PostgreSQL first, then update to v0.2.34, not further, and complete its [MinIO → SeaweedFS upgrade runbook](https://github.com/insciqq/AIQSA/blob/v0.2.34/UPGRADING_FROM_MINIO.md). Later releases no longer contain this one-time storage migration. Before updating past v0.2.34, remove any `minio-legacy` service and `/legacy` mount from your Compose overrides and drop `storage-migration` from `COMPOSE_PROFILES`.
 
-**Local MCP servers are removed after v0.2.34.** Local (npm, PyPI, OCI) MCP servers and the bundled ToolHive runtime are gone; remote MCP servers are unaffected. Before updating, delete local servers in the Control Center of your current release and run `docker compose --profile maintenance run --rm mcp-maintenance --execute` there, or set `AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1` in `.env` for the first start of the new release to delete them automatically. Without either, startup stops with `local_mcp_removal_acknowledgement_required` and changes nothing. The update's `--remove-orphans` removes the `toolhive-runtime` container; afterwards remove the `toolhive_data` volume (`docker volume rm <project>_toolhive_data`), leftover `aiqsa-<hex>-<token>` containers and `toolhivelocal/*` images by hand.
+**Local MCP servers are removed after v0.2.34.** Local (npm, PyPI, OCI) MCP servers and the bundled ToolHive runtime are removed; remote MCP servers are unaffected. Before the first start of the new release, set `AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1` in `.env`: startup then deletes leftover local servers and local configurations. Without it, startup stops with `local_mcp_removal_acknowledgement_required` and changes nothing; the flag is ignored once nothing local is left. Upstream OAuth grants of removed servers are not revoked; revoke them at the provider if needed. Optionally, before updating, run `docker compose --profile maintenance run --rm mcp-maintenance --execute` in the current release to remove its ToolHive workloads. `--remove-orphans` removes the `toolhive-runtime` container; afterwards remove the `<project>_toolhive_data` volume, any leftover `aiqsa-<hex>-<token>` containers and `toolhivelocal/*` images by hand.
+
+**First update to this release.** Released checkouts up to v0.2.34 do not contain `aiqsa.sh`, so this update is manual. If `.env` pins `AIQSA_IMAGE` (the v0.2.34 runbook did), set it to the new release first, for example `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z`. Then update the checkout and start the stack:
 
 ```bash
-./aiqsa.sh upgrade
+git pull --ff-only                          # installation on a branch
+git fetch --tags && git checkout vX.Y.Z     # installation on a release tag (detached HEAD)
+./aiqsa.sh up                               # or: docker compose pull && docker compose up -d --remove-orphans
 ```
 
-`upgrade` stops on local changes to tracked files or a MinIO-era installation and asks you to confirm a current backup of PostgreSQL, object storage and `.env` (`--backup-confirmed` without a prompt). It then updates the checkout with `git pull --ff-only` (or `--to vX.Y.Z` for a pinned release tag), pulls the images before any container is replaced, restarts with `--remove-orphans` and waits until the stack is ready. It never rewrites `.env`: keys new in `.env.example` are reported, and `--add-missing-keys` appends them.
+**Later updates** use the CLI:
+
+```bash
+./aiqsa.sh upgrade                # installation on a branch
+./aiqsa.sh upgrade --to vX.Y.Z    # installation on a release tag (detached HEAD): always pass --to
+```
+
+`upgrade` stops on local changes to tracked files or a MinIO-era installation and asks you to confirm a current backup of PostgreSQL, object storage and `.env` (`--backup-confirmed` without a prompt). It then updates the checkout with `git pull --ff-only`, or moves it to the release tag given with `--to`. Images follow the image settings in `.env` (`AIQSA_IMAGE`, `AIQSA_WORKSPACE_RUNNER_IMAGE`), otherwise the newest release: `upgrade` refuses before changing anything when a pinned image belongs to another release, or when `--to` names an older release while the images are unpinned, and prints the exact `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z` line to set. It then pulls the images before any container is replaced, restarts with `--remove-orphans` and waits until the stack is ready; a Workspace runner that is not ready is only a warning, because the rest of AIQSA works without it. It never rewrites `.env`: keys new in `.env.example` are reported, and `--add-missing-keys` appends them.
 
 The equivalent manual update: update the checkout first so Compose uses the release's configuration, then pull the images and restart:
 
