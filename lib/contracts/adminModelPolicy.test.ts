@@ -9,8 +9,6 @@ describe("administrator model policy contract", () => {
         policy: {
           defaultModel: null,
           reasoningEffort: null,
-          mcpAutoDiscoveryTimeoutSeconds: null,
-          mcpAutoDiscoveryMaxOutputTokens: null,
           maxMcpToolsPerDiscovery: 10,
           maxToolCalls: 20,
           maxToolRounds: 8,
@@ -30,14 +28,14 @@ describe("administrator model policy contract", () => {
     })).toBeNull();
   });
 
-  it.each([null, 8192])("decodes Auto or an explicit MCP output allowance: %s", (mcpAutoDiscoveryMaxOutputTokens) => {
-    expect(decodeAdminModelPolicyResponse({
+  it("decodes the MCP Auto tool count and never projects the retired discovery settings", () => {
+    const policy = decodeAdminModelPolicyResponse({
       modelPolicy: {
         candidates: [],
         policy: {
           defaultModel: null,
           reasoningEffort: null,
-          mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens,
+          mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
           maxMcpToolsPerDiscovery: 10,
           maxToolCalls: 200,
           maxToolRounds: 200,
@@ -46,18 +44,15 @@ describe("administrator model policy contract", () => {
           version: 1
         }
       }
-    })?.modelPolicy.policy).toMatchObject({
-      mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens,
-      maxMcpToolsPerDiscovery: 10,
-      maxToolCalls: 200,
-      maxToolRounds: 200
-    });
+    })?.modelPolicy.policy;
+    expect(policy).toMatchObject({ maxMcpToolsPerDiscovery: 10, maxToolCalls: 200, maxToolRounds: 200 });
+    expect(policy).not.toHaveProperty("mcpAutoDiscoveryTimeoutSeconds");
+    expect(policy).not.toHaveProperty("mcpAutoDiscoveryMaxOutputTokens");
   });
 
-  it.each([undefined, 0, 1023, 65537, 4096.5, "8192"])("rejects invalid MCP output allowance %s", (mcpAutoDiscoveryMaxOutputTokens) => {
+  it.each([undefined, 0, 129, 4.5, "10"])("rejects an invalid MCP Auto tool count %s", (maxMcpToolsPerDiscovery) => {
     expect(decodeAdminModelPolicyResponse({ modelPolicy: { candidates: [], policy: {
-      defaultModel: null, reasoningEffort: null, mcpAutoDiscoveryTimeoutSeconds: 60,
-      mcpAutoDiscoveryMaxOutputTokens, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8,
+      defaultModel: null, reasoningEffort: null, maxMcpToolsPerDiscovery, maxToolCalls: 20, maxToolRounds: 8,
       updatedAt: "2026-09-09T00:00:00.000Z", updatedBy: null, version: 1
     } } })).toBeNull();
   });
@@ -71,7 +66,6 @@ describe("administrator model policy contract", () => {
           policy: {
             defaultModel: null,
             reasoningEffort: null,
-            mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
             maxMcpToolsPerDiscovery: 10,
             maxToolCalls,
             maxToolRounds: 8,

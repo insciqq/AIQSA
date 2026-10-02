@@ -79,8 +79,6 @@ function sources(overrides: Partial<ProviderUsageSources> = {}): ProviderUsageSo
         maxMcpToolsPerDiscovery: 8,
         maxToolCalls: 8,
         maxToolRounds: 4,
-        mcpAutoDiscoveryMaxOutputTokens: 8192,
-        mcpAutoDiscoveryTimeoutSeconds: 30,
         reasoningEffort: null,
         updatedAt: FIXTURE_NOW,
         updatedBy: null,
