@@ -84,6 +84,65 @@ const storedDecisionKeys = [
 ].sort();
 const token = /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,127}$/u;
 
+const outputInvalidCode = "memory_semantic_adjudication_output_invalid";
+
+/** Closed, content-free reasons why a provider adjudication call is rejected
+ * as a whole. Each names the first violated invariant in decoder order. */
+export const MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_VIOLATIONS = Object.freeze([
+  "call_count",
+  "tool_name",
+  "arguments",
+  "decision_count",
+  "candidate_set",
+  "decision_shape",
+  "candidate_ref",
+  "operation",
+  "enum",
+  "target_ref",
+  "entity_ref",
+  "operation_target",
+  "reason_code",
+  "subject_identity"
+] as const);
+
+export type MemorySemanticAdjudicationOutputViolation =
+  typeof MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_VIOLATIONS[number];
+
+export type MemorySemanticAdjudicationOutputInvalidCode =
+  | typeof outputInvalidCode
+  | `${typeof outputInvalidCode}_${MemorySemanticAdjudicationOutputViolation}`;
+
+/** The retryable output-invalid family: the base code remains for an
+ * unexpected decoder exception and for bindings settled before subcodes. */
+export const MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES: ReadonlySet<string> =
+  new Set<MemorySemanticAdjudicationOutputInvalidCode>([
+    outputInvalidCode,
+    ...MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_VIOLATIONS.map((violation) =>
+      `${outputInvalidCode}_${violation}` as const)
+  ]);
+
+const normalizedNotEntailedHigh = "normalized_not_entailed_high";
+const normalizedReasonCode = "normalized_reason_code";
+
+/** Server-owned reason codes that mark a decoder normalization. */
+export const MEMORY_SEMANTIC_ADJUDICATION_NORMALIZED_REASON_CODES: ReadonlySet<string> =
+  new Set([normalizedNotEntailedHigh, normalizedReasonCode]);
+
+export class MemorySemanticAdjudicationOutputError extends Error {
+  readonly code: MemorySemanticAdjudicationOutputInvalidCode;
+
+  constructor(readonly violation: MemorySemanticAdjudicationOutputViolation) {
+    const code = `${outputInvalidCode}_${violation}` as const;
+    super(code);
+    this.name = "MemorySemanticAdjudicationOutputError";
+    this.code = code;
+  }
+}
+
+function outputInvalid(violation: MemorySemanticAdjudicationOutputViolation): never {
+  throw new MemorySemanticAdjudicationOutputError(violation);
+}
+
 export type MemorySemanticAdjudicationInput = Readonly<{
   candidateRefs: readonly string[];
   inputHash: string;
@@ -113,8 +172,12 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
   return actual.length === keys.length && actual.every((key, index) => key === keys[index]);
 }
 
+function isBoundedToken(value: unknown, maxLength: number): value is string {
+  return typeof value === "string" && value.length <= maxLength && token.test(value);
+}
+
 function boundedToken(value: unknown, maxLength = 128): string {
-  if (typeof value !== "string" || value.length > maxLength || !token.test(value)) {
+  if (!isBoundedToken(value, maxLength)) {
     throw new Error("memory_semantic_adjudication_output_invalid");
   }
   return value;
@@ -479,65 +542,88 @@ function referenceDomains(contextRefs: readonly MemoryFactContextRef[]) {
   };
 }
 
+/** Normalization is limited to fields that never confer authority. A decision
+ * outside the ENTAILED/HIGH band can only ever be AMBIGUOUS for admission, so
+ * rewriting it to AMBIGUOUS, dropping its refs and its identity claim cannot
+ * admit or move anything; a malformed reason_code label is never read by any
+ * authority. References, targets, operation/target agreement, subject
+ * identity, the candidate set and the call shape decide what may change, so
+ * any defect there still rejects the whole packet. Previously accepted output
+ * decodes exactly as before. */
 function decodeDecision(
   value: unknown,
   input: MemorySemanticAdjudicationInput
 ): MemorySemanticAdjudication {
-  if (!record(value) || !exactKeys(value, decisionKeys)) {
-    throw new Error("memory_semantic_adjudication_output_invalid");
+  if (!record(value) || !exactKeys(value, decisionKeys)) outputInvalid("decision_shape");
+  const candidateRef = value.candidate_ref;
+  if (!isBoundedToken(candidateRef, 64) || !input.candidateRefs.includes(candidateRef)) {
+    outputInvalid("candidate_ref");
   }
-  const candidateRef = boundedToken(value.candidate_ref, 64);
-  if (!input.candidateRefs.includes(candidateRef)) {
-    throw new Error("memory_semantic_adjudication_output_invalid");
-  }
-  const operation = enumValue<MemorySemanticAdjudication["operation"]>(
-    value.operation,
-    operations
-  );
-  const targetRef = value.target_ref === null
-    ? null
-    : boundedToken(value.target_ref, 128);
-  const entityRef = value.entity_ref === null
-    ? null
-    : boundedToken(value.entity_ref, 128);
+  const operation = value.operation;
+  if (!isBoundedToken(operation, 64) || !operations.has(operation)) outputInvalid("operation");
+  const targetRef = value.target_ref;
+  if (targetRef !== null && !isBoundedToken(targetRef, 128)) outputInvalid("target_ref");
+  const entityRef = value.entity_ref;
+  if (entityRef !== null && !isBoundedToken(entityRef, 128)) outputInvalid("entity_ref");
   const { entityRefs, targetRefs } = referenceDomains(input.plan.input.contextRefs);
-  if ((targetRef !== null && !targetRefs.has(targetRef)) ||
-    (entityRef !== null && !entityRefs.has(entityRef)) ||
-    (targetOperations.has(operation) !== (targetRef !== null)) ||
+  if (targetRef !== null && !targetRefs.has(targetRef)) outputInvalid("target_ref");
+  if (entityRef !== null && !entityRefs.has(entityRef)) outputInvalid("entity_ref");
+  if ((targetOperations.has(operation) !== (targetRef !== null)) ||
     (operation === "NO_RELATION" && targetRef !== null) ||
     (operation === "AMBIGUOUS" && targetRef !== null)) {
-    throw new Error("memory_semantic_adjudication_output_invalid");
+    outputInvalid("operation_target");
   }
-  const entailment = enumValue<MemorySemanticAdjudication["entailment"]>(
+  const enumField = <T extends string>(entry: unknown, allowed: ReadonlySet<string>): T => {
+    if (!isBoundedToken(entry, 64) || !allowed.has(entry)) outputInvalid("enum");
+    return entry as T;
+  };
+  const entailment = enumField<MemorySemanticAdjudication["entailment"]>(
     value.entailment,
     entailments
   );
-  const confidenceBand = enumValue<MemorySemanticAdjudication["confidenceBand"]>(
+  const confidenceBand = enumField<MemorySemanticAdjudication["confidenceBand"]>(
     value.confidence_band,
     confidenceBands
   );
-  if ((entailment !== "ENTAILED" || confidenceBand !== "HIGH") &&
-    operation !== "AMBIGUOUS") {
-    throw new Error("memory_semantic_adjudication_output_invalid");
-  }
+  const assertionStatus = enumField<MemorySemanticAdjudication["assertionStatus"]>(
+    value.assertion_status,
+    assertionStatuses
+  );
+  if (typeof value.reason_code !== "string") outputInvalid("reason_code");
+  const reasonCode = isBoundedToken(value.reason_code, 64)
+    ? value.reason_code
+    : normalizedReasonCode;
+  const subjectIdentity = enumField<NonNullable<MemorySemanticAdjudication["subjectIdentity"]>>(
+    value.subject_identity,
+    subjectIdentities
+  );
+  const subjectScope = enumField<MemorySemanticAdjudication["subjectScope"]>(
+    value.subject_scope,
+    subjectScopes
+  );
+  const temporalPerspective = enumField<MemorySemanticAdjudication["temporalPerspective"]>(
+    value.temporal_perspective,
+    temporalPerspectives
+  );
+  const normalized = (entailment !== "ENTAILED" || confidenceBand !== "HIGH") &&
+    operation !== "AMBIGUOUS";
+  // Fields keep the established key order of previously accepted decisions.
   const decision: MemorySemanticAdjudication = {
-    assertionStatus: enumValue(value.assertion_status, assertionStatuses),
+    assertionStatus,
     candidateRef,
     confidenceBand,
     entailment,
-    entityRef,
-    operation,
-    reasonCode: boundedToken(value.reason_code, 64),
-    subjectIdentity: enumValue<NonNullable<MemorySemanticAdjudication["subjectIdentity"]>>(
-      value.subject_identity, subjectIdentities
-    ),
-    subjectScope: enumValue(value.subject_scope, subjectScopes),
-    targetRef,
-    temporalPerspective: enumValue(value.temporal_perspective, temporalPerspectives)
+    entityRef: normalized ? null : entityRef,
+    operation: normalized
+      ? "AMBIGUOUS"
+      : operation as MemorySemanticAdjudication["operation"],
+    reasonCode: normalized ? normalizedNotEntailedHigh : reasonCode,
+    subjectIdentity: normalized ? "UNRESOLVED" : subjectIdentity,
+    subjectScope,
+    targetRef: normalized ? null : targetRef,
+    temporalPerspective
   };
-  if (!subjectIdentityIsValid(decision)) {
-    throw new Error("memory_semantic_adjudication_output_invalid");
-  }
+  if (!subjectIdentityIsValid(decision)) outputInvalid("subject_identity");
   return decision;
 }
 
@@ -599,18 +685,17 @@ export function decodeMemorySemanticAdjudication(
   input: MemorySemanticAdjudicationInput
 ): MemorySemanticAdjudicationPacket {
   const call = calls?.[0];
-  if (!call || calls?.length !== 1 ||
-    call.name !== MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME ||
-    !record(call.arguments) || !exactKeys(call.arguments, ["decisions"]) ||
-    !Array.isArray(call.arguments.decisions) ||
-    call.arguments.decisions.length !== input.candidateRefs.length) {
-    throw new Error("memory_semantic_adjudication_output_invalid");
-  }
-  const decisions = call.arguments.decisions.map((value) => decodeDecision(value, input));
+  if (!call || calls?.length !== 1) outputInvalid("call_count");
+  if (call.name !== MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME) outputInvalid("tool_name");
+  if (!record(call.arguments) || !exactKeys(call.arguments, ["decisions"]) ||
+    !Array.isArray(call.arguments.decisions)) outputInvalid("arguments");
+  const values: readonly unknown[] = call.arguments.decisions;
+  if (values.length !== input.candidateRefs.length) outputInvalid("decision_count");
+  const decisions = values.map((value) => decodeDecision(value, input));
   const refs = decisions.map(({ candidateRef }) => candidateRef);
   if (new Set(refs).size !== refs.length ||
     input.candidateRefs.some((candidateRef) => !refs.includes(candidateRef))) {
-    throw new Error("memory_semantic_adjudication_output_invalid");
+    outputInvalid("candidate_set");
   }
   decisions.sort((left, right) =>
     input.candidateRefs.indexOf(left.candidateRef) -

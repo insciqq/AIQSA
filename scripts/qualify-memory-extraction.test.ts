@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  MEMORY_SEMANTIC_ADJUDICATION_NORMALIZED_REASON_CODES,
+  MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES
+} from "../lib/server/memory/learning/extraction/adjudication";
+import {
   EXTRACTION_QUALIFICATION_GROUPS,
+  extractionQualificationCallStates,
   extractionQualificationDatabase,
   extractionQualificationOptions,
   extractionQualificationSpan,
   judgeExtractionScenario,
   MEMORY_EXTRACTION_QUALIFICATION_ACK,
   MEMORY_EXTRACTION_QUALIFICATION_SCENARIOS,
+  MEMORY_EXTRACTION_QUALIFICATION_VERSION,
   sanitizeExtractionQualificationMessage,
   summarizeExtractionQualification,
   type ExtractionQualificationResult,
@@ -142,20 +148,23 @@ describe("long-term extraction qualification fixture and oracle", () => {
       })
     }));
     const usage = [
-      { estimatedCostMicros: 120, inputTokens: 1_000, outputTokens: 200, role: "MEMORY_FACT_EXTRACT",
+      { estimatedCostMicros: 120, inputTokens: 1_000, outputTokens: 200, stage: "extraction",
         state: "SUCCEEDED", totalTokens: 1_200 },
-      { estimatedCostMicros: null, inputTokens: null, outputTokens: null, role: "MEMORY_SEMANTIC_ADJUDICATE",
+      { estimatedCostMicros: null, inputTokens: null, outputTokens: null, stage: "adjudication",
         state: "SUCCEEDED", totalTokens: null }
-    ];
+    ] as const;
     const report = summarizeExtractionQualification({
       degradedCodes: [], jobStages: ["fact_observations_committed"], results: passing, usage
     });
     expect(report).toMatchObject({
       degraded: 0, estimatedCostMicros: 120, inputTokens: 1_000, outputTokens: 200,
-      providerCalls: { "MEMORY_SEMANTIC_ADJUDICATE:SUCCEEDED": 1, "MEMORY_FACT_EXTRACT:SUCCEEDED": 1 },
+      adjudicationNormalized: {}, bindingFailures: {},
+      providerCalls: { "adjudication:SUCCEEDED": 1, "extraction:SUCCEEDED": 1 },
       reportedCostCalls: 1, reportedTokenCalls: 1, sanitizedAggregatesOnly: true,
-      scenarios: MEMORY_EXTRACTION_QUALIFICATION_SCENARIOS.length, status: "passed", totalTokens: 1_200
+      scenarios: MEMORY_EXTRACTION_QUALIFICATION_SCENARIOS.length, status: "passed", totalTokens: 1_200,
+      version: 2
     });
+    expect(MEMORY_EXTRACTION_QUALIFICATION_VERSION).toBe(2);
     expect(report.groups.SHORT_TERM).toMatchObject({
       expectation: "NONE", falseSaves: 0, notSaved: 12, receipts: { REJECT_NOT_USEFUL: 12 }, saved: 0
     });
@@ -196,11 +205,54 @@ describe("long-term extraction qualification fixture and oracle", () => {
       usage: [...usage, { ...usage[0]!, state: "RETRIED" }]
     })).toMatchObject({
       degraded: 0, jobRetries: { memory_fact_provider_transient: 1 },
-      providerCalls: { "MEMORY_FACT_EXTRACT:RETRIED": 1 }, status: "passed"
+      providerCalls: { "extraction:RETRIED": 1 }, status: "passed"
+    });
+    // Unsuccessful calls are reported by stage and code; normalization by
+    // its server-owned reason codes only.
+    expect(summarizeExtractionQualification({
+      adjudicationNormalized: ["normalized_reason_code", "normalized_not_entailed_high",
+        "normalized_reason_code"],
+      bindingFailures: ["adjudication:memory_semantic_adjudication_output_invalid_operation_target"],
+      degradedCodes: [], jobStages: [], results: passing,
+      usage: [...usage, { ...usage[1], state: "RETRIED" }]
+    })).toMatchObject({
+      adjudicationNormalized: { normalized_not_entailed_high: 1, normalized_reason_code: 2 },
+      bindingFailures: { "adjudication:memory_semantic_adjudication_output_invalid_operation_target": 1 },
+      degraded: 0, providerCalls: { "adjudication:RETRIED": 1 }, status: "passed"
     });
     expect(summarizeExtractionQualification({
       degradedCodes: [], jobStages: [], results: passing, usage: [{ ...usage[0]!, state: "FAILED" }]
     })).toMatchObject({ degraded: 1, status: "failed" });
+  });
+
+  it("marks only a recovered retryable call as retried", () => {
+    const context = {
+      retryableAdjudicationCodes: new Set(["memory_fact_provider_transient",
+        ...MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES]),
+      succeededJobs: new Set(["retried-job", "degraded-job", "extraction-job"])
+    };
+    const binding = (memoryJobId: string, stage: "extraction" | "adjudication", state: string,
+      errorCode: string | null = null) => ({ errorCode, memoryJobId, stage, state });
+    expect(extractionQualificationCallStates([
+      binding("retried-job", "adjudication", "FAILED", "memory_semantic_adjudication_output_invalid_enum"),
+      binding("retried-job", "adjudication", "SUCCEEDED"),
+      // Degraded: both calls failed and the job applied without adjudication.
+      binding("degraded-job", "adjudication", "FAILED", "memory_semantic_adjudication_output_invalid_enum"),
+      binding("degraded-job", "adjudication", "FAILED", "memory_fact_provider_transient"),
+      binding("extraction-job", "extraction", "FAILED", "memory_fact_provider_transient"),
+      binding("extraction-job", "adjudication", "FAILED", "memory_fact_provider_unavailable"),
+      binding("extraction-job", "adjudication", "SUCCEEDED"),
+      binding("terminal-job", "adjudication", "FAILED", "memory_fact_provider_transient"),
+      binding("terminal-job", "adjudication", "SUCCEEDED"),
+      binding("extraction-job", "extraction", "OUTCOME_UNKNOWN", "memory_fact_provider_outcome_unknown")
+    ], context)).toEqual([
+      "RETRIED", "SUCCEEDED", "FAILED", "FAILED", "RETRIED", "FAILED", "SUCCEEDED",
+      "FAILED", "SUCCEEDED", "OUTCOME_UNKNOWN"
+    ]);
+    expect([...MEMORY_SEMANTIC_ADJUDICATION_NORMALIZED_REASON_CODES].every((code) =>
+      summarizeExtractionQualification({
+        adjudicationNormalized: [code], degradedCodes: [], jobStages: [], results: [], usage: []
+      }).adjudicationNormalized[code] === 1)).toBe(true);
   });
 
   it("prints only bounded codes and counts from the worker message", () => {
@@ -209,6 +261,9 @@ describe("long-term extraction qualification fixture and oracle", () => {
     });
     const safe = sanitizeExtractionQualificationMessage({
       ...report,
+      adjudicationNormalized: { normalized_reason_code: 1, "private label": 2, other: "text" },
+      bindingFailures: { "adjudication:memory_semantic_adjudication_output_invalid_candidate_set": 1,
+        "adjudication:Ivan owes": 1 },
       groups: { ...report.groups, DURABLE: { ...report.groups.DURABLE, statement: "private text" } },
       private: "I owe Ivan 38 rubles.",
       code: "Private failure text"
@@ -217,10 +272,16 @@ describe("long-term extraction qualification fixture and oracle", () => {
     expect(text).not.toContain("private");
     expect(text).not.toContain("Ivan");
     expect(text).not.toContain("spaces");
+    expect(text).not.toContain("label");
+    expect(text).not.toContain("text");
     expect(safe).toMatchObject({
+      adjudicationNormalized: { normalized_reason_code: 1 },
+      bindingFailures: { "adjudication:memory_semantic_adjudication_output_invalid_candidate_set": 1 },
       code: "memory_extraction_qualification_failed",
       degradedCodes: { invalid_code: 1 }, sanitizedAggregatesOnly: true, status: "failed"
     });
+    expect(Object.keys(safe!.adjudicationNormalized as object)).toEqual(["normalized_reason_code"]);
+    expect(Object.keys(safe!.bindingFailures as object)).toHaveLength(1);
     expect(sanitizeExtractionQualificationMessage({ status: "unknown" })).toBeNull();
     expect(sanitizeExtractionQualificationMessage(["passed"])).toBeNull();
   });

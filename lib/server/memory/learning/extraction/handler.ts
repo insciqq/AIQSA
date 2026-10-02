@@ -1,7 +1,10 @@
 import { memoryReportedUsage as reportedUsage } from "../../execution/usage";
 import type { PrismaClient } from "@prisma/client";
 import { prisma } from "../../../prisma";
+import { logEvent } from "../../../observability";
 import { MemoryCoordinatorError } from "../../coordinator/errors";
+import { DEFAULT_MEMORY_COORDINATOR_POLICY } from "../../coordinator/policy";
+import { memoryCoordinatorJobMaxAttempts } from "../../coordinator/registry";
 import type {
   MemoryJobDescriptor,
   MemoryJobExecutionResult,
@@ -46,6 +49,8 @@ import {
   decodeMemorySemanticAdjudication,
   decodeStoredMemorySemanticAdjudication,
   memorySemanticAdjudicationInput,
+  MemorySemanticAdjudicationOutputError,
+  MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES,
   MEMORY_SEMANTIC_ADJUDICATION_VERSIONS,
   type MemorySemanticAdjudicationPacket
 } from "./adjudication";
@@ -275,6 +280,35 @@ function extractionAuthority(
   };
 }
 
+/** Provider calls one adjudication input may consume across job attempts,
+ * including a re-claim after an expired lease. */
+const MEMORY_SEMANTIC_ADJUDICATION_MAX_CALLS_PER_INPUT = 2;
+
+function retryableAdjudicationFailure(errorCode: string | null): errorCode is string {
+  return errorCode === "memory_fact_provider_transient" ||
+    (errorCode !== null && MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES.has(errorCode));
+}
+
+/** Exhausted adjudication applies the staged plan without a packet: candidates
+ * that need adjudication are rejected explicitly, independent candidates and
+ * the next page are kept. The event carries only the failure code. */
+function degradedAdjudication(
+  job: MemoryJobDescriptor,
+  errorCode: string,
+  bindingId: string,
+  plan: MemoryFactExtractionPlan
+): AdjudicationAuthority {
+  logEvent("service_operation", {
+    action: "degrade",
+    code: errorCode,
+    job_id: job.id,
+    outcome: "degraded",
+    stage: errorCode === "memory_fact_provider_transient" ? "dispatch" : "validate",
+    subsystem: "memory"
+  });
+  return extractionAuthority(bindingId, plan);
+}
+
 async function adjudicatePlan(
   deps: MemoryFactExtractionHandlerDependencies,
   job: MemoryJobDescriptor,
@@ -338,8 +372,7 @@ async function adjudicatePlan(
     binding.inputHash !== adjudicationInput.inputHash ||
     (binding.state !== "PENDING" && !(
       binding.state === "FAILED" &&
-      (binding.errorCode === "memory_fact_provider_transient" ||
-        binding.errorCode === "memory_semantic_adjudication_output_invalid") &&
+      retryableAdjudicationFailure(binding.errorCode) &&
       binding.acceptedOutputHash === null
     )))) {
     const running = attempts.find(({ state }) => state === "RUNNING");
@@ -354,6 +387,31 @@ async function adjudicatePlan(
     }
     return extractionAuthority(extractionBindingId, plan);
   }
+  // Every remaining attempt is PENDING or a retryable FAILED call of this input.
+  const failedCalls = attempts
+    .filter(({ state }) => state === "FAILED")
+    .sort((left, right) => left.ordinal - right.ordinal);
+  const lastFailure = failedCalls.at(-1);
+  if (lastFailure && failedCalls.length >= MEMORY_SEMANTIC_ADJUDICATION_MAX_CALLS_PER_INPUT) {
+    return degradedAdjudication(
+      job,
+      lastFailure.errorCode ?? "memory_semantic_adjudication_output_invalid",
+      extractionBindingId,
+      plan
+    );
+  }
+  // A first retryable failure keeps the staged extraction for one coordinator
+  // retry. A repeated failure, or one on the job's final attempt, applies the
+  // plan without adjudication instead of failing the whole page terminally.
+  const retryOrDegrade = (errorCode: string): AdjudicationAuthority => {
+    if (failedCalls.length === 0 && job.attemptCount < memoryCoordinatorJobMaxAttempts(
+      job.kind,
+      DEFAULT_MEMORY_COORDINATOR_POLICY.maxJobAttempts
+    )) {
+      throw new MemoryCoordinatorError(errorCode, true);
+    }
+    return degradedAdjudication(job, errorCode, extractionBindingId, plan);
+  };
 
   let bindingId = pending?.id;
   if (!bindingId) {
@@ -409,11 +467,8 @@ async function adjudicatePlan(
       state: failure.state,
       usage: failure.usage
     });
-    // Preserve staged extraction until the coordinator retries this known-safe
-    // failure. Applying without adjudication would permanently reject facts
-    // whose authority depends on it.
     if (failure.classification === "REPLAY_SAFE_TRANSIENT") {
-      throw new MemoryCoordinatorError(failure.errorCode, true);
+      return retryOrDegrade(failure.errorCode);
     }
     return extractionAuthority(extractionBindingId, plan);
   }
@@ -421,19 +476,20 @@ async function adjudicatePlan(
   let packet: MemorySemanticAdjudicationPacket;
   try {
     packet = decodeMemorySemanticAdjudication(result.toolCalls, adjudicationInput);
-  } catch {
+  } catch (error) {
+    const errorCode = error instanceof MemorySemanticAdjudicationOutputError
+      ? error.code
+      : "memory_semantic_adjudication_output_invalid";
     await deps.execution.lifecycle.settle(job.userId, bindingId, {
       acceptedOutputHash: null,
-      errorCode: "memory_semantic_adjudication_output_invalid",
+      errorCode,
       providerResponseId: result.providerResponseId,
       state: "FAILED",
       usage: reportedUsage(result.usage)
     });
     // The provider returned and its usage is settled, so only this invalid
-    // adjudication may be retried. Keep the accepted extraction staged instead
-    // of turning missing decisions into permanent semantic rejections. The
-    // coordinator's existing attempt ceiling exposes repeated failure.
-    throw new MemoryCoordinatorError("memory_semantic_adjudication_output_invalid", true);
+    // adjudication may be retried within the per-input call budget.
+    return retryOrDegrade(errorCode);
   }
 
   await deps.execution.lifecycle.settleSucceededWithDurableResult(
