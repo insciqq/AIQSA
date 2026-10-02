@@ -144,9 +144,75 @@ describe("personal MCP OAuth discovery", () => {
     expect(other.requested.some((url) => url.startsWith("http://auth.example.test"))).toBe(false);
   });
 
-  it("rejects oversized metadata before parsing it", async () => {
-    const fetch = vi.fn(async () => new Response(" ".repeat(512 * 1_024 + 1), { headers: { "content-type": "application/json" } }));
-    await expect(preparePersonalMcpOAuthDraft(draftFor("https://mcp.example.test/mcp"), { fetch }))
-      .rejects.toMatchObject({ code: "mcp_oauth_discovery_failed" });
+  describe("metadata size cap", () => {
+    const METADATA_CAP = 512 * 1_024;
+    const mcpUrl = "https://mcp.example.test/mcp";
+    const authorizationServer = "https://auth.example.test";
+    const authorizationMetadata = {
+      authorization_endpoint: `${authorizationServer}/authorize`,
+      issuer: authorizationServer,
+      response_types_supported: ["code"],
+      token_endpoint: `${authorizationServer}/token`
+    };
+
+    /** Valid authorization-server metadata of exactly `bytes` ASCII bytes. */
+    function paddedMetadata(bytes: number): string {
+      const empty = JSON.stringify({ ...authorizationMetadata, service_documentation_padding: "" });
+      const padded = JSON.stringify({ ...authorizationMetadata, service_documentation_padding: "a".repeat(bytes - empty.length) });
+      expect(Buffer.byteLength(padded)).toBe(bytes);
+      return padded;
+    }
+
+    /** Valid protected-resource metadata, then `metadata` for the authorization server. */
+    function servingAuthorizationMetadata(metadata: () => Response) {
+      return vi.fn(async (request: unknown) => {
+        const url = new URL(String(request));
+        if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
+          return Response.json({ authorization_servers: [authorizationServer], resource: mcpUrl });
+        }
+        if (url.origin === authorizationServer && url.pathname.startsWith("/.well-known/oauth-authorization-server")) return metadata();
+        return Response.json({ error: "not_found" }, { status: 404 });
+      });
+    }
+
+    const json = (body: BodyInit) => new Response(body, { headers: { "content-type": "application/json" } });
+
+    it("accepts valid metadata at the cap", async () => {
+      const body = paddedMetadata(METADATA_CAP);
+      const prepared = await preparePersonalMcpOAuthDraft(draftFor(mcpUrl), { fetch: servingAuthorizationMetadata(() => json(body)) });
+      expect(prepared.draft.auth).toMatchObject({ allowedAuthorizationServerOrigins: [authorizationServer] });
+    });
+
+    it("rejects valid metadata one byte over the cap", async () => {
+      const body = paddedMetadata(METADATA_CAP + 1);
+      expect(() => JSON.parse(body) as unknown).not.toThrow();
+      await expect(preparePersonalMcpOAuthDraft(draftFor(mcpUrl), { fetch: servingAuthorizationMetadata(() => json(body)) }))
+        .rejects.toMatchObject({ code: "mcp_oauth_discovery_failed", name: "PersonalMcpOAuthDiscoveryError" });
+    });
+
+    it("stops reading a 64 MiB valid metadata stream shortly after the cap", async () => {
+      const chunk = new TextEncoder().encode("a".repeat(64 * 1_024));
+      const total = 64 * 1_024 * 1_024;
+      let delivered = 0;
+      const stream = () => new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (delivered === 0) {
+            const prefix = new TextEncoder().encode(JSON.stringify(authorizationMetadata).slice(0, -1) + ',"service_documentation_padding":"');
+            delivered += prefix.byteLength;
+            controller.enqueue(prefix);
+          } else if (delivered < total) {
+            delivered += chunk.byteLength;
+            controller.enqueue(chunk);
+          } else {
+            controller.enqueue(new TextEncoder().encode('"}'));
+            controller.close();
+          }
+        }
+      });
+      await expect(preparePersonalMcpOAuthDraft(draftFor(mcpUrl), { fetch: servingAuthorizationMetadata(() => json(stream())) }))
+        .rejects.toMatchObject({ code: "mcp_oauth_discovery_failed" });
+      expect(delivered).toBeGreaterThan(METADATA_CAP);
+      expect(delivered).toBeLessThan(2 * METADATA_CAP);
+    });
   });
 });

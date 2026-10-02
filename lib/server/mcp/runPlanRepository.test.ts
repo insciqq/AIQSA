@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { MAX_TOOL_DESCRIPTION_LENGTH } from "@/lib/contracts/mcp";
 import { namespacedMcpToolName, prepareMcpRunPlan } from "./runPlan";
+import { resolveMcpRunTool } from "./toolExecutor";
 import {
   loadMcpCapabilityCatalog,
   loadMcpRunPlanRecords,
@@ -858,6 +859,104 @@ describe("Prisma MCP personal live catalog", () => {
     const [loaded] = await loadMcpRunPlanRecords("user-1", clientWith([installation]).client);
     expect(loaded).toMatchObject({ errorCode: null, readiness: "queued" });
     expect(loaded).not.toHaveProperty("userDisabledToolNames");
+  });
+
+  /** A second owned connection with its own server, preference, generation and namespace. */
+  function secondPersonal(names: readonly string[], namespace: string) {
+    const record = personal(names, { desiredRuntimeGenerationId: "generation-2", id: "preference-2" });
+    record.desiredRuntimeGeneration!.id = "generation-2";
+    record.desiredRuntimeGeneration!.fingerprint = "fingerprint-2";
+    record.server.id = "server-2";
+    record.server.namespace = namespace;
+    return record;
+  }
+
+  it("keeps identical upstream tool names of two personal connections apart in Auto, Load all and routing", async () => {
+    // Generated personal namespaces whose 20-character name token is identical:
+    // only the namespace hash separates the model-facing names.
+    const first = personal(["search"]);
+    first.server.namespace = "mcp_0123456789abcdef0000";
+    first.server.activeRevision!.validationEvidence = { toolInventory: [] };
+    const second = secondPersonal(["search"], "mcp_0123456789abcdef1111");
+    second.server.activeRevision!.validationEvidence = { toolInventory: [] };
+    second.server.displayName = first.server.displayName;
+    const { client } = clientWith([first, second]);
+    const firstName = namespacedMcpToolName("mcp_0123456789abcdef0000", "search");
+    const secondName = namespacedMcpToolName("mcp_0123456789abcdef1111", "search");
+    expect(firstName).not.toBe(secondName);
+
+    const catalog = await loadMcpCapabilityCatalog("user-1", client);
+    expect(catalog.servers.map((server) => [server.serverId, server.tools.map((tool) => tool.namespacedName)])).toEqual([
+      ["server-1", [firstName]],
+      ["server-2", [secondName]]
+    ]);
+
+    const loadAll = await prepareMcpRunPlan({
+      isGenerationLive: () => true,
+      load: () => loadMcpRunPlanRecords("user-1", client),
+      now: () => NOW
+    });
+    if (!loadAll.ok) throw new Error(loadAll.code);
+    expect(loadAll.snapshot.tools.map((tool) => [tool.namespacedName, tool.serverId, tool.originalName])).toEqual([
+      [firstName, "server-1", "search"],
+      [secondName, "server-2", "search"]
+    ]);
+    expect(resolveMcpRunTool(loadAll.snapshot, secondName)).toMatchObject({ fingerprint: "fingerprint-2", originalName: "search", serverId: "server-2" });
+
+    // Auto materializes one connection's tool without binding the other.
+    const selected = await prepareMcpRunPlan({
+      allowedToolNames: [secondName],
+      isGenerationLive: () => true,
+      load: () => loadMcpRunPlanRecords("user-1", client),
+      now: () => NOW
+    });
+    expect(selected).toMatchObject({
+      bindings: [{ runtimeGenerationId: "generation-2", serverId: "server-2" }],
+      ok: true,
+      snapshot: { servers: [{ serverId: "server-2" }], tools: [{ namespacedName: secondName, serverId: "server-2" }] }
+    });
+  });
+
+  it("drops a disconnected personal connection from the next message's Auto catalog and run plan", async () => {
+    const kept = personal(["read"]);
+    const deleted = secondPersonal(["write"], "mcp_deleted0000000000000");
+    const records = [kept, deleted];
+    // The preference query's own filter, as the database applies it.
+    const findMany = vi.fn(async ({ where }: { where: { enabled?: boolean; userId: string } }) =>
+      records.filter((record) => record.userId === where.userId && (where.enabled === undefined || record.enabled === where.enabled)));
+    const client = {
+      mcpToolAccessPolicy: { findMany: async () => [] },
+      mcpUserServer: { findMany },
+      user: { findUnique: async () => ({ groups: [], status: "active" }) }
+    } as unknown as PrismaClient;
+    const nextMessage = () => prepareMcpRunPlan({
+      isGenerationLive: () => true,
+      load: () => loadMcpRunPlanRecords("user-1", client),
+      now: () => NOW
+    });
+    expect(await catalogNames(client)).toEqual(["read", "write"]);
+    await expect(nextMessage()).resolves.toMatchObject({ bindings: [{ serverId: "server-1" }, { serverId: "server-2" }], ok: true });
+
+    // What disconnect leaves behind (archivePersonalMcpServers).
+    const live = { desiredRuntimeGeneration: deleted.desiredRuntimeGeneration, desiredRuntimeGenerationId: deleted.desiredRuntimeGenerationId };
+    Object.assign(deleted, {
+      desiredRuntimeGeneration: null,
+      desiredRuntimeGenerationId: null,
+      discoveredInventory: null,
+      discoveredOAuthConnectionId: null,
+      discoveredRevisionId: null,
+      enabled: false
+    });
+    Object.assign(deleted.server, { archivedAt: NOW, enabled: false });
+    expect(await catalogNames(client)).toEqual(["read"]);
+    const after = await nextMessage();
+    expect(after).toMatchObject({ bindings: [{ serverId: "server-1" }], ok: true });
+    expect(JSON.stringify(after)).not.toContain("server-2");
+
+    // Even a preference read as still enabled with its runtime offers nothing of an archived server to Auto.
+    Object.assign(deleted, { ...live, enabled: true });
+    expect(await catalogNames(client)).toEqual(["read"]);
+    expect(JSON.stringify(await loadMcpCapabilityCatalog("user-1", client))).not.toContain("server-2");
   });
 
   it("bounds live descriptions in the personal catalog", async () => {

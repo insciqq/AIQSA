@@ -16,7 +16,7 @@ import { createMcpSafeFetch } from "./safeFetch";
 import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
 import { McpRuntimeCoordinator } from "./runtimeCoordinator";
 import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
-import { loadMcpCapabilityCatalog } from "./runPlanRepository";
+import { loadMcpCapabilityCatalog, loadMcpRunPlanRecords } from "./runPlanRepository";
 
 const key = Buffer.alloc(32, 7);
 const userIds: string[] = [];
@@ -211,6 +211,9 @@ describe("personal MCP persistence and isolation", () => {
       expect(await storage.deletePersonalServer!({ serverId, userId: ownerId })).toMatchObject({ kind: "ok" });
       expect(await storage.listUserServers(ownerId)).toEqual([]);
       expect(await storage.listUserServers(otherId)).toEqual([]);
+      // The next message's Auto catalog and run plan no longer know the deleted connection.
+      expect((await loadMcpCapabilityCatalog(ownerId, prisma)).servers).toEqual([]);
+      expect(await loadMcpRunPlanRecords(ownerId, prisma)).toEqual([]);
     } finally {
       await runtime.stop();
       await peer.close();
