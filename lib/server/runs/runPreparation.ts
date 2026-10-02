@@ -65,6 +65,7 @@ import { createProviderPreviewRuntimeBinding } from "../providers/runtimeFactory
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../providers/memoryActionAnswer";
 import { memorySearchTool, type MemorySearchSnapshot } from "../memory/search/contract";
 import { hasExplicitMemoryCommandBoundary } from "../memory/actions/actionAdmission";
+import { logEvent } from "../observability";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -94,7 +95,6 @@ import { readToolCallTool } from "../tools/readToolCall";
 import { isToolHistoryMessageId, TOOL_HISTORY_VERSION } from "./toolHistoryContract";
 import { insertToolHistory } from "./toolHistory";
 import { toolHistoryReaders } from "./toolHistoryRecords";
-import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
@@ -2115,14 +2115,6 @@ async function prepareRunWith(
       provider: executionProvider
     }) === true;
   const toolObservationVersion: 0 | 1 = observationPolicy === "v1" && observationCapable ? 1 : 0;
-  const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
-  const memoryStandingEligible = !project && !agent && resolvedChatMode.mode === "NORMAL" &&
-    !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content));
-  const memorySearch = memoryStandingEligible && body?.tools !== "none" &&
-    modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
-      modelId: executionModelId, provider: executionProvider
-    }) === true && deps.memorySearchAdmission
-    ? await deps.memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null) : null;
   // References and digests of the branch's eligible calls only: the record
   // text is projected again, with current authority, for every request.
   const toolHistoryLeafMessageId = input.source.kind === "send"
@@ -2136,6 +2128,14 @@ async function prepareRunWith(
       code: "tool_history_unavailable", prisma_code: databaseFailureCode(error) });
     return null;
   }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
+  const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
+  const memoryStandingEligible = !project && !agent && resolvedChatMode.mode === "NORMAL" &&
+    !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content));
+  const memorySearch = memoryStandingEligible && body?.tools !== "none" &&
+    modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
+      modelId: executionModelId, provider: executionProvider
+    }) === true && deps.memorySearchAdmission
+    ? await deps.memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null) : null;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
