@@ -756,22 +756,28 @@ function statusActivity(status: RunLifecycleStatusV2 | null | undefined) {
 const NEUTRAL_RUN_PREPARATION_CODE_V2 = "preparation_failed";
 // Run failures persisted with Memory wording, including historical messages
 // already stored before the neutral server copy.
-const memoryRunFailureMessagePattern = /^Memory (?:preparation|search)\b/u;
+const memoryRunFailureMessagePattern = /^Memory (?:preparation|search|egress)\b|answer-model Memory tool/u;
+// The external-dispatch evidence ledger keeps a historical `memory_egress_`
+// prefix; its failures concern Knowledge, providers or MCP, not Memory.
+const EGRESS_LEDGER_CODE_PREFIX = "memory_egress_";
 
 /** Users never see Memory failures: a run that failed while preparing or
  * settling Memory keeps its recovery actions with neutral copy, and its
- * support reference never carries a `memory_` code. */
+ * support reference never carries a `memory_` code. Egress-ledger failures
+ * keep their own text and show their code without the `memory_` prefix. */
 export function neutralizeMemoryRunFailureV2<T extends Readonly<{ code?: string | null; message?: string | null }>>(
   failure: T
 ): T {
-  const memoryCode = typeof failure.code === "string" && failure.code.startsWith("memory_");
+  const egressCode = typeof failure.code === "string" && failure.code.startsWith(EGRESS_LEDGER_CODE_PREFIX);
+  const memoryCode = !egressCode && typeof failure.code === "string" && failure.code.startsWith("memory_");
   const memoryMessage = typeof failure.message === "string" &&
     memoryRunFailureMessagePattern.test(failure.message.trim());
-  if (!memoryCode && !memoryMessage) return failure;
+  if (!egressCode && !memoryCode && !memoryMessage) return failure;
   return {
     ...failure,
+    ...(egressCode ? { code: failure.code!.slice("memory_".length) } : {}),
     ...(memoryCode ? { code: NEUTRAL_RUN_PREPARATION_CODE_V2 } : {}),
-    message: memoryUiCopy("answer.preparationFailed")
+    ...(memoryMessage || memoryCode ? { message: memoryUiCopy("answer.preparationFailed") } : {})
   };
 }
 
