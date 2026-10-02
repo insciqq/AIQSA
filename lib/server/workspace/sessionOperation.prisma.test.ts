@@ -268,7 +268,7 @@ describe("Prisma Workspace operation admission", () => {
     await expect(followups.markAnswerDispatched(claim!)).rejects.toMatchObject({ code: "workspace_followup_unavailable" });
   });
 
-  it.each(["standing", "explicit", "expired", "unplaceable"] as const)(
+  it.each(["standing", "explicit", "expired", "unplaceable", "executed"] as const)(
     "answers a crash-interrupted %s Memory read without Memory only when no effect or evidence is lost",
     async (variation) => {
       const value = await publishedPredecessor();
@@ -306,6 +306,22 @@ describe("Prisma Workspace operation admission", () => {
           data: { createdAt: new Date(Date.now() - 20 * 60_000), expiresAt: new Date(Date.now() - 10 * 60_000) } });
       }
       const [executing] = await prisma.memoryRetrievalAttempt.findMany({ where: { modelRunId: created.runId } });
+      if (variation === "executed") {
+        // The crashed owner had already settled a utility execution for this attempt.
+        const executionId = randomUUID();
+        const completedAt = new Date();
+        await prisma.memoryExecutionBinding.create({ data: {
+          acceptedOutputHash: "a".repeat(64), cachedInputTokens: 0, completedAt,
+          createdAt: new Date(completedAt.getTime() - 1), destinationFingerprint: "b".repeat(64), id: executionId,
+          inputHash: "c".repeat(64), inputTokens: 0, logicalRole: "MEMORY_CONTROL", ordinal: 0, outputTokens: 0,
+          ownerType: "RETRIEVAL_ATTEMPT", pipelineVersion: "interrupted-fixture-v1", policyVersion: "interrupted-fixture-v1",
+          promptVersion: "interrupted-fixture-v1", providerId: "interrupted-fixture", reasoningTokens: 0,
+          recoverableUntil: completedAt, relationsDetachedAt: completedAt, retrievalAttemptId: executing!.id,
+          schemaVersion: "interrupted-fixture-v1", secretFreeExecutionSnapshot: { version: 1 },
+          startedAt: new Date(completedAt.getTime() - 1), state: "SUCCEEDED", totalTokens: 0,
+          usageCompleteness: "COMPLETE", userId: value.userId
+        } });
+      }
       if (variation === "unplaceable") {
         // The read completed before the crash; its answer no longer fits the request.
         expect(await value.repository.completePreparingRunAttempt({ attemptId: executing!.id, runId: created.runId,
@@ -319,7 +335,7 @@ describe("Prisma Workspace operation admission", () => {
           memoryMaterializer: variation === "unplaceable" ? () => null : memoryMaterializer }, created,
         claimToken: claim!.claimToken });
       try {
-        if (variation === "explicit" || variation === "expired") {
+        if (variation === "explicit" || variation === "expired" || variation === "executed") {
           await expect(second).rejects.toMatchObject({ code: "workspace_followup_interrupted" });
           expect(await prisma.modelRunMemoryBinding.count({ where: { modelRunId: created.runId } })).toBe(0);
           return;
