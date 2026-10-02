@@ -39,6 +39,11 @@ async function prepare(page: Page, servers: () => UserMcpServer[]) {
   let hubReads = 0;
   await page.route("**/api/me/mcp**", async route => {
     const request = route.request();
+    // Personal chats load the separate personal connections list; this spec observes the installation catalog.
+    if (request.method() === "GET" && new URL(request.url()).pathname === "/api/me/mcp-connections") {
+      await route.fulfill({ json: { servers: [] } });
+      return;
+    }
     requests.push(`${request.method()} ${new URL(request.url()).pathname}`);
     if (request.method() === "GET" && new URL(request.url()).pathname === "/api/me/mcp") {
       await route.fulfill({ json: { servers: servers() } });
