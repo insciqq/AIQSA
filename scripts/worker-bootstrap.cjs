@@ -17,7 +17,6 @@ const roles = new Map([
   ["knowledge-source-backfill.ts", "maintenance"],
   ["knowledge-restore-reconcile.ts", "maintenance"],
   ["knowledge-search-integrity.ts", "maintenance"],
-  ["mcp-toolhive-cleanup.ts", "maintenance"],
   ["prune.ts", "maintenance"],
   ["bootstrap.ts", "bootstrap"]
 ]);
