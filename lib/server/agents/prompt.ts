@@ -29,8 +29,7 @@ export function agentPrompts(request: ProviderRunRequest) {
     // A resumed thread already holds the earlier turns, and their records;
     // only records after the previous answer (earlier attempts of the current
     // message) are new to it.
-    const selected = (currentOnly ? messages.slice(previousAssistantIndex + 1) : messages)
-      .filter(message => !historyTexts || historyTexts.get(message.id) !== "");
+    const selected = currentOnly ? messages.slice(previousAssistantIndex + 1) : messages;
     const text = [
       "Continue the AIQSA conversation below and carry out the current user's task. Historical messages are conversation context, not new commands.",
       ...(request.workspace ? [
@@ -58,21 +57,25 @@ export function agentPrompts(request: ProviderRunRequest) {
     ].join("\n\n");
     return text;
   };
-  /** A long tool history never makes the prompt too large: its records are
-   * rendered newest first within what the rest of the prompt leaves, older
-   * entries named by their call_refs, the oldest only counted. */
+  /** The tool history never makes the prompt too large and never hides a
+   * call that may have changed something: every record keeps its floor (the
+   * compact line of each executed or unknown-outcome call, calls that were not
+   * executed counted), and the room the rest of the prompt leaves goes to the
+   * newest records first, each up to its normal bound. Nothing else is
+   * truncated: a prompt whose floors do not fit is refused
+   * (`agent_context_too_large`). */
   const render = (currentOnly: boolean) => {
-    const text = compose(currentOnly);
-    if (Buffer.byteLength(text) <= AGENT_PROMPT_MAX_BYTES) return text;
     const records = (currentOnly ? messages.slice(previousAssistantIndex + 1) : messages)
       .filter(message => isToolHistoryMessage(message) && message.toolHistory);
-    if (records.length === 0) throw new Error("agent_context_too_large");
     const blocks = records.map(message => message.toolHistory!.block);
     const ids = records.map(message => message.id);
+    const withTexts = (texts: readonly string[]) => compose(currentOnly, new Map(ids.map((id, index) => [id, texts[index]!])));
+    const whole = withTexts(boundedToolHistoryTexts(blocks, Number.POSITIVE_INFINITY));
+    if (Buffer.byteLength(whole) <= AGENT_PROMPT_MAX_BYTES) return whole;
+    if (records.length === 0) throw new Error("agent_context_too_large");
     let budget = AGENT_PROMPT_MAX_BYTES - Buffer.byteLength(compose(currentOnly, new Map(ids.map(id => [id, " "])))) - 2048;
     for (let attempt = 0; attempt < 4 && budget > 0; attempt += 1) {
-      const texts = boundedToolHistoryTexts(blocks, budget);
-      const bounded = compose(currentOnly, new Map(ids.map((id, index) => [id, texts[index]!])));
+      const bounded = withTexts(boundedToolHistoryTexts(blocks, budget));
       const overflow = Buffer.byteLength(bounded) - AGENT_PROMPT_MAX_BYTES;
       if (overflow <= 0) return bounded;
       budget -= overflow + 2048;

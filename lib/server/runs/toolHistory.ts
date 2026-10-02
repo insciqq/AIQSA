@@ -92,34 +92,25 @@ function withRefs(line: string, refs: readonly string[], budgetBytes: number): s
 }
 
 /**
- * Records rendered newest first within `budgetBytes` in total (an Agent
- * prompt's room): each takes at most its normal bound, its omitted entries
- * named for the reader as space allows; records older than the room for a
- * header leave one line counting their calls. Texts in record order; an
- * empty text is a record left out entirely.
+ * Records rendered within `budgetBytes` in total (an Agent prompt's room),
+ * never below their floor: the header, the footer and the compact line
+ * (call_ref and outcome) of every executed call and every call of unknown
+ * outcome, the calls that were not executed counted. The room beyond the
+ * floors goes to the newest records first, each up to its normal bound
+ * (details, then the counted calls named for the reader). Floors beyond the
+ * room are still returned whole: the caller refuses such a prompt rather
+ * than hide a call that may have changed something. Texts in record order.
  */
 export function boundedToolHistoryTexts(blocks: readonly ToolHistoryBlock[], budgetBytes: number): string[] {
-  const texts = blocks.map(() => "");
-  const markerReserve = 1024;
-  let remaining = budgetBytes - markerReserve;
-  let cut = -1;
-  for (let index = blocks.length - 1; index >= 0; index -= 1) {
-    const block = blocks[index]!;
-    const minimum = bytes(block.header) + (block.footer ? bytes(block.footer) + 1 : 0) +
-      (block.entries.length ? bytes(omittedEntriesLine(block.entries.length)) + 1 : 0);
-    if (remaining < minimum) {
-      cut = index;
-      break;
-    }
-    const text = renderToolHistoryBlock(block, Math.min(TOOL_HISTORY_LIMITS.blockBytes, remaining), { nameOmittedRefs: true })
-      .lines.join("\n");
+  const render = (block: ToolHistoryBlock, room: number) =>
+    renderToolHistoryBlock(block, room, { keepEssential: true, nameOmittedRefs: true }).lines.join("\n");
+  const texts = blocks.map(block => render(block, 0));
+  let room = budgetBytes - texts.reduce((total, text) => total + bytes(text) + 1, 0);
+  for (let index = blocks.length - 1; index >= 0 && room > 0; index -= 1) {
+    const floor = bytes(texts[index]!);
+    const text = render(blocks[index]!, Math.min(TOOL_HISTORY_LIMITS.blockBytes, floor + room));
+    room -= bytes(text) - floor;
     texts[index] = text;
-    remaining -= bytes(text) + 1;
-  }
-  if (cut >= 0) {
-    const calls = blocks.slice(0, cut + 1).flatMap(block => block.entries.map(entry => entry.ref)).reverse();
-    const line = `[AIQSA: ${calls.length} older tool call${calls.length === 1 ? "" : "s"} of this chat ${calls.length === 1 ? "is" : "are"} omitted from this prompt for size; this does not mean ${calls.length === 1 ? "it" : "they"} did not happen.`;
-    texts[cut] = `${calls.length ? withRefs(line, calls, Math.max(bytes(line), markerReserve + Math.max(0, remaining) - 1)) : line}]`;
   }
   return texts;
 }
