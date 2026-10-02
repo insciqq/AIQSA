@@ -333,7 +333,9 @@ function consumerStatus(
       !response.capabilities.automaticLearningAvailable ||
     response.settings.referenceChatHistory &&
       !response.capabilities.pastChatIndexingAvailable ||
-    response.settings.synthesisEnabled &&
+    // `synthesisAvailable` now reports background maintenance, which follows
+    // automatic learning.
+    response.settings.learnAutomatically &&
       !response.capabilities.synthesisAvailable ||
     response.settings.decayEnabled && !response.capabilities.decayAvailable
   ) return "UNAVAILABLE";

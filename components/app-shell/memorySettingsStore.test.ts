@@ -33,12 +33,10 @@ describe("Memory settings store", () => {
         "useMemoryFacts",
         "referenceChatHistory",
         "learnAutomatically",
-        "synthesisEnabled",
         "decayEnabled"
       ].find(
         (candidate) => typeof body[candidate] === "boolean"
-      ) as "decayEnabled" | "learnAutomatically" | "referenceChatHistory" | "synthesisEnabled" |
-        "useMemoryFacts";
+      ) as "decayEnabled" | "learnAutomatically" | "referenceChatHistory" | "useMemoryFacts";
       server = memoryConsumerSettingsFixture({
         settings: { ...server.settings, [key]: body[key] as boolean },
         status: key === "useMemoryFacts" && body[key] === true ? "ON" : server.status
@@ -50,21 +48,19 @@ describe("Memory settings store", () => {
     await updateMemoryGate("useMemoryFacts", true);
     await updateMemoryGate("referenceChatHistory", true);
     await updateMemoryGate("learnAutomatically", true);
-    await updateMemoryGate("synthesisEnabled", true);
     await updateMemoryGate("decayEnabled", true);
 
     expect(useMemorySettingsStore.getState().data?.settings).toEqual({
       decayEnabled: true,
       learnAutomatically: true,
       referenceChatHistory: true,
-      synthesisEnabled: true,
+      synthesisEnabled: false,
       useMemoryFacts: true
     });
     expect(bodies).toEqual([
       { useMemoryFacts: true },
       { referenceChatHistory: true },
       { learnAutomatically: true },
-      { synthesisEnabled: true },
       { decayEnabled: true }
     ]);
     expect(JSON.stringify(bodies)).not.toMatch(/revision|generation|fingerprint|deployment/iu);
@@ -85,6 +81,24 @@ describe("Memory settings store", () => {
 
     expect(useMemorySettingsStore.getState().data).toEqual(current);
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads settings with or without the retired Dream fields and never sends them", async () => {
+    const retained = memoryConsumerSettingsFixture({ status: "ON" });
+    const { synthesisAvailable: _available, ...capabilities } = retained.capabilities;
+    const { synthesisEnabled: _enabled, ...settings } = retained.settings;
+    const current = { ...retained, capabilities, settings };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json(retained))
+      .mockResolvedValueOnce(json(current))
+      .mockResolvedValueOnce(json(current));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(refreshMemorySettings(true)).resolves.toEqual(retained);
+    await expect(refreshMemorySettings(true)).resolves.toEqual(current);
+    expect(useMemorySettingsStore.getState()).toMatchObject({ data: current, error: null, loadState: "ready" });
+    await expect(updateMemoryGate("decayEnabled", true)).resolves.toEqual(current);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({ decayEnabled: true });
   });
 
   it("keeps the committed value and stays usable after a failed change, reconciling silently", async () => {

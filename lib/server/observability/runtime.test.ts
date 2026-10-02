@@ -85,25 +85,27 @@ describe("bounded observability runtime", () => {
       .toMatchObject({ code, outcome: "failed", level: "error" });
   });
 
-  it("reports a Dream no-plan evaluation with only an allowlisted code and source count", () => {
+  it.each([
+    ["memory_synthesis_retired", "reconcile", "cancelled"],
+    ["memory_synthesis_retired_forgotten", "cleanup", "completed"],
+    ["memory_synthesis_retired_pinned", "cleanup", "skipped"]
+  ] as const)("reports retired Dream cleanup %s with only an allowlisted code and count", (code, stage, outcome) => {
     const line = serializeEvent("runtime_lifecycle", {
       subsystem: "memory",
-      stage: "reconcile",
-      outcome: "skipped",
-      code: "memory_synthesis_plan_unavailable",
+      stage,
+      outcome,
+      code,
       count: 3,
       userId: "PRIVATE_USER",
-      messageId: "PRIVATE_MESSAGE",
       factId: "PRIVATE_FACT",
-      sourceText: "PRIVATE_SOURCE"
+      statement: "PRIVATE_STATEMENT"
     } as never)!;
     expect(JSON.parse(line)).toMatchObject({
-      code: "memory_synthesis_plan_unavailable",
+      code,
       count: 3,
       event: "runtime_lifecycle",
-      level: "info",
-      outcome: "skipped",
-      stage: "reconcile",
+      outcome,
+      stage,
       subsystem: "memory"
     });
     expect(line).not.toContain("PRIVATE_");

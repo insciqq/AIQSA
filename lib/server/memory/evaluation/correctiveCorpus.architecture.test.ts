@@ -228,42 +228,6 @@ const corpus: readonly CorrectiveScenario[] = Object.freeze([
   {
     evidence: [
       {
-        anchor: "[E06] synthesizes, retrieves, invalidates, and replaces a source-bound pattern",
-        kind: "database",
-        path: "synthesis/repository.prisma.test.ts"
-      },
-      {
-        anchor: "[E06] builds a bounded ref-only prompt with untrusted source labels",
-        kind: "runtime",
-        path: "synthesis/contract.test.ts"
-      },
-      {
-        anchor: "[E06] performs one governed synthesis call, stages, reauthorizes, and applies",
-        kind: "provider_budget",
-        path: "synthesis/handler.test.ts"
-      },
-      {
-        anchor: "replacementRace",
-        kind: "concurrency",
-        path: "synthesis/repository.prisma.test.ts"
-      },
-      {
-        anchor: "proves the production HNSW plan, bounded exact plan, and pinned database profile",
-        kind: "query_plan",
-        path: "retrieval/vector.prisma.test.ts"
-      },
-      {
-        anchor: "compatibleAutomaticFactVersions: 2",
-        kind: "operational",
-        path: "synthesis/repository.prisma.test.ts"
-      }
-    ],
-    id: "E06",
-    providerCallBudget: { initialSynthesis: 1, stagedRecoveryAdditional: 0 }
-  },
-  {
-    evidence: [
-      {
         anchor: "[E07] retrieves one canonical current pointer or deduplicated genuine history",
         kind: "database",
         path: "retrieval/localRepository.prisma.test.ts"
@@ -350,6 +314,11 @@ const legacyDispositions = Object.freeze([
   {
     disposition: "AUTHORITY_FENCED_RETRACTABLE",
     subsystem: "unsupported_aliases_and_dependencies"
+  },
+  {
+    // E06: Dream synthesis is removed; its derivatives are forgotten.
+    disposition: "REMOVED_AND_FORGOTTEN",
+    subsystem: "dream_synthesis_patterns_and_combinations"
   }
 ]);
 
@@ -360,7 +329,7 @@ function source(path: string): string {
 describe("Memory corrective E01-E08 corpus inventory", () => {
   it("binds every scenario to executable runtime, database, budget and count evidence", () => {
     expect(corpus.map(({ id }) => id)).toEqual([
-      "E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08"
+      "E01", "E02", "E03", "E04", "E05", "E07", "E08"
     ]);
     for (const scenario of corpus) {
       const kinds = new Set(scenario.evidence.map(({ kind }) => kind));

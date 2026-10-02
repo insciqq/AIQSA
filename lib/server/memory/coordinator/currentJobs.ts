@@ -33,7 +33,7 @@ export function currentMemoryJobsSql(now: Date): Prisma.Sql {
             WHEN job.kind = 'INDEX_HISTORY' THEN settings."useMemoryFacts" AND settings."referenceChatHistory"
             WHEN job.kind IN ('EXTRACT_FACTS', 'CONSOLIDATE_CANDIDATE', 'VERIFY_CANDIDATE', 'RESOLVE_FACT_RELATIONS')
               THEN settings."useMemoryFacts" AND settings."learnAutomatically"
-            WHEN job.kind = 'SYNTHESIZE_MEMORIES' THEN settings."useMemoryFacts" AND settings."synthesisEnabled"
+            WHEN job.kind = 'SYNTHESIZE_MEMORIES' THEN settings."useMemoryFacts" AND settings."learnAutomatically"
             ELSE settings."useMemoryFacts"
           END
           AND (job."chatId" IS NULL OR (

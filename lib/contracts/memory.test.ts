@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_ERROR_CODES, MEMORY_PAGE_SIZE_MAX, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION, decodeMemoryBulkDeleteInput, decodeMemoryChatModePatch, decodeMemoryChatModeResponse, decodeMemoryCreateInput, decodeMemoryDeletionStatus, decodeMemoryEvidenceResponse, decodeMemoryDetailResponse, decodeMemoryFeedbackInput, decodeMemoryFeedbackMutationResponse, decodeMemoryConflictResolutionInput, decodeMemoryErrorResponse, decodeMemoryInitialChatMode, decodeMemoryListInput, decodeMemoryListResponse, decodeMemoryListSearchInput, decodeMemoryMutationResponse, decodeMemoryActionFeedback, decodeMemoryRebuildInput, decodeMemoryRebuildStatus, decodeMemoryScopeSelection, decodeMemorySettingsResponse, decodeMemoryUpdateInput } from "./memory";
+import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_ERROR_CODES, MEMORY_PAGE_SIZE_MAX, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION, decodeMemoryBulkDeleteInput, decodeMemoryChatModePatch, decodeMemoryChatModeResponse, decodeMemoryCreateInput, decodeMemoryDeletionStatus, decodeMemoryEvidenceResponse, decodeMemoryDetailResponse, decodeMemoryFeedbackInput, decodeMemoryFeedbackMutationResponse, decodeMemoryConflictResolutionInput, decodeMemoryErrorResponse, decodeMemoryInitialChatMode, decodeMemoryListInput, decodeMemoryListResponse, decodeMemoryListSearchInput, decodeMemoryMutationResponse, decodeMemoryActionFeedback, decodeMemoryRebuildInput, decodeMemoryRebuildStatus, decodeMemoryScopeSelection, decodeMemorySettingsMutation, decodeMemorySettingsResponse, decodeMemoryUpdateInput } from "./memory";
 
 const now = "2026-08-09T12:00:00.000Z";
 
@@ -258,6 +258,26 @@ describe("Memory response contracts", () => {
         useMemoryFacts: false
       }
     })).toMatchObject({ ok: false });
+  });
+
+  it("keeps the retired Dream setting false and its toggle-only patch decodable", () => {
+    expect(decodeMemorySettingsResponse({
+      ...settingsResponse(),
+      settings: { ...settingsResponse().settings, synthesisEnabled: true }
+    })).toMatchObject({ ok: false });
+    const { synthesisEnabled: _retired, ...withoutRetired } = settingsResponse().settings;
+    expect(decodeMemorySettingsResponse({ ...settingsResponse(), settings: withoutRetired }))
+      .toMatchObject({ ok: false });
+    expect(decodeMemorySettingsMutation({
+      expectedMemoryRevision: 1,
+      expectedSettingsRevision: 2,
+      synthesisEnabled: true
+    })).toEqual({
+      ok: true,
+      value: { kind: "patch", value: { expectedMemoryRevision: 1, expectedSettingsRevision: 2, synthesisEnabled: true } }
+    });
+    expect(decodeMemorySettingsMutation({ expectedSettingsRevision: 2, synthesisEnabled: true }))
+      .toMatchObject({ ok: false });
   });
 
   it("strictly decodes list and mutation projections", () => {
