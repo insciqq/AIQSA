@@ -181,7 +181,7 @@ describe("fallback action outcome (D3)", () => {
   });
 
   it("fails closed for LIST/SEARCH results whose evidence the answer would lose", () => {
-    const listed = { items: [], operation: "LIST", status: "COMPLETE" } as const;
+    const listed = { items: [], operation: "LIST" as const, status: "COMPLETE" as const };
     const budget = { memoryActionAnswerResult: { operation: "LIST", status: "COMPLETE", version: 4 }, memoryActionResult: listed };
     expect(failedSafeActionForRun({ budgetSnapshot: budget, commandPending: false, executedAction: listed }))
       .toEqual({ kind: "fail" });
