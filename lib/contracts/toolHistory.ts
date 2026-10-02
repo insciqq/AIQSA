@@ -9,6 +9,9 @@
  * user message itself). */
 export type ToolHistoryTurn = Readonly<{
   turnMessageId: string;
+  /** The turn's user message: places the record when the turn's answer is
+   * not in the provider context (an error or Stop without text). */
+  userMessageId?: string;
   callRefs: readonly string[];
   /** sha256 of the canonical immutable fields of the listed calls, in order. */
   digest: string;
@@ -22,6 +25,9 @@ export type ToolHistorySnapshot = Readonly<{
   turns: readonly ToolHistoryTurn[];
   /** Eligible calls older than the listed ones, beyond the listing bound. */
   omittedCalls?: number;
+  /** The branch's calls could not be read at admission: every request of
+   * the run says so instead of implying that none were made. */
+  unavailable?: true;
 }>;
 
 /** A persisted call of the current run, by its provider call id: the
@@ -37,6 +43,9 @@ export type ToolHistoryEntry = Readonly<{
   compact: string;
   /** The full line discloses saved arguments or results. */
   details: boolean;
+  /** The call executed or its outcome is unknown: a record that must shrink
+   * keeps at least its compact line (absent counts as essential). */
+  essential?: boolean;
 }>;
 
 /** One turn's server-rendered record, built for one provider request. */

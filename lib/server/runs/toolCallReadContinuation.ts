@@ -1,6 +1,10 @@
+import { observationReadBudget, observationWholeDeliveryBatches, type WholeDeliveryShare } from "../toolObservations/sourceAdapters";
+import type { ToolCallReadBatch } from "../tools/readToolCall";
 import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
 import { providerResultCallId } from "./contextCompactionPlanner";
 import { READ_TOOL_CALL_NAME } from "./toolHistoryContract";
+import { parsePersistedToolExecutionResult } from "./toolExecutionPersistence";
+import type { PersistedToolLoopCall } from "./toolLoopPersistence";
 
 /**
  * What a persisted tool-loop continuation keeps of a `read_tool_call` output:
@@ -55,4 +59,29 @@ export async function withRereadCallReads(
     reread.push(callId !== null && readCallIds.has(callId) ? bridge.appendToolResult(undefined, await read(callId)) : message);
   }
   return reread;
+}
+
+/**
+ * The batch share in which each saved call read is read again on recovery,
+ * by its round: the reads of one round draw on one delivery allowance, as
+ * live reads did, after what that round's settled results drew from it. A
+ * read beyond it is shortened, then deferred, exactly as in a live batch.
+ */
+export function callReadReplayBudgets(calls: readonly PersistedToolLoopCall[],
+  share: WholeDeliveryShare): (round: number) => ToolCallReadBatch {
+  const batches = observationWholeDeliveryBatches();
+  const reads = callReadIds(calls);
+  let begun: number | null = null;
+  return (round) => {
+    if (begun !== round) {
+      begun = round;
+      batches.begin(round, share);
+      for (const call of calls) {
+        if (call.roundIndex !== round || reads.has(call.providerCallId)) continue;
+        const settled = parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, call.result);
+        if (settled) batches.replay(round, share, settled);
+      }
+    }
+    return observationReadBudget(batches.allowance(round, share));
+  };
 }

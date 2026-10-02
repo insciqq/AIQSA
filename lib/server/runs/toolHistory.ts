@@ -12,16 +12,14 @@ export type { ToolHistoryBlock, ToolHistoryEntry, ToolHistoryMessageData, ToolHi
 
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 
-export function omittedEntriesLine(count: number): string {
+export function omittedEntriesLine(count: number, notExecuted = false): string {
+  if (notExecuted) {
+    return `- ${count} call${count === 1 ? "" : "s"} of this turn that ${count === 1 ? "was" : "were"} not executed ${count === 1 ? "is" : "are"} not listed here (record size limit).`;
+  }
   return `- ${count} earlier call${count === 1 ? "" : "s"} of this turn ${count === 1 ? "is" : "are"} not listed here (record size limit); this does not mean ${count === 1 ? "it" : "they"} did not happen.`;
 }
 
 const NAMED_PREFIX = " read_tool_call reads them by call_ref:";
-
-/** The omission line, naming `refs` (newest first) when given. */
-function omissionLine(count: number, refs: readonly string[]): string {
-  return omittedEntriesLine(count) + (refs.length ? `${NAMED_PREFIX} ${refs.join(", ")}` : "");
-}
 
 /**
  * The lines of one record within `budgetBytes`, chronological. As many of
@@ -29,10 +27,12 @@ function omissionLine(count: number, refs: readonly string[]): string {
  * them upgraded to their full line while room remains; older entries are
  * counted on one omission line that (with `nameOmittedRefs`) names as many of
  * their call_refs, newest first, as still fit. The header and the footer are
- * always kept.
+ * always kept. With `keepEssential` only calls that were not executed may
+ * leave the listing: every executed call, and every call of unknown outcome,
+ * keeps at least its compact line (call_ref and outcome), whatever the room.
  */
 export function renderToolHistoryBlock(block: ToolHistoryBlock, budgetBytes: number = TOOL_HISTORY_LIMITS.blockBytes,
-  options: Readonly<{ nameOmittedRefs?: boolean }> = {}): Readonly<{
+  options: Readonly<{ keepEssential?: boolean; nameOmittedRefs?: boolean }> = {}): Readonly<{
   lines: readonly string[];
   detailRefs: readonly string[];
 }> {
@@ -40,27 +40,32 @@ export function renderToolHistoryBlock(block: ToolHistoryBlock, budgetBytes: num
   const fixed = bytes(block.header) + 1 + (block.footer ? bytes(block.footer) + 1 : 0);
   // Naming omitted calls for the reader may take up to a quarter of the room.
   const namingReserve = options.nameOmittedRefs ? Math.floor(Math.max(0, budgetBytes) / 4) : 0;
+  // The entries that may leave the listing, oldest first.
+  const omittable = entries.flatMap((entry, index) => !options.keepEssential || entry.essential === false ? [index] : []);
   const refBytes: number[] = [0];
-  for (const entry of entries) refBytes.push(refBytes.at(-1)! + bytes(entry.ref) + 2);
+  for (const index of omittable) refBytes.push(refBytes.at(-1)! + bytes(entries[index]!.ref) + 2);
+  const lineOf = (count: number) => omittedEntriesLine(count, options.keepEssential === true);
   const omissionBytes = (count: number) => count > 0
-    ? bytes(omittedEntriesLine(count)) + 1 + Math.min(namingReserve, namingReserve ? bytes(NAMED_PREFIX) + refBytes[count]! : 0) : 0;
-  // Compact bytes of the listed suffix, from the oldest listed entry on.
+    ? bytes(lineOf(count)) + 1 + Math.min(namingReserve, namingReserve ? bytes(NAMED_PREFIX) + refBytes[count]! : 0) : 0;
+  // Compact bytes of the listed entries; the oldest omittable ones leave first.
   let listedBytes = entries.reduce((total, entry) => total + bytes(entry.compact) + 1, 0);
-  let first = 0;
-  while (first < entries.length && fixed + listedBytes + omissionBytes(first) > budgetBytes) {
-    listedBytes -= bytes(entries[first]!.compact) + 1;
-    first += 1;
+  let omitted = 0;
+  while (omitted < omittable.length && fixed + listedBytes + omissionBytes(omitted) > budgetBytes) {
+    listedBytes -= bytes(entries[omittable[omitted]!]!.compact) + 1;
+    omitted += 1;
   }
-  let remaining = budgetBytes - fixed - listedBytes - (first > 0 ? bytes(omittedEntriesLine(first)) + 1 : 0);
-  let omission = first > 0 ? omittedEntriesLine(first) : null;
+  const left = new Set(omittable.slice(0, omitted));
+  let remaining = budgetBytes - fixed - listedBytes - (omitted > 0 ? bytes(lineOf(omitted)) + 1 : 0);
+  let omission = omitted > 0 ? lineOf(omitted) : null;
   if (omission && options.nameOmittedRefs) {
     const base = bytes(omission);
-    omission = withRefs(omission, entries.slice(0, first).map(entry => entry.ref).reverse(),
+    omission = withRefs(omission, omittable.slice(0, omitted).map(index => entries[index]!.ref).reverse(),
       base + Math.min(Math.max(0, remaining), namingReserve));
     remaining -= bytes(omission) - base;
   }
   const full = new Set<number>();
-  for (let index = entries.length - 1; index >= first; index -= 1) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (left.has(index)) continue;
     const extra = bytes(entries[index]!.full) - bytes(entries[index]!.compact);
     if (extra <= remaining) {
       full.add(index);
@@ -68,7 +73,7 @@ export function renderToolHistoryBlock(block: ToolHistoryBlock, budgetBytes: num
     }
   }
   const lines = [block.header, ...(omission ? [omission] : []),
-    ...entries.slice(first).map((entry, offset) => full.has(first + offset) ? entry.full : entry.compact),
+    ...entries.flatMap((entry, index) => left.has(index) ? [] : [full.has(index) ? entry.full : entry.compact]),
     ...(block.footer ? [block.footer] : [])];
   return { lines, detailRefs: entries.flatMap((entry, index) => full.has(index) && entry.details ? [entry.ref] : []) };
 }
@@ -121,7 +126,7 @@ export function boundedToolHistoryTexts(blocks: readonly ToolHistoryBlock[], bud
 
 /** The provider-only message of one record: role assistant, without `purpose`. */
 export function toolHistoryMessage(block: ToolHistoryBlock, budgetBytes?: number,
-  options: Readonly<{ nameOmittedRefs?: boolean }> = {}): ProviderConversationMessage {
+  options: Readonly<{ keepEssential?: boolean; nameOmittedRefs?: boolean }> = {}): ProviderConversationMessage {
   const id = toolHistoryMessageId(block.turnMessageId);
   const rendered = renderToolHistoryBlock(block, budgetBytes, options);
   return {
@@ -175,7 +180,7 @@ export function insertToolHistory(request: ProviderRunRequest, projection: ToolH
   for (const block of projection.blocks) {
     const index = anchorIndex(messages, block);
     if (index === null) continue;
-    before.set(index, [...(before.get(index) ?? []), toolHistoryMessage(block)]);
+    before.set(index, [...(before.get(index) ?? []), recordMessage(block, messages.at(-1))]);
   }
   if (before.size === 0 && messages.length === request.context.messages.length) return request;
   return { ...request, context: { ...request.context,
@@ -194,8 +199,15 @@ export function refreshToolHistory(request: ProviderRunRequest, projection: Tool
   return { ...request, context: { ...request.context!, messages: messages.flatMap(message => {
     if (!isToolHistoryMessage(message)) return [message];
     const block = blocks.get(message.id);
-    return block ? [toolHistoryMessage(block)] : [];
+    return block ? [recordMessage(block, messages.at(-1))] : [];
   }) } };
+}
+
+/** A record at its normal bound. The record of earlier attempts of the
+ * current message keeps every executed call and every call of unknown
+ * outcome listed even beyond that bound (the planner fits or refuses it). */
+function recordMessage(block: ToolHistoryBlock, current: ProviderConversationMessage | undefined): ProviderConversationMessage {
+  return toolHistoryMessage(block, undefined, { keepEssential: block.turnMessageId === current?.id });
 }
 
 export function requestHasToolHistory(request: Pick<ProviderRunRequest, "context">): boolean {
@@ -205,9 +217,12 @@ export function requestHasToolHistory(request: Pick<ProviderRunRequest, "context
 /**
  * The request with the record of earlier attempts of its current message
  * rendered smaller, so that `excessTokens` leave the irreducible part of the
- * request: older entries become compact, then counted (their call_refs named
- * while room remains), down to the header and that count. Null when there is
- * no such record or it cannot shrink further.
+ * request: details go first (compact lines), then calls that were not
+ * executed (counted, their call_refs named while room remains). Every executed
+ * call, and every call of unknown outcome, keeps its compact line with its
+ * call_ref and outcome. Null when there is no such record, it cannot shrink,
+ * or even that floor does not release `excessTokens` (the request is refused
+ * rather than hide an action that may have happened).
  */
 export function fitCurrentTurnToolHistory(request: ProviderRunRequest, excessTokens: number,
   estimate: (value: unknown) => number): Readonly<{ request: ProviderRunRequest; releasedTokens: number }> | null {
@@ -219,11 +234,13 @@ export function fitCurrentTurnToolHistory(request: ProviderRunRequest, excessTok
   if (!record || !block || excessTokens <= 0) return null;
   const tokens = estimate(record.content);
   const target = tokens - excessTokens;
-  const render = (bytes: number) => toolHistoryMessage(block, bytes, { nameOmittedRefs: true });
-  // The largest rendering within the target, by bytes; the smallest one when none fits.
+  const render = (bytes: number) => toolHistoryMessage(block, bytes, { keepEssential: true, nameOmittedRefs: true });
+  const floor = render(0);
+  if (estimate(floor.content) > target) return null;
+  // The largest rendering within the target, by bytes.
   let low = 0;
   let high: number = TOOL_HISTORY_LIMITS.blockBytes;
-  let best = render(0);
+  let best = floor;
   while (low < high) {
     const middle = Math.floor((low + high + 1) / 2);
     const candidate = render(middle);

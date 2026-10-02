@@ -767,21 +767,21 @@ export function planContextCompaction(input: Readonly<{
     request.tools?.some(tool => tool.name === READ_TOOL_RESULT_NAME && tool.capability === "session") === true &&
     input.bridge.supportsToolCalling({ modelId: request.modelId, provider: request.provider });
   if (minimumTokens > budgetTokens) {
-    // The record of earlier attempts of the current message is irreducible
-    // but renders smaller (compact entries, then a count): it takes the room
-    // the rest of the minimum leaves before anything is refused.
-    const fitted = fitCurrentTurnToolHistory(request, minimumTokens - budgetTokens, estimate);
-    if (fitted) {
+    // The newest batch has never reached the model, so its whole results and
+    // previews may still arrive as their references (nothing it has seen
+    // leaves): this lossless reduction comes first.
+    const degraded = maskingAvailable
+      ? newestBatchAsReferences(request, input.bridge!, input.observations, transcript, minimumTokens - budgetTokens) : null;
+    if (!degraded) {
+      // Only then does the record of earlier attempts of the current message
+      // render smaller, never below the compact line (call_ref and outcome)
+      // of every executed call or call of unknown outcome. A minimum that
+      // floor cannot bring within the budget is irreducible.
+      const fitted = fitCurrentTurnToolHistory(request, minimumTokens - budgetTokens, estimate);
+      if (!fitted) return result("irreducible_overflow", { overflow: overflow() });
       const plan = planContextCompaction({ ...input, assembledTokens: beforeTokens - fitted.releasedTokens, request: fitted.request });
       return { ...plan, measurement: { ...plan.measurement, beforeTokens } };
     }
-    // The newest batch has never reached the model, so its whole results and
-    // previews may still arrive as their references (nothing it has seen
-    // leaves). Only a minimum those references cannot bring within the
-    // budget is irreducible.
-    const degraded = maskingAvailable
-      ? newestBatchAsReferences(request, input.bridge!, input.observations, transcript, minimumTokens - budgetTokens) : null;
-    if (!degraded) return result("irreducible_overflow", { overflow: overflow() });
     const plan = planContextCompaction({ ...input, assembledTokens: beforeTokens - degraded.releasedTokens, request: degraded.request });
     return { ...plan, measurement: plan.measurement.outcome === "irreducible_overflow" ? plan.measurement : {
       ...plan.measurement,

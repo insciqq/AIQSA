@@ -88,36 +88,55 @@ describe("tool history placement", () => {
 
 describe("fitting the current message's record", () => {
   const estimate = (value: unknown) => Math.ceil(Buffer.byteLength(JSON.stringify(value) ?? "", "utf8") / 4);
-  const withRecord = (entries: number) => insertToolHistory(request([message("q1", "user"), message("a1", "assistant"),
-    message("q2", "user")]), { blocks: [block("q2", "q2", entries)] });
+  /** Forty calls of earlier attempts: every fourth one executed, the others refused before dispatch. */
+  const mixed = (): ToolHistoryBlock => {
+    const value = block("q2", "q2", 40);
+    return { ...value, entries: value.entries.map((entry, index) => index % 4 === 0 ? { ...entry, essential: true } : {
+      ...entry, essential: false, compact: entry.compact.replace("executed.", "not executed."),
+      full: entry.full.replace("executed.", "not executed.") }) };
+  };
+  const withRecord = (value: ToolHistoryBlock) => insertToolHistory(request([message("q1", "user"), message("a1", "assistant"),
+    message("q2", "user")]), { blocks: [value] });
   const record = (value: ProviderRunRequest) => value.context!.messages.find(entry => entry.id === toolHistoryMessageId("q2"))!;
+  const text = (value: ProviderRunRequest) => record(value).content.blocks.map(entry => (entry as { text: string }).text);
+  const floorTokens = (value: ToolHistoryBlock) => estimate(toolHistoryMessage(value, 0, { keepEssential: true, nameOmittedRefs: true }).content);
 
-  it("renders it smaller by the excess, keeping the newest entries and naming the older ones", () => {
-    const original = withRecord(40);
+  it("renders it smaller by the excess: details first, then the calls that were not executed, named", () => {
+    const original = withRecord(mixed());
     const before = estimate(record(original).content);
     const fitted = fitCurrentTurnToolHistory(original, 500, estimate)!;
     const after = estimate(record(fitted.request).content);
     expect(after).toBeLessThanOrEqual(before - 500);
     expect(fitted.releasedTokens).toBe(before - after);
     // Older entries become compact first, the newest keep their details.
-    const lines = record(fitted.request).content.blocks.map(entry => (entry as { text: string }).text);
-    expect(lines.find(line => line.includes("call 0:"))).toBe("- [tcr1_00000000000000000000000000000000] call 0: executed.");
-    expect(lines.at(-1)).toContain("call 39: executed. Arguments");
-    // A larger excess counts the oldest and names their call_refs.
-    const counted = fitCurrentTurnToolHistory(original, before - 150, estimate)!;
-    const text = JSON.stringify(record(counted.request).content);
-    expect(text).toContain("read_tool_call reads them by call_ref");
-    expect(text).toContain("call 39");
+    expect(text(fitted.request).find(line => line.includes("call 0:"))).toBe("- [tcr1_00000000000000000000000000000000] call 0: executed.");
+    expect(text(fitted.request).at(-1)).toContain("call 39: not executed. Arguments");
+    // A larger excess counts calls that were not executed and names their call_refs.
+    const counted = fitCurrentTurnToolHistory(original, before - floorTokens(mixed()) - 40, estimate)!;
+    const lines = text(counted.request);
+    expect(lines[1]).toMatch(/^- \d+ calls of this turn that were not executed are not listed here \(record size limit\)\. read_tool_call reads them by call_ref: tcr1_/u);
+    for (const entry of mixed().entries.filter(value => value.essential)) expect(lines).toContain(entry.compact);
     // Only that record changes; its id and place stay.
     expect(ids(fitted.request)).toEqual(ids(original));
   });
 
-  it("goes down to its header and count, then reports that it cannot shrink", () => {
-    const minimal = fitCurrentTurnToolHistory(withRecord(40), 1_000_000, estimate)!;
-    const text = JSON.stringify(record(minimal.request).content);
-    expect(text).toContain("[record q2]");
-    expect(text).toContain("40 earlier calls of this turn are not listed here");
-    expect(fitCurrentTurnToolHistory(minimal.request, 1_000_000, estimate)).toBeNull();
+  it("never goes below the compact line of every executed call: beyond that it reports that it cannot shrink", () => {
+    const value = mixed();
+    const original = withRecord(value);
+    const before = estimate(record(original).content);
+    const minimal = fitCurrentTurnToolHistory(original, before - floorTokens(value), estimate)!;
+    const lines = text(minimal.request);
+    expect(lines[0]).toBe("[record q2]");
+    expect(lines[1]).toBe("- 30 calls of this turn that were not executed are not listed here (record size limit).");
+    expect(lines.slice(2)).toEqual(value.entries.filter(entry => entry.essential).map(entry => entry.compact));
+    expect(fitCurrentTurnToolHistory(minimal.request, 1, estimate)).toBeNull();
+    expect(fitCurrentTurnToolHistory(original, before - floorTokens(value) + 1, estimate)).toBeNull();
+    // Calls of unknown essentiality count as executed: none of them leaves the listing.
+    const executed = withRecord(block("q2", "q2", 40));
+    const kept = fitCurrentTurnToolHistory(executed, 1_000_000, estimate);
+    expect(kept).toBeNull();
+    const compact = fitCurrentTurnToolHistory(executed, estimate(record(executed).content) - floorTokens(block("q2", "q2", 40)), estimate)!;
+    expect(text(compact.request).slice(1)).toEqual(block("q2", "q2", 40).entries.map(entry => entry.compact));
     expect(fitCurrentTurnToolHistory(request([message("q1", "user")]), 100, estimate)).toBeNull();
   });
 });
@@ -148,6 +167,21 @@ describe("tool history rendering within a byte budget", () => {
     const tiny = renderToolHistoryBlock(value, 10);
     expect(tiny.lines[0]).toBe("[record a1]");
     expect(tiny.detailRefs).toEqual([]);
+  });
+
+  it("lists every executed call of the current message's record even beyond the normal bound", () => {
+    // More compact lines than one record's normal bound holds.
+    const many = block("q2", "q2", 600);
+    const lines = (value: ProviderRunRequest, id: string) => value.context!.messages.find(entry => entry.id === toolHistoryMessageId(id))!
+      .content.blocks.map(entry => (entry as { text: string }).text);
+    const current = insertToolHistory(request([message("q1", "user"), message("a1", "assistant"), message("q2", "user")]),
+      { blocks: [many] });
+    expect(lines(current, "q2").slice(1)).toEqual(expect.arrayContaining(many.entries.map(entry => entry.compact)));
+    expect(lines(refreshToolHistory(current, { blocks: [many] }), "q2")).toEqual(lines(current, "q2"));
+    // An earlier turn's record keeps its bound: older entries are counted.
+    const earlier = insertToolHistory(request([message("q1", "user"), message("a1", "assistant"), message("q2", "user")]),
+      { blocks: [{ ...many, turnMessageId: "a1", userMessageId: "q1" }] });
+    expect(lines(earlier, "a1")[1]).toMatch(/^- \d+ earlier calls of this turn are not listed here/u);
   });
 
   it("carries the rendered refs that disclose details", () => {

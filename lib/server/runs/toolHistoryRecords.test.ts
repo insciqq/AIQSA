@@ -68,6 +68,8 @@ describe("tool call outcomes keep request, dispatch and result distinct", () => 
     const outcome = toolCallOutcome(input);
     expect(outcome.status).toBe(status);
     expect(outcome.dispatched).toBe(dispatched);
+    // Only a call that was not executed may leave a record that must shrink.
+    expect(toolHistoryEntry(toolHistoryRecord(input, false), both).essential).toBe(status !== "not_executed");
   });
 
   it("recognizes a blocked repeat only by the whole server-owned combination", () => {
@@ -239,15 +241,27 @@ describe("tool history blocks", () => {
   it("keeps every turn in place with its calls counted when the saved facts cannot be read", () => {
     const projection = unavailableToolHistoryProjection({ currentUserMessageId: "question-2", readers: both, toolHistory: {
       version: 1, omittedCalls: 4, turns: [
-        { turnMessageId: "answer-1", callRefs: [toolCallRef(id)!], digest: "d".repeat(64), readerCalls: 2 },
+        // A failed answer without text: its frozen user message places the record.
+        { turnMessageId: "answer-1", userMessageId: "question-1", callRefs: [toolCallRef(id)!], digest: "d".repeat(64), readerCalls: 2 },
         { turnMessageId: "question-2", callRefs: [toolCallRef(id)!, toolCallRef(id)!], digest: "d".repeat(64) }
       ] } });
     expect(projection.blocks.map(block => block.turnMessageId)).toEqual(["answer-1", "question-2"]);
+    expect(projection.blocks.map(block => block.userMessageId)).toEqual(["question-1", null]);
     expect(projection.blocks.every(block => block.entries.length === 0)).toBe(true);
     expect(projection.blocks[0]!.footer).toContain("1 recorded call: saved details are temporarily unavailable");
     expect(projection.blocks[0]!.footer).toContain("Also 2 read, status or tool-search calls");
     expect(projection.blocks[0]!.footer).toContain("4 older tool calls of this chat are not listed");
     expect(projection.blocks[1]!.header).toContain("earlier attempts to answer the next user message");
     expect(projection.blocks[1]!.footer).toContain("2 recorded calls: saved details are temporarily unavailable");
+  });
+
+  it("says before the current message that the history could not be loaded when admission could not read it", () => {
+    const toolHistory = { version: 1, turns: [], unavailable: true } as const;
+    const projection = unavailableToolHistoryProjection({ currentUserMessageId: "question-2", readers: both, toolHistory });
+    expect(projection.blocks).toEqual([{ turnMessageId: "question-2", userMessageId: "question-2", header: expect.any(String),
+      entries: [], footer: null }]);
+    expect(projection.blocks[0]!.header).toContain("earlier tool calls of this chat could not be loaded");
+    expect(projection.blocks[0]!.header).toContain("Do not assume that none were made");
+    expect(unavailableToolHistoryProjection({ currentUserMessageId: null, readers: none, toolHistory }).blocks).toEqual([]);
   });
 });

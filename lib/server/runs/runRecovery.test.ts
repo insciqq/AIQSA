@@ -6335,7 +6335,8 @@ describe("run recovery", () => {
         { content: { blocks: [{ text: "Created it.", type: "text" as const }] }, id: "answer-0", role: "assistant" as const },
         { content: { blocks: [{ text: "remember this", type: "text" as const }] }, id: "question-1", role: "user" as const }
       ];
-      const run = async (projections: Array<{ blocks: (typeof block)[] }>, rounds = 1) => {
+      const run = async (projections: Array<{ blocks: (typeof block)[] }>, rounds = 1,
+        toolHistory: NormalizedRunRequest["toolHistory"] = { version: 1, turns: [{ turnMessageId: "answer-0", callRefs: [callRef], digest: "e".repeat(64) }] }) => {
         const requests: ProviderRunRequest[] = [];
         const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
           async *stream(request) {
@@ -6353,26 +6354,34 @@ describe("run recovery", () => {
         const { mcp: _mcp, ...normalizedRequest } = base.normalizedRequest;
         installCheckpointState(harness, { ...base, normalizedRequest: { ...normalizedRequest, sessionStatusTool: true, toolMode: "none",
           toolCallReader: true, context: { messages, mode: "branch_path" },
-          contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "answer-0", messages }),
-          toolHistory: { version: 1, turns: [{ turnMessageId: "answer-0", callRefs: [callRef], digest: "e".repeat(64) }] } } });
+          contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "answer-0", messages }), toolHistory } });
         await refreshProviderRunIfNeeded(harness.deps, runId, userId);
         expect(harness.state.recoveredErrors).toEqual([]);
-        expect(project).toHaveBeenCalledWith({ actor: { runId, userId }, readers: { call: true, result: false },
-          toolHistory: expect.objectContaining({ version: 1 }), cache: expect.any(Map) });
         return { project, requests };
       };
       const projected = await run([{ blocks: [block] }]);
-      // The restart's first dispatch reuses the projection it inserted.
-      expect(projected.project).toHaveBeenCalledOnce();
+      // The restart projects to place the records and again for its dispatch:
+      // no projection is reused across awaited work.
+      expect(projected.project).toHaveBeenCalledTimes(2);
+      expect(projected.project).toHaveBeenCalledWith({ actor: { runId, userId }, readers: { call: true, result: false },
+        toolHistory: expect.objectContaining({ version: 1 }), cache: expect.any(Map) });
       const [first] = projected.requests;
       expect(first!.context!.messages.map(message => message.id)).toEqual(["question-0", "tch1_answer-0", "answer-0", "question-1"]);
       expect(first!.context!.messages[1]).toMatchObject({ role: "assistant", historyClass: "tool_history" });
       expect(JSON.stringify(first!.context!.messages[1]!.content)).toContain("CURRENT_TITLE");
       // Revoked before the next round: its dispatch no longer carries the record.
-      const revoked = await run([{ blocks: [block] }, { blocks: [] }], 2);
+      const revoked = await run([{ blocks: [block] }, { blocks: [block] }, { blocks: [] }], 2);
       expect(revoked.requests).toHaveLength(2);
       expect(revoked.requests[0]!.context!.messages.map(message => message.id)).toContain("tch1_answer-0");
       expect(revoked.requests[1]!.context!.messages.map(message => message.id)).toEqual(["question-0", "answer-0", "question-1"]);
+      // A history admission could not read is said to be unavailable in every dispatch, without projection I/O.
+      const notLoaded = await run([{ blocks: [] }], 2, { version: 1, turns: [], unavailable: true });
+      expect(notLoaded.project).not.toHaveBeenCalled();
+      expect(notLoaded.requests).toHaveLength(2);
+      for (const request of notLoaded.requests) {
+        expect(request.context!.messages.map(message => message.id)).toEqual(["question-0", "answer-0", "tch1_question-1", "question-1"]);
+        expect(JSON.stringify(request.context!.messages[2]!.content)).toContain("earlier tool calls of this chat could not be loaded");
+      }
     });
 
     it("reads a saved call read again before replaying its continuation and persists only its stub", async () => {

@@ -34,11 +34,16 @@ export const TOOL_HISTORY_LIMITS = Object.freeze({
   projectionValueBytes: 16 * 1024,
   /** Calls whose saved values one projection query loads at once. */
   projectionBatchCalls: 256,
-  /** One history read inside a database transaction. The projection of a
-   * long chat stays far below it (the stateful timing check measures it); a
-   * slower read degrades to "details unavailable", never fails the run. */
+  /** The admission read of a branch's history inside one database
+   * transaction (a long chat stays far below it; the stateful timing check
+   * measures it). A slower read freezes "could not be loaded", never refusing
+   * the message. */
   transactionMs: 15_000,
   transactionWaitMs: 5_000,
+  /** Every per-request read (projection, call read, availability check)
+   * holds a pooled connection only this long; a slower one degrades. */
+  requestTransactionMs: 5_000,
+  requestTransactionWaitMs: 2_000,
   /** Runs with calls one admission reads, newest first, before the rest of
    * the branch's calls are counted as omitted without being read. */
   scannedRuns: 1024,
@@ -107,14 +112,17 @@ const messageId = (value: unknown): value is string => typeof value === "string"
 
 /** Strict decoder for the frozen field; any other shape refuses the request. */
 export function decodeToolHistorySnapshot(value: unknown): ToolHistorySnapshot | null {
-  if (!record(value) || !exactKeys(value, ["turns", "version"], ["omittedCalls"]) || value.version !== TOOL_HISTORY_VERSION ||
+  if (!record(value) || !exactKeys(value, ["turns", "version"], ["omittedCalls", "unavailable"]) || value.version !== TOOL_HISTORY_VERSION ||
     !Array.isArray(value.turns) || value.turns.length > TOOL_HISTORY_LIMITS.turns ||
-    value.omittedCalls !== undefined && (!count(value.omittedCalls, Number.MAX_SAFE_INTEGER) || value.omittedCalls === 0)) return null;
+    value.omittedCalls !== undefined && (!count(value.omittedCalls, Number.MAX_SAFE_INTEGER) || value.omittedCalls === 0) ||
+    // A history that could not be read lists and counts nothing.
+    value.unavailable !== undefined && (value.unavailable !== true || value.turns.length > 0 || value.omittedCalls !== undefined)) return null;
   const seenTurns = new Set<string>();
   const seenRefs = new Set<string>();
   for (const turn of value.turns) {
-    if (!record(turn) || !exactKeys(turn, ["callRefs", "digest", "turnMessageId"], ["readerCalls"]) ||
+    if (!record(turn) || !exactKeys(turn, ["callRefs", "digest", "turnMessageId"], ["readerCalls", "userMessageId"]) ||
       !messageId(turn.turnMessageId) || seenTurns.has(turn.turnMessageId) ||
+      turn.userMessageId !== undefined && !messageId(turn.userMessageId) ||
       typeof turn.digest !== "string" || !/^[a-f0-9]{64}$/u.test(turn.digest) ||
       !Array.isArray(turn.callRefs) ||
       turn.readerCalls !== undefined && (!count(turn.readerCalls, TOOL_HISTORY_LIMITS.readerCalls) || turn.readerCalls === 0) ||

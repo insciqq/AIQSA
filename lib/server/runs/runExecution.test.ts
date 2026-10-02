@@ -7942,9 +7942,10 @@ describe("cross-turn tool history", () => {
       expect(text).toContain("Synthetic issue 7");
       expect(text).toContain(writeRef);
     }
-    // Every answer request re-projects with the run's own authority, the
-    // first request's consumer reusing the projection it was built with.
-    expect(projectToolHistory).toHaveBeenCalledTimes(2);
+    // Every answer request re-projects with the run's own authority (the
+    // first one also projected once to place the records): no projection is
+    // reused across awaited work.
+    expect(projectToolHistory).toHaveBeenCalledTimes(3);
     expect(projectToolHistory).toHaveBeenCalledWith({ actor: { runId: "run-1", userId: "user-1" },
       readers: { call: true, result: prepared.normalizedRequest.toolObservationVersion === 1 },
       toolHistory: prepared.normalizedRequest.toolHistory, cache: expect.any(Map) });
@@ -7967,8 +7968,8 @@ describe("cross-turn tool history", () => {
     const requests: ProviderRunRequest[] = [];
     const repository = createRepository();
     let call = 0;
-    // The first projection serves round one (its start and its consumer).
-    const projectToolHistory = vi.fn(async () => ++call <= 1 ? historyProjection()
+    // The first two projections serve round one (placing the records and its request).
+    const projectToolHistory = vi.fn(async () => ++call <= 2 ? historyProjection()
       : historyProjection("withheld (their secret values cannot be verified as redacted)"));
     const adapter = createAdapter(async function* (request) {
       requests.push(structuredClone(request));
@@ -8027,6 +8028,52 @@ describe("cross-turn tool history", () => {
     const text = JSON.stringify(requests[0]!.context!.messages[1]!.content);
     expect(text).toContain("1 recorded call: saved details are temporarily unavailable");
     expect(text).not.toContain("Synthetic issue 7");
+  });
+
+  it("keeps a failed answer's degraded record in that answer's place by its frozen user message", async () => {
+    const prepared = historyPrepared();
+    // The first answer failed without text after its write: it is not in the context.
+    const messages = prepared.normalizedRequest.context!.messages.filter((message) => message.id !== "answer-1");
+    const toolHistory = { version: 1 as const, turns: [{ turnMessageId: "failed-answer-1", userMessageId: "question-1",
+      callRefs: [writeRef], digest: "a".repeat(64) }] };
+    const normalizedRequest: NormalizedRunRequest = { ...prepared.normalizedRequest, toolHistory,
+      context: { messages, mode: "branch_path" }, contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "question-1", messages }) };
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const adapter = createAdapter(async function* (request) { requests.push(structuredClone(request)); return providerResult({ finalText: "Answer." }); });
+    await createRunExecutionResponse(executionInput({ adapter, prepared: { ...prepared, normalizedRequest,
+      providerRequest: { ...prepared.providerRequest, ...normalizedRequest } },
+    repository: { ...repository.repository, projectToolHistory: vi.fn(async () => { throw new Error("synthetic_database_timeout"); }) } })).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(requests[0]!.context!.messages.map((message) => message.id))
+      .toEqual(["question-1", "tch1_failed-answer-1", "current-user-message"]);
+    expect(JSON.stringify(requests[0]!.context!.messages[1]!.content)).toContain("1 recorded call: saved details are temporarily unavailable");
+  });
+
+  it("says in every request that the history could not be loaded when admission could not read it", async () => {
+    const prepared = historyPrepared();
+    const normalizedRequest: NormalizedRunRequest = { ...prepared.normalizedRequest,
+      toolHistory: { version: 1, turns: [], unavailable: true } };
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const projectToolHistory = vi.fn();
+    const adapter = createAdapter(async function* (request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: { call_ref: writeRef }, id: "read-1",
+        name: "read_tool_call" }] });
+      return providerResult({ finalText: "Answer." });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, prepared: { ...prepared, normalizedRequest,
+      providerRequest: { ...prepared.providerRequest, ...normalizedRequest } },
+    repository: { ...repository.repository, projectToolHistory } })).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.context!.messages.map((message) => message.id))
+        .toEqual(["question-1", "answer-1", "tch1_current-user-message", "current-user-message"]);
+      expect(JSON.stringify(request.context!.messages[2]!.content)).toContain("earlier tool calls of this chat could not be loaded");
+    }
+    expect(projectToolHistory).not.toHaveBeenCalled();
   });
 
   it("sends no records and no projection I/O for a run without a frozen history", async () => {

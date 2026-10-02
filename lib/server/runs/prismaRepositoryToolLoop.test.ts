@@ -542,8 +542,8 @@ describe("provider dispatch recovery request loading", () => {
   });
 
   it("round-trips the frozen tool history and call reader and rejects any other shape", async () => {
-    const toolHistory = { version: 1, turns: [{ turnMessageId: "answer-one", callRefs: [`tcr1_${"a".repeat(32)}`],
-      digest: "d".repeat(64), readerCalls: 2 }], omittedCalls: 3 };
+    const toolHistory = { version: 1, turns: [{ turnMessageId: "answer-one", userMessageId: "question-one",
+      callRefs: [`tcr1_${"a".repeat(32)}`], digest: "d".repeat(64), readerCalls: 2 }], omittedCalls: 3 };
     let accepted: unknown = { ...normalizedRequest, toolCallReader: true, toolHistory };
     const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
       chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
@@ -551,7 +551,11 @@ describe("provider dispatch recovery request loading", () => {
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     const load = () => operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
     await expect(load()).resolves.toEqual(accepted);
+    // A history admission could not read stays recoverable as that marker.
+    accepted = { ...normalizedRequest, toolCallReader: true, toolHistory: { version: 1, turns: [], unavailable: true } };
+    await expect(load()).resolves.toEqual(accepted);
     for (const invalid of [{ toolCallReader: false }, { toolHistory: { ...toolHistory, version: 2 } },
+      { toolHistory: { ...toolHistory, unavailable: true } },
       { toolHistory: { version: 1, turns: [{ ...toolHistory.turns[0], callRefs: ["tor1_not-a-call"] }] } },
       { toolHistory: { version: 1, turns: [{ ...toolHistory.turns[0], arguments: { title: "copied" } }] } }]) {
       accepted = { ...normalizedRequest, toolCallReader: true, toolHistory, ...invalid };
