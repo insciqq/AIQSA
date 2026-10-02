@@ -6,6 +6,7 @@ import { authorizeMemoryExecutionResultsForCommit, probeMemoryStructuredOutputAu
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { lockMemorySettings } from "../persistence/transaction";
+import type { MemoryMaintenanceOutput } from "./contract";
 import { MEMORY_MAINTENANCE_PIPELINE_VERSION, MEMORY_MAINTENANCE_POLICY_VERSION, MEMORY_MAINTENANCE_VERSIONS } from "./policy";
 import { createPrismaMemoryMaintenanceProvider, memoryMaintenanceInputHash, type MemoryMaintenanceProvider,
   type MemoryMaintenanceVerificationResult } from "./provider";
@@ -16,6 +17,9 @@ export function isMemoryMaintenanceJob(job: MemoryJobDescriptor): boolean {
     job.chatId === null && job.sourceMessageId === null && job.targetFactVersionId === null &&
     job.activeLeafMessageId === null && job.branchGeneration === null && job.sourceRevision === null && job.sourceHash === null;
 }
+/** Before the paid review a changed source stales the whole plan; afterwards
+ * the verifier receives only still-matching removals and apply settles each
+ * changed source on its own. */
 export function createPrismaMemoryMaintenanceHandler(client: PrismaClient, options: Readonly<{
   authority?: MemoryExecutionAuthorityDependencies; structuredProvider?: MemoryStructuredOutputProvider;
   provider?: MemoryMaintenanceProvider; repository?: MemoryMaintenanceRepository;
@@ -32,8 +36,11 @@ export function createPrismaMemoryMaintenanceHandler(client: PrismaClient, optio
       if (!settings?.useMemoryFacts || !settings.learnAutomatically) {
         return { status: "CANCELLED", errorCode: "memory_maintenance_disabled" };
       }
-      if (settings.memoryGeneration !== job.memoryGenerationSnapshot ||
-        !await repository.snapshot(job)) return { status: "STALE", errorCode: "memory_maintenance_source_stale" };
+      if (settings.memoryGeneration !== job.memoryGenerationSnapshot) return { status: "STALE", errorCode: "memory_maintenance_source_stale" };
+      const snapshot = await repository.snapshot(job);
+      if (!snapshot || (!snapshot.plan && !await repository.bindingExists(job, 0))) {
+        return { status: "STALE", errorCode: "memory_maintenance_source_stale" };
+      }
       try {
         await probeMemoryStructuredOutputAuthority({ authority, client, role: "MEMORY_SYNTHESIZE", userId: job.userId, versions: MEMORY_MAINTENANCE_VERSIONS });
       } catch { return { status: "WAITING_FOR_CONFIGURATION", errorCode: "memory_maintenance_authority_unavailable" }; }
@@ -41,16 +48,17 @@ export function createPrismaMemoryMaintenanceHandler(client: PrismaClient, optio
     },
     async execute(job, context) {
       if (!isMemoryMaintenanceJob(job)) throw new MemoryCoordinatorError("memory_maintenance_job_invalid", false);
-      const plan = await repository.snapshot(job);
-      if (!plan) throw new MemoryCoordinatorError("memory_maintenance_source_stale", false);
-      const inputHash = memoryMaintenanceInputHash(plan);
+      const reviewed = await repository.snapshot(job);
+      if (!reviewed) throw new MemoryCoordinatorError("memory_maintenance_source_stale", false);
+      const owner = { userId: job.userId, jobId: job.id };
       await context.setStage("maintenance_review");
-      let review = await repository.stagedReview(job, plan, inputHash);
+      let review = await repository.stagedReview(job, reviewed, memoryMaintenanceInputHash(reviewed));
       if (!review) {
         if (await repository.bindingExists(job, 0)) {
           throw new MemoryCoordinatorError("memory_maintenance_outcome_unknown", false);
         }
-        review = await provider.review(plan, context.signal, { userId: job.userId, jobId: job.id });
+        if (!reviewed.plan) throw new MemoryCoordinatorError("memory_maintenance_source_stale", false);
+        review = await provider.review(reviewed.plan, context.signal, owner);
       }
       if (review.policyVersion !== MEMORY_MAINTENANCE_POLICY_VERSION) {
         throw new MemoryCoordinatorError("memory_maintenance_policy_stale", false);
@@ -58,14 +66,22 @@ export function createPrismaMemoryMaintenanceHandler(client: PrismaClient, optio
       let verification: MemoryMaintenanceVerificationResult | null = null;
       if (review.output.decisions.some(({ action }) => action === "REMOVE_TRANSIENT")) {
         await context.setStage("maintenance_verify");
-        verification = await repository.stagedVerification(job, review.output, memoryMaintenanceInputHash(plan, review.output));
+        verification = await repository.stagedVerification(job, reviewed, review.output);
         if (!verification) {
           if (await repository.bindingExists(job, 1)) throw new MemoryCoordinatorError("memory_maintenance_outcome_unknown", false);
-          const fresh = await repository.snapshot(job);
-          if (fresh?.sourceSnapshotHash !== plan.sourceSnapshotHash) throw new MemoryCoordinatorError("memory_maintenance_source_stale", false);
-          verification = await provider.verify(plan, review.output, context.signal, { userId: job.userId, jobId: job.id });
+          // Disclose only removals whose source still matches its reviewed
+          // hash; a changed one is BLOCKED in apply instead of staling the batch.
+          const current = await repository.snapshot(job);
+          if (current?.sourceSnapshotHash !== reviewed.sourceSnapshotHash) {
+            throw new MemoryCoordinatorError("memory_maintenance_source_stale", false);
+          }
+          const removals = new Set(review.output.decisions.filter(({ action }) => action === "REMOVE_TRANSIENT").map(({ sourceRef }) => sourceRef));
+          const disclosed = current.sources.flatMap(({ ref, current: content }) => removals.has(ref) && content ? [content] : []);
+          const proposal: MemoryMaintenanceOutput = { decisions: review.output.decisions.filter(({ sourceRef }) =>
+            disclosed.some(({ ref }) => ref === sourceRef)) };
+          if (disclosed.length) verification = await provider.verify(reviewed, disclosed, proposal, context.signal, owner);
         }
-        if (verification.policyVersion !== MEMORY_MAINTENANCE_POLICY_VERSION) {
+        if (verification && verification.policyVersion !== MEMORY_MAINTENANCE_POLICY_VERSION) {
           throw new MemoryCoordinatorError("memory_maintenance_policy_stale", false);
         }
       }
@@ -84,7 +100,7 @@ export function createPrismaMemoryMaintenanceHandler(client: PrismaClient, optio
           if (authorized.length !== accepted.length || authorized.some((result, index) => result.bindingId !== accepted[index]!.executionId ||
             result.modelId !== accepted[index]!.modelId || result.providerId !== accepted[index]!.providerId ||
             result.policyVersion !== accepted[index]!.policyVersion)) throw new Error("memory_maintenance_authority_mismatch");
-          await repository.apply(tx, claim, plan, reviewResult, verificationResult, context.now());
+          await repository.apply(tx, claim, reviewed, reviewResult, verificationResult, context.now());
         }
       };
     }

@@ -31,7 +31,7 @@ Inbound Memory MCP is a separate delegated owner-command boundary. An active own
 
 ## Learning And Evidence
 
-Only the exact direct-user target supplies automatic testimony. Bounded context may resolve references, time or an immediately preceding question's attribute; the user must supply the value, not merely confirm an assistant assertion. Context remains a revalidated dependency. Every reuse checks the active DAG path, source, pause, exclusion, deletion and generation fences. Durable imperative communication preferences require semantic adjudication; one-off instructions are ineligible. Assistant speech may support history recall, never user testimony.
+Only the exact direct-user target supplies automatic testimony. Bounded context may resolve references, time or an immediately preceding question's attribute; the user must supply the value, not merely confirm an assistant assertion. Context remains a revalidated dependency. Every reuse checks the active DAG path, source, pause, exclusion, deletion and generation fences. Maintenance-removed source facts skip these fences; evidence is purged. Durable imperative communication preferences require semantic adjudication; one-off instructions are ineligible. Assistant speech may support history recall, never user testimony.
 
 Direct personal reports retain attribution and uncertainty: “my brother told me he works nights” attests the user's report about the brother, never independent testimony or the user's schedule. Quotations, external material and assistant text alone cannot attest facts; reported speech within the user's own assertion remains eligible.
 
@@ -43,7 +43,7 @@ Safety Lite is local and independent from semantic classification. It redacts re
 
 Expiration requires grounded source language and validated calendar interpretation. Unresolved explicit TTL rejects the candidate. Reads enforce expiration synchronously; cleanup is not authorization. Expiration or supersession never resurrects older versions. Current reads label elapsed or long-unconfirmed structured plans and past events without inferring expiry or completion. Historical reads and untyped explicit facts remain unchanged.
 
-Background maintenance follows Memory and automatic learning; it has no toggle. Versioned maintenance reviews existing/changed automatic facts against exact sources. Explicit saves, owner edits and pins are protected. Independently verified useless automatic observations may be removed; age, confidence or retrieval frequency alone never authorize deletion. Atomic source fences prevent resurrection while preserving independent testimony and original chat. Settings/source/version/protection changes invalidate decisions; settled or ambiguous provider calls never replay.
+Background maintenance follows Memory and automatic learning, without a toggle. Versioned reviews apply the long-term criterion to current versions' exact sources. Explicit, owner-edited, pinned and remember-requested lineages are protected. Verified removal forgets whole automatic lineages; age, confidence or use alone never suffice. Fences prevent resurrection; chats remain. Changed sources fail alone; failed reviews get one new job, not replay.
 
 ## Retrieval And Presentation
 
