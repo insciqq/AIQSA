@@ -90,6 +90,9 @@ import type {
 } from "../mcp/runPlan";
 import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
+import { readToolCallTool } from "../tools/readToolCall";
+import { isToolHistoryMessageId, TOOL_HISTORY_VERSION } from "./toolHistoryContract";
+import { insertToolHistory } from "./toolHistory";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderToolBridge } from "../tools/types";
@@ -183,6 +186,8 @@ type RunPreparationRepository = Pick<
   | "loadBranchContextCheckpoints"
   | "loadKnowledgeFullContextPassages"
   | "loadProjectAssistantRowContext"
+  | "loadToolHistory"
+  | "projectToolHistory"
 >>;
 
 /**
@@ -200,6 +205,9 @@ async function carriedContextSummary(input: Readonly<{
   repository: RunPreparationRepository;
   request: ProviderRunRequest;
   userId: string;
+  /** The request with this admission's tool-history records, for notes whose
+   * boundary is such a record. Never part of the prepared request. */
+  withToolHistory?(request: ProviderRunRequest): Promise<ProviderRunRequest>;
 }>): Promise<ContextSummaryReuse | null> {
   const policy = input.request.contextCompactionPolicy;
   const load = input.repository.loadBranchContextCheckpoints;
@@ -211,12 +219,15 @@ async function carriedContextSummary(input: Readonly<{
   // covered boundary in the provider context.
   const current = input.conversationMessages.at(-1)?.id;
   const branch = await load({ chatId: input.request.chatId, leafMessageId, userId: input.userId });
+  let withHistory: ProviderRunRequest | undefined;
   for (const reuse of contextSummaryReuseCandidates({
     checkpoints: branch.checkpoints,
     priorMessageIds: branch.ancestorMessageIds.filter((messageId) => messageId !== current),
     userId: input.userId
   })) {
-    const projected = applyReusedContextSummary({ ...input.request, contextCompactionPolicy: { ...policy, reuse } });
+    const base = isToolHistoryMessageId(reuse.coveredMessageId) && input.withToolHistory
+      ? withHistory ??= await input.withToolHistory(input.request) : input.request;
+    const projected = applyReusedContextSummary({ ...base, contextCompactionPolicy: { ...policy, reuse } });
     if (projected && applyProviderRequestContextBudget({
       ...(input.bridge ? { bridge: input.bridge } : {}),
       request: projected
@@ -2055,6 +2066,10 @@ async function prepareRunWith(
       };
     }
   }
+  // The call reader is a session tool like the status tool: admitted for
+  // every tool-capable answer model, independent of the observation policy.
+  const toolCallReader = agentEnabled || modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   let agent: NormalizedRunAgent | undefined;
   if (agentEnabled) {
     let limits: ReturnType<typeof agentLimits>;
@@ -2081,6 +2096,8 @@ async function prepareRunWith(
         visionAnalysis: visionAnalysis ?? null, workspaceCheckpoints,
         // Absent for Off: pre-observation accepted threads keep their identity.
         ...(observationPolicy === "v1" ? { toolObservationVersion: 1 } : {}),
+        // Accepted threads before the cross-turn history contract keep theirs.
+        toolHistory: TOOL_HISTORY_VERSION, ...(toolCallReader ? { toolCallReader: true } : {}),
         images: imagePlan ? { plan: imagePlan, references: imageReferences } : null,
         artifacts: artifactToolAvailable ? { description: artifactToolDescription, policy: artifactResourcePolicy,
           references: artifactReferences ?? [], edit: artifactEdit ?? null, intent: artifactIntent ?? null,
@@ -2103,6 +2120,13 @@ async function prepareRunWith(
       modelId: executionModelId, provider: executionProvider
     }) === true && deps.memorySearchAdmission
     ? await deps.memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null) : null;
+  // References and digests of the branch's eligible calls only: the record
+  // text is projected again, with current authority, for every request.
+  const toolHistoryLeafMessageId = input.source.kind === "send"
+    ? input.source.draftProjectChat || input.source.draftPersonalChat ? null : input.source.chat.activeLeafMessageId
+    : input.source.source.userMessage.id;
+  const toolHistory = await deps.repository.loadToolHistory?.({ chatId: chat.id, leafMessageId: toolHistoryLeafMessageId,
+    userId: input.userId }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
@@ -2123,6 +2147,8 @@ async function prepareRunWith(
     ...(modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
       modelId: executionModelId, provider: executionProvider
     }) === true ? { sessionStatusTool: true as const } : {}),
+    ...(toolCallReader ? { toolCallReader: true as const } : {}),
+    toolHistory,
     attachmentIds,
     chatId: chat.id,
     content,
@@ -2206,6 +2232,7 @@ async function prepareRunWith(
     ...skillToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
+    ...(baseNormalizedRequest.toolCallReader ? [readToolCallTool] : []),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
@@ -2357,12 +2384,19 @@ async function prepareRunWith(
   }
   // The exact branch stays the admitted context; carried notes are frozen
   // beside it as a candidate the executor applies only when needed.
+  const projectHistory = deps.repository.projectToolHistory;
   const reuse = await carriedContextSummary({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     conversationMessages,
     repository: deps.repository,
     request: providerRequest,
-    userId: input.userId
+    userId: input.userId,
+    ...(projectHistory && toolHistory.turns.length > 0 ? {
+      withToolHistory: async (request: ProviderRunRequest) => insertToolHistory(request, await projectHistory({
+        actor: { chatId: chat.id, leafMessageId: toolHistoryLeafMessageId, userId: input.userId },
+        reader: normalizedRequest.toolCallReader === true, toolHistory
+      }))
+    } : {})
   });
   if (reuse && providerRequest.contextCompactionPolicy) {
     const contextCompactionPolicy = { ...providerRequest.contextCompactionPolicy, reuse };

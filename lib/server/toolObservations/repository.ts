@@ -30,6 +30,53 @@ function refusal(error: unknown): boolean {
     error instanceof McpToolAccessDeniedError;
 }
 
+/**
+ * The recall authority of one live run of the actor: active run, active user,
+ * mutable chat access (Project Contributor) and, for Agent, an unexpired,
+ * unrevoked grant. The saved-result and call readers share it.
+ */
+export async function observationRunAuthority(tx: Prisma.TransactionClient, actor: ObservationActor, lock = false) {
+  if (lock) {
+    await lockRunSettlementScope(tx, actor.runId);
+    await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${actor.runId} FOR UPDATE`;
+  }
+  const run = await tx.modelRun.findFirst({ where: { id: actor.runId, userId: actor.userId }, select: {
+    id: true, chatId: true, assistantMessageId: true, userMessageId: true, status: true, errorPayload: true,
+    chat: { select: { archived: true, permanentDeletionAt: true, projectId: true } }
+  } });
+  if (!run || !run.assistantMessageId || !activeToolLoopRun(run) ||
+    run.chat.archived || run.chat.permanentDeletionAt ||
+    !await tx.user.findFirst({ where: { id: actor.userId, status: "active" }, select: { id: true } }) ||
+    !await resolveChatAccess(tx, { chatId: run.chatId, userId: actor.userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" })) throw unavailable();
+  const agent = await tx.agentRunBinding.findUnique({ where: { modelRunId: run.id }, select: {
+    revokedAt: true, completedAt: true, failureCode: true, followupInterruptAt: true, expiresAt: true, leaseExpiresAt: true
+  } });
+  const now = new Date();
+  if (agent && (agent.revokedAt || agent.completedAt || agent.failureCode || agent.followupInterruptAt ||
+    !agent.leaseExpiresAt || agent.leaseExpiresAt <= now || agent.expiresAt && agent.expiresAt <= now)) throw unavailable();
+  return run as typeof run & { assistantMessageId: string };
+}
+
+/** Message ids of the branch path from `leafMessageId` to the root. */
+export async function branchPathMessageIds(tx: Prisma.TransactionClient, chatId: string, leafMessageId: string): Promise<Set<string>> {
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`WITH RECURSIVE path AS (
+    SELECT "id", "parentMessageId" FROM "Message" WHERE "chatId" = ${chatId} AND "id" = ${leafMessageId}
+    UNION SELECT p."id", p."parentMessageId" FROM "Message" p JOIN path c ON p."id" = c."parentMessageId"
+      WHERE p."chatId" = ${chatId}
+  ) SELECT "id" FROM path`;
+  return new Set(rows.map(row => row.id));
+}
+
+/**
+ * Whether a source run belongs to the reader's branch: its answer lies on the
+ * path, or it answered a user message on the path (an earlier attempt of that
+ * message, including the current one). Runs of other edits of a user message
+ * and of other chats never qualify.
+ */
+export function runOnBranchPath(path: ReadonlySet<string>, source: Readonly<{ assistantMessageId: string | null; userMessageId: string }>): boolean {
+  return source.assistantMessageId !== null && path.has(source.assistantMessageId) || path.has(source.userMessageId);
+}
+
 /** One accepted producer, with the same owner -> chat -> run locking order as
  * settlement for every write. Read-only recall and restore take no row locks:
  * they recheck the same authority, and the service rechecks after its I/O.
@@ -40,28 +87,7 @@ export function createToolObservationRepository(input: Readonly<{
   loadSource(tx: Prisma.TransactionClient, source: ToolObservation, consumer: ObservationActor): Promise<unknown>;
 }>) {
   const { prisma } = input;
-
-  async function authority(tx: Prisma.TransactionClient, actor: ObservationActor, lock: boolean) {
-    if (lock) {
-      await lockRunSettlementScope(tx, actor.runId);
-      await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${actor.runId} FOR UPDATE`;
-    }
-    const run = await tx.modelRun.findFirst({ where: { id: actor.runId, userId: actor.userId }, select: {
-      id: true, chatId: true, assistantMessageId: true, status: true, errorPayload: true,
-      chat: { select: { archived: true, permanentDeletionAt: true, projectId: true } }
-    } });
-    if (!run || !run.assistantMessageId || !activeToolLoopRun(run) ||
-      run.chat.archived || run.chat.permanentDeletionAt ||
-      !await tx.user.findFirst({ where: { id: actor.userId, status: "active" }, select: { id: true } }) ||
-      !await resolveChatAccess(tx, { chatId: run.chatId, userId: actor.userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" })) throw unavailable();
-    const agent = await tx.agentRunBinding.findUnique({ where: { modelRunId: run.id }, select: {
-      revokedAt: true, completedAt: true, failureCode: true, followupInterruptAt: true, expiresAt: true, leaseExpiresAt: true
-    } });
-    const now = new Date();
-    if (agent && (agent.revokedAt || agent.completedAt || agent.failureCode || agent.followupInterruptAt ||
-      !agent.leaseExpiresAt || agent.leaseExpiresAt <= now || agent.expiresAt && agent.expiresAt <= now)) throw unavailable();
-    return run;
-  }
+  const authority = observationRunAuthority;
 
   async function producer(tx: Prisma.TransactionClient, context: ObservationProducer, lock: boolean) {
     const run = await authority(tx, context, lock);
@@ -73,18 +99,12 @@ export function createToolObservationRepository(input: Readonly<{
   async function forRead(tx: Prisma.TransactionClient, actor: ObservationActor, id: string) {
     const run = await authority(tx, actor, false);
     const source = await tx.toolObservation.findUnique({ where: { id }, include: {
-      modelRun: { select: { chatId: true, assistantMessageId: true } }, toolCall: { select: { state: true } }
+      modelRun: { select: { chatId: true, assistantMessageId: true, userMessageId: true } }, toolCall: { select: { state: true } }
     } });
     if (!source || source.state !== "READY" || source.modelRun.chatId !== run.chatId ||
       !["complete", "error"].includes(source.toolCall.state)) throw unavailable();
-    if (source.modelRunId !== run.id) {
-      const ancestor = await tx.$queryRaw<Array<{ id: string }>>`WITH RECURSIVE path AS (
-        SELECT "id", "parentMessageId" FROM "Message" WHERE "chatId" = ${run.chatId} AND "id" = ${run.assistantMessageId}
-        UNION SELECT p."id", p."parentMessageId" FROM "Message" p JOIN path c ON p."id" = c."parentMessageId"
-          WHERE p."chatId" = ${run.chatId}
-      ) SELECT "id" FROM path WHERE "id" = ${source.modelRun.assistantMessageId}`;
-      if (!ancestor.length) throw unavailable();
-    }
+    if (source.modelRunId !== run.id &&
+      !runOnBranchPath(await branchPathMessageIds(tx, run.chatId, run.assistantMessageId), source.modelRun)) throw unavailable();
     await input.authorizeSource(tx, source, actor);
     return source;
   }
@@ -267,20 +287,14 @@ export function createToolObservationRepository(input: Readonly<{
         try {
           const run = await authority(tx, actor, false);
           const sources = await tx.toolObservation.findMany({ where: { id: { in: unique } }, include: {
-            modelRun: { select: { chatId: true, assistantMessageId: true } }, toolCall: { select: { state: true } }
+            modelRun: { select: { chatId: true, assistantMessageId: true, userMessageId: true } }, toolCall: { select: { state: true } }
           } });
           if (sources.length !== unique.length || sources.some(source => source.state !== "READY" ||
             source.modelRun.chatId !== run.chatId || !["complete", "error"].includes(source.toolCall.state))) return false;
-          const foreign = [...new Set(sources.filter(source => source.modelRunId !== run.id)
-            .map(source => source.modelRun.assistantMessageId))];
-          if (foreign.some(id => id === null)) return false;
+          const foreign = sources.filter(source => source.modelRunId !== run.id);
           if (foreign.length > 0) {
-            const ancestors = await tx.$queryRaw<Array<{ id: string }>>`WITH RECURSIVE path AS (
-              SELECT "id", "parentMessageId" FROM "Message" WHERE "chatId" = ${run.chatId} AND "id" = ${run.assistantMessageId}
-              UNION SELECT p."id", p."parentMessageId" FROM "Message" p JOIN path c ON p."id" = c."parentMessageId"
-                WHERE p."chatId" = ${run.chatId}
-            ) SELECT "id" FROM path WHERE "id" IN (${Prisma.join(foreign as string[])})`;
-            if (new Set(ancestors.map(row => row.id)).size !== foreign.length) return false;
+            const path = await branchPathMessageIds(tx, run.chatId, run.assistantMessageId);
+            if (foreign.some(source => !runOnBranchPath(path, source.modelRun))) return false;
           }
           const ordered = [...sources].sort((left, right) => left.sourceKind.localeCompare(right.sourceKind) ||
             left.id.localeCompare(right.id));

@@ -248,3 +248,30 @@ describe("repeated identical calls without progress", () => {
     });
   });
 });
+
+describe("call reads fingerprint the hash of their output", () => {
+  const ref = "tcr1_" + "a".repeat(32);
+  const readRow = (round: number, output: string) => {
+    const base = row({ round, name: "read_tool_call", arguments: { call_ref: ref } });
+    const settled = settledRepeatOutcome({ call: { arguments: { call_ref: ref }, id: base.providerCallId, name: "read_tool_call" },
+      ordinal: 0, round, result: { status: "complete", value: { callId: base.providerCallId, name: "read_tool_call", status: "complete",
+        content: [{ type: "json", value: { call_ref: ref, result: { fragment: output } } }] } } });
+    return { ...base, result: settled.result, state: settled.state };
+  };
+
+  it("keeps only a receipt and compares outputs by its hash", () => {
+    const first = readRow(1, "created #5");
+    expect(JSON.stringify(first.result)).not.toContain("created #5");
+    expect(toolCallOutcomeFingerprint(first)).toMatch(/^read:[a-f0-9]{64}$/u);
+    expect(toolCallOutcomeFingerprint(readRow(2, "created #5"))).toBe(toolCallOutcomeFingerprint(first));
+    expect(toolCallOutcomeFingerprint(readRow(2, "created #6"))).not.toBe(toolCallOutcomeFingerprint(first));
+  });
+
+  it("blocks a third identical read, never one whose output changed", () => {
+    const readOnly = () => true;
+    const same = new ToolCallRepeatHistory([readRow(1, "x"), readRow(2, "x")]);
+    expect(same.blockFor({ arguments: { call_ref: ref }, toolName: "read_tool_call" }, 3, { batch: [], readOnly })).toEqual([1, 2]);
+    const changed = new ToolCallRepeatHistory([readRow(1, "x"), readRow(2, "y")]);
+    expect(changed.blockFor({ arguments: { call_ref: ref }, toolName: "read_tool_call" }, 3, { batch: [], readOnly })).toBeNull();
+  });
+});
