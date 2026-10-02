@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
+import { createAutomaticMaintenanceFact, createMaintenanceMessage } from "@/tests/support/memoryMaintenance";
 import { prisma } from "../../prisma";
+import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../maintenance/policy";
 import { memorySha256 } from "../persistence/lexical";
 import { MEMORY_OPERATIONAL_COUNTER_KEYS } from "./counters";
 import { loadMemorySemanticCutoverInventory } from "./cutover";
@@ -187,6 +189,66 @@ describe("Memory operational PostgreSQL contracts", () => {
       expect(serialized).not.toContain("memory-operational-private-pipeline-v1");
     } finally {
       await cleanupOwner(userId);
+    }
+  });
+
+  it("reports content-free current-policy maintenance outcomes by reason", async () => {
+    const active = await createOwner();
+    const paused = await createOwner();
+    try {
+      const before = await loadMemoryOperationalSnapshot(prisma, { from, to });
+      const versions = new Map<string, string>();
+      const jobs = new Map<string, string>();
+      for (const userId of [active, paused]) {
+        await prisma.memoryScope.create({ data: { scopeType: "GLOBAL_USER", userId } });
+        const source = await createMaintenanceMessage(userId, "A synthetic maintenance source.");
+        versions.set(userId, (await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }])).currentVersionId);
+        jobs.set(userId, (await prisma.memoryJob.create({ data: { userId, kind: "SYNTHESIZE_MEMORIES",
+          pipelineVersion: "memory-maintenance-v1", idempotencyFingerprint: memorySha256({ userId, operational: true }),
+          memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0 } })).id);
+      }
+      await prisma.userMemorySettings.update({ where: { userId: paused }, data: { learnAutomatically: false } });
+      const reviewedAt = new Date("2099-01-01T00:00:10.000Z");
+      let ordinal = 0;
+      const review = (userId: string, data: Readonly<{ disposition?: string; usefulness?: string; reasonCode?: string;
+        withJob?: boolean; policyVersion?: string; settled?: boolean }>) => prisma.memoryMaintenanceReview.create({ data: {
+        userId, factVersionId: versions.get(userId)!, memoryJobId: data.withJob === false ? null : jobs.get(userId)!,
+        policyVersion: data.policyVersion ?? MEMORY_MAINTENANCE_POLICY_VERSION, evidenceThrough: reviewedAt,
+        sourceSnapshotHash: (++ordinal).toString(16).padStart(64, "0"), disposition: data.disposition ?? "PENDING",
+        usefulness: data.usefulness ?? null, reasonCode: data.reasonCode ?? null,
+        reviewedAt: data.settled === false ? null : reviewedAt } });
+      await review(active, { disposition: "KEEP", usefulness: "DURABLE" });
+      await review(active, { disposition: "REMOVED" });
+      await review(active, { disposition: "REJECTED" });
+      await review(active, { disposition: "BLOCKED", reasonCode: "pending_relation", withJob: false });
+      await review(active, { disposition: "BLOCKED", reasonCode: "source_changed" });
+      await review(active, { disposition: "UNREVIEWABLE", reasonCode: "statement_too_long", withJob: false });
+      await review(active, { disposition: "STALE" });
+      await review(active, { disposition: "UNKNOWN" });
+      await review(active, { disposition: "KEEP", usefulness: "ONGOING", policyVersion: "memory-maintenance-policy-v2" });
+      await review(active, { settled: false });
+      await review(paused, { settled: false });
+      const snapshot = await loadMemoryOperationalSnapshot(prisma, { from, to });
+      expect(snapshot.version).toBe("memory-operational-snapshot-v7");
+      expect(snapshot.maintenance).toEqual({
+        blocked: before.maintenance.blocked + 2,
+        blockedReasons: [{ code: "pending_relation", count: 1 }, { code: "source_changed", count: 1 }],
+        kept: before.maintenance.kept + 1,
+        paused: before.maintenance.paused + 1,
+        pending: before.maintenance.pending + 1,
+        rejected: before.maintenance.rejected + 1,
+        removed: before.maintenance.removed + 1,
+        reviewed: before.maintenance.reviewed + 3,
+        stale: before.maintenance.stale + 1,
+        unknown: before.maintenance.unknown + 1,
+        unreviewable: before.maintenance.unreviewable + 1,
+        unreviewableReasons: [{ code: "statement_too_long", count: 1 }]
+      });
+      const serialized = JSON.stringify(snapshot.maintenance);
+      for (const value of [active, paused, ...versions.values(), ...jobs.values()]) expect(serialized).not.toContain(value);
+    } finally {
+      await cleanupOwner(active);
+      await cleanupOwner(paused);
     }
   });
 
