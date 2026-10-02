@@ -1,6 +1,7 @@
 import type { ToolHistoryBlock, ToolHistoryProjection } from "../../contracts/toolHistory";
 import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import {
+  isCurrentTurnToolHistory,
   isToolHistoryMessage,
   TOOL_HISTORY_CLASS,
   TOOL_HISTORY_LIMITS,
@@ -119,9 +120,10 @@ export function boundedToolHistoryTexts(blocks: readonly ToolHistoryBlock[], bud
 }
 
 /** The provider-only message of one record: role assistant, without `purpose`. */
-export function toolHistoryMessage(block: ToolHistoryBlock, budgetBytes?: number): ProviderConversationMessage {
+export function toolHistoryMessage(block: ToolHistoryBlock, budgetBytes?: number,
+  options: Readonly<{ nameOmittedRefs?: boolean }> = {}): ProviderConversationMessage {
   const id = toolHistoryMessageId(block.turnMessageId);
-  const rendered = renderToolHistoryBlock(block, budgetBytes);
+  const rendered = renderToolHistoryBlock(block, budgetBytes, options);
   return {
     content: { blocks: rendered.lines.map(text => ({ text, type: "text" })) },
     contextTurnId: id,
@@ -137,11 +139,17 @@ export function withoutToolHistory(messages: readonly ProviderConversationMessag
 }
 
 /** Where a record belongs in `messages` (records already removed): before
- * its answer; for the current message, before that message; for an answer
- * that is not in the context, after the last message of its user turn. */
+ * its answer; for the current message, before that message and the pins
+ * that directly precede it (where the budget keeps pins), whatever was
+ * pinned first; for an answer that is not in the context, after the last
+ * message of its user turn. */
 function anchorIndex(messages: readonly ProviderConversationMessage[], block: ToolHistoryBlock): number | null {
   const current = messages.at(-1);
-  if (current && block.turnMessageId === current.id) return messages.length - 1;
+  if (current && block.turnMessageId === current.id) {
+    let index = messages.length - 1;
+    while (index > 0 && messages[index - 1]!.purpose !== undefined) index -= 1;
+    return index;
+  }
   const answer = messages.findIndex(message => message.id === block.turnMessageId && message.role === "assistant" &&
     message.purpose === undefined);
   if (answer >= 0) return answer;
@@ -192,4 +200,40 @@ export function refreshToolHistory(request: ProviderRunRequest, projection: Tool
 
 export function requestHasToolHistory(request: Pick<ProviderRunRequest, "context">): boolean {
   return request.context?.messages.some(isToolHistoryMessage) === true;
+}
+
+/**
+ * The request with the record of earlier attempts of its current message
+ * rendered smaller, so that `excessTokens` leave the irreducible part of the
+ * request: older entries become compact, then counted (their call_refs named
+ * while room remains), down to the header and that count. Null when there is
+ * no such record or it cannot shrink further.
+ */
+export function fitCurrentTurnToolHistory(request: ProviderRunRequest, excessTokens: number,
+  estimate: (value: unknown) => number): Readonly<{ request: ProviderRunRequest; releasedTokens: number }> | null {
+  const messages = request.context?.messages ?? [];
+  const current = messages.at(-1);
+  const index = messages.findIndex(message => isCurrentTurnToolHistory(message, current));
+  const record = index >= 0 ? messages[index]! : null;
+  const block = record?.toolHistory?.block;
+  if (!record || !block || excessTokens <= 0) return null;
+  const tokens = estimate(record.content);
+  const target = tokens - excessTokens;
+  const render = (bytes: number) => toolHistoryMessage(block, bytes, { nameOmittedRefs: true });
+  // The largest rendering within the target, by bytes; the smallest one when none fits.
+  let low = 0;
+  let high: number = TOOL_HISTORY_LIMITS.blockBytes;
+  let best = render(0);
+  while (low < high) {
+    const middle = Math.floor((low + high + 1) / 2);
+    const candidate = render(middle);
+    if (estimate(candidate.content) <= target) {
+      best = candidate;
+      low = middle;
+    } else high = middle - 1;
+  }
+  const released = tokens - estimate(best.content);
+  if (released <= 0) return null;
+  return { releasedTokens: released, request: { ...request, context: { ...request.context!,
+    messages: messages.map((message, position) => position === index ? best : message) } } };
 }

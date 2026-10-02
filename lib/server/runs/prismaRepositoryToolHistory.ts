@@ -7,8 +7,9 @@ import { mcpCallRedactionEvidence, type McpRedactionEvidence } from "../mcp/call
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import { resolveChatAccess } from "../projects/access";
-import { decodeToolObservationSourceBinding } from "../toolObservations/contract";
+import { decodeToolObservationSourceBinding, ObservationStoreError } from "../toolObservations/contract";
 import { branchPathMessageIds, observationRunAuthority, runOnBranchPath } from "../toolObservations/repository";
+import { retainRunPrismaCode } from "./prismaRepositoryObservability";
 import { activeModelRunStatuses } from "./prismaRepositoryShared";
 import type { ToolHistoryProjection } from "./toolHistory";
 import {
@@ -17,15 +18,18 @@ import {
   toolCallIdFromRef,
   toolCallRef,
   toolHistoryDigest,
+  type ToolHistoryCache,
   type ToolHistorySnapshot,
   type ToolHistoryTurn
 } from "./toolHistoryContract";
 import {
   isToolHistoryReaderName,
+  TOOL_HISTORY_READER_NAMES,
   toolHistoryBlock,
   toolHistoryKind,
   toolHistoryRecord,
   type ToolCallFacts,
+  type ToolHistoryReaders,
   type ToolHistoryRecord
 } from "./toolHistoryRecords";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
@@ -56,13 +60,21 @@ class ToolHistoryUnavailable extends Error {
 
 const MANAGED_AGENT_EXEC = namespacedWorkspaceToolName("sandbox_exec_start");
 
-async function readingContext(tx: Prisma.TransactionClient, actor: ToolHistoryActor): Promise<ReadingContext> {
+/** Explicit bounds of every history read; the defaults are too short for a
+ * long chat and a slower read must degrade, never hold the run. */
+const TRANSACTION = { maxWait: TOOL_HISTORY_LIMITS.transactionWaitMs, timeout: TOOL_HISTORY_LIMITS.transactionMs } as const;
+
+async function readingContext(tx: Prisma.TransactionClient, actor: ToolHistoryActor,
+  options: Readonly<{ unarmedAgent?: boolean }> = {}): Promise<ReadingContext> {
   let chatId: string;
   let leafMessageId: string | null;
   let runId: string | null = null;
   let currentUserMessageId: string | null = null;
   if ("runId" in actor) {
-    const run = await observationRunAuthority(tx, actor).catch(() => { throw new ToolHistoryUnavailable(); });
+    // Only a refusal makes the history unavailable; a database failure stays one.
+    const run = await observationRunAuthority(tx, actor, false, options).catch((error: unknown) => {
+      throw error instanceof ObservationStoreError ? new ToolHistoryUnavailable() : error;
+    });
     chatId = run.chatId;
     leafMessageId = run.assistantMessageId;
     runId = run.id;
@@ -106,8 +118,8 @@ type CallHead = Prisma.ModelRunToolCallGetPayload<{ select: typeof callHeadSelec
 type CallValues = Readonly<{
   arguments: unknown;
   result: unknown;
-  omittedArgumentsBytes?: number;
-  omittedResultBytes?: number;
+  omittedArguments?: true;
+  omittedResult?: true;
 }>;
 
 type LoadedCall = CallHead & CallValues;
@@ -119,23 +131,35 @@ type AcceptedRun = Readonly<{
   normalizedRequest: Record<string, unknown>;
 }>;
 
-/** Only the accepted request parts that classify a call: never message bodies,
- * prompts or the continuation. */
-async function acceptedRuns(tx: Prisma.TransactionClient, runIds: readonly string[]): Promise<Map<string, AcceptedRun>> {
+/**
+ * Only the accepted request parts that classify a call: never message bodies,
+ * prompts or the continuation. Each accepted request is read once (a fenced
+ * copy is decompressed once for every part), and once per run when the
+ * caller keeps a cache: an accepted request never changes.
+ */
+async function acceptedRuns(tx: Prisma.TransactionClient, runIds: readonly string[],
+  cache?: ToolHistoryCache): Promise<Map<string, AcceptedRun>> {
   const runs = new Map<string, AcceptedRun>();
-  if (runIds.length === 0) return runs;
+  const missing: string[] = [];
+  for (const id of new Set(runIds)) {
+    const cached = cache?.get(`run:${id}`) as AcceptedRun | undefined;
+    if (cached) runs.set(id, cached);
+    else missing.push(id);
+  }
+  if (missing.length === 0) return runs;
   const rows = await tx.$queryRaw<Array<{
     id: string; mcp: unknown; catalog: unknown; searchPlan: unknown; workspace: boolean | null; image: boolean | null;
     agent: boolean | null; historyVersion: string | null;
-  }>>`SELECT r."id",
-      r."normalizedRequest" -> 'mcp' AS "mcp",
-      r."normalizedRequest" -> 'mcpDiscovery' -> 'catalog' AS "catalog",
-      r."normalizedRequest" -> 'searchPlan' AS "searchPlan",
-      (r."normalizedRequest" -> 'workspace' ->> 'enabled') = 'true' AS "workspace",
-      (r."normalizedRequest" -> 'imagePlan') IS NOT NULL AS "image",
-      (r."normalizedRequest" -> 'agent') IS NOT NULL AS "agent",
-      r."normalizedRequest" -> 'toolHistory' ->> 'version' AS "historyVersion"
-    FROM "ModelRun" r WHERE r."id" IN (${Prisma.join([...runIds])})`;
+  }>>`SELECT s."id",
+      s."accepted" -> 'mcp' AS "mcp",
+      s."accepted" -> 'mcpDiscovery' -> 'catalog' AS "catalog",
+      s."accepted" -> 'searchPlan' AS "searchPlan",
+      (s."accepted" -> 'workspace' ->> 'enabled') = 'true' AS "workspace",
+      (s."accepted" -> 'imagePlan') IS NOT NULL AS "image",
+      (s."accepted" -> 'agent') IS NOT NULL AS "agent",
+      s."accepted" -> 'toolHistory' ->> 'version' AS "historyVersion"
+    FROM (SELECT r."id", r."normalizedRequest" || '{}'::jsonb AS "accepted" FROM "ModelRun" r
+      WHERE r."id" = ANY(${missing}::text[]) OFFSET 0) s`;
   const agentIds = rows.filter(row => row.agent).map(row => row.id);
   const agentTools = agentIds.length ? await tx.agentMcpTool.findMany({ where: { modelRunId: { in: agentIds } },
     select: { modelRunId: true, toolId: true, snapshot: true } }) : [];
@@ -149,7 +173,7 @@ async function acceptedRuns(tx: Prisma.TransactionClient, runIds: readonly strin
       tools.set(tool.toolId, { identity: { serverId: route.serverId, originalName: route.originalName,
         revisionId: server.revisionId, fingerprint: route.fingerprint }, originalName: route.originalName, serverName: server.serverName });
     }
-    runs.set(row.id, {
+    const accepted: AcceptedRun = {
       agent: row.agent === true,
       agentMcpTools: tools,
       eligible: row.historyVersion === String(TOOL_HISTORY_VERSION),
@@ -161,7 +185,10 @@ async function acceptedRuns(tx: Prisma.TransactionClient, runIds: readonly strin
         ...(row.image ? { imagePlan: {} } : {}),
         ...(row.agent ? { agent: {} } : {})
       }
-    });
+    };
+    runs.set(row.id, accepted);
+    // An Agent's admitted tools grow while it runs: only a settled reading is kept.
+    if (!accepted.agent) cache?.set(`run:${row.id}`, accepted);
   }
   return runs;
 }
@@ -236,7 +263,7 @@ async function callFacts(input: Readonly<{
   const { call, context, run } = input;
   const { identity, ...classified } = classify(call, run);
   const readable = identity ? await input.mcp.readable(identity) : false;
-  const redaction = identity && readable && !run.agent
+  const redaction = identity && readable
     ? await input.mcp.redaction(identity, call.mcpRunBinding?.runtimeGenerationId ?? null) : null;
   return {
     id: call.id,
@@ -249,8 +276,8 @@ async function callFacts(input: Readonly<{
     startedAt: call.startedAt?.toISOString() ?? null,
     arguments: call.arguments,
     result: call.result,
-    ...(call.omittedArgumentsBytes !== undefined ? { omittedArgumentsBytes: call.omittedArgumentsBytes } : {}),
-    ...(call.omittedResultBytes !== undefined ? { omittedResultBytes: call.omittedResultBytes } : {}),
+    ...(call.omittedArguments ? { omittedArguments: true as const } : {}),
+    ...(call.omittedResult ? { omittedResult: true as const } : {}),
     kind: classified.kind,
     label: classified.label,
     runTerminal: !activeModelRunStatuses.includes(call.modelRun.status),
@@ -281,33 +308,36 @@ async function loadWholeCall(tx: Prisma.TransactionClient, id: string): Promise<
 
 /**
  * The saved values of `ids` for records: each whole up to the projection
- * bound, a larger one only by size (a result keeping its status and preview
- * flags). A projection of many calls never loads their large values.
+ * bound, a larger one only marked as such (a result keeping its status and
+ * preview flags). A stored size above the bound decides without reading the
+ * value; only a smaller stored value is measured as text. A projection of
+ * many calls therefore never loads, or serializes, their large values.
  */
 async function projectionValues(tx: Prisma.TransactionClient, ids: readonly string[]): Promise<Map<string, CallValues>> {
   const values = new Map<string, CallValues>();
   if (ids.length === 0) return values;
   const limit = TOOL_HISTORY_LIMITS.projectionValueBytes;
   const rows = await tx.$queryRaw<Array<{
-    id: string; argumentsBytes: number; arguments: unknown; resultBytes: number | null; result: unknown;
+    id: string; argumentsFit: boolean; arguments: unknown; hasResult: boolean; resultFit: boolean; result: unknown;
     resultStatus: unknown; resultRawPreview: unknown;
-  }>>`SELECT v."id", v."argumentsBytes", v."resultBytes",
-      CASE WHEN v."argumentsBytes" <= ${limit} THEN v."arguments" END AS "arguments",
-      CASE WHEN v."resultBytes" <= ${limit} THEN v."result" END AS "result",
-      CASE WHEN v."resultBytes" > ${limit} THEN v."result" -> 'status' END AS "resultStatus",
-      CASE WHEN v."resultBytes" > ${limit} THEN v."result" -> 'rawPreview' END AS "resultRawPreview"
-    FROM (SELECT c."id", c."arguments", c."result", octet_length(c."arguments"::text) AS "argumentsBytes",
-        octet_length(c."result"::text) AS "resultBytes"
-      FROM "ModelRunToolCall" c WHERE c."id" IN (${Prisma.join([...ids])})) v`;
+  }>>`SELECT v."id", v."argumentsFit", v."resultFit", v."result" IS NOT NULL AS "hasResult",
+      CASE WHEN v."argumentsFit" THEN v."arguments" END AS "arguments",
+      CASE WHEN v."resultFit" THEN v."result" END AS "result",
+      CASE WHEN NOT v."resultFit" THEN v."result" -> 'status' END AS "resultStatus",
+      CASE WHEN NOT v."resultFit" THEN v."result" -> 'rawPreview' END AS "resultRawPreview"
+    FROM (SELECT c."id", c."arguments", c."result",
+        CASE WHEN pg_column_size(c."arguments") > ${limit} THEN false
+          ELSE octet_length(c."arguments"::text) <= ${limit} END AS "argumentsFit",
+        CASE WHEN c."result" IS NULL THEN true WHEN pg_column_size(c."result") > ${limit} THEN false
+          ELSE octet_length(c."result"::text) <= ${limit} END AS "resultFit"
+      FROM "ModelRunToolCall" c WHERE c."id" = ANY(${[...ids]}::text[]) OFFSET 0) v`;
   for (const row of rows) {
-    const argumentsOmitted = row.argumentsBytes > limit;
-    const resultOmitted = row.resultBytes !== null && row.resultBytes > limit;
     values.set(row.id, {
-      arguments: argumentsOmitted ? undefined : row.arguments,
-      result: row.resultBytes === null ? null : resultOmitted
-        ? { status: row.resultStatus, ...(record(row.resultRawPreview) ? { rawPreview: row.resultRawPreview } : {}) } : row.result,
-      ...(argumentsOmitted ? { omittedArgumentsBytes: row.argumentsBytes } : {}),
-      ...(resultOmitted ? { omittedResultBytes: row.resultBytes! } : {})
+      arguments: row.argumentsFit ? row.arguments : undefined,
+      result: !row.hasResult ? null : row.resultFit ? row.result
+        : { status: row.resultStatus, ...(record(row.resultRawPreview) ? { rawPreview: row.resultRawPreview } : {}) },
+      ...(row.argumentsFit ? {} : { omittedArguments: true as const }),
+      ...(row.hasResult && !row.resultFit ? { omittedResult: true as const } : {})
     });
   }
   return values;
@@ -333,18 +363,27 @@ async function searchAvailable(tx: Prisma.TransactionClient, context: ReadingCon
   return true;
 }
 
-export function createPrismaToolHistoryOperations(prisma: PrismaClient) {
+/** The admission listing bounds; tests may lower them to reach their edges. */
+type ListingBounds = Readonly<Record<"calls" | "turns" | "scannedRuns" | "scanBatchRuns", number>>;
+
+export function createPrismaToolHistoryOperations(prisma: PrismaClient, bounds: Partial<ListingBounds> = {}) {
+  const listing: ListingBounds = { calls: TOOL_HISTORY_LIMITS.calls, turns: TOOL_HISTORY_LIMITS.turns,
+    scannedRuns: TOOL_HISTORY_LIMITS.scannedRuns, scanBatchRuns: TOOL_HISTORY_LIMITS.scanBatchRuns, ...bounds };
   return {
     /**
-     * The frozen history of a new admission: every eligible call of the
+     * The frozen history of a new admission: the eligible calls of the
      * branch's turns and of earlier attempts of each user message on it, by
      * reference and digest only, oldest first. Readers and status calls are
-     * counted. Nothing is read from message bodies or call payloads.
+     * counted. Runs are read newest first and only until the listing bounds
+     * (calls, turns, scanned runs) are reached: every older call of the branch
+     * is counted as omitted without being read. Nothing is read from message
+     * bodies or call payloads.
      */
     async loadToolHistory(input: Readonly<{ chatId: string; leafMessageId: string | null; userId: string }>): Promise<ToolHistorySnapshot> {
-      if (!input.leafMessageId) return { version: TOOL_HISTORY_VERSION, turns: [] };
-      return prisma.$transaction(async tx => {
-        if (!await resolveChatAccess(tx, { chatId: input.chatId, userId: input.userId })) return { version: TOOL_HISTORY_VERSION, turns: [] };
+      const empty: ToolHistorySnapshot = { version: TOOL_HISTORY_VERSION, turns: [] };
+      if (!input.leafMessageId) return empty;
+      return prisma.$transaction(async (tx): Promise<ToolHistorySnapshot> => {
+        if (!await resolveChatAccess(tx, { chatId: input.chatId, userId: input.userId })) return empty;
         const path = await tx.$queryRaw<Array<{ id: string; parentMessageId: string | null; role: string }>>`WITH RECURSIVE path AS (
           SELECT "id", "parentMessageId", "role" FROM "Message" WHERE "chatId" = ${input.chatId} AND "id" = ${input.leafMessageId}
           UNION SELECT p."id", p."parentMessageId", p."role" FROM "Message" p JOIN path c ON p."id" = c."parentMessageId"
@@ -355,59 +394,88 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient) {
         const ordered: typeof path = [];
         for (let current = byId.get(input.leafMessageId!); current && ordered.length < path.length;
           current = current.parentMessageId ? byId.get(current.parentMessageId) : undefined) ordered.unshift(current);
-        const onPath = new Set(ordered.map(row => row.id));
-        const runs = ordered.length ? await tx.$queryRaw<Array<{ id: string; userMessageId: string; assistantMessageId: string | null }>>`
-          SELECT r."id", r."userMessageId", r."assistantMessageId" FROM "ModelRun" r
-          WHERE r."chatId" = ${input.chatId}
-            AND (r."userMessageId" IN (${Prisma.join([...onPath])}) OR r."assistantMessageId" IN (${Prisma.join([...onPath])}))
-            AND r."normalizedRequest" -> 'toolHistory' ->> 'version' = ${String(TOOL_HISTORY_VERSION)}
-          ORDER BY r."createdAt" ASC, r."id" ASC` : [];
-        if (runs.length === 0) return { version: TOOL_HISTORY_VERSION, turns: [] };
-        const calls = await tx.modelRunToolCall.findMany({ where: { modelRunId: { in: runs.map(run => run.id) } },
-          select: { id: true, modelRunId: true, toolName: true, roundIndex: true, ordinal: true, workspaceRunBindingId: true } });
-        const runOrder = new Map(runs.map((run, index) => [run.id, index]));
-        calls.sort((left, right) => runOrder.get(left.modelRunId)! - runOrder.get(right.modelRunId)! ||
-          left.roundIndex - right.roundIndex || left.ordinal - right.ordinal);
+        const userMessageIds = ordered.filter(row => row.role === "user").map(row => row.id);
+        if (userMessageIds.length === 0) return empty;
+        // Runs of the branch's user messages that made any call, newest
+        // first; no accepted request is read for this list.
+        const candidates = await tx.$queryRaw<Array<{ id: string; userMessageId: string }>>`
+          SELECT r."id", r."userMessageId" FROM "ModelRun" r
+          WHERE r."chatId" = ${input.chatId} AND r."userMessageId" = ANY(${userMessageIds}::text[])
+            AND EXISTS (SELECT 1 FROM "ModelRunToolCall" c WHERE c."modelRunId" = r."id")
+          ORDER BY r."createdAt" DESC, r."id" DESC`;
+        type CallRow = Readonly<{ id: string; modelRunId: string; toolName: string; roundIndex: number; ordinal: number }>;
+        const listed = new Map<string, CallRow[]>();
+        const readerCalls = new Map<string, number>();
+        const turns = new Set<string>();
+        let remaining: number = listing.calls;
+        let omittedCalls = 0;
+        let scanned = 0;
+        let full = false;
+        const scanLimit = Math.min(candidates.length, listing.scannedRuns);
+        while (!full && scanned < scanLimit) {
+          const batch = candidates.slice(scanned, Math.min(scanned + listing.scanBatchRuns, scanLimit));
+          scanned += batch.length;
+          const eligible = new Set((await tx.$queryRaw<Array<{ id: string }>>`SELECT r."id" FROM "ModelRun" r
+            WHERE r."id" = ANY(${batch.map(run => run.id)}::text[])
+              AND r."normalizedRequest" -> 'toolHistory' ->> 'version' = ${String(TOOL_HISTORY_VERSION)}`).map(row => row.id));
+          const calls = eligible.size ? await tx.modelRunToolCall.findMany({ where: { modelRunId: { in: [...eligible] } },
+            select: { id: true, modelRunId: true, toolName: true, roundIndex: true, ordinal: true, workspaceRunBindingId: true } }) : [];
+          for (const run of batch) {
+            if (!eligible.has(run.id)) continue;
+            // Newest calls first: the bound keeps the newest listed.
+            const runCalls = calls.filter(call => call.modelRunId === run.id &&
+              !(call.toolName === MANAGED_AGENT_EXEC && call.workspaceRunBindingId !== null))
+              .sort((left, right) => right.roundIndex - left.roundIndex || right.ordinal - left.ordinal);
+            if (runCalls.length === 0) continue;
+            const known = turns.has(run.userMessageId);
+            if (!known && (turns.size >= listing.turns || remaining <= 0)) {
+              omittedCalls += runCalls.filter(call => !isToolHistoryReaderName(call.toolName)).length;
+              full = true;
+              continue;
+            }
+            turns.add(run.userMessageId);
+            for (const call of runCalls) {
+              if (isToolHistoryReaderName(call.toolName)) {
+                readerCalls.set(run.userMessageId, (readerCalls.get(run.userMessageId) ?? 0) + 1);
+              } else if (remaining > 0) {
+                listed.set(run.id, [...(listed.get(run.id) ?? []), call]);
+                remaining -= 1;
+              } else omittedCalls += 1;
+            }
+          }
+          if (remaining <= 0 || turns.size >= listing.turns) full = true;
+        }
+        // Older runs the bounds left unread: their calls are counted, unread.
+        const unread = candidates.slice(scanned).map(run => run.id);
+        if (unread.length > 0) {
+          const [counted] = await tx.$queryRaw<Array<{ count: number }>>`SELECT COUNT(*)::int AS "count" FROM "ModelRunToolCall" c
+            WHERE c."modelRunId" = ANY(${unread}::text[]) AND NOT (c."toolName" = ANY(${[...TOOL_HISTORY_READER_NAMES]}::text[]))
+              AND NOT (c."toolName" = ${MANAGED_AGENT_EXEC} AND c."workspaceRunBindingId" IS NOT NULL)`;
+          omittedCalls += counted?.count ?? 0;
+        }
         const answerOf = new Map<string, string>();
         for (const message of ordered) {
-          if (message.role === "assistant" && message.parentMessageId && onPath.has(message.parentMessageId)) {
+          if (message.role === "assistant" && message.parentMessageId && turns.has(message.parentMessageId)) {
             answerOf.set(message.parentMessageId, message.id);
           }
         }
-        type Draft = { turnMessageId: string; calls: typeof calls; readerCalls: number };
-        const drafts: Draft[] = [];
-        for (const message of ordered) {
-          if (message.role !== "user") continue;
-          const turnRuns = new Set(runs.filter(run => run.userMessageId === message.id).map(run => run.id));
-          if (turnRuns.size === 0) continue;
-          const turnCalls = calls.filter(call => turnRuns.has(call.modelRunId) &&
-            !(call.toolName === MANAGED_AGENT_EXEC && call.workspaceRunBindingId !== null));
-          const listed = turnCalls.filter(call => !isToolHistoryReaderName(call.toolName));
-          const readerCalls = turnCalls.length - listed.length;
-          if (listed.length === 0 && readerCalls === 0) continue;
-          drafts.push({ turnMessageId: answerOf.get(message.id) ?? message.id, calls: listed, readerCalls });
+        const result: ToolHistoryTurn[] = [];
+        for (const userMessageId of userMessageIds) {
+          if (!turns.has(userMessageId)) continue;
+          // A turn lists its runs oldest first, each by round and ordinal.
+          const turnCalls = candidates.filter(run => run.userMessageId === userMessageId).reverse()
+            .flatMap(run => [...(listed.get(run.id) ?? [])].reverse());
+          const readers = readerCalls.get(userMessageId) ?? 0;
+          if (turnCalls.length === 0 && readers === 0) continue;
+          result.push({
+            turnMessageId: answerOf.get(userMessageId) ?? userMessageId,
+            callRefs: turnCalls.map(call => toolCallRef(call.id)!),
+            digest: toolHistoryDigest(turnCalls),
+            ...(readers > 0 ? { readerCalls: Math.min(readers, TOOL_HISTORY_LIMITS.readerCalls) } : {})
+          });
         }
-        // The newest calls stay listed; older ones beyond the bound are counted.
-        let remaining = TOOL_HISTORY_LIMITS.calls;
-        let omittedCalls = 0;
-        for (let index = drafts.length - 1; index >= 0; index -= 1) {
-          const draft = drafts[index]!;
-          const kept = Math.min(draft.calls.length, Math.max(0, remaining));
-          omittedCalls += draft.calls.length - kept;
-          draft.calls = draft.calls.slice(draft.calls.length - kept);
-          remaining -= kept;
-        }
-        const turns: ToolHistoryTurn[] = drafts
-          .filter(draft => draft.calls.length > 0 || draft.readerCalls > 0)
-          .slice(-TOOL_HISTORY_LIMITS.turns)
-          .map(draft => ({
-            turnMessageId: draft.turnMessageId,
-            callRefs: draft.calls.map(call => toolCallRef(call.id)!),
-            digest: toolHistoryDigest(draft.calls),
-            ...(draft.readerCalls > 0 ? { readerCalls: Math.min(draft.readerCalls, TOOL_HISTORY_LIMITS.readerCalls) } : {})
-          }));
-        return { version: TOOL_HISTORY_VERSION, turns, ...(omittedCalls > 0 ? { omittedCalls } : {}) };
-      });
+        return { version: TOOL_HISTORY_VERSION, turns: result, ...(omittedCalls > 0 ? { omittedCalls } : {}) };
+      }, TRANSACTION).catch(retainRunPrismaCode);
     },
 
     /**
@@ -418,20 +486,23 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient) {
      */
     async projectToolHistory(input: Readonly<{
       actor: ToolHistoryActor;
-      reader: boolean;
+      readers: ToolHistoryReaders;
       toolHistory: ToolHistorySnapshot;
+      /** The reading run's memo of what never changes between its requests. */
+      cache?: ToolHistoryCache;
     }>): Promise<ToolHistoryProjection> {
       const turns = input.toolHistory.turns;
       if (turns.length === 0) return { blocks: [] };
       return prisma.$transaction(async tx => {
-        const context = await readingContext(tx, input.actor).catch((error: unknown) => {
+        // A run's own Agent binding is armed only after its first prompt is built.
+        const context = await readingContext(tx, input.actor, { unarmedAgent: true }).catch((error: unknown) => {
           if (error instanceof ToolHistoryUnavailable) return null;
           throw error;
         });
         const ids = turns.flatMap(turn => turn.callRefs.flatMap(ref => toolCallIdFromRef(ref) ?? []));
         const heads = context ? await loadCallHeads(tx, ids) : [];
         const byId = new Map(heads.map(call => [call.id, call]));
-        const runs = await acceptedRuns(tx, [...new Set(heads.map(call => call.modelRunId))]);
+        const runs = await acceptedRuns(tx, [...new Set(heads.map(call => call.modelRunId))], input.cache);
         const mcp = context ? mcpAuthority(tx, context) : null;
         const states = turns.map(turn => ({ records: [] as ToolHistoryRecord[], unavailableCalls: 0, userMessageId: null as string | null,
           // Earlier attempts of the current message form their own record;
@@ -478,9 +549,9 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient) {
           unavailableCalls: states[index]!.unavailableCalls,
           readerCalls: turn.readerCalls ?? 0,
           ...(index === 0 && input.toolHistory.omittedCalls ? { omittedCalls: input.toolHistory.omittedCalls } : {}),
-          reader: input.reader
+          readers: input.readers
         })) };
-      });
+      }, TRANSACTION).catch(retainRunPrismaCode);
     },
 
     /** One call's authorized record for `read_tool_call`, or null when it is
@@ -506,7 +577,7 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient) {
         const previousAttempt = call.modelRunId !== context.runId &&
           !(call.modelRun.assistantMessageId !== null && context.pathIds.has(call.modelRun.assistantMessageId));
         return toolHistoryRecord(facts, previousAttempt);
-      });
+      }, TRANSACTION).catch(retainRunPrismaCode);
     },
 
     /**
@@ -537,7 +608,7 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient) {
           if (kind === "web_search" && !run.agent && !await searchAvailable(tx, context, call, run)) return false;
         }
         return true;
-      });
+      }, TRANSACTION).catch(retainRunPrismaCode);
     }
   };
 }

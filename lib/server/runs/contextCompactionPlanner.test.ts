@@ -894,4 +894,30 @@ describe("call_ref provenance and the current turn's tool history", () => {
     expect(history.prior.map((message) => message.id)).toEqual(["tch1_answer-1", "answer-1"]);
     expect(history.uncovered.map((message) => message.id)).toEqual(["tch1_answer-1", "answer-1"]);
   });
+
+  it("fits that record into the room the irreducible request leaves instead of refusing it", async () => {
+    const { applyProviderRequestContextBudget } = await import("./runContextBudget");
+    const { insertToolHistory } = await import("./toolHistory");
+    const current: ProviderConversationMessage = { content: { blocks: [{ text: "current", type: "text" }] }, id: "current", role: "user" };
+    const entries = Array.from({ length: 40 }, (_, index) => {
+      const ref = `tcr1_${String(index).padStart(32, "0")}`;
+      return { ref, details: true, compact: `- [${ref}] write ${index}: executed.`,
+        full: `- [${ref}] write ${index}: executed. Arguments: ${JSON.stringify({ body: "w".repeat(300) })}.` };
+    });
+    const base = { ...request([]), tools: [], providerToolMessages: [],
+      modelCapabilities: { ...request([]).modelCapabilities, contextWindow: 3_000, defaultMaxOutputTokens: 256 },
+      context: { messages: [current], mode: "branch_path" as const },
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: null, messages: [current] }) };
+    const withRecord = insertToolHistory(base, { blocks: [{ turnMessageId: "current", userMessageId: "current",
+      header: "[earlier attempts of the next message]", footer: null, entries }] });
+    const result = applyProviderRequestContextBudget({ bridge: openAIResponsesToolBridge, request: withRecord });
+    expect(result.ok).toBe(true);
+    const record = result.ok ? result.request.context!.messages.find((message) => message.id === "tch1_current") : undefined;
+    const text = JSON.stringify(record?.content);
+    // Smaller than its full form, it still states what the earlier attempts did.
+    expect(text.length).toBeLessThan(JSON.stringify(withRecord.context!.messages[0]!.content).length);
+    expect(text).toContain("[earlier attempts of the next message]");
+    expect(text).toContain("write 39: executed.");
+    expect(result.ok && result.request.context!.messages.at(-1)!.id).toBe("current");
+  });
 });

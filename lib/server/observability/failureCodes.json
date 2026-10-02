@@ -876,6 +876,7 @@
   "tool_calling_not_supported",
   "tool_configuration_empty",
   "tool_definition_changed",
+  "tool_history_unavailable",
   "tool_loop_checkpoint_conflict",
   "tool_loop_recovery_failed",
   "tool_loop_recovery_required",

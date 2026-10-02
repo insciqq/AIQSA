@@ -5,8 +5,10 @@ import { captureMcpObservation, captureWorkspaceObservation, captureSearchObserv
   type ToolObservationService } from "../toolObservations/sourceAdapters";
 import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from "../tools/readToolResult";
 import { executeReadToolCall, readToolCallReceipt, readToolCallTool, type ToolCallReader } from "../tools/readToolCall";
-import { insertToolHistory, refreshToolHistory, requestHasToolHistory } from "./toolHistory";
-import { READ_TOOL_CALL_NAME, toolCallRefEntry, type ToolCallRefEntry } from "./toolHistoryContract";
+import { insertToolHistory, refreshToolHistory, requestHasToolHistory, type ToolHistoryProjection } from "./toolHistory";
+import { READ_TOOL_CALL_NAME, toolCallRefEntry, type ToolCallRefEntry, type ToolHistoryCache } from "./toolHistoryContract";
+import { toolHistoryReaders, unavailableToolHistoryProjection } from "./toolHistoryRecords";
+import { callReadIds, withoutCallReadOutputs, withRereadCallReads } from "./toolCallReadContinuation";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
@@ -968,6 +970,11 @@ function isRecoveredCallRead(context: RecoveryToolContext, name: string): boolea
   return context.run.normalizedRequest.toolCallReader === true && name === READ_TOOL_CALL_NAME;
 }
 
+/** A read names saved originals only to a run that holds their reader. */
+function recoveredCallReadOptions(context: RecoveryToolContext) {
+  return { resultReader: context.run.normalizedRequest.toolObservationVersion === 1 } as const;
+}
+
 function recoveredToolCallReader(deps: RunRecoveryDeps): ToolCallReader | undefined {
   const read = deps.repository.readToolCall;
   return read ? { read: (actor, ref) => read(actor, ref) } : undefined;
@@ -982,17 +989,42 @@ async function settleRecoveredCallRead(context: RecoveryToolContext, persistedId
   if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "Saved-call read could not be settled.");
 }
 
+/** One recovery's memo of the accepted history: what never changes between
+ * its requests, and the projection its first request inserted (which that
+ * request's consumer reuses once instead of reading the history again). */
+type RecoveredToolHistory = { cache: ToolHistoryCache; fresh: ToolHistoryProjection | null };
+
+/** The accepted history's records under the run's current authority. A
+ * failed or slow read never fails recovery: the records then say the details
+ * are temporarily unavailable. */
+async function recoveredToolHistoryProjection(deps: RunRecoveryDeps, request: ProviderRunRequest,
+  actor: Readonly<{ runId: string; userId: string }>, state?: RecoveredToolHistory): Promise<ToolHistoryProjection | null> {
+  const history = request.toolHistory;
+  const project = deps.repository.projectToolHistory;
+  if (!history?.turns.length || !project) return null;
+  const readers = toolHistoryReaders(request);
+  try {
+    return await project({ actor, readers, toolHistory: history, ...(state ? { cache: state.cache } : {}) });
+  } catch (error) {
+    logEvent("run_recovery", { subsystem: "run_recovery", stage: "projection", outcome: "degraded", action: "degrade",
+      code: "tool_history_unavailable", prisma_code: databaseFailureCode(error), run_id: actor.runId });
+    return unavailableToolHistoryProjection({ readers, toolHistory: history,
+      currentUserMessageId: request.context?.messages.at(-1)?.id ?? null });
+  }
+}
+
 /**
  * The request a recovery dispatch rebuilds, with the accepted history's
  * records projected again under the run's current authority: nothing of an
  * earlier projection is reused, so revoked or deleted details never return.
  */
 async function withRecoveredToolHistory(deps: RunRecoveryDeps, request: ProviderRunRequest,
-  actor: Readonly<{ runId: string; userId: string }>, mode: "insert" | "refresh"): Promise<ProviderRunRequest> {
-  const history = request.toolHistory;
-  const project = deps.repository.projectToolHistory;
-  if (!history?.turns.length || !project || mode === "refresh" && !requestHasToolHistory(request)) return request;
-  const projection = await project({ actor, reader: request.toolCallReader === true, toolHistory: history });
+  actor: Readonly<{ runId: string; userId: string }>, mode: "insert" | "refresh",
+  state?: RecoveredToolHistory): Promise<ProviderRunRequest> {
+  if (mode === "refresh" && !requestHasToolHistory(request)) return request;
+  const projection = mode === "refresh" && state?.fresh ? state.fresh : await recoveredToolHistoryProjection(deps, request, actor, state);
+  if (state) state.fresh = mode === "insert" ? projection : null;
+  if (!projection) return request;
   return mode === "insert" ? insertToolHistory(request, projection) : refreshToolHistory(request, projection);
 }
 
@@ -1516,7 +1548,8 @@ async function executePersistedToolCallInContext(
   }
   if (claim.kind === "ambiguous" && isRecoveredCallRead(context, call.name)) {
     const read = await executeReadToolCall(recoveredToolCallReader(context.deps), call,
-      { runId: context.run.id, userId: context.run.userId }, signal, recoveredReadBudget(context, persisted.roundIndex));
+      { runId: context.run.id, userId: context.run.userId }, signal, recoveredReadBudget(context, persisted.roundIndex),
+      recoveredCallReadOptions(context));
     await settleRecoveredCallRead(context, persisted.id, call, read);
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: read }, round: persisted.roundIndex };
   }
@@ -1633,7 +1666,7 @@ async function executePersistedToolCallInContext(
       // A settled read keeps only its receipt and reads again.
       : isRecoveredCallRead(context, call.name)
       ? await executeReadToolCall(recoveredToolCallReader(context.deps), call, { runId: context.run.id, userId: context.run.userId },
-        signal, recoveredReadBudget(context, persisted.roundIndex))
+        signal, recoveredReadBudget(context, persisted.roundIndex), recoveredCallReadOptions(context))
       : parsePersistedToolExecutionResult(call, claim.call.result);
     if (result && call.name === MEMORY_SEARCH_TOOL_NAME && context.run.normalizedRequest.memorySearch) {
       await memoryActivity(result.status, result);
@@ -1735,7 +1768,8 @@ async function executePersistedToolCallInContext(
   };
   if (isRecoveredCallRead(context, call.name)) {
     const read = await executeReadToolCall(recoveredToolCallReader(context.deps), call,
-      { runId: context.run.id, userId: context.run.userId }, signal, recoveredReadBudget(context, persisted.roundIndex));
+      { runId: context.run.id, userId: context.run.userId }, signal, recoveredReadBudget(context, persisted.roundIndex),
+      recoveredCallReadOptions(context));
     await settleRecoveredCallRead(context, claim.call.id, call, read);
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: read }, round: persisted.roundIndex };
   }
@@ -2313,6 +2347,7 @@ async function recoverCheckpointedToolLoop(
     const { settled: settledSummaryClaim, unsettled: unsettledSummaryClaim } = lostSummaryAttempt(run.checkpoint);
     const summaryAttempts = run.checkpoint.contextCompaction?.summaryAttempts?.map((attempt) =>
       attempt === unsettledSummaryClaim ? settledSummaryClaim! : attempt);
+    const recoveredHistory: RecoveredToolHistory = { cache: new Map(), fresh: null };
     let providerRequest: ProviderRunRequest = {
       ...run.normalizedRequest,
       attachments,
@@ -2324,7 +2359,8 @@ async function recoverCheckpointedToolLoop(
     };
     // The history's records are projected again before the committed notes
     // apply: their coverage may name a record.
-    providerRequest = await withRecoveredToolHistory(deps, providerRequest, { runId: run.id, userId: run.userId }, "insert");
+    providerRequest = await withRecoveredToolHistory(deps, providerRequest, { runId: run.id, userId: run.userId }, "insert",
+      recoveredHistory);
     if (run.checkpoint.contextCompaction?.summary) {
       providerRequest = applyContextSummaryToRequest(
         providerRequest,
@@ -2471,6 +2507,16 @@ async function recoverCheckpointedToolLoop(
     }
     assertPersonalContextEgressSafe(providerRequest);
     let runtime = deps.mcpRuntime;
+    // The saved continuation keeps no call read's output: each is read again
+    // here, once, with the run's current authority.
+    const savedContinuation = parseProviderToolLoopContinuation(run.checkpoint.providerContinuation);
+    const savedCallReads = callReadIds(run.calls);
+    const rereadCalls = new Map(run.calls.filter(call => savedCallReads.has(call.providerCallId))
+      .map(call => [call.providerCallId, call]));
+    const savedToolMessages = await withRereadCallReads(savedContinuation.providerToolMessages, savedCallReads, bridge,
+      async (callId) => executeReadToolCall(recoveredToolCallReader(deps), { id: callId, name: READ_TOOL_CALL_NAME,
+        arguments: rereadCalls.get(callId)?.arguments ?? {} }, { runId: run.id, userId: run.userId }, signal, undefined,
+      { resultReader: run.normalizedRequest.toolObservationVersion === 1 }));
     const context: RecoveryToolContext = {
       skillResultBudget: createSkillToolResultBudget(),
       activeMcpDiscovery,
@@ -2483,7 +2529,7 @@ async function recoverCheckpointedToolLoop(
       sessionRequest: {
         ...providerRequest,
         tools,
-        providerToolMessages: [...parseProviderToolLoopContinuation(run.checkpoint.providerContinuation).providerToolMessages]
+        providerToolMessages: [...savedToolMessages]
       },
       providerRequest,
       run,
@@ -2807,7 +2853,8 @@ async function recoverCheckpointedToolLoop(
     ): Promise<ProviderRunRequest> {
       // Records still in the request are rebuilt with current authority, and
       // the run's persisted calls index the provenance of its transcript.
-      roundRequest = { ...await withRecoveredToolHistory(deps, roundRequest, { runId: run.id, userId: run.userId }, "refresh"),
+      roundRequest = { ...await withRecoveredToolHistory(deps, roundRequest, { runId: run.id, userId: run.userId }, "refresh",
+        recoveredHistory),
         toolCallRefs: recoveredToolCallRefs(persistedCalls.values()) };
       // A rebuild the live run recorded keeps its tightened budget here too,
       // for the measured round and every recovered dispatch.
@@ -3032,7 +3079,7 @@ async function recoverCheckpointedToolLoop(
           };
         }),
         providerContinuation: toolLoopJson(
-          continuation,
+          withoutCallReadOutputs(continuation, callReadIds(persistedCalls.values()), bridge),
           toolLoopPersistenceLimits.checkpointBytes,
           "tool_loop_checkpoint_invalid"
         ),
@@ -3124,7 +3171,10 @@ async function recoverCheckpointedToolLoop(
       return toolChoice === "none" ? { ...prepared, toolChoice } : prepared;
     }
 
-    let continuation = parseProviderToolLoopContinuation(run.checkpoint.providerContinuation);
+    let continuation: ProviderToolLoopContinuation = { ...savedContinuation, providerToolMessages: [...savedToolMessages] };
+    /** A persisted continuation keeps no output of a call read. */
+    const persistableContinuation = <T extends Readonly<{ providerToolMessages: readonly unknown[] }>>(value: T): T =>
+      withoutCallReadOutputs(value, callReadIds(persistedCalls.values()), bridge);
     let currentCalls: readonly PersistedToolLoopCall[];
     let correctedNoToolRound = false;
     /** The round whose batch was refused over the call budget; its tool-free
@@ -3133,7 +3183,8 @@ async function recoverCheckpointedToolLoop(
     const persistFinalSynthesis = async (nextContinuation: ProviderToolLoopContinuation, round: number) => {
       const started = await deps.repository.beginToolLoopProviderRound({
         finalSynthesisOfRound: round,
-        providerContinuation: toolLoopJson(nextContinuation, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+        providerContinuation: toolLoopJson(persistableContinuation(nextContinuation), toolLoopPersistenceLimits.checkpointBytes,
+          "tool_loop_checkpoint_invalid"),
         roundIndex: round + 1,
         runId: run.id,
         userId: run.userId
@@ -3147,7 +3198,8 @@ async function recoverCheckpointedToolLoop(
     const persistRequiredToolCorrection = async (nextContinuation: ProviderToolLoopContinuation, round: number) => {
       const started = await deps.repository.beginToolLoopProviderRound({
         requiredToolCorrectionOfRound: round,
-        providerContinuation: toolLoopJson(nextContinuation, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+        providerContinuation: toolLoopJson(persistableContinuation(nextContinuation), toolLoopPersistenceLimits.checkpointBytes,
+          "tool_loop_checkpoint_invalid"),
         roundIndex: round + 1,
         runId: run.id,
         userId: run.userId
@@ -3500,7 +3552,8 @@ async function recoverCheckpointedToolLoop(
       beforeSynthesisDispatch: async ({ continuation: dispatched, round }) => {
         const marked = await deps.repository.beginToolLoopProviderRound({
           finalSynthesisOfRound: round - 1,
-          providerContinuation: toolLoopJson(dispatched, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+          providerContinuation: toolLoopJson(persistableContinuation(dispatched), toolLoopPersistenceLimits.checkpointBytes,
+            "tool_loop_checkpoint_invalid"),
           roundIndex: round,
           runId: run.id,
           userId: run.userId

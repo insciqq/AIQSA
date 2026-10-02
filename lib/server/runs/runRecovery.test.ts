@@ -6335,10 +6335,17 @@ describe("run recovery", () => {
         { content: { blocks: [{ text: "Created it.", type: "text" as const }] }, id: "answer-0", role: "assistant" as const },
         { content: { blocks: [{ text: "remember this", type: "text" as const }] }, id: "question-1", role: "user" as const }
       ];
-      const run = async (projections: Array<{ blocks: (typeof block)[] }>) => {
+      const run = async (projections: Array<{ blocks: (typeof block)[] }>, rounds = 1) => {
         const requests: ProviderRunRequest[] = [];
         const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
-          async *stream(request) { requests.push(request); return providerResult; } } } });
+          async *stream(request) {
+            requests.push(request);
+            // An earlier round asks for the session status again.
+            if (requests.length < rounds) return { ...providerResult, finalText: "", providerResponseId: `response-status-${requests.length}`,
+              providerToolCallMessage: [{ type: "function_call", name: "get_session_status", call_id: `status-${requests.length}`, arguments: "{}" }],
+              toolCalls: [{ id: `status-${requests.length}`, name: "get_session_status", arguments: {} }] };
+            return providerResult;
+          } } } });
         const project = vi.fn(async () => projections.length > 1 ? projections.shift()! : projections[0]!);
         harness.repository.projectToolHistory = project;
         const base = checkpointedRun({ calls: [{ ...persistedRecoveryCall("pending"), arguments: {}, toolName: "get_session_status" }],
@@ -6350,16 +6357,70 @@ describe("run recovery", () => {
           toolHistory: { version: 1, turns: [{ turnMessageId: "answer-0", callRefs: [callRef], digest: "e".repeat(64) }] } } });
         await refreshProviderRunIfNeeded(harness.deps, runId, userId);
         expect(harness.state.recoveredErrors).toEqual([]);
-        expect(project).toHaveBeenCalledWith({ actor: { runId, userId }, reader: true, toolHistory: expect.objectContaining({ version: 1 }) });
-        return requests;
+        expect(project).toHaveBeenCalledWith({ actor: { runId, userId }, readers: { call: true, result: false },
+          toolHistory: expect.objectContaining({ version: 1 }), cache: expect.any(Map) });
+        return { project, requests };
       };
-      const [projected] = await run([{ blocks: [block] }]);
-      expect(projected!.context!.messages.map(message => message.id)).toEqual(["question-0", "tch1_answer-0", "answer-0", "question-1"]);
-      expect(projected!.context!.messages[1]).toMatchObject({ role: "assistant", historyClass: "tool_history" });
-      expect(JSON.stringify(projected!.context!.messages[1]!.content)).toContain("CURRENT_TITLE");
-      // Revoked between the restart's insert and its dispatch: the record leaves.
-      const [revoked] = await run([{ blocks: [block] }, { blocks: [] }]);
-      expect(revoked!.context!.messages.map(message => message.id)).toEqual(["question-0", "answer-0", "question-1"]);
+      const projected = await run([{ blocks: [block] }]);
+      // The restart's first dispatch reuses the projection it inserted.
+      expect(projected.project).toHaveBeenCalledOnce();
+      const [first] = projected.requests;
+      expect(first!.context!.messages.map(message => message.id)).toEqual(["question-0", "tch1_answer-0", "answer-0", "question-1"]);
+      expect(first!.context!.messages[1]).toMatchObject({ role: "assistant", historyClass: "tool_history" });
+      expect(JSON.stringify(first!.context!.messages[1]!.content)).toContain("CURRENT_TITLE");
+      // Revoked before the next round: its dispatch no longer carries the record.
+      const revoked = await run([{ blocks: [block] }, { blocks: [] }], 2);
+      expect(revoked.requests).toHaveLength(2);
+      expect(revoked.requests[0]!.context!.messages.map(message => message.id)).toContain("tch1_answer-0");
+      expect(revoked.requests[1]!.context!.messages.map(message => message.id)).toEqual(["question-0", "answer-0", "question-1"]);
+    });
+
+    it("reads a saved call read again before replaying its continuation and persists only its stub", async () => {
+      const read = vi.fn(async () => savedRecord('{"query":"CURRENT_ARGUMENTS"}'));
+      const requests: ProviderRunRequest[] = [];
+      const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+        async *stream(request) {
+          requests.push(request);
+          // The restarted round asks for the status once more, so its batch persists the continuation.
+          if (requests.length === 1) return { ...providerResult, finalText: "", providerResponseId: "response-status-3",
+            providerToolCallMessage: [{ type: "function_call", name: "get_session_status", call_id: "status-3", arguments: "{}" }],
+            toolCalls: [{ id: "status-3", name: "get_session_status", arguments: {} }] };
+          return providerResult;
+        } } } });
+      harness.repository.readToolCall = read;
+      const batches: unknown[] = [];
+      // A continuation persisted before reads were stubbed still holds the old output.
+      const savedRead = openAIResponsesToolBridge.appendToolResult(undefined, { callId: "earlier-read", name: "read_tool_call",
+        status: "complete", content: [{ type: "json", value: { arguments: { fragment: "OLD_OUTPUT" } } }] });
+      const base = checkpointedRun({ calls: [
+        { ...persistedRecoveryCall("complete"), id: "stored-read", providerCallId: "earlier-read", toolName: "read_tool_call", mcpBinding: null,
+          arguments: { call_ref: callRef }, roundIndex: 1, result: snapshotToolExecutionResult(readToolCallReceipt(
+            { id: "earlier-read", name: "read_tool_call", arguments: { call_ref: callRef } },
+            { callId: "earlier-read", name: "read_tool_call", status: "complete", content: [{ type: "json", value: {} }] }),
+          toolLoopPersistenceLimits.resultBytes) },
+        { ...persistedRecoveryCall("pending"), id: "stored-status", providerCallId: "status-2", arguments: {}, toolName: "get_session_status",
+          mcpBinding: null, roundIndex: 2 }
+      ], phase: "tools_pending", roundIndex: 2, providerToolMessages: [
+        { type: "function_call", call_id: "earlier-read", name: "read_tool_call", arguments: JSON.stringify({ call_ref: callRef }) },
+        savedRead as ToolLoopJsonValue,
+        { type: "function_call", call_id: "status-2", name: "get_session_status", arguments: "{}" }
+      ] });
+      const { mcp: _mcp, ...normalizedRequest } = base.normalizedRequest;
+      installCheckpointState(harness, { ...base, normalizedRequest: { ...normalizedRequest, sessionStatusTool: true, toolMode: "none",
+        toolCallReader: true } });
+      const persist = harness.repository.persistToolLoopCallBatch;
+      harness.repository.persistToolLoopCallBatch = async (input) => { batches.push(input.providerContinuation); return persist(input); };
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([]);
+      expect(read).toHaveBeenCalledOnce();
+      expect(read).toHaveBeenCalledWith({ runId, userId }, callRef);
+      const sent = JSON.stringify(requests[0]?.providerToolMessages);
+      expect(sent).toContain("CURRENT_ARGUMENTS");
+      expect(sent).not.toContain("OLD_OUTPUT");
+      expect(batches).toHaveLength(1);
+      expect(JSON.stringify(batches[0])).toContain("tool_call_read_not_kept");
+      expect(JSON.stringify(batches[0])).not.toContain("CURRENT_ARGUMENTS");
+      expect(JSON.stringify(batches[0])).not.toContain("OLD_OUTPUT");
     });
   });
 
