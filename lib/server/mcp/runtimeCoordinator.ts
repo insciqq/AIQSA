@@ -587,6 +587,30 @@ export class McpRuntimeCoordinator {
   }
 
   /**
+   * Owned lifecycle transition of the personal network policy: closes every
+   * live personal session at once, open streams included. Generations keep
+   * their state and the closer owns the outcome, so an in-flight refresh or
+   * health check records nothing; the next reconciliation or on-demand use
+   * restarts each under the current policy, which refuses what it no longer
+   * allows.
+   */
+  async closePersonalRuntimes(): Promise<number> {
+    const closing: Array<readonly [string, LiveRuntime]> = [];
+    for (const [generationId, runtime] of this.#live) {
+      // Only personal runtimes follow their live upstream inventory.
+      if (!runtime.allowUnpublishedTools) continue;
+      runtime.evictionErrorCode = "mcp_session_closed";
+      this.#live.delete(generationId);
+      this.#discardHealthProbe(generationId, runtime);
+      closing.push([generationId, runtime]);
+    }
+    await Promise.allSettled(closing.map(([generationId, runtime]) =>
+      this.#close(generationId, () => runtime.session.dispose?.() ?? runtime.session.close())));
+    this.#scheduleHealthCheck();
+    return closing.length;
+  }
+
+  /**
    * Coordinator-local session inspection used by the health timer and the reconcile kick:
    * enqueues a due health probe or evicts a closed session for an already-owned runtime,
    * never starts one. Not a user-facing projection.

@@ -9,28 +9,40 @@ import { mcpRuntimeErrorMessage, type McpDraftConfiguration, type UserMcpServer 
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { McpClientSessionError } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
+import { createDefaultMcpDraftValidator } from "./defaultMcp";
+import { applyPersonalMcpPolicyChange, personalMcpAddressPolicy } from "./defaultPersonalNetwork";
+import { createDefaultMcpLaunchFetch } from "./defaultRuntime";
 import { currentMcpDispatchFailure, mcpDispatchError } from "./dispatchStatus";
 import { userServerProjection } from "./handlers";
 import { createMcpOAuthStartHandler } from "./oauthHandlers";
 import { buildMcpOAuthPolicy } from "./oauthPolicy";
 import type { McpOAuthRepository } from "./oauthRepository";
 import { McpOAuthError, McpOAuthService } from "./oauthService";
+import { PERSONAL_MCP_EGRESS_HEADERS } from "./personalEgress";
 import { createPersonalMcpCreateHandler } from "./personalHandlers";
 import {
   buildPersonalMcpNetworkEnvironment,
   createPersonalMcpAddressPolicy,
   mcpDestinationSafeFetchOptions,
+  type PersonalMcpAddressPolicyState,
   type PersonalMcpNetworkHost
 } from "./personalNetworkPolicy";
+import { createMcpPolicyHandlers } from "./policyHandlers";
 import { preparePersonalMcpOAuthDraft } from "./personalOAuthDiscovery";
 import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
 import type { McpRepository, McpUserServerState } from "./repositoryContract";
 import {
   McpRuntimeCoordinator,
   type McpRuntimeCoordinatorRepository,
-  type McpRuntimeGenerationLaunch
+  type McpRuntimeGenerationLaunch,
+  type McpRuntimeLaunch
 } from "./runtimeCoordinator";
-import { createMcpSafeFetch, type McpAddressDenialCode, type McpPinnedHttpRequest } from "./safeFetch";
+import {
+  createMcpSafeFetch,
+  type McpAddressDenialCode,
+  type McpPinnedHttpRequest,
+  type McpSafeFetchOptions
+} from "./safeFetch";
 
 const LIMITS = { maxListDurationMs: 10_000, maxToolArgumentBytes: 4_096, maxToolMetadataBytes: 8_192, maxTools: 16 };
 
@@ -239,20 +251,21 @@ const networkHost: PersonalMcpNetworkHost = {
   }
 };
 
-function runtimeRepository(launch: McpRuntimeGenerationLaunch) {
+function runtimeRepository(...launches: McpRuntimeGenerationLaunch[]) {
   const failures: Array<Readonly<{ errorCode: string; generationId: string }>> = [];
   const repository: McpRuntimeCoordinatorRepository = {
     deleteDrainedGeneration: vi.fn(async () => false),
     finalizeDeletedServers: vi.fn(async () => 0),
     listDrainedGenerationIds: vi.fn(async () => []),
-    loadAcceptedGeneration: vi.fn(async () => launch),
+    loadAcceptedGeneration: vi.fn(async (generationId: string) =>
+      launches.find((launch) => launch.generationId === generationId) ?? null),
     markFailed: vi.fn(async ({ errorCode, generationId }) => {
       failures.push({ errorCode, generationId });
       return { applied: true, retryAt: null };
     }),
     markReady: vi.fn(async () => true),
     markStarting: vi.fn(async () => true),
-    synchronizeDesired: vi.fn(async () => [launch]),
+    synchronizeDesired: vi.fn(async () => launches),
     synchronizeShared: vi.fn(async () => []),
     touchLastUsed: vi.fn(async () => undefined)
   };
@@ -372,6 +385,156 @@ describe("personal MCP runtime under the local network policy", () => {
       expect(posts()).toBeGreaterThan(reachedBefore);
     } finally {
       await coordinator.stop();
+    }
+  });
+});
+
+describe("default personal MCP transports", () => {
+  it("validates a personal draft under the personal policy and leaves an installation draft unchanged", async () => {
+    for (const reason of ["mcp_internal_address_forbidden", "mcp_local_network_disabled"] as const) {
+      const personalAddressPolicy = vi.fn(async () => reason);
+      const validator = createDefaultMcpDraftValidator({ personalAddressPolicy });
+      await expect(validator.validate({ draft: remoteDraft("http://192.168.1.20:8080/mcp"), personal: true, values: {} }))
+        .resolves.toEqual({ issues: [expect.objectContaining({ code: reason, path: "source" })], kind: "invalid" });
+      await expect(validator.validate({ draft: remoteDraft("http://192.168.1.20:8080/mcp"), values: {} }))
+        .resolves.toEqual({ issues: [expect.objectContaining({ code: "mcp_connection_forbidden" })], kind: "invalid" });
+      expect(personalAddressPolicy).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("builds each launch transport from its destination", async () => {
+    const personalAddressPolicy = vi.fn(async () => null);
+    const created: McpSafeFetchOptions[] = [];
+    const baseFetch = vi.fn() as unknown as FetchLike;
+    const oauthFetch = vi.fn() as unknown as FetchLike;
+    const oauthRuntimeFetch = vi.fn(async () => oauthFetch);
+    const launchFetch = createDefaultMcpLaunchFetch({
+      createSafeFetch: (options) => { created.push(options); return baseFetch; },
+      oauthRuntimeFetch,
+      personalAddressPolicy
+    });
+    const launch = (overrides: Partial<McpRuntimeLaunch>): McpRuntimeLaunch => ({
+      callTimeoutMs: 5_000, fingerprint: "fingerprint", generationId: "generation", headers: {}, redactionValues: [],
+      retryAt: null, startupTimeoutMs: 5_000, url: "http://nas.lan:8080/mcp", ...overrides
+    });
+
+    await expect(launchFetch(launch({ personalRuntime: true }))).resolves.toBe(baseFetch);
+    // The ToolHive probe is installation-owned even when the launch says personal.
+    await launchFetch(launch({ personalRuntime: true, trustedInternalHttp: true }));
+    await launchFetch(launch({ allowPrivateNetwork: true }));
+    await expect(launchFetch(launch({ oauthConnectionId: "connection-1", personalRuntime: true }))).resolves.toBe(oauthFetch);
+    expect(created).toEqual([
+      { addressPolicy: personalAddressPolicy, allowInsecureHttp: true, egressHeaders: PERSONAL_MCP_EGRESS_HEADERS },
+      { allowInsecureHttp: true, allowPrivateNetwork: true },
+      { allowInsecureHttp: true, allowPrivateNetwork: true },
+      { addressPolicy: personalAddressPolicy, allowInsecureHttp: true, egressHeaders: PERSONAL_MCP_EGRESS_HEADERS }
+    ]);
+    expect(oauthRuntimeFetch).toHaveBeenCalledExactlyOnceWith("connection-1", baseFetch, "http://nas.lan:8080/mcp");
+  });
+
+  it("refuses a personal launch before any request with the policy's reason", async () => {
+    const launchFetch = createDefaultMcpLaunchFetch({ personalAddressPolicy: async () => "mcp_local_network_disabled" as const });
+    const fetch = await launchFetch({
+      callTimeoutMs: 5_000, fingerprint: "fingerprint", generationId: "generation", headers: {}, personalRuntime: true,
+      redactionValues: [], retryAt: null, startupTimeoutMs: 5_000, url: "http://192.168.1.20:8080/mcp"
+    });
+    await expect(fetch("http://192.168.1.20:8080/mcp")).rejects.toMatchObject({ code: "mcp_local_network_disabled" });
+  });
+});
+
+describe("switching personal local network access off", () => {
+  type PolicyGlobal = typeof globalThis & { __aiqsaPersonalMcpAddressPolicy?: PersonalMcpAddressPolicyState };
+
+  it("closes live personal runtimes at once and restarts only those the policy still allows", async () => {
+    const scope = globalThis as PolicyGlobal;
+    const previous = scope.__aiqsaPersonalMcpAddressPolicy;
+    const fixture = await startFixture();
+    let localNetworkEnabled = true;
+    let version = 1;
+    // The process-wide default policy, read through its injected setting.
+    scope.__aiqsaPersonalMcpAddressPolicy = createPersonalMcpAddressPolicy({
+      environment: () => buildPersonalMcpNetworkEnvironment(networkHost),
+      readLocalNetworkEnabled: async () => localNetworkEnabled
+    });
+    const posts: string[] = [];
+    const sessions = createMcpClientSessionFactory({
+      fetch: refusingFetch("mcp_http_address_forbidden"),
+      // The default launch transport; only the wire is a loopback fixture.
+      fetchForLaunch: createDefaultMcpLaunchFetch({
+        createSafeFetch: (options) => createMcpSafeFetch({
+          ...options,
+          dispatch: async (request) => {
+            if (request.method === "POST") posts.push(request.address.address);
+            return fetch(new URL(`${request.url.pathname}${request.url.search}`, fixture.url), {
+              body: request.body ?? undefined, headers: request.headers, method: request.method, signal: request.signal
+            });
+          },
+          lookupHostname: async (hostname) => [{ address: hostname === "nas.lan" ? "192.168.1.20" : "93.184.216.34", family: 4 }]
+        })
+      }),
+      limits: LIMITS
+    });
+    const personalLaunch = (generationId: string, url: string): McpRuntimeGenerationLaunch => ({
+      allowPrivateNetwork: false, callTimeoutMs: 5_000, fingerprint: `fingerprint-${generationId}`, generationId,
+      headers: {}, personalRuntime: true, publishedTools: { kind: "names", names: new Set() }, redactionValues: [],
+      retryAt: null, startupTimeoutMs: 5_000, url
+    });
+    const { failures, repository } = runtimeRepository(
+      personalLaunch("generation-lan", "http://nas.lan:8080/mcp"),
+      personalLaunch("generation-public", "http://tools.example.test:8080/mcp"),
+      { ...personalLaunch("generation-installation", "http://tools.example.test:8080/mcp"), personalRuntime: undefined }
+    );
+    const coordinator = new McpRuntimeCoordinator({ repository, sessions });
+    const handlers = createMcpPolicyHandlers({
+      onUpdated: (policy) => applyPersonalMcpPolicyChange(policy, coordinator),
+      repository: {
+        read: async () => ({ personalLocalNetworkEnabled: localNetworkEnabled, version }),
+        update: async (input) => {
+          if (input.expectedVersion !== version) return { kind: "stale" };
+          localNetworkEnabled = input.personalLocalNetworkEnabled;
+          version += 1;
+          return { kind: "ok", policy: { personalLocalNetworkEnabled: localNetworkEnabled, version } };
+        }
+      },
+      resolveAuth: (async () => ({ user: { id: "admin-1", role: "admin", status: "active" }, userId: "admin-1" })) as unknown as RequestAuthResolver
+    });
+    const patch = (personalLocalNetworkEnabled: boolean) => handlers.PATCH(new Request("https://aiqsa.test/api/admin/mcp/policy", {
+      body: JSON.stringify({ personalLocalNetworkEnabled, version }), headers: { "content-type": "application/json" }, method: "PATCH"
+    }));
+    const lan = { address: "192.168.1.20", family: 4 } as const;
+    const nasUrl = new URL("http://nas.lan:8080/mcp");
+    try {
+      await coordinator.ensureUserServersReady("user-1", ["server-lan", "server-public", "server-installation"]);
+      expect(coordinator.hasLiveGeneration("generation-lan")).toBe(true);
+      expect(coordinator.hasLiveGeneration("generation-public")).toBe(true);
+      expect(coordinator.hasLiveGeneration("generation-installation")).toBe(true);
+      await expect(personalMcpAddressPolicy(lan, nasUrl)).resolves.toBeNull();
+      const lanPostsBefore = posts.filter((address) => address === lan.address).length;
+
+      await expect(patch(false)).resolves.toMatchObject({ status: 200 });
+      // Both sessions close with the response, open streams included, and the
+      // cached setting is gone at once.
+      expect(coordinator.hasLiveGeneration("generation-lan")).toBe(false);
+      expect(coordinator.hasLiveGeneration("generation-public")).toBe(false);
+      expect(coordinator.hasLiveGeneration("generation-installation")).toBe(true);
+      await expect(personalMcpAddressPolicy(lan, nasUrl)).resolves.toBe("mcp_local_network_disabled");
+
+      // The resync restarts the public endpoint; the LAN one is refused before any request.
+      await coordinator.reconcileNow();
+      expect(coordinator.hasLiveGeneration("generation-public")).toBe(true);
+      expect(coordinator.hasLiveGeneration("generation-lan")).toBe(false);
+      expect(failures).toContainEqual({ errorCode: "mcp_local_network_disabled", generationId: "generation-lan" });
+      expect(failures.filter((failure) => failure.generationId === "generation-public")).toEqual([]);
+      expect(posts.filter((address) => address === lan.address)).toHaveLength(lanPostsBefore);
+
+      // Switching back on lets the LAN runtime reconnect on the resync.
+      await expect(patch(true)).resolves.toMatchObject({ status: 200 });
+      await coordinator.reconcileNow();
+      expect(coordinator.hasLiveGeneration("generation-lan")).toBe(true);
+    } finally {
+      await coordinator.stop();
+      if (previous) scope.__aiqsaPersonalMcpAddressPolicy = previous;
+      else delete scope.__aiqsaPersonalMcpAddressPolicy;
     }
   });
 });
