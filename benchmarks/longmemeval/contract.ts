@@ -137,7 +137,6 @@ export type LongMemEvalProfileManifest = Readonly<{
   id: LongMemEvalProfile;
   label: "official-history-recall" | "product-full-memory";
   officialComparable: boolean;
-  patternSynthesis: boolean;
   version: 2;
 }>;
 
@@ -168,7 +167,6 @@ export function longMemEvalProfileManifest(
         id: profile,
         label: "official-history-recall" as const,
         officialComparable: true,
-        patternSynthesis: false,
         version: 2 as const
       })
     : Object.freeze({
@@ -176,7 +174,6 @@ export function longMemEvalProfileManifest(
         id: profile,
         label: "product-full-memory" as const,
         officialComparable: false,
-        patternSynthesis: true,
         version: 2 as const
       });
 }
@@ -190,11 +187,12 @@ export function decodeLongMemEvalProfileManifest(
   const record = value as Record<string, unknown>;
   const profile = decodeLongMemEvalProfile(record.id);
   const expected = longMemEvalProfileManifest(profile);
+  // Summaries written before Dream synthesis was retired also carry a
+  // `patternSynthesis` flag; it describes no current behavior and is ignored.
   if (
     record.automaticFactLearning !== expected.automaticFactLearning ||
     record.label !== expected.label ||
     record.officialComparable !== expected.officialComparable ||
-    record.patternSynthesis !== expected.patternSynthesis ||
     record.version !== expected.version
   ) {
     throw new Error("longmemeval_profile_manifest_invalid");
@@ -203,31 +201,17 @@ export function decodeLongMemEvalProfileManifest(
 }
 
 export type LongMemEvalLearningEvidence = Readonly<{
-  appliedSynthesisExecutions: number;
   assistantEvidence: number;
   automaticFactLearning: boolean;
   automaticFactVersions: number;
   classifiedAutomaticFactVersions: number;
-  classifiedPatternVersions: number;
   directUserEvidence: number;
-  eligibleSynthesisSources: number;
   expectedSettlements: number;
   extractionJobs: number;
   factVersionRelations: number;
-  lastSynthesisAtRecorded: boolean;
-  patternVersions: number;
   relationJobs: number;
-  retainedSynthesisPayloads: number;
   successfulFactExtractionExecutions: number;
   successfulFactExtractionJobs: number;
-  successfulSynthesisExecutions: number;
-  successfulSynthesisJobs: number;
-  synthesizedFromRelations: number;
-  synthesisDue: boolean;
-  synthesisEnabled: boolean;
-  synthesisJobs: number;
-  synthesisScheduleReason: string;
-  synthesisThreshold: number;
 }>;
 
 export function longMemEvalProductMemoryPipelineComplete(
@@ -236,12 +220,10 @@ export function longMemEvalProductMemoryPipelineComplete(
   const counts = Object.values(evidence).filter(
     (value): value is number => typeof value === "number"
   );
-  if (counts.some((value) => !Number.isSafeInteger(value) || value < 0) ||
-    evidence.synthesisThreshold < 1 ||
-    !/^[A-Z_]{2,64}$/u.test(evidence.synthesisScheduleReason)) {
+  if (counts.some((value) => !Number.isSafeInteger(value) || value < 0)) {
     return false;
   }
-  const automaticLearningComplete = evidence.automaticFactLearning &&
+  return evidence.automaticFactLearning &&
     evidence.expectedSettlements > 0 &&
     evidence.extractionJobs === evidence.expectedSettlements &&
     evidence.successfulFactExtractionJobs > 0 &&
@@ -250,24 +232,7 @@ export function longMemEvalProductMemoryPipelineComplete(
       evidence.successfulFactExtractionJobs &&
     evidence.automaticFactVersions > 0 &&
     evidence.classifiedAutomaticFactVersions === evidence.automaticFactVersions &&
-    evidence.directUserEvidence > 0 && evidence.assistantEvidence === 0 &&
-    evidence.classifiedPatternVersions === evidence.patternVersions;
-  if (!automaticLearningComplete || !evidence.synthesisEnabled) return false;
-  if (evidence.synthesisJobs === 0) {
-    return !evidence.synthesisDue &&
-      evidence.successfulSynthesisExecutions === 0 &&
-      evidence.successfulSynthesisJobs === 0 &&
-      evidence.appliedSynthesisExecutions === 0 &&
-      evidence.retainedSynthesisPayloads === 0 &&
-      !evidence.lastSynthesisAtRecorded && evidence.patternVersions === 0 &&
-      evidence.synthesizedFromRelations === 0;
-  }
-  return evidence.successfulSynthesisJobs === evidence.synthesisJobs &&
-    evidence.successfulSynthesisExecutions >= evidence.successfulSynthesisJobs &&
-    evidence.appliedSynthesisExecutions === evidence.successfulSynthesisJobs &&
-    evidence.retainedSynthesisPayloads === 0 && evidence.lastSynthesisAtRecorded &&
-    (evidence.patternVersions === 0 ||
-      evidence.synthesizedFromRelations >= evidence.patternVersions * 3);
+    evidence.directUserEvidence > 0 && evidence.assistantEvidence === 0;
 }
 
 export const LONGMEMEVAL_MEMORY_SOTA_BASELINE_CONFIGURATION = Object.freeze({
