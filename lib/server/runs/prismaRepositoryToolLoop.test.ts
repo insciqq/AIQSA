@@ -680,7 +680,7 @@ describe("provider dispatch recovery request loading", () => {
     else await expect(loaded).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
   });
 
-  it.each([undefined, "model", 1024, 32768, 65536, null, 1023, 65537, "8192"])("loads only valid frozen MCP output budgets: %s", async (tokens) => {
+  it.each([undefined, "model", 1024, 32768, 65536, null, 1023, 65537, "8192"])("decodes retired frozen MCP output budgets unchanged: %s", async (tokens) => {
     const request = { ...normalizedRequest, toolBudgets: {
       maxToolCalls: 20, maxToolRounds: 8,
       ...(tokens === undefined ? {} : { mcpAutoDiscoveryMaxOutputTokens: tokens })

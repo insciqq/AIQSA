@@ -88,8 +88,7 @@ import type {
   McpRunPlanBinding,
   McpRunPlanResult
 } from "../mcp/runPlan";
-import type { McpSemanticRouter } from "../mcp/router";
-import { mcpConnectedServicesGuidance, mcpFindToolsTool } from "../mcp/discovery";
+import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
@@ -263,7 +262,6 @@ export type RunPreparationDeps = Readonly<{
      * user's server grants, personal slots, and OAuth connections. Tool restrictions
      * additionally use the initiating user. */
     prepareProject?(userId: string, serverIds: readonly string[]): Promise<McpRunPlanResult>;
-    router?: McpSemanticRouter;
   }>;
   providers: Readonly<Record<string, ProviderAdapter>>;
   providerAdmission?: Readonly<{
@@ -2026,8 +2024,8 @@ async function prepareRunWith(
       : "";
     prompt = { ...prompt, system: [prompt.system, imageGuidance, artifactImageGuidance].filter(Boolean).join("\n\n") };
   }
-  // Auto names only the frozen catalog's services; the accepted prompt keeps it through recovery.
-  const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpConnectedServicesGuidance(mcpCatalog) : null;
+  // Auto discloses the frozen catalog's bounded tool index; the accepted prompt keeps it through recovery.
+  const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpToolIndexGuidance(mcpCatalog) : null;
   if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
   if (artifactIntent) prompt = { ...prompt, system: `${prompt.system}\n\nThe user explicitly asked for an artifact: call create_artifact for this message.` };
   let artifactReferences: NormalizedRunRequest["artifactReferences"];
@@ -2184,8 +2182,6 @@ async function prepareRunWith(
       }))
     },
     toolBudgets: {
-      mcpAutoDiscoveryTimeoutSeconds: toolBudgets.mcpAutoDiscoveryTimeoutSeconds,
-      mcpAutoDiscoveryMaxOutputTokens: toolBudgets.mcpAutoDiscoveryMaxOutputTokens ?? undefined,
       maxMcpToolsPerDiscovery: toolBudgets.maxMcpToolsPerDiscovery,
       maxToolCalls: workspaceEnabled
         ? Math.max(

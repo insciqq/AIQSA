@@ -29,18 +29,16 @@ class Sink extends EventEmitter {
 afterEach(() => { setProcessRole("app"); vi.restoreAllMocks(); });
 
 describe("bounded observability runtime", () => {
-  it("projects discovery reasons and counts without tool metadata or private goals", () => {
-    const fields = { outcome: "completed", attempt: 2, duration_ms: 123,
-      correction_reason: "uncovered_outcomes", input_bytes: 1000, candidate_count: 121,
-      selected_count: 2, requirement_count: 3, uncovered_count: 1, previous_uncovered_count: 1,
-      selection_changed: false } as const;
-    const event = record("mcp_discovery", { ...fields, goals: "PRIVATE_GOAL", catalog: "PRIVATE_CATALOG",
-      requirements: "PRIVATE_OUTPUT", token: "PRIVATE_CREDENTIAL" } as never);
+  it("projects local tool search counts without the query or tool names", () => {
+    const fields = { outcome: "completed", duration_ms: 3, mode: "keywords", candidate_count: 180,
+      result_count: 4, loaded_count: 3, already_loaded_count: 1, unknown_name_count: 0 } as const;
+    const event = record("mcp_discovery", { ...fields, query: "PRIVATE_QUERY", tool_names: ["PRIVATE_TOOL"],
+      catalog: "PRIVATE_CATALOG" } as never);
     expect(event).toMatchObject(fields);
     expect(JSON.stringify(event)).not.toContain("PRIVATE_");
-    const invalid = record("mcp_discovery", { ...fields, attempt: 3, candidate_count: -1,
-      correction_reason: "PRIVATE_GOAL", selected_count: "PRIVATE_OUTPUT", input_bytes: Infinity } as never);
-    for (const key of ["attempt", "candidate_count", "correction_reason", "selected_count", "input_bytes"]) {
+    const invalid = record("mcp_discovery", { ...fields, mode: "PRIVATE_QUERY", candidate_count: -1,
+      result_count: "PRIVATE_TOOL", loaded_count: Infinity } as never);
+    for (const key of ["mode", "candidate_count", "result_count", "loaded_count"]) {
       expect(invalid).not.toHaveProperty(key);
     }
   });

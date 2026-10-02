@@ -1,7 +1,6 @@
 import { assertInstructionPresetSelection } from "../instructions/store";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
-import { insertAcceptedMcpRoutingBindings } from "../mcp/decisionBinding";
 import { activeRunControllerRegistry } from "./activeRunControllerRegistry";
 import { admittedFollowupFields, insertAdmittedRunFollowups } from "./prismaRepositoryFollowups";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
@@ -1155,9 +1154,6 @@ export async function admitProjectRunWithClient(
         runId: run.id,
         userId: input.userId
       });
-      if (input.normalizedRequest.mcpDiscovery || input.normalizedRequest.agent?.mcpMode === "auto") {
-        await insertAcceptedMcpRoutingBindings(tx, run.id);
-      }
       await insertAcceptedMcpRunBindings(tx, {
         bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
         tools: input.normalizedRequest.mcp?.tools ?? [],
@@ -1685,9 +1681,6 @@ export async function admitPreparingRunWithClient(
         runId: run.id,
         userId: input.userId
       });
-      if (input.normalizedRequest.mcpDiscovery || input.normalizedRequest.agent?.mcpMode === "auto") {
-        await insertAcceptedMcpRoutingBindings(tx, run.id);
-      }
       await insertAcceptedMcpRunBindings(tx, {
         bindings: input.mcpBindings ? [...input.mcpBindings] : undefined,
         tools: input.normalizedRequest.mcp?.tools ?? [],
