@@ -126,7 +126,7 @@ describe("tool history records project only what each owner discloses", () => {
         checksum: "c".repeat(64), maskable: true, sourceTruncated: false },
       content: [{ type: "json", value: { observation: {}, preview: "x", reader: "read_tool_result" } }] } }), false);
     expect(saved.result).toEqual({ state: "saved", handle: `tor1_${"a".repeat(32)}`, preview: "{\"text\":[\"created\"]}" });
-    for (const kind of ["memory", "knowledge", "skill", "workspace", "web_search", "artifact", "image"] as const) {
+    for (const kind of ["memory", "knowledge", "skill", "workspace", "web_search", "artifact", "image", "vision", "tool"] as const) {
       const record = toolHistoryRecord(facts({ kind, toolName: "x", mcp: undefined, observation: { handle: `tor1_${"b".repeat(32)}`,
         executionOutcome: "complete", preview: "secret preview" } }), false);
       expect(record.arguments).toEqual({ state: "not_applicable" });
