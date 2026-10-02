@@ -30,6 +30,7 @@ import {
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
 import type { KnowledgeSelection } from "@/lib/contracts/knowledge";
+import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { reconcileSearchPlanSelection } from "@/lib/domain/catalogMatrix";
 import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
 
@@ -585,6 +586,18 @@ export function useRunControlsActions({
   function setDefaultMcpMode(mode: ChatDefaultMcpMode) {
     void persistUserDefaults({ mcpMode: mode }, { noticeScope: "settings" });
   }
+
+  /**
+   * The composer's MCP mode is also the personal default, so new chats keep
+   * it. With an Assistant the choice stays this chat's override of its tools
+   * row; a Project chat never writes personal defaults.
+   */
+  function selectMcpMode(selection: McpRunSelection) {
+    const assistantChat = Boolean(boundComposerAssistant(useComposerControlStore.getState()));
+    useComposerControlStore.getState().setMcpSelection(selection);
+    if (assistantChat || currentCatalogFromStore()?.defaults.mcpMode === selection.mode) return;
+    void persistUserDefaults({ mcpMode: selection.mode });
+  }
   function setDefaultSkillsMode(mode: "auto" | "off") {
     void persistUserDefaults({ skillsMode: mode }, { noticeScope: "settings" });
   }
@@ -700,6 +713,7 @@ export function useRunControlsActions({
     flushPendingModelControlDefaults,
     makeModelDefault,
     persistUserDefaults,
+    selectMcpMode,
     selectModel,
     selectSearchPlan,
     selectSearchStrategy,

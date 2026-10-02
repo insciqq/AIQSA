@@ -1074,7 +1074,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onRetryConfig={composer.retryCatalog}
       onSearchKnowledgeSources={composer.knowledge.searchSources}
       onSelectKnowledgeSelection={composer.knowledge.select}
-      onSelectMcp={(selection) => useComposerControlStore.getState().setMcpSelection(selection)}
+      onSelectMcp={composer.selectMcpMode}
       onSelectModel={composer.selectModel}
       onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
       searchPlanMode={composer.searchPlanMode}

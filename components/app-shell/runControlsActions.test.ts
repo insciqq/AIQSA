@@ -158,3 +158,67 @@ describe("parameter persistence with an Assistant", () => {
     expect(assistant?.state === "bound" && assistant.rows.controls.origin).toBe("chat");
   });
 });
+
+describe("composer MCP mode", () => {
+  function useMcpActionsForTest(options: { allowPersonalPersistence?: boolean; mcpMode?: "auto" | "load_all" | "off" } = {}) {
+    const catalog = { defaults: { controlValues: {}, mcpMode: options.mcpMode ?? "auto" }, models: [] } as unknown as Catalog;
+    const enqueue = vi.fn(async () => true);
+    const setCatalog = vi.fn();
+    const actions = useRunControlsActions({
+      allowPersonalPersistence: () => options.allowPersonalPersistence ?? true,
+      catalog,
+      currentModel: undefined,
+      pendingControlDefaultsRef: { current: null },
+      pendingControlDefaultsTimerRef: { current: null },
+      resolveCatalog: () => catalog,
+      settingsMutationCoordinatorRef: {
+        current: { configure: vi.fn(), enqueue, retry: vi.fn() } as unknown as SettingsMutationCoordinator
+      },
+      setCatalog,
+      setNotice: () => undefined,
+      setSettingsNotice: () => undefined
+    });
+    return { actions, enqueue, setCatalog };
+  }
+
+  it("saves the chosen mode as the personal default so new chats keep it", () => {
+    const { actions, enqueue, setCatalog } = useMcpActionsForTest();
+
+    actions.selectMcpMode({ mode: "load_all" });
+
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
+    expect(enqueue).toHaveBeenCalledWith({ mcpMode: "load_all" }, {});
+    expect(setCatalog).toHaveBeenCalledOnce();
+  });
+
+  it("does not write the default again when the mode already is the default", () => {
+    const { actions, enqueue } = useMcpActionsForTest({ mcpMode: "load_all" });
+
+    actions.selectMcpMode({ mode: "load_all" });
+
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("keeps an Assistant chat's choice as that chat's override", () => {
+    useComposerControlStore.setState({ assistant: boundComposerAssistantFixture() });
+    const { actions, enqueue } = useMcpActionsForTest();
+
+    actions.selectMcpMode({ mode: "load_all" });
+
+    expect(enqueue).not.toHaveBeenCalled();
+    const assistant = useComposerControlStore.getState().assistant;
+    expect(assistant?.state === "bound" && assistant.rows.tools.origin).toBe("chat");
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
+  });
+
+  it("never writes personal defaults from a Project chat", () => {
+    const { actions, enqueue, setCatalog } = useMcpActionsForTest({ allowPersonalPersistence: false });
+
+    actions.selectMcpMode({ mode: "off" });
+
+    expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "off" });
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(setCatalog).not.toHaveBeenCalled();
+  });
+});
