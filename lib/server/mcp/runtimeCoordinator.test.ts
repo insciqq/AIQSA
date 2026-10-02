@@ -1597,3 +1597,124 @@ describe("MCP runtime coordinator", () => {
     expect(cleanupOrphans).toHaveBeenLastCalledWith(["fingerprint-retained"]);
   });
 });
+
+describe("MCP runtime housekeeping drain", () => {
+  const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+  it.each(["personal", "shared"] as const)("returns %s preparation while orphan cleanup is blocked and still drains", async (scope) => {
+    // Stands in for ToolHive cleanup queued behind another user's container start.
+    const blocked = deferred<void>();
+    const cleanupOrphans = vi.fn(() => blocked.promise);
+    const test = harness({ cleanupOrphans, retainedFingerprints: ["fingerprint-1"] });
+    vi.mocked(test.repository.listDrainedGenerationIds).mockResolvedValue(["drained-generation"]);
+    test.setSharedLaunches([launch({ fingerprint: "shared-fingerprint", generationId: "shared-generation" })]);
+
+    if (scope === "personal") await test.coordinator.ensureUserServersReady("user-1", ["server-1"]);
+    else await test.coordinator.ensureSharedServersReady(["server-1"]);
+
+    expect(test.coordinator.hasLiveGeneration(scope === "personal" ? "generation-1" : "shared-generation")).toBe(true);
+    await vi.waitFor(() => expect(cleanupOrphans).toHaveBeenCalledWith(["fingerprint-1"]));
+    expect(test.repository.deleteDrainedGeneration).toHaveBeenCalledWith("drained-generation");
+    expect(test.repository.finalizeDeletedServers).toHaveBeenCalledOnce();
+    // Released only so stop() can finish the drain it waits for.
+    blocked.resolve();
+    await test.coordinator.stop();
+  });
+
+  it("runs one drain at a time and folds requests made during it into exactly one follow-up", async () => {
+    const first = deferred<void>();
+    const cleanupOrphans = vi.fn<(tokens: readonly string[]) => Promise<void>>()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(undefined);
+    const test = harness({ cleanupOrphans, retainedFingerprints: [] });
+
+    await test.coordinator.ensureUserServersReady("user-1", ["server-1"]);
+    await vi.waitFor(() => expect(cleanupOrphans).toHaveBeenCalledOnce());
+    await Promise.all([
+      test.coordinator.ensureUserServersReady("user-1", ["server-1"]),
+      test.coordinator.ensureSharedServersReady(["server-1"]),
+      test.coordinator.ensureUserServersReady("user-2", ["server-1"])
+    ]);
+    await settle();
+    expect(test.repository.listDrainedGenerationIds).toHaveBeenCalledOnce();
+    expect(cleanupOrphans).toHaveBeenCalledOnce();
+
+    first.resolve();
+    await vi.waitFor(() => expect(cleanupOrphans).toHaveBeenCalledTimes(2));
+    await settle();
+    expect(test.repository.listDrainedGenerationIds).toHaveBeenCalledTimes(2);
+    expect(test.repository.finalizeDeletedServers).toHaveBeenCalledTimes(2);
+    expect(cleanupOrphans).toHaveBeenCalledTimes(2);
+    await test.coordinator.stop();
+  });
+
+  it("reports a failed drain without failing the caller and recovers on the next drain", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const records = () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)));
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    const test = harness();
+    vi.mocked(test.repository.finalizeDeletedServers).mockRejectedValueOnce(new Error("PRIVATE_DRAIN_CANARY"));
+    try {
+      await expect(test.coordinator.ensureUserServersReady("user-1", ["server-1"])).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(records()).toContainEqual(expect.objectContaining({
+        event: "runtime_lifecycle", subsystem: "mcp", stage: "drain", outcome: "failed", action: "retry"
+      })));
+      await expect(test.coordinator.ensureUserServersReady("user-1", ["server-1"])).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(records()).toContainEqual(expect.objectContaining({
+        event: "subsystem.recovered", subsystem: "mcp", stage: "drain"
+      })));
+      await settle();
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+    } finally {
+      process.off("unhandledRejection", unhandled);
+      await test.coordinator.stop();
+      writer.mockRestore();
+    }
+  });
+
+  it("lets stop finish a running drain before closing sessions and never starts its queued follow-up", async () => {
+    const first = deferred<void>();
+    const cleanupOrphans = vi.fn<(tokens: readonly string[]) => Promise<void>>()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(undefined);
+    const test = harness({ cleanupOrphans, retainedFingerprints: [] });
+    await test.coordinator.ensureUserServersReady("user-1", ["server-1"]);
+    await vi.waitFor(() => expect(cleanupOrphans).toHaveBeenCalledOnce());
+    await test.coordinator.ensureUserServersReady("user-1", ["server-1"]);
+
+    let stopped = false;
+    const stopping = test.coordinator.stop().then(() => { stopped = true; });
+    await settle();
+    expect(stopped).toBe(false);
+    expect(test.session.close).not.toHaveBeenCalled();
+
+    first.resolve();
+    await stopping;
+    await settle();
+    expect(test.session.close).toHaveBeenCalledOnce();
+    expect(test.repository.listDrainedGenerationIds).toHaveBeenCalledOnce();
+    expect(cleanupOrphans).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the reconcile pass waiting for a drain that starts after its own launches", async () => {
+    const first = deferred<void>();
+    const cleanupOrphans = vi.fn<(tokens: readonly string[]) => Promise<void>>()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(undefined);
+    const test = harness({ cleanupOrphans, retainedFingerprints: [] });
+    await test.coordinator.ensureUserServersReady("user-1", ["server-1"]);
+    await vi.waitFor(() => expect(cleanupOrphans).toHaveBeenCalledOnce());
+
+    let reconciled = false;
+    const reconcile = test.coordinator.reconcileNow().then(() => { reconciled = true; });
+    await settle();
+    expect(reconciled).toBe(false);
+    first.resolve();
+    await reconcile;
+    expect(cleanupOrphans).toHaveBeenCalledTimes(2);
+    expect(test.repository.listDrainedGenerationIds).toHaveBeenCalledTimes(2);
+    await test.coordinator.stop();
+  });
+});
