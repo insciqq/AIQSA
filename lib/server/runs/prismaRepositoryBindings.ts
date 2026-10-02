@@ -332,6 +332,7 @@ export async function insertAcceptedMcpRunBindings(
       WHERE server."id" = ${binding.serverId}
         AND server."enabled" = true
         AND server."archivedAt" IS NULL
+        AND server."ownerUserId" IS NULL
         AND server."activeRevisionId" = generation."revisionId"
         AND (
           server."sharedConfigEnvelope" IS NOT NULL
@@ -371,6 +372,7 @@ export async function insertAcceptedMcpRunBindings(
         AND preference."enabled" = true
         AND preference."desiredRuntimeGenerationId" = generation."id"
         AND server."id" = ${binding.serverId}
+        AND (server."ownerUserId" IS NULL OR server."ownerUserId" = ${input.userId})
         AND server."enabled" = true
         AND server."archivedAt" IS NULL
         AND server."activeRevisionId" = generation."revisionId"

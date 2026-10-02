@@ -6,6 +6,7 @@ import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { createGatedRunStreamFixture } from "./support/gatedRunStream";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { authenticateWithLocalToken } from "./support/localAuth";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 const sizes = [{ width: 1440, height: 900 }, { width: 1280, height: 640 },
   { width: 768, height: 1024 }, { width: 1024, height: 768 }, { width: 390, height: 844 }, { width: 844, height: 390 }];
@@ -23,10 +24,7 @@ async function fixture(page: Page) {
         const response = await page.request.delete(`/api/artifacts/${id}`);
         expect(response.ok() || response.status() === 404).toBe(true);
       }),
-      async () => {
-        const response = await page.request.delete(`/api/chats/${chatId}`);
-        expect(response.ok() || response.status() === 404).toBe(true);
-      }
+      () => deleteOwnedChatPermanently(page.request, chatId)
     ];
     for (const action of actions) {
       try { await action(); } catch (error) { errors.push(error); }

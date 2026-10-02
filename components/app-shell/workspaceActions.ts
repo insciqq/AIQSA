@@ -713,6 +713,10 @@ export function useWorkspaceActions({
       "system"
     );
     applyModelControlDefaults(model, catalogOverride?.defaults.controlValues);
+    // A chat keeps no MCP mode of its own: it runs in the user's saved mode.
+    useComposerControlStore.getState().setMcpSelection({
+      mode: catalogOverride?.defaults.mcpMode ?? "auto"
+    }, "system");
   }
 
   function reapplyActiveChatDefaults(catalogOverride: Catalog): boolean {

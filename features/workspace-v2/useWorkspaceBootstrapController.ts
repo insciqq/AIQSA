@@ -39,6 +39,7 @@ export function workspaceDefaultControlsFingerprint(state: ComposerControlSnapsh
     assistant: state.assistant?.state === "bound" ? state.assistant.id : state.assistant?.state ?? null,
     backgroundMode: state.backgroundMode,
     maxOutputTokens: state.maxOutputTokens,
+    mcpSelection: state.mcpSelection,
     knowledgePlanSource: state.knowledgePlanSource,
     reasoningEffort: state.reasoningEffort,
     reasoningMode: state.reasoningMode,

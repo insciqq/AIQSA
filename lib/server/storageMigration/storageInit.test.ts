@@ -1,34 +1,32 @@
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryMigrationBucket } from "@/tests/support/migrationBucket";
-import type { LegacyLayout } from "./legacyLayout";
 import {
   createStorageMarker,
   parseStorageMarker,
   serializeStorageMarker,
-  STORAGE_MARKER_KEY,
-  StorageMigrationError
+  STORAGE_MARKER_KEY
 } from "./marker";
-import { isBundledStorageEndpoint, runStorageInit, type StorageInitInput } from "./storageInit";
+import {
+  isBundledStorageEndpoint,
+  runStorageInit,
+  STORAGE_INIT_GUIDANCE,
+  type StorageInitInput
+} from "./storageInit";
 
 const identity = { bucket: "aiqsa-uploads", composeProject: "aiqsa" };
 const now = new Date("2026-09-29T12:00:00.000Z");
 
-function setup(options: { legacy?: LegacyLayout | Error; references?: boolean; exists?: boolean } = {}) {
+function setup(options: { references?: boolean; exists?: boolean } = {}) {
   const target = createMemoryMigrationBucket({}, options.exists ?? false);
   const databaseHasReferences = vi.fn(async () => options.references ?? false);
-  const legacyLayout = vi.fn(async () => {
-    if (options.legacy instanceof Error) throw options.legacy;
-    return options.legacy ?? { kind: "empty" as const };
-  });
   const input: StorageInitInput = {
     databaseHasReferences,
     endpoint: "http://minio:9000",
     identity: () => identity,
-    legacyLayout,
     now: () => now,
     target: () => target
   };
-  return { databaseHasReferences, input, legacyLayout, target };
+  return { databaseHasReferences, input, target };
 }
 
 function markerObject(project = "aiqsa") {
@@ -59,14 +57,8 @@ describe("storage-init guard", () => {
     expect(target.calls).toEqual(["createBucket", "put"]);
   });
 
-  it("treats a MinIO layout without objects and without references as fresh", async () => {
-    const { input } = setup({ legacy: { hasObjects: false, kind: "minio" } });
-    await expect(runStorageInit(input)).resolves.toMatchObject({ outcome: "fresh_marker_created" });
-  });
-
   it.each([
-    ["legacy objects", { legacy: { hasObjects: true, kind: "minio" } as LegacyLayout }],
-    ["database references with an empty legacy volume", { references: true }],
+    ["database references without a bucket", { references: true }],
     ["database references with an existing empty bucket", { exists: true, references: true }]
   ])("requires the migration for %s without touching storage", async (_name, options) => {
     const { input, target } = setup(options);
@@ -92,17 +84,24 @@ describe("storage-init guard", () => {
     expect(invalid.target.calls).toEqual([]);
   });
 
-  it("passes a valid marker without consulting the legacy volume or the database", async () => {
-    const { databaseHasReferences, input, legacyLayout, target } = setup({ exists: true, references: true });
+  it("passes a valid marker without consulting the database", async () => {
+    const { databaseHasReferences, input, target } = setup({ exists: true, references: true });
     target.objects.set(STORAGE_MARKER_KEY, markerObject());
     await expect(runStorageInit(input)).resolves.toMatchObject({ outcome: "marker_valid" });
-    expect(legacyLayout).not.toHaveBeenCalled();
     expect(databaseHasReferences).not.toHaveBeenCalled();
   });
 
-  it("propagates an unknown legacy layout", async () => {
-    const { input, target } = setup({ legacy: new StorageMigrationError("storage_legacy_layout_unknown") });
-    await expect(runStorageInit(input)).rejects.toMatchObject({ code: "storage_legacy_layout_unknown" });
-    expect(target.calls).toEqual([]);
+  it("sends an unmigrated installation back through the last release with the migration", () => {
+    expect(Object.keys(STORAGE_INIT_GUIDANCE).sort()).toEqual([
+      "storage_marker_foreign", "storage_marker_invalid", "storage_migration_required", "storage_target_unmarked"
+    ]);
+    for (const code of ["storage_migration_required", "storage_target_unmarked"]) {
+      const guidance = STORAGE_INIT_GUIDANCE[code]!;
+      expect(guidance).toContain("Nothing was changed in object storage");
+      expect(guidance).toContain("Restore the PostgreSQL backup taken before this upgrade");
+      expect(guidance).toContain("check out v0.2.34 and follow its UPGRADING_FROM_MINIO.md, then upgrade again");
+      expect(guidance).not.toContain("migrate-minio-to-seaweedfs");
+      expect(guidance).not.toContain("/legacy");
+    }
   });
 });

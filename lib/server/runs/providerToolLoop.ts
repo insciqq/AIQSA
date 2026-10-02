@@ -24,13 +24,92 @@ import {
   type ToolLoopToolResult
 } from "./toolLoop";
 import { providerRequestContextRebuild } from "./runContextBudget";
+import { canonicalJsonText } from "./contextCompactionContract";
+
+/** A checkpointed decision that the next round is tool-free synthesis. Only
+ * `budget_exhausted` is ever written; `no_progress` is derived from the
+ * persisted calls of the previous round. */
+export type ToolSynthesisMarker = "budget_exhausted" | "no_progress";
 
 export type ProviderToolLoopContinuation = Readonly<{
+  /** The previous round's batch exceeded the remaining call budget and was
+   * neither persisted nor dispatched; this round answers without tools. */
+  finalSynthesis?: ToolSynthesisMarker;
   providerResponseId: string | null;
   providerToolMessages: readonly unknown[];
   /** The run already consumed its one correction of a missing required call. */
   requiredToolCorrection?: true;
+  /** Written immediately before the synthesis request is sent: a claimed
+   * synthesis round without it was provably never dispatched. */
+  synthesisDispatched?: true;
 }>;
+
+/** Why a round answers without tools. `calls` and `rounds` are an exactly
+ * reached budget; the other two also left planned calls unexecuted. */
+export type ToolSynthesisReason = ToolSynthesisMarker | "calls" | "rounds";
+
+export type ToolSynthesisDecision = Readonly<{
+  /** The transient budget signal, when a budget ended tool use. */
+  budget: NonNullable<ReturnType<typeof reachedToolLoopBudget>> | null;
+  reason: ToolSynthesisReason;
+}>;
+
+/**
+ * The one rule for a tool-free synthesis round, shared by live execution and
+ * recovery: a checkpointed marker first, then a previous round of only
+ * blocked repeats, then an exactly reached budget. A run admitted without
+ * tools (`toolChoice: "none"`) is not synthesis.
+ */
+export function toolSynthesisDecision(input: Readonly<{
+  budgets: Pick<ToolLoopBudgets, "maxToolCalls" | "maxToolRounds">;
+  continuation: Pick<ProviderToolLoopContinuation, "finalSynthesis">;
+  initialToolChoice: ProviderRunRequest["toolChoice"];
+  noProgress: boolean;
+  progress: Pick<ToolLoopProgress, "toolCalls" | "toolRounds">;
+}>): ToolSynthesisDecision | null {
+  if (input.initialToolChoice === "none") return null;
+  const reached = reachedToolLoopBudget(input.progress, input.budgets);
+  if (input.continuation.finalSynthesis === "budget_exhausted") {
+    return { budget: { kind: "calls", limit: input.budgets.maxToolCalls }, reason: "budget_exhausted" };
+  }
+  if (input.continuation.finalSynthesis === "no_progress" || input.noProgress) {
+    return { budget: reached, reason: "no_progress" };
+  }
+  return reached ? { budget: reached, reason: reached.kind } : null;
+}
+
+/** Server-owned and never persisted: built in the provider projection of
+ * the synthesis request, by recovery the same way. */
+export function toolSynthesisInstruction(reason: ToolSynthesisReason): string {
+  const cause = reason === "no_progress"
+    ? "repeated identical calls returned no new data"
+    : reason === "rounds" ? "the tool-round budget is exhausted" : "the tool-call budget is exhausted";
+  const unexecuted = reason === "budget_exhausted" || reason === "no_progress"
+    ? " Some planned tool calls were not executed." : "";
+  return `Tool use is now disabled for this run: ${cause}.${unexecuted} Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed.`;
+}
+
+/** The instruction as the last provider tool message, in the bridge's form. */
+export function toolSynthesisMessage(bridge: Pick<ProviderToolBridge, "provider">, text: string): unknown {
+  return bridge.provider === "gemini"
+    ? { type: "user_input", content: [{ type: "text", text }] }
+    : bridge.provider === "anthropic"
+      ? { role: "user", content: [{ type: "text", text }] }
+      : { role: "user", content: text };
+}
+
+/** Removes the instruction again so no continuation, checkpoint or row keeps it. */
+function withoutSynthesisMessage(messages: readonly unknown[], message: unknown): unknown[] {
+  const text = canonicalJsonText(message);
+  let index = messages.length - 1;
+  while (index >= 0 && messages[index] !== message && canonicalJsonText(messages[index]) !== text) index -= 1;
+  return index < 0 ? [...messages] : [...messages.slice(0, index), ...messages.slice(index + 1)];
+}
+
+/** A server-owned note on a settled result in the provider projection only. */
+export function withProviderNote(result: ToolExecutionResult, note: string | undefined): ToolExecutionResult {
+  return note ? { ...result, content: [...result.content, { type: "text", text: note }] } : result;
+}
 
 export type ProviderToolLoopResume = Readonly<{
   continuation: ProviderToolLoopContinuation;
@@ -60,6 +139,22 @@ export type ProviderToolLoopInput = Readonly<{
   onToolArguments?(input: { round: number; event: import("../providers/types").ProviderToolArgumentEvent }): Promise<void>;
   onEvent?(event: ModelRunSseEvent): Promise<void> | void;
   onFinalSynthesis?(budget: NonNullable<ReturnType<typeof reachedToolLoopBudget>>): Promise<void> | void;
+  /** Persist the refused round's synthesis decision (`finalSynthesis`) and
+   * claim its successor before any synthesis I/O. */
+  onFinalSynthesisTransition?(input: Readonly<{
+    continuation: ProviderToolLoopContinuation;
+    round: number;
+  }>): Promise<void> | void;
+  /** Durably mark the claimed synthesis round dispatched, immediately before
+   * each provider request of it. */
+  beforeSynthesisDispatch?(input: Readonly<{
+    continuation: ProviderToolLoopContinuation;
+    round: number;
+  }>): Promise<void> | void;
+  /** True only for a persisted call blocked as a repeat without progress. */
+  isRepeatBlockedCall?(call: ToolLoopCall): boolean;
+  /** A server-owned repeat note for a settled result, in the projection only. */
+  toolResultNoteForProvider?(entry: ToolLoopSettledCall<ToolExecutionResult>): string | undefined;
   onProviderResult?(input: Readonly<{
     request: ProviderRunRequest;
     result: ProviderRunResult;
@@ -247,7 +342,8 @@ function continuationForRound(
   bridge: ProviderToolBridge,
   continuation: ProviderToolLoopContinuation,
   previousToolResults: readonly ToolLoopSettledCall<ToolExecutionResult>[],
-  projectToolResultForProvider?: ProviderToolLoopInput["projectToolResultForProvider"]
+  projectToolResultForProvider?: ProviderToolLoopInput["projectToolResultForProvider"],
+  toolResultNoteForProvider?: ProviderToolLoopInput["toolResultNoteForProvider"]
 ): ProviderToolLoopContinuation {
   if (previousToolResults.length === 0) return continuation;
   return {
@@ -258,7 +354,8 @@ function continuationForRound(
         const result = settledExecutionResult(entry);
         return bridge.appendToolResult(
           undefined,
-          projectToolResultForProvider?.(result, { round: entry.round }) ?? result
+          withProviderNote(projectToolResultForProvider?.(result, { round: entry.round }) ?? result,
+            toolResultNoteForProvider?.(entry))
         );
       })
     ]
@@ -288,6 +385,7 @@ export async function runProviderToolLoop(
     onToolBatchSettled: input.onToolBatchSettled,
     onSignal: input.onSignal,
     persistToolBatch: input.persistToolBatch,
+    refuseToolBatch: ({ continuation, round }) => input.onFinalSynthesisTransition?.({ continuation, round }),
     resume: input.resume ? {
       continuation: input.resume.continuation,
       ...(input.resume.previousToolResults
@@ -301,22 +399,38 @@ export async function runProviderToolLoop(
         input.bridge,
         continuation,
         previousToolResults,
-        input.projectToolResultForProvider
+        input.projectToolResultForProvider,
+        input.toolResultNoteForProvider
       );
-      const budget = reachedToolLoopBudget(progress, input.budgets);
+      const synthesis = toolSynthesisDecision({
+        budgets: input.budgets,
+        continuation,
+        initialToolChoice: input.initialRequest.toolChoice,
+        noProgress: previousToolResults.length > 0 && input.isRepeatBlockedCall !== undefined &&
+          previousToolResults.every(entry => input.isRepeatBlockedCall!(entry.call)),
+        progress
+      });
+      const budget = synthesis?.budget ?? null;
       const required = progress.toolRounds === 0 && input.initialRequest.toolChoice === "required";
-      const toolChoice = budget || input.initialRequest.toolChoice === "none"
+      const toolChoice = synthesis || input.initialRequest.toolChoice === "none"
         ? "none"
         : required && !continuation.requiredToolCorrection
           ? "required"
           : "auto";
+      // The instruction is budgeted with the request it ends, then removed
+      // from everything the round persists.
+      const synthesisMessage = synthesis
+        ? toolSynthesisMessage(input.bridge, toolSynthesisInstruction(synthesis.reason)) : null;
       const requestedRound = withRoundForcedTool({
         ...preparedRequest,
         parallelToolCalls: input.parallelToolCalls,
-        providerToolMessages: [...effectiveContinuation.providerToolMessages],
+        providerToolMessages: [...effectiveContinuation.providerToolMessages,
+          ...(synthesisMessage ? [synthesisMessage] : [])],
         toolChoice,
         tools: [...input.tools]
       }, input.initialRequest.forcedToolName);
+      const persistedMessages = (messages: readonly unknown[]) => synthesisMessage
+        ? withoutSynthesisMessage(messages, synthesisMessage) : [...messages];
       let roundInput = requestedRound;
       let rejected: Readonly<{ error: unknown }> | null = null;
       let preparedContinuation: ProviderToolLoopContinuation;
@@ -343,7 +457,7 @@ export async function runProviderToolLoop(
           ...effectiveContinuation,
           providerResponseId: effectiveContinuation.providerResponseId,
           providerToolMessages: preparedRound.providerToolMessages
-            ? [...preparedRound.providerToolMessages]
+            ? persistedMessages(preparedRound.providerToolMessages)
             : effectiveContinuation.providerToolMessages
         };
         // Request/context preparation cannot restore tool authority after its
@@ -363,6 +477,13 @@ export async function runProviderToolLoop(
           if (budget) await input.onFinalSynthesis?.(budget);
         }
 
+        if (continuation.finalSynthesis === "budget_exhausted") {
+          try {
+            await input.beforeSynthesisDispatch?.({ continuation: { ...continuation, synthesisDispatched: true }, round });
+          } catch (error) {
+            throw beforeAnswerDispatch(error);
+          }
+        }
         // Text, tool arguments and any event other than the provider's own
         // lifecycle summary are accepted output of this round.
         let acceptedOutput = false;
@@ -431,7 +552,7 @@ export async function runProviderToolLoop(
         : {
             ...preparedContinuation,
             providerResponseId: preparedContinuation.providerResponseId,
-            providerToolMessages: [...dispatchedRequest.providerToolMessages]
+            providerToolMessages: persistedMessages(dispatchedRequest.providerToolMessages)
           };
       let publicationFailed = false;
       let publicationError: unknown;
@@ -474,7 +595,7 @@ export async function runProviderToolLoop(
         ? { ...result, toolCalls: normalizedCalls }
         : result;
       if (required && missingRequiredToolCall(input.initialRequest, normalizedCalls)) {
-        if (calls.length > 0 || continuation.requiredToolCorrection || budget) {
+        if (calls.length > 0 || continuation.requiredToolCorrection || synthesis) {
           return { error: REQUIRED_TOOL_CALL_FAILURE, status: "error" as const };
         }
         const correction = requiredToolCorrectionContinuation(
@@ -508,7 +629,16 @@ export async function runProviderToolLoop(
           normalizedResult
         ),
         parallelToolCalls: roundRequest.parallelToolCalls === true,
-        status: "tool_calls" as const
+        status: "tool_calls" as const,
+        // Over the remaining call budget the batch is dropped: synthesis
+        // resends this round's own transcript (with the previous round's
+        // results) without its assistant items, so every bridge keeps its
+        // call/output pairing and no output is invented. It is the transcript
+        // before this round's preparation: a reference that preparation made
+        // while the reader was callable would be unreadable without tools, so
+        // synthesis is re-planned from the real results (notes or an explicit
+        // overflow, never a reference it cannot read).
+        synthesisContinuation: { ...effectiveContinuation, finalSynthesis: "budget_exhausted" as const }
       };
     },
     signal: input.signal

@@ -31,8 +31,8 @@ import {
 } from "@/lib/contracts/runs";
 import { decodeUploadAttachmentResponse, decodeUploadErrorResponse, type UploadedAttachmentWire } from "@/lib/contracts/uploads";
 import type { Dispatch, SetStateAction } from "react";
-import { fetchWorkspaceUploadConfig, uploadWorkspaceFile } from "./workspaceUploadClient";
-import { uploadFormatFor } from "@/lib/domain/uploadFormats";
+import { fetchWorkspaceUploadConfig, IMAGE_UPLOAD_FAILURE_MESSAGES, uploadWorkspaceFile } from "./workspaceUploadClient";
+import { ATTACHMENT_UPLOAD_FORMAT_LABELS, uploadAdmissionFormatFor } from "@/lib/domain/uploadFormats";
 
 type MutableRef<T> = {
   current: T;
@@ -139,6 +139,10 @@ function attachmentPollTimeoutMessage(fileName: string): string {
   return `${fileName}: processing is taking longer than expected. Retry status checking or remove the file.`;
 }
 
+const UPLOAD_FAILURE_GENERIC_MESSAGE =
+  "Upload failed. Try again, or choose another file if it keeps failing.";
+
+/** Names a direct-upload refusal by decoded code first, then by status; never echoes the body. */
 async function uploadFailureMessage(response: Response): Promise<string> {
   let decoded: ReturnType<typeof decodeUploadErrorResponse> = null;
   try {
@@ -147,39 +151,47 @@ async function uploadFailureMessage(response: Response): Promise<string> {
     // Reverse proxies may return a non-JSON body before the application runs.
   }
 
-  if (decoded?.error === "pdf_password_required") {
-    return "Password-protected PDFs are not supported.";
+  switch (decoded?.error) {
+    case "pdf_password_required":
+      return "Password-protected PDFs are not supported.";
+    case "pdf_invalid":
+      return "This PDF is damaged or invalid.";
+    case "pdf_extraction_timeout":
+      return "PDF processing timed out.";
+    case "pdf_page_limit_exceeded":
+      return `This PDF has more than ${decoded.maxPages} pages.`;
+    case "pdf_extraction_failed":
+      return "PDF processing failed. Try another PDF.";
+    case "upload_busy":
+      return "Upload capacity is busy. Try again shortly.";
+    case "workspace_runtime_unavailable":
+      return "Workspace is unavailable. Turn it off or try again later.";
+    case "file_too_large":
+      return "File exceeds the configured upload size limit.";
+    case "file_required":
+      return "The file is empty or couldn't be read. Choose a non-empty file and try again.";
+    case "image_invalid":
+    case "image_limit_exceeded":
+      return IMAGE_UPLOAD_FAILURE_MESSAGES[decoded.error];
+    case "unsupported_type":
+      return `This file type isn't supported, or its extension doesn't match its contents. Supported: ${ATTACHMENT_UPLOAD_FORMAT_LABELS.join(", ")}. Check that the extension matches the file.`;
+    case "project_not_found":
+      return "This project is no longer available. Refresh the page or upload the file in another chat.";
+    case "unauthorized":
+      return "Your session ended. Sign in again to continue.";
+    case undefined:
+      break;
   }
 
-  if (decoded?.error === "pdf_invalid") {
-    return "This PDF is damaged or invalid.";
-  }
-
-  if (decoded?.error === "pdf_extraction_timeout") {
-    return "PDF processing timed out.";
-  }
-
-  if (decoded?.error === "pdf_page_limit_exceeded") {
-    return `This PDF has more than ${decoded.maxPages} pages.`;
-  }
-
-  if (decoded?.error === "pdf_extraction_failed") {
-    return "PDF processing failed. Try another PDF.";
-  }
-
-  if (decoded?.error === "upload_busy" || response.status === 429) {
-    return "Upload capacity is busy. Try again shortly.";
-  }
-
-  if (decoded?.error === "workspace_runtime_unavailable") {
-    return "Workspace is unavailable. Turn it off or try again later.";
-  }
-
-  if (decoded?.error === "file_too_large" || response.status === 413) {
+  if (response.status === 413) {
     return "File exceeds the configured upload size limit.";
   }
 
-  return `upload_failed_${response.status}`;
+  if (response.status === 429) {
+    return "Upload capacity is busy. Try again shortly.";
+  }
+
+  return UPLOAD_FAILURE_GENERIC_MESSAGE;
 }
 
 type RunLifecycleActionsInput = {
@@ -315,7 +327,7 @@ export function useRunLifecycleActions({
           if (!useComposerSessionStore.getState().sessionsByKey[sourceSessionKey]?.pendingUploadGenerations.includes(generation)) break;
           const projectId = projectIdFromComposerSessionKey(sourceSessionKey) ??
             projectIdForChat(chatIdFromComposerSessionKey(sourceSessionKey));
-          if (limits && (file.size > limits.ordinaryMaxBytes || !uploadFormatFor(file.name, file.type, "attachment"))) {
+          if (limits && (file.size > limits.ordinaryMaxBytes || !uploadAdmissionFormatFor(file.name, file.type, "attachment"))) {
             if (file.size > limits.maxBytes) throw new Error(`File exceeds the ${Number((limits.maxBytes / 1024 / 1024).toFixed(1))} MiB upload limit.`);
             const attachment = await uploadWorkspaceFile({ file, projectId, sourceKey: sourceSessionKey, generation });
             if (attachment) useComposerSessionStore.getState().appendUploadedAttachment(sourceSessionKey, generation, attachment);

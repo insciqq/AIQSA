@@ -4,6 +4,7 @@ import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import { loadProviderAttachments } from "../runs/runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "../runs/attachmentLimits";
 import { applyProviderRequestContextBudget } from "../runs/runContextBudget";
+import { CONTEXT_COMPACTION_POLICY_RETIRED, contextCompactionPolicyRetired } from "../runs/contextCompactionContract";
 import { createRunExecutionResponse, type RunExecutionInput } from "../runs/runExecution";
 import { acceptedRunSnapshot, type AcceptedRunSnapshot } from "../runs/acceptedRunSnapshot";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "../runs/preparingRunMaterialization";
@@ -36,6 +37,7 @@ export function createChatPdfRunFailure(deps: Readonly<{
     const message = error.code === "pdf_local_text_unusable"
       ? "This PDF could not be read. Try a different file."
       : error.code === "pdf_preparation_context_limit" ? "This document does not fit the conversation context."
+      : error.code === CONTEXT_COMPACTION_POLICY_RETIRED.code ? CONTEXT_COMPACTION_POLICY_RETIRED.message
       : "Document preparation could not finish. Try again.";
     const settled = await observeChatPdfPersistence(claim.runId, "fail", () => deps.repository.settlePreparingRunFailure({
       errorCode: error.code, message, retryable: error.retryable, runId: claim.runId, state: "FAILED", userId: claim.userId
@@ -69,6 +71,12 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
       throw new ChatPdfPreparationError("pdf_preparation_invalid");
     }
     let prepared = snapshot.prepared;
+    // A snapshot accepted under the retired context policy ends before its
+    // budget, provider or tool step.
+    if (contextCompactionPolicyRetired(prepared.normalizedRequest) || loaded.modelRun.normalizedRequest &&
+      contextCompactionPolicyRetired(loaded.modelRun.normalizedRequest as unknown as NormalizedRunRequest)) {
+      throw new ChatPdfPreparationError(CONTEXT_COMPACTION_POLICY_RETIRED.code);
+    }
     const runtime = await deps.providerRuntime.resolve(claim.runId, "answer");
     const records = await deps.repository.loadAttachments(claim.userId, prepared.normalizedRequest.attachmentIds,
       prepared.project?.projectId);

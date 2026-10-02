@@ -1,5 +1,6 @@
 import { MODEL_PRICES_MIGRATION, modelPricesFixtureSql, modelPricesProofSql, modelPricesGuardProofSql } from "./model-prices-adoption";
 import { WORKSPACE_CHECKPOINT_MIGRATION, workspaceCheckpointFixtureSql, workspaceCheckpointProofSql } from "./workspace-checkpoint-adoption";
+import { WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION, workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql } from "./workspace-checkpoint-deletion-job-repair-adoption";
 import { TOOL_OBSERVATION_MIGRATION, toolObservationFixtureSql, toolObservationProofSql } from "./tool-observation-adoption";
 import { TOOL_OBSERVATION_ROLLOUT_POLICY_MIGRATION, toolObservationRolloutPolicyFixtureSql, toolObservationRolloutPolicyProofSql } from "./tool-observation-rollout-policy-adoption";
 import { VISION_ANALYSIS_MIGRATION, visionAnalysisFixtureSql, visionAnalysisProofSql } from "./vision-analysis-adoption";
@@ -584,6 +585,10 @@ function bootstrapFoundationDigest(database: string): string {
       'workspace_policy', COALESCE((
         SELECT jsonb_agg(jsonb_build_array(id, enabled, "internetEnabled", version, "updatedByUserId") ORDER BY id)
         FROM "WorkspacePolicy"
+      ), '[]'::jsonb),
+      'mcp_policy', COALESCE((
+        SELECT jsonb_agg(jsonb_build_array(id, "personalLocalNetworkEnabled", version) ORDER BY id)
+        FROM "McpPolicy"
       ), '[]'::jsonb)
     )::text);`,
   );
@@ -600,6 +605,11 @@ function runBootstrapProof(database: string): void {
     psqlScalar(database, `SELECT enabled FROM "WorkspacePolicy" WHERE id = 'installation';`),
     "t",
     "fresh migration history must permit Workspace before bootstrap",
+  );
+  assert.equal(
+    psqlScalar(database, `SELECT CASE WHEN "personalLocalNetworkEnabled" THEN 'on' ELSE 'off' END || ':' || version::text FROM "McpPolicy" WHERE id = 'installation';`),
+    "on:1",
+    "fresh migration history must allow personal MCP local network access before bootstrap",
   );
   const bootstrapEnvironment = {
     AIQSA_INITIAL_ADMIN_DISPLAY_NAME: "Baseline Administrator",
@@ -640,13 +650,14 @@ function runBootstrapProof(database: string): void {
     "adopted bootstrap changed the settled fresh-install foundation",
   );
   psqlScalar(database, `UPDATE "WorkspacePolicy" SET enabled = false, version = version + 1 WHERE id = 'installation';
-    UPDATE "AgentPolicy" SET "limitsEnabled" = true, "maxModelCalls" = 3, version = version + 1 WHERE id = 'installation';`);
+    UPDATE "AgentPolicy" SET "limitsEnabled" = true, "maxModelCalls" = 3, version = version + 1 WHERE id = 'installation';
+    UPDATE "McpPolicy" SET "personalLocalNetworkEnabled" = false, version = version + 1 WHERE id = 'installation';`);
   const disabledDigest = bootstrapFoundationDigest(database);
   app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.equal(
     bootstrapFoundationDigest(database),
     disabledDigest,
-    "bootstrap adoption must preserve an administrator's saved Workspace Off",
+    "bootstrap adoption must preserve an administrator's saved Workspace and personal MCP local network Off",
   );
   assert.equal(
     psqlScalar(
@@ -7634,6 +7645,8 @@ function main(
      END $$;`);
   runForwardAdoptionProof(shadowDatabase, migrations, MODEL_PRICES_MIGRATION,
     modelPricesFixtureSql, modelPricesProofSql + modelPricesGuardProofSql, modelPricesProofSql + modelPricesGuardProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION,
+    workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

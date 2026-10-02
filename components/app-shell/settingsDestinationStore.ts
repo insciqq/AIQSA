@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 export type SettingsSection =
   | "account"
+  | "connections"
   | "connected_apps"
   | "data"
   | "general";

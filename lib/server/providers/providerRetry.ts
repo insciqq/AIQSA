@@ -1,4 +1,4 @@
-import { ProviderSafeFetchError } from "./providerSafeFetch";
+import { ProviderSafeFetchError, providerRequestNotSent } from "./providerSafeFetch";
 import { observeProviderRetry, withProviderAttempt } from "./providerObservability";
 
 export const DEFAULT_PROVIDER_REQUEST_MAX_ATTEMPTS = 4;
@@ -83,6 +83,34 @@ export function isRetryableProviderNetworkError(error: unknown): boolean {
   // Native fetch implementations reject transport failures with TypeError.
   // Abort/deadline errors are rejected by the caller before this classifier.
   return error instanceof TypeError;
+}
+
+export const PROVIDER_REQUEST_OUTCOME_UNKNOWN = "provider_request_outcome_unknown";
+
+/** A paid create lost its transport after the provider may have received it.
+ * Neither success, zero usage nor a completed replay may be inferred. */
+export class ProviderRequestOutcomeUnknownError extends Error {
+  readonly code = PROVIDER_REQUEST_OUTCOME_UNKNOWN;
+
+  constructor(cause: unknown) {
+    super(PROVIDER_REQUEST_OUTCOME_UNKNOWN, { cause });
+    this.name = "ProviderRequestOutcomeUnknownError";
+  }
+}
+
+/** Only a transport that owns initial-request replay reports its refusal to
+ * replay as an unknown outcome. Callers that disable replay (they own dispatch
+ * recovery or their own paid-probe policy) keep the raw transport failure. */
+export function ownsInitialRequestReplay(options: ProviderRetryOptions | undefined): boolean {
+  return options !== undefined && options.maxAttempts !== 1;
+}
+
+/** A transport failure without proof of non-delivery leaves the create's
+ * outcome and billing unknown; aborts and deadlines keep their own identity. */
+export function initialRequestTransportFailure(error: unknown, signal: AbortSignal): unknown {
+  return signal.aborted || providerRequestNotSent(error) || !isRetryableProviderNetworkError(error)
+    ? error
+    : new ProviderRequestOutcomeUnknownError(error);
 }
 
 /**

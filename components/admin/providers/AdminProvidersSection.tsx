@@ -3,6 +3,7 @@
 import { adminSectionPath, type AdminSectionId } from "@/components/admin/adminSections";
 import { AdminTopbarMenu, useAdminSectionTopbar, type AdminShellTopbar } from "@/components/admin/AdminShell";
 import { AdminProviderAddSheet } from "@/components/admin/providers/add/AdminProviderAddSheet";
+import { systemModelPolicyAssignsMemory } from "@/components/admin/providers/add/AdminProviderSetupResults";
 import { AdminProviderPage } from "@/components/admin/providers/AdminProviderPage";
 import { AdminProvidersList } from "@/components/admin/providers/AdminProvidersList";
 import { describeDeleteBlockers } from "@/components/admin/providers/providerBlockers";
@@ -243,6 +244,7 @@ export function AdminProvidersSection({
       />
       <AdminProviderAddSheet
         connections={connections}
+        memoryAssigned={systemModelPolicyAssignsMemory(usageSources.systemModelPolicy)}
         onClose={() => setAdding(false)}
         onCreated={openCreated}
         onOpenMemoryRole={openMemoryRole}

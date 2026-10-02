@@ -104,6 +104,39 @@ function compatibleRequest(): ProviderRunRequest {
   };
 }
 
+function geminiRequest(): ProviderRunRequest {
+  return {
+    attachmentIds: [],
+    attachments: [],
+    chatId: "chat-1",
+    content: { blocks: [{ text: "hello", type: "text" }] },
+    knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
+    toolMode: "auto",
+    modelCapabilities: {
+      nativePdfInput: false,
+      nativeSearch: false,
+      pdf: false,
+      reasoning: false,
+      streaming: false,
+      vision: false
+    },
+    modelId: "gemini-3.6-flash",
+    params: { stream: false },
+    prompt: { developer: null, system: null },
+    provider: "gemini",
+    searchPlan: { mode: "all_selected", options: [] }
+  };
+}
+
+function geminiCompletedInteraction(): Response {
+  return new Response(JSON.stringify({
+    id: "interaction-1",
+    model: "gemini-3.6-flash",
+    status: "completed",
+    steps: [{ content: [{ text: "ok", type: "text" }], type: "model_output" }]
+  }));
+}
+
 async function collect(
   stream: AsyncGenerator<unknown, ProviderRunResult>
 ): Promise<ProviderRunResult> {
@@ -696,39 +729,13 @@ describe("provider runtime factory", () => {
   });
 
   it("injects a deferred Gemini credential only as x-goog-api-key", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
-      id: "interaction-1",
-      model: "gemini-3.6-flash",
-      status: "completed",
-      steps: [{ content: [{ text: "ok", type: "text" }], type: "model_output" }]
-    })));
+    const fetchFn = vi.fn<typeof fetch>(async () => geminiCompletedInteraction());
     const runtime = createProviderRuntimeBinding({
       options: { allowFake: false, fetchFn },
       secret: async () => "resolved-google-secret",
       snapshot: snapshot("gemini_interactions_native")
     });
-    const request: ProviderRunRequest = {
-      attachmentIds: [],
-      attachments: [],
-      chatId: "chat-1",
-      content: { blocks: [{ text: "hello", type: "text" }] },
-      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
-      toolMode: "auto",
-      modelCapabilities: {
-        nativePdfInput: false,
-        nativeSearch: false,
-        pdf: false,
-        reasoning: false,
-        streaming: false,
-        vision: false
-      },
-      modelId: "gemini-3.6-flash",
-      params: { stream: false },
-      prompt: { developer: null, system: null },
-      provider: "gemini",
-      searchPlan: { mode: "all_selected", options: [] }
-    };
-    const stream = runtime.adapter.stream(request);
+    const stream = runtime.adapter.stream(geminiRequest());
     while (!(await stream.next()).done) {
       // Drain the normalized provider events.
     }
@@ -736,6 +743,46 @@ describe("provider runtime factory", () => {
     const headers = new Headers(fetchFn.mock.calls[0]?.[1]?.headers);
     expect(headers.get("x-goog-api-key")).toBe("resolved-google-secret");
     expect(headers.get("authorization")).toBeNull();
+  });
+
+  it("bounded-retries a Gemini rate-limit refusal of the initial dispatch unless the caller disables replay", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      for (const disableRequestRetries of [false, true]) {
+        writer.mockClear();
+        let attempts = 0;
+        const fetchFn = vi.fn<typeof fetch>(async () => ++attempts === 1
+          ? Response.json({ error: { message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } }, { status: 429 })
+          : geminiCompletedInteraction());
+        const runtime = createProviderRuntimeBinding({
+          options: { allowFake: false, disableRequestRetries, fetchFn },
+          secret: "PRIVATE_KEY_CANARY",
+          snapshot: snapshot("gemini_interactions_native")
+        });
+        const pending = collect(runtime.adapter.stream(geminiRequest())).catch((error: unknown) => error);
+        await vi.runAllTimersAsync();
+        const records = writer.mock.calls.flatMap(([chunk]) => {
+          try { return [JSON.parse(String(chunk)) as Record<string, unknown>]; } catch { return []; }
+        });
+        const retries = records.filter((entry) => entry.event === "provider_retry");
+        if (disableRequestRetries) {
+          expect(await pending).toMatchObject({ httpStatus: 429, message: "Gemini request failed with status 429" });
+          expect(fetchFn).toHaveBeenCalledOnce();
+          expect(retries).toMatchObject([{ attempt: 1, action: "stop", httpStatus: 429 }]);
+        } else {
+          expect(await pending).toMatchObject({ finalText: "ok" });
+          expect(fetchFn).toHaveBeenCalledTimes(2);
+          expect(retries).toMatchObject([{ attempt: 1, action: "retry", httpStatus: 429, adapterKind: "gemini_interactions_native" }]);
+        }
+        expect(JSON.stringify(records)).not.toMatch(/PRIVATE_|hello/u);
+      }
+    } finally {
+      writer.mockRestore();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
   });
 
   it("keeps Fake behind the explicit test boundary and credential-free", () => {

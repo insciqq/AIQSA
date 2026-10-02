@@ -46,8 +46,10 @@ export function createObservationSourceOwners(knowledge: SourceOwner) {
             accepted.runtimeGeneration.revision.serverId !== binding.serverId) ||
           !accepted.runtimeGeneration && source.state !== "READY") throw unavailable();
         const memberships = await tx.userGroup.findMany({ where: { userId: actor.userId, group: { archivedAt: null } }, select: { groupId: true } });
+        // A personal server authorizes only its owner, and never inside a Project.
         const server = await tx.mcpServer.findFirst({ where: { id: binding.serverId, enabled: true, archivedAt: null,
-          ...(projectId ? { projectBindings: { some: { projectId } } } : {
+          ...(projectId ? { ownerUserId: null, projectBindings: { some: { projectId } } } : {
+            OR: [{ ownerUserId: null }, { ownerUserId: actor.userId }],
             grants: { some: { canUse: true, OR: [{ userId: actor.userId }, { groupId: { in: memberships.map(group => group.groupId) } }] } },
             userServers: { some: { userId: actor.userId, enabled: true } }
           }) }, select: { namespace: true, activeRevision: { select: { configuration: true } } } });

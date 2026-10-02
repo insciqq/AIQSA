@@ -123,7 +123,10 @@ function geminiExecutorFixture(value: unknown, apiVersion = "v1", responseForReq
       usage: { total_input_tokens: 20, total_output_tokens: 8, total_thought_tokens: 4,
         total_cached_tokens: 5, total_tokens: 32 } });
   });
-  const execute = createAcceptedStructuredOutputExecutor(client, { createFetch: () => fetchFn, encryptionKey: () => KEY });
+  // The MCP hub owns its whole routing operation with one provider attempt (defaultHub.ts).
+  const execute = createAcceptedStructuredOutputExecutor(client, {
+    createFetch: () => fetchFn, disableRequestRetries: true, encryptionKey: () => KEY
+  });
   const requests: ProviderStructuredOutputRequest[] = [];
   const router = createMcpSemanticRouter({ executeStructuredOutput: (role, request, options) => {
     requests.push(structuredClone(request));

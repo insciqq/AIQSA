@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { textMessageContent } from "@/lib/domain/content";
 import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
@@ -17,6 +18,9 @@ import { getWorkspaceConfig } from "./config";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import { createWorkspaceSelectedCaptures } from "./selectedCapture";
+import { createSavedFileRepository } from "../uploads/savedFileRepository";
+import { createPrismaRetentionRepository } from "../retention/prune";
+import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
 const cleanups: Array<() => Promise<void>> = [];
@@ -37,6 +41,9 @@ async function fixture(project = false) {
   cleanups.push(async () => {
     if (runtimeForCleanup && sessionForCleanup) await runtimeForCleanup.removeSession({ sessionId: sessionForCleanup, runtimeSandboxId: runtimeIdForCleanup ?? null });
     const captures = sessionForCleanup ? await prisma.workspaceSelectedCapture.findMany({ where: { workspaceSessionId: sessionForCleanup }, select: { id: true } }) : [];
+    // Saved and reused copies are chat-less; remove them before the run cascade
+    // so the capture trigger restages the captured keys for the cleanup below.
+    await prisma.attachment.deleteMany({ where: { userId, chatId: null } });
     await prisma.attachment.deleteMany({ where: { chatId: chat.id } });
     await prisma.modelRun.deleteMany({ where: { chatId: chat.id } });
     if (sessionForCleanup) await prisma.workspaceSession.deleteMany({ where: { id: sessionForCleanup } });
@@ -275,5 +282,205 @@ describe("Workspace draft checkpoint persistence", () => {
     await expect(later.service.execute(call, later.context)).rejects.toMatchObject({ code: "workspace_checkpoint_unavailable" });
     expect(retain).not.toHaveBeenCalled();
     expect(await prisma.workspaceCheckpointFile.count({ where: { checkpoint: { modelRunId: f.current.runId } } })).toBe(0);
+  });
+});
+
+async function published(toolCallId: string) {
+  const receipt = await prisma.workspaceOutputCheckpoint.findUniqueOrThrow({ where: { toolCallId }, include: { files: { include: { attachment: true } } } });
+  return { receipt, attachment: receipt.files[0]!.attachment };
+}
+
+/** Save (save=true) and Use (save=false) share copy(); both must succeed. */
+async function expectCopies(attachmentId: string, userId: string) {
+  const repository = createSavedFileRepository(prisma);
+  const source = await prisma.attachment.findUniqueOrThrow({ where: { id: attachmentId } });
+  const savedCopy = await repository.copy({ attachmentId, save: true, userId });
+  const reusedCopy = await repository.copy({ attachmentId, save: false, userId });
+  expect(savedCopy).not.toBeNull();
+  expect(reusedCopy).not.toBeNull();
+  const saved = await prisma.attachment.findUniqueOrThrow({ where: { id: savedCopy!.id } });
+  const reused = await prisma.attachment.findUniqueOrThrow({ where: { id: reusedCopy!.id } });
+  expect(saved).toMatchObject({ savedAt: expect.any(Date), chatId: null, userId, storageKey: source.storageKey });
+  expect(reused).toMatchObject({ savedAt: null, chatId: null, userId, storageKey: source.storageKey });
+  return { saved, reused };
+}
+
+async function retained(f: Awaited<ReturnType<typeof fixture>>, inv: Awaited<ReturnType<typeof invocation>>) {
+  const store = createWorkspaceCheckpointStore(prisma, config.outputTotalMaxBytes);
+  const c = { runId: f.current.runId, userId: f.userId, toolCallId: inv.tool.id, call: inv.call };
+  const input = parseWorkspaceCheckpointInput(inv.call.arguments, c.runId);
+  await store.reserve(c, input);
+  const ref = { runId: c.runId, userId: c.userId, consumerKey: c.toolCallId };
+  const capture = await f.service.create({ ...ref, requestKey: c.toolCallId, files: input.files });
+  await store.bind(c, capture.id, ["project/design.psd"]);
+  await f.service.retain({ ...ref, captureId: capture.id });
+  const file = await prisma.workspaceCapturedFile.findFirstOrThrow({ where: { captureId: capture.id } });
+  return { store, c, ref: { ...ref, captureId: capture.id }, storageKey: file.storageKey! };
+}
+
+async function unpublishedState(runId: string, toolCallId: string, storageKey: string) {
+  // A live retry rebinds the same capture, which only touches updatedAt.
+  const { updatedAt: _rebound, ...checkpoint } = await prisma.workspaceOutputCheckpoint.findUniqueOrThrow({ where: { toolCallId } });
+  return {
+    attachments: await prisma.attachment.count({ where: { storageKey } }),
+    checkpoint,
+    events: await prisma.modelRunEvent.findMany({ where: { modelRunId: runId }, orderBy: { id: "asc" } }),
+    files: await prisma.workspaceCheckpointFile.count({ where: { checkpoint: { toolCallId } } }),
+    job: await prisma.attachmentDeletionJob.findUnique({ where: { storageKey } }),
+    tool: await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: toolCallId } })
+  };
+}
+
+describe("Workspace checkpoint deletion obligations", () => {
+  it("settles the retained-capture job on live publication so Save and Use succeed", async () => {
+    const f = await fixture(); await f.write("project", "design.psd", "live-version");
+    const inv = await invocation(f);
+    await inv.service.execute(inv.call, inv.context);
+    const { receipt, attachment } = await published(inv.tool.id);
+    expect(receipt.state).toBe("SETTLED");
+    expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: attachment.storageKey } })).toBe(0);
+    const copies = await expectCopies(attachment.id, f.userId);
+    expect(await expectCopies(copies.saved.id, f.userId)).toMatchObject({ saved: { id: copies.saved.id } });
+  });
+
+  it("settles the retained-capture job on restart recovery after the run ended", async () => {
+    const f = await fixture(); await f.write("project", "design.psd", "recovered-version");
+    const inv = await invocation(f);
+    const { storageKey } = await retained(f, inv);
+    expect(await prisma.attachmentDeletionJob.findUnique({ where: { storageKey } })).toMatchObject({ claimToken: null });
+    await prisma.modelRun.update({ where: { id: f.current.runId }, data: { status: "complete" } });
+    expect(await inv.service.recover()).toEqual({ completed: 1 });
+    const { attachment } = await published(inv.tool.id);
+    expect(attachment.storageKey).toBe(storageKey);
+    expect(await prisma.attachmentDeletionJob.count({ where: { storageKey } })).toBe(0);
+    await expectCopies(attachment.id, f.userId);
+  });
+
+  it("fails closed while the captured key's deletion job is claimed and recovers once the claim is gone", async () => {
+    const f = await fixture(); await f.write("project", "design.psd", "claimed-version");
+    const inv = await invocation(f);
+    const { storageKey } = await retained(f, inv);
+    await prisma.attachmentDeletionJob.update({ where: { storageKey }, data: { claimToken: "synthetic-claim", claimedAt: new Date() } });
+    const before = await unpublishedState(f.current.runId, inv.tool.id, storageKey);
+    await expect(inv.service.execute(inv.call, inv.context)).rejects.toMatchObject({ code: "workspace_checkpoint_unavailable" });
+    const after = await unpublishedState(f.current.runId, inv.tool.id, storageKey);
+    expect(after).toEqual(before);
+    expect(after).toMatchObject({ attachments: 0, files: 0, checkpoint: { state: "PENDING" }, tool: { state: "running", result: null },
+      job: { claimToken: "synthetic-claim" } });
+    await prisma.modelRun.update({ where: { id: f.current.runId }, data: { status: "complete" } });
+    const blocked = await prisma.workspaceOutputCheckpoint.findUniqueOrThrow({ where: { toolCallId: inv.tool.id } });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(await inv.service.recover()).toEqual({ completed: 0 });
+    const deferred = await prisma.workspaceOutputCheckpoint.findUniqueOrThrow({ where: { toolCallId: inv.tool.id } });
+    expect(deferred.state).toBe("PENDING");
+    expect(deferred.updatedAt.getTime()).toBeGreaterThan(blocked.updatedAt.getTime());
+    expect(await prisma.attachmentDeletionJob.findUnique({ where: { storageKey } })).toEqual(before.job);
+    await prisma.attachmentDeletionJob.update({ where: { storageKey }, data: { claimToken: null, claimedAt: null } });
+    expect(await inv.service.recover()).toEqual({ completed: 1 });
+    expect((await published(inv.tool.id)).receipt.state).toBe("SETTLED");
+    expect(await prisma.attachmentDeletionJob.count({ where: { storageKey } })).toBe(0);
+  });
+
+  it("rolls the job delete back with every other publication write", async () => {
+    const f = await fixture(); await f.write("project", "design.psd", "rollback-version");
+    const inv = await invocation(f);
+    const { store, c, ref, storageKey } = await retained(f, inv);
+    const before = await unpublishedState(c.runId, inv.tool.id, storageKey);
+    expect(before.job).toMatchObject({ claimToken: null });
+    await expect(f.service.settleRetained(ref, async (tx, files) => {
+      await store.publish(tx, c, files);
+      throw new Error("synthetic-rollback");
+    })).rejects.toThrow("synthetic-rollback");
+    const after = await unpublishedState(c.runId, inv.tool.id, storageKey);
+    expect(after).toEqual(before);
+    expect(after).toMatchObject({ attachments: 0, files: 0, checkpoint: { state: "PENDING" } });
+    await f.service.settleRetained(ref, (tx, files) => store.publish(tx, c, files));
+    expect((await published(inv.tool.id)).receipt.state).toBe("SETTLED");
+    expect(await prisma.attachmentDeletionJob.count({ where: { storageKey } })).toBe(0);
+  });
+
+  it("republishes a shared capture without its settled job and replays a settled checkpoint unchanged", async () => {
+    const f = await fixture(); await f.write("project", "design.psd", "shared-version");
+    const first = await invocation(f);
+    await first.service.execute(first.call, first.context);
+    const original = await published(first.tool.id);
+    await f.nextRun();
+    const later = await invocation(f);
+    const call = { ...later.call, arguments: { ...later.call.arguments, capture_id: original.receipt.captureId! } };
+    await prisma.modelRunToolCall.update({ where: { id: later.tool.id }, data: { arguments: call.arguments } });
+    await later.service.execute(call, later.context);
+    const republished = await published(later.tool.id);
+    expect(republished.receipt).toMatchObject({ state: "SETTLED", captureId: original.receipt.captureId });
+    expect(republished.attachment.storageKey).toBe(original.attachment.storageKey);
+    expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: original.attachment.storageKey } })).toBe(0);
+    await expectCopies(republished.attachment.id, f.userId);
+
+    const store = createWorkspaceCheckpointStore(prisma, config.outputTotalMaxBytes);
+    const c = { runId: f.current.runId, userId: f.userId, toolCallId: later.tool.id, call };
+    const ref = { runId: c.runId, userId: c.userId, consumerKey: c.toolCallId, captureId: original.receipt.captureId! };
+    const snapshot = async () => ({
+      attachments: await prisma.attachment.findMany({ where: { storageKey: original.attachment.storageKey }, orderBy: { id: "asc" } }),
+      checkpoint: await prisma.workspaceOutputCheckpoint.findUniqueOrThrow({ where: { toolCallId: later.tool.id } }),
+      events: await prisma.modelRunEvent.count({ where: { modelRunId: f.current.runId } }),
+      jobs: await prisma.attachmentDeletionJob.count({ where: { storageKey: original.attachment.storageKey } })
+    });
+    const settled = await snapshot();
+    await f.service.settleRetained(ref, (tx, files) => store.publish(tx, c, files));
+    expect(await snapshot()).toEqual(settled);
+  });
+
+  it.each(["message deletion", "chat permanent deletion"] as const)("keeps a saved checkpoint copy usable through source %s", async source => {
+    const f = await fixture(); await f.write("project", "design.psd", "saved-version");
+    const inv = await invocation(f);
+    await inv.service.execute(inv.call, inv.context);
+    const { attachment } = await published(inv.tool.id);
+    const key = attachment.storageKey;
+    // Runs last: the capture is gone by then, so its prefix cleanup misses this key.
+    cleanups.unshift(async () => { await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: key } }); });
+    const { saved } = await expectCopies(attachment.id, f.userId);
+    await prisma.modelRun.update({ where: { id: f.current.runId }, data: { status: "complete" } });
+    await prisma.message.update({ where: { id: f.answer.id }, data: { status: "complete" } });
+    if (source === "message deletion") {
+      await expect(createPrismaMessageBranchRepository(prisma).deleteMessageSubtree({ messageId: f.answer.parentMessageId!, userId: f.userId }))
+        .resolves.toMatchObject({ chatId: f.chat.id });
+    } else {
+      // Chat permanent deletion keeps the shared object, then removes the chat's
+      // Attachments before its runs (permanentDeletion/cleanup.ts order).
+      await prisma.$transaction(async tx => {
+        await tx.attachment.deleteMany({ where: { chatId: f.chat.id, userId: f.userId } });
+        await tx.modelRun.deleteMany({ where: { chatId: f.chat.id, userId: f.userId } });
+      });
+    }
+    expect(await prisma.modelRun.count({ where: { chatId: f.chat.id } })).toBe(0);
+    expect(await prisma.workspaceCapturedFile.count({ where: { storageKey: key } })).toBe(0);
+    expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: key } })).toBe(0);
+    expect(f.storage.objects.has(key)).toBe(true);
+    const fromSaved = await expectCopies(saved.id, f.userId);
+    expect(fromSaved.saved.id).toBe(saved.id);
+
+    expect(await createSavedFileRepository(prisma).remove({ attachmentId: saved.id, userId: f.userId })).toBe(true);
+    await prisma.attachment.updateMany({ where: { storageKey: key }, data: { createdAt: new Date("1990-01-01T00:00:00.000Z") } });
+    const retention = createPrismaRetentionRepository(prisma);
+    await retention.stageOrphanedAttachments({ cutoff: new Date("1990-01-02T00:00:00.000Z"), limit: 100 });
+    expect(await prisma.attachment.count({ where: { storageKey: key } })).toBe(0);
+    const job = await prisma.attachmentDeletionJob.findUniqueOrThrow({ where: { storageKey: key } });
+    const now = new Date();
+    expect(await retention.findClaimableAttachmentDeletionJobIds({ now, claimableBefore: new Date(now.getTime() + 1000), limit: 1000 })).toContain(job.id);
+  });
+
+  it("repairs a published key that still carries the pre-upgrade job with the migration's statement", async () => {
+    const f = await fixture(); await f.write("project", "design.psd", "pre-upgrade-version");
+    const inv = await invocation(f);
+    await inv.service.execute(inv.call, inv.context);
+    const { attachment } = await published(inv.tool.id);
+    await prisma.attachmentDeletionJob.create({ data: { storageKey: attachment.storageKey } });
+    const repository = createSavedFileRepository(prisma);
+    for (const save of [true, false]) expect(await repository.copy({ attachmentId: attachment.id, save, userId: f.userId })).toBeNull();
+    const migration = readFileSync("prisma/migrations/20261002120000_workspace_checkpoint_deletion_job_repair/migration.sql", "utf8");
+    const statements = migration.match(/^DELETE FROM "AttachmentDeletionJob"[^;]*;/gmu) ?? [];
+    expect(statements).toHaveLength(1);
+    await prisma.$executeRawUnsafe(statements[0]!);
+    expect(await prisma.attachmentDeletionJob.count({ where: { storageKey: attachment.storageKey } })).toBe(0);
+    await expectCopies(attachment.id, f.userId);
   });
 });

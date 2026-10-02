@@ -40,7 +40,8 @@ describe("Skill result context admission", () => {
     return {
       ...request,
       context: { messages, mode: "branch_path" },
-      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages, mode }),
+      // A legacy policy is only ever read from runs accepted before it retired.
+      contextCompactionPolicy: { ...conversationContextPolicy({ leafMessageId: "current", messages }), mode },
       modelCapabilities: { ...request.modelCapabilities, contextWindow: 20_000, toolCalling: true },
       toolObservationVersion: 1,
       tools: [readToolResultTool]

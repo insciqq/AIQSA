@@ -16,7 +16,9 @@ export class ObservationReadError extends Error {
   /** A storage transport failure, hidden behind the same code, rather than
    * bytes that prove the original unavailable. */
   readonly transient: boolean;
-  constructor(readonly code: "tool_observation_selector_invalid" | "tool_observation_unavailable",
+  constructor(readonly code: "tool_observation_selector_invalid" | "tool_observation_unavailable" |
+    /** The read's tool batch can no longer receive a preview-sized fragment. */
+    "tool_observation_read_deferred",
     options: Readonly<{ transient?: boolean }> = {}) {
     super(code);
     this.name = "ObservationReadError";

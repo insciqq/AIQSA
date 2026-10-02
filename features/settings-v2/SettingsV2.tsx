@@ -25,6 +25,7 @@ import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 
 export type SettingsSectionV2 =
   | "account"
+  | "connections"
   | "connected_apps"
   | "data"
   | "general";
@@ -33,10 +34,11 @@ type SettingsIntentV2 =
   | Readonly<{ kind: "close" }>
   | Readonly<{ kind: "section"; section: SettingsSectionV2 }>;
 
-const SECTION_ORDER: readonly SettingsSectionV2[] = ["general", "account", "connected_apps", "data"];
+const SECTION_ORDER: readonly SettingsSectionV2[] = ["general", "account", "connections", "connected_apps", "data"];
 const SECTION_META: Record<SettingsSectionV2, Readonly<{ icon: UiV2IconName; label: string }>> = {
   general: { icon: "sun", label: "General" },
   account: { icon: "assistant", label: "Account" },
+  connections: { icon: "plug", label: "Connections" },
   connected_apps: { icon: "link", label: "Claude Code & Codex" },
   data: { icon: "archive", label: "Data" }
 };

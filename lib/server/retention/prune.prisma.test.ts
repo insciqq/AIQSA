@@ -11,11 +11,7 @@ import { projectRunOutputArtifactEvent, type RunOutputArtifactEvent } from "../r
 import { WORKSPACE_ACTIVITY_RECEIPT, WORKSPACE_ACTIVITY_SNAPSHOT } from "../runs/workspaceActivityPersistence";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
-import {
-  createPrismaRetentionRepository,
-  pruneRetention,
-  releaseInProgressMultipartKnowledgeUploads
-} from "./prune";
+import { createPrismaRetentionRepository, pruneRetention } from "./prune";
 
 const oldDate = new Date("2000-01-01T00:00:00.000Z");
 const retentionNow = new Date("2000-02-15T00:00:00.000Z");
@@ -477,131 +473,6 @@ describe("Prisma attachment retention outbox", () => {
       });
       await cleanupKnowledgePayloadFixture(fixture);
       await cleanupUser(user.id, [proxyKey, multipartKey, recentKey]);
-    }
-  });
-
-  it("releases every in-progress direct multipart upload for an object-store replacement", async () => {
-    const user = await createUser();
-    const fixture = await createKnowledgePayloadFixture(
-      user.id,
-      `retention/replacement-original-${randomUUID()}`,
-      `retention/replacement-normalized-${randomUUID()}`
-    );
-    const keys = Object.fromEntries(["queued", "uploading", "stored", "attention", "proxy"]
-      .map((name) => [name, `retention/replacement-${name}-${randomUUID()}`])) as Record<string, string>;
-    const future = new Date("2100-01-01T00:00:00.000Z");
-    const multipart = (name: string, state: "NEEDS_ATTENTION" | "QUEUED" | "STORED" | "UPLOADING") => ({
-      clientFileId: name,
-      declaredByteSize: 8,
-      declaredMimeType: "text/plain",
-      errorCode: state === "NEEDS_ATTENTION" ? "knowledge_upload_checksum_mismatch" : null,
-      fileName: `${name}.txt`,
-      multipartUploadId: `legacy-upload-${name}`,
-      normalizedMimeType: "text/plain",
-      parts: { create: [{ byteOffset: 0, byteSize: 8, partNumber: 1 }] },
-      sessionExpiresAt: future,
-      state,
-      storageKey: keys[name],
-      transport: "MULTIPART" as const
-    });
-    const batch = await prisma.knowledgeUploadBatch.create({
-      data: {
-        clientBatchId: `retention-${randomUUID()}`,
-        items: {
-          create: [
-            multipart("queued", "QUEUED"),
-            multipart("uploading", "UPLOADING"),
-            multipart("stored", "STORED"),
-            multipart("attention", "NEEDS_ATTENTION"),
-            {
-              clientFileId: "proxy",
-              declaredByteSize: 4,
-              declaredMimeType: "text/plain",
-              fileName: "proxy.txt",
-              normalizedMimeType: "text/plain",
-              sessionExpiresAt: future,
-              state: "UPLOADING",
-              storageKey: keys.proxy,
-              transport: "PROXY",
-              uploadedByteSize: 2
-            }
-          ]
-        },
-        knowledgeBaseId: fixture.base.id,
-        ownerUserId: user.id
-      },
-      include: { items: true }
-    });
-
-    try {
-      await expect(releaseInProgressMultipartKnowledgeUploads(prisma, { limit: 1, now: retentionNow })).resolves.toBe(2);
-      await expect(releaseInProgressMultipartKnowledgeUploads(prisma, { limit: 1, now: retentionNow })).resolves.toBe(0);
-      await expect(prisma.knowledgeUploadItem.findMany({
-        orderBy: { clientFileId: "asc" },
-        select: { clientFileId: true, errorCode: true, multipartUploadId: true, state: true, storageKey: true },
-        where: { batchId: batch.id }
-      })).resolves.toEqual([
-        {
-          clientFileId: "attention",
-          errorCode: "knowledge_upload_checksum_mismatch",
-          multipartUploadId: "legacy-upload-attention",
-          state: "NEEDS_ATTENTION",
-          storageKey: keys.attention
-        },
-        { clientFileId: "proxy", errorCode: null, multipartUploadId: null, state: "UPLOADING", storageKey: keys.proxy },
-        {
-          clientFileId: "queued",
-          errorCode: "knowledge_upload_session_expired",
-          multipartUploadId: null,
-          state: "NEEDS_ATTENTION",
-          storageKey: null
-        },
-        {
-          clientFileId: "stored",
-          errorCode: null,
-          multipartUploadId: "legacy-upload-stored",
-          state: "STORED",
-          storageKey: keys.stored
-        },
-        {
-          clientFileId: "uploading",
-          errorCode: "knowledge_upload_session_expired",
-          multipartUploadId: null,
-          state: "NEEDS_ATTENTION",
-          storageKey: null
-        }
-      ]);
-      await expect(prisma.knowledgeUploadPart.count({
-        where: { uploadItem: { batchId: batch.id, clientFileId: { in: ["queued", "uploading"] } } }
-      })).resolves.toBe(0);
-      await expect(prisma.attachmentDeletionJob.findMany({
-        orderBy: { storageKey: "asc" },
-        select: { multipartUploadId: true, storageKey: true },
-        where: { storageKey: { in: Object.values(keys) } }
-      })).resolves.toEqual([
-        { multipartUploadId: "legacy-upload-queued", storageKey: keys.queued },
-        { multipartUploadId: "legacy-upload-uploading", storageKey: keys.uploading }
-      ].sort((left, right) => left.storageKey.localeCompare(right.storageKey)));
-
-      const released = batch.items.find(({ clientFileId }) => clientFileId === "uploading")!;
-      await expect(createPrismaKnowledgeUploadRepository(prisma).retry({
-        attemptNumber: released.attemptNumber,
-        batchId: batch.id,
-        itemId: released.id,
-        knowledgeBaseId: fixture.base.id,
-        multipartUploadId: "new-store-upload",
-        now: retentionNow,
-        parts: [{ byteOffset: 0, byteSize: 8, partNumber: 1 }],
-        sessionExpiresAt: future,
-        storageKey: `retention/replacement-retry-${randomUUID()}`,
-        transport: "MULTIPART",
-        userId: user.id
-      })).resolves.toMatchObject({ kind: "ok" });
-    } finally {
-      await prisma.knowledgeUploadBatch.deleteMany({ where: { id: batch.id } });
-      await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { in: Object.values(keys) } } });
-      await cleanupKnowledgePayloadFixture(fixture);
-      await cleanupUser(user.id, Object.values(keys));
     }
   });
 

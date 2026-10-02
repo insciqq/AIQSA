@@ -1,4 +1,5 @@
 import type { AdminProviderCapabilityAttempt, AdminProviderCapabilityCheck, AdminProviderCheckRun } from "@/lib/contracts/adminProviders";
+import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import { decodeImageFailureDiagnostic, type ImageFailureDiagnostic } from "@/lib/contracts/imageGeneration";
 import { adminSectionPath } from "@/components/admin/adminSections";
 import type { MouseEvent } from "react";
@@ -59,12 +60,22 @@ export function providerSetupNeedsMemory(run: AdminProviderCheckRun | null | und
     run.setup.needsConfiguration?.includes("memory"));
 }
 
+/**
+ * The installation policy now assigns Memory, so a finished run's
+ * `needsConfiguration` no longer applies. An unloaded policy proves nothing.
+ */
+export function systemModelPolicyAssignsMemory(policy: AdminSystemModelPolicyCatalog | null | undefined): boolean {
+  return Boolean(policy && policy.memoryPolicy.assignmentSource !== "unassigned");
+}
+
 /** A calm pointer to the Memory row in Defaults & roles; not a failure and not retryable. */
-export function AdminProviderSetupMemoryHint({ onOpenMemoryRole, run }: Readonly<{
+export function AdminProviderSetupMemoryHint({ memoryAssigned = false, onOpenMemoryRole, run }: Readonly<{
+  /** Memory is assigned in the current installation policy: the hint is stale. */
+  memoryAssigned?: boolean;
   onOpenMemoryRole?: () => void;
   run: AdminProviderCheckRun | null | undefined;
 }>) {
-  if (!providerSetupNeedsMemory(run)) return null;
+  if (memoryAssigned || !providerSetupNeedsMemory(run)) return null;
   const href = adminSectionPath(typeof window === "undefined" ? "/admin" : window.location.href, "roles", "memory");
   return (
     <p className="mt-1 text-xs leading-5 text-ink-muted" data-testid="provider-setup-memory-hint">

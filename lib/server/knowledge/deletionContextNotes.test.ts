@@ -51,6 +51,15 @@ describe("Knowledge deletion context notes scrub", () => {
     expect(decoded?.contextCompaction?.measurement).toEqual(checkpoint.contextCompaction.measurement);
   });
 
+  it("scrubs the notes of a notes-only checkpoint a Knowledge answer wrote outside the tool loop", () => {
+    const notesOnly = { ...checkpoint, providerContinuation: null, roundIndex: 0 };
+    expect(parseToolLoopCheckpoint(notesOnly)?.contextCompaction?.summary).toEqual(notes);
+    const scrubbed = parseToolLoopCheckpoint(withoutCheckpointContextNotes(notesOnly));
+    expect(JSON.stringify(scrubbed)).not.toContain("Private excerpt digest");
+    expect(scrubbed).toMatchObject({ providerContinuation: null, roundIndex: 0 });
+    expect(scrubbed?.contextCompaction?.summaryAttempts).toEqual(checkpoint.contextCompaction.summaryAttempts);
+  });
+
   it("is idempotent and leaves values without notes untouched", () => {
     const once = withoutCheckpointContextNotes(checkpoint);
     expect(withoutCheckpointContextNotes(once)).toBe(once);

@@ -7,8 +7,10 @@ import { getDefaultToolHiveClient, getDefaultToolHiveDriver } from "./defaultToo
 import type { McpDraftValidator } from "./draftValidator";
 import { createLocalMcpDraftValidator } from "./localDraftValidator";
 import { createPrismaMcpRepository } from "./prismaRepository";
+import { personalMcpAddressPolicy } from "./defaultPersonalNetwork";
+import { mcpDestinationSafeFetchOptions } from "./personalNetworkPolicy";
 import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
-import { createMcpSafeFetch } from "./safeFetch";
+import { createMcpSafeFetch, type McpAddressPolicy } from "./safeFetch";
 import { createToolHiveMcpSessionFactory } from "./toolhiveSessionFactory";
 
 const VALIDATION_RUNTIME_LIMITS = {
@@ -31,13 +33,22 @@ export function createDefaultMcpRepository(input: { draftValidator?: McpDraftVal
   });
 }
 
-function createDefaultMcpDraftValidator(): McpDraftValidator {
+/**
+ * The installation's draft validator. A personal draft (`personal: true`)
+ * validates under the personal network policy; an installation draft keeps
+ * its reviewed per-server permission. The policy is injectable for tests.
+ */
+export function createDefaultMcpDraftValidator(input: Readonly<{
+  personalAddressPolicy?: McpAddressPolicy;
+}> = {}): McpDraftValidator {
+  const personalAddressPolicy = input.personalAddressPolicy ?? personalMcpAddressPolicy;
   const remote = createRemoteMcpDraftValidator({
     fetch: createMcpSafeFetch(),
-    fetchForDraft: (draft) => createMcpSafeFetch({
+    fetchForDraft: (draft, { personal }) => createMcpSafeFetch(mcpDestinationSafeFetchOptions({
       allowInsecureHttp: true,
-      allowPrivateNetwork: draft.source.kind === "remote" && draft.source.allowPrivateNetwork === true
-    }),
+      allowPrivateNetwork: draft.source.kind === "remote" && draft.source.allowPrivateNetwork === true,
+      personal
+    }, personalAddressPolicy)),
     oauthProviderForDraft: async (validation) => {
       if (!validation.serverId || !validation.validationUserId) return null;
       return mcpOAuthService.createValidationProvider({

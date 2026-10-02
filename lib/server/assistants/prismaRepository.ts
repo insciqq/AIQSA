@@ -324,7 +324,7 @@ export async function loadUserAccessibleMcpServerIdsWith(
     select: { serverId: true },
     where: {
       canUse: true,
-      server: { archivedAt: null, enabled: true, activeRevisionId: { not: null } },
+      server: { archivedAt: null, enabled: true, activeRevisionId: { not: null }, ownerUserId: null },
       OR: [
         { userId },
         ...(memberGroupIds.length > 0 ? [{ groupId: { in: [...memberGroupIds] } }] : [])

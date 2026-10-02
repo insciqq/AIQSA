@@ -16,15 +16,25 @@ import {
   type OAuthDiscoveryState,
   type OAuthTokens
 } from "@modelcontextprotocol/client";
-import { createMcpSafeFetch } from "./safeFetch";
+import { reportSubsystemFailure, reportSubsystemHealthy } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
+import { mcpDestinationSafeFetchOptions } from "./personalNetworkPolicy";
+import {
+  createMcpSafeFetch,
+  mcpNetworkPolicyRefusal,
+  type McpAddressPolicy,
+  type McpNetworkPolicyRefusalCode
+} from "./safeFetch";
 import type { McpEndpointCorrection } from "./draftValidator";
 import {
   bindMcpOAuthPolicyResource,
   mcpOAuthPolicyFingerprint,
   mcpOAuthRegistrationKey,
+  personalMcpOAuthTransportAllowed,
   sanitizeMcpOAuthAccountLabel,
   type McpOAuthPolicy,
-  type McpOAuthPurpose
+  type McpOAuthPurpose,
+  type McpOAuthSourceKind
 } from "./oauthPolicy";
 import type {
   McpOAuthRepository,
@@ -37,6 +47,8 @@ const MAX_AUTHORIZATION_URL_BYTES = 8 * 1_024;
 const MAX_OAUTH_RESPONSE_BYTES = 512 * 1_024;
 const OAUTH_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_REVOCATION_PASSES = 3;
+/** Revocation retries end this long after the disconnect request; the token is then wiped locally. */
+export const MCP_OAUTH_REVOCATION_ABANDON_MS = 24 * 60 * 60_000;
 const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 
 // Every authorization-server response, including the ones the SDK parses with
@@ -83,7 +95,20 @@ async function withinDeadline<T>(signal: AbortSignal, operation: Promise<T>): Pr
   }
 }
 
+/** Content-free: a stable code and the server-owned connection scope only. */
+function reportRevocationFailure(connectionId: string, code: string, error?: unknown): void {
+  reportSubsystemFailure({
+    action: code === "mcp_oauth_revocation_abandoned" ? "stop" : "retry",
+    code,
+    ...(error === undefined ? {} : { prisma_code: databaseFailureCode(error) }),
+    scope_id: connectionId,
+    stage: "cleanup",
+    subsystem: "mcp"
+  });
+}
+
 export type McpOAuthErrorCode =
+  | McpNetworkPolicyRefusalCode
   | "mcp_oauth_authorization_failed"
   | "mcp_oauth_configuration_changed"
   | "mcp_oauth_not_available"
@@ -131,6 +156,27 @@ export type McpOAuthRuntimeProvider = OAuthClientProvider & Readonly<{
 
 type OAuthProviderMode = "callback" | "runtime" | "start";
 
+type OAuthCredentialScope = "all" | "client" | "discovery" | "tokens" | "verifier";
+
+type OAuthSubject = Pick<McpOAuthPolicy, "purpose" | "serverId" | "userId">;
+
+/** The authorization server no longer accepts this client registration. */
+function clientRejected(error: unknown): boolean {
+  return error instanceof OAuthError && (error.code === OAuthErrorCode.InvalidClient ||
+    error.code === OAuthErrorCode.UnauthorizedClient);
+}
+
+/** RFC 7591: a non-zero `client_secret_expires_at` in the past ends the registration. */
+function clientSecretExpired(client: McpOAuthStoredClient, now: Date): boolean {
+  const information = client.clientInformation;
+  const expiresAt = "client_secret_expires_at" in information ? information.client_secret_expires_at : undefined;
+  return typeof expiresAt === "number" && expiresAt > 0 && expiresAt * 1_000 <= now.getTime();
+}
+
+function subjectOf(policy: McpOAuthPolicy): OAuthSubject {
+  return { purpose: policy.purpose, serverId: policy.serverId, userId: policy.userId };
+}
+
 function clientMetadata(policy: McpOAuthPolicy): OAuthClientMetadata {
   return {
     client_name: "AIQSA MCP client",
@@ -162,6 +208,15 @@ function requireHttps(url: URL, allowInsecureHttp: boolean): void {
   }
 }
 
+/** Installation policies keep the service-wide rule; personal policies add
+ * the endpoint-bound transport rule. */
+function requirePolicyTransport(url: URL, policy: McpOAuthPolicy, allowInsecureHttp: boolean): void {
+  requireHttps(url, allowInsecureHttp);
+  if (policy.personal && !personalMcpOAuthTransportAllowed(policy.serverUrl, url)) {
+    throw new McpOAuthError("mcp_oauth_policy_forbidden");
+  }
+}
+
 function requirePolicyUrl(
   value: string,
   policy: McpOAuthPolicy,
@@ -174,7 +229,7 @@ function requirePolicyUrl(
   } catch {
     throw new McpOAuthError("mcp_oauth_policy_forbidden");
   }
-  requireHttps(url, allowInsecureHttp);
+  requirePolicyTransport(url, policy, allowInsecureHttp);
   const origins = options.authorizationServerOnly
     ? new Set(policy.allowedAuthorizationServerOrigins)
     : allowedOrigins(policy);
@@ -219,6 +274,20 @@ function validateDiscovery(
       throw new McpOAuthError("mcp_oauth_policy_forbidden");
     }
   }
+}
+
+/** The first network-policy refusal of one OAuth operation, kept even when the SDK swallows it. */
+type NetworkPolicyRefusal = { code: McpNetworkPolicyRefusalCode | null };
+
+function refusalRecording(baseFetch: FetchLike, refusal: NetworkPolicyRefusal): FetchLike {
+  return async (input, init) => {
+    try {
+      return await baseFetch(input, init);
+    } catch (error) {
+      refusal.code ??= mcpNetworkPolicyRefusal(error);
+      throw error;
+    }
+  };
 }
 
 function policyFetch(
@@ -344,6 +413,13 @@ class DurableOAuthProvider implements OAuthClientProvider {
 
   async saveClientInformation(clientInformation: OAuthClientInformationMixed): Promise<void> {
     if (this.#mode === "runtime") {
+      // Only the SDK's recovery after the server rejected the bearer reaches
+      // this. Settle the connection instead of leaving it ready: a forced
+      // refresh either rotates usable tokens or marks reauthorization (and
+      // retires a rejected client).
+      if (this.#connection && !this.#invalidated) {
+        await this.#service.recoverRejectedAuthorization(this.#connection.id);
+      }
       throw new McpOAuthError("mcp_oauth_reauthorization_required");
     }
     this.#client = await this.#repository.saveClient({
@@ -413,9 +489,20 @@ class DurableOAuthProvider implements OAuthClientProvider {
     return new URL(this.#policy.resource);
   }
 
-  async invalidateCredentials(): Promise<void> {
-    if (this.#mode === "runtime") await this.#invalidateRuntime();
-    else this.#invalidated = true;
+  async invalidateCredentials(scope: OAuthCredentialScope = "all"): Promise<void> {
+    const rejectedClient = scope === "all" || scope === "client" ? this.#client : null;
+    if (rejectedClient) await this.#service.retireRejectedClient(rejectedClient, subjectOf(this.#policy));
+    if (this.#mode === "runtime") {
+      await this.#invalidateRuntime();
+      // Never register a replacement client from a runtime request.
+      if (rejectedClient) throw new McpOAuthError("mcp_oauth_reauthorization_required");
+      return;
+    }
+    this.#invalidated = true;
+    // An authorization code is bound to the rejected client; do not retry.
+    if (rejectedClient && this.#mode === "callback") throw new McpOAuthError("mcp_oauth_authorization_failed");
+    // A start retries with a fresh registration.
+    if (rejectedClient) this.#client = null;
   }
 
   saveDiscoveryState(state: OAuthDiscoveryState): void {
@@ -463,14 +550,20 @@ export class McpOAuthService {
     allowInsecureHttp?: boolean;
     fetchForPolicy?: (policy: McpOAuthPolicy) => FetchLike;
     now?: () => Date;
+    /** Applied to personal policies by the default transport; absent, personal OAuth stays public-only. */
+    personalAddressPolicy?: McpAddressPolicy;
     requestTimeoutMs?: number;
   }>) {
     this.#repository = input.repository;
     this.allowInsecureHttp = input.allowInsecureHttp ?? true;
-    this.#fetchForPolicy = input.fetchForPolicy ?? ((policy) => createMcpSafeFetch({
+    // A personal policy (derived from the server owner at load) uses the
+    // personal network policy; installation policies keep their reviewed
+    // per-server permission.
+    this.#fetchForPolicy = input.fetchForPolicy ?? ((policy) => createMcpSafeFetch(mcpDestinationSafeFetchOptions({
       allowInsecureHttp: this.allowInsecureHttp,
-      allowPrivateNetwork: policy.allowPrivateNetwork
-    }));
+      allowPrivateNetwork: policy.allowPrivateNetwork,
+      personal: policy.personal === true
+    }, input.personalAddressPolicy)));
     this.#now = input.now ?? (() => new Date());
     this.#requestTimeoutMs = input.requestTimeoutMs ?? OAUTH_REQUEST_TIMEOUT_MS;
   }
@@ -480,6 +573,8 @@ export class McpOAuthService {
     purpose: McpOAuthPurpose;
     redirectUri: string;
     serverId: string;
+    /** Restricts a user route to its own kind of server; absent accepts both. */
+    sourceKind?: McpOAuthSourceKind;
     state: string;
     userId: string;
   }>): Promise<McpOAuthStartResult> {
@@ -489,7 +584,8 @@ export class McpOAuthService {
     if (!loadedPolicy) throw new McpOAuthError("mcp_oauth_not_available");
     this.#validatePolicy(loadedPolicy);
     const deadline = this.#deadline();
-    const fetchFn = this.#oauthFetch(loadedPolicy, deadline);
+    const refusal: NetworkPolicyRefusal = { code: null };
+    const fetchFn = this.#oauthFetch(loadedPolicy, deadline, refusal);
     let discovered: OAuthDiscoveryState;
     let policy: McpOAuthPolicy;
     try {
@@ -501,11 +597,17 @@ export class McpOAuthService {
       this.#validatePolicy(policy);
       validateDiscovery(discovered, policy, this.allowInsecureHttp);
     } catch (error) {
+      // A network-policy refusal keeps its own reason for the user.
+      if (refusal.code) throw new McpOAuthError(refusal.code);
       if (error instanceof McpOAuthError) throw error;
       throw new McpOAuthError("mcp_oauth_authorization_failed");
     }
     const registrationKey = mcpOAuthRegistrationKey(policy, discovered.authorizationServerUrl);
-    const client = await this.#repository.findClient(registrationKey);
+    let client = await this.#repository.findClient(registrationKey);
+    if (client && clientSecretExpired(client, this.#now())) {
+      await this.retireRejectedClient(client, subjectOf(policy));
+      client = null;
+    }
     if (client && !input.forceReconnect) {
       const fingerprint = mcpOAuthPolicyFingerprint(policy, client.clientInformation.client_id);
       if (await this.#repository.findReadyConnection({
@@ -570,6 +672,7 @@ export class McpOAuthService {
         kind: "redirect"
       };
     } catch (error) {
+      if (refusal.code) throw new McpOAuthError(refusal.code);
       if (error instanceof McpOAuthError) throw error;
       throw new McpOAuthError("mcp_oauth_authorization_failed");
     }
@@ -667,8 +770,60 @@ export class McpOAuthService {
       return created.value;
     } catch (error) {
       if (error instanceof McpOAuthError) throw error;
+      // The manual HTTP token path reports a rejected client directly.
+      if (clientRejected(error)) await this.retireRejectedClient(client, subjectOf(policy));
       throw new McpOAuthError("mcp_oauth_authorization_failed");
     }
+  }
+
+  /**
+   * Stops reusing a registration the authorization server rejected, so the
+   * next start registers again, and takes the subject's ready connection on
+   * that client out of `ready`.
+   */
+  async retireRejectedClient(client: McpOAuthStoredClient, subject?: OAuthSubject): Promise<void> {
+    await this.#repository.retireClient({
+      clientId: client.clientInformation.client_id,
+      id: client.id,
+      registrationKey: client.registrationKey
+    });
+    if (!subject) return;
+    const ready = await this.#repository.findLatestReadyConnection(subject);
+    if (ready && ready.client.id === client.id) {
+      await this.#repository.markReauthorizationRequired({
+        connectionId: ready.id,
+        tokenVersion: ready.tokenVersion
+      });
+    }
+  }
+
+  /**
+   * After the MCP server rejected a stored bearer, refresh once regardless of
+   * the recorded expiry. Success keeps the connection with rotated tokens;
+   * a rejected grant or client, or no refresh token, requires reauthorization.
+   */
+  async recoverRejectedAuthorization(connectionId: string): Promise<void> {
+    const connection = await this.#repository.loadConnection(connectionId);
+    if (!connection || !["ready", "disconnecting"].includes(connection.state)) return;
+    if (!connection.tokens.refresh_token) {
+      await this.#repository.markReauthorizationRequired({
+        connectionId,
+        tokenVersion: connection.tokenVersion
+      });
+      return;
+    }
+    const existing = this.#refreshes.get(connectionId);
+    if (existing) {
+      await existing.promise.catch(() => undefined);
+      return;
+    }
+    const abort = new AbortController();
+    const deadline = this.#deadline(abort.signal);
+    const promise = withinDeadline(deadline, this.#refresh(connection, deadline, { force: true })).finally(() => {
+      if (this.#refreshes.get(connectionId)?.promise === promise) this.#refreshes.delete(connectionId);
+    });
+    this.#refreshes.set(connectionId, { abort, promise });
+    await promise.catch(() => undefined);
   }
 
   async tokensForConnection(connectionId: string): Promise<OAuthTokens> {
@@ -717,12 +872,15 @@ export class McpOAuthService {
       try {
         await this.#revoke(connection);
       } catch {
+        // The token stays stored; reconcileDisconnecting retries within its bound.
+        reportRevocationFailure(connectionId, "mcp_oauth_revocation_failed");
         return "disconnecting";
       }
       if (await this.#repository.finalizeDisconnected({
         connectionId,
         tokenVersion: connection.tokenVersion
       })) {
+        reportSubsystemHealthy("mcp", "cleanup", connectionId);
         return "disconnected";
       }
       const current = await this.#repository.loadConnection(connectionId);
@@ -736,12 +894,36 @@ export class McpOAuthService {
     return "disconnecting";
   }
 
+  /**
+   * Marks ineligible connections (archived personal or installation servers,
+   * inactive owners, lost grants) disconnecting, retries each revocation and,
+   * 24 h after the disconnect request, wipes the token locally instead, so no
+   * connection stays disconnecting forever and finalization can proceed.
+   */
   async reconcileDisconnecting(): Promise<void> {
     await this.#repository.requestDisconnectForIneligibleConnections();
     const connectionIds = await this.#repository.listDisconnectingConnectionIds();
-    await Promise.allSettled(
-      connectionIds.map((connectionId) => this.revokeConnectionIfDrained(connectionId))
+    const requestedBefore = new Date(this.#now().getTime() - MCP_OAUTH_REVOCATION_ABANDON_MS);
+    const settled = await Promise.allSettled(
+      connectionIds.map((connectionId) => this.#settleDisconnecting(connectionId, requestedBefore))
     );
+    settled.forEach((result, index) => {
+      if (result.status === "rejected") {
+        reportRevocationFailure(connectionIds[index]!, "mcp_oauth_revocation_failed", result.reason);
+      }
+    });
+  }
+
+  async #settleDisconnecting(connectionId: string, requestedBefore: Date): Promise<void> {
+    try {
+      if (await this.revokeConnectionIfDrained(connectionId) === "disconnected") return;
+    } catch (error) {
+      reportRevocationFailure(connectionId, "mcp_oauth_revocation_failed", error);
+    }
+    if (await this.#repository.abandonRevocation({ connectionId, requestedBefore })) {
+      this.#refreshes.get(connectionId)?.abort.abort();
+      reportRevocationFailure(connectionId, "mcp_oauth_revocation_abandoned");
+    }
   }
 
   async createRuntimeProvider(connectionId: string): Promise<McpOAuthRuntimeProvider> {
@@ -807,8 +989,9 @@ export class McpOAuthService {
     return abort ? AbortSignal.any([timeout, abort]) : timeout;
   }
 
-  #oauthFetch(policy: McpOAuthPolicy, deadline: AbortSignal): FetchLike {
-    const baseFetch = this.#fetchForPolicy(policy);
+  #oauthFetch(policy: McpOAuthPolicy, deadline: AbortSignal, refusal?: NetworkPolicyRefusal): FetchLike {
+    const policyBaseFetch = this.#fetchForPolicy(policy);
+    const baseFetch = refusal ? refusalRecording(policyBaseFetch, refusal) : policyBaseFetch;
     return policyFetch(async (input, init) => boundedOAuthResponse(await baseFetch(input, {
       ...init,
       signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline
@@ -828,17 +1011,23 @@ export class McpOAuthService {
     }
     for (const origin of policy.allowedAuthorizationServerOrigins) {
       const url = new URL(origin);
-      requireHttps(url, this.allowInsecureHttp);
+      requirePolicyTransport(url, policy, this.allowInsecureHttp);
       if (url.origin !== origin) throw new McpOAuthError("mcp_oauth_policy_forbidden");
     }
   }
 
-  async #refresh(connection: McpOAuthStoredConnection, deadline: AbortSignal): Promise<OAuthTokens> {
+  async #refresh(
+    connection: McpOAuthStoredConnection,
+    deadline: AbortSignal,
+    options: Readonly<{ force?: boolean }> = {}
+  ): Promise<OAuthTokens> {
     const latest = await this.#repository.loadConnection(connection.id);
     if (!latest || !["ready", "disconnecting"].includes(latest.state)) {
       throw new McpOAuthError("mcp_oauth_reauthorization_required");
     }
-    if (!latest.expiresAt || latest.expiresAt.getTime() > this.#now().getTime() + REFRESH_SKEW_MS) {
+    if (options.force && latest.tokenVersion !== connection.tokenVersion) return latest.tokens;
+    if (!options.force &&
+      (!latest.expiresAt || latest.expiresAt.getTime() > this.#now().getTime() + REFRESH_SKEW_MS)) {
       return latest.tokens;
     }
     const refreshToken = latest.tokens.refresh_token;
@@ -890,8 +1079,20 @@ export class McpOAuthService {
         });
         throw new McpOAuthError("mcp_oauth_reauthorization_required");
       }
+      if (clientRejected(error)) {
+        // The authorization server no longer accepts this registration. The
+        // connection needs consent again, and the next start must register a
+        // fresh client instead of reusing the dead one.
+        await this.#repository.markReauthorizationRequired({
+          connectionId: latest.id,
+          tokenVersion: latest.tokenVersion
+        });
+        await this.retireRejectedClient(latest.client);
+        throw new McpOAuthError("mcp_oauth_reauthorization_required");
+      }
       if (error instanceof McpOAuthError) throw error;
-      throw new McpOAuthError("mcp_oauth_authorization_failed");
+      const refusal = mcpNetworkPolicyRefusal(error);
+      throw new McpOAuthError(refusal ?? "mcp_oauth_authorization_failed");
     }
   }
 

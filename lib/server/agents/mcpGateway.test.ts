@@ -3,6 +3,9 @@ import { syntheticImagePlan } from "@/tests/support/imagePlan";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as hub from "../mcp/hubService";
+import { mcpDispatchError } from "../mcp/dispatchStatus";
+import * as defaultRuntime from "../mcp/defaultRuntime";
+import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { McpSemanticRouterError } from "../mcp/router";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { createAgentRunStore } from "./store";
@@ -19,7 +22,7 @@ import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import * as workspaceCheckpoints from "../workspace/checkpoints";
 
 // Text-result contract from the pinned consumer's CallToolResult conversion:
-// https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/protocol/src/models.rs#L2129
+// https://github.com/openai/codex/blob/rust-v0.159.3/codex-rs/protocol/src/models.rs#L2646
 // Non-null structured content takes precedence over all ordinary text items.
 // Pin this harness so an SDK upgrade requires reviewing the actual consumer.
 function codexModelOutput(result: {
@@ -27,7 +30,7 @@ function codexModelOutput(result: {
   structuredContent?: unknown;
   isError?: boolean;
 }) {
-  expect(CODEX_VERSION).toBe("0.154.0");
+  expect(CODEX_VERSION).toBe("0.159.3");
   return {
     body: result.structuredContent != null ? JSON.stringify(result.structuredContent)
       : result.content.map(({ text }) => text ?? "").join("\n"),
@@ -216,6 +219,72 @@ describe("Agent MCP discovery surface", () => {
         fields: expect.objectContaining({ code: value.code, stage: kind === "execution_outcome_unknown" ? "result" : "admission" }) });
       expect(JSON.stringify(logs)).not.toContain("PRIVATE_ARGUMENT");
     });
+
+  it("reports a runtime refusal of a changed definition as unsent although dispatch had begun", async () => {
+    const version = "a".repeat(64), toolId = "arbitrary_delta";
+    const dispatch = vi.fn(async ({ onDispatch }: { onDispatch(): void }) => {
+      onDispatch();
+      throw new hub.McpHubServiceError("tool_definition_changed", { cause: mcpDispatchError("mcp_tool_definition_changed") });
+    });
+    vi.spyOn(hub, "createMcpToolService").mockReturnValue({ prepareToolCall: vi.fn(async () => ({})),
+      dispatchPreparedToolCall: dispatch } as unknown as ReturnType<typeof hub.createMcpToolService>);
+    const settleTool = vi.fn(async () => {});
+    const store = { mcpTools: async () => [{ toolId, version }], toolCall: async () => "attempt",
+      settleTool } as unknown as ReturnType<typeof createAgentRunStore>;
+    const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "auto" },
+      searchPlan: { options: [] } } as unknown as NormalizedRunRequest, store, runId: "run", userId: "user", incarnation: "incarnation",
+      signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+    const result = await rpcResult(await handler(new Request("http://agent.invalid/mcp", { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "call_tool",
+        arguments: { tool_id: toolId, tool_version: version, arguments: {} } } }) })));
+
+    const value = JSON.parse(codexModelOutput(result).body);
+    expect(value).toMatchObject({ code: "tool_definition_changed", dispatched: false, recovery: "find_tools" });
+    expect(value.message).toContain("No external tool call was sent");
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(settleTool).toHaveBeenCalledWith("attempt", "error", { code: "tool_definition_changed" });
+  });
+
+  it("refuses a Load-all personal tool its owner switched off before any dispatch and calls it once on again", async () => {
+    const personal = personalMcpFixture({ toolNames: ["read", "write"], userId: "user" });
+    const toolId = personal.namespacedName("write");
+    const accepted = await personal.prepare([personal.namespacedName("read"), toolId]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    const plan = async (_userId: string, tools: readonly { namespacedName: string }[]) =>
+      personal.prepare(tools.map((tool) => tool.namespacedName));
+    vi.spyOn(defaultRuntime.defaultMcpRunPlan, "filterTools").mockImplementation(async (_userId, tools) => [...tools]);
+    vi.spyOn(defaultRuntime.defaultMcpRunPlan, "inspect").mockImplementation(plan);
+    vi.spyOn(defaultRuntime.defaultMcpRunPlan, "materialize").mockImplementation(plan);
+    const callTool = vi.fn(async ({ beforeDispatch }: { beforeDispatch(): Promise<void> }) => {
+      await beforeDispatch();
+      return { isError: false, structuredContent: null, text: ["WRITTEN"], unsupportedContentTypes: [] };
+    });
+    vi.spyOn(defaultRuntime, "getDefaultMcpRuntimeCoordinator")
+      .mockReturnValue({ callTool } as unknown as ReturnType<typeof defaultRuntime.getDefaultMcpRuntimeCoordinator>);
+    const store = { admitMcpPlan: async () => {}, assertActive: async () => {}, attachMcpCall: vi.fn(async () => {}),
+      mcpTools: async () => [], toolCall: async () => "write-call", settleTool: vi.fn(async () => {}) } as unknown as ReturnType<typeof createAgentRunStore>;
+    const handler = await createAgentMcpGateway({ request: { agent: { mcpMode: "all" }, mcp: accepted.snapshot,
+      searchPlan: { options: [] } } as unknown as NormalizedRunRequest, store, runId: "run", userId: "user", incarnation: "incarnation",
+    signal: new AbortController().signal, onFailure: vi.fn(), onUsage: vi.fn() });
+    const call = async () => rpcResult(await handler(new Request("http://agent.invalid/mcp", { method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: toolId, arguments: {} } }) })));
+
+    personal.switchTool("write", false);
+    const off = await call();
+    expect(off.isError).toBe(true);
+    expect(JSON.parse(codexModelOutput(off).body)).toMatchObject({ dispatched: false, recovery: "find_tools" });
+    expect(callTool).not.toHaveBeenCalled();
+    expect(vi.mocked(store.attachMcpCall)).not.toHaveBeenCalled();
+
+    personal.switchTool("write", true);
+    const on = await call();
+    expect(on.isError).not.toBe(true);
+    expect(codexModelOutput(on).body).toContain("WRITTEN");
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({ generationId: personal.generationId, name: "write" }));
+  });
 
   it("uses an admission discovered through another gateway handler", async () => {
     const toolId = "arbitrary_delta", version = "a".repeat(64);

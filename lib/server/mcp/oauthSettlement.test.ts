@@ -205,4 +205,17 @@ describe("MCP OAuth settlement", () => {
       userId: "user-1"
     })).resolves.toEqual({ kind: "failed" });
   });
+
+  it("fails the callback when enabling would exceed the enabled-server limit", async () => {
+    const storage = repository({
+      updateUserServer: vi.fn(async () => ({ kind: "mcp_enabled_server_limit_reached" as const }))
+    });
+
+    await expect(createMcpOAuthSettler(storage)({
+      configurationIdentity: "revision-1",
+      purpose: "user",
+      serverId: "server-1",
+      userId: "user-1"
+    })).resolves.toEqual({ kind: "failed" });
+  });
 });

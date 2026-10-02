@@ -12,7 +12,7 @@ import type { RunUsageAttribution } from "../runs/runRepositoryContract";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { createAgentRunStore } from "./store";
 import { agentPrompts } from "./prompt";
-import type { CodexManagedProfile } from "./codexProfile";
+import { CODEX_VERSION, type CodexManagedProfile } from "./codexProfile";
 import { createCodexActivityProjection } from "./activityProjection";
 import { createAgentBuiltinProgress } from "./builtinProgress";
 import type { RunOutputArtifactEvent } from "../runs/runOutputEvents";
@@ -62,6 +62,9 @@ export async function executeCodexTurn(input: Readonly<{
   };
   const onUsage = async () => input.onUsage(await store.usage());
   try {
+    // A run accepted under another guest Codex version is cut over, never
+    // executed: fail before any grant, Workspace start or provider dispatch.
+    if (configuration.codexVersion !== CODEX_VERSION) throw new AgentExecutionError("agent_execution_interrupted");
     let grant = { ...await store.arm(prompts.previousAssistantMessageId), timeoutSeconds: configuration.timeoutSeconds };
     heartbeat = setInterval(() => {
       renewing ??= store.renew().then(onUsage).catch((error) => fail(agentFailureCode(error) ?? "agent_authority_expired")).finally(() => { renewing = null; });

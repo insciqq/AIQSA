@@ -96,6 +96,21 @@ describe("artifact library cache", () => {
     expect(archivedReads).toHaveLength(2);
     expect(useArtifactLibraryStore.getState().mutations[item.id]).toBe(false);
   });
+  it("re-requests an archived catalog whose first read failed after a mutation", async () => {
+    const fetch = vi.fn((url: string) => Promise.resolve(url === "/api/artifacts?archived=true"
+      ? fetch.mock.calls.filter(call => call[0] === url).length === 1
+        ? Response.json({ error: "unavailable" }, { status: 503 }) : Response.json({ artifacts: [item] })
+      : url === "/api/artifacts?archived=false" ? Response.json({ artifacts: [] }) : Response.json({ ok: true })));
+    vi.stubGlobal("fetch", fetch);
+    activateArtifactLibraryAccount("account");
+    await refreshArtifactLibrary(true);
+    expect(useArtifactLibraryStore.getState()).toMatchObject({ data: { archived: null }, loadState: { archived: "error" } });
+    await mutateArtifactLibrary(item.id, { archived: true });
+    expect(fetch.mock.calls.map(call => call[0])).toEqual([
+      "/api/artifacts?archived=true", "/api/artifacts/artifact", "/api/artifacts?archived=false", "/api/artifacts?archived=true"
+    ]);
+    expect(useArtifactLibraryStore.getState()).toMatchObject({ data: { archived: [item] }, loadState: { archived: "ready" } });
+  });
   it("does not request an archived catalog that was never requested", async () => {
     const fetch = vi.fn().mockResolvedValueOnce(Response.json({ ok: true })).mockResolvedValueOnce(Response.json({ artifacts: [] }));
     vi.stubGlobal("fetch", fetch);

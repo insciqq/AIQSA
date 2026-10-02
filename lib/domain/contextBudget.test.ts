@@ -27,13 +27,14 @@ function message(id: string, role: "assistant" | "user", text: string): ContextB
 }
 
 describe("context budget", () => {
-  it("trims an old question and its clarifications as one turn", () => {
+  it("never trims history: a branch over the budget is refused whole", () => {
     const messages = [message("original", "user", "x".repeat(200)),
       { ...message("partial", "assistant", "p".repeat(200)), contextTurnId: "original" },
       { ...message("clarification", "user", "c".repeat(200)), contextTurnId: "original" },
       message("answer", "assistant", "a".repeat(200)), message("current", "user", "next")];
-    const result = applyContextBudget({ messages, contextWindow: 130, maxOutputTokens: 20 });
-    expect(result.ok && result.messages.map(item => item.id)).toEqual(["current"]);
+    expect(applyContextBudget({ messages, contextWindow: 130, maxOutputTokens: 20 })).toMatchObject({ ok: false, code: "context_too_large" });
+    const fitting = applyContextBudget({ messages, contextWindow: 1_000, maxOutputTokens: 20 });
+    expect(fitting.ok && fitting.messages).toBe(messages);
   });
 
   it("cannot keep a current clarification by discarding its original question", () => {
@@ -116,36 +117,6 @@ describe("context budget", () => {
 
     expect(result.ok).toBe(true);
     expect(result.ok ? result.messages : []).toBe(messages);
-    expect(result.ok ? result.truncation : null).toBeNull();
-  });
-
-  it("drops oldest prior turns whole while keeping newer adjacency", () => {
-    const oldUser = message("u-old", "user", "u".repeat(200));
-    const oldAssistant = message("a-old", "assistant", "a".repeat(200));
-    const recentUser = message("u-recent", "user", "recent question");
-    const recentAssistant = message("a-recent", "assistant", "recent answer");
-    const current = message("u-current", "user", "current");
-    const result = applyContextBudget({
-      contextWindow: 130,
-      maxOutputTokens: 20,
-      messages: [oldUser, oldAssistant, recentUser, recentAssistant, current],
-      prompt: {
-        developer: "",
-        system: ""
-      }
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.ok ? result.messages.map((item) => item.id) : []).toEqual([
-      "u-recent",
-      "a-recent",
-      "u-current"
-    ]);
-    expect(result.ok ? result.truncation : null).toMatchObject({
-      approxDroppedTokens: estimateApproxTokens(oldUser.content) + estimateApproxTokens(oldAssistant.content),
-      droppedMessages: 2,
-      keptMessages: 3
-    });
   });
 
   it("fails when the prompt and current user message exceed the budget", () => {

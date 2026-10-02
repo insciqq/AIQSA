@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { createAdminSystemModelPolicyService } from "../../lib/server/admin/providers/systemModelPolicyService";
 import { forcedToolCallVerificationEvidence } from "../../lib/server/providers/forcedToolCallEvidence";
 import { structuredOutputVerificationEvidence } from "../../lib/server/providers/structuredOutputEvidence";
@@ -11,6 +11,16 @@ import {
 } from "../../lib/server/providerRuntime/systemModelRole";
 import { signInWithLocalToken } from "./support/localAuth";
 import { expectCenterUnobscured, expectNoHorizontalOverflow, expectTouchSafe } from "./support/layoutAssertions";
+
+// Touch-safety is asserted under the product's touch rule. Chromium drops hasTouch's
+// (hover: none)/(pointer: coarse) emulation for the page after an element screenshot
+// taller than the viewport, so the responsive loops take viewport screenshots before a
+// later touch check, and this guard makes a lost emulation fail loudly.
+async function expectTouchRule(page: Page): Promise<void> {
+  expect(
+    await page.evaluate(() => matchMedia("(hover: none), (pointer: coarse)").matches), "touch rule applies"
+  ).toBe(true);
+}
 
 const prisma = new PrismaClient();
 const fixture = {
@@ -409,18 +419,19 @@ test.describe("system model policy", () => {
       for (const viewport of viewports) {
         await page.setViewportSize(viewport);
         await expectNoHorizontalOverflow(page);
+        await expectTouchRule(page);
         await expectTouchSafe(trigger);
         await trigger.focus();
         await expect(trigger).toBeFocused();
         await row.evaluate((element) => element.scrollIntoView({ block: "center" }));
         await expectCenterUnobscured(trigger);
-        await row.screenshot({ path: testInfo.outputPath(`memory-policy-${viewport.name}-${colorScheme}.png`) });
+        await page.screenshot({ path: testInfo.outputPath(`memory-policy-${viewport.name}-${colorScheme}.png`) });
       }
     }
     await trigger.click();
     await expect(picker).toBeVisible();
     await expectNoHorizontalOverflow(page);
-    await picker.screenshot({ path: testInfo.outputPath("memory-policy-picker-phone-dark.png") });
+    await page.screenshot({ path: testInfo.outputPath("memory-policy-picker-phone-dark.png") });
     await page.keyboard.press("Escape");
     await expect(trigger).toBeFocused();
     await row.getByRole("button", { name: "Memory utility model actions" }).click();
@@ -461,12 +472,6 @@ test.describe("system model policy", () => {
     await expect(useRecommended).toBeVisible();
     const dialog = page.getByRole("dialog", { name: "Use recommended Memory model" });
     const before = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-    // Touch-safety is asserted under the product's touch rule. Chromium drops hasTouch's
-    // (hover: none)/(pointer: coarse) emulation for the page after an element screenshot
-    // taller than the viewport, so screenshots here stay within the viewport.
-    const expectTouchRule = async () => expect(
-      await page.evaluate(() => matchMedia("(hover: none), (pointer: coarse)").matches), "touch rule applies"
-    ).toBe(true);
     const viewports = [
       { name: "desktop-landscape", width: 1440, height: 900 }, { name: "desktop-portrait", width: 900, height: 1440 },
       { name: "tablet-landscape", width: 1024, height: 768 }, { name: "tablet-portrait", width: 768, height: 1024 },
@@ -477,7 +482,7 @@ test.describe("system model policy", () => {
       for (const viewport of viewports) {
         await page.setViewportSize(viewport);
         await expectNoHorizontalOverflow(page);
-        await expectTouchRule();
+        await expectTouchRule(page);
         await expectTouchSafe(useRecommended);
         const heading = row.locator("p").first();
         await heading.evaluate((element) => element.scrollIntoView({ block: "center" }));
@@ -490,7 +495,7 @@ test.describe("system model policy", () => {
         await useRecommended.click();
         await expect(dialog).toContainText("System Policy Model with low reasoning");
         const confirm = dialog.getByRole("button", { name: "Confirm use recommended", exact: true });
-        await expectTouchRule();
+        await expectTouchRule(page);
         await expectTouchSafe(confirm);
         await confirm.focus(); await expect(confirm).toBeFocused();
         await expectNoHorizontalOverflow(page);

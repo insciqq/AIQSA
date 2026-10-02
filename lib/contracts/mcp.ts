@@ -12,11 +12,25 @@ export const MCP_SERVER_TOOL_LIMIT = 1_024;
  */
 export const MCP_INVENTORY_EXCLUSION_LIMIT = 2 * MCP_SERVER_TOOL_LIMIT;
 
+/**
+ * Characters of one tool description kept by validation evidence, persisted
+ * personal discovery and the personal catalog projections built from them.
+ */
+export const MAX_TOOL_DESCRIPTION_LENGTH = 2_048;
+
+/** Applies MAX_TOOL_DESCRIPTION_LENGTH without splitting a UTF-16 surrogate pair. */
+export function boundMcpToolDescription(description: string): string {
+  if (description.length <= MAX_TOOL_DESCRIPTION_LENGTH) return description;
+  const last = description.charCodeAt(MAX_TOOL_DESCRIPTION_LENGTH - 1);
+  return description.slice(0, MAX_TOOL_DESCRIPTION_LENGTH - (last >= 0xd800 && last <= 0xdbff ? 1 : 0));
+}
+
 const MCP_RUNTIME_ERROR_MESSAGES = {
   mcp_accepted_generation_changed: "The MCP configuration or tool changed. Start a new request to use the current configuration.",
   mcp_authorization_required: "MCP authorization is no longer valid. Reconnect in MCP settings.",
   mcp_connect_failed: "The MCP connection failed. Check the server and try again.",
   mcp_health_check_failed: "The MCP health check failed. Check the server and try again.",
+  mcp_internal_address_forbidden: "This address belongs to AIQSA or its host services, so MCP cannot use it.",
   mcp_inventory_invalid: "The MCP server returned an invalid tool inventory. Ask an administrator to check the server.",
   mcp_inventory_changed: "The MCP tool inventory changed. Refresh the connection before trying again.",
   mcp_inventory_cursor_cycle: "The MCP server repeated a tool-list page, so its inventory could not be read completely. Ask an administrator to check the server.",
@@ -26,11 +40,14 @@ const MCP_RUNTIME_ERROR_MESSAGES = {
   mcp_inventory_schema_limit: "An MCP tool schema exceeds the size limit. Ask an administrator to check the server.",
   mcp_inventory_time_limit: "The MCP server's tool list could not be read within its time limit. Check the server and try again.",
   mcp_inventory_tool_limit: `The MCP server offers more than ${MCP_SERVER_TOOL_LIMIT} tools. Ask an administrator to reduce the server's tools.`,
+  mcp_local_network_disabled: "Local network access for personal MCP connections is turned off. Ask an administrator.",
   mcp_response_too_large: "The MCP server response exceeded its size limit. Ask an administrator to check the server.",
   mcp_runtime_unavailable: "The MCP runtime is unavailable. Check MCP settings and try again.",
   mcp_session_closed: "The MCP session closed. Try again to reconnect the runtime.",
   mcp_timeout: "The MCP server timed out. Check the server and try again.",
-  mcp_tool_access_denied: "You no longer have access to this MCP tool."
+  mcp_tool_access_denied: "You no longer have access to this MCP tool.",
+  mcp_tool_definition_changed: "The MCP tool's definition changed after this request started. Start a new request to use the current definition.",
+  mcp_tool_disabled: "This MCP tool was switched off in MCP settings. Switch it back on to use it."
 } as const;
 
 export type McpRuntimeErrorCode = keyof typeof MCP_RUNTIME_ERROR_MESSAGES;
@@ -400,9 +417,19 @@ export type UserMcpConfigurationField = {
   valueType: McpConfigurationSlot["valueType"];
 };
 
-export type McpOperationalStatus = "active" | "checking" | "inactive";
-
 export type UserMcpServer = {
+  /** Personal settings inventory, including tools the owner has switched off. */
+  availableTools?: { description: string | null; name: string }[];
+  /** Installation servers are administered; personal servers are owned by this account. */
+  sourceType?: "installation" | "personal";
+  /** Redacted endpoint projection for personal settings only. */
+  endpoint?: string;
+  /** Personal settings only: tools the owner switched off; every other upstream tool is on. */
+  userDisabledToolNames?: string[];
+  /** Personal settings only: how the connection authenticates upstream. */
+  authMode?: "none" | "oauth" | "static";
+  /** Personal settings only: the static credential's header name; null unless `authMode` is static. */
+  authHeaderName?: string | null;
   runtimeErrorCode?: McpRuntimeErrorCode | null;
   accountLabel: string | null;
   description: string;
@@ -413,7 +440,6 @@ export type UserMcpServer = {
   name: string;
   oauthAvailable: boolean;
   oauthState: "disconnected" | "disconnecting" | "ready" | "reauthorization_required" | null;
-  operationalStatus: McpOperationalStatus;
   readiness: McpReadiness;
   tools: { description: string | null; name: string }[];
   /** Tools the ready runtime reports but this user cannot use, each with its reason. */
@@ -439,6 +465,9 @@ export function decodeMcpRunSelection(value: unknown): McpRunSelection | null {
 }
 
 export type McpErrorCode =
+  | "auth_mode_invalid"
+  | "authorization_required"
+  | "header_name_invalid"
   | "mcp_artifact_missing"
   | "mcp_draft_changed"
   | "mcp_draft_test_failed"
@@ -447,16 +476,49 @@ export type McpErrorCode =
   | "invalid_grant"
   | "invalid_mcp_values"
   | "json_required"
+  | "mcp_enabled_server_limit_reached"
   | "mcp_encryption_unavailable"
+  | "mcp_internal_address_forbidden"
+  | "mcp_local_network_disabled"
   | "mcp_not_found"
+  | "mcp_oauth_insecure_endpoint"
   | "mcp_revision_required"
   | "mcp_storage_unavailable"
   | "mcp_validation_unavailable"
+  | "oauth_authorization_origin_confirmation_required"
+  | "personal_mcp_limit_reached"
+  | "personal_mcp_rate_limited"
   | "unauthorized";
 
 export type McpErrorResponse = {
   error: McpErrorCode;
   issues?: readonly McpValidationIssue[];
+};
+
+/**
+ * Personal MCP create (HTTP 422): the discovered OAuth authorization origins
+ * that are neither same-origin nor same-site. The client resubmits the create
+ * request with `authorizationOriginsAcknowledged` naming these exact origins.
+ */
+export type PersonalMcpAuthorizationOriginConfirmationResponse = {
+  authorizationOrigins: string[];
+  error: "oauth_authorization_origin_confirmation_required";
+  issues: McpValidationIssue[];
+};
+
+/**
+ * Personal MCP credential replacement (`PATCH /api/me/mcp-connections/{id}`),
+ * static-auth connections only and never combined with `enabled` or `tool`.
+ * `authorization` is the complete header value; `headerName` absent keeps the
+ * stored header. A header-name change always carries a new secret.
+ */
+export type PersonalMcpCredentialReplacementRequest = {
+  credentials: { authorization: string; headerName?: string };
+};
+
+/** The replaced connection; the secret is write-only and never returned. */
+export type PersonalMcpCredentialReplacementResponse = {
+  server: UserMcpServer;
 };
 
 export type AdminMcpCreateRequest = {
@@ -514,6 +576,12 @@ export const MCP_RUN_PLAN_LIMITS = Object.freeze({
   maxEnabledServers: 64,
   maxTools: 128
 });
+
+/**
+ * Live (non-archived) personal MCP connections one user may own. Their enabled
+ * rows also count toward `maxEnabledServers` together with installation MCP.
+ */
+export const PERSONAL_MCP_CONNECTION_LIMIT = 25;
 
 /** Provider completion allowance includes reasoning and the strict JSON selection. */
 export const MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS = Object.freeze({

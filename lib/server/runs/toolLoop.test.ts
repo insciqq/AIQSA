@@ -407,8 +407,40 @@ describe("provider-neutral tool loop", () => {
     expect(settled).toEqual(["active"]);
   });
 
+  it("refuses a batch over the remaining call budget and continues with one synthesis round", async () => {
+    const executeTool = vi.fn(async () => ({ status: "complete" as const, value: "unused" }));
+    const persistToolBatch = vi.fn();
+    const order: string[] = [];
+    const continuations: number[] = [];
+    const outcome = await continueToolLoop({
+      budgets: { ...defaultBudgets, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool,
+      initialContinuation: 0,
+      persistToolBatch,
+      refuseToolBatch: ({ calls, continuation, round }) => { order.push(`refuse:${round}:${calls.length}:${continuation}`); },
+      onSignal: (signal) => { order.push(signal.type === "message_reset" ? `reset:${signal.round}` : "text"); },
+      resume: { continuation: 40, progress: { providerRounds: 40, toolCalls: 317, toolRounds: 39 } },
+      async runProviderRound(input) {
+        continuations.push(input.continuation);
+        if (input.round === 41) {
+          await input.emitText("planning");
+          return { calls: ["a", "b", "c", "d", "e", "f"].map(call), continuation: 41, status: "tool_calls" as const,
+            synthesisContinuation: 410 };
+        }
+        return { final: "answer", status: "complete" as const };
+      }
+    });
+
+    expect(outcome).toMatchObject({ final: "answer", providerRounds: 42, status: "complete", toolCalls: 317, toolRounds: 39 });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(persistToolBatch).not.toHaveBeenCalled();
+    expect(order).toEqual(["text", "refuse:41:6:410", "reset:41"]);
+    expect(continuations).toEqual([40, 410]);
+  });
+
   it("fails before dispatch when call or round budgets are exceeded", async () => {
     const executeTool = vi.fn(async () => ({ status: "complete" as const, value: "unused" }));
+    // Without a synthesis continuation the generic loop still refuses the run.
     const callLimited = await continueToolLoop({
       budgets: {
         ...defaultBudgets,

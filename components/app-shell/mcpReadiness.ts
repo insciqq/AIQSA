@@ -19,8 +19,23 @@ const presentations: Record<McpReadiness, McpReadinessPresentation> = {
   unavailable: { kind: "failed", label: "Runtime unavailable" }
 };
 
+/**
+ * Copy for the registry runtime codes the local-network and tool-continuity
+ * contracts add; every other code keeps the shared contract message.
+ */
+const registryRuntimeMessages: Readonly<Record<string, string>> = {
+  mcp_internal_address_forbidden: "This address belongs to AIQSA itself, so MCP cannot use it.",
+  mcp_local_network_disabled: "The administrator turned off MCP connections to the local network.",
+  mcp_tool_definition_changed: "An MCP tool changed. Start a new request to use the current tool.",
+  mcp_tool_disabled: "This MCP tool is switched off. Switch it on in Settings → Connections, then start a new request."
+};
+
+export function mcpRuntimeFailureMessage(code: string): string {
+  return Object.hasOwn(registryRuntimeMessages, code) ? registryRuntimeMessages[code]! : mcpRuntimeErrorMessage(code);
+}
+
 export function mcpReadinessPresentation(readiness: McpReadiness, runtimeErrorCode?: string | null): McpReadinessPresentation {
-  if (readiness === "unavailable" && runtimeErrorCode) return { kind: "failed", label: mcpRuntimeErrorMessage(runtimeErrorCode) };
+  if (readiness === "unavailable" && runtimeErrorCode) return { kind: "failed", label: mcpRuntimeFailureMessage(runtimeErrorCode) };
   return presentations[readiness];
 }
 
@@ -40,12 +55,5 @@ export function isMcpReadinessTransitioning(readiness: McpReadiness): boolean {
 }
 
 export function hasTransitioningMcpServer(servers: readonly UserMcpServer[]): boolean {
-  return servers.some((server) => server.enabled &&
-    (server.operationalStatus === "checking" || isMcpReadinessTransitioning(server.readiness)));
-}
-
-export function mcpOperationalPresentation(server: UserMcpServer): McpReadinessPresentation {
-  if (server.operationalStatus === "active") return { kind: "ready", label: "Active" };
-  if (server.operationalStatus === "checking") return { kind: "progress", label: "Checking" };
-  return { kind: "disabled", label: "Inactive" };
+  return servers.some((server) => server.enabled && isMcpReadinessTransitioning(server.readiness));
 }

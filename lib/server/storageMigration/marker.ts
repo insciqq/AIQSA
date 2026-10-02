@@ -139,3 +139,11 @@ export function createStorageMarker(
 export function serializeStorageMarker(marker: StorageMarker): Buffer {
   return Buffer.from(`${JSON.stringify(marker)}\n`, "utf8");
 }
+
+/** Reads the bucket's marker; null when none exists. */
+export async function readStorageMarker(
+  bucket: Readonly<{ readSmall(key: string, maxBytes: number): Promise<Uint8Array | null> }>
+): Promise<StorageMarker | null> {
+  const bytes = await bucket.readSmall(STORAGE_MARKER_KEY, STORAGE_MARKER_MAX_BYTES);
+  return bytes ? parseStorageMarker(bytes) : null;
+}

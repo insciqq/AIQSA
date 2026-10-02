@@ -201,7 +201,9 @@ export async function createAgentMcpGateway(input: Readonly<{
           if (agentCode && agentCode !== "agent_mcp_call_limit") await input.onFailure(agentCode);
           if (callId) await input.store.settleTool(callId, "error", detail).catch(() => undefined);
           observe(true, code);
-          if (!dispatched && ["tool_unavailable", "tool_definition_changed", "upstream_unavailable", "invalid_arguments", "authorization_required"].includes(code)) {
+          // The runtime refuses a changed definition before anything is sent.
+          const sent = dispatched && !(error instanceof McpHubServiceError && error.refusedBeforeSend);
+          if (!sent && ["tool_unavailable", "tool_definition_changed", "upstream_unavailable", "invalid_arguments", "authorization_required"].includes(code)) {
             const discoveryRequired = error instanceof DiscoveryRequiredError;
             const explanation = discoveryRequired ? "This tool has not been discovered or admitted for the current turn."
               : code === "tool_definition_changed" ? "The tool definition or configuration changed; the old arguments were not executed."

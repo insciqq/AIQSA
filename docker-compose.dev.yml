@@ -21,6 +21,14 @@ services:
       AIQSA_ARTIFACT_IMAGE_HOSTS: ${AIQSA_ARTIFACT_IMAGE_HOSTS-}
       AIQSA_AUTH_SESSION_SECRET: ${AIQSA_AUTH_SESSION_SECRET:-aiqsa-development-session-secret-000000000000000000000000}
       AIQSA_BIND_ADDRESS: 127.0.0.1
+      # Published application and data-service ports: personal MCP never
+      # reaches them through the host gateway.
+      AIQSA_PORT: ${AIQSA_PORT:-3000}
+      AIQSA_DEV_MINIO_PORT: ${AIQSA_DEV_MINIO_PORT:-9000}
+      AIQSA_DEV_OPENSEARCH_PORT: ${AIQSA_DEV_OPENSEARCH_PORT:-19200}
+      AIQSA_DEV_POSTGRES_PORT: ${AIQSA_DEV_POSTGRES_PORT:-5432}
+      # The app always runs in a container here; never rely on runtime detection.
+      AIQSA_PERSONAL_MCP_NETWORK_MODE: container
       AIQSA_BOOTSTRAP_AUTH_TOKEN: ${AIQSA_BOOTSTRAP_AUTH_TOKEN:-}
       AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256: ${AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256:-}
       AIQSA_BOOTSTRAP_LOGIN_ENABLED: ${AIQSA_BOOTSTRAP_LOGIN_ENABLED:-}
@@ -118,7 +126,7 @@ services:
       AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: ${AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME:-1}
       AIQSA_WORKSPACE_DISK_MIB: ${AIQSA_WORKSPACE_DISK_MIB:-10240}
       AIQSA_WORKSPACE_IDLE_TTL_SECONDS: ${AIQSA_WORKSPACE_IDLE_TTL_SECONDS:-1800}
-      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.29}
+      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.30}
       AIQSA_WORKSPACE_MAX_TOOL_CALLS: ${AIQSA_WORKSPACE_MAX_TOOL_CALLS:-320}
       AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: ${AIQSA_WORKSPACE_MAX_TOOL_ROUNDS:-}
       AIQSA_WORKSPACE_MCP_VERSION: ${AIQSA_WORKSPACE_MCP_VERSION:-0.6.16}
@@ -149,6 +157,10 @@ services:
       S3_SECRET_ACCESS_KEY: aiqsa-development-password
     ports:
       - "127.0.0.1:${AIQSA_PORT:-3000}:3000"
+    # Personal MCP reaches services on the Docker host through this name while
+    # the administrator allows local network access; AIQSA's ports stay denied.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Bound the long-lived compiler and any one-shot tool process so a stale
     # dev cache cannot pressure the host into swap/OOM or monopolize every CPU.
     # Production defaults to 2 GiB; development gets limited extra headroom.
@@ -358,7 +370,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: workspace-runner
-    image: aiqsa-workspace-runner:0.1.29-dev
+    image: aiqsa-workspace-runner:0.1.30-dev
     cap_drop:
       - ALL
     cpus: ${AIQSA_WORKSPACE_RUNNER_CPU_LIMIT:-4.0}
@@ -371,7 +383,7 @@ services:
       AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "0"
       AIQSA_WORKSPACE_DISK_MIB: ${AIQSA_WORKSPACE_DISK_MIB:-10240}
       AIQSA_WORKSPACE_IDLE_TTL_SECONDS: ${AIQSA_WORKSPACE_IDLE_TTL_SECONDS:-1800}
-      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.29}
+      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.30}
       AIQSA_WORKSPACE_MAX_TOOL_CALLS: ${AIQSA_WORKSPACE_MAX_TOOL_CALLS:-320}
       AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: ${AIQSA_WORKSPACE_MAX_TOOL_ROUNDS:-}
       AIQSA_WORKSPACE_MCP_VERSION: ${AIQSA_WORKSPACE_MCP_VERSION:-0.6.16}
@@ -422,7 +434,7 @@ services:
       AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "0"
       AIQSA_WORKSPACE_DISK_MIB: ${AIQSA_WORKSPACE_DISK_MIB:-10240}
       AIQSA_WORKSPACE_IDLE_TTL_SECONDS: ${AIQSA_WORKSPACE_IDLE_TTL_SECONDS:-1800}
-      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.29}
+      AIQSA_WORKSPACE_IMAGE: ${AIQSA_WORKSPACE_IMAGE:-aiqsa-workspace:0.1.30}
       AIQSA_WORKSPACE_MAX_TOOL_CALLS: ${AIQSA_WORKSPACE_MAX_TOOL_CALLS:-320}
       AIQSA_WORKSPACE_MAX_TOOL_ROUNDS: ${AIQSA_WORKSPACE_MAX_TOOL_ROUNDS:-}
       AIQSA_WORKSPACE_MCP_VERSION: ${AIQSA_WORKSPACE_MCP_VERSION:-0.6.16}

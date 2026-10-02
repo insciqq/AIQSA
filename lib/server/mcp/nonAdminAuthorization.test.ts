@@ -118,6 +118,7 @@ describe("ordinary-user MCP authorization", () => {
     expect(response.status).toBe(404);
     expect(calls).toEqual([{
       enabled: true,
+      installationOnly: true,
       serverId: SERVER_ID,
       userId: USER_ID,
       values: { workspace: "member-workspace" }

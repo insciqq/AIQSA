@@ -76,7 +76,10 @@ describe("MCP bounded transport failure details", () => {
   it.each([
     ["mcp_http_dns_failed", "mcp_network_failed"],
     ["mcp_http_tls_failed", "mcp_tls_failed"],
-    ["mcp_http_address_forbidden", "mcp_connection_forbidden"]
+    ["mcp_http_address_forbidden", "mcp_connection_forbidden"],
+    // The network policy's own reasons stay stable up to the user.
+    ["mcp_internal_address_forbidden", "mcp_internal_address_forbidden"],
+    ["mcp_local_network_disabled", "mcp_local_network_disabled"]
   ] as const)("keeps %s distinct from authorization", async (cause, code) => {
     const fixture = await startFixture();
     const session = createSession(fixture, { fetch: async () => { throw new McpSafeFetchError(cause); } });

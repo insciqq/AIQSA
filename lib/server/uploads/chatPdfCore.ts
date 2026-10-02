@@ -54,7 +54,8 @@ export function chatPdfImageLimits(
 export class ChatPdfPreparationError extends Error {
   constructor(readonly code: "pdf_preparation_failed" | "pdf_preparation_ambiguous" |
     "pdf_preparation_unavailable" | "pdf_preparation_invalid" | "pdf_local_text_unusable" |
-    "pdf_page_limit_exceeded" | "pdf_preparation_context_limit" | "pdf_transcription_failed", readonly retryable = false) {
+    "pdf_page_limit_exceeded" | "pdf_preparation_context_limit" | "pdf_transcription_failed" |
+    "context_compaction_policy_retired", readonly retryable = false) {
     super(code);
     this.name = "ChatPdfPreparationError";
   }

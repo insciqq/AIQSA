@@ -88,6 +88,58 @@ describe("transcript Quote selection", () => {
     expect(f.onQuote).not.toHaveBeenCalled();
   });
 
+  it("gives way to a composer layer and returns only with the next selection", () => {
+    const f = fixture(); select(f.markdown("assistant"));
+    expect(screen.getByRole("button", { name: "Quote" })).toBeVisible();
+    f.rerender(<ConversationV2 messages={f.messages} quote={{ ...f.quote, suppressed: true }} />);
+    expect(document.querySelector(".v2-selection-quote")).toBeNull();
+    expect(window.getSelection()!.toString()).toBe("A finished answer.");
+    select(f.markdown("user"));
+    expect(document.querySelector(".v2-selection-quote")).toBeNull();
+    // Closing the layer keeps the still-highlighted selection dismissed, like Escape.
+    f.rerender(<ConversationV2 messages={f.messages} quote={f.quote} />);
+    expect(window.getSelection()!.toString()).toBe("A user question.");
+    expect(document.querySelector(".v2-selection-quote")).toBeNull();
+    select(f.markdown("assistant"));
+    fireEvent.click(screen.getByRole("button", { name: "Quote" }));
+    expect(f.onQuote).toHaveBeenCalledExactlyOnceWith("A finished answer.", false);
+    select(f.markdown("assistant"));
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    expect(screen.getByRole("dialog", { name: "Add comment" })).toBeVisible();
+  });
+
+  it("hides the notice under a composer layer without restarting its timer", () => {
+    const f = fixture(true); select(f.markdown("assistant"));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Quote" }));
+      expect(screen.getByRole("status")).toHaveTextContent("Quoted");
+      f.rerender(<ConversationV2 messages={f.messages} quote={{ ...f.quote, suppressed: true }} />);
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(document.querySelector(".v2-selection-quote")).toBeNull();
+      act(() => { vi.advanceTimersByTime(1000); });
+      f.rerender(<ConversationV2 messages={f.messages} quote={f.quote} />);
+      expect(screen.getByRole("status")).toHaveTextContent("Quoted");
+      act(() => { vi.advanceTimersByTime(800); });
+      expect(screen.queryByRole("status")).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps an open comment form, its text and focus when a composer layer opens and closes", () => {
+    const f = fixture(); select(f.markdown("assistant"));
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Comment" }), { target: { value: "Still typing" } });
+    for (const suppressed of [true, false]) {
+      f.rerender(<ConversationV2 messages={f.messages} quote={{ ...f.quote, suppressed }} />);
+      expect(screen.getByRole("dialog", { name: "Add comment" })).toBeVisible();
+      expect(screen.getByRole("textbox", { name: "Comment" })).toHaveValue("Still typing");
+      expect(screen.getByRole("textbox", { name: "Comment" })).toHaveFocus();
+    }
+    expect(f.onComment).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Comment" }), { key: "Enter" });
+    expect(f.onComment).toHaveBeenCalledExactlyOnceWith("A finished answer.", "Still typing", false, answerAnchor);
+  });
+
   it("uses a touch pill, keeps focus away from the composer and confirms the quote", () => {
     const f = fixture(true); select(f.markdown("assistant"));
     const button = screen.getByRole("button", { name: "Quote" });
@@ -113,6 +165,23 @@ describe("transcript Quote selection", () => {
     fireEvent.keyDown(field, { key: "Enter" });
     expect(f.onComment).toHaveBeenCalledExactlyOnceWith("A finished answer.", "Check this claim", false, answerAnchor);
     expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+  });
+
+  it("previews and saves a formatted fragment as plain text", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, addEventListener() {}, removeEventListener() {} })));
+    const onComment = vi.fn((): string | null => null);
+    const { container } = render(<ConversationV2 messages={[{ id: "formatted", role: "assistant", content: "**Step one:** water the plants" }]}
+      quote={{ onQuote: vi.fn(() => null), onComment, scopeKey: "chat:formatted" }} getMessageActions={() => ({ onCopy: vi.fn() })} />);
+    const markdown = container.querySelector('[data-message-id="formatted"] .v2-conversation-markdown')!;
+    expect(markdown.querySelector("strong")).toHaveTextContent("Step one:");
+    select(markdown);
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    const dialog = screen.getByRole("dialog", { name: "Add comment" });
+    expect(dialog.querySelector(".v2-selection-comment-quote")).toHaveTextContent(/^Step one: water the plants$/u);
+    fireEvent.change(screen.getByRole("textbox", { name: "Comment" }), { target: { value: "Which plants?" } });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Comment" }), { key: "Enter" });
+    expect(onComment).toHaveBeenCalledExactlyOnceWith("Step one: water the plants", "Which plants?", false,
+      expect.objectContaining({ messageId: "formatted" }));
   });
 
   it("shows the count notice instead of opening a form that cannot save", () => {
@@ -301,6 +370,20 @@ describe("pending comment marks", () => {
     f.rerender(<ConversationV2 messages={f.messages} quote={{ ...f.quote, disabled: true }} />);
     fireEvent.click(f.markdown("user"), { clientX: 10, clientY: 10 });
     expect(screen.queryByRole("dialog", { name: "Edit comment" })).toBeNull();
+  });
+
+  it("opens a mark and keeps its edit form while a composer layer is open", () => {
+    const f = marked([note], { suppressed: true });
+    fireEvent.click(f.markdown("assistant"), { clientX: 10, clientY: 10 });
+    const field = screen.getByRole("textbox", { name: "Comment" });
+    expect(field).toHaveValue("Original note");
+    fireEvent.change(field, { target: { value: "Edited under a layer" } });
+    f.rerender(<ConversationV2 messages={f.messages} quote={{ ...f.quote, suppressed: false }} />);
+    expect(screen.getByRole("dialog", { name: "Edit comment" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Comment" })).toHaveValue("Edited under a layer");
+    expect(f.onCommentUpdate).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Comment" }), { key: "Enter" });
+    expect(f.onCommentUpdate).toHaveBeenCalledExactlyOnceWith("c1", "Edited under a layer");
   });
 
   it("closes the form and clears marks when the comment is sent or deleted elsewhere", async () => {

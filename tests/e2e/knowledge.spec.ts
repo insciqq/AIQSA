@@ -977,7 +977,7 @@ test("reuses one document across Bases with distinct Add, Move, and Remove journ
   const confirmation = page.getByRole("dialog", {
     name: "Remove Reusable product handbook from Assistant docs"
   });
-  await expect(confirmation).toContainText("stays in your library and in its other bases");
+  await expect(confirmation).toContainText("stays in Knowledge and in its other bases");
   await confirmation.getByRole("button", { name: "Confirm remove from base" }).click();
   const remainingMemberships = knowledge.getByRole("list", { name: "Document base memberships" });
   await expect(remainingMemberships).not.toContainText("Assistant docs");

@@ -3,6 +3,7 @@ import {
   UPLOAD_FORMAT_REGISTRY,
   type UploadContentEvidence
 } from "../../domain/uploadFormats";
+import { IMAGE_MAX_BYTES } from "../../contracts/imageGeneration";
 import { resolveDocumentParserRoute } from "../parsing/routing";
 import {
   defaultUploadMaxBytes,
@@ -414,5 +415,74 @@ describe("upload validation", () => {
       sample: Buffer.from([0x50, 0x4b, 0x03, 0x04]),
       scope: "knowledge"
     })).toEqual({ code: "unsupported_type", ok: false });
+  });
+
+  describe("static-raster normalization admission", () => {
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0]);
+    const webp = Buffer.from("RIFF\x00\x00\x00\x00WEBP", "binary");
+    const raster = (bytes: Buffer, fileName: string, mimeType: string, scope: "attachment" | "workspace" | "knowledge" = "attachment") =>
+      validateUpload({ byteSize: bytes.byteLength, bytes, fileName, maxBytes: 1024, mimeType, scope });
+
+    it.each(["image/jpeg", "image/png", "", "application/octet-stream"])(
+      "asks for a full decode of PNG content named .jpeg with MIME %j",
+      (mimeType) => {
+        for (const scope of ["attachment", "workspace"] as const) {
+          expect(raster(png, "synthetic.jpeg", mimeType, scope)).toMatchObject({
+            kind: "image", mimeType: "image/png", ok: true, rasterCheck: { id: "png" }
+          });
+        }
+      }
+    );
+
+    it("detects JPEG and WebP content and decodes whenever extension and MIME name different rasters", () => {
+      expect(raster(jpeg, "photo.png", "image/png")).toMatchObject({ mimeType: "image/jpeg", rasterCheck: { id: "jpeg" } });
+      expect(raster(jpeg, "photo.jpeg", "image/png")).toMatchObject({ mimeType: "image/jpeg", rasterCheck: { id: "jpeg" } });
+      expect(raster(webp, "photo.png", "image/png")).toMatchObject({ mimeType: "image/webp", rasterCheck: { id: "webp" } });
+      expect(raster(png, "photo.webp", "image/webp")).toMatchObject({ mimeType: "image/png", rasterCheck: { id: "png" } });
+    });
+
+    it("keeps matching uploads on the unchanged path without a decode request", () => {
+      expect(raster(png, "synthetic.png", "image/png")).toEqual({ kind: "image", mimeType: "image/png", ok: true });
+      expect(raster(jpeg, "photo.jpeg", "image/jpg")).toEqual({ kind: "image", mimeType: "image/jpeg", ok: true });
+      expect(raster(webp, "photo.webp", "")).toEqual({ kind: "image", mimeType: "image/webp", ok: true });
+    });
+
+    it("still refuses content that is not PNG, JPEG or WebP under a raster name", () => {
+      const svg = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'></svg>");
+      const html = Buffer.from("<!doctype html><main>Fixture</main>");
+      for (const bytes of [svg, html, Buffer.from("GIF89a"), Buffer.from([0, 1, 2, 3]), Buffer.from("BMfixture")]) {
+        expect(raster(bytes, "synthetic.jpeg", "image/jpeg")).toEqual({ code: "unsupported_type", ok: false });
+        expect(raster(bytes, "synthetic.jpeg", "image/png", "workspace")).toEqual({ code: "unsupported_type", ok: false });
+      }
+      expect(raster(png, "synthetic.gif", "image/gif")).toEqual({ code: "unsupported_type", ok: false });
+      expect(raster(png, "synthetic.jpeg", "image/svg+xml")).toEqual({ code: "unsupported_type", ok: false });
+      expect(raster(png, "synthetic.jpeg", "image/png", "knowledge")).toEqual({ code: "unsupported_type", ok: false });
+      expect(raster(png, "synthetic.jpeg", "image/jpeg", "knowledge")).toEqual({ code: "unsupported_type", ok: false });
+    });
+
+    it("refuses an image beyond the decode limit early only when it must be decoded", () => {
+      const large = { byteSize: IMAGE_MAX_BYTES + 1, maxBytes: 64 * 1024 * 1024 };
+      expect(validateUpload({ ...large, fileName: "large.jpeg", mimeType: "image/png" }))
+        .toEqual({ code: "image_limit_exceeded", ok: false });
+      expect(validateUpload({ ...large, fileName: "large.jpeg", mimeType: "image/png", scope: "workspace" }))
+        .toEqual({ code: "image_limit_exceeded", ok: false });
+      expect(validateUpload({ ...large, fileName: "large.jpeg", mimeType: "image/jpeg" }))
+        .toEqual({ kind: "image", mimeType: "image/jpeg", ok: true });
+      expect(validateUpload({ ...large, bytes: Buffer.concat([png, Buffer.alloc(IMAGE_MAX_BYTES)]), fileName: "large.jpeg", mimeType: "image/jpeg" }))
+        .toEqual({ code: "image_limit_exceeded", ok: false });
+      expect(validateUpload({ ...large, bytes: Buffer.concat([png, Buffer.alloc(IMAGE_MAX_BYTES)]), fileName: "large.png", mimeType: "image/png" }))
+        .toEqual({ kind: "image", mimeType: "image/png", ok: true });
+    });
+
+    it("applies the same rule to the bounded multipart sample", () => {
+      const inspect = (sample: Buffer, byteSize: number, fileName: string, mimeType: string) => validateUploadInspection({
+        byteSize, fileName, foundNeedles: [], maxBytes: 64 * 1024 * 1024, mimeType, sample, scope: "workspace"
+      });
+      expect(inspect(png, 200_000, "synthetic.jpeg", "image/jpeg")).toMatchObject({ mimeType: "image/png", rasterCheck: { id: "png" } });
+      expect(inspect(jpeg, 200_000, "synthetic.jpeg", "image/jpeg")).toEqual({ kind: "image", mimeType: "image/jpeg", ok: true });
+      expect(inspect(png, IMAGE_MAX_BYTES + 1, "synthetic.jpeg", "image/jpeg")).toEqual({ code: "image_limit_exceeded", ok: false });
+      expect(inspect(Buffer.from("GIF89a"), 200_000, "synthetic.jpeg", "image/jpeg")).toEqual({ code: "unsupported_type", ok: false });
+    });
   });
 });

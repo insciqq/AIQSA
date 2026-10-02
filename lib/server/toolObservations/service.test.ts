@@ -14,7 +14,8 @@ import { observationFailure, TOOL_OBSERVATION_LIMITS } from "./contract";
 import { ObservationStoreError } from "./repository";
 import { createToolObservationService, type ToolObservationRepository } from "./service";
 import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, projectObservationForProvider,
-  observationRestoreRefused, observationWholeDeliveryBatches, restoreObservedResult, wholeDeliveryAllowance } from "./sourceAdapters";
+  observationReadBudget, observationRestoreRefused, observationWholeDeliveryBatches, restoreObservedResult, wholeDeliveryAllowance } from "./sourceAdapters";
+import { executeReadToolResult, readToolResultError } from "../tools/readToolResult";
 import { settleableToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { boundedRenderedSearchToolResultText, boundedRetainedSearchToolResultText, boundedSearchToolResultText, LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_TOOL_RESULT_VERSION, searchExecutionsFromToolResult, searchToolResultContent, searchToolResultText,
   type SearchExecutionEvidence } from "../search/toolResult";
@@ -1000,15 +1001,89 @@ describe("observation review fixes: batch share, restore classification, Search 
       expect(await restoreObservedResult({ service: observations.service(), producer: { ...actor, toolCallId: id },
         wholeDelivery: restoring.allowance(3, share) }, calls[index]!)).toEqual(results[index]);
     }
-    // Settled siblings replayed into the batch keep their whole deliveries
-    // counted; previews count nothing. A restored sibling then stays bounded.
+    // The siblings beyond the allowance arrive as their references, which draw nothing.
+    for (const result of results.filter(result => !isWhole(result))) {
+      expect(result.content).toEqual([{ type: "json", value: { observation: result.observation, reader: "read_tool_result" } }]);
+    }
+    // Settled siblings replayed into the batch keep what their whole
+    // deliveries drew beyond their references counted. A restored sibling
+    // then stays bounded.
+    const referenceTokens = (result: ToolExecutionResult) => projectedTokens({ ...result,
+      content: [{ type: "json", value: { observation: result.observation, reader: "read_tool_result" } }] });
     const replayed = observationWholeDeliveryBatches();
     for (const result of results) replayed.replay(3, share, result);
-    expect(replayed.allowance(3, share).remainingTokens).toBe(share - whole.reduce((sum, result) => sum + projectedTokens(result), 0));
+    expect(replayed.allowance(3, share).remainingTokens).toBe(share -
+      whole.reduce((sum, result) => sum + projectedTokens(result) - referenceTokens(result), 0));
     const wholeIndex = results.indexOf(whole[0]!);
     const restored = await restoreObservedResult({ service: observations.service(), producer: { ...actor, toolCallId: calls[wholeIndex]!.id },
       wholeDelivery: replayed.allowance(3, share) }, calls[wholeIndex]!);
     expect(isWhole(restored)).toBe(false);
+  });
+
+  it("bounds previews and reader fragments by the batch allowance; beyond it results arrive as references", async () => {
+    const observations = memoryToolObservations();
+    const actor = { runId: "bounded-run", userId: "bounded-owner" };
+    const calls = Array.from({ length: 5 }, (_, index) => ({ id: `bounded-${index}`, name: "synthetic_tool", arguments: {} }));
+    const reference = (result: ToolExecutionResult) =>
+      [{ type: "json", value: { observation: result.observation, reader: "read_tool_result" } }];
+    // Above the persisted result bound every result is at most a preview.
+    const probe = await captureMcpObservation({ service: memoryToolObservations().service(), producer: { ...actor, toolCallId: "probe" } },
+      calls[0]!, binding, async () => mcpOriginal(300 * 1024, "probe"));
+    const previewDraw = projectedTokens(probe) - projectedTokens({ ...probe, content: reference(probe) as ToolExecutionResult["content"] });
+    expect(previewDraw).toBeGreaterThan(0);
+    const share = 2 * previewDraw + 10;
+    const live = observationWholeDeliveryBatches();
+    const order: string[] = [];
+    const results = await Promise.all(calls.map(call => captureMcpObservation({ service: observations.service(),
+      producer: { ...actor, toolCallId: call.id }, wholeDelivery: live.allowance(2, share) }, call, binding,
+      async () => mcpOriginal(300 * 1024, call.id)).then(result => { order.push(call.id); return result; })));
+    const previews = results.filter(result => result.content.length === 1 && "preview" in (result.content[0] as { value: object }).value);
+    expect(previews).toHaveLength(2);
+    expect(results.filter(result => !previews.includes(result)).map(result => result.content))
+      .toEqual(results.filter(result => !previews.includes(result)).map(reference));
+    // Ambiguous recovery in the same order repeats every form.
+    const restoring = observationWholeDeliveryBatches();
+    for (const id of order) {
+      const index = calls.findIndex(call => call.id === id);
+      expect(await restoreObservedResult({ service: observations.service(), producer: { ...actor, toolCallId: id },
+        wholeDelivery: restoring.allowance(2, share) }, calls[index]!)).toEqual(results[index]);
+    }
+    // Replayed previews keep their draw; replayed references draw nothing.
+    const replayed = observationWholeDeliveryBatches();
+    for (const result of results) replayed.replay(2, share, result);
+    expect(replayed.allowance(2, share).remainingTokens).toBe(share - 2 * previewDraw);
+
+    // Reads in one batch share an allowance too.
+    const handle = results[0]!.observation!.handle;
+    const read = (id: string, batch?: ReturnType<typeof observationReadBudget>) => executeReadToolResult(observations.service(),
+      { id, name: "read_tool_result", arguments: { handle, maxBytes: 6 * 1024 } }, actor, undefined, batch);
+    const unbounded = await read("read-probe");
+    // A read draws what it adds beyond its deferral, which its batch floor already holds.
+    const readTokens = estimateApproxTokens(unbounded.content) -
+      estimateApproxTokens(readToolResultError({ id: "read-probe", name: "read_tool_result" }, "tool_observation_read_deferred").content);
+    const reads = wholeDeliveryAllowance(readTokens + Math.floor(readTokens / 2));
+    const first = await read("read-1", observationReadBudget(reads));
+    expect(first).toEqual({ ...unbounded, callId: "read-1" });
+    expect(reads.remainingTokens).toBe(Math.floor(readTokens / 2));
+    // The second fragment is shortened to the rest, with a cursor to continue.
+    const second = await read("read-2", observationReadBudget(reads));
+    const fragment = (second.content[0] as { value: { fragment: string; incomplete: boolean; cursor: string | null } }).value;
+    expect(second.status).toBe("complete");
+    expect(Buffer.byteLength(fragment.fragment)).toBeGreaterThanOrEqual(TOOL_OBSERVATION_LIMITS.previewBytes);
+    expect(fragment.fragment.length).toBeLessThan((unbounded.content[0] as { value: { fragment: string } }).value.fragment.length);
+    expect(fragment).toMatchObject({ incomplete: true, cursor: expect.any(String) });
+    expect(reads.remainingTokens).toBeGreaterThanOrEqual(0);
+    // Below a preview's room the read is deferred, drawing nothing; the saved result stays readable.
+    const left = reads.remainingTokens;
+    const deferred = await read("read-3", observationReadBudget(reads));
+    expect(deferred).toMatchObject({ status: "error", content: [{ type: "json", value: { code: "tool_observation_read_deferred" } }] });
+    expect(reads.remainingTokens).toBe(left);
+    expect((await read("read-4", observationReadBudget(wholeDeliveryAllowance(readTokens)))).status).toBe("complete");
+    // Concurrent reads never count on the same room: a fragment is drawn when it is chosen.
+    const shared = wholeDeliveryAllowance(readTokens);
+    const concurrent = await Promise.all(["read-5", "read-6"].map(id => read(id, observationReadBudget(shared))));
+    expect(concurrent.map(result => result.status).sort()).toEqual(["complete", "error"]);
+    expect(shared.remainingTokens).toBe(0);
   });
 
   it("keeps a restore's storage or database failure transient and every proof of loss a refusal", async () => {

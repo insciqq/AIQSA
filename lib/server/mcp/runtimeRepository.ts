@@ -59,6 +59,8 @@ type StoredValues = {
 
 type StoredEffectiveSnapshot = StoredValues & {
   plan: EffectiveMcpSlotPlanItem[];
+  /** Frozen ownership boundary for personal remote runtimes. */
+  personalRuntime?: boolean;
 };
 
 function isSlotValue(value: unknown): value is McpSlotValue {
@@ -133,7 +135,19 @@ function storedEffectiveSnapshot(
       valueVersion: item.valueVersion
     });
   }
-  return { plan, values, version: 1 };
+  let personalRuntime: boolean | undefined;
+  if ("personalRuntime" in decoded) {
+    if (typeof decoded.personalRuntime !== "boolean") {
+      throw runtimeConfigurationError("mcp_values_invalid");
+    }
+    personalRuntime = decoded.personalRuntime;
+  }
+  return {
+    plan,
+    values,
+    version: 1,
+    ...(personalRuntime !== undefined ? { personalRuntime } : {})
+  };
 }
 
 function revisionConfiguration(value: Prisma.JsonValue): McpDraftConfiguration | null {
@@ -166,6 +180,7 @@ type RemoteRuntimeFields = {
   callTimeoutMs: number;
   effectiveEnvelope: {
     plan: ReturnType<typeof resolveEffectiveMcpValues>["plan"];
+    personalRuntime?: boolean;
     values: Record<string, McpSlotValue>;
     version: 1;
   };
@@ -175,6 +190,7 @@ type RemoteRuntimeFields = {
   fingerprint: string;
   headers: Record<string, string>;
   oauthConnectionId?: string;
+  personalRuntime?: boolean;
   publishedTools: McpPublishedToolDefinitions;
   revisionId: string;
   redactionValues: readonly string[];
@@ -186,6 +202,7 @@ type LocalRuntimeFields = {
   callTimeoutMs: number;
   effectiveEnvelope: {
     plan: ReturnType<typeof resolveEffectiveMcpValues>["plan"];
+    personalRuntime?: boolean;
     values: Record<string, McpSlotValue>;
     version: 1;
   };
@@ -194,6 +211,7 @@ type LocalRuntimeFields = {
   externalAccountLabel: null;
   fingerprint: string;
   oauthConnectionId?: undefined;
+  personalRuntime?: boolean;
   publishedTools: McpPublishedToolDefinitions;
   revisionId: string;
   redactionValues: readonly string[];
@@ -217,6 +235,7 @@ type EffectiveRuntimeBase = Readonly<{
   fingerprint: string;
   externalAccountLabel: string | null;
   oauthConnectionId: string | null;
+  personalRuntime?: boolean;
   revision: NonNullable<DesiredRecord["server"]["activeRevision"]>;
 }>;
 
@@ -257,10 +276,16 @@ function effectiveRuntimeCandidate(input: {
   record: DesiredRecord;
 }): EffectiveRuntimeCandidate | null {
   if (!input.record.enabled || !input.record.server.enabled || input.record.server.archivedAt) return null;
+  // A personal server is usable only by its exact owner. Grants are
+  // installation-owned access rows and must never make another user eligible
+  // for a personal endpoint, even if a malformed row grants it.
+  if (input.record.server.ownerUserId != null &&
+    input.record.server.ownerUserId !== input.record.userId) return null;
   const revision = input.record.server.activeRevision;
   if (!revision) return null;
   const configuration = revisionConfiguration(revision.configuration);
   if (!configuration) return null;
+  if (input.record.server.ownerUserId != null && configuration.source.kind !== "remote") return null;
   const groupIds = input.record.user.groups.map((membership) => membership.groupId);
   const direct = input.record.server.grants.find((grant) => grant.userId === input.record.userId) ?? null;
   const groups = input.record.server.grants.filter((grant) => grant.groupId && groupIds.includes(grant.groupId));
@@ -295,6 +320,9 @@ function effectiveRuntimeCandidate(input: {
     slots: configuration.slots
   });
   if (effective.invalidSlotKeys.length || effective.missingSlotKeys.length) return null;
+  // A personal runtime keeps the full upstream inventory; the owner's
+  // switched-off tools are filtered from projections, never from the runtime.
+  const personalRuntime = input.record.server.ownerUserId === input.record.userId;
   let oauthConnectionId: string | null = null;
   let externalAccountLabel: string | null = null;
   if (configuration.auth.mode === "oauth") {
@@ -333,10 +361,16 @@ function effectiveRuntimeCandidate(input: {
   return {
     configuration,
     credentialSources: safeCredentialSources(configuration, effective.plan, Boolean(oauthConnectionId)),
-    effectiveEnvelope: { plan: effective.plan, values: effective.values, version: 1 },
+    effectiveEnvelope: {
+      plan: effective.plan,
+      values: effective.values,
+      version: 1,
+      ...(personalRuntime ? { personalRuntime: true } : {})
+    },
     externalAccountLabel,
     fingerprint,
     oauthConnectionId,
+    ...(personalRuntime ? { personalRuntime: true } : {}),
     revision,
     userId: input.record.userId,
     userServerId: input.record.id
@@ -357,14 +391,15 @@ function remoteRuntimeFields(base: EffectiveRuntimeBase): RemoteRuntimeFields | 
     allowPrivateNetwork: source.allowPrivateNetwork === true,
     callTimeoutMs: configuration.runtime.callTimeoutMs,
     credentialSources: base.credentialSources,
-    ...(base.configuration.disabledToolNames?.length
-      ? { disabledToolNames: base.configuration.disabledToolNames }
+    ...(configuration.disabledToolNames?.length
+      ? { disabledToolNames: configuration.disabledToolNames }
       : {}),
     effectiveEnvelope: base.effectiveEnvelope,
     externalAccountLabel: base.externalAccountLabel,
     fingerprint: base.fingerprint,
     headers,
     ...(base.oauthConnectionId ? { oauthConnectionId: base.oauthConnectionId } : {}),
+    ...(base.personalRuntime ? { personalRuntime: true } : {}),
     publishedTools: mcpPublishedToolDefinitions(base.revision.validationEvidence),
     redactionValues: effectiveRedactionValues(configuration, base.effectiveEnvelope.values),
     revisionId: base.revision.id,
@@ -395,6 +430,7 @@ function localRuntimeFields(base: EffectiveRuntimeBase): LocalRuntimeFields | nu
     effectiveEnvelope: base.effectiveEnvelope,
     externalAccountLabel: null,
     fingerprint: base.fingerprint,
+    ...(base.personalRuntime ? { personalRuntime: true } : {}),
     publishedTools: mcpPublishedToolDefinitions(base.revision.validationEvidence),
     redactionValues: effectiveRedactionValues(base.configuration, base.effectiveEnvelope.values),
     revisionId: base.revision.id,
@@ -438,7 +474,8 @@ export function sharedRuntimeCandidate(input: {
   server: SharedRuntimeServerRecord;
 }): SharedRuntimeCandidate | null {
   const { server } = input;
-  if (!server.enabled || server.archivedAt) return null;
+  // Only an explicit owner marks a server as personal.
+  if (!server.enabled || server.archivedAt || server.ownerUserId != null) return null;
   const revision = server.activeRevision;
   if (!revision) return null;
   const configuration = revisionConfiguration(revision.configuration);
@@ -502,6 +539,7 @@ function generationLaunch(
         ...(candidate.oauthConnectionId
           ? { oauthConnectionId: candidate.oauthConnectionId }
           : {}),
+        ...(candidate.personalRuntime ? { personalRuntime: true } : {}),
         url: candidate.url
       }
     : { ...commonLaunch, toolHive: candidate.toolHive };
@@ -572,6 +610,8 @@ export function createPrismaMcpRuntimeRepository(input: {
           encryptionKey(),
           mcpRuntimeGenerationEnvelopeContext(generation.id, generation.fingerprint)
         );
+        if (owner.userId === null && snapshot.personalRuntime) return null;
+        if (snapshot.personalRuntime && configuration.source.kind !== "remote") return null;
         const configuredSlotKeys = new Set(configuration.slots.map((slot) => slot.slotKey));
         if (snapshot.plan.length !== configuration.slots.length ||
           Object.keys(snapshot.values).length !== configuration.slots.length ||
@@ -601,6 +641,7 @@ export function createPrismaMcpRuntimeRepository(input: {
             now.getTime() - generation.inventoryUpdatedAt.getTime() >= INVENTORY_FRESH_MS,
           // The accepted revision, not the active one, bounds what this generation offers.
           publishedTools: mcpPublishedToolDefinitions(generation.revision.validationEvidence),
+          ...(snapshot.personalRuntime ? { personalRuntime: true } : {}),
           redactionValues: effectiveRedactionValues(configuration, snapshot.values),
           retryAt: generation.retryAt,
           startupTimeoutMs: configuration.runtime.startupTimeoutMs
@@ -716,7 +757,12 @@ export function createPrismaMcpRuntimeRepository(input: {
             ? { serverId: { in: [...(serverIds ?? [])] } }
             : { desiredRuntimeGenerationId: { not: null } }),
           enabled: true,
-          server: { activeRevisionId: { not: null }, archivedAt: null, enabled: true },
+          server: {
+            activeRevisionId: { not: null },
+            archivedAt: null,
+            enabled: true,
+            ...(userId ? { OR: [{ ownerUserId: null }, { ownerUserId: userId }] } : {})
+          },
           user: {
             status: "active",
             ...(userId ? { id: userId } : {
@@ -789,10 +835,14 @@ export function createPrismaMcpRuntimeRepository(input: {
             where: {
               enabled: true,
               id: candidate.userServerId,
+              // A sync that read the row before a value replacement never
+              // re-desires the generation of the replaced values.
+              personalConfigVersion: record.personalConfigVersion,
               server: {
                 activeRevisionId: candidate.revisionId,
                 archivedAt: null,
                 enabled: true,
+                ...(candidate.personalRuntime ? { ownerUserId: candidate.userId } : {}),
                 ...(candidate.oauthConnectionId ? {
                   oauthConnections: {
                     some: {
@@ -841,6 +891,7 @@ export function createPrismaMcpRuntimeRepository(input: {
           activeRevisionId: { not: null },
           archivedAt: null,
           enabled: true,
+          ownerUserId: null,
           projectBindings: { some: {} },
           ...(onDemand
             ? { id: { in: [...(serverIds ?? [])] } }
@@ -966,7 +1017,7 @@ export function createPrismaMcpRuntimeRepository(input: {
       return count === 1;
     },
 
-    markReady: async ({ fingerprint, generationId, inventory, now }) => {
+    markReady: async ({ discoveredInventory, fingerprint, generationId, inventory, now }) => {
       const inventoryJson = JSON.stringify(inventory);
       const count = await client.$executeRaw`
         UPDATE "McpRuntimeGeneration" AS generation
@@ -1009,6 +1060,42 @@ export function createPrismaMcpRuntimeRepository(input: {
             )
           )
       `.catch(retainDatabaseFailure);
+      if (count === 1 && discoveredInventory) {
+        const discoveredJson = JSON.stringify(discoveredInventory);
+        // Catalog evidence survives idle generation deletion. Only the current
+        // personal generation may replace it; accepted historical runs cannot
+        // republish metadata from an old OAuth identity into future discovery.
+        await client.$executeRaw`
+          UPDATE "McpUserServer" AS preference
+          SET "discoveredInventory" = ${discoveredJson}::jsonb,
+              "discoveredRevisionId" = generation."revisionId",
+              "discoveredOAuthConnectionId" = generation."oauthConnectionId"
+          FROM "McpRuntimeGeneration" AS generation
+          JOIN "McpServer" AS server ON server."activeRevisionId" = generation."revisionId"
+          WHERE generation."id" = ${generationId}
+            AND generation."fingerprint" = ${fingerprint}
+            AND generation."state" = 'ready'::"McpRuntimeState"
+            AND preference."id" = generation."userServerId"
+            AND preference."desiredRuntimeGenerationId" = generation."id"
+            AND preference."serverId" = server."id"
+            AND preference."userId" = server."ownerUserId"
+            AND preference."enabled" = true
+            AND server."enabled" = true
+            AND server."archivedAt" IS NULL
+            AND (
+              generation."oauthConnectionId" IS NULL
+              OR EXISTS (
+                SELECT 1 FROM "McpOAuthConnection" AS connection
+                WHERE connection."id" = generation."oauthConnectionId"
+                  AND connection."serverId" = server."id"
+                  AND connection."userId" = preference."userId"
+                  AND connection."purpose" = 'user'::"McpOAuthPurpose"
+                  AND connection."state" = 'ready'::"McpOAuthConnectionState"
+                  AND connection."disconnectRequestedAt" IS NULL
+              )
+            )
+        `.catch(retainDatabaseFailure);
+      }
       return count === 1;
     },
 
@@ -1105,12 +1192,16 @@ export function createPrismaMcpRuntimeRepository(input: {
     },
 
     finalizeDeletedServers: async () => client.$transaction(async (tx) => {
+      // A stored token, whatever its state, waits for revocation or the
+      // revocation bound; deleting the server would cascade it away.
+      const tokensSettled = { none: { tokenEnvelope: { not: null } } } satisfies Prisma.McpOAuthConnectionListRelationFilter;
       const candidates = await tx.mcpServer.findMany({
         orderBy: { archivedAt: "asc" },
         select: { id: true },
         take: 100,
         where: {
           archivedAt: { not: null },
+          oauthConnections: tokensSettled,
           revisions: { none: { runtimeGenerations: { some: {} } } }
         }
       });
@@ -1143,6 +1234,7 @@ export function createPrismaMcpRuntimeRepository(input: {
         where: {
           archivedAt: { not: null },
           id: { in: serverIds },
+          oauthConnections: tokensSettled,
           revisions: { none: {} }
         }
       });

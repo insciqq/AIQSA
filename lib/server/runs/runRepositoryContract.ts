@@ -570,6 +570,12 @@ export type RunRepository = {
   beginToolLoopProviderRound(input: {
     /** Claim a single corrective request after a terminal no-tool response. */
     requiredToolCorrectionOfRound?: number;
+    /** Claim the one tool-free synthesis round after round R's batch exceeded
+     * the remaining call budget: only from R's provider round with terminal
+     * usage and no persisted calls, with a `budget_exhausted` continuation.
+     * The same continuation with `synthesisDispatched` then marks that claimed
+     * round dispatched, before it has usage of its own. */
+    finalSynthesisOfRound?: number;
     contextCompaction?: ContextCompactionCheckpoint;
     providerContinuation: ToolLoopJsonValue | null;
     providerCursor?: number | string | null;

@@ -1,7 +1,8 @@
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { defaultToolObservations } from "../toolObservations/defaultService";
 import { captureMcpObservation, captureWorkspaceObservation, captureSearchObservation, captureOwnedObservation, restoreObservedResult, projectObservationForProvider,
-  OBSERVATION_RESTORE_FAILURE, observationRestoreRefused, observationWholeDeliveryBatches, type ToolObservationService } from "../toolObservations/sourceAdapters";
+  OBSERVATION_RESTORE_FAILURE, observationReadBudget, observationRestoreRefused, observationWholeDeliveryBatches,
+  type ToolObservationService } from "../toolObservations/sourceAdapters";
 import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from "../tools/readToolResult";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
@@ -11,6 +12,7 @@ import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTool } from "../tools/analyzeImage
 import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
 import { VIEW_WORKSPACE_IMAGE, viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import { agentFailureMessage } from "../agents/failures";
+import { agentCodexVersionRetired } from "../agents/config";
 import { knowledgeAnswerInstructions, type KnowledgeAnswerInstructions } from "../knowledge/answerInstructions";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext, type LifecycleStage } from "../observability";
@@ -191,10 +193,14 @@ import {
   requiredToolCorrectionContinuation,
   REQUIRED_TOOL_CALL_FAILURE,
   runProviderToolLoop,
+  toolSynthesisDecision,
+  withProviderNote,
   withRoundForcedTool,
   type ProviderToolLoopContinuation
 } from "./providerToolLoop";
-import { applyProviderRequestContextBudget, measureSessionContext, observationWholeResultTokens } from "./runContextBudget";
+import { readOnlyRunTool } from "./toolReadOnly";
+import { repeatBlockedRounds, roundMadeNoProgress, settledRepeatOutcome, ToolCallRepeatHistory } from "./toolCallRepeatGuard";
+import { applyProviderRequestContextBudget, measureSessionContext, observationBatchShare, observationWholeResultTokens } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import type { ProviderToolBridge } from "../tools/types";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
@@ -229,6 +235,7 @@ import {
   snapshotToolExecutionResult
 } from "./toolExecutionPersistence";
 import {
+  isNotesOnlyCheckpoint,
   mergeAnswerRoundUsage,
   snapshotToolLoopJson,
   toolLoopPersistenceLimits,
@@ -247,7 +254,14 @@ import {
 } from "./runOutputEvents";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
 import type { ContextSummaryAttempt } from "../../contracts/contextCompaction";
-import { CONTEXT_SUMMARY_NOT_DISPATCHED, contextCompactionCheckpoint, type ContextObservation } from "./contextCompactionContract";
+import {
+  CONTEXT_COMPACTION_POLICY_RETIRED,
+  CONTEXT_SUMMARY_NOT_DISPATCHED,
+  contextCompactionCheckpoint,
+  contextCompactionPolicyRetired,
+  type ContextCompactionCheckpoint,
+  type ContextObservation
+} from "./contextCompactionContract";
 import {
   contextObservationsFromResults,
   observationCallIdsInProviderMessages,
@@ -260,9 +274,9 @@ import {
   createContextCompactionPublisher
 } from "./contextCompactionEvents";
 import {
-  applyKnowledgeAnswerContextBudget,
   observationSourceAvailability,
-  prepareCompactedProviderRequest
+  prepareCompactedProviderRequest,
+  rebuiltCompactedProviderRequest
 } from "./contextCompactionConsumer";
 
 export const activeRunStaleMs = 10 * 60 * 1000;
@@ -329,6 +343,7 @@ export type RunRecoveryMcpRuntime = Readonly<{
   callTool(input: {
     arguments: Record<string, unknown>;
     beforeDispatch?(): Promise<void>;
+    definitionHash: string;
     generationId: string;
     inputSchema: Record<string, unknown>;
     name: string;
@@ -559,7 +574,9 @@ function parseProviderToolLoopContinuation(value: ToolLoopJsonValue | null): Pro
   if (!isRecord(value) ||
     !(value.providerResponseId === null || typeof value.providerResponseId === "string") ||
     !Array.isArray(value.providerToolMessages) ||
-    value.requiredToolCorrection !== undefined && value.requiredToolCorrection !== true) {
+    value.requiredToolCorrection !== undefined && value.requiredToolCorrection !== true ||
+    value.finalSynthesis !== undefined && value.finalSynthesis !== "budget_exhausted" && value.finalSynthesis !== "no_progress" ||
+    value.synthesisDispatched !== undefined && (value.synthesisDispatched !== true || value.finalSynthesis !== "budget_exhausted")) {
     throw new ToolLoopRecoveryError(
       "tool_loop_checkpoint_invalid",
       "The saved tool-loop continuation is invalid. Retry the run."
@@ -567,9 +584,12 @@ function parseProviderToolLoopContinuation(value: ToolLoopJsonValue | null): Pro
   }
 
   return {
+    ...(value.finalSynthesis === "budget_exhausted" || value.finalSynthesis === "no_progress"
+      ? { finalSynthesis: value.finalSynthesis } : {}),
     providerResponseId: value.providerResponseId,
     providerToolMessages: value.providerToolMessages,
-    ...(value.requiredToolCorrection === true ? { requiredToolCorrection: true } : {})
+    ...(value.requiredToolCorrection === true ? { requiredToolCorrection: true } : {}),
+    ...(value.synthesisDispatched === true ? { synthesisDispatched: true } : {})
   };
 }
 
@@ -907,9 +927,14 @@ type RecoveryToolContext = {
   tools: RunTool[];
   usageAccountedToolCallIds: Set<string>;
   usageAttributions: RunUsageAttribution[];
-  /** Whole-delivery allowances of the recovered and later tool batches. */
+  /** Delivery allowances of the recovered and later tool batches. */
   wholeDelivery: ReturnType<typeof observationWholeDeliveryBatches>;
 };
+
+/** A recovered read draws on its batch's delivery allowance, as live reads do. */
+function recoveredReadBudget(context: RecoveryToolContext, round: number) {
+  return observationReadBudget(context.wholeDelivery.allowance(round, observationWholeResultTokens(context.providerRequest)));
+}
 
 function persistedContextObservations(calls: readonly PersistedToolLoopCall[]): Map<string, ContextObservation> {
   return new Map(contextObservationsFromResults(calls.flatMap((call) => {
@@ -1356,7 +1381,8 @@ function registerRecoveredMcpDiscoveryBatch(
     .sort((left, right) => left.ordinal - right.ordinal)
     .flatMap((persisted) => {
       const call = modelToolCall(persisted);
-      return call.name === MCP_FIND_TOOLS_NAME && mcpFindToolsArguments(call.arguments)
+      // A blocked repeat never runs, so its goal is never routed or epoched.
+      return call.name === MCP_FIND_TOOLS_NAME && mcpFindToolsArguments(call.arguments) && !repeatBlockedRounds(persisted)
         ? [{ call, modelRunToolCallId: persisted.id }]
         : [];
     });
@@ -1506,6 +1532,14 @@ async function executePersistedToolCallInContext(
     runId: context.run.id,
     userId: context.run.userId
   });
+  if (claim.kind === "settled" && repeatBlockedRounds(claim.call)) {
+    // A blocked repeat was settled with its batch: nothing runs or replays.
+    const blocked = parsePersistedToolExecutionResult(call, claim.call.result);
+    if (!blocked) {
+      throw new ToolLoopRecoveryError("tool_call_result_invalid", "A persisted tool result is invalid and cannot be replayed safely.");
+    }
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: blocked }, round: persisted.roundIndex };
+  }
   const memoryActivity = async (state: "running" | "complete" | "error" | "cancelled", result?: ToolExecutionResult) => {
     const event = memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex, state, result });
     const projected = projectRunOutputArtifactEvent(event);
@@ -1528,7 +1562,7 @@ async function executePersistedToolCallInContext(
   }
   if (claim.kind === "ambiguous" && isRecoveredObservationRead(context, call.name)) {
     const result = await executeReadToolResult(await recoveredObservations(context), call,
-      { runId: context.run.id, userId: context.run.userId }, signal);
+      { runId: context.run.id, userId: context.run.userId }, signal, recoveredReadBudget(context, persisted.roundIndex));
     const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
     const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,
       result: snapshot, runId: context.run.id, state: result.status, userId: context.run.userId });
@@ -1634,7 +1668,8 @@ async function executePersistedToolCallInContext(
       ? await context.deps.memorySearch.revalidate(call, { persistedToolCallId: persisted.id,
           request: context.providerRequest, runId: context.run.id, userId: context.run.userId })
       : isRecoveredObservationRead(context, call.name)
-      ? await executeReadToolResult(await recoveredObservations(context), call, { runId: context.run.id, userId: context.run.userId }, signal)
+      ? await executeReadToolResult(await recoveredObservations(context), call, { runId: context.run.id, userId: context.run.userId }, signal,
+        recoveredReadBudget(context, persisted.roundIndex))
       : parsePersistedToolExecutionResult(call, claim.call.result);
     if (result && call.name === MEMORY_SEARCH_TOOL_NAME && context.run.normalizedRequest.memorySearch) {
       await memoryActivity(result.status, result);
@@ -1907,7 +1942,8 @@ async function executePersistedToolCallInContext(
       if (!context.deps.images) throw recoveryToolUnavailable("image_tool_unavailable");
       result = await context.deps.images.execute(call, executionContext, signal);
     } else if (isRecoveredObservationRead(context, call.name)) {
-      result = await executeReadToolResult(await recoveredObservations(context), call, executionContext, signal);
+      result = await executeReadToolResult(await recoveredObservations(context), call, executionContext, signal,
+        recoveredReadBudget(context, persisted.roundIndex));
     } else if (isSessionCall) {
       result = executeSessionStatus(call, context.sessionRequest ?? context.providerRequest, context.sessionToolBridge);
     } else if (isRecoveredMcpDiscoveryCall(context, call.name)) {
@@ -2092,6 +2128,12 @@ async function executePersistedToolBatch(
     calls: ordered.map((call) => ({ id: call.providerCallId, name: call.toolName })),
     observations: recoveredContextObservations(context)
   });
+  // The recovered batch is sized as its live execution sized it.
+  if (context.sessionToolBridge && ordered[0]) context.wholeDelivery.begin(ordered[0].roundIndex, observationBatchShare({
+    bridge: context.sessionToolBridge, request: context.sessionRequest ?? context.providerRequest,
+    calls: ordered.map((call) => ({ id: call.providerCallId, name: call.toolName })),
+    observations: recoveredContextObservations(context)
+  }));
   const ambiguous = ordered.find((call) =>
     call.state === "running" && call.toolName !== MCP_FIND_TOOLS_NAME &&
     !(context.run.normalizedRequest.memorySearch && context.deps.memorySearch && call.toolName === MEMORY_SEARCH_TOOL_NAME) &&
@@ -2766,6 +2808,10 @@ async function recoverCheckpointedToolLoop(
     ): Promise<void> {
       recordRecoveredObservations(context, results);
       for (const settled of results) {
+        const persisted = persistedCalls.get(settled.call.id);
+        if (persisted) repeatHistory.settle(persisted.id, settledRepeatOutcome(settled));
+      }
+      for (const settled of results) {
         const call = {
           arguments: isRecord(settled.call.arguments) ? settled.call.arguments : {},
           id: settled.call.id,
@@ -2839,6 +2885,8 @@ async function recoverCheckpointedToolLoop(
     const persistedCalls = new Map<string, PersistedToolLoopCall>(
       run.calls.map((call) => [call.providerCallId, call])
     );
+    // Repeat decisions read the run's persisted calls, as live execution does.
+    const repeatHistory = new ToolCallRepeatHistory(run.calls);
 
     function recoveredKnowledgeDispatchDraft(): KnowledgeEvidenceDispatchManifestDraft | null {
       const calls = [...persistedCalls.values()]
@@ -2961,6 +3009,10 @@ async function recoverCheckpointedToolLoop(
       context.sessionRequest = { ...(context.sessionRequest ?? context.providerRequest), providerToolMessages: [...continuation.providerToolMessages] };
       context.skillResultBudget.begin({ calls, request: context.sessionRequest, bridge,
         observations: recoveredContextObservations(context) });
+      context.wholeDelivery.begin(round, observationBatchShare({ bridge, calls, request: context.sessionRequest,
+        observations: recoveredContextObservations(context) }));
+      const repeatContext = { batch: calls.map(call => ({ arguments: call.arguments, toolName: call.name })),
+        readOnly: readOnlyRunTool({ mcp: context.activeMcpSnapshot, tools }) };
       const persisted = await deps.repository.persistToolLoopCallBatch({
         calls: calls.map((call, ordinal) => {
           const route = resolveMcpRunTool(context.activeMcpSnapshot, call.name);
@@ -2982,14 +3034,17 @@ async function recoverCheckpointedToolLoop(
               `The provider requested unsupported tool ${call.name}.`
             );
           }
+          const callArguments = toolLoopJson(
+            call.arguments,
+            toolLoopPersistenceLimits.argumentsBytes,
+            "tool_call_arguments_invalid"
+          ) as Readonly<Record<string, ToolLoopJsonValue>>;
+          const repeatOf = repeatHistory.blockFor({ arguments: callArguments, toolName: call.name }, round, repeatContext);
           return {
-            arguments: toolLoopJson(
-              call.arguments,
-              toolLoopPersistenceLimits.argumentsBytes,
-              "tool_call_arguments_invalid"
-            ) as Readonly<Record<string, ToolLoopJsonValue>>,
+            arguments: callArguments,
             ordinal,
             providerCallId: call.id,
+            ...(repeatOf ? { repeatBlocked: { repeatOf } } : {}),
             ...(route ? { runtimeGenerationFingerprint: route.fingerprint } : {}),
             toolName: call.name,
             ...(isRecoveredWorkspaceCall(context, call.name)
@@ -3005,7 +3060,7 @@ async function recoverCheckpointedToolLoop(
         roundIndex: round,
         runId: run.id,
         userId: run.userId,
-        ...(!run.normalizedRequest.agent && run.normalizedRequest.toolObservationVersion === 1 && context.sessionRequest
+        ...(!run.normalizedRequest.agent && run.normalizedRequest.contextCompactionPolicy && context.sessionRequest
           ? { contextCompaction: contextCompactionCheckpoint({
               ownerId: run.userId,
               request: context.sessionRequest,
@@ -3027,11 +3082,17 @@ async function recoverCheckpointedToolLoop(
           "The recovered tool batch could not be persisted."
         );
       }
-      for (const call of persisted.calls) persistedCalls.set(call.providerCallId, call);
+      for (const call of persisted.calls) {
+        persistedCalls.set(call.providerCallId, call);
+        repeatHistory.record(call);
+      }
       registerRecoveredMcpDiscoveryBatch(persisted.calls, context);
       return persisted.calls;
     }
 
+    /** The saved round's transcript with the previous round's results,
+     * before its preparation (the basis a refused batch's synthesis uses). */
+    let providerRunningTranscript: readonly unknown[] = [];
     async function providerRunningRequest(
       savedContinuation: ProviderToolLoopContinuation,
       round: number
@@ -3053,14 +3114,25 @@ async function recoverCheckpointedToolLoop(
                 },
                 settled.result.error.message
               );
-          return bridge.appendToolResult(undefined, projectObservationForProvider(result));
+          const persisted = persistedCalls.get(settled.call.id);
+          return bridge.appendToolResult(undefined, withProviderNote(projectObservationForProvider(result),
+            persisted ? repeatHistory.noteFor(persisted.id) : undefined));
         })
       ];
+      providerRunningTranscript = providerToolMessages;
       const completedToolRounds = new Set(run.calls.filter(call => call.roundIndex > 0 && call.roundIndex < round)
         .map(call => call.roundIndex)).size;
       const priorToolCalls = run.calls.filter((call) => call.roundIndex > 0).length;
-      const toolChoice = completedToolRounds >= toolBudgets.maxToolRounds ||
-        priorToolCalls >= toolBudgets.maxToolCalls || providerRequest.toolChoice === "none"
+      // The live rule: a checkpointed synthesis marker, a previous round of
+      // only blocked repeats, or an exactly reached budget.
+      const synthesis = toolSynthesisDecision({
+        budgets: toolBudgets,
+        continuation: savedContinuation,
+        initialToolChoice: providerRequest.toolChoice,
+        noProgress: roundMadeNoProgress(priorCalls),
+        progress: { toolCalls: priorToolCalls, toolRounds: completedToolRounds }
+      });
+      const toolChoice = synthesis || providerRequest.toolChoice === "none"
         ? "none"
         : completedToolRounds === 0 && providerRequest.toolChoice === "required" &&
           !savedContinuation.requiredToolCorrection ? "required" : "auto";
@@ -3077,6 +3149,23 @@ async function recoverCheckpointedToolLoop(
     let continuation = parseProviderToolLoopContinuation(run.checkpoint.providerContinuation);
     let currentCalls: readonly PersistedToolLoopCall[];
     let correctedNoToolRound = false;
+    /** The round whose batch was refused over the call budget; its tool-free
+     * synthesis round follows without executing any call of it. */
+    let refusedBatchRound: number | null = null;
+    const persistFinalSynthesis = async (nextContinuation: ProviderToolLoopContinuation, round: number) => {
+      const started = await deps.repository.beginToolLoopProviderRound({
+        finalSynthesisOfRound: round,
+        providerContinuation: toolLoopJson(nextContinuation, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+        roundIndex: round + 1,
+        runId: run.id,
+        userId: run.userId
+      });
+      if (started === "cancelled") throw new ToolLoopRecoveryStopped();
+      if (started !== "started" && started !== "reused") {
+        throw new ToolLoopRecoveryError("tool_loop_checkpoint_conflict", "Tool-free synthesis could not start.");
+      }
+      currentProviderResponseId = null;
+    };
     const persistRequiredToolCorrection = async (nextContinuation: ProviderToolLoopContinuation, round: number) => {
       const started = await deps.repository.beginToolLoopProviderRound({
         requiredToolCorrectionOfRound: round,
@@ -3090,7 +3179,18 @@ async function recoverCheckpointedToolLoop(
       currentProviderResponseId = null;
     };
 
-    if (run.checkpoint.phase === "provider_running") {
+    // A synthesis round claimed after a refused batch whose dispatch mark was
+    // never written (it precedes the request), with no response id and no
+    // usage of its own, was provably never sent: dispatch that one tool-free
+    // round. Any other round without a response id stays an unknown outcome.
+    const claimedSynthesisRound = run.checkpoint.phase === "provider_running" && !currentProviderResponseId &&
+      continuation.finalSynthesis === "budget_exhausted" && continuation.synthesisDispatched !== true && !unsettledSummaryClaim &&
+      !recoverySettledSummaryAttempt(run.checkpoint) &&
+      !answerRoundUsage.some((entry) => entry.roundIndex === run.checkpoint.roundIndex);
+    if (claimedSynthesisRound) {
+      refusedBatchRound = run.checkpoint.roundIndex - 1;
+      currentCalls = [];
+    } else if (run.checkpoint.phase === "provider_running") {
       const round = run.checkpoint.roundIndex;
       const roundRequest = await providerRunningRequest(continuation, round);
       let refreshed: ProviderRunRefreshResult;
@@ -3247,9 +3347,22 @@ async function recoverCheckpointedToolLoop(
           );
         }
         return;
+      } else if (run.calls.filter((call) => call.roundIndex > 0).length + refreshedCalls.length > toolBudgets.maxToolCalls) {
+        // The live rule: a batch over the remaining call budget is neither
+        // persisted nor dispatched; synthesis is re-planned from the round's
+        // own transcript before its preparation.
+        for (const event of refreshed.events) await appendEvent(event);
+        continuation = { ...continuation, finalSynthesis: "budget_exhausted",
+          providerToolMessages: [...providerRunningTranscript] };
+        await persistFinalSynthesis(continuation, round);
+        refusedBatchRound = round;
+        currentCalls = [];
       } else {
         for (const event of refreshed.events) await appendEvent(event);
-        continuation = providerToolLoopContinuationAfterResult(bridge, continuation, refreshed.result);
+        // As live: the batch follows the round's own request, which already
+        // carries the previous round's results.
+        continuation = providerToolLoopContinuationAfterResult(bridge, { ...continuation,
+          providerToolMessages: [...(roundRequest.providerToolMessages ?? continuation.providerToolMessages)] }, refreshed.result);
         currentCalls = await persistToolBatch(refreshedCalls, continuation, run.checkpoint.roundIndex);
       }
     } else {
@@ -3290,7 +3403,7 @@ async function recoverCheckpointedToolLoop(
     if (!correctedNoToolRound) {
       await tokenBuffer.flush();
       const reset = await deps.repository.resetToolLoopAssistantDraft({
-        roundIndex: run.checkpoint.roundIndex,
+        roundIndex: refusedBatchRound ?? run.checkpoint.roundIndex,
         runId: run.id,
         userId: run.userId
       });
@@ -3301,7 +3414,8 @@ async function recoverCheckpointedToolLoop(
         );
       }
       tokenBuffer.resetLocal();
-
+    }
+    if (!correctedNoToolRound && refusedBatchRound === null) {
       previousToolResults = await executePersistedToolBatch(currentCalls, context, signal);
       await appendToolResults(previousToolResults);
       await persistCumulativeUsage();
@@ -3402,6 +3516,30 @@ async function recoverCheckpointedToolLoop(
       onRequiredToolCorrection: async ({ continuation: nextContinuation, round }) => {
         await persistRequiredToolCorrection(nextContinuation, round);
       },
+      onFinalSynthesisTransition: async ({ continuation: nextContinuation, round }) => {
+        await persistFinalSynthesis(nextContinuation, round);
+      },
+      beforeSynthesisDispatch: async ({ continuation: dispatched, round }) => {
+        const marked = await deps.repository.beginToolLoopProviderRound({
+          finalSynthesisOfRound: round - 1,
+          providerContinuation: toolLoopJson(dispatched, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+          roundIndex: round,
+          runId: run.id,
+          userId: run.userId
+        });
+        if (marked === "cancelled") throw new ToolLoopRecoveryStopped();
+        if (marked !== "started" && marked !== "reused") {
+          throw new ToolLoopRecoveryError("tool_loop_checkpoint_conflict", "Tool-free synthesis could not be dispatched.");
+        }
+      },
+      isRepeatBlockedCall: (call) => {
+        const persisted = persistedCalls.get(call.id);
+        return persisted !== undefined && repeatBlockedRounds(persisted) !== null;
+      },
+      toolResultNoteForProvider: (entry) => {
+        const persisted = persistedCalls.get(entry.call.id);
+        return persisted ? repeatHistory.noteFor(persisted.id) : undefined;
+      },
       onSignal: async (signal) => {
         if (signal.type === "text_delta") {
           if (recoveredKnowledgeEnabled) return;
@@ -3453,7 +3591,8 @@ async function recoverCheckpointedToolLoop(
         continuation,
         previousToolResults,
         progress: {
-          providerRounds: run.checkpoint.roundIndex,
+          // A claimed synthesis round is dispatched as that same round.
+          providerRounds: refusedBatchRound ?? run.checkpoint.roundIndex,
           toolCalls: [...persistedCalls.values()].filter(call => call.roundIndex > 0).length,
           toolRounds: new Set([...persistedCalls.values()].filter(call => call.roundIndex > 0)
             .map(call => call.roundIndex)).size
@@ -3632,6 +3771,37 @@ function requiresCheckpointedProviderLoop(request: ProviderRunRequest): boolean 
     request.modelCapabilities.toolCalling === true;
 }
 
+/** The notes a run committed outside the tool loop (its notes-only
+ * checkpoint), which a recovered grounded dispatch applies without buying. */
+async function notesOnlyCompaction(
+  deps: RunRecoveryDeps,
+  runId: string,
+  userId: string
+): Promise<ContextCompactionCheckpoint | null> {
+  const run = await deps.repository.loadCheckpointedToolLoopRun({ runId, userId });
+  return run && isNotesOnlyCheckpoint(run.checkpoint) ? run.checkpoint.contextCompaction ?? null : null;
+}
+
+/** A recovered grounded answer request: the run's committed or carried notes
+ * apply as the live consumer applied them; recovery never buys notes. */
+async function recoveredGroundedAnswerRequest(input: Readonly<{
+  bridge?: ProviderToolBridge;
+  deps: RunRecoveryDeps;
+  request: ProviderRunRequest;
+  runId: string;
+  signal: AbortSignal;
+  userId: string;
+}>) {
+  return rebuiltCompactedProviderRequest({
+    ...(input.bridge ? { bridge: input.bridge } : {}),
+    checkpoint: await notesOnlyCompaction(input.deps, input.runId, input.userId),
+    request: input.request,
+    signal: input.signal,
+    sourceAvailable: observationSourceAvailability(async () => input.deps.observations ?? defaultToolObservations(),
+      { runId: input.runId, userId: input.userId })
+  });
+}
+
 async function rebuildReservedAnswerRequest(input: Readonly<{
   control: Readonly<{
     chatId: string;
@@ -3732,10 +3902,15 @@ async function rebuildReservedAnswerRequest(input: Readonly<{
       "The saved provider request requires a tool-loop checkpoint."
     );
   }
-  // Explicit legacy guard: a reserved Knowledge answer has no summary consumer.
-  const budgeted = applyKnowledgeAnswerContextBudget({
+  // The live grounded route compacted through the consumer; recovery applies
+  // the notes it committed (or carried) and never buys new ones.
+  const budgeted = await recoveredGroundedAnswerRequest({
     ...(runtime.toolBridge ? { bridge: runtime.toolBridge } : {}),
-    request: requestWithEvidence
+    deps: input.deps,
+    request: requestWithEvidence,
+    runId: input.runId,
+    signal: input.signal,
+    userId: input.userId
   });
   if (!budgeted.ok) {
     throw new ToolLoopRecoveryError("context_too_large", budgeted.error.message);
@@ -4530,6 +4705,45 @@ async function accountLostExecutorCheckpoint(deps: RunRecoveryDeps, runId: strin
   await record({ answerRoundUsage: entry });
 }
 
+/**
+ * Ends a run accepted under the retired context policy. Nothing is dispatched,
+ * refreshed or executed. A provider response the lost executor already started
+ * is cancelled, and its paid work is accounted content-free: a lost tool-loop
+ * round or summary call through the checkpoint, a direct answer dispatch as one
+ * operation of unknown usage (recorded once the run is terminal, so a retry
+ * never counts it twice).
+ */
+async function failRetiredContextPolicyRun(
+  deps: RunRecoveryDeps,
+  control: Readonly<{ chatId: string; modelId: string; provider: string; providerResponseId: string | null }>,
+  runId: string,
+  userId: string,
+  assistantMessageId: string
+): Promise<void> {
+  if (control.providerResponseId) {
+    const runtime = await resolveAnswerRuntime(deps, runId, control.provider).catch(() => null);
+    await runtime?.adapter.cancel?.(control.providerResponseId).catch(() => undefined);
+  }
+  const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({ runId, userId }).catch(() => null);
+  if (checkpointed) await accountLostExecutorCheckpoint(deps, runId, userId);
+  const failed = await failRecoveredRun(deps.repository, runId, assistantMessageId, {
+    code: CONTEXT_COMPACTION_POLICY_RETIRED.code,
+    message: CONTEXT_COMPACTION_POLICY_RETIRED.message
+  }, { recoveryTerminal: true });
+  if (!failed || checkpointed || !control.providerResponseId) return;
+  const persisted = await deps.repository.loadRunUsageAttributions({ runId, userId });
+  await deps.repository.recordRunUsageEvents({
+    chatId: control.chatId,
+    runId,
+    usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
+      ...persisted.map(({ recordedAt: _recordedAt, ...attribution }) => attribution),
+      { modelId: control.modelId, operationCount: 1, provider: control.provider,
+        usage: normalizeTokenUsage({ completeness: "unavailable" }) }
+    ])),
+    userId
+  }).catch(() => undefined);
+}
+
 async function refreshProviderRunOnceRegistered(
   deps: RunRecoveryDeps,
   runId: string,
@@ -4546,6 +4760,16 @@ async function refreshProviderRunOnceRegistered(
   const publishedAnswer = await deps.repository.loadPublishedRunAnswer?.({ runId, userId });
   if (publishedAnswer) {
     const request = await deps.repository.loadProviderDispatchRecoveryRequest?.({ runId, userId });
+    if (agentCodexVersionRetired(request?.agent)) {
+      // Accepted under an earlier guest Codex: keep the published answer, skip
+      // handoff and replay, and settle like a failed capture.
+      await failRecoveredRun(deps.repository, runId, publishedAnswer.assistantMessageId, {
+        code: "agent_execution_interrupted",
+        message: agentFailureMessage("agent_execution_interrupted")
+      }, { recoveryTerminal: true });
+      await deps.workspace?.settle({ outcome: "failed", runId, userId, onActivity: recoveredWorkspaceActivity(deps, runId) });
+      return;
+    }
     if (!request?.workspace || !deps.workspace) throw new WorkspaceRuntimeError("workspace_runtime_unavailable");
     let handoff;
     try {
@@ -4573,6 +4797,17 @@ async function refreshProviderRunOnceRegistered(
   }
 
   if (await recoverAgentIfNeeded(deps, runId, userId)) return;
+
+  // A run accepted under the retired context policy ends before any budget,
+  // provider or tool step: the single retired rule, after a published answer
+  // settled above.
+  const acceptedRequest = deps.repository.loadProviderDispatchRecoveryRequest
+    ? await deps.repository.loadProviderDispatchRecoveryRequest({ runId, userId })
+    : null;
+  if (acceptedRequest && contextCompactionPolicyRetired(acceptedRequest)) {
+    if (control.assistantMessageId) await failRetiredContextPolicyRun(deps, control, runId, userId, control.assistantMessageId);
+    return;
+  }
 
   // Recovery has no live generation fence. Close admission atomically before
   // replaying any old checkpoint; a clarified task cannot reuse an answer or
@@ -4637,9 +4872,6 @@ async function refreshProviderRunOnceRegistered(
     }
   }
 
-  const acceptedRequest = deps.repository.loadProviderDispatchRecoveryRequest
-    ? await deps.repository.loadProviderDispatchRecoveryRequest({ runId, userId })
-    : null;
   if (acceptedRequest?.memoryActionTools !== undefined ||
     acceptedRequest?.memoryHistoryTool !== undefined) {
     if (control.assistantMessageId) {
@@ -4773,9 +5005,19 @@ async function refreshProviderRunOnceRegistered(
     }
     return;
   }
+  let notesOnly = false;
   if (!focusedRequest) {
     const checkpointed = await deps.repository.loadCheckpointedToolLoopRun({ runId, userId });
-    if (checkpointed) {
+    if (checkpointed && contextCompactionPolicyRetired(checkpointed.normalizedRequest, checkpointed.checkpoint.contextCompaction)) {
+      if (checkpointed.assistantMessageId) {
+        await failRetiredContextPolicyRun(deps, control, runId, userId, checkpointed.assistantMessageId);
+      }
+      return;
+    }
+    // Notes committed outside the tool loop never make the run a tool-loop
+    // run: the direct or grounded path continues and applies them.
+    notesOnly = checkpointed !== null && isNotesOnlyCheckpoint(checkpointed.checkpoint);
+    if (checkpointed && !notesOnly) {
       await recoverCheckpointedToolLoop(deps, checkpointed, signal);
       return;
     }
@@ -5023,10 +5265,15 @@ async function refreshProviderRunOnceRegistered(
           );
         }
         const evidenceMessage = knowledgeEvidenceMessageFromDispatchDraft(draft);
-        // Explicit legacy guard: this Knowledge answer route has no summary consumer.
-        const budgeted = applyKnowledgeAnswerContextBudget({
+        // Recovery applies the notes the live route committed or carried and
+        // never buys new ones.
+        const budgeted = await recoveredGroundedAnswerRequest({
           ...(runtime.toolBridge ? { bridge: runtime.toolBridge } : {}),
-          request: withAutomaticKnowledgeEvidence(providerRequest, evidenceMessage)
+          deps,
+          request: withAutomaticKnowledgeEvidence(providerRequest, evidenceMessage),
+          runId,
+          signal,
+          userId
         });
         const retainedEvidence = budgeted.ok
           ? budgeted.request.context?.messages.find((message) =>
@@ -5230,6 +5477,15 @@ async function refreshProviderRunOnceRegistered(
             },
         { recoveryTerminal: true }
       );
+    } else if (notesOnly && control.assistantMessageId) {
+      // A direct dispatch lost after its notes were committed: a run without
+      // the notes-only checkpoint would have been swept as orphaned. Its lost
+      // summary call settles first; the answer request is never repeated.
+      await accountLostExecutorCheckpoint(deps, runId, userId);
+      await failRecoveredRun(deps.repository, runId, control.assistantMessageId, {
+        code: "provider_round_outcome_unknown",
+        message: "The saved provider round could not be resumed safely. Retry the run."
+      }, { recoveryTerminal: true });
     }
     return;
   }

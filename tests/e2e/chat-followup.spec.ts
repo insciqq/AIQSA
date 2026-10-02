@@ -4,6 +4,7 @@ import { chooseSearchStrategy } from "./shell/composer";
 import { signInWithLocalToken } from "./support/localAuth";
 import { selectFakeModel, setWorkspaceEnabled } from "./support/workspace";
 import { expectCenterUnobscured, expectNoHorizontalOverflow, expectTouchSafe } from "./support/layoutAssertions";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 async function startAnswer(page: Page): Promise<string> {
   await signInWithLocalToken(page);
@@ -29,7 +30,8 @@ async function startAnswer(page: Page): Promise<string> {
     const detail = decodeChatDetailResponse(await (await page.request.get(`/api/chats/${chatId}`)).json());
     const runId = detail?.messages.find(message => message.role === "assistant")?.modelRunId;
     if (runId) await page.request.post(`/api/model-runs/${runId}/cancel`);
-    await page.request.delete(`/api/chats/${chatId}`);
+    // Keep the original failure: a failed cleanup must not replace it.
+    await deleteOwnedChatPermanently(page.request, chatId).catch(() => undefined);
     throw error;
   }
 }
@@ -97,7 +99,7 @@ test("Follow-up stays on the accepted run, survives another tab and reload, and 
     expect(detail!.messages.find(message => message.role === "assistant")?.followups?.entries).toHaveLength(2);
   } finally {
     if (runId) await page.request.post(`/api/model-runs/${runId}/cancel`);
-    await page.request.delete(`/api/chats/${chatId}`);
+    await deleteOwnedChatPermanently(page.request, chatId);
   }
 });
 
@@ -133,6 +135,6 @@ test("Stop can win a pending Follow-up without clearing the draft or creating an
   } finally {
     release();
     if (runId) await page.request.post(`/api/model-runs/${runId}/cancel`);
-    await page.request.delete(`/api/chats/${chatId}`);
+    await deleteOwnedChatPermanently(page.request, chatId);
   }
 });

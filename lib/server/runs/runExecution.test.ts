@@ -1,6 +1,8 @@
 import * as workspaceCheckpoints from "../workspace/checkpoints";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { captureRunObservation } from "@/tests/support/runObservation";
+import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { workspaceCheckpointResult } from "../workspace/checkpointResult";
 import * as workspaceImageViewer from "../workspace/directImageView";
 import { prepareWorkspaceImages } from "../workspace/imageCapture";
@@ -34,6 +36,7 @@ import { GeminiInteractionsStreamError } from "../providers/geminiInteractionsSt
 import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanSnapshot } from "../mcp/runPlan";
 import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import { mcpRunTools } from "../mcp/toolExecutor";
+import { mcpDispatchError } from "../mcp/dispatchStatus";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
 import { buildOpenRouterChatRequest, buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
@@ -49,6 +52,7 @@ import { isRunOutputArtifactEvent } from "./runOutputEvents";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
+  ProviderConversationMessage,
   ProviderRunRequest,
   ProviderRunResult,
   ProviderSearchAdapter,
@@ -122,6 +126,7 @@ import * as agentExecutor from "../agents/executor";
 import { agentLimits } from "../agents/config";
 import { DEFAULT_AGENT_POLICY } from "../../contracts/agentPolicy";
 import { conversationContextPolicy } from "./contextCompactionContract";
+import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 import { decodeContextCompactionStatus, type ContextSummary } from "../../contracts/contextCompaction";
 
 type CompleteRunInput = Parameters<RunRepository["completeRun"]>[0];
@@ -570,20 +575,17 @@ function preparedData(input: Readonly<{
   const searchPlan = input.searchPlan ?? { mode: "all_selected" as const, options: [] };
   const chatId = input.chatId ?? "chat-1";
   const content = textMessageContent("Current question");
+  const contextMessages: ProviderConversationMessage[] = [{ content, id: "current-user-message", role: "user" }];
   const normalizedRequest: NormalizedRunRequest = {
     attachmentIds: [],
     chatId,
     content,
     context: {
-      messages: [
-        {
-          content,
-          id: "current-user-message",
-          role: "user"
-        }
-      ],
+      messages: contextMessages,
       mode: "branch_path"
     },
+    // Every non-Agent admission freezes the one conversation policy.
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages: contextMessages }),
     modelCapabilities: {
       backgroundStreaming: true,
       contextWindow: 32_768,
@@ -1116,7 +1118,7 @@ function createRepository(options: RepositoryOptions = {}) {
         const id = `persisted-tool-call-${++toolCallSequence}`;
         const persisted: PersistedToolLoopCall = {
           arguments: call.arguments,
-          completedAt: null,
+          completedAt: call.repeatBlocked ? new Date().toISOString() : null,
           id,
           mcpBinding: call.runtimeGenerationFingerprint ? {
             id: `binding-${id}`,
@@ -1125,10 +1127,12 @@ function createRepository(options: RepositoryOptions = {}) {
           } : null,
           ordinal: call.ordinal,
           providerCallId: call.providerCallId,
-          result: null,
+          // Like the durable repository, a blocked repeat settles with its batch.
+          result: call.repeatBlocked ? repeatBlockedToolCallResult({ providerCallId: call.providerCallId,
+            repeatOf: call.repeatBlocked.repeatOf, toolName: call.toolName }) : null,
           roundIndex: input.roundIndex,
           startedAt: null,
-          state: "pending",
+          state: call.repeatBlocked ? "error" : "pending",
           toolName: call.toolName,
           workspaceBindingId: call.workspace ? input.runId : null
         };
@@ -1438,6 +1442,8 @@ function compactionLoopFixture(input: Readonly<{
   /** Answer dispatches (1-based) the provider rejects for context length. */
   rejectAnswers?: readonly number[];
   repository?: ReturnType<typeof createRepository>;
+  /** Every summary call fails before any notes. */
+  summaryFails?: boolean;
 }>) {
   const repository = input.repository ?? createRepository();
   const observations = memoryToolObservations();
@@ -1456,7 +1462,7 @@ function compactionLoopFixture(input: Readonly<{
   const hybrid: NormalizedRunRequest = {
     ...base.normalizedRequest,
     context: { mode: "branch_path", messages },
-    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages, mode: "hybrid" }),
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages }),
     modelCapabilities: { ...base.normalizedRequest.modelCapabilities, contextWindow: 8_192 },
     toolObservationVersion: 1
   };
@@ -1467,6 +1473,7 @@ function compactionLoopFixture(input: Readonly<{
   const adapter = createAdapter(async function* (request) {
     if (request.forceNonStreaming) {
       summaries.push(request);
+      if (input.summaryFails) throw new Error("summary provider unavailable");
       // A part cites only the references it carries.
       const output = JSON.stringify({ notes: "PRIVATE_NOTES old history condensed.",
         sourceRefs: JSON.stringify(request.content).includes("old-history") ? ["old-history"] : [] });
@@ -1595,7 +1602,7 @@ describe("run execution", () => {
     const request: ProviderRunRequest = {
       ...base.providerRequest,
       context: { mode: "branch_path", messages },
-      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages, mode: "hybrid" }),
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages }),
       contextCompaction: { version: 1, beforeTokens: 10_000, afterTokens: 10_000, budgetTokens: 6_000,
         legacyFallback: false, maskedBatches: 0, maskedObservations: 0, outcome: "needs_summary" },
       modelCapabilities: { ...base.providerRequest.modelCapabilities, contextWindow: 8_192 },
@@ -1643,8 +1650,8 @@ describe("run execution", () => {
   it("buys one summary in the round tool results cross the budget and carries it through checkpoints", async () => {
     // Round 1 stays below the 75% headroom trigger; round 2's batch (the
     // newest, never masked) pushes it over the budget: one inline result
-    // whole within the batch share, the other as its bounded preview.
-    const loop = compactionLoopFixture({ historyTokens: 4_600, resultChars: 6_000, callsPerRound: 2 });
+    // whole within the batch allowance, the other as its reference.
+    const loop = compactionLoopFixture({ historyTokens: 4_900, resultChars: 6_000, callsPerRound: 2 });
     const events = await loop.run();
     expect(loop.repository.failedRuns).toEqual([]);
     expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
@@ -1685,7 +1692,8 @@ describe("run execution", () => {
     expect(accounted?.operationCount).toBe(loop.summaries.length + loop.answers.length);
     // Round 3 reuses the committed summary without another purchase.
     expect(reuse?.contextCompactionSummary).toEqual(summary);
-    expect(JSON.stringify(reuse?.providerToolMessages)).toContain("RESULT_2");
+    expect(JSON.stringify(reuse?.providerToolMessages)).toContain("RESULT_3");
+    expect(JSON.stringify(reuse?.providerToolMessages)).not.toContain("RESULT_2");
     const statuses = loop.compactionStatuses();
     expect(statuses.map(({ cycle, outcome, state }) => [cycle, state, outcome])).toEqual([
       [1, "running", "pending"], [1, "complete", "summary_applied"]
@@ -1806,22 +1814,30 @@ describe("run execution", () => {
       .not.toContain("PRIVATE_PROVIDER_MESSAGE_CANARY");
   });
 
-  it("masks an older settled result live from the run's own server observations", async () => {
+  it("buys notes when a round crosses the trigger and keeps covered results inline while the request has room", async () => {
     // Each result is whole within the 8k window's batch share.
     const loop = compactionLoopFixture({ historyTokens: 2_000, resultChars: 6_000 });
     await loop.run();
     expect(loop.repository.failedRuns).toEqual([]);
-    const [, second, final] = loop.answers;
-    // Round 2 still fits below the trigger: the first result stays inline.
+    const [first, second, final] = loop.answers;
+    // Rounds 1 and 2 stay below the trigger: nothing is bought or masked.
+    expect(first?.contextCompactionSummary).toBeUndefined();
+    expect(second?.contextCompactionSummary).toBeUndefined();
     expect(JSON.stringify(second?.providerToolMessages)).toContain(`RESULT_1 ${"r".repeat(100)}`);
-    // Round 3 replaces the older batch with its reader reference and keeps the newest one.
+    // Round 3 crosses it: one pass covers the history and both units before
+    // anything leaves; the history goes and the covered results, no longer
+    // needed for room, stay exact.
+    expect(loop.summaries).toHaveLength(1);
+    const notes = final!.contextCompactionSummary!;
+    expect(notes.sourceRefs.filter((ref) => ref.startsWith("ctxu1_"))).toHaveLength(2);
+    expect(notes.sourceRefs[0]).toBe("ctxm1_recent-3");
+    expect(JSON.stringify(final?.context)).not.toContain("OLD_HISTORY");
     const transcript = JSON.stringify(final?.providerToolMessages);
-    expect(transcript).not.toContain(`RESULT_1 ${"r".repeat(100)}`);
+    expect(transcript).toContain(`RESULT_1 ${"r".repeat(100)}`);
     expect(transcript).toContain(`RESULT_2 ${"r".repeat(100)}`);
-    const handle = transcript.match(/tor1_[a-f0-9]{32}/u)?.[0];
-    expect(handle).toBeDefined();
-    expect(loop.batchCheckpoints.find(batch => batch.roundIndex === 2)?.contextCompaction?.observationRefs)
-      .toContain(handle);
+    expect(loop.compactionStatuses().map(({ outcome, state }) => [state, outcome])).toEqual([
+      ["running", "pending"], ["complete", "summary_applied"]
+    ]);
     for (const request of loop.answers) {
       expect(request.contextCompaction!.afterTokens).toBeLessThanOrEqual(request.contextCompaction!.budgetTokens!);
     }
@@ -1841,9 +1857,10 @@ describe("run execution", () => {
     expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
     expect(followups.entries[0]?.delivery).toBe("delivered");
     expect(loop.summaries).toHaveLength(1);
-    // The one purchase measured the clarified request, not the pre-delivery round.
-    expect(JSON.stringify(loop.summaries[0]?.content)).toContain("Clarified constraint");
-    const [, clarified, next] = loop.answers;
+    // The one purchase measured the clarified request, not the pre-delivery
+    // round; the clarification itself stays exact in the transcript tail.
+    const [preDelivery, clarified, next] = loop.answers;
+    expect(preDelivery?.contextCompactionSummary).toBeUndefined();
     const summary = clarified?.contextCompactionSummary;
     expect(summary).toBeDefined();
     expect(JSON.stringify(clarified?.providerToolMessages)).toContain("Clarified constraint");
@@ -1861,7 +1878,7 @@ describe("run execution", () => {
     ]);
   });
 
-  it("keeps a hybrid Knowledge answer on the legacy guard without buying a summary", async () => {
+  it("buys notes for a Knowledge answer whose history exceeds the window and keeps its evidence exact", async () => {
     const finalText = "Total cholesterol is 5.3 mmol/L [K1].";
     const repository = createRepository({ groundingResult: structuralGroundingResult(finalText) });
     const dispatch = createKnowledgeProviderDispatchRecorder();
@@ -1874,11 +1891,20 @@ describe("run execution", () => {
     const hybrid = <T extends NormalizedRunRequest>(request: T): T => {
       const messages = [...history, ...request.context!.messages];
       return { ...request, context: { mode: "branch_path", messages },
-        contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages, mode: "hybrid" }),
+        contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages }),
         modelCapabilities: { ...request.modelCapabilities, contextWindow: 8_192 } };
     };
+    const summarizer = (request: ProviderRunRequest) =>
+      request.prompt.system?.startsWith("You are the server-owned context compaction summarizer") === true;
     const requests: ProviderRunRequest[] = [];
+    const summaries: ProviderRunRequest[] = [];
     const adapter = createAdapter(async function* (request) {
+      if (summarizer(request)) {
+        summaries.push(request);
+        const output = JSON.stringify({ notes: "PRIVATE_NOTES the user asked about lipid results earlier.", sourceRefs: [] });
+        yield { data: { delta: output }, type: "token" };
+        return providerResult({ finalText: output });
+      }
       requests.push(request);
       const providerText = JSON.stringify(plannedCurrentKnowledgeOutput(requests.length, "Total cholesterol is 5.3 mmol/L"));
       yield { data: { delta: providerText }, type: "token" };
@@ -1890,10 +1916,18 @@ describe("run execution", () => {
     })).text(), true);
     expect(repository.failedRuns).toEqual([]);
     expect(repository.completeRuns[0]?.finalText).toBe(finalText);
-    expect(requests.some(request => request.forceNonStreaming)).toBe(false);
+    // Notes replace the history; the pinned evidence is never part of their source.
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(JSON.stringify(summaries.map((request) => request.content))).toContain("OLD_HISTORY");
+    expect(JSON.stringify(summaries.map((request) => request.content))).not.toContain("knowledge-evidence");
     expect(JSON.stringify(requests)).not.toContain("OLD_HISTORY");
-    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "context_truncated")).toBe(true);
-    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "context_compaction")).toBe(false);
+    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "context_truncated")).toBe(false);
+    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "context_compaction")).toBe(true);
+    // Outside the tool loop the receipts and notes form the notes-only checkpoint.
+    const receipts = repository.recordedRunUsageEvents.flatMap((entry) => entry.contextSummaryReceipt ? [entry.contextSummaryReceipt] : []);
+    expect(receipts.length).toBeGreaterThan(0);
+    expect(receipts.every((receipt) => receipt.roundIndex === 0)).toBe(true);
+    expect(receipts.at(-1)).toMatchObject({ attempt: { state: "committed" }, summary: expect.objectContaining({ formatVersion: 1 }) });
   });
 
   it.each([undefined, "Frozen checkpoint wording"])("keeps a checkpoint visible and its accepted tool text after provider failure (saved=%s)", async workspaceCheckpointToolDescription => {
@@ -3934,6 +3968,39 @@ describe("run execution", () => {
       error: {
         code: "memory_answer_model_tools_retired",
         message: "This run uses a retired answer-model Memory tool contract."
+      },
+      options: { recoveryTerminal: true }
+    })]);
+  });
+
+  it.each([
+    ["without a policy", (request: NormalizedRunRequest): NormalizedRunRequest => {
+      const { contextCompactionPolicy: _policy, ...rest } = request;
+      void _policy;
+      return rest;
+    }],
+    ["under the legacy mode", (request: NormalizedRunRequest): NormalizedRunRequest =>
+      ({ ...request, contextCompactionPolicy: { ...request.contextCompactionPolicy!, mode: "legacy_compatible" } })]
+  ] as const)("terminalizes a queued run accepted %s before any budget, provider or tool step", async (_label, retire) => {
+    const repository = createRepository();
+    const providerRequests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      providerRequests.push(request);
+      return providerResult({ finalText: "must not dispatch" });
+    });
+    const base = preparedData({ modelId: "openai-answer-model", provider: "openai" });
+    await createRunExecutionResponse(executionInput({
+      adapter,
+      prepared: { ...base, normalizedRequest: retire(base.normalizedRequest), providerRequest: { ...retire(base.normalizedRequest), attachments: [] } },
+      repository: repository.repository
+    })).text();
+    expect(providerRequests).toEqual([]);
+    expect(repository.toolCalls.size).toBe(0);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({
+      error: {
+        code: "context_compaction_policy_retired",
+        message: "This answer was interrupted by an application update. Regenerate to try again."
       },
       options: { recoveryTerminal: true }
     })]);
@@ -6440,6 +6507,125 @@ describe("run execution", () => {
     }
   });
 
+  it("keeps an accepted personal tool through an unrelated switch, refuses it while switched off and dispatches it once on", async () => {
+    const personal = personalMcpFixture({ toolNames: ["read", "write"] });
+    const namespacedName = personal.namespacedName("write");
+    const accepted = await personal.prepare([namespacedName]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(async (_user, options) =>
+      personal.prepare(options?.allowedToolNames));
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["WRITTEN"], unsupportedContentTypes: [] };
+    });
+    const run = async () => {
+      const egress = createMemoryEgressRecorder();
+      const repository = createRepository();
+      let rounds = 0;
+      const adapter = createAdapter(async function* () {
+        if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "write-call", name: namespacedName }] });
+        return providerResult({ finalText: "Write settled" });
+      });
+      await createRunExecutionResponse(executionInput({ adapter, memoryEgress: egress.service, repository: repository.repository,
+        mcp: { filterTools: allowMcpTools, prepare },
+        mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+        prepared: preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai" }) })).text();
+      return { egress, repository };
+    };
+
+    // An unrelated tool's switch neither refuses the accepted tool nor replaces its generation.
+    personal.switchTool("read", false);
+    const unrelated = await run();
+    expect(callTool).toHaveBeenCalledOnce();
+    expect([...unrelated.repository.toolCalls.values()][0]).toMatchObject({ state: "complete" });
+    personal.switchTool("read", true);
+
+    personal.switchTool("write", false);
+    const off = await run();
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(off.egress.blocked).toEqual([expect.objectContaining({ errorCode: "mcp_tool_disabled", mode: "TOOL_CALL" })]);
+    expect([...off.repository.toolCalls.values()][0]).toMatchObject({ state: "error" });
+
+    // The switch never replaced the runtime: switching back on dispatches on the accepted generation.
+    personal.switchTool("write", true);
+    const on = await run();
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(callTool).toHaveBeenLastCalledWith(expect.objectContaining({
+      definitionHash: accepted.snapshot.tools[0]!.definitionHash, generationId: personal.generationId, name: "write"
+    }));
+    expect([...on.repository.toolCalls.values()][0]).toMatchObject({ state: "complete" });
+    expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: [personal.serverId], allowedToolNames: [namespacedName] });
+  });
+
+  it.each([
+    ["the connection is switched off", "memory_egress_destination_revoked"],
+    ["the connection is deleted", "memory_egress_destination_revoked"],
+    ["its authorization is lost", "mcp_authorization_required"],
+    ["the runtime applied a new definition", "mcp_tool_definition_changed"]
+  ] as const)("refuses an accepted personal tool with its own cause after %s", async (change, errorCode) => {
+    const personal = personalMcpFixture({ oauth: true, toolNames: ["read", "write"] });
+    const namespacedName = personal.namespacedName("write");
+    const accepted = await personal.prepare([namespacedName]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    if (change === "the connection is switched off") personal.setEnabled(false);
+    else if (change === "the connection is deleted") personal.delete();
+    else if (change === "its authorization is lost") personal.loseAuthorization();
+    else personal.changeDefinition("write");
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["WRITTEN"], unsupportedContentTypes: [] };
+    });
+    const egress = createMemoryEgressRecorder();
+    const repository = createRepository();
+    let rounds = 0;
+    const adapter = createAdapter(async function* () {
+      if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "write-call", name: namespacedName }] });
+      return providerResult({ finalText: "Write refused" });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, memoryEgress: egress.service, repository: repository.repository,
+      mcp: { filterTools: allowMcpTools, prepare: async (_user, options) => personal.prepare(options?.allowedToolNames) },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+      prepared: preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai" }) })).text();
+
+    expect(callTool).not.toHaveBeenCalled();
+    expect(egress.blocked).toEqual([expect.objectContaining({ errorCode, mode: "TOOL_CALL" })]);
+    const [settled] = [...repository.toolCalls.values()];
+    expect(settled).toMatchObject({ state: "error" });
+    expect(JSON.stringify(settled?.result)).toContain(errorCode);
+    expect(repository.completeRuns[0]?.finalText).toBe("Write refused");
+  });
+
+  it("settles a definition the runtime saw change after the recheck as a refusal, not an unknown outcome", async () => {
+    const personal = personalMcpFixture({ toolNames: ["write"] });
+    const namespacedName = personal.namespacedName("write");
+    const accepted = await personal.prepare([namespacedName]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    // The plan recheck still passes; the runtime has applied the new definition.
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      throw mcpDispatchError("mcp_tool_definition_changed");
+    });
+    const egress = createMemoryEgressRecorder();
+    const repository = createRepository();
+    let rounds = 0;
+    const adapter = createAdapter(async function* () {
+      if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "write-call", name: namespacedName }] });
+      return providerResult({ finalText: "Write refused" });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, memoryEgress: egress.service, repository: repository.repository,
+      mcp: { filterTools: allowMcpTools, prepare: async (_user, options) => personal.prepare(options?.allowedToolNames) },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+      prepared: preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai" }) })).text();
+
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(egress.failed).toEqual([expect.objectContaining({ errorCode: "mcp_tool_definition_changed" })]);
+    const [settled] = [...repository.toolCalls.values()];
+    expect(settled).toMatchObject({ state: "error" });
+    expect(JSON.stringify(settled?.result)).toContain("mcp_tool_definition_changed");
+    expect(JSON.stringify(settled?.result)).not.toContain("tool_call_outcome_unknown");
+    expect(repository.completeRuns[0]?.finalText).toBe("Write refused");
+  });
+
   it.each([false, true])("recalls a large MCP original through the public reader, with duplicate representation=%s", async duplicate => {
     const name = "mcp_synthetic_records";
     const mcp: McpRunPlanSnapshot = { version: 1,
@@ -7435,4 +7621,310 @@ it("retains final-only provider usage if completing the local egress receipt thr
   expect(JSON.stringify(events)).not.toContain("PRIVATE");
   expect(egress.completed).toEqual([]);
   expect(egress.failed).toHaveLength(1);
+});
+
+describe("tool-free synthesis and repeated calls in live execution", () => {
+  it.each([undefined, 1] as const)("waits through quiet Workspace polls until process completion (observations=%s)", async (toolObservationVersion) => {
+    const repository = createRepository();
+    const start = namespacedWorkspaceToolName("sandbox_exec_start");
+    const poll = namespacedWorkspaceToolName("sandbox_exec_poll");
+    const requests: ProviderRunRequest[] = [];
+    let polls = 0;
+    const workspace: NonNullable<RunExecutionInput["workspace"]> = {
+      accepts: ({ name }) => name === start || name === poll,
+      execute: vi.fn<NonNullable<RunExecutionInput["workspace"]>["execute"]>(async ({ call }) => {
+        if (call.name === poll) polls += 1;
+        return { callId: call.id, name: call.name, status: "complete", content: [{ type: "text", text: JSON.stringify({ data:
+          call.name === start ? { execSessionId: "exec-1" }
+            : { done: polls === 4, events: [], exitStatus: polls === 4 ? { code: 0 } : null, nextCursor: 0 }
+        }) }] };
+      }),
+      tools: async () => [start, poll].map(name => ({ capability: "workspace", name, description: name, inputSchema: { type: "object" } })),
+      finalize: vi.fn(), recoverExports: vi.fn(),
+      handoff: vi.fn(async () => {
+        // Handoff stops outstanding processes, so it must wait for the terminal poll.
+        expect(polls).toBe(4);
+        return { status: "ready" as const };
+      }),
+      settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }))
+    };
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      const round = requests.length;
+      if (request.toolChoice === "none" || round > 5) return providerResult({ finalText: polls === 4 ? "Command completed." : "Command unfinished." });
+      return providerResult({ finalText: "", toolCalls: [{ id: `exec-${round}`, name: round === 1 ? start : poll,
+        arguments: round === 1 ? { command: "synthetic-export", args: [] } : { execSessionId: "exec-1", cursor: 0 } }] });
+    });
+    const base = preparedData({ provider: "openai", modelId: "gpt-tool-model", toolBudgets: { maxToolCalls: 80, maxToolRounds: 32 } });
+    const prepared = { ...base,
+      normalizedRequest: { ...base.normalizedRequest, toolObservationVersion, workspace: completionWorkspace },
+      providerRequest: { ...base.providerRequest, toolObservationVersion, workspace: completionWorkspace }
+    };
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }),
+      workspace, observations: memoryToolObservations().service() }).text();
+
+    expect(repository.failedRuns).toEqual([]);
+    expect(polls).toBe(4);
+    expect(workspace.execute).toHaveBeenCalledTimes(5);
+    expect(workspace.handoff).toHaveBeenCalledOnce();
+    expect(requests.map(request => request.toolChoice)).toEqual(Array(6).fill("auto"));
+    expect([...repository.toolCalls.values()].map(call => call.state)).toEqual(Array(5).fill("complete"));
+    expect(JSON.stringify(requests)).not.toMatch(/Identical to the result|tool_call_repeat_blocked/u);
+    expect(repository.completeRuns[0]?.finalText).toBe("Command completed.");
+  });
+
+  const name = "mcp_synthetic_records";
+  const update = "mcp_synthetic_update";
+  // The server declares its read tool read-only; the update tool may change state.
+  const mcp: McpRunPlanSnapshot = { version: 1,
+    servers: [{ fingerprint: "a".repeat(64), revisionId: "synthetic-revision", serverId: "synthetic-server", serverName: "Records" }],
+    tools: [{ annotations: { readOnlyHint: true }, definitionHash: "b".repeat(64), description: "Read records", inputSchema: { type: "object" },
+      name: "records", namespacedName: name, originalName: "records", serverId: "synthetic-server", serverName: "Records" },
+    { definitionHash: "c".repeat(64), description: "Update a record", inputSchema: { type: "object" },
+      name: "update", namespacedName: update, originalName: "update", serverId: "synthetic-server", serverName: "Records" }] };
+  const runtime = (text: (call: number) => string) => {
+    let calls = 0;
+    const callTool = vi.fn(async () => {
+      calls += 1;
+      return { isError: false, structuredContent: null, text: [text(calls)], unsupportedContentTypes: [] };
+    });
+    return { callTool, ensureAcceptedGeneration: async () => true };
+  };
+
+  it("refuses a batch over the remaining call budget, claims synthesis and answers from obtained results", async () => {
+    const repository = createRepository();
+    const order: string[] = [];
+    const begin = vi.spyOn(repository.repository, "beginToolLoopProviderRound");
+    begin.mockImplementation(async (input) => {
+      order.push(input.finalSynthesisOfRound === undefined ? "begin"
+        : (input.providerContinuation as { synthesisDispatched?: true }).synthesisDispatched ? "dispatch-mark" : "claim");
+      return "started";
+    });
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      order.push(`provider:${requests.length}`);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ id: "first", name, arguments: { page: 1 } }] });
+      if (requests.length === 2) {
+        yield { type: "token", data: { delta: "Fetching the rest" } };
+        return providerResult({ finalText: "Fetching the rest", toolCalls: Array.from({ length: 6 }, (_, index) =>
+          ({ id: `more-${index}`, name, arguments: { page: index + 2 } })) });
+      }
+      return providerResult({ finalText: "Page 1 is checked; pages 2-7 were not verified." });
+    });
+    const mcpRuntime = runtime(() => "page 1 records");
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, mcpRuntime,
+      prepared: preparedData({ mcp, modelId: "synthetic-model", provider: "openai", toolBudgets: { maxToolCalls: 3, maxToolRounds: 8 } }),
+      repository: repository.repository })).text());
+
+    expect(mcpRuntime.callTool).toHaveBeenCalledOnce();
+    expect([...repository.toolCalls.values()].map(call => call.providerCallId)).toEqual(["first"]);
+    expect(begin).toHaveBeenCalledWith(expect.objectContaining({ finalSynthesisOfRound: 2, roundIndex: 3,
+      providerContinuation: expect.objectContaining({ finalSynthesis: "budget_exhausted" }) }));
+    // The dispatch mark is written after the claim and immediately before the request.
+    expect(order).toEqual(["begin", "provider:1", "provider:2", "claim", "dispatch-mark", "provider:3"]);
+    expect(begin).toHaveBeenCalledWith(expect.objectContaining({ finalSynthesisOfRound: 2, roundIndex: 3,
+      providerContinuation: expect.objectContaining({ finalSynthesis: "budget_exhausted", synthesisDispatched: true }) }));
+    const synthesisClaim = begin.mock.calls.find(([input]) => input.finalSynthesisOfRound === 2)![0];
+    expect(JSON.stringify(synthesisClaim.providerContinuation)).not.toContain("more-0");
+    expect(JSON.stringify(synthesisClaim.providerContinuation)).not.toContain("Tool use is now disabled");
+    expect(requests.map(request => request.toolChoice)).toEqual(["auto", "auto", "none"]);
+    expect(requests[2]!.providerToolMessages!.at(-1)).toEqual({ role: "user",
+      content: expect.stringContaining("the tool-call budget is exhausted. Some planned tool calls were not executed.") });
+    expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: {
+      artifactType: "tool_budget", payload: { kind: "calls", limit: 3 } } }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "message_reset", data: { round: 2 } }));
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns[0]?.finalText).toBe("Page 1 is checked; pages 2-7 were not verified.");
+    expect(repository.recordedRunUsageEvents.flatMap(entry => entry.answerRoundUsage?.completeness === "terminal"
+      ? [entry.answerRoundUsage.roundIndex] : [])).toEqual([1, 2, 3]);
+  });
+
+  it("fails before any synthesis dispatch when the refused round's synthesis claim conflicts", async () => {
+    const repository = createRepository();
+    const begin = repository.repository.beginToolLoopProviderRound;
+    repository.repository.beginToolLoopProviderRound = async (input) =>
+      input.finalSynthesisOfRound !== undefined ? "conflict" : begin(input);
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1
+        ? providerResult({ finalText: "", toolCalls: Array.from({ length: 6 }, (_, index) => ({ id: `more-${index}`, name, arguments: { page: index } })) })
+        : providerResult({ finalText: "must not be sent" });
+    });
+    const mcpRuntime = runtime(() => "unused");
+    await createRunExecutionResponse(executionInput({ adapter, mcpRuntime,
+      prepared: preparedData({ mcp, modelId: "synthetic-model", provider: "openai", toolBudgets: { maxToolCalls: 3, maxToolRounds: 8 } }),
+      repository: repository.repository })).text();
+    expect(requests).toHaveLength(1);
+    expect(mcpRuntime.callTool).not.toHaveBeenCalled();
+    expect(repository.toolCalls.size).toBe(0);
+    expect(repository.completeRuns).toEqual([]);
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "tool_loop_checkpoint_failed" }) })]);
+  });
+
+  it("marks an identical second result, blocks the third call before dispatch and ends an all-blocked round in synthesis", async () => {
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const same = { id: "rec-1" };
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      const round = requests.length;
+      if (round === 1 || round === 2) return providerResult({ finalText: "", toolCalls: [{ id: `same-${round}`, name, arguments: same }] });
+      if (round === 3) return providerResult({ finalText: "", toolCalls: [{ id: "same-3", name, arguments: same },
+        { id: "other-3", name, arguments: { id: "rec-2" } }] });
+      if (round === 4) return providerResult({ finalText: "", toolCalls: [{ id: "same-4", name, arguments: same }] });
+      return providerResult({ finalText: "rec-1 is open; nothing changed." });
+    });
+    const mcpRuntime = runtime(call => call === 3 ? "record rec-2: closed" : "record rec-1: open");
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, mcpRuntime,
+      prepared: preparedData({ mcp, modelId: "synthetic-model", provider: "openai", toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }),
+      repository: repository.repository })).text());
+
+    // The first two calls and the other call of round 3 ran; the repeats did not.
+    expect(mcpRuntime.callTool).toHaveBeenCalledTimes(3);
+    const rows = [...repository.toolCalls.values()];
+    const blocked = rows.filter(row => row.providerCallId === "same-3" || row.providerCallId === "same-4");
+    expect(blocked).toEqual([3, 4].map(round => expect.objectContaining({ roundIndex: round, startedAt: null, state: "error",
+      result: { callId: `same-${round}`, name, status: "error",
+        content: [{ type: "json", value: { error: "tool_call_repeat_blocked", repeatOf: [1, 2] } }] } })));
+    expect(rows.find(row => row.providerCallId === "other-3")).toMatchObject({ state: "complete" });
+    // Notes live only in the provider projection.
+    expect(JSON.stringify(rows)).not.toContain("Identical to the result");
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).not.toContain("Identical to the result");
+    expect(JSON.stringify(requests[2]!.providerToolMessages))
+      .toContain("Identical to the result of the same call in round 1; no new data.");
+    expect(JSON.stringify(requests[3]!.providerToolMessages))
+      .toContain("Not executed: this call already returned the same data twice (rounds 1, 2). Use those results.");
+    expect(requests.map(request => request.toolChoice)).toEqual(["auto", "auto", "auto", "auto", "none"]);
+    expect(requests[4]!.providerToolMessages!.at(-1)).toEqual({ role: "user",
+      content: expect.stringContaining("repeated identical calls returned no new data. Some planned tool calls were not executed.") });
+    expect(events.some(event => event.type === "artifact" && event.data.artifactType === "tool_budget")).toBe(false);
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns[0]?.finalText).toBe("rec-1 is open; nothing changed.");
+  });
+
+  it("dispatches an identical read again after a call that may have changed state", async () => {
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const same = { id: "rec-1" };
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      const round = requests.length;
+      if (round === 3) return providerResult({ finalText: "", toolCalls: [{ id: "write-3", name: update, arguments: { id: "rec-1", status: "done" } }] });
+      return round <= 4
+        ? providerResult({ finalText: "", toolCalls: [{ id: `same-${round}`, name, arguments: same }] })
+        : providerResult({ finalText: "done" });
+    });
+    const mcpRuntime = runtime(() => "record rec-1: open");
+    await createRunExecutionResponse(executionInput({ adapter, mcpRuntime,
+      prepared: preparedData({ mcp, modelId: "synthetic-model", provider: "openai", toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }),
+      repository: repository.repository })).text();
+    expect(mcpRuntime.callTool).toHaveBeenCalledTimes(4);
+    expect([...repository.toolCalls.values()].every(row => row.state === "complete")).toBe(true);
+    expect(requests[4]!.toolChoice).toBe("auto");
+    expect(repository.completeRuns[0]?.finalText).toBe("done");
+  });
+
+  it("counts a blocked row against the call budget", async () => {
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length <= 3
+        ? providerResult({ finalText: "", toolCalls: [{ id: `same-${requests.length}`, name, arguments: { id: "rec-1" } }] })
+        : providerResult({ finalText: "done" });
+    });
+    const mcpRuntime = runtime(() => "record rec-1: open");
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, mcpRuntime,
+      prepared: preparedData({ mcp, modelId: "synthetic-model", provider: "openai", toolBudgets: { maxToolCalls: 3, maxToolRounds: 8 } }),
+      repository: repository.repository })).text());
+    expect(mcpRuntime.callTool).toHaveBeenCalledTimes(2);
+    expect(repository.toolCalls.size).toBe(3);
+    expect(requests.map(request => request.toolChoice)).toEqual(["auto", "auto", "auto", "none"]);
+    // The block and the exactly reached budget coincide: the budget signal stays.
+    expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: {
+      artifactType: "tool_budget", payload: { kind: "calls", limit: 3 } } }));
+    expect(repository.completeRuns[0]?.finalText).toBe("done");
+  });
+
+  it.each(["evidence", "none"] as const)("grounds a client-tool Knowledge run after a refused batch (%s)", async (settled) => {
+    const repository = createRepository({ groundingResult: structuralGroundingResult("Reviewed answer [K1].") });
+    const finalize = vi.spyOn(repository.repository, "groundKnowledgeEvidenceAnswer");
+    const { execute, executor } = toolLoopKnowledgeExecutor();
+    const dispatch = createKnowledgeProviderDispatchRecorder();
+    const requests: ProviderRunRequest[] = [];
+    const search = (id: string) => ({ name: KNOWLEDGE_SEARCH_TOOL_NAME, id, arguments: { query: `retention ${id}`, sourceAliases: [] } });
+    const refusedRound = settled === "evidence" ? 2 : 1;
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      const round = requests.length;
+      if (round < refusedRound) return providerResult({ finalText: "", toolCalls: [search("knowledge-call-1")] });
+      if (round === refusedRound) return providerResult({ finalText: "", toolCalls: [1, 2, 3, 4, 5, 6].map(index => search(`more-${index}`)) });
+      if (round === refusedRound + 1) return providerResult({ finalText: "AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE" });
+      return providerResult({ finalText: JSON.stringify(round === refusedRound + 2
+        ? { version: 1, blocks: [{ kind: "paragraph", text: "A supported answer.", evidenceHandles: ["K1"] }] }
+        : { version: 1, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"] }],
+          coverage: "complete", analysisComplete: true, missingInformation: [], followUps: [] }) });
+    });
+    const base = preparedData({ knowledgeBaseIds: ["base-1"], modelId: "openai-answer-model", provider: "openai",
+      toolBudgets: { maxToolCalls: 2, maxToolRounds: 8 } });
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, knowledgeAnswerWorkflowVersion: 10 as const },
+      providerRequest: { ...base.providerRequest, knowledgeAnswerWorkflowVersion: 10 as const } };
+    await createRunExecutionResponse(executionInput({ adapter, prepared, repository: repository.repository,
+      knowledgeExecutor: executor, knowledgeProviderDispatch: dispatch.lifecycle })).text();
+
+    expect(requests[refusedRound]!.toolChoice).toBe("none");
+    if (settled === "evidence") {
+      expect(execute).toHaveBeenCalledOnce();
+      expect(finalize).toHaveBeenCalledOnce();
+      expect(repository.failedRuns).toEqual([]);
+      expect(repository.completeRuns).toHaveLength(1);
+    } else {
+      // Without settled evidence the existing outcome stands.
+      expect(execute).not.toHaveBeenCalled();
+      expect(finalize).not.toHaveBeenCalled();
+      expect(repository.completeRuns).toEqual([]);
+      expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "knowledge_retrieval_required" }) })]);
+    }
+  });
+});
+
+describe("tool-free synthesis under the context budget", () => {
+  const exactBudget = (request: NormalizedRunRequest): NormalizedRunRequest =>
+    ({ ...request, toolBudgets: { maxToolCalls: 2, maxToolRounds: 8 } });
+
+  it("re-plans the synthesis request through the budget and buys the notes it needs", async () => {
+    const loop = compactionLoopFixture({ historyTokens: 3_000, resultChars: 6_000, mutate: exactBudget });
+    await loop.run();
+    expect(loop.repository.failedRuns).toEqual([]);
+    expect(loop.repository.completeRuns[0]?.finalText).toBe("Done.");
+    expect(loop.answers.map(answer => answer.toolChoice)).toEqual(["auto", "auto", "none"]);
+    const synthesis = loop.answers[2]!;
+    expect(synthesis.providerToolMessages!.at(-1)).toEqual({ role: "user", content: expect.stringContaining(
+      "Tool use is now disabled for this run: the tool-call budget is exhausted. Answer now") });
+    // The synthesis round itself crossed the budget and bought the notes.
+    const receipts = loop.repository.recordedRunUsageEvents.flatMap(entry =>
+      entry.contextSummaryReceipt ? [entry.contextSummaryReceipt] : []);
+    expect(receipts.length).toBeGreaterThan(0);
+    expect(receipts.every(receipt => receipt.roundIndex === 3)).toBe(true);
+    expect(synthesis.contextCompactionSummary?.notes).toContain("condensed");
+    // The server-owned instruction is never summarized into the notes.
+    expect(JSON.stringify(loop.summaries)).not.toContain("Tool use is now disabled");
+    expect(JSON.stringify(synthesis.context)).not.toContain("OLD_HISTORY");
+    expect(synthesis.contextCompaction!.afterTokens).toBeLessThanOrEqual(synthesis.contextCompaction!.budgetTokens!);
+  });
+
+  it("fails explicitly, without truncating history, when the synthesis request cannot buy its notes", async () => {
+    // Round 2 only crosses the headroom and proceeds without notes; the
+    // synthesis request no longer fits without them.
+    const loop = compactionLoopFixture({ historyTokens: 4_900, resultChars: 6_000, mutate: exactBudget,
+      summaryFails: true });
+    await loop.run();
+    expect(loop.answers).toHaveLength(2);
+    expect(loop.summaries.length).toBeGreaterThan(0);
+    expect(loop.repository.completeRuns).toEqual([]);
+    expect(loop.repository.failedRuns).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: expect.stringMatching(/^context_compaction_/u) }) })]);
+  });
 });

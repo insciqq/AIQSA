@@ -12,28 +12,53 @@ import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { SEARCH_OBSERVATION_MAX_BYTES, searchObservationOriginal, type SearchObservationOriginal } from "./searchOriginal";
 import { ObservationStoreError } from "./contract";
 import { ObservationReadError } from "./byteReader";
-import { projectObservationForProvider } from "./projection";
+import { observationFloorOf, observationReference, projectObservationForProvider } from "./projection";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { McpToolAccessDeniedError } from "../mcp/toolAccess";
 import { isStoredObjectMissingError } from "../uploads/storage";
 
 export type ToolObservationService = ReturnType<typeof createToolObservationService>;
-/** One share of the admitted input budget (Infinity for an unknown window),
- * with the request's context estimate that measures it; a bare number keeps
- * the character-weight estimate. */
-export type WholeDeliveryShare = number | Readonly<{ estimateTokens: (value: unknown) => number; tokens: number }>;
-/** The estimated tokens an MCP/Workspace tool batch may still receive whole,
- * shared by the batch's concurrent captures, restores and replayed results. */
-export type WholeDeliveryAllowance = { estimateTokens?: (value: unknown) => number; remainingTokens: number };
+/** A tool batch's delivery allowance in estimated tokens (Infinity for an
+ * unknown window), with the request's context estimate; `measure`, when
+ * present, estimates a provider-projected result exactly as the next request
+ * carries it. A bare number keeps the character-weight estimate. */
+export type WholeDeliveryShare = number | Readonly<{
+  estimateTokens: (value: unknown) => number;
+  measure?: (result: ToolExecutionResult) => number;
+  tokens: number;
+}>;
+/** The estimated tokens a tool batch may still receive beyond its floor
+ * (every retained result as its reference, every read deferred): whole
+ * MCP/Workspace results, their bounded previews and reader fragments, shared
+ * by the batch's concurrent captures, reads, restores and replayed results.
+ * A result beyond it reaches the model as its reference. */
+export type WholeDeliveryAllowance = {
+  estimateTokens?: (value: unknown) => number;
+  measure?: (result: ToolExecutionResult) => number;
+  remainingTokens: number;
+};
 
 export function wholeDeliveryAllowance(share: WholeDeliveryShare): WholeDeliveryAllowance {
   return typeof share === "number"
     ? { remainingTokens: share }
-    : { estimateTokens: share.estimateTokens, remainingTokens: share.tokens };
+    : { estimateTokens: share.estimateTokens, remainingTokens: share.tokens, ...(share.measure ? { measure: share.measure } : {}) };
 }
 
+/** What a delivered result adds beyond its floor: its reference, or a read's
+ * deferral, which the batch's floor already holds. */
 function allowanceTokens(allowance: WholeDeliveryAllowance, result: ToolExecutionResult): number {
-  return (allowance.estimateTokens ?? estimateApproxTokens)(projectObservationForProvider(result).content);
+  const cost = allowance.measure ??
+    ((projected: ToolExecutionResult) => (allowance.estimateTokens ?? estimateApproxTokens)(projected.content));
+  const floor = observationFloorOf(result);
+  return Math.max(0, cost(projectObservationForProvider(result)) - (floor ? cost(floor) : 0));
+}
+
+/** Draws a delivered result from its batch allowance when it still fits. */
+function drawn(allowance: WholeDeliveryAllowance, result: ToolExecutionResult): boolean {
+  const tokens = allowanceTokens(allowance, result);
+  if (tokens > allowance.remainingTokens) return false;
+  allowance.remainingTokens -= tokens;
+  return true;
 }
 
 type CaptureContext = Readonly<{
@@ -64,27 +89,32 @@ export { projectObservationForProvider };
 const wholeOriginalBytes = (context: CaptureContext) => context.wholeDelivery === undefined
   ? TOOL_OBSERVATION_LIMITS.inlineBytes : OBSERVATION_WHOLE_ORIGINAL_BYTES;
 
-/** Off parity within the batch share: the model receives the normalized
- * result whole when Off could settle it whole and it fits what its batch may
- * still receive whole, inline-sized originals included, so the newest batch,
- * which masking never replaces, stays reducible. It keeps its descriptor, so
- * the planner can mask it later and the reader recalls it; otherwise the
- * bounded preview names the reader. */
-function deliveredWhole(context: CaptureContext, byteSize: number, whole: () => ToolExecutionResult): ToolExecutionResult | null {
+/** Off parity within the batch allowance, so the newest batch, which masking
+ * never replaces, fits beside the rest of the request: the model receives the
+ * normalized result whole when Off could settle it whole and it fits what its
+ * batch may still receive, inline-sized originals included; otherwise the
+ * bounded preview while that fits; otherwise the reference alone. Every form
+ * keeps its descriptor, so the planner can mask it later and the reader
+ * recalls the retained original. */
+function delivered(context: CaptureContext, byteSize: number, forms: Readonly<{
+  whole: () => ToolExecutionResult; preview: () => ToolExecutionResult; reference: () => ToolExecutionResult;
+}>): ToolExecutionResult {
   const allowance = context.wholeDelivery;
-  if (!allowance) return byteSize <= TOOL_OBSERVATION_LIMITS.inlineBytes ? whole() : null;
-  if (byteSize > OBSERVATION_WHOLE_ORIGINAL_BYTES) return null;
-  const result = whole();
-  if (!snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)) return null;
-  const tokens = allowanceTokens(allowance, result);
-  if (tokens > allowance.remainingTokens) return null;
-  allowance.remainingTokens -= tokens;
-  return result;
+  if (!allowance) return byteSize <= TOOL_OBSERVATION_LIMITS.inlineBytes ? forms.whole() : forms.preview();
+  if (byteSize <= OBSERVATION_WHOLE_ORIGINAL_BYTES) {
+    const result = forms.whole();
+    if (snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes) && drawn(allowance, result)) return result;
+  }
+  const preview = forms.preview();
+  return drawn(allowance, preview) ? preview : forms.reference();
 }
 
-/** One allowance per tool batch of a run: its captures and ambiguous-recovery
- * restores draw on it, and a settled result replayed into the batch that was
- * delivered whole keeps its tokens counted. Batches never overlap. */
+/** One allowance per tool batch of a run: its captures, reads and
+ * ambiguous-recovery restores draw on it, and a settled MCP/Workspace result
+ * replayed into the batch keeps what its whole result or preview drew counted
+ * (a reference draws nothing). `begin` sizes a batch from its request before
+ * any call runs; a batch never begun takes the share its first draw names.
+ * Batches never overlap. */
 export function observationWholeDeliveryBatches() {
   let current: Readonly<{ round: number; allowance: WholeDeliveryAllowance }> | undefined;
   const allowance = (round: number, share: WholeDeliveryShare): WholeDeliveryAllowance => {
@@ -93,14 +123,27 @@ export function observationWholeDeliveryBatches() {
   };
   return {
     allowance,
+    begin(round: number, share: WholeDeliveryShare): void {
+      current = { round, allowance: wholeDeliveryAllowance(share) };
+    },
     replay(round: number, share: WholeDeliveryShare, result: ToolExecutionResult): void {
       const source = result.observation?.source;
       if (source !== "mcp" && source !== "workspace") return;
-      const projected = projectObservationForProvider(result);
-      // A bounded preview already carries its descriptor part.
-      if (projected.content.length === result.content.length) return;
       const batch = allowance(round, share);
       batch.remainingTokens -= allowanceTokens(batch, result);
+    }
+  };
+}
+
+/** A read's share of its batch allowance: the fragment is shortened to what
+ * the batch may still receive, never below a preview (the read is then
+ * deferred to a later round), and a delivered fragment is drawn. */
+export function observationReadBudget(allowance: WholeDeliveryAllowance) {
+  const tokens = (result: ToolExecutionResult) => allowanceTokens(allowance, result);
+  return {
+    fits: (result: ToolExecutionResult) => tokens(result) <= allowance.remainingTokens,
+    spend(result: ToolExecutionResult): void {
+      if (result.status === "complete") allowance.remainingTokens -= tokens(result);
     }
   };
 }
@@ -129,9 +172,13 @@ export async function captureMcpObservation(context: CaptureContext,
 
 function mcpObservationProjection(context: CaptureContext, call: Pick<ModelToolCall, "id" | "name">,
   original: AiqsaMcpToolCallResult, projection: ToolObservationProjection): ToolExecutionResult {
-  return deliveredWhole(context, projection.observation.byteSize, () =>
-    ({ ...mcpToolExecutionResult({ ...call, arguments: {} }, original), observation: projection.observation })) ??
-    observationResult(call, original.isError ? "error" : "complete", projection);
+  const status = original.isError ? "error" : "complete";
+  return delivered(context, projection.observation.byteSize, {
+    whole: () => ({ ...mcpToolExecutionResult({ ...call, arguments: {} }, original), observation: projection.observation }),
+    preview: () => observationResult(call, status, projection),
+    // The reference is the masked form, so the planner never masks it again.
+    reference: () => observationReference(observationResult(call, status, projection))
+  });
 }
 
 export async function captureWorkspaceObservation(context: CaptureContext, call: ModelToolCall,
@@ -155,10 +202,13 @@ export async function captureWorkspaceObservation(context: CaptureContext, call:
 /** Artifacts and the runtime's exit/truncation metadata survive either way. */
 function workspaceObservationProjection(context: CaptureContext, call: Pick<ModelToolCall, "id" | "name">,
   result: Omit<ToolExecutionResult, "callId" | "name">, projection: ToolObservationProjection): ToolExecutionResult {
-  return deliveredWhole(context, projection.observation.byteSize, () =>
-    ({ ...result, callId: call.id, name: call.name, observation: projection.observation })) ??
-    { ...observationResult(call, result.status, projection), ...(result.rawPreview ? { rawPreview: result.rawPreview } : {}),
-      ...(result.artifacts ? { artifacts: result.artifacts } : {}) };
+  const metadata = { ...(result.rawPreview ? { rawPreview: result.rawPreview } : {}),
+    ...(result.artifacts ? { artifacts: result.artifacts } : {}) };
+  return delivered(context, projection.observation.byteSize, {
+    whole: () => ({ ...result, callId: call.id, name: call.name, observation: projection.observation }),
+    preview: () => ({ ...observationResult(call, result.status, projection), ...metadata }),
+    reference: () => ({ ...observationReference(observationResult(call, result.status, projection)), ...metadata })
+  });
 }
 
 export async function captureSearchObservation(context: CaptureContext, call: ModelToolCall,

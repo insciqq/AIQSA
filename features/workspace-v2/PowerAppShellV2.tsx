@@ -96,6 +96,7 @@ import { fetchKnowledgeSources } from "@/components/knowledge/knowledgeApi";
 import { useSkillLibraryStore } from "@/components/app-shell/skillLibraryStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import { deactivateMcpSettings } from "@/components/app-shell/mcpSettingsStore";
+import { deactivatePersonalMcp } from "@/components/app-shell/personalMcpStore";
 import { useMcpOAuthReturn } from "./useMcpOAuthReturn";
 import { ASSISTANT_SEND_GATE_HINT } from "./AssistantBindingNoticeV2";
 import { assistantStripItemsV2 } from "./AssistantStripV2";
@@ -639,6 +640,7 @@ export function PowerAppShellV2({
     return () => {
     deactivateArchivedChats();
     deactivateMcpSettings();
+    deactivatePersonalMcp();
     deactivateMemoryManager();
       deactivateMemorySettings(accountId);
     };
@@ -1012,6 +1014,7 @@ export function PowerAppShellV2({
     changeTemperature,
     flushPendingModelControlDefaults,
     makeModelDefault,
+    selectMcpMode,
     selectModel,
     selectSearchPlan,
     setDefaultAssistant,
@@ -1738,7 +1741,10 @@ export function PowerAppShellV2({
     }
   });
   function openMcpSettings() { studio.open("mcp"); }
-  useMcpOAuthReturn(accountId, useEventCallback(openMcpSettings));
+  const openConnectionsSettings = useEventCallback(() => {
+    useSettingsDestinationStore.getState().openSettings("connections");
+  });
+  useMcpOAuthReturn(accountId, useEventCallback(openMcpSettings), openConnectionsSettings);
   const openAssistantLibrary = () => studio.open("assistants");
   const openKnowledgeLibrary = () => studio.open("knowledge");
   const openKnowledgeLibrarySource = (sourceId: string) => {
@@ -2673,6 +2679,7 @@ export function PowerAppShellV2({
     reasoningMode,
     retryCatalog,
     searchPlanMode,
+    selectMcpMode,
     selectModel,
     selectSearchPlan,
     selectedModelId,

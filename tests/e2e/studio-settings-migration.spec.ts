@@ -15,7 +15,7 @@ const server: UserMcpServer = {
   fields: [{ configured: true, label: "Personal API key", minLength: 8, sensitive: true,
     slotKey: "api_key", source: "personal", valueType: "secret" }],
   id: "studio-mcp", knownToolCount: 1, name: "Research service", oauthAvailable: true,
-  oauthState: "disconnected", operationalStatus: "inactive", readiness: "needs_authorization", tools: []
+  oauthState: "disconnected", readiness: "needs_authorization", tools: []
 };
 
 async function prepare(page: Page) {
@@ -188,7 +188,7 @@ for (const theme of ["dark", "light"] as const) {
       await runAccountMenuAction(page, "Settings");
       const settings = page.getByTestId("settings-v2");
       await expect(settings.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText([
-        "General", "Account", "Claude Code & Codex", "Data"
+        "General", "Account", "Connections", "Claude Code & Codex", "Data"
       ]);
       if (size.width === 1440) {
         await expect.poll(async () => {
