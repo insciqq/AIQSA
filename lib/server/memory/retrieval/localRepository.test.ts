@@ -33,7 +33,13 @@ import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
 } from "./vector";
-import { MemoryReadBudgetError } from "./readBudget";
+import {
+  MEMORY_READ_BUDGET_ERROR_CODES,
+  MemoryReadBudgetError,
+  withMemoryReadBudget
+} from "./readBudget";
+import { MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS } from
+  "../../../domain/memory/retrieval/config";
 import type {
   MemoryLexicalShadowLaneReceipt,
   MemoryLexicalShadowRuntime
@@ -196,6 +202,10 @@ function mockClient(
     )[];
     lexicalRejectionRows?: readonly Record<string, unknown>[];
     vectorHits?: readonly Record<string, unknown>[];
+    vectorRejoinFailure?: unknown;
+    vectorTransaction?: (
+      callback: (tx: Record<string, unknown>) => Promise<unknown>
+    ) => Promise<unknown>;
   }> = {}
 ) {
   const laneSql: string[] = [];
@@ -206,6 +216,9 @@ function mockClient(
     if (sql.includes("set_config('lock_timeout'")) return [];
     if (sql.includes('owner."status"')) return [row];
     laneSql.push(sql);
+    if (options.vectorRejoinFailure !== undefined && sql.includes("vector_raw_candidates")) {
+      throw options.vectorRejoinFailure;
+    }
     if (sql.includes("ranked_rounds") || sql.includes("ranked_user_rounds")) {
       return options.completionRows ?? [];
     }
@@ -242,6 +255,7 @@ function mockClient(
     transactionOptions?: Readonly<{ isolationLevel?: string }>
   ) => {
     if (transactionOptions?.isolationLevel === "RepeatableRead") {
+      if (options.vectorTransaction) return options.vectorTransaction(callback);
       if (!options.vectorHits) throw new Error("vector unavailable");
       return {
         hits: options.vectorHits,
@@ -1603,11 +1617,17 @@ describe("local Memory retrieval repository", () => {
     let digestReady = false;
     let digestExpansionStarted = false;
     let snapshotReads = 0;
+    // Detached reads must still end, or they would keep their read admission
+    // permits for the remainder of this file.
+    const detachedReads: Array<(error: Error) => void> = [];
+    const detachedRead = () => new Promise<never>((_resolve, reject) => {
+      detachedReads.push(reject);
+    });
     mocked.$queryRaw.mockImplementation(async (query: { strings?: readonly string[] }) => {
       const sql = query.strings?.join("?") ?? "";
       if (sql.includes('owner."status"')) {
         snapshotReads += 1;
-        return snapshotReads === 1 ? [snapshotRow()] : new Promise<never>(() => undefined);
+        return snapshotReads === 1 ? [snapshotRow()] : detachedRead();
       }
       if (sql.includes("digest_navigation")) {
         digestReady = true;
@@ -1615,7 +1635,7 @@ describe("local Memory retrieval repository", () => {
       }
       if (sql.includes("source_filtered_history")) {
         digestExpansionStarted = true;
-        return new Promise<never>(() => undefined);
+        return detachedRead();
       }
       if (digestReady) return [];
       return [];
@@ -1656,6 +1676,7 @@ describe("local Memory retrieval repository", () => {
       lane: "HISTORY_DIGEST_FTS_SIMPLE"
     }]));
     expect(snapshotReads).toBe(1);
+    for (const release of detachedReads.splice(0)) release(new Error("test_detached_read_ended"));
   });
 
   it("routes tool observations through the episodic history family only", async () => {
@@ -2826,5 +2847,301 @@ describe("local Memory retrieval repository", () => {
       .rejects.toThrow("memory_retrieval_source_snapshot_invalid");
     await expect(second.retrieve({ ...request, sourceSnapshot: snapshot }))
       .rejects.toThrow("memory_retrieval_source_snapshot_invalid");
+  });
+
+  describe("read admission and vector diagnostics", () => {
+    const hybridRow = () => snapshotRow({
+      generationIndexMode: "HYBRID",
+      generationPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
+    });
+    const vectorQuery = () => ({
+      minimumScore: 0.4,
+      profile: {
+        configurationFingerprint: "c".repeat(64),
+        connectionId: "connection-1",
+        dimension: 1_024 as const,
+        generationId: "generation-1",
+        minimumSimilarity: 0.55,
+        providerModelId: "model-1",
+        retrievalConfigFingerprint: MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
+        vectorSpaceFingerprint: "d".repeat(64)
+      },
+      vector: Array.from({ length: 1_024 }, (_, index) => index === 0 ? 1 : 0)
+    });
+    const activeProfileRow = (overrides: Record<string, unknown> = {}) => ({
+      activeIndexGenerationId: "generation-1",
+      count: 0,
+      embeddingConfigurationFingerprint: "c".repeat(64),
+      embeddingConnectionId: "connection-1",
+      embeddingDimension: 1_024,
+      embeddingProviderModelId: "model-1",
+      generationId: "generation-1",
+      generationState: "ACTIVE",
+      indexMode: "HYBRID",
+      ownerStatus: "active",
+      retrievalPipelineVersion: MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION,
+      selectedEmbeddingProviderModelId: "model-1",
+      useMemoryFacts: true,
+      vectorSpaceFingerprint: "d".repeat(64),
+      ...overrides
+    });
+    /** Runs the real vector lane orchestration against recorded statements. */
+    const recordingVectorTransaction = (
+      profileRow: Record<string, unknown>,
+      statements: Array<Readonly<{ sql: string; values: readonly unknown[] }>>
+    ) => async (callback: (tx: Record<string, unknown>) => Promise<unknown>) =>
+      callback({
+        $executeRaw: vi.fn(async () => 0),
+        $queryRaw: vi.fn(async (query: { strings?: readonly string[]; values?: readonly unknown[] }) => {
+          const sql = query.strings?.join("?") ?? "";
+          statements.push({ sql, values: query.values ?? [] });
+          if (sql.includes("set_config('lock_timeout'")) return [];
+          if (sql.includes("AS active_profile")) return [profileRow];
+          return [{ count: 0 }];
+        })
+      });
+    const historyPlan = () => planMemoryRetrieval({
+      currentUserText: "Which file did the tool create?",
+      filters: { sourceKinds: ["HISTORY"] },
+      mode: "PAST_CHAT_SEARCH",
+      now,
+      temporalIntent: "ANY"
+    });
+    const vectorItemTypes = (
+      statements: readonly Readonly<{ sql: string; values: readonly unknown[] }>[]
+    ) => statements.filter(({ sql }) => sql.includes("AS bounded_eligible"))
+      .flatMap(({ values }) => values.filter((value) =>
+        ["FACT_VERSION", "RECALL_CHUNK", "RECALL_ROUND", "RECALL_ROUND_SEGMENT", "TOOL_EVENT"]
+          .includes(String(value))));
+
+    it("excludes tool events only from the vector item types of a flagged search", async () => {
+      const run = async (excludeToolEvents: boolean) => {
+        const statements: Array<Readonly<{ sql: string; values: readonly unknown[] }>> = [];
+        const mocked = mockClient(hybridRow(), {
+          vectorTransaction: recordingVectorTransaction(activeProfileRow(), statements)
+        });
+        const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+          assistantId: null,
+          chatId: "chat-1",
+          ...(excludeToolEvents ? { excludeToolEvents: true as const } : {}),
+          now,
+          plan: historyPlan(),
+          userId: "user-1",
+          vector: vectorQuery()
+        });
+        return {
+          itemTypes: vectorItemTypes(statements),
+          laneSql: mocked.laneSql.filter((sql) => !sql.includes("vector")).sort(),
+          result
+        };
+      };
+      const ordinary = await run(false);
+      const search = await run(true);
+
+      expect(ordinary.itemTypes).toContain("TOOL_EVENT");
+      expect(search.itemTypes).not.toContain("TOOL_EVENT");
+      expect(search.itemTypes).toEqual(ordinary.itemTypes.filter((type) => type !== "TOOL_EVENT"));
+      expect(search.laneSql).toEqual(ordinary.laneSql);
+      expect(search.result.vectorState).toBe("READY");
+      expect(search.result.vectorFailureCodes).toEqual([]);
+    });
+
+    it("degrades a stale current profile in the first vector statement, not as empty READY", async () => {
+      const statements: Array<Readonly<{ sql: string; values: readonly unknown[] }>> = [];
+      const mocked = mockClient(hybridRow(), {
+        vectorTransaction: recordingVectorTransaction(activeProfileRow({
+          activeIndexGenerationId: "generation-2",
+          generationId: "generation-2"
+        }), statements)
+      });
+      const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({ currentUserText: "What is my preferred editor?", now }),
+        userId: "user-1",
+        vector: vectorQuery()
+      });
+
+      expect(result.vectorState).toBe("DEGRADED");
+      expect(result.vectorFailureCodes).toEqual(["memory_vector_generation_stale"]);
+      expect(result.laneResults.some(({ lane }) => lane === "FACT_LEXICAL_UNICODE")).toBe(true);
+      const vectorStatements = statements.filter(({ sql }) =>
+        !sql.includes("set_config('lock_timeout'"));
+      expect(vectorStatements).toHaveLength(1);
+      expect(vectorStatements[0]!.sql).toContain("AS active_profile");
+    });
+
+    it.each([
+      [new MemoryReadBudgetError("memory_read_admission_timeout"), "memory_read_admission_timeout"],
+      [new Error("private vector detail"), "memory_vector_unavailable"]
+    ] as const)("keeps the source code of a failed eager vector search", async (failure, code) => {
+      const mocked = mockClient(hybridRow(), {
+        vectorTransaction: async () => { throw failure; }
+      });
+      const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({ currentUserText: "What is my preferred editor?", now }),
+        userId: "user-1",
+        vector: vectorQuery()
+      });
+      expect(result.vectorState).toBe("DEGRADED");
+      expect(result.vectorFailureCodes).toEqual([code]);
+      expect(JSON.stringify(result)).not.toContain("private vector detail");
+    });
+
+    it("keeps healthy lanes when an eager vector rejoin times out", async () => {
+      const mocked = mockClient(hybridRow(), {
+        vectorHits: [{
+          distance: 0.1,
+          entryId: "entry-vector-1",
+          itemId: "fact-vector-1",
+          itemType: "FACT_VERSION",
+          score: 0.9
+        }],
+        vectorRejoinFailure: new MemoryReadBudgetError("memory_read_statement_timeout")
+      });
+      const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({ currentUserText: "What is my preferred editor?", now }),
+        userId: "user-1",
+        vector: vectorQuery()
+      });
+      expect(result.vectorState).toBe("DEGRADED");
+      expect(result.vectorFailureCodes).toEqual(["memory_read_statement_timeout"]);
+      expect(result.lexicalState).toBe("READY");
+      expect(result.laneResults.some(({ lane }) => lane === "FACT_LEXICAL_UNICODE")).toBe(true);
+    });
+
+    it("records a settled eager vector lane and releases its admission", async () => {
+      const vectorGate: { release?: () => void } = {};
+      const mocked = mockClient(hybridRow(), {
+        vectorTransaction: () => new Promise((resolve) => {
+          vectorGate.release = () => resolve({ hits: [], lanes: [], profile: {}, status: "READY" });
+        })
+      });
+      const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+      const controller = new AbortController();
+      const pending = repository.retrieve({
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({ currentUserText: "What is my preferred editor?", now }),
+        settleSignal: controller.signal,
+        userId: "user-1",
+        vector: vectorQuery()
+      });
+      await vi.waitFor(() => expect(vectorGate.release).toBeDefined());
+      controller.abort({ code: "test_settled" });
+      const result = await pending;
+      expect(result.vectorState).toBe("DEGRADED");
+      expect(result.vectorFailureCodes).toEqual(["memory_vector_settle_timeout"]);
+      vectorGate.release?.();
+    });
+
+    it.each(MEMORY_READ_BUDGET_ERROR_CODES)("marks lexical evidence for %s by the timedOut rule", async (code) => {
+      const mocked = mockClient(snapshotRow(), {
+        laneFailure: new MemoryReadBudgetError(code)
+      });
+      const result = await createPrismaLocalMemoryRetrievalRepository(mocked.client).retrieve({
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({ currentUserText: "project details", now }),
+        userId: "user-1"
+      });
+      expect(result.lexicalEvidence.length).toBeGreaterThan(0);
+      expect(result.lexicalEvidence.every((entry) => entry.failureCode === code &&
+        entry.timedOut === (code !== "memory_read_transaction_expired"))).toBe(true);
+    });
+
+    it("keeps eager vector, lanes and expansion within the process read admission", async () => {
+      const mocked = mockClient(hybridRow(), {
+        vectorHits: [{
+          distance: 0.1,
+          entryId: "entry-vector-1",
+          itemId: "fact-vector-1",
+          itemType: "FACT_VERSION",
+          score: 0.9
+        }]
+      });
+      const transaction = (mocked.client as unknown as {
+        $transaction: ReturnType<typeof vi.fn>;
+      }).$transaction;
+      const original = transaction.getMockImplementation()! as (
+        ...values: unknown[]
+      ) => Promise<unknown>;
+      let active = 0;
+      let maximum = 0;
+      transaction.mockImplementation(async (...args: unknown[]) => {
+        active += 1;
+        maximum = Math.max(maximum, active);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+          return await original(...args);
+        } finally {
+          active -= 1;
+        }
+      });
+      const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+      const input = {
+        assistantId: null,
+        chatId: "chat-1",
+        now,
+        plan: planMemoryRetrieval({
+          currentUserText: "What did we discuss about my preferred editor?",
+          now
+        }),
+        userId: "user-1",
+        vector: vectorQuery()
+      };
+      const [first, second] = await Promise.all([
+        repository.retrieve(input),
+        repository.retrieve(input)
+      ]);
+      expect(first.lexicalState).toBe("READY");
+      expect(second.lexicalState).toBe("READY");
+      expect(transaction.mock.calls.length).toBeGreaterThan(
+        MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS
+      );
+      expect(maximum).toBeLessThanOrEqual(MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS);
+    });
+
+    it("records settlement for lexical lanes withdrawn from read admission", async () => {
+      // Hold every process permit so each lane read of the retrieval waits.
+      const releases: Array<() => void> = [];
+      const holding = { $transaction: vi.fn(async () =>
+        new Promise<void>((resolve) => releases.push(resolve))) } as unknown as PrismaClient;
+      const mocked = mockClient(snapshotRow());
+      const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+      const plan = planMemoryRetrieval({ currentUserText: "project details", now });
+      const snapshot = await repository.snapshot({
+        assistantId: null, chatId: "chat-1", now, plan, userId: "user-1"
+      });
+      const holders = Array.from({ length: MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS },
+        () => withMemoryReadBudget(holding, 2_000, async () => true, { admission: "REQUIRED" }));
+      await vi.waitFor(() => expect(releases).toHaveLength(
+        MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS
+      ));
+      const controller = new AbortController();
+      const pending = repository.retrieve({
+        assistantId: null, chatId: "chat-1", now, plan, settleSignal: controller.signal,
+        sourceSnapshot: snapshot, userId: "user-1"
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      controller.abort({ code: "test_settled" });
+      const result = await pending;
+      for (const release of releases.splice(0)) release();
+      await Promise.all(holders);
+
+      expect(result.lexicalEvidence.length).toBeGreaterThan(0);
+      expect(result.lexicalEvidence.every((entry) =>
+        entry.failureCode === "memory_lexical_settle_timeout" && entry.timedOut)).toBe(true);
+      expect(mocked.laneSql).toEqual([]);
+    });
   });
 });
