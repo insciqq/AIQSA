@@ -2,13 +2,15 @@
 // Run with --ack DISPOSABLE_PAID_MEMORY_CLEANUP --mode preview|apply
 // --fixture /private/fixture.json --plan /private/plan.json --output /private/report.json.
 // Preview stages real governed decisions without changing facts. Apply recovers
-// that exact staged job and proves that recovery makes no further provider call.
+// that exact staged job, proves that recovery makes no further provider call and
+// runs the owner's resulting fact purges. Verify reports the whole corpus.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { PrismaClient } from "@prisma/client";
 import type { MemoryJobClaim } from "../lib/server/memory/coordinator/types";
 import {
+  MEMORY_CLEANUP_QUALIFICATION_REASONS,
   assertCleanupQualificationOwnership,
   assertCleanupQualificationContinuation,
   assertCleanupQualificationPlan,
@@ -31,11 +33,29 @@ import {
 const TIMEOUT_MS = 12 * 60 * 1_000;
 let currentPhase = "arguments";
 const activeStates = ["QUEUED", "CLAIMED", "RETRYABLE_FAILED", "WAITING_FOR_CONFIGURATION", "WAITING_FOR_EGRESS_CONSENT"] as const;
+type ReasonCounts = Readonly<{
+  blockedPendingRelation: number;
+  blockedEvidenceWithoutOffsets: number;
+  blockedSourceChanged: number;
+  unreviewableContext: number;
+  unreviewableStatementTooLong: number;
+  unreviewableEvidenceNotCurrent: number;
+}>;
 type Report = Readonly<{
   status: "passed" | "failed";
   mode: "seed" | "preview" | "apply" | "verify";
   reviewed: number;
   removed: number;
+  kept: number;
+  rejected: number;
+  blocked: number;
+  unreviewable: number;
+  erroneousRemovals: number;
+  remainingShortTerm: number;
+  datedRemoved: number;
+  datedPurged: number;
+  purgePending: number;
+  durationMs: number;
   protected: number;
   checked: number;
   passed: number;
@@ -55,7 +75,22 @@ type Report = Readonly<{
   scope: "FIXTURE_SETUP" | "BATCH" | "CORPUS";
   corpusComplete: boolean;
   remaining: number;
-}>;
+}> & ReasonCounts;
+const REPORT_REASON_KEYS = {
+  pending_relation: "blockedPendingRelation",
+  evidence_without_offsets: "blockedEvidenceWithoutOffsets",
+  source_changed: "blockedSourceChanged",
+  unreviewable_context: "unreviewableContext",
+  statement_too_long: "unreviewableStatementTooLong",
+  evidence_not_current: "unreviewableEvidenceNotCurrent"
+} as const satisfies Record<(typeof MEMORY_CLEANUP_QUALIFICATION_REASONS)[number], keyof ReasonCounts>;
+const startedAt = Date.now();
+function reasonCounts(reasons?: Readonly<Record<string, number>>): ReasonCounts {
+  return Object.fromEntries(MEMORY_CLEANUP_QUALIFICATION_REASONS.map((reason) =>
+    [REPORT_REASON_KEYS[reason], reasons?.[reason] ?? 0])) as ReasonCounts;
+}
+const noOutcomes = { kept: 0, rejected: 0, blocked: 0, unreviewable: 0, erroneousRemovals: 0, remainingShortTerm: 0,
+  datedRemoved: 0, datedPurged: 0, purgePending: 0, ...reasonCounts() };
 
 async function inventory(client: PrismaClient, userId: string): Promise<readonly CleanupQualificationFactState[]> {
   const [facts, versions, ownerEvents] = await Promise.all([
@@ -70,7 +105,8 @@ async function inventory(client: PrismaClient, userId: string): Promise<readonly
       factId: fact.id,
       currentVersionId: fact.currentVersionId,
       active: fact.state === "ACTIVE" && current?.state === "ACTIVE" && current.contentPurgedAt === null,
-      protected: fact.pinned || versions.some((version) => version.factId === fact.id && version.sourceMode === "EXPLICIT") ||
+      protected: fact.pinned || versions.some((version) => version.factId === fact.id && (version.sourceMode === "EXPLICIT" ||
+        (version.semanticFrame as { memoryDirective?: unknown } | null)?.memoryDirective === "EXPLICIT_REMEMBER")) ||
         ownerEvents.some((event) => event.factId === fact.id),
       snapshotHash: cleanupQualificationHash({ fact, versions: versions.filter((version) => version.factId === fact.id) })
     };
@@ -112,23 +148,75 @@ async function sourceDocumentsHash(client: PrismaClient, userId: string): Promis
   return cleanupQualificationHash({ chats, messages });
 }
 
+/** Only governed jobs with provider receipts count as paid decisions; an
+ * imported historical checkpoint without receipts is baseline state. */
 async function committedReviews(client: PrismaClient, userId: string, current: readonly CleanupQualificationFactState[]) {
   const { MEMORY_MAINTENANCE_POLICY_VERSION, MEMORY_MAINTENANCE_PIPELINE_VERSION,
     MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS } =
     await import("../lib/server/memory/maintenance/policy");
-  const [reviews, jobs, versions] = await Promise.all([
+  const [reviews, jobs, paid, versions] = await Promise.all([
     client.memoryMaintenanceReview.findMany({ where: { userId,
       policyVersion: { in: [...MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS] },
-      disposition: { in: ["KEEP", "REMOVED", "REJECTED"] } },
-    select: { factVersionId: true, memoryJobId: true, policyVersion: true, disposition: true } }),
+      disposition: { in: ["KEEP", "REMOVED", "REJECTED", "BLOCKED", "UNREVIEWABLE"] } },
+    select: { factVersionId: true, memoryJobId: true, policyVersion: true, disposition: true, reasonCode: true } }),
     client.memoryJob.findMany({ where: { userId, state: "SUCCEEDED", pipelineVersion: MEMORY_MAINTENANCE_PIPELINE_VERSION },
       select: { id: true } }),
+    client.memoryExecutionBinding.findMany({ where: { userId, logicalRole: "MEMORY_SYNTHESIZE" }, select: { memoryJobId: true } }),
     client.memoryFactVersion.findMany({ where: { userId }, select: { id: true, factId: true } })
   ]);
+  const receipts = new Set(paid.map(({ memoryJobId }) => memoryJobId));
   return summarizeCleanupQualificationReviews({ currentPolicy: MEMORY_MAINTENANCE_POLICY_VERSION,
     supportedPolicies: MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS,
     activeFactIds: current.filter((item) => item.active).map((item) => item.factId),
-    succeededJobIds: jobs.map(({ id }) => id), versions, reviews });
+    succeededJobIds: jobs.map(({ id }) => id).filter((id) => receipts.has(id)), versions, reviews });
+}
+
+/** The owner's fact purges, run as the stopped coordinator would. No provider. */
+async function drainOwnedForgetPurges(client: PrismaClient, userId: string): Promise<number> {
+  const [{ createPrismaMemoryCoordinatorRepository }, { MEMORY_PURGE_REQUIRED_CONTRIBUTORS },
+    { registerMemoryDeletionContributors }, { MemoryDeletionContributorRegistry }] = await Promise.all([
+    import("../lib/server/memory/coordinator/prismaRepository"), import("../lib/server/memory/purge/contract"),
+    import("../lib/server/memory/purge/leaves"), import("../lib/server/memory/purge/registry")
+  ]);
+  const registry = new MemoryDeletionContributorRegistry({ operation: "FORGET_PURGE", requirements: MEMORY_PURGE_REQUIRED_CONTRIBUTORS });
+  registerMemoryDeletionContributors(registry);
+  const coordinator = createPrismaMemoryCoordinatorRepository(client);
+  const pending = await client.memoryDeletionOutbox.findMany({ where: { userId, operation: "FORGET_PURGE",
+    state: { in: ["PENDING", "RETRY_WAIT"] } }, select: { id: true }, orderBy: { id: "asc" } });
+  let purged = 0;
+  for (const { id } of pending) {
+    const now = new Date();
+    const claimToken = randomUUID();
+    const leaseExpiresAt = new Date(now.getTime() + 60_000);
+    const claimed = await client.memoryDeletionOutbox.updateMany({ where: { id, userId, state: { in: ["PENDING", "RETRY_WAIT"] } },
+      data: { attemptCount: { increment: 1 }, errorCode: null, leaseExpiresAt, leaseToken: claimToken,
+        nextAttemptAt: null, state: "RUNNING", updatedAt: now } });
+    if (claimed.count !== 1) continue;
+    const row = await client.memoryDeletionOutbox.findUniqueOrThrow({ where: { id } });
+    const claim = { admissionAuthorizationId: row.admissionAuthorizationId, admittedActiveLeafMessageId: row.admittedActiveLeafMessageId,
+      admittedChatSourceRevision: row.admittedChatSourceRevision, alsoForgetOriginMemories: row.alsoForgetOriginMemories,
+      attemptCount: row.attemptCount, claimToken, id, leaseExpiresAt, memoryGeneration: row.memoryGeneration,
+      operation: row.operation, recoveredLease: false, resumedFromBlocked: false, targetId: row.targetId,
+      targetType: row.targetType, userId };
+    const execution = await registry.handler().execute(claim, { now: () => now, signal: AbortSignal.timeout(60_000) });
+    if (!await coordinator.commitDeletionSuccess({ apply: execution.apply, claim, now })) {
+      throw new Error("memory_cleanup_purge_commit_rejected");
+    }
+    purged++;
+  }
+  return purged;
+}
+
+/** Removed dated fixture facts and their purge obligations. */
+async function datedPurgeStates(client: PrismaClient, userId: string, fixture: Readonly<{ assertions: readonly Readonly<{
+  factIds: readonly string[]; dated?: boolean }>[] }>, current: readonly CleanupQualificationFactState[]) {
+  const dated = new Set(fixture.assertions.filter(({ dated }) => dated).flatMap(({ factIds }) => factIds));
+  const removed = current.filter(({ factId, active }) => dated.has(factId) && !active).map(({ factId }) => factId);
+  const [succeeded, pending] = await Promise.all([
+    client.memoryDeletionOutbox.count({ where: { userId, operation: "FORGET_PURGE", state: "SUCCEEDED", targetId: { in: removed } } }),
+    client.memoryDeletionOutbox.count({ where: { userId, operation: "FORGET_PURGE", state: { not: "SUCCEEDED" } } })
+  ]);
+  return { datedRemoved: removed.length, datedPurged: succeeded, purgePending: pending };
 }
 
 async function assertStoppedCoordinator(client: PrismaClient, allowedJobId: string | null): Promise<void> {
@@ -166,7 +254,8 @@ async function worker(): Promise<Report> {
         const fixture = await materializeMemoryCleanupSyntheticFixture(prisma, options.runId);
         currentPhase = "seed_write_fixture";
         await fixtureFile.write(fixture);
-        const report: Report = { status: "passed", mode: "seed", reviewed: 0, removed: 0,
+        const report: Report = { status: "passed", mode: "seed", reviewed: 0, removed: 0, ...noOutcomes,
+          durationMs: Date.now() - startedAt,
           protected: fixture.assertions.filter((item) => item.protected).length,
           checked: fixture.assertions.length, passed: fixture.assertions.length,
           providerCalls: 0, replayProviderCalls: 0, previewUnchanged: false, repeatedCommitUnchanged: false,
@@ -251,12 +340,14 @@ async function worker(): Promise<Report> {
           let pendingEligible = 0;
           for (let page = 0; page <= Math.ceil(current.length / 16); page++) {
             const scan = await scanMemoryMaintenanceSources(prisma, fixture.userId, new Date(), cursor);
-            pendingEligible += scan.plan?.sources.length ?? 0;
+            pendingEligible += (scan.plan?.sources.length ?? 0) + scan.blockers.length;
             if (scan.cursor === null) break;
             cursor = scan.cursor;
           }
-          const remaining = before.filter((item) => item.active && !item.protected && !priorReviews.reviewed.has(item.factId)).length;
+          const remaining = before.filter((item) => item.active && !item.protected && !priorReviews.reviewed.has(item.factId) &&
+            !priorReviews.settled.has(item.factId)).length;
           const quality = evaluateCleanupQualification(fixture, before, current);
+          const purges = await datedPurgeStates(prisma, fixture.userId, fixture, current);
           const receipts = await Promise.all(priorReviews.jobs.map((id) => providerEvidence(prisma, fixture.userId, id)));
           const usage = receipts.reduce((total, item) => ({
             inputTokens: total.inputTokens + item.usage.inputTokens,
@@ -266,8 +357,13 @@ async function worker(): Promise<Report> {
             reportedCostCalls: total.reportedCostCalls + item.usage.reportedCostCalls,
             reportedTokenCalls: total.reportedTokenCalls + item.usage.reportedTokenCalls
           }), { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimatedCostMicros: 0, reportedCostCalls: 0, reportedTokenCalls: 0 });
-          const report: Report = { status: remaining === 0 && pendingEligible === 0 && failedJobs === 0 && quality.checked === quality.passed ? "passed" : "failed",
+          const report: Report = { status: remaining === 0 && pendingEligible === 0 && failedJobs === 0 &&
+              quality.erroneousRemovals === 0 && purges.purgePending === 0 ? "passed" : "failed",
             mode: "verify", reviewed: priorReviews.reviewed.size, removed: quality.retired,
+            kept: priorReviews.outcomes.kept, rejected: priorReviews.outcomes.rejected,
+            blocked: priorReviews.outcomes.blocked, unreviewable: priorReviews.outcomes.unreviewable,
+            erroneousRemovals: quality.erroneousRemovals, remainingShortTerm: quality.remainingRetire, ...purges,
+            ...reasonCounts(priorReviews.reasons), durationMs: Date.now() - startedAt,
             protected: quality.protected, checked: quality.checked, passed: quality.passed,
             providerCalls: receipts.reduce((total, receipt) => total + receipt.count, 0), replayProviderCalls: 0,
             previewUnchanged: false, repeatedCommitUnchanged: false, ...usage, sanitizedAggregatesOnly: true,
@@ -289,6 +385,8 @@ async function worker(): Promise<Report> {
           userId: fixture.userId, pipelineVersion: MEMORY_MAINTENANCE_PIPELINE_VERSION,
           ...(previous ? { id: previous.jobId } : { state: { in: [...activeStates] } })
         }, select: { id: true, state: true, acceptedResultHash: true } });
+        // Remaining sources may all be settled as blocked or unreviewable.
+        if (!previous && jobs.length === 0) throw new Error("memory_cleanup_no_reviewable_batch");
         if (jobs.length !== 1) throw new Error("memory_cleanup_job_missing_or_ambiguous");
         const job = jobs[0]!;
         if (previous && job.state === "SUCCEEDED") {
@@ -296,16 +394,20 @@ async function worker(): Promise<Report> {
           if (job.acceptedResultHash !== previous.acceptedOutputHash) throw new Error("memory_cleanup_plan_receipt_mismatch");
           const evidence = await providerEvidence(prisma, fixture.userId, job.id);
           const quality = evaluateCleanupQualification(fixture, before, current, new Set(previous.reviewedFactIds));
-          if (evidence.count !== previous.providerCalls || quality.checked !== quality.passed) {
+          if (evidence.count !== previous.providerCalls || quality.erroneousRemovals !== 0) {
             throw new Error("memory_cleanup_repeat_verification_failed");
           }
+          const purges = await datedPurgeStates(prisma, fixture.userId, fixture, current);
           const report: Report = { status: "passed", mode: "apply", reviewed: 0,
-            removed: quality.retired, protected: quality.protected, checked: quality.checked,
+            removed: quality.retired, ...noOutcomes, erroneousRemovals: quality.erroneousRemovals,
+            remainingShortTerm: quality.remainingRetire, ...purges, durationMs: Date.now() - startedAt,
+            protected: quality.protected, checked: quality.checked,
             passed: quality.passed, providerCalls: evidence.count, replayProviderCalls: 0,
             previewUnchanged: true, repeatedCommitUnchanged: true, ...evidence.usage,
             sanitizedAggregatesOnly: true, paidExtraction: false, sourceMessagesUnchanged: true,
             scope: "BATCH", corpusComplete: false,
-            remaining: before.filter((item) => item.active && !item.protected && !priorReviews.reviewed.has(item.factId)).length };
+            remaining: before.filter((item) => item.active && !item.protected && !priorReviews.reviewed.has(item.factId) &&
+              !priorReviews.settled.has(item.factId)).length };
           await files.report.write(report);
           return report;
         }
@@ -319,8 +421,9 @@ async function worker(): Promise<Report> {
         const gate = await handler.preflight(claim);
         if (gate.status !== "READY") throw new Error("memory_cleanup_source_not_ready");
         currentPhase = "source_snapshot";
-        const sourcePlan = await repository.snapshot(claim);
-        if (!sourcePlan || !sourcePlan.sources.length) throw new Error("memory_cleanup_source_plan_missing");
+        const sourceSnapshot = await repository.snapshot(claim);
+        const sourcePlan = sourceSnapshot?.plan;
+        if (!sourceSnapshot || !sourcePlan || !sourcePlan.sources.length) throw new Error("memory_cleanup_source_plan_missing");
         if (previous && (sourcePlan.sourceSnapshotHash !== previous.sourceSnapshotHash || !claim.recoveredLease)) {
           throw new Error("memory_cleanup_source_snapshot_changed");
         }
@@ -383,14 +486,28 @@ async function worker(): Promise<Report> {
           repeatedCommitUnchanged = !repeated && cleanupQualificationHash(after) ===
             cleanupQualificationHash(await inventory(prisma, fixture.userId));
           if (!repeatedCommitUnchanged) throw new Error("memory_cleanup_commit_not_idempotent");
+          currentPhase = "purge_removed_facts";
+          await drainOwnedForgetPurges(prisma, fixture.userId);
+          after = await inventory(prisma, fixture.userId);
         }
         currentPhase = "evaluate_batch";
         const quality = evaluateCleanupQualification(fixture, before, after, new Set(reviewedFactIds));
         if (sourceHash !== await sourceDocumentsHash(prisma, fixture.userId)) {
           throw new Error("memory_cleanup_source_documents_changed");
         }
-        const report: Report = { status: options.mode === "preview" || quality.checked === quality.passed ? "passed" : "failed",
+        const batchOutcomes = options.mode === "apply" ? await prisma.memoryMaintenanceReview.findMany({ where: { userId: fixture.userId,
+          memoryJobId: claim.id }, select: { disposition: true, reasonCode: true } }) : [];
+        const purges = options.mode === "apply" ? await datedPurgeStates(prisma, fixture.userId, fixture, after)
+          : { datedRemoved: 0, datedPurged: 0, purgePending: 0 };
+        const report: Report = { status: options.mode === "preview" || quality.erroneousRemovals === 0 ? "passed" : "failed",
           mode: options.mode, reviewed: sourcePlan.sources.length, removed: quality.retired,
+          kept: batchOutcomes.filter(({ disposition }) => disposition === "KEEP").length,
+          rejected: batchOutcomes.filter(({ disposition }) => disposition === "REJECTED").length,
+          blocked: batchOutcomes.filter(({ disposition }) => disposition === "BLOCKED").length,
+          unreviewable: 0, erroneousRemovals: quality.erroneousRemovals, remainingShortTerm: quality.remainingRetire,
+          ...purges, ...reasonCounts(Object.fromEntries(MEMORY_CLEANUP_QUALIFICATION_REASONS.map((reason) =>
+            [reason, batchOutcomes.filter(({ reasonCode }) => reasonCode === reason).length]))),
+          durationMs: Date.now() - startedAt,
           protected: quality.protected, checked: options.mode === "preview" ? 0 : quality.checked,
           passed: options.mode === "preview" ? 0 : quality.passed,
           providerCalls: evidence.count, replayProviderCalls: callsBefore ? evidence.count - callsBefore.count : 0,
@@ -398,6 +515,7 @@ async function worker(): Promise<Report> {
           ...evidence.usage, sanitizedAggregatesOnly: true, paidExtraction: false, sourceMessagesUnchanged: true,
           scope: "BATCH", corpusComplete: false,
           remaining: before.filter((item) => item.active && !item.protected && !priorReviews.reviewed.has(item.factId) &&
+            !priorReviews.settled.has(item.factId) &&
             (options.mode === "preview" || !reviewedFactIds.includes(item.factId))).length };
         await files.report.write(report);
         return report;
@@ -443,7 +561,9 @@ async function main(): Promise<void> {
         status: raw.status, sanitizedAggregatesOnly: true
       };
       for (const key of ["reviewed", "removed", "protected", "checked", "passed", "providerCalls", "replayProviderCalls",
-        "inputTokens", "outputTokens", "totalTokens", "estimatedCostMicros", "reportedCostCalls", "reportedTokenCalls", "remaining"]) {
+        "inputTokens", "outputTokens", "totalTokens", "estimatedCostMicros", "reportedCostCalls", "reportedTokenCalls", "remaining",
+        "kept", "rejected", "blocked", "unreviewable", "erroneousRemovals", "remainingShortTerm", "datedRemoved", "datedPurged",
+        "purgePending", "durationMs", ...Object.values(REPORT_REASON_KEYS)]) {
         if (typeof raw[key] === "number" && Number.isFinite(raw[key]) && raw[key] >= 0) safe[key] = raw[key];
       }
       for (const key of ["previewUnchanged", "repeatedCommitUnchanged", "sourceMessagesUnchanged", "corpusComplete"]) {
