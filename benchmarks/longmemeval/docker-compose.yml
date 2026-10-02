@@ -48,12 +48,6 @@ services:
   tika:
     container_name: aiqsa-memory-benchmark-second-tika
 
-  toolhive-runtime:
-    container_name: aiqsa-memory-benchmark-second-toolhive
-    profiles: ["benchmark-disabled"]
-    user: "65532:65532"
-    volumes: !override []
-
   postgres:
     container_name: aiqsa-memory-benchmark-second-postgres
     environment:
@@ -86,12 +80,6 @@ networks:
     ipam: !override
       config:
         - subnet: 192.168.112.0/24
-  mcp-control:
-    name: aiqsa-memory-benchmark-second-mcp-control
-    internal: true
-    ipam: !override
-      config:
-        - subnet: 192.168.113.0/24
   parser-control:
     name: aiqsa-memory-benchmark-second-parser-control
     internal: true
