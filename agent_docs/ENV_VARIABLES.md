@@ -5,7 +5,7 @@ Scope: Environment ownership, secret rotation, and Compose selection.
 
 ## Canonical Sources
 
-[Examples](../.env.example), [production](../compose.yaml)/[development Compose](../docker-compose.dev.yml), and parsers/tests own keys, defaults, validation and ceilings; update together. [Configure](../scripts/configure.sh) creates secrets once, preserving `.env`. Prose owns operator/security contracts; malformed security settings fail closed. Infrastructure owns provisioning.
+[Examples](../.env.example), [production](../compose.yaml)/[development Compose](../docker-compose.dev.yml), and parsers/tests own keys, defaults, validation and ceilings; update together. [`aiqsa.sh configure`](../aiqsa.sh) creates secrets once, preserving `.env`. Prose owns operator/security contracts; malformed security settings fail closed. Infrastructure owns provisioning.
 
 Mutable provider/Search credentials/configuration belong in encrypted database records. Administrator-owned Agent limits default Off, independent of Workspace networking. Environment supplies installation wiring and bounded policy/recovery inputs. Roles receive only consumed authority: parsers no data/provider credentials; runner only its internal token/runtime policy; maintenance database/runner access without object/provider credentials; restore review no provider credentials or ordinary execution.
 
