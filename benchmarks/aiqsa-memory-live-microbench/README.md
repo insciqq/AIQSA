@@ -2,22 +2,17 @@
 
 This is a separate, non-LongMemEval, non-leaderboard qualification. It creates
 one disposable user and exercises the ordinary HTTP user flow: thirteen source
-chats, thirteen real model sends, automatic history/fact learning, the unchanged
-production Dream scheduler and source threshold, a Qwen HYBRID rebuild, and
-three isolated recall sends. It never inserts a fact or pattern directly and
+chats, thirteen real model sends, automatic history/fact learning, a Qwen HYBRID
+rebuild, and two isolated recall sends. It never inserts a fact directly and
 never lowers a product threshold.
 
-The thirteen source messages intentionally use thirteen independent chats.
-This keeps the live source flow within a small 10–15-message budget and gives
-the unchanged eight-evidence-chat Dream trigger bounded tolerance for ordinary
-zero-observation or supporting-only extraction. The complete paid flow is
-sixteen sends.
+Each source message uses its own chat, which keeps the live source flow within a
+small 10–15-message budget. The complete paid flow is fifteen sends.
 
 The gate requires every run to avoid `DEGRADED`, every background job to settle
-successfully, one source-grounded PATTERN with at least three distinct direct
-sources, that PATTERN to enter the Dream recall context, and all three custom
-semantic answer checks to pass. Results are ignored, mode-0600 local audit
-artifacts; this benchmark has no official oracle and makes no SOTA claim.
+successfully, every learned fact to rest only on direct user evidence, and both
+custom semantic answer checks to pass. Results are ignored, mode-0600 local
+audit artifacts; this benchmark has no official oracle and makes no SOTA claim.
 
 Use only the disposable benchmark compose stack and the exact local provider
 profile selected by the operator:

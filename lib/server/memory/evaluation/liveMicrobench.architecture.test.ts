@@ -33,12 +33,14 @@ describe("AIQSA Memory live microbench contract", () => {
   });
 
   it("scores paraphrases by required semantic anchors without exact prose", () => {
-    const dream = liveScenario.recalls.find(({ id }) => id === "dream-routine")!;
+    const tablecloth = liveScenario.recalls.find(({ id }) => id === "tablecloth")!;
+    expect(evaluateLiveRecall(tablecloth, "Your booth is covered with a TEAL cloth."))
+      .toEqual({ matchedGroups: 1, passed: true, requiredGroups: 1 });
+    expect(evaluateLiveRecall(tablecloth, "I do not know.").passed).toBe(false);
     expect(evaluateLiveRecall(
-      dream,
-      "You tend to prepare in the early morning: Riverside, Harbor, and Spring support it."
-    )).toEqual({ matchedGroups: 4, passed: true, requiredGroups: 4 });
-    expect(evaluateLiveRecall(dream, "You prepare early for Riverside.").passed).toBe(false);
+      { ...tablecloth, requiredAnswerGroups: [["teal"], ["riverside"]] },
+      "A teal cloth."
+    )).toEqual({ matchedGroups: 1, passed: false, requiredGroups: 2 });
   });
 
   it("confines paid traffic and artifacts to the disposable stack", () => {
