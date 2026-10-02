@@ -11,9 +11,9 @@ test("MCP setup edits inline and expanded with one draft, selection and no impli
   await page.goto("/admin?section=mcp");
   await page.getByRole("button", { name: "New server" }).click();
   const sheet = page.getByRole("dialog", { name: "New server" });
-  const editor = page.getByRole("textbox", { name: "Configuration JSON, URL, or install command" });
+  const editor = page.getByRole("textbox", { name: "Configuration JSON or URL" });
   await expect(editor).toBeFocused();
-  await editor.fill("npx -y @example/mcp@latest");
+  await editor.fill("https://mcp.example.test/api");
   await expect(sheet.getByRole("button", { name: "Format", exact: true })).toBeDisabled();
   const value = JSON.stringify({ mcpServers: { example: { url: "https://mcp.example.test/api", note: "long value ".repeat(100) } } });
   await editor.fill(value);
