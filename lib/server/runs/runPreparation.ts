@@ -65,6 +65,7 @@ import { createProviderPreviewRuntimeBinding } from "../providers/runtimeFactory
 import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../providers/memoryActionAnswer";
 import { memorySearchTool, type MemorySearchSnapshot } from "../memory/search/contract";
 import { hasExplicitMemoryCommandBoundary } from "../memory/actions/actionAdmission";
+import { logEvent } from "../observability";
 import type {
   NormalizedRunRequest,
   ProviderAdapter,
@@ -2098,11 +2099,21 @@ async function prepareRunWith(
   const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
   const memoryStandingEligible = !project && !agent && resolvedChatMode.mode === "NORMAL" &&
     !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content));
-  const memorySearch = memoryStandingEligible && body?.tools !== "none" &&
+  const memorySearchAdmission = memoryStandingEligible && body?.tools !== "none" &&
     modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
       modelId: executionModelId, provider: executionProvider
-    }) === true && deps.memorySearchAdmission
-    ? await deps.memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null) : null;
+    }) === true ? deps.memorySearchAdmission : undefined;
+  let memorySearch: MemorySearchSnapshot | null = null;
+  if (memorySearchAdmission) {
+    try {
+      memorySearch = await memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null);
+    } catch {
+      // Nothing is frozen before acceptance: the run proceeds without the
+      // optional tool, standing preparation is unchanged, and users see nothing.
+      logEvent("service_operation", { subsystem: "memory_search", stage: "preflight",
+        outcome: "degraded", action: "degrade", code: "memory_search_admission_skipped" });
+    }
+  }
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
