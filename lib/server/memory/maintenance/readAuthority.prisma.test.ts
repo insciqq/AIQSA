@@ -2,23 +2,37 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
-  createAutomaticMaintenanceFact, createMaintenanceMessage, createMaintenanceOwner, deleteMaintenanceOwner,
-  drainMaintenanceForgetPurges, relearnMaintenanceFact, settleMaintenanceJob, type MaintenanceFixtureMessage
+  addMaintenanceEvidence, createAutomaticMaintenanceFact, createMaintenanceMessage, createMaintenanceOwner,
+  deleteMaintenanceOwner, drainMaintenanceForgetPurges, relearnMaintenanceFact, settleMaintenanceJob,
+  type MaintenanceFixtureMessage
 } from "@/tests/support/memoryMaintenance";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import { fuseMemoryRetrievalCandidates, planMemoryRetrieval } from "../../../domain/memory/retrieval";
 import { prisma } from "../../prisma";
 import { MemoryPreparingRunConflictError } from "../../runs/preparingRun";
 import { resolvePreparingMemoryItem } from "../../runs/preparingMemoryItems";
 import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
+import { createExplicitMemoryService } from "../explicit/service";
 import type { MemoryFactCandidateDependency } from "../learning/extraction/contract";
 import { memoryFactDependenciesAreValid, persistMemoryFactDependencies } from "../learning/dependencies/repository";
+import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
+import { createMemoryLifecycleService } from "../lifecycle/service";
+import { memoryForgetPeerCascadeCount } from "../lifecycle/sourcePreservation";
+import { createPrismaMemoryMutationAuthorizationRepository } from "../persistence/authorizations";
+import { loadPersonalEligibleFactVersionIds } from "../persistence/eligibility";
+import { memoryPersistenceFailureCode } from "../persistence/errors";
+import { createPrismaMemoryFactRepository } from "../persistence/facts";
 import {
   MEMORY_LEXICAL_ANALYSIS_PROFILE, MEMORY_LEXICAL_CHUNKING_VERSION, MEMORY_LEXICAL_NORMALIZATION_VERSION,
   MEMORY_LEXICAL_RETRIEVAL_PIPELINE_VERSION
 } from "../persistence/lexical";
+import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { createMemorySuppressionInTransaction } from "../persistence/suppressions";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
+import { MEMORY_PURGE_REQUIRED_CONTRIBUTORS } from "../purge/contract";
+import { registerMemoryDeletionContributors } from "../purge/leaves";
+import { MemoryDeletionContributorRegistry } from "../purge/registry";
 import { createPrismaLocalMemoryRetrievalRepository } from "../retrieval/localRepository";
 import { createMemoryNativeFactSearchPlan } from "../retrieval/nativeFactSearch";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
@@ -137,6 +151,31 @@ const sourceFences: Readonly<Record<string, (owner: Owner, source: MaintenanceFi
     await prisma.chat.update({ where: { id: chatId }, data: { activeLeafMessageId: edited.id, memorySourceRevision: { increment: 1 } } });
   }
 };
+
+/** The owner's confirmed Forget through the production lifecycle service. */
+async function forgetThroughLifecycle(userId: string, fact: FactRef):
+  Promise<Readonly<{ cascadedPeers: number }> | Readonly<{ failure: string }>> {
+  const authorizationRepository = createPrismaMemoryMutationAuthorizationRepository(prisma);
+  const readRepository = createPrismaExplicitMemoryRepository(prisma);
+  const explicit = createExplicitMemoryService({ authorizationRepository, readRepository,
+    factRepository: createPrismaMemoryFactRepository(keyring, prisma), scopeRepository: createPrismaMemoryScopeRepository(prisma) });
+  const registry = new MemoryDeletionContributorRegistry({ operation: "FORGET_PURGE", requirements: MEMORY_PURGE_REQUIRED_CONTRIBUTORS });
+  registerMemoryDeletionContributors(registry);
+  const lifecycle = createMemoryLifecycleService({ authorizationRepository, readRepository,
+    mutationRepository: createPrismaMemoryLifecycleRepository(keyring, registry, prisma) });
+  const { mutationAuthorizationId } = await explicit.mintAuthorization(userId, { action: "FORGET",
+    confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, expectedTargetVersionId: fact.currentVersionId,
+    requestNonce: randomUUID(), targetFactId: fact.factId });
+  return lifecycle.forget(userId, fact.factId, { expectedVersionId: fact.currentVersionId, mutationAuthorizationId })
+    .then((response) => ({ cascadedPeers: memoryForgetPeerCascadeCount(response) }), (error: unknown) => {
+      const failure = memoryPersistenceFailureCode(error);
+      if (failure === null) throw error;
+      return { failure };
+    });
+}
+async function eligible(userId: string, versionId: string): Promise<boolean> {
+  return (await loadPersonalEligibleFactVersionIds(prisma, userId, [versionId])).has(versionId);
+}
 
 /** A removal as policies v1 and v2 committed it: review, exact fences, job FORGET and content removal. */
 async function removeAsEarlierPolicy(userId: string, policyVersion: string, fact: FactRef): Promise<void> {
@@ -281,6 +320,53 @@ describe("dependent fact authority after automatic cleanup", () => {
     expect(await readable(owner, dependent)).toEqual(visible);
     await ownerForget(owner.userId, source);
     expect(await readable(owner, dependent)).toEqual(hidden);
+  });
+});
+
+describe("owner Forget beside a maintenance-removed source", () => {
+  const sister = "She is my only sister.";
+  const kettle = "My kettle is black.";
+
+  it("cascades a peer that loses its removed source through a message the Forget fences", async () => {
+    const owner = await reader();
+    const first = await createMaintenanceMessage(owner.userId, "Anna visited me yesterday.");
+    const text = `Anna came by again today. ${sister} ${kettle}`;
+    const second = await createMaintenanceMessage(owner.userId, text);
+    const source = await createAutomaticMaintenanceFact(owner.userId, [{ statement: first.text, source: first, usefulness: "EPISODIC" }]);
+    await addMaintenanceEvidence(owner.userId, source.currentVersionId, second, { start: 0, end: text.indexOf(sister) - 1 });
+    const peer = { ...await createAutomaticMaintenanceFact(owner.userId, [{ statement: "Anna is my only sister.", source: second,
+      start: text.indexOf(sister), end: text.indexOf(sister) + sister.length, usefulness: "DURABLE" }]), statement: "Anna is my only sister." };
+    const forgotten = await createAutomaticMaintenanceFact(owner.userId, [{ statement: kettle, source: second,
+      start: text.indexOf(kettle), end: text.length, usefulness: "DURABLE" }]);
+    await depend(owner.userId, peer, source.currentVersionId);
+    await removeByMaintenance(owner.userId, source);
+    expect(new Set((await prisma.memoryMaintenanceSuppression.findMany({ where: { userId: owner.userId } }))
+      .map(({ sourceMessageId }) => sourceMessageId))).toEqual(new Set([first.messageId, second.messageId]));
+    expect(await readable(owner, peer)).toEqual(visible);
+    expect(await forgetThroughLifecycle(owner.userId, forgotten)).toEqual({ cascadedPeers: 1 });
+    expect(await prisma.memoryFact.findUnique({ where: { id: forgotten.factId } })).toMatchObject({ state: "FORGOTTEN" });
+    expect(await readable(owner, peer)).toEqual(hidden);
+    expect(await prisma.memoryFactVersion.findUnique({ where: { id: peer.currentVersionId }, select: { state: true } }))
+      .toEqual({ state: "ACTIVE" });
+  });
+
+  it("still refuses a peer loss that the removed source's own fences do not explain", async () => {
+    const owner = await reader();
+    const first = await createMaintenanceMessage(owner.userId, "Anna visited me yesterday.");
+    const text = `${sister} ${kettle}`;
+    const second = await createMaintenanceMessage(owner.userId, text);
+    const source = await createAutomaticMaintenanceFact(owner.userId, [{ statement: first.text, source: first, usefulness: "EPISODIC" }]);
+    // Legacy-shaped peer support in the fenced message cannot be preserved.
+    const peer = await createAutomaticMaintenanceFact(owner.userId, [{ statement: "Anna is my only sister.", source: second,
+      start: 0, end: sister.length, legacy: true, usefulness: "DURABLE" }]);
+    const forgotten = await createAutomaticMaintenanceFact(owner.userId, [{ statement: kettle, source: second,
+      start: text.indexOf(kettle), end: text.length, usefulness: "DURABLE" }]);
+    await depend(owner.userId, peer, source.currentVersionId);
+    await removeByMaintenance(owner.userId, source);
+    expect(await eligible(owner.userId, peer.currentVersionId)).toBe(true);
+    expect(await forgetThroughLifecycle(owner.userId, forgotten)).toEqual({ failure: "memory_forget_peer_ineligible_after_fence" });
+    expect(await prisma.memoryFact.findUnique({ where: { id: forgotten.factId } })).toMatchObject({ state: "ACTIVE" });
+    expect(await eligible(owner.userId, peer.currentVersionId)).toBe(true);
   });
 });
 
