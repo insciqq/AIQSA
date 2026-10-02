@@ -139,6 +139,27 @@ describe("personal MCP handlers", () => {
     expect(input.createPersonalServer).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "https://user:pass@mcp.example.test/mcp",
+    "https://user@mcp.example.test/mcp",
+    "https://mcp.example.test/mcp?x=1",
+    "https://mcp.example.test/mcp#a"
+  ])("rejects %s as url_invalid before any limit check, discovery or validation", async (url) => {
+    const input = deps();
+    const personalCreationLimit = vi.fn(async () => null);
+    const prepareOAuthDraft = vi.fn(async (draft: McpDraftConfiguration) => ({ authorizationOrigins: [], draft }));
+    input.repository.personalCreationLimit = personalCreationLimit;
+    const response = await createPersonalMcpCreateHandler({ ...input, prepareOAuthDraft })(new Request("https://aiqsa.test/api/me/mcp-connections", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ auth: { mode: "oauth" }, name: "Fixture", url })
+    }));
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "url_invalid", issues: [{ code: "url_invalid", path: "url" }] });
+    expect(personalCreationLimit).not.toHaveBeenCalled();
+    expect(prepareOAuthDraft).not.toHaveBeenCalled();
+    expect(input.createPersonalServer).not.toHaveBeenCalled();
+  });
+
   it("starts runtime preparation without waiting for it and returns the safe persisted state", async () => {
     const input = deps();
     input.updateUserServer.mockResolvedValueOnce({ kind: "ok", value: {

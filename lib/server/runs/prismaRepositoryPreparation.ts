@@ -2658,7 +2658,8 @@ async function assertCurrentKnowledgeAdmission(
   }
 }
 
-async function assertCurrentMcpAdmission(
+/** Rechecks an accepted run's MCP bindings at finalization; exported for its SQL-fence tests. */
+export async function assertCurrentMcpAdmission(
   tx: Prisma.TransactionClient,
   input: Readonly<{
     bindings: readonly McpRunPlanBinding[] | undefined;

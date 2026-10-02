@@ -196,6 +196,35 @@ async function setup(input: { accepted: string[]; draftValidator?: (remote: McpD
   return { call, currentPlan, ownerId, peer, preference, runtime, serverId, storage, storedAuthorization };
 }
 
+describe("personal MCP static secret at rest", () => {
+  it("stores the created token only inside the encrypted preference envelope", async () => {
+    const secret = `synthetic-at-rest-${randomUUID()}`;
+    const token = `Bearer ${secret}`;
+    const fixture = await setup({ accepted: [token] });
+    const { ownerId, peer, serverId } = fixture;
+    try {
+      const preference = await fixture.preference();
+      expect(preference.personalConfigEnvelope).toEqual(expect.any(String));
+      expect(await fixture.storedAuthorization()).toBe(token);
+      const rows = {
+        grants: await prisma.mcpGrant.findMany({ where: { serverId } }),
+        preference,
+        revisions: await prisma.mcpRevision.findMany({ where: { serverId } }),
+        server: await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } })
+      };
+      expect(rows.server.ownerUserId).toBe(ownerId);
+      expect(rows.revisions).not.toHaveLength(0);
+      const stored = JSON.stringify(rows);
+      for (const form of [secret, Buffer.from(secret).toString("base64"), Buffer.from(secret).toString("base64url"), Buffer.from(secret).toString("hex")]) {
+        expect(stored).not.toContain(form);
+      }
+    } finally {
+      await fixture.runtime.stop();
+      await peer.close();
+    }
+  });
+});
+
 describe("personal MCP credential replacement", () => {
   it("rotates a static token in place: future messages use it, an accepted run's later call never reaches upstream", async () => {
     const fixture = await setup({ accepted: ["Bearer token-a"] });
