@@ -334,7 +334,7 @@ describe("personal MCP tenant fence", () => {
     await expectRejected((tx) => tx.mcpSharedRuntime.create({ data: { serverId } }), boundary);
     await expectRejected((tx) => tx.mcpToolAccessPolicy.create({ data: { serverId, toolName: "read" } }), boundary);
     await expectRejected((tx) => tx.mcpActivationJob.create({ data: {
-      draftHash: "integrity-fence", serverId, sharedConfigVersion: 0, workloadToken: randomUUID().replaceAll("-", "")
+      draftHash: "integrity-fence", serverId, sharedConfigVersion: 0
     } }), boundary);
     const preference = await prisma.mcpUserServer.findUniqueOrThrow({ where: { userId_serverId: { serverId, userId: ownerId } } });
     await expectRejected((tx) => tx.mcpUserServer.update({ data: { userId: otherId }, where: { id: preference.id } }), boundary);
@@ -371,7 +371,7 @@ describe("personal MCP tenant fence", () => {
     await prisma.projectMcpBinding.create({ data: { projectId: project.id, serverId: installationId } });
     await prisma.mcpSharedRuntime.create({ data: { serverId: installationId } });
     const job = await prisma.mcpActivationJob.create({ data: {
-      draftHash: "integrity-move", serverId: installationId, sharedConfigVersion: 0, workloadToken: randomUUID().replaceAll("-", "")
+      draftHash: "integrity-move", serverId: installationId, sharedConfigVersion: 0
     } });
     const preference = await prisma.mcpUserServer.create({ data: { serverId: installationId, userId: otherId } });
     const connection = await prisma.mcpOAuthConnection.create({ data: {

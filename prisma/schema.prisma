@@ -3635,7 +3635,7 @@ model McpActivationJob {
   errorCode           String?
   issues              Json?
   leaseId             String?
-  workloadToken       String             @unique
+  workloadToken       String?            @unique
   requestedAt         DateTime           @default(now())
   startedAt           DateTime?
   completedAt         DateTime?
