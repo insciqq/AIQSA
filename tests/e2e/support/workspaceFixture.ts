@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { expect, type Page } from "@playwright/test";
 import { providerTemplateIds } from "../../../lib/domain/providerTemplates";
 import { parseChatRoutePath } from "../../../lib/domain/chatRoute";
+import { keepAccountMcpDefault } from "./chatDefaults";
 
 /** Workspace's admitted contract and tool schemas exceed Fake QSA's 8k seed
  * window. Bound only this disposable fake fixture; normal budgeting stays on.
@@ -35,6 +36,7 @@ export async function prepareWorkspaceFakeContext(prisma: PrismaClient): Promise
 /** Explicit per-composer modes prevent unrelated real routing/search/Skill
  * selection on a disposable stand that also hosts provider checks. */
 export async function configureWorkspaceOnlyTools(page: Page): Promise<void> {
+  await keepAccountMcpDefault(page);
   await page.getByRole("button", { name: "Change MCP mode", exact: true }).click();
   await page.getByRole("menu", { name: "MCP tools", exact: true }).getByRole("menuitemradio", { name: /^Off/u }).click();
   await page.getByRole("button", { name: "Change Skills mode", exact: true }).click();

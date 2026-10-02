@@ -5,6 +5,7 @@ import { PrismaClient } from "@prisma/client";
 import { expect, test, type Page } from "@playwright/test";
 import type { AdminMcpServer } from "../../lib/contracts/mcp";
 import { assistantContentWithText } from "./shell/thread";
+import { keepAccountMcpDefault } from "./support/chatDefaults";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 import {
@@ -109,6 +110,8 @@ test("MCP tools changed on the server stay unavailable with a reason until Test 
   let serverId: string | null = null;
   try {
     await signInWithLocalToken(page);
+    // Load all is chosen for these chats only, not as the account's default.
+    await keepAccountMcpDefault(page);
     // Recalled past chats would also count against the 8k fake model. Memory is
     // not under test; the account's recall settings are restored afterwards.
     const memory = await page.request.get("/api/me/memory/settings");
