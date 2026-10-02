@@ -401,13 +401,21 @@ describe("doctor", () => {
       f.writeEnv({ AIQSA_S3_ENDPOINT: "https://s3.example.com" });
       f.rules.push({ match: "storage-init status", exit: 3 });
     }, expected: [/INFO storage: no storage marker on the external endpoint yet/u] },
-    { name: "unavailable Workspace runner", status: 4, setup: (f) => {
+    { name: "unreachable storage", status: 4, setup: (f) => {
+      f.writeEnv();
+      f.rules.push({ match: "storage-init status", exit: 1, stdout: "storage-init: refused ECONNREFUSED\n" });
+    }, expected: [/FAIL storage: object storage is unreachable \(ECONNREFUSED\)/u] },
+    { name: "failing storage status", status: 4, setup: (f) => {
+      f.writeEnv();
+      f.rules.push({ match: "storage-init status", exit: 1, stdout: "storage-init: refused storage_configuration_incomplete\n" });
+    }, expected: [/ {2}storage-init: refused storage_configuration_incomplete\nFAIL storage: storage-init status failed \(see the output above\)/u] },
+    { name: "unavailable Workspace runner", status: 0, setup: (f) => {
       f.kvmDevice(0o660);
       f.writeEnv({ COMPOSE_PROFILES: "workspace", AIQSA_WORKSPACE_RUNNER_URL: "http://workspace-runner:4310",
         AIQSA_WORKSPACE_RUNNER_TOKEN: secretOf("TOKEN"), AIQSA_KVM_GID: String(statSync(f.kvm).gid) });
       f.rules.push({ match: " ps -a --format", stdout: `${readyRows}workspace-runner|running|healthy|0|c8\n` },
         { match: " exec -T workspace-runner node", stdout: "200 unavailable workspace_runtime_unavailable\n" });
-    }, expected: [/FAIL workspace-runner: runtime unavailable \(workspace_runtime_unavailable\)/u] }
+    }, expected: [/WARN workspace-runner: runtime unavailable \(workspace_runtime_unavailable\); Workspace is unavailable/u] }
   ];
 
   it.each(configCases)("configuration and stack check: $name", ({ setup, expected, status }) => {
@@ -436,6 +444,19 @@ describe("doctor", () => {
     expect(result.output).not.toContain(secret);
     expect(result.output).not.toContain("\r");
     expect(existsSync(fixture.file("pwned"))).toBe(false);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("explains an unreadable .env instead of a raw bash error", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv({}, 0o000);
+    for (const command of ["doctor", "up"]) {
+      const result = fixture.run([command]);
+      expect(result.status, command).toBe(1);
+      expect(result.stderr).toMatch(/^\.env is not readable by \S+ \(owner \S+, mode 0\)\.$/mu);
+      expect(result.stderr).toContain('sudo chown "$(id -un)": .env');
+      expect(result.output).not.toMatch(/Permission denied|line \d+:/u);
+    }
+    expect(fixture.dockerLog).not.toContain(" up -d");
   });
 });
 
@@ -473,13 +494,28 @@ describe("up and install", () => {
   it("exits 5 on a wait timeout and shows the service that is still starting", () => {
     const fixture = new Fixture();
     fixture.writeEnv();
+    // Compose lists ps rows by container name: the created app comes first.
     fixture.rules.push(
       { match: " up -d ", exit: 1, stderr: "timeout waiting for services\n" },
-      { match: " ps -a --format", stdout: "migrate-bootstrap|exited||0|c2\nopensearch|running|starting|0|c4\napp|created||0|c1\n" }
+      { match: " ps -a --format", stdout: "app|created||0|c1\nmigrate-bootstrap|exited||0|c2\nopensearch|running|starting|0|c4\n" }
     );
     const result = fixture.run(["up", "--timeout", "5"]);
     expect(result.status).toBe(5);
+    expect(result.stderr).toContain("Last 60 log lines of opensearch:");
     expect(fixture.dockerLog).toContain("logs --no-color --tail 60 opensearch");
+    expect(fixture.dockerLog).not.toContain("logs --no-color --tail 60 app");
+  });
+
+  it.each([
+    ["an exited service before a still starting one", "app|created||0|c1\nmemory-worker|exited||137|c5\nopensearch|running|starting|0|c4\n", "memory-worker"],
+    ["a running one-shot before a created service", "app|created||0|c1\nmigrate-bootstrap|running||0|c2\n", "migrate-bootstrap"],
+    ["a created service when nothing else is pending", "app|created||0|c1\npostgres|running|healthy|0|c3\n", "app"]
+  ])("diagnoses a timeout by rank: %s", (_name, rows, service) => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    fixture.rules.push({ match: " up -d ", exit: 1, stderr: "timeout\n" }, { match: " ps -a --format", stdout: rows });
+    expect(fixture.run(["up"]).status).toBe(5);
+    expect(fixture.dockerLog.match(/logs --no-color --tail 60 (\S+)/u)?.[1]).toBe(service);
   });
 
   it.each([
@@ -511,6 +547,32 @@ describe("up and install", () => {
     expect(second.stdout).toContain(".env already exists; its configuration and secrets were preserved.");
     expect(readFileSync(fixture.file(".env"), "utf8")).toBe(body);
     expect(fixture.dockerLog.match(/ up -d --remove-orphans --wait/gu)).toHaveLength(2);
+  });
+
+  it("exits 5, not 4, when the post-start check fails after a successful start", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    fixture.rules.push({ match: "storage-init status", exit: 4 });
+    const result = fixture.run(["install", "--yes"]);
+    expect(result.status).toBe(5);
+    expect(result.stdout).toContain("FAIL storage: the storage marker is invalid");
+    expect(result.stderr).toContain("The stack started but the checks above failed");
+    expect(fixture.dockerLog).toContain(" up -d --remove-orphans --wait");
+  });
+
+  it("treats a Workspace runner that is not ready as a warning during and after the start", () => {
+    const fixture = new Fixture();
+    fixture.kvmDevice(0o660);
+    const body = fixture.writeEnv({ COMPOSE_PROFILES: "workspace", AIQSA_WORKSPACE_RUNNER_URL: "http://workspace-runner:4310",
+      AIQSA_WORKSPACE_RUNNER_TOKEN: secretOf("TOKEN"), AIQSA_KVM_GID: String(statSync(fixture.kvm).gid) });
+    fixture.rules.push({ match: " ps -a --format", stdout: `${readyRows}workspace-runner|running|healthy|0|c8\n` },
+      { match: " exec -T workspace-runner node", stdout: "200 unavailable workspace_runtime_unavailable\n" });
+    const result = fixture.run(["install", "--yes"]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("Workspace is not ready; chat and other features work.");
+    expect(result.stdout.match(/WARN workspace-runner: runtime unavailable/gu)).toHaveLength(2);
+    expect(result.stdout).not.toContain("FAIL");
+    expectNoSecrets(result.output, body);
   });
 
   it.each([
@@ -562,6 +624,21 @@ describe("upgrade", () => {
     git(seed, "push", "--quiet", "origin", "main");
   }
 
+  // Publishes tagged releases after the installation's v0.3.0.
+  function tagReleases(seed: string, git: (cwd: string, ...args: string[]) => string, ...versions: string[]): void {
+    for (const version of versions) {
+      writeFileSync(path.join(seed, "package.json"), `{\n  "version": "${version}"\n}\n`);
+      git(seed, "commit", "--quiet", "-am", `release ${version}`);
+      git(seed, "tag", `v${version}`);
+    }
+    git(seed, "push", "--quiet", "--tags", "origin", "main");
+  }
+
+  function expectUnchanged(fixture: Fixture, git: (cwd: string, ...args: string[]) => string, before: string): void {
+    expect(git(fixture.project, "rev-parse", "HEAD")).toBe(before);
+    expect(fixture.dockerLog).not.toMatch(/ (pull|up|down)( |$)/mu);
+  }
+
   it.each([
     ["a dirty tree", (f: Fixture) => writeFileSync(f.file("compose.yaml"), "services: {x: {}}\n"), [], /local changes to tracked files/u],
     ["the legacy storage profile", (f: Fixture) => f.writeEnv({ COMPOSE_PROFILES: "storage-migration" }), [], /storage-migration/u],
@@ -610,6 +687,107 @@ describe("upgrade", () => {
     expect(readFileSync(fixture.file("package.json"), "utf8")).toContain("0.3.1");
     expect(fixture.dockerLog).toMatch(/ pull --quiet\n(?:.*\n)*.* up -d --remove-orphans --wait --wait-timeout 600\n/u);
     expectNoSecrets(result.output, body);
+    expect(readdirSync(path.join(fixture.root, "tmp"))).toEqual([]);
+  });
+
+  it("exits 5 when the post-start check fails after the upgrade started the stack", () => {
+    const { fixture, git, seed } = repository();
+    release(seed, git);
+    fixture.writeEnv();
+    fixture.rules.push({ match: "storage-init status", exit: 4 });
+    const result = fixture.run(["upgrade", "--backup-confirmed"]);
+    expect(result.status).toBe(5);
+    expect(fixture.dockerLog).toContain(" up -d --remove-orphans --wait");
+  });
+
+  it("refuses a detached HEAD without --to and names the flag", () => {
+    const { fixture, git, seed } = repository();
+    tagReleases(seed, git, "0.3.1");
+    git(fixture.project, "checkout", "--quiet", "--detach", "v0.3.0");
+    fixture.writeEnv();
+    const before = git(fixture.project, "rev-parse", "HEAD");
+    const result = fixture.run(["upgrade", "--backup-confirmed"]);
+    expect(result.status).toBe(6);
+    expect(result.stderr).toContain("Installations on a detached HEAD always pass the release tag: ./aiqsa.sh upgrade --to vX.Y.Z");
+    expectUnchanged(fixture, git, before);
+  });
+
+  it("shows git's reason and the safe.directory remedy when git refuses the checkout", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    fixture.tool("git", [
+      'if [ "$1" = --version ]; then echo "git version 2.43.0"; exit 0; fi',
+      `echo "fatal: detected dubious ownership in repository at '$PWD'" >&2`,
+      'echo "To add an exception for this directory, call:" >&2',
+      "exit 128"
+    ].join("\n"));
+    const result = fixture.run(["upgrade", "--backup-confirmed"]);
+    expect(result.status).toBe(6);
+    expect(result.stderr).toContain("fatal: detected dubious ownership in repository at");
+    expect(result.stderr).toContain(`git config --global --add safe.directory ${fixture.project}`);
+    expect(result.stderr).not.toContain("is not a git checkout");
+  });
+
+  it.each([
+    ["an app image pinned to the current release", { AIQSA_IMAGE: "ghcr.io/insciqq/aiqsa:0.3.0" }, {}, [],
+      [/pin another release than 0\.3\.1: AIQSA_IMAGE=ghcr\.io\/insciqq\/aiqsa:0\.3\.0 \(from \.env\)/u, /^ {2}AIQSA_IMAGE=ghcr\.io\/insciqq\/aiqsa:0\.3\.1$/mu]],
+    ["a minor-version pin from the process environment", {}, { AIQSA_IMAGE: "ghcr.io/insciqq/aiqsa:0.2" }, [],
+      [/AIQSA_IMAGE=ghcr\.io\/insciqq\/aiqsa:0\.2 \(from the process environment\)/u, /^ {2}AIQSA_IMAGE=ghcr\.io\/insciqq\/aiqsa:0\.3\.1$/mu]],
+    ["a runner image pinned to the current release", { AIQSA_WORKSPACE_RUNNER_IMAGE: "ghcr.io/insciqq/aiqsa:workspace-runner-0.3.0" }, {}, [],
+      [/^ {2}AIQSA_WORKSPACE_RUNNER_IMAGE=ghcr\.io\/insciqq\/aiqsa:workspace-runner-0\.3\.1$/mu]],
+    ["unpinned images on an older --to release", {}, {}, ["--to", "v0.3.1"],
+      [/--to v0\.3\.1 is older than the newest release v0\.3\.2, but the images are not pinned/u,
+        /Unpinned images follow the newest release/u, /^ {2}AIQSA_IMAGE=ghcr\.io\/insciqq\/aiqsa:0\.3\.1$/mu]],
+    ["an explicit :latest image on an older --to release", { AIQSA_IMAGE: "ghcr.io/insciqq/aiqsa:latest" }, {}, ["--to", "v0.3.1"],
+      [/^ {2}AIQSA_IMAGE=ghcr\.io\/insciqq\/aiqsa:0\.3\.1$/mu]]
+  ])("refuses %s before the checkout moves", (_name, settings, environment, extra, messages) => {
+    const { fixture, git, seed } = repository();
+    tagReleases(seed, git, "0.3.1", "0.3.2");
+    if (extra.length === 0) {
+      // Without --to the branch upstream is the target: make it v0.3.1.
+      git(seed, "reset", "--quiet", "--hard", "v0.3.1");
+      git(seed, "push", "--quiet", "--force", "origin", "main");
+    }
+    fixture.writeEnv(settings);
+    const before = git(fixture.project, "rev-parse", "HEAD");
+    const result = fixture.run(["upgrade", "--backup-confirmed", ...extra], environment);
+    for (const message of messages) expect(result.stderr).toMatch(message);
+    expect(result.status).toBe(6);
+    expectUnchanged(fixture, git, before);
+  });
+
+  it.each([
+    ["an older --to release with a matching pin", { AIQSA_IMAGE: "ghcr.io/insciqq/aiqsa:0.3.1" }, ["--to", "v0.3.1"], "0.3.1", null],
+    ["an older --to release with a matching minor pin", { AIQSA_IMAGE: "ghcr.io/insciqq/aiqsa:0.3" }, ["--to", "v0.3.1"], "0.3.1", null],
+    ["unpinned images to the newest release", {}, ["--to", "v0.3.2"], "0.3.2", null],
+    ["unpinned images following the branch", {}, [], "0.3.2", null],
+    ["a digest pin", { AIQSA_IMAGE: "ghcr.io/insciqq/aiqsa@sha256:0123456789abcdef" }, ["--to", "v0.3.1"], "0.3.1",
+      /INFO image: AIQSA_IMAGE=ghcr\.io\/insciqq\/aiqsa@sha256:0123456789abcdef \(from \.env\) is a digest or a custom image; match it to the release notes of 0\.3\.1/u],
+    ["a custom registry", { AIQSA_IMAGE: "registry.example.com/aiqsa:0.2.34" }, ["--to", "v0.3.1"], "0.3.1",
+      /INFO image: AIQSA_IMAGE=registry\.example\.com\/aiqsa:0\.2\.34/u]
+  ])("upgrades with %s", (_name, settings, extra, version, info) => {
+    const { fixture, git, seed } = repository();
+    tagReleases(seed, git, "0.3.1", "0.3.2");
+    fixture.writeEnv(settings);
+    const result = fixture.run(["upgrade", "--backup-confirmed", ...extra]);
+    expect(result.status).toBe(0);
+    expect(readFileSync(fixture.file("package.json"), "utf8")).toContain(version);
+    if (info) expect(result.stdout).toMatch(info);
+    else expect(result.stdout).not.toContain("INFO image");
+  });
+
+  it("never appends a key that the process environment provides", () => {
+    const { fixture, git, seed } = repository();
+    release(seed, git);
+    const routingKey = "cHJvdmlkZWQtYnktdGhlLWVudmlyb25tZW50LTAxMjM0NQ==";
+    const body = fixture.writeEnv({ AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: null });
+    const result = fixture.run(["upgrade", "--backup-confirmed", "--add-missing-keys"],
+      { AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: routingKey });
+    expect(result.status).toBe(0);
+    const appended = readFileSync(fixture.file(".env"), "utf8").slice(body.length);
+    expect(values(appended)).toEqual({ AIQSA_NEW_SETTING: "on" });
+    expect(result.stdout).toContain("Keys in .env.example provided by the environment, not .env: AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY");
+    expect(result.output).not.toContain(routingKey);
   });
 
   it("appends missing keys only with --add-missing-keys and to a pinned tag", () => {

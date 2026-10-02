@@ -3,8 +3,10 @@
 #
 # Usage: ./aiqsa.sh <command> [options]; ./aiqsa.sh help lists commands and flags.
 #
-# Exit codes: 0 ok, 1 failure, 2 usage, 3 unsupported host, 4 preflight failed,
-# 5 stack not ready (Compose up failed or the wait timed out), 6 upgrade refused.
+# Exit codes: 0 ok, 1 failure, 2 usage, 3 unsupported host, 4 preflight or
+# doctor check failed (install/up/upgrade: before any container change),
+# 5 stack not ready (Compose up failed, the wait timed out or the post-start
+# check failed), 6 upgrade refused.
 #
 # The project directory is the directory containing this script. Compose
 # chooses the project name (COMPOSE_PROJECT_NAME, else `name:` in compose.yaml).
@@ -171,6 +173,7 @@ env_load() {
   ENV_VALUES=()
   ENV_INVALID_LINES=0
   [[ -f $ENV_FILE ]] || return 0
+  env_readable_or_die
   while IFS= read -r line || [[ -n $line ]]; do
     line=${line%$'\r'}
     [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
@@ -183,6 +186,18 @@ env_load() {
     fi
   done < "$ENV_FILE"
   mask_refresh
+}
+
+# A root-owned .env (for example after `sudo ./aiqsa.sh install`) must not end
+# in a raw bash redirection error.
+env_readable_or_die() {
+  [[ -r $ENV_FILE ]] && return 0
+  local owner mode shown
+  owner=$(stat -c %U -- "$ENV_FILE" 2>/dev/null) || owner=unknown
+  mode=$(stat -c %a -- "$ENV_FILE" 2>/dev/null) || mode=unknown
+  shown=$(display_path "$ENV_FILE")
+  die "$EXIT_FAILURE" "$shown is not readable by $(id -un) (owner $owner, mode $mode)." \
+    "Run ./aiqsa.sh as $owner, or take ownership: sudo chown \"\$(id -un)\": $(printf '%q' "$shown")"
 }
 
 # mask_add KEY VALUE: queues VALUE for masking when KEY looks secret.
@@ -767,18 +782,34 @@ doctor_runner() {
   local answer status state reason
   answer=$(dc exec -T workspace-runner node -e "$RUNNER_PROBE" </dev/null 2>/dev/null | tail -n 1) || answer=unreachable
   read -r status state reason <<< "${answer:-unreachable}"
+  # Workspace is optional for core readiness, so a runtime that is not ready only warns.
   if [[ $status == 200 && $state == ready ]]; then
     check PASS workspace-runner "runtime ready"
   else
-    check FAIL workspace-runner "runtime ${state:-$status}${reason:+ ($reason)}" \
+    check WARN workspace-runner "runtime ${state:-$status}${reason:+ ($reason)}; Workspace is unavailable, everything else works" \
       "docker compose logs --tail $LOG_TAIL_LINES workspace-runner; check $KVM_DEVICE access and AIQSA_KVM_GID."
   fi
 }
 
 doctor_storage() {
-  local code=0 endpoint
-  dc run --rm --no-deps -T storage-init status </dev/null >/dev/null 2>&1 || code=$?
+  local code=0 endpoint output refused
+  ensure_temp_dir
+  output=$TEMP_DIR/storage-status.log
+  dc run --rm --no-deps -T storage-init status </dev/null >"$output" 2>&1 || code=$?
   endpoint=$(env_value AIQSA_S3_ENDPOINT)
+  if (( code == 1 )); then
+    # storage-init prints `storage-init: refused <code>`; only network codes prove unreachability.
+    refused=$(sed -n 's/^storage-init: refused \([A-Za-z0-9_]*\).*$/\1/p' "$output" | head -n 1)
+    case $refused in
+      ECONNREFUSED | ENOTFOUND | EAI_AGAIN | ETIMEDOUT | EHOSTUNREACH | ENETUNREACH | ECONNRESET)
+        check FAIL storage "object storage is unreachable ($refused)" "docker compose logs --tail $LOG_TAIL_LINES seaweedfs" ;;
+      *)
+        tail -n 20 "$output" | mask_stream | sed 's/^/  /'
+        check FAIL storage "storage-init status failed (see the output above)" \
+          "docker compose run --rm --no-deps storage-init status" ;;
+    esac
+    return 0
+  fi
   case $code in
     0) check PASS storage "storage marker valid" ;;
     3) if [[ -n $endpoint && $endpoint != http://minio:9000 ]]; then
@@ -788,7 +819,6 @@ doctor_storage() {
        fi ;;
     4) check FAIL storage "the storage marker is invalid or belongs to another installation" \
       "Do not start writers; check AIQSA_S3_* settings and the project name: docker compose run --rm --no-deps storage-init status" ;;
-    1) check FAIL storage "object storage is unreachable" "docker compose logs --tail $LOG_TAIL_LINES seaweedfs minio" ;;
     *) check FAIL storage "storage-init status failed with exit code $code" ;;
   esac
 }
@@ -979,19 +1009,29 @@ print_stack_table() {
   done <<< "$rows" | mask_stream >&2
 }
 
+# Rank of a ps row as the cause of a failed start; lower is more likely, 0 is no candidate.
+# Compose lists rows by container name, so the rank, not the order, decides.
+service_rank() {
+  local service=$1 state=$2 health=$3 code=$4
+  if [[ $service == migrate-bootstrap && $state == exited && $code != 0 ]]; then printf 1; return; fi
+  if [[ ( $state == exited && $code != 0 ) || $state == restarting || $state == dead || $health == unhealthy ]]; then
+    printf 2; return
+  fi
+  if [[ $health == starting ]] || [[ $state == running && ( $service == migrate-bootstrap || $service == storage-init ) ]]; then
+    printf 3; return
+  fi
+  if [[ $state == created ]]; then printf 4; return; fi
+  printf 0
+}
+
 failing_service() {
-  local rows=$1 service state health code
+  local rows=$1 service state health code rank best=0 chosen=""
   while IFS='|' read -r service state health code _; do
-    if [[ $service == migrate-bootstrap && $state == exited && $code != 0 ]]; then printf '%s' "$service"; return; fi
+    [[ -n $service ]] || continue
+    rank=$(service_rank "$service" "$state" "$health" "$code")
+    if (( rank && ( best == 0 || rank < best ) )); then best=$rank chosen=$service; fi
   done <<< "$rows"
-  while IFS='|' read -r service state health code _; do
-    if [[ ( $state == exited && $code != 0 ) || $state == restarting || $state == dead || $health == unhealthy ]]; then
-      printf '%s' "$service"; return
-    fi
-  done <<< "$rows"
-  while IFS='|' read -r service state health code _; do
-    if [[ $health == starting || $state == created ]]; then printf '%s' "$service"; return; fi
-  done <<< "$rows"
+  printf '%s' "$chosen"
 }
 
 report_stack_failure() {
@@ -1048,10 +1088,9 @@ up_stack() {
     exit "$EXIT_NOT_READY"
   fi
   if profile_enabled workspace; then
-    local saved=$FAIL_COUNT
+    local saved=$WARN_COUNT
     doctor_runner
-    if (( FAIL_COUNT > saved )); then note "Workspace is not ready; chat and other features work."; fi
-    FAIL_COUNT=$saved
+    if (( WARN_COUNT > saved )); then note "Workspace is not ready; chat and other features work."; fi
   fi
   say "AIQSA is ready at $(env_value AIQSA_APP_BASE_URL)." \
     "Administrator: $(env_value AIQSA_INITIAL_ADMIN_EMAIL); the initial password is AIQSA_INITIAL_ADMIN_PASSWORD in $(display_path "$ENV_FILE")."
@@ -1060,6 +1099,15 @@ up_stack() {
 cmd_up() {
   require_linux
   up_stack host+config
+}
+
+# After a successful start: a FAIL means the stack is not ready (exit 5);
+# exit 4 stays reserved for preflight before any container change.
+post_start_check() {
+  doctor_stack 1
+  doctor_summary
+  (( FAIL_COUNT == 0 )) && return 0
+  die "$EXIT_NOT_READY" "The stack started but the checks above failed; fix the FAIL lines and rerun ./aiqsa.sh doctor."
 }
 
 # ---------------------------------------------------------------- doctor command
@@ -1108,9 +1156,7 @@ cmd_install() {
   fi
   FAIL_COUNT=0 WARN_COUNT=0 PASS_COUNT=0
   up_stack config
-  doctor_stack 1
-  doctor_summary
-  (( FAIL_COUNT == 0 )) || exit "$EXIT_PREFLIGHT"
+  post_start_check
   local base_url
   base_url=$(env_value AIQSA_APP_BASE_URL)
   say "" "Next steps:" \
@@ -1127,6 +1173,106 @@ cmd_install() {
 git_in() { run git -C "$PROJECT_DIR" "$@"; }
 
 refuse() { die "$EXIT_REFUSED" "Upgrade refused: $1" "${@:2}"; }
+
+# Refuses with git's own reason when the checkout cannot be used.
+git_checkout_guard() {
+  local errors reason directory
+  ensure_temp_dir
+  errors=$TEMP_DIR/git-rev-parse.err
+  git_in rev-parse --is-inside-work-tree >/dev/null 2>"$errors" && return 0
+  reason=$(head -n 1 "$errors")
+  case ${reason,,} in
+    *"dubious ownership"* | *safe.directory*)
+      directory=$(printf '%q' "$PROJECT_DIR")
+      refuse "git refuses to use $PROJECT_DIR because another user owns it: $reason" \
+        "Run ./aiqsa.sh as the owner of the checkout, or trust it with: git config --global --add safe.directory $directory" ;;
+    *"not a git repository"*)
+      refuse "$PROJECT_DIR is not a git checkout: $reason" "Update it as described in README.md." ;;
+    *)
+      refuse "git cannot read $PROJECT_DIR: ${reason:-git rev-parse failed without an error message}" ;;
+  esac
+}
+
+readonly OFFICIAL_IMAGE=ghcr.io/insciqq/aiqsa
+
+# image_kind KEY VALUE: sets REPLY to unpinned, digest, custom or the pinned
+# version (X.Y.Z or X.Y). Only the official repository's release tags compare.
+image_kind() {
+  local key=$1 value=$2 repository tag prefix=""
+  [[ $key == AIQSA_WORKSPACE_RUNNER_IMAGE ]] && prefix=workspace-runner-
+  if [[ -z $value ]]; then REPLY=unpinned; return; fi
+  if [[ $value == *@* ]]; then REPLY=digest; return; fi
+  repository=$value tag=latest
+  if [[ ${value##*/} == *:* ]]; then repository=${value%:*} tag=${value##*:}; fi
+  [[ $repository == "$OFFICIAL_IMAGE" ]] || { REPLY=custom; return; }
+  if [[ $tag == "${prefix:-latest}" || $tag == "${prefix%-}" ]]; then REPLY=unpinned; return; fi
+  tag=${tag#"$prefix"}
+  if [[ -n $prefix && $tag == "${value##*:}" ]]; then REPLY=custom; return; fi
+  if [[ $tag =~ ^[0-9]+\.[0-9]+(\.[0-9]+(-[0-9A-Za-z.-]+)?)?$ ]]; then REPLY=$tag; else REPLY=custom; fi
+}
+
+# image_line KEY VERSION: the .env line that pins KEY to the release VERSION.
+image_line() {
+  if [[ $1 == AIQSA_WORKSPACE_RUNNER_IMAGE ]]; then
+    printf '%s=%s:workspace-runner-%s' "$1" "$OFFICIAL_IMAGE" "$2"
+  else
+    printf '%s=%s:%s' "$1" "$OFFICIAL_IMAGE" "$2"
+  fi
+}
+
+# Newest stable release tag (vX.Y.Z) in the checkout, without the v.
+newest_release() {
+  local tag newest=""
+  while IFS= read -r tag; do
+    [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    if [[ -z $newest ]] || ! version_ge "$newest" "${tag#v}"; then newest=${tag#v}; fi
+  done < <(git_in tag --list 'v[0-9]*' 2>/dev/null)
+  printf '%s' "$newest"
+}
+
+# Images must match the target release before the checkout moves: a pin to
+# another version, or an unpinned image on an older --to release, is refused.
+image_guard() {
+  local target=$1 key value kind keys=(AIQSA_IMAGE) stale=() unpinned=() lines=() newest from
+  if [[ -n $(env_value AIQSA_WORKSPACE_RUNNER_IMAGE) ]] || profile_enabled workspace; then
+    keys+=(AIQSA_WORKSPACE_RUNNER_IMAGE)
+  fi
+  for key in "${keys[@]}"; do
+    value=$(env_value "$key")
+    image_kind "$key" "$value"
+    kind=$REPLY
+    from=.env
+    [[ -n ${!key+set} ]] && from="the process environment"
+    case $kind in
+      unpinned) unpinned+=("$key") ;;
+      digest | custom)
+        check INFO image "$key=$value (from $from) is a digest or a custom image; match it to the release notes of $target yourself" ;;
+      *)
+        if [[ $kind == "$target" || ( $kind =~ ^[0-9]+\.[0-9]+$ && $target == "$kind".* ) ]]; then continue; fi
+        stale+=("$key=$value (from $from)")
+        lines+=("$(image_line "$key" "$target")") ;;
+    esac
+  done
+  if (( ${#stale[@]} )); then
+    refuse "the image settings pin another release than $target: ${stale[*]}." \
+      "Set in $(display_path "$ENV_FILE") (and in the environment, if it sets them):" \
+      "${lines[@]/#/  }" \
+      "Then rerun the upgrade; nothing was changed."
+  fi
+  [[ -n $TARGET_TAG && ${#unpinned[@]} -gt 0 ]] || return 0
+  # AIQSA_IMAGE decides; the runner follows the same rule when Workspace is on.
+  [[ ${unpinned[0]} == AIQSA_IMAGE ]] || return 0
+  newest=$(newest_release)
+  if [[ -n $newest ]] && ! version_ge "$target" "$newest"; then
+    lines=()
+    for key in "${unpinned[@]}"; do lines+=("$(image_line "$key" "$target")"); done
+    refuse "--to $TARGET_TAG is older than the newest release v$newest, but the images are not pinned." \
+      "Unpinned images follow the newest release, so the containers would not match the $target checkout." \
+      "Pin the release first by setting in $(display_path "$ENV_FILE"):" \
+      "${lines[@]/#/  }" \
+      "Then rerun the upgrade; nothing was changed."
+  fi
+}
 
 legacy_guard() {
   local services
@@ -1174,8 +1320,7 @@ cmd_upgrade() {
     fi
   fi
   command -v git >/dev/null 2>&1 || refuse "git is not installed."
-  git_in rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    || refuse "$PROJECT_DIR is not a git checkout." "Update it as described in README.md."
+  git_checkout_guard
   local branch="" dirty
   dirty=$(git_in status --porcelain --untracked-files=no) || refuse "git status failed."
   if [[ -n $dirty ]]; then
@@ -1184,7 +1329,8 @@ cmd_upgrade() {
   fi
   branch=$(git_in symbolic-ref --quiet --short HEAD 2>/dev/null) || branch=""
   if [[ -z $branch && -z $TARGET_TAG ]]; then
-    refuse "HEAD is detached." "Pass --to vX.Y.Z to move to a release tag, or check out a branch first."
+    refuse "HEAD is detached (the installation is on a release tag)." \
+      "Installations on a detached HEAD always pass the release tag: ./aiqsa.sh upgrade --to vX.Y.Z"
   fi
   legacy_guard
   confirm_backup
@@ -1208,6 +1354,7 @@ cmd_upgrade() {
   fi
   git_in cat-file -e "$target_ref:aiqsa.sh" 2>/dev/null \
     || refuse "the target release has no aiqsa.sh." "Update it by hand as described in README.md."
+  image_guard "$target"
   say "Upgrading from $current to $target. Release notes: $REPOSITORY_URL/releases/tag/v$target"
   previous=$(git_in rev-parse HEAD)
   if [[ -n $TARGET_TAG ]]; then
@@ -1222,16 +1369,22 @@ cmd_upgrade() {
   (( VERBOSE )) && args+=(--verbose)
   (( SKIP_PREFLIGHT )) && args+=(--skip-preflight)
   (( ADD_MISSING_KEYS )) && args+=(--add-missing-keys)
+  # exec skips the EXIT trap, so clean up first.
+  cleanup
+  TEMP_DIR="" CONFIGURE_TMP=""
   exec bash "$PROJECT_DIR/aiqsa.sh" "${args[@]}"
 }
 
+# Prints `env KEY` for template keys only the process environment sets (as
+# env_value resolves them) and `missing KEY` for keys set nowhere.
 missing_template_keys() {
   local line key
   while IFS= read -r line || [[ -n $line ]]; do
     line=${line%$'\r'}
     [[ $line =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
     key=${BASH_REMATCH[1]}
-    [[ -n ${ENV_VALUES[$key]+set} ]] || printf '%s\n' "$key"
+    [[ -z ${ENV_VALUES[$key]+set} ]] || continue
+    if [[ -n ${!key+set} ]]; then printf 'env %s\n' "$key"; else printf 'missing %s\n' "$key"; fi
   done < "$PROJECT_DIR/.env.example"
 }
 
@@ -1254,8 +1407,13 @@ cmd_upgrade_apply() {
   require_linux
   [[ $PREVIOUS_REF =~ ^[0-9a-f]{7,64}$ ]] || die "$EXIT_USAGE" "__upgrade-apply needs --previous-ref <commit>."
   env_load
-  local missing=() output
-  mapfile -t missing < <(missing_template_keys)
+  local missing=() provided=() output kind key
+  while read -r kind key; do
+    if [[ $kind == env ]]; then provided+=("$key"); else missing+=("$key"); fi
+  done < <(missing_template_keys)
+  if (( ${#provided[@]} )); then
+    say "Keys in .env.example provided by the environment, not $(display_path "$ENV_FILE"): ${provided[*]}"
+  fi
   if (( ${#missing[@]} )); then
     if (( ADD_MISSING_KEYS )); then
       append_missing_keys "${missing[@]}"
@@ -1277,9 +1435,7 @@ cmd_upgrade_apply() {
       "Rerunning ./aiqsa.sh upgrade is safe, or return with: git checkout $PREVIOUS_REF"
   fi
   up_stack config
-  doctor_stack 1
-  doctor_summary
-  (( FAIL_COUNT == 0 )) || exit "$EXIT_PREFLIGHT"
+  post_start_check
   say "Upgrade complete."
 }
 
@@ -1319,12 +1475,15 @@ Options:
   --host-only, --stack-only
                          doctor: limit the checks to one section.
   --skip-preflight       up/install/upgrade: continue despite failed preflight checks.
-  --to vX.Y.Z            upgrade: move to this release tag instead of the branch upstream.
+  --to vX.Y.Z            upgrade: move to this release tag instead of the branch upstream
+                         (required on a detached HEAD). Images follow the .env image
+                         settings, otherwise the newest release.
   --backup-confirmed     upgrade: confirm a current backup without prompting.
   --add-missing-keys     upgrade: append keys new in .env.example to .env.
 
-Exit codes: 0 ok, 1 failure, 2 usage, 3 unsupported host, 4 preflight failed,
-5 stack not ready, 6 upgrade refused.
+Exit codes: 0 ok, 1 failure, 2 usage, 3 unsupported host, 4 preflight or doctor
+check failed (before any container change), 5 stack not ready after a start,
+6 upgrade refused. A Workspace runner that is not ready is a warning.
 EOF
 }
 
