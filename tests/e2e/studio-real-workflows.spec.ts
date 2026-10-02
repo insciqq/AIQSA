@@ -47,7 +47,7 @@ test("Memory saves and forgets actual owned facts and persists the reset", async
     await learn.click();
     expect((await preference).ok()).toBe(true);
     await expect(learn).not.toBeChecked();
-    for (const label of ["Use memories in answers", "Search past chats", "Notice repeated details", "Learn from what you use"]) {
+    for (const label of ["Use memories in answers", "Search past chats", "Learn from what you use"]) {
       await expect(library.getByRole("switch", { name: new RegExp(`^${label}:`) })).toBeChecked();
     }
     await library.getByRole("button", { name: "Add memory", exact: true }).first().click();
@@ -73,7 +73,7 @@ test("Memory saves and forgets actual owned facts and persists the reset", async
     const list = await page.request.get("/api/me/memories?pageSize=20");
     expect(list.ok()).toBe(true);
     expect((await list.json()).items).toEqual([]);
-    for (const label of ["Use memories in answers", "Search past chats", "Learn automatically", "Notice repeated details", "Learn from what you use"]) {
+    for (const label of ["Use memories in answers", "Search past chats", "Learn automatically", "Learn from what you use"]) {
       await expect(library.getByRole("switch", { name: new RegExp(`^${label}:`) })).not.toBeChecked();
     }
     await expectNoHorizontalOverflow(page);

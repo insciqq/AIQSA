@@ -41,7 +41,6 @@ describe("MemorySettingsRowsV2", () => {
     ["Use memories in answers", "useMemoryFacts"],
     ["Search past chats", "referenceChatHistory"],
     ["Learn automatically", "learnAutomatically"],
-    ["Notice repeated details", "synthesisEnabled"],
     ["Learn from what you use", "decayEnabled"]
   ] as const)("can enable %s while its runtime capability is inactive", async (label, key) => {
     const data = memoryConsumerSettingsFixture({
@@ -82,12 +81,12 @@ describe("MemorySettingsRowsV2", () => {
     useMemorySettingsStore.setState({ data, loadState: "ready" });
     render(<MemorySettingsRowsV2 />);
 
-    expect(screen.getAllByRole("switch")).toHaveLength(5);
+    expect(screen.getAllByRole("switch")).toHaveLength(4);
     expect(screen.getByRole("switch", { name: "Use memories in answers: off" })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Search past chats: on" })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Learn automatically: on" })).toBeEnabled();
-    expect(screen.getByRole("switch", { name: "Notice repeated details: off" })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Learn from what you use: off" })).toBeEnabled();
+    expect(screen.queryByRole("switch", { name: /Notice repeated details/u })).toBeNull();
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
     expect(screen.getByTestId("settings-memory-status")).toHaveTextContent("Memory is paused");
     expect(screen.queryByRole("button", { name: "Open in Library" })).toBeNull();
@@ -177,7 +176,7 @@ describe("MemorySettingsRowsV2", () => {
       fireEvent.click(screen.getByRole("button", { name: "Reload" }));
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.getAllByRole("switch")).toHaveLength(5);
+    expect(screen.getAllByRole("switch")).toHaveLength(4);
   });
 
   it("shows durable reset progress and prevents a second reset", () => {
