@@ -1,3 +1,5 @@
+import { RUN_PREPARATION_FAILURE_MESSAGE } from "@/lib/contracts/runs";
+
 const EN = {
   "settings.heading": "Memory",
   "settings.reload": "Reload",
@@ -107,7 +109,7 @@ const EN = {
   "action.resetConfirmation": "Forgetting everything needs your confirmation on the Memory page.",
   "action.thisChatOnly": "Not saved to Memory. Available in this chat only.",
   "action.manage": "Manage Memories",
-  "answer.preparationFailed": "The answer could not be prepared. Try again.",
+  "answer.preparationFailed": RUN_PREPARATION_FAILURE_MESSAGE,
   "source.learnedMemory": "Learned memory",
   "source.pastChat": "Past chat",
   "source.savedMemory": "Saved memory",

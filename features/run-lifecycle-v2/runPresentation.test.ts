@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RunEventView } from "@/lib/contracts/runs";
-import { TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
@@ -513,7 +514,8 @@ describe("run lifecycle v2 presentation", () => {
 
   it.each([
     ["memory_egress_destination_revoked", "Knowledge access changed before answer dispatch", "egress_destination_revoked"],
-    ["memory_egress_receipt_conflict", "Provider dispatch evidence could not be completed.", "egress_receipt_conflict"]
+    ["memory_egress_receipt_conflict", "Provider dispatch evidence could not be completed.", "egress_receipt_conflict"],
+    ["memory_egress_receipt_unavailable", "Provider dispatch evidence is unavailable.", "egress_receipt_unavailable"]
   ])("keeps the egress-ledger failure %s visible with an egress support code", (code, message, shown) => {
     const live = presentRunLifecycleV2(state({
       events: [{ type: "error", data: { code, message, recovery: "change_parameters" } }]
@@ -534,6 +536,41 @@ describe("run lifecycle v2 presentation", () => {
     const persisted = presentRunLifecycleV2(state({ failure: { message }, status: "error" }));
     expect(persisted.failure?.message).toBe("The answer could not be prepared. Try again.");
     expect(JSON.stringify([live, persisted])).not.toMatch(/memory/iu);
+  });
+
+  it.each([
+    "A retired answer-model Memory tool request cannot be rebuilt.",
+    "This saved run uses a retired answer-model Memory tool contract."
+  ])("neutralizes the historical retired-tool text %s live and after reload", (message) => {
+    const coded = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code: "memory_answer_model_tools_retired", message, recovery: "change_parameters" } }]
+    }));
+    expect(coded.failure).toMatchObject({ code: "preparation_failed", message: RUN_PREPARATION_FAILURE_MESSAGE });
+    const uncoded = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { message, recovery: "change_parameters" } }]
+    }));
+    expect(uncoded.failure?.message).toBe(RUN_PREPARATION_FAILURE_MESSAGE);
+    const persisted = presentRunLifecycleV2(state({ failure: { message }, status: "error" }));
+    expect(persisted.failure?.message).toBe(RUN_PREPARATION_FAILURE_MESSAGE);
+    expect(JSON.stringify([coded, uncoded, persisted])).not.toMatch(/memory/iu);
+  });
+
+  it("keeps a retired non-Memory runtime failure unchanged", () => {
+    const message = "The retired Knowledge planning runtime cannot be replayed.";
+    const live = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code: "knowledge_legacy_runtime_retired", message } }]
+    }));
+    expect(live.failure).toMatchObject({ code: "knowledge_legacy_runtime_retired", message });
+    const persisted = presentRunLifecycleV2(state({ failure: { message }, status: "error" }));
+    expect(persisted.failure?.message).toBe(message);
+  });
+
+  it("shows the server-written neutral text exactly as the live neutralization does", () => {
+    expect(memoryUiCopy("answer.preparationFailed")).toBe(RUN_PREPARATION_FAILURE_MESSAGE);
+    const persisted = presentRunLifecycleV2(state({
+      failure: { message: RUN_PREPARATION_FAILURE_MESSAGE }, status: "error"
+    }));
+    expect(persisted.failure?.message).toBe(RUN_PREPARATION_FAILURE_MESSAGE);
   });
 
   it("bounds malformed error state and supplies factual fallback copy", () => {

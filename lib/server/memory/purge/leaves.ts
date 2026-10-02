@@ -20,6 +20,7 @@ import {
   allReusableWorkContributor
 } from "./allReusable";
 import { pruneUnreferencedMemoryEntities } from "../learning/entities/lifecycle";
+import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../../contracts/runs";
 
 function countFrom(rows: readonly Readonly<{ count: number }>[]): number {
   const count = rows[0]?.count;
@@ -381,7 +382,7 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
           SET
             "errorPayload" = jsonb_build_object(
               'code', 'memory_all_reusable_deleted',
-              'message', 'Memory preparation stopped because reusable Memory was deleted.'
+              'message', ${RUN_PREPARATION_FAILURE_MESSAGE}::text
             ),
             "normalizedRequest" = COALESCE(
               run."normalizedRequest",
@@ -398,7 +399,7 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
         )
         UPDATE "Message" AS message
         SET
-          "errorMessage" = 'Memory preparation stopped because reusable Memory was deleted.',
+          "errorMessage" = ${RUN_PREPARATION_FAILURE_MESSAGE},
           "status" = 'error'::"MessageStatus",
           "updatedAt" = CURRENT_TIMESTAMP
         FROM selected
@@ -487,7 +488,7 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
         SET
           "errorPayload" = jsonb_build_object(
             'code', 'memory_item_forgotten',
-            'message', 'Memory preparation stopped because a selected Memory item was forgotten.'
+            'message', ${RUN_PREPARATION_FAILURE_MESSAGE}::text
           ),
           "normalizedRequest" = COALESCE(
             run."normalizedRequest",
@@ -505,8 +506,7 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
       )
       UPDATE "Message" AS message
       SET
-        "errorMessage" =
-          'Memory preparation stopped because a selected Memory item was forgotten.',
+        "errorMessage" = ${RUN_PREPARATION_FAILURE_MESSAGE},
         "status" = 'error'::"MessageStatus",
         "updatedAt" = CURRENT_TIMESTAMP
       FROM settled_attempts AS attempt
