@@ -1,13 +1,7 @@
-import { storedTokenUsage } from "../usage";
 import type { PrismaClient } from "@prisma/client";
-import type { ModelRunUsage } from "@/lib/domain/modelRunEvents";
 import type { McpHubServiceDependencies } from "./hubService";
 
-type Database = Pick<PrismaClient, "$transaction" | "mcpHubDispatch" | "mcpHubDiscoveryAttempt">;
-
-function reportedUsage(usage: ModelRunUsage | null) {
-  return storedTokenUsage(usage ?? {});
-}
+type Database = Pick<PrismaClient, "mcpHubDispatch" | "mcpHubDiscoveryAttempt">;
 
 export type McpHubMaintenanceResult = Readonly<{
   dispatches: { expired: number; removed: number };
@@ -16,7 +10,9 @@ export type McpHubMaintenanceResult = Readonly<{
 
 /** Content-free receipts outlive revocation; user deletion cascades them.
  * Maintenance expires ambiguous work without replay and retires old receipts,
- * retaining their existing UsageEvent under the ordinary accounting lifecycle. */
+ * retaining their existing UsageEvent under the ordinary accounting lifecycle.
+ * Discovery no longer calls a model, so discovery attempts are retired storage:
+ * maintenance only settles and removes rows written before local search. */
 export function createMcpHubOperationStore(database: Database) {
   const maintain = async (input: Readonly<{
     cutoff?: Date;
@@ -74,42 +70,5 @@ export function createMcpHubOperationStore(database: Database) {
     };
   };
 
-  const recordDiscoveryAttempt: McpHubServiceDependencies["recordDiscoveryAttempt"] = async (authority, role, _maxOutputTokens, timeoutMs) => {
-    const snapshot = role.snapshot;
-    if (!snapshot.connectionId || !snapshot.providerModelId || !snapshot.credentialVersionId) {
-      throw new Error("mcp_hub_discovery_binding_missing");
-    }
-    await maintain();
-    const operation = await database.mcpHubDiscoveryAttempt.create({
-      data: {
-        clientId: authority.clientId, grantId: authority.grantId, userId: authority.userId,
-        expiresAt: new Date(Date.now() + timeoutMs + 60_000),
-        connectionId: snapshot.connectionId, providerModelId: snapshot.providerModelId,
-        credentialVersionId: snapshot.credentialVersionId,
-        usageEvent: { create: {
-          mcpHubDiscovery: true, userId: authority.userId,
-          modelId: snapshot.model.upstreamModelId, provider: snapshot.providerFamily,
-          providerModelId: snapshot.providerModelId
-        } }
-      },
-      select: { id: true, revision: true }
-    });
-    return {
-      async settle({ state, usage }) {
-        await database.$transaction(async (tx) => {
-          await tx.mcpHubDiscoveryAttempt.updateMany({
-            where: { id: operation.id, revision: operation.revision, state: "DISPATCHED" },
-            data: { state, completedAt: new Date(), revision: { increment: 1 } }
-          });
-          // Late usage may enrich an expired UNKNOWN receipt, but never creates
-          // a second event or changes an already settled accounting outcome.
-          if (usage) await tx.usageEvent.updateMany({
-            where: { mcpHubDiscoveryAttemptId: operation.id, usageCompleteness: "UNAVAILABLE" },
-            data: reportedUsage(usage)
-          });
-        });
-      }
-    };
-  };
-  return { maintain, recordDispatch, recordDiscoveryAttempt };
+  return { maintain, recordDispatch };
 }

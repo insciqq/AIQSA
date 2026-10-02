@@ -1,13 +1,9 @@
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { getMcpRequestMaxBytes } from "./responseLimits";
-import { mcpDiscoveryFailureMessage } from "../../contracts/mcpDiscoveryFailure";
+import { mcpFindToolsInputSchema } from "./discovery";
 import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
 import type { McpHubDiscoveryResult } from "@/lib/contracts/mcpHub";
 import { createMcpHubService, McpHubServiceError, type McpHubAuthority } from "./hubService";
-const findToolsInput = z.strictObject({
-  goal: z.string().trim().min(1).max(getMcpRequestMaxBytes())
-}, { error: "invalid_arguments" });
 const callToolInput = z.strictObject({
   tool_id: z.string().trim().min(1).max(128),
   tool_version: z.string().trim().min(1).max(128),
@@ -24,9 +20,6 @@ function result(value: Readonly<Record<string, unknown>>, isError = false): Call
 
 function errorResult(error: unknown): CallToolResult {
   const code = error instanceof McpHubServiceError ? error.code : "upstream_unavailable";
-  const discoveryFailure = error instanceof McpHubServiceError ? error.discoveryFailure : null;
-  if (discoveryFailure) return result({ code, discoveryFailure,
-    message: `${mcpDiscoveryFailureMessage(discoveryFailure)} No connected tool was called. This does not establish an authorization failure on the connected service.` }, true);
   const toolFailure = error instanceof McpHubServiceError ? error.toolFailure : null;
   if (toolFailure) return result({ code, toolFailure, message: `${mcpToolFailureMessage(toolFailure)} Request fewer records or fields for a read-only query. Do not repeat a write solely because its response could not be read.` }, true);
   const message = code === "authorization_required"
@@ -38,7 +31,7 @@ function errorResult(error: unknown): CallToolResult {
         : code === "upstream_unavailable"
           ? "Check the connection and sign-in status in AIQSA MCP settings."
           : code === "discovery_unavailable"
-            ? "Tool discovery is unavailable. Ask an administrator to check the System Model."
+            ? "Tool discovery is unavailable. No connected tool was called; retry find_tools or check AIQSA MCP settings."
             : code === "tool_unavailable"
               ? "This tool is unavailable with your current permissions and enabled connections."
               : code === "result_unsupported"
@@ -81,22 +74,21 @@ export function createMcpHubServer(input: Readonly<{
   authority: McpHubAuthority;
   deadlineMs?: number;
 }>): McpServer {
-  // The router model and exact server runtime own operation deadlines.
+  // Search is local; the exact server runtime owns operation deadlines.
   // An explicit enclosing deadline is used by bounded test/embedding callers.
   const deadlineMs = input.deadlineMs;
   const server = new McpServer({ name: "aiqsa-mcp-hub", version: "1.0.0" }, {
-    instructions: "Use find_tools with the user's goal, then call_tool with the returned tool_id, tool_version, and arguments. Tools are limited by the user's current AIQSA permissions and enabled MCP connections."
+    instructions: "Use find_tools with query \"select:<tool name>\" (or \"select:<server name>/<tool name>\", comma-separated for several) when you know exact tool names, or with short English keywords naming the service, action and object, such as \"github create issue\". Then call_tool with a returned tool_id, tool_version, and arguments. Tools are limited by the user's current AIQSA permissions and enabled MCP connections."
   });
   server.registerTool("find_tools", {
     annotations: { readOnlyHint: true, idempotentHint: true },
-    description: "Find enabled MCP tools that can help with a goal. This performs bounded semantic discovery and does not call a business tool.",
-    inputSchema: findToolsInput
+    description: "Find enabled MCP tools by exact name (\"select:name1,name2\") or short English keywords (service + action + object). The search is local and lexical, returns tool definitions for call_tool, and does not call a business tool. If nothing fits, call again with other words.",
+    inputSchema: mcpFindToolsInputSchema
   }, (argumentsValue, context) => bounded(
     (signal) => input.service.findTools({
       authority: input.authority,
-      goal: argumentsValue.goal,
-      signal,
-      timeoutMs: deadlineMs
+      query: (argumentsValue as { query: string }).query,
+      signal
     }).then((value: McpHubDiscoveryResult) => result(value)),
     context.mcpReq.signal,
     deadlineMs

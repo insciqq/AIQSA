@@ -63,7 +63,7 @@ describe("masked Codex activity", () => {
     expect(JSON.stringify(events)).not.toContain("SECRET_CANARY");
   });
 
-  it.each(["structuredContent", "structured_content", "text"])("projects only allowlisted discovery failure fields from %s", (format) => {
+  it.each(["structuredContent", "structured_content", "text"])("projects a discovery failure from %s as the generic failed step", (format) => {
     const diagnostic = { reason: "mcp_router_output_invalid", detail: "mcp_router_unknown_tool", attempt: 2, private: "SECRET_CANARY" };
     const value = { code: "discovery_unavailable", discoveryFailure: diagnostic, message: "SECRET_CANARY" };
     const result = format === "text" ? { content: [{ type: "text", text: JSON.stringify(value) }] } : { [format]: value };
@@ -77,9 +77,12 @@ describe("masked Codex activity", () => {
     const project = createCodexActivityProjection("run", request);
     const entries = events.map(event => project(event, text)).filter(Boolean);
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ kind: "mcp_call", phase: "failed", mcp: { discovery: true },
-      text: "Tool discovery failed: the tool selection contains an identifier outside the available catalog." });
+    expect(entries[0]).toMatchObject({ kind: "mcp_call", phase: "failed", mcp: { discovery: true } });
+    expect(entries[0]).not.toHaveProperty("text");
     expect(decodeThreadWorkspaceActivityEntry(entries[0])).toEqual(entries[0]);
+    // Stored entries carrying a retired router diagnostic keep the entry without its text.
+    const stored = { ...entries[0], text: "Tool discovery failed: the System Model returned malformed JSON." };
+    expect(decodeThreadWorkspaceActivityEntry(stored)).toEqual(entries[0]);
     expect(JSON.stringify(events)).not.toContain("SECRET_CANARY");
     expect(JSON.stringify(entries)).not.toContain("SECRET_CANARY");
   });

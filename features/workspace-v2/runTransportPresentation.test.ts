@@ -33,11 +33,12 @@ describe("Run transport presentation v2", () => {
     expect(present(slice, "Beginning file check.")).toMatchObject({ kind: "terminal_error", failure: { message } });
   });
 
-  it("restores deterministic Gemini routing rejection without a blind retry after reload", () => {
-    const failure = mcpAutoDiscoveryFailure("mcp_router_gemini_invalid_request");
+  it("restores a stored retired System Model rejection as the generic Auto failure after reload", () => {
+    const stored = "The System Model rejected automatic tool selection (Gemini HTTP 400: invalid_request). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.";
     const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,
-      message: { ...streamingMessage, errorMessage: failure.message, status: "error" }, persistedRunStatus: "error" });
-    expect(present(slice)).toMatchObject({ kind: "terminal_error", failure: { ...failure, recovery: "change_parameters" } });
+      message: { ...streamingMessage, errorMessage: stored, status: "error" }, persistedRunStatus: "error" });
+    expect(present(slice)).toMatchObject({ kind: "recoverable_error", failure: {
+      code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE, recovery: "retry" } });
   });
   it.each([TOOL_SYNTHESIS_FAILURE.message, "Provider returned a tool call from a no-tool synthesis request."])(
     "restores a safe final synthesis failure from its persisted message", (errorMessage) => {
@@ -48,7 +49,7 @@ describe("Run transport presentation v2", () => {
     }
   );
 
-  it.each(["mcp_router_output_limit", "mcp_router_timeout", "mcp_router_output_invalid"])("restores the exact safe %s cause after reload", (reason) => {
+  it.each(["mcp_materialization_failed", "mcp_materialization_mcp_not_ready"])("restores the exact safe %s cause after reload", (reason) => {
     const failure = mcpAutoDiscoveryFailure(reason);
     const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,
       message: { ...streamingMessage, errorMessage: failure.message, status: "error" }, persistedRunStatus: "error" });

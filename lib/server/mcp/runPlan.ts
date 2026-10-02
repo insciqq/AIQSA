@@ -82,6 +82,7 @@ export type McpCapabilityCatalog = {
 
 export type McpDiscoveryEpoch = {
   epoch: number;
+  /** The call's find_tools query; the field keeps its historical name. */
   goal: string;
   modelRunToolCallId: string;
   roundIndex: number;
