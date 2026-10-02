@@ -35,7 +35,6 @@ import {
   mcpSharedConfigEnvelopeContext,
   type McpEnvelopeContext
 } from "./encryption";
-import { parseMcpLocalResolvedArtifact } from "./localArtifact";
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import type {
   McpRuntimeCoordinatorRepository,
@@ -198,35 +197,12 @@ type RemoteRuntimeFields = {
   url: string;
 };
 
-type LocalRuntimeFields = {
-  callTimeoutMs: number;
-  effectiveEnvelope: {
-    plan: ReturnType<typeof resolveEffectiveMcpValues>["plan"];
-    personalRuntime?: boolean;
-    values: Record<string, McpSlotValue>;
-    version: 1;
-  };
-  credentialSources: readonly McpCredentialSource[];
-  disabledToolNames?: readonly string[];
-  externalAccountLabel: null;
-  fingerprint: string;
-  oauthConnectionId?: undefined;
-  personalRuntime?: boolean;
-  publishedTools: McpPublishedToolDefinitions;
-  revisionId: string;
-  redactionValues: readonly string[];
-  startupTimeoutMs: number;
-  toolHive: NonNullable<McpRuntimeLaunch["toolHive"]>;
-};
-
 type UserRuntimeOwner = { userId: string; userServerId: string };
 
 export type RemoteRuntimeCandidate = RemoteRuntimeFields & UserRuntimeOwner;
 
-export type LocalRuntimeCandidate = LocalRuntimeFields & UserRuntimeOwner;
-
 /** The Project runtime of a server: shared or no-auth values only, never a member. */
-export type SharedRuntimeCandidate = (RemoteRuntimeFields | LocalRuntimeFields) & { serverId: string };
+export type SharedRuntimeCandidate = RemoteRuntimeFields & { serverId: string };
 
 type EffectiveRuntimeBase = Readonly<{
   configuration: McpDraftConfiguration;
@@ -285,7 +261,6 @@ function effectiveRuntimeCandidate(input: {
   if (!revision) return null;
   const configuration = revisionConfiguration(revision.configuration);
   if (!configuration) return null;
-  if (input.record.server.ownerUserId != null && configuration.source.kind !== "remote") return null;
   const groupIds = input.record.user.groups.map((membership) => membership.groupId);
   const direct = input.record.server.grants.find((grant) => grant.userId === input.record.userId) ?? null;
   const groups = input.record.server.grants.filter((grant) => grant.groupId && groupIds.includes(grant.groupId));
@@ -377,10 +352,9 @@ function effectiveRuntimeCandidate(input: {
   };
 }
 
-function remoteRuntimeFields(base: EffectiveRuntimeBase): RemoteRuntimeFields | null {
+function remoteRuntimeFields(base: EffectiveRuntimeBase): RemoteRuntimeFields {
   const { configuration } = base;
   const source = configuration.source;
-  if (source.kind !== "remote") return null;
   const headers: Record<string, string> = {};
   for (const slot of configuration.slots) {
     if (slot.target.kind === "header" && Object.hasOwn(base.effectiveEnvelope.values, slot.slotKey)) {
@@ -408,59 +382,13 @@ function remoteRuntimeFields(base: EffectiveRuntimeBase): RemoteRuntimeFields | 
   };
 }
 
-function localRuntimeFields(base: EffectiveRuntimeBase): LocalRuntimeFields | null {
-  if (base.configuration.source.kind === "remote") return null;
-  const artifact = parseMcpLocalResolvedArtifact(
-    base.revision.resolvedArtifact,
-    base.configuration.source
-  );
-  if (!artifact) return null;
-  const envVars: Record<string, string> = {};
-  for (const slot of base.configuration.slots) {
-    if (slot.target.kind !== "environment" ||
-      !Object.hasOwn(base.effectiveEnvelope.values, slot.slotKey)) return null;
-    envVars[slot.target.name] = headerValue(base.effectiveEnvelope.values[slot.slotKey]!);
-  }
-  return {
-    callTimeoutMs: base.configuration.runtime.callTimeoutMs,
-    credentialSources: base.credentialSources,
-    ...(base.configuration.disabledToolNames?.length
-      ? { disabledToolNames: base.configuration.disabledToolNames }
-      : {}),
-    effectiveEnvelope: base.effectiveEnvelope,
-    externalAccountLabel: null,
-    fingerprint: base.fingerprint,
-    ...(base.personalRuntime ? { personalRuntime: true } : {}),
-    publishedTools: mcpPublishedToolDefinitions(base.revision.validationEvidence),
-    redactionValues: effectiveRedactionValues(base.configuration, base.effectiveEnvelope.values),
-    revisionId: base.revision.id,
-    startupTimeoutMs: base.configuration.runtime.startupTimeoutMs,
-    toolHive: {
-      cmdArguments: base.configuration.source.args,
-      envVars,
-      generationToken: base.fingerprint,
-      image: artifact.imageRef
-    }
-  };
-}
-
 export function remoteRuntimeCandidate(input: {
   key: Buffer;
   oauthRedirectUri?: (serverId: string) => string;
   record: DesiredRecord;
 }): RemoteRuntimeCandidate | null {
   const base = effectiveRuntimeCandidate(input);
-  const fields = base && remoteRuntimeFields(base);
-  return base && fields ? { ...fields, userId: base.userId, userServerId: base.userServerId } : null;
-}
-
-export function localRuntimeCandidate(input: {
-  key: Buffer;
-  record: DesiredRecord;
-}): LocalRuntimeCandidate | null {
-  const base = effectiveRuntimeCandidate(input);
-  const fields = base && localRuntimeFields(base);
-  return base && fields ? { ...fields, userId: base.userId, userServerId: base.userServerId } : null;
+  return base ? { ...remoteRuntimeFields(base), userId: base.userId, userServerId: base.userServerId } : null;
 }
 
 /**
@@ -507,59 +435,40 @@ export function sharedRuntimeCandidate(input: {
     oauthConnectionId: null,
     revision
   };
-  const fields = configuration.source.kind === "remote" ? remoteRuntimeFields(base) : localRuntimeFields(base);
-  return fields ? { ...fields, serverId: server.id } : null;
+  return { ...remoteRuntimeFields(base), serverId: server.id };
 }
 
 function generationLaunch(
-  candidate: LocalRuntimeFields | RemoteRuntimeFields,
+  candidate: RemoteRuntimeFields,
   generation: Readonly<{ id: string; inventoryUpdatedAt: Date | null; retryAt: Date | null }>,
   now: Date
 ): McpRuntimeGenerationLaunch {
-  const commonLaunch = {
+  return {
     callTimeoutMs: candidate.callTimeoutMs,
     ...(candidate.disabledToolNames?.length
       ? { disabledToolNames: candidate.disabledToolNames }
       : {}),
     fingerprint: candidate.fingerprint,
     generationId: generation.id,
-    headers: {},
+    headers: candidate.headers,
     inventoryRefreshRequired: !generation.inventoryUpdatedAt ||
       now.getTime() - generation.inventoryUpdatedAt.getTime() >= INVENTORY_FRESH_MS,
     publishedTools: candidate.publishedTools,
     redactionValues: candidate.redactionValues,
     retryAt: generation.retryAt,
-    startupTimeoutMs: candidate.startupTimeoutMs
+    startupTimeoutMs: candidate.startupTimeoutMs,
+    allowPrivateNetwork: candidate.allowPrivateNetwork,
+    ...(candidate.oauthConnectionId
+      ? { oauthConnectionId: candidate.oauthConnectionId }
+      : {}),
+    ...(candidate.personalRuntime ? { personalRuntime: true } : {}),
+    url: candidate.url
   };
-  return "url" in candidate
-    ? {
-        ...commonLaunch,
-        allowPrivateNetwork: candidate.allowPrivateNetwork,
-        headers: candidate.headers,
-        ...(candidate.oauthConnectionId
-          ? { oauthConnectionId: candidate.oauthConnectionId }
-          : {}),
-        ...(candidate.personalRuntime ? { personalRuntime: true } : {}),
-        url: candidate.url
-      }
-    : { ...commonLaunch, toolHive: candidate.toolHive };
 }
 
 function sameCredentialSources(stored: readonly string[], candidate: readonly McpCredentialSource[]): boolean {
   return stored.length === candidate.length &&
     stored.every((source) => candidate.includes(source as McpCredentialSource));
-}
-
-function runtimeCandidate(input: {
-  key: Buffer;
-  oauthRedirectUri?: (serverId: string) => string;
-  record: DesiredRecord;
-}): LocalRuntimeCandidate | RemoteRuntimeCandidate | null {
-  const revision = input.record.server.activeRevision;
-  const configuration = revision && revisionConfiguration(revision.configuration);
-  return configuration?.source.kind === "remote"
-    ? remoteRuntimeCandidate(input)
-    : localRuntimeCandidate(input);
 }
 
 export function createPrismaMcpRuntimeRepository(input: {
@@ -578,7 +487,7 @@ export function createPrismaMcpRuntimeRepository(input: {
       const generation = await client.mcpRuntimeGeneration.findFirst({
         include: {
           revision: {
-            select: { configuration: true, id: true, resolvedArtifact: true, serverId: true, validationEvidence: true }
+            select: { configuration: true, id: true, serverId: true, validationEvidence: true }
           },
           userServer: {
             select: { serverId: true, userId: true }
@@ -611,7 +520,6 @@ export function createPrismaMcpRuntimeRepository(input: {
           mcpRuntimeGenerationEnvelopeContext(generation.id, generation.fingerprint)
         );
         if (owner.userId === null && snapshot.personalRuntime) return null;
-        if (snapshot.personalRuntime && configuration.source.kind !== "remote") return null;
         const configuredSlotKeys = new Set(configuration.slots.map((slot) => slot.slotKey));
         if (snapshot.plan.length !== configuration.slots.length ||
           Object.keys(snapshot.values).length !== configuration.slots.length ||
@@ -646,43 +554,21 @@ export function createPrismaMcpRuntimeRepository(input: {
           retryAt: generation.retryAt,
           startupTimeoutMs: configuration.runtime.startupTimeoutMs
         };
-        if (configuration.source.kind === "remote") {
-          const headers: Record<string, string> = {};
-          for (const slot of configuration.slots) {
-            if (slot.target.kind === "header") {
-              headers[slot.target.name] = headerValue(snapshot.values[slot.slotKey]!);
-            }
-          }
-          reportSubsystemHealthy("mcp", "recovery", generation.id);
-          return {
-            ...commonLaunch,
-            allowPrivateNetwork: configuration.source.allowPrivateNetwork === true,
-            headers,
-            ...(generation.oauthConnectionId
-              ? { oauthConnectionId: generation.oauthConnectionId }
-              : {}),
-            url: configuration.source.url
-          };
-        }
-        const artifact = parseMcpLocalResolvedArtifact(
-          generation.revision.resolvedArtifact,
-          configuration.source
-        );
-        if (!artifact) return null;
-        const envVars: Record<string, string> = {};
+        const headers: Record<string, string> = {};
         for (const slot of configuration.slots) {
-          if (slot.target.kind !== "environment") return null;
-          envVars[slot.target.name] = headerValue(snapshot.values[slot.slotKey]!);
+          if (slot.target.kind === "header") {
+            headers[slot.target.name] = headerValue(snapshot.values[slot.slotKey]!);
+          }
         }
         reportSubsystemHealthy("mcp", "recovery", generation.id);
         return {
           ...commonLaunch,
-          toolHive: {
-            cmdArguments: configuration.source.args,
-            envVars,
-            generationToken: generation.fingerprint,
-            image: artifact.imageRef
-          }
+          allowPrivateNetwork: configuration.source.allowPrivateNetwork === true,
+          headers,
+          ...(generation.oauthConnectionId
+            ? { oauthConnectionId: generation.oauthConnectionId }
+            : {}),
+          url: configuration.source.url
         };
       } catch (error) {
         reportSubsystemFailure({ subsystem: "mcp", stage: "recovery", scope_id: generation.id,
@@ -782,7 +668,7 @@ export function createPrismaMcpRuntimeRepository(input: {
       const key = encryptionKey();
       const launches: McpRuntimeGenerationLaunch[] = [];
       for (const record of records) {
-        const candidate = runtimeCandidate({
+        const candidate = remoteRuntimeCandidate({
           key,
           record,
           ...(input.oauthRedirectUri ? { oauthRedirectUri: input.oauthRedirectUri } : {})
@@ -1135,31 +1021,6 @@ export function createPrismaMcpRuntimeRepository(input: {
         RETURNING generation."retryAt"
       `.catch(retainDatabaseFailure);
       return { applied: rows.length === 1, retryAt: rows.length === 1 ? rows[0]!.retryAt : null };
-    },
-
-    listGenerationFingerprints: async () => {
-      const [generations, activations] = await Promise.all([
-        client.mcpRuntimeGeneration.findMany({ select: { fingerprint: true } }).catch(retainDatabaseFailure),
-        client.mcpActivationJob.findMany({
-          select: { workloadToken: true },
-          where: {
-            stage: {
-              in: [
-                "queued",
-                "resolving",
-                "preparing_runtime",
-                "connecting",
-                "discovering_tools",
-                "publishing"
-              ]
-            }
-          }
-        }).catch(retainDatabaseFailure)
-      ]);
-      return [
-        ...generations.map((row) => row.fingerprint),
-        ...activations.map((row) => row.workloadToken)
-      ];
     },
 
     listDrainedGenerationIds: async () => {

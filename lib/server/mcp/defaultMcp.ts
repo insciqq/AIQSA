@@ -1,22 +1,11 @@
 import { prisma } from "@/lib/server/prisma";
-import { getMcpRequestMaxBytes } from "./responseLimits";
-import { MCP_INVENTORY_SESSION_LIMITS } from "./clientSession";
-import { createMcpClientSessionFactory } from "./clientSessionFactory";
 import { mcpOAuthService } from "./defaultOAuth";
-import { getDefaultToolHiveClient, getDefaultToolHiveDriver } from "./defaultToolHive";
 import type { McpDraftValidator } from "./draftValidator";
-import { createLocalMcpDraftValidator } from "./localDraftValidator";
 import { createPrismaMcpRepository } from "./prismaRepository";
 import { personalMcpAddressPolicy } from "./defaultPersonalNetwork";
 import { mcpDestinationSafeFetchOptions } from "./personalNetworkPolicy";
 import { createRemoteMcpDraftValidator } from "./remoteDraftValidator";
 import { createMcpSafeFetch, type McpAddressPolicy } from "./safeFetch";
-import { createToolHiveMcpSessionFactory } from "./toolhiveSessionFactory";
-
-const VALIDATION_RUNTIME_LIMITS = {
-  ...MCP_INVENTORY_SESSION_LIMITS,
-  get maxToolArgumentBytes() { return getMcpRequestMaxBytes(); }
-} as const;
 
 export function createDefaultMcpRepository(input: { draftValidator?: McpDraftValidator } = {}) {
   return createPrismaMcpRepository({
@@ -42,11 +31,11 @@ export function createDefaultMcpDraftValidator(input: Readonly<{
   personalAddressPolicy?: McpAddressPolicy;
 }> = {}): McpDraftValidator {
   const personalAddressPolicy = input.personalAddressPolicy ?? personalMcpAddressPolicy;
-  const remote = createRemoteMcpDraftValidator({
+  return createRemoteMcpDraftValidator({
     fetch: createMcpSafeFetch(),
     fetchForDraft: (draft, { personal }) => createMcpSafeFetch(mcpDestinationSafeFetchOptions({
       allowInsecureHttp: true,
-      allowPrivateNetwork: draft.source.kind === "remote" && draft.source.allowPrivateNetwork === true,
+      allowPrivateNetwork: draft.source.allowPrivateNetwork === true,
       personal
     }, personalAddressPolicy)),
     oauthProviderForDraft: async (validation) => {
@@ -61,27 +50,6 @@ export function createDefaultMcpDraftValidator(input: Readonly<{
       });
     }
   });
-  let local: McpDraftValidator | null = null;
-  return {
-    validate(input) {
-      if (input.draft.source.kind === "remote") return remote.validate(input);
-      local ??= createLocalMcpDraftValidator({
-        client: getDefaultToolHiveClient(),
-        driver: getDefaultToolHiveDriver(),
-        sessions: createToolHiveMcpSessionFactory({
-          directSessions: createMcpClientSessionFactory({
-            fetch: createMcpSafeFetch({
-              allowInsecureHttp: true,
-              allowPrivateNetwork: true
-            }),
-            limits: VALIDATION_RUNTIME_LIMITS
-          }),
-          driver: getDefaultToolHiveDriver()
-        })
-      });
-      return local.validate(input);
-    }
-  };
 }
 
 export const defaultMcpDraftValidator = createDefaultMcpDraftValidator();

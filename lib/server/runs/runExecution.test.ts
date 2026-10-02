@@ -5968,7 +5968,7 @@ describe("run execution", () => {
       epochs: [],
       version: 2
     };
-    const rawFailure = "PRIVATE_TOOLHIVE_ENDPOINT_FAILURE";
+    const rawFailure = "PRIVATE_RUNTIME_ENDPOINT_FAILURE";
     const materialize = vi.fn(async (): Promise<McpRunPlanResult> => {
       if (outcome === "cancelled") expect(activeRunControllerRegistry.abort("run-1")).toBe(true);
       throw new Error(rawFailure);
@@ -6031,7 +6031,7 @@ describe("run execution", () => {
       epochs: [],
       version: 2
     };
-    const rawFailure = "PRIVATE_TOOLHIVE_STARTUP_FAILURE";
+    const rawFailure = "PRIVATE_RUNTIME_STARTUP_FAILURE";
     const materialize = vi.fn(async () => ({
       code: "mcp_not_ready" as const,
       issues: [{ errorCode: rawFailure, name: "Catalog", readiness: "unavailable" as const }],

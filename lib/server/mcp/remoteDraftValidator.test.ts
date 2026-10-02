@@ -59,16 +59,6 @@ function remoteDraft(input: {
   };
 }
 
-function localDraft(): McpDraftConfiguration {
-  return {
-    auth: { mode: "none" },
-    runtime: { callTimeoutMs: 28_000, startupTimeoutMs: 41_000 },
-    slots: [],
-    source: { args: [], kind: "npm", packageName: "example-mcp", versionSelector: "1.0.0" },
-    transport: "stdio"
-  };
-}
-
 function tool(input: Partial<AiqsaMcpToolDefinition> & { name: string }): AiqsaMcpToolDefinition {
   return {
     definitionHash: "a".repeat(64),
@@ -392,14 +382,10 @@ describe("remote MCP draft validator", () => {
     expect(JSON.stringify(rejected)).not.toContain(identitySecret);
   });
 
-  it("returns stable deferred results for local and OAuth drafts without opening a session", async () => {
+  it("returns a stable deferred result for OAuth drafts without opening a session", async () => {
     const sessionFactory = vi.fn<McpRemoteDraftValidationSessionFactory>();
     const validator = createRemoteMcpDraftValidator({ fetch: safeFetch, sessionFactory });
 
-    await expect(validator.validate({ draft: localDraft(), values: {} })).resolves.toEqual({
-      issues: [{ code: "mcp_local_runtime_unavailable", path: "source.kind" }],
-      kind: "invalid"
-    });
     await expect(validator.validate({
       draft: remoteDraft({
         auth: {

@@ -96,7 +96,7 @@ export async function preparePersonalMcpOAuthDraft(
   draft: McpDraftConfiguration,
   input: Readonly<{ addressPolicy?: McpAddressPolicy; fetch?: FetchLike; timeoutMs?: number }> = {}
 ): Promise<PersonalMcpOAuthDraft> {
-  if (draft.auth.mode !== "oauth" || draft.source.kind !== "remote") return { authorizationOrigins: [], draft };
+  if (draft.auth.mode !== "oauth") return { authorizationOrigins: [], draft };
   const endpoint = draft.source.url;
   const deadline = AbortSignal.timeout(input.timeoutMs ?? 15_000);
   const baseFetch = input.fetch ?? createMcpSafeFetch(mcpDestinationSafeFetchOptions({
