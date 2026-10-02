@@ -24,6 +24,12 @@ export type ConversationQuoteV2 = Readonly<{
   onCommentRemove?(id: string): void;
   onQuote(markdown: string, touch: boolean): string | null;
   scopeKey: string;
+  /**
+   * A composer layer is open: the Quote/Comment toolbar and its notice give way to it. Setting it dismisses the
+   * captured selection, which returns only with the next selection change. Not part of the scope key, so an open
+   * comment form, its text and the mark clicks are unaffected.
+   */
+  suppressed?: boolean;
 }>;
 
 type CapturedSelection = Readonly<{ markdown: string; range: Range; root: HTMLElement; scopeKey: string }>;
@@ -69,7 +75,17 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
   const surfaceRef = useRef<HTMLElement>(null);
   const commentSourceRef = useRef<HTMLElement | null>(null);
   const feedbackId = useId();
-  const current = captured?.scopeKey === quote.scopeKey && captured.root.isConnected && !quote.disabled ? captured : null;
+  const suppressed = Boolean(quote.suppressed);
+  // Opening a composer layer dismisses the selection, like Escape; the layer's own Escape never reaches this scope.
+  const [suppressedSeen, setSuppressedSeen] = useState(suppressed);
+  if (suppressedSeen !== suppressed) {
+    setSuppressedSeen(suppressed);
+    if (suppressed) setCaptured(null);
+  }
+  // Read by the selection listener, updated before any later event can run.
+  const suppressedRef = useRef(suppressed);
+  useLayoutEffect(() => { suppressedRef.current = suppressed; }, [suppressed]);
+  const current = captured?.scopeKey === quote.scopeKey && captured.root.isConnected && !quote.disabled && !suppressed ? captured : null;
   const editedComment = commenting?.editId ? quote.comments?.find(comment => comment.id === commenting.editId) ?? null : null;
   // An edited comment that was sent or deleted elsewhere closes its form.
   const activeComment = commenting?.scopeKey === quote.scopeKey && commenting.root.isConnected && !quote.disabled &&
@@ -136,6 +152,7 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
 
   useEffect(() => {
     const changed = () => {
+      if (suppressedRef.current) return;
       const container = scrollRef.current;
       const next = !quote.disabled && container ? captureConversationSelection(container, window.getSelection(), quote.scopeKey) : null;
       setCaptured(next);
@@ -219,7 +236,7 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
   }, [notice]);
 
   useLayoutEffect(() => {
-    if (!current && !activeComment && !feedback) return;
+    if (!current && !activeComment && (!feedback || suppressed)) return;
     const place = () => {
       const surface = surfaceRef.current;
       if (!surface) return;
@@ -252,7 +269,7 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
       window.visualViewport?.removeEventListener("resize", place);
       observer?.disconnect();
     };
-  }, [activeComment, current, feedback, quote.dockRef, sheet, touch]);
+  }, [activeComment, current, feedback, quote.dockRef, sheet, suppressed, touch]);
 
   if (!current && !activeComment && !feedback) return null;
   if (activeComment) return createPortal(
@@ -284,6 +301,8 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
       </section>
     </div>, document.body
   );
+  // The notice keeps its timer while hidden.
+  if (suppressed) return null;
   return createPortal(
     <div className="v2-selection-quote" data-touch={touch || undefined} ref={element => { surfaceRef.current = element; }}
       style={{ left: position?.left ?? 8, top: position?.top ?? 8, visibility: position ? "visible" : "hidden" }}>

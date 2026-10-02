@@ -48,7 +48,7 @@ The stack uses prebuilt images and persistent Docker volumes. Keep `.env` with y
 
 ## Update
 
-**Existing installations using bundled MinIO:** follow the [MinIO → SeaweedFS upgrade runbook](UPGRADING_FROM_MINIO.md) before running `docker compose up -d`. This is a one-time storage migration.
+**Installations on v0.2.0–v0.2.30 (bundled MinIO):** back up PostgreSQL first, then update to v0.2.34, not further, and complete its [MinIO → SeaweedFS upgrade runbook](https://github.com/insciqq/AIQSA/blob/v0.2.34/UPGRADING_FROM_MINIO.md). Later releases no longer contain this one-time storage migration. Before updating past v0.2.34, remove any `minio-legacy` service and `/legacy` mount from your Compose overrides and drop `storage-migration` from `COMPOSE_PROFILES`.
 
 Update the checkout first so Compose uses the release's configuration, then pull the images and restart:
 
@@ -59,7 +59,7 @@ docker compose pull && docker compose up -d
 
 This tracks stable releases and applies database migrations before starting the application. See the [release notes](https://github.com/insciqq/AIQSA/releases) before updating. Images are published on [GHCR](https://github.com/insciqq/AIQSA/pkgs/container/aiqsa); their digests are included in each release.
 
-If `docker compose pull` reports `pull access denied for minio/mc`, the Compose file is outdated: run `git pull --ff-only` first and follow the migration runbook above.
+If `docker compose pull` reports `pull access denied for minio/mc`, the checkout is older than v0.2.31: stop at v0.2.34 and follow its runbook as described above.
 
 ## Development
 

@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
+import { IMAGE_MAX_BYTES } from "@/lib/contracts/imageGeneration";
 import type { WorkspaceUploadConfigWire, WorkspaceUploadWire } from "@/lib/contracts/workspaceUploads";
 import { getRequestBodyConfig } from "../http/requestBodyConfig";
 import { resolveUploadPermitGate, type UploadPermitGate } from "../http/uploadPermitGate";
 import { runInBackground, reportSubsystemFailure } from "../observability";
+import { normalizeUploadRaster } from "./rasterNormalization";
 import type { StorageAdapter } from "./storage";
 import { defaultUploadMaxBytes, UPLOAD_CONTENT_INSPECTION_NEEDLES, validateUpload, validateUploadInspection } from "./validation";
 import { WORKSPACE_UPLOAD_PART_BYTES, WORKSPACE_UPLOAD_REQUEST_MS, workspaceUploadMaxBytes } from "./workspaceUploadConfig";
@@ -20,6 +23,10 @@ export function decodeWorkspaceUploadCreate(value: unknown): CreateInput | null 
     !(v.projectId === null || typeof v.projectId === "string" && /^[a-zA-Z0-9-]{1,128}$/u.test(v.projectId)) ||
     typeof v.idempotencyKey !== "string" || !/^[a-zA-Z0-9-]{16,64}$/u.test(v.idempotencyKey)) return null;
   return v as CreateInput;
+}
+
+function refusalStatus(code: string): 400 | 413 {
+  return code === "file_too_large" || code === "image_limit_exceeded" ? 413 : 400;
 }
 
 export class WorkspaceUploadService {
@@ -53,7 +60,7 @@ export class WorkspaceUploadService {
   }
   async create(input: CreateInput, userId: string): Promise<WorkspaceUploadWire> {
     const validation = validateUpload({ ...input, maxBytes: this.#maxBytes(), scope: "workspace" });
-    if (!validation.ok) throw new WorkspaceUploadError(validation.code, validation.code === "file_too_large" ? 413 : 400);
+    if (!validation.ok) throw new WorkspaceUploadError(validation.code, refusalStatus(validation.code));
     await this.#available();
     return workspaceUploadProjection(await this.deps.repository.create({ ...input, mimeType: validation.mimeType, userId }));
   }
@@ -164,9 +171,24 @@ export class WorkspaceUploadService {
           if (inspected.byteSize !== row.byteSize) throw new WorkspaceUploadError("upload_size_mismatch");
           const validation = validateUploadInspection({ ...inspected, fileName: row.fileName, mimeType: row.mimeType,
             maxBytes: row.byteSize, scope: "workspace" });
-          if (!validation.ok) throw new WorkspaceUploadError(validation.code, 400);
+          if (!validation.ok) throw new WorkspaceUploadError(validation.code, refusalStatus(validation.code));
+          let { fileName, mimeType } = row;
+          if (validation.rasterCheck) {
+            // Validation admits a raster check only within IMAGE_MAX_BYTES.
+            const { body } = await this.deps.storage.getObject(output.storageKey, { maxBytes: IMAGE_MAX_BYTES, signal: controller.signal });
+            if (body.byteLength !== row.byteSize || createHash("sha256").update(body).digest("hex") !== inspected.checksum) {
+              throw new WorkspaceUploadError("upload_size_mismatch");
+            }
+            const normalized = await normalizeUploadRaster(body, { fileName: row.fileName, format: validation.rasterCheck, signal: controller.signal });
+            if (!normalized.ok) throw new WorkspaceUploadError(normalized.code, normalized.status);
+            ({ fileName, mimeType } = normalized);
+            controller.signal.throwIfAborted();
+            // Same bytes, decoded type: the stored object must not keep the declared one.
+            await this.deps.storage.putObject({ body, contentType: mimeType, storageKey: output.storageKey });
+          }
           controller.signal.throwIfAborted();
-          await this.deps.repository.settle({ id: row.id, claimToken: token, storageKey: output.storageKey, checksum: inspected.checksum });
+          await this.deps.repository.settle({ id: row.id, claimToken: token, storageKey: output.storageKey,
+            checksum: inspected.checksum, fileName, mimeType });
         } catch (error) {
           await this.deps.repository.failSettlement(row.id, token,
             error instanceof WorkspaceUploadError ? error.code : "upload_verification_failed", !(error instanceof WorkspaceUploadError));

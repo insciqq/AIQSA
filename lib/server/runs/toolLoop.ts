@@ -65,6 +65,10 @@ export type ToolLoopProviderRoundResult<Continuation, FinalValue> =
       continuation: Continuation;
       parallelToolCalls?: boolean;
       status: "tool_calls";
+      /** The continuation of one tool-free synthesis round that drops this
+       * round's calls, used when the batch exceeds the remaining call budget.
+       * Without it such a batch fails the loop. */
+      synthesisContinuation?: Continuation;
     }>
   | Readonly<{
       error: ToolLoopIssue;
@@ -169,6 +173,14 @@ export type ContinueToolLoopInput<Continuation, ToolValue, FinalValue> = Readonl
     progress: ToolLoopProgress;
     round: number;
     toolRound: number;
+  }>): Promise<void> | void;
+  /** Durably records that a batch over the remaining call budget was refused
+   * (neither persisted nor dispatched) and that its synthesis round follows. */
+  refuseToolBatch?(input: Readonly<{
+    calls: readonly ToolLoopCall[];
+    continuation: Continuation;
+    progress: ToolLoopProgress;
+    round: number;
   }>): Promise<void> | void;
   resume?: Readonly<{
     continuation: Continuation;
@@ -638,12 +650,42 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
     }
 
     if (progress.toolCalls + calls.length > input.budgets.maxToolCalls) {
-      return failed(progress, {
-        code: "tool_call_limit_exceeded",
-        message: `Tool call limit of ${input.budgets.maxToolCalls} was exceeded.`,
-        round,
-        stage: "budget"
-      });
+      const synthesis = providerResult.synthesisContinuation;
+      if (synthesis === undefined) {
+        return failed(progress, {
+          code: "tool_call_limit_exceeded",
+          message: `Tool call limit of ${input.budgets.maxToolCalls} was exceeded.`,
+          round,
+          stage: "budget"
+        });
+      }
+      // No call of the batch runs, partly or wholly: the next round answers
+      // from the results already obtained.
+      try {
+        await input.refuseToolBatch?.({ calls, continuation: synthesis, progress, round });
+      } catch (error) {
+        return failed(progress, {
+          code: "tool_loop_checkpoint_failed",
+          message: errorMessage(error, "Tool-loop synthesis checkpoint failed."),
+          round,
+          stage: "persistence"
+        });
+      }
+      if (emittedText) {
+        try {
+          await input.onSignal?.({ round, type: "message_reset" });
+        } catch (error) {
+          return failed(progress, {
+            code: "tool_loop_signal_failed",
+            message: errorMessage(error, "Tool-loop signal delivery failed."),
+            round,
+            stage: "signal"
+          });
+        }
+      }
+      continuation = synthesis;
+      previousToolResults = [];
+      continue;
     }
 
     calls.forEach((call) => seenCallIds.add(call.id));

@@ -116,6 +116,13 @@ export function createWorkspaceCheckpointStore(prisma: PrismaClient, maximumByte
       if (checkpoint.state !== "PENDING" || !checkpoint.captureId) throw unavailable();
       const selected = checkpoint.selection as unknown as WorkspaceCheckpointInput["files"];
       if (JSON.stringify(selected.map(f => `${f.root}/${f.relativePath}`).sort()) !== JSON.stringify(captured.map(f => f.relativePath).sort())) throw unavailable();
+      // Publication settles the crash-cleanup obligation of each retained key,
+      // like the run-output and image publishers. A claimed job may already be
+      // deleting the object; a missing job means an earlier publish settled it.
+      const jobs = await tx.$queryRaw<Array<{ storageKey: string; claimToken: string | null }>>`
+        SELECT "storageKey", "claimToken" FROM "AttachmentDeletionJob"
+        WHERE "storageKey" IN (${Prisma.join(captured.map(file => file.storageKey))}) ORDER BY "storageKey" FOR UPDATE`;
+      if (jobs.some(job => job.claimToken !== null)) throw unavailable();
       await checkByteReservation(tx, run.id, checkpoint.id, captured);
       const view = { id: checkpoint.id, description: checkpoint.description, createdAt: checkpoint.createdAt.toISOString() };
       const user = run.chat.projectId ? await tx.user.findUnique({ where: { id: context.userId }, select: { displayName: true } }) : null;
@@ -135,6 +142,7 @@ export function createWorkspaceCheckpointStore(prisma: PrismaClient, maximumByte
       const result = workspaceCheckpointResult(context.call, view, checkpoint.captureId, files);
       const snapshot = snapshotToolExecutionResult(result, 64 * 1024);
       if (!snapshot) throw unavailable();
+      if (jobs.length) await tx.attachmentDeletionJob.deleteMany({ where: { storageKey: { in: jobs.map(job => job.storageKey) }, claimToken: null } });
       await tx.workspaceOutputCheckpoint.update({ where: { id: checkpoint.id }, data: { state: "SETTLED", settledAt: new Date(), result: json(snapshot) } });
       if (["pending", "running"].includes(tool.state)) await tx.modelRunToolCall.update({ where: { id: tool.id }, data: {
         result: json(snapshot), state: "complete", completedAt: new Date() } });

@@ -63,6 +63,9 @@ function observe(source: string, event: keyof typeof OBSERVED_CODES): void {
     action: event === "busy" ? "retry" : event === "waited" ? "wait" : "degrade" });
 }
 
+/** What a read's tool batch may still receive; `take` draws the chosen response. */
+export type ObservationReadBatchRoom = Readonly<{ fits(response: unknown): boolean; take(response: unknown): void }>;
+
 type ReaderResponse = Readonly<{
   observation: ToolObservationDescriptor;
   fragmentKind: "serialized_json_text";
@@ -76,29 +79,45 @@ type ReaderResponse = Readonly<{
 
 /** Keep the exact bytes, but never refuse a valid selector only because dense
  * text (for example pictographs) exceeds the reader's estimated-token bound:
- * return a shorter prefix at a code point boundary with a continuation. */
-function readerResponse(reference: ToolObservationDescriptor, fragment: ObservationByteFragment, query?: string): ReaderResponse {
+ * return a shorter prefix at a code point boundary with a continuation. A
+ * read within a tool batch is also shortened to what that batch may still
+ * receive (`batch`), never below a preview: such a read is deferred. The
+ * chosen fragment is drawn from the batch in the same synchronous step, so
+ * concurrent reads never count on the same room. */
+function readerResponse(reference: ToolObservationDescriptor, fragment: ObservationByteFragment, query?: string,
+  batch?: ObservationReadBatchRoom): ReaderResponse {
   const build = (text: string, endOffset: number, nextOffset: number | null, complete: boolean): ReaderResponse => ({
     observation: reference, fragmentKind: "serialized_json_text", fragment: text, offset: fragment.offset, endOffset,
     incomplete: !complete, matchOffset: fragment.matchOffset,
     cursor: nextOffset === null ? null : toolObservationCursor(reference, nextOffset, query) });
   const fits = (response: ReaderResponse) => Buffer.byteLength(JSON.stringify(response)) <= TOOL_OBSERVATION_LIMITS.readerBytes &&
     estimateApproxTokens(response) <= TOOL_OBSERVATION_LIMITS.readerEstimatedTokens;
-  const full = build(fragment.fragment, fragment.endOffset, fragment.nextOffset, fragment.completeDocument);
-  if (fits(full)) return full;
-  const points = Array.from(fragment.fragment);
-  let low = 1, high = points.length - 1;
-  let best: ReaderResponse | null = null;
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2);
-    const text = points.slice(0, middle).join("");
-    const endOffset = fragment.offset + Buffer.byteLength(text, "utf8");
-    // A literal search continues after its match; a range read at the cut.
-    const candidate = build(text, endOffset, query === undefined ? endOffset : fragment.nextOffset, false);
-    if (fits(candidate)) { best = candidate; low = middle + 1; } else high = middle - 1;
-  }
+  const longest = (accept: (response: ReaderResponse) => boolean) => {
+    const full = build(fragment.fragment, fragment.endOffset, fragment.nextOffset, fragment.completeDocument);
+    if (accept(full)) return full;
+    const points = Array.from(fragment.fragment);
+    let low = 1, high = points.length - 1;
+    let best: ReaderResponse | null = null;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const text = points.slice(0, middle).join("");
+      const endOffset = fragment.offset + Buffer.byteLength(text, "utf8");
+      // A literal search continues after its match; a range read at the cut.
+      const candidate = build(text, endOffset, query === undefined ? endOffset : fragment.nextOffset, false);
+      if (accept(candidate)) { best = candidate; low = middle + 1; } else high = middle - 1;
+    }
+    return best;
+  };
+  const best = longest(fits);
   if (!best) throw unavailable();
-  return best;
+  if (!batch) return best;
+  // Only a fragment the batch cuts must keep a preview's length.
+  const batched = batch.fits(best) ? best : longest(response => fits(response) && batch.fits(response));
+  if (!batched || batched !== best && Buffer.byteLength(batched.fragment, "utf8") < TOOL_OBSERVATION_LIMITS.previewBytes) {
+    throw new ObservationReadError("tool_observation_read_deferred");
+  }
+  batch.take(batched);
+  return batched;
 }
 
 export function createToolObservationService(input: Readonly<{
@@ -287,7 +306,8 @@ export function createToolObservationService(input: Readonly<{
       }
     },
 
-    async read(actor: ObservationActor, value: unknown, signal?: AbortSignal) {
+    async read(actor: ObservationActor, value: unknown, signal?: AbortSignal,
+      options: Readonly<{ batch?: ObservationReadBatchRoom }> = {}) {
       const request = decodeToolObservationReadInput(value);
       let source = "";
       try {
@@ -306,7 +326,7 @@ export function createToolObservationService(input: Readonly<{
         // Access or source revocation during object I/O suppresses the bytes.
         const after = descriptor(await repository.read(actor, current.id));
         if (after.checksum !== reference.checksum || after.byteSize !== reference.byteSize) throw unavailable();
-        return readerResponse(reference, fragment, request.selector.query);
+        return readerResponse(reference, fragment, request.selector.query, options.batch);
       } catch (error) {
         if (signal?.aborted) throw signal.reason;
         if (error instanceof ObservationStoreError && error.code === "tool_observation_busy") observe(source, "busy");

@@ -17,15 +17,15 @@ import {
   CONTEXT_COMPACTION_LIMITS,
   CONTEXT_SUMMARY_NOT_DISPATCHED,
   CONTEXT_SUMMARY_REFS_INCOMPLETE,
-  conversationContextPolicy
+  contextSummaryCoverage,
+  conversationContextPolicy,
+  messageCoverageRef
 } from "./contextCompactionContract";
-import { contextObservationsFromResults } from "./contextCompactionPlanner";
+import { contextObservationsFromResults, isUnitCoverageRef, toolTranscriptUnits, unitCoverageRef } from "./contextCompactionPlanner";
 import {
   applyContextSummaryToRequest,
   applyReusedContextSummary,
-  contextSummaryIsCurrent,
   contextSummarySource,
-  contextSummarySourceRevision,
   ContextSummaryError,
   executeContextSummary,
   type ContextSummaryAdapter,
@@ -54,12 +54,15 @@ function request(input: Readonly<{
     context: { messages, mode: "branch_path" },
     contextCompaction: { afterTokens: 4_000, beforeTokens: 4_000, budgetTokens: 3_200, legacyFallback: false,
       maskedBatches: 0, maskedObservations: 0, outcome: "needs_summary", version: 1 },
-    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: messages.at(-1)!.id, messages, mode: "hybrid" }),
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: messages.at(-1)!.id, messages }),
     knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     modelCapabilities: { contextWindow: input.window ?? 16_000, defaultMaxOutputTokens: 256, maxOutputTokens: input.maxOutputTokens ?? 1_024,
       nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true, vision: false },
     modelId: "answer-model", params: { reasoning: { effort: "low" } }, prompt: { developer: null, system: "ordinary prompt" }, provider: "openai",
     searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", toolObservationVersion: 1,
+    // Server-owned tools: their results may enter notes without an observation handle.
+    tools: [readToolResultTool, ...["read_record", "write_file"].map((name) =>
+      ({ capability: "artifact" as const, description: name, inputSchema: { type: "object" }, name }))],
     ...input.overrides
   };
 }
@@ -115,7 +118,8 @@ describe("context compaction summarizer", () => {
     expect(calls).toHaveLength(1);
     expect(summarized.summary.sourceDigest).toBe(contextSummarySource(source).digest);
     expect(summarized.summary.sourceRefs).toEqual(expect.arrayContaining(["message-current", "reply-old", "message-old"]));
-    expect(contextSummaryIsCurrent(summarized.request)).toBe(true);
+    // The notes stand for the history through the newest prior message they read.
+    expect(summarized.summary.sourceRefs[0]).toBe(messageCoverageRef("reply-old"));
     // The large old message is replaced by notes; pins keep their bytes and
     // stay directly before the current message.
     expect(summarized.request.context?.messages.map(message => message.id)).toEqual([
@@ -232,17 +236,19 @@ describe("context compaction summarizer", () => {
     expect(system).toMatch(/call ids .* are not references/u);
   });
 
-  it("does not pay again when the committed summary is already applied", async () => {
+  it("does not pay again when the committed summary already covers everything", async () => {
     const calls: ProviderRunRequest[] = [];
+    const recorded = receipts();
     const first = await executeContextSummary({ adapter: adapter([json("once", ["message-old"])], calls), request: request() });
-    const second = await executeContextSummary({
+    await expect(executeContextSummary({
       adapter: adapter([json("should not run")], calls),
       existingAttempts: first.attempts,
       existingSummary: first.summary,
+      receipts: recorded.hooks,
       request: first.request
-    });
-    expect(second.summary.id).toBe(first.summary.id);
+    })).rejects.toMatchObject({ code: "context_compaction_summary_no_progress" });
     expect(calls).toHaveLength(1);
+    expect(recorded.claims).toHaveLength(0);
   });
 
   it("claims every paid call durably before dispatch and settles it with its usage", async () => {
@@ -395,8 +401,9 @@ describe("context compaction summarizer", () => {
       ] } });
       const stored = reordered(source);
       expect(JSON.stringify(stored.providerToolMessages)).not.toBe(JSON.stringify(source.providerToolMessages));
-      expect(contextSummarySourceRevision(stored)).toBe(contextSummarySourceRevision(source));
       expect(contextSummarySource(stored).digest).toBe(contextSummarySource(source).digest);
+      expect(contextSummarySource(stored).refs).toEqual(contextSummarySource(source).refs);
+      expect(contextSummarySource(source).units.at(-1)?.text).toContain("RESULT");
     });
 
     it("keeps the newest tool handles and refuses cross-turn reuse instead of dropping handles over the cap", () => {
@@ -418,16 +425,18 @@ describe("context compaction summarizer", () => {
       });
       const source = contextSummarySource(overflowing, contextObservationsFromResults(results));
       expect(source.refs).toHaveLength(CONTEXT_COMPACTION_LIMITS.summarySourceRefs);
-      expect(source.refs.slice(0, 2)).toEqual([source.revision, CONTEXT_SUMMARY_REFS_INCOMPLETE]);
+      // Coverage refs come first and are never cut: the history boundary and one ref per unit.
+      expect(source.refs[0]).toBe(messageCoverageRef("recent"));
+      expect(source.refs.slice(1, 301).every(isUnitCoverageRef)).toBe(true);
+      expect(source.refs[301]).toBe(CONTEXT_SUMMARY_REFS_INCOMPLETE);
       expect(source.refs.filter((ref) => ref.startsWith("tor1_"))[0]).toBe(handle(1_299));
-      expect(results.every((result) => source.refs.includes(result.observation!.handle))).toBe(true);
       // Every carried handle is still rechecked in this run, whatever the refs keep.
       expect(source.referencedHandles).toEqual(expect.arrayContaining(carriedHandles));
       // Within the cap: no marker, newest tool results first, then carried handles.
       const fitting = contextSummarySource({ ...overflowing, providerToolMessages: overflowing.providerToolMessages!.slice(-4),
         contextCompactionSummary: { ...previous, sourceRefs: previous.sourceRefs.slice(0, 3) } },
       contextObservationsFromResults(results));
-      expect(fitting.refs[0]).toBe(fitting.revision);
+      expect(fitting.refs.slice(0, 3).map((ref) => ref.slice(0, 6))).toEqual(["ctxm1_", "ctxu1_", "ctxu1_"]);
       expect(fitting.refs.filter((ref) => ref.startsWith("tor1_")).slice(0, 4)).toEqual([handle(1_299), handle(1_298), handle(0), handle(1)]);
       expect(fitting.refs).not.toContain(CONTEXT_SUMMARY_REFS_INCOMPLETE);
     });
@@ -525,14 +534,14 @@ describe("context compaction summarizer", () => {
     expect(summarized.summary.notes).toBe("combined notes of every part");
     // Digest and references describe exactly what was sent.
     expect(summarized.summary.sourceDigest).toBe(contextSummarySource(source).digest);
-    // Revision and transcript coverage refs are server-owned locators, not source content.
-    for (const ref of summarized.summary.sourceRefs.filter(ref => !ref.startsWith("ctxr1_") && !ref.startsWith("ctxt1_"))) {
+    // Coverage refs are server-owned locators, not source content.
+    for (const ref of summarized.summary.sourceRefs.filter(ref => !ref.startsWith("ctxm1_") && !ref.startsWith("ctxu1_"))) {
       expect(bodies.some(body => body.includes(ref))).toBe(true);
     }
     expect(summarized.attempts.map(({ state }) => state)).toEqual([...partials.map(() => "settled"), "committed"]);
   });
 
-  it("summarizes the newest span when the source needs more calls than a plan may use", async () => {
+  it("covers a source longer than one plan in oldest-first passes without dropping anything", async () => {
     // 4,000-token window: about 3,000 input tokens per call; 30,000 tokens of history.
     const history = Array.from({ length: 60 }, (_, index) =>
       text(`TURN_${index} ${String(index % 10).repeat(2_000)}`, `h${index}`, index % 2 ? "assistant" : "user"));
@@ -540,28 +549,44 @@ describe("context compaction summarizer", () => {
       overrides: { providerToolMessages: [{ call_id: "tool-1", name: "read_record", type: "function_call" },
         { call_id: "tool-1", output: "NEWEST_TOOL_RESULT", type: "function_call_output" }] } });
     const calls: ProviderRunRequest[] = [];
-    const summarized = await executeContextSummary({
-      adapter: adapter([json("span notes")], calls), request: source
-    });
-    const omitted = summarized.omitted!;
-    // Whole turns (user and reply) leave oldest first; the newest stay.
-    expect(omitted.messages).toBeGreaterThan(0);
-    expect(omitted.messages % 2).toBe(0);
-    expect(omitted.tokens).toBeGreaterThan(0);
-    expect(calls.length).toBeLessThanOrEqual(CONTEXT_COMPACTION_LIMITS.summaryPlannedCalls);
-    const bodies = calls.map(envelopeText).join("\n");
-    expect(bodies).not.toContain('id="h0"');
-    expect(bodies).not.toContain(`id="h${omitted.messages - 1}"`);
-    expect(bodies).toContain(`id="h${omitted.messages}"`);
-    expect(bodies).toContain("CURRENT_QUESTION");
-    expect(bodies).toContain("NEWEST_TOOL_RESULT");
-    // Digest and refs describe only the summarized span.
-    const span: ProviderRunRequest = { ...source, context: { mode: "branch_path", messages: source.context!.messages.slice(omitted.messages) } };
-    expect(summarized.summary.sourceDigest).toBe(contextSummarySource(span).digest);
-    expect(summarized.summary.sourceDigest).not.toBe(contextSummarySource(source).digest);
-    expect(summarized.summary.sourceRefs).not.toContain("h0");
-    expect(summarized.summary.sourceRefs).toContain(`h${omitted.messages}`);
-    expect(summarized.request.context?.messages.some(message => message.id === "h0")).toBe(false);
+    let current = source;
+    let attempts: readonly ContextSummaryAttempt[] = [];
+    const boundaries: string[] = [];
+    const bodiesByPass: string[][] = [];
+    for (let pass = 0; pass < 10; pass += 1) {
+      const before = calls.length;
+      let summarized: Awaited<ReturnType<typeof executeContextSummary>>;
+      try {
+        summarized = await executeContextSummary({ adapter: adapter([json(`pass notes ${pass}`)], calls), existingAttempts: attempts,
+          ...(current.contextCompactionSummary ? { existingSummary: current.contextCompactionSummary } : {}), request: current });
+      } catch (error) {
+        expect(error).toMatchObject({ code: "context_compaction_summary_no_progress" });
+        break;
+      }
+      expect(calls.length - before).toBeLessThanOrEqual(CONTEXT_COMPACTION_LIMITS.summaryPlannedCalls);
+      bodiesByPass.push(calls.slice(before).map(envelopeText));
+      boundaries.push(summarized.summary.sourceRefs.find((ref) => ref.startsWith("ctxm1_"))!);
+      attempts = summarized.attempts;
+      current = summarized.request;
+      // Uncovered history after the boundary stays exact: nothing leaves uncovered.
+      const prior = current.context!.messages.filter((message) => message.id.startsWith("h"));
+      const { uncovered } = contextSummaryCoverage(current, summarized.summary, prior);
+      const boundary = Number(boundaries.at(-1)!.slice("ctxm1_h".length));
+      expect(uncovered.map((message) => message.id)).toEqual(history.slice(boundary + 1).map((message) => message.id));
+    }
+    expect(bodiesByPass.length).toBeGreaterThan(1);
+    // The first pass starts at the oldest turn; every later pass absorbs the earlier notes.
+    expect(bodiesByPass[0]!.join("\n")).toContain('id="h0"');
+    expect(bodiesByPass.slice(1).every((bodies) => bodies.join("\n").includes("<previous-notes"))).toBe(true);
+    expect(bodiesByPass.every((bodies) => bodies.join("\n").includes("CURRENT_QUESTION"))).toBe(true);
+    expect(bodiesByPass.at(-1)!.join("\n")).toContain("NEWEST_TOOL_RESULT");
+    expect(boundaries.at(-1)).toBe(messageCoverageRef("h59"));
+    expect(new Set(boundaries).size).toBe(boundaries.length);
+    // The final notes cover every turn and the tool unit; only the exact tail stays.
+    expect(current.contextCompactionSummary!.sourceRefs).toContain(
+      unitCoverageRef(toolTranscriptUnits(source.providerToolMessages!)[0]!));
+    expect(current.context!.messages.some((message) => message.id === "h0")).toBe(false);
+    expect(current.context!.messages.at(-1)?.id).toBe("current");
   });
 
   it("refuses as irreducible when even the newest span cannot be covered, before any paid call", async () => {
@@ -621,8 +646,9 @@ describe("context compaction summarizer", () => {
   });
 
   it("joins earlier notes to the reduction verbatim when the source needs several calls", async () => {
+    // Notes whose history boundary lies before every message here.
     const earlier: ContextSummary = { formatVersion: 1, id: "cs1_earlier", notes: "FACT_RARE7731 from the first third",
-      sourceDigest: "e".repeat(64), sourceRefs: ["h-first"] };
+      sourceDigest: "e".repeat(64), sourceRefs: [messageCoverageRef("h-first"), "h-first"] };
     const messages = [
       text(`Model-derived context notes (verify against exact sources):\n${earlier.notes}`, "__context-summary-cs1_earlier", "assistant"),
       ...Array.from({ length: 8 }, (_, index) => text(`FACT_DELTA${index} ${"x".repeat(2_000)}`, `d${index}`,
@@ -640,6 +666,25 @@ describe("context compaction summarizer", () => {
     expect(bodies.at(-1)).toContain("<previous-notes");
     expect(summarized.summary.notes).toContain("FACT_RARE7731");
     expect(summarized.summary.sourceRefs).toContain("h-first");
+  });
+
+  it("never lets first-turn notes over tool units stand for the user's first message", async () => {
+    // A chat's first turn: no prior message, only tool rounds to cover.
+    const first = text("FIRST_TASK list the records", "u1");
+    const source = request({ messages: [first], overrides: { providerToolMessages: [
+      { call_id: "tool-1", name: "read_record", type: "function_call" },
+      { call_id: "tool-1", output: `RECORD ${"r".repeat(2_000)}`, type: "function_call_output" }
+    ] } });
+    const summarized = await executeContextSummary({ adapter: adapter([json("Record facts.")], []), request: source });
+    expect(summarized.summary.sourceRefs.some((ref) => ref.startsWith("ctxu1_"))).toBe(true);
+    expect(summarized.summary.sourceRefs.some((ref) => ref.startsWith("ctxm1_"))).toBe(false);
+    // A later turn of the same branch keeps u1 exact: the notes cover no prior message.
+    const later = { ...summarized.request, context: { mode: "branch_path" as const, messages: [
+      ...summarized.request.context!.messages.slice(0, -1), first, text("Answer.", "a1", "assistant"), text("Next.", "u2")] },
+      providerToolMessages: [] };
+    const prior = later.context.messages.filter((message) => message.id === "u1" || message.id === "a1");
+    expect(contextSummaryCoverage(later, summarized.summary, prior).uncovered.map((message) => message.id)).toEqual(["u1", "a1"]);
+    expect(applyContextSummaryToRequest(later, summarized.summary).context?.messages.some((message) => message.id === "u1")).toBe(true);
   });
 
   it("never keeps a superseded summary note as recent history", () => {
@@ -680,19 +725,18 @@ describe("context compaction summarizer", () => {
       expect(applyContextSummaryToRequest(reused(), carriedNotes)).toEqual(projected);
     });
 
-    it("is never current in the carrying run, even for an identical current message", () => {
-      const base = reused();
-      const revision = contextSummarySource(base).revision;
-      const identical = { ...carriedNotes, sourceRefs: [revision] };
-      const request = { ...base, contextCompactionPolicy: { ...base.contextCompactionPolicy!,
-        reuse: { ...base.contextCompactionPolicy!.reuse!, summary: identical } } };
-      const projected = applyContextSummaryToRequest(request, identical);
-      expect(contextSummaryIsCurrent(projected)).toBe(false);
-      // The same notes bought by this run would be current.
-      const { reuse: _reuse, ...own } = projected.contextCompactionPolicy!;
-      void _reuse;
-      expect(contextSummaryIsCurrent({ ...projected, contextCompactionPolicy: own })).toBe(true);
-    });
+  it("covers only through its frozen boundary, whatever history boundary its refs name", () => {
+    const base = reused();
+    const later = { ...carriedNotes, sourceRefs: [messageCoverageRef("a3")] };
+    const request = { ...base, contextCompactionPolicy: { ...base.contextCompactionPolicy!,
+      reuse: { ...base.contextCompactionPolicy!.reuse!, summary: later } } };
+    const prior = request.context!.messages.filter((message) => message.purpose === undefined).slice(0, -1);
+    expect(contextSummaryCoverage(request, later, prior).uncovered.map((message) => message.id)).toEqual(["a2", "u3", "a3"]);
+    // The same notes bought by this run stand for the history through their ref.
+    const { reuse: _reuse, ...own } = request.contextCompactionPolicy!;
+    void _reuse;
+    expect(contextSummaryCoverage({ ...request, contextCompactionPolicy: own }, later, prior).uncovered).toEqual([]);
+  });
 
     it("summarizes previous notes plus the exact delta, and the new notes cover everything", async () => {
       const calls: ProviderRunRequest[] = [];
@@ -840,9 +884,16 @@ describe("context compaction summarizer", () => {
     const observations = contextObservationsFromResults(results);
     const source = request({ window: 128_000, overrides: { providerToolMessages: masked } });
     const built = contextSummarySource(source, observations);
-    expect(built.refs.filter((ref) => ref.startsWith("tor1_"))[0]).toBe(handle(599));
-    expect(built.refs).toContain(CONTEXT_SUMMARY_REFS_INCOMPLETE);
-    const newest = Array.from({ length: CONTEXT_COMPACTION_LIMITS.references }, (_, index) => handle(600 - CONTEXT_COMPACTION_LIMITS.references + index));
+    // One pass covers only the units whose coverage refs fit beside the marker;
+    // the later ones stay exact for the next pass.
+    const covered = built.refs.filter(isUnitCoverageRef).length;
+    expect(covered).toBe(CONTEXT_COMPACTION_LIMITS.summarySourceRefs - 2);
+    // Coverage refs are never cut, so no handle fits beside them: the marker
+    // keeps these notes in this run, whose recheck covers every masked handle.
+    expect(built.refs).toHaveLength(CONTEXT_COMPACTION_LIMITS.summarySourceRefs);
+    expect(built.refs.at(-1)).toBe(CONTEXT_SUMMARY_REFS_INCOMPLETE);
+    expect(built.refs.some((ref) => ref.startsWith("tor1_"))).toBe(false);
+    const newest = Array.from({ length: covered }, (_, index) => handle(index));
     expect(built.referencedHandles).toEqual(newest);
     const checked: string[][] = [];
     await executeContextSummary({ adapter: adapter([json("bounded notes")], []), observations, request: source,

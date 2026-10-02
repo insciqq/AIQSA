@@ -3,6 +3,7 @@
 import { AdminProviderConnectionSettingsSheet } from "@/components/admin/providers/AdminProviderConnectionSettingsSheet";
 import { AdminProviderKeys } from "@/components/admin/providers/AdminProviderKeys";
 import { AdminProviderCatalogModels } from "@/components/admin/providers/AdminProviderCatalogModels";
+import { systemModelPolicyAssignsMemory } from "@/components/admin/providers/add/AdminProviderSetupResults";
 import { AdminProviderCheckBanner } from "@/components/admin/providers/models/AdminProviderCheckBanner";
 import { AdminProviderModels } from "@/components/admin/providers/models/AdminProviderModels";
 import { checkableCredentials, diagnosticCheckRun, initialDiagnosticCredentialId } from "@/components/admin/providers/models/modelListView";
@@ -75,6 +76,7 @@ export function AdminProviderPage({
         checks={{ ...checks, interrupted: selectedKeyAvailable ? checks.interrupted : null, run: selectedRun }}
         connection={connection}
         disabled={controller.state.busy}
+        memoryAssigned={systemModelPolicyAssignsMemory(usageSources.systemModelPolicy)}
         onOpenMemoryRole={onOpenMemoryRole}
         selectedCredentialId={diagnosticCredentialId}
       />

@@ -1816,6 +1816,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               quote={{
                 comments: composerComments,
                 disabled: Boolean(thread.editingMessageId), dockRef: composerDockRef, scopeKey: uploadSourceKey,
+                suppressed: composerLayer !== null,
                 onComment: (quote, text, _touch, anchor) => {
                   const store = useComposerSessionStore.getState();
                   if (store.activeSessionKey !== uploadSourceKey) return "Return to this conversation before adding its comment.";

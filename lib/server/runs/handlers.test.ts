@@ -54,6 +54,8 @@ import {
   type CheckpointedToolLoopRun,
   type PersistedToolLoopCall
 } from "./toolLoopPersistence";
+import { conversationContextPolicy } from "./contextCompactionContract";
+import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -776,11 +778,14 @@ function createMemoryRepository(
           : null,
         ordinal: call.ordinal,
         providerCallId: call.providerCallId,
-        result: null,
+        // Like the durable repository, a blocked repeat settles with its batch.
+        result: call.repeatBlocked ? repeatBlockedToolCallResult({ providerCallId: call.providerCallId,
+          repeatOf: call.repeatBlocked.repeatOf, toolName: call.toolName }) : null,
         roundIndex: input.roundIndex,
         startedAt: null,
-        state: "pending",
-        toolName: call.toolName
+        state: call.repeatBlocked ? "error" : "pending",
+        toolName: call.toolName,
+        ...(call.repeatBlocked ? { completedAt: "2026-07-12T09:00:00.000Z" } : {})
       }));
       state.toolCalls.push(...calls);
       return { calls, kind: "persisted" };
@@ -2860,7 +2865,7 @@ describe("model run route handlers", () => {
     ]);
   });
 
-  it("trims oldest branch context for tiny context windows and emits a truncation artifact", async () => {
+  it("never drops branch turns for a tiny context window and fails explicitly when no summary call fits", async () => {
     const conversationContext: ProviderConversationMessage[] = [
       {
         content: { blocks: [{ text: "old user ".repeat(50), type: "text" }] },
@@ -2920,28 +2925,23 @@ describe("model run route handlers", () => {
 
     expect(response.status).toBe(200);
     const liveEvents = parseSse(await response.text());
+    // Admission freezes the notes policy and keeps the exact branch: no turn is dropped.
+    expect(state.created?.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", version: 1 });
     expect(state.created?.normalizedRequest.context?.messages.map((message) => message.id)).toEqual([
+      "old-user",
+      "old-assistant",
       "recent-user",
       "recent-assistant",
       "current-user-message"
     ]);
-    expect(state.created?.normalizedRequest.context?.summary?.truncation).toMatchObject({
-      droppedMessages: 2,
-      keptMessages: 3
-    });
-    const truncationEvent = liveEvents.find(
-      (event) => event.type === "artifact" &&
-        (event.data as { artifactType?: string }).artifactType === "context_truncated"
-    );
-
-    expect(truncationEvent?.type).toBe("artifact");
-    expect((truncationEvent?.data as { payload?: unknown } | undefined)?.payload)
-      .toMatchObject({ droppedMessages: 2 });
-    expect(state.events).toHaveLength(2);
-    expect(state.events.map(({ sequence, event }) => ({ sequence, phase: event.type === "artifact" && event.data.artifactType === "context_status"
-      ? (event.data.payload as { phase?: unknown }).phase : undefined }))).toEqual([
-      { sequence: 0, phase: "request" }, { sequence: 1, phase: "after_answer" }
-    ]);
+    expect(state.created?.normalizedRequest.context?.summary).toBeUndefined();
+    expect(liveEvents.some((event) => event.type === "artifact" &&
+      (event.data as { artifactType?: string }).artifactType === "context_truncated")).toBe(false);
+    // A 400-token window cannot hold even one bounded summary call: the run
+    // fails explicitly instead of answering without the start of the chat.
+    expect(state.completed).toBeNull();
+    expect(state.failed?.error).toEqual({ code: "context_compaction_summary_failed",
+      message: "The admitted model window cannot hold a bounded summary call." });
   });
 
   it("fails before run creation when irreducible context exceeds the budget", async () => {
@@ -3004,7 +3004,7 @@ describe("model run route handlers", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
       error: "context_too_large",
-      message: "Prompt and current message exceed the model context budget (8 estimated tokens available)."
+      message: "Prompt, pinned context, current message, and tools exceed the model context budget (8 estimated tokens available)."
     });
     expect(state.created).toBeNull();
     expect(buildRequestPreview).not.toHaveBeenCalled();
@@ -3711,11 +3711,15 @@ describe("model run route handlers", () => {
     });
   });
 
-  it("uses the handler's effective attachment limits during stale GET-assisted recovery", async () => {
+  it.each([true, false])("uses the handler's effective attachment limits during stale GET-assisted recovery (accepted policy: %s)", async (policy) => {
     const { repository, state } = createMemoryRepository();
     const created = openAiCreatedRun();
     const normalizedRequest = {
       ...created.normalizedRequest,
+      // A run accepted before the notes policy ends as retired before any
+      // attachment, budget or provider step; one with it reaches the limit check.
+      ...(policy ? { contextCompactionPolicy: conversationContextPolicy({
+        leafMessageId: null, messages: created.normalizedRequest.context?.messages ?? [] }) } : {}),
       attachmentIds: ["one", "two"],
       content: {
         blocks: [
@@ -3777,9 +3781,12 @@ describe("model run route handlers", () => {
 
     expect(response.status).toBe(200);
     expect(loadAttachments).not.toHaveBeenCalled();
-    expect(state.failed?.error).toMatchObject({
+    expect(state.failed?.error).toMatchObject(policy ? {
       code: "attachment_count_limit_exceeded",
       message: "This run contains 2 attachments; the limit is 1."
+    } : {
+      code: "context_compaction_policy_retired",
+      message: "This answer was interrupted by an application update. Regenerate to try again."
     });
   });
 

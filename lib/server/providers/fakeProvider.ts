@@ -1,12 +1,13 @@
 import { textFromContentBlocks, type ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { conversationPreview, textConversationForRequest } from "./context";
+import { CHECKPOINT_OUTPUTS_TOOL_NAME } from "../tools/checkpointOutputs";
 import type { ModelToolCall, RunTool } from "../tools/types";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "./types";
 
 const DETERMINISTIC_RESULT_ZIP_BASE64 =
   "UEsDBBQAAAAAAAAAIQDtsuv+JQAAACUAAAAKAAAAcmVzdWx0LnR4dEFJUVNBIGRldGVybWluaXN0aWMgd29ya3NwYWNlIHJlc3VsdApQSwECFAMUAAAAAAAAACEA7bLr/iUAAAAlAAAACgAAAAAAAAAAAAAApIEAAAAAcmVzdWx0LnR4dFBLBQYAAAAAAQABADgAAABNAAAAAAA=";
 const WORKSPACE_TEST_DIRECTIVE =
-  /^\[AIQSA_WORKSPACE_E2E:(activity_probe|async_stop|browser_save|browser_restore|browser_missing|descendant_stop|export_fault|forget_executions_stop|deterministic_prepare|live_async_stop|live_marker_probe|live_prepare|live_quiesce_probe|live_staging_probe|long_command|lose_session|marker_probe|network_off_probe|recreate_probe|reset_probe|resume_probe|staging_probe|state_probe)\]$/u;
+  /^\[AIQSA_WORKSPACE_E2E:(activity_probe|async_stop|browser_save|browser_restore|browser_missing|checkpoint_save|descendant_stop|export_fault|forget_executions_stop|deterministic_prepare|live_async_stop|live_marker_probe|live_prepare|live_quiesce_probe|live_staging_probe|long_command|lose_session|marker_probe|network_off_probe|recreate_probe|reset_probe|resume_probe|staging_probe|state_probe)\]$/u;
 
 type FakeToolResultMessage = Readonly<{
   content: readonly Readonly<{ text?: string; type: "json" | "text"; value?: unknown }>[];
@@ -133,6 +134,23 @@ function scriptedWorkspaceResult(
       const data = lastToolData(results);
       const found = isRecord(data) && typeof data.content === "string" && data.content.includes("synthetic-browser-session");
       finalText = found ? "Workspace browser session restored." : "Workspace browser session absent.";
+    }
+  } else if (scenario === "checkpoint_save") {
+    // A builtin Workspace tool keeps its plain name; it is not a guest tool.
+    if (step === 0) {
+      call = toolCall(request, "sandbox_fs_write", step, {
+        content: "Synthetic checkpoint draft\n", encoding: "utf8", path: "/workspace/project/draft.txt"
+      });
+    } else if (step === 1 && request.tools?.some((tool) => tool.name === CHECKPOINT_OUTPUTS_TOOL_NAME)) {
+      call = {
+        arguments: { description: "Synthetic draft", files: ["/workspace/project/draft.txt"] },
+        id: `workspace-e2e-${step}-${CHECKPOINT_OUTPUTS_TOOL_NAME}`,
+        name: CHECKPOINT_OUTPUTS_TOOL_NAME
+      };
+    } else {
+      finalText = results.length === 2 && results.every((result) => result.status === "complete")
+        ? "Workspace checkpoint saved."
+        : "Workspace checkpoint failed.";
     }
   } else if (scenario === "deterministic_prepare") {
     if (step === 0) {

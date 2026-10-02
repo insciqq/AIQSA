@@ -6,6 +6,7 @@ import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { authenticateWithLocalToken, signInWithLocalToken } from "./support/localAuth";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 type Viewport = Readonly<{ width: number; height: number }>;
 const sizes: readonly Viewport[] = [{ width: 1440, height: 900 }, { width: 768, height: 1024 },
@@ -53,7 +54,7 @@ async function withTwoChats(page: Page, run: (titles: { alpha: string; beta: str
     await expect(page.getByTestId("header-title")).toHaveText(titles.beta);
     await run(titles, ids);
   } finally {
-    for (const id of Object.values(ids)) await page.request.delete(`/api/chats/${id}`).catch(() => undefined);
+    for (const id of Object.values(ids)) await deleteOwnedChatPermanently(page.request, id).catch(() => undefined);
   }
 }
 

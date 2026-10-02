@@ -547,6 +547,35 @@ describe("AdminProvidersSection", () => {
     expect(onNavigateSection).toHaveBeenCalledWith("roles", "memory");
   });
 
+  it("drops the Memory hint from a finished setup run once the installation policy assigns Memory", async () => {
+    connections.current = connections.current.map((connection) => connection.id === "conn-openai"
+      ? { ...connection, checkRun: fixtureCheckRun({ credentialId: "cred-primary", done: 2, finishedAt: "2026-09-07T12:52:00.000Z",
+          id: "run-memory", reason: "setup", state: "completed", total: 2,
+          results: [{ providerModelId: "model-terra", state: "saved" }, { providerModelId: "model-luna", state: "saved" }],
+          setup: { defaults: ["Chat: GPT-5.6 Terra"], needsConfiguration: ["memory"], search: "ready", state: "completed" } }) }
+      : connection);
+    const memoryModel = {
+      available: true, connectionDisplayName: "OpenAI", connectionId: "conn-openai", defaultReasoningEffort: null,
+      displayName: "GPT-5.6 Luna", forcedToolCall: "verified", id: "model-luna", reasoningEfforts: [], structuredOutput: "verified"
+    };
+    const calls = mockFetch(connections, ({ method, url }) => method === "GET" && url === "/api/admin/providers/system-model-policy"
+      ? Response.json({ systemModelPolicy: {
+          memoryPolicy: { assignmentSource: "operator", model: memoryModel, reasoningEffort: null, version: 2 },
+          candidates: [], titleCandidates: [], documentCandidates: [], verificationCandidates: [], rerankerCandidates: [],
+          policy: {
+            chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null, chatPdfReasoningEffort: null,
+            reasoningEffort: null, rerankerModel: null, systemModel: null,
+            updatedAt: "2026-09-07T12:53:00.000Z", updatedBy: null, version: 1
+          }
+        } })
+      : null);
+    renderSection("conn-openai");
+
+    expect(await screen.findByText("Automatic setup finished.")).toBeVisible();
+    await waitFor(() => expect(screen.queryByTestId("provider-setup-memory-hint")).not.toBeInTheDocument());
+    expect(calls.some(({ method, url }) => method === "GET" && url === "/api/admin/providers/system-model-policy")).toBe(true);
+  });
+
   it("turns the provider off from the topbar switch and opens the Add provider sheet behind the primary action", async () => {
     const calls = mockFetch(connections, ({ body, method, url }) => {
       if (method === "POST" && url === "/api/admin/providers/conn-openai/actions") {

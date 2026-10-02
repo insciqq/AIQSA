@@ -394,6 +394,28 @@ describe("upload wire decoders", () => {
     ).toBeNull();
   });
 
+  it.each(["file_required", "image_invalid", "image_limit_exceeded", "unsupported_type", "project_not_found", "unauthorized"])(
+    "decodes the direct-upload refusal %s by code only",
+    (error) => {
+      expect(decodeUploadErrorResponse({ error })).toEqual({ error });
+      expect(
+        decodeUploadErrorResponse({ error, message: "<html>private server detail</html>" })
+      ).toEqual({ error });
+      expect(decodeUploadErrorResponse({ error, limit: 26_048_576 })).toBeNull();
+      expect(decodeUploadErrorResponse({ error, maxPages: 500 })).toBeNull();
+    }
+  );
+
+  it("rejects malformed and unknown upload refusals", () => {
+    expect(decodeUploadErrorResponse("unsupported_type")).toBeNull();
+    expect(decodeUploadErrorResponse(null)).toBeNull();
+    expect(decodeUploadErrorResponse(["unsupported_type"])).toBeNull();
+    expect(decodeUploadErrorResponse({})).toBeNull();
+    expect(decodeUploadErrorResponse({ error: 400 })).toBeNull();
+    expect(decodeUploadErrorResponse({ error: "invalid_origin" })).toBeNull();
+    expect(decodeUploadErrorResponse({ error: "upload_failed_400" })).toBeNull();
+  });
+
   it("decodes non-PDF document completeness with explicit invariants", () => {
     const truncated = {
       characterCount: 1_000_000,

@@ -6,6 +6,7 @@ import { runAccountMenuAction } from "./shell/page";
 import { e2eAssistantRows } from "./support/assistants";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 
 const sizes = [{ width: 1440, height: 900 }, { width: 1280, height: 640 },
   { width: 768, height: 1024 }, { width: 1024, height: 768 }, { width: 390, height: 844 }, { width: 844, height: 390 }];
@@ -209,7 +210,7 @@ test("a settled load can pin an authorized Skill for the next turn without chang
     }
   } catch (error) { errors.push(error); } finally {
     await cleanupFixtures([
-      async () => { if (createdChatId) expect((await page.request.delete(`/api/chats/${createdChatId}`)).ok()).toBe(true); },
+      async () => { if (createdChatId) await deleteOwnedChatPermanently(page.request, createdChatId); },
       async () => { if (skillId) expect((await page.request.delete(`/api/me/skills/${skillId}`)).ok()).toBe(true); }
     ], errors);
   }

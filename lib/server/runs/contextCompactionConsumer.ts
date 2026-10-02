@@ -1,12 +1,18 @@
-import type { ContextPlanMeasurement, ContextSummaryAttempt } from "../../contracts/contextCompaction";
+import type { ContextCompactionCheckpoint, ContextPlanMeasurement, ContextSummaryAttempt } from "../../contracts/contextCompaction";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { ProviderRunRequest } from "../providers/types";
 import type { ObservationActor } from "../toolObservations/repository";
 import type { ToolObservationService } from "../toolObservations/sourceAdapters";
 import type { ProviderToolBridge } from "../tools/types";
-import { contextSummaryMessageId, contextSummaryRefsComplete, type ContextObservation } from "./contextCompactionContract";
+import {
+  CONTEXT_COMPACTION_LIMITS,
+  contextSummaryMessageId,
+  contextSummaryRefsComplete,
+  type ContextObservation
+} from "./contextCompactionContract";
 import { contextCompactionFailureOutcome, type ContextCompactionPublisher } from "./contextCompactionEvents";
 import {
+  applyContextSummaryToRequest,
   applyReusedContextSummary,
   ContextSummaryError,
   executeContextSummary,
@@ -18,7 +24,6 @@ import {
 import {
   applyProviderRequestContextBudget,
   providerRequestFitsContextBudget,
-  withSummaryHistoryOmission,
   type ProviderRequestContextBudgetResult
 } from "./runContextBudget";
 
@@ -111,12 +116,13 @@ type BudgetedRequest = Extract<ProviderRequestContextBudgetResult, { ok: true }>
  * the ordinary bounded path, which never sees another run's notes. Notes whose
  * refs could not name every retained source are never carried. A failed
  * availability check (not a refusal) throws its classified error instead of
- * silently dropping the notes.
+ * silently dropping the notes. `projected` is the unplanned request with the
+ * notes applied: the source every later pass reads.
  */
 async function withCarriedSummary(
-  input: CompactedProviderRequestInput,
+  input: Pick<CompactedProviderRequestInput, "request" | "signal" | "sourceAvailable">,
   budget: (request: ProviderRunRequest) => ProviderRequestContextBudgetResult
-): Promise<Readonly<{ beforeTokens: number; result: BudgetedRequest }> | null> {
+): Promise<Readonly<{ beforeTokens: number; projected: ProviderRunRequest; result: BudgetedRequest }> | null> {
   const { request } = input;
   const reuse = request.contextCompactionPolicy?.reuse;
   if (!reuse || request.contextCompactionPolicy?.mode !== "hybrid" || request.contextCompactionSummary ||
@@ -125,13 +131,13 @@ async function withCarriedSummary(
   if (!exact.ok || exact.request.contextCompaction?.outcome !== "needs_summary") return null;
   const projected = applyReusedContextSummary(exact.request);
   const fitted = projected ? budget(projected) : null;
-  if (!fitted?.ok) return null;
+  if (!projected || !fitted?.ok) return null;
   const handles = reuse.summary.sourceRefs.filter((ref) => ref.startsWith("tor1_"));
   if (handles.length > 0 && input.sourceAvailable) {
     input.signal.throwIfAborted();
     if (!(await input.sourceAvailable(handles, input.signal))) return null;
   }
-  return { beforeTokens: exact.request.contextCompaction.beforeTokens, result: fitted };
+  return { beforeTokens: exact.request.contextCompaction.beforeTokens, projected, result: fitted };
 }
 
 export type CompactedProviderRequestInput = Readonly<{
@@ -161,15 +167,21 @@ export type CompactedProviderRequestInput = Readonly<{
  * It measures the request's actual messages first and decides only from that
  * fresh measurement; a measurement carried from an earlier round never buys or
  * skips a summary. The returned request is exactly what may be dispatched and
- * checkpointed. At most one summary cycle runs per request: notes bought here
- * cover all prior history (carried notes plus the exact messages after them),
- * so the planner never asks again, and a request that still does not fit fails
- * as irreducible overflow instead of falling back to legacy trimming. The
- * published outcome and the thrown code always agree. A summary bought only
- * for headroom (the request already fits) whose cycle fails with a tolerated
- * class, including notes that do not lower the estimate (never committed),
- * publishes the failed cycle; the fitting request continues unchanged with the
- * cycle's settled receipts, and the run buys no further headroom-only summary
+ * checkpointed.
+ *
+ * Nothing leaves the request before notes cover it. While the planner asks
+ * for notes, one cycle buys up to `summaryPasses` oldest-first passes; each
+ * pass reads the request as it stood before this plan masked or released
+ * anything (covered material is already in earlier notes), commits its notes
+ * and the request is planned again, so covered results are masked and covered
+ * units leave only afterwards. When the passes run out, a fitting request is
+ * dispatched with the coverage reached and a request over its budget fails as
+ * `context_too_large`; nothing falls back to truncation. The published
+ * outcome and the thrown code always agree. A headroom pass (the request
+ * already fits) that fails with a tolerated class, including notes that do
+ * not lower the estimate (never committed), ends the cycle; the fitting
+ * request continues with every pass committed before it and the cycle's
+ * settled receipts, and the run buys no further headroom-only summary
  * (`headroomSummaryDeclined`).
  */
 export async function prepareCompactedProviderRequest(
@@ -204,9 +216,7 @@ export async function prepareCompactedProviderRequest(
   }
   if (summaryNeedsProvider(prepared.request)) {
     input.signal.throwIfAborted();
-    const source = prepared.request;
-    const headroom = fitsWithoutSummary(source, input.bridge);
-    await publisher.begin(cycleMeasurement(source.contextCompaction));
+    await publisher.begin(cycleMeasurement(prepared.request.contextCompaction));
     try {
       await input.authorize?.();
     } catch (error) {
@@ -214,51 +224,76 @@ export async function prepareCompactedProviderRequest(
       await publisher.settle(code ? contextCompactionFailureOutcome(code) : "unknown");
       throw error;
     }
-    // A failed cycle: a request that fits without the summary continues
-    // unchanged, without notes or trimming, carrying the cycle's settled
-    // receipts so every later checkpoint keeps them.
-    const failed = async (rejection: ContextSummaryRejection, attempts: readonly ContextSummaryAttempt[]) => {
-      await publisher.settle(contextCompactionFailureOutcome(rejection.code));
-      if (!headroom || !HEADROOM_TOLERATED_FAILURES.has(rejection.code)) throw input.failure(rejection.code, rejection.message);
+    // The request every pass reads: this round's messages before planning,
+    // with the notes committed so far applied.
+    let source: ProviderRunRequest = carried?.projected ?? input.request;
+    let committed = false;
+    // A failed pass: a request that fits without it continues as planned
+    // before the pass, with the passes committed so far and the cycle's
+    // settled receipts, so every later checkpoint keeps them.
+    const failed = async (rejection: ContextSummaryRejection, attempts: readonly ContextSummaryAttempt[], headroom: boolean) => {
+      const tolerated = headroom && HEADROOM_TOLERATED_FAILURES.has(rejection.code);
+      // Notes an earlier pass committed stay applied: that is this cycle's outcome.
+      if (committed && tolerated) await publisher.settle("summary_applied", prepared.request.contextCompaction);
+      else await publisher.settle(contextCompactionFailureOutcome(rejection.code));
+      if (!tolerated) throw input.failure(rejection.code, rejection.message);
       if (prepared.contextTruncation) await input.onTruncation?.(prepared.contextTruncation);
-      return attempts.length > 0 ? { ...source, contextCompactionSummaryAttempts: attempts } : source;
+      const request = committed ? withoutHeadroomSummary(prepared.request) : prepared.request;
+      return attempts.length > 0 ? { ...request, contextCompactionSummaryAttempts: attempts } : request;
     };
-    let summarized: Awaited<ReturnType<typeof executeContextSummary>>;
-    try {
-      summarized = await executeContextSummary({
-        accept: (request) => summaryRejection(source, budget(request), headroom),
-        adapter: input.summaryAdapter,
-        existingAttempts: source.contextCompactionSummaryAttempts,
-        existingSummary: source.contextCompactionSummary,
-        ...(input.observations ? { observations: input.observations } : {}),
-        receipts: input.receipts,
-        request: source,
-        signal: input.signal,
-        ...(input.sourceAvailable ? { sourceAvailable: input.sourceAvailable } : {})
-      });
-    } catch (error) {
-      // Stop: the run's cancellation settles the open cycle as unknown.
-      if (input.signal.aborted) throw error;
-      if (error instanceof ContextSummaryError) return failed(error, error.attempts);
-      const code = failureCode(error);
-      await publisher.settle(code ? contextCompactionFailureOutcome(code) : "unknown");
-      throw error;
+    for (let pass = 0; summaryNeedsProvider(prepared.request); pass += 1) {
+      const headroom = fitsWithoutSummary(prepared.request, input.bridge);
+      if (pass >= CONTEXT_COMPACTION_LIMITS.summaryPasses) {
+        if (!headroom) {
+          await publisher.settle(contextCompactionFailureOutcome("context_too_large"));
+          throw input.failure("context_too_large",
+            "The conversation still exceeds the model context budget after the bounded summary passes.");
+        }
+        prepared = { ...prepared, request: withoutHeadroomSummary(prepared.request) };
+        break;
+      }
+      const current = prepared.request;
+      const passSource: ProviderRunRequest = {
+        ...source,
+        ...(current.contextCompaction ? { contextCompaction: current.contextCompaction } : {}),
+        ...(current.contextCompactionSummaryAttempts
+          ? { contextCompactionSummaryAttempts: current.contextCompactionSummaryAttempts } : {})
+      };
+      let summarized: Awaited<ReturnType<typeof executeContextSummary>>;
+      try {
+        summarized = await executeContextSummary({
+          accept: (request) => summaryRejection(current, budget(request), headroom),
+          adapter: input.summaryAdapter,
+          existingAttempts: current.contextCompactionSummaryAttempts,
+          existingSummary: current.contextCompactionSummary,
+          ...(input.observations ? { observations: input.observations } : {}),
+          receipts: input.receipts,
+          request: passSource,
+          signal: input.signal,
+          ...(input.sourceAvailable ? { sourceAvailable: input.sourceAvailable } : {})
+        });
+      } catch (error) {
+        // Stop: the run's cancellation settles the open cycle as unknown.
+        if (input.signal.aborted) throw error;
+        if (error instanceof ContextSummaryError) return failed(error, error.attempts, headroom);
+        const code = failureCode(error);
+        await publisher.settle(code ? contextCompactionFailureOutcome(code) : "unknown");
+        throw error;
+      }
+      // Stop that lands as the last call completes: nothing is applied or
+      // reported as success; the run's cancellation settles the open cycle.
+      input.signal.throwIfAborted();
+      // The notes (with the covered material they allow to leave) must lower
+      // the estimate. Bought notes met this check before their commit; notes
+      // reused without a call meet it here, and a pass that fails it is never
+      // kept.
+      const next = budget(summarized.request);
+      const rejection = summaryRejection(current, next, headroom);
+      if (rejection || !next.ok) return failed(rejection ?? NO_PROGRESS, summarized.attempts, headroom);
+      committed = true;
+      source = summarized.request;
+      prepared = next;
     }
-    // Stop that lands as the last call completes: nothing is applied or
-    // reported as success; the run's cancellation settles the open cycle.
-    input.signal.throwIfAborted();
-    // The notes (with the covered history they allow to leave) must lower
-    // the estimate. Bought notes met this check before their commit; notes
-    // reused without a call meet it here, and a cycle that fails it is never
-    // kept.
-    const next = budget(summarized.request);
-    const rejection = summaryRejection(source, next, headroom);
-    if (rejection || !next.ok) return failed(rejection ?? NO_PROGRESS, summarized.attempts);
-    // History older than the span a bounded summary could cover leaves as
-    // whole-turn truncation evidence, as the legacy guard would drop it.
-    prepared = summarized.omitted
-      ? withSummaryHistoryOmission({ ...(input.bridge ? { bridge: input.bridge } : {}), omitted: summarized.omitted, result: next })
-      : next;
     await publisher.settle("summary_applied", prepared.request.contextCompaction);
   } else if (publisher.running) {
     // A cycle left running by a lost executor: a summary committed to the
@@ -277,6 +312,47 @@ export async function prepareCompactedProviderRequest(
   }
   if (prepared.contextTruncation) await input.onTruncation?.(prepared.contextTruncation);
   return prepared.request;
+}
+
+/**
+ * The request a recovery route rebuilds for a dispatch it may not compact
+ * itself: the accepted request with the notes the run committed outside the
+ * tool loop (its notes-only checkpoint) or, without them, the carried notes
+ * exactly as the live consumer would apply them. It never buys notes: a
+ * rebuilt request that still needs them to fit fails as `context_too_large`,
+ * while one that fits continues without a headroom purchase.
+ */
+export async function rebuiltCompactedProviderRequest(input: Readonly<{
+  bridge?: ProviderToolBridge;
+  checkpoint?: Pick<ContextCompactionCheckpoint, "summary" | "summaryAttempts"> | null;
+  request: ProviderRunRequest;
+  signal: AbortSignal;
+  sourceAvailable?(handles: readonly string[], signal?: AbortSignal): Promise<boolean>;
+}>): Promise<ProviderRequestContextBudgetResult> {
+  const budget = (request: ProviderRunRequest) => applyProviderRequestContextBudget({
+    ...(input.bridge ? { bridge: input.bridge } : {}),
+    request
+  });
+  const summary = input.checkpoint?.summary;
+  const attempts = input.checkpoint?.summaryAttempts;
+  let result: ProviderRequestContextBudgetResult;
+  if (summary) {
+    // Applied exactly as the live pass applied it: the tail rule reads the
+    // request's measured budget.
+    const exact = budget(input.request);
+    if (!exact.ok) return exact;
+    result = budget(applyContextSummaryToRequest({ ...input.request,
+      ...(exact.request.contextCompaction ? { contextCompaction: exact.request.contextCompaction } : {}),
+      contextCompactionSummary: summary }, summary, attempts));
+  } else {
+    result = (await withCarriedSummary(input, budget))?.result ?? budget(input.request);
+  }
+  if (!result.ok || !summaryNeedsProvider(result.request)) return result;
+  if (!fitsWithoutSummary(result.request, input.bridge)) {
+    return { error: { code: "context_too_large", message: "The recovered request needs context notes this recovery cannot buy." },
+      ok: false, status: 400 };
+  }
+  return { ...result, request: withoutHeadroomSummary(result.request) };
 }
 
 /** Availability of retained originals by one authorization-only check of the
@@ -299,24 +375,4 @@ export function observationSourceAvailability(
         "The availability of retained context sources could not be checked.", { cause: error });
     }
   };
-}
-
-/**
- * Knowledge answer routes have no summary consumer. Their grounded answer
- * operations carry only the frozen evidence manifest and effective question,
- * and model-derived notes must never stand beside citation evidence. Their
- * evidence fit check therefore keeps the exact legacy whole-turn guard even
- * for a hybrid admission: prior turns may be trimmed, pinned evidence stays
- * whole, irreducible overflow is rejected, and no over-budget request results.
- */
-export function applyKnowledgeAnswerContextBudget(input: Readonly<{
-  bridge?: ProviderToolBridge;
-  request: ProviderRunRequest;
-}>): ProviderRequestContextBudgetResult {
-  const { contextCompactionPolicy: _hybridPolicy, ...legacy } = input.request;
-  void _hybridPolicy;
-  return applyProviderRequestContextBudget({
-    ...(input.bridge ? { bridge: input.bridge } : {}),
-    request: legacy
-  });
 }

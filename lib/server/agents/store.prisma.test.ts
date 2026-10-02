@@ -33,9 +33,10 @@ async function fixture(runConfiguration = configuration) {
   await prisma.user.create({ data: { id: userId, displayName: "Agent store fixture", status: "active" } });
   const chat = await prisma.chat.create({ data: { userId, title: "Agent fixture" } });
   const session = await prisma.workspaceSession.create({ data: { chatId: chat.id, sandboxName: `agent-${randomUUID()}`,
-    imageRef: "aiqsa-workspace:0.1.29", internetEnabled: true, policyRevision: 1,
+    imageRef: "aiqsa-workspace:0.1.30", internetEnabled: true, policyRevision: 1,
     runtimeSandboxId: "fixture-runtime", state: "RUNNING", expiresAt: new Date(Date.now() + 600000) } });
-  async function run() {
+  // A per-run configuration lets one chat hold runs accepted under different Codex versions.
+  async function run(selected = runConfiguration) {
     await prisma.modelRun.updateMany({ where: { chatId: chat.id, status: "in_progress" }, data: { status: "error" } });
     const message = await prisma.message.create({ data: { chatId: chat.id, role: "user", content: textMessageContent("synthetic task") } });
     const answer = await prisma.message.create({ data: { chatId: chat.id, role: "assistant", content: textMessageContent("synthetic answer") } });
@@ -45,7 +46,7 @@ async function fixture(runConfiguration = configuration) {
       imageRef: session.imageRef, internetEnabled: true, policyRevision: 1, runtimeVersion: "0.6.16", mcpVersion: "0.6.16",
       toolCatalogHash: "a".repeat(64), toolDefinitions: [{ originalName: "sandbox_exec_start", namespacedName: "workspace__sandbox_exec_start",
         description: "Fixture", inputSchema: { type: "object" } }], outputDirectory: `/workspace/output/${accepted.id}` } });
-    await prisma.agentRunBinding.create({ data: { modelRunId: accepted.id, configuration: runConfiguration, compatibilityHash: runConfiguration.compatibilityHash } });
+    await prisma.agentRunBinding.create({ data: { modelRunId: accepted.id, configuration: selected, compatibilityHash: selected.compatibilityHash } });
     await prisma.providerRunBinding.create({ data: { modelRunId: accepted.id, role: "answer", credentialSource: "default",
       executionSnapshot: { version: 1, providerFamily: "fake", connectionId: "fixture", providerModelId: "fixture",
         connectionDisplayName: "Fixture", modelDisplayName: "Fixture", credentialId: null, credentialVersionId: null,
@@ -53,7 +54,7 @@ async function fixture(runConfiguration = configuration) {
         model: { adapterKind: "fake", upstreamModelId: "fixture", defaultParams: {}, capabilities: {
           nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, streaming: true, vision: false
         } } } } });
-    const store = createAgentRunStore(prisma, { runId: accepted.id, userId, configuration: runConfiguration });
+    const store = createAgentRunStore(prisma, { runId: accepted.id, userId, configuration: selected });
     return { ...accepted, store };
   }
   return { userId, session, run, async dispose() {
@@ -707,6 +708,23 @@ describe("durable Agent authority and accounting", () => {
     } finally { await f.dispose(); }
   });
 
+  it("starts a fresh native thread when the predecessor was accepted under another Codex compatibility hash", async () => {
+    const f = await fixture();
+    try {
+      const preUpgrade = { ...configuration, codexVersion: "0.158.0", compatibilityHash: "b".repeat(64) };
+      const first = await f.run(preUpgrade);
+      await first.store.arm(null);
+      await first.store.setThread(randomUUID());
+      await first.store.revoke(true);
+      await prisma.modelRun.update({ where: { id: first.id }, data: { status: "complete" } });
+      const second = await f.run();
+      expect((await second.store.arm(first.assistantMessageId)).threadId).toBeUndefined();
+      expect(await prisma.agentRunBinding.findUniqueOrThrow({ where: { modelRunId: second.id } }))
+        .toMatchObject({ resumedFromRunId: null, startedAt: expect.any(Date), compatibilityHash: configuration.compatibilityHash });
+      expect(await second.store.resumedMcpTools()).toEqual([]);
+    } finally { await f.dispose(); }
+  });
+
   it.each(["sibling", "failed", "thread"] as const)("does not resume a predecessor thread already advanced by a %s successor", async successor => {
     const f = await fixture();
     try {
@@ -837,6 +855,26 @@ describe("durable Agent authority and accounting", () => {
       expect(await interruptExpiredAgentRun(prisma, { runId: run.id, userId: f.userId, now: new Date() })).toEqual({ kind: "interrupted", failureCode: "agent_execution_interrupted", usage: [] });
       expect(await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: call } })).toMatchObject({ state: "error", result: { outcome: "unknown" } });
       await expect(run.store.arm(null)).rejects.toThrow("agent_binding_invalid");
+    } finally { await f.dispose(); }
+  });
+
+  it("interrupts a lapsed pre-upgrade Agent run without validating its Codex version or replaying effects", async () => {
+    const f = await fixture({ ...configuration, codexVersion: "0.158.0" });
+    try {
+      const run = await f.run();
+      await run.store.arm(null);
+      const call = await run.store.toolCall("find_tools", {}, false, "pre-upgrade-delivery");
+      // A native search receipt stays DISPATCHED without holding the generation slot.
+      const attempt = await run.store.reserveProvider(100, { kind: "native_search" });
+      await prisma.agentRunBinding.update({ where: { modelRunId: run.id },
+        data: { leaseExpiresAt: new Date(0), expiresAt: new Date(Date.now() + 600000) } });
+      expect(await interruptExpiredAgentRun(prisma, { runId: run.id, userId: f.userId, now: new Date() }))
+        .toMatchObject({ kind: "interrupted", failureCode: "agent_execution_interrupted" });
+      expect(await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: call } }))
+        .toMatchObject({ state: "error", result: { code: "agent_execution_interrupted", outcome: "unknown" } });
+      expect(await prisma.agentProviderAttempt.findUniqueOrThrow({ where: { id: attempt } })).toMatchObject({ state: "UNKNOWN" });
+      expect(await prisma.agentRunBinding.findUniqueOrThrow({ where: { modelRunId: run.id } }))
+        .toMatchObject({ failureCode: "agent_execution_interrupted", revokedAt: expect.any(Date) });
     } finally { await f.dispose(); }
   });
 });

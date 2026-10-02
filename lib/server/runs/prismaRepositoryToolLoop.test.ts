@@ -1,5 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
+import { agentLimits } from "../agents/config";
 import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import type { NormalizedRunRequest } from "../providers/types";
 import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
@@ -499,6 +501,28 @@ describe("provider dispatch recovery request loading", () => {
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
       .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
+  it("loads an Agent request accepted under an earlier guest Codex only so recovery can settle it", async () => {
+    const agent = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
+      compatibilityHash: "a".repeat(64), mcpMode: "auto" as const };
+    let accepted: unknown;
+    const operations = createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+      chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+      normalizedRequest: accepted, provider: "provider-one"
+    })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    const load = () => operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
+    for (const codexVersion of [agent.codexVersion, "0.158.0"]) {
+      accepted = { ...normalizedRequest, workspace, agent: { ...agent, codexVersion } };
+      await expect(load()).resolves.toMatchObject({ agent: { codexVersion } });
+    }
+    for (const invalid of [{ codexVersion: 154 }, { codexVersion: "0.158.0-alpha" }, { codexVersion: "0.158.0", compatibilityHash: "x" },
+      { codexVersion: "0.158.0", mcpMode: "sometimes" }]) {
+      accepted = { ...normalizedRequest, workspace, agent: { ...agent, ...invalid } };
+      await expect(load()).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+    }
+    accepted = { ...normalizedRequest, agent: { ...agent, codexVersion: "0.158.0" } };
+    await expect(load()).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
   });
 
   it("keeps historical requests on the legacy path and accepts the explicit Off marker", async () => {
@@ -1392,7 +1416,7 @@ describe("Prisma context summary receipts", () => {
     const operations = createPrismaRunToolLoopOperations({
       $transaction: async (consume: (client: typeof tx) => Promise<unknown>) => consume(tx)
     } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
-    const record = (receipt: Readonly<{ attempt: ContextSummaryAttempt; summary?: ContextSummary; roundIndex?: number | null }>,
+    const record = (receipt: Readonly<{ attempt: ContextSummaryAttempt; summary?: ContextSummary; roundIndex?: number }>,
       attributions = [] as { modelId: string; operationCount: number; provider: string; usage: typeof usage }[]) =>
       operations.recordRunUsageEvents({ chatId: "chat-1", runId: "run-1", userId: "user-1", usageAttributions: attributions,
         contextSummaryReceipt: { attempt: receipt.attempt, compaction, roundIndex: receipt.roundIndex === undefined ? 1 : receipt.roundIndex,
@@ -1460,10 +1484,15 @@ describe("Prisma context summary receipts", () => {
     })).resolves.toBe("conflict");
   });
 
-  it("records usage only for a dispatch outside the tool loop", async () => {
+  it("keeps receipts and notes of a dispatch outside the tool loop in a notes-only checkpoint", async () => {
     const store = harness();
-    await expect(store.record({ attempt: attempt("claim"), roundIndex: null })).resolves.toBe(true);
-    expect(store.run.toolLoopState).toBeNull();
+    await expect(store.record({ attempt: attempt("claim"), roundIndex: 0 })).resolves.toBe(true);
+    expect(parseToolLoopCheckpoint(store.run.toolLoopState)).toMatchObject({ phase: "provider_running", providerContinuation: null,
+      roundIndex: 0, contextCompaction: { summaryAttempts: [attempt("claim")] } });
+    await expect(store.record({ attempt: attempt("committed"), roundIndex: 0, summary },
+      [{ modelId: "answer-model", operationCount: 1, provider: "openai", usage }])).resolves.toBe(true);
+    expect(parseToolLoopCheckpoint(store.run.toolLoopState)?.contextCompaction).toMatchObject({ summary,
+      summaryAttempts: [attempt("committed")] });
   });
 });
 
@@ -1506,8 +1535,110 @@ describe("branch context checkpoint candidates", () => {
     // recovery may still resume qualifies only by a committed receipt for
     // exactly the checkpoint notes, which later work cannot revoke.
     expect(sql).toContain(`r."status" IN ('complete', 'cancelled', 'error')`);
+    // Knowledge runs supply notes too: no Knowledge filter remains.
+    expect(sql).not.toContain("knowledgePlan");
     expect(sql).toContain(`AND (NOT ("r"."status" IN ('streaming', 'queued', 'in_progress') OR ("r"."status" = 'error' AND NOT COALESCE(`);
     expect(sql).toContain(`-> 'summaryAttempts' @> jsonb_build_array(jsonb_build_object( 'state', 'committed', ` +
       `'sourceDigest', r."toolLoopState" -> 'contextCompaction' -> 'summary' -> 'sourceDigest' )), false))`);
+  });
+});
+
+describe("Prisma tool-free synthesis and blocked repeats", () => {
+  const usage = { cachedInputTokens: 0, cacheWriteInputTokens: 0, completeness: "complete" as const,
+    inputTokens: 9, outputTokens: 4, reasoningTokens: 0, totalTokens: 13 };
+  type Row = { arguments: unknown; completedAt: Date | null; id: string; mcpRunBinding: null; modelRunId: string; ordinal: number;
+    providerCallId: string; result: unknown; roundIndex: number; startedAt: Date | null; state: string; toolName: string;
+    usageAccountedAt: null; workspaceRunBindingId: null };
+
+  function harness(initial: Readonly<{ rows?: Row[]; status?: string }> = {}) {
+    const run = { assistantMessageId: "assistant-1", errorPayload: null, followupRevision: 0,
+      providerResponseId: "refused-response" as string | null, status: initial.status ?? "streaming", toolLoopState: null as unknown };
+    const rows: Row[] = [...(initial.rows ?? [])];
+    const matches = (row: Row, where: { modelRunId?: string; roundIndex?: number }) =>
+      (where.modelRunId === undefined || row.modelRunId === where.modelRunId) && (where.roundIndex === undefined || row.roundIndex === where.roundIndex);
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ ...run }]),
+      message: { updateMany: vi.fn(async () => ({ count: 1 })) },
+      modelRun: { update: vi.fn(async ({ data }: { data: { providerResponseId?: string | null; toolLoopState?: unknown } }) => {
+        if (data.toolLoopState !== undefined) run.toolLoopState = data.toolLoopState;
+        if (data.providerResponseId !== undefined) run.providerResponseId = data.providerResponseId;
+      }) },
+      modelRunToolCall: {
+        count: vi.fn(async ({ where }: { where: { modelRunId: string; roundIndex: number } }) => rows.filter(row => matches(row, where)).length),
+        create: vi.fn(async ({ data }: { data: Omit<Row, "completedAt" | "id" | "mcpRunBinding" | "result" | "startedAt" | "usageAccountedAt"> &
+          Partial<Pick<Row, "completedAt" | "result">> & { mcpRunBindingId: null } }) => {
+          const { mcpRunBindingId: _binding, ...fields } = data;
+          void _binding;
+          rows.push({ completedAt: null, result: null, ...fields, id: `row-${rows.length + 1}`, mcpRunBinding: null, startedAt: null,
+            usageAccountedAt: null, workspaceRunBindingId: null });
+        }),
+        findMany: vi.fn(async ({ where }: { where: { modelRunId: string; roundIndex: number } }) =>
+          rows.filter(row => matches(row, where)).sort((left, right) => left.ordinal - right.ordinal))
+      }
+    };
+    const operations = createPrismaRunToolLoopOperations({
+      $transaction: async (consume: (client: typeof tx) => Promise<unknown>) => consume(tx)
+    } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
+    return { operations, rows, run, tx };
+  }
+  const synthesis = { finalSynthesis: "budget_exhausted", providerResponseId: null, providerToolMessages: [{ type: "prior" }] };
+  const claim = { finalSynthesisOfRound: 41, providerContinuation: synthesis, roundIndex: 42, runId: "run-1", userId: "user-1" };
+
+  it.each(["terminal", "partial", "rows", "marker", "cancelled"] as const)("claims tool-free synthesis only from a refused round with terminal usage: %s", async (state) => {
+    const store = harness({ status: state === "cancelled" ? "cancelled" : "streaming", rows: state === "rows" ? [{
+      arguments: {}, completedAt: null, id: "row-0", mcpRunBinding: null, modelRunId: "run-1", ordinal: 0, providerCallId: "p", result: null,
+      roundIndex: 41, startedAt: null, state: "pending", toolName: "alpha", usageAccountedAt: null, workspaceRunBindingId: null }] : [] });
+    store.run.toolLoopState = toolLoopCheckpoint({
+      answerRoundUsage: [{ completeness: state === "partial" ? "partial" : "terminal", roundIndex: 41, usage }],
+      phase: "provider_running", roundIndex: 41,
+      providerContinuation: state === "marker" ? synthesis : { providerResponseId: null, providerToolMessages: [] }
+    });
+    const expected = state === "terminal" ? "started" : state === "cancelled" ? "cancelled" : "conflict";
+    expect(await store.operations.beginToolLoopProviderRound(claim)).toBe(expected);
+    if (state !== "terminal") { expect(store.tx.modelRun.update).not.toHaveBeenCalled(); return; }
+    expect(parseToolLoopCheckpoint(store.run.toolLoopState)).toMatchObject({ phase: "provider_running", roundIndex: 42,
+      answerRoundUsage: [{ completeness: "terminal", roundIndex: 41, usage }], providerContinuation: synthesis });
+    expect(store.run.providerResponseId).toBeNull();
+    // The same claim after an executor loss reuses the round; nothing else does.
+    expect(await store.operations.beginToolLoopProviderRound(claim)).toBe("reused");
+    expect(await store.operations.beginToolLoopProviderRound({ ...claim, providerContinuation: { ...synthesis, providerToolMessages: [] } })).toBe("conflict");
+    expect(await store.operations.beginToolLoopProviderRound({ ...claim, providerContinuation: { ...synthesis, finalSynthesis: "no_progress" } })).toBe("conflict");
+    expect(store.tx.modelRun.update).toHaveBeenCalledOnce();
+    // The dispatch mark follows the claim once, before the round has usage.
+    const mark = { ...claim, providerContinuation: { ...synthesis, synthesisDispatched: true } };
+    expect(await store.operations.beginToolLoopProviderRound({ ...mark,
+      providerContinuation: { ...synthesis, providerToolMessages: [], synthesisDispatched: true } })).toBe("conflict");
+    expect(await store.operations.beginToolLoopProviderRound(mark)).toBe("started");
+    expect(parseToolLoopCheckpoint(store.run.toolLoopState)).toMatchObject({ roundIndex: 42,
+      providerContinuation: { ...synthesis, synthesisDispatched: true } });
+    expect(await store.operations.beginToolLoopProviderRound(mark)).toBe("reused");
+    expect(store.tx.modelRun.update).toHaveBeenCalledTimes(2);
+    // The refused round's text resets once synthesis is claimed, before its usage.
+    expect(await store.operations.resetToolLoopAssistantDraft({ roundIndex: 41, runId: "run-1", userId: "user-1" })).toBe(true);
+    expect(await store.operations.resetToolLoopAssistantDraft({ roundIndex: 42, runId: "run-1", userId: "user-1" })).toBe(false);
+  });
+
+  it("persists a blocked repeat already settled with its batch and reuses the same batch", async () => {
+    const store = harness();
+    store.run.toolLoopState = toolLoopCheckpoint({ answerRoundUsage: [{ completeness: "terminal", roundIndex: 3, usage }],
+      phase: "provider_running", providerContinuation: { providerResponseId: null, providerToolMessages: [] }, roundIndex: 3 });
+    const batch = { providerContinuation: { providerResponseId: null, providerToolMessages: ["calls"] }, roundIndex: 3, runId: "run-1", userId: "user-1",
+      calls: [{ arguments: { id: "rec-1" }, ordinal: 0, providerCallId: "repeat", repeatBlocked: { repeatOf: [1, 2] as const }, toolName: "alpha" },
+        { arguments: { id: "rec-2" }, ordinal: 1, providerCallId: "other", toolName: "alpha" }] };
+    const persisted = await store.operations.persistToolLoopCallBatch(batch);
+    expect(persisted).toMatchObject({ kind: "persisted", calls: [
+      { providerCallId: "repeat", state: "error", startedAt: null, completedAt: expect.any(String),
+        result: { callId: "repeat", name: "alpha", status: "error",
+          content: [{ type: "json", value: { error: "tool_call_repeat_blocked", repeatOf: [1, 2] } }] } },
+      { providerCallId: "other", state: "pending", result: null, completedAt: null }] });
+    expect(await store.operations.persistToolLoopCallBatch(batch)).toMatchObject({ kind: "reused" });
+    // A different decision for the same batch is a conflict.
+    expect(await store.operations.persistToolLoopCallBatch({ ...batch, calls: batch.calls.map(({ repeatBlocked: _blocked, ...call }) => call) }))
+      .toEqual({ kind: "conflict" });
+    // Blocks must name two earlier rounds.
+    const invalid = harness();
+    invalid.run.toolLoopState = store.run.toolLoopState;
+    expect(await invalid.operations.persistToolLoopCallBatch({ ...batch,
+      calls: [{ ...batch.calls[0]!, repeatBlocked: { repeatOf: [2, 3] as const } }] })).toEqual({ kind: "conflict" });
   });
 });

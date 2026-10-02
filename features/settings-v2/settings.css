@@ -2037,4 +2037,21 @@
     min-width: 2.75rem;
     height: 2.75rem;
   }
+
+  /* The 44px Back and Close controls keep about 6px above and below
+     instead of touching the 48px bar, as Studio's crumb row does; the
+     dialog's header track grows with it. */
+  .v2-settings-header {
+    min-height: 3.5rem;
+  }
+
+  .v2-settings-dialog {
+    grid-template-rows: 3.5rem auto auto minmax(0, 1fr);
+  }
+}
+
+@media ((hover: none) or (pointer: coarse)) and ((max-width: 767px) or (max-height: 36rem)) {
+  .v2-settings-dialog {
+    grid-template-rows: auto 3.5rem auto auto minmax(0, 1fr);
+  }
 }

@@ -22,28 +22,47 @@ export const readToolResultTool: RunTool = {
   } }
 };
 
+/** A read's share of its tool batch (`observationReadBudget`). */
+export type ObservationReadBatch = Readonly<{
+  fits(result: ToolExecutionResult): boolean;
+  spend(result: ToolExecutionResult): void;
+}>;
+
 export async function executeReadToolResult(
   service: Pick<ReturnType<typeof createToolObservationService>, "read">,
   call: ModelToolCall,
   context: Pick<ToolExecutionContext, "runId" | "userId">,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  batch?: ObservationReadBatch
 ): Promise<ToolExecutionResult> {
   try {
     signal?.throwIfAborted();
     if (!context.runId || !context.userId || call.name !== READ_TOOL_RESULT_NAME) {
       throw new ObservationStoreError("tool_observation_unavailable");
     }
-    const value = await service.read({ runId: context.runId, userId: context.userId }, call.arguments, signal);
-    return { callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value }] };
+    const delivered = (value: unknown): ToolExecutionResult =>
+      ({ callId: call.id, name: call.name, status: "complete", content: [{ type: "json", value }] });
+    // The fragment is drawn from the batch when it is chosen.
+    const value = await service.read({ runId: context.runId, userId: context.userId }, call.arguments, signal,
+      batch ? { batch: { fits: response => batch.fits(delivered(response)), take: response => batch.spend(delivered(response)) } } : {});
+    return delivered(value);
   } catch (error) {
     if (signal?.aborted) throw signal.reason;
-    const code = error instanceof ObservationReadError || error instanceof ObservationStoreError
-      ? error.code : "tool_observation_unavailable";
-    return { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
-      code, message: code === "tool_observation_selector_invalid" ? "Use the bounded selector and original handle returned by the tool."
-        // Transient load only: the saved result and its handle stay valid.
-        : code === "tool_observation_busy" ? "Saved tool results are temporarily busy. Retry the same read shortly."
-          : "The saved result is unavailable to this run. This does not mean the original operation failed or permit executing it again."
-    } }] };
+    return readToolResultError(call, error instanceof ObservationReadError || error instanceof ObservationStoreError
+      ? error.code : "tool_observation_unavailable");
   }
+}
+
+/** The reader's refusal of one call; a deferred read is the smallest form a
+ * read reaches the model in. */
+export function readToolResultError(call: Pick<ModelToolCall, "id" | "name">, code: string): ToolExecutionResult {
+  return { callId: call.id, name: call.name, status: "error", content: [{ type: "json", value: {
+    code, message: code === "tool_observation_selector_invalid" ? "Use the bounded selector and original handle returned by the tool."
+      // Transient load only: the saved result and its handle stay valid.
+      : code === "tool_observation_busy" ? "Saved tool results are temporarily busy. Retry the same read shortly."
+        // The other results of this step already fill its context share.
+        : code === "tool_observation_read_deferred"
+          ? "This step's tool results already fill the context it may receive. Repeat this read in a later step; the saved result stays available."
+          : "The saved result is unavailable to this run. This does not mean the original operation failed or permit executing it again."
+  } }] };
 }

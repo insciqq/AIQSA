@@ -66,7 +66,6 @@ export type ContextBudgetResult =
       budgetTokens: number;
       messages: ContextBudgetMessage[];
       ok: true;
-      truncation: ContextTruncationSummary | null;
     }
   | {
       approxCurrentTokens: number;
@@ -228,117 +227,38 @@ function promptTokens(input: ContextBudgetInput): number {
   return estimate(input.prompt?.system ?? "") + estimate(input.prompt?.developer ?? "");
 }
 
-function groupPriorTurns(messages: ContextBudgetMessage[]): ContextBudgetMessage[][] {
-  const groups: ContextBudgetMessage[][] = [];
-  let current: ContextBudgetMessage[] = [];
-
-  for (const message of messages) {
-    if (message.role === "user" && current.length > 0 &&
-      (!message.contextTurnId || message.contextTurnId !== (current[0]?.contextTurnId ?? current[0]?.id))) {
-      groups.push(current);
-      current = [message];
-      continue;
-    }
-
-    current.push(message);
-  }
-
-  if (current.length > 0) {
-    groups.push(current);
-  }
-
-  return groups;
-}
-
 function sum(values: number[]): number {
   return values.reduce((total, value) => total + value, 0);
 }
 
+/** The exact fit check of a prompt and its messages. It never removes a
+ * message: history leaves a request only after context notes cover it, which
+ * the run planner owns. */
 export function applyContextBudget(input: ContextBudgetInput): ContextBudgetResult {
   if (!Number.isFinite(input.contextWindow) || input.contextWindow <= 0 || input.messages.length === 0) {
     return {
       approxFinalTokens: 0,
       budgetTokens: Number.POSITIVE_INFINITY,
       messages: input.messages,
-      ok: true,
-      truncation: null
+      ok: true
     };
   }
 
   const { budgetTokens, contextWindow, maxOutputTokens, safetyMarginTokens } = calculateContextBudgetLimits(input);
   const estimatedPromptTokens = promptTokens(input);
-  const tokenCounts = input.messages.map((message) => messageTokens(input, message));
-  const approxOriginalTokens = estimatedPromptTokens + sum(tokenCounts);
-
-  if (approxOriginalTokens <= budgetTokens) {
-    return {
-      approxFinalTokens: approxOriginalTokens,
-      budgetTokens,
-      messages: input.messages,
-      ok: true,
-      truncation: null
-    };
+  const messageTokenTotal = sum(input.messages.map((message) => messageTokens(input, message)));
+  const approxFinalTokens = estimatedPromptTokens + messageTokenTotal;
+  if (approxFinalTokens <= budgetTokens) {
+    return { approxFinalTokens, budgetTokens, messages: input.messages, ok: true };
   }
-
-  const currentMessage = input.messages[input.messages.length - 1];
-  const groupStart = currentMessage.contextTurnId
-    ? input.messages.findIndex(message => message.id === currentMessage.contextTurnId) : -1;
-  const currentStart = groupStart >= 0 ? groupStart : input.messages.length - 1;
-  const currentMessages = input.messages.slice(currentStart);
-  const currentTokens = sum(tokenCounts.slice(currentStart));
-  const irreducibleTokens = estimatedPromptTokens + currentTokens;
-
-  if (irreducibleTokens > budgetTokens) {
-    return {
-      approxCurrentTokens: currentTokens,
-      approxPromptTokens: estimatedPromptTokens,
-      budgetTokens,
-      code: "context_too_large",
-      contextWindow,
-      maxOutputTokens,
-      ok: false,
-      safetyMarginTokens
-    };
-  }
-
-  const priorMessages = input.messages.slice(0, currentStart);
-  const priorGroups = groupPriorTurns(priorMessages);
-  const groupTokenCounts = priorGroups.map((group) => sum(group.map((message) => messageTokens(input, message))));
-  let usedTokens = irreducibleTokens;
-  let firstKeptGroupIndex = priorGroups.length;
-
-  for (let index = priorGroups.length - 1; index >= 0; index -= 1) {
-    const nextTokens = groupTokenCounts[index] ?? 0;
-
-    if (usedTokens + nextTokens > budgetTokens) {
-      break;
-    }
-
-    usedTokens += nextTokens;
-    firstKeptGroupIndex = index;
-  }
-
-  const keptPriorMessages = priorGroups.slice(firstKeptGroupIndex).flat();
-  const droppedGroups = priorGroups.slice(0, firstKeptGroupIndex);
-  const droppedMessages = droppedGroups.flat();
-  const approxDroppedTokens = sum(droppedGroups.flatMap((group) => group.map((message) => messageTokens(input, message))));
-  const messages = [...keptPriorMessages, ...currentMessages];
-
   return {
-    approxFinalTokens: usedTokens,
+    approxCurrentTokens: messageTokenTotal,
+    approxPromptTokens: estimatedPromptTokens,
     budgetTokens,
-    messages,
-    ok: true,
-    truncation: {
-      approxDroppedTokens,
-      approxFinalTokens: usedTokens,
-      approxOriginalTokens,
-      budgetTokens,
-      contextWindow,
-      droppedMessages: droppedMessages.length,
-      keptMessages: messages.length,
-      maxOutputTokens,
-      safetyMarginTokens
-    }
+    code: "context_too_large",
+    contextWindow,
+    maxOutputTokens,
+    ok: false,
+    safetyMarginTokens
   };
 }

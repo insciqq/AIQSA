@@ -1129,12 +1129,17 @@ async function findRetainedEvidenceCopies(
         OR model_run."toolLoopState" #> '{contextCompaction,summary}' IS NOT NULL)
     ORDER BY model_run."id"
   `);
+  // A run that read a retained Knowledge result through the reader may hold
+  // it in its own notes: those notes, and notes descending from them, go too.
+  const affected = new Set(input.modelRunIds);
+  const readerRunIds = [...new Set(readerCalls.map(({ modelRunId }) => modelRunId))].filter((id) => !affected.has(id));
   return {
     knowledgeCalls: observations.map((observation) => ({
       modelRunId: observation.modelRunId,
       providerCallId: observation.toolCall.providerCallId
     })),
-    notesRunIds: contextNotesDescendantRunIds({ affectedRunIds: input.modelRunIds, runs: notesRuns }),
+    notesRunIds: uniqueStrings([...readerRunIds,
+      ...contextNotesDescendantRunIds({ affectedRunIds: [...input.modelRunIds, ...readerRunIds], runs: notesRuns })]),
     readerCalls
   };
 }

@@ -5,6 +5,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { expect, test } from "@playwright/test";
 import type { AdminProviderCustomSetupReadyResult } from "../../lib/contracts/adminProviderCustomSetup";
 import { DEFAULT_BOOTSTRAP_USER_ID } from "../../lib/server/auth/config";
+import { setWorkspaceDefault } from "./support/chatDefaults";
 import { signInWithLocalToken } from "./support/localAuth";
 import { disableMemoryRecall, sendAndExpect, startNewChat } from "./support/workspace";
 import { chooseSearchStrategy, closeRunSetup, openRunSetup, selectModel } from "./shell/composer";
@@ -78,10 +79,15 @@ test("ordinary output defaults reach requests and survive reload, override and r
     expect(unknown.capabilities).toMatchObject({ defaultMaxOutputTokens: 65536 });
     expect(unknown.capabilities).not.toHaveProperty("maxOutputTokens");
     expect(unknown.capabilities).not.toHaveProperty("contextWindow");
+    // These chats exercise the custom provider, not Workspace: with the
+    // Workspace default on, each send would open a Workspace session that the
+    // Prisma cleanup below cannot remove.
+    await setWorkspaceDefault(page.request, false);
     await page.goto("/");
     await startNewChat(page);
     await selectModel(page, setup.connectionId, unknown.displayName);
-    await chooseSearchStrategy(page, "Off");
+    // Installations without configured Search omit its chip entirely.
+    if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
     let controls = await openRunSetup(page);
     await expect(controls.getByLabel("Max output tokens")).toHaveValue("65536");
     await expect(controls.getByLabel("Max output tokens")).not.toHaveAttribute("max", /.+/);
@@ -134,7 +140,8 @@ test("ordinary output defaults reach requests and survive reload, override and r
       const connectionId = setup.connectionId;
       await prisma.$transaction(async (tx) => {
         await tx.userSettings.update({ where: { userId }, data: { defaultProviderModelId: priorSettings.defaultProviderModelId,
-          defaultControlValues: priorSettings.defaultControlValues as Prisma.InputJsonValue } });
+          defaultControlValues: priorSettings.defaultControlValues as Prisma.InputJsonValue,
+          defaultWorkspaceEnabled: priorSettings.defaultWorkspaceEnabled } });
         await tx.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: priorPolicy.defaultProviderModelId,
           reasoningEffort: priorPolicy.reasoningEffort, version: priorPolicy.version } });
         await tx.systemModelPolicy.update({ where: { id: "installation" }, data: { providerModelId: priorRoles.providerModelId,

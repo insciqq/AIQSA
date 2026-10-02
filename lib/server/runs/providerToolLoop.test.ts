@@ -18,15 +18,17 @@ import { openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { openRouterChatToolBridge } from "../tools/bridges";
 import { createOpenRouterChatAdapter } from "../providers/openRouterChat";
 import type { RunTool, ToolExecutionResult } from "../tools/types";
-import { readToolResultTool } from "../tools/readToolResult";
+import { executeReadToolResult, READ_TOOL_RESULT_NAME, readToolResultTool } from "../tools/readToolResult";
 import { projectObservationForProvider } from "../toolObservations/projection";
+import { captureMcpObservation, observationReadBudget, observationWholeDeliveryBatches, wholeDeliveryAllowance } from "../toolObservations/sourceAdapters";
+import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { conversationContextPolicy } from "./contextCompactionContract";
 import { prepareCompactedProviderRequest } from "./contextCompactionConsumer";
 import { createContextCompactionPublisher } from "./contextCompactionEvents";
-import { contextObservationsFromResults } from "./contextCompactionPlanner";
+import { contextObservationsFromResults, toolTranscriptUnits, unitCoverageRef } from "./contextCompactionPlanner";
 import { applyContextSummaryToRequest } from "./contextCompactionSummarizer";
 import type { ProviderToolLoopContinuation } from "./providerToolLoop";
-import { applyProviderRequestContextBudget, measureSessionContext } from "./runContextBudget";
+import { applyProviderRequestContextBudget, measureSessionContext, observationBatchShare } from "./runContextBudget";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
   return {
@@ -951,7 +953,7 @@ describe("provider tool loop with transcript compaction", () => {
   function hybrid(): ProviderRunRequest {
     const messages = [{ content: { blocks: [{ text: "Write the files.", type: "text" as const }] }, id: "current", role: "user" as const }];
     return request({ content: messages[0]!.content, context: { messages, mode: "branch_path" },
-      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages, mode: "hybrid" }),
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages }),
       modelCapabilities: { ...request().modelCapabilities, contextWindow: 16_000, defaultMaxOutputTokens: 1_000, toolCalling: true },
       params: {}, toolObservationVersion: 1 });
   }
@@ -1054,9 +1056,11 @@ describe("context-length rejection rebuild", () => {
   const turn = (id: string, index: number) => ({ content: { blocks: [{ text: `${id} ${"h".repeat(5_000)}`, type: "text" as const }] },
     id, role: index % 2 ? "assistant" as const : "user" as const });
   // About half of a 17,488-token budget: the planner judged every round fitting.
+  const branch = [...Array.from({ length: 6 }, (_, index) => turn(`h${index}`, index)),
+    { content: { blocks: [{ text: "question", type: "text" as const }] }, id: "current", role: "user" as const }];
   const initial = (overrides: Partial<ProviderRunRequest> = {}) => request({
-    context: { messages: [...Array.from({ length: 6 }, (_, index) => turn(`h${index}`, index)),
-      { content: { blocks: [{ text: "question", type: "text" }] }, id: "current", role: "user" }], mode: "branch_path" },
+    context: { messages: branch, mode: "branch_path" },
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages: branch }),
     modelCapabilities: { ...request().modelCapabilities, contextWindow: 20_000, defaultMaxOutputTokens: 512, toolCalling: true },
     params: { stream: true },
     toolObservationVersion: 1,
@@ -1110,11 +1114,23 @@ describe("context-length rejection rebuild", () => {
       initialRequest: input.initialRequest ?? initial(),
       onUsage: (usage, _request, context) => onUsage(context),
       parallelToolCalls: false,
+      // The run's consumer: under a tightened budget it buys notes before any
+      // history leaves the rebuilt round.
       prepareRequest: (roundRequest) => {
         prepared.push(roundRequest);
-        const budgeted = applyProviderRequestContextBudget({ bridge: openAIResponsesToolBridge, request: roundRequest });
-        if (!budgeted.ok) throw Object.assign(new Error(budgeted.error.message), { code: budgeted.error.code });
-        return budgeted.request;
+        return prepareCompactedProviderRequest({
+          bridge: openAIResponsesToolBridge,
+          failure: (code, message) => Object.assign(new Error(message), { code }),
+          publisher: createContextCompactionPublisher(async () => undefined),
+          receipts: { claim: async () => undefined, dispatch: async () => undefined, settle: async () => undefined },
+          request: roundRequest,
+          signal: new AbortController().signal,
+          summaryAdapter: { async *stream() {
+            const output = JSON.stringify({ notes: "Turns h0-h5 discussed the earlier question.", sourceRefs: [] });
+            yield { data: { delta: output }, type: "token" as const };
+            return { finalProviderResponsePreview: {}, finalText: output, usage: {} };
+          } }
+        });
       },
       tools: [alpha]
     });
@@ -1349,4 +1365,574 @@ it("continues after a tool when store:false omits created metadata, without repl
   expect(continuation).not.toHaveProperty("previous_interaction_id");
   expect(continuation.input).toEqual(expect.arrayContaining([signedCall,
     expect.objectContaining({ type: "function_result", call_id: "call-1" })]));
+});
+
+/**
+ * Synthetic reproduction of the incident class: a run that reads about fifty
+ * large tool results (structured JSON, plain text, errors, a few results the
+ * store did not retain) and recalls earlier ones under context pressure.
+ * Neutral fake tools; no provider, server or tool name is special.
+ */
+describe("synthetic many-result recall scenario", () => {
+  const OBJECTS = 50;
+  const tool = (name: string, description: string): RunTool => ({ capability: "mcp", description, inputSchema: { type: "object" }, name });
+  const listTool = tool("mcp_objects_list", "List the objects.");
+  const fetchTool = tool("mcp_objects_fetch", "Fetch one object.");
+  const peekTool = tool("mcp_objects_peek", "Peek at one object.");
+  const binding = { version: 1 as const, source: "mcp" as const, serverId: "objects-server", originalName: "objects",
+    revisionId: "objects-revision", fingerprint: "a".repeat(64) };
+  const filler = (seed: string, chars: number) => Array.from({ length: Math.ceil(chars / 64) }, (_, index) =>
+    createHash("sha256").update(`${seed}:${index}`).digest("hex")).join("").slice(0, chars);
+  const original = (index: number) => {
+    const chars = 2_000 + (index * 977) % 6_000;
+    const text = index % 2 === 0
+      ? JSON.stringify({ id: `object-${index}`, marker: `OBJECT_${index}_FACT`, status: index % 3 ? "open" : "answered",
+        comments: filler(`object-${index}`, chars) })
+      : `OBJECT_${index}_FACT plain status ${index % 3 ? "open" : "answered"} ${filler(`object-${index}`, chars)}`;
+    return { isError: index % 9 === 0, structuredContent: null, text: [text], unsupportedContentTypes: [] };
+  };
+  /** The scripted model: list, fetch every object, recall a few earlier ones
+   * through the reader, peek at some (results the store did not retain), answer. */
+  type Step = Readonly<{ name: string; arguments: Record<string, unknown> }>;
+  const PEEKS = new Set([3, 17, 29, 41, 47]);
+  const RECALLS = new Set([12, 24, 36, 48]);
+
+  function scenario() {
+    const observations = memoryToolObservations();
+    const actor = { runId: "synthetic-run", userId: "synthetic-owner" };
+    const settled: ToolExecutionResult[] = [];
+    const handles = new Map<number, string>();
+    const log: Array<Readonly<{ kind: "answer"; request: ProviderRunRequest }> | Readonly<{ kind: "summary"; request: ProviderRunRequest }>> = [];
+    const steps: Step[] = [{ arguments: {}, name: listTool.name }];
+    for (let index = 1; index <= OBJECTS; index += 1) {
+      steps.push({ arguments: { id: `object-${index}` }, name: fetchTool.name });
+      if (PEEKS.has(index)) steps.push({ arguments: { id: `object-${index}` }, name: peekTool.name });
+      if (RECALLS.has(index)) steps.push({ arguments: { recall: index - 8 }, name: READ_TOOL_RESULT_NAME });
+    }
+    const summaryAdapter: Pick<ProviderAdapter, "stream"> = { async *stream(next) {
+      log.push({ kind: "summary", request: next });
+      const body = (next.content.blocks[0] as { text: string }).text;
+      const facts = [...new Set(body.match(/OBJECT_[A-Z0-9]+_FACT/gu) ?? [])];
+      const output = JSON.stringify({ notes: `Processed: ${facts.join(", ") || "none"}. Remaining objects follow.`, sourceRefs: [] });
+      yield { data: { delta: output }, type: "token" };
+      return { finalProviderResponsePreview: {}, finalText: output, usage: { inputTokens: 3, outputTokens: 1 } };
+    } };
+    let step = 0;
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(roundRequest) {
+      log.push({ kind: "answer", request: roundRequest });
+      const next = steps[step];
+      step += 1;
+      if (!next) return { finalProviderResponsePreview: {}, finalText: "All objects reviewed.", usage: { inputTokens: 1, outputTokens: 1 } };
+      const args = next.name === READ_TOOL_RESULT_NAME
+        ? { handle: handles.get(Number(next.arguments.recall))!, maxBytes: 2_000, offset: 0 } : next.arguments;
+      return { finalProviderResponsePreview: {}, finalText: "", usage: { inputTokens: 1, outputTokens: 1 },
+        toolCalls: [{ arguments: args, id: `call-${step}`, name: next.name }] };
+    } };
+    const executeTool = async (call: { arguments: Record<string, unknown>; id: string; name: string }) => {
+      let value: ToolExecutionResult;
+      if (call.name === READ_TOOL_RESULT_NAME) {
+        value = await executeReadToolResult(observations.service(), { arguments: call.arguments, id: call.id, name: call.name }, actor);
+      } else if (call.name === peekTool.name) {
+        // Delivered without a server observation (degraded or unretained).
+        value = { callId: call.id, content: [{ text: `PEEK_${String(call.arguments.id)} small preview`, type: "text" }],
+          name: call.name, status: "complete" };
+      } else {
+        const index = call.name === listTool.name ? 0 : Number(String(call.arguments.id).slice("object-".length));
+        value = await captureMcpObservation({ service: observations.service(), producer: { ...actor, toolCallId: call.id },
+          wholeDelivery: wholeDeliveryAllowance(Number.POSITIVE_INFINITY) },
+        { arguments: call.arguments, id: call.id, name: call.name }, binding, async () => index === 0
+          ? { isError: false, structuredContent: null, unsupportedContentTypes: [],
+            text: [`OBJECT_LIST_FACT ${Array.from({ length: OBJECTS }, (_, item) => `object-${item + 1}`).join(" ")}`] }
+          : original(index));
+        if (index > 0 && value.observation) handles.set(index, value.observation.handle);
+      }
+      settled.push(value);
+      return { status: "complete" as const, value };
+    };
+    const messages = [{ content: { blocks: [{ text: "Review every object and list which comments still wait for an answer.",
+      type: "text" as const }] }, id: "current", role: "user" as const }];
+    const initialRequest = request({ content: messages[0]!.content, context: { messages, mode: "branch_path" },
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages }),
+      modelCapabilities: { ...request().modelCapabilities, contextWindow: 16_000, defaultMaxOutputTokens: 1_000, toolCalling: true },
+      params: {}, toolObservationVersion: 1 });
+    const run = () => runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 320, maxToolRounds: 160 },
+      executeTool, initialRequest, parallelToolCalls: false,
+      prepareRequest: (roundRequest) => prepareCompactedProviderRequest({
+        bridge: openAIResponsesToolBridge, failure: (code, message) => Object.assign(new Error(message), { code }),
+        observations: contextObservationsFromResults(settled),
+        publisher: createContextCompactionPublisher(async () => undefined),
+        receipts: { claim: async () => undefined, dispatch: async () => undefined, settle: async () => undefined },
+        request: roundRequest, signal: new AbortController().signal, summaryAdapter
+      }),
+      projectToolResultForProvider: projectObservationForProvider,
+      tools: [readToolResultTool, listTool, fetchTool, peekTool]
+    });
+    return { log, run, steps };
+  }
+
+  const key = (unit: { callIds: readonly string[] }) => unit.callIds.join(",");
+  const unitText = (request: ProviderRunRequest, unit: { start: number; end: number }) =>
+    JSON.stringify((request.providerToolMessages ?? []).slice(unit.start, unit.end));
+  const markerOf = (text: string) => /OBJECT_[A-Z0-9]+_FACT/u.exec(text)?.[0] ?? null;
+
+  it("finishes with an answer, and nothing leaves or is masked before committed notes read it whole", async () => {
+    const { log, run, steps } = scenario();
+    const outcome = await run();
+    expect(outcome).toMatchObject({ final: { finalText: "All objects reviewed." }, status: "complete", toolCalls: steps.length });
+    const answers = log.flatMap((entry) => entry.kind === "answer" ? [entry.request] : []);
+    const summaries = log.filter((entry) => entry.kind === "summary");
+    expect(summaries.length).toBeGreaterThan(0);
+    // Every dispatched round fits its budget.
+    for (const sent of answers) expect(sent.contextCompaction!.afterTokens).toBeLessThanOrEqual(sent.contextCompaction!.budgetTokens!);
+
+    /** The text a unit first reached the model with, unmasked, by its call ids. */
+    const firstSeen = new Map<string, string>();
+    /** How each unit last reached the model: exact, masked, or gone. */
+    const state = new Map<string, "exact" | "gone" | "masked">();
+    let released = 0;
+    let masked = 0;
+    for (let round = 0; round < answers.length; round += 1) {
+      const current = answers[round]!;
+      const position = log.findIndex((entry) => entry.kind === "answer" && entry.request === current);
+      const readBefore = log.slice(0, position).flatMap((entry) => entry.kind === "summary"
+        ? [(entry.request.content.blocks[0] as { text: string }).text] : []).join("\n");
+      const units = toolTranscriptUnits(current.providerToolMessages ?? []).filter((unit) => unit.settled);
+      const present = new Map(units.map((unit) => [key(unit), unit]));
+      for (const unit of units) if (!firstSeen.has(key(unit))) firstSeen.set(key(unit), unitText(current, unit));
+      const refs = new Set(current.contextCompactionSummary?.sourceRefs ?? []);
+      for (const [unitKey, text] of firstSeen) {
+        const unit = present.get(unitKey);
+        const now = unit ? unitText(current, unit) : null;
+        const isPeek = text.includes("PEEK_");
+        if (isPeek) {
+          // A result without a server observation never enters notes and stays exact.
+          expect(now).toBe(text);
+          expect(readBefore).not.toContain(text.match(/PEEK_object-\d+/u)![0]);
+          continue;
+        }
+        const next = now === text ? "exact" : now === null ? "gone" : "masked";
+        const previous = state.get(unitKey) ?? "exact";
+        state.set(unitKey, next);
+        if (next === previous || next === "exact") continue;
+        // Newly masked or gone: committed notes of this run cover it, and a
+        // summary call read it whole before this dispatch.
+        if (next === "gone") released += 1; else masked += 1;
+        expect(refs.has(unitCoverageRef({ callIds: unitKey.split(",") }))).toBe(true);
+        const marker = markerOf(text);
+        if (marker) expect(readBefore).toContain(marker);
+      }
+    }
+    expect(released + masked).toBeGreaterThan(0);
+    // The summarizer knows the task and keeps facts with their source handles.
+    for (const entry of summaries) {
+      expect(entry.request.prompt.system).toContain("current=\"true\" is the user's current task");
+      // Every call that reads source material reads the task with it; a
+      // reduction combines part notes that already kept what the task needs.
+      if (!entry.request.prompt.system!.includes("notes of consecutive parts")) {
+        expect((entry.request.content.blocks[0] as { text: string }).text).toContain('current="true"');
+      }
+    }
+    expect(summaries.some((entry) => /tor1_[a-f0-9]{32}/u.test((entry.request.content.blocks[0] as { text: string }).text))).toBe(true);
+  });
+});
+
+/**
+ * The paid stand's shape: one list call, then parallel batches of 8–64 KB
+ * detail calls (every seventh an error) on a 32k window whose fixed part (the
+ * prompt and every loaded tool definition) takes about 10.5k tokens, with read
+ * rounds between them; each call round carries the model's reasoning item.
+ * Previews outside the batch allowance, then a flat quarter-budget allowance
+ * beside that fixed part (and concurrent reads all counting on the same
+ * room), once made the irreducible newest batch exceed the budget
+ * (context_too_large before any compaction cycle). Each batch is now sized
+ * against the request that carries it.
+ */
+describe("parallel batches of large retained results on a small window", () => {
+  const RECORDS = 50;
+  const READS_PER_ROUND = 10;
+  const tool = (name: string, description = name, properties: Record<string, unknown> = {}): RunTool =>
+    ({ capability: "mcp", description, inputSchema: { type: "object", properties }, name });
+  const listTool = tool("mcp_records_list");
+  const detailTool = tool("mcp_records_details");
+  const binding = { version: 1 as const, source: "mcp" as const, serverId: "records-server", originalName: "records",
+    revisionId: "records-revision", fingerprint: "b".repeat(64) };
+  const VOCABULARY = ["record", "status", "owner", "history", "reply", "pending", "review", "detail"];
+  const prose = (seed: string, count: number) => Array.from({ length: count }, (_, index) =>
+    VOCABULARY[createHash("sha256").update(`${seed}:${index}`).digest()[0]! % VOCABULARY.length]).join(" ");
+  /** "Load all" of a large MCP inventory: tool definitions dominate the fixed part. */
+  const inventory = Array.from({ length: 31 }, (_, index) => tool(`mcp_inventory_tool_${index}`, prose(`tool-${index}`, 120),
+    Object.fromEntries(Array.from({ length: 4 }, (_, field) =>
+      [`field_${field}`, { type: "string", description: prose(`field-${index}-${field}`, 18) }]))));
+  const recordId = (index: number) => `rec-${String(index % RECORDS + 1).padStart(3, "0")}`;
+  const isReferenceResult = (result: ToolExecutionResult) => result.content.length === 1 && result.content[0]!.type === "json" &&
+    Object.keys(result.content[0]!.value as object).sort().join(",") === "observation,reader";
+  const detail = (index: number) => {
+    if ((index + 1) % 7 === 0) return { isError: true, structuredContent: null, text: [`Record ${recordId(index)} is temporarily unavailable.`], unsupportedContentTypes: [] };
+    // As the stand's fixture: JSON with a structured history for even ids
+    // (dense in quotes the provider transcript escapes again), text for odd ones.
+    const bytes = 8 * 1024 + createHash("sha256").update(`size:${index}`).digest().readUInt16BE(0) % (56 * 1024);
+    const history = Array.from({ length: Math.ceil(bytes / 90) }, (_, step) =>
+      ({ author: prose(`author-${index}-${step}`, 1), note: prose(`note-${index}-${step}`, 9), step: step + 1 }));
+    const text = index % 2 === 0
+      ? JSON.stringify({ history, id: recordId(index), status: "open", title: `RECORD_${index + 1}_FACT` })
+      : [`Record ${recordId(index)}: RECORD_${index + 1}_FACT`, ...history.map((entry) => `${entry.step}. ${entry.author}: ${entry.note}`)].join("\n");
+    return { isError: false, structuredContent: null, unsupportedContentTypes: [], text: [text.slice(0, bytes)] };
+  };
+
+  // `drift` overstates a batch's allowance, as when the request that finally
+  // carries it costs more than estimated when it was sized (the stand's
+  // 25-call run missed the budget by about 250 tokens).
+  it.each([{ drift: 0, parallel: 25 }, { drift: 0, parallel: 43 }, { drift: 1_500, parallel: 25 }])(
+    "keeps $parallel parallel calls per batch (allowance drift $drift) within the budget beside a 10.5k-token fixed part",
+    async ({ drift, parallel }) => {
+    const observations = memoryToolObservations();
+    const actor = { runId: "records-run", userId: "records-owner" };
+    const settled: ToolExecutionResult[] = [];
+    const answers: ProviderRunRequest[] = [];
+    let summaries = 0;
+    const messages = [{ content: { blocks: [{ text: "Review every record and report which ones still wait for a reply.", type: "text" as const }] },
+      id: "current", role: "user" as const }];
+    const initialRequest = request({ content: messages[0]!.content, context: { messages, mode: "branch_path" },
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current", messages }),
+      modelCapabilities: { ...request().modelCapabilities, contextWindow: 32_768, defaultMaxOutputTokens: 4_096, toolCalling: true },
+      params: {}, prompt: { developer: null, system: prose("system", 1_500) }, toolObservationVersion: 1 });
+    const batches = observationWholeDeliveryBatches();
+    const shares = new Map<number, number>();
+    let latest = initialRequest;
+    const detailHandles: string[] = [];
+    // Rounds: list; details; reads; more details; reads; answer.
+    const plan = (round: number): Array<{ arguments: Record<string, unknown>; id: string; name: string }> => {
+      if (round === 1) return [{ arguments: {}, id: "list", name: listTool.name }];
+      if (round === 2 || round === 4) {
+        const first = round === 2 ? 0 : parallel;
+        return Array.from({ length: parallel }, (_, index) =>
+          ({ arguments: { id: recordId(first + index), index: first + index }, id: `detail-${round}-${index}`, name: detailTool.name }));
+      }
+      if (round === 3 || round === 5) {
+        const first = round === 3 ? 0 : parallel;
+        return detailHandles.slice(first, first + READS_PER_ROUND).filter(Boolean)
+          .map((handle, index) => ({ arguments: { handle, maxBytes: 6 * 1024 }, id: `read-${round}-${index}`, name: READ_TOOL_RESULT_NAME }));
+      }
+      return [];
+    };
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(roundRequest) {
+      answers.push(roundRequest);
+      const calls = plan(answers.length);
+      const usage = { inputTokens: 1, outputTokens: 1 };
+      // A reasoning model's encrypted reasoning travels with its calls and stays with the newest batch.
+      const reasoning = { encrypted_content: Buffer.from(prose(`reasoning-${answers.length}`, 400)).toString("base64"),
+        id: `rs-${answers.length}`, summary: [], type: "reasoning" };
+      return calls.length ? { finalProviderResponsePreview: {}, finalText: "", usage, toolCalls: calls,
+        providerToolCallMessage: [reasoning, ...calls.map((call) => ({ arguments: JSON.stringify(call.arguments), call_id: call.id,
+          name: call.name, status: "completed", type: "function_call" }))] }
+        : { finalProviderResponsePreview: {}, finalText: "Records reviewed.", usage };
+    } };
+    const summaryAdapter: Pick<ProviderAdapter, "stream"> = { async *stream(next) {
+      summaries += 1;
+      const facts = [...new Set((next.content.blocks[0] as { text: string }).text.match(/RECORD_\d+_FACT/gu) ?? [])];
+      // Notes of about the summarizer's floor, bought in the cycle that prepares the next round.
+      const output = JSON.stringify({ notes: `Seen: ${facts.join(", ") || "none"}. ${prose(`notes-${summaries}`, 500)}`.slice(0, 3_500),
+        sourceRefs: [] });
+      yield { data: { delta: output }, type: "token" };
+      return { finalProviderResponsePreview: {}, finalText: output, usage: { inputTokens: 3, outputTokens: 1 } };
+    } };
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 20 },
+      executeTool: async (call, context) => {
+        const allowance = batches.allowance(context.round, 0);
+        let value: ToolExecutionResult;
+        if (call.name === READ_TOOL_RESULT_NAME) {
+          value = await executeReadToolResult(observations.service(), { arguments: call.arguments, id: call.id, name: call.name }, actor,
+            undefined, observationReadBudget(allowance));
+        } else {
+          const index = call.name === listTool.name ? -1 : Number(call.arguments.index);
+          value = await captureMcpObservation({ service: observations.service(), producer: { ...actor, toolCallId: call.id }, wholeDelivery: allowance },
+            { arguments: call.arguments, id: call.id, name: call.name }, binding, async () => index < 0
+              ? { isError: false, structuredContent: null, unsupportedContentTypes: [],
+                text: [JSON.stringify(Array.from({ length: RECORDS }, (_, item) => recordId(item)))] }
+              : detail(index));
+          if (index >= 0 && value.observation) detailHandles[index] = value.observation.handle;
+        }
+        settled.push(value);
+        return { status: "complete" as const, value };
+      },
+      initialRequest, parallelToolCalls: true,
+      // As execution does: size each batch against the request that carries it.
+      persistToolBatch: ({ calls, continuation, round }) => {
+        const share = observationBatchShare({ bridge: openAIResponsesToolBridge, calls,
+          observations: contextObservationsFromResults(settled),
+          request: { ...latest, providerToolMessages: [...continuation.providerToolMessages] } });
+        shares.set(round, share.tokens);
+        batches.begin(round, { ...share, tokens: share.tokens + drift });
+      },
+      prepareRequest: async (roundRequest) => {
+        latest = await prepareCompactedProviderRequest({
+          bridge: openAIResponsesToolBridge, failure: (code, message) => Object.assign(new Error(message), { code }),
+          observations: contextObservationsFromResults(settled),
+          publisher: createContextCompactionPublisher(async () => undefined),
+          receipts: { claim: async () => undefined, dispatch: async () => undefined, settle: async () => undefined },
+          request: roundRequest, signal: new AbortController().signal, summaryAdapter
+        });
+        return latest;
+      },
+      projectToolResultForProvider: projectObservationForProvider,
+      tools: [readToolResultTool, listTool, detailTool, ...inventory]
+    });
+
+    expect(outcome).toMatchObject({ final: { finalText: "Records reviewed." }, status: "complete" });
+    const budget = answers[0]!.contextCompaction!.budgetTokens!;
+    // The fixed part alone is about 10.5k estimated tokens, as on the stand.
+    expect(answers[0]!.contextCompaction!.beforeTokens).toBeGreaterThan(9_500);
+    expect(answers[0]!.contextCompaction!.beforeTokens).toBeLessThan(11_500);
+    for (const sent of answers) expect(sent.contextCompaction!.afterTokens).toBeLessThanOrEqual(budget);
+    // A detail batch beside the fixed part, its own floor (references and the
+    // calls with their reasoning) and the notes still to come receives less
+    // than the flat quarter share; that share once overflowed the 43-call batch.
+    for (const round of [2, 4]) expect(shares.get(round)).toBeGreaterThan(0);
+    expect(shares.get(4)).toBeLessThan(Math.floor(budget / 4));
+    if (parallel === 43) expect(shares.get(2)).toBeLessThan(Math.floor(budget / 4));
+    // Results an overstated allowance delivered whole or as previews reach the
+    // model as their references when the request that carries them would not
+    // fit: they had never been seen, so nothing leaves without notes.
+    const firstOutput = (callId: string) => answers.flatMap((sent) => sent.providerToolMessages ?? [])
+      .map((message) => message as { call_id?: string; output?: string; type?: string })
+      .find((message) => message.call_id === callId && message.type === "function_call_output")?.output ?? "";
+    const asReference = (text: string) => {
+      try { return ["is_error,observation,reader", "observation,reader"].includes(Object.keys(JSON.parse(text) as object).sort().join(",")); }
+      catch { return false; }
+    };
+    const degraded = settled.filter((result) => result.name === detailTool.name && !isReferenceResult(result) &&
+      asReference(firstOutput(result.callId)));
+    if (drift > 0) expect(degraded.length).toBeGreaterThan(0);
+    else expect(degraded).toEqual([]);
+    const details = settled.filter((result) => result.name === detailTool.name);
+    // Every detail stays retained and readable; beyond the batch allowance it arrives as its reference.
+    expect(details.every((result) => result.observation)).toBe(true);
+    expect(details.filter(isReferenceResult).length).toBeGreaterThan(0);
+    // The model reads what it needs; a read beyond its batch is deferred, never cut below a preview.
+    const reads = settled.filter((result) => result.name === READ_TOOL_RESULT_NAME);
+    expect(reads.some((result) => result.status === "complete")).toBe(true);
+    for (const read of reads.filter((result) => result.status === "error")) {
+      expect(read.content).toEqual([{ type: "json", value: expect.objectContaining({ code: "tool_observation_read_deferred" }) }]);
+    }
+    // Notes are bought as the rounds accumulate, before older results leave.
+    expect(summaries).toBeGreaterThan(0);
+  });
+});
+
+describe("tool-free synthesis when the budget ends tool use", () => {
+  const tools: RunTool[] = [{ capability: "mcp", description: "A", inputSchema: { type: "object" }, name: "alpha" }];
+  const previous = {
+    call: { arguments: {}, id: "old", name: "alpha" }, ordinal: 0, round: 40,
+    result: { status: "complete" as const, value: { callId: "old", name: "alpha", status: "complete" as const,
+      content: [{ type: "text" as const, text: "obtained data" }] } }
+  };
+  const instruction = (reason: string, unexecuted: boolean) =>
+    `Tool use is now disabled for this run: ${reason}.${unexecuted ? " Some planned tool calls were not executed." : ""} ` +
+    "Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed.";
+
+  function scripted(rounds: ReadonlyArray<Readonly<{ calls?: number; prefix?: string; text: string }>>) {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(roundRequest) {
+        requests.push(roundRequest);
+        const round = rounds[requests.length - 1]!;
+        if (round.text) yield { type: "token", data: { delta: round.text } };
+        return {
+          finalProviderResponsePreview: {}, finalText: round.text,
+          toolCalls: Array.from({ length: round.calls ?? 0 }, (_, index) => ({
+            arguments: { index }, id: `${round.prefix ?? "call"}-${index}`, name: "alpha" })),
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }
+        };
+      }
+    };
+    return { adapter, requests };
+  }
+
+  it("refuses a batch over the remaining call budget and answers in one tool-free round", async () => {
+    const { adapter, requests } = scripted([{ calls: 6, text: "planning more" }, { text: "partial answer, unverified rest" }]);
+    const executeTool = vi.fn();
+    const persistToolBatch = vi.fn();
+    const transitions: Array<{ continuation: ProviderToolLoopContinuation; round: number }> = [];
+    const budgets: unknown[] = [];
+    const signals: string[] = [];
+    const usage: Array<[number, string]> = [];
+    const prepared: ProviderRunRequest[] = [];
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool, initialRequest: request(), parallelToolCalls: true, persistToolBatch, tools,
+      onFinalSynthesis: budget => { budgets.push(budget); },
+      onFinalSynthesisTransition: input => { transitions.push(input); },
+      onSignal: signal => { signals.push(signal.type === "message_reset" ? `reset:${signal.round}` : `text:${signal.delta}`); },
+      onUsage: (_usage, _request, context) => { usage.push([context.round, context.completeness]); },
+      prepareRequest: roundRequest => { prepared.push(roundRequest); return roundRequest; },
+      resume: { continuation: { providerResponseId: null, providerToolMessages: [{ type: "prior" }] },
+        previousToolResults: [previous], progress: { providerRounds: 40, toolCalls: 317, toolRounds: 39 }, seenCallIds: ["old"] }
+    });
+
+    expect(outcome).toMatchObject({ status: "complete", final: { finalText: "partial answer, unverified rest" },
+      providerRounds: 42, toolCalls: 317, toolRounds: 39 });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(persistToolBatch).not.toHaveBeenCalled();
+    const firstMessages = requests[0]!.providerToolMessages!;
+    expect(firstMessages).toEqual([{ type: "prior" }, { call_id: "old", output: "obtained data", type: "function_call_output" }]);
+    expect(transitions).toEqual([{ round: 41, continuation: {
+      finalSynthesis: "budget_exhausted", providerResponseId: null, providerToolMessages: firstMessages } }]);
+    // The refused round's assistant items never reach synthesis; the previous
+    // round's results do, then the server-owned instruction ends the request.
+    expect(requests.map(value => value.toolChoice)).toEqual(["auto", "none"]);
+    expect(requests[1]!.providerToolMessages).toEqual([...firstMessages,
+      { role: "user", content: instruction("the tool-call budget is exhausted", true) }]);
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).not.toContain("call-0");
+    // The instruction is budgeted with the request but never persisted.
+    expect(prepared[1]!.providerToolMessages!.at(-1)).toEqual(requests[1]!.providerToolMessages!.at(-1));
+    expect(JSON.stringify(transitions)).not.toContain("Tool use is now disabled");
+    expect(budgets).toEqual([{ kind: "calls", limit: 320 }]);
+    expect(signals).toEqual(["text:planning more", "reset:41", "text:partial answer, unverified rest"]);
+    expect(usage).toEqual([[41, "terminal"], [42, "terminal"]]);
+  });
+
+  it("executes a batch that exactly fills the budget, then answers without the unexecuted-calls sentence", async () => {
+    const { adapter, requests } = scripted([{ calls: 3, text: "" }, { text: "answer" }]);
+    const executeTool = vi.fn(async (call: { id: string; name: string }) => ({ status: "complete" as const,
+      value: { callId: call.id, name: call.name, status: "complete" as const, content: [{ type: "text" as const, text: "ok" }] } }));
+    const transition = vi.fn();
+    const budgets: unknown[] = [];
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool, initialRequest: request(), parallelToolCalls: true, tools, onFinalSynthesisTransition: transition,
+      onFinalSynthesis: budget => { budgets.push(budget); },
+      resume: { continuation: { providerResponseId: null, providerToolMessages: [] },
+        progress: { providerRounds: 40, toolCalls: 317, toolRounds: 39 } }
+    });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 320 });
+    expect(executeTool).toHaveBeenCalledTimes(3);
+    expect(transition).not.toHaveBeenCalled();
+    expect(requests[1]!.toolChoice).toBe("none");
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user",
+      content: instruction("the tool-call budget is exhausted", false) });
+    expect(budgets).toEqual([{ kind: "calls", limit: 320 }]);
+  });
+
+  it("names the round budget when the tool-round limit ends tool use", async () => {
+    const { adapter, requests } = scripted([{ calls: 1, text: "" }, { text: "answer" }]);
+    await runProviderToolLoop({
+      adapter, bridge: geminiInteractionsToolBridge, budgets: { maxConcurrency: 1, maxToolCalls: 10, maxToolRounds: 1 },
+      executeTool: async call => ({ status: "complete", value: { callId: call.id, name: call.name, status: "complete",
+        content: [{ type: "text", text: "ok" }] } }),
+      initialRequest: request({ provider: "gemini" }), parallelToolCalls: false, tools
+    });
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ type: "user_input",
+      content: [{ type: "text", text: instruction("the tool-round budget is exhausted", false) }] });
+  });
+
+  it("keeps the synthesis failure when a provider ignores the tool-free choice after a refused batch", async () => {
+    const { adapter } = scripted([{ calls: 6, text: "" }, { calls: 1, prefix: "late", text: "" }]);
+    const executeTool = vi.fn();
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 5, maxToolRounds: 100 },
+      executeTool, initialRequest: request(), parallelToolCalls: true, tools
+    });
+    expect(outcome).toMatchObject({ status: "failed", failure: { code: "synthesis_tool_call_forbidden" }, toolCalls: 0 });
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("fails before synthesis I/O when the refused round cannot be checkpointed", async () => {
+    const { adapter, requests } = scripted([{ calls: 6, text: "" }, { text: "never" }]);
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 5, maxToolRounds: 100 },
+      executeTool: vi.fn(), initialRequest: request(), parallelToolCalls: true, tools,
+      onFinalSynthesisTransition: () => { throw new Error("checkpoint conflict"); }
+    });
+    expect(outcome).toMatchObject({ status: "failed", failure: { code: "tool_loop_checkpoint_failed", stage: "persistence" } });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("answers without tools or a budget signal after a round of only blocked repeats, with projection notes", async () => {
+    const { adapter, requests } = scripted([{ calls: 2, text: "" }, { text: "answer from earlier results" }]);
+    const budgets: unknown[] = [];
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool: async call => ({ status: "complete", value: { callId: call.id, name: call.name, status: "error",
+        content: [{ type: "json", value: { error: "tool_call_repeat_blocked", repeatOf: [1, 2] } }] } }),
+      initialRequest: request(), parallelToolCalls: true, tools,
+      isRepeatBlockedCall: () => true,
+      toolResultNoteForProvider: () => "Not executed: this call already returned the same data twice (rounds 1, 2). Use those results.",
+      onFinalSynthesis: budget => { budgets.push(budget); }
+    });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 2 });
+    expect(requests[1]!.toolChoice).toBe("none");
+    const messages = requests[1]!.providerToolMessages!;
+    expect(messages.at(-1)).toEqual({ role: "user", content: instruction("repeated identical calls returned no new data", true) });
+    expect(JSON.stringify(messages.filter(message => (message as { type?: string }).type === "function_call_output")))
+      .toContain("Not executed: this call already returned the same data twice (rounds 1, 2).");
+    expect(budgets).toEqual([]);
+  });
+
+  it("keeps a round with an executed call open for tools", async () => {
+    const { adapter, requests } = scripted([{ calls: 2, text: "" }, { text: "done" }]);
+    await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 320, maxToolRounds: 100 },
+      executeTool: async call => ({ status: "complete", value: { callId: call.id, name: call.name, status: "complete",
+        content: [{ type: "text", text: "data" }] } }),
+      initialRequest: request(), parallelToolCalls: true, tools,
+      isRepeatBlockedCall: call => call.id === "call-0"
+    });
+    expect(requests[1]!.toolChoice).toBe("auto");
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).not.toContain("Tool use is now disabled");
+  });
+
+  it("sends the Anthropic instruction as a text block the adapter keeps", async () => {
+    const { adapter, requests } = scripted([{ calls: 6, text: "" }, { text: "answer" }]);
+    await runProviderToolLoop({
+      adapter, bridge: anthropicMessagesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 5, maxToolRounds: 100 },
+      executeTool: vi.fn(), initialRequest: request({ provider: "anthropic" }), parallelToolCalls: true, tools
+    });
+    expect(requests[1]!.providerToolMessages!.at(-1)).toEqual({ role: "user",
+      content: [{ type: "text", text: instruction("the tool-call budget is exhausted", true) }] });
+  });
+});
+
+describe("synthesis after a refused batch never inherits reader-dependent references", () => {
+  it("re-plans synthesis from the refused round's unprepared transcript, not its degraded projection", async () => {
+    const tools: RunTool[] = [{ capability: "mcp", description: "A", inputSchema: { type: "object" }, name: "alpha" }];
+    const requests: ProviderRunRequest[] = [];
+    const prepared: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      async *stream(roundRequest) {
+        requests.push(roundRequest);
+        const index = requests.length;
+        return { finalProviderResponsePreview: {}, finalText: index === 3 ? "answer" : "",
+          toolCalls: index === 1 ? [{ arguments: {}, id: "first", name: "alpha" }]
+            : index === 2 ? Array.from({ length: 6 }, (_, call) => ({ arguments: { call }, id: `more-${call}`, name: "alpha" })) : [],
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 } };
+      }
+    };
+    // Like the planner's newest-batch degradation: only while the reader is
+    // callable may an unseen result arrive as its reference.
+    const prepareRequest = (roundRequest: ProviderRunRequest) => {
+      prepared.push(roundRequest);
+      return roundRequest.toolChoice === "none" ? roundRequest : { ...roundRequest,
+        providerToolMessages: roundRequest.providerToolMessages?.map(message =>
+          JSON.stringify(message).includes("FULL_DATA") ? { call_id: "first", output: "REFERENCE_ONLY", type: "function_call_output" } : message) };
+    };
+    const outcome = await runProviderToolLoop({
+      adapter, bridge: openAIResponsesToolBridge, budgets: { maxConcurrency: 4, maxToolCalls: 3, maxToolRounds: 10 },
+      executeTool: async call => ({ status: "complete", value: { callId: call.id, name: call.name, status: "complete",
+        content: [{ type: "text", text: "FULL_DATA" }] } }),
+      initialRequest: request(), parallelToolCalls: true, prepareRequest, tools
+    });
+    expect(outcome).toMatchObject({ status: "complete" });
+    // The refused round itself saw only the reference ...
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain("REFERENCE_ONLY");
+    // ... but its tool-free synthesis is planned from the real result.
+    expect(JSON.stringify(prepared[2]!.providerToolMessages)).toContain("FULL_DATA");
+    expect(JSON.stringify(requests[2]!.providerToolMessages)).toContain("FULL_DATA");
+    expect(JSON.stringify(requests[2]!.providerToolMessages)).not.toContain("REFERENCE_ONLY");
+  });
 });

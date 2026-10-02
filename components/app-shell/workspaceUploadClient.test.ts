@@ -72,6 +72,35 @@ describe("Workspace file upload lifecycle", () => {
     expect(useComposerSessionStore.getState().activeSessionKey).toBe("chat:other");
     expect(useComposerSessionStore.getState().sessionsByKey["chat:other"]?.attachments).toHaveLength(0);
   });
+  it.each([
+    { code: "image_invalid", message: "This image could not be verified. Check that it opens correctly, or choose another file." },
+    { code: "image_limit_exceeded", message: "This image is too large to verify (up to 24 MiB and 16.8 megapixels). " +
+      "Reduce it, or rename it with the extension that matches its format." },
+    { code: "unsupported_type", message: "The file type or content could not be validated." }
+  ])("shows a final $code settlement refusal without offering a retry", async ({ code, message }) => {
+    vi.mocked(shellFetch)
+      .mockImplementation(async () => Response.json(wire))
+      .mockResolvedValueOnce(Response.json({ ...wire, state: "verifying", completedParts: [1] }))
+      .mockResolvedValueOnce(Response.json({ ...wire, state: "failed", completedParts: [1], errorCode: code }));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      begin();
+      await vi.waitFor(() => expect(vi.mocked(shellFetch)).toHaveBeenCalledTimes(1));
+      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.waitFor(() => expect(useWorkspaceUploadProgress.getState().items[0]?.state).toBe("failed"));
+    } finally { vi.useRealTimers(); }
+    expect(useWorkspaceUploadProgress.getState().items[0]).toMatchObject({ message, retryable: false });
+  });
+  it("refuses an over-limit image session at create without offering a retry", async () => {
+    vi.mocked(shellFetch)
+      .mockImplementation(async () => Response.json(wire))
+      .mockResolvedValueOnce(Response.json({ error: "image_limit_exceeded" }, { status: 413 }));
+    begin();
+    await vi.waitFor(() => expect(useWorkspaceUploadProgress.getState().items[0]?.state).toBe("failed"));
+    expect(useWorkspaceUploadProgress.getState().items[0]).toMatchObject({
+      message: expect.stringContaining("too large to verify"), retryable: false
+    });
+  });
   it.each(["remove", "logout"])("aborts transfer and schedules deletion on %s", async action => {
     vi.mocked(shellFetch).mockResolvedValue(Response.json(wire));
     const { result } = begin();

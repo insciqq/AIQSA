@@ -10,6 +10,7 @@ import { supportsAgentNativeWebSearch, type AgentResponsesTransport } from "../p
 import { AGENT_REQUEST_MAX_BYTES, type NormalizedRunAgent } from "./config";
 import type { createAgentRunStore } from "./store";
 import { setTimeout as sleep } from "node:timers/promises";
+import { logEvent } from "../observability";
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -22,6 +23,16 @@ function modelFailureCode(error: unknown) {
   if (transport.category === "dns") return "agent_provider_dns_failed";
   if (["ECONNRESET", "EPIPE"].includes(transport.code ?? "")) return "agent_provider_connection_lost";
   return "agent_provider_failed";
+}
+
+const ADMISSION_CODES = ["agent_model_request_invalid", "agent_model_tools_invalid", "agent_model_input_invalid"];
+
+/** The run keeps the generic provider failure; operators get the exact fence. */
+function observeAdmissionRejection(error: unknown, snapshot: AgentResponsesTransport["snapshot"]): void {
+  if (!(error instanceof Error) || !ADMISSION_CODES.includes(error.message)) return;
+  logEvent("provider_operation", { adapterKind: snapshot.model.adapterKind, connectionId: snapshot.connectionId,
+    providerFamily: snapshot.providerFamily, providerModelId: snapshot.providerModelId,
+    stage: "answer", outcome: "failed", action: "stop", code: error.message, reason: "policy" });
 }
 
 class RetryableProviderError extends Error {
@@ -40,11 +51,14 @@ function providerEventFailure(value: unknown): Error {
     ? new RetryableProviderError("agent_provider_failed") : new Error("agent_provider_failed");
 }
 
-function admitLocalTools(value: unknown, budget: { remaining: number }, webSearch = false, depth = 0): void {
+type HostedTools = Readonly<{ webSearch?: boolean; toolSearch?: boolean }>;
+const TOOL_ITEM_KEYS = ["type", "id", "call_id", "status", "execution", "internal_chat_message_metadata_passthrough"];
+
+function admitLocalTools(value: unknown, budget: { remaining: number }, hosted: HostedTools = {}, depth = 0): void {
   if (!Array.isArray(value) || depth > 4) throw new Error("agent_model_tools_invalid");
   for (const tool of value) {
     if (--budget.remaining < 0 || !record(tool)) throw new Error("agent_model_tools_invalid");
-    if (tool.type === "web_search" && webSearch && depth === 0) {
+    if (tool.type === "web_search" && hosted.webSearch && depth === 0) {
       if (Object.keys(tool).some((key) => !["type", "external_web_access", "search_content_types", "search_context_size"].includes(key)) ||
         (tool.external_web_access !== undefined && typeof tool.external_web_access !== "boolean") ||
         (tool.search_content_types !== undefined && (!Array.isArray(tool.search_content_types) ||
@@ -54,9 +68,38 @@ function admitLocalTools(value: unknown, budget: { remaining: number }, webSearc
       }
       continue;
     }
+    // Codex declares its deferred-tool discovery for models with search-tool
+    // support. Client execution means Codex itself searches the tools it
+    // deferred and returns their local definitions in tool_search_output; the
+    // provider never executes it and gains no external or file access.
+    if (tool.type === "tool_search" && hosted.toolSearch && depth === 0) {
+      if (Object.keys(tool).some((key) => !["type", "execution", "description", "parameters"].includes(key)) ||
+        tool.execution !== "client" || (tool.description !== undefined && typeof tool.description !== "string") ||
+        !record(tool.parameters)) {
+        throw new Error("agent_model_tools_invalid");
+      }
+      continue;
+    }
     if (typeof tool.name !== "string" || !tool.name || tool.name.length > 256) throw new Error("agent_model_tools_invalid");
-    if (tool.type === "namespace") admitLocalTools(tool.tools, budget, false, depth + 1);
+    if (tool.type === "namespace") admitLocalTools(tool.tools, budget, {}, depth + 1);
     else if (tool.type !== "function" && tool.type !== "custom") throw new Error("agent_model_tools_invalid");
+  }
+}
+
+/** A replayed client tool search: its call and the local definitions Codex loaded for it. */
+function admitToolSearchItem(item: Record<string, unknown>): void {
+  const payload = item.type === "tool_search_call" ? "arguments" : "tools";
+  if (Object.keys(item).some((key) => key !== payload && !TOOL_ITEM_KEYS.includes(key)) ||
+    item.execution !== "client" || (item.call_id !== undefined && item.call_id !== null && typeof item.call_id !== "string") ||
+    (item.status !== undefined && typeof item.status !== "string")) {
+    throw new Error("agent_model_input_invalid");
+  }
+  if (item.type === "tool_search_call") {
+    if (!record(item.arguments)) throw new Error("agent_model_input_invalid");
+  } else {
+    // Each loaded set is bounded like a request's declared tools and carries
+    // only local function/namespace definitions, never a hosted tool.
+    admitLocalTools(item.tools, { remaining: 256 });
   }
 }
 
@@ -67,9 +110,9 @@ export function admittedAgentRequest(value: unknown, modelId: string, maxOutputT
     throw new Error("agent_model_request_invalid");
   }
   const toolBudget = { remaining: 256 };
-  if (value.tools !== undefined) admitLocalTools(value.tools, toolBudget, nativeWebSearch);
+  if (value.tools !== undefined) admitLocalTools(value.tools, toolBudget, { webSearch: nativeWebSearch, toolSearch: true });
   for (const item of value.input) {
-    if (!record(item) || !["message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "reasoning", "compaction", "additional_tools", ...(nativeWebSearch ? ["web_search_call"] : []), undefined].includes(item.type as string | undefined)) {
+    if (!record(item) || !["message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "reasoning", "compaction", "additional_tools", "tool_search_call", "tool_search_output", ...(nativeWebSearch ? ["web_search_call"] : []), undefined].includes(item.type as string | undefined)) {
       throw new Error("agent_model_input_invalid");
     }
     if (item.type === "web_search_call" && (!record(item.action) ||
@@ -77,6 +120,7 @@ export function admittedAgentRequest(value: unknown, modelId: string, maxOutputT
     // Native Codex model profiles can declare namespaced local tools in the
     // input instead of the top-level tools array. The same hosted-tool fence applies.
     if (item.type === "additional_tools") admitLocalTools(item.tools, toolBudget);
+    if (item.type === "tool_search_call" || item.type === "tool_search_output") admitToolSearchItem(item);
     // Tool results can also carry multimodal content. Apply the same source
     // restrictions there so an output cannot introduce a provider file ID.
     const parts = [item.content, item.output].filter(Array.isArray).flat();
@@ -247,6 +291,7 @@ export function createAgentModelGateway(input: Readonly<{
       });
       return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
     } catch (error) {
+      observeAdmissionRejection(error, input.transport.snapshot);
       await settle("UNKNOWN").catch(() => undefined);
       if (error instanceof Error && error.message === "agent_followup_interrupt" &&
         await input.store.expectedFollowupInterruption()) {

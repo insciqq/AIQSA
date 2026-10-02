@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { runAccountMenuAction } from "./shell/page";
 import { e2eAssistantAvatar, e2eAssistantRows } from "./support/assistants";
+import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { authenticateWithLocalToken } from "./support/localAuth";
 
 // Short screens and narrow tablets (task 20260928115822568): on a phone held
@@ -43,23 +44,6 @@ async function createOwnedChat(request: APIRequestContext): Promise<Readonly<{ c
   expect(response.status(), await response.text()).toBe(201);
   const chatId = ((await response.json()) as { chat: { id: string } }).chat.id;
   return { chatId, title };
-}
-
-/**
- * `DELETE /api/chats/:id` only archives: the owned chat is deleted
- * permanently, or archived where the installation offers no permanent deletion.
- */
-async function deleteOwnedChat(request: APIRequestContext, chatId: string): Promise<void> {
-  const response = await request.post(`/api/chats/${chatId}/delete-permanently`, {
-    data: { alsoForgetOriginMemories: false, confirmationCopyVersion: "memory-confirmation-v1", requestId: randomUUID() },
-    maxRetries: 2
-  });
-  if (response.status() === 503) {
-    const archived = await request.delete(`/api/chats/${chatId}`, { maxRetries: 2 });
-    expect([200, 204, 404], "the owned chat is archived").toContain(archived.status());
-    return;
-  }
-  expect([202, 404], "the owned chat is cleaned up").toContain(response.status());
 }
 
 async function fakeModelId(request: APIRequestContext): Promise<string> {
@@ -199,6 +183,42 @@ async function expectStackedStudio(page: Page, size: Size): Promise<void> {
   await expect(first).toHaveAttribute("aria-selected", "true");
 }
 
+/**
+ * On a short touch screen an open sub-view (the Assistant editor) hides the
+ * section strip and keeps "Back to Assistants" in the crumb row; Back shows
+ * the strip again and focuses the selected section tab.
+ */
+async function expectEditorYieldsSectionStrip(page: Page, size: Size): Promise<void> {
+  const assistant = await createOwnedAssistant(page.request);
+  try {
+    await openShell(page, "/");
+    const library = await openStudioSection(page, "Assistants");
+    const card = library.getByTestId(`assistant-card-${assistant.id}`);
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    // The role query skips hidden nodes; the attribute query keeps the strip in reach once hidden.
+    const strip = library.locator('[role="tablist"][aria-label="Studio sections"]');
+    await expect(strip).toHaveCount(1);
+    await expect(strip).toBeVisible();
+
+    await card.getByRole("button", { exact: true, name: `More actions for ${assistant.name}` }).tap();
+    await page.getByRole("menuitem", { exact: true, name: "Edit" }).tap();
+    const editor = library.getByTestId("assistant-editor");
+    await expect(editor.getByLabel("Name Required", { exact: true })).toHaveValue(assistant.name, { timeout: 30_000 });
+    await expect(strip, "the section strip yields to the editor").toBeHidden();
+    const back = library.getByRole("button", { exact: true, name: "Back to Assistants" });
+    const backBox = await boxOf(back, "Back to Assistants");
+    expectInside(backBox, await boxOf(library.locator(".v2-library-heading-row"), "Studio crumb row"), "Back to Assistants in the crumb row");
+    expectInside(backBox, viewportBox(size), "Back to Assistants on screen");
+
+    await back.tap();
+    await expect(editor).toHaveCount(0);
+    await expect(strip).toBeVisible();
+    await expect(library.getByRole("tab", { exact: true, name: "Assistants" })).toBeFocused();
+  } finally {
+    await deleteOwnedAssistant(page.request, assistant.id);
+  }
+}
+
 test.describe("short screens · phone landscape 844×390 touch", () => {
   const size = { height: 390, width: 844 } as const;
   test.use({ hasTouch: true, isMobile: true, viewport: size });
@@ -261,7 +281,7 @@ test.describe("short screens · phone landscape 844×390 touch", () => {
       }
     } finally {
       if (assistant) await deleteOwnedAssistant(page.request, assistant.id);
-      await deleteOwnedChat(page.request, chatId);
+      await deleteOwnedChatPermanently(page.request, chatId);
     }
   });
 
@@ -302,6 +322,23 @@ test.describe("short screens · phone landscape 844×390 touch", () => {
     } finally {
       await deleteOwnedAssistant(page.request, assistant.id);
     }
+  });
+
+  test("the Assistant editor hides the section strip and Back restores it · phone landscape 844×390", async ({ page }) => {
+    test.setTimeout(120_000);
+    await authenticateWithLocalToken(page.request);
+    await expectEditorYieldsSectionStrip(page, size);
+  });
+});
+
+test.describe("short screens · small phone landscape 667×375 touch", () => {
+  const size = { height: 375, width: 667 } as const;
+  test.use({ hasTouch: true, isMobile: true, viewport: size });
+
+  test("the Assistant editor hides the section strip and Back restores it · phone landscape 667×375", async ({ page }) => {
+    test.setTimeout(120_000);
+    await authenticateWithLocalToken(page.request);
+    await expectEditorYieldsSectionStrip(page, size);
   });
 });
 

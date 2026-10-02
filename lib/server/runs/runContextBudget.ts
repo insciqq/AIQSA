@@ -32,15 +32,16 @@ import type {
   ProviderModelCapabilities,
   ProviderRunRequest
 } from "../providers/types";
-import type { ProviderToolBridge } from "../tools/types";
+import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
 import type { WholeDeliveryShare } from "../toolObservations/sourceAdapters";
+import { observationBatchFloor } from "../toolObservations/projection";
 import type { SessionContextStatus } from "../../contracts/sessionStatus";
 import { getAttachmentTextConfig } from "../uploads/attachmentTextConfig";
 import type { SkillBudgetFacts } from "../../contracts/skills";
-import type { ContextObservation, ContextRejectionRebuild } from "./contextCompactionContract";
+import { CONTEXT_COMPACTION_LIMITS, type ContextObservation, type ContextRejectionRebuild } from "./contextCompactionContract";
 import {
-  contextCompactionMeasurementWithBudget,
   contextHistory,
+  contextReductionFloor,
   contextRejectionRebuild,
   planContextCompaction,
   type ContextCompactionPlan,
@@ -84,10 +85,9 @@ function maxOutputTokensForBudget(
   return selectedMaxOutputTokens;
 }
 
-export type RunContextBudgetResult =
+type RunContextBudgetResult =
   | Readonly<{
       context: NonNullable<NormalizedRunRequest["context"]>;
-      contextTruncation: ContextTruncationSummary | null;
       ok: true;
     }>
   | Readonly<{
@@ -114,7 +114,8 @@ function contextBudgetPrompt(prompt: NormalizedRunRequest["prompt"]) {
   };
 }
 
-export function applyRunContextBudget(input: Readonly<{
+/** The exact fit of prompt, branch, pins and current message; nothing leaves. */
+function applyRunContextBudget(input: Readonly<{
   contextMessages: ProviderConversationMessage[];
   messageExtraTokens?: Record<string, number>;
   modelCapabilities: ProviderModelCapabilities;
@@ -156,47 +157,27 @@ export function applyRunContextBudget(input: Readonly<{
   });
 
   if (!budget.ok) {
+    const history = budgetMessages.length > 1 ? " conversation history," : "";
     return {
       error: {
         code: "context_too_large",
         message: internalContextMessages.length > 0
-          ? `Prompt, selected private context, and current message exceed the model context budget (${budget.budgetTokens} estimated tokens available). Reduce selected context or choose a model with a larger context window.`
-          : `Prompt and current message exceed the model context budget (${budget.budgetTokens} estimated tokens available).`
+          ? `Prompt,${history} selected private context, and current message exceed the model context budget (${budget.budgetTokens} estimated tokens available). Reduce selected context or choose a model with a larger context window.`
+          : `Prompt,${history} and current message exceed the model context budget (${budget.budgetTokens} estimated tokens available).`
       },
       ok: false,
       status: 400
     };
   }
 
-  const messages = internalContextMessages.length > 0 && budget.messages.length > 0
+  const messages = internalContextMessages.length > 0 && budgetMessages.length > 0
     ? [
-        ...budget.messages.slice(0, -1),
+        ...budgetMessages.slice(0, -1),
         ...internalContextMessages,
-        budget.messages.at(-1)!
+        budgetMessages.at(-1)!
       ]
-    : budget.messages;
-  const truncation = budget.truncation
-    ? {
-        ...budget.truncation,
-        keptMessages: budget.truncation.keptMessages + internalContextMessages.length
-      }
-    : null;
-  const context: NonNullable<NormalizedRunRequest["context"]> = {
-    messages,
-    mode: "branch_path"
-  };
-
-  if (truncation) {
-    context.summary = {
-      truncation
-    };
-  }
-
-  return {
-    context,
-    contextTruncation: truncation,
-    ok: true
-  };
+    : budgetMessages;
+  return { context: { messages, mode: "branch_path" }, ok: true };
 }
 
 /** Returns the bounded room for a future Personal Memory block after the
@@ -302,7 +283,7 @@ function contextCompactionBudgetLimits(request: ProviderRunRequest) {
   return limits && rebuilt !== undefined && rebuilt < limits.budgetTokens ? { ...limits, budgetTokens: rebuilt } : limits;
 }
 
-/** The legacy whole-turn guard sees a rebuild's tighter budget as a fixed reserve. */
+/** The fit check of a request outside the planner sees a rebuild's tighter budget as a fixed reserve. */
 function contextRebuildReserveTokens(request: ProviderRunRequest): number {
   const model = modelContextBudgetLimits(request);
   const planned = contextCompactionBudgetLimits(request);
@@ -351,6 +332,49 @@ export function observationWholeResultTokens(request: ProviderRunRequest): Extra
     estimateTokens: contextTokenEstimator(request),
     tokens: limits ? Math.floor(limits.budgetTokens * OBSERVATION_WHOLE_RESULT_BUDGET_SHARE) : Number.POSITIVE_INFINITY
   };
+}
+
+/**
+ * The delivery allowance of one tool batch, sized against the request that
+ * will carry it, so the newest batch (which notes never cover yet) stays
+ * within the budget beside everything no reduction removes: at most the
+ * quarter share, and never more than the budget leaves after the irreducible
+ * minimum of the next request with every call of this batch at its floor (a
+ * reference, or a deferred read) and room for the notes that may still
+ * replace uncovered material. Results are measured exactly as that request
+ * carries them. A request whose floor alone does not fit gets no allowance
+ * and fails explicitly at the next round's fit check. The sizing is an
+ * estimate made before the next request exists; the planner still turns the
+ * newest batch's unseen deliveries into references when that request does
+ * not fit after all.
+ */
+export function observationBatchShare(input: Readonly<{
+  bridge: ProviderToolBridge;
+  calls: readonly Readonly<{ id: string; name: string }>[];
+  observations?: readonly ContextObservation[];
+  /** The request after this round, with the batch's call items but no results. */
+  request: ProviderRunRequest;
+}>): Extract<WholeDeliveryShare, object> {
+  const { bridge, request } = input;
+  const estimateTokens = contextTokenEstimator(request);
+  const measure = (result: ToolExecutionResult) => estimateTokens([bridge.appendToolResult(undefined, result)]);
+  const limits = contextCompactionBudgetLimits(request);
+  if (!limits) return { estimateTokens, measure, tokens: Number.POSITIVE_INFINITY };
+  const share = Math.floor(limits.budgetTokens * OBSERVATION_WHOLE_RESULT_BUDGET_SHARE);
+  if (!usesHybridBudget(request)) return { estimateTokens, measure, tokens: share };
+  const floor: ProviderRunRequest = { ...request, providerToolMessages: [...(request.providerToolMessages ?? []),
+    ...input.calls.map((call) => bridge.appendToolResult(undefined, observationBatchFloor(call)))] };
+  const { minimumTokens, uncoveredBytes, uncoveredTokens } = contextReductionFloor({ assembledTokens: hybridRequestTokens(floor, bridge),
+    budgetTokens: limits.budgetTokens, ...(input.observations ? { observations: input.observations } : {}), request: floor });
+  // Notes a pass may still commit for the uncovered material grow the
+  // minimum by at most what the summarizer allows them (the notes floor or
+  // half of what they replace, within the notes bound), at the density of
+  // the material they stand for. Nothing uncovered buys no notes.
+  const notesBytes = Math.min(CONTEXT_COMPACTION_LIMITS.summaryNotesBytes,
+    Math.max(CONTEXT_COMPACTION_LIMITS.summaryMinimumNotesBytes, Math.ceil(uncoveredBytes / 2)));
+  const notesReserve = uncoveredBytes > 0 ? Math.ceil(notesBytes * uncoveredTokens / uncoveredBytes) : 0;
+  return { estimateTokens, measure,
+    tokens: Math.max(0, Math.min(share, limits.budgetTokens - minimumTokens - notesReserve)) };
 }
 
 function approximateProviderRequestTokens(request: ProviderRunRequest, bridge?: ProviderToolBridge): number {
@@ -689,27 +713,29 @@ function withoutSkillPins(request: ProviderRunRequest): Readonly<{
   };
 }
 
-/** Budgets the exact provider-facing client tools and retained tool transcript. */
+/**
+ * Budgets the exact provider-facing client tools and retained tool transcript.
+ * A non-Agent request with its conversation policy and a known window takes
+ * the planner (notes before anything leaves). Every other request (Agent,
+ * standalone PDF/OCR guards without history, an unknown window) is only fit
+ * checked: no message ever leaves it.
+ */
 export function applyProviderRequestContextBudget(input: ProviderRequestBudgetInput): ProviderRequestContextBudgetResult {
   if (usesHybridBudget(input.request)) return applyHybridProviderRequestContextBudget(input);
-  const { limits, planned } = planProviderRequestContext(input);
+  const { planned } = planProviderRequestContext(input);
   const plannedInput = { bridge: input.bridge, request: planned.request };
   const result = applyProviderRequestContextBudgetCore(plannedInput);
-  const withMeasurement = (value: ProviderRequestContextBudgetResult): ProviderRequestContextBudgetResult => {
-    const next = contextCompactionMeasurementWithBudget(planned.measurement, limits?.budgetTokens ?? null, value.ok);
-    if (value.ok) return { ...value, request: { ...value.request, contextCompaction: next } };
-    return value;
-  };
-  if (result.ok || input.request.agent) return withMeasurement(result);
+  if (result.ok) return { ...result, request: { ...result.request, contextCompaction: planned.measurement } };
+  if (input.request.agent) return result;
   const skills = withoutSkillPins(planned.request);
-  if (!skills.pinned.length && !skills.catalog.length) return withMeasurement(result);
+  if (!skills.pinned.length && !skills.catalog.length) return result;
   const withoutSkills = applyProviderRequestContextBudgetCore({ ...plannedInput, request: skills.request });
-  if (!withoutSkills.ok) return withMeasurement(result);
+  if (!withoutSkills.ok) return result;
   return skillsBudgetExceeded(input.request, skills.pinned, skills.catalog);
 }
 
-/** Same provider order as the legacy guard: exact pins directly precede the
- * current message, also after a summary rebuilt the prior context. */
+/** Exact pins directly precede the current message, also after a summary
+ * rebuilt the prior context. */
 function pinsBeforeCurrentMessage(request: ProviderRunRequest): ProviderRunRequest {
   const messages = request.context?.messages ?? [];
   const current = messages.at(-1);
@@ -735,11 +761,11 @@ function hybridOverflowMessage(overflow: ContextOverflow | undefined, budgetToke
 }
 
 /**
- * Accepted hybrid runs never use the legacy whole-turn trimmer on unsummarized
- * history. The planner owns the outcome; this applies it to the exact request:
- * an irreducible minimum is rejected here (before a run exists at admission),
- * a pending summary keeps its source intact for the execution consumer, and a
- * fitting projection gives extracted attachment text only the remaining room.
+ * Unsummarized history never leaves a request. The planner owns the outcome;
+ * this applies it to the exact request: an irreducible minimum is rejected
+ * here (before a run exists at admission), a pending summary keeps its source
+ * intact for the execution consumer, and a fitting projection gives extracted
+ * attachment text only the remaining room.
  */
 function applyHybridProviderRequestContextBudget(input: ProviderRequestBudgetInput): ProviderRequestContextBudgetResult {
   const { limits, planned } = planProviderRequestContext(input);
@@ -804,43 +830,8 @@ function applyHybridProviderRequestContextBudget(input: ProviderRequestBudgetInp
   };
 }
 
-/**
- * A bounded summary that could cover only the newest span leaves the older
- * prior turns out exactly like the legacy whole-turn guard: ordinary
- * truncation evidence, cumulative with earlier trimming, and a measurement
- * marked as the legacy fallback. It never hides lost coverage.
- */
-export function withSummaryHistoryOmission(input: Readonly<{
-  bridge?: ProviderToolBridge;
-  omitted: Readonly<{ messages: number; tokens: number }>;
-  result: Extract<ProviderRequestContextBudgetResult, { ok: true }>;
-}>): Extract<ProviderRequestContextBudgetResult, { ok: true }> {
-  const { request } = input.result;
-  const limits = contextCompactionBudgetLimits(request);
-  if (!limits || !request.context || input.omitted.messages === 0) return input.result;
-  const finalTokens = approximateProviderRequestTokens(request, input.bridge);
-  const contextTruncation = cumulativeTruncationSummary(input.result.contextTruncation ?? request.context.summary?.truncation, {
-    approxDroppedTokens: input.omitted.tokens,
-    approxFinalTokens: finalTokens,
-    approxOriginalTokens: finalTokens + input.omitted.tokens,
-    budgetTokens: limits.budgetTokens,
-    contextWindow: limits.contextWindow,
-    droppedMessages: input.omitted.messages,
-    keptMessages: request.context.messages.length,
-    maxOutputTokens: limits.maxOutputTokens,
-    safetyMarginTokens: limits.safetyMarginTokens
-  });
-  return {
-    contextTruncation,
-    ok: true,
-    request: {
-      ...request,
-      context: { ...request.context, summary: { truncation: contextTruncation } },
-      ...(request.contextCompaction ? { contextCompaction: { ...request.contextCompaction, legacyFallback: true } } : {})
-    }
-  };
-}
-
+/** The fit check of a request outside the planner. It never removes a
+ * message: an exact request that does not fit is refused. */
 function applyProviderRequestContextBudgetCore(input: Readonly<{
   bridge?: ProviderToolBridge;
   request: ProviderRunRequest;
@@ -896,23 +887,9 @@ function applyProviderRequestContextBudgetCore(input: Readonly<{
   if (contextMessages.length === 0) {
     return { contextTruncation: null, ok: true, request: fittedRequest };
   }
-
-  const previous = input.request.context?.summary?.truncation;
-  const contextTruncation = budget.contextTruncation
-    ? cumulativeTruncationSummary(previous, budget.contextTruncation)
-    : null;
-  const effectiveTruncation = contextTruncation ?? previous;
   return {
-    contextTruncation,
+    contextTruncation: null,
     ok: true,
-    request: {
-      ...fittedRequest,
-      context: {
-        ...budget.context,
-        ...(effectiveTruncation
-          ? { summary: { truncation: effectiveTruncation } }
-          : {})
-      }
-    }
+    request: { ...fittedRequest, context: { ...input.request.context!, ...budget.context } }
   };
 }

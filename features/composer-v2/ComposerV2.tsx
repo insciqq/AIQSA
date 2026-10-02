@@ -228,9 +228,86 @@ function externalLayerAnchor(
   };
 }
 
-/* An anchored popover wants this much room; with less above the composer it
-   flips below when there is more room there (blank chat, UX audit A11). */
-const LAYER_PREFERRED_PX = 480;
+/** Where a toolbar-anchored layer opens; "over" covers the draft above its trigger. */
+type ComposerLayerSide = "above" | "below" | "over";
+
+type ComposerLayerPlacement = Readonly<{
+  side: ComposerLayerSide;
+  /** Room (px) inside the scroll owner above the composer, below it, and above the trigger. */
+  spaceAbove: number;
+  spaceBelow: number;
+  spaceOver: number;
+  /** "over" only: the layer's bottom offset (px) from the composer's padding box. */
+  overBottom: number;
+}>;
+
+const INITIAL_LAYER_PLACEMENT: ComposerLayerPlacement = {
+  side: "above",
+  spaceAbove: 0,
+  spaceBelow: 0,
+  spaceOver: 0,
+  overBottom: 0
+};
+
+function sameLayerPlacement(a: ComposerLayerPlacement, b: ComposerLayerPlacement): boolean {
+  return a.side === b.side && a.spaceAbove === b.spaceAbove && a.spaceBelow === b.spaceBelow &&
+    a.spaceOver === b.spaceOver && a.overBottom === b.overBottom;
+}
+
+/** The layer's uncapped content height: the CSS cap is lifted for one synchronous read. */
+function naturalLayerHeight(layer: HTMLElement): number {
+  const previous = layer.style.maxHeight;
+  layer.style.maxHeight = "none";
+  const height = layer.offsetHeight;
+  layer.style.maxHeight = previous;
+  return height;
+}
+
+/**
+ * Placement of a toolbar-anchored layer (issue #43). It keeps opening outside
+ * the composer, above and otherwise below it, when the whole layer fits there;
+ * otherwise it opens over the draft directly above its own trigger, which in a
+ * tall blank chat leaves room for the menu. Rooms are measured inside the
+ * scroll owner (the reading column; the viewport when there is none), which
+ * also clips the layer. Every CSS cap keeps 1rem of a room free: a 0.5rem gap
+ * to the anchor and 0.5rem to the owner's edge.
+ */
+function measureLayerPlacement(
+  composer: HTMLElement,
+  trigger: HTMLElement | null,
+  layer: HTMLElement | null
+): ComposerLayerPlacement {
+  const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  const box = composer.getBoundingClientRect();
+  const owner = composer.closest(".v2-conversation-scroll")?.getBoundingClientRect();
+  const ownerTop = owner?.top ?? 0;
+  const ownerBottom = owner?.bottom ?? window.innerHeight;
+  const triggerTop = trigger ? trigger.getBoundingClientRect().top : box.top;
+  const spaceAbove = Math.round(Math.max(0, box.top - ownerTop));
+  const spaceBelow = Math.round(Math.max(0, ownerBottom - box.bottom));
+  const spaceOver = Math.round(Math.max(spaceAbove, triggerTop - ownerTop));
+  // The base CSS cap (34rem, viewport minus 3rem) bounds what any side must hold.
+  const need = layer
+    ? Math.min(naturalLayerHeight(layer), 34 * rem, window.innerHeight - 3 * rem)
+    : 0;
+  const fits = (space: number) => need <= space - rem;
+  const side: ComposerLayerSide = fits(spaceAbove)
+    ? "above"
+    : fits(spaceBelow)
+      ? "below"
+      : spaceOver >= spaceBelow
+        ? "over"
+        : "below";
+  const paddingBoxBottom = box.bottom -
+    (Number.parseFloat(getComputedStyle(composer).borderBottomWidth) || 0);
+  return {
+    side,
+    spaceAbove,
+    spaceBelow,
+    spaceOver,
+    overBottom: Math.round(paddingBoxBottom - (triggerTop - rem / 2))
+  };
+}
 
 const EMPTY_MODELS: readonly CatalogModel[] = [];
 const EMPTY_PROVIDERS: readonly CatalogProvider[] = [];
@@ -567,11 +644,7 @@ export function ComposerV2({
   const [layer, setLayer] = useState<ComposerV2Layer>(initialLayer);
   const [layerLeft, setLayerLeft] = useState(0);
   const [externalAnchor, setExternalAnchor] = useState<Readonly<{ left: number; top: number }> | null>(null);
-  const [layerPlacement, setLayerPlacement] = useState<Readonly<{
-    below: boolean;
-    spaceAbove: number;
-    spaceBelow: number;
-  }>>({ below: false, spaceAbove: 0, spaceBelow: 0 });
+  const [layerPlacement, setLayerPlacement] = useState<ComposerLayerPlacement>(INITIAL_LAYER_PLACEMENT);
   const [modelQuery, setModelQuery] = useState("");
   const [knowledgeQuery, setKnowledgeQuery] = useState("");
   const [knowledgeSourceSearch, setKnowledgeSourceSearch] = useState<Readonly<{
@@ -855,19 +928,8 @@ export function ComposerV2({
     const external = !composerRef.current?.contains(opener);
     setExternalAnchor(external ? externalLayerAnchor(opener, next) : null);
     setLayerLeft(external ? 0 : layerAnchorLeft(opener, composerRef.current, next));
-    // Free room above and below the composer inside its scroll owner (the
-    // reading column; the viewport when there is none).
-    const composerBox = composerRef.current?.getBoundingClientRect();
-    const ownerBox = composerRef.current?.closest(".v2-conversation-scroll")?.getBoundingClientRect();
-    const spaceAbove = composerBox ? Math.max(0, composerBox.top - (ownerBox?.top ?? 0)) : 0;
-    const spaceBelow = composerBox
-      ? Math.max(0, (ownerBox?.bottom ?? window.innerHeight) - composerBox.bottom)
-      : 0;
-    setLayerPlacement({
-      below: !external && spaceAbove < LAYER_PREFERRED_PX && spaceBelow > spaceAbove,
-      spaceAbove: Math.round(spaceAbove),
-      spaceBelow: Math.round(spaceBelow)
-    });
+    // The vertical placement needs the rendered layer: the layout effect
+    // below measures it before the first paint.
     setLayer(next);
   }
 
@@ -891,29 +953,44 @@ export function ComposerV2({
   useEffect(() => {
     onLayerChangeRef.current?.(layer);
   }, [layer]);
-  // Follow the actual control when wrapping or resizing moves its anchor.
+  // Follow the actual control when wrapping or resizing moves its anchor, and
+  // re-measure the room whenever the draft, the attachments, the viewport, the
+  // blank chat's scroll position or the layer's own content changes it.
   const externallyAnchored = externalAnchor !== null;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!layer) return;
+    const composer = composerRef.current;
+    if (!composer) return;
+    const owner = composer.closest<HTMLElement>(".v2-conversation-scroll");
     const reposition = () => {
       const opener = openerRef.current;
-      const composer = composerRef.current;
-      if (!opener || !composer) return;
-      if (externallyAnchored) setExternalAnchor(externalLayerAnchor(opener, layer));
-      else {
-        setLayerLeft(layerAnchorLeft(opener, composer, layer));
-        const box = composer.getBoundingClientRect();
-        const owner = composer.closest(".v2-conversation-scroll")?.getBoundingClientRect();
-        const above = Math.max(0, box.top - (owner?.top ?? 0));
-        const below = Math.max(0, (owner?.bottom ?? window.innerHeight) - box.bottom);
-        setLayerPlacement({ below: above < LAYER_PREFERRED_PX && below > above,
-          spaceAbove: Math.round(above), spaceBelow: Math.round(below) });
+      if (externallyAnchored) {
+        if (opener) setExternalAnchor(externalLayerAnchor(opener, layer));
+        return;
       }
+      // An opener inside a layer that has since been replaced (Add → Knowledge)
+      // is detached: the layer then belongs to the Add trigger.
+      const trigger = opener?.isConnected && composer.contains(opener) ? opener : plusTriggerRef.current;
+      if (trigger) setLayerLeft(layerAnchorLeft(trigger, composer, layer));
+      const next = measureLayerPlacement(composer, trigger, layerRef.current);
+      setLayerPlacement(current => sameLayerPlacement(current, next) ? current : next);
     };
+    if (!externallyAnchored) reposition();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reposition);
-    if (composerRef.current) observer?.observe(composerRef.current);
+    observer?.observe(composer);
+    if (owner) observer?.observe(owner);
+    const content = externallyAnchored || typeof MutationObserver === "undefined" || !layerRef.current
+      ? null
+      : new MutationObserver(reposition);
+    if (layerRef.current) content?.observe(layerRef.current, { characterData: true, childList: true, subtree: true });
     window.addEventListener("resize", reposition);
-    return () => { observer?.disconnect(); window.removeEventListener("resize", reposition); };
+    owner?.addEventListener("scroll", reposition, { passive: true });
+    return () => {
+      observer?.disconnect();
+      content?.disconnect();
+      window.removeEventListener("resize", reposition);
+      owner?.removeEventListener("scroll", reposition);
+    };
   }, [externallyAnchored, layer]);
   const portalLayer = (node: ReactNode) =>
     externalAnchor && typeof document !== "undefined" ? createPortal(node, document.body) : node;
@@ -1528,7 +1605,7 @@ export function ComposerV2({
               className="v2-composer-layer"
               data-anchor={externalAnchor ? "external" : undefined}
               data-kind={layer}
-              data-placement={!externalAnchor && layerPlacement.below ? "below" : undefined}
+              data-placement={!externalAnchor && layerPlacement.side !== "above" ? layerPlacement.side : undefined}
               id={`${layerId}-${layer}`}
               role={layer === "model" || layer === "files" || layer === "search" ? "dialog" : "menu"}
               tabIndex={-1}
@@ -1537,6 +1614,8 @@ export function ComposerV2({
                 "--v2-composer-layer-left": `${externalAnchor?.left ?? layerLeft}px`,
                 "--v2-composer-layer-space-above": `${layerPlacement.spaceAbove}px`,
                 "--v2-composer-layer-space-below": `${layerPlacement.spaceBelow}px`,
+                "--v2-composer-layer-space-over": `${layerPlacement.spaceOver}px`,
+                "--v2-composer-layer-bottom": `${layerPlacement.overBottom}px`,
                 "--v2-composer-layer-top": `${externalAnchor?.top ?? 0}px`
               } as CSSProperties}
               onKeyDown={handleLayerKeyDown}

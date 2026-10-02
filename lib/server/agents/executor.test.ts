@@ -130,6 +130,21 @@ describe("Agent executor terminal behavior", () => {
     expect(store.revoke).toHaveBeenCalledExactlyOnceWith(false);
   });
 
+  it("fails a run accepted under another Codex version before any grant or native execution", async () => {
+    const executeAgent = vi.fn<NonNullable<WorkspaceCoordinator["executeAgent"]>>(async () => undefined);
+    const f = fixture(executeAgent);
+    f.input.request = { ...f.input.request, agent: { ...f.input.request.agent!, codexVersion: "0.158.0" } };
+    store.fail.mockImplementation(async () => { store.failure.mockResolvedValue("agent_execution_interrupted"); });
+    await expect(executeCodexTurn(f.input)).rejects.toMatchObject({ code: "agent_execution_interrupted" });
+    expect(store.fail).toHaveBeenCalledExactlyOnceWith("agent_execution_interrupted");
+    expect(store.arm).not.toHaveBeenCalled();
+    expect(restoreAgentMcpTools).not.toHaveBeenCalled();
+    expect(store.toolCall).not.toHaveBeenCalled();
+    expect(executeAgent).not.toHaveBeenCalled();
+    expect(f.events).toEqual([]);
+    expect(store.revoke).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
   it("delivers received text before a later gateway failure and retains its original cause", async () => {
     const f = fixture(async ({ onEvent }) => {
       await onEvent({ type: "message", id: "available", text: "Available result." }, new WorkspaceActivityText());

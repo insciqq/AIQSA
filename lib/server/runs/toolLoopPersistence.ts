@@ -137,6 +137,9 @@ export type PersistToolLoopCallBatchInput = Readonly<{
     arguments: Readonly<Record<string, ToolLoopJsonValue>>;
     ordinal: number;
     providerCallId: string;
+    /** Persist the call already settled as an undispatched repeat of the two
+     * equal successes of these earlier rounds (`tool_call_repeat_blocked`). */
+    repeatBlocked?: Readonly<{ repeatOf: readonly [number, number] }>;
     runtimeGenerationFingerprint?: string | null;
     toolName: string;
     workspace?: true;
@@ -429,12 +432,22 @@ export type ContextSummaryReceiptWrite = Readonly<{
   /** Compaction identity of the summarized request. It seeds the checkpoint
    * only when the first round's summary precedes the round's own begin. */
   compaction: ContextCompactionCheckpoint;
-  /** The provider round being prepared, or null for a dispatch outside the
-   * tool loop: it has no checkpoint and is only ever refreshed, never
-   * replayed, so its receipt reaches accounting without checkpoint state. */
-  roundIndex: number | null;
+  /** The provider round being prepared, or 0 for a dispatch outside the tool
+   * loop, whose receipts and committed notes form the notes-only checkpoint
+   * (`isNotesOnlyCheckpoint`). */
+  roundIndex: number;
   summary?: ContextSummary;
 }>;
+
+/**
+ * A run's checkpoint outside the tool loop: round 0 with no provider
+ * continuation and no calls, holding only the context notes the run committed
+ * and their receipts. It survives a restart so the per-source call cap holds
+ * and a later turn carries the notes; it never makes the run a tool-loop run.
+ */
+export function isNotesOnlyCheckpoint(checkpoint: Pick<ToolLoopCheckpoint, "providerContinuation" | "roundIndex">): boolean {
+  return checkpoint.roundIndex === 0 && checkpoint.providerContinuation === null;
+}
 
 /** The continuation of a first round that has not dispatched yet. */
 export const INITIAL_PROVIDER_CONTINUATION: ToolLoopJsonValue = Object.freeze({
@@ -517,18 +530,18 @@ export function checkpointWithContextSummaryReceipt(
   current: ToolLoopCheckpoint | null,
   write: ContextSummaryReceiptWrite
 ): ToolLoopCheckpoint | null {
-  if (write.roundIndex === null) return current;
   const attempt = decodeContextSummaryAttempt(write.attempt);
   if (!attempt || write.summary !== undefined && (attempt.state !== "committed" ||
     !decodeContextSummary(write.summary) || write.summary.sourceDigest !== attempt.sourceDigest)) return null;
   const claim = unsettledSummaryStates.has(attempt.state);
   if (!current) {
-    return attempt.state === "claim" && write.roundIndex === 1
+    return attempt.state === "claim" && (write.roundIndex === 0 || write.roundIndex === 1)
       ? toolLoopCheckpoint({
           contextCompaction: { ...stripReceipts(write.compaction), summaryAttempts: [attempt] },
           phase: "provider_running",
-          providerContinuation: INITIAL_PROVIDER_CONTINUATION,
-          roundIndex: 1
+          // Outside the loop: the notes-only checkpoint has no continuation.
+          providerContinuation: write.roundIndex === 0 ? null : INITIAL_PROVIDER_CONTINUATION,
+          roundIndex: write.roundIndex
         })
       : null;
   }
@@ -579,16 +592,17 @@ function stripReceipts(compaction: ContextCompactionCheckpoint): ContextCompacti
 
 /**
  * A round may begin over receipts its own compaction wrote first: the same
- * round, still before any provider response or usage. The begin's projection
- * replaces the seed while every durable receipt and committed summary stays.
+ * round, still before any provider response or usage, or the first round over
+ * a notes-only checkpoint. The begin's projection replaces the seed while
+ * every durable receipt and committed summary stays.
  */
 export function checkpointAdoptingSummaryReceipts(
   current: ToolLoopCheckpoint,
   next: ToolLoopCheckpoint
 ): ToolLoopCheckpoint | null {
   if (current.phase !== "provider_running" || next.phase !== "provider_running" ||
-    current.roundIndex !== next.roundIndex || current.answerRoundUsage.length > 0 ||
-    !current.contextCompaction?.summaryAttempts?.length) return null;
+    current.roundIndex !== next.roundIndex && !(isNotesOnlyCheckpoint(current) && next.roundIndex === 1) ||
+    current.answerRoundUsage.length > 0 || !current.contextCompaction?.summaryAttempts?.length) return null;
   const compaction = mergeContextCompactionReceipts(current.contextCompaction, next.contextCompaction);
   if (!compaction) return null;
   return toolLoopCheckpoint({

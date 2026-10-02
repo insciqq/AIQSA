@@ -12,7 +12,7 @@ type Service = Record<string, unknown> & {
   environment?: Record<string, string>; image?: string; networks?: string[]; profiles?: string[];
   volumes?: string[];
 };
-type ComposeFile = { networks: Record<string, { internal?: boolean }>; services: Record<string, Service>; volumes: Record<string, unknown> };
+type ComposeFile = { networks?: Record<string, unknown>; services: Record<string, Service>; volumes?: Record<string, unknown> };
 
 const files = ["compose.yaml", "docker-compose.dev.yml"] as const;
 const load = (file: string) => parse(readFileSync(path.resolve(file), "utf8")) as ComposeFile;
@@ -24,13 +24,18 @@ afterEach(() => {
 });
 
 describe("object storage topology", () => {
-  it.each(files)("%s references no MinIO client image and keeps MinIO only as the pinned legacy reader", (file) => {
+  it.each(files)("%s declares nothing of the removed MinIO migration path", (file) => {
     const compose = load(file);
-    for (const [name, service] of Object.entries(compose.services)) {
-      expect(String(service.image ?? "")).not.toMatch(/minio\/mc/u);
-      if (/minio\/minio/u.test(String(service.image ?? ""))) expect(name).toBe("minio-legacy");
+    for (const name of ["minio-init", "minio-legacy", "storage-migrate"]) expect(compose.services[name]).toBeUndefined();
+    for (const service of Object.values(compose.services)) {
+      expect(String(service.image ?? "")).not.toMatch(/minio\/(?:minio|mc)/u);
+      expect(service.profiles ?? []).not.toContain("storage-migration");
+      expect(service.networks ?? []).not.toContain("storage-migration");
+      expect((service.volumes ?? []).filter((entry) => entry.startsWith("minio_data:"))).toEqual([]);
     }
-    expect(compose.services["minio-init"]).toBeUndefined();
+    expect(Object.keys(compose.networks ?? {})).not.toContain("storage-migration");
+    expect(Object.keys(compose.volumes ?? {})).not.toContain("minio_data");
+    expect(compose.services["storage-init"]!.volumes).toBeUndefined();
   });
 
   it.each(files)("%s runs SeaweedFS without a network and exposes only the S3 relay", (file) => {
@@ -67,24 +72,10 @@ describe("object storage topology", () => {
     }
     expect(Object.keys(services["migrate-bootstrap"]!.depends_on!)).toEqual(["postgres"]);
     expect(Object.keys(services["migrate-bootstrap"]!.environment!).filter((key) => key.startsWith("S3_"))).toEqual([]);
-    expect(services["storage-init"]!.volumes).toEqual(["minio_data:/legacy:ro"]);
-  });
-
-  it("starts the migration services only through their profile and explicit arguments", () => {
-    const { networks, services } = production;
-    const legacy = services["minio-legacy"]!;
-    expect(legacy).toMatchObject({ networks: ["storage-migration"], profiles: ["storage-migration"], pull_policy: "never" });
-    expect(legacy.image).toMatch(/^minio\/minio:RELEASE\.[0-9TZ-]+@sha256:[0-9a-f]{64}$/u);
-    expect(legacy.ports).toBeUndefined();
-    expect(networks["storage-migration"]).toEqual({ internal: true });
-    const migrate = services["storage-migrate"]!;
-    expect(migrate.profiles).toEqual(["storage-migration"]);
-    // Arguments of `docker compose run` must reach the script, not replace it.
-    expect(migrate.entrypoint).toEqual(["node", "--import", "tsx", "scripts/storage-migrate.ts"]);
-    expect(migrate.command).toEqual([]);
+    // Arguments of `docker compose run storage-init` must reach the script, not replace it.
     expect(services["storage-init"]!.entrypoint).toEqual(["node", "--import", "tsx", "scripts/storage-init.ts"]);
     expect(services["storage-init"]!.command).toEqual([]);
-    expect(Object.keys(production.volumes)).toEqual(expect.arrayContaining(["minio_data", "seaweedfs_data", "storage_socket"]));
+    expect(Object.keys(production.volumes ?? {})).toEqual(expect.arrayContaining(["seaweedfs_data", "storage_socket"]));
   });
 });
 

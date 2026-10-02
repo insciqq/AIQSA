@@ -2129,13 +2129,12 @@ async function prepareRunWith(
     chatId: chat.id,
     content,
     context: { messages: contextMessages, mode: "branch_path" },
-    // Knowledge and native Memory search keep the whole-turn guard: summaries
-    // cannot retain private evidence after its source authority is revoked.
-    // The observation store/reader remains available for other tool results.
-    ...(!agent && !knowledgeRequested && !memorySearch && toolObservationVersion === 1 ? { contextCompactionPolicy: conversationContextPolicy({
+    // Every non-Agent run compacts by notes before anything leaves its
+    // context, whatever Knowledge, Memory search, Observation or tool support
+    // it has; Codex owns Agent context.
+    ...(!agent ? { contextCompactionPolicy: conversationContextPolicy({
       leafMessageId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
-      messages: contextMessages,
-      mode: "hybrid"
+      messages: contextMessages
     }) } : {}),
     ...(knowledgeRequested ? {
       knowledgeAnswerWorkflowVersion: 11 as const,
@@ -2360,8 +2359,8 @@ async function prepareRunWith(
     normalizedRequest.followupContextReserveTokens = reserve;
     providerRequest.followupContextReserveTokens = reserve;
   }
-  // The exact branch stays the admitted context. A Knowledge run has no hybrid
-  // policy, so it never carries notes.
+  // The exact branch stays the admitted context; carried notes are frozen
+  // beside it as a candidate the executor applies only when needed.
   const reuse = await carriedContextSummary({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     conversationMessages,

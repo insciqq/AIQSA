@@ -16,6 +16,10 @@ import { captureRunObservation } from "@/tests/support/runObservation";
 import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { searchObservationReceipt } from "../toolObservations/searchReceipt";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
+import { agentLimits } from "../agents/config";
+import { CODEX_VERSION } from "../agents/codexProfile";
+import { agentFailureMessage } from "../agents/failures";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { McpClientSessionError } from "../mcp/clientSession";
 import { McpSemanticRouterError } from "../mcp/router";
@@ -159,7 +163,8 @@ import { decodeContextCompactionStatus, type ContextPlanMeasurement, type Contex
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { projectObservationForProvider } from "../toolObservations/projection";
-import { contextCompactionCheckpoint, conversationContextPolicy } from "./contextCompactionContract";
+import { contextCompactionCheckpoint, contextCompactionPolicyRetired, conversationContextPolicy } from "./contextCompactionContract";
+import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 import { measureSessionContext } from "./runContextBudget";
 
 // Most recovery fixtures below intentionally exercise the historical V20/V16
@@ -754,6 +759,8 @@ function normalizedToolRequest(): NormalizedRunRequest {
     chatId: "chat-1",
     content: { blocks: [{ text: "remember this", type: "text" }] },
     context: { messages: [], mode: "branch_path" },
+    // Every non-Agent run accepted by current admission carries the policy.
+    contextCompactionPolicy: conversationContextPolicy({ leafMessageId: null, messages: [] }),
     knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
     toolMode: "auto",
     mcp: {
@@ -1444,6 +1451,7 @@ function installCheckpointState(
 ) {
   let currentCheckpoint = initial.checkpoint;
   let calls = initial.calls.map((call) => ({ ...call }));
+  let synthesisDispatchMarks = 0;
   harness.setStoredRun({
     providerResponseId: initial.providerResponseId,
     recoverySettled: false,
@@ -1537,11 +1545,14 @@ function installCheckpointState(
         : null,
       ordinal: call.ordinal,
       providerCallId: call.providerCallId,
-      result: null,
+      // Like the durable repository, a blocked repeat settles with its batch.
+      result: call.repeatBlocked ? repeatBlockedToolCallResult({ providerCallId: call.providerCallId,
+        repeatOf: call.repeatBlocked.repeatOf, toolName: call.toolName }) : null,
       roundIndex: input.roundIndex,
       startedAt: null,
-      state: "pending",
-      toolName: call.toolName
+      state: call.repeatBlocked ? "error" : "pending",
+      toolName: call.toolName,
+      ...(call.repeatBlocked ? { completedAt: "2026-07-12T09:00:20.000Z" } : {})
     }));
     calls = [...calls, ...created];
     currentCheckpoint = checkpoint(
@@ -1554,6 +1565,28 @@ function installCheckpointState(
   };
   harness.repository.resetToolLoopAssistantDraft = async () => true;
   harness.repository.beginToolLoopProviderRound = async (input) => {
+    if (input.finalSynthesisOfRound !== undefined) {
+      const round = input.finalSynthesisOfRound;
+      const continuation = input.providerContinuation as { finalSynthesis?: unknown } | null;
+      if (currentCheckpoint.phase === "provider_running" && currentCheckpoint.roundIndex === round + 1 &&
+        JSON.stringify(currentCheckpoint.providerContinuation) === JSON.stringify(input.providerContinuation)) return "reused";
+      const marked = input.providerContinuation as { synthesisDispatched?: unknown } | null;
+      if (marked?.synthesisDispatched === true) {
+        const { synthesisDispatched: _mark, ...claimed } = marked as Record<string, ToolLoopJsonValue>;
+        void _mark;
+        if (currentCheckpoint.roundIndex !== round + 1 ||
+          JSON.stringify(currentCheckpoint.providerContinuation) !== JSON.stringify(claimed)) return "conflict";
+        synthesisDispatchMarks += 1;
+        currentCheckpoint = checkpoint("provider_running", input.roundIndex, input.providerContinuation!, currentCheckpoint.answerRoundUsage);
+        return "started";
+      }
+      if (currentCheckpoint.phase !== "provider_running" || currentCheckpoint.roundIndex !== round || input.roundIndex !== round + 1 ||
+        continuation?.finalSynthesis !== "budget_exhausted" || calls.some(call => call.roundIndex === round) ||
+        !currentCheckpoint.answerRoundUsage.some(entry => entry.roundIndex === round && entry.completeness === "terminal")) return "conflict";
+      currentCheckpoint = checkpoint("provider_running", input.roundIndex, input.providerContinuation!, currentCheckpoint.answerRoundUsage);
+      harness.setStoredRun({ providerResponseId: null });
+      return "started";
+    }
     if (input.requiredToolCorrectionOfRound !== currentCheckpoint.roundIndex || input.roundIndex !== 2 ||
       !currentCheckpoint.answerRoundUsage.some(entry => entry.roundIndex === 1 && entry.completeness === "terminal")) return "conflict";
     currentCheckpoint = checkpoint("provider_running", input.roundIndex, input.providerContinuation!, currentCheckpoint.answerRoundUsage);
@@ -1576,7 +1609,8 @@ function installCheckpointState(
   };
   return {
     calls: () => calls,
-    checkpoint: () => currentCheckpoint
+    checkpoint: () => currentCheckpoint,
+    synthesisDispatchMarks: () => synthesisDispatchMarks
   };
 }
 
@@ -1770,6 +1804,90 @@ describe("run recovery", () => {
       expect(workspace.settle).toHaveBeenCalledWith({ outcome: "failed", runId, userId, onActivity: expect.any(Function) });
       expect(harness.state.run.status).toBe("error");
     } else expect(harness.state.failed).toEqual([]);
+  });
+
+  describe("Agent runs across a guest Codex version cutover", () => {
+    const interrupted = { code: "agent_execution_interrupted", message: agentFailureMessage("agent_execution_interrupted") };
+    const agent = (codexVersion: string) => ({ ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true },
+      { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }), codexVersion, compatibilityHash: "a".repeat(64), mcpMode: "auto" as const });
+    const workspaceDeps = () => ({
+      accepts: () => false, execute: vi.fn(), finalize: vi.fn(), handoff: vi.fn(async () => ({ status: "ready" as const })),
+      recoverExports: vi.fn(), settle: vi.fn(async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true })), tools: async () => []
+    }) satisfies NonNullable<RunRecoveryDeps["workspace"]>;
+
+    it("settles an interrupted pre-upgrade Agent run without provider stream or refresh", async () => {
+      const refresh = vi.fn();
+      const adapter = providerWithRefresh(refresh);
+      const stream = vi.spyOn(adapter, "stream");
+      const harness = createHarness({ providers: { openai: adapter } });
+      const loadRequest = vi.fn(async () => { throw new Error("provider_dispatch_recovery_request_invalid_in_storage"); });
+      harness.repository.loadProviderDispatchRecoveryRequest = loadRequest;
+      harness.repository.interruptExpiredAgentRun = vi.fn(async () => ({ kind: "interrupted" as const,
+        failureCode: "agent_execution_interrupted" as const, usage: [] }));
+      const workspace = workspaceDeps();
+      await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({ error: interrupted, runId })]);
+      expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+      expect(workspace.settle).toHaveBeenCalledExactlyOnceWith({ outcome: "failed", runId, userId, onActivity: expect.any(Function) });
+      expect(workspace.handoff).not.toHaveBeenCalled();
+      expect(loadRequest).not.toHaveBeenCalled();
+      expect(stream).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+    });
+
+    it.each(["0.158.0", CODEX_VERSION])("settles a published Agent answer accepted under Codex %s without replay", async codexVersion => {
+      const refresh = vi.fn();
+      const adapter = providerWithRefresh(refresh);
+      const stream = vi.spyOn(adapter, "stream");
+      const harness = createHarness({ providers: { openai: adapter } });
+      const saved = checkpointedRun({ phase: "provider_running", providerResponseId: "response-old", providerToolMessages: [] });
+      harness.repository.loadProviderDispatchRecoveryRequest = async () => ({
+        ...saved.normalizedRequest, workspace: completionWorkspace, agent: agent(codexVersion)
+      });
+      const published = { assistantMessageId: "assistant-1", chatId: "chat-1", estimatedCostMicros: 17,
+        finalText: "Already published answer", modelId: "gpt-test", provider: "openai",
+        providerResponseId: "response-old", runId, usage: { inputTokens: 2, outputTokens: 3 }, userId };
+      harness.repository.loadPublishedRunAnswer = vi.fn(async () => published);
+      const interrupt = vi.fn();
+      harness.repository.interruptExpiredAgentRun = interrupt;
+      const workspace = workspaceDeps();
+      await refreshProviderRunIfNeeded({ ...harness.deps, workspace }, runId, userId);
+      expect(stream).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+      expect(interrupt).not.toHaveBeenCalled();
+      if (codexVersion === CODEX_VERSION) {
+        // Same-version recovery still captures Workspace outputs and completes.
+        expect(workspace.handoff).toHaveBeenCalledOnce();
+        expect(harness.state.completed).toEqual(published);
+        expect(harness.state.failed).toEqual([]);
+        return;
+      }
+      // The answer text is never rewritten: only the run is terminalized.
+      expect(workspace.handoff).not.toHaveBeenCalled();
+      expect(harness.state.completed).toBeNull();
+      expect(harness.state.assistantTexts).toEqual([]);
+      expect(harness.state.failed).toEqual([{ assistantMessageId: "assistant-1", error: interrupted, runId }]);
+      expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+      expect(workspace.settle).toHaveBeenCalledExactlyOnceWith({ outcome: "failed", runId, userId, onActivity: expect.any(Function) });
+    });
+
+    it.each(["preparing", "pdf", "workspace"] as const)("leaves a pre-upgrade Agent run with %s preparation to its owner without decoding it", async pending => {
+      const harness = createHarness({ providers: {},
+        staleRuns: [staleControl({ providerResponseId: null, ...(pending === "preparing" ? { status: "preparing" as const } : {}) })] });
+      const loadRequest = vi.fn(async () => { throw new Error("provider_dispatch_recovery_request_invalid_in_storage"); });
+      harness.repository.loadProviderDispatchRecoveryRequest = loadRequest;
+      const interrupt = vi.fn();
+      harness.repository.interruptExpiredAgentRun = interrupt;
+      harness.repository.hasPendingPdfPreparation = async () => pending === "pdf";
+      harness.repository.hasPendingWorkspacePreparation = async () => pending === "workspace";
+      await reconcileStaleRuns(harness.deps, { now: new Date("2026-07-12T10:00:01.000Z"), userId });
+      // Memory preparation recovery settles a preparing run; a pending PDF or
+      // Workspace continuation reaches the executor's version guard instead.
+      expect(harness.state.preparingRecoveries).toHaveLength(pending === "preparing" ? 1 : 0);
+      expect(loadRequest).not.toHaveBeenCalled();
+      expect(interrupt).not.toHaveBeenCalled();
+      expect(harness.state.failed).toEqual([]);
+    });
   });
 
   it.each(["ready", "failed", "cancelled", "busy"] as const)("waits for recovered Workspace handoff and respects %s settlement", async (outcome) => {
@@ -5317,7 +5435,7 @@ describe("run recovery", () => {
         { id: "current-user-message", role: "user" as const, content: base.content }
       ];
       return { ...base, context: { mode: "branch_path", messages },
-        contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages, mode: "hybrid" }),
+        contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "current-user-message", messages }),
         modelCapabilities: { ...base.modelCapabilities, contextWindow: 8_192, defaultMaxOutputTokens: 512, toolCalling: true },
         toolObservationVersion: 1 };
     }
@@ -5570,7 +5688,7 @@ describe("run recovery", () => {
       });
     });
 
-    it("masks an older recovered result from the run's persisted server observations", async () => {
+    it("covers an older recovered result by notes before it leaves, using the run's persisted server observations", async () => {
       const observed = { callId: "provider-call-1", name: recoveryToolName, status: "complete" as const,
         content: [{ type: "text" as const, text: `RESULT_1 ${"r".repeat(16_000)}` }],
         observation: { byteSize: 16_009, checksum: "c".repeat(64), encoding: "json-utf8-v1" as const,
@@ -5594,11 +5712,12 @@ describe("run recovery", () => {
       expect(recovery.harness.state.completed).toMatchObject({ finalText: "Recovered." });
       expect(recovery.answers).toHaveLength(1);
       const transcript = JSON.stringify(recovery.answers[0]?.providerToolMessages);
+      // The recovered round bought notes reading the exact result, then let it go.
+      expect(recovery.summaries.length).toBeGreaterThan(0);
+      expect(JSON.stringify(recovery.summaries.map((next) => next.content))).toContain(`RESULT_1 ${"r".repeat(100)}`);
+      expect(recovery.answers[0]?.contextCompactionSummary?.sourceRefs).toContain(observed.observation.handle);
       expect(transcript).not.toContain(`RESULT_1 ${"r".repeat(100)}`);
-      expect(transcript).toContain(observed.observation.handle);
       expect(transcript).toContain("RESULT_2");
-      expect(recovery.answers[0]?.contextCompaction).toMatchObject({ maskedObservations: 1, outcome: "masking_applied" });
-      expect(recovery.summaries).toHaveLength(0);
       expect(recovery.withinBudget).toEqual([true]);
     });
 
@@ -7412,6 +7531,115 @@ describe("run recovery", () => {
     expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
   });
 
+  describe("runs accepted under the retired context policy", () => {
+    const retired = { code: "context_compaction_policy_retired",
+      message: "This answer was interrupted by an application update. Regenerate to try again." };
+    const legacyPolicy = (): NonNullable<NormalizedRunRequest["contextCompactionPolicy"]> =>
+      ({ ...normalizedToolRequest().contextCompactionPolicy!, mode: "legacy_compatible" });
+
+    it.each([
+      ["without a policy", () => { const { contextCompactionPolicy: _policy, ...request } = normalizedToolRequest(); void _policy; return request; }],
+      ["under the legacy mode", () => ({ ...normalizedToolRequest(), contextCompactionPolicy: legacyPolicy() })]
+    ] as const)("terminalizes an accepted request %s before any provider or tool step", async (_label, requestFactory) => {
+      const stream = vi.fn<ProviderAdapter["stream"]>(async function* () {
+        return { finalProviderResponsePreview: {}, finalText: "must not dispatch", usage: { inputTokens: 1, outputTokens: 1 } };
+      });
+      const refresh = vi.fn();
+      const harness = createHarness({ providerDispatchRecoveryRequest: requestFactory(),
+        providers: { openai: { buildRequestPreview: () => ({}), refresh, stream } } });
+      const installed = installCheckpointState(harness, { ...checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" }),
+        normalizedRequest: requestFactory() });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(stream).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+      // The pending call is never executed by recovery.
+      expect(installed.calls()).toEqual([expect.objectContaining({ state: "pending" })]);
+      expect(harness.state.failed).toEqual([expect.objectContaining({ error: retired, runId })]);
+      expect(harness.state.run).toMatchObject({ recoverySettled: true, status: "error" });
+    });
+
+    it("cancels a direct answer dispatched under the retired policy and accounts it as one operation of unknown usage", async () => {
+      const { contextCompactionPolicy: _policy, ...legacy } = normalizedToolRequest();
+      void _policy;
+      const refresh = vi.fn();
+      const cancel = vi.fn(async () => ({}));
+      const stream = vi.fn<ProviderAdapter["stream"]>(async function* () {
+        return { finalProviderResponsePreview: {}, finalText: "must not dispatch", usage: { inputTokens: 1, outputTokens: 1 } };
+      });
+      const harness = createHarness({ providerDispatchRecoveryRequest: legacy,
+        providers: { openai: { buildRequestPreview: () => ({}), cancel, refresh, stream } } });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(cancel).toHaveBeenCalledExactlyOnceWith("response-old");
+      expect(refresh).not.toHaveBeenCalled();
+      expect(stream).not.toHaveBeenCalled();
+      expect(harness.state.failed).toEqual([expect.objectContaining({ error: retired, runId })]);
+      expect(harness.state.usageAttributions).toEqual([[expect.objectContaining({ modelId: "gpt-test", operationCount: 1,
+        provider: "openai", usage: expect.objectContaining({ completeness: "unavailable", inputTokens: null }) })]]);
+    });
+
+    it("terminalizes a tool-loop checkpoint written under the legacy revision", async () => {
+      const stream = vi.fn<ProviderAdapter["stream"]>(async function* () {
+        return { finalProviderResponsePreview: {}, finalText: "must not dispatch", usage: { inputTokens: 1, outputTokens: 1 } };
+      });
+      const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}), stream } } });
+      const saved = checkpointedRun({ calls: [persistedRecoveryCall()], phase: "tools_pending" });
+      const legacyCheckpoint = toolLoopCheckpoint({ ...saved.checkpoint, contextCompaction: {
+        ...contextCompactionCheckpoint({ ownerId: userId, request: { ...normalizedToolRequest() }, runId }),
+        policyRevision: "legacy-compatible-v1" } })!;
+      installCheckpointState(harness, { ...saved, checkpoint: legacyCheckpoint });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(stream).not.toHaveBeenCalled();
+      expect(harness.state.recoveredErrors.concat(harness.state.failed as never[])).toEqual(
+        expect.arrayContaining([expect.objectContaining({ error: retired })]));
+    });
+
+    it("settles a published answer as before and leaves Agent runs alone", async () => {
+      const { contextCompactionPolicy: _policy, ...legacy } = normalizedToolRequest();
+      void _policy;
+      expect(contextCompactionPolicyRetired(legacy)).toBe(true);
+      expect(contextCompactionPolicyRetired({ ...legacy, agent: { maxOutputTokens: 1 } as never })).toBe(false);
+      expect(contextCompactionPolicyRetired(normalizedToolRequest())).toBe(false);
+    });
+  });
+
+  describe("a notes-only checkpoint outside the tool loop", () => {
+    const notesOnly = (summary?: ContextSummary) => toolLoopCheckpoint({
+      contextCompaction: { ...contextCompactionCheckpoint({ ownerId: userId, request: { ...normalizedToolRequest() }, runId }),
+        ...(summary ? { summary, summaryAttempts: [{ attempt: 1, bindingDigest: "b".repeat(64), id: "csa1_notes", sourceDigest: summary.sourceDigest,
+          state: "committed" as const, usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } }] } : {}) },
+      phase: "provider_running", providerContinuation: null, roundIndex: 0 })!;
+    const summary: ContextSummary = { formatVersion: 1, id: `cs1_${"a".repeat(32)}`, notes: "Committed notes.",
+      sourceDigest: "a".repeat(64), sourceRefs: [] };
+
+    it("never routes the run into tool-loop recovery: the direct response is refreshed", async () => {
+      const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({ events: [providerEvent],
+        providerResponseId: "response-new", result: providerResult, status: "completed", terminal: true }));
+      const adapter = providerWithRefresh(refresh);
+      const stream = vi.spyOn(adapter, "stream");
+      const harness = createHarness({ providers: { openai: adapter } });
+      installCheckpointState(harness, { ...checkpointedRun({ phase: "provider_running", providerToolMessages: [] }),
+        calls: [], checkpoint: notesOnly(summary), providerResponseId: "response-old" });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(refresh).toHaveBeenCalledWith("response-old");
+      expect(stream).not.toHaveBeenCalled();
+      expect(harness.state.completed).toMatchObject({ providerResponseId: "response-new", runId });
+    });
+
+    it("fails a direct dispatch lost without a response handle instead of replaying it", async () => {
+      const stream = vi.fn<ProviderAdapter["stream"]>(async function* () {
+        return { finalProviderResponsePreview: {}, finalText: "must not dispatch", usage: { inputTokens: 1, outputTokens: 1 } };
+      });
+      const harness = createHarness({ controls: [control({ providerResponseId: null })],
+        providers: { openai: { buildRequestPreview: () => ({}), stream } } });
+      installCheckpointState(harness, { ...checkpointedRun({ phase: "provider_running", providerToolMessages: [] }),
+        calls: [], checkpoint: notesOnly(summary), providerResponseId: null });
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(stream).not.toHaveBeenCalled();
+      expect(harness.state.failed).toEqual([expect.objectContaining({ error: expect.objectContaining({
+        code: "provider_round_outcome_unknown" }) })]);
+    });
+  });
+
   it("blocks a recovered hosted-Search dispatch when current access was revoked", async () => {
     const stream = vi.fn<ProviderAdapter["stream"]>(async function* () {
       return {
@@ -8550,8 +8778,10 @@ describe("run recovery", () => {
 
   it.each([
     { mode: "single", goals: ["remember this detail"] },
-    { mode: "batch", goals: ["a".repeat(400), "remember this detail"] }
-  ])("routes fresh recovered $mode goals through their accepted binding and attributes usage once", async ({ goals }) => {
+    { mode: "batch", goals: ["a".repeat(400), "remember this detail"] },
+    // A blocked repeat in the batch is never routed, billed or epoched.
+    { mode: "batch with a blocked repeat", goals: ["a".repeat(400), "remember this detail"], blocked: true }
+  ])("routes fresh recovered $mode goals through their accepted binding and attributes usage once", async ({ goals, blocked }) => {
     const requests: ProviderRunRequest[] = [];
     const snapshot = normalizedToolRequest().mcp!;
     const catalog = {
@@ -8628,7 +8858,8 @@ describe("run recovery", () => {
       return { discovery, snapshot };
     });
     harness.repository.appendMcpDiscoveryEpoch = appendEpoch;
-    const findToolsCalls: PersistedToolLoopCall[] = goals.map((goal, index) => ({
+    const roundIndex = blocked ? 3 : 1;
+    const findToolsCalls: PersistedToolLoopCall[] = [...goals.map((goal, index): PersistedToolLoopCall => ({
       arguments: { goal },
       completedAt: null,
       id: `stored-find-tools-call-${index}`,
@@ -8636,14 +8867,20 @@ describe("run recovery", () => {
       ordinal: index,
       providerCallId: `provider-find-tools-call-${index}`,
       result: null,
-      roundIndex: 1,
+      roundIndex,
       startedAt: null,
       state: "pending",
       toolName: MCP_FIND_TOOLS_NAME
-    }));
+    })), ...(blocked ? [{
+      arguments: { goal: "remember this detail" }, completedAt: "2026-07-12T09:00:20.000Z", id: "stored-find-tools-blocked",
+      mcpBinding: null, ordinal: goals.length, providerCallId: "provider-find-tools-blocked",
+      result: repeatBlockedToolCallResult({ providerCallId: "provider-find-tools-blocked", repeatOf: [1, 2], toolName: MCP_FIND_TOOLS_NAME }),
+      roundIndex, startedAt: null, state: "error" as const, toolName: MCP_FIND_TOOLS_NAME
+    }] : [])];
     const durable = checkpointedRun({
       calls: findToolsCalls,
       phase: "tools_pending",
+      roundIndex,
       providerToolMessages: findToolsCalls.map((call) => ({
         arguments: JSON.stringify(call.arguments),
         call_id: call.providerCallId,
@@ -9775,5 +10012,249 @@ describe("Recovered image and artifact tool services", () => {
     expect(JSON.stringify(state.calls()[0]!.result)).toContain("artifact_tool_unavailable");
     expect(requests).toHaveLength(1);
     expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("artifact_tool_unavailable");
+  });
+});
+
+describe("recovered tool-free synthesis and repeated calls", () => {
+  const terminal = (roundIndex: number): PersistedAnswerRoundUsage => ({ completeness: "terminal", roundIndex,
+    usage: { completeness: "complete", cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 1, outputTokens: 1,
+      reasoningTokens: 0, totalTokens: 2 } });
+  const settledCall = (index: number, roundIndex: number, args: Record<string, ToolLoopJsonValue> = { value: `alpha-${index}` },
+    text = `settled result ${index}`): PersistedToolLoopCall => ({
+    ...persistedRecoveryCall("complete"), arguments: args, id: `settled-${index}`, ordinal: 0,
+    providerCallId: `call-${index}`, roundIndex, usageAccountedAt: "2026-07-12T09:02:00.000Z",
+    result: snapshotToolExecutionResult({ callId: `call-${index}`, name: recoveryToolName,
+      content: [{ type: "text", text }], status: "complete" }, toolLoopPersistenceLimits.resultBytes)
+  });
+  // 317 settled calls over 40 rounds, then round 41 asks for six more.
+  const priorCalls = Array.from({ length: 317 }, (_, index) => ({ ...settledCall(index + 1, 1 + Math.floor(index / 8)),
+    ordinal: index % 8 }));
+  const budgets = { maxToolCalls: 320, maxToolRounds: 100 };
+  const sixCalls = Array.from({ length: 6 }, (_, index) => ({ id: `more-${index}`, name: recoveryToolName, arguments: { value: `more-${index}` } }));
+  const instructionTail = "Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed.";
+
+  function synthesisAdapter(refreshResult?: ProviderRunRefreshResult) {
+    const requests: ProviderRunRequest[] = [];
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => refreshResult!);
+    const adapter: ProviderAdapter = {
+      buildRequestPreview: () => ({}),
+      refresh,
+      async *stream(request) {
+        requests.push(request);
+        return { finalProviderResponsePreview: {}, finalText: "Checked part answered; the rest was not verified.",
+          providerResponseId: "synthesis-response", usage: { inputTokens: 4, outputTokens: 2, reasoningTokens: 0 } };
+      }
+    };
+    return { adapter, refresh, requests };
+  }
+
+  function refusedRoundRefresh(): ProviderRunRefreshResult {
+    return { events: [{ type: "token", data: { delta: "Fetching more" } }], providerResponseId: "refused-response",
+      status: "completed", terminal: true,
+      result: { finalProviderResponsePreview: {}, finalText: "Fetching more", toolCalls: sixCalls,
+        usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 } } };
+  }
+
+  it.each([true, false])("refuses a refreshed batch over the remaining budget and answers once without tools (terminal usage saved=%s)", async (usageSaved) => {
+    const { adapter, refresh, requests } = synthesisAdapter(refusedRoundRefresh());
+    const runtimeCall = vi.fn();
+    const harness = createHarness({ controls: [control({ providerResponseId: "refused-response" })], providers: { openai: adapter },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+    // The refused round's terminal usage is what its refresh reports again.
+    const answerRoundUsage = [...Array.from({ length: 40 }, (_, index) => terminal(index + 1)),
+      ...(usageSaved ? [{ completeness: "terminal" as const, roundIndex: 41,
+        usage: normalizeTokenUsage({ inputTokens: 1, outputTokens: 1, reasoningTokens: 0 }) }] : [])];
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ answerRoundUsage, calls: priorCalls, phase: "provider_running", providerResponseId: "refused-response", roundIndex: 41 }),
+      normalizedRequest: { ...normalizedToolRequest(), toolBudgets: budgets }
+    });
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+    const persistBatch = vi.spyOn(harness.repository, "persistToolLoopCallBatch");
+    const begin = vi.spyOn(harness.repository, "beginToolLoopProviderRound");
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(runtimeCall).not.toHaveBeenCalled();
+    expect(persistBatch).not.toHaveBeenCalled();
+    expect(installed.calls()).toHaveLength(317);
+    expect(begin).toHaveBeenCalledWith(expect.objectContaining({ finalSynthesisOfRound: 41, roundIndex: 42,
+      providerContinuation: expect.objectContaining({ finalSynthesis: "budget_exhausted" }) }));
+    expect(installed.synthesisDispatchMarks()).toBe(1);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.toolChoice).toBe("none");
+    const messages = requests[0]!.providerToolMessages!;
+    expect(messages.at(-1)).toEqual({ role: "user", content:
+      `Tool use is now disabled for this run: the tool-call budget is exhausted. Some planned tool calls were not executed. ${instructionTail}` });
+    expect(JSON.stringify(messages)).not.toContain("more-0");
+    expect(JSON.stringify(installed.checkpoint().providerContinuation)).not.toContain("Tool use is now disabled");
+    expect(harness.state.completed).toMatchObject({ finalText: "Checked part answered; the rest was not verified." });
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(installed.checkpoint()).toMatchObject({ phase: "provider_running", roundIndex: 42 });
+    expect(installed.checkpoint().answerRoundUsage.filter(entry => entry.roundIndex >= 41)
+      .map(entry => [entry.roundIndex, entry.completeness])).toEqual([[41, "terminal"], [42, "terminal"]]);
+  });
+
+  const markerContinuation = (messages: ToolLoopJsonValue[] = [{ type: "prior" }]): ToolLoopJsonValue =>
+    ({ finalSynthesis: "budget_exhausted", providerResponseId: null, providerToolMessages: messages });
+
+  function markerRun(input: Readonly<{ answerRoundUsage: readonly PersistedAnswerRoundUsage[]; providerResponseId: string | null }>): CheckpointedToolLoopRun {
+    const base = checkpointedRun({ calls: priorCalls, phase: "provider_running", providerResponseId: input.providerResponseId, roundIndex: 42 });
+    return { ...base, checkpoint: checkpoint("provider_running", 42, markerContinuation(), input.answerRoundUsage),
+      normalizedRequest: { ...normalizedToolRequest(), toolBudgets: budgets } };
+  }
+
+  it("dispatches a claimed synthesis round that has no response id or usage of its own", async () => {
+    const { adapter, refresh, requests } = synthesisAdapter();
+    const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: { openai: adapter } });
+    const installed = installCheckpointState(harness, markerRun({ answerRoundUsage: Array.from({ length: 41 }, (_, index) => terminal(index + 1)),
+      providerResponseId: null }));
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+    const reset = vi.spyOn(harness.repository, "resetToolLoopAssistantDraft");
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(installed.synthesisDispatchMarks()).toBe(1);
+    expect(reset).toHaveBeenCalledWith(expect.objectContaining({ roundIndex: 41 }));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.toolChoice).toBe("none");
+    expect(requests[0]!.providerToolMessages).toEqual([{ type: "prior" }, { role: "user", content:
+      `Tool use is now disabled for this run: the tool-call budget is exhausted. Some planned tool calls were not executed. ${instructionTail}` }]);
+    expect(harness.state.completed).toMatchObject({ finalText: "Checked part answered; the rest was not verified." });
+    expect(installed.checkpoint().answerRoundUsage.at(-1)).toMatchObject({ roundIndex: 42, completeness: "terminal" });
+  });
+
+  it("keeps an unknown outcome, never re-sending, when the claimed synthesis round was marked dispatched", async () => {
+    const { adapter, requests } = synthesisAdapter();
+    const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: { openai: adapter } });
+    const run = markerRun({ answerRoundUsage: Array.from({ length: 41 }, (_, index) => terminal(index + 1)), providerResponseId: null });
+    installCheckpointState(harness, { ...run, checkpoint: checkpoint("provider_running", 42,
+      { ...(markerContinuation() as Record<string, ToolLoopJsonValue>), synthesisDispatched: true }, run.checkpoint.answerRoundUsage) });
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(requests).toEqual([]);
+    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "tool_loop_provider_round_outcome_unknown" }) })]);
+  });
+
+  it("keeps an unknown outcome when the claimed synthesis round already reported usage", async () => {
+    const { adapter, requests } = synthesisAdapter();
+    const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: { openai: adapter } });
+    const partial = { ...terminal(42), completeness: "partial" as const };
+    installCheckpointState(harness, markerRun({ answerRoundUsage: [...Array.from({ length: 41 }, (_, index) => terminal(index + 1)), partial],
+      providerResponseId: null }));
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(requests).toEqual([]);
+    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({
+      error: expect.objectContaining({ code: "tool_loop_provider_round_outcome_unknown" }) })]);
+  });
+
+  it.each([false, true])("refreshes a dispatched synthesis round as tool-free (provider ignored none=%s)", async (ignored) => {
+    const { adapter, refresh, requests } = synthesisAdapter({ events: [], providerResponseId: "synthesis-response", status: "completed",
+      terminal: true, result: { finalProviderResponsePreview: {}, finalText: "Recovered synthesis",
+        ...(ignored ? { toolCalls: [{ id: "late", name: recoveryToolName, arguments: {} }] } : {}),
+        usage: { inputTokens: 2, outputTokens: 1, reasoningTokens: 0 } } });
+    const runtimeCall = vi.fn();
+    const harness = createHarness({ controls: [control({ providerResponseId: "synthesis-response" })], providers: { openai: adapter },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+    installCheckpointState(harness, markerRun({ answerRoundUsage: Array.from({ length: 41 }, (_, index) => terminal(index + 1)),
+      providerResponseId: "synthesis-response" }));
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(requests).toEqual([]);
+    expect(runtimeCall).not.toHaveBeenCalled();
+    if (ignored) {
+      expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({ error: TOOL_SYNTHESIS_FAILURE })]);
+    } else {
+      expect(harness.state.completed).toMatchObject({ finalText: "Recovered synthesis" });
+    }
+  });
+
+  it("fails a claimed synthesis round under the retired context policy before any dispatch", async () => {
+    const { adapter, requests } = synthesisAdapter();
+    const legacy = { ...normalizedToolRequest(), toolBudgets: budgets,
+      contextCompactionPolicy: { ...normalizedToolRequest().contextCompactionPolicy!, mode: "legacy_compatible" as const } };
+    const harness = createHarness({ controls: [control({ providerResponseId: null })], providerDispatchRecoveryRequest: legacy,
+      providers: { openai: adapter } });
+    installCheckpointState(harness, { ...markerRun({ answerRoundUsage: Array.from({ length: 41 }, (_, index) => terminal(index + 1)),
+      providerResponseId: null }), normalizedRequest: legacy });
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(requests).toEqual([]);
+    expect(harness.state.failed).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "context_compaction_policy_retired" }) })]);
+  });
+
+  it("blocks a refreshed repeat from persisted rows, dispatches the rest of the batch and notes the block", async () => {
+    const same = { value: "same" };
+    const rows = [settledCall(1, 1, same, "same data"), settledCall(2, 2, same, "same data")];
+    const { adapter, requests } = synthesisAdapter({ events: [], providerResponseId: "round-3", status: "completed", terminal: true,
+      result: { finalProviderResponsePreview: {}, finalText: "", usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
+        toolCalls: [{ id: "repeat-3", name: recoveryToolName, arguments: same },
+          { id: "other-3", name: recoveryToolName, arguments: { value: "other" } }] } });
+    const runtimeCall = vi.fn(async () => ({ isError: false, structuredContent: null, text: ["other data"], unsupportedContentTypes: [] }));
+    const harness = createHarness({ controls: [control({ providerResponseId: "round-3" })], providers: { openai: adapter },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+    // The server declares the tool read-only, so the other call of the batch cannot change its data.
+    const base = normalizedToolRequest();
+    const readOnlyMcp = { ...base.mcp!, tools: base.mcp!.tools.map(tool => ({ ...tool, annotations: { readOnlyHint: true } })) };
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ answerRoundUsage: [terminal(1), terminal(2)], calls: rows, phase: "provider_running",
+        providerResponseId: "round-3", roundIndex: 3 }),
+      normalizedRequest: { ...base, mcp: readOnlyMcp, toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }
+    });
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(runtimeCall).toHaveBeenCalledOnce();
+    expect(installed.calls().find(call => call.providerCallId === "repeat-3")).toMatchObject({ startedAt: null, state: "error",
+      result: { content: [{ type: "json", value: { error: "tool_call_repeat_blocked", repeatOf: [1, 2] } }] } });
+    expect(installed.calls().find(call => call.providerCallId === "other-3")).toMatchObject({ state: "complete" });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.toolChoice).toBe("auto");
+    expect(JSON.stringify(requests[0]!.providerToolMessages))
+      .toContain("Not executed: this call already returned the same data twice (rounds 1, 2). Use those results.");
+    // The refreshed batch keeps the previous round's output paired with its call.
+    expect(requests[0]!.providerToolMessages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ call_id: "call-2", type: "function_call_output" }),
+      expect.objectContaining({ call_id: "repeat-3", type: "function_call_output" }),
+      expect.objectContaining({ call_id: "other-3", type: "function_call_output" })]));
+    expect(harness.state.completed).not.toBeNull();
+  });
+
+  it("ends a saved round of only blocked repeats in tool-free synthesis without dispatching them", async () => {
+    const same = { value: "same" };
+    const blocked: PersistedToolLoopCall = { ...persistedRecoveryCall("error"), arguments: same, id: "blocked-3",
+      providerCallId: "repeat-3", roundIndex: 3, startedAt: null,
+      result: repeatBlockedToolCallResult({ providerCallId: "repeat-3", repeatOf: [1, 2], toolName: recoveryToolName }) };
+    const { adapter, requests } = synthesisAdapter();
+    const runtimeCall = vi.fn();
+    const harness = createHarness({ controls: [control({ providerResponseId: null })], providers: { openai: adapter },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+    installCheckpointState(harness, {
+      ...checkpointedRun({ answerRoundUsage: [terminal(1), terminal(2), terminal(3)], calls: [settledCall(1, 1, same, "same data"),
+        settledCall(2, 2, same, "same data"), blocked], phase: "tools_pending", roundIndex: 3 }),
+      normalizedRequest: { ...normalizedToolRequest(), toolBudgets: { maxToolCalls: 20, maxToolRounds: 8 } }
+    });
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(runtimeCall).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.toolChoice).toBe("none");
+    expect(requests[0]!.providerToolMessages!.at(-1)).toEqual({ role: "user", content:
+      `Tool use is now disabled for this run: repeated identical calls returned no new data. Some planned tool calls were not executed. ${instructionTail}` });
+    expect(harness.state.completed).toMatchObject({ finalText: "Checked part answered; the rest was not verified." });
   });
 });
