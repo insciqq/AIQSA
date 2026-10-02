@@ -19,6 +19,7 @@ import {
 } from "./rounds";
 import { currentMemoryJobsSql } from "../coordinator/currentJobs";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
+import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../../contracts/runs";
 
 export const MEMORY_HISTORY_CLEAR_MANIFEST_VERSION =
   "memory-history-clear-v1";
@@ -591,7 +592,7 @@ async function settleAttemptItems(
       SET
         "errorPayload" = jsonb_build_object(
           'code', 'memory_source_stale',
-          'message', 'Memory preparation stopped because selected history was cleared.'
+          'message', ${RUN_PREPARATION_FAILURE_MESSAGE}::text
         ),
         "status" = 'error'::"ModelRunStatus",
         "updatedAt" = CURRENT_TIMESTAMP
@@ -604,7 +605,7 @@ async function settleAttemptItems(
     )
     UPDATE "Message" AS message
     SET
-      "errorMessage" = 'Memory preparation stopped because selected history was cleared.',
+      "errorMessage" = ${RUN_PREPARATION_FAILURE_MESSAGE},
       "status" = 'error'::"MessageStatus",
       "updatedAt" = CURRENT_TIMESTAMP
     FROM settled_attempts AS attempt

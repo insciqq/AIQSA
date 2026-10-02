@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { presentRunLifecycleV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE, mcpAutoDiscoveryFailure } from "@/lib/contracts/runs";
-import { TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 import {
   runTransportStateV2,
   transportLostForMessageV2
@@ -43,6 +43,23 @@ describe("Run transport presentation v2", () => {
       code: null, message: "The answer could not be prepared. Try again.", recovery: "change_parameters"
     } });
   });
+
+  it("restores historical Memory-worded egress text with neutral copy after reload", () => {
+    const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,
+      message: { ...streamingMessage, status: "error", errorMessage: "Memory egress evidence is unavailable." },
+      persistedRunStatus: "error" });
+    expect(slice.failure).toEqual({ message: RUN_PREPARATION_FAILURE_MESSAGE });
+    expect(present(slice, "").failure?.message).toBe(RUN_PREPARATION_FAILURE_MESSAGE);
+  });
+
+  it.each(["Knowledge access changed before retrieval.", "Provider dispatch evidence is unavailable."])(
+    "restores the non-Memory failure %s unchanged after reload", (errorMessage) => {
+      const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,
+        message: { ...streamingMessage, status: "error", errorMessage }, persistedRunStatus: "error" });
+      expect(slice.failure).toEqual({ message: errorMessage });
+      expect(present(slice, "").failure?.message).toBe(errorMessage);
+    }
+  );
 
   it("restores a stored retired System Model rejection as the generic Auto failure after reload", () => {
     const stored = "The System Model rejected automatic tool selection (Gemini HTTP 400: invalid_request). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.";

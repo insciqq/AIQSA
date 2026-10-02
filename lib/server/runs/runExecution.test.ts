@@ -10,7 +10,7 @@ import sharp from "sharp";
 import { createHash } from "node:crypto";
 import { observationWholeResultTokens } from "./runContextBudget";
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
-import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
+import { mcpAutoDiscoveryFailure, RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
@@ -3966,7 +3966,7 @@ describe("run execution", () => {
     expect(repository.failedRuns).toEqual([expect.objectContaining({
       error: {
         code: "memory_answer_model_tools_retired",
-        message: "This run uses a retired answer-model Memory tool contract."
+        message: RUN_PREPARATION_FAILURE_MESSAGE
       },
       options: { recoveryTerminal: true }
     })]);

@@ -223,8 +223,7 @@
   margin-bottom: 0.625rem;
 }
 
-.v2-knowledge-answer-state,
-.v2-memory-answer-state {
+.v2-knowledge-answer-state {
   display: grid;
   grid-template-columns: 1rem minmax(0, 1fr);
   align-items: start;
@@ -762,8 +761,7 @@
 }
 
 .v2-gemini-suggestions-error,
-.v2-answer-output-error,
-.v2-memory-action-error {
+.v2-answer-output-error {
   color: var(--v2-color-danger);
 }
 
