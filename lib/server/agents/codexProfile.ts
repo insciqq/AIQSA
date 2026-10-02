@@ -35,6 +35,9 @@ export type CodexManagedProfile = Readonly<{
   visionAnalysis?: boolean;
   checkpoints?: boolean;
   toolObservations?: boolean;
+  /** `read_tool_call` on the managed AIQSA server: the saved records of
+   * earlier calls of the branch, independent of the observation policy. */
+  toolCallReader?: boolean;
   mcpTimeoutSeconds: number;
 }>;
 
@@ -73,6 +76,7 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     (input.imageInput !== undefined && typeof input.imageInput !== "boolean") ||
     (input.checkpoints !== undefined && typeof input.checkpoints !== "boolean") ||
     (input.toolObservations !== undefined && typeof input.toolObservations !== "boolean") ||
+    (input.toolCallReader !== undefined && typeof input.toolCallReader !== "boolean") ||
     (input.visionAnalysis !== undefined && typeof input.visionAnalysis !== "boolean") ||
     (input.images !== undefined && typeof input.images !== "boolean") ||
     (input.nativeWebSearch !== undefined && typeof input.nativeWebSearch !== "boolean") ||
@@ -134,7 +138,8 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
     "[feedback]",
     'enabled = false'
   ];
-  if (input.mcpMode !== "off" || input.aiqsaSearch || input.artifacts || input.images || input.visionAnalysis || input.checkpoints || input.toolObservations) {
+  if (input.mcpMode !== "off" || input.aiqsaSearch || input.artifacts || input.images || input.visionAnalysis || input.checkpoints || input.toolObservations ||
+    input.toolCallReader) {
     lines.push("", "[mcp_servers.aiqsa]",
       `url = ${JSON.stringify(`${gateway}/mcp`)}`,
       `bearer_token_env_var = ${JSON.stringify(CODEX_RUN_TOKEN_ENV)}`,
@@ -148,7 +153,7 @@ export function renderCodexManagedProfile(input: CodexManagedProfile): string {
       ...(input.mcpMode !== "all" ? [`enabled_tools = ${JSON.stringify([
         ...(input.mcpMode === "auto" ? ["find_tools", "call_tool"] : []), ...(input.aiqsaSearch ? ["aiqsa_search"] : []),
         ...(input.artifacts ? ["create_artifact", "read_artifact"] : []), ...(input.images ? ["generate_image"] : []), ...(input.visionAnalysis ? ["analyze_image"] : []), ...(input.checkpoints ? ["checkpoint_outputs"] : []),
-        ...(input.toolObservations ? ["read_tool_result"] : [])])}`] : [])
+        ...(input.toolObservations ? ["read_tool_result"] : []), ...(input.toolCallReader ? ["read_tool_call"] : [])])}`] : [])
     );
   }
   return lines.join("\n") + "\n";

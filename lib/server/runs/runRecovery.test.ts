@@ -165,6 +165,8 @@ import { projectObservationForProvider } from "../toolObservations/projection";
 import { contextCompactionCheckpoint, contextCompactionPolicyRetired, conversationContextPolicy } from "./contextCompactionContract";
 import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 import { measureSessionContext } from "./runContextBudget";
+import { readToolCallReceipt, readToolCallReceiptHash } from "../tools/readToolCall";
+import type { ToolHistoryRecord } from "./toolHistoryRecords";
 
 // Most recovery fixtures below intentionally exercise the historical V20/V16
 // new-run path. Persisted V21 snapshots are selected from their durable first
@@ -6301,6 +6303,166 @@ describe("run recovery", () => {
     expect(installed.calls()).toHaveLength(1);
     expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("tool_observation_unavailable");
     expect(JSON.stringify(requests[0]?.providerToolMessages)).not.toContain("OLD_PRIVATE_FRAGMENT");
+  });
+
+  describe("saved-call reads and tool history after restart", () => {
+    const callRef = `tcr1_${"c".repeat(32)}`;
+    const savedRecord = (argumentsText: string): ToolHistoryRecord => ({ ref: callRef, kind: "mcp", toolName: "mcp_records",
+      label: "MCP Records › records (tool mcp_records)", previousAttempt: false, roundIndex: 1, ordinal: 0,
+      outcome: { status: "succeeded", dispatched: true }, arguments: { state: "available", text: argumentsText },
+      result: { state: "inline", text: "saved result" } });
+    const restartedReader = (state: PersistedToolLoopCall["state"], read: RunRecoveryRepository["readToolCall"]) => {
+      const requests: ProviderRunRequest[] = [];
+      const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+        async *stream(request) { requests.push(request); return providerResult; } } } });
+      harness.repository.readToolCall = read;
+      const oldReceipt = readToolCallReceipt({ id: "provider-call-1", name: "read_tool_call", arguments: { call_ref: callRef } },
+        { callId: "provider-call-1", name: "read_tool_call", status: "complete", content: [{ type: "json", value: { old: "OLD_OUTPUT" } }] });
+      const base = checkpointedRun({ calls: [{ ...persistedRecoveryCall(state), toolName: "read_tool_call", mcpBinding: null,
+        arguments: { call_ref: callRef }, result: state === "complete"
+          ? snapshotToolExecutionResult(oldReceipt, toolLoopPersistenceLimits.resultBytes) : null }],
+      phase: "tools_running", providerToolMessages: [] });
+      const installed = installCheckpointState(harness, { ...base, normalizedRequest: { ...base.normalizedRequest,
+        mcp: undefined, toolMode: "none", toolCallReader: true } });
+      return { harness, installed, requests, oldReceipt };
+    };
+
+    it.each(["pending", "running", "complete"] as const)("reads a %s saved-call read again with current authority and keeps only a receipt",
+      async state => {
+        const read = vi.fn(async () => savedRecord('{"query":"CURRENT_ARGUMENTS"}'));
+        const { harness, installed, requests, oldReceipt } = restartedReader(state, read);
+        await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+        expect(harness.state.recoveredErrors).toEqual([]);
+        expect(read).toHaveBeenCalledOnce();
+        expect(read).toHaveBeenCalledWith({ runId, userId }, callRef);
+        expect(requests[0]?.tools?.map(tool => tool.name)).toEqual(["read_tool_call"]);
+        expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("CURRENT_ARGUMENTS");
+        expect(JSON.stringify(requests[0]?.providerToolMessages)).not.toContain("OLD_OUTPUT");
+        // The row never keeps what a read returned: an unsettled read settles
+        // its receipt, a settled one keeps the receipt it had.
+        const [settled] = installed.calls();
+        expect(settled).toMatchObject({ state: "complete", toolName: "read_tool_call" });
+        expect(JSON.stringify(settled!.result)).not.toContain("CURRENT_ARGUMENTS");
+        expect(readToolCallReceiptHash(settled!.result)).toMatch(/^[a-f0-9]{64}$/u);
+        if (state === "complete") expect(readToolCallReceiptHash(settled!.result)).toBe(readToolCallReceiptHash(oldReceipt));
+        expect(harness.state.completed).not.toBeNull();
+      });
+
+    it("refuses a record revoked since the original read without replaying it", async () => {
+      const read = vi.fn(async () => null);
+      const { harness, installed, requests } = restartedReader("complete", read);
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([]);
+      expect(read).toHaveBeenCalledOnce();
+      expect(JSON.stringify(requests[0]?.providerToolMessages)).toContain("tool_call_unavailable");
+      expect(installed.calls()).toHaveLength(1);
+    });
+
+    it("projects the accepted history again for a restarted dispatch and drops a record whose turn is no longer projected", async () => {
+      const block = { turnMessageId: "answer-0", userMessageId: "question-0", header: "[RECORD answer-0]", footer: null,
+        entries: [{ ref: callRef, compact: `- [${callRef}] create_issue: executed.`, details: true,
+          full: `- [${callRef}] create_issue: executed. Arguments: {"title":"CURRENT_TITLE"}` }] };
+      const messages = [
+        { content: { blocks: [{ text: "Create the issue", type: "text" as const }] }, id: "question-0", role: "user" as const },
+        { content: { blocks: [{ text: "Created it.", type: "text" as const }] }, id: "answer-0", role: "assistant" as const },
+        { content: { blocks: [{ text: "remember this", type: "text" as const }] }, id: "question-1", role: "user" as const }
+      ];
+      const run = async (projections: Array<{ blocks: (typeof block)[] }>, rounds = 1,
+        toolHistory: NormalizedRunRequest["toolHistory"] = { version: 1, turns: [{ turnMessageId: "answer-0", callRefs: [callRef], digest: "e".repeat(64) }] }) => {
+        const requests: ProviderRunRequest[] = [];
+        const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+          async *stream(request) {
+            requests.push(request);
+            // An earlier round asks for the session status again.
+            if (requests.length < rounds) return { ...providerResult, finalText: "", providerResponseId: `response-status-${requests.length}`,
+              providerToolCallMessage: [{ type: "function_call", name: "get_session_status", call_id: `status-${requests.length}`, arguments: "{}" }],
+              toolCalls: [{ id: `status-${requests.length}`, name: "get_session_status", arguments: {} }] };
+            return providerResult;
+          } } } });
+        const project = vi.fn(async () => projections.length > 1 ? projections.shift()! : projections[0]!);
+        harness.repository.projectToolHistory = project;
+        const base = checkpointedRun({ calls: [{ ...persistedRecoveryCall("pending"), arguments: {}, toolName: "get_session_status" }],
+          phase: "tools_pending", providerToolMessages: [] });
+        const { mcp: _mcp, ...normalizedRequest } = base.normalizedRequest;
+        installCheckpointState(harness, { ...base, normalizedRequest: { ...normalizedRequest, sessionStatusTool: true, toolMode: "none",
+          toolCallReader: true, context: { messages, mode: "branch_path" },
+          contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "answer-0", messages }), toolHistory } });
+        await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+        expect(harness.state.recoveredErrors).toEqual([]);
+        return { project, requests };
+      };
+      const projected = await run([{ blocks: [block] }]);
+      // The restart projects to place the records and again for its dispatch:
+      // no projection is reused across awaited work.
+      expect(projected.project).toHaveBeenCalledTimes(2);
+      expect(projected.project).toHaveBeenCalledWith({ actor: { runId, userId }, readers: { call: true, result: false },
+        toolHistory: expect.objectContaining({ version: 1 }), cache: expect.any(Map), currentUserMessageId: "question-1" });
+      const [first] = projected.requests;
+      expect(first!.context!.messages.map(message => message.id)).toEqual(["question-0", "tch1_answer-0", "answer-0", "question-1"]);
+      expect(first!.context!.messages[1]).toMatchObject({ role: "assistant", historyClass: "tool_history" });
+      expect(JSON.stringify(first!.context!.messages[1]!.content)).toContain("CURRENT_TITLE");
+      // Revoked before the next round: its dispatch no longer carries the record.
+      const revoked = await run([{ blocks: [block] }, { blocks: [block] }, { blocks: [] }], 2);
+      expect(revoked.requests).toHaveLength(2);
+      expect(revoked.requests[0]!.context!.messages.map(message => message.id)).toContain("tch1_answer-0");
+      expect(revoked.requests[1]!.context!.messages.map(message => message.id)).toEqual(["question-0", "answer-0", "question-1"]);
+      // A history admission could not read is said to be unavailable in every dispatch, without projection I/O.
+      const notLoaded = await run([{ blocks: [] }], 2, { version: 1, turns: [], unavailable: true });
+      expect(notLoaded.project).not.toHaveBeenCalled();
+      expect(notLoaded.requests).toHaveLength(2);
+      for (const request of notLoaded.requests) {
+        expect(request.context!.messages.map(message => message.id)).toEqual(["question-0", "answer-0", "tch1_question-1", "question-1"]);
+        expect(JSON.stringify(request.context!.messages[2]!.content)).toContain("earlier tool calls of this chat could not be loaded");
+      }
+    });
+
+    it("reads a saved call read again before replaying its continuation and persists only its stub", async () => {
+      const read = vi.fn(async () => savedRecord('{"query":"CURRENT_ARGUMENTS"}'));
+      const requests: ProviderRunRequest[] = [];
+      const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+        async *stream(request) {
+          requests.push(request);
+          // The restarted round asks for the status once more, so its batch persists the continuation.
+          if (requests.length === 1) return { ...providerResult, finalText: "", providerResponseId: "response-status-3",
+            providerToolCallMessage: [{ type: "function_call", name: "get_session_status", call_id: "status-3", arguments: "{}" }],
+            toolCalls: [{ id: "status-3", name: "get_session_status", arguments: {} }] };
+          return providerResult;
+        } } } });
+      harness.repository.readToolCall = read;
+      const batches: unknown[] = [];
+      // A continuation persisted before reads were stubbed still holds the old output.
+      const savedRead = openAIResponsesToolBridge.appendToolResult(undefined, { callId: "earlier-read", name: "read_tool_call",
+        status: "complete", content: [{ type: "json", value: { arguments: { fragment: "OLD_OUTPUT" } } }] });
+      const base = checkpointedRun({ calls: [
+        { ...persistedRecoveryCall("complete"), id: "stored-read", providerCallId: "earlier-read", toolName: "read_tool_call", mcpBinding: null,
+          arguments: { call_ref: callRef }, roundIndex: 1, result: snapshotToolExecutionResult(readToolCallReceipt(
+            { id: "earlier-read", name: "read_tool_call", arguments: { call_ref: callRef } },
+            { callId: "earlier-read", name: "read_tool_call", status: "complete", content: [{ type: "json", value: {} }] }),
+          toolLoopPersistenceLimits.resultBytes) },
+        { ...persistedRecoveryCall("pending"), id: "stored-status", providerCallId: "status-2", arguments: {}, toolName: "get_session_status",
+          mcpBinding: null, roundIndex: 2 }
+      ], phase: "tools_pending", roundIndex: 2, providerToolMessages: [
+        { type: "function_call", call_id: "earlier-read", name: "read_tool_call", arguments: JSON.stringify({ call_ref: callRef }) },
+        savedRead as ToolLoopJsonValue,
+        { type: "function_call", call_id: "status-2", name: "get_session_status", arguments: "{}" }
+      ] });
+      const { mcp: _mcp, ...normalizedRequest } = base.normalizedRequest;
+      installCheckpointState(harness, { ...base, normalizedRequest: { ...normalizedRequest, sessionStatusTool: true, toolMode: "none",
+        toolCallReader: true } });
+      const persist = harness.repository.persistToolLoopCallBatch;
+      harness.repository.persistToolLoopCallBatch = async (input) => { batches.push(input.providerContinuation); return persist(input); };
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([]);
+      expect(read).toHaveBeenCalledOnce();
+      expect(read).toHaveBeenCalledWith({ runId, userId }, callRef);
+      const sent = JSON.stringify(requests[0]?.providerToolMessages);
+      expect(sent).toContain("CURRENT_ARGUMENTS");
+      expect(sent).not.toContain("OLD_OUTPUT");
+      expect(batches).toHaveLength(1);
+      expect(JSON.stringify(batches[0])).toContain("tool_call_read_not_kept");
+      expect(JSON.stringify(batches[0])).not.toContain("CURRENT_ARGUMENTS");
+      expect(JSON.stringify(batches[0])).not.toContain("OLD_OUTPUT");
+    });
   });
 
   it("recovers a pending session-status call without MCP or external tool dispatch", async () => {

@@ -233,6 +233,8 @@ describe("context compaction summarizer", () => {
     const system = calls[0]!.prompt.system!;
     expect(system).toContain("id attribute of a <message> element");
     expect(system).toContain("tor1_ observation handle");
+    expect(system).toContain("tcr1_ call reference");
+    expect(system).toMatch(/unknown outcome into success or failure/u);
     expect(system).toMatch(/call ids .* are not references/u);
   });
 
@@ -929,5 +931,56 @@ describe("context compaction summarizer", () => {
       expect(calls.at(-1)!.params.thinking).toEqual(admitted);
       expect(() => buildAnthropicMessagesRequest(calls.at(-1)!)).not.toThrow();
     }
+  });
+});
+
+describe("tool-history records in summary sources", () => {
+  const callRef = (digit: string) => `tcr1_${digit.repeat(32)}`;
+  const record = (id: string, detailRefs: readonly string[], value = "record"): ProviderConversationMessage => ({
+    content: { blocks: [{ text: `[AIQSA record] ${value}`, type: "text" }] }, historyClass: "tool_history", id, role: "assistant",
+    toolHistory: { block: { turnMessageId: id.slice(5), userMessageId: null, header: "h", entries: [], footer: null }, detailRefs }
+  });
+
+  it("carries the call references a past turn's record discloses into the notes' refs", async () => {
+    const calls: ProviderRunRequest[] = [];
+    const source = request({ messages: [
+      text(`old question ${"o".repeat(4_000)}`, "q1"), record("tch1_a1", [callRef("1")], "MCP write executed. Arguments: {\"title\":\"x\"}"),
+      text("done", "a1", "assistant"), text("current request", "q2")
+    ] });
+    const summarized = await executeContextSummary({ adapter: adapter([json("A write titled x was executed (tcr1_...).")], calls), request: source });
+    expect(envelopeText(calls[0]!)).toContain('<message id="tch1_a1" role="assistant">');
+    expect(summarized.summary.sourceRefs).toEqual(expect.arrayContaining([callRef("1"), "tch1_a1"]));
+  });
+
+  it("rechecks call references of earlier notes before buying notes that would carry them on", async () => {
+    const calls: ProviderRunRequest[] = [];
+    const previous: ContextSummary = { formatVersion: 1, id: "cs1_previous", notes: "Earlier write arguments: secret plan.",
+      sourceDigest: "e".repeat(64), sourceRefs: [messageCoverageRef("q1"), callRef("2")] };
+    const base = request({ messages: [
+      { content: { blocks: [{ text: "notes", type: "text" }] }, id: "__context-summary-cs1_previous", role: "assistant" },
+      text("q1", "q1"), text(`more ${"m".repeat(4_000)}`, "q1b"), text("ok", "a1b", "assistant"), text("current request", "q2")
+    ] });
+    const checked: string[][] = [];
+    const failure = await executeContextSummary({ adapter: adapter([json("never")], calls),
+      request: { ...base, contextCompactionSummary: previous },
+      sourceAvailable: async (handles) => { checked.push([...handles]); return false; } }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: "context_compaction_source_unavailable" });
+    expect(checked).toEqual([[callRef("2")]]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("keeps the record of earlier attempts of the current message exact beside it, never a pass or a boundary", async () => {
+    const calls: ProviderRunRequest[] = [];
+    const current = record("tch1_q2", [callRef("3")], "earlier attempt executed the write");
+    const pin = text("exact pin", "skill-context:v1", "user", "skill_context");
+    const source = request({ messages: [
+      text(`old question ${"o".repeat(4_000)}`, "q1"), text("old answer", "a1", "assistant"), current, pin, text("current request", "q2")
+    ] });
+    const summarized = await executeContextSummary({ adapter: adapter([json("Old question answered.")], calls), request: source });
+    expect(envelopeText(calls[0]!)).not.toContain("earlier attempt executed the write");
+    expect(summarized.summary.sourceRefs).not.toContain("tch1_q2");
+    expect(summarized.summary.sourceRefs).not.toContain(messageCoverageRef("tch1_q2"));
+    const ids = summarized.request.context!.messages.map((message) => message.id);
+    expect(ids.slice(-3)).toEqual(["tch1_q2", "skill-context:v1", "q2"]);
   });
 });

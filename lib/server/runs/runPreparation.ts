@@ -91,6 +91,11 @@ import type {
 } from "../mcp/runPlan";
 import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
+import { readToolCallTool } from "../tools/readToolCall";
+import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
+import { insertToolHistory, type ToolHistoryProjection } from "./toolHistory";
+import { toolHistoryReaders, unavailableToolHistoryProjection } from "./toolHistoryRecords";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderToolBridge } from "../tools/types";
@@ -184,6 +189,8 @@ type RunPreparationRepository = Pick<
   | "loadBranchContextCheckpoints"
   | "loadKnowledgeFullContextPassages"
   | "loadProjectAssistantRowContext"
+  | "loadToolHistory"
+  | "projectToolHistory"
 >>;
 
 /**
@@ -201,6 +208,9 @@ async function carriedContextSummary(input: Readonly<{
   repository: RunPreparationRepository;
   request: ProviderRunRequest;
   userId: string;
+  /** The request with this admission's tool-history records, for notes whose
+   * boundary is such a record. Never part of the prepared request. */
+  withToolHistory?(request: ProviderRunRequest): Promise<ProviderRunRequest>;
 }>): Promise<ContextSummaryReuse | null> {
   const policy = input.request.contextCompactionPolicy;
   const load = input.repository.loadBranchContextCheckpoints;
@@ -212,12 +222,15 @@ async function carriedContextSummary(input: Readonly<{
   // covered boundary in the provider context.
   const current = input.conversationMessages.at(-1)?.id;
   const branch = await load({ chatId: input.request.chatId, leafMessageId, userId: input.userId });
+  let withHistory: ProviderRunRequest | undefined;
   for (const reuse of contextSummaryReuseCandidates({
     checkpoints: branch.checkpoints,
     priorMessageIds: branch.ancestorMessageIds.filter((messageId) => messageId !== current),
     userId: input.userId
   })) {
-    const projected = applyReusedContextSummary({ ...input.request, contextCompactionPolicy: { ...policy, reuse } });
+    const base = isToolHistoryMessageId(reuse.coveredMessageId) && input.withToolHistory
+      ? withHistory ??= await input.withToolHistory(input.request) : input.request;
+    const projected = applyReusedContextSummary({ ...base, contextCompactionPolicy: { ...policy, reuse } });
     if (projected && applyProviderRequestContextBudget({
       ...(input.bridge ? { bridge: input.bridge } : {}),
       request: projected
@@ -681,15 +694,43 @@ function resolveWorkspaceEnabled(
   return (value as { enabled: boolean }).enabled;
 }
 
+/** One read of a frozen history's records, shared by the admission checks
+ * that need them; null when it cannot be read. */
+function readToolHistoryOnce(read: () => Promise<ToolHistoryProjection>): () => Promise<ToolHistoryProjection | null> {
+  let pending: Promise<ToolHistoryProjection | null> | null = null;
+  return () => pending ??= read().catch(() => null);
+}
+
+/**
+ * Whether the Agent prompts of `request` stay within their limit with the
+ * tool-history records execution adds, whose floors never shrink: the frozen
+ * history's records under the admitting user's authority, or the records a
+ * failed read renders. Execution checks again with its own records.
+ */
+async function agentPromptsFit(request: ProviderRunRequest, toolHistory: ToolHistorySnapshot | undefined,
+  readRecords: (() => Promise<ToolHistoryProjection | null>) | null): Promise<boolean> {
+  const read = toolHistory && !toolHistory.unavailable && toolHistory.turns.length > 0 && readRecords ? await readRecords() : null;
+  const records = read ?? (toolHistory ? unavailableToolHistoryProjection({ readers: toolHistoryReaders(request), toolHistory,
+    currentUserMessageId: request.context?.messages.at(-1)?.id ?? null }) : null);
+  try {
+    agentPrompts(records?.blocks.length ? insertToolHistory(request, records) : request);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Explicit document retry retains the accepted reader/answer authority, but a
  * sibling needs its own current Workspace admission and derived request. */
 export async function preparePdfRetry(
-  deps: Pick<RunPreparationDeps, "workspace" | "runPolicy">,
+  deps: Pick<RunPreparationDeps, "workspace" | "runPolicy"> &
+    Readonly<{ repository?: Pick<RunPreparationDeps["repository"], "projectToolHistory"> }>,
   input: Readonly<{
     adapter: ProviderAdapter;
     prepared: PreparedRun;
     signal?: AbortSignal;
     toolBridge?: ProviderToolBridge;
+    userId: string;
     userMessageId: string;
   }>
 ): Promise<RunPreparationResult> {
@@ -767,7 +808,13 @@ export async function preparePdfRetry(
     prepared.normalizedRequest = { ...prepared.normalizedRequest, context: budget.request.context! };
     prepared.providerRequest = budget.request;
     if (agent) {
-      try { agentPrompts(budget.request); } catch { return failure("agent_context_too_large", 413); }
+      const history = request.toolHistory;
+      const project = deps.repository?.projectToolHistory;
+      const records = project && history ? readToolHistoryOnce(() => project({
+        actor: { chatId: request.chatId, leafMessageId: input.userMessageId, userId: input.userId },
+        readers: toolHistoryReaders(request), toolHistory: history,
+        currentUserMessageId: budget.request.context?.messages.at(-1)?.id ?? null })) : null;
+      if (!await agentPromptsFit(budget.request, history, records)) return failure("agent_context_too_large", 413);
     }
     prepared.providerRequestPreview = input.adapter.buildRequestPreview(budget.request);
   }
@@ -2056,6 +2103,10 @@ async function prepareRunWith(
       };
     }
   }
+  // The call reader is a session tool like the status tool: admitted for
+  // every tool-capable answer model, independent of the observation policy.
+  const toolCallReader = agentEnabled || modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   let agent: NormalizedRunAgent | undefined;
   if (agentEnabled) {
     let limits: ReturnType<typeof agentLimits>;
@@ -2082,6 +2133,8 @@ async function prepareRunWith(
         visionAnalysis: visionAnalysis ?? null, workspaceCheckpoints,
         // Absent for Off: pre-observation accepted threads keep their identity.
         ...(observationPolicy === "v1" ? { toolObservationVersion: 1 } : {}),
+        // Accepted threads before the cross-turn history contract keep theirs.
+        toolHistory: TOOL_HISTORY_VERSION, ...(toolCallReader ? { toolCallReader: true } : {}),
         images: imagePlan ? { plan: imagePlan, references: imageReferences } : null,
         artifacts: artifactToolAvailable ? { description: artifactToolDescription, policy: artifactResourcePolicy,
           references: artifactReferences ?? [], edit: artifactEdit ?? null, intent: artifactIntent ?? null,
@@ -2096,6 +2149,20 @@ async function prepareRunWith(
       provider: executionProvider
     }) === true;
   const toolObservationVersion: 0 | 1 = observationPolicy === "v1" && observationCapable ? 1 : 0;
+  // References and digests of the branch's eligible calls only: the record
+  // text is projected again, with current authority, for every request.
+  const toolHistoryLeafMessageId = input.source.kind === "send"
+    ? input.source.draftProjectChat || input.source.draftPersonalChat ? null : input.source.chat.activeLeafMessageId
+    : input.source.source.userMessage.id;
+  // A failed or slow history read never refuses the message: the run then
+  // freezes that the history could not be loaded (content-free log), and
+  // every request of it says so instead of implying no earlier calls.
+  const toolHistory: ToolHistorySnapshot = await (deps.repository.loadToolHistory?.({ chatId: chat.id,
+    leafMessageId: toolHistoryLeafMessageId, userId: input.userId }) ?? null)?.catch((error: unknown) => {
+    logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
+      code: "tool_history_unavailable", prisma_code: databaseFailureCode(error) });
+    return { version: TOOL_HISTORY_VERSION, turns: [], unavailable: true as const };
+  }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
   const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
   const memoryStandingEligible = !project && !agent && resolvedChatMode.mode === "NORMAL" &&
     !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content));
@@ -2134,6 +2201,8 @@ async function prepareRunWith(
     ...(modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
       modelId: executionModelId, provider: executionProvider
     }) === true ? { sessionStatusTool: true as const } : {}),
+    ...(toolCallReader ? { toolCallReader: true as const } : {}),
+    toolHistory,
     attachmentIds,
     chatId: chat.id,
     content,
@@ -2217,6 +2286,7 @@ async function prepareRunWith(
     ...skillToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
+    ...(baseNormalizedRequest.toolCallReader ? [readToolCallTool] : []),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
@@ -2368,20 +2438,35 @@ async function prepareRunWith(
   }
   // The exact branch stays the admitted context; carried notes are frozen
   // beside it as a candidate the executor applies only when needed.
+  const projectHistory = deps.repository.projectToolHistory;
+  // The frozen history's records under the admitting user's authority, read
+  // once for every admission check that needs them.
+  const admittedRecords = projectHistory && toolHistory.turns.length > 0 ? readToolHistoryOnce(() => projectHistory({
+    actor: { chatId: chat.id, leafMessageId: toolHistoryLeafMessageId, userId: input.userId },
+    readers: toolHistoryReaders(normalizedRequest), toolHistory,
+    currentUserMessageId: providerRequest.context?.messages.at(-1)?.id ?? null
+  })) : null;
   const reuse = await carriedContextSummary({
     ...(toolBridge ? { bridge: toolBridge } : {}),
     conversationMessages,
     repository: deps.repository,
     request: providerRequest,
-    userId: input.userId
+    userId: input.userId,
+    ...(admittedRecords ? {
+      // Without its records (a failed read) no carried notes bounded by one apply.
+      withToolHistory: async (request: ProviderRunRequest) => {
+        const projection = await admittedRecords();
+        return projection ? insertToolHistory(request, projection) : request;
+      }
+    } : {})
   });
   if (reuse && providerRequest.contextCompactionPolicy) {
     const contextCompactionPolicy = { ...providerRequest.contextCompactionPolicy, reuse };
     normalizedRequest.contextCompactionPolicy = contextCompactionPolicy;
     providerRequest.contextCompactionPolicy = contextCompactionPolicy;
   }
-  if (agent) {
-    try { agentPrompts(providerRequest); } catch { return failure("agent_context_too_large", 413); }
+  if (agent && !await agentPromptsFit(providerRequest, toolHistory, admittedRecords)) {
+    return failure("agent_context_too_large", 413);
   }
   const providerRequestPreview = adapter.buildRequestPreview(providerRequest);
   // Assistant-derived values never overwrite the user's ordinary manual

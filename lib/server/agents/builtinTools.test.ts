@@ -5,6 +5,7 @@ import type { createAgentRunStore } from "./store";
 import { agentBuiltinTools, createAgentBuiltinDispatcher } from "./builtinTools";
 import { WorkspaceCheckpointError } from "../workspace/checkpointInput";
 import { ObservationStoreError } from "../toolObservations/contract";
+import { readToolCallReceiptHash } from "../tools/readToolCall";
 
 const request = { workspace: {}, agent: { mcpMode: "off", imageInput: false },
   visionAnalysis: { version: 1, available: false, code: "vision_model_absent" } } as unknown as NormalizedRunRequest;
@@ -40,6 +41,46 @@ describe("native saved-result reader", () => {
     await expect(dispatch(call, controller.signal)).rejects.toThrow("synthetic_stop");
   });
 });
+describe("native saved-call reader", () => {
+  it("settles a content-free receipt once and reads again on every replay with current authority", async () => {
+    const accepted = { ...request, workspace: undefined, toolCallReader: true as const };
+    // Admitted with the observation policy Off.
+    expect(agentBuiltinTools(accepted).map(tool => tool.name)).toEqual(["read_tool_call"]);
+    const callRef = `tcr1_${"a".repeat(32)}`;
+    const call = { id: "read-call", name: "read_tool_call", arguments: { call_ref: callRef } };
+    let allowed = true;
+    const read = vi.fn(async () => allowed ? { ref: callRef, kind: "mcp" as const, toolName: "mcp_records", label: "MCP Records › records",
+      previousAttempt: false, roundIndex: 1, ordinal: 0, outcome: { status: "succeeded" as const, dispatched: true },
+      arguments: { state: "available" as const, text: '{"query":"SYNTHETIC_ARGUMENTS"}' }, result: { state: "not_applicable" as const } } : null);
+    const store = { claimBuiltinTool: vi.fn(async () => ({ claimed: true, id: "tool", result: null as ToolExecutionResult | null })),
+      settleBuiltinTool: vi.fn(async (_id: string, _result: ToolExecutionResult) => {}),
+      builtinResult: vi.fn(async (): Promise<ToolExecutionResult | null> => null) };
+    const dispatch = createAgentBuiltinDispatcher({ request: accepted, runId: "run", userId: "user",
+      store: store as unknown as ReturnType<typeof createAgentRunStore>, toolCalls: { read } });
+    const original = await dispatch(call, new AbortController().signal);
+    expect(original.status).toBe("complete");
+    expect(JSON.stringify(original)).toContain("SYNTHETIC_ARGUMENTS");
+    expect(read).toHaveBeenCalledWith({ runId: "run", userId: "user" }, callRef, expect.any(AbortSignal));
+    expect(store.settleBuiltinTool).toHaveBeenCalledOnce();
+    const receipt = store.settleBuiltinTool.mock.calls[0]![1];
+    expect(JSON.stringify(receipt)).not.toContain("SYNTHETIC_ARGUMENTS");
+    expect(readToolCallReceiptHash(receipt)).toMatch(/^[a-f0-9]{64}$/u);
+    // A replay never returns the stored receipt or an earlier read.
+    store.claimBuiltinTool.mockResolvedValue({ claimed: false, id: "tool", result: receipt });
+    allowed = false;
+    const revoked = await dispatch(call, new AbortController().signal);
+    expect(revoked.status).toBe("error");
+    expect(JSON.stringify(revoked)).toContain("tool_call_unavailable");
+    expect(JSON.stringify(revoked)).not.toContain("SYNTHETIC_ARGUMENTS");
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(store.settleBuiltinTool).toHaveBeenCalledOnce();
+    // Without a reader every record is unavailable.
+    const unavailable = createAgentBuiltinDispatcher({ request: accepted, runId: "run", userId: "user",
+      store: store as unknown as ReturnType<typeof createAgentRunStore> });
+    expect(JSON.stringify(await unavailable(call, new AbortController().signal))).toContain("tool_call_unavailable");
+  });
+});
+
 describe("native first-party System Vision dispatch", () => {
   it("registers the precise capability even with external MCP Off and a text-only main model", () => {
     expect(agentBuiltinTools(request).map(tool => tool.name)).toEqual(["analyze_image"]);

@@ -74,8 +74,10 @@ export async function createAgentMcpGateway(input: Readonly<{
   const observationService = () => observations ??= input.observations ? Promise.resolve(input.observations) : defaultToolObservations();
   const configuration = input.request.agent!;
   const builtins = agentBuiltinTools(input.request);
-  const dispatchBuiltin = createAgentBuiltinDispatcher(input);
   const repository = createPrismaRunRepository(prisma);
+  const readToolCall = repository.readToolCall;
+  const dispatchBuiltin = createAgentBuiltinDispatcher({ ...input,
+    ...(readToolCall ? { toolCalls: { read: (actor, ref) => readToolCall(actor, ref) } } : {}) });
   const search = createAgentAiqsaSearch({ plan: input.request.searchPlan, store: input.store, onUsage: input.onUsage,
     ...(input.request.toolObservationVersion === 1 ? { observation: {
       service: await observationService(), runId: input.runId, userId: input.userId } } : {}),

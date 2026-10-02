@@ -1,6 +1,8 @@
 import type { ToolExecutionResult } from "../tools/types";
 import { decodeToolObservationDescriptor } from "./contract";
 import { READ_TOOL_RESULT_NAME, readToolResultError } from "../tools/readToolResult";
+import { readToolCallError } from "../tools/readToolCall";
+import { READ_TOOL_CALL_NAME } from "../runs/toolHistoryContract";
 
 /** Keep canonical checkpoints separate from their provider representation. */
 export function projectObservationForProvider(result: ToolExecutionResult): ToolExecutionResult {
@@ -41,6 +43,7 @@ export function observationReference(result: ToolExecutionResult): ToolExecution
  * reference. A batch's delivery allowance is what remains beside these. */
 export function observationBatchFloor(call: Readonly<{ id: string; name: string }>): ToolExecutionResult {
   return call.name === READ_TOOL_RESULT_NAME ? readToolResultError(call, "tool_observation_read_deferred")
+    : call.name === READ_TOOL_CALL_NAME ? readToolCallError(call, "tool_call_read_deferred")
     : projectObservationForProvider(observationReference({ callId: call.id, name: call.name, status: "error",
       observation: LARGEST_DESCRIPTOR, content: [] }));
 }
@@ -50,6 +53,7 @@ export function observationBatchFloor(call: Readonly<{ id: string; name: string 
 export function observationFloorOf(result: ToolExecutionResult): ToolExecutionResult | null {
   if (result.observation) return projectObservationForProvider(observationReference(result));
   return result.name === READ_TOOL_RESULT_NAME ? readToolResultError({ id: result.callId, name: result.name }, "tool_observation_read_deferred")
+    : result.name === READ_TOOL_CALL_NAME ? readToolCallError({ id: result.callId, name: result.name }, "tool_call_read_deferred")
     : null;
 }
 

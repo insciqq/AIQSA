@@ -7882,3 +7882,235 @@ describe("tool-free synthesis under the context budget", () => {
       error: expect.objectContaining({ code: expect.stringMatching(/^context_compaction_/u) }) })]);
   });
 });
+
+describe("cross-turn tool history", () => {
+  const writeCallId = "0f8fad5b-d9cb-469f-a165-70867728950e";
+  const writeRef = toolCallRefForTest(writeCallId);
+  function toolCallRefForTest(id: string) { return `tcr1_${id.replaceAll("-", "")}`; }
+
+  function historyPrepared() {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const messages: ProviderConversationMessage[] = [
+      { content: textMessageContent("Create the synthetic issue"), id: "question-1", role: "user" },
+      { content: textMessageContent("Done."), id: "answer-1", role: "assistant" },
+      { content: textMessageContent("Did you create it?"), id: "current-user-message", role: "user" }
+    ];
+    const toolHistory = { version: 1 as const, turns: [{ turnMessageId: "answer-1", callRefs: [writeRef], digest: "a".repeat(64) }] };
+    const normalizedRequest: NormalizedRunRequest = { ...base.normalizedRequest, content: messages.at(-1)!.content,
+      context: { messages, mode: "branch_path" }, toolCallReader: true, toolHistory,
+      contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "answer-1", messages }) };
+    return { ...base, normalizedRequest, providerRequest: { ...normalizedRequest, attachments: [], tools: [readToolCallToolForTest] } };
+  }
+
+  const readToolCallToolForTest = { capability: "session" as const, description: "Read a saved call record.",
+    inputSchema: { type: "object" }, name: "read_tool_call" };
+
+  function historyProjection(argumentsText = "{\"title\":\"Synthetic issue 7\"}") {
+    return { blocks: [{ turnMessageId: "answer-1", userMessageId: "question-1", footer: null,
+      header: "[AIQSA record of tool calls made while answering the user message above.]",
+      entries: [{ ref: writeRef, details: true, compact: `- [${writeRef}] MCP Tracker › create_issue: executed; the tool reported success.`,
+        full: `- [${writeRef}] MCP Tracker › create_issue: executed; the tool reported success. Arguments: ${argumentsText}. Result: "created #7".` }] }] };
+  }
+
+  it("projects the records before their answer for every answer request and never into the accepted request", async () => {
+    const prepared = historyPrepared();
+    const acceptedContext = structuredClone(prepared.normalizedRequest.context);
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const projectToolHistory = vi.fn(async () => historyProjection());
+    const readToolCall = vi.fn(async () => ({ ref: writeRef, kind: "mcp" as const, toolName: "mcp_tracker_create_issue_abc",
+      label: "MCP Tracker › create_issue", previousAttempt: false, roundIndex: 1, ordinal: 0,
+      outcome: { status: "succeeded" as const, dispatched: true }, arguments: { state: "available" as const, text: "{\"title\":\"Synthetic issue 7\"}" },
+      result: { state: "inline" as const, text: "created #7" } }));
+    const adapter = createAdapter(async function* (request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: { call_ref: writeRef }, id: "read-1",
+        name: "read_tool_call" }] });
+      return providerResult({ finalText: "Yes: the earlier turn created issue #7." });
+    });
+    const events = await createRunExecutionResponse(executionInput({ adapter, prepared,
+      repository: { ...repository.repository, projectToolHistory, readToolCall } })).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.context!.messages.map((message) => message.id)).toEqual(["question-1", "tch1_answer-1", "answer-1", "current-user-message"]);
+      const record = request.context!.messages[1]!;
+      expect(record).toMatchObject({ role: "assistant", historyClass: "tool_history" });
+      expect(record.purpose).toBeUndefined();
+      const text = record.content.blocks.map((block) => (block as { text: string }).text).join("\n");
+      expect(text).toContain("MCP Tracker › create_issue");
+      expect(text).toContain("Synthetic issue 7");
+      expect(text).toContain(writeRef);
+    }
+    // Every answer request re-projects with the run's own authority (the
+    // first one also projected once to place the records): no projection is
+    // reused across awaited work.
+    expect(projectToolHistory).toHaveBeenCalledTimes(3);
+    expect(projectToolHistory).toHaveBeenCalledWith({ actor: { runId: "run-1", userId: "user-1" },
+      readers: { call: true, result: prepared.normalizedRequest.toolObservationVersion === 1 },
+      toolHistory: prepared.normalizedRequest.toolHistory, cache: expect.any(Map), currentUserMessageId: "current-user-message" });
+    // The accepted request never carries a record.
+    expect(prepared.normalizedRequest.context).toEqual(acceptedContext);
+    // The read returns the saved record; its row keeps only a receipt.
+    expect(readToolCall).toHaveBeenCalledWith({ runId: "run-1", userId: "user-1" }, writeRef);
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain("Synthetic issue 7");
+    const row = [...repository.toolCalls.values()].find((call) => call.toolName === "read_tool_call")!;
+    expect(row.state).toBe("complete");
+    expect(JSON.stringify(row.result)).not.toContain("Synthetic issue 7");
+    expect(JSON.stringify(row.result)).toContain("output_sha256");
+    // Nothing of the record or the read reaches the browser stream.
+    expect(events).not.toContain("Synthetic issue 7");
+    expect(events).not.toContain(writeRef);
+  });
+
+  it("drops a record a later projection no longer discloses and never re-adds a released one", async () => {
+    const prepared = historyPrepared();
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    let call = 0;
+    // The first two projections serve round one (placing the records and its request).
+    const projectToolHistory = vi.fn(async () => ++call <= 2 ? historyProjection()
+      : historyProjection("withheld (their secret values cannot be verified as redacted)"));
+    const adapter = createAdapter(async function* (request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: { call_ref: writeRef }, id: "read-1",
+        name: "read_tool_call" }] });
+      return providerResult({ finalText: "Answer." });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, prepared,
+      repository: { ...repository.repository, projectToolHistory } })).text();
+    expect(JSON.stringify(requests[0]!.context)).toContain("Synthetic issue 7");
+    // A revocation between rounds hides the details in the next request.
+    expect(JSON.stringify(requests[1]!.context)).not.toContain("Synthetic issue 7");
+    // Without the reader the read is unavailable, never a business call.
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain("tool_call_unavailable");
+  });
+
+  it("keeps no call read output in a persisted continuation", async () => {
+    const prepared = historyPrepared();
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const batches: Parameters<RunExecutionRepository["persistToolLoopCallBatch"]>[0][] = [];
+    const persist = repository.repository.persistToolLoopCallBatch;
+    repository.repository.persistToolLoopCallBatch = async (value) => { batches.push(value); return persist(value); };
+    const readToolCall = vi.fn(async () => ({ ref: writeRef, kind: "mcp" as const, toolName: "mcp_tracker_create_issue_abc",
+      label: "MCP Tracker › create_issue", previousAttempt: false, roundIndex: 1, ordinal: 0,
+      outcome: { status: "succeeded" as const, dispatched: true }, arguments: { state: "available" as const, text: "{\"title\":\"READ_ONLY_DETAIL\"}" },
+      result: { state: "inline" as const, text: "created #7" } }));
+    const adapter = createAdapter(async function* (request) {
+      requests.push(structuredClone(request));
+      if (requests.length <= 2) return providerResult({ finalText: "", toolCalls: [{ arguments: { call_ref: writeRef },
+        id: `read-${requests.length}`, name: "read_tool_call" }] });
+      return providerResult({ finalText: "Done." });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, prepared,
+      repository: { ...repository.repository, projectToolHistory: vi.fn(async () => historyProjection()), readToolCall } })).text();
+    expect(repository.failedRuns).toEqual([]);
+    // The provider received the read; the second batch's continuation keeps only a stub of it.
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain("READ_ONLY_DETAIL");
+    expect(batches).toHaveLength(2);
+    expect(JSON.stringify(batches[1]!.providerContinuation)).not.toContain("READ_ONLY_DETAIL");
+    expect(JSON.stringify(batches[1]!.providerContinuation)).toContain("tool_call_read_not_kept");
+  });
+
+  it("degrades to temporarily unavailable records when the history read fails, never failing the run", async () => {
+    const prepared = historyPrepared();
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const projectToolHistory = vi.fn(async () => { throw new Error("synthetic_database_timeout"); });
+    const adapter = createAdapter(async function* (request) { requests.push(structuredClone(request)); return providerResult({ finalText: "Answer." }); });
+    await createRunExecutionResponse(executionInput({ adapter, prepared,
+      repository: { ...repository.repository, projectToolHistory } })).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.context!.messages.map((message) => message.id))
+      .toEqual(["question-1", "tch1_answer-1", "answer-1", "current-user-message"]);
+    const text = JSON.stringify(requests[0]!.context!.messages[1]!.content);
+    expect(text).toContain("1 recorded call: saved details are temporarily unavailable");
+    expect(text).not.toContain("Synthetic issue 7");
+  });
+
+  it("keeps a failed answer's degraded record in that answer's place by its frozen user message", async () => {
+    const prepared = historyPrepared();
+    // The first answer failed without text after its write: it is not in the context.
+    const messages = prepared.normalizedRequest.context!.messages.filter((message) => message.id !== "answer-1");
+    const toolHistory = { version: 1 as const, turns: [{ turnMessageId: "failed-answer-1", userMessageId: "question-1",
+      callRefs: [writeRef], digest: "a".repeat(64) }] };
+    const normalizedRequest: NormalizedRunRequest = { ...prepared.normalizedRequest, toolHistory,
+      context: { messages, mode: "branch_path" }, contextCompactionPolicy: conversationContextPolicy({ leafMessageId: "question-1", messages }) };
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const adapter = createAdapter(async function* (request) { requests.push(structuredClone(request)); return providerResult({ finalText: "Answer." }); });
+    await createRunExecutionResponse(executionInput({ adapter, prepared: { ...prepared, normalizedRequest,
+      providerRequest: { ...prepared.providerRequest, ...normalizedRequest } },
+    repository: { ...repository.repository, projectToolHistory: vi.fn(async () => { throw new Error("synthetic_database_timeout"); }) } })).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(requests[0]!.context!.messages.map((message) => message.id))
+      .toEqual(["question-1", "tch1_failed-answer-1", "current-user-message"]);
+    expect(JSON.stringify(requests[0]!.context!.messages[1]!.content)).toContain("1 recorded call: saved details are temporarily unavailable");
+  });
+
+  it("says in every request that the history could not be loaded when admission could not read it", async () => {
+    const prepared = historyPrepared();
+    const normalizedRequest: NormalizedRunRequest = { ...prepared.normalizedRequest,
+      toolHistory: { version: 1, turns: [], unavailable: true } };
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const projectToolHistory = vi.fn();
+    const adapter = createAdapter(async function* (request) {
+      requests.push(structuredClone(request));
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: { call_ref: writeRef }, id: "read-1",
+        name: "read_tool_call" }] });
+      return providerResult({ finalText: "Answer." });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, prepared: { ...prepared, normalizedRequest,
+      providerRequest: { ...prepared.providerRequest, ...normalizedRequest } },
+    repository: { ...repository.repository, projectToolHistory } })).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.context!.messages.map((message) => message.id))
+        .toEqual(["question-1", "answer-1", "tch1_current-user-message", "current-user-message"]);
+      expect(JSON.stringify(request.context!.messages[2]!.content)).toContain("earlier tool calls of this chat could not be loaded");
+    }
+    expect(projectToolHistory).not.toHaveBeenCalled();
+  });
+
+  it("fails an Agent run whose records cannot fit the prompt with its own code before any native work", async () => {
+    const base = historyPrepared();
+    const agent = { ...agentLimits(DEFAULT_AGENT_POLICY, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
+      compatibilityHash: "a".repeat(64), mcpMode: "off" as const };
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, agent, workspace: completionWorkspace },
+      providerRequest: { ...base.providerRequest, agent, workspace: completionWorkspace } };
+    // Executed calls whose compact lines alone exceed the Agent prompt limit.
+    const entries = Array.from({ length: 2_600 }, (_, index) => {
+      const ref = `tcr1_${index.toString(16).padStart(32, "0")}`;
+      const compact = `- [${ref}] MCP Tracker › write ${"w".repeat(400)}: executed.`;
+      return { ref, compact, full: compact, details: false, essential: true };
+    });
+    const projectToolHistory = vi.fn(async () => ({ blocks: [{ ...historyProjection().blocks[0]!, entries }] }));
+    const repository = createRepository();
+    const executeAgent = vi.fn<NonNullable<NonNullable<RunExecutionInput["workspace"]>["executeAgent"]>>();
+    await createRunExecutionResponse({
+      ...executionInput({ adapter: createAdapter(vi.fn()), prepared, repository: { ...repository.repository, projectToolHistory } }),
+      agentResponses: {} as NonNullable<RunExecutionInput["agentResponses"]>,
+      workspace: { accepts: () => false, execute: vi.fn(), executeAgent, finalize: vi.fn(), recoverExports: vi.fn(), tools: async () => [],
+        handoff: async () => ({ status: "ready" }), settle: async () => ({ quiesced: true, sessionSettled: true, stoppedVm: true }) }
+    }).text();
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "agent_context_too_large",
+      message: "This conversation is too large to start Agent. Continue in a new chat." }) })]);
+    expect(executeAgent).not.toHaveBeenCalled();
+  });
+
+  it("sends no records and no projection I/O for a run without a frozen history", async () => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const projectToolHistory = vi.fn();
+    const repository = createRepository();
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) { requests.push(request); return providerResult({ finalText: "Answer." }); });
+    await createRunExecutionResponse(executionInput({ adapter, prepared: base,
+      repository: { ...repository.repository, projectToolHistory } })).text();
+    expect(projectToolHistory).not.toHaveBeenCalled();
+    expect(requests[0]!.context!.messages.some((message) => message.historyClass)).toBe(false);
+  });
+});

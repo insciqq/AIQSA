@@ -9,6 +9,7 @@ import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { WORKSPACE_NO_REPLAY_SAFETY, workspacePromptContract } from "../workspace/promptContract";
 import { WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
 import { visionAnalysisGuidance } from "../tools/analyzeImage";
+import { toolHistoryMessage, type ToolHistoryBlock } from "../runs/toolHistory";
 
 describe("Codex conversation delivery", () => {
   it("offers first-party analysis to text-only Agent without claiming to see pixels", () => {
@@ -239,5 +240,98 @@ describe("Codex conversation delivery", () => {
       expect(prompt).toContain('"fileName":"current-attachment.txt"');
     }
     expect(result.developerInstructions).not.toContain("/workspace/output/current");
+  });
+});
+
+describe("Agent delivery of the cross-turn tool history", () => {
+  const entry = (index: number) => {
+    const ref = `tcr1_${index.toString(16).padStart(32, "0")}`;
+    return { ref, details: true, compact: `- [${ref}] MCP Tracker › write: executed.`,
+      full: `- [${ref}] MCP Tracker › write: executed. Arguments: ${JSON.stringify({ index, body: "x".repeat(1_400) })}.` };
+  };
+  const record = (turnMessageId: string, entries: number, start = 0) => {
+    const block = { turnMessageId, userMessageId: null, header: `[AIQSA record ${turnMessageId}]`, footer: null,
+      entries: Array.from({ length: entries }, (_, index) => entry(start + index)) };
+    return { id: `tch1_${turnMessageId}`, contextTurnId: `tch1_${turnMessageId}`, role: "assistant" as const, historyClass: "tool_history" as const,
+      content: { blocks: [block.header, ...block.entries.map((value) => value.full)].map((text) => ({ text, type: "text" })) },
+      toolHistory: { block, detailRefs: block.entries.map((value) => value.ref) } };
+  };
+  const request = (messages: unknown[]) => ({ content: textMessageContent("current"), attachments: [], prompt: { system: "baseline" },
+    context: { messages } }) as unknown as ProviderRunRequest;
+
+  it("resumes from the real previous answer and sends only records the native thread lacks", () => {
+    const result = agentPrompts(request([
+      { id: "q1", role: "user", content: textMessageContent("first") },
+      record("a1", 1),
+      { id: "a1", role: "assistant", content: textMessageContent("first answer") },
+      // Earlier attempts of the current message: not in the native thread.
+      record("q2", 1, 50),
+      { id: "q2", role: "user", content: textMessageContent("current") }
+    ]));
+    expect(result.previousAssistantMessageId).toBe("a1");
+    expect(result.resumePrompt).toContain(entry(50).ref);
+    expect(result.resumePrompt).not.toContain(entry(0).ref);
+    expect(result.prompt).toContain(entry(0).ref);
+    expect(result.prompt).toContain(entry(50).ref);
+  });
+
+  it("never names a record as the native predecessor", () => {
+    const result = agentPrompts(request([
+      { id: "q1", role: "user", content: textMessageContent("first") },
+      // The answer failed without text: its record stands in its place.
+      record("a1", 1),
+      { id: "q2", role: "user", content: textMessageContent("current") }
+    ]));
+    expect(result.previousAssistantMessageId).toBeNull();
+  });
+
+  /** A record of `entries` calls whose compact lines carry `padding`; `executed(index)` decides each outcome. */
+  const padded = (turn: number, padding: number, executed: (index: number) => boolean) => {
+    const value = record(`a${turn}`, 30, turn * 30);
+    const entries = value.toolHistory.block.entries.map((item, index) => executed(index)
+      ? { ...item, essential: true, compact: `${item.compact} ${"c".repeat(padding)}` }
+      : { ...item, essential: false, compact: `${item.compact.replace("executed.", "not executed.")} ${"c".repeat(padding)}`,
+        full: item.full.replace("executed.", "not executed.") });
+    return { ...value, toolHistory: { ...value.toolHistory, block: { ...value.toolHistory.block, entries } } };
+  };
+  const chat = (records: ReturnType<typeof padded>[]) => request([...records.flatMap((value, turn) => [
+    { id: `q${turn}`, role: "user", content: textMessageContent(`question ${turn}`) },
+    value,
+    { id: `a${turn}`, role: "assistant", content: textMessageContent(`answer ${turn}`) }
+  ]), { id: "current", role: "user", content: textMessageContent("current") }]);
+
+  it("bounds a long history to the prompt limit without hiding an executed call", () => {
+    // Every tenth call executed; the long others were refused before dispatch.
+    const records = Array.from({ length: 40 }, (_, turn) => padded(turn, 1_100, (index) => index % 10 === 0));
+    const result = agentPrompts(chat(records));
+    expect(Buffer.byteLength(result.prompt)).toBeLessThanOrEqual(1024 * 1024);
+    // Even the oldest records keep the compact line of every executed call.
+    for (const value of records) {
+      for (const item of value.toolHistory.block.entries.filter((entry) => entry.essential)) expect(result.prompt).toContain(item.compact);
+    }
+    // Only calls that were not executed are counted, named for the reader while room remains.
+    expect(result.prompt).toContain("calls of this turn that were not executed are not listed here");
+    expect(result.prompt).toContain("read_tool_call reads them by call_ref");
+    expect(result.prompt).not.toContain("this does not mean they did not happen");
+    expect(result.prompt).toContain("answer 0");
+    expect(result.previousAssistantMessageId).toBe("a39");
+  });
+
+  it("refuses a prompt whose executed calls do not fit rather than hide one", () => {
+    const records = Array.from({ length: 40 }, (_, turn) => padded(turn, 1_100, () => true));
+    expect(() => agentPrompts(chat(records))).toThrow("agent_context_too_large");
+  });
+
+  it("lists every executed call of a record beyond its normal bound", () => {
+    // More compact lines than one record's normal bound holds, as the answer request renders it.
+    const block: ToolHistoryBlock = { turnMessageId: "a1", userMessageId: "q1", header: "[AIQSA record a1]", footer: null,
+      entries: Array.from({ length: 400 }, (_, index) => ({ ...entry(index), compact: `${entry(index).compact} ${"d".repeat(40)}` })) };
+    const message = toolHistoryMessage(block);
+    expect(JSON.stringify(message.content)).toContain("earlier calls of this turn are not listed here");
+    const result = agentPrompts(request([{ id: "q1", role: "user", content: textMessageContent("first") }, message,
+      { id: "a1", role: "assistant", content: textMessageContent("first answer") },
+      { id: "q2", role: "user", content: textMessageContent("current") }]));
+    for (const item of block.entries) expect(result.prompt).toContain(item.compact);
+    expect(result.prompt).not.toContain("earlier calls of this turn are not listed here");
   });
 });
