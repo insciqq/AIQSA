@@ -102,32 +102,54 @@ function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("This operation was aborted", "AbortError");
 }
 
+/**
+ * Admission class of one Memory read transaction. REQUIRED reads carry the
+ * structure of an answer (snapshot, core/standing facts, entity alias probe,
+ * canonical rejoin/expansion, profile and readiness reads); without them the
+ * retrieval fails as a whole. LANE reads are optional candidate generation
+ * (lane candidate and rejoin queries, vector lanes, rejection audit) whose
+ * failure only degrades one lane. Every caller names its class explicitly.
+ */
+export type MemoryReadAdmissionClass = "LANE" | "REQUIRED";
+
 type MemoryReadAdmission = Readonly<{
-  acquire(options: Readonly<{ signal?: AbortSignal; waitMs: number }>): Promise<() => void>;
+  acquire(options: Readonly<{
+    admission: MemoryReadAdmissionClass;
+    signal?: AbortSignal;
+    waitMs: number;
+  }>): Promise<() => void>;
 }>;
 
-/** FIFO process-local permits. A released permit passes directly to the oldest
- * waiter; an aborted or timed-out waiter leaves the queue without dispatch. */
+/** Process-local permits with one queue per class, FIFO within a class. A
+ * released permit passes directly to the oldest REQUIRED waiter, otherwise to
+ * the oldest LANE waiter; an aborted or timed-out waiter leaves its queue
+ * without dispatch. LANE reads proceed whenever no REQUIRED read waits. */
 function createMemoryReadAdmission(limit: number): MemoryReadAdmission {
   if (!Number.isSafeInteger(limit) || limit < 1) {
     throw new Error("memory_read_admission_invalid");
   }
   let active = 0;
-  const waiters: Array<() => void> = [];
+  const queues: Readonly<Record<MemoryReadAdmissionClass, Array<() => void>>> = {
+    LANE: [],
+    REQUIRED: []
+  };
   const permit = () => {
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      const next = waiters.shift();
+      const next = queues.REQUIRED.shift() ?? queues.LANE.shift();
       if (next) next();
       else active -= 1;
     };
   };
   return Object.freeze({
-    acquire({ signal, waitMs }) {
+    acquire({ admission, signal, waitMs }) {
+      const waiters = queues[admission];
+      if (!waiters) return Promise.reject(new Error("memory_read_admission_invalid"));
       if (signal?.aborted) return Promise.reject(abortReason(signal));
-      if (active < limit && waiters.length === 0) {
+      if (active < limit && queues.REQUIRED.length === 0 &&
+        (admission === "REQUIRED" || queues.LANE.length === 0)) {
         active += 1;
         return Promise.resolve(permit());
       }
@@ -185,12 +207,14 @@ export async function withMemoryReadBudget<T>(
   budgetMs: number,
   work: (tx: MemoryReadTransaction) => Promise<T>,
   options: Readonly<{
+    /** Required, never defaulted: a misclassified read changes who waits. */
+    admission: MemoryReadAdmissionClass;
     deadlineAtMs?: number;
     isolationLevel?: Prisma.TransactionIsolationLevel;
     lockBudgetMs?: number;
     preserveExplicitJoinOrder?: boolean;
     signal?: AbortSignal;
-  }> = {}
+  }>
 ): Promise<T> {
   const lockBudgetMs = options.lockBudgetMs ?? Math.min(
     MEMORY_READ_LOCK_BUDGET_MS,
@@ -198,6 +222,7 @@ export async function withMemoryReadBudget<T>(
   );
   if (!boundedBudget(budgetMs) || !boundedBudget(lockBudgetMs) ||
     lockBudgetMs > budgetMs ||
+    (options.admission !== "LANE" && options.admission !== "REQUIRED") ||
     options.deadlineAtMs !== undefined &&
       (!Number.isSafeInteger(options.deadlineAtMs) || options.deadlineAtMs < 1) ||
     options.preserveExplicitJoinOrder !== undefined &&
@@ -211,6 +236,7 @@ export async function withMemoryReadBudget<T>(
   if (options.signal?.aborted) throw abortReason(options.signal);
   if (remainingMs() < 1) throw new MemoryReadBudgetError("memory_read_deadline_exhausted");
   const release = await memoryReadAdmission.acquire({
+    admission: options.admission,
     signal: options.signal,
     waitMs: remainingMs()
   });

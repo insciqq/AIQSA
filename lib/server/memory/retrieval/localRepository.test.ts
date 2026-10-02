@@ -33,7 +33,11 @@ import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION
 } from "./vector";
-import { MEMORY_READ_BUDGET_ERROR_CODES, MemoryReadBudgetError } from "./readBudget";
+import {
+  MEMORY_READ_BUDGET_ERROR_CODES,
+  MemoryReadBudgetError,
+  withMemoryReadBudget
+} from "./readBudget";
 import { MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS } from
   "../../../domain/memory/retrieval/config";
 import type {
@@ -3105,6 +3109,39 @@ describe("local Memory retrieval repository", () => {
         MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS
       );
       expect(maximum).toBeLessThanOrEqual(MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS);
+    });
+
+    it("records settlement for lexical lanes withdrawn from read admission", async () => {
+      // Hold every process permit so each lane read of the retrieval waits.
+      const releases: Array<() => void> = [];
+      const holding = { $transaction: vi.fn(async () =>
+        new Promise<void>((resolve) => releases.push(resolve))) } as unknown as PrismaClient;
+      const mocked = mockClient(snapshotRow());
+      const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+      const plan = planMemoryRetrieval({ currentUserText: "project details", now });
+      const snapshot = await repository.snapshot({
+        assistantId: null, chatId: "chat-1", now, plan, userId: "user-1"
+      });
+      const holders = Array.from({ length: MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS },
+        () => withMemoryReadBudget(holding, 2_000, async () => true, { admission: "REQUIRED" }));
+      await vi.waitFor(() => expect(releases).toHaveLength(
+        MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS
+      ));
+      const controller = new AbortController();
+      const pending = repository.retrieve({
+        assistantId: null, chatId: "chat-1", now, plan, settleSignal: controller.signal,
+        sourceSnapshot: snapshot, userId: "user-1"
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      controller.abort({ code: "test_settled" });
+      const result = await pending;
+      for (const release of releases.splice(0)) release();
+      await Promise.all(holders);
+
+      expect(result.lexicalEvidence.length).toBeGreaterThan(0);
+      expect(result.lexicalEvidence.every((entry) =>
+        entry.failureCode === "memory_lexical_settle_timeout" && entry.timedOut)).toBe(true);
+      expect(mocked.laneSql).toEqual([]);
     });
   });
 });

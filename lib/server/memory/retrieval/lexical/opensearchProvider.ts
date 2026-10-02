@@ -138,7 +138,8 @@ async function queryMemoryOpenSearchProjectionReadiness(
         AND state."indexGenerationId" = ${request.activeGenerationId}
       LIMIT 1
     `),
-    { deadlineAtMs: request.deadlineAtMs }
+    // Readiness gates every provider lane of the snapshot: structural.
+    { admission: "REQUIRED", deadlineAtMs: request.deadlineAtMs }
   );
   if (!row) return Object.freeze({
     caughtUp: false,
