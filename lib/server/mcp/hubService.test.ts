@@ -3,7 +3,9 @@ import { namespacedMcpToolName, type McpCapabilityCatalog, type McpRunPlanResult
 import { createMcpHubService, McpHubServiceError, type McpHubAuthority, type McpHubServiceDependencies } from "./hubService";
 import { McpSemanticRouterError } from "./router";
 import { McpClientSessionError } from "./clientSession";
+import { mcpDispatchError } from "./dispatchStatus";
 import { getMcpRequestMaxBytes } from "./responseLimits";
+import { personalMcpFixture } from "@/tests/support/personalMcp";
 
 const authority: McpHubAuthority = {
   assertActive: async () => undefined,
@@ -121,6 +123,29 @@ function fixture(overrides: Partial<McpHubServiceDependencies> = {}) {
 }
 
 describe("MCP Hub shared discovery and dispatch", () => {
+  it("refuses a prepared call whose personal tool was switched off before dispatch, without recording it", async () => {
+    // The shared policy the Agent gateway also uses; the Hub's own filter keeps personal servers out entirely.
+    const personal = personalMcpFixture({ toolNames: ["echo", "write"] });
+    const plan: McpHubServiceDependencies["inspect"] = async (_userId, tools) =>
+      personal.prepare(tools.map(({ namespacedName }) => namespacedName));
+    const test = fixture({ catalog: () => personal.catalog(), inspect: plan, materialize: plan });
+    const toolId = personal.namespacedName("write");
+    const descriptor = (await test.service.findTools({ authority, goal: "Write" })).tools.find((tool) => tool.tool_id === toolId)!;
+    const prepared = await test.service.prepareToolCall({ authority, arguments: {}, toolId, toolVersion: descriptor.tool_version });
+
+    personal.switchTool("write", false);
+    await expect(test.service.dispatchPreparedToolCall({ authority, prepared })).rejects.toMatchObject({ code: "tool_unavailable" });
+    expect(test.dependencies.recordDispatch).not.toHaveBeenCalled();
+    expect(test.dependencies.callRuntimeTool).not.toHaveBeenCalled();
+
+    personal.switchTool("write", true);
+    const again = await test.service.prepareToolCall({ authority, arguments: {}, toolId, toolVersion: descriptor.tool_version });
+    await test.service.dispatchPreparedToolCall({ authority, prepared: again });
+    expect(test.dependencies.callRuntimeTool).toHaveBeenCalledWith(expect.objectContaining({
+      generationId: personal.generationId, name: "write"
+    }));
+  });
+
   it("passes large admitted arguments intact and refuses oversize before recording a dispatch", async () => {
     const test = fixture();
     const descriptor = (await test.service.findTools({ authority, goal: "Echo" })).tools[0]!;
@@ -314,6 +339,27 @@ describe("MCP Hub shared discovery and dispatch", () => {
       .catch((failure: unknown) => failure);
     expect(error).toBeInstanceOf(McpHubServiceError);
     expect(error).toMatchObject({ code: "execution_outcome_unknown" });
+  });
+
+  it("settles a runtime refusal of a changed definition as an unsent refusal, not an unknown outcome", async () => {
+    const settle = vi.fn(async () => undefined);
+    const test = fixture({
+      callRuntimeTool: vi.fn(async () => { throw mcpDispatchError("mcp_tool_definition_changed"); }),
+      recordDispatch: async () => ({ settle })
+    });
+    const descriptor = (await test.service.findTools({ authority, goal: "echo" })).tools[0]!;
+    const prepared = await test.service.prepareToolCall({
+      arguments: { value: "x" }, toolId: echoId, toolVersion: descriptor.tool_version, authority
+    });
+
+    const error = await test.service.dispatchPreparedToolCall({ prepared, authority }).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(McpHubServiceError);
+    expect(error).toMatchObject({ code: "tool_definition_changed" });
+    expect((error as McpHubServiceError).refusedBeforeSend).toBe(true);
+    expect(new McpHubServiceError("tool_definition_changed").refusedBeforeSend).toBe(false);
+    expect(settle).toHaveBeenCalledExactlyOnceWith("ERROR", "tool_definition_changed");
+    // The runtime received the accepted definition to compare before sending.
+    expect(test.dependencies.callRuntimeTool).toHaveBeenCalledWith(expect.objectContaining({ definitionHash: "a".repeat(64) }));
   });
 
   it.each([false, true])("retains rejected-response classification across runtime bundles (%s)", async (foreignBundle) => {

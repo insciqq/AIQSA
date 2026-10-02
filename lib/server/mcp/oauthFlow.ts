@@ -11,6 +11,7 @@ const RETURN_PATH_MAX_LENGTH = 2_048;
 export type McpOAuthFlowState = Readonly<{
   flow: McpOAuthFlowBinding;
   returnPath: string | null;
+  settingsSection?: "connections";
 }>;
 
 const FLOW_STRING_LIMITS: Record<keyof McpOAuthFlowBinding, number> = {
@@ -64,9 +65,14 @@ export async function signMcpOAuthFlow(input: Readonly<{
   flow: McpOAuthFlowBinding;
   now: Date;
   returnPath?: string;
+  settingsSection?: "connections";
   sessionSecret: string;
 }>): Promise<string> {
-  return new SignJWT({ ...input.flow, ...(input.returnPath ? { returnPath: input.returnPath } : {}) })
+  return new SignJWT({
+    ...input.flow,
+    ...(input.returnPath ? { returnPath: input.returnPath } : {}),
+    ...(input.settingsSection ? { settingsSection: input.settingsSection } : {})
+  })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setIssuedAt(Math.floor(input.now.getTime() / 1_000))
     .setExpirationTime(Math.floor(input.now.getTime() / 1_000) + MCP_OAUTH_FLOW_MAX_AGE_SECONDS)
@@ -87,12 +93,14 @@ export async function readMcpOAuthFlow(input: Readonly<{
       maxTokenAge: `${MCP_OAUTH_FLOW_MAX_AGE_SECONDS}s`
     });
     const returnPath = verified.payload.returnPath;
+    const settingsSection = (verified.payload as Record<string, unknown>).settingsSection;
     if (!validFlow(verified.payload)) return null;
     return {
       flow: exactFlow(verified.payload),
       returnPath: typeof returnPath === "string" && returnPath.length <= RETURN_PATH_MAX_LENGTH
         ? returnPath
-        : null
+        : null,
+      ...(settingsSection === "connections" ? { settingsSection: "connections" as const } : {})
     };
   } catch {
     return null;

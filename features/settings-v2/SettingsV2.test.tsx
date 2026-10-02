@@ -3,12 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { SettingsV2 } from "./SettingsV2";
 
 describe("SettingsV2", () => {
-  it("contains only the four personal account sections in their intended order", () => {
-    render(<SettingsV2 connectedAppsContent={<p>Apps</p>} panels={{ account: <p>Account</p>, data: <p>Data</p> }}
+  it("contains personal account sections in their intended order", () => {
+    render(<SettingsV2 connectedAppsContent={<p>Apps</p>} panels={{ account: <p>Account</p>, connections: <p>Connections</p>, data: <p>Data</p> }}
       onClose={vi.fn()} onThemeChange={vi.fn()} themeId="light" />);
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     expect(within(nav).getAllByRole("button").map(button => button.textContent?.trim())).toEqual([
-      "General", "Account", "Claude Code & Codex", "Data"
+      "General", "Account", "Connections", "Claude Code & Codex", "Data"
     ]);
   });
   it("exposes exactly System, Light, and Dark and supports roving selection", () => {

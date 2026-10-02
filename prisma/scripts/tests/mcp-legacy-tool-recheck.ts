@@ -1,7 +1,7 @@
 export const MCP_LEGACY_TOOL_RECHECK_MIGRATION = "20260927230000_mcp_legacy_tool_recheck";
 
 const storedStateSql = `SELECT jsonb_build_object(
-  'servers', (SELECT jsonb_agg(to_jsonb(server) - 'legacyToolRecheckPending' ORDER BY id) FROM "McpServer" AS server),
+  'servers', (SELECT jsonb_agg(to_jsonb(server) - ARRAY['legacyToolRecheckPending', 'ownerUserId'] ORDER BY id) FROM "McpServer" AS server),
   'revisions', (SELECT jsonb_agg(to_jsonb(revision) ORDER BY id) FROM "McpRevision" AS revision),
   'grants', (SELECT jsonb_agg(to_jsonb(grant_row) ORDER BY id) FROM "McpGrant" AS grant_row),
   'toolPolicies', (SELECT jsonb_agg(to_jsonb(policy) ORDER BY id) FROM "McpToolAccessPolicy" AS policy),

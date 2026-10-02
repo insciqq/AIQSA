@@ -65,7 +65,7 @@ describe("MCP group grant mutation guards", () => {
     const { repository, tx } = fixture({ archivedAt: null, id: "group", systemRole: null });
     tx.mcpServer.findFirst.mockResolvedValueOnce(null);
     expect(await repository.setGrant({ canUse: true, groupId: "group", personalSlotKeys: [], serverId: "server", userId: null })).toEqual({ kind: "not_found" });
-    expect(tx.mcpServer.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { archivedAt: null, id: "server" } }));
+    expect(tx.mcpServer.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { archivedAt: null, id: "server", ownerUserId: null } }));
     expect(tx.mcpGrant.upsert).not.toHaveBeenCalled();
   });
 });

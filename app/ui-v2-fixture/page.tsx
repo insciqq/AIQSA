@@ -72,6 +72,8 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "default",
         "error",
         "knowledge",
+        "load-all-refused",
+        "mcp-personal",
         "model",
         "project-knowledge",
         "reasoning",
@@ -202,7 +204,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "settings") {
     const state = fixtureState(
       query.state,
-      ["appearance", "archived", "dirty", "account"] as const,
+      ["appearance", "archived", "dirty", "account", "connections", "connections-empty", "connections-error", "connections-rows"] as const,
       "appearance"
     );
     const { SettingsV2Gallery } = await import("./_fixtures/SettingsV2Gallery");

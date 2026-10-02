@@ -1095,6 +1095,11 @@
   opacity: 0.6;
 }
 
+/* Third-party secrets: masked text that never engages the password manager. */
+.v2-settings-input-masked {
+  -webkit-text-security: disc;
+}
+
 .v2-settings-form {
   display: grid;
   gap: 0.625rem;
@@ -1359,6 +1364,287 @@
 
 .v2-settings-mcp {
   container: mcp-page / inline-size;
+}
+
+.v2-settings-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0 0.75rem;
+  border-bottom: 1px solid var(--v2-color-border);
+}
+
+.v2-settings-section-title,
+.v2-settings-personal-mcp-form h4,
+.v2-settings-server-row h5 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--v2-color-text);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.v2-settings-section-description,
+.v2-settings-personal-mcp-form p {
+  margin: 0.25rem 0 0;
+  color: var(--v2-color-text2);
+  font-size: 0.78125rem;
+  line-height: 1.45;
+}
+
+.v2-settings-personal-mcp-form,
+.v2-settings-server-row {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-surface2);
+}
+
+.v2-settings-server-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.5rem;
+}
+
+.v2-settings-server-row-title > span {
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.v2-settings-server-row-title > span[data-tone="ok"] {
+  color: var(--v2-color-ok);
+}
+
+.v2-settings-server-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.v2-settings-personal-mcp-form {
+  margin: 0.75rem 0 1rem;
+}
+
+.v2-settings-personal-mcp-fields {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.75fr) minmax(16rem, 1.25fr);
+  gap: 0.75rem;
+}
+
+.v2-settings-personal-mcp-form label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+}
+
+.v2-settings-input-help {
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+  line-height: 1.35;
+}
+
+.v2-settings-personal-mcp-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.75rem;
+}
+
+.v2-settings-personal-mcp-options > label:not(.v2-settings-http-warning) {
+  min-width: 13rem;
+}
+
+.v2-settings-http-warning {
+  display: flex !important;
+  max-width: 24rem;
+  align-items: flex-start;
+  grid-template-columns: none !important;
+  gap: 0.5rem !important;
+  color: var(--v2-color-warn) !important;
+  line-height: 1.35;
+}
+
+.v2-settings-http-warning input {
+  flex: 0 0 auto;
+  margin-top: 0.125rem;
+}
+
+.v2-settings-http-warning {
+  flex-wrap: wrap;
+}
+
+.v2-settings-http-warning > .v2-settings-field-note {
+  flex-basis: 100%;
+}
+
+.v2-settings-personal-mcp-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v2-settings-personal-mcp-list > li {
+  min-width: 0;
+}
+
+.v2-settings-personal-mcp-origins {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.v2-settings-personal-mcp-origins code {
+  overflow-wrap: anywhere;
+  color: var(--v2-color-text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8125rem;
+}
+
+.v2-settings-personal-mcp-status,
+.v2-settings-personal-mcp-notice {
+  display: grid;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+}
+
+.v2-settings-personal-mcp-status:empty {
+  display: none;
+}
+
+.v2-settings-personal-mcp-replace {
+  display: grid;
+  gap: 0.625rem;
+  max-width: 28rem;
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--v2-color-border);
+  border-radius: var(--v2-radius-m);
+  background: var(--v2-color-surface2);
+}
+
+.v2-settings-personal-mcp-replace label {
+  display: grid;
+  gap: 0.25rem;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+}
+
+.v2-settings-tool-filter {
+  width: min(100%, 20rem);
+  margin-bottom: 0.5rem;
+}
+
+.v2-settings-server-list-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  padding: 0.5rem 0 0.375rem;
+}
+
+.v2-settings-server-list-heading h4 {
+  margin: 0;
+  color: var(--v2-color-text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.v2-settings-server-list-heading p {
+  margin: 0;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+}
+
+.v2-settings-tool-selection {
+  min-width: 0;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.v2-settings-tool-selection legend {
+  margin-bottom: 0.375rem;
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.v2-settings-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.375rem 0.75rem;
+}
+
+.v2-settings-tool-option {
+  display: flex !important;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.5rem !important;
+  color: var(--v2-color-text) !important;
+  line-height: 1.4;
+}
+
+.v2-settings-tool-option input {
+  flex: 0 0 auto;
+  margin-top: 0.125rem;
+}
+
+.v2-settings-tool-option > span {
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.v2-settings-tool-name {
+  overflow-wrap: anywhere;
+  color: var(--v2-color-text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+}
+
+.v2-settings-tool-description {
+  overflow-wrap: anywhere;
+  color: var(--v2-color-text3);
+  font-size: 0.6875rem;
+}
+
+.v2-settings-server-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+}
+
+@container mcp-page (max-width: 42rem) {
+  .v2-settings-personal-mcp-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .v2-settings-server-row {
+    grid-template-columns: 1fr;
+  }
+
+  .v2-settings-server-row-actions {
+    justify-content: flex-start;
+  }
+
+  .v2-settings-tool-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .v2-settings-mcp-toolbar {
@@ -1635,6 +1921,18 @@
   line-height: 1.45;
 }
 
+.v2-settings-field-note[data-tone="danger"] {
+  color: var(--v2-color-danger);
+}
+
+.v2-settings-field-note[data-tone="warn"] {
+  color: var(--v2-color-warn);
+}
+
+.v2-settings-field-note[data-tone="ok"] {
+  color: var(--v2-color-ok);
+}
+
 .v2-settings-field-note > .v2-icon {
   width: 0.75rem;
   height: 0.75rem;
@@ -1678,7 +1976,7 @@
 .v2-settings-tool-name {
   overflow-wrap: anywhere;
   color: var(--v2-color-text);
-  font-family: var(--v2-font-mono, ui-monospace, monospace);
+  font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.75rem;
 }
 

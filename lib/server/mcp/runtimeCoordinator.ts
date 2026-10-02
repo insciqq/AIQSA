@@ -5,9 +5,11 @@ import {
   type AiqsaMcpToolCallResult,
   type McpFatalResponseErrorCode
 } from "./clientSession";
-import type { McpOperationalStatus, McpToolExclusionReason } from "@/lib/contracts/mcp";
+import { boundMcpToolDescription, type McpToolExclusionReason } from "@/lib/contracts/mcp";
 import type { McpPublishedToolDefinitions } from "./definitions";
+import { mcpDispatchError } from "./dispatchStatus";
 import { redactMcpToolCallResult } from "./resultRedaction";
+import { mcpNetworkPolicyRefusal } from "./safeFetch";
 import { ToolHiveClientError } from "./toolhiveClient";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, type LifecycleStage } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
@@ -34,6 +36,7 @@ export type McpRuntimeLaunch = {
   onConnecting?(): Promise<void>;
   redactionValues: readonly string[];
   oauthConnectionId?: string;
+  personalRuntime?: boolean;
   retryAt: Date | null;
   startupTimeoutMs: number;
   trustedInternalHttp?: boolean;
@@ -59,6 +62,19 @@ export type McpRuntimeInventory = {
   tools: McpRuntimeInventoryTool[];
   version: 1;
 };
+
+/** Schema-free upstream listing retained for a personal owner's catalog and Settings. */
+export type McpDiscoveredInventory = { tools: { description: string | null; name: string }[]; version: 1 };
+
+function discoveredInventory(tools: readonly McpRuntimeInventoryTool[]): McpDiscoveredInventory {
+  return {
+    tools: tools.map(({ description, name }) => ({
+      description: description === null ? null : boundMcpToolDescription(description),
+      name
+    })),
+    version: 1
+  };
+}
 
 export type McpRuntimeSession = {
   callTool(input: {
@@ -97,6 +113,8 @@ export type McpRuntimeCoordinatorRepository = {
     fingerprint: string;
     generationId: string;
     inventory: McpRuntimeInventory;
+    /** Schema-free inventory retained for the owner's personal catalog. */
+    discoveredInventory?: McpDiscoveredInventory;
     now: Date;
   }): Promise<boolean>;
   markStarting(input: { fingerprint: string; generationId: string; now: Date }): Promise<boolean>;
@@ -124,6 +142,9 @@ export type McpRuntimeLifecycle = {
   cleanupOrphans(keepGenerationTokens: readonly string[]): Promise<void>;
 };
 
+/** Session warmth for health scheduling only; never projected to users. */
+type McpOperationalStatus = "active" | "checking" | "inactive";
+
 type LiveRuntime = {
   healthUsesToolList: boolean;
   toolDefinitionHashes: ReadonlyMap<string, string>;
@@ -133,6 +154,7 @@ type LiveRuntime = {
   fingerprint: string;
   local: boolean;
   lastProtocolSuccessAt: number;
+  allowUnpublishedTools: boolean;
   /** Fixed for the generation: its fingerprint binds the revision. */
   publishedTools: McpPublishedToolDefinitions;
   redactionValues: readonly string[];
@@ -149,9 +171,12 @@ type LiveRuntime = {
 function effectiveRuntimeTools(
   upstream: readonly McpRuntimeInventoryTool[],
   published: McpPublishedToolDefinitions,
-  disabledToolNames: ReadonlySet<string>
+  disabledToolNames: ReadonlySet<string>,
+  allowUnpublishedTools = false
 ): Pick<McpRuntimeInventory, "exclusions" | "tools"> {
-  const publishedNames: ReadonlySet<string> = published.kind === "definitions"
+  const publishedNames: ReadonlySet<string> = allowUnpublishedTools
+    ? new Set(upstream.map((tool) => tool.name))
+    : published.kind === "definitions"
     ? new Set(published.hashes.keys())
     : published.kind === "names" ? published.names : new Set<string>();
   const upstreamNames = new Set<string>();
@@ -166,7 +191,7 @@ function effectiveRuntimeTools(
       ? "disabled_by_policy"
       : !publishedNames.has(tool.name)
         ? "unpublished_addition"
-        : published.kind === "definitions" && published.hashes.get(tool.name) !== tool.definitionHash
+        : !allowUnpublishedTools && published.kind === "definitions" && published.hashes.get(tool.name) !== tool.definitionHash
           ? "definition_drift"
           : null;
     if (reason) exclusions.push({ name: tool.name, reason });
@@ -263,6 +288,9 @@ async function mapLimit<Value>(
 }
 
 function stableRuntimeError(error: unknown): string {
+  // A network-policy refusal keeps its reason through launch, health and refresh.
+  const refusal = mcpNetworkPolicyRefusal(error);
+  if (refusal) return refusal;
   if (error instanceof ToolHiveClientError && error.code === "toolhive_artifact_missing") {
     return "mcp_artifact_missing";
   }
@@ -510,6 +538,8 @@ export class McpRuntimeCoordinator {
   async callTool(input: {
     arguments: Record<string, unknown>;
     beforeDispatch?(): Promise<void>;
+    /** The accepted definition the arguments were validated against. */
+    definitionHash: string;
     generationId: string;
     inputSchema: Record<string, unknown>;
     name: string;
@@ -525,6 +555,11 @@ export class McpRuntimeCoordinator {
     input.signal?.throwIfAborted();
     await input.beforeDispatch?.();
     input.signal?.throwIfAborted();
+    // A refresh can apply a new definition while the caller rechecks its
+    // plan. Compare with no await before the send; nothing has left yet.
+    if (runtime.toolDefinitionHashes.get(input.name) !== input.definitionHash) {
+      throw mcpDispatchError("mcp_tool_definition_changed");
+    }
     try {
       const result = await runtime.session.callTool({
         arguments: input.arguments,
@@ -551,7 +586,35 @@ export class McpRuntimeCoordinator {
     return runtime !== undefined && !isClosedSession(runtime.session);
   }
 
-  /** A prompt snapshot; renews only an already-owned session, never starts one. */
+  /**
+   * Owned lifecycle transition of the personal network policy: closes every
+   * live personal session at once, open streams included. Generations keep
+   * their state and the closer owns the outcome, so an in-flight refresh or
+   * health check records nothing; the next reconciliation or on-demand use
+   * restarts each under the current policy, which refuses what it no longer
+   * allows.
+   */
+  async closePersonalRuntimes(): Promise<number> {
+    const closing: Array<readonly [string, LiveRuntime]> = [];
+    for (const [generationId, runtime] of this.#live) {
+      // Only personal runtimes follow their live upstream inventory.
+      if (!runtime.allowUnpublishedTools) continue;
+      runtime.evictionErrorCode = "mcp_session_closed";
+      this.#live.delete(generationId);
+      this.#discardHealthProbe(generationId, runtime);
+      closing.push([generationId, runtime]);
+    }
+    await Promise.allSettled(closing.map(([generationId, runtime]) =>
+      this.#close(generationId, () => runtime.session.dispose?.() ?? runtime.session.close())));
+    this.#scheduleHealthCheck();
+    return closing.length;
+  }
+
+  /**
+   * Coordinator-local session inspection used by the health timer and the reconcile kick:
+   * enqueues a due health probe or evicts a closed session for an already-owned runtime,
+   * never starts one. Not a user-facing projection.
+   */
   operationalStatus(generationId: string): McpOperationalStatus {
     const runtime = this.#live.get(generationId);
     if (!runtime) return this.#starts.has(generationId) ? "checking" : "inactive";
@@ -629,6 +692,7 @@ export class McpRuntimeCoordinator {
       onAbort = () => reject(controller.signal.reason);
       controller.signal.addEventListener("abort", onAbort, { once: true });
     });
+    let refreshInventory = false;
     try {
       await Promise.race([
         Promise.resolve().then(async () => {
@@ -648,16 +712,24 @@ export class McpRuntimeCoordinator {
           controller.signal.throwIfAborted();
           assertInventoryDoesNotExposeCredentials(tools, runtime.redactionValues, runtime.session);
           const hashes = new Map(tools.map((tool) => [tool.name, tool.definitionHash]));
-          for (const [name, hash] of runtime.toolDefinitionHashes) {
-            if (hashes.get(name) !== hash) throw runtimeStateError("mcp_inventory_changed");
+          const changed = [...runtime.toolDefinitionHashes].some(([name, hash]) => hashes.get(name) !== hash);
+          if (!runtime.allowUnpublishedTools) {
+            // A health response renews liveness only; it never publishes new tools.
+            if (changed) throw runtimeStateError("mcp_inventory_changed");
+            return;
           }
-          // A health response renews liveness only; it never publishes new tools.
+          // A personal runtime follows its live upstream inventory. A
+          // difference goes through the ordinary refresh, never eviction, so
+          // accepted runs keep dispatching their unchanged tools.
+          refreshInventory = changed || tools.some((tool) =>
+            !runtime.toolDefinitionHashes.has(tool.name) && !runtime.disabledToolNames.has(tool.name));
         }),
         cancelled
       ]);
       if (this.#live.get(generationId) !== runtime || this.#healthProbes.get(generationId) !== probe) return;
       if (isClosedSession(runtime.session)) throw runtimeStateError("mcp_session_closed");
       runtime.lastProtocolSuccessAt = this.#now().getTime();
+      if (refreshInventory) void this.#refresh(generationId, runtime.fingerprint, true).catch(() => undefined);
     } catch (error) {
       // Eviction removes live proof immediately; cleanup does not hold a probe slot.
       if (this.#live.get(generationId) === runtime) {
@@ -852,11 +924,12 @@ export class McpRuntimeCoordinator {
       if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, launch.redactionValues, session);
       const disabledToolNames = new Set(launch.disabledToolNames ?? []);
-      const effective = effectiveRuntimeTools(tools, publishedTools, disabledToolNames);
+      const effective = effectiveRuntimeTools(tools, publishedTools, disabledToolNames, launch.personalRuntime === true);
       const accepted = await this.#write(launch.generationId, "complete", () => this.#repository.markReady({
         fingerprint: launch.fingerprint,
         generationId: launch.generationId,
         inventory: { exclusions: effective.exclusions, tools: effective.tools, version: 1 },
+        ...(launch.personalRuntime ? { discoveredInventory: discoveredInventory(tools) } : {}),
         now: this.#now()
       }));
       signal.throwIfAborted();
@@ -866,6 +939,7 @@ export class McpRuntimeCoordinator {
       }
       if (isClosedSession(session)) throw runtimeStateError("mcp_session_closed");
       this.#live.set(launch.generationId, {
+        allowUnpublishedTools: launch.personalRuntime === true,
         healthUsesToolList: false,
         toolDefinitionHashes: new Map(effective.tools.map((tool) => [tool.name, tool.definitionHash])),
         disabledToolNames,
@@ -941,44 +1015,20 @@ export class McpRuntimeCoordinator {
     }
     logEvent("job_attempt", { subsystem: "mcp", generation_id: generationId, stage: "refresh", outcome: "started" });
     try {
-      const startingWrite = this.#write(generationId, "claim", () => this.#repository.markStarting({
-        fingerprint,
-        generationId,
-        now: this.#now()
-      }));
-      live.repositoryStateWrite = startingWrite;
-      let started: boolean;
-      try {
-        started = await startingWrite;
-      } finally {
-        if (live.repositoryStateWrite === startingWrite) live.repositoryStateWrite = null;
-      }
-      if (!started) {
-        if (live.evictionErrorCode !== null) return false;
-        if (this.#live.get(generationId) === live) this.#live.delete(generationId);
-        await this.#close(generationId, () => live.session.close());
-        return false;
-      }
-      if (this.#live.get(generationId) !== live) {
-        if (live.evictionErrorCode !== null) return false;
-        await this.#markFailed({
-          errorCode: "mcp_session_closed",
-          fingerprint,
-          generationId,
-          now: this.#now()
-        });
-        return false;
-      }
+      // The generation stays ready while its inventory is re-read, so plan
+      // rechecks of accepted runs keep dispatching on it. markReady's guard
+      // decides whether the generation is still wanted.
       const tools = await live.session.listTools();
       const protocolSuccessAt = this.#now().getTime();
       if (isClosedSession(live.session)) throw runtimeStateError("mcp_session_closed");
       assertInventoryDoesNotExposeCredentials(tools, live.redactionValues, live.session);
-      const effective = effectiveRuntimeTools(tools, live.publishedTools, live.disabledToolNames);
+      const effective = effectiveRuntimeTools(tools, live.publishedTools, live.disabledToolNames, live.allowUnpublishedTools);
       if (this.#live.get(generationId) !== live) return false;
       const readinessWrite = this.#write(generationId, "complete", () => this.#repository.markReady({
         fingerprint,
         generationId,
         inventory: { exclusions: effective.exclusions, tools: effective.tools, version: 1 },
+        ...(live.allowUnpublishedTools ? { discoveredInventory: discoveredInventory(tools) } : {}),
         now: this.#now()
       }));
       live.repositoryStateWrite = readinessWrite;

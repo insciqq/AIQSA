@@ -29,7 +29,8 @@ export async function canReadAcceptedMcpCall(tx: Prisma.TransactionClient, input
 }): Promise<boolean> {
   const memberships = await tx.userGroup.findMany({ where: { userId: input.userId, group: { archivedAt: null } }, select: { groupId: true } });
   const server = await tx.mcpServer.findFirst({ where: { id: input.serverId, enabled: true, archivedAt: null,
-    ...(input.projectId ? { projectBindings: { some: { projectId: input.projectId } } } : {
+    ...(input.projectId ? { projectBindings: { some: { projectId: input.projectId } }, ownerUserId: null } : {
+      OR: [{ ownerUserId: null }, { ownerUserId: input.userId }],
       grants: { some: { canUse: true, OR: [{ userId: input.userId }, { groupId: { in: memberships.map(item => item.groupId) } }] } },
       userServers: { some: { userId: input.userId, enabled: true } }
     }) }, select: { activeRevision: { select: { configuration: true } } } });

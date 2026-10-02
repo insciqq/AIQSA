@@ -13,11 +13,11 @@ function catalog(): UserMcpServer[] {
   const server = (id: string, name: string, extra: Partial<UserMcpServer> = {}): UserMcpServer => ({
     id, name, accountLabel: null, description: `${name} tools for your personal workspace`, enabled: false,
     fields: [], knownToolCount: 3, oauthAvailable: false, oauthState: null,
-    operationalStatus: "inactive", readiness: "disabled", tools: [], ...extra
+    readiness: "disabled", tools: [], ...extra
   });
   return [
     server("github", "GitHub", { enabled: true, readiness: "idle" }),
-    server("linear", "Linear", { enabled: true, readiness: "ready", operationalStatus: "active",
+    server("linear", "Linear", { enabled: true, readiness: "ready",
       tools: [{ name: "find_issues", description: "Find matching issues" }] }),
     server("research", "Research", { fields: [personalField], readiness: "needs_setup",
       oauthAvailable: true, oauthState: "disconnected" }),
@@ -39,6 +39,11 @@ async function prepare(page: Page, servers: () => UserMcpServer[]) {
   let hubReads = 0;
   await page.route("**/api/me/mcp**", async route => {
     const request = route.request();
+    // Personal chats load the separate personal connections list; this spec observes the installation catalog.
+    if (request.method() === "GET" && new URL(request.url()).pathname === "/api/me/mcp-connections") {
+      await route.fulfill({ json: { servers: [] } });
+      return;
+    }
     requests.push(`${request.method()} ${new URL(request.url()).pathname}`);
     if (request.method() === "GET" && new URL(request.url()).pathname === "/api/me/mcp") {
       await route.fulfill({ json: { servers: servers() } });

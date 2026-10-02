@@ -17,8 +17,9 @@ import {
   McpOAuthError,
   type McpOAuthService
 } from "./oauthService";
-import type { McpOAuthPurpose } from "./oauthPolicy";
+import type { McpOAuthPurpose, McpOAuthSourceKind } from "./oauthPolicy";
 import type { McpOAuthSettler } from "./oauthSettlement";
+import { personalMcpRateLimitResponse, type PersonalMcpRateLimiter } from "./personalRateLimit";
 
 type McpOAuthRouteContext = {
   params: Promise<{ serverId: string }> | { serverId: string };
@@ -30,8 +31,11 @@ type McpOAuthWebConfig = Pick<
 >;
 
 export type McpOAuthHandlerDeps = Readonly<{
+  userSettingsSection?: "connections";
   getConfig(): McpOAuthWebConfig;
   onRuntimeChanged?(userId?: string): void;
+  /** Required by personal start routes; counts every start per user. */
+  rateLimiter?: PersonalMcpRateLimiter;
   resolveAuth: RequestAuthResolver;
   settleAuthorization?: McpOAuthSettler;
   service: Pick<
@@ -89,12 +93,14 @@ function outcomeUrl(input: Readonly<{
   purpose: McpOAuthPurpose;
   returnPath?: string | null;
   serverId: string;
+  settingsSection?: "connections";
 }>): string {
   const url = new URL(
     input.purpose === "validation" ? "/admin" : chatReturnPath(input.returnPath),
     input.appBaseUrl
   );
   if (input.purpose === "validation") url.searchParams.set("section", "mcp");
+  else if (input.settingsSection) url.searchParams.set("settings", input.settingsSection);
   else url.searchParams.set("library", "mcp");
   url.searchParams.set("oauth", input.outcome);
   url.searchParams.set("server", input.serverId);
@@ -147,13 +153,19 @@ function serviceError(error: unknown): Response {
   if (!(error instanceof McpOAuthError)) return errorResponse("mcp_oauth_unavailable", 503);
   if (error.code === "mcp_oauth_not_available") return errorResponse(error.code, 404);
   if (error.code === "mcp_oauth_configuration_changed") return errorResponse(error.code, 409);
-  if (error.code === "mcp_oauth_policy_forbidden") return errorResponse(error.code, 422);
+  if (error.code === "mcp_oauth_policy_forbidden" || error.code === "mcp_internal_address_forbidden" ||
+    error.code === "mcp_local_network_disabled") return errorResponse(error.code, 422);
   return errorResponse(error.code, 502);
 }
 
 export function createMcpOAuthStartHandler(
   deps: McpOAuthHandlerDeps,
-  options: Readonly<{ forceReconnect: boolean; purpose: McpOAuthPurpose }>
+  options: Readonly<{
+    forceReconnect: boolean;
+    purpose: McpOAuthPurpose;
+    /** A user route addresses only its own kind of server; others are not found. */
+    sourceKind?: McpOAuthSourceKind;
+  }>
 ) {
   return async function POST(request: Request, context: McpOAuthRouteContext): Promise<Response> {
     // Starting can settle an existing connection (enable the server, publish
@@ -171,6 +183,11 @@ export function createMcpOAuthStartHandler(
     const session = auth.session;
     const { serverId } = await context.params;
     if (!validServerId(serverId)) return errorResponse("mcp_not_found", 404);
+    if (options.sourceKind === "personal") {
+      if (!deps.rateLimiter) return errorResponse("mcp_oauth_unavailable", 503);
+      const limited = await personalMcpRateLimitResponse(deps.rateLimiter, "oauth-start", session.userId);
+      if (limited) return limited;
+    }
     const redirectUri = new URL(callbackPath(serverId, options.purpose), config.appBaseUrl).toString();
     const state = (deps.randomState ?? randomState)();
     const returnPath = options.purpose === "user"
@@ -182,6 +199,7 @@ export function createMcpOAuthStartHandler(
         purpose: options.purpose,
         redirectUri,
         serverId,
+        ...(options.sourceKind ? { sourceKind: options.sourceKind } : {}),
         state,
         userId: session.userId
       });
@@ -195,6 +213,7 @@ export function createMcpOAuthStartHandler(
         if (!settled) {
           return startLocation(outcomeUrl({
             appBaseUrl: config.appBaseUrl,
+            settingsSection: deps.userSettingsSection,
             outcome: "failed",
             purpose: options.purpose,
             returnPath,
@@ -204,6 +223,7 @@ export function createMcpOAuthStartHandler(
         notifyRuntimeChanged(deps, options.purpose === "user" ? session.userId : undefined);
         return startLocation(outcomeUrl({
           appBaseUrl: config.appBaseUrl,
+          settingsSection: deps.userSettingsSection,
           outcome: "connected",
           purpose: options.purpose,
           returnPath,
@@ -214,6 +234,7 @@ export function createMcpOAuthStartHandler(
         flow: result.flow,
         now: deps.now?.() ?? new Date(),
         returnPath,
+        settingsSection: deps.userSettingsSection,
         sessionSecret: config.sessionSecret
       });
       return startLocation(result.authorizationUrl, mcpOAuthFlowCookie({
@@ -235,14 +256,6 @@ export function createMcpOAuthCallbackHandler(
     const config = deps.getConfig();
     const { serverId } = await context.params;
     const clearCookie = clearMcpOAuthFlowCookie(config.cookieSecure);
-    const failed = (returnPath: string | null = null) => redirect(outcomeUrl({
-      appBaseUrl: config.appBaseUrl,
-      outcome: "failed",
-      purpose,
-      returnPath,
-      serverId
-    }), clearCookie);
-    if (!config.configured || !validServerId(serverId)) return failed();
     const auth = await authorizedSession(request, deps, purpose);
     const session = auth.session;
     const flowState = await readMcpOAuthFlow({
@@ -251,6 +264,16 @@ export function createMcpOAuthCallbackHandler(
       sessionSecret: config.sessionSecret
     });
     const flow = flowState?.flow ?? null;
+    const settingsSection = flowState?.settingsSection ?? deps.userSettingsSection;
+    const failed = (returnPath: string | null = null) => redirect(outcomeUrl({
+      appBaseUrl: config.appBaseUrl,
+      settingsSection,
+      outcome: "failed",
+      purpose,
+      returnPath,
+      serverId
+    }), clearCookie);
+    if (!config.configured || !validServerId(serverId)) return failed();
     const query = new URL(request.url).searchParams;
     const state = singleValue(query, "state");
     if (!session || !flowState || !flow || flow.userId !== session.userId || flow.serverId !== serverId ||
@@ -271,6 +294,7 @@ export function createMcpOAuthCallbackHandler(
     if (errors[0]) {
       return redirect(outcomeUrl({
         appBaseUrl: config.appBaseUrl,
+        settingsSection,
         outcome: errors[0] === "access_denied" ? "cancelled" : "failed",
         purpose,
         returnPath,
@@ -295,6 +319,7 @@ export function createMcpOAuthCallbackHandler(
       notifyRuntimeChanged(deps, purpose === "user" ? session.userId : undefined);
       return redirect(outcomeUrl({
         appBaseUrl: config.appBaseUrl,
+        settingsSection,
         outcome: "connected",
         purpose,
         returnPath,

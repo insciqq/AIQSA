@@ -1,6 +1,7 @@
 import * as workspaceCheckpoints from "../workspace/checkpoints";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { captureRunObservation } from "@/tests/support/runObservation";
+import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { workspaceCheckpointResult } from "../workspace/checkpointResult";
 import * as workspaceImageViewer from "../workspace/directImageView";
 import { prepareWorkspaceImages } from "../workspace/imageCapture";
@@ -34,6 +35,7 @@ import { GeminiInteractionsStreamError } from "../providers/geminiInteractionsSt
 import { namespacedMcpToolName, prepareMcpRunPlan, type McpDiscoveryState, type McpRunPlanRecord, type McpRunPlanSnapshot } from "../mcp/runPlan";
 import { MCP_SERVER_TOOL_LIMIT } from "../../contracts/mcp";
 import { mcpRunTools } from "../mcp/toolExecutor";
+import { mcpDispatchError } from "../mcp/dispatchStatus";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import { buildOpenAIResponsesRequestPreview } from "../providers/openaiResponsesRequest";
 import { buildOpenRouterChatRequest, buildOpenRouterChatRequestPreview } from "../providers/openRouterChatRequest";
@@ -6438,6 +6440,125 @@ describe("run execution", () => {
       expect(prepareProject).not.toHaveBeenCalled();
       expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: [record.serverId], allowedToolNames: [namespacedName] });
     }
+  });
+
+  it("keeps an accepted personal tool through an unrelated switch, refuses it while switched off and dispatches it once on", async () => {
+    const personal = personalMcpFixture({ toolNames: ["read", "write"] });
+    const namespacedName = personal.namespacedName("write");
+    const accepted = await personal.prepare([namespacedName]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    const prepare = vi.fn<NonNullable<RunExecutionInput["mcp"]>["prepare"]>(async (_user, options) =>
+      personal.prepare(options?.allowedToolNames));
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["WRITTEN"], unsupportedContentTypes: [] };
+    });
+    const run = async () => {
+      const egress = createMemoryEgressRecorder();
+      const repository = createRepository();
+      let rounds = 0;
+      const adapter = createAdapter(async function* () {
+        if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "write-call", name: namespacedName }] });
+        return providerResult({ finalText: "Write settled" });
+      });
+      await createRunExecutionResponse(executionInput({ adapter, memoryEgress: egress.service, repository: repository.repository,
+        mcp: { filterTools: allowMcpTools, prepare },
+        mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+        prepared: preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai" }) })).text();
+      return { egress, repository };
+    };
+
+    // An unrelated tool's switch neither refuses the accepted tool nor replaces its generation.
+    personal.switchTool("read", false);
+    const unrelated = await run();
+    expect(callTool).toHaveBeenCalledOnce();
+    expect([...unrelated.repository.toolCalls.values()][0]).toMatchObject({ state: "complete" });
+    personal.switchTool("read", true);
+
+    personal.switchTool("write", false);
+    const off = await run();
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(off.egress.blocked).toEqual([expect.objectContaining({ errorCode: "mcp_tool_disabled", mode: "TOOL_CALL" })]);
+    expect([...off.repository.toolCalls.values()][0]).toMatchObject({ state: "error" });
+
+    // The switch never replaced the runtime: switching back on dispatches on the accepted generation.
+    personal.switchTool("write", true);
+    const on = await run();
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(callTool).toHaveBeenLastCalledWith(expect.objectContaining({
+      definitionHash: accepted.snapshot.tools[0]!.definitionHash, generationId: personal.generationId, name: "write"
+    }));
+    expect([...on.repository.toolCalls.values()][0]).toMatchObject({ state: "complete" });
+    expect(prepare).toHaveBeenCalledWith("user-1", { allowedServerIds: [personal.serverId], allowedToolNames: [namespacedName] });
+  });
+
+  it.each([
+    ["the connection is switched off", "memory_egress_destination_revoked"],
+    ["the connection is deleted", "memory_egress_destination_revoked"],
+    ["its authorization is lost", "mcp_authorization_required"],
+    ["the runtime applied a new definition", "mcp_tool_definition_changed"]
+  ] as const)("refuses an accepted personal tool with its own cause after %s", async (change, errorCode) => {
+    const personal = personalMcpFixture({ oauth: true, toolNames: ["read", "write"] });
+    const namespacedName = personal.namespacedName("write");
+    const accepted = await personal.prepare([namespacedName]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    if (change === "the connection is switched off") personal.setEnabled(false);
+    else if (change === "the connection is deleted") personal.delete();
+    else if (change === "its authorization is lost") personal.loseAuthorization();
+    else personal.changeDefinition("write");
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      return { isError: false, structuredContent: null, text: ["WRITTEN"], unsupportedContentTypes: [] };
+    });
+    const egress = createMemoryEgressRecorder();
+    const repository = createRepository();
+    let rounds = 0;
+    const adapter = createAdapter(async function* () {
+      if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "write-call", name: namespacedName }] });
+      return providerResult({ finalText: "Write refused" });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, memoryEgress: egress.service, repository: repository.repository,
+      mcp: { filterTools: allowMcpTools, prepare: async (_user, options) => personal.prepare(options?.allowedToolNames) },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+      prepared: preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai" }) })).text();
+
+    expect(callTool).not.toHaveBeenCalled();
+    expect(egress.blocked).toEqual([expect.objectContaining({ errorCode, mode: "TOOL_CALL" })]);
+    const [settled] = [...repository.toolCalls.values()];
+    expect(settled).toMatchObject({ state: "error" });
+    expect(JSON.stringify(settled?.result)).toContain(errorCode);
+    expect(repository.completeRuns[0]?.finalText).toBe("Write refused");
+  });
+
+  it("settles a definition the runtime saw change after the recheck as a refusal, not an unknown outcome", async () => {
+    const personal = personalMcpFixture({ toolNames: ["write"] });
+    const namespacedName = personal.namespacedName("write");
+    const accepted = await personal.prepare([namespacedName]);
+    if (!accepted.ok) throw new Error("personal_fixture_invalid");
+    // The plan recheck still passes; the runtime has applied the new definition.
+    const callTool = vi.fn<NonNullable<RunExecutionInput["mcpRuntime"]>["callTool"]>(async ({ beforeDispatch }) => {
+      await beforeDispatch?.();
+      throw mcpDispatchError("mcp_tool_definition_changed");
+    });
+    const egress = createMemoryEgressRecorder();
+    const repository = createRepository();
+    let rounds = 0;
+    const adapter = createAdapter(async function* () {
+      if (++rounds === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "write-call", name: namespacedName }] });
+      return providerResult({ finalText: "Write refused" });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, memoryEgress: egress.service, repository: repository.repository,
+      mcp: { filterTools: allowMcpTools, prepare: async (_user, options) => personal.prepare(options?.allowedToolNames) },
+      mcpRuntime: { callTool, ensureAcceptedGeneration: async () => true },
+      prepared: preparedData({ mcp: accepted.snapshot, modelId: "gpt-tool-model", provider: "openai" }) })).text();
+
+    expect(callTool).toHaveBeenCalledOnce();
+    expect(egress.failed).toEqual([expect.objectContaining({ errorCode: "mcp_tool_definition_changed" })]);
+    const [settled] = [...repository.toolCalls.values()];
+    expect(settled).toMatchObject({ state: "error" });
+    expect(JSON.stringify(settled?.result)).toContain("mcp_tool_definition_changed");
+    expect(JSON.stringify(settled?.result)).not.toContain("tool_call_outcome_unknown");
+    expect(repository.completeRuns[0]?.finalText).toBe("Write refused");
   });
 
   it.each([false, true])("recalls a large MCP original through the public reader, with duplicate representation=%s", async duplicate => {

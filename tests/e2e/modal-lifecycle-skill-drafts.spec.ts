@@ -65,7 +65,7 @@ for (const size of sizes) {
     const server: UserMcpServer = {
       id: "research", name: "Research", accountLabel: null, description: "Research tools", enabled: false,
       fields: [{ configured: false, label: "Personal API key", sensitive: true, slotKey: "api_key", source: "missing", valueType: "secret" }],
-      knownToolCount: 1, oauthAvailable: false, oauthState: null, operationalStatus: "inactive", readiness: "needs_setup", tools: []
+      knownToolCount: 1, oauthAvailable: false, oauthState: null, readiness: "needs_setup", tools: []
     };
     await authenticateWithLocalToken(page.request);
     await installMatrixCatalogFixture(page);

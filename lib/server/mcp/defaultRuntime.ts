@@ -9,9 +9,12 @@ import {
   createToolHiveRuntimeLifecycle,
   getDefaultToolHiveDriver
 } from "./defaultToolHive";
-import { McpRuntimeCoordinator } from "./runtimeCoordinator";
+import { personalMcpAddressPolicy } from "./defaultPersonalNetwork";
+import { mcpDestinationSafeFetchOptions } from "./personalNetworkPolicy";
+import { McpRuntimeCoordinator, type McpRuntimeLaunch } from "./runtimeCoordinator";
 import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
-import { createMcpSafeFetch } from "./safeFetch";
+import { createMcpSafeFetch, type McpAddressPolicy, type McpSafeFetchOptions } from "./safeFetch";
+import type { McpOAuthService } from "./oauthService";
 import { createToolHiveMcpSessionFactory } from "./toolhiveSessionFactory";
 import { prepareMcpRunPlan } from "./runPlan";
 import {
@@ -34,6 +37,32 @@ type McpRuntimeGlobal = typeof globalThis & {
   __aiqsaMcpRuntimeCoordinator?: McpRuntimeCoordinator;
 };
 
+type LaunchFetch = Awaited<ReturnType<McpOAuthService["createRuntimeFetch"]>>;
+
+/**
+ * The transport of one runtime launch. Each request of a personal runtime
+ * re-checks the personal network policy; installation runtimes and the
+ * ToolHive probe keep their reviewed permission. Seams are injectable for tests.
+ */
+export function createDefaultMcpLaunchFetch(deps: Readonly<{
+  createSafeFetch?: (options: McpSafeFetchOptions) => LaunchFetch;
+  oauthRuntimeFetch?: McpOAuthService["createRuntimeFetch"];
+  personalAddressPolicy?: McpAddressPolicy;
+}> = {}): (launch: McpRuntimeLaunch) => Promise<LaunchFetch> {
+  const createSafeFetch = deps.createSafeFetch ?? createMcpSafeFetch;
+  const personalAddressPolicy = deps.personalAddressPolicy ?? personalMcpAddressPolicy;
+  const oauthRuntimeFetch = deps.oauthRuntimeFetch ??
+    ((connectionId, baseFetch, serverUrl) => mcpOAuthService.createRuntimeFetch(connectionId, baseFetch, serverUrl));
+  return async (launch) => {
+    const baseFetch = createSafeFetch(mcpDestinationSafeFetchOptions({
+      allowInsecureHttp: true,
+      allowPrivateNetwork: launch.trustedInternalHttp === true || launch.allowPrivateNetwork === true,
+      personal: launch.personalRuntime === true && launch.trustedInternalHttp !== true
+    }, personalAddressPolicy));
+    return launch.oauthConnectionId ? oauthRuntimeFetch(launch.oauthConnectionId, baseFetch, launch.url) : baseFetch;
+  };
+}
+
 function createDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
   const toolHiveDriver = getDefaultToolHiveDriver();
   const directSessions = createMcpClientSessionFactory({
@@ -41,15 +70,7 @@ function createDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
       ? createDefaultMcpOAuthRuntimeProvider(launch.oauthConnectionId)
       : undefined,
     fetch: createMcpSafeFetch(),
-    async fetchForLaunch(launch) {
-      const baseFetch = createMcpSafeFetch({
-        allowInsecureHttp: true,
-        allowPrivateNetwork: launch.trustedInternalHttp === true || launch.allowPrivateNetwork === true
-      });
-      return launch.oauthConnectionId
-        ? mcpOAuthService.createRuntimeFetch(launch.oauthConnectionId, baseFetch, launch.url)
-        : baseFetch;
-    },
+    fetchForLaunch: createDefaultMcpLaunchFetch(),
     limits: DEFAULT_RUNTIME_LIMITS
   });
   return new McpRuntimeCoordinator({
@@ -84,12 +105,6 @@ export function getDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
 
 export function kickDefaultMcpRuntime(userId?: string): void {
   getDefaultMcpRuntimeCoordinator().kick(userId);
-}
-
-export function defaultMcpOperationalStatus(generationId: string) {
-  // Status reads must not create/start the coordinator or wake idle workloads.
-  return (globalThis as McpRuntimeGlobal).__aiqsaMcpRuntimeCoordinator
-    ?.operationalStatus(generationId) ?? "inactive";
 }
 
 const loadRunPlan = createPrismaMcpRunPlanLoader();

@@ -1,6 +1,6 @@
 import { getDefaultMcpRuntimeCoordinator, defaultMcpRunPlan } from "./defaultRuntime";
 import { createMcpHubService } from "./hubService";
-import { filterMcpToolsForUser } from "./toolAccess";
+import { filterMcpToolsForHub } from "./toolAccess";
 import { prisma } from "@/lib/server/prisma";
 import { getAuthConfig } from "../auth/config";
 import { createPrismaLoginRateLimiter } from "../auth/prismaRateLimit";
@@ -22,7 +22,7 @@ export const defaultMcpHubRateLimiter = createPrismaLoginRateLimiter({
 export const defaultMcpHubService = createMcpHubService({
   callRuntimeTool: (input) => getDefaultMcpRuntimeCoordinator().callTool(input),
   catalog: (userId) => defaultMcpRunPlan.catalog(userId),
-  filterTools: filterMcpToolsForUser,
+  filterTools: filterMcpToolsForHub,
   inspect: (userId, tools) => defaultMcpRunPlan.inspect(userId, tools),
   materialize: (userId, tools, signal) => defaultMcpRunPlan.materialize(userId, tools, signal),
   router: createMcpSemanticRouter({

@@ -53,6 +53,8 @@ type RecordOptions = {
   sharedEndpoints?: Record<string, McpEndpointBinding>;
   sharedValues?: Record<string, McpSlotValue>;
   sharedVersion?: number;
+  ownerUserId?: string | null;
+  userDisabledToolNames?: string[];
 };
 
 /** A revision checked with recorded name/definition pairs. */
@@ -240,6 +242,7 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
       grants: grants.map(grant),
       id: SERVER_ID,
       namespace: "remote-mcp",
+      ...(options.ownerUserId !== undefined ? { ownerUserId: options.ownerUserId } : {}),
       sharedConfigEnvelope: encryptMcpEnvelope(
         {
           ...(options.sharedEndpoints ? { endpoints: options.sharedEndpoints } : {}),
@@ -259,11 +262,43 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
       groups: (options.groupIds ?? ["group-1"]).map((groupId) => ({ groupId })),
       id: USER_ID
     },
+    userDisabledToolNames: options.userDisabledToolNames ?? [],
     userId: USER_ID
   } as unknown as RuntimeRecord;
 }
 
 describe("remote MCP runtime candidates", () => {
+  it("rejects a personal server for a different user even when a grant is present", () => {
+    const candidate = remoteRuntimeCandidate({
+      key: KEY,
+      record: runtimeRecord({
+        grants: [{ canUse: true, groupId: null, personalSlotKeys: ["authorization", "workspace"], userId: USER_ID }],
+        ownerUserId: "other-user"
+      })
+    });
+
+    expect(candidate).toBeNull();
+  });
+
+  it("keeps a personal runtime's identity and full inventory when its owner switches tools off", () => {
+    const candidate = (userDisabledToolNames: string[]) => remoteRuntimeCandidate({
+      key: KEY,
+      record: runtimeRecord({
+        grants: [{ canUse: true, groupId: null, personalSlotKeys: ["authorization", "workspace"], userId: USER_ID }],
+        ownerUserId: USER_ID,
+        userDisabledToolNames
+      })
+    });
+    const all = candidate([]);
+    const switchedOff = candidate(["echo"]);
+
+    expect(all).toMatchObject({ effectiveEnvelope: { personalRuntime: true }, personalRuntime: true });
+    expect(switchedOff?.fingerprint).toBe(all?.fingerprint);
+    expect(switchedOff?.effectiveEnvelope).toEqual(all?.effectiveEnvelope);
+    expect(switchedOff).not.toHaveProperty("allowedToolNames");
+    expect(switchedOff?.effectiveEnvelope).not.toHaveProperty("toolSelection");
+  });
+
   it("unions group use with direct-only personal permissions and decrypts the effective headers", () => {
     const candidate = remoteRuntimeCandidate({ key: KEY, record: runtimeRecord() });
 
@@ -612,6 +647,16 @@ describe("remote MCP runtime candidates", () => {
 });
 
 describe("local MCP runtime candidates", () => {
+  it("does not launch a locally hosted runtime for a personal server", () => {
+    const record = runtimeRecord({
+      configuration: localConfiguration,
+      ownerUserId: USER_ID,
+      resolvedArtifact: localArtifact
+    });
+
+    expect(localRuntimeCandidate({ key: KEY, record })).toBeNull();
+  });
+
   it("maps the per-user effective values exactly into the ToolHive workload environment", () => {
     const candidate = localRuntimeCandidate({
       key: KEY,
@@ -924,6 +969,8 @@ describe("Prisma MCP shared Project runtimes", () => {
     await expect(repository(accepted(personalPlan, mcpSharedRuntimeFingerprint({
       plan: personalPlan.plan, revisionId: REVISION_ID
     }))).loadAcceptedGeneration("shared-accepted", NOW)).resolves.toBeNull();
+    await expect(repository(accepted({ ...expected.effectiveEnvelope, personalRuntime: true }))
+      .loadAcceptedGeneration("shared-accepted", NOW)).resolves.toBeNull();
     // A generation owned by another server's shared runtime is not this revision's.
     await expect(repository({ ...accepted(expected.effectiveEnvelope), sharedServerId: "server-2" })
       .loadAcceptedGeneration("shared-accepted", NOW)).resolves.toBeNull();
@@ -972,9 +1019,10 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     }));
   });
 
-  it("persists only an encrypted effective snapshot while returning the required launch headers", async () => {
+  it.each([false, true])("persists an encrypted effective snapshot without the owner's switch-offs, personal=%s", async (personal) => {
     const record = runtimeRecord({
-      configuration: { ...configuration, disabledToolNames: ["dangerous_tool"] }
+      configuration: { ...configuration, disabledToolNames: ["dangerous_tool"] },
+      ...(personal ? { ownerUserId: USER_ID, userDisabledToolNames: ["echo"] } : {})
     });
     const expected = remoteRuntimeCandidate({ key: KEY, record });
     const createGeneration = vi.fn(async (input: { data: Record<string, unknown> }) => ({
@@ -1016,6 +1064,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
 
     expect(launches).toEqual([{
       allowPrivateNetwork: false,
+      ...(personal ? { personalRuntime: true } : {}),
       callTimeoutMs: 28_000,
       disabledToolNames: ["dangerous_tool"],
       fingerprint: expected?.fingerprint,
@@ -1047,13 +1096,67 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
       where: {
         enabled: true,
         id: USER_SERVER_ID,
+        // The value version the candidate was derived from: a sync that read
+        // the row before a credential replacement cannot re-desire it.
+        personalConfigVersion: 9,
         server: {
           activeRevisionId: REVISION_ID,
           archivedAt: null,
-          enabled: true
+          enabled: true,
+          ...(personal ? { ownerUserId: USER_ID } : {})
         }
       }
     });
+  });
+
+  it("restores an accepted personal runtime with its ownership flag after the owner switches tools", async () => {
+    const expected = remoteRuntimeCandidate({
+      key: KEY,
+      record: runtimeRecord({
+        grants: [{ canUse: true, groupId: null, personalSlotKeys: ["authorization", "workspace"], userId: USER_ID }],
+        ownerUserId: USER_ID
+      })
+    });
+    if (!expected) throw new Error("expected personal runtime candidate");
+    const findFirst = vi.fn(async () => ({
+      effectiveConfigEnvelope: encryptMcpEnvelope(
+        expected.effectiveEnvelope,
+        KEY,
+        mcpRuntimeGenerationEnvelopeContext("generation-personal", expected.fingerprint)
+      ),
+      fingerprint: expected.fingerprint,
+      id: "generation-personal",
+      inventoryUpdatedAt: NOW,
+      oauthConnectionId: null,
+      retryAt: null,
+      revision: {
+        configuration,
+        id: REVISION_ID,
+        serverId: SERVER_ID,
+        validationEvidence: checkedEvidence(CHECKED_TOOLS)
+      },
+      sharedServerId: null,
+      // A switch after acceptance changes no runtime input: recovery uses the
+      // encrypted snapshot's ownership flag and keeps the full inventory.
+      userServer: {
+        server: { ownerUserId: USER_ID },
+        serverId: SERVER_ID,
+        userDisabledToolNames: ["echo"],
+        userId: USER_ID
+      }
+    }));
+    const repository = createPrismaMcpRuntimeRepository({
+      encryptionKey: () => KEY,
+      prisma: { mcpRuntimeGeneration: { findFirst } } as unknown as PrismaClient
+    });
+
+    const restored = await repository.loadAcceptedGeneration("generation-personal", NOW);
+    expect(restored).toMatchObject({
+      fingerprint: expected.fingerprint,
+      generationId: "generation-personal",
+      personalRuntime: true
+    });
+    expect(restored).not.toHaveProperty("allowedToolNames");
   });
 
   it("restores an accepted active-run generation from its immutable revision and effective snapshot", async () => {
@@ -1244,7 +1347,7 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     });
   });
 
-  it("finalizes only tombstoned server graphs that have no runtime generations", async () => {
+  it("finalizes only tombstoned server graphs without runtime generations or stored tokens", async () => {
     const calls: string[] = [];
     const tx = {
       mcpOAuthClient: {
@@ -1280,16 +1383,20 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     const repository = createPrismaMcpRuntimeRepository({ prisma: client });
 
     await expect(repository.finalizeDeletedServers()).resolves.toBe(1);
+    // Any stored token, ready or disconnecting, keeps the server until it is
+    // revoked or the revocation bound wipes it.
+    const tokensSettled = { none: { tokenEnvelope: { not: null } } };
     expect(tx.mcpServer.findMany).toHaveBeenCalledWith(expect.objectContaining({
       take: 100,
       where: {
         archivedAt: { not: null },
+        oauthConnections: tokensSettled,
         revisions: { none: { runtimeGenerations: { some: {} } } }
       }
     }));
     expect(calls).toEqual(["detach-active-revision", "revisions", "servers", "oauth-clients"]);
     expect(tx.mcpServer.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ archivedAt: { not: null }, revisions: { none: {} } })
+      where: expect.objectContaining({ archivedAt: { not: null }, oauthConnections: tokensSettled, revisions: { none: {} } })
     }));
     expect(tx.mcpOAuthClient.deleteMany).toHaveBeenCalledWith({
       where: { connections: { none: {} }, id: { in: ["oauth-client-1"] } }

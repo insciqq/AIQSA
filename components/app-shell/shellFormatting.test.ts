@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CatalogModel } from "./types";
-import { chatTitleForDisplay, exportFileBaseName, formatTokenCount, humanizeErrorCode, modelCapabilityDescription, modelCapabilityLabel, modelCapabilityLabels, responseErrorMessage } from "./shellFormatting";
+import { chatTitleForDisplay, exportFileBaseName, formatTokenCount, humanizeErrorCode, modelCapabilityDescription, modelCapabilityLabel, modelCapabilityLabels, MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE, responseErrorMessage, responseErrorMessageDetails } from "./shellFormatting";
 
 describe("shell error formatting", () => {
   it.each([
@@ -27,6 +27,23 @@ describe("shell error formatting", () => {
   it("explains a message deletion conflict with a recovery action", async () => {
     expect(await responseErrorMessage(Response.json({ error: "message_delete_conflict" }, { status: 409 }), "message_delete_failed_409"))
       .toBe("This message is still in use by another operation. Wait for it to finish, then try deleting again (message_delete_conflict)");
+  });
+
+  it("explains a Load all refusal over the tool limit on send and on Use Load all without suggesting Load all", async () => {
+    const serverMessage = "Load all can offer at most 128 MCP tools to one message. Use MCP Auto or switch some tools off.";
+    for (const fallback of ["send_failed_409", "regenerate_failed_409"]) {
+      const details = await responseErrorMessageDetails(
+        Response.json({ error: "mcp_plan_too_large", message: serverMessage }, { status: 409 }), fallback);
+      expect(details).toEqual({ code: "mcp_plan_too_large", message: MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE, preserveForComposer: true });
+      expect(details.message).toMatch(/at most 128 MCP tools/);
+      expect(details.message).toMatch(/Use Auto, or switch tools off in Settings → Connections/);
+      expect(details.message).not.toMatch(/use Load all/i);
+    }
+    expect((await responseErrorMessageDetails(Response.json({ error: "mcp_plan_too_large", limit: "maxTools" }, { status: 409 }), "send_failed_409")).message)
+      .toBe(MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE);
+    // Other plan limits keep the generic copy.
+    expect(await responseErrorMessage(Response.json({ error: "mcp_plan_too_large", message: "MCP tools are not ready: docs." }, { status: 409 }), "send_failed_409"))
+      .toBe("The enabled MCP tools exceed the per-run limit. Disable some servers and try again (mcp_plan_too_large)");
   });
 
   it("explains MCP tool denial at send and regeneration admission", async () => {

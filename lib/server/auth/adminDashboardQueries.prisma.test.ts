@@ -621,9 +621,9 @@ describe("Prisma-backed admin dashboard queries", () => {
           },
           _count: {
             select: {
-              mcpGrants: true,
-              mcpOAuthConnections: true,
-              mcpUserServers: true
+              mcpGrants: { where: { server: { ownerUserId: null } } },
+              mcpOAuthConnections: { where: { server: { ownerUserId: null } } },
+              mcpUserServers: { where: { server: { ownerUserId: null } } }
             }
           },
           settings: {
@@ -636,7 +636,7 @@ describe("Prisma-backed admin dashboard queries", () => {
       expect(inviteFindMany).toHaveBeenCalledOnce();
       expect(mcpServerFindFirst).toHaveBeenCalledWith({
         select: { id: true },
-        where: { archivedAt: null }
+        where: { archivedAt: null, ownerUserId: null }
       });
       expect(smtpControlFindFirst).toHaveBeenCalledWith({
         select: { id: true },

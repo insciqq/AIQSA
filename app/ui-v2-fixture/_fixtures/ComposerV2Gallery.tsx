@@ -34,6 +34,8 @@ import {
 import type { ComposerV2Assistant } from "@/features/composer-v2/AssistantRowProvenanceV2";
 import { HeaderModelSelectorV2 } from "@/features/workspace-v2/WorkspaceHeaderV2";
 import { headerModelProvenanceV2 } from "@/features/workspace-v2/HeaderAssistantSelectorV2";
+import { ComposerOperationErrorV2 } from "@/features/workspace-v2/PowerAppShellV2View";
+import { MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE } from "@/components/app-shell/shellFormatting";
 import type { ComposerAttachmentItemV2 } from "@/features/attachments-v2/attachmentPresentation";
 
 export type ComposerGalleryState =
@@ -58,6 +60,8 @@ export type ComposerGalleryState =
   | "error"
   | "model"
   | "knowledge"
+  | "load-all-refused"
+  | "mcp-personal"
   | "project-knowledge"
   | "reasoning"
   | "reasoning-hidden"
@@ -535,7 +539,7 @@ function initialLayer(state: ComposerGalleryState): ComposerV2Layer {
   if (state === "assistant-project-fallback") return "knowledge";
   if (state === "add") return "add";
   if (state === "assistant") return "skills";
-  if (state === "assistant-fixed") return "tools";
+  if (state === "assistant-fixed" || state === "mcp-personal") return "tools";
   if (state === "assistant-changed") return "search";
   if (state === "assistant-knowledge" || state === "knowledge" || state === "project-knowledge") {
     return "knowledge";
@@ -580,6 +584,25 @@ function galleryReasoningConfig(config: ComposerConfig, state: ComposerGallerySt
   };
 }
 
+/**
+ * A personal chat's MCP disclosure: Studio's installation server plus the
+ * account's enabled personal connections, two of them needing attention.
+ */
+const galleryPersonalMcpServers: ComposerConfig["mcpServers"] = [
+  { ...composerGalleryConfig.mcpServers[0]!, source: "installation" },
+  {
+    attention: "reauthorization_required", description: "", enabled: true, id: "personal-notion", knownToolCount: 14,
+    name: "Notion", readiness: "reauthorization_required", runtimeErrorCode: null, source: "personal"
+  },
+  {
+    attention: "unavailable", description: "", enabled: true, id: "personal-home-lab", knownToolCount: 3,
+    name: "Home lab", readiness: "unavailable", runtimeErrorCode: "mcp_connect_failed", source: "personal"
+  },
+  {
+    description: "", enabled: true, id: "personal-docs", knownToolCount: 18, name: "Docs search", readiness: "ready", source: "personal"
+  }
+];
+
 export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalleryState }) {
   const wideChips = state === "chips-wide" || state === "chips-wide-comments";
   const reasoningFixture = wideChips || state.startsWith("reasoning");
@@ -614,13 +637,16 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
         ? galleryReasoningConfig({ ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
             wideChips ? { ...server, enabled: true } : server
           ) }, state)
-        : { ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
-            wideChips || offChips ? { ...server, enabled: true } : server
-          ) });
+        : state === "mcp-personal"
+          ? { ...composerGalleryConfig, mcpServers: galleryPersonalMcpServers }
+          : { ...composerGalleryConfig, mcpServers: composerGalleryConfig.mcpServers.map((server) =>
+              wideChips || offChips ? { ...server, enabled: true } : server
+            ) });
   const [workspaceEnabled, setWorkspaceEnabled] = useState(!offChips);
   const [agentEnabled, setAgentEnabled] = useState(false);
   const allCapabilities = chipFixture || ["capabilities", "workspace-running", "workspace-failed"].includes(state);
-  const [draft, setDraft] = useState(state === "default" ? "Подготовь краткое резюме" : "");
+  const [draft, setDraft] = useState(state === "default" ? "Подготовь краткое резюме"
+    : state === "load-all-refused" ? "Сверь открытые задачи во всех подключённых системах" : "");
   // Assistant states mirror the composer store: a change marks an adjustable
   // row as changed for this chat, a fixed row refuses it, Reset restores it.
   const [assistantSetup] = useState(() => galleryAssistantSetup(state));
@@ -658,7 +684,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
     : state === "project-knowledge" || projectFallback ? "project" : state === "zero" ? "off" : "explicit");
   const [mcpSelection, setMcpSelection] = useState<ComposerMcpSelection>(assistantSetup && !assistantChanged
     ? structuredClone(composerGalleryAssistantValues.tools as ComposerMcpSelection)
-    : { mode: wideChips ? "load_all" : offChips ? "off" : "auto" });
+    : { mode: wideChips || state === "load-all-refused" ? "load_all" : offChips ? "off" : "auto" });
   const [skillsMode, setSkillsMode] = useState<"auto" | "off">(offChips || assistantChanged ? "off" : "auto");
   const [reasoningEffort, setReasoningEffort] = useState(wideChips ? "xhigh" : "high");
   const [attachmentItems, setAttachmentItems] = useState<ComposerAttachmentItemV2[]>(
@@ -786,6 +812,14 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
             }]}
           />
           <div className="v2-composer-gallery-dock">
+            {/* A Load all refusal over the tool limit arrives before a run:
+                the shell shows it above the composer and keeps the draft. */}
+            <ComposerOperationErrorV2
+              error={state === "load-all-refused" ? MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE : null}
+              live
+              onRetry={() => undefined}
+              retryable={false}
+            />
             <ComposerV2
               agent={allCapabilities ? {
                 enabled: agentEnabled, onToggle: setAgentEnabled,
@@ -814,6 +848,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               onMakeModelDefault={() => undefined}
               onOpenKnowledgeLibrary={projectFallback ? undefined : () => undefined}
               onOpenMcpSettings={() => undefined}
+              onOpenPersonalMcpSettings={() => undefined}
               onOpenModelParameters={() => undefined}
               onOpenSkillLibrary={() => undefined}
               onOverrideKnowledgePlan={() => {

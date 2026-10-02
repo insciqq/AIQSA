@@ -183,8 +183,12 @@ async function projectPlan(runtime: McpRuntimeCoordinator, userId: string, serve
 }
 
 async function call(runtime: McpRuntimeCoordinator, generationId: string, name: string, note?: string) {
+  // A run accepts the definition the generation's ready inventory holds.
+  const { inventory } = await prisma.mcpRuntimeGeneration.findUniqueOrThrow({ select: { inventory: true }, where: { id: generationId } });
+  const definitionHash = (inventory as { tools: { definitionHash: string; name: string }[] }).tools
+    .find((tool) => tool.name === name)!.definitionHash;
   const result = await runtime.callTool({
-    arguments: note === undefined ? {} : { note }, generationId, inputSchema: { type: "object" }, name
+    arguments: note === undefined ? {} : { note }, definitionHash, generationId, inputSchema: { type: "object" }, name
   });
   return result.text.join("");
 }
