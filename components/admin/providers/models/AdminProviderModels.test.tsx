@@ -106,8 +106,6 @@ function usageSources(): ProviderUsageSources {
         maxMcpToolsPerDiscovery: 8,
         maxToolCalls: 8,
         maxToolRounds: 4,
-        mcpAutoDiscoveryMaxOutputTokens: 8192,
-        mcpAutoDiscoveryTimeoutSeconds: 30,
         reasoningEffort: null,
         updatedAt: "2026-09-07T12:00:00.000Z",
         updatedBy: null,

@@ -30,7 +30,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
       candidates: [reasoningModel, plainModel],
       policy: {
         defaultModel: { ...reasoningModel, available: true }, reasoningEffort: null,
-        mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8,
+        maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8,
         updatedAt: "2026-09-07T00:00:00.000Z", updatedBy: null, version: 1
       }
     };
@@ -60,12 +60,6 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         for (const key of ["maxMcpToolsPerDiscovery", "maxToolCalls", "maxToolRounds"] as const) {
           const value = body[key];
           if (value !== undefined) policy.policy[key] = value;
-        }
-        if (body.mcpAutoDiscoveryTimeoutSeconds !== undefined) {
-          policy.policy.mcpAutoDiscoveryTimeoutSeconds = body.mcpAutoDiscoveryTimeoutSeconds;
-        }
-        if (body.mcpAutoDiscoveryMaxOutputTokens !== undefined) {
-          policy.policy.mcpAutoDiscoveryMaxOutputTokens = body.mcpAutoDiscoveryMaxOutputTokens;
         }
         policy.policy.version += 1;
       }
@@ -103,20 +97,17 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await save.click();
     await expect(savedNotice).toBeVisible();
     expect(saved).toEqual([{ expectedVersion: 1, providerModelId: reasoningModel.id, reasoningEffort: "high" }]);
-    const outputTokens = defaults.getByRole("spinbutton", { name: "MCP Auto output tokens", exact: true });
-    await expect(outputTokens).toHaveValue("8192");
-    await outputTokens.fill("32768");
+    const mcpTools = defaults.getByRole("spinbutton", { name: "MCP Auto tools", exact: true });
+    await expect(mcpTools).toHaveValue("10");
+    await mcpTools.fill("20");
     await expect(save).toBeEnabled();
     await save.click();
     await expect(defaults.getByRole("status")).toHaveText("No unsaved changes");
-    expect(saved.at(-1)).toEqual({
-      expectedVersion: 2, maxMcpToolsPerDiscovery: 10, maxToolCalls: 20, maxToolRounds: 8,
-      mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 32768
-    });
+    expect(saved.at(-1)).toEqual({ expectedVersion: 2, maxMcpToolsPerDiscovery: 20, maxToolCalls: 20, maxToolRounds: 8 });
     await page.reload();
     await defaults.locator("summary").click();
     await expect(effort).toHaveValue("high");
-    await expect(outputTokens).toHaveValue("32768");
+    await expect(mcpTools).toHaveValue("20");
     await expect(model).toHaveValue(reasoningModel.id);
     await expect(save).toBeDisabled();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -125,28 +116,20 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width + 1);
     await page.screenshot({ path: testInfo.outputPath("default-reasoning.png") });
 
-    const outputMode = defaults.getByRole("combobox", { name: "MCP output budget" });
-    const timeout = defaults.getByRole("spinbutton", { name: "Discovery timeout", exact: true });
-    await outputMode.selectOption("model");
-    await timeout.fill("");
-    await save.click();
-    expect(saved.at(-1)).toMatchObject({ mcpAutoDiscoveryTimeoutSeconds: null, mcpAutoDiscoveryMaxOutputTokens: null });
-    await page.reload();
-    await defaults.locator("summary").click();
-    await expect(outputMode).toHaveValue("model");
-    await expect(timeout).toHaveValue("");
-    await expect(timeout).toHaveAttribute("placeholder", "Auto");
-    await expect(save).toBeDisabled();
+    // The retired MCP Auto output budget and discovery timeout stay out of the card.
+    await expect(defaults.getByRole("combobox", { name: "MCP output budget" })).toHaveCount(0);
+    await expect(defaults.getByRole("spinbutton", { name: "MCP Auto output tokens" })).toHaveCount(0);
+    await expect(defaults.getByRole("spinbutton", { name: "Discovery timeout" })).toHaveCount(0);
     if (viewport.width === 1440) {
       for (const theme of ["light", "dark"]) {
         await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
         for (const size of [{ width: 1440, height: 900 }, { width: 820, height: 1180 },
           { width: 1180, height: 820 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
           await page.setViewportSize(size);
-          await timeout.scrollIntoViewIfNeeded();
-          await expect(timeout).toBeInViewport();
+          await mcpTools.scrollIntoViewIfNeeded();
+          await expect(mcpTools).toBeInViewport();
           expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
-          await page.screenshot({ path: testInfo.outputPath(`utility-auto-${theme}-${size.width}x${size.height}.png`) });
+          await page.screenshot({ path: testInfo.outputPath(`chat-defaults-${theme}-${size.width}x${size.height}.png`) });
         }
       }
       await page.setViewportSize(viewport);

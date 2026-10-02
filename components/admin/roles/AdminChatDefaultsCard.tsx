@@ -5,7 +5,7 @@ import { cardClass, compactInputClass, compactSelectClass, sectionHeadingClass }
 import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
 import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminDefaultAnswerModelCandidate, AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
-import { MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS, MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS, isMcpAutoDiscoveryOutputTokens, MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
+import { MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
 import { resolveProviderConnectionLabels } from "@/lib/contracts/providerConnectionLabels";
 import type { ToolObservationPolicy } from "@/lib/contracts/toolObservationPolicy";
 import { useId, useMemo, useState } from "react";
@@ -16,15 +16,12 @@ type Draft = Readonly<{
   mcpTools: string;
   /** Empty while the saved policy is unknown. */
   observation: ToolObservationPolicy | "";
-  outputTokens: string;
-  outputMode: "model" | "manual";
   modelId: string;
   rounds: string;
-  timeout: string;
 }>;
 
 const emptyDraft: Draft = {
-  calls: "", effort: "", mcpTools: "", observation: "", outputTokens: "", outputMode: "model", modelId: "", rounds: "", timeout: ""
+  calls: "", effort: "", mcpTools: "", observation: "", modelId: "", rounds: ""
 };
 
 const OBSERVATION_POLICY_LABEL = "Tool result store and context compaction";
@@ -36,11 +33,8 @@ function draftFor(catalog: AdminModelPolicyCatalog | null): Draft {
     effort: catalog.policy.reasoningEffort ?? "",
     mcpTools: String(catalog.policy.maxMcpToolsPerDiscovery),
     observation: catalog.policy.toolObservationPolicy ?? "",
-    outputTokens: String(catalog.policy.mcpAutoDiscoveryMaxOutputTokens ?? MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.fallbackTokens),
-    outputMode: catalog.policy.mcpAutoDiscoveryMaxOutputTokens === null ? "model" : "manual",
     modelId: catalog.policy.defaultModel?.id ?? "",
-    rounds: String(catalog.policy.maxToolRounds),
-    timeout: catalog.policy.mcpAutoDiscoveryTimeoutSeconds === null ? "" : String(catalog.policy.mcpAutoDiscoveryTimeoutSeconds)
+    rounds: String(catalog.policy.maxToolRounds)
   };
 }
 
@@ -112,21 +106,16 @@ export function AdminChatDefaultsCard({
   const parsed = {
     calls: positiveSafeInteger(draft.calls),
     mcpTools: positiveSafeInteger(draft.mcpTools),
-    outputTokens: positiveSafeInteger(draft.outputTokens),
-    rounds: positiveSafeInteger(draft.rounds),
-    timeout: positiveSafeInteger(draft.timeout)
+    rounds: positiveSafeInteger(draft.rounds)
   };
   const invalidLimits = [
     ...(parsed.rounds === null ? ["Rounds"] : []),
     ...(parsed.calls === null ? ["Calls"] : []),
-    ...(parsed.mcpTools === null || parsed.mcpTools > MCP_RUN_PLAN_LIMITS.maxTools ? ["MCP Auto tools"] : []),
-    ...(draft.outputMode === "manual" && !isMcpAutoDiscoveryOutputTokens(parsed.outputTokens) ? ["MCP Auto output tokens"] : []),
-    ...(draft.timeout !== "" && (parsed.timeout === null || parsed.timeout < MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
-      parsed.timeout > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds) ? ["Discovery timeout"] : [])
+    ...(parsed.mcpTools === null || parsed.mcpTools > MCP_RUN_PLAN_LIMITS.maxTools ? ["MCP Auto tools"] : [])
   ];
   const limitsValid = invalidLimits.length === 0;
   const modelChanged = draft.modelId !== current.modelId || draft.effort !== current.effort;
-  const limitsChanged = (["calls", "mcpTools", "outputMode", "outputTokens", "rounds", "timeout"] as const)
+  const limitsChanged = (["calls", "mcpTools", "rounds"] as const)
     .filter((key) => draft[key] !== current[key]).length;
   const observationChanged = draft.observation !== "" && draft.observation !== current.observation;
   const changed = (modelChanged ? 1 : 0) + limitsChanged + (observationChanged ? 1 : 0);
@@ -153,9 +142,7 @@ export function AdminChatDefaultsCard({
       ...(limitsChanged > 0 ? {
         maxMcpToolsPerDiscovery: parsed.mcpTools!,
         maxToolCalls: parsed.calls!,
-        maxToolRounds: parsed.rounds!,
-        mcpAutoDiscoveryTimeoutSeconds: draft.timeout === "" ? null : parsed.timeout!,
-        mcpAutoDiscoveryMaxOutputTokens: draft.outputMode === "model" ? null : parsed.outputTokens!
+        maxToolRounds: parsed.rounds!
       } : {}),
       ...(observationChanged && draft.observation !== "" ? { toolObservationPolicy: draft.observation } : {})
     });
@@ -164,39 +151,32 @@ export function AdminChatDefaultsCard({
   };
 
   const limitField = (
-    key: "calls" | "mcpTools" | "outputTokens" | "rounds" | "timeout",
+    key: "calls" | "mcpTools" | "rounds",
     name: string,
-    options: Readonly<{ max?: number; min?: number; suffix?: string; width: string }>
+    options: Readonly<{ max?: number; width: string }>
   ) => (
     <label className="flex items-center gap-2 text-xs text-ink-muted">
       <span>{name}</span>
       <input
         aria-invalid={draft[key] !== "" && (
-          key === "calls" || key === "rounds"
-            ? parsed[key] === null
-            : key === "outputTokens"
-              ? !isMcpAutoDiscoveryOutputTokens(parsed.outputTokens)
-            : key === "mcpTools"
-              ? parsed.mcpTools === null || parsed.mcpTools > MCP_RUN_PLAN_LIMITS.maxTools
-              : parsed.timeout === null || parsed.timeout < MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds ||
-                parsed.timeout > MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds
+          key === "mcpTools"
+            ? parsed.mcpTools === null || parsed.mcpTools > MCP_RUN_PLAN_LIMITS.maxTools
+            : parsed[key] === null
         ) ? true : undefined}
         aria-label={name}
         className={`${compactInputClass} ${options.width}`}
         disabled={!catalog || busy}
         inputMode="numeric"
         max={options.max}
-        min={options.min ?? 1}
+        min={1}
         onChange={(event) => {
           const value = event.currentTarget.value;
           setEdits((previous) => ({ ...previous, [key]: value }));
         }}
         step={1}
-        placeholder={key === "timeout" ? "Auto" : undefined}
         type="number"
         value={draft[key]}
       />
-      {options.suffix ? <span aria-hidden="true">{options.suffix}</span> : null}
     </label>
   );
 
@@ -269,35 +249,7 @@ export function AdminChatDefaultsCard({
               {limitField("rounds", "Rounds", { width: "w-16" })}
               {limitField("calls", "Calls", { width: "w-16" })}
               {limitField("mcpTools", "MCP Auto tools", { max: MCP_RUN_PLAN_LIMITS.maxTools, width: "w-16" })}
-              <label className="flex items-center gap-2 text-xs text-ink-muted">
-                <span>MCP output budget</span>
-                <select aria-label="MCP output budget" className={compactSelectClass}
-                  disabled={!catalog || busy} value={draft.outputMode}
-                  onChange={(event) => {
-                    const outputMode = event.currentTarget.value === "model" ? "model" : "manual";
-                    setEdits((previous) => ({ ...previous, outputMode }));
-                  }}>
-                  <option value="model">Auto · System Model</option>
-                  <option value="manual">Custom limit</option>
-                </select>
-              </label>
-              {draft.outputMode === "manual" ? limitField("outputTokens", "MCP Auto output tokens", {
-                max: MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.maxTokens,
-                min: MCP_AUTO_DISCOVERY_OUTPUT_TOKEN_LIMITS.minTokens,
-                width: "w-24"
-              }) : null}
-              {limitField("timeout", "Discovery timeout", {
-                max: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.maxSeconds,
-                min: MCP_AUTO_DISCOVERY_TIMEOUT_LIMITS.minSeconds,
-                suffix: "s",
-                width: "w-20"
-              })}
             </div>
-            <p className="text-xs leading-5 text-ink-muted">
-              Auto uses the System Model’s output setting and available context for hidden reasoning and JSON tool selection.
-              Without an output setting or a known model limit, Auto allows up to 65,536 tokens. Larger allowances can increase time and cost.
-              Leave discovery timeout blank to use the System Model’s response timeout. Tool calls use their MCP server’s timeout.
-            </p>
           </div>
         <div className="flex min-w-0 items-center justify-between gap-6 border-t border-trace-subtle px-5 py-4">
           <span className="min-w-0">
