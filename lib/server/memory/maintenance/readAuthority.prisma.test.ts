@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
-  createAutomaticMaintenanceFact, createMaintenanceMessage, createMaintenanceOwner, deleteMaintenanceOwner, settleMaintenanceJob
+  createAutomaticMaintenanceFact, createMaintenanceMessage, createMaintenanceOwner, deleteMaintenanceOwner,
+  drainMaintenanceForgetPurges, settleMaintenanceJob
 } from "@/tests/support/memoryMaintenance";
 import { fuseMemoryRetrievalCandidates, planMemoryRetrieval } from "../../../domain/memory/retrieval";
 import { prisma } from "../../prisma";
@@ -99,6 +100,10 @@ describe("dependent fact authority after automatic cleanup", () => {
     await settleMaintenanceJob(owner.userId, (factId) => factId === source.factId ? "REMOVE" : "KEEP");
     expect(await prisma.memoryFact.findUnique({ where: { id: source.factId } })).toMatchObject({ state: "FORGOTTEN" });
     expect(await readable(owner, source)).toEqual(hidden);
+    expect(await readable(owner, dependent)).toEqual(visible);
+    // The purge removes the source's evidence; the cleanup event keeps the hint valid.
+    expect(await drainMaintenanceForgetPurges(owner.userId)).toBe(1);
+    expect(await prisma.memoryEvidence.count({ where: { userId: owner.userId, factVersionId: source.currentVersionId } })).toBe(0);
     expect(await readable(owner, dependent)).toEqual(visible);
     // The cleaned source's own dependency is no longer evaluated.
     await ownerForget(owner.userId, root);
