@@ -1,6 +1,7 @@
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import { mcpCatalogToolsByNames } from "./discovery";
-import { McpSemanticRouterError, type McpRouterUsageAttribution, type McpSemanticRouter } from "./router";
+import { logEvent } from "../observability";
+import { searchMcpCatalog, type McpToolSearchResult } from "./toolSearch";
 import type { McpCapabilityCatalog, McpRunPlanResult } from "./runPlan";
 import type { McpToolAccessFilter } from "./toolAccess";
 import { filterMcpCatalog } from "./toolAccessProjection";
@@ -47,55 +48,71 @@ export async function materializeMcpSelection(input: Readonly<{
   return result;
 }
 
-/** Shared discovery has no Chat, ModelRun or provider-request dependency. */
+/** Shared discovery has no Chat, ModelRun or provider-request dependency.
+ * The search is local and deterministic; only materialization performs I/O. */
 export async function discoverMcpTools(input: Readonly<{
   assertActive?(): Promise<void>;
   catalog: McpCapabilityCatalog;
   filterTools: McpToolAccessFilter;
   materialize: Materialize;
-  onUsage?(usage: McpRouterUsageAttribution): void;
   partial?: boolean;
-  router?: McpSemanticRouter;
-  routing: Omit<Parameters<McpSemanticRouter["route"]>[0], "catalog">;
+  search: Readonly<{
+    activeToolNames: ReadonlySet<string>;
+    limit: number;
+    query: string;
+    signal?: AbortSignal;
+  }>;
   userId: string;
-}>): Promise<Readonly<{ plans: ReadyPlan[]; selected: McpDiscoverySelection }>> {
-  const { signal, activeToolNames, limit } = input.routing;
+}>): Promise<Readonly<{
+  alreadyActive: McpDiscoverySelection;
+  plans: ReadyPlan[];
+  search: McpToolSearchResult;
+  selected: McpDiscoverySelection;
+}>> {
+  const { signal, activeToolNames, limit, query } = input.search;
+  const started = Date.now();
+  let search: McpToolSearchResult | undefined;
+  let alreadyActive: McpDiscoverySelection = [];
+  let loaded = 0;
+  const observe = (outcome: "completed" | "failed" | "cancelled") => logEvent("mcp_discovery", {
+    outcome, duration_ms: Date.now() - started,
+    ...(search ? { mode: search.mode, candidate_count: search.candidateCount, result_count: search.matches.length,
+      unknown_name_count: search.unknownNames.length } : {}),
+    loaded_count: loaded, already_loaded_count: alreadyActive.length
+  });
   const assertActive = async () => {
     signal?.throwIfAborted();
     await input.assertActive?.();
     signal?.throwIfAborted();
   };
-  await assertActive();
-  if (!Number.isSafeInteger(limit) || limit < 0 || limit > MCP_RUN_PLAN_LIMITS.maxTools) {
-    throw new McpDiscoveryError("mcp_discovery_limit_invalid");
-  }
-  const catalog = await filterMcpCatalog(input.userId, input.catalog, input.filterTools);
-  await assertActive();
-  if (limit === 0 || catalog.servers.every((server) => server.tools.every((tool) => activeToolNames.has(tool.namespacedName)))) {
-    return { plans: [], selected: [] };
-  }
-  if (!input.router) throw new McpDiscoveryError("mcp_router_unavailable");
-  let routed: Awaited<ReturnType<McpSemanticRouter["route"]>>;
   try {
-    routed = await input.router.route({ ...input.routing, catalog });
-  } catch (error) {
-    if (error instanceof McpSemanticRouterError && error.usageAttribution) input.onUsage?.(error.usageAttribution);
-    if (signal?.aborted) throw error;
-    throw new McpDiscoveryError(error instanceof McpSemanticRouterError ? error.code : "mcp_router_request_failed", { cause: error });
-  }
-  if (routed.usageAttribution) input.onUsage?.(routed.usageAttribution);
-  await assertActive();
-  const selected = mcpCatalogToolsByNames(catalog, routed.toolNames)
-    .filter((tool) => !activeToolNames.has(tool.namespacedName));
-  if (routed.toolNames.length > limit || new Set(routed.toolNames).size !== routed.toolNames.length ||
-    selected.length !== routed.toolNames.length) throw new McpDiscoveryError("mcp_router_output_invalid");
-  const batches = input.partial ? selected.map((tool) => [tool]) : selected.length ? [selected] : [];
-  const settled = await Promise.allSettled(batches.map(async (batch) => {
     await assertActive();
-    return materializeMcpSelection({ materialize: input.materialize, selected: batch, signal, userId: input.userId });
-  }));
-  await assertActive();
-  const failed = settled.find((result) => result.status === "rejected");
-  if (!input.partial && failed?.status === "rejected") throw failed.reason;
-  return { plans: settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []), selected };
+    if (!Number.isSafeInteger(limit) || limit < 0 || limit > MCP_RUN_PLAN_LIMITS.maxTools) {
+      throw new McpDiscoveryError("mcp_discovery_limit_invalid");
+    }
+    const catalog = await filterMcpCatalog(input.userId, input.catalog, input.filterTools);
+    await assertActive();
+    const allowed = new Set(catalog.servers.flatMap((server) => server.tools.map((tool) => tool.namespacedName)));
+    // The frozen catalog object keys the cached index; current access only narrows candidates.
+    search = searchMcpCatalog(input.catalog, { query, limit, eligible: (name) => allowed.has(name) });
+    const ranked = mcpCatalogToolsByNames(catalog, search.matches.map((match) => match.namespacedName));
+    alreadyActive = ranked.filter((tool) => activeToolNames.has(tool.namespacedName));
+    const capacity = Math.max(0, MCP_RUN_PLAN_LIMITS.maxTools - activeToolNames.size);
+    const selected = ranked.filter((tool) => !activeToolNames.has(tool.namespacedName)).slice(0, capacity);
+    const batches = input.partial ? selected.map((tool) => [tool]) : selected.length ? [selected] : [];
+    const settled = await Promise.allSettled(batches.map(async (batch) => {
+      await assertActive();
+      return materializeMcpSelection({ materialize: input.materialize, selected: batch, signal, userId: input.userId });
+    }));
+    await assertActive();
+    const failed = settled.find((result) => result.status === "rejected");
+    if (!input.partial && failed?.status === "rejected") throw failed.reason;
+    const plans = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    loaded = plans.reduce((total, plan) => total + plan.snapshot.tools.length, 0);
+    observe("completed");
+    return { alreadyActive, plans, search, selected };
+  } catch (error) {
+    observe(signal?.aborted ? "cancelled" : "failed");
+    throw error;
+  }
 }

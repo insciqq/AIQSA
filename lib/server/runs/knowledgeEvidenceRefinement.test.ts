@@ -23,7 +23,7 @@ function fixture(workflowVersion: 9 | 10 | 11 = 9) {
     knowledgeAnswerWorkflowVersion: workflowVersion, knowledgePlan: { mode: "explicit", version: 1, baseIds: ["base"], sourceIds: [] },
     modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: true, reasoning: false, vision: false }, modelId: "answer", params: {}, prompt: { developer: null, system: null }, provider: "fake",
     searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", toolBudgets: {
-      maxToolCalls: 8, maxToolRounds: 4, maxMcpToolsPerDiscovery: 10, mcpAutoDiscoveryTimeoutSeconds: 60 } };
+      maxToolCalls: 8, maxToolRounds: 4, maxMcpToolsPerDiscovery: 10 } };
   const first: PersistedToolLoopCall = { arguments: { query: "North effective date", sourceAliases: [] }, completedAt: new Date(1).toISOString(),
     id: "first", mcpBinding: null, ordinal: 0, providerCallId: "first-provider-call", result: null, roundIndex: 1,
     startedAt: new Date(0).toISOString(), state: "complete", toolName: "search_knowledge" };

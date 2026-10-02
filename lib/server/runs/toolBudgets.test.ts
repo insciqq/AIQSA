@@ -9,28 +9,18 @@ import {
 describe("accepted tool budgets", () => {
   it("uses the exact accepted snapshot", () => {
     expect(toolRunBudgetsForRequest({
-      toolBudgets: {
-        mcpAutoDiscoveryTimeoutSeconds: 60,
-        mcpAutoDiscoveryMaxOutputTokens: 4096,
-        maxMcpToolsPerDiscovery: 10,
-        maxToolCalls: 200,
-        maxToolRounds: 17
-      }
-    } as NormalizedRunRequest)).toEqual({
-      mcpAutoDiscoveryTimeoutSeconds: 60,
-      mcpAutoDiscoveryMaxOutputTokens: 4096,
-      maxMcpToolsPerDiscovery: 10,
-      maxToolCalls: 200,
-      maxToolRounds: 17
-    });
+      toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: 200, maxToolRounds: 17 }
+    } as NormalizedRunRequest)).toEqual({ maxMcpToolsPerDiscovery: 10, maxToolCalls: 200, maxToolRounds: 17 });
   });
 
-  it("retains the old per-route calculation marker and the other frozen policy fields", () => {
+  it.each([
+    { mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 4096 },
+    { mcpAutoDiscoveryTimeoutSeconds: 19, mcpAutoDiscoveryMaxOutputTokens: "model" },
+    { mcpAutoDiscoveryMaxOutputTokens: null }
+  ])("ignores retired router allowances in older accepted requests: %o", (retired) => {
     expect(toolRunBudgetsForRequest({ toolBudgets: {
-      mcpAutoDiscoveryTimeoutSeconds: 19, maxMcpToolsPerDiscovery: 120,
-      maxToolCalls: 31, maxToolRounds: 9
-    } })).toEqual({ mcpAutoDiscoveryTimeoutSeconds: 19, mcpAutoDiscoveryMaxOutputTokens: null,
-      maxMcpToolsPerDiscovery: 120, maxToolCalls: 31, maxToolRounds: 9 });
+      ...retired, maxMcpToolsPerDiscovery: 120, maxToolCalls: 31, maxToolRounds: 9
+    } })).toEqual({ maxMcpToolsPerDiscovery: 120, maxToolCalls: 31, maxToolRounds: 9 });
   });
 
   it.each([
@@ -38,26 +28,18 @@ describe("accepted tool budgets", () => {
     { maxToolCalls: 80, maxToolRounds: 40 }
   ])("keeps pre-increase accepted budgets unchanged: %o", (accepted) => {
     const toolBudgets = { ...DEFAULT_TOOL_RUN_BUDGETS, ...accepted };
-    expect(toolRunBudgetsForRequest({ toolBudgets })).toBe(toolBudgets);
-  });
-
-  it.each([null, 0, 1023, 65537, 4096.5, "8192"])("rejects an invalid persisted output allowance: %s", (value) => {
-    expect(() => toolRunBudgetsForRequest({ toolBudgets: {
-      ...DEFAULT_TOOL_RUN_BUDGETS, mcpAutoDiscoveryMaxOutputTokens: value
-    } })).toThrow("accepted_tool_budgets_invalid");
+    expect(toolRunBudgetsForRequest({ toolBudgets })).toEqual(toolBudgets);
   });
 
   it("preserves the pre-policy limits for legacy accepted runs", () => {
     expect(toolRunBudgetsForRequest({} as NormalizedRunRequest)).toEqual({
-      mcpAutoDiscoveryTimeoutSeconds: 60,
-      mcpAutoDiscoveryMaxOutputTokens: null,
       maxMcpToolsPerDiscovery: 5,
       maxToolCalls: 16,
       maxToolRounds: 3
     });
+    expect(toolRunBudgetsForRequest({ toolBudgets: { maxToolCalls: 7, maxToolRounds: 2 } }))
+      .toEqual({ maxMcpToolsPerDiscovery: 5, maxToolCalls: 7, maxToolRounds: 2 });
     expect(DEFAULT_TOOL_RUN_BUDGETS).toEqual({
-      mcpAutoDiscoveryTimeoutSeconds: 300,
-      mcpAutoDiscoveryMaxOutputTokens: "model",
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 80,
       maxToolRounds: 32

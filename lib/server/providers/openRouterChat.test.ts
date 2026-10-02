@@ -392,7 +392,7 @@ describe("OpenRouter Chat facade", () => {
     expect(fetchFn).toHaveBeenCalledOnce();
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls?.[0]).toMatchObject({ id: "discover-1", name: "find_tools" });
-    expect(mcpFindToolsArguments(result.toolCalls![0]!.arguments)).toEqual({ goal: "Read the synthetic service" });
+    expect(mcpFindToolsArguments(result.toolCalls![0]!.arguments)).toEqual({ query: "Read the synthetic service" });
     expect(result.usage).toMatchObject({ inputTokens: 17, outputTokens: 9 });
   });
 

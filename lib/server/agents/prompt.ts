@@ -14,7 +14,8 @@ export function agentPrompts(request: ProviderRunRequest) {
     : [{ id: "current", role: "user", content: request.content }];
   const messages = conversation.filter((message) => message.purpose !== "skill_catalog");
   // find_tools exists only for a non-empty frozen Auto catalog; its connected
-  // service names arrive once, through the admitted system prompt.
+  // tool index (the chat's mcpToolIndexGuidance) arrives once, through the
+  // admitted system prompt.
   const mcpDiscoveryAvailable = request.agent?.mcpMode === "auto" && Boolean(request.mcpDiscovery?.catalog.servers.length);
   let previousAssistantIndex = -1;
   for (let index = messages.length - 1; index >= 0; index--) {
@@ -65,7 +66,7 @@ export function agentPrompts(request: ProviderRunRequest) {
       + " Cite web sources with ordinary Markdown links to their URLs; internal search reference IDs are not clickable in this chat.",
       ...(request.agent?.mcpMode && request.agent.mcpMode !== "off" ? [
         "When asked to inspect private issues, documents or repositories, try the enabled MCP tools before concluding that a resource is inaccessible from a public web page. " +
-        (mcpDiscoveryAvailable ? "Use find_tools to discover the relevant capabilities. " : "") +
+        (mcpDiscoveryAvailable ? "Use find_tools to load the relevant capabilities: pass select: with exact names from the connected tool index, or short English keywords naming the service, action and object. " : "") +
         "A tool-discovery failure is not an authorization denial by the connected service. Report the actual diagnostic and which checks were not completed."
       ] : []),
       ...(request.workspace && request.workspaceCheckpoints ? [
