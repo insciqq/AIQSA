@@ -5038,15 +5038,16 @@ describe("PREPARING run orchestration", () => {
     /** A disposable-database fault scoped to one synthetic owner. */
     const injectInsertFailure = async (
       userId: string,
-      table: "MemoryRetrievalAttemptItem" | "ModelRunMemoryBinding",
+      table: "MemoryRetrievalAttempt" | "MemoryRetrievalAttemptItem" | "ModelRunMemoryBinding",
       body: "RAISE EXCEPTION 'synthetic preparation fault'; RETURN NEW;" | "PERFORM pg_sleep(8); RETURN NEW;",
-      condition = "TRUE"
+      condition = "TRUE",
+      event: "INSERT" | "UPDATE" = "INSERT"
     ) => {
       const name = `aiqsa_fail_open_${randomUUID().replaceAll("-", "")}`;
       if (!/^preparing-run-[0-9a-f-]+$/u.test(userId)) throw new Error("fault_owner_invalid");
       await prisma.$executeRawUnsafe(
         `CREATE FUNCTION "${name}"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN ${body} END $$`);
-      await prisma.$executeRawUnsafe(`CREATE TRIGGER "${name}" BEFORE INSERT ON "${table}" FOR EACH ROW ` +
+      await prisma.$executeRawUnsafe(`CREATE TRIGGER "${name}" BEFORE ${event} ON "${table}" FOR EACH ROW ` +
         `WHEN (NEW."userId" = '${userId}' AND ${condition}) EXECUTE FUNCTION "${name}"()`);
       return async () => {
         await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS "${name}" ON "${table}"`);
@@ -5297,6 +5298,64 @@ describe("PREPARING run orchestration", () => {
         expect(state.attempts).toEqual([expect.objectContaining({ state: "STALE" })]);
       });
     });
+
+    it("(12) finalizes a deadline at the next attempt's start with that attempt's own utility evidence", async () => {
+      await withPreparingUser(async ({ userId }) => {
+        const fixture = await createPreparingEmbeddingAuthority(userId);
+        try {
+          await prisma.userMemorySettings.update({ where: { userId }, data: {
+            embeddingProviderModelId: null, referenceChatHistory: false
+          } });
+          const policy = await prisma.$transaction(async tx => resolveCurrentMemoryUtilityPolicy(tx, userId,
+            await tx.userMemorySettings.findUniqueOrThrow({ where: { userId } })));
+          await prisma.userMemorySettings.update({ where: { userId }, data: {
+            acceptedUtilityEgressFingerprint: policy.fingerprint
+          } });
+          const chat = await prisma.chat.create({ data: { title: "Deadline after external attempt", userId } });
+          const request = baseRequest(chat.id, "/memory what do you know about me?");
+          const execution = createPrismaMemoryExecutionService(fixture.authority, prisma);
+          const retrieve = vi.fn(async (input: { attemptId: string }) => {
+            // Attempt 0 settles one external control utility, then a retryable drift follows.
+            const inputHash = memorySha256({ attemptId: input.attemptId, purpose: "deadline-next-attempt" });
+            const binding = await execution.admission.bind(userId, { inputHash, ordinal: 0,
+              owner: { retrievalAttemptId: input.attemptId, type: "RETRIEVAL_ATTEMPT" },
+              role: "MEMORY_CONTROL", versions: MEMORY_CONTROL_VERSIONS });
+            await execution.admission.start(userId, binding.id);
+            await execution.lifecycle.settle(userId, binding.id, {
+              acceptedOutputHash: memoryControlAcceptedOutputHash(inputHash, memoryControlIntentHash(readOnlyRetryIntent)),
+              errorCode: null, providerResponseId: "deadline-next-attempt-control", state: "SUCCEEDED",
+              usage: { cachedInputTokens: 0, completeness: "COMPLETE", estimatedCostMicros: null,
+                inputTokens: 9, outputTokens: 4, reasoningTokens: 0, totalTokens: 13 }
+            });
+            await prisma.userMemorySettings.update({ where: { userId }, data: { memoryRevision: { increment: 1 } } });
+            return { budgetSnapshot: { memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+              utilityEgressMode: "CONSENTED_EXTERNAL",
+              utilityExecutions: [{ reason: null, role: "MEMORY_CONTROL", state: "READY" }] },
+            items: [], outcome: "EMPTY", preparedContext: null, querySnapshot: null };
+          });
+          // Starting attempt 1 outlives the admission deadline.
+          const drop = await injectInsertFailure(userId, "MemoryRetrievalAttempt", "PERFORM pg_sleep(8); RETURN NEW;",
+            'NEW."attemptOrdinal" = 1 AND NEW."state" = \'EXECUTING\'', "UPDATE");
+          try {
+            await send(createPrismaRunRepository(prisma, { memoryAdmissionDeadlineMs: 4_000,
+              memoryExecutionAuthority: fixture.authority, memoryRetrieval: { retrieve } as never }), userId, request);
+          } finally {
+            await drop();
+          }
+          expect(retrieve).toHaveBeenCalledOnce();
+          const state = await receipts(userId);
+          expect(state.run).toMatchObject({ status: "streaming", errorPayload: null });
+          expect(state.attempts.map(({ attemptOrdinal, state: attemptState }) => [attemptOrdinal, attemptState]))
+            .toEqual([[0, "STALE"], [1, "CONSUMED"]]);
+          expect(state.attempts[1]).toMatchObject({ degradationCode: "memory_admission_deadline_exceeded",
+            externalRolesUsed: [], outcome: "FAILED_SAFE", utilityEgressMode: "LOCAL_ONLY" });
+          expect(state.binding).toMatchObject({ degradationCode: "memory_admission_deadline_exceeded",
+            outcome: "FAILED_SAFE", retrievalAttemptId: state.attempts[1]!.id });
+        } finally {
+          await fixture.cleanup();
+        }
+      });
+    }, 20_000);
 
     it("(11) has one guarded winner between concurrent fallbacks and Stop", async () => {
       await withPreparingUser(async ({ userId }) => {
