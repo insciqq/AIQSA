@@ -13,7 +13,7 @@ import { createAgentRunStore } from "../agents/store";
 import type { ProviderRunRequest } from "../providers/types";
 import { createPrismaToolHistoryOperations } from "./prismaRepositoryToolHistory";
 import { insertToolHistory } from "./toolHistory";
-import { toolCallRef, toolHistoryDigest } from "./toolHistoryContract";
+import { TOOL_HISTORY_LIMITS, toolCallRef, toolHistoryDigest } from "./toolHistoryContract";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -552,7 +552,9 @@ describe("history reads of a long chat", () => {
     expect(lines.filter((line) => line.includes("Result: large, not shown here"))).toHaveLength(turns);
     process.stdout.write(JSON.stringify({ toolHistoryTiming: { turns, calls: turns * 3, loadMs: Math.round(loadMs),
       projectMs: Math.round(projectMs), repeatProjectMs: Math.round(repeatMs) } }) + "\n");
-    // Far below the bound a slower read would degrade under.
-    for (const duration of [loadMs, projectMs, repeatMs]) expect(duration).toBeLessThan(5_000);
+    // Far below the bounds a slower read would degrade under: the admission
+    // read's, and the shorter one of every request's projection.
+    expect(loadMs).toBeLessThan(TOOL_HISTORY_LIMITS.transactionMs / 3);
+    for (const duration of [projectMs, repeatMs]) expect(duration).toBeLessThan(TOOL_HISTORY_LIMITS.requestTransactionMs / 2);
   });
 });
