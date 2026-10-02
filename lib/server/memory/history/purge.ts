@@ -585,7 +585,8 @@ async function settleAttemptItems(
       WHERE attempt."userId" = affected."userId"
         AND attempt."id" = affected."attemptId"
       RETURNING
-        attempt."admittedAssistantLeafMessageId", attempt."chatId",
+        attempt."admittedAssistantLeafMessageId",
+        attempt."boundedPrivateBaseRequestSnapshot", attempt."chatId",
         attempt."modelRunId", attempt."userId", attempt."state"
     ), settled_runs AS (
       UPDATE "ModelRun" AS run
@@ -593,6 +594,11 @@ async function settleAttemptItems(
         "errorPayload" = jsonb_build_object(
           'code', 'memory_source_stale',
           'message', ${RUN_PREPARATION_FAILURE_MESSAGE}::text
+        ),
+        "normalizedRequest" = COALESCE(
+          run."normalizedRequest",
+          attempt."boundedPrivateBaseRequestSnapshot" -> 'normalizedRequest',
+          '{}'::jsonb
         ),
         "status" = 'error'::"ModelRunStatus",
         "updatedAt" = CURRENT_TIMESTAMP

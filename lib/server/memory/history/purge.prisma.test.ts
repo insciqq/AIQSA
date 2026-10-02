@@ -331,18 +331,6 @@ describe("Prisma Memory history purge", () => {
         data: { activeLeafMessageId: assistantMessage.id },
         where: { id: chat.id }
       });
-      const run = await prisma.modelRun.create({
-        data: {
-          assistantMessageId: assistantMessage.id,
-          chatId: chat.id,
-          modelId: "memory-history-purge-model",
-          normalizedRequest: {},
-          provider: "memory-history-purge-provider",
-          status: "preparing",
-          userId,
-          userMessageId: userMessage.id
-        }
-      });
       const safeText = "[user] Preparing source fixture.";
       const chunk = await prisma.memoryRecallChunk.create({
         data: {
@@ -366,29 +354,45 @@ describe("Prisma Memory history purge", () => {
         }
       });
       const preparedContext = `Relevant prior conversation:\n${safeText}`;
-      const attempt = await prisma.memoryRetrievalAttempt.create({
-        data: {
-          admissionKind: "NORMAL_SEND",
-          admittedAssistantLeafMessageId: assistantMessage.id,
-          admittedUserMessageId: userMessage.id,
-          attemptOrdinal: 0,
-          baseRequestHash: memorySha256("history-purge-preparing-base"),
-          boundedPrivateBaseRequestSnapshot: {},
-          chatId: chat.id,
-          chatMemoryModeSnapshot: "NORMAL",
-          expiresAt: new Date("2030-01-01T00:00:00.000Z"),
-          memoryGenerationSnapshot: settings.memoryGeneration,
-          modelRunId: run.id,
-          preparedContextHash: memorySha256(preparedContext),
-          preparedContextText: preparedContext,
-          preparedContextTokenCount: 8,
-          queryHash: memorySha256("preparing history source"),
-          retrievalRevisionSnapshot: settings.memoryRevision,
-          settingsSnapshot: {},
-          state: "READY",
-          userId,
-          utilityEgressMode: "LOCAL_ONLY"
-        }
+      // A preparing run needs its live attempt in the same transaction.
+      const { attempt, run } = await prisma.$transaction(async (tx) => {
+        const createdRun = await tx.modelRun.create({
+          data: {
+            assistantMessageId: assistantMessage.id,
+            chatId: chat.id,
+            modelId: "memory-history-purge-model",
+            provider: "memory-history-purge-provider",
+            status: "preparing",
+            userId,
+            userMessageId: userMessage.id
+          }
+        });
+        const createdAttempt = await tx.memoryRetrievalAttempt.create({
+          data: {
+            admissionKind: "NORMAL_SEND",
+            admittedAssistantLeafMessageId: assistantMessage.id,
+            admittedUserMessageId: userMessage.id,
+            attemptOrdinal: 0,
+            baseRequestHash: memorySha256("history-purge-preparing-base"),
+            boundedPrivateBaseRequestSnapshot: { normalizedRequest: { fixture: "preparing" } },
+            chatId: chat.id,
+            chatMemoryModeSnapshot: "NORMAL",
+            expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+            memoryGenerationSnapshot: settings.memoryGeneration,
+            modelRunId: createdRun.id,
+            outcome: "USED",
+            preparedContextHash: memorySha256(preparedContext),
+            preparedContextText: preparedContext,
+            preparedContextTokenCount: 8,
+            queryHash: memorySha256("preparing history source"),
+            retrievalRevisionSnapshot: settings.memoryRevision,
+            settingsSnapshot: {},
+            state: "READY",
+            userId,
+            utilityEgressMode: "LOCAL_ONLY"
+          }
+        });
+        return { attempt: createdAttempt, run: createdRun };
       });
       await prisma.memoryRetrievalAttemptItem.create({
         data: {
@@ -433,6 +437,7 @@ describe("Prisma Memory history purge", () => {
           code: "memory_source_stale",
           message: RUN_PREPARATION_FAILURE_MESSAGE
         },
+        normalizedRequest: { fixture: "preparing" },
         status: "error"
       });
       await expect(prisma.message.findUniqueOrThrow({
