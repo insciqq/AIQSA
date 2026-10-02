@@ -61,7 +61,6 @@
     "knowledge:search:integrity": "tsx scripts/knowledge-search-integrity.ts",
     "knowledge:search:worker": "tsx scripts/knowledge-search-worker.ts",
     "knowledge:search:rebuild": "tsx scripts/knowledge-search-worker.ts --rebuild --drain",
-    "mcp:cleanup": "tsx scripts/mcp-toolhive-cleanup.ts",
     "workspace:maintenance": "tsx scripts/workspace-maintenance.ts",
     "prune": "tsx scripts/prune.ts",
     "security:deps": "npm audit --audit-level=high",
