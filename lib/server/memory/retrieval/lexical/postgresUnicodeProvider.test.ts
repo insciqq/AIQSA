@@ -117,7 +117,7 @@ describe("Unicode PostgreSQL Memory lexical candidate provider", () => {
       }]
     }))).rejects.toThrow("memory_lexical_search_request_invalid");
     await expect(provider.search(request("FACT", { deadlineAtMs: Date.now() - 1 })))
-      .rejects.toMatchObject({ code: "memory_read_statement_timeout" });
+      .rejects.toMatchObject({ code: "memory_read_deadline_exhausted" });
     expect(mocked.transaction).not.toHaveBeenCalled();
   });
 });

@@ -35,6 +35,11 @@ export const memoryLexicalProjectionReadinessScope = Symbol(
   "memory-lexical-projection-readiness-scope"
 );
 
+/** Caller settlement signal for PostgreSQL candidate reads. Symbol-keyed like
+ * the readiness scope, so it never reaches provider payloads or diagnostics. It
+ * withdraws a read still waiting for admission and never cancels started SQL. */
+export const memoryLexicalReadSignal = Symbol("memory-lexical-read-signal");
+
 export type MemoryLexicalMatchMode =
   | "FOLDED"
   | "NGRAM"
@@ -49,6 +54,7 @@ export type MemoryLexicalLogicalTerm = Readonly<{
 
 export type MemoryLexicalSearchRequest = Readonly<{
   [memoryLexicalProjectionReadinessScope]?: object;
+  [memoryLexicalReadSignal]?: AbortSignal;
   activeGenerationId: string;
   analysisProfileVersion: string;
   candidateLimitPerVariant: number;
@@ -93,8 +99,12 @@ export type MemoryLexicalFailureCode =
   | "memory_opensearch_scope_too_large"
   | "memory_opensearch_timeout"
   | "memory_opensearch_unavailable"
+  | "memory_read_admission_timeout"
+  | "memory_read_connection_timeout"
+  | "memory_read_deadline_exhausted"
   | "memory_read_lock_timeout"
-  | "memory_read_statement_timeout";
+  | "memory_read_statement_timeout"
+  | "memory_read_transaction_expired";
 
 /** Candidate-source evidence deliberately has no authority counters. Only the
  * PostgreSQL owner can add those after the canonical rejoin. */
@@ -183,8 +193,12 @@ const lexicalFailureCodes = new Set<MemoryLexicalFailureCode>([
   "memory_opensearch_scope_too_large",
   "memory_opensearch_timeout",
   "memory_opensearch_unavailable",
+  "memory_read_admission_timeout",
+  "memory_read_connection_timeout",
+  "memory_read_deadline_exhausted",
   "memory_read_lock_timeout",
-  "memory_read_statement_timeout"
+  "memory_read_statement_timeout",
+  "memory_read_transaction_expired"
 ]);
 const matchModes = new Set<MemoryLexicalMatchMode>([
   "FOLDED",
@@ -223,6 +237,8 @@ export function assertMemoryLexicalSearchRequest(
     !Number.isSafeInteger(request.memoryRevisionSnapshot) ||
     request.memoryRevisionSnapshot < 0 ||
     !Number.isSafeInteger(request.deadlineAtMs) || request.deadlineAtMs < 1 ||
+    request[memoryLexicalReadSignal] !== undefined &&
+      !(request[memoryLexicalReadSignal] instanceof AbortSignal) ||
     !analysisProfilePattern.test(request.analysisProfileVersion)
   ) throw new Error("memory_lexical_search_request_invalid");
 

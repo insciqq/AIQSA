@@ -10,11 +10,16 @@ export const MEMORY_RETRIEVAL_RRF_K = 60;
 export const MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES = 160;
 export const MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES = 400;
 // Each lane is an independent, bounded read against the same stable snapshot.
-// Sixteen workers keep the bounded Unicode exact/lexical/n-gram/vector set
-// in one SQL wave on the qualification topology. PostgreSQL/Prisma retain the
-// installation-level connection ceiling; candidate limits, fusion, and source
-// diversity are unchanged.
+// Sixteen workers only schedule the bounded Unicode exact/lexical/n-gram/vector
+// set of one retrieval; they do not decide database concurrency. Every Memory
+// read transaction of the process, including eager vector, expansion, snapshot
+// and profile reads outside this pool, first takes one of the process-wide
+// read admission permits below and holds it until its transaction has ended.
 export const MEMORY_RETRIEVAL_MAX_PARALLEL_LANES = 16;
+// Process-local cap on concurrent Memory read transactions. It is a resource
+// fence for one application or worker process, not an installation-wide limit;
+// waiting is bounded by the read budget or the caller's deadline and signal.
+export const MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS = 4;
 export const MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES = 100;
 export const MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES = 250;
 export const MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES = 60;

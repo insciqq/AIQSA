@@ -3,12 +3,12 @@ import type { MemoryRetrievalLane } from "../../../../domain/memory/retrieval";
 import { MEMORY_LEXICAL_ANALYSIS_PROFILE } from "../../persistence/lexical";
 import {
   MEMORY_READ_BUDGET_MS,
-  MemoryReadBudgetError,
   withMemoryReadBudget
 } from "../readBudget";
 import {
   assertMemoryLexicalSearchRequest,
   assertMemoryLexicalSearchResult,
+  memoryLexicalReadSignal,
   type MemoryLexicalCandidateProvider,
   type MemoryLexicalMatchMode,
   type MemoryLexicalRawCandidate,
@@ -135,21 +135,18 @@ export async function executePostgresMemoryLexicalQuery(input: Readonly<{
   if (!/^[A-Z0-9_]{1,64}$/u.test(input.queryTag)) {
     throw new Error("memory_lexical_provider_contract_invalid");
   }
-  const remainingMs = Math.min(
-    MEMORY_READ_BUDGET_MS.LEXICAL_CANDIDATE,
-    input.request.deadlineAtMs - Date.now()
-  );
-  if (!Number.isSafeInteger(remainingMs) || remainingMs < 1) {
-    throw new MemoryReadBudgetError("memory_read_statement_timeout");
-  }
   const startedAt = Date.now();
   const rows = await withMemoryReadBudget(
     input.client,
-    remainingMs,
+    MEMORY_READ_BUDGET_MS.LEXICAL_CANDIDATE,
     (tx) => tx.$queryRaw<PostgresMemoryLexicalRawCandidateRow[]>(Prisma.sql`
       /* aiqsa_memory_retrieval_lane:${Prisma.raw(input.queryTag)} */
       ${input.sql}
-    `)
+    `),
+    {
+      deadlineAtMs: input.request.deadlineAtMs,
+      signal: input.request[memoryLexicalReadSignal]
+    }
   );
   const candidates = decodePostgresMemoryLexicalRows(rows, input.matchMode);
   const result = Object.freeze({
