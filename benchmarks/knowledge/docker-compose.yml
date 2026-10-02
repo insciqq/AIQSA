@@ -63,12 +63,6 @@ services:
   tika:
     container_name: aiqsa-knowledge-benchmark-second-tika
 
-  toolhive-runtime:
-    container_name: aiqsa-knowledge-benchmark-second-toolhive
-    profiles: ["benchmark-disabled"]
-    user: "65532:65532"
-    volumes: !override []
-
   postgres:
     container_name: aiqsa-knowledge-benchmark-second-postgres
     shm_size: ${AIQSA_KNOWLEDGE_BENCHMARK_POSTGRES_SHM_SIZE:-512m}
@@ -106,12 +100,6 @@ networks:
     ipam:
       config:
         - subnet: ${AIQSA_KNOWLEDGE_BENCHMARK_DEFAULT_SUBNET:-192.168.119.0/24}
-  mcp-control:
-    name: aiqsa-knowledge-benchmark-second-mcp-control
-    internal: true
-    ipam:
-      config:
-        - subnet: ${AIQSA_KNOWLEDGE_BENCHMARK_MCP_CONTROL_SUBNET:-192.168.120.0/24}
   parser-control:
     name: aiqsa-knowledge-benchmark-second-parser-control
     internal: true

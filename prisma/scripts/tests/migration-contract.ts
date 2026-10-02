@@ -20,6 +20,7 @@ import { MEMORY_WORKER_RECOVERY_MIGRATION, memoryWorkerRecoveryFixtureSql, memor
 import { MEMORY_HISTORY_LIVE_ORDINALS_MIGRATION, memoryHistoryLiveOrdinalsFixtureSql, memoryHistoryLiveOrdinalsProofSql } from "./memory-history-live-ordinals";
 import { MCP_MODEL_OUTPUT_BUDGET_MIGRATION, mcpModelOutputBudgetFixtures } from "./mcp-model-output-budget";
 import { MCP_LEGACY_TOOL_RECHECK_MIGRATION, mcpLegacyToolRecheckFixtureSql, mcpLegacyToolRecheckProofSql, mcpLegacyToolRecheckRepeatProofSql } from "./mcp-legacy-tool-recheck";
+import { REMOVE_LOCAL_MCP_SOURCES_MIGRATION, removeLocalMcpSourcesFixtureSql, removeLocalMcpSourcesProofSql, removeLocalMcpSourcesRepeatProofSql } from "./remove-local-mcp-sources-adoption";
 import { UTILITY_RUNTIME_BUDGET_MIGRATION, utilityRuntimeBudgetFixtures } from "./utility-runtime-budgets";
 import { SEMANTIC_DECISIONS_MIGRATION, semanticDecisionsFixtureSql, semanticDecisionsProofSql } from "./semantic-decisions-adoption";
 import { DECISION_UPGRADE_MIGRATION, decisionUpgradeFixtureSql, decisionUpgradeProofSql } from "./decision-upgrade-adoption";
@@ -7647,6 +7648,8 @@ function main(
     modelPricesFixtureSql, modelPricesProofSql + modelPricesGuardProofSql, modelPricesProofSql + modelPricesGuardProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION,
     workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, REMOVE_LOCAL_MCP_SOURCES_MIGRATION,
+    removeLocalMcpSourcesFixtureSql, removeLocalMcpSourcesProofSql, removeLocalMcpSourcesRepeatProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
