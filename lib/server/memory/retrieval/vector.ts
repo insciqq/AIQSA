@@ -159,12 +159,17 @@ export type MemoryVectorLaneExecutor = Readonly<{
     input: MemoryVectorSearchInput,
     itemType: CurrentMemorySearchItemType
   ): Promise<number>;
+  /** First item type only: the same statement also returns the owner's
+   * current active profile, so the search needs no separate resolve trip. */
+  profiledEligibleCount(
+    input: MemoryVectorSearchInput,
+    itemType: CurrentMemorySearchItemType
+  ): Promise<Readonly<{ count: number; profile: MemoryVectorProfileResolution }>>;
   rejoin(
     input: MemoryVectorSearchInput,
     itemType: CurrentMemorySearchItemType,
     candidateIds: readonly string[]
   ): Promise<readonly MemoryVectorHit[]>;
-  resolveActiveProfile(userId: string): Promise<MemoryVectorProfileResolution>;
 }>;
 
 type ProfileRow = Readonly<{
@@ -185,6 +190,7 @@ type ProfileRow = Readonly<{
 
 type CandidateRow = Readonly<{ entryId: string }>;
 type CountRow = Readonly<{ count: number }>;
+type ProfiledCountRow = ProfileRow & CountRow;
 type HitRow = Readonly<{
   distance: number;
   entryId: string;
@@ -973,15 +979,13 @@ function eligibilitySql(
   }
 }
 
-export function memoryVectorEligibleCountSql(input: MemoryVectorSqlInput): Prisma.Sql {
+function boundedEligibleRowsSql(input: MemoryVectorSqlInput): Prisma.Sql {
   // Strategy selection needs a conservative upper bound, not a second full
   // authoritative scan. Counting the current generation's READY index rows
   // can only choose HNSW earlier when stale rows exist; candidate scan and the
   // authoritative rejoin still apply every source/safety/lifecycle fence. A
   // full eligible count here doubled the hot-path work for HNSW requests.
   return Prisma.sql`
-    SELECT count(*)::integer AS "count"
-    FROM (
       SELECT 1
       FROM "MemorySearchEntry" AS entry
       WHERE entry."userId" = ${input.input.userId}
@@ -991,7 +995,54 @@ export function memoryVectorEligibleCountSql(input: MemoryVectorSqlInput): Prism
         AND entry."embedding" IS NOT NULL
         AND entry."embeddingDimension" = ${input.input.profile.dimension}
       LIMIT ${MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1}
-    ) AS bounded_eligible
+  `;
+}
+
+export function memoryVectorEligibleCountSql(input: MemoryVectorSqlInput): Prisma.Sql {
+  return Prisma.sql`
+    SELECT count(*)::integer AS "count"
+    FROM (${boundedEligibleRowsSql(input)}) AS bounded_eligible
+  `;
+}
+
+function activeProfileSelectSql(userId: string): Prisma.Sql {
+  return Prisma.sql`
+    SELECT
+      owner."status"::text AS "ownerStatus",
+      settings."useMemoryFacts",
+      settings."activeIndexGenerationId",
+      settings."embeddingProviderModelId" AS "selectedEmbeddingProviderModelId",
+      generation."id" AS "generationId",
+      generation."state"::text AS "generationState",
+      generation."indexMode"::text AS "indexMode",
+      generation."embeddingConnectionId",
+      generation."embeddingProviderModelId",
+      generation."embeddingConfigurationFingerprint",
+      generation."embeddingDimension",
+      generation."retrievalPipelineVersion",
+      generation."vectorSpaceFingerprint"
+    FROM "UserMemorySettings" AS settings
+    INNER JOIN "User" AS owner ON owner."id" = settings."userId"
+    LEFT JOIN "MemoryIndexGeneration" AS generation
+      ON generation."userId" = settings."userId"
+      AND generation."id" = settings."activeIndexGenerationId"
+    WHERE settings."userId" = ${userId}
+    LIMIT 1
+  `;
+}
+
+/** One round trip for the first item type: current owner/settings/generation
+ * profile evidence beside the bounded strategy count. The count reads only the
+ * caller's frozen generation; the profile decides whether it may be used. */
+export function memoryVectorProfiledEligibleCountSql(
+  input: MemoryVectorSqlInput
+): Prisma.Sql {
+  return Prisma.sql`
+    SELECT active_profile.*, (
+      SELECT count(*)::integer
+      FROM (${boundedEligibleRowsSql(input)}) AS bounded_eligible
+    ) AS "count"
+    FROM (${activeProfileSelectSql(input.input.userId)}) AS active_profile
   `;
 }
 
@@ -1087,35 +1138,7 @@ function decodedHits(
   return hits;
 }
 
-async function resolveActiveProfileWith(
-  store: Pick<PrismaClient, "$queryRaw">,
-  userId: string
-): Promise<MemoryVectorProfileResolution> {
-  if (!boundedToken(userId)) throw new Error("memory_vector_query_invalid");
-  const rows = await store.$queryRaw<ProfileRow[]>(Prisma.sql`
-    SELECT
-      owner."status"::text AS "ownerStatus",
-      settings."useMemoryFacts",
-      settings."activeIndexGenerationId",
-      settings."embeddingProviderModelId" AS "selectedEmbeddingProviderModelId",
-      generation."id" AS "generationId",
-      generation."state"::text AS "generationState",
-      generation."indexMode"::text AS "indexMode",
-      generation."embeddingConnectionId",
-      generation."embeddingProviderModelId",
-      generation."embeddingConfigurationFingerprint",
-      generation."embeddingDimension",
-      generation."retrievalPipelineVersion",
-      generation."vectorSpaceFingerprint"
-    FROM "UserMemorySettings" AS settings
-    INNER JOIN "User" AS owner ON owner."id" = settings."userId"
-    LEFT JOIN "MemoryIndexGeneration" AS generation
-      ON generation."userId" = settings."userId"
-      AND generation."id" = settings."activeIndexGenerationId"
-    WHERE settings."userId" = ${userId}
-    LIMIT 1
-  `);
-  const row = rows[0];
+function profileResolution(row: ProfileRow | undefined): MemoryVectorProfileResolution {
   if (
     !row ||
     row.ownerStatus !== "active" ||
@@ -1157,6 +1180,15 @@ async function resolveActiveProfileWith(
   };
 }
 
+async function resolveActiveProfileWith(
+  store: Pick<PrismaClient, "$queryRaw">,
+  userId: string
+): Promise<MemoryVectorProfileResolution> {
+  if (!boundedToken(userId)) throw new Error("memory_vector_query_invalid");
+  const rows = await store.$queryRaw<ProfileRow[]>(activeProfileSelectSql(userId));
+  return profileResolution(rows[0]);
+}
+
 function createPrismaLaneExecutor(tx: VectorTransaction): MemoryVectorLaneExecutor {
   return Object.freeze({
     async candidateScan(input, itemType, strategy, limit) {
@@ -1192,14 +1224,22 @@ function createPrismaLaneExecutor(tx: VectorTransaction): MemoryVectorLaneExecut
         memoryVectorEligibleCountSql({ input, itemType })
       ));
     },
+    async profiledEligibleCount(input, itemType) {
+      const rows = await tx.$queryRaw<ProfiledCountRow[]>(
+        memoryVectorProfiledEligibleCountSql({ input, itemType })
+      );
+      if (rows.length > 1) throw new Error("memory_vector_result_invalid");
+      const profile = profileResolution(rows[0]);
+      return {
+        count: profile.status === "READY" ? decodedCount(rows) : 0,
+        profile
+      };
+    },
     async rejoin(input, itemType, candidateIds) {
       if (candidateIds.length === 0) return [];
       return decodedHits(await tx.$queryRaw<HitRow[]>(
         memoryVectorAuthoritativeRejoinSql({ candidateIds, input, itemType })
       ), itemType);
-    },
-    resolveActiveProfile(userId) {
-      return resolveActiveProfileWith(tx, userId);
     }
   });
 }
@@ -1209,23 +1249,35 @@ export async function searchMemoryVectorLanes(
   input: MemoryVectorSearchInput
 ): Promise<MemoryVectorSearchResult> {
   validateSearchInput(input);
-  const resolved = await executor.resolveActiveProfile(input.userId);
-  if (resolved.status !== "READY") {
-    return { hits: [], lanes: [], reason: resolved.reason, status: "DEGRADED" };
-  }
-  if (!sameProfile(resolved.profile, input.profile)) {
-    return {
-      hits: [],
-      lanes: [],
-      reason: "memory_vector_generation_stale",
-      status: "DEGRADED"
-    };
-  }
-
+  let resolvedProfile: MemoryVectorProfile | null = null;
   const allHits: MemoryVectorHit[] = [];
   const lanes: MemoryVectorLaneEvidence[] = [];
   for (const itemType of input.itemTypes) {
-    const eligibleCount = await executor.eligibleCount(input, itemType);
+    let eligibleCount: number;
+    if (resolvedProfile === null) {
+      const profiled = await executor.profiledEligibleCount(input, itemType);
+      if (profiled.profile.status !== "READY") {
+        return {
+          hits: [],
+          lanes: [],
+          reason: profiled.profile.reason,
+          status: "DEGRADED"
+        };
+      }
+      // A different current profile must never become an empty READY result.
+      if (!sameProfile(profiled.profile.profile, input.profile)) {
+        return {
+          hits: [],
+          lanes: [],
+          reason: "memory_vector_generation_stale",
+          status: "DEGRADED"
+        };
+      }
+      resolvedProfile = profiled.profile.profile;
+      eligibleCount = profiled.count;
+    } else {
+      eligibleCount = await executor.eligibleCount(input, itemType);
+    }
     if (eligibleCount === 0) {
       lanes.push({
         candidateCount: 0,
@@ -1283,24 +1335,37 @@ export async function searchMemoryVectorLanes(
     .sort((left, right) => right.score - left.score ||
       left.entryId.localeCompare(right.entryId))
     .slice(0, input.limit);
-  return { hits, lanes, profile: resolved.profile, status: "READY" };
+  if (!resolvedProfile) throw new Error("memory_vector_query_invalid");
+  return { hits, lanes, profile: resolvedProfile, status: "READY" };
 }
+
+type MemoryVectorReadOptions = Readonly<{
+  /** Withdraws a read still waiting for read admission. */
+  signal?: AbortSignal;
+}>;
 
 export function createPrismaMemoryVectorRepository(client: PrismaClient = prisma) {
   return Object.freeze({
-    resolveActiveProfile(userId: string) {
+    resolveActiveProfile(userId: string, options: MemoryVectorReadOptions = {}) {
       return withMemoryReadBudget(
         client,
         MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
-        (tx) => resolveActiveProfileWith(tx, userId)
+        (tx) => resolveActiveProfileWith(tx, userId),
+        { signal: options.signal }
       );
     },
-    async search(input: MemoryVectorSearchInput): Promise<MemoryVectorSearchResult> {
+    async search(
+      input: MemoryVectorSearchInput,
+      options: MemoryVectorReadOptions = {}
+    ): Promise<MemoryVectorSearchResult> {
       return withMemoryReadBudget(
         client,
         MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
         (tx) => searchMemoryVectorLanes(createPrismaLaneExecutor(tx), input),
-        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+          signal: options.signal
+        }
       );
     }
   });

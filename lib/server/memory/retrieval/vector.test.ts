@@ -6,6 +6,7 @@ import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   memoryVectorCandidateSql,
   memoryVectorEligibleCountSql,
+  memoryVectorProfiledEligibleCountSql,
   searchMemoryVectorLanes,
   type MemoryVectorHit,
   type MemoryVectorLaneExecutor,
@@ -48,6 +49,13 @@ function input(overrides: Partial<MemoryVectorSearchInput> = {}): MemoryVectorSe
     vector: Array.from({ length: 1_024 }, (_, index) => index === 0 ? 1 : 0),
     ...overrides
   };
+}
+
+function profiled(count: number, resolved: MemoryVectorProfile = profile) {
+  return vi.fn(async () => ({
+    count,
+    profile: { profile: resolved, status: "READY" as const }
+  }));
 }
 
 function hit(entryId: string): MemoryVectorHit {
@@ -131,8 +139,8 @@ describe("Memory vector lane orchestration", () => {
     const executor: MemoryVectorLaneExecutor = {
       candidateScan: vi.fn(async () => []),
       eligibleCount: vi.fn(async () => 0),
-      rejoin: vi.fn(async () => []),
-      resolveActiveProfile: vi.fn(async () => ({ profile, status: "READY" as const }))
+      profiledEligibleCount: profiled(0),
+      rejoin: vi.fn(async () => [])
     };
     await expect(searchMemoryVectorLanes(executor, wide)).resolves.toMatchObject({
       hits: [],
@@ -154,13 +162,11 @@ describe("Memory vector lane orchestration", () => {
       async eligibleCount() {
         return MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1;
       },
+      profiledEligibleCount: profiled(MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1),
       async rejoin(_input, _itemType, candidateIds) {
         return candidateIds
           .filter((id) => !id.includes("filtered"))
           .map((id) => hit(id));
-      },
-      async resolveActiveProfile() {
-        return { profile, status: "READY" };
       }
     };
 
@@ -201,8 +207,8 @@ describe("Memory vector lane orchestration", () => {
     const executor: MemoryVectorLaneExecutor = {
       candidateScan,
       eligibleCount: vi.fn(async () => 1),
-      rejoin,
-      resolveActiveProfile: vi.fn(async () => ({ profile, status: "READY" as const }))
+      profiledEligibleCount: profiled(1),
+      rejoin
     };
 
     const result = await searchMemoryVectorLanes(executor, input({
@@ -225,22 +231,84 @@ describe("Memory vector lane orchestration", () => {
 
   it("degrades before scanning when the active generation no longer matches", async () => {
     const eligibleCount = vi.fn(async () => 1);
+    const candidateScan = vi.fn(async () => []);
+    const profiledEligibleCount = profiled(1, { ...profile, generationId: "generation-2" });
     const executor: MemoryVectorLaneExecutor = {
-      candidateScan: vi.fn(async () => []),
+      candidateScan,
       eligibleCount,
-      rejoin: vi.fn(async () => []),
-      resolveActiveProfile: vi.fn(async () => ({
-        profile: { ...profile, generationId: "generation-2" },
-        status: "READY" as const
-      }))
+      profiledEligibleCount,
+      rejoin: vi.fn(async () => [])
     };
-    await expect(searchMemoryVectorLanes(executor, input())).resolves.toEqual({
+    await expect(searchMemoryVectorLanes(executor, input({
+      itemTypes: ["RECALL_CHUNK", "TOOL_EVENT"]
+    }))).resolves.toEqual({
       hits: [],
       lanes: [],
       reason: "memory_vector_generation_stale",
       status: "DEGRADED"
     });
+    expect(profiledEligibleCount).toHaveBeenCalledTimes(1);
     expect(eligibleCount).not.toHaveBeenCalled();
+    expect(candidateScan).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "memory_vector_generation_stale",
+    "memory_vector_profile_unsupported",
+    "memory_vector_unavailable"
+  ] as const)("keeps the current-profile reason %s distinct without scanning", async (reason) => {
+    const candidateScan = vi.fn(async () => []);
+    const executor: MemoryVectorLaneExecutor = {
+      candidateScan,
+      eligibleCount: vi.fn(async () => 1),
+      profiledEligibleCount: vi.fn(async () => ({
+        count: 0,
+        profile: { reason, status: "DEGRADED" as const }
+      })),
+      rejoin: vi.fn(async () => [])
+    };
+    await expect(searchMemoryVectorLanes(executor, input())).resolves.toEqual({
+      hits: [],
+      lanes: [],
+      reason,
+      status: "DEGRADED"
+    });
+    expect(candidateScan).not.toHaveBeenCalled();
+  });
+
+  it("resolves the profile only inside the first item type count", async () => {
+    const eligibleCount = vi.fn(async (
+      _input: MemoryVectorSearchInput,
+      _itemType: string
+    ) => 0);
+    const profiledEligibleCount = profiled(0);
+    const executor: MemoryVectorLaneExecutor = {
+      candidateScan: vi.fn(async () => []),
+      eligibleCount,
+      profiledEligibleCount,
+      rejoin: vi.fn(async () => [])
+    };
+    await expect(searchMemoryVectorLanes(executor, input({
+      itemTypes: ["RECALL_CHUNK", "RECALL_ROUND_SEGMENT", "TOOL_EVENT"]
+    }))).resolves.toMatchObject({ profile, status: "READY" });
+    expect(profiledEligibleCount).toHaveBeenCalledTimes(1);
+    expect(profiledEligibleCount).toHaveBeenCalledWith(expect.anything(), "RECALL_CHUNK");
+    expect(eligibleCount.mock.calls.map(([, itemType]) => itemType))
+      .toEqual(["RECALL_ROUND_SEGMENT", "TOOL_EVENT"]);
+  });
+
+  it("reads the active profile and the bounded count in one statement", () => {
+    const query = memoryVectorProfiledEligibleCountSql({
+      input: input(),
+      itemType: "RECALL_CHUNK"
+    });
+    const sql = query.strings.join("?");
+    expect(sql).toContain("AS active_profile");
+    expect(sql).toContain("AS bounded_eligible");
+    expect(sql).toContain('owner."status"::text AS "ownerStatus"');
+    expect(sql).toContain('generation."retrievalPipelineVersion"');
+    expect(sql).toContain('settings."embeddingProviderModelId" AS "selectedEmbeddingProviderModelId"');
+    expect(query.values).toContain(MEMORY_EXACT_VECTOR_MAX_ELIGIBLE_ROWS + 1);
   });
 
   it("rejects malformed dimensions, caller-expanded scope lists, and thresholds", async () => {
