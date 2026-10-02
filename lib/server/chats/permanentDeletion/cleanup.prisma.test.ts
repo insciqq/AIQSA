@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
+import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../../contracts/runs";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import { createPrismaShareRepository } from "../../shares/prismaRepository";
@@ -417,6 +418,106 @@ async function createAcceptedDestinationReceipt(input: Readonly<{
   return { destination, includedText, memoryItem };
 }
 
+async function createPreparingDestinationAttempt(input: Readonly<{
+  chunkId: string;
+  sourceChatId: string;
+  sourceContentHash: string;
+  userId: string;
+}>) {
+  const chat = await prisma.chat.create({
+    data: { title: "Preparing destination", userId: input.userId }
+  });
+  const userMessage = await prisma.message.create({
+    data: {
+      chatId: chat.id,
+      content: textMessageContent("Preparing destination user"),
+      role: "user",
+      status: "complete"
+    }
+  });
+  const assistantMessage = await prisma.message.create({
+    data: {
+      chatId: chat.id,
+      content: textMessageContent(""),
+      modelId: "permanent-chat-test-model",
+      parentMessageId: userMessage.id,
+      provider: "permanent-chat-test-provider",
+      role: "assistant",
+      status: "streaming"
+    }
+  });
+  await prisma.chat.update({
+    data: { activeLeafMessageId: assistantMessage.id },
+    where: { id: chat.id }
+  });
+  const settings = await prisma.userMemorySettings.findUniqueOrThrow({
+    where: { userId: input.userId }
+  });
+  const preparedText = "Live destination prepared text";
+  // A preparing run needs its live attempt in the same transaction.
+  const { attempt, run } = await prisma.$transaction(async (tx) => {
+    const createdRun = await tx.modelRun.create({
+      data: {
+        assistantMessageId: assistantMessage.id,
+        chatId: chat.id,
+        modelId: "permanent-chat-test-model",
+        provider: "permanent-chat-test-provider",
+        status: "preparing",
+        userId: input.userId,
+        userMessageId: userMessage.id
+      }
+    });
+    const createdAttempt = await tx.memoryRetrievalAttempt.create({
+      data: {
+        admissionKind: "NORMAL_SEND",
+        admittedAssistantLeafMessageId: assistantMessage.id,
+        admittedUserMessageId: userMessage.id,
+        attemptOrdinal: 0,
+        baseRequestHash: memorySha256({ kind: "preparing-destination-base" }),
+        boundedPrivateBaseRequestSnapshot: { normalizedRequest: { fixture: "preparing" } },
+        chatId: chat.id,
+        chatMemoryModeSnapshot: "NORMAL",
+        expiresAt: new Date(Date.now() + 60_000),
+        memoryGenerationSnapshot: settings.memoryGeneration,
+        modelRunId: createdRun.id,
+        outcome: "USED",
+        preparedContextHash: memorySha256(preparedText),
+        preparedContextText: preparedText,
+        preparedContextTokenCount: 5,
+        queryHash: memorySha256("preparing-destination-query"),
+        retrievalRevisionSnapshot: settings.memoryRevision,
+        settingsSnapshot: {},
+        state: "READY",
+        userId: input.userId,
+        utilityEgressMode: "LOCAL_ONLY"
+      }
+    });
+    return { attempt: createdAttempt, run: createdRun };
+  });
+  await prisma.memoryRetrievalAttemptItem.create({
+    data: {
+      attemptId: attempt.id,
+      exactItemId: input.chunkId,
+      exactSafeText: preparedText,
+      featureSnapshot: {},
+      itemType: "RECALL_CHUNK",
+      laneRanks: {},
+      ordinal: 0,
+      recallChunkId: input.chunkId,
+      selectionReason: "permanent-chat-preparing-test",
+      sourceBranchGenerationSnapshot: 0,
+      sourceChatIdSnapshot: input.sourceChatId,
+      sourceContentHashSnapshot: input.sourceContentHash,
+      sourceRevisionSnapshot: 0,
+      sourceSnapshot: { sourceMode: "HISTORY" },
+      textHash: memorySha256(preparedText),
+      userId: input.userId,
+      versionSnapshot: { scopeType: "GLOBAL_USER" }
+    }
+  });
+  return { assistantMessage, attempt, run };
+}
+
 async function createOriginExplicitFact(input: Readonly<{
   sourceRunId: string;
   statement: string;
@@ -494,6 +595,12 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
     sourceChatId: source.chat.id,
     sourceContentHash: chunk.contentHash,
     sourceMessageId: source.userMessage.id,
+    userId
+  });
+  const preparing = await createPreparingDestinationAttempt({
+    chunkId: chunk.id,
+    sourceChatId: source.chat.id,
+    sourceContentHash: chunk.contentHash,
     userId
   });
   const originFact = await createOriginExplicitFact({
@@ -644,6 +751,26 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
   await expect(prisma.modelRun.findUniqueOrThrow({
     where: { id: accepted.destination.run.id }
   })).resolves.toMatchObject({ normalizedRequest: { accepted: "Destination" } });
+  await expect(prisma.memoryRetrievalAttempt.findUniqueOrThrow({
+    where: { id: preparing.attempt.id }
+  })).resolves.toMatchObject({
+    errorCode: "memory_source_deleted",
+    preparedContextText: null,
+    state: "STALE"
+  });
+  await expect(prisma.modelRun.findUniqueOrThrow({
+    where: { id: preparing.run.id }
+  })).resolves.toMatchObject({
+    errorPayload: { code: "memory_source_deleted", message: RUN_PREPARATION_FAILURE_MESSAGE },
+    normalizedRequest: { fixture: "preparing" },
+    status: "error"
+  });
+  await expect(prisma.message.findUniqueOrThrow({
+    where: { id: preparing.assistantMessage.id }
+  })).resolves.toMatchObject({
+    errorMessage: RUN_PREPARATION_FAILURE_MESSAGE,
+    status: "error"
+  });
   await expect(service.status(userId, source.chat.id, admission.deletionId))
     .resolves.toMatchObject({ cleanupComplete: true, state: "SUCCEEDED" });
   const fact = await prisma.memoryFact.findUniqueOrThrow({

@@ -2,7 +2,7 @@ import * as workspaceImageViewer from "../workspace/directImageView";
 import { prepareWorkspaceImages, WorkspaceImageError } from "../workspace/imageCapture";
 import sharp from "sharp";
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
-import { mcpAutoDiscoveryFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
+import { mcpAutoDiscoveryFailure, RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { WORKSPACE_BROWSER_GUIDANCE } from "../workspace/browserGuidance";
 import { createKnowledgeEvidenceAnswerSnapshotV1 } from "../knowledge/evidenceAnswerSnapshotV1";
 import { createKnowledgeEvidenceAnswerSnapshotV2 } from "../knowledge/evidenceAnswerSnapshotV2";
@@ -1703,6 +1703,38 @@ describe("run recovery", () => {
     expect(service.revalidate).toHaveBeenCalled();
     expect(requests).toHaveLength(1);
     expect(service.markDelivered).toHaveBeenCalledTimes(state === "complete" ? 1 : 0);
+  });
+
+  it("ends a Memory search settle conflict with neutral text and no provider dispatch", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) {
+      requests.push(request); return providerResult;
+    } };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const failure = { callId: "provider-call-1", name: "memory_search", status: "error" as const,
+      content: [{ type: "json" as const, value: { version: "memory-search-v1", outcome: "failure", evidence: null } }] };
+    const call = { ...persistedRecoveryCall("running"), toolName: "memory_search", mcpBinding: null,
+      arguments: { query: "earlier plan", comparison: false } };
+    const base = checkpointedRun({ calls: [call], phase: "tools_running", providerToolMessages: [{
+      arguments: '{"query":"earlier plan","comparison":false}', call_id: call.providerCallId,
+      name: "memory_search", type: "function_call"
+    }] });
+    const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+    installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized,
+      memoryStandingVersion: 1, memorySearch: { version: "memory-search-v1", maxCalls: 3,
+        resultTokens: 6000, comparisonResultTokens: 12000, timeoutSeconds: 30,
+        memoryGeneration: 1, referenceChatHistory: true, destinations: [] } } });
+    harness.repository.settleToolLoopCall = async () => "not_found";
+    const service = { execute: vi.fn(), settleAmbiguous: vi.fn(async () => failure),
+      revalidate: vi.fn(async () => failure), markDelivered: vi.fn(async () => {}) };
+    await refreshProviderRunIfNeeded({ ...harness.deps, memorySearch: service }, runId, userId);
+    expect(service.settleAmbiguous).toHaveBeenCalledOnce();
+    expect(harness.state.recoveredErrors).toHaveLength(1);
+    expect(harness.state.recoveredErrors[0].error).toEqual({
+      code: "tool_call_settle_conflict", message: RUN_PREPARATION_FAILURE_MESSAGE
+    });
+    expect(JSON.stringify(harness.state.recoveredErrors[0].error)).not.toMatch(/memory/i);
+    expect(requests).toEqual([]);
   });
 
   it.each(["accepted", "delivered"] as const)("ends a lost executor honestly with a %s clarification instead of replaying the old question", async delivery => {
@@ -7484,7 +7516,7 @@ describe("run recovery", () => {
       expect.objectContaining({
         error: {
           code: "memory_answer_model_tools_retired",
-          message: "Checkpointed answer-model Memory tools cannot be replayed."
+          message: RUN_PREPARATION_FAILURE_MESSAGE
         },
         runId
       })
@@ -7522,7 +7554,7 @@ describe("run recovery", () => {
       expect.objectContaining({
         error: {
           code: "memory_answer_model_tools_retired",
-          message: "This saved run uses a retired answer-model Memory tool contract."
+          message: RUN_PREPARATION_FAILURE_MESSAGE
         },
         runId
       })

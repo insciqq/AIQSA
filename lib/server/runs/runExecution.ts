@@ -31,7 +31,7 @@ import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { dispatchMcpTool } from "../mcp/toolExecutor";
 import { currentMcpDispatchFailure, mcpDispatchError, type McpDispatchFailureCode } from "../mcp/dispatchStatus";
 import type { ChatUpdateDataWire } from "../../contracts/chats";
-import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
+import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure, RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import { executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1, KnowledgeAnswerProviderError } from "../knowledge/evidenceAnswerExecutionV1";
 import { refineKnowledgeEvidence } from "./knowledgeEvidenceRefinement";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
@@ -1448,7 +1448,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           process.env.NODE_ENV === "production") {
           throw new RunPipelineError(
             "memory_egress_receipt_unavailable",
-            "Memory egress evidence is unavailable."
+            "Provider dispatch evidence is unavailable."
           );
         }
       }
@@ -1891,7 +1891,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             process.env.NODE_ENV === "production") {
             throw new RunPipelineError(
               "memory_egress_receipt_unavailable",
-              "Memory egress evidence is unavailable."
+              "Provider dispatch evidence is unavailable."
             );
           }
           if (requestHasHostedSearchCapability(request) &&
@@ -2350,7 +2350,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
                 const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id,
                   result: snapshot, runId, state: result.status, userId: input.userId });
-                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Memory search could not be settled.");
+                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", RUN_PREPARATION_FAILURE_MESSAGE);
                 await emit(controller, encoder, input.repository, runId, memorySearchActivityEvent({
                   ordinal: persisted.ordinal, round: persisted.roundIndex, state: result.status, result }));
                 return { status: "complete", value: result };
@@ -3210,7 +3210,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           input.prepared.providerRequest.memoryHistoryTool !== undefined) {
           throw new RunPipelineError(
             "memory_answer_model_tools_retired",
-            "This run uses a retired answer-model Memory tool contract."
+            RUN_PREPARATION_FAILURE_MESSAGE
           );
         }
         // Queued or preparing runs accepted under the retired context policy

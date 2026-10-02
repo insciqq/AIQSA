@@ -16,6 +16,7 @@ import {
 import { detachFrozenMemoryRoundTargets } from "../../memory/history/purge";
 import { loadMemorySuppressionKeyring } from "../../memory/suppressionKeyring";
 import { PERMANENT_CHAT_DELETION_TARGET_TYPE } from "./contract";
+import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../../contracts/runs";
 
 const activeRunStatuses = [
   "in_progress",
@@ -316,14 +317,20 @@ async function settleDestinationAttemptItems(
           'READY'::"MemoryRetrievalAttemptState"
         )
       RETURNING
-        attempt."admittedAssistantLeafMessageId", attempt."chatId",
+        attempt."admittedAssistantLeafMessageId",
+        attempt."boundedPrivateBaseRequestSnapshot", attempt."chatId",
         attempt."modelRunId", attempt."state", attempt."userId"
     ), settled_runs AS (
       UPDATE "ModelRun" AS run
       SET
         "errorPayload" = jsonb_build_object(
           'code', 'memory_source_deleted',
-          'message', 'Memory preparation stopped because a selected source was deleted.'
+          'message', ${RUN_PREPARATION_FAILURE_MESSAGE}::text
+        ),
+        "normalizedRequest" = COALESCE(
+          run."normalizedRequest",
+          attempt."boundedPrivateBaseRequestSnapshot" -> 'normalizedRequest',
+          '{}'::jsonb
         ),
         "status" = 'error'::"ModelRunStatus",
         "updatedAt" = CURRENT_TIMESTAMP
@@ -336,7 +343,7 @@ async function settleDestinationAttemptItems(
     )
     UPDATE "Message" AS message
     SET
-      "errorMessage" = 'Memory preparation stopped because a selected source was deleted.',
+      "errorMessage" = ${RUN_PREPARATION_FAILURE_MESSAGE},
       "status" = 'error'::"MessageStatus",
       "updatedAt" = CURRENT_TIMESTAMP
     FROM settled_attempts AS attempt

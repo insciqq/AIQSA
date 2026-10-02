@@ -9,6 +9,7 @@ import {
 import {
   MEMORY_CONFIRMATION_COPY_VERSION
 } from "../../../contracts/memory";
+import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../../contracts/runs";
 import { textMessageContent } from "../../../domain/content";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { prisma } from "../../prisma";
@@ -1266,12 +1267,14 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         state: "STALE"
       });
       expect(settledRun).toMatchObject({
-        errorPayload: { code: "memory_item_forgotten" },
+        errorPayload: {
+          code: "memory_item_forgotten",
+          message: RUN_PREPARATION_FAILURE_MESSAGE
+        },
         status: "error"
       });
       expect(settledMessage).toMatchObject({
-        errorMessage:
-          "Memory preparation stopped because a selected Memory item was forgotten.",
+        errorMessage: RUN_PREPARATION_FAILURE_MESSAGE,
         status: "error"
       });
       await expect(prisma.memoryRetrievalAttemptItem.count({
@@ -2757,6 +2760,16 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       await expect(prisma.modelRun.findUniqueOrThrow({
         where: { id: unacceptedAttempt.runId }
       })).resolves.toMatchObject({
+        errorPayload: {
+          code: "memory_all_reusable_deleted",
+          message: RUN_PREPARATION_FAILURE_MESSAGE
+        },
+        status: "error"
+      });
+      await expect(prisma.message.findUniqueOrThrow({
+        where: { id: unacceptedAttempt.assistantMessageId }
+      })).resolves.toMatchObject({
+        errorMessage: RUN_PREPARATION_FAILURE_MESSAGE,
         status: "error"
       });
       await expect(prisma.memoryFeedback.findUniqueOrThrow({

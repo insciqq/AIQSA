@@ -244,7 +244,7 @@ import {
   type ToolLoopJsonValue
 } from "./toolLoopPersistence";
 import { createRunTokenPersistenceBuffer } from "./runTokenPersistence";
-import { TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
+import { RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "../../contracts/runs";
 import {
   projectRunOutputArtifactEvent,
   runOutputArtifactEvents
@@ -1460,7 +1460,7 @@ async function executePersistedToolCallInContext(
     const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
     const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,
       result: snapshot, runId: context.run.id, state: result.status, userId: context.run.userId });
-    if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "Memory search could not be settled.");
+    if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", RUN_PREPARATION_FAILURE_MESSAGE);
     await memoryActivity(result.status, result);
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
   }
@@ -2167,7 +2167,7 @@ async function recoverCheckpointedToolLoop(
       run.normalizedRequest.memoryHistoryTool !== undefined) {
       throw new ToolLoopRecoveryError(
         "memory_answer_model_tools_retired",
-        "Checkpointed answer-model Memory tools cannot be replayed."
+        RUN_PREPARATION_FAILURE_MESSAGE
       );
     }
     if (run.calls.some(isFocusedKnowledgeCall) ||
@@ -2395,7 +2395,7 @@ async function recoverCheckpointedToolLoop(
     if (egressReceiptRequired && !deps.memoryEgress && process.env.NODE_ENV === "production") {
       throw new ToolLoopRecoveryError(
         "memory_egress_receipt_unavailable",
-        "Memory egress evidence is unavailable."
+        "Provider dispatch evidence is unavailable."
       );
     }
     assertPersonalContextEgressSafe(providerRequest);
@@ -2476,7 +2476,7 @@ async function recoverCheckpointedToolLoop(
         if (egressReceiptRequired && !deps.memoryEgress && process.env.NODE_ENV === "production") {
           throw new ToolLoopRecoveryError(
             "memory_egress_receipt_unavailable",
-            "Memory egress evidence is unavailable."
+            "Provider dispatch evidence is unavailable."
           );
         }
         if (run.project && !(await currentProjectRecoveryAuthorityAllowed(
@@ -3750,7 +3750,7 @@ async function rebuildReservedAnswerRequest(input: Readonly<{
     normalizedRequest.memoryHistoryTool !== undefined) {
     throw new ToolLoopRecoveryError(
       "memory_answer_model_tools_retired",
-      "A retired answer-model Memory tool request cannot be rebuilt."
+      RUN_PREPARATION_FAILURE_MESSAGE
     );
   }
   const runtime = await resolveAnswerRuntime(
@@ -3901,7 +3901,7 @@ async function dispatchRecoveredReservedAnswer(input: Readonly<{
       process.env.NODE_ENV === "production") {
       throw new ToolLoopRecoveryError(
         "memory_egress_receipt_unavailable",
-        "Memory egress evidence is unavailable."
+        "Provider dispatch evidence is unavailable."
       );
     }
     if (requestHasHostedSearchCapability(input.request) &&
@@ -4781,7 +4781,7 @@ async function refreshProviderRunOnceRegistered(
         control.assistantMessageId,
         {
           code: "memory_answer_model_tools_retired",
-          message: "This saved run uses a retired answer-model Memory tool contract."
+          message: RUN_PREPARATION_FAILURE_MESSAGE
         },
         { recoveryTerminal: true }
       );
