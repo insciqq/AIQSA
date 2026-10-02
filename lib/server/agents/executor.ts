@@ -95,6 +95,7 @@ export async function executeCodexTurn(input: Readonly<{
       visionAnalysis: Boolean(input.request.visionAnalysis),
       checkpoints: input.request.workspaceCheckpoints === true,
       toolObservations: input.request.toolObservationVersion === 1,
+      toolCallReader: input.request.toolCallReader === true,
       mcpTimeoutSeconds: agentMcpEnvelopeTimeoutSeconds(input.request),
       ...(effort && ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)
         ? { reasoningEffort: effort as CodexManagedProfile["reasoningEffort"] } : {})

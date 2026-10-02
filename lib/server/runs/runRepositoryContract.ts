@@ -785,6 +785,28 @@ export type RunRepository = {
     leafMessageId: string;
     userId: string;
   }): Promise<BranchContextCheckpoints>;
+  /** Cross-turn tool history frozen at admission: references and digests of
+   * the eligible calls of the branch from `leafMessageId` (its turns and the
+   * earlier attempts of each user message on it). No payload is read. */
+  loadToolHistory?(input: {
+    chatId: string;
+    leafMessageId: string | null;
+    userId: string;
+  }): Promise<import("./toolHistoryContract").ToolHistorySnapshot>;
+  /** One request's records of a frozen history under the reader's current
+   * authority; see `createPrismaToolHistoryOperations`. */
+  projectToolHistory?(input: {
+    actor: import("./prismaRepositoryToolHistory").ToolHistoryActor;
+    reader: boolean;
+    toolHistory: import("./toolHistoryContract").ToolHistorySnapshot;
+  }): Promise<import("./toolHistory").ToolHistoryProjection>;
+  /** The authorized record `read_tool_call` returns, or null when unavailable. */
+  readToolCall?(
+    actor: Readonly<{ runId: string; userId: string }>,
+    ref: string
+  ): Promise<import("./toolHistoryRecords").ToolHistoryRecord | null>;
+  /** Whether every referenced call is still readable by this run. */
+  toolCallsAvailable?(actor: Readonly<{ runId: string; userId: string }>, refs: readonly string[]): Promise<boolean>;
   /** Server-only checkpoint for the one focused Knowledge operation. */
   loadFocusedKnowledgeCall?(input: {
     runId: string;

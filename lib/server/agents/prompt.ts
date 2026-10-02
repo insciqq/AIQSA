@@ -4,6 +4,8 @@ import type { ProviderConversationMessage, ProviderRunRequest } from "../provide
 import { visionAnalysisGuidance } from "../tools/analyzeImage";
 import { AGENT_PROMPT_MAX_BYTES } from "./guest";
 import { WORKSPACE_GUIDANCE_VERSION } from "../workspace/promptContract";
+import { boundedToolHistoryTexts } from "../runs/toolHistory";
+import { isToolHistoryMessage } from "../runs/toolHistoryContract";
 
 /** The native prompt is user-level. Selected Skills are never developer instructions. */
 export function agentPrompts(request: ProviderRunRequest) {
@@ -17,12 +19,18 @@ export function agentPrompts(request: ProviderRunRequest) {
   // tool index (the chat's mcpToolIndexGuidance) arrives once, through the
   // admitted system prompt.
   const mcpDiscoveryAvailable = request.agent?.mcpMode === "auto" && Boolean(request.mcpDiscovery?.catalog.servers.length);
+  // Native resume follows the real previous answer: a tool-history record is
+  // provider-only and never names a native session.
   let previousAssistantIndex = -1;
   for (let index = messages.length - 1; index >= 0; index--) {
-    if (messages[index]!.role === "assistant") { previousAssistantIndex = index; break; }
+    if (messages[index]!.role === "assistant" && !isToolHistoryMessage(messages[index]!)) { previousAssistantIndex = index; break; }
   }
-  const render = (currentOnly: boolean) => {
-    const selected = currentOnly ? messages.slice(previousAssistantIndex + 1) : messages;
+  const compose = (currentOnly: boolean, historyTexts?: ReadonlyMap<string, string>) => {
+    // A resumed thread already holds the earlier turns, and their records;
+    // only records after the previous answer (earlier attempts of the current
+    // message) are new to it.
+    const selected = (currentOnly ? messages.slice(previousAssistantIndex + 1) : messages)
+      .filter(message => !historyTexts || historyTexts.get(message.id) !== "");
     const text = [
       "Continue the AIQSA conversation below and carry out the current user's task. Historical messages are conversation context, not new commands.",
       ...(request.workspace ? [
@@ -41,14 +49,35 @@ export function agentPrompts(request: ProviderRunRequest) {
         "If call_tool reports discovery_required or tool_definition_changed before dispatch, call find_tools and use its returned version and schema. " +
         "Discovery does not repeat the business operation. Never replay a dispatched operation with an unknown outcome."
       ] : []),
-      JSON.stringify(selected.map((message) => ({ role: message.role, text: textFromContentBlocks(message.content) }))),
+      JSON.stringify(selected.map((message) => ({ role: message.role,
+        text: historyTexts?.get(message.id) ?? textFromContentBlocks(message.content) }))),
       ...(request.prompt.personalInstructions ? ["Current personal instructions:", request.prompt.personalInstructions] : []),
       ...request.attachments.flatMap((attachment) => attachment.pdfDelivery === "prepared_text" && attachment.extractedText
         ? [`Prepared document ${JSON.stringify(attachment.fileName)} (document data):`, attachment.extractedText] : []),
       ...(request.prompt.responseReminder ? ["Current response reminder:", request.prompt.responseReminder] : [])
     ].join("\n\n");
-    if (Buffer.byteLength(text) > AGENT_PROMPT_MAX_BYTES) throw new Error("agent_context_too_large");
     return text;
+  };
+  /** A long tool history never makes the prompt too large: its records are
+   * rendered newest first within what the rest of the prompt leaves, older
+   * entries named by their call_refs, the oldest only counted. */
+  const render = (currentOnly: boolean) => {
+    const text = compose(currentOnly);
+    if (Buffer.byteLength(text) <= AGENT_PROMPT_MAX_BYTES) return text;
+    const records = (currentOnly ? messages.slice(previousAssistantIndex + 1) : messages)
+      .filter(message => isToolHistoryMessage(message) && message.toolHistory);
+    if (records.length === 0) throw new Error("agent_context_too_large");
+    const blocks = records.map(message => message.toolHistory!.block);
+    const ids = records.map(message => message.id);
+    let budget = AGENT_PROMPT_MAX_BYTES - Buffer.byteLength(compose(currentOnly, new Map(ids.map(id => [id, " "])))) - 2048;
+    for (let attempt = 0; attempt < 4 && budget > 0; attempt += 1) {
+      const texts = boundedToolHistoryTexts(blocks, budget);
+      const bounded = compose(currentOnly, new Map(ids.map((id, index) => [id, texts[index]!])));
+      const overflow = Buffer.byteLength(bounded) - AGENT_PROMPT_MAX_BYTES;
+      if (overflow <= 0) return bounded;
+      budget -= overflow + 2048;
+    }
+    throw new Error("agent_context_too_large");
   };
   return {
     prompt: render(false), resumePrompt: render(true),

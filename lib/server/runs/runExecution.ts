@@ -163,6 +163,9 @@ import {
 } from "../tools/types";
 import { measureSessionContext, observationBatchShare, observationWholeResultTokens } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
+import { executeReadToolCall, readToolCallReceipt, readToolCallTool, type ToolCallReader } from "../tools/readToolCall";
+import { insertToolHistory, refreshToolHistory, requestHasToolHistory, type ToolHistoryProjection } from "./toolHistory";
+import { READ_TOOL_CALL_NAME, toolCallRefEntry, type ToolCallRefEntry } from "./toolHistoryContract";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { memorySearchTool, MEMORY_SEARCH_TOOL_NAME } from "../memory/search/contract";
 import { revalidateMemorySearchDispatch } from "./memorySearchDispatch";
@@ -280,6 +283,8 @@ export type RunExecutionRepository = Pick<
   | "markRunAnswerStarted"
   | "persistToolLoopCallBatch"
   | "prepareAutomaticKnowledgeCallBatch"
+  | "projectToolHistory"
+  | "readToolCall"
   | "recordRunUsageEvents"
   | "resetToolLoopAssistantDraft"
   | "settleToolLoopCall"
@@ -774,6 +779,24 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
       // authority for masking a provider result or citing its handle.
       const settledObservations = new Map<string, ContextObservation>();
       const runObservations = (): readonly ContextObservation[] => [...settledObservations.values()];
+      // Server-minted references of this run's persisted calls, by row id:
+      // the only authority for a summary's `call_ref` provenance.
+      const runToolCallRefs = new Map<string, ToolCallRefEntry>();
+      const rememberToolCallRef = (call: Parameters<typeof toolCallRefEntry>[0]) => {
+        const entry = toolCallRefEntry(call);
+        if (entry) runToolCallRefs.set(call.id, entry);
+      };
+      /** This request's tool-history records of the accepted history, rebuilt
+       * with the reader's current authority; null without one. */
+      async function runToolHistoryProjection(): Promise<ToolHistoryProjection | null> {
+        const history = normalizedRequest.toolHistory;
+        const project = input.repository.projectToolHistory;
+        if (!history?.turns.length || !project) return null;
+        return project({ actor: { runId, userId: input.userId }, reader: normalizedRequest.toolCallReader === true,
+          toolHistory: history });
+      }
+      const toolCallReader: ToolCallReader | undefined = input.repository.readToolCall
+        ? { read: (actor, ref) => input.repository.readToolCall!(actor, ref) } : undefined;
       let followupBaseRequest = input.prepared.providerRequest;
       let agentFollowupRevision = 0;
       async function publishFollowupDelivery(revision: number) {
@@ -1798,10 +1821,18 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
 
       /** The run's single compaction consumer; see prepareCompactedProviderRequest. */
       async function compactAnswerRequest(
-        request: ProviderRunRequest,
+        unprojected: ProviderRunRequest,
         bridge: ProviderToolBridge | undefined,
         dispatchSignal: AbortSignal
       ): Promise<ProviderRunRequest> {
+        // Records still in the request are rebuilt with current authority;
+        // a record covered by notes and released never returns.
+        let request = unprojected;
+        if (requestHasToolHistory(request)) {
+          const projection = await runToolHistoryProjection();
+          if (projection) request = refreshToolHistory(request, projection);
+        }
+        request = { ...request, toolCallRefs: [...runToolCallRefs.values()] };
         const answerSnapshot = input.prepared.providerAdmissionPlan.answer.snapshot;
         return prepareCompactedProviderRequest({
           async authorize() {
@@ -2091,6 +2122,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...(clientToolsEnabled && normalizedRequest.artifactTool ? [artifactTool(normalizedRequest.artifactToolDescription), ...(normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
           ...(normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
           ...(normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
+          ...(normalizedRequest.toolCallReader ? [readToolCallTool] : []),
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
           ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
@@ -2102,6 +2134,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const isMemoryCall = (name: string) => clientToolsEnabled && Boolean(normalizedRequest.memorySearch) && name === MEMORY_SEARCH_TOOL_NAME;
         const isObservationRead = (name: string) => normalizedRequest.toolObservationVersion === 1 && name === READ_TOOL_RESULT_NAME;
         const isSessionCall = (name: string) => normalizedRequest.sessionStatusTool === true && name === SESSION_STATUS_TOOL_NAME;
+        const isCallRead = (name: string) => normalizedRequest.toolCallReader === true && name === READ_TOOL_CALL_NAME;
+        /** A call read settles its content-free receipt; the model receives the read. */
+        const settleCallRead = async (persistedId: string, call: ModelToolCall, read: ToolExecutionResult) => {
+          const snapshot = snapshotToolExecutionResult(readToolCallReceipt(call, read), toolLoopPersistenceLimits.resultBytes);
+          const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persistedId, result: snapshot, runId,
+            state: read.status, userId: input.userId });
+          if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Saved-call read could not be settled.");
+        };
         if (tools.length === 0) {
           throw new RunPipelineError("tool_configuration_empty", "No run tools are configured");
         }
@@ -2364,6 +2404,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Saved-result read could not be settled.");
                 return { status: "complete", value: result };
               }
+              if (claim.kind === "ambiguous" && isCallRead(call.name)) {
+                // A read has no external effect: it runs again with current authority.
+                const read = await executeReadToolCall(toolCallReader, call, { runId, userId: input.userId }, context.signal,
+                  observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))));
+                await settleCallRead(persisted.id, call, read);
+                return { status: "complete", value: read };
+              }
               if (claim.kind === "ambiguous" && isCheckpointCall(call.name)) {
                 const restored = await (await defaultWorkspaceCheckpoints()).restore(call, { persistedToolCallId: persisted.id, request, runId, userId: input.userId }, context.signal);
                 return { status: "complete", value: restored };
@@ -2452,6 +2499,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   : isObservationRead(call.name)
                   ? await executeReadToolResult(await observationService(), call, { runId, userId: input.userId }, context.signal,
                       observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))))
+                  // A settled read keeps only its receipt: it reads again,
+                  // with current authority, never from a stored copy.
+                  : isCallRead(call.name)
+                  ? await executeReadToolCall(toolCallReader, call, { runId, userId: input.userId }, context.signal,
+                      observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))))
                   : parsePersistedToolExecutionResult(call, claim.call.result);
                 if (isMemoryCall(call.name) && stored) await emit(controller, encoder, input.repository, runId,
                   memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex, state: stored.status, result: stored }));
@@ -2537,6 +2589,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     state: context.signal.aborted ? "cancelled" : result.status, result }));
                 return result;
               };
+              if (isCallRead(call.name)) {
+                // Saved data only: no egress, discovery, runtime or OAuth.
+                const read = await executeReadToolCall(toolCallReader, call, { runId, userId: input.userId }, context.signal,
+                  observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))));
+                await settleCallRead(claim.call.id, call, read);
+                return { status: "complete", value: read };
+              }
               let externalReceipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
               try {
                 if (hasInvalidProviderToolArguments(call.arguments)) {
@@ -2562,7 +2621,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
                   }
                 }
-                const externalCall = !isMemoryCall(call.name) && !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
+                const externalCall = !isMemoryCall(call.name) && !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
                 if (externalCall) {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
@@ -2992,7 +3051,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isMemoryCall(call.name) && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isSkillCall(call.name)) {
+                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isSkillCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 const callArguments = toolLoopJson(
@@ -3040,6 +3099,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             for (const call of persisted.calls) {
               persistedCalls.set(call.providerCallId, call);
               repeatHistory.record(call);
+              rememberToolCallRef(call);
             }
             if (searchPlanRouter) {
               let changed = false;
@@ -3262,9 +3322,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;
-        const preparedProviderRequest = await requestWithAutomaticKnowledgeEvidence(
-          input.images ? await input.images.withConversationPixels(input.prepared.providerRequest, input.userId, signal) : input.prepared.providerRequest
-        );
+        // The one projector places this request's tool-history records; the
+        // prepared and accepted requests never carry them.
+        const unprojectedRequest = input.images
+          ? await input.images.withConversationPixels(input.prepared.providerRequest, input.userId, signal) : input.prepared.providerRequest;
+        const historyProjection = await runToolHistoryProjection();
+        const preparedProviderRequest = await requestWithAutomaticKnowledgeEvidence(historyProjection
+          ? insertToolHistory(unprojectedRequest, historyProjection) : unprojectedRequest);
         const providerRequest = preparedProviderRequest.request;
         followupBaseRequest = providerRequest;
         lastSessionRequest = groundedKnowledgeAnswer ? { ...providerRequest, tools: [] } : providerRequest;

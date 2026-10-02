@@ -4,6 +4,9 @@ import { captureMcpObservation, captureWorkspaceObservation, captureSearchObserv
   OBSERVATION_RESTORE_FAILURE, observationReadBudget, observationRestoreRefused, observationWholeDeliveryBatches,
   type ToolObservationService } from "../toolObservations/sourceAdapters";
 import { READ_TOOL_RESULT_NAME, readToolResultTool, executeReadToolResult } from "../tools/readToolResult";
+import { executeReadToolCall, readToolCallReceipt, readToolCallTool, type ToolCallReader } from "../tools/readToolCall";
+import { insertToolHistory, refreshToolHistory, requestHasToolHistory } from "./toolHistory";
+import { READ_TOOL_CALL_NAME, toolCallRefEntry, type ToolCallRefEntry } from "./toolHistoryContract";
 import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
@@ -334,6 +337,9 @@ export type RunRecoveryRepository = Pick<
   | "loadFocusedKnowledgeRecoveryScope"
   | "claimAutomaticKnowledgeCall"
   | "loadEntitlements"
+  | "projectToolHistory"
+  | "readToolCall"
+  | "toolCallsAvailable"
 >>;
 
 export type RunRecoveryMcpRuntime = Readonly<{
@@ -957,6 +963,44 @@ function isRecoveredObservationRead(context: RecoveryToolContext, name: string):
   return context.run.normalizedRequest.toolObservationVersion === 1 && name === READ_TOOL_RESULT_NAME;
 }
 
+/** The call reader as the run accepted it, independent of the observation policy. */
+function isRecoveredCallRead(context: RecoveryToolContext, name: string): boolean {
+  return context.run.normalizedRequest.toolCallReader === true && name === READ_TOOL_CALL_NAME;
+}
+
+function recoveredToolCallReader(deps: RunRecoveryDeps): ToolCallReader | undefined {
+  const read = deps.repository.readToolCall;
+  return read ? { read: (actor, ref) => read(actor, ref) } : undefined;
+}
+
+/** A recovered read settles its content-free receipt; the model receives the read. */
+async function settleRecoveredCallRead(context: RecoveryToolContext, persistedId: string, call: ModelToolCall,
+  read: ToolExecutionResult): Promise<void> {
+  const snapshot = snapshotToolExecutionResult(readToolCallReceipt(call, read), toolLoopPersistenceLimits.resultBytes);
+  const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persistedId, result: snapshot,
+    runId: context.run.id, state: read.status, userId: context.run.userId });
+  if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "Saved-call read could not be settled.");
+}
+
+/**
+ * The request a recovery dispatch rebuilds, with the accepted history's
+ * records projected again under the run's current authority: nothing of an
+ * earlier projection is reused, so revoked or deleted details never return.
+ */
+async function withRecoveredToolHistory(deps: RunRecoveryDeps, request: ProviderRunRequest,
+  actor: Readonly<{ runId: string; userId: string }>, mode: "insert" | "refresh"): Promise<ProviderRunRequest> {
+  const history = request.toolHistory;
+  const project = deps.repository.projectToolHistory;
+  if (!history?.turns.length || !project || mode === "refresh" && !requestHasToolHistory(request)) return request;
+  const projection = await project({ actor, reader: request.toolCallReader === true, toolHistory: history });
+  return mode === "insert" ? insertToolHistory(request, projection) : refreshToolHistory(request, projection);
+}
+
+/** Server-minted references of a run's persisted calls. */
+function recoveredToolCallRefs(calls: Iterable<PersistedToolLoopCall>): ToolCallRefEntry[] {
+  return [...calls].flatMap(call => toolCallRefEntry(call) ?? []);
+}
+
 function isRecoveredSearchCall(context: RecoveryToolContext, name: string): boolean {
   return context.searchExecutor?.accepts(name) === true;
 }
@@ -1464,6 +1508,12 @@ async function executePersistedToolCallInContext(
     await memoryActivity(result.status, result);
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
   }
+  if (claim.kind === "ambiguous" && isRecoveredCallRead(context, call.name)) {
+    const read = await executeReadToolCall(recoveredToolCallReader(context.deps), call,
+      { runId: context.run.id, userId: context.run.userId }, signal, recoveredReadBudget(context, persisted.roundIndex));
+    await settleRecoveredCallRead(context, persisted.id, call, read);
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: read }, round: persisted.roundIndex };
+  }
   if (claim.kind === "ambiguous" && isRecoveredObservationRead(context, call.name)) {
     const result = await executeReadToolResult(await recoveredObservations(context), call,
       { runId: context.run.id, userId: context.run.userId }, signal, recoveredReadBudget(context, persisted.roundIndex));
@@ -1574,6 +1624,10 @@ async function executePersistedToolCallInContext(
       : isRecoveredObservationRead(context, call.name)
       ? await executeReadToolResult(await recoveredObservations(context), call, { runId: context.run.id, userId: context.run.userId }, signal,
         recoveredReadBudget(context, persisted.roundIndex))
+      // A settled read keeps only its receipt and reads again.
+      : isRecoveredCallRead(context, call.name)
+      ? await executeReadToolCall(recoveredToolCallReader(context.deps), call, { runId: context.run.id, userId: context.run.userId },
+        signal, recoveredReadBudget(context, persisted.roundIndex))
       : parsePersistedToolExecutionResult(call, claim.call.result);
     if (result && call.name === MEMORY_SEARCH_TOOL_NAME && context.run.normalizedRequest.memorySearch) {
       await memoryActivity(result.status, result);
@@ -1673,6 +1727,12 @@ async function executePersistedToolCallInContext(
     }
     return result;
   };
+  if (isRecoveredCallRead(context, call.name)) {
+    const read = await executeReadToolCall(recoveredToolCallReader(context.deps), call,
+      { runId: context.run.id, userId: context.run.userId }, signal, recoveredReadBudget(context, persisted.roundIndex));
+    await settleRecoveredCallRead(context, claim.call.id, call, read);
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: read }, round: persisted.roundIndex };
+  }
   let externalReceipt: Awaited<ReturnType<MemoryToolEgressReceiptService["beginDispatch"]>> | null = null;
   const unrecorded: { search?: ToolExecutionResult } = {};
   try {
@@ -1705,7 +1765,7 @@ async function executePersistedToolCallInContext(
     const isImageCall = Boolean(context.run.normalizedRequest.imagePlan) && call.name === IMAGE_GENERATION_TOOL_NAME;
     const isSessionCall = context.run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME;
     const isMemoryCall = Boolean(context.run.normalizedRequest.memorySearch) && call.name === MEMORY_SEARCH_TOOL_NAME;
-    const externalCall = !isMemoryCall && !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredObservationRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
+    const externalCall = !isMemoryCall && !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredObservationRead(context, call.name) && !isRecoveredCallRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
@@ -2043,6 +2103,7 @@ async function executePersistedToolBatch(
     !(context.run.normalizedRequest.memorySearch && context.deps.memorySearch && call.toolName === MEMORY_SEARCH_TOOL_NAME) &&
     !isSkillToolName(call.toolName) &&
     !isRecoveredObservationRead(context, call.toolName) &&
+    !isRecoveredCallRead(context, call.toolName) &&
     !(context.run.normalizedRequest.toolObservationVersion === 1 &&
       (isRecoveredWorkspaceCall(context, call.toolName) || isRecoveredSearchCall(context, call.toolName) ||
         resolveMcpRunTool(context.activeMcpSnapshot, call.toolName))) &&
@@ -2255,6 +2316,9 @@ async function recoverCheckpointedToolLoop(
       ...(run.checkpoint.contextCompaction?.summary ? { contextCompactionSummary: run.checkpoint.contextCompaction.summary } : {}),
       ...(summaryAttempts ? { contextCompactionSummaryAttempts: summaryAttempts } : {})
     };
+    // The history's records are projected again before the committed notes
+    // apply: their coverage may name a record.
+    providerRequest = await withRecoveredToolHistory(deps, providerRequest, { runId: run.id, userId: run.userId }, "insert");
     if (run.checkpoint.contextCompaction?.summary) {
       providerRequest = applyContextSummaryToRequest(
         providerRequest,
@@ -2361,6 +2425,7 @@ async function recoverCheckpointedToolLoop(
       ...(clientToolsEnabled && run.normalizedRequest.artifactTool ? [artifactTool(run.normalizedRequest.artifactToolDescription), ...(run.normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
       ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
       ...(run.normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
+      ...(run.normalizedRequest.toolCallReader ? [readToolCallTool] : []),
       ...(recoveredKnowledgeEnabled
         ? knowledgeRetrievalToolsForRequest(run.normalizedRequest, deps.knowledgeExecutor?.tools ?? [])
         : []),
@@ -2734,6 +2799,10 @@ async function recoverCheckpointedToolLoop(
        * no cycle for work that did not happen here. */
       mode: "dispatch" | "measure" = "dispatch"
     ): Promise<ProviderRunRequest> {
+      // Records still in the request are rebuilt with current authority, and
+      // the run's persisted calls index the provenance of its transcript.
+      roundRequest = { ...await withRecoveredToolHistory(deps, roundRequest, { runId: run.id, userId: run.userId }, "refresh"),
+        toolCallRefs: recoveredToolCallRefs(persistedCalls.values()) };
       // A rebuild the live run recorded keeps its tightened budget here too,
       // for the measured round and every recovered dispatch.
       const persistedRebuild = run.checkpoint.contextCompaction?.rebuild;
@@ -2930,6 +2999,7 @@ async function recoverCheckpointedToolLoop(
             !isRecoveredWorkspaceCall(context, call.name) &&
             !isRecoveredSkillCall(context, call.name) &&
             !isRecoveredObservationRead(context, call.name) &&
+            !isRecoveredCallRead(context, call.name) &&
             !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
@@ -3696,7 +3766,8 @@ async function recoveredGroundedAnswerRequest(input: Readonly<{
   return rebuiltCompactedProviderRequest({
     ...(input.bridge ? { bridge: input.bridge } : {}),
     checkpoint: await notesOnlyCompaction(input.deps, input.runId, input.userId),
-    request: input.request,
+    // The records belong to the request the live consumer budgeted.
+    request: await withRecoveredToolHistory(input.deps, input.request, { runId: input.runId, userId: input.userId }, "insert"),
     signal: input.signal,
     sourceAvailable: observationSourceAvailability(async () => input.deps.observations ?? defaultToolObservations(),
       { runId: input.runId, userId: input.userId })
