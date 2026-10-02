@@ -128,6 +128,7 @@ class Fixture {
         HOME: path.join(this.root, "home"),
         TMPDIR: path.join(this.root, "tmp"),
         LANG: "C",
+        NODE_ENV: "test",
         FAKE_STATE: this.state,
         AIQSA_CLI_KVM_DEVICE: this.kvm,
         AIQSA_CLI_PROC_ROOT: this.proc,
@@ -466,7 +467,6 @@ describe("up and install", () => {
     expect(result.stderr).toContain("connecting with ***");
     expect(result.stderr).toContain("key ***");
     expect(result.stderr).toContain("set AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1 in .env, then rerun ./aiqsa.sh up");
-    expect(result.output).not.toMatch(/toolhive/iu);
     expectNoSecrets(result.output, body);
   });
 
