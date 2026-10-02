@@ -144,6 +144,7 @@ export async function executePostgresMemoryLexicalQuery(input: Readonly<{
       ${input.sql}
     `),
     {
+      admission: "LANE",
       deadlineAtMs: input.request.deadlineAtMs,
       signal: input.request[memoryLexicalReadSignal]
     }

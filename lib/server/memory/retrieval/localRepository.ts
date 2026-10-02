@@ -108,6 +108,7 @@ import {
   MEMORY_READ_BUDGET_MS,
   MemoryReadBudgetError,
   isMemoryReadBudgetErrorCode,
+  type MemoryReadAdmissionClass,
   memoryReadBudgetFailureCode,
   memoryReadBudgetTimedOut,
   withMemoryReadBudget
@@ -978,7 +979,7 @@ async function loadSnapshot(
     WHERE owner."id" = ${input.userId}
     LIMIT 1
     `),
-    { signal: input.settleSignal }
+    { admission: "REQUIRED", signal: input.settleSignal }
   );
   const row = rows[0];
   if (!row || row.ownerStatus !== "active" ||
@@ -1652,7 +1653,8 @@ async function loadStandingFacts(
     client,
     MEMORY_READ_BUDGET_MS.SNAPSHOT_CORE,
     (tx) => tx.$queryRaw<CoreRow[]>(standingFactsSql(snapshot,
-      options.standingVersion === 1 ? MEMORY_STANDING_MAX_FACTS + 1 : MEMORY_LEGACY_STANDING_MAX_FACTS + 1))
+      options.standingVersion === 1 ? MEMORY_STANDING_MAX_FACTS + 1 : MEMORY_LEGACY_STANDING_MAX_FACTS + 1)),
+    { admission: "REQUIRED" }
   );
   return rows.flatMap((row): readonly MemoryCoreCandidate[] => {
     const safeText = safeMemoryProjectionText(row.safeText);
@@ -1711,7 +1713,7 @@ async function loadCore(
     client,
     MEMORY_READ_BUDGET_MS.SNAPSHOT_CORE,
     (tx) => tx.$queryRaw<CoreRow[]>(coreSql(snapshot)),
-    { signal }
+    { admission: "REQUIRED", signal }
   );
   return rows.flatMap((row): readonly MemoryCoreCandidate[] => {
     const safeText = safeMemoryProjectionText(row.safeText);
@@ -2862,7 +2864,8 @@ async function hasPotentialEntityAlias(
         userId: snapshot.userId
       }
     }),
-    { signal }
+    // A cheap structural probe that decides whether the entity lane runs.
+    { admission: "REQUIRED", signal }
   ) !== null;
 }
 
@@ -3471,6 +3474,7 @@ async function queryLane(
     options.readBudgetMs ?? MEMORY_READ_BUDGET_MS.LEXICAL_CANDIDATE,
     (tx) => tx.$queryRaw<CandidateRow[]>(taggedSql),
     {
+      admission: "LANE",
       deadlineAtMs: options.deadlineAtMs,
       preserveExplicitJoinOrder: options.preserveExplicitJoinOrder,
       signal: options.signal
@@ -3714,7 +3718,9 @@ function lexicalMatchMode(
 type MemoryLexicalEvidenceRecorder = Readonly<{
   complete(entry: MemoryLexicalLaneEvidence): MemoryLexicalLaneEvidence | null;
   counts(rawCandidateCount: number, canonicalAcceptedCount: number): void;
-  failure(error: unknown): MemoryLexicalLaneEvidence | null;
+  /** A lane read withdrawn because its settlement signal fired records the
+   * settlement, whichever of the waiter and the lane runner observed it first. */
+  failure(error: unknown, settleSignal?: AbortSignal): MemoryLexicalLaneEvidence | null;
   settled(): MemoryLexicalLaneEvidence | null;
   success(): MemoryLexicalLaneEvidence | null;
 }>;
@@ -3780,7 +3786,10 @@ function createLexicalEvidenceRecorder(
       rawCandidateCount = raw;
       canonicalAcceptedCount = accepted;
     },
-    failure(error) {
+    failure(error, settleSignal) {
+      if (settleSignal?.aborted && memoryReadBudgetFailureCode(error) === null) {
+        return record("memory_lexical_settle_timeout");
+      }
       return record(error instanceof MemoryReadBudgetError
         ? error.code
         : "memory_lexical_lane_unavailable");
@@ -3864,7 +3873,7 @@ export async function classifyMemoryLexicalCanonicalRejections(input: Readonly<{
         ON entry."id" = lexical_candidates."searchEntryId"
       ORDER BY lexical_candidates."searchEntryId"
     `),
-    { deadlineAtMs: input.deadlineAtMs, signal: input.signal }
+    { admission: "LANE", deadlineAtMs: input.deadlineAtMs, signal: input.signal }
   );
   if (rows.length !== byEntry.size || new Set(rows.map(({ searchEntryId }) =>
     searchEntryId)).size !== rows.length) {
@@ -4267,7 +4276,7 @@ function pushLexicalTasks(
           if (recorded) executionEvidence.push(recorded);
           return result;
         } catch (error) {
-          const recorded = recorder.failure(error);
+          const recorded = recorder.failure(error, signal);
           if (recorded) {
             executionEvidence.push(recorded);
             failures.push(lane);
@@ -4442,7 +4451,7 @@ function pushVectorTasks(
     profile: input.vector.profile,
     userId: snapshot.userId,
     vector: input.vector.vector
-  }, { signal: input.settleSignal }).then((value) => {
+  }, { admission: "LANE", signal: input.settleSignal }).then((value) => {
     if (value.status === "DEGRADED") {
       state = "DEGRADED";
       recordMemoryVectorFailure(failureCodes, value.reason);
@@ -4743,7 +4752,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
           if (recorded) executionEvidence.push(recorded);
           return result;
         } catch (error) {
-          const recorded = recorder.failure(error);
+          const recorded = recorder.failure(error, input.settleSignal);
           if (recorded) {
             executionEvidence.push(recorded);
             lexicalFailures.push(lane);
@@ -4801,7 +4810,7 @@ async function executeDigestIntraChatStage(input: Readonly<{
       profile: vector.profile,
       userId: input.snapshot.userId,
       vector: vector.vector
-    }, { signal: input.settleSignal }).then((result) => {
+    }, { admission: "LANE", signal: input.settleSignal }).then((result) => {
       if (result.status === "READY") input.vectorEvidence.push(...result.lanes);
       else {
         vectorState = "DEGRADED";
@@ -6256,12 +6265,16 @@ export function createPrismaLocalMemoryRetrievalRepository(
       return false;
     }
   };
-  const canonicalRead = <Row>(sql: Prisma.Sql, signal?: AbortSignal): Promise<Row[]> =>
+  const canonicalRead = <Row>(
+    sql: Prisma.Sql,
+    admission: MemoryReadAdmissionClass,
+    signal?: AbortSignal
+  ): Promise<Row[]> =>
     withMemoryReadBudget(
       client,
       MEMORY_READ_BUDGET_MS.CANONICAL_REJOIN_EXPANSION,
       (tx) => tx.$queryRaw<Row[]>(sql),
-      { signal }
+      { admission, signal }
     );
   const repository = {
     async loadStandingFacts(
@@ -6325,24 +6338,24 @@ export function createPrismaLocalMemoryRetrievalRepository(
             NULL::text AS "supportingItemId", NULL::timestamp AS "occurredFrom",
             NULL::timestamp AS "occurredTo"
           FROM eligible WHERE eligible."itemId" IN (${valuesSql(coreIds)})
-        `, options.signal));
+        `, "REQUIRED", options.signal));
       }
       if (factIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
-        currentFactExpansionSql(snapshot, plan, factIds), options.signal));
+        currentFactExpansionSql(snapshot, plan, factIds), "REQUIRED", options.signal));
       if (digestChunkIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
-        digestExpansionSql(snapshot, plan, digestChunkIds), options.signal));
+        digestExpansionSql(snapshot, plan, digestChunkIds), "REQUIRED", options.signal));
       if (rawChunkIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
         plan.mode === "HISTORY_OVERVIEW"
           ? digestExpansionSql(snapshot, plan, rawChunkIds)
-          : chunkExpansionSql(snapshot, plan, rawChunkIds), options.signal));
+          : chunkExpansionSql(snapshot, plan, rawChunkIds), "REQUIRED", options.signal));
       if (toolEventIds.length > 0) queries.push(canonicalRead<ExpandedRow>(
-        toolEventExpansionSql(snapshot, plan, toolEventIds), options.signal));
+        toolEventExpansionSql(snapshot, plan, toolEventIds), "REQUIRED", options.signal));
       if (roundSelections.legacyIds.length > 0) {
         queries.push(canonicalRead<ExpandedRow>(rawRoundExpansionSql(
           snapshot,
           plan,
           roundSelections.legacyIds
-        ), options.signal).then((rows) => rows.map((row) => ({
+        ), "REQUIRED", options.signal).then((rows) => rows.map((row) => ({
           ...row,
           safeText: boundedMemoryRecallRoundEvidenceText(row.safeText)
         }))));
@@ -6352,7 +6365,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
           snapshot,
           plan,
           roundSelections.segments
-        ), options.signal));
+        ), "REQUIRED", options.signal));
       }
       if (roundSelections.userSegments.length > 0) {
         // Containment needs the provenance of the rendered user excerpt, not
@@ -6363,7 +6376,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
           plan,
           roundSelections.userSegments,
           true
-        ), options.signal).then((rows) => rows.flatMap((row) => {
+        ), "REQUIRED", options.signal).then((rows) => rows.flatMap((row) => {
           const projected = projectUserTestimonyExpandedRow(row);
           return projected ? [projected] : [];
         })));
@@ -6389,7 +6402,8 @@ export function createPrismaLocalMemoryRetrievalRepository(
       if (representatives.length === 0) return facts;
       const sourceChatIds = representatives.map(({ metadata }) => metadata.sourceChatId!);
       const rows = await canonicalRead<CandidateRow>(
-        aggregationDigestCandidatesSql(snapshot, plan, sourceChatIds)
+        aggregationDigestCandidatesSql(snapshot, plan, sourceChatIds),
+        "REQUIRED"
       );
       const bySource = new Map<string, MemoryLaneCandidate>();
       for (const row of rows) {
@@ -6505,7 +6519,7 @@ export function createPrismaLocalMemoryRetrievalRepository(
           profile: options.vector.profile,
           userId: snapshot.userId,
           vector: options.vector.vector
-        });
+        }, { admission: "LANE" });
         if (vectorResult.status !== "READY") {
           throw new Error("memory_session_completion_vector_unavailable");
         }
@@ -6527,7 +6541,10 @@ export function createPrismaLocalMemoryRetrievalRepository(
               sourceChatIds,
               queryRankedRoundIds,
               selectedSeeds
-            )
+            ),
+        // Optional session completion: its failure only marks the stage
+        // unavailable, so it must not overtake required reads.
+        "LANE"
       );
       if (rows.length > sourceChatIds.length * perSourceLimit) {
         throw new Error("memory_session_completion_result_invalid");

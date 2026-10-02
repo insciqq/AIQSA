@@ -24,7 +24,8 @@ import {
 } from "../persistence/pauseIntervals";
 import {
   MEMORY_READ_BUDGET_MS,
-  withMemoryReadBudget
+  withMemoryReadBudget,
+  type MemoryReadAdmissionClass
 } from "./readBudget";
 
 export const MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION =
@@ -1344,6 +1345,11 @@ type MemoryVectorReadOptions = Readonly<{
   signal?: AbortSignal;
 }>;
 
+type MemoryVectorSearchOptions = MemoryVectorReadOptions & Readonly<{
+  /** Lane vector scans are LANE; the caller decides, never a default. */
+  admission: MemoryReadAdmissionClass;
+}>;
+
 export function createPrismaMemoryVectorRepository(client: PrismaClient = prisma) {
   return Object.freeze({
     resolveActiveProfile(userId: string, options: MemoryVectorReadOptions = {}) {
@@ -1351,18 +1357,19 @@ export function createPrismaMemoryVectorRepository(client: PrismaClient = prisma
         client,
         MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
         (tx) => resolveActiveProfileWith(tx, userId),
-        { signal: options.signal }
+        { admission: "REQUIRED", signal: options.signal }
       );
     },
     async search(
       input: MemoryVectorSearchInput,
-      options: MemoryVectorReadOptions = {}
+      options: MemoryVectorSearchOptions
     ): Promise<MemoryVectorSearchResult> {
       return withMemoryReadBudget(
         client,
         MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
         (tx) => searchMemoryVectorLanes(createPrismaLaneExecutor(tx), input),
         {
+          admission: options.admission,
           isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
           signal: options.signal
         }

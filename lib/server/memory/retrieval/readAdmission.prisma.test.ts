@@ -4,7 +4,11 @@ import { describe, expect, it } from "vitest";
 import { MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS } from
   "../../../domain/memory/retrieval/config";
 import { prisma } from "../../prisma";
-import { MemoryReadBudgetError, withMemoryReadBudget } from "./readBudget";
+import {
+  MemoryReadBudgetError,
+  withMemoryReadBudget,
+  type MemoryReadAdmissionClass
+} from "./readBudget";
 import {
   MEMORY_VECTOR_RETRIEVAL_CONFIG_FINGERPRINT,
   memoryVectorProfiledEligibleCountSql
@@ -32,7 +36,11 @@ function planText(rows: readonly unknown[]): string {
   return JSON.stringify(rows);
 }
 
-function sleepingRead(client: Pick<PrismaClient, "$transaction">, seconds: number) {
+function sleepingRead(
+  client: Pick<PrismaClient, "$transaction">,
+  seconds: number,
+  admission: MemoryReadAdmissionClass = "LANE"
+) {
   return withMemoryReadBudget(client, 2_000, (tx) => tx.$queryRaw<Array<{ active: number }>>(
     Prisma.sql`
       /* aiqsa_read_admission_probe */
@@ -41,7 +49,7 @@ function sleepingRead(client: Pick<PrismaClient, "$transaction">, seconds: numbe
         WHERE state = 'active' AND query LIKE '%aiqsa_read_admission_probe%'
       ) AS active
     `
-  ));
+  ), { admission });
 }
 
 describe("Memory read admission PostgreSQL boundary", () => {
@@ -51,7 +59,7 @@ describe("Memory read admission PostgreSQL boundary", () => {
         SELECT current_setting('jit') AS jit,
           current_setting('lock_timeout') AS lock,
           current_setting('statement_timeout') AS statement
-      `), { deadlineAtMs: Date.now() + 300 });
+      `), { admission: "REQUIRED", deadlineAtMs: Date.now() + 300 });
     expect(settings?.jit).toBe("off");
     const statementMs = Number.parseInt(settings?.statement ?? "", 10);
     const lockMs = Number.parseInt(settings?.lock ?? "", 10);
@@ -122,7 +130,7 @@ describe("Memory read admission PostgreSQL boundary", () => {
         `),
         vectorRows: await tx.$queryRaw<unknown[]>(vectorCount)
       };
-    });
+    }, { admission: "LANE" });
     expect(planText(admitted.probe)).not.toContain('"JIT"');
     expect(planText(admitted.vector)).not.toContain('"JIT"');
     expect(admitted.vectorRows).toEqual([]);
@@ -142,7 +150,7 @@ describe("Memory read admission PostgreSQL boundary", () => {
       }, { maxWait: 2_000, timeout: 5_000 });
       await new Promise((resolve) => setTimeout(resolve, 100));
       const acquisition = await failureOf(withMemoryReadBudget(limited, 500, (tx) =>
-        tx.$queryRaw(Prisma.sql`SELECT 1`)));
+        tx.$queryRaw(Prisma.sql`SELECT 1`), { admission: "REQUIRED" }));
       holding();
       await held;
       expect(acquisition).toBeInstanceOf(MemoryReadBudgetError);
@@ -150,16 +158,17 @@ describe("Memory read admission PostgreSQL boundary", () => {
       expect(JSON.stringify(acquisition)).not.toMatch(/given time|connection pool/iu);
 
       const statement = await failureOf(withMemoryReadBudget(limited, 50, (tx) =>
-        tx.$queryRaw(Prisma.sql`SELECT pg_sleep(1)`)));
+        tx.$queryRaw(Prisma.sql`SELECT pg_sleep(1)`), { admission: "LANE" }));
       expect(statement).toMatchObject({ code: "memory_read_statement_timeout" });
 
       const expired = await failureOf(withMemoryReadBudget(limited, 50, async (tx) => {
         await new Promise((resolve) => setTimeout(resolve, 400));
         return tx.$queryRaw(Prisma.sql`SELECT 1`);
-      }));
+      }, { admission: "REQUIRED" }));
       expect(expired).toMatchObject({ code: "memory_read_transaction_expired" });
       await expect(withMemoryReadBudget(limited, 500, (tx) =>
-        tx.$queryRaw<Array<{ value: number }>>(Prisma.sql`SELECT 1::integer AS value`)))
+        tx.$queryRaw<Array<{ value: number }>>(Prisma.sql`SELECT 1::integer AS value`),
+        { admission: "REQUIRED" }))
         .resolves.toEqual([{ value: 1 }]);
     } finally {
       await limited.$disconnect();
@@ -169,6 +178,7 @@ describe("Memory read admission PostgreSQL boundary", () => {
   it("fails an exhausted deadline before any dispatch", async () => {
     const client = counting(prisma);
     await expect(withMemoryReadBudget(client, 500, (tx) => tx.$queryRaw(Prisma.sql`SELECT 1`), {
+      admission: "REQUIRED",
       deadlineAtMs: Date.now() - 1
     })).rejects.toMatchObject({ code: "memory_read_deadline_exhausted" });
     expect(client.dispatched).toBe(0);
@@ -200,9 +210,9 @@ describe("Memory read admission PostgreSQL boundary", () => {
     const controller = new AbortController();
     const startedAt = performance.now();
     const budget = failureOf(withMemoryReadBudget(waiting, 100, (tx) =>
-      tx.$queryRaw(Prisma.sql`SELECT 1`)));
+      tx.$queryRaw(Prisma.sql`SELECT 1`), { admission: "REQUIRED" }));
     const aborted = failureOf(withMemoryReadBudget(waiting, 2_000, (tx) =>
-      tx.$queryRaw(Prisma.sql`SELECT 1`), { signal: controller.signal }));
+      tx.$queryRaw(Prisma.sql`SELECT 1`), { admission: "LANE", signal: controller.signal }));
     controller.abort({ code: "test_settled" });
     await expect(aborted).resolves.toEqual({ code: "test_settled" });
     await expect(budget).resolves.toMatchObject({ code: "memory_read_admission_timeout" });
@@ -210,8 +220,29 @@ describe("Memory read admission PostgreSQL boundary", () => {
     expect(waiting.dispatched).toBe(0);
     await Promise.all(holders);
     await expect(withMemoryReadBudget(waiting, 500, (tx) =>
-      tx.$queryRaw<Array<{ value: number }>>(Prisma.sql`SELECT 1::integer AS value`)))
+      tx.$queryRaw<Array<{ value: number }>>(Prisma.sql`SELECT 1::integer AS value`),
+      { admission: "LANE" }))
       .resolves.toEqual([{ value: 1 }]);
     expect(waiting.dispatched).toBe(1);
+  });
+
+  it("dispatches a required read before queued lane reads", async () => {
+    const holders = Array.from(
+      { length: MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS },
+      // Staggered holders release one permit at a time.
+      (_, index) => sleepingRead(prisma, 0.3 + index * 0.15)
+    );
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const order: string[] = [];
+    const tracked = (label: string, admission: MemoryReadAdmissionClass) =>
+      withMemoryReadBudget(prisma, 2_000, async (tx) => {
+        order.push(label);
+        return tx.$queryRaw(Prisma.sql`SELECT 1::integer AS value`);
+      }, { admission });
+    const queued = [tracked("lane-1", "LANE"), tracked("lane-2", "LANE"),
+      tracked("lane-3", "LANE"), tracked("required", "REQUIRED")];
+    await Promise.all([...holders, ...queued]);
+    expect(order[0]).toBe("required");
+    expect(order.slice(1)).toEqual(["lane-1", "lane-2", "lane-3"]);
   });
 });
