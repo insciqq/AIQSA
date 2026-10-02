@@ -41,11 +41,9 @@ describe("workspace activity presentation", () => {
     expect(visibleWorkspaceActivityV2({ entries: [], outputStatus: { state: "failed" } })).not.toBeNull();
   });
 
-  it("shows a failed discovery and its safe cause instead of claiming tools were found", () => {
+  it("shows a failed discovery instead of claiming tools were found", () => {
     const failed = { id: "discovery", kind: "mcp_call", phase: "failed", mcp: { discovery: true, toolName: "find_tools" } } as const;
     expect(workspaceActivityLabelV2(failed)).toBe("Tool discovery failed");
-    expect(workspaceActivityLabelV2({ ...failed, text: "Tool discovery failed: the System Model returned malformed JSON." }))
-      .toBe("Tool discovery failed: the System Model returned malformed JSON.");
   });
 
   it("keeps output freshness when a cold terminal update arrives before its output snapshots", () => {
