@@ -109,8 +109,7 @@ function request(contextWindow = 8_192): ProviderRunRequest {
     toolBudgets: {
       maxMcpToolsPerDiscovery: 32,
       maxToolCalls: 16,
-      maxToolRounds: 8,
-      mcpAutoDiscoveryTimeoutSeconds: 30
+      maxToolRounds: 8
     },
     toolMode: "auto"
   };

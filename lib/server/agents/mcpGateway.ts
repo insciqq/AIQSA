@@ -3,7 +3,6 @@ import { captureMcpObservation, projectObservationForProvider, wholeDeliveryAllo
 import { observationFailure } from "../toolObservations/contract";
 import { resolveMcpRunTool } from "../mcp/toolExecutor";
 import { createAgentAiqsaSearch } from "./aiqsaSearchTool";
-import { mcpDiscoveryFailureMessage } from "../../contracts/mcpDiscoveryFailure";
 import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
 import { agentFailureCode, agentFailureMessage } from "./failures";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
@@ -15,9 +14,9 @@ import { prisma } from "../prisma";
 import { readBoundedRequestBody, RequestBodyTooLargeError } from "../http/requestBody";
 import { createMcpToolService, McpHubServiceError, type McpToolAuthority } from "../mcp/hubService";
 import { defaultMcpRunPlan, getDefaultMcpRuntimeCoordinator } from "../mcp/defaultRuntime";
-import { createPrismaAcceptedMcpRouter } from "../mcp/decisionRouter";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { validateMcpToolArguments } from "../mcp/clientSession";
+import { mcpFindToolsInputSchema } from "../mcp/discovery";
 import { normalizeMcpResultForModel } from "../mcp/resultNormalization";
 import { getMcpResponseWireLimits, getMcpRequestMaxBytes, mcpRequestSizeFailure } from "../mcp/responseLimits";
 import type { McpCapabilityCatalog, McpRunPlanSnapshot } from "../mcp/runPlan";
@@ -104,37 +103,6 @@ export async function createAgentMcpGateway(input: Readonly<{
       if (plan.ok) await input.store.admitMcpPlan(plan);
       return plan;
     },
-    router: createPrismaAcceptedMcpRouter(prisma, { runId: input.runId, userId: input.userId }, {
-      disableRequestRetries: true,
-      // A speculative utility must not consume the last admitted call/token
-      // allowance needed by the ordinary router. Bounded Agents keep baseline.
-      decisionsEnabled: !configuration.limitsEnabled,
-      async admit(snapshot) {
-        // Reserve the qualified model envelope, not an invented token charge.
-        // Reported usage settles the reservation; unknown work stays reserved.
-        const contextWindow = snapshot.model.capabilities.contextWindow;
-        if (!contextWindow || !Number.isSafeInteger(contextWindow)) throw new Error("decision_model_context_unavailable");
-        const id = await input.store.reserveProvider(contextWindow, { kind: "decision", snapshot });
-        return { async settle(result) {
-          const usage = result.receipt?.usage;
-          await input.store.settleProvider(id, result.receipt || !result.dispatched ? result.failureCode ? "ERROR" : "COMPLETE" : "UNKNOWN",
-            usage ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
-              totalTokens: usage.inputTokens + usage.outputTokens, completeness: "complete" } : null);
-          await input.onUsage();
-        } };
-      }
-    }),
-    async recordDiscoveryAttempt(authority, providerRole, maxOutputTokens, _timeoutMs, inputBytes) {
-      await authority.assertActive();
-      // Include the complete admitted goal, context and catalog. Reserve for
-      // transport escaping and output; charge only provider-reported usage.
-      const reservation = 2 * inputBytes + maxOutputTokens;
-      const id = await input.store.reserveProvider(reservation, { kind: "discovery", role: providerRole });
-      return { async settle({ state, usage }) {
-        await input.store.settleProvider(id, state, usage);
-        await input.onUsage();
-      } };
-    },
     async recordDispatch({ authority, toolId }) {
       await input.store.attachMcpCall(authority.callId, toolId);
       return { async settle(state, resultCode) {
@@ -177,7 +145,7 @@ export async function createAgentMcpGateway(input: Readonly<{
         try {
           signal.throwIfAborted();
           callId = await input.store.toolCall(name, { argumentHash: hashCanonicalMcpValue(args) }, false, deliveryId);
-          const authority = { callId, discoveryOperationKey: callId, userId: input.userId,
+          const authority = { callId, userId: input.userId,
             markDispatched() { dispatched = true; }, async assertActive() {
             signal.throwIfAborted(); await input.store.assertActive();
           } };
@@ -195,9 +163,8 @@ export async function createAgentMcpGateway(input: Readonly<{
           const agentCode = agentFailureCode(error);
           const code = agentCode ?? (error instanceof McpHubServiceError ? error.code
             : error instanceof Error && error.message === "agent_mcp_definition_changed" ? "tool_definition_changed" : "execution_unavailable");
-          const discoveryFailure = error instanceof McpHubServiceError ? error.discoveryFailure : null;
           const toolFailure = error instanceof McpHubServiceError ? error.toolFailure : null;
-          const detail = { code, ...(discoveryFailure ? { discoveryFailure } : {}), ...(toolFailure ? { toolFailure } : {}) };
+          const detail = { code, ...(toolFailure ? { toolFailure } : {}) };
           if (agentCode && agentCode !== "agent_mcp_call_limit") await input.onFailure(agentCode);
           if (callId) await input.store.settleTool(callId, "error", detail).catch(() => undefined);
           observe(true, code);
@@ -217,7 +184,7 @@ export async function createAgentMcpGateway(input: Readonly<{
             return { ...textResult(value, true), structuredContent: value };
           }
           if (code === "discovery_unavailable") {
-            const value = { ...detail, message: `${discoveryFailure ? mcpDiscoveryFailureMessage(discoveryFailure) : "Tool discovery is unavailable."} No connected tool was called. This does not establish an authorization failure on the connected service. You may retry find_tools with a narrower goal.` };
+            const value = { ...detail, message: "Tool discovery is unavailable. No connected tool was called. This does not establish an authorization failure on the connected service. You may retry find_tools with another query." };
             return { ...textResult(value, true), structuredContent: value };
           }
           if (code === "result_unsupported") {
@@ -293,13 +260,11 @@ export async function createAgentMcpGateway(input: Readonly<{
         if (search) server.registerTool("aiqsa_search", { description: search.description, inputSchema: frozenSchema(search.schema) },
           (args) => execute("aiqsa_search", args, (authority) => search.execute(args as Record<string, unknown>, authority.callId, signal)));
         if (configuration.mcpMode === "auto") {
-          server.registerTool("find_tools", { description: "Find a small relevant set of the chat's enabled MCP tools. Call the returned tools with call_tool.",
-            inputSchema: z.strictObject({ goal: z.string().trim().min(1).max(getMcpRequestMaxBytes()) }) },
+          server.registerTool("find_tools", { description: "Find the chat's enabled MCP tools by exact name from the connected tool index (\"select:name1,name2\") or short English keywords (service + action + object). The search is local and lexical; call the returned tools with call_tool. If nothing fits, call again with other words.",
+            inputSchema: mcpFindToolsInputSchema },
           (args) => execute("find_tools", args, async (authority) => {
-            const result = await service.findTools({ authority, goal: args.goal, signal,
-              timeoutMs: (input.request.toolBudgets?.mcpAutoDiscoveryTimeoutSeconds ?? 90) * 1000,
-              maxResults: input.request.toolBudgets?.maxMcpToolsPerDiscovery ?? 5,
-              maxOutputTokens: input.request.toolBudgets?.mcpAutoDiscoveryMaxOutputTokens });
+            const result = await service.findTools({ authority, query: (args as { query: string }).query, signal,
+              maxResults: input.request.toolBudgets?.maxMcpToolsPerDiscovery ?? 5 });
             return textResult(result);
           }));
           server.registerTool("call_tool", { description: "Call one tool returned by find_tools using its exact tool_id, tool_version and argument schema.",

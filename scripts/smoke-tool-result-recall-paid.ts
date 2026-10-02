@@ -413,8 +413,6 @@ type ToolLimits = Readonly<{
   maxMcpToolsPerDiscovery: number;
   maxToolCalls: number;
   maxToolRounds: number;
-  mcpAutoDiscoveryMaxOutputTokens: number | null;
-  mcpAutoDiscoveryTimeoutSeconds: number | null;
 }>;
 
 const MODEL_POLICY_PATH = "/api/admin/providers/model-policy";
@@ -423,8 +421,7 @@ async function modelPolicy(api: Api, stage: JourneyStage): Promise<ToolLimits & 
   const policy = decodeAdminModelPolicyResponse(await json(api, stage, MODEL_POLICY_PATH))?.modelPolicy.policy ??
     fail(stage, "model_policy_response_invalid");
   return { maxMcpToolsPerDiscovery: policy.maxMcpToolsPerDiscovery, maxToolCalls: policy.maxToolCalls,
-    maxToolRounds: policy.maxToolRounds, mcpAutoDiscoveryMaxOutputTokens: policy.mcpAutoDiscoveryMaxOutputTokens,
-    mcpAutoDiscoveryTimeoutSeconds: policy.mcpAutoDiscoveryTimeoutSeconds, version: policy.version };
+    maxToolRounds: policy.maxToolRounds, version: policy.version };
 }
 
 /** Writes all tool limits at once, as the Admin API requires. */

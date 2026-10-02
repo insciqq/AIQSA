@@ -55,7 +55,7 @@ function modelCatalog(): AdminModelPolicyCatalog {
     candidates: [candidate, { ...candidate, displayName: "GPT Terra", id: "terra" }],
     policy: {
       defaultModel: { ...candidate, available: true }, maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 8,
-      mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192, reasoningEffort: "medium", toolObservationPolicy: "v1",
+      reasoningEffort: "medium", toolObservationPolicy: "v1",
       updatedAt: "2026-09-07T00:00:00.000Z", updatedBy: null, version: 4
     }
   };
@@ -190,8 +190,7 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
           } : {}),
           ...(Object.hasOwn(body, "maxToolRounds") ? {
             maxMcpToolsPerDiscovery: Number(body.maxMcpToolsPerDiscovery), maxToolCalls: Number(body.maxToolCalls),
-            maxToolRounds: Number(body.maxToolRounds), mcpAutoDiscoveryTimeoutSeconds: Number(body.mcpAutoDiscoveryTimeoutSeconds),
-            mcpAutoDiscoveryMaxOutputTokens: body.mcpAutoDiscoveryMaxOutputTokens === null ? null : Number(body.mcpAutoDiscoveryMaxOutputTokens)
+            maxToolRounds: Number(body.maxToolRounds)
           } : {}),
           ...(body.toolObservationPolicy === "off" || body.toolObservationPolicy === "v1"
             ? { toolObservationPolicy: body.toolObservationPolicy } : {})
@@ -655,50 +654,46 @@ describe("AdminRolesSection", () => {
     expect(patchesTo(calls, "/api/admin/knowledge")).toEqual([]);
   });
 
-  it("exposes the MCP allowance, validates its range, preserves failed edits and saves on retry", async () => {
+  it("validates the MCP Auto tool count, preserves failed edits and saves on retry", async () => {
     const calls = server();
     renderSection();
-    const tokens = await screen.findByRole("spinbutton", { name: "MCP Auto output tokens" });
-    expect(tokens).toHaveValue(8192);
-    expect(tokens.closest("details")).toBeNull();
-    expect(screen.getByText(/hidden reasoning and JSON tool selection/)).toBeVisible();
+    const tools = await screen.findByRole("spinbutton", { name: "MCP Auto tools" });
+    expect(tools).toHaveValue(12);
+    expect(tools.closest("details")).toBeNull();
     const save = screen.getByRole("button", { name: "Save" });
-    for (const value of ["", "0", "1023", "65537", "4096.5"]) {
-      fireEvent.change(tokens, { target: { value } });
+    for (const value of ["", "0", "129", "4.5"]) {
+      fireEvent.change(tools, { target: { value } });
       expect(save).toBeDisabled();
     }
-    fireEvent.change(tokens, { target: { value: "32768" } });
+    fireEvent.change(tools, { target: { value: "20" } });
     const original = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
       String(input) === "/api/admin/providers/model-policy" && init?.method === "PATCH"
         ? Response.json({ error: "model_policy_stale" }, { status: 409 }) : original(input, init)));
     fireEvent.click(save);
     await screen.findByRole("alert");
-    expect(tokens).toHaveValue(32768);
+    expect(tools).toHaveValue(20);
     expect(save).toBeEnabled();
     vi.stubGlobal("fetch", original);
     fireEvent.click(save);
     await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeInTheDocument());
-    expect(patchesTo(calls, "/api/admin/providers/model-policy").at(-1)).toMatchObject({ mcpAutoDiscoveryMaxOutputTokens: 32768 });
+    expect(patchesTo(calls, "/api/admin/providers/model-policy").at(-1)).toEqual({
+      expectedVersion: 4, maxMcpToolsPerDiscovery: 20, maxToolCalls: 24, maxToolRounds: 8
+    });
     const previousGetCount = calls.filter((call) => call.method === "GET").length;
     fireEvent(window, new Event("focus"));
     await waitFor(() => expect(calls.filter((call) => call.method === "GET")).toHaveLength(previousGetCount + 3));
-    expect(tokens).toHaveValue(32768);
+    expect(tools).toHaveValue(20);
   });
 
-  it("saves Auto without converting it to zero and retains the choice after refresh", async () => {
-    const calls = server();
+  it("no longer offers the retired MCP Auto output budget or discovery timeout", async () => {
+    server();
     renderSection();
-    const mode = await screen.findByRole("combobox", { name: "MCP output budget" });
-    expect(mode).toHaveValue("manual");
-    fireEvent.change(mode, { target: { value: "model" } });
+    await screen.findByRole("spinbutton", { name: "MCP Auto tools" });
+    expect(screen.queryByRole("combobox", { name: "MCP output budget" })).not.toBeInTheDocument();
     expect(screen.queryByRole("spinbutton", { name: "MCP Auto output tokens" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(screen.getByText("No unsaved changes")).toBeInTheDocument());
-    expect(patchesTo(calls, "/api/admin/providers/model-policy").at(-1)).toMatchObject({ mcpAutoDiscoveryMaxOutputTokens: null });
-    expect(mode).toHaveValue("model");
-    fireEvent.change(mode, { target: { value: "manual" } });
-    expect(screen.getByRole("spinbutton", { name: "MCP Auto output tokens" })).toHaveValue(65536);
+    expect(screen.queryByRole("spinbutton", { name: "Discovery timeout" })).not.toBeInTheDocument();
+    expect(within(screen.getByTestId("admin-chat-defaults")).queryByText(/System Model/)).not.toBeInTheDocument();
   });
 
   it("saves the default chat model and tool limits with one request", async () => {
@@ -715,7 +710,7 @@ describe("AdminRolesSection", () => {
     await waitFor(() => expect(reportNotice).toHaveBeenCalledWith("Chat defaults saved for new chats"));
     expect(patchesTo(calls, "/api/admin/providers/model-policy")).toEqual([{
       expectedVersion: 4, maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 10,
-      mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192, providerModelId: "terra", reasoningEffort: null
+      providerModelId: "terra", reasoningEffort: null
     }]);
     expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
   });

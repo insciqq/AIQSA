@@ -1,9 +1,6 @@
-import type { ProviderRunRequest } from "../providers/types";
 import type { McpToolAccessFilter } from "./toolAccess";
-import { mcpChatDiscoveryContext } from "./chatDiscoveryContext";
 import { discoverMcpTools, McpDiscoveryError } from "./discoveryService";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
-import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import {
   mcpAutoDiscoveryFailure
@@ -14,10 +11,6 @@ import {
   mcpFindToolsArguments,
   mcpFindToolsExecutionResult
 } from "./discovery";
-import {
-  type McpRouterUsageAttribution,
-  type McpSemanticRouter
-} from "./router";
 import type {
   McpDiscoveryState,
   McpRunPlanBinding,
@@ -52,14 +45,21 @@ type AppendMcpDiscoveryEpoch = (input: Readonly<{
 
 const emptySnapshot = (): McpRunPlanSnapshot => ({ servers: [], tools: [], version: 1 });
 
-function selectedToolsFromCheckpoint(input: Readonly<{
+type CatalogSelection = ReturnType<typeof mcpCatalogToolsByNames>;
+
+/** An epoch lists loaded and already-active matches in rank order. Without
+ * the pre-call snapshot (replay), a tool an earlier epoch listed counts as
+ * already available. */
+function checkpointResult(input: Readonly<{
   discovery: McpDiscoveryState;
   modelRunToolCallId: string;
+  previouslyActive?: ReadonlySet<string>;
   snapshot: McpRunPlanSnapshot;
-}>): ReturnType<typeof mcpCatalogToolsByNames> {
-  const epoch = input.discovery.epochs.find((candidate) =>
+}>): Readonly<{ loaded: CatalogSelection; alreadyAvailable: CatalogSelection }> {
+  const index = input.discovery.epochs.findIndex((candidate) =>
     candidate.modelRunToolCallId === input.modelRunToolCallId
   );
+  const epoch = input.discovery.epochs[index];
   if (!epoch) throw new Error("mcp_discovery_checkpoint_conflict");
   const activeNames = new Set(input.snapshot.tools.map((tool) => tool.namespacedName));
   const tools = mcpCatalogToolsByNames(input.discovery.catalog, epoch.toolIds)
@@ -67,7 +67,12 @@ function selectedToolsFromCheckpoint(input: Readonly<{
   if (tools.length !== epoch.toolIds.length) {
     throw new Error("mcp_discovery_checkpoint_conflict");
   }
-  return tools;
+  const earlier = input.previouslyActive ??
+    new Set(input.discovery.epochs.slice(0, index).flatMap((candidate) => candidate.toolIds));
+  return {
+    loaded: tools.filter((tool) => !earlier.has(tool.namespacedName)),
+    alreadyAvailable: tools.filter((tool) => earlier.has(tool.namespacedName))
+  };
 }
 
 type ExecuteDurableMcpDiscoveryInput = Readonly<{
@@ -85,16 +90,10 @@ type ExecuteDurableMcpDiscoveryInput = Readonly<{
     }>[]
   ): Promise<McpRunPlanResult>;
   maxResults?: number;
-  maxOutputTokens?: number | "model" | null;
   modelRunToolCallId: string;
-  onUsage?(attribution: McpRouterUsageAttribution): void;
-  request: Pick<ProviderRunRequest, "content" | "context">;
-  routingGoals?: readonly string[];
   roundIndex: number;
-  router?: McpSemanticRouter;
   runId: string;
   signal?: AbortSignal;
-  timeoutMs?: number;
   userId: string;
 }>;
 
@@ -104,6 +103,8 @@ type DurableMcpDiscoveryResult = Readonly<{
   toolResult: ToolExecutionResult;
 }>;
 
+/** A settled epoch replays without searching; a pending call repeats the
+ * deterministic search against the run's frozen catalog. */
 export async function executeDurableMcpDiscovery(
   input: ExecuteDurableMcpDiscoveryInput
 ): Promise<DurableMcpDiscoveryResult> {
@@ -118,18 +119,24 @@ export async function executeDurableMcpDiscovery(
   const replay = input.activeDiscovery.epochs.find((epoch) =>
     epoch.modelRunToolCallId === input.modelRunToolCallId
   );
+  const resultFrom = async (discovery: McpDiscoveryState, snapshot: McpRunPlanSnapshot,
+    fresh?: Readonly<{ previouslyActive: ReadonlySet<string>; unknownNames: readonly string[] }>) => {
+    const checkpoint = checkpointResult({ discovery, modelRunToolCallId: input.modelRunToolCallId, snapshot,
+      ...(fresh ? { previouslyActive: fresh.previouslyActive } : {}) });
+    return mcpFindToolsExecutionResult(input.call, {
+      loaded: await input.filterTools(input.userId, checkpoint.loaded),
+      alreadyAvailable: await input.filterTools(input.userId, checkpoint.alreadyAvailable),
+      unknownNames: fresh?.unknownNames ?? []
+    });
+  };
   if (replay) {
-    if (replay.goal !== parsed.goal || replay.roundIndex !== input.roundIndex) {
+    if (replay.goal !== parsed.query || replay.roundIndex !== input.roundIndex) {
       throw new Error("mcp_discovery_checkpoint_conflict");
     }
     return {
       discovery: input.activeDiscovery,
       snapshot: currentSnapshot,
-      toolResult: mcpFindToolsExecutionResult(input.call, await input.filterTools(input.userId, selectedToolsFromCheckpoint({
-        discovery: input.activeDiscovery,
-        modelRunToolCallId: input.modelRunToolCallId,
-        snapshot: currentSnapshot
-      })))
+      toolResult: await resultFrom(input.activeDiscovery, currentSnapshot)
     };
   }
 
@@ -140,17 +147,11 @@ export async function executeDurableMcpDiscovery(
       catalog: input.activeDiscovery.catalog,
       filterTools: input.filterTools,
       materialize: input.materialize,
-      onUsage: input.onUsage,
-      router: input.router,
-      routing: {
-        decisionOperationKey: input.modelRunToolCallId,
+      search: {
         activeToolNames: activeNames,
-        context: mcpChatDiscoveryContext(input.request),
-        goals: input.routingGoals ?? [parsed.goal],
-        limit: Math.min(maxResults, Math.max(0, MCP_RUN_PLAN_LIMITS.maxTools - activeNames.size)),
-        maxOutputTokens: input.maxOutputTokens,
-        signal: input.signal,
-        timeoutMs: input.timeoutMs
+        limit: maxResults,
+        query: parsed.query,
+        signal: input.signal
       },
       userId: input.userId
     });
@@ -158,108 +159,27 @@ export async function executeDurableMcpDiscovery(
     if (input.signal?.aborted) throw error;
     throw new McpAutoDiscoveryUnavailableError(error instanceof McpDiscoveryError ? error.code : "mcp_materialization_failed");
   }
-  const { selected, plans } = discovered;
+  const { selected, alreadyActive, plans, search } = discovered;
   const addedSnapshot = plans[0]?.snapshot ?? emptySnapshot();
   const bindings = plans[0]?.bindings ?? [];
+  const accepted = new Set([...selected, ...alreadyActive].map((tool) => tool.namespacedName));
 
   const appended = await input.appendEpoch({
     bindings,
-    goal: parsed.goal,
+    // The persisted epoch field keeps its historical name; it stores the query.
+    goal: parsed.query,
     modelRunToolCallId: input.modelRunToolCallId,
     roundIndex: input.roundIndex,
     runId: input.runId,
     snapshot: addedSnapshot,
-    toolIds: selected.map((tool) => tool.namespacedName),
+    toolIds: search.matches.map((match) => match.namespacedName).filter((name) => accepted.has(name)),
     userId: input.userId
   });
   if (!appended) throw new Error("mcp_discovery_checkpoint_conflict");
   return {
     discovery: appended.discovery,
     snapshot: appended.snapshot,
-    toolResult: mcpFindToolsExecutionResult(input.call, await input.filterTools(input.userId, selectedToolsFromCheckpoint({
-      discovery: appended.discovery,
-      modelRunToolCallId: input.modelRunToolCallId,
-      snapshot: appended.snapshot
-    })))
+    toolResult: await resultFrom(appended.discovery, appended.snapshot,
+      { previouslyActive: activeNames, unknownNames: search.unknownNames })
   };
-}
-
-export async function executeDurableMcpDiscoveryBatch(
-  input: Omit<ExecuteDurableMcpDiscoveryInput, "call" | "modelRunToolCallId" | "routingGoals"> &
-    Readonly<{
-      calls: readonly Readonly<{
-        call: ModelToolCall;
-        modelRunToolCallId: string;
-      }>[];
-    }>
-): Promise<Readonly<{
-  discovery: McpDiscoveryState;
-  snapshot: McpRunPlanSnapshot;
-  toolResults: ReadonlyMap<string, ToolExecutionResult>;
-}>> {
-  if (input.calls.length === 0 || input.calls.length > toolLoopPersistenceLimits.batchCalls) {
-    throw new Error("mcp_discovery_arguments_invalid");
-  }
-  const parsed = input.calls.map(({ call }) => mcpFindToolsArguments(call.arguments));
-  if (parsed.some((goal) => goal === null)) {
-    throw new Error("mcp_discovery_arguments_invalid");
-  }
-  const routingGoals = [...new Set(parsed.map((goal) => goal!.goal))];
-  const [leader, ...followers] = input.calls;
-  const executed = await executeDurableMcpDiscovery({
-    ...input,
-    call: leader!.call,
-    modelRunToolCallId: leader!.modelRunToolCallId,
-    routingGoals
-  });
-  let discovery = executed.discovery;
-  let snapshot = executed.snapshot;
-  const leaderEpoch = discovery.epochs.find((epoch) =>
-    epoch.modelRunToolCallId === leader!.modelRunToolCallId
-  );
-  if (!leaderEpoch) throw new Error("mcp_discovery_checkpoint_conflict");
-  const toolResults = new Map<string, ToolExecutionResult>([
-    [leader!.call.id, executed.toolResult]
-  ]);
-
-  for (const follower of followers) {
-    const goal = mcpFindToolsArguments(follower.call.arguments);
-    if (!goal) throw new Error("mcp_discovery_arguments_invalid");
-    let epoch = discovery.epochs.find((candidate) =>
-      candidate.modelRunToolCallId === follower.modelRunToolCallId
-    );
-    if (epoch) {
-      if (epoch.goal !== goal.goal || epoch.roundIndex !== input.roundIndex) {
-        throw new Error("mcp_discovery_checkpoint_conflict");
-      }
-    } else {
-      const appended = await input.appendEpoch({
-        bindings: [],
-        goal: goal.goal,
-        modelRunToolCallId: follower.modelRunToolCallId,
-        roundIndex: input.roundIndex,
-        runId: input.runId,
-        snapshot: emptySnapshot(),
-        toolIds: leaderEpoch.toolIds,
-        userId: input.userId
-      });
-      if (!appended) throw new Error("mcp_discovery_checkpoint_conflict");
-      discovery = appended.discovery;
-      snapshot = appended.snapshot;
-      epoch = discovery.epochs.find((candidate) =>
-        candidate.modelRunToolCallId === follower.modelRunToolCallId
-      );
-      if (!epoch) throw new Error("mcp_discovery_checkpoint_conflict");
-    }
-    toolResults.set(follower.call.id, mcpFindToolsExecutionResult(
-      follower.call,
-      await input.filterTools(input.userId, selectedToolsFromCheckpoint({
-        discovery,
-        modelRunToolCallId: follower.modelRunToolCallId,
-        snapshot
-      }))
-    ));
-  }
-
-  return { discovery, snapshot, toolResults };
 }

@@ -162,19 +162,20 @@ describe("Run lifecycle v2", () => {
     expect(screen.getByRole("status")).toHaveTextContent("4 enabled Skills were omitted from Auto discovery for this response");
   });
 
-  it("offers only explicit Load all for a deterministic System Model routing rejection", () => {
+  it("offers Auto retry and an explicit Load all for an MCP activation failure", () => {
     const retry = vi.fn();
     const useLoadAll = vi.fn();
-    const failure = mcpAutoDiscoveryFailure("mcp_router_gemini_invalid_request");
+    const failure = mcpAutoDiscoveryFailure("mcp_materialization_mcp_not_ready");
     render(<RunAnswerV2 content="" onRetry={retry} onUseLoadAll={useLoadAll} onRegenerate={vi.fn()}
-      presentation={presentation({ kind: "terminal_error", failure: { ...failure, recovery: "change_parameters" } })} />);
+      presentation={presentation({ kind: "terminal_error", failure: { ...failure, recovery: "retry" } })} />);
     expect(screen.getByText(failure.message, { exact: true })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Regenerate" })).toBeNull();
     expect(retry).not.toHaveBeenCalled();
     expect(useLoadAll).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Use Load all" }));
     expect(useLoadAll).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
   });
   it("prioritizes final synthesis over stale running steps and keeps partial work after its failure", () => {
     const onRegenerate = vi.fn();

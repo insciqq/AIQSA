@@ -22,8 +22,6 @@ import {
   createPrismaMcpProjectRunPlanLoader,
   createPrismaMcpRunPlanLoader
 } from "./runPlanRepository";
-import { prisma } from "../prisma";
-import { createPrismaAcceptedMcpRouter } from "./decisionRouter";
 import { filterMcpToolsForUser } from "./toolAccess";
 import { reportSubsystemFailure, reportSubsystemHealthy } from "../observability";
 import { observedFailureCode } from "../providers/providerObservability";
@@ -215,8 +213,5 @@ export const defaultMcpRunPlan = {
   },
   async prepareProject(userId: string, serverIds: readonly string[], options?: Readonly<{ allowedToolNames?: readonly string[] }>) {
     return prepareExactProjectMcpRunPlan(userId, serverIds, options?.allowedToolNames);
-  },
-  routerForRun(owner: Readonly<{ runId: string; userId: string }>) {
-    return createPrismaAcceptedMcpRouter(prisma, owner);
   }
 };

@@ -233,8 +233,8 @@ test("Documents reasoning keeps the draft, confirmation and saved revision acros
       systemModel: null, updatedAt: "2026-09-09T00:00:00.000Z", updatedBy: null, version: 1
     } };
   const defaults: AdminModelPolicyCatalog = { candidates: [], policy: { defaultModel: null, reasoningEffort: null,
-    maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 8, mcpAutoDiscoveryTimeoutSeconds: 20,
-    mcpAutoDiscoveryMaxOutputTokens: 8192, updatedAt: "2026-09-09T00:00:00.000Z", updatedBy: null, version: 1 } };
+    maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 8,
+    updatedAt: "2026-09-09T00:00:00.000Z", updatedBy: null, version: 1 } };
   const mutations: Record<string, unknown>[] = [];
   await page.route("**/api/admin", async (route) => route.fulfill({ json: emptyAdminDashboard() }));
   await page.route("**/api/admin/release", async (route) => route.fulfill({ json: { state: "unavailable" } }));
@@ -344,8 +344,8 @@ for (const viewport of [
         systemModel: null, updatedAt: "2026-09-24T00:00:00.000Z", updatedBy: null, version: 1 }
     };
     const defaults: AdminModelPolicyCatalog = { candidates: [], policy: { defaultModel: null, reasoningEffort: null,
-      maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 8, mcpAutoDiscoveryTimeoutSeconds: 20,
-      mcpAutoDiscoveryMaxOutputTokens: 8192, updatedAt: "2026-09-24T00:00:00.000Z", updatedBy: null, version: 1 } };
+      maxMcpToolsPerDiscovery: 12, maxToolCalls: 24, maxToolRounds: 8,
+      updatedAt: "2026-09-24T00:00:00.000Z", updatedBy: null, version: 1 } };
     let checks = 0;
     const mutations: Record<string, unknown>[] = [];
     await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));

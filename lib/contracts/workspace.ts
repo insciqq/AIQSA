@@ -1,4 +1,3 @@
-import { isMcpDiscoveryFailureMessage } from "./mcpDiscoveryFailure";
 import { isMcpToolFailureMessage } from "./mcpToolFailure";
 import { WORKSPACE_OPERATION_FAILURE_MESSAGES } from "./workspaceFailure";
 
@@ -618,8 +617,12 @@ export function decodeThreadWorkspaceActivityEntry(value: unknown): ThreadWorksp
     if (!decoded || utf8Bytes(decoded) > WORKSPACE_ACTIVITY_NOTE_MAX_BYTES) return null;
     text = decoded;
   } else if (kind === "mcp_call" && phase === "failed" && value.text !== undefined) {
-    if (mcp?.discovery && isMcpDiscoveryFailureMessage(value.text) || !mcp?.discovery && isMcpToolFailureMessage(value.text)) text = value.text;
-    else return null;
+    // Stored discovery diagnostics named the retired model router; they now
+    // render the generic failed label instead of their text.
+    if (!mcp?.discovery) {
+      if (!isMcpToolFailureMessage(value.text)) return null;
+      text = value.text;
+    }
   } else if (value.text !== undefined) return null;
   let elided: Pick<ThreadWorkspaceActivityEntry, "failedCount" | "hasLifecycle" | "throughSequence"> = {};
   if (kind === "elided") {
