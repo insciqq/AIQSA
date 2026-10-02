@@ -4,22 +4,25 @@ import { currentMemoryJobsSql } from "../../memory/coordinator/currentJobs";
 import { memoryHistoryActiveWorkSql, memoryHistoryAutoHealAttemptsSql, memoryHistoryAutoHealProtectedSql, memoryHistoryIncompleteOutputSql } from "../../memory/history/autoHeal";
 import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS } from "../../memory/history/contract";
 import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
+import { MEMORY_PREPARATION_FAILURE_CODES } from "../../runs/preparingFailOpen";
 
 const STALLED_MS = 15 * 60_000;
 const RETRY_WARNING_MS = 5 * 60_000;
-/** Users never see Memory command/search failures; administrators get a
- * rolling 24-hour count of them. Unindexed full scan inside the window. */
+/** Users never see Memory command/search/preparation failures; administrators
+ * get a rolling 24-hour count of them. Unindexed full scan inside the window. */
 const RECENT_ACTIVITY_MS = 24 * 60 * 60_000;
 type Stage = AdminMemoryProcessingIssue["stage"];
 type Reason = AdminMemoryProcessingIssue["reason"];
 type Healing = NonNullable<AdminMemoryProcessingIssue["autoHeal"]>;
 type ProcessingRow = { stage: Stage; reason: Reason | null; autoHeal: Healing | null; count: bigint; oldestAt: Date };
-type RecentActivityRow = { stage: "COMMAND" | "SEARCH"; reason: "COMMAND_FAILED" | "COMMAND_UNKNOWN" | "SEARCH_DEGRADED" | "SEARCH_FAILED";
+type RecentActivityRow = { stage: "COMMAND" | "SEARCH" | "PREPARATION";
+  reason: "COMMAND_FAILED" | "COMMAND_UNKNOWN" | "SEARCH_DEGRADED" | "SEARCH_FAILED" | "PREPARATION_SKIPPED" | "PREPARATION_FAILED";
   count: bigint; oldestAt: Date };
 const priority: Record<Reason, number> = {
   MODEL_UNAVAILABLE: 6, CAPABILITY_UNAVAILABLE: 5, CONFIGURATION_REQUIRED: 4,
   PROCESSING_FAILED: 3, STALLED: 2, RETRYING: 1, OUTPUT_LIMIT: 0, HISTORY_INCOMPLETE: 0,
-  COMMAND_FAILED: 1, COMMAND_UNKNOWN: 0, SEARCH_FAILED: 1, SEARCH_DEGRADED: 0
+  COMMAND_FAILED: 1, COMMAND_UNKNOWN: 0, SEARCH_FAILED: 1, SEARCH_DEGRADED: 0,
+  PREPARATION_FAILED: 1, PREPARATION_SKIPPED: 0
 };
 
 /** Only allowlisted statuses are counted; no content, identity or error text
@@ -49,6 +52,22 @@ function recentActivitySql(now: Date): Prisma.Sql {
       WHERE run."createdAt" > ${since} AND run."createdAt" <= ${now}
         -- Cancelled searches are a user Stop, not degradation.
         AND (run.state = 'ERROR'::"MemoryHistoryRunState" OR run.outcome = 'DEGRADED'::"MemoryHistoryRunOutcome")
+      UNION ALL
+      -- Preparation-level fallbacks alone record a degradation code on a
+      -- FAILED_SAFE receipt; retrieval-level optional stages leave it null.
+      SELECT 'PREPARATION', 'PREPARATION_SKIPPED', binding."finalizedAt"
+      FROM "ModelRunMemoryBinding" AS binding
+      JOIN "User" AS owner ON owner.id = binding."userId" AND owner.status = 'active'::"UserStatus"
+      WHERE binding."finalizedAt" > ${since} AND binding."finalizedAt" <= ${now}
+        AND binding.outcome = 'FAILED_SAFE'::"MemoryReceiptOutcome"
+        AND binding."degradationCode" IS NOT NULL
+      UNION ALL
+      SELECT 'PREPARATION', 'PREPARATION_FAILED', run."updatedAt"
+      FROM "ModelRun" AS run
+      JOIN "User" AS owner ON owner.id = run."userId" AND owner.status = 'active'::"UserStatus"
+      WHERE run.status = 'error'::"ModelRunStatus"
+        AND run."updatedAt" > ${since} AND run."updatedAt" <= ${now}
+        AND run."errorPayload"->>'code' IN (${Prisma.join(MEMORY_PREPARATION_FAILURE_CODES)})
     )
     SELECT stage, reason, count(*) AS count, min("occurredAt") AS "oldestAt"
     FROM recent GROUP BY stage, reason

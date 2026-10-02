@@ -11,7 +11,8 @@ const stages = {
   MAINTENANCE: "Memory maintenance needs attention",
   DELETION: "Memory deletion needs attention",
   COMMAND: "Memory commands failed recently",
-  SEARCH: "Memory search degraded recently"
+  SEARCH: "Memory search degraded recently",
+  PREPARATION: "Memory preparation degraded recently"
 } as const;
 
 const reasons = {
@@ -26,10 +27,12 @@ const reasons = {
   COMMAND_FAILED: "Some Memory changes requested in chat could not be completed in the last 24 hours. Users are not shown these failures.",
   COMMAND_UNKNOWN: "Some Memory changes requested in chat ended with an unconfirmed outcome in the last 24 hours. They are not repeated automatically.",
   SEARCH_DEGRADED: "Some Memory searches returned limited results in the last 24 hours. Answers continued with the available evidence.",
-  SEARCH_FAILED: "Some Memory searches failed in the last 24 hours. Answers continued without their results."
+  SEARCH_FAILED: "Some Memory searches failed in the last 24 hours. Answers continued without their results.",
+  PREPARATION_SKIPPED: "Some answers in the last 24 hours continued without Memory because its preparation could not finish. Users are not shown these failures.",
+  PREPARATION_FAILED: "Some answers in the last 24 hours could not start because Memory preparation stopped safely. Users saw a neutral error."
 } as const;
 
-/** Command and search outcomes from the last 24 hours: Control Center
+/** Command, search and preparation outcomes from the last 24 hours: Control Center
  * diagnostics that are not blocked processing and not Overview attention. */
 export function isAdminMemoryRecentActivityIssue(issue: AdminMemoryProcessingIssue): boolean {
   return (ADMIN_MEMORY_RECENT_ACTIVITY_STAGES as readonly string[]).includes(issue.stage);
@@ -50,6 +53,7 @@ function unit(issue: AdminMemoryProcessingIssue): string {
   const one = issue.count === 1;
   return issue.stage === "COMMAND" ? one ? "command" : "commands"
     : issue.stage === "SEARCH" ? one ? "search" : "searches"
+    : issue.stage === "PREPARATION" ? one ? "answer" : "answers"
     : one ? "affected job" : "affected jobs";
 }
 

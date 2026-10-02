@@ -71,7 +71,7 @@ test("Memory auto-heal needs no administrator action and reports exhausted recov
   await expect(page).toHaveURL(/section=roles&resource=memory/u);
 });
 
-test("Memory card lists recent command and search failures as neutral warnings, not blocked processing", async ({ page }, testInfo) => {
+test("Memory card lists recent command, search and preparation failures as neutral warnings, not blocked processing", async ({ page }, testInfo) => {
   test.setTimeout(90_000);
   const memory: AdminMemoryStatusResponse["memory"] = { ...memoryResponse({ rebuilding: false, timeoutSeconds: 30, timeoutVersion: 1 }).memory,
     index: { generation: 1, readiness: "READY" as const }, rebuild: { state: "NOT_REQUIRED" as const },
@@ -81,7 +81,9 @@ test("Memory card lists recent command and search failures as neutral warnings, 
       { stage: "COMMAND", reason: "COMMAND_FAILED", count: 2, oldestAgeSeconds: 7200, severity: "warn" },
       { stage: "COMMAND", reason: "COMMAND_UNKNOWN", count: 1, oldestAgeSeconds: 600, severity: "warn" },
       { stage: "SEARCH", reason: "SEARCH_FAILED", count: 3, oldestAgeSeconds: 3600, severity: "warn" },
-      { stage: "SEARCH", reason: "SEARCH_DEGRADED", count: 1, oldestAgeSeconds: 60, severity: "warn" }
+      { stage: "SEARCH", reason: "SEARCH_DEGRADED", count: 1, oldestAgeSeconds: 60, severity: "warn" },
+      { stage: "PREPARATION", reason: "PREPARATION_FAILED", count: 1, oldestAgeSeconds: 300, severity: "warn" },
+      { stage: "PREPARATION", reason: "PREPARATION_SKIPPED", count: 4, oldestAgeSeconds: 5400, severity: "warn" }
     ] } };
   await page.route("**/api/admin", (route) => route.fulfill({ json: emptyAdminDashboard() }));
   await page.route("**/api/admin/knowledge", (route) => route.fulfill({ json: { knowledge: adminKnowledgeSettingsFixture() } }));
@@ -94,11 +96,17 @@ test("Memory card lists recent command and search failures as neutral warnings, 
   await expect(section.getByText("Memory search degraded recently")).toHaveCount(2);
   await expect(section).toContainText("2 commands; oldest 2h");
   await expect(section).toContainText("3 searches; oldest 1h");
-  await expect(section).not.toContainText(/Processing blocked|Processing delayed|memory_command|memory_search_/u);
+  await expect(section.getByText("Memory preparation degraded recently")).toHaveCount(2);
+  await expect(section).toContainText("continued without Memory because its preparation could not finish");
+  await expect(section).toContainText("4 answers; oldest 1h");
+  await expect(section).toContainText("Users saw a neutral error. 1 answer; oldest 5m");
+  await expect(section).not.toContainText(/Processing blocked|Processing delayed|memory_command|memory_search_|memory_prepar/u);
   for (const viewport of [
     { name: "desktop-landscape", width: 1440, height: 900 },
     { name: "tablet-portrait", width: 768, height: 1024 },
-    { name: "phone-portrait", width: 390, height: 844 }
+    { name: "tablet-landscape", width: 1024, height: 768 },
+    { name: "phone-portrait", width: 390, height: 844 },
+    { name: "phone-landscape", width: 844, height: 390 }
   ]) {
     await page.setViewportSize(viewport);
     await expectNoHorizontalOverflow(page);

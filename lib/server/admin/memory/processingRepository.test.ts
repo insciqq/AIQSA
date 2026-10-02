@@ -46,4 +46,26 @@ describe("Memory issue aggregation", () => {
       { stage: "SEARCH", reason: "SEARCH_FAILED", count: 2, oldestAgeSeconds: 3600, severity: "warn" }
     ]);
   });
+
+  it("adds 24-hour preparation fallbacks and safe stops by allowlisted codes only", async () => {
+    const now = new Date("2026-09-19T12:00:00Z");
+    const queryRaw = vi.fn().mockResolvedValueOnce([{ enabled: 1n, learning: 0n }]).mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { stage: "PREPARATION", reason: "PREPARATION_SKIPPED", count: 4n, oldestAt: new Date(now.getTime() - 600_000) },
+        { stage: "PREPARATION", reason: "PREPARATION_FAILED", count: 1n, oldestAt: new Date(now.getTime() - 60_000) }
+      ]);
+    const result = await readAdminMemoryProcessing({ $queryRaw: queryRaw } as unknown as PrismaClient, now);
+    expect(result.issues).toEqual([
+      { stage: "PREPARATION", reason: "PREPARATION_FAILED", count: 1, oldestAgeSeconds: 60, severity: "warn" },
+      { stage: "PREPARATION", reason: "PREPARATION_SKIPPED", count: 4, oldestAgeSeconds: 600, severity: "warn" }
+    ]);
+    const recent = queryRaw.mock.calls[2]![0] as { sql: string; values: unknown[] };
+    expect(recent.sql).toContain('"ModelRunMemoryBinding"');
+    expect(recent.sql).toContain("\"degradationCode\" IS NOT NULL");
+    expect(recent.sql).toContain("owner.status = 'active'");
+    expect(recent.sql).not.toMatch(/LIKE\s+'memory_/);
+    expect(recent.values).toEqual(expect.arrayContaining(["memory_preparing_failed", "memory_source_deleted",
+      "memory_item_forgotten", "memory_all_reusable_deleted", "memory_source_stale", "memory_preparing_recovery_required"]));
+    expect(recent.values).not.toContain("memory_answer_model_tools_retired");
+  });
 });

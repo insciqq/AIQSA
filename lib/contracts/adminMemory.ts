@@ -38,13 +38,15 @@ export const ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS = Object.freeze({
 const safeInteger = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const safeLabel = z.string().trim().min(1).max(200);
 const processingStage = z.enum(["LEARNING", "HISTORY", "INDEXING", "MAINTENANCE", "DELETION"]);
-/** Recent-activity stages aggregate the last 24 hours of command and search
- * outcomes. They are administrator diagnostics, never worker stages. */
-export const ADMIN_MEMORY_RECENT_ACTIVITY_STAGES = ["COMMAND", "SEARCH"] as const;
+/** Recent-activity stages aggregate the last 24 hours of command, search and
+ * answer-preparation outcomes. They are administrator diagnostics, never
+ * worker stages. */
+export const ADMIN_MEMORY_RECENT_ACTIVITY_STAGES = ["COMMAND", "SEARCH", "PREPARATION"] as const;
 const issueStage = z.enum([...processingStage.options, ...ADMIN_MEMORY_RECENT_ACTIVITY_STAGES]);
 const issueReasons = [
   "MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED", "OUTPUT_LIMIT",
-  "HISTORY_INCOMPLETE", "RETRYING", "STALLED", "COMMAND_FAILED", "COMMAND_UNKNOWN", "SEARCH_DEGRADED", "SEARCH_FAILED"
+  "HISTORY_INCOMPLETE", "RETRYING", "STALLED", "COMMAND_FAILED", "COMMAND_UNKNOWN", "SEARCH_DEGRADED", "SEARCH_FAILED",
+  "PREPARATION_SKIPPED", "PREPARATION_FAILED"
 ] as const;
 const autoHealStates = ["RETRYING", "EXHAUSTED", "UNAVAILABLE"] as const;
 export const adminMemoryProcessingIssueSchema = z.strictObject({
