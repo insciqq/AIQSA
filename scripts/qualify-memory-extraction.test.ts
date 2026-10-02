@@ -190,6 +190,17 @@ describe("long-term extraction qualification fixture and oracle", () => {
     expect(summarizeExtractionQualification({
       degradedCodes: [], jobStages: [], results: passing.slice(1), usage
     }).status).toBe("failed");
+    // A retried replay-safe transient call is reported, never hidden or degraded.
+    expect(summarizeExtractionQualification({
+      degradedCodes: [], jobRetries: ["memory_fact_provider_transient"], jobStages: [], results: passing,
+      usage: [...usage, { ...usage[0]!, state: "RETRIED" }]
+    })).toMatchObject({
+      degraded: 0, jobRetries: { memory_fact_provider_transient: 1 },
+      providerCalls: { "MEMORY_FACT_EXTRACT:RETRIED": 1 }, status: "passed"
+    });
+    expect(summarizeExtractionQualification({
+      degradedCodes: [], jobStages: [], results: passing, usage: [{ ...usage[0]!, state: "FAILED" }]
+    })).toMatchObject({ degraded: 1, status: "failed" });
   });
 
   it("prints only bounded codes and counts from the worker message", () => {
