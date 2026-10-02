@@ -248,7 +248,6 @@ async function loadFactTarget(
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
       AND ${memoryReusableFactAuthorityPredicate(row.userId, {
-        includePatterns: true,
         lifecycle: "CURRENT_OR_HISTORICAL"
       })}
     LIMIT 1

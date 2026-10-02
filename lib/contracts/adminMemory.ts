@@ -37,7 +37,7 @@ export const ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS = Object.freeze({
 
 const safeInteger = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const safeLabel = z.string().trim().min(1).max(200);
-const processingStage = z.enum(["LEARNING", "HISTORY", "INDEXING", "SYNTHESIS", "MAINTENANCE", "DELETION"]);
+const processingStage = z.enum(["LEARNING", "HISTORY", "INDEXING", "MAINTENANCE", "DELETION"]);
 /** Recent-activity stages aggregate the last 24 hours of command and search
  * outcomes. They are administrator diagnostics, never worker stages. */
 export const ADMIN_MEMORY_RECENT_ACTIVITY_STAGES = ["COMMAND", "SEARCH"] as const;

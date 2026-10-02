@@ -562,8 +562,6 @@
   "memory_suppression_preflight_arguments_invalid",
   "memory_suppression_required_key_ids_invalid",
   "memory_suppression_shape_invalid",
-  "memory_synthesis_cancelled",
-  "memory_synthesis_output_invalid",
   "memory_synthesis_retired",
   "memory_synthesis_retired_forgotten",
   "memory_synthesis_retired_pinned",

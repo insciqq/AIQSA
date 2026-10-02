@@ -321,9 +321,7 @@ export async function loadMemoryRunSources(
   ]);
   const versionById = new Map(versions.map((version) => [version.id, version]));
   const [eligibleVersionIds, evidenceSnapshots] = await Promise.all([
-    loadMemoryReusableFactVersionIds(client, input.userId, factVersionIds, {
-      includePatterns: true
-    }),
+    loadMemoryReusableFactVersionIds(client, input.userId, factVersionIds),
     loadPersonalMemoryEvidenceSnapshots(client, input.userId, factVersionIds)
   ]);
   const evidenceByVersionId = new Map<string, typeof evidenceSnapshots>();

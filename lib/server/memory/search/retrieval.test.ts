@@ -17,7 +17,7 @@ function fixture(history = true) {
     lifecycleState: "ACTIVE", matchedEntityRole: null, modality: "STATE", observedAt: now, occurredAt: null,
     occurredFrom: null, occurredTo: null, pinned: false, predicateKey: null, relationDepth: 0, scopeAffinity: 0,
     scopeType: "GLOBAL_USER", sensitivityClass: "NORMAL", sourceAssistantId: null, sourceChatId: null,
-    sourceFolderId: null, sourceMode: "EXPLICIT", sourceAuthority: "EXPLICIT", subjectKey: null, synthesisDepth: 0,
+    sourceFolderId: null, sourceMode: "EXPLICIT", sourceAuthority: "EXPLICIT", subjectKey: null,
     systemFrom: now, temperatureClass: null, temperatureScore: 0, validFrom: null, validTo: null
   };
   const fact: MemoryLaneCandidate = { itemId: "overflow-version", itemType: "FACT_VERSION", entryId: "entry",

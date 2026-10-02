@@ -8,8 +8,7 @@ const stages = {
   LEARNING: "Memory is not learning new facts",
   HISTORY: "Memory history processing needs attention",
   INDEXING: "Memory indexing is degraded",
-  SYNTHESIS: "Memory synthesis needs attention",
-  MAINTENANCE: "Memory processing needs attention",
+  MAINTENANCE: "Memory maintenance needs attention",
   DELETION: "Memory deletion needs attention",
   COMMAND: "Memory commands failed recently",
   SEARCH: "Memory search degraded recently"

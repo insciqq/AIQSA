@@ -23,7 +23,7 @@ export function memoryFailureOutcome(code: string, fallback: "failed" | "blocked
   switch (code) {
     case "memory_job_lease_lost": case "memory_deletion_lease_lost": case "memory_lexical_projection_lease_lost": return "lost_lease";
     case "memory_classifier_cancelled": case "memory_rebuild_cancelled": case "memory_reclassification_cancelled":
-    case "memory_run_utility_cancelled": case "memory_speculation_cancelled": case "memory_synthesis_cancelled":
+    case "memory_run_utility_cancelled": case "memory_speculation_cancelled":
     case "memory_query_resolution_speculation_cancelled": return "cancelled";
     case "memory_dependency_source_stale": case "memory_embedding_batch_binding_stale":
     case "memory_embedding_batch_generation_stale": case "memory_embedding_batch_result_stale":
@@ -34,7 +34,7 @@ export function memoryFailureOutcome(code: string, fallback: "failed" | "blocked
     case "memory_fact_source_normalization_stale": case "memory_fact_source_stale": case "memory_fact_transition_stale":
     case "memory_fact_verification_stale": case "memory_fact_version_stale": case "memory_history_plan_stale":
     case "memory_history_search_entry_stale": case "memory_reclassification_snapshot_stale": case "memory_source_stale":
-    case "memory_synthesis_snapshot_stale": case "memory_synthesis_source_stale": case "memory_vector_generation_stale":
+    case "memory_vector_generation_stale":
     case "memory_version_stale": return "stale";
     default: return fallback;
   }

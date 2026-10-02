@@ -175,34 +175,6 @@ describe("Memory job enqueue boundary", () => {
     expect(memoryJob.create).toHaveBeenCalledOnce();
   });
 
-  it("allows a synthesis job to target one existing pattern", async () => {
-    const memoryJob = {
-      create: vi.fn().mockResolvedValue({
-        id: "targeted-synthesis-job",
-        memoryGenerationSnapshot: 0,
-        memoryRevisionSnapshot: 0,
-        state: "QUEUED"
-      }),
-      findUnique: vi.fn().mockResolvedValue(null)
-    };
-    const tx = { memoryJob } as unknown as MemoryTransaction;
-
-    await expect(enqueueMemoryJob(tx, settings, {
-      idempotencyFingerprint: "targeted-synthesis-fingerprint",
-      kind: "SYNTHESIZE_MEMORIES",
-      pipelineVersion: "memory-synthesis-v2",
-      targetFactVersionId: "pattern-version-1"
-    })).resolves.toMatchObject({
-      created: true,
-      id: "targeted-synthesis-job"
-    });
-    expect(memoryJob.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        targetFactVersionId: "pattern-version-1"
-      })
-    }));
-  });
-
   it("rejects a target on job kinds without a target contract", async () => {
     const memoryJob = {
       create: vi.fn(),
@@ -214,6 +186,13 @@ describe("Memory job enqueue boundary", () => {
       idempotencyFingerprint: "targeted-rebuild-fingerprint",
       kind: "REBUILD_INDEX",
       pipelineVersion: "memory-index-rebuild-v1",
+      targetFactVersionId: "pattern-version-1"
+    })).rejects.toThrow("memory_input_invalid");
+    // Retired Dream synthesis targeted a pattern; maintenance has no target.
+    await expect(enqueueMemoryJob(tx, settings, {
+      idempotencyFingerprint: "targeted-maintenance-fingerprint",
+      kind: "SYNTHESIZE_MEMORIES",
+      pipelineVersion: "memory-maintenance-v1",
       targetFactVersionId: "pattern-version-1"
     })).rejects.toThrow("memory_input_invalid");
     expect(memoryJob.findUnique).not.toHaveBeenCalled();

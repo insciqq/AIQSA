@@ -186,7 +186,7 @@ function metadata(id: string): MemoryCandidateMetadata {
     predicateKey: null, relationDepth: 0, sensitivityClass: "NORMAL",
     sourceAssistantId: null, sourceChatId: null, sourceFolderId: null,
     sourceMode: "AUTOMATIC", sourceAuthority: "DIRECT_AUTOMATIC", subjectKey: null,
-    synthesisDepth: 0, systemFrom: now,
+    systemFrom: now,
     temperatureClass: null, temperatureScore: 0, validFrom: null, validTo: null
   };
 }
@@ -427,26 +427,6 @@ describe("relative-rank Memory fusion", () => {
     expect(ranked[0]?.rrfScore).toBe(ranked[2]?.rrfScore);
     expect(ranked.map(({ featureSnapshot }) => featureSnapshot.temporalFit))
       .toEqual([1, 0.5, 0.5]);
-  });
-
-  it("demotes inferred synthesis below equally ranked direct facts", () => {
-    const synthesized = candidate("pattern", "FACT_LEXICAL_UNICODE", 1);
-    const ranked = fuseMemoryRetrievalCandidates(plan, [{
-      lane: "FACT_LEXICAL_UNICODE",
-      candidates: [{
-        ...synthesized,
-        metadata: {
-          ...synthesized.metadata,
-          directness: "INFERRED",
-          modality: "PATTERN",
-          sourceAuthority: "SYNTHESIS",
-          synthesisDepth: 1
-        }
-      }, candidate("direct", "FACT_LEXICAL_UNICODE", 0.9)]
-    }], now);
-
-    expect(ranked.map(({ itemId }) => itemId)).toEqual(["direct", "pattern"]);
-    expect(ranked[1]!.finalScore).toBeCloseTo(ranked[1]!.rrfScore * 0.5);
   });
 
   it("keeps supporting observations retrievable below equal HIGH authority", () => {
