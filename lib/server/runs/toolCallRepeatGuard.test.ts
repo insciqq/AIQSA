@@ -10,6 +10,7 @@ import {
 } from "./toolCallRepeatGuard";
 import type { ToolLoopJsonValue } from "./toolLoopPersistence";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
+import { MCP_FIND_TOOLS_NAME } from "../mcp/discovery";
 
 let sequence = 0;
 
@@ -119,6 +120,15 @@ describe("repeated identical calls without progress", () => {
     const changed = new ToolCallRepeatHistory([row({ round: 1 }),
       row({ round: 2, content: [{ type: "text", text: "record rec-1: closed" }] })]);
     expect(changed.blockFor(call, 3, onlyReads)).toBeNull();
+  });
+
+  it("never blocks a find_tools search with another query, only the same query", () => {
+    const search = (query: string) => ({ arguments: { query }, toolName: MCP_FIND_TOOLS_NAME });
+    const noMatch = [{ type: "json", value: { loaded: [], message: "No matching tools." } }];
+    const history = new ToolCallRepeatHistory([1, 2].map(round =>
+      row({ round, name: MCP_FIND_TOOLS_NAME, arguments: search("weather").arguments, content: noMatch })));
+    expect(history.blockFor(search("forecast"), 3, { batch: [search("forecast")], readOnly: () => true })).toBeNull();
+    expect(history.blockFor(search("weather"), 3, { batch: [search("weather")], readOnly: () => true })).toEqual([1, 2]);
   });
 
   it("allows a retry after an error, busy, cancelled or unknown outcome", () => {
