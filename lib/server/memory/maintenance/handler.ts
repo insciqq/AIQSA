@@ -28,8 +28,8 @@ export function createPrismaMemoryMaintenanceHandler(client: PrismaClient, optio
     async preflight(job) {
       if (!isMemoryMaintenanceJob(job)) return { status: "CANCELLED", errorCode: "memory_maintenance_job_invalid" };
       const settings = await client.userMemorySettings.findUnique({ where: { userId: job.userId },
-        select: { useMemoryFacts: true, learnAutomatically: true, synthesisEnabled: true, memoryGeneration: true, memoryRevision: true } });
-      if (!settings?.useMemoryFacts || !settings.learnAutomatically || !settings.synthesisEnabled) {
+        select: { useMemoryFacts: true, learnAutomatically: true, memoryGeneration: true, memoryRevision: true } });
+      if (!settings?.useMemoryFacts || !settings.learnAutomatically) {
         return { status: "CANCELLED", errorCode: "memory_maintenance_disabled" };
       }
       if (settings.memoryGeneration !== job.memoryGenerationSnapshot ||

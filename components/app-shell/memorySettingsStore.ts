@@ -15,7 +15,6 @@ export type MemorySettingsMutation =
   | "decayEnabled"
   | "learnAutomatically"
   | "referenceChatHistory"
-  | "synthesisEnabled"
   | "useMemoryFacts";
 
 /** Failures are never shown: a failed read keeps the last known settings
@@ -145,8 +144,7 @@ export function refreshMemorySettingsAfterReset(): Promise<MemoryConsumerSetting
 }
 
 export async function updateMemoryGate(
-  key: "decayEnabled" | "learnAutomatically" | "referenceChatHistory" | "synthesisEnabled" |
-    "useMemoryFacts",
+  key: MemorySettingsMutation,
   value: boolean
 ): Promise<MemoryConsumerSettingsResponse> {
   return mutation(key, () => {

@@ -9,8 +9,6 @@ const EN = {
   "settings.searchPastChatsDescription": "Let an answer look for details in your earlier chats.",
   "settings.learnAutomaticallyLabel": "Learn automatically",
   "settings.learnAutomaticallySimpleDescription": "Save new details from ordinary chats without asking each time.",
-  "settings.synthesisLabel": "Notice repeated details",
-  "settings.synthesisDescription": "Occasionally combine overlapping details or notice repeated patterns. Combined memories appear here with their sources.",
   "settings.decayLabel": "Learn from what you use",
   "settings.decayDescription": "Facts you rely on often are read first when an answer needs them.",
   "settings.statusOn": "On",

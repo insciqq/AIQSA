@@ -773,8 +773,7 @@ describe("Memory coordinator worker liveness", () => {
         embeddingProviderModelId: null, learnAutomatically: true, memoryConsentRevision: 0,
         memoryGeneration: 0, memoryRevision: 0, referenceChatHistory: true,
         sensitiveAutomaticPolicy: "EXPLICIT_ONLY", settingsRevision: 0,
-        synthesisEnabled: true, synthesisEnabledAt: NOW, synthesisPolicyVersion: null,
-        lastSynthesisAt: null, updatedAt: NOW, useMemoryFacts: true, userId: "user-1"
+        updatedAt: NOW, useMemoryFacts: true, userId: "user-1"
       }
     });
     try {

@@ -11,7 +11,6 @@ import {
 } from "../../../contracts/memoryActionIntent";
 import { textMessageContent } from "../../../domain/content";
 import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
-import { MEMORY_SYNTHESIS_POLICY_VERSION } from "../synthesis/policy";
 import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   resolveCurrentMemoryUtilityPolicy
@@ -562,20 +561,19 @@ describe("Prisma Memory persistence", () => {
     }
   });
 
-  it("initializes all five preferences and preserves reversible decay choices", async () => {
-    const createdAfter = new Date();
+  it("initializes all four preferences and preserves reversible decay choices", async () => {
     const userId = await createActiveUser("settings-defaults");
     const repository = createPrismaMemorySettingsRepository(prisma);
     try {
       const initial = await repository.get(userId);
       expect(initial).toMatchObject({
         useMemoryFacts: true, referenceChatHistory: true, learnAutomatically: true,
-        synthesisEnabled: true, synthesisPolicyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
-        lastSynthesisAt: null, decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
+        decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
         memoryRevision: 0, settingsRevision: 0
       });
-      expect(initial.synthesisEnabledAt!.getTime()).toBeGreaterThanOrEqual(createdAfter.getTime());
-      expect(initial.synthesisEnabledAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      for (const retired of ["synthesisEnabled", "synthesisEnabledAt", "synthesisPolicyVersion", "lastSynthesisAt"]) {
+        expect(initial).not.toHaveProperty(retired);
+      }
       const disabled = await repository.patch(userId, {
         decayEnabled: false, expectedMemoryRevision: 0, expectedSettingsRevision: 0
       });
@@ -598,6 +596,70 @@ describe("Prisma Memory persistence", () => {
         decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
         memoryRevision: reenabled.memoryRevision, settingsRevision: reenabled.settingsRevision + 1
       });
+    } finally {
+      await cleanupUser(userId);
+    }
+  });
+
+  it("stops reading and writing the retired Dream columns within their shape check", async () => {
+    const userId = await createActiveUser("retired-dream-columns");
+    const service = createMemorySettingsService({
+      repository: createPrismaMemorySettingsRepository(prisma),
+      resolveCurrentUtilityPolicy: (ownerId, settings) =>
+        resolveCurrentMemoryUtilityPolicy(prisma, ownerId, settings)
+    });
+    const retiredColumns = () => prisma.userMemorySettings.findUniqueOrThrow({
+      select: {
+        lastSynthesisAt: true, memoryRevision: true, settingsRevision: true,
+        synthesisEnabled: true, synthesisEnabledAt: true, synthesisPolicyVersion: true
+      },
+      where: { userId }
+    });
+    try {
+      // Database defaults satisfy the second branch of the retired CHECK.
+      const created = await retiredColumns();
+      expect(created).toMatchObject({
+        lastSynthesisAt: null, memoryRevision: 0, settingsRevision: 0,
+        synthesisEnabled: true, synthesisPolicyVersion: "memory-synthesis-policy-v6"
+      });
+      expect(created.synthesisEnabledAt).toBeInstanceOf(Date);
+
+      // A stale tab's toggle-only PATCH changes nothing and returns current settings.
+      for (const synthesisEnabled of [false, true]) {
+        await expect(service.patch(userId, {
+          expectedMemoryRevision: 0, expectedSettingsRevision: 0, synthesisEnabled
+        })).resolves.toMatchObject({
+          settings: { memoryRevision: 0, settingsRevision: 0, synthesisEnabled: false }
+        });
+      }
+      await expect(retiredColumns()).resolves.toEqual(created);
+
+      // Inside another change the retired field is ignored, not written.
+      await expect(service.patch(userId, {
+        decayEnabled: false, expectedMemoryRevision: 0, expectedSettingsRevision: 0, synthesisEnabled: false
+      })).resolves.toMatchObject({ settings: { decayEnabled: false, settingsRevision: 1, synthesisEnabled: false } });
+      await expect(retiredColumns()).resolves.toMatchObject({
+        lastSynthesisAt: null, settingsRevision: 1, synthesisEnabled: true,
+        synthesisEnabledAt: created.synthesisEnabledAt, synthesisPolicyVersion: "memory-synthesis-policy-v6"
+      });
+
+      // A fenced row (reset/account deletion values) stays in the first branch.
+      await prisma.userMemorySettings.update({ data: {
+        lastSynthesisAt: null, synthesisEnabled: false, synthesisEnabledAt: null, synthesisPolicyVersion: null
+      }, where: { userId } });
+      const current = await service.get(userId);
+      await expect(service.patch(userId, {
+        expectedMemoryRevision: current.settings.memoryRevision,
+        expectedSettingsRevision: current.settings.settingsRevision,
+        learnAutomatically: false,
+        useMemoryFacts: false
+      })).resolves.toMatchObject({ settings: { learnAutomatically: false, useMemoryFacts: false } });
+      await expect(retiredColumns()).resolves.toMatchObject({
+        lastSynthesisAt: null, synthesisEnabled: false, synthesisEnabledAt: null, synthesisPolicyVersion: null
+      });
+      // The CHECK itself is unchanged: the code simply never writes the columns.
+      await expect(prisma.userMemorySettings.update({ data: { synthesisEnabled: true }, where: { userId } }))
+        .rejects.toThrow(/UserMemorySettings_synthesis_shape_check/u);
     } finally {
       await cleanupUser(userId);
     }
@@ -702,6 +764,18 @@ describe("Prisma Memory persistence", () => {
           userId
         }
       })));
+      // Background maintenance follows automatic learning.
+      const maintenance = await prisma.memoryJob.create({
+        data: {
+          idempotencyFingerprint: `subordinate-pause-maintenance-${randomUUID()}`,
+          kind: "SYNTHESIZE_MEMORIES",
+          memoryGenerationSnapshot: 0,
+          memoryRevisionSnapshot: 0,
+          pipelineVersion: "memory-maintenance-v1",
+          state: "QUEUED",
+          userId
+        }
+      });
 
       const paused = await repository.patch(userId, {
         expectedMemoryRevision: 0,
@@ -741,6 +815,8 @@ describe("Prisma Memory persistence", () => {
         { kind: "REBUILD_INDEX", state: "QUEUED" },
         { kind: "VERIFY_CANDIDATE", state: "CANCELLED" }
       ]));
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: maintenance.id } }))
+        .resolves.toMatchObject({ errorCode: "memory_automatic_learning_paused", state: "CANCELLED" });
 
       currentTime = resumedAt;
       await repository.patch(userId, {

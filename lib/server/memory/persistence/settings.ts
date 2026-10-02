@@ -4,13 +4,15 @@ import {
   type MemoryPauseScope,
   type PrismaClient
 } from "@prisma/client";
-import type { MemorySettingsPatch } from "../../../contracts/memory";
+import {
+  MEMORY_SETTINGS_PATCH_KEYS,
+  type MemorySettingsPatch
+} from "../../../contracts/memory";
 import {
   loadEmbeddingProviderRole,
   ProviderAdmissionError
 } from "../../providerRuntime/admission";
 import { prisma } from "../../prisma";
-import { MEMORY_SYNTHESIS_POLICY_VERSION } from "../synthesis/policy";
 import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
 import { memoryPersistenceFailure } from "./errors";
 import { reconcileMemoryShadowGenerations } from "../rebuild/lifecycle";
@@ -36,10 +38,6 @@ export type MemorySettingsPersistenceSnapshot = Readonly<{
   referenceChatHistory: boolean;
   sensitiveAutomaticPolicy: "EXPLICIT_ONLY";
   settingsRevision: number;
-  synthesisEnabled: boolean;
-  synthesisEnabledAt: Date | null;
-  synthesisPolicyVersion: string | null;
-  lastSynthesisAt: Date | null;
   updatedAt: Date;
   useMemoryFacts: boolean;
   userId: string;
@@ -60,10 +58,6 @@ const settingsSelect = {
   referenceChatHistory: true,
   sensitiveAutomaticPolicy: true,
   settingsRevision: true,
-  synthesisEnabled: true,
-  synthesisEnabledAt: true,
-  synthesisPolicyVersion: true,
-  lastSynthesisAt: true,
   updatedAt: true,
   useMemoryFacts: true,
   userId: true
@@ -195,15 +189,8 @@ async function cancelPausedJobs(
   });
 }
 
-const visibleKeys = [
-  "decayEnabled",
-  "embeddingDeploymentId",
-  "learnAutomatically",
-  "referenceChatHistory",
-  "sensitiveAutomaticPolicy",
-  "synthesisEnabled",
-  "useMemoryFacts"
-] as const;
+// The retired Dream toggle is not a setting: the service drops it first.
+const visibleKeys = MEMORY_SETTINGS_PATCH_KEYS;
 
 function owns(input: object, key: PropertyKey): boolean {
   return Object.hasOwn(input, key);
@@ -228,8 +215,6 @@ function visiblePatchChanges(
       patch.referenceChatHistory !== settings.referenceChatHistory) ||
     (owns(patch, "sensitiveAutomaticPolicy") &&
       patch.sensitiveAutomaticPolicy !== settings.sensitiveAutomaticPolicy) ||
-    (owns(patch, "synthesisEnabled") &&
-      patch.synthesisEnabled !== settings.synthesisEnabled) ||
     (owns(patch, "useMemoryFacts") && patch.useMemoryFacts !== settings.useMemoryFacts)
   );
 }
@@ -337,10 +322,6 @@ export function createPrismaMemorySettingsRepository(
           settings.learnAutomatically && patch.learnAutomatically === false;
         const learningResume = owns(patch, "learnAutomatically") &&
           !settings.learnAutomatically && patch.learnAutomatically === true;
-        const synthesisEnable = owns(patch, "synthesisEnabled") &&
-          !settings.synthesisEnabled && patch.synthesisEnabled === true;
-        const synthesisDisable = owns(patch, "synthesisEnabled") &&
-          settings.synthesisEnabled && patch.synthesisEnabled === false;
         if (masterPause) {
           // Unlike a subordinate preference change, pausing the master must
           // invalidate every already-admitted source/job snapshot.  Keep the
@@ -372,13 +353,6 @@ export function createPrismaMemorySettingsRepository(
         }
         if (owns(patch, "sensitiveAutomaticPolicy")) {
           data.sensitiveAutomaticPolicy = patch.sensitiveAutomaticPolicy;
-        }
-        if (owns(patch, "synthesisEnabled")) {
-          data.synthesisEnabled = patch.synthesisEnabled;
-          if (patch.synthesisEnabled) {
-            data.synthesisEnabledAt = settings.synthesisEnabledAt ?? cutoff;
-            data.synthesisPolicyVersion = MEMORY_SYNTHESIS_POLICY_VERSION;
-          }
         }
         if (owns(patch, "useMemoryFacts")) data.useMemoryFacts = patch.useMemoryFacts;
 
@@ -447,25 +421,18 @@ export function createPrismaMemorySettingsRepository(
         }
         if (learningPause) {
           await openPauseAdmissionCutoff(tx, settings, "AUTOMATIC_LEARNING", cutoff);
+          // Background maintenance (SYNTHESIZE_MEMORIES) follows automatic
+          // learning, so pausing learning also cancels its queued work.
           await cancelPausedJobs(
             tx,
             userId,
-            ["EXTRACT_FACTS", "CONSOLIDATE_CANDIDATE", "VERIFY_CANDIDATE"],
+            ["EXTRACT_FACTS", "CONSOLIDATE_CANDIDATE", "VERIFY_CANDIDATE", "SYNTHESIZE_MEMORIES"],
             "memory_automatic_learning_paused",
             cutoff
           );
         }
         if (learningResume) {
           await closePauseAdmissionCutoff(tx, userId, "AUTOMATIC_LEARNING", cutoff);
-        }
-        if (synthesisDisable) {
-          await cancelPausedJobs(
-            tx,
-            userId,
-            ["SYNTHESIZE_MEMORIES"],
-            "memory_synthesis_disabled",
-            cutoff
-          );
         }
         settings.settingsRevision += 1;
         if (owns(patch, "decayEnabled")) {
@@ -482,13 +449,6 @@ export function createPrismaMemorySettingsRepository(
         }
         if (owns(patch, "useMemoryFacts")) {
           settings.useMemoryFacts = patch.useMemoryFacts!;
-        }
-        if (owns(patch, "synthesisEnabled")) {
-          settings.synthesisEnabled = patch.synthesisEnabled!;
-          if (synthesisEnable) {
-            settings.synthesisEnabledAt ??= cutoff;
-            settings.synthesisPolicyVersion = MEMORY_SYNTHESIS_POLICY_VERSION;
-          }
         }
         return persistedSettings(tx, userId);
       });

@@ -32,12 +32,13 @@ import { ensureDefaultMemoryDeletionComposition } from "../deletionComposition";
 import { defaultMemoryWorkerHeartbeat } from "./workerHeartbeat";
 import { preflightPrismaMemoryProviderBindings } from "./providerPreflight";
 import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/repository";
-import { createPrismaMemorySynthesisHandler } from "../synthesis/handler";
-import { reconcileMemorySynthesisWork } from "../synthesis/reconcile";
-import { MEMORY_SYNTHESIS_VERSIONS } from "../synthesis/provider";
-import { createPrismaMemoryMaintenanceHandler, isMemoryMaintenanceJob } from "../maintenance/handler";
+import { createPrismaMemoryMaintenanceHandler } from "../maintenance/handler";
 import { reconcileMemoryMaintenanceWork } from "../maintenance/reconcile";
 import { MEMORY_MAINTENANCE_VERSIONS } from "../maintenance/policy";
+import {
+  createMemorySynthesizeJobDispatcher,
+  reconcileRetiredMemorySynthesis
+} from "../maintenance/retiredSynthesis";
 import {
   reconcileMemoryHistoryBackfills,
   resolveMemoryHistoryBackfillWindow
@@ -63,8 +64,8 @@ type DefaultMemoryReconciliationWork = Readonly<{
   historyAutoHeal?: () => Promise<unknown>;
   reclassification?: () => Promise<unknown>;
   relations?: () => Promise<unknown>;
-  synthesis?: () => Promise<unknown>;
   maintenance?: () => Promise<unknown>;
+  retiredSynthesis?: () => Promise<unknown>;
 }>;
 
 const defaultMemoryEmbeddingSetup = createPrismaMemoryEmbeddingSetup(prisma);
@@ -87,20 +88,7 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
         role: "MEMORY_SYNTHESIZE", userId, versions: MEMORY_MAINTENANCE_VERSIONS });
       return true;
     }),
-    synthesis: () => reconcileMemorySynthesisWork(
-      prisma,
-      new Date(),
-      async (userId) => {
-        await probeMemoryStructuredOutputAuthority({
-          authority: defaultMemoryExecutionAuthority,
-          client: prisma,
-          role: "MEMORY_SYNTHESIZE",
-          userId,
-          versions: MEMORY_SYNTHESIS_VERSIONS
-        });
-        return true;
-      }
-    )
+    retiredSynthesis: () => reconcileRetiredMemorySynthesis(prisma, new Date())
   });
 
 export async function reconcileDefaultMemoryWork(
@@ -116,7 +104,7 @@ export async function reconcileDefaultMemoryWork(
   await work.reclassification?.();
   await work.relations?.();
   await work.maintenance?.();
-  await work.synthesis?.();
+  await work.retiredSynthesis?.();
 }
 
 // Provider-backed work validates current destination, credential, transport,
@@ -143,13 +131,10 @@ const defaultMemoryRebuildHandler = createPrismaMemoryRebuildHandler(prisma);
 const defaultMemoryReclassificationHandler =
   createPrismaMemoryReclassificationHandler(prisma);
 const defaultMemoryRelationHandler = createPrismaMemoryRelationHandler(prisma);
-const patternSynthesisHandler = createPrismaMemorySynthesisHandler(prisma);
-const maintenanceHandler = createPrismaMemoryMaintenanceHandler(prisma);
-const defaultMemorySynthesisHandler: MemoryJobHandler = Object.freeze({
-  kind: "SYNTHESIZE_MEMORIES",
-  preflight: (job) => (isMemoryMaintenanceJob(job) ? maintenanceHandler : patternSynthesisHandler).preflight(job),
-  execute: (job, context) => (isMemoryMaintenanceJob(job) ? maintenanceHandler : patternSynthesisHandler).execute(job, context)
-});
+// Maintenance is the only SYNTHESIZE_MEMORIES pipeline; retired Dream jobs close.
+const defaultMemorySynthesizeHandler = createMemorySynthesizeJobDispatcher(
+  createPrismaMemoryMaintenanceHandler(prisma)
+);
 
 function getDefaultMemoryCoordinatorRuntime(): Readonly<{
   policy: MemoryCoordinatorPolicy;
@@ -235,7 +220,7 @@ export function ensureDefaultMemoryHandlersRegistered(): void {
     "memory_default_relation_handler_conflict"
   );
   ensureJobHandlerRegistered(
-    defaultMemorySynthesisHandler,
+    defaultMemorySynthesizeHandler,
     "memory_default_synthesis_handler_conflict"
   );
 }
