@@ -76,7 +76,6 @@ services:
       AIQSA_SMTP_TOTAL_TIMEOUT_MS: ${AIQSA_SMTP_TOTAL_TIMEOUT_MS:-60000}
       AIQSA_TRUST_PROXY_HEADERS: ${AIQSA_TRUST_PROXY_HEADERS:-}
       AIQSA_TRUSTED_PROXY_COUNT: ${AIQSA_TRUSTED_PROXY_COUNT:-}
-      AIQSA_TOOLHIVE_URL: http://toolhive-runtime:8080
       AIQSA_AUTH_REQUEST_BODY_MAX_BYTES: ${AIQSA_AUTH_REQUEST_BODY_MAX_BYTES:-65536}
       AIQSA_JSON_REQUEST_BODY_MAX_BYTES: ${AIQSA_JSON_REQUEST_BODY_MAX_BYTES:-1048576}
       AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS: ${AIQSA_ATTACHMENT_EXTRACTED_TEXT_MAX_CHARS:-1000000}
@@ -149,7 +148,6 @@ services:
     mem_limit: ${AIQSA_APP_MEMORY_LIMIT:-2g}
     networks:
       - default
-      - mcp-control
       - parser-control
       - search-control
       - workspace-control
@@ -344,36 +342,10 @@ services:
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=512m
 
-  toolhive-runtime:
-    image: ghcr.io/stacklok/toolhive:v0.40.1@sha256:677dff9d73b33681f3d2c9b3c0b187e3210dc5ca3b8b326590d8db975f155578
-    command: ["serve", "--host", "0.0.0.0", "--port", "8080"]
-    cap_drop:
-      - ALL
-    environment:
-      HOME: /var/lib/toolhive
-      XDG_CACHE_HOME: /var/lib/toolhive/cache
-      XDG_CONFIG_HOME: /var/lib/toolhive/config
-      XDG_DATA_HOME: /var/lib/toolhive/data
-      XDG_STATE_HOME: /var/lib/toolhive/state
-    init: true
-    logging: *default-logging
-    networks:
-      - mcp-control
-    read_only: true
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    stop_grace_period: 30s
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,noexec,size=256m
-    user: "0:0"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - toolhive_data:/var/lib/toolhive
-
   migrate-bootstrap:
     image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
     environment:
+      AIQSA_ACCEPT_LOCAL_MCP_REMOVAL: ${AIQSA_ACCEPT_LOCAL_MCP_REMOVAL:-}
       AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
       AIQSA_MEMORY_FINGERPRINT_KEYRING: ${AIQSA_MEMORY_FINGERPRINT_KEYRING:?Set AIQSA_MEMORY_FINGERPRINT_KEYRING in .env}
       AIQSA_INITIAL_ADMIN_DISPLAY_NAME: ${AIQSA_INITIAL_ADMIN_DISPLAY_NAME:-Administrator}
@@ -390,22 +362,6 @@ services:
         condition: service_healthy
     logging: *default-logging
     mem_limit: ${AIQSA_TOOLS_MEMORY_LIMIT:-1g}
-    restart: "no"
-
-  mcp-maintenance:
-    profiles:
-      - maintenance
-    image: ${AIQSA_IMAGE:-ghcr.io/insciqq/aiqsa:latest}
-    entrypoint: ["npm", "run", "mcp:cleanup", "--"]
-    command: []
-    environment:
-      AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:?Set AIQSA_ENCRYPTION_KEY in .env}
-      AIQSA_TOOLHIVE_URL: http://toolhive-runtime:8080
-    depends_on:
-      - toolhive-runtime
-    init: true
-    networks:
-      - mcp-control
     restart: "no"
 
   workspace-runner:
@@ -685,8 +641,6 @@ services:
       - /tmp:rw,nosuid,nodev,noexec,size=64m
 
 networks:
-  mcp-control:
-    internal: true
   parser-control:
     internal: true
   search-control:
@@ -704,5 +658,4 @@ volumes:
       device: tmpfs
       o: size=1m,uid=1000,gid=1000,mode=0770
       type: tmpfs
-  toolhive_data:
   workspace_runtime_data:

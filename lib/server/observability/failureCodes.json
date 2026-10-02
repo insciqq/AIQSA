@@ -302,6 +302,8 @@
   "knowledge_text_limit_exceeded",
   "knowledge_tokenizer_unavailable",
   "knowledge_tool_arguments_invalid",
+  "local_mcp_removal_acknowledgement_required",
+  "local_mcp_sources_removed",
   "maintenance_failed",
   "mcp_accepted_generation_changed",
   "mcp_activation_failed",
