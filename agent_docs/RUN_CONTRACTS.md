@@ -13,7 +13,7 @@ Observation policy defaults to `v1`; admission freezes it. Every non-Agent admis
 
 Personal presets supplement personal/temporary chats, never Assistants/Projects. They, like Assistant answer rules, may replace default answer rules without authority; date/time uses baseline zone. Assistants own hidden user-level reminders after current content/attachments. Presets and Assistant reminders are irreducible, frozen through recovery, and excluded from previews/utility prompts. Knowledge keeps accepted instructions/effective question; instructions are not Memory facts.
 
-Acceptance transfers execution server-side; disconnect never cancels preparation/commands. Stop/deadlines/authority remain. Recovery uses live owners without replay; PDF gates eligible Memory and final admission refreezes authority/evidence. Preparation forbids provider/tool I/O. Optional Memory failure cannot bypass authority. Temporary/Project bypass Memory; inbound Memory MCP stays independent.
+Acceptance transfers execution server-side; disconnect never cancels preparation/commands. Stop/deadlines/authority remain. Recovery uses live owners without replay; PDF gates eligible Memory and final admission refreezes authority/evidence. Preparation forbids provider/tool I/O. Failed Memory preparation answers without Memory, preserving authority and settled actions. Temporary/Project bypass Memory; inbound Memory MCP stays independent.
 
 Follow-up orders user input within accepted bindings/budgets without repeating preparation. Acceptance races publication; delivery proves receipt, not obedience. Preserve partial text, settle dispatched tools, skip obsolete decisions, fence old generations. Recovery closes admission; executor loss ends clarified tasks. Regeneration re-admits them.
 
@@ -81,7 +81,7 @@ Every terminal path retires guest execution authority: stop registered processes
 
 ## Settlement And Outputs
 
-Completion requires provider terminal proof. Failures preserve accepted partial text/reported usage without false success; guarded settlement has one winner. Cancellation stops later work/writes; stale reconciliation cannot sweep newer runs. Recovery uses accepted checkpoints/bindings, never browser claims or reconstructed prose.
+Completion requires provider terminal proof. Failures preserve accepted partial text/reported usage without false success. Cancellation stops later work/writes; stale reconciliation cannot sweep newer runs. Recovery uses accepted checkpoints/bindings, never browser claims or reconstructed prose.
 
 Unknown command exit, confirmed environment stop and durable cleanup are distinct. Local publication/accounting failures preserve reported usage without authorizing replay or proving provider failure. Never infer causes from exception prose.
 
