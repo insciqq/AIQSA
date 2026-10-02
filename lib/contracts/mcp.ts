@@ -72,34 +72,13 @@ export function mcpRuntimeErrorMessage(code: unknown): string {
   return MCP_RUNTIME_ERROR_MESSAGES[mcpRuntimeErrorCode(code)];
 }
 
-export type McpSource =
-  | {
-      allowPrivateNetwork?: boolean;
-      kind: "remote";
-      url: string;
-    }
-  | {
-      args: string[];
-      kind: "npm";
-      packageName: string;
-      versionSelector?: string;
-    }
-  | {
-      args: string[];
-      kind: "pypi";
-      packageName: string;
-      versionSelector?: string;
-    }
-  | {
-      args: string[];
-      command?: string[];
-      image: string;
-      kind: "oci";
-    };
+export type McpSource = {
+  allowPrivateNetwork?: boolean;
+  kind: "remote";
+  url: string;
+};
 
-export type McpSlotTarget =
-  | { kind: "environment"; name: string }
-  | { kind: "header"; name: string };
+export type McpSlotTarget = { kind: "header"; name: string };
 
 export type McpSlotValue = boolean | number | string;
 
@@ -141,7 +120,7 @@ export type McpDraftConfiguration = {
   };
   slots: McpConfigurationSlot[];
   source: McpSource;
-  transport: "stdio" | "streamable_http";
+  transport: "streamable_http";
 };
 
 export type McpValidationIssue = {
@@ -296,7 +275,6 @@ export function isMcpInventoryDifferenceReason(value: unknown): value is McpInve
 export type McpToolVerification = "definitions" | "invalid" | "names";
 
 export type McpRevisionSummary = {
-  artifactStatus: "available" | "missing" | "not_applicable" | "unknown";
   createdAt: string;
   disabledToolNames?: string[];
   draftHash: string;
@@ -468,7 +446,6 @@ export type McpErrorCode =
   | "auth_mode_invalid"
   | "authorization_required"
   | "header_name_invalid"
-  | "mcp_artifact_missing"
   | "mcp_draft_changed"
   | "mcp_draft_test_failed"
   | "forbidden"
@@ -608,9 +585,9 @@ export function adminMcpOAuthAction(serverId: string, reconnect: boolean): strin
 
 /**
  * What an administrator must still do for a server before it works for
- * everyone: connect or reconnect validation OAuth, review a failed check,
- * repair a missing runtime artifact, or check tools that changed on the
- * server again. `null` means nothing is owed.
+ * everyone: connect or reconnect validation OAuth, review a failed check
+ * or a runtime problem, or check tools that changed on the server again.
+ * `null` means nothing is owed.
  */
 export function adminMcpAttention(server: AdminMcpServer): AdminMcpAttention | null {
   if (server.archivedAt) return null;
@@ -629,7 +606,7 @@ export function adminMcpAttention(server: AdminMcpServer): AdminMcpAttention | n
   if (server.activation?.stage === "failed") {
     return { action: "Review and retry", oauthAction: null, label: "Settings check failed", task: "validation" };
   }
-  if (server.activeRevision?.artifactStatus === "missing" || server.runtimeProblem) {
+  if (server.runtimeProblem) {
     return {
       action: "Review connection", oauthAction: null,
       label: server.runtimeProblem === "reauthorization_required"
