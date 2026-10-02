@@ -1,5 +1,5 @@
 import { syntheticImagePlan } from "@/tests/support/imagePlan";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ProviderRunRequest } from "../providers/types";
 import { textMessageContent } from "@/lib/domain/content";
 import { agentPrompts } from "./prompt";
@@ -294,6 +294,9 @@ describe("Agent delivery of the cross-turn tool history", () => {
         full: item.full.replace("executed.", "not executed.") });
     return { ...value, toolHistory: { ...value.toolHistory, block: { ...value.toolHistory.block, entries } } };
   };
+  /** The conversation a prompt carries, as its messages. */
+  const conversationOf = (prompt: string) => prompt.split("\n\n").filter((section) => section.startsWith("[{\"role\""))
+    .flatMap((section) => JSON.parse(section) as Array<{ role: string; text: string }>);
   const chat = (records: ReturnType<typeof padded>[]) => request([...records.flatMap((value, turn) => [
     { id: `q${turn}`, role: "user", content: textMessageContent(`question ${turn}`) },
     value,
@@ -305,16 +308,46 @@ describe("Agent delivery of the cross-turn tool history", () => {
     const records = Array.from({ length: 40 }, (_, turn) => padded(turn, 1_100, (index) => index % 10 === 0));
     const result = agentPrompts(chat(records));
     expect(Buffer.byteLength(result.prompt)).toBeLessThanOrEqual(1024 * 1024);
-    // Even the oldest records keep the compact line of every executed call.
-    for (const value of records) {
-      for (const item of value.toolHistory.block.entries.filter((entry) => entry.essential)) expect(result.prompt).toContain(item.compact);
-    }
+    // Even the oldest records keep the compact line of every executed call. (Looked up by line: a
+    // substring search for these long one-character runs costs seconds in V8.)
+    const lines = new Set(conversationOf(result.prompt).flatMap((message) => message.text.split("\n")));
+    const executed = records.flatMap((value) => value.toolHistory.block.entries.filter((entry) => entry.essential).map((entry) => entry.compact));
+    expect(executed).toHaveLength(120);
+    expect(executed.filter((line) => !lines.has(line))).toEqual([]);
     // Only calls that were not executed are counted, named for the reader while room remains.
     expect(result.prompt).toContain("calls of this turn that were not executed are not listed here");
     expect(result.prompt).toContain("read_tool_call reads them by call_ref");
     expect(result.prompt).not.toContain("this does not mean they did not happen");
     expect(result.prompt).toContain("answer 0");
     expect(result.previousAssistantMessageId).toBe("a39");
+  });
+
+  it("measures and serializes each part of a long history a bounded number of times", () => {
+    /** Characters serialized or measured while both prompts are built (or refused). */
+    const work = (records: ReturnType<typeof padded>[]) => {
+      const input = chat(records);
+      const serialize = vi.spyOn(JSON, "stringify");
+      const measure = vi.spyOn(Buffer, "byteLength");
+      try {
+        try { agentPrompts(input); } catch { /* refused: its work counts too */ }
+        return serialize.mock.results.reduce((total, call) => total + (typeof call.value === "string" ? call.value.length : 0), 0) +
+          measure.mock.calls.reduce((total, [value]) => total + (typeof value === "string" ? value.length : 0), 0);
+      } finally {
+        serialize.mockRestore();
+        measure.mockRestore();
+      }
+    };
+    const size = (records: ReturnType<typeof padded>[]) => records.reduce((total, value) => total + value.toolHistory.block.header.length +
+      value.toolHistory.block.entries.reduce((sum, item) => sum + item.compact.length + item.full.length, 0), 0);
+    // A prompt fitted within the limit, and one whose floors do not fit.
+    for (const executed of [(index: number) => index % 10 === 0, () => true]) {
+      const [smaller, larger] = [40, 80].map((turns) => Array.from({ length: turns }, (_, turn) => padded(turn, 1_100, executed)));
+      // However many fitting attempts it takes, each part is handled a few times only.
+      expect(work(smaller!)).toBeLessThan(4 * size(smaller!));
+      expect(work(larger!)).toBeLessThan(4 * size(larger!));
+      // Twice the history, about twice the work.
+      expect(work(larger!) / work(smaller!)).toBeLessThan(2.5);
+    }
   });
 
   it("refuses a prompt whose executed calls do not fit rather than hide one", () => {

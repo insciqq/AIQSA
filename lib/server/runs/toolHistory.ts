@@ -20,6 +20,32 @@ export function omittedEntriesLine(count: number, notExecuted = false): string {
 }
 
 const NAMED_PREFIX = " read_tool_call reads them by call_ref:";
+const NAMED_PREFIX_BYTES = bytes(NAMED_PREFIX);
+
+/** The UTF-8 sizes of one record's parts, measured once per record: a
+ * record is rendered at several budgets while one prompt is fitted. */
+type RecordSizes = Readonly<{
+  of: Pick<ToolHistoryBlock, "entries" | "footer" | "header">;
+  header: number;
+  footer: number;
+  compact: readonly number[];
+  full: readonly number[];
+  ref: readonly number[];
+}>;
+const recordSizes = new WeakMap<ToolHistoryBlock, RecordSizes>();
+
+function sizesOf(block: ToolHistoryBlock): RecordSizes {
+  const cached = recordSizes.get(block);
+  if (cached && cached.of.entries === block.entries && cached.of.header === block.header && cached.of.footer === block.footer) {
+    return cached;
+  }
+  const sizes: RecordSizes = { of: { entries: block.entries, footer: block.footer, header: block.header },
+    header: bytes(block.header), footer: block.footer ? bytes(block.footer) : 0,
+    compact: block.entries.map(entry => bytes(entry.compact)), full: block.entries.map(entry => bytes(entry.full)),
+    ref: block.entries.map(entry => bytes(entry.ref)) };
+  recordSizes.set(block, sizes);
+  return sizes;
+}
 
 /**
  * The lines of one record within `budgetBytes`, chronological. As many of
@@ -37,21 +63,26 @@ export function renderToolHistoryBlock(block: ToolHistoryBlock, budgetBytes: num
   detailRefs: readonly string[];
 }> {
   const { entries } = block;
-  const fixed = bytes(block.header) + 1 + (block.footer ? bytes(block.footer) + 1 : 0);
+  const size = sizesOf(block);
+  const fixed = size.header + 1 + (block.footer ? size.footer + 1 : 0);
   // Naming omitted calls for the reader may take up to a quarter of the room.
   const namingReserve = options.nameOmittedRefs ? Math.floor(Math.max(0, budgetBytes) / 4) : 0;
   // The entries that may leave the listing, oldest first.
-  const omittable = entries.flatMap((entry, index) => !options.keepEssential || entry.essential === false ? [index] : []);
+  const omittable: number[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    if (!options.keepEssential || entries[index]!.essential === false) omittable.push(index);
+  }
   const refBytes: number[] = [0];
-  for (const index of omittable) refBytes.push(refBytes.at(-1)! + bytes(entries[index]!.ref) + 2);
+  for (const index of omittable) refBytes.push(refBytes.at(-1)! + size.ref[index]! + 2);
   const lineOf = (count: number) => omittedEntriesLine(count, options.keepEssential === true);
   const omissionBytes = (count: number) => count > 0
-    ? bytes(lineOf(count)) + 1 + Math.min(namingReserve, namingReserve ? bytes(NAMED_PREFIX) + refBytes[count]! : 0) : 0;
+    ? bytes(lineOf(count)) + 1 + Math.min(namingReserve, namingReserve ? NAMED_PREFIX_BYTES + refBytes[count]! : 0) : 0;
   // Compact bytes of the listed entries; the oldest omittable ones leave first.
-  let listedBytes = entries.reduce((total, entry) => total + bytes(entry.compact) + 1, 0);
+  let listedBytes = 0;
+  for (const compact of size.compact) listedBytes += compact + 1;
   let omitted = 0;
   while (omitted < omittable.length && fixed + listedBytes + omissionBytes(omitted) > budgetBytes) {
-    listedBytes -= bytes(entries[omittable[omitted]!]!.compact) + 1;
+    listedBytes -= size.compact[omittable[omitted]!]! + 1;
     omitted += 1;
   }
   const left = new Set(omittable.slice(0, omitted));
@@ -59,14 +90,15 @@ export function renderToolHistoryBlock(block: ToolHistoryBlock, budgetBytes: num
   let omission = omitted > 0 ? lineOf(omitted) : null;
   if (omission && options.nameOmittedRefs) {
     const base = bytes(omission);
-    omission = withRefs(omission, omittable.slice(0, omitted).map(index => entries[index]!.ref).reverse(),
+    const named = withRefs(omission, base, omittable.slice(0, omitted).reverse(), entries, size,
       base + Math.min(Math.max(0, remaining), namingReserve));
-    remaining -= bytes(omission) - base;
+    omission = named.text;
+    remaining -= named.bytes - base;
   }
   const full = new Set<number>();
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     if (left.has(index)) continue;
-    const extra = bytes(entries[index]!.full) - bytes(entries[index]!.compact);
+    const extra = size.full[index]! - size.compact[index]!;
     if (extra <= remaining) {
       full.add(index);
       remaining -= extra;
@@ -78,18 +110,24 @@ export function renderToolHistoryBlock(block: ToolHistoryBlock, budgetBytes: num
   return { lines, detailRefs: entries.flatMap((entry, index) => full.has(index) && entry.details ? [entry.ref] : []) };
 }
 
-/** `line` naming as many of `refs` as fit within `budgetBytes`. */
-function withRefs(line: string, refs: readonly string[], budgetBytes: number): string {
-  let text = line;
-  let named = 0;
-  for (const ref of refs) {
-    const next = `${named === 0 ? text + NAMED_PREFIX : text + ","} ${ref}`;
-    if (bytes(next) > budgetBytes) break;
-    text = next;
-    named += 1;
+/** `line` naming as many of the entries at `indexes` by call_ref as fit
+ * within `budgetBytes`, its size counted as it grows. */
+function withRefs(line: string, lineBytes: number, indexes: readonly number[], entries: ToolHistoryBlock["entries"],
+  size: RecordSizes, budgetBytes: number): Readonly<{ text: string; bytes: number }> {
+  const parts = [line];
+  let total = lineBytes;
+  for (const index of indexes) {
+    const first = parts.length === 1;
+    const added = (first ? NAMED_PREFIX_BYTES : 1) + 1 + size.ref[index]!;
+    if (total + added > budgetBytes) break;
+    parts.push(`${first ? NAMED_PREFIX : ","} ${entries[index]!.ref}`);
+    total += added;
   }
-  return text;
+  return { text: parts.join(""), bytes: total };
 }
+
+/** One prompt's renders of its records, each record at each budget once. */
+export type ToolHistoryRenders = WeakMap<ToolHistoryBlock, Map<number, Readonly<{ text: string; bytes: number }>>>;
 
 /**
  * Records rendered within `budgetBytes` in total (an Agent prompt's room),
@@ -99,20 +137,30 @@ function withRefs(line: string, refs: readonly string[], budgetBytes: number): s
  * floors goes to the newest records first, each up to its normal bound
  * (details, then the counted calls named for the reader). Floors beyond the
  * room are still returned whole: the caller refuses such a prompt rather
- * than hide a call that may have changed something. Texts in record order.
+ * than hide a call that may have changed something. Texts in record order;
+ * `renders` keeps each record's renders for the next fit of the same prompt.
  */
-export function boundedToolHistoryTexts(blocks: readonly ToolHistoryBlock[], budgetBytes: number): string[] {
-  const render = (block: ToolHistoryBlock, room: number) =>
-    renderToolHistoryBlock(block, room, { keepEssential: true, nameOmittedRefs: true }).lines.join("\n");
-  const texts = blocks.map(block => render(block, 0));
-  let room = budgetBytes - texts.reduce((total, text) => total + bytes(text) + 1, 0);
+export function boundedToolHistoryTexts(blocks: readonly ToolHistoryBlock[], budgetBytes: number,
+  renders: ToolHistoryRenders = new WeakMap()): string[] {
+  const render = (block: ToolHistoryBlock, room: number) => {
+    let byRoom = renders.get(block);
+    if (!byRoom) renders.set(block, byRoom = new Map());
+    let rendered = byRoom.get(room);
+    if (!rendered) {
+      const text = renderToolHistoryBlock(block, room, { keepEssential: true, nameOmittedRefs: true }).lines.join("\n");
+      byRoom.set(room, rendered = { text, bytes: bytes(text) });
+    }
+    return rendered;
+  };
+  const rendered = blocks.map(block => render(block, 0));
+  let room = budgetBytes - rendered.reduce((total, value) => total + value.bytes + 1, 0);
   for (let index = blocks.length - 1; index >= 0 && room > 0; index -= 1) {
-    const floor = bytes(texts[index]!);
-    const text = render(blocks[index]!, Math.min(TOOL_HISTORY_LIMITS.blockBytes, floor + room));
-    room -= bytes(text) - floor;
-    texts[index] = text;
+    const floor = rendered[index]!.bytes;
+    const next = render(blocks[index]!, Math.min(TOOL_HISTORY_LIMITS.blockBytes, floor + room));
+    room -= next.bytes - floor;
+    rendered[index] = next;
   }
-  return texts;
+  return rendered.map(value => value.text);
 }
 
 /** The provider-only message of one record: role assistant, without `purpose`. */
