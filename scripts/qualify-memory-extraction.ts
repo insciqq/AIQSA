@@ -21,12 +21,18 @@
 // the stand's own Memory worker stopped. The Memory utility binding must
 // already be configured through Admin; credentials stay in the database.
 //
-// Output: the parent prints, and the report file holds, only content-free
-// aggregates per scenario group (saved/not saved, false saves, misses, receipt
-// outcome or rejection codes, job stages, degraded codes, provider calls by
-// role and state, tokens and cost). Like the coordinator, a retryable job
-// failure is retried within its attempt budget; a settled transient call whose
-// job then succeeded is reported as RETRIED, any other failure as degraded. status=passed requires zero false saves,
+// Output (report version 2): the parent prints, and the report file holds,
+// only content-free aggregates per scenario group (saved/not saved, false
+// saves, misses, receipt outcome or rejection codes, job stages, degraded
+// codes, provider calls by stage (extraction or adjudication) and state,
+// failure codes of unsuccessful calls by stage, server-owned normalization
+// reason codes of accepted adjudications, tokens and cost). Like the
+// coordinator, a retryable job failure is retried within its attempt budget.
+// A settled transient extraction call whose job then succeeded, or a settled
+// retryable adjudication failure (transient or output-invalid) whose job then
+// succeeded with an adjudication, is reported as RETRIED; any other failure,
+// including adjudication that degraded to an unadjudicated apply, as degraded.
+// status=passed requires zero false saves,
 // every strict group (MIXED, PROTECTED, CHANGE and all "no" groups) passing,
 // at most one miss in DURABLE and in ONGOING, and zero degradation. The miss
 // budget of the acceptance criteria spans both runs and is summed by hand.
@@ -40,6 +46,7 @@ import {
   withCleanupQualificationOutputFiles
 } from "./memory-cleanup-qualification-support";
 import {
+  extractionQualificationCallStates,
   extractionQualificationDatabase,
   extractionQualificationOptions,
   judgeExtractionScenario,
@@ -80,7 +87,10 @@ async function worker(): Promise<Record<string, unknown>> {
         { createPrismaMemoryCoordinatorRepository }, { MemoryCoordinatorError },
         { defaultMemoryExecutionAuthority }, { createPrismaMemoryFactExtractionHandler },
         { createPrismaMemoryRelationHandler }, { reconcileMemoryFactRelationJobs },
-        { loadMemoryCoordinatorPolicy, memoryRetryDelay }, { memoryCoordinatorJobMaxAttempts }] = await Promise.all([
+        { loadMemoryCoordinatorPolicy, memoryRetryDelay }, { memoryCoordinatorJobMaxAttempts },
+        { decodeStoredMemorySemanticAdjudication, MEMORY_SEMANTIC_ADJUDICATION_NORMALIZED_REASON_CODES,
+          MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES,
+          MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION }] = await Promise.all([
         import("@prisma/client"), import("../lib/server/prisma"), import("../lib/domain/content"),
         import("../lib/server/auth/provisioning"), import("../lib/server/memory/sourceState"),
         import("../lib/server/memory/sourceHooks"),
@@ -91,7 +101,8 @@ async function worker(): Promise<Record<string, unknown>> {
         import("../lib/server/memory/learning/relations/handler"),
         import("../lib/server/memory/learning/relations/reconcile"),
         import("../lib/server/memory/coordinator/policy"),
-        import("../lib/server/memory/coordinator/registry")
+        import("../lib/server/memory/coordinator/registry"),
+        import("../lib/server/memory/learning/extraction/adjudication")
       ]);
       try {
         currentPhase = "database_identity";
@@ -342,26 +353,45 @@ async function worker(): Promise<Record<string, unknown>> {
           results.push(await runScenario(scenario));
         }
         currentPhase = "usage";
-        const bindings = await prisma.memoryExecutionBinding.findMany({
-          select: { errorCode: true, estimatedCostMicros: true, inputTokens: true, logicalRole: true,
-            memoryJobId: true, outputTokens: true, state: true, totalTokens: true },
+        const bindings = (await prisma.memoryExecutionBinding.findMany({
+          select: { errorCode: true, estimatedCostMicros: true, inputTokens: true,
+            memoryJobId: true, outputTokens: true, pipelineVersion: true, state: true, totalTokens: true },
           where: { userId: { in: ownerIds } }
-        });
+        })).map((row) => ({
+          ...row,
+          // Extraction and adjudication share one logical role; the pipeline names the stage.
+          stage: row.pipelineVersion === MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION
+            ? "adjudication" as const : "extraction" as const
+        }));
         const succeededJobs = new Set((await prisma.memoryJob.findMany({
           select: { id: true },
           where: { id: { in: bindings.flatMap(({ memoryJobId }) => memoryJobId ? [memoryJobId] : []) },
             state: "SUCCEEDED" }
         })).map(({ id }) => id));
-        const usage = bindings.map((row) => ({
+        const callStates = extractionQualificationCallStates(bindings, {
+          retryableAdjudicationCodes: new Set(["memory_fact_provider_transient",
+            ...MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES]),
+          succeededJobs
+        });
+        const usage = bindings.map((row, index) => ({
           estimatedCostMicros: row.estimatedCostMicros === null ? null : Number(row.estimatedCostMicros),
-          inputTokens: row.inputTokens, outputTokens: row.outputTokens, role: row.logicalRole,
-          // A settled replay-safe transient call whose job then succeeded on
-          // the coordinator's retry is reported, not degraded.
-          state: row.state === "FAILED" && /_transient$/u.test(row.errorCode ?? "") &&
-            row.memoryJobId !== null && succeededJobs.has(row.memoryJobId) ? "RETRIED" : row.state,
+          inputTokens: row.inputTokens, outputTokens: row.outputTokens, stage: row.stage,
+          state: callStates[index]!,
           totalTokens: row.totalTokens
         }));
-        const report = summarizeExtractionQualification({ degradedCodes, jobRetries, jobStages, results, usage });
+        const bindingFailures = bindings.flatMap(({ errorCode, stage, state }) =>
+          state === "SUCCEEDED" ? [] : [`${stage}:${errorCode ?? state}`]);
+        currentPhase = "adjudication_normalization";
+        const adjudicationNormalized = (await prisma.memoryAuxiliarySemanticCall.findMany({
+          select: { result: true },
+          where: { completedAt: { not: null }, purpose: "FACT_EXTRACTION_ADJUDICATION",
+            userId: { in: ownerIds } }
+        })).flatMap(({ result }) => decodeStoredMemorySemanticAdjudication(result).decisions
+          .flatMap(({ reasonCode }) =>
+            MEMORY_SEMANTIC_ADJUDICATION_NORMALIZED_REASON_CODES.has(reasonCode) ? [reasonCode] : []));
+        const report = summarizeExtractionQualification({
+          adjudicationNormalized, bindingFailures, degradedCodes, jobRetries, jobStages, results, usage
+        });
         currentPhase = "write_report";
         await files.report.write(report);
         return report;
