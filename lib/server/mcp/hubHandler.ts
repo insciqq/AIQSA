@@ -20,7 +20,7 @@ import type { InboundMcpOAuthService } from "@/lib/server/memoryMcp/oauth/servic
 import { defaultMcpHubRateLimiter, defaultMcpHubService } from "./defaultHub";
 import { createMcpHubServer } from "./hubServer";
 import { getMcpRequestMaxBytes, MCP_JSON_RPC_REQUEST_MAX_BYTES, mcpRequestSizeFailure } from "./responseLimits";
-import { McpHubServiceError } from "./hubService";
+import { McpHubServiceError, type McpHubAuthority } from "./hubService";
 import {
   isMcpHubEnabled,
   MCP_HUB_MAX_CONCURRENT_REQUESTS,
@@ -93,6 +93,31 @@ function holdResponse(
   return new Response(body, { headers: response.headers, status: response.status, statusText: response.statusText });
 }
 
+/** Only these responses carry server instructions in the legacy and 2026-07-28 eras. */
+function returnsInstructions(body: unknown): boolean {
+  const method = body && typeof body === "object" ? (body as { method?: unknown }).method : undefined;
+  return method === "initialize" || method === "server/discover";
+}
+
+/** The index never fails the request: an unavailable or cancelled read falls back to generic instructions. */
+async function connectToolIndex(
+  service: typeof defaultMcpHubService,
+  authority: McpHubAuthority,
+  signal: AbortSignal
+): Promise<Awaited<ReturnType<typeof service.toolIndex>>> {
+  if (signal.aborted) return null;
+  let cancel!: () => void;
+  const cancelled = new Promise<null>((resolve) => {
+    cancel = () => resolve(null);
+    signal.addEventListener("abort", cancel, { once: true });
+  });
+  try {
+    return await Promise.race([service.toolIndex({ authority, signal }).catch(() => null), cancelled]);
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
 function allowedHostnames(resource: string): string[] {
   const hostname = new URL(resource).hostname;
   return isLoopbackHostname(hostname) ? [...new Set([...localhostAllowedHostnames(), hostname])] : [hostname];
@@ -140,7 +165,9 @@ export function createMcpHubHandler(input: Readonly<{
       }
     }
   });
-  const mcp = createMcpHandler((context) => {
+  // Requests whose response returns server instructions; keyed by the exact request passed to the SDK.
+  const instructionRequests = new WeakSet<Request>();
+  const mcp = createMcpHandler(async (context) => {
     const userId = context.authInfo?.extra?.userId;
     if (typeof userId !== "string" || !userId) throw new Error("mcp_hub_principal_unavailable");
     const clientId = context.authInfo?.clientId;
@@ -149,22 +176,22 @@ export function createMcpHubHandler(input: Readonly<{
     if (typeof clientId !== "string" || !clientId || typeof grantId !== "string" || !grantId || !token) {
       throw new Error("mcp_hub_principal_unavailable");
     }
-    return createMcpHubServer({
-      authority: {
-        clientId,
-        grantId,
-        userId,
-        async assertActive() {
-          const current = await oauthService.resolveAccessToken(token, resource.toString());
-          if (!current || current.capability !== "mcp:hub" || current.userId !== userId ||
-            current.clientId !== clientId || current.grantId !== grantId) {
-            throw new McpHubServiceError("authorization_required");
-          }
+    const authority: McpHubAuthority = {
+      clientId,
+      grantId,
+      userId,
+      async assertActive() {
+        const current = await oauthService.resolveAccessToken(token, resource.toString());
+        if (!current || current.capability !== "mcp:hub" || current.userId !== userId ||
+          current.clientId !== clientId || current.grantId !== grantId) {
+          throw new McpHubServiceError("authorization_required");
         }
-      },
-      deadlineMs,
-      service
-    });
+      }
+    };
+    const request = context.requestInfo;
+    const toolIndex = request && instructionRequests.has(request)
+      ? await connectToolIndex(service, authority, request.signal) : null;
+    return createMcpHubServer({ authority, deadlineMs, service, toolIndex });
   }, { legacy: "stateless", responseMode: "json" });
 
   async function authorize(request: Request): Promise<AuthInfo | Response> {
@@ -224,6 +251,7 @@ export function createMcpHubHandler(input: Readonly<{
           signal: AbortSignal.any([bounded.request.signal, AbortSignal.timeout(30_000)]) });
         const parsedBody = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
         if (Array.isArray(parsedBody)) return jsonError("invalid_request", 400);
+        if (returnsInstructions(parsedBody)) instructionRequests.add(bounded.request);
         // The legacy transport returns headers while its tool call is still running.
         const response = holdResponse(await mcp.fetch(bounded.request, { authInfo: auth, parsedBody }), bounded, release);
         transferred = true;

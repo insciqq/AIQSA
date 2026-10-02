@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { namespacedMcpToolName, type McpCapabilityCatalog, type McpRunPlanResult } from "./runPlan";
-import { createMcpHubService, McpHubServiceError, type McpHubAuthority, type McpHubServiceDependencies } from "./hubService";
+import { createMcpHubService, createMcpToolService, McpHubServiceError, type McpHubAuthority, type McpHubServiceDependencies } from "./hubService";
 import { McpClientSessionError } from "./clientSession";
 import { mcpDispatchError } from "./dispatchStatus";
 import { getMcpRequestMaxBytes } from "./responseLimits";
@@ -180,6 +180,51 @@ describe("MCP Hub shared discovery and dispatch", () => {
         tools: []
       });
     expect(test.dependencies.materialize).not.toHaveBeenCalled();
+  });
+
+  it("adds the current authorized tool index only to Hub results without matches", async () => {
+    const test = fixture({
+      catalog: vi.fn(async () => catalog([echoId, otherId])),
+      filterTools: async (_userId, tools) => tools.filter((tool) => tool.serverId !== "server-other")
+    });
+    const index = [{ name: "Example", description: "Example integration", tools: ["echo"] }];
+    const empty = await test.service.findTools({ authority, query: "weather forecast" });
+    expect(empty).toEqual({
+      incomplete: false,
+      message: "No matching enabled MCP tools were found. Pick exact names from tool_index with select:<tool name> or select:<server name>/<tool name>, or try other short English keywords (service + action + object).",
+      schema_version: 1,
+      tool_index: index,
+      tools: []
+    });
+    const unknown = await test.service.findTools({ authority, query: "select:lookup, missing" });
+    expect(unknown.tools).toEqual([]);
+    expect(unknown.tool_index).toEqual(index);
+    expect(unknown.message).toContain('Unknown names in select (not available): ["lookup","missing"].');
+    const found = await test.service.findTools({ authority, query: "select:echo" });
+    expect(found.tools.map((tool) => tool.tool_id)).toEqual([echoId]);
+    expect(found).not.toHaveProperty("tool_index");
+    for (const result of [empty, unknown]) {
+      expect(JSON.stringify(result.tool_index)).not.toMatch(/Other|Look up|Echo a value|server-example|revision-example/u);
+    }
+    expect(test.dependencies.materialize).toHaveBeenCalledOnce();
+    await expect(test.service.toolIndex({ authority })).resolves.toEqual(index);
+  });
+
+  it("keeps Agent gateway results without matches free of the index", async () => {
+    const test = fixture();
+    const service = createMcpToolService({ ...test.dependencies, recordDispatch: async () => ({ settle: async () => undefined }) });
+    const result = await service.findTools({ authority, query: "weather forecast" });
+    expect(result).not.toHaveProperty("tool_index");
+    expect(result.message).toBe("No matching enabled MCP tools were found. Try other short English keywords (service + action + object), or exact tool names with select:name1,name2.");
+  });
+
+  it("reads the tool index only under active authority and returns null for an empty catalog", async () => {
+    const test = fixture({ catalog: vi.fn(async () => catalog([])) });
+    await expect(test.service.toolIndex({ authority })).resolves.toBeNull();
+    const inactive = { ...authority, assertActive: async () => { throw new McpHubServiceError("authorization_required"); } };
+    vi.mocked(test.dependencies.catalog).mockClear();
+    await expect(test.service.toolIndex({ authority: inactive })).rejects.toMatchObject({ code: "authorization_required" });
+    expect(test.dependencies.catalog).not.toHaveBeenCalled();
   });
 
   it("loads exact select: names, reports unknown ones and never offers tools outside current grants", async () => {

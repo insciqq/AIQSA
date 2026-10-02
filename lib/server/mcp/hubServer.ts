@@ -1,8 +1,8 @@
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { mcpFindToolsInputSchema } from "./discovery";
+import { mcpFindToolsInputSchema, mcpHubInstructions } from "./discovery";
 import { mcpToolFailureMessage } from "../../contracts/mcpToolFailure";
-import type { McpHubDiscoveryResult } from "@/lib/contracts/mcpHub";
+import type { McpHubDiscoveryResult, McpHubToolIndexEntry } from "@/lib/contracts/mcpHub";
 import { createMcpHubService, McpHubServiceError, type McpHubAuthority } from "./hubService";
 const callToolInput = z.strictObject({
   tool_id: z.string().trim().min(1).max(128),
@@ -73,16 +73,18 @@ export function createMcpHubServer(input: Readonly<{
   service: ReturnType<typeof createMcpHubService>;
   authority: McpHubAuthority;
   deadlineMs?: number;
+  /** The caller's authorized index for responses that carry instructions. */
+  toolIndex?: readonly McpHubToolIndexEntry[] | null;
 }>): McpServer {
   // Search is local; the exact server runtime owns operation deadlines.
   // An explicit enclosing deadline is used by bounded test/embedding callers.
   const deadlineMs = input.deadlineMs;
   const server = new McpServer({ name: "aiqsa-mcp-hub", version: "1.0.0" }, {
-    instructions: "Use find_tools with query \"select:<tool name>\" (or \"select:<server name>/<tool name>\", comma-separated for several) when you know exact tool names, or with short English keywords naming the service, action and object, such as \"github create issue\". Then call_tool with a returned tool_id, tool_version, and arguments. Tools are limited by the user's current AIQSA permissions and enabled MCP connections."
+    instructions: mcpHubInstructions(input.toolIndex)
   });
   server.registerTool("find_tools", {
     annotations: { readOnlyHint: true, idempotentHint: true },
-    description: "Find enabled MCP tools by exact name (\"select:name1,name2\") or short English keywords (service + action + object). The search is local and lexical, returns tool definitions for call_tool, and does not call a business tool. If nothing fits, call again with other words.",
+    description: "Find enabled MCP tools by exact name (\"select:name1,name2\") or short English keywords (service + action + object). The search is local and lexical, returns tool definitions for call_tool, and does not call a business tool. The connected tool index is in the server instructions and, as tool_index, in results without matches. If nothing fits, call again with other words or exact names.",
     inputSchema: mcpFindToolsInputSchema
   }, (argumentsValue, context) => bounded(
     (signal) => input.service.findTools({
