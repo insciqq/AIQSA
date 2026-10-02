@@ -256,183 +256,69 @@ describe("preparing Memory item finalization", () => {
     expect(factSql).not.toContain('INNER JOIN "MemorySearchEntry"');
   });
 
-  it("freezes a PATTERN only with three independently revalidated direct supports", async () => {
-    const patternRow = {
-      ...automaticFactRow,
-      coreEligible: false,
-      coreSalience: "NONE",
-      displayText: "The user tends to follow a recurring weekly review workflow.",
-      factCanonicalKey: `prop:v1:${"a".repeat(64)}`,
-      factCategory: "patterns",
-      modality: "PATTERN",
-      searchSafeContentHash: memorySha256({
-        displayText: "The user tends to follow a recurring weekly review workflow.",
-        structuredValue: automaticFactRow.structuredValue
-      })
+  it("accepts and ignores the pattern opt-in of an item frozen before the retirement", async () => {
+    const resolveDirect = (featureSnapshot: Record<string, unknown>) => {
+      const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
+        .mockResolvedValueOnce([automaticFactRow])
+        .mockResolvedValueOnce([automaticEvidenceRow()])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]);
+      return { $queryRaw, resolved: resolvePreparingMemoryItem(
+        { $queryRaw } as unknown as Prisma.TransactionClient, authority, "concise answers", {
+          ...item,
+          featureSnapshot: {
+            directFactAuthority: true, historical: false, retrievalMode: "TARGETED_CURRENT",
+            tier: "DYNAMIC", ...featureSnapshot
+          },
+          selectionReason: "deterministic_fallback.exact_text"
+        }) };
     };
-    const relations = Array.from({ length: 3 }, (_, index) => ({
-      pipelineVersion: "memory-synthesis-v2",
-      sourceEligibilityHash: String(index + 1).repeat(64),
-      targetDisplayText: `The user directly described workflow occurrence ${index + 1}.`,
-      targetObservedAt: new Date(`2026-08-${10 + index}T10:00:00.000Z`),
-      targetSourceMode: "AUTOMATIC",
-      targetVersionId: `source-version-${index + 1}`
-    }));
-    const patternSupportingEvidence = relations.map((relation, index) => ({
-      factVersionId: relation.targetVersionId,
-      observedAt: relation.targetObservedAt.toISOString(),
-      sourceAuthority: "learned_from_user",
-      sourceRootHash: memorySha256(`message:source-message-${index + 1}`),
-      textHash: memorySha256(relation.targetDisplayText)
-    }));
-    const patternEvidence = relations.map((relation, index) => ({
-      ...automaticEvidenceRow({
-        evidenceId: `evidence-${index + 1}`,
-        messageId: `source-message-${index + 1}`
-      }),
-      evidenceObservedAt: relation.targetObservedAt,
-      targetVersionId: relation.targetVersionId
-    }));
-    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
-      .mockResolvedValueOnce([patternRow])
-      .mockResolvedValueOnce(relations)
-      .mockResolvedValueOnce(patternEvidence)
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
-
-    const resolved = await resolvePreparingMemoryItem(
-      { $queryRaw } as unknown as Prisma.TransactionClient,
-      { ...authority, indexGenerationId: "generation-1" },
-      "What recurring workflow pattern do I follow?",
-      {
-        ...item,
-        exactSafeText: patternRow.displayText,
-        featureSnapshot: {
-          directFactAuthority: false,
-          historical: false,
-          includePatterns: true,
-          patternSupportingEvidence,
-          retrievalMode: "TARGETED_CURRENT",
-          tier: "DYNAMIC"
-        },
-        selectionReason: "rrf+pattern_relevance"
-      }
-    );
-
-    expect(resolved).toMatchObject({
-      sourceBranchGenerationSnapshot: null,
-      sourceChatIdSnapshot: null,
-      sourceMessageIdsSnapshot: [
-        "source-message-1", "source-message-2", "source-message-3"
-      ],
-      sourceSnapshot: {
-        patternSupportingEvidence,
-        synthesisRelations: relations.map(({ pipelineVersion,
-          sourceEligibilityHash, targetVersionId }) => ({
-          pipelineVersion,
-          sourceEligibilityHash,
-          targetVersionId
-        }))
-      },
-      versionSnapshot: { modality: "PATTERN" }
+    const current = await resolveDirect({}).resolved;
+    for (const frozen of [
+      { includePatterns: true, patternSupportingEvidence: [] },
+      { includePatterns: false, patternSupportingEvidence: [] }
+    ]) {
+      const { $queryRaw, resolved } = resolveDirect(frozen);
+      const resolvedFrozen = await resolved;
+      expect(resolvedFrozen.factVersionId).toBe("version-1");
+      // The retired fields stay empty, so pre-retirement snapshots compare equal.
+      expect(resolvedFrozen.sourceSnapshot).toEqual(current.sourceSnapshot);
+      expect(resolvedFrozen.sourceSnapshot).toMatchObject({
+        patternSupportingEvidence: [], synthesisRelations: []
+      });
+      expect(resolvedFrozen.versionSnapshot).toEqual(current.versionSnapshot);
+      const factSql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
+      expect(factSql).toContain('version."modality" <> \'PATTERN\'');
+      expect(factSql).not.toContain("SYNTHESIZED_FROM");
+    }
+    await expect(resolveDirect({ includePatterns: "yes" }).resolved).rejects.toMatchObject({
+      code: "memory_attempt_item_fact_retrieval_invalid", retryable: false
     });
-    expect($queryRaw).toHaveBeenCalledTimes(5);
   });
 
-  it("rejects a PATTERN attempt that does not freeze three direct supports", async () => {
-    const patternRow = {
-      ...automaticFactRow,
-      coreEligible: false,
-      coreSalience: "NONE",
-      displayText: "The user tends to follow a recurring weekly review workflow.",
-      factCanonicalKey: `prop:v1:${"a".repeat(64)}`,
-      factCategory: "patterns",
-      modality: "PATTERN",
-      searchSafeContentHash: memorySha256({
-        displayText: "The user tends to follow a recurring weekly review workflow.",
-        structuredValue: automaticFactRow.structuredValue
-      })
-    };
-    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
-      .mockResolvedValueOnce([patternRow]);
-
+  it.each([
+    { evidenceType: "pattern" },
+    { sourceAuthority: "derived_pattern" },
+    { patternSupportingEvidence: [{ factVersionId: "source-version-1" }] },
+    { patternSupportingEvidence: "malformed" }
+  ])("drops a frozen derived-pattern element fail-closed as stale: %j", async (retired) => {
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => []);
     await expect(resolvePreparingMemoryItem(
       { $queryRaw } as unknown as Prisma.TransactionClient,
       { ...authority, indexGenerationId: "generation-1" },
-      "What recurring workflow pattern do I follow?",
+      "What recurring workflow do I follow?",
       {
         ...item,
-        exactSafeText: patternRow.displayText,
+        exactSafeText: "The user tends to follow a recurring weekly review workflow.",
         featureSnapshot: {
-          directFactAuthority: false,
-          historical: false,
-          includePatterns: true,
-          patternSupportingEvidence: [],
-          retrievalMode: "TARGETED_CURRENT",
-          tier: "DYNAMIC"
+          directFactAuthority: false, historical: false, includePatterns: true,
+          retrievalMode: "TARGETED_CURRENT", tier: "DYNAMIC", ...retired
         },
         selectionReason: "rrf+pattern_relevance"
       }
-    )).rejects.toMatchObject({
-      code: "memory_attempt_item_pattern_support_invalid",
-      retryable: false
-    });
-    expect($queryRaw).toHaveBeenCalledTimes(1);
+    )).rejects.toMatchObject({ code: "memory_attempt_item_stale", retryable: true });
+    expect($queryRaw).not.toHaveBeenCalled();
   });
-
-  it.each(["combined_overlapping_facts", "combined_episode_facts"])(
-    "freezes two exact lower-certainty supports for %s without promoting their authority", async (reasonCode) => {
-      const episode = reasonCode === "combined_episode_facts";
-      const displayText = "The user reported a dated personal event.";
-      const structuredValue = { kind: "pattern", reasonCode,
-        ...(episode ? { claims: [{ statement: displayText,
-          sourceVersionIds: ["source-version-1", "source-version-2"] }] } : {}) };
-      const patternRow = {
-        ...automaticFactRow, coreEligible: false, coreSalience: "NONE", displayText,
-        factCanonicalKey: `prop:v1:${"a".repeat(64)}`, factCategory: "patterns",
-        modality: "PATTERN", structuredValue,
-        searchSafeContentHash: memorySha256({ displayText, structuredValue })
-      };
-      const relations = Array.from({ length: 2 }, (_, index) => ({
-        pipelineVersion: "memory-synthesis-v2", sourceEligibilityHash: String(index + 1).repeat(64),
-        targetConfidence: 0.6, targetDisplayText: automaticSourceText,
-        targetObservedAt: new Date(`2026-08-${10 + index}T10:00:00.000Z`),
-        targetSourceMode: "AUTOMATIC", targetVersionId: `source-version-${index + 1}`
-      }));
-      const supports = relations.map((relation, index) => ({
-        factVersionId: relation.targetVersionId, observedAt: relation.targetObservedAt.toISOString(),
-        sourceAuthority: "supporting_observation",
-        sourceRootHash: memorySha256(`message:source-message-${episode ? 1 : index + 1}`),
-        textHash: memorySha256(relation.targetDisplayText)
-      }));
-      const evidence = relations.map((relation, index) => ({
-        ...automaticEvidenceRow({ evidenceId: `evidence-${index + 1}`,
-          messageId: `source-message-${episode ? 1 : index + 1}` }),
-        evidenceObservedAt: relation.targetObservedAt, targetVersionId: relation.targetVersionId
-      }));
-      const resolve = (sourceAuthority: string, extraRelation = false) => {
-        const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [])
-          .mockResolvedValueOnce([patternRow])
-          .mockResolvedValueOnce(extraRelation ? [...relations, { ...relations[0], targetVersionId: "missing-support" }] : relations)
-          .mockResolvedValueOnce(evidence).mockResolvedValueOnce([]).mockResolvedValueOnce([]);
-        return resolvePreparingMemoryItem({ $queryRaw } as unknown as Prisma.TransactionClient,
-          { ...authority, indexGenerationId: "generation-1" }, "Recall my event", {
-            ...item, exactSafeText: displayText,
-            featureSnapshot: { directFactAuthority: false, historical: false, includePatterns: true,
-              patternSupportingEvidence: supports.map((support) => ({ ...support, sourceAuthority })),
-              retrievalMode: "TARGETED_CURRENT", tier: "DYNAMIC" },
-            selectionReason: "rrf+pattern_relevance"
-          });
-      };
-      await expect(resolve("supporting_observation")).resolves.toMatchObject({
-        sourceSnapshot: { patternSupportingEvidence: supports }
-      });
-      await expect(resolve("learned_from_user")).rejects.toMatchObject({ code: "memory_attempt_item_stale" });
-      await expect(resolve("supporting_observation", true)).rejects.toMatchObject({
-        code: "memory_attempt_item_pattern_support_invalid"
-      });
-    }
-  );
 
   it.each([
     {

@@ -1,16 +1,8 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   memoryExactVNextDirectAuthorityPredicate,
-  memoryPersonalEvidenceRowPredicate,
   memoryPersonalFactEvidencePredicate
 } from "../persistence/eligibility";
-import {
-  MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES,
-  MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES,
-  MEMORY_SYNTHESIS_COMBINED_REASONS,
-  MEMORY_SYNTHESIS_PIPELINE_VERSION,
-  MEMORY_SYNTHESIS_POLICY_VERSION
-} from "./policy";
 
 export type MemoryReusableFactAuthorityClassification =
   | "CLASSIFIED"
@@ -32,7 +24,6 @@ type AuthorityAliases = Readonly<{
 export type MemoryReusableFactAuthorityInput = AuthorityAliases & Readonly<{
   allowLegacySafetyReprojection?: boolean;
   classification?: MemoryReusableFactAuthorityClassification;
-  includePatterns?: boolean;
   lifecycle?: MemoryReusableFactAuthorityLifecycle;
 }>;
 
@@ -124,7 +115,6 @@ function commonAuthorityPredicate(
   input: Readonly<{
     allowLegacySafetyReprojection?: boolean;
     classification: MemoryReusableFactAuthorityClassification;
-    forManagement?: boolean;
     lifecycle: MemoryReusableFactAuthorityLifecycle;
   }>
 ): Prisma.Sql {
@@ -136,7 +126,7 @@ function commonAuthorityPredicate(
     AND ${scope}."userId" = ${fact}."userId"
     AND ${scope}."id" = ${fact}."scopeId"
     AND ${settings}."userId" = ${version}."userId"
-    ${input.forManagement ? Prisma.empty : Prisma.sql`AND ${settings}."useMemoryFacts" = TRUE`}
+    AND ${settings}."useMemoryFacts" = TRUE
     AND ${lifecyclePredicate(version, fact, input.lifecycle)}
     AND ${version}."safetyClassificationState" =
       ${input.classification}::"MemorySafetyClassificationState"
@@ -229,328 +219,9 @@ export function memoryExplicitFactReceiptAuthorityPredicate(
   )`;
 }
 
-function sourceAuthorityPredicate(
-  userId: string | Prisma.Sql,
-  version: Prisma.Sql,
-  fact: Prisma.Sql,
-  scope: Prisma.Sql,
-  settings: Prisma.Sql,
-  forManagement = false
-): Prisma.Sql {
-  const aliases = { fact, scope, settings, version };
-  return Prisma.sql`
-    ${commonAuthorityPredicate(userId, aliases, {
-      classification: "CLASSIFIED",
-      forManagement,
-      lifecycle: "CURRENT"
-    })}
-    AND ${directAuthorityPredicate(userId, version)}
-    AND ${version}."confidence" > 0.0
-    AND ${version}."confidence" <= 1.0
-    AND ${version}."observedAt" IS NOT NULL
-    AND ${settings}."synthesisEnabledAt" IS NOT NULL
-    AND ${settings}."synthesisPolicyVersion" = ${MEMORY_SYNTHESIS_POLICY_VERSION}
-    AND ${version}."observedAt" >= ${settings}."synthesisEnabledAt"
-    ${forManagement ? Prisma.empty : Prisma.sql`AND (
-      ${version}."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-      OR ${settings}."learnAutomatically" = TRUE
-    )`}
-    AND NOT EXISTS (
-      SELECT 1
-      FROM "MemoryPauseInterval" AS synthesis_pause
-      WHERE synthesis_pause."userId" = ${version}."userId"
-        AND synthesis_pause."scope" = 'MASTER'::"MemoryPauseScope"
-        AND ${version}."observedAt" >= synthesis_pause."pausedAt"
-        AND (
-          synthesis_pause."resumedAt" IS NULL
-          OR ${version}."observedAt" < synthesis_pause."resumedAt"
-        )
-    )
-    AND ${memoryExplicitFactReceiptAuthorityPredicate(version)}
-  `;
-}
-
-/** Fixed aliases make this fragment usable inside source-selection CTEs. */
-export function memorySynthesisSourceAuthorityPredicate(
-  userId: string | Prisma.Sql,
-  options: Readonly<{ forManagement?: boolean }> = {}
-): Prisma.Sql {
-  return sourceAuthorityPredicate(
-    userId,
-    Prisma.sql`source_version`,
-    Prisma.sql`source_fact`,
-    Prisma.sql`source_scope`,
-    Prisma.sql`settings`,
-    options.forManagement === true
-  );
-}
-
-function sourceEligibilityHashExpression(
-  version: Prisma.Sql,
-  fact: Prisma.Sql,
-  settings: Prisma.Sql
-): Prisma.Sql {
-  return Prisma.sql`aiqsa_memory_synthesis_source_eligibility_hash(
-    ${fact}."canonicalKey",
-    ${version}."directness"::text,
-    ${version}."factId",
-    ${version}."ingestionFingerprint",
-    ${settings}."memoryGeneration",
-    ${version}."modality"::text,
-    ${version}."observedAt",
-    ${version}."pipelineVersion",
-    ${version}."sourceMode"::text,
-    ${version}."id"
-  )`;
-}
-
-/** Authoritative depth-one rejoin for an already-created PATTERN. Every exact
- * relation must still point at an eligible direct source and retain the exact
- * eligibility hash captured when the provider call was admitted. */
-export function memorySynthesisPatternAuthorityPredicate(
-  userId: string | Prisma.Sql,
-  input: AuthorityAliases & Readonly<{
-    allowLegacySafetyReprojection?: boolean;
-    classification?: MemoryReusableFactAuthorityClassification;
-    /** Owner management remains available while new reading/learning is paused. */
-    forManagement?: boolean;
-    patternVersionId?: Prisma.Sql;
-  }> = {}
-): Prisma.Sql {
-  const version = input.version ?? Prisma.sql`version`;
-  const fact = input.fact ?? Prisma.sql`fact`;
-  const scope = input.scope ?? Prisma.sql`scope`;
-  const settings = input.settings ?? Prisma.sql`settings`;
-  const classification = input.classification ?? "CLASSIFIED";
-  const patternVersionId = input.patternVersionId ?? Prisma.sql`${version}."id"`;
-  const combination = Prisma.sql`COALESCE(
-    ${version}."structuredValue"->>'reasonCode' IN (${Prisma.join(MEMORY_SYNTHESIS_COMBINED_REASONS)}),
-    FALSE
-  )`;
-  const episode = Prisma.sql`COALESCE(
-    ${version}."structuredValue"->>'reasonCode' = 'combined_episode_facts', FALSE
-  )`;
-  return Prisma.sql`(
-    ${commonAuthorityPredicate(userId, { fact, scope, settings, version }, {
-      allowLegacySafetyReprojection: input.allowLegacySafetyReprojection,
-      classification,
-      forManagement: input.forManagement,
-      lifecycle: "CURRENT"
-    })}
-    AND ${version}."modality" = 'PATTERN'::"MemoryFactModality"
-    AND ${version}."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
-    AND ${version}."directness" = 'INFERRED'::"MemoryDirectness"
-    AND ${version}."synthesisDepth" = 1
-    AND ${version}."pipelineVersion" = ${MEMORY_SYNTHESIS_PIPELINE_VERSION}
-    AND ${version}."synthesisGeneration" = ${settings}."memoryGeneration"
-    AND ${version}."synthesisSourceSetFingerprint" ~ '^[a-f0-9]{64}$'
-    AND ${settings}."synthesisEnabledAt" IS NOT NULL
-    AND ${settings}."synthesisPolicyVersion" = ${MEMORY_SYNTHESIS_POLICY_VERSION}
-    AND ${version}."observedAt" IS NOT NULL
-    AND ${version}."observedAt" >= ${settings}."synthesisEnabledAt"
-    AND ${fact}."identityKind" = 'PROPOSITION'::"MemoryFactIdentityKind"
-    AND ${fact}."identityVersion" IN ('proposition-v1', 'proposition-v2')
-    AND ${fact}."subjectEntityId" IS NULL
-    AND ${fact}."subjectKey" IS NULL
-    AND ${fact}."predicateKey" IS NULL
-    AND ${fact}."dimensionKey" IS NULL
-    AND (
-      SELECT COUNT(DISTINCT relation_source_fact."id")
-      FROM "MemoryFactVersionRelation" AS relation
-      INNER JOIN "MemoryFactVersion" AS relation_source_version
-        ON relation_source_version."userId" = relation."userId"
-       AND relation_source_version."id" = relation."targetVersionId"
-      INNER JOIN "MemoryFact" AS relation_source_fact
-        ON relation_source_fact."userId" = relation_source_version."userId"
-       AND relation_source_fact."id" = relation_source_version."factId"
-      WHERE relation."userId" = ${userId}
-        AND relation."sourceVersionId" = ${patternVersionId}
-        AND relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-    ) >= CASE WHEN ${combination}
-      THEN ${MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES}
-      ELSE ${MEMORY_SYNTHESIS_MIN_PATTERN_SOURCES} END
-    AND (
-      COALESCE(${version}."structuredValue"->>'reasonCode', '') NOT IN (
-        'combined_refined_facts', 'combined_episode_facts'
-      )
-      OR aiqsa_memory_synthesis_claims_valid(${userId}, ${patternVersionId})
-    )
-    AND EXISTS (
-      WITH root_support AS (
-        SELECT DISTINCT root_source_fact."id" AS "factId",
-          support."messageId" AS "messageId", support."chatId" AS "chatId"
-        FROM "MemoryFactVersionRelation" AS root_relation
-        INNER JOIN "MemoryFactVersion" AS root_source_version
-          ON root_source_version."userId" = root_relation."userId"
-         AND root_source_version."id" = root_relation."targetVersionId"
-        INNER JOIN "MemoryFact" AS root_source_fact
-          ON root_source_fact."userId" = root_source_version."userId"
-         AND root_source_fact."id" = root_source_version."factId"
-        INNER JOIN "MemoryEvidence" AS support
-          ON support."userId" = root_source_version."userId"
-         AND support."factVersionId" = root_source_version."id"
-        INNER JOIN "Chat" AS evidence_chat
-          ON evidence_chat."userId" = support."userId"
-         AND evidence_chat."id" = support."chatId"
-         AND evidence_chat."projectId" IS NULL
-         AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-         AND evidence_chat."permanentDeletionAt" IS NULL
-        INNER JOIN "Message" AS evidence_message
-          ON evidence_message."chatId" = support."chatId"
-         AND evidence_message."id" = support."messageId"
-         AND evidence_message."role" = 'user'
-        WHERE root_relation."userId" = ${userId}
-          AND root_relation."sourceVersionId" = ${patternVersionId}
-          AND root_relation."kind" =
-            'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-          AND ${memoryPersonalEvidenceRowPredicate(
-            userId,
-            Prisma.sql`root_source_version."id"`,
-            { exactVNext: true }
-          )}
-      )
-      SELECT 1 FROM root_support AS first
-      INNER JOIN root_support AS second
-        ON second."factId" <> first."factId"
-      WHERE (
-        SELECT COUNT(DISTINCT supported."factId") FROM root_support AS supported
-      ) = (
-        SELECT COUNT(DISTINCT required_source."factId")
-        FROM "MemoryFactVersionRelation" AS required_relation
-        INNER JOIN "MemoryFactVersion" AS required_source
-          ON required_source."userId" = required_relation."userId"
-         AND required_source."id" = required_relation."targetVersionId"
-        WHERE required_relation."userId" = ${userId}
-          AND required_relation."sourceVersionId" = ${patternVersionId}
-          AND required_relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-      ) AND ((
-        ${episode}
-        AND second."chatId" = first."chatId"
-        AND NOT EXISTS (
-          SELECT 1 FROM root_support AS selected
-          WHERE NOT EXISTS (
-            SELECT 1 FROM root_support AS same_chat
-            WHERE same_chat."factId" = selected."factId"
-              AND same_chat."chatId" = first."chatId"
-          )
-        )
-      ) OR (
-        NOT ${episode}
-        AND second."messageId" <> first."messageId"
-        AND (${combination} OR EXISTS (
-          SELECT 1 FROM root_support AS third
-          WHERE third."factId" <> first."factId"
-            AND third."factId" <> second."factId"
-            AND third."messageId" <> first."messageId"
-            AND third."messageId" <> second."messageId"
-        ))
-      ))
-    )
-    AND NOT EXISTS (
-      SELECT 1
-      FROM "MemoryFactVersionRelation" AS relation
-      LEFT JOIN "MemoryFactVersion" AS source_version
-        ON source_version."userId" = relation."userId"
-       AND source_version."id" = relation."targetVersionId"
-      LEFT JOIN "MemoryFact" AS source_fact
-        ON source_fact."userId" = source_version."userId"
-       AND source_fact."id" = source_version."factId"
-      LEFT JOIN "MemoryScope" AS source_scope
-        ON source_scope."userId" = source_fact."userId"
-       AND source_scope."id" = source_fact."scopeId"
-      WHERE relation."userId" = ${userId}
-        AND relation."sourceVersionId" = ${patternVersionId}
-        AND relation."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-        AND NOT COALESCE((
-          relation."pipelineVersion" = ${MEMORY_SYNTHESIS_PIPELINE_VERSION}
-          AND relation."executionId" IS NOT NULL
-          AND relation."sourceEligibilityHash" ~ '^[a-f0-9]{64}$'
-          AND relation."sourceEligibilityHash" = ${sourceEligibilityHashExpression(
-            Prisma.sql`source_version`,
-            Prisma.sql`source_fact`,
-            settings
-          )}
-          AND ${sourceAuthorityPredicate(
-            userId,
-            Prisma.sql`source_version`,
-            Prisma.sql`source_fact`,
-            Prisma.sql`source_scope`,
-            settings,
-            input.forManagement === true
-          )}
-          AND (${combination} OR source_version."confidence" = 1.0)
-          AND (NOT ${combination} OR ${version}."confidence" <= source_version."confidence")
-        ), FALSE)
-    )
-  )`;
-}
-
-/** New patterns receive synchronous Safety Lite admission. Reconciliation also
- * preserves source-authorized legacy safety states until bounded local
- * reprojection can classify or purge them; ordinary retrieval still admits
- * only CLASSIFIED rows. */
-export function memorySynthesisPatternInvalidationPredicate(
-  userId: string | Prisma.Sql,
-  input: AuthorityAliases & Readonly<{
-    patternVersionId?: Prisma.Sql;
-  }> = {}
-): Prisma.Sql {
-  const version = input.version ?? Prisma.sql`version`;
-  const aliases = {
-    fact: input.fact,
-    patternVersionId: input.patternVersionId,
-    scope: input.scope,
-    settings: input.settings,
-    version
-  };
-  return Prisma.sql`(
-    (
-      ${version}."safetyClassificationState" =
-        'PENDING'::"MemorySafetyClassificationState"
-      AND NOT (${memorySynthesisPatternAuthorityPredicate(userId, {
-        ...aliases,
-        classification: "PENDING"
-      })})
-    )
-    OR (
-      ${version}."safetyClassificationState" =
-        'CLASSIFIED'::"MemorySafetyClassificationState"
-      AND NOT (${memorySynthesisPatternAuthorityPredicate(userId, {
-        ...aliases,
-        classification: "CLASSIFIED"
-      })})
-    )
-    OR (
-      ${version}."safetyClassificationState" =
-        'UNCERTAIN'::"MemorySafetyClassificationState"
-      AND NOT (${memorySynthesisPatternAuthorityPredicate(userId, {
-        ...aliases,
-        allowLegacySafetyReprojection: true,
-        classification: "UNCERTAIN"
-      })})
-    )
-    OR (
-      ${version}."safetyClassificationState" =
-        'SECRET_FENCED'::"MemorySafetyClassificationState"
-      AND NOT (${memorySynthesisPatternAuthorityPredicate(userId, {
-        ...aliases,
-        allowLegacySafetyReprojection: true,
-        classification: "SECRET_FENCED"
-      })})
-    )
-    OR ${version}."safetyClassificationState" NOT IN (
-      'PENDING'::"MemorySafetyClassificationState",
-      'CLASSIFIED'::"MemorySafetyClassificationState",
-      'UNCERTAIN'::"MemorySafetyClassificationState",
-      'SECRET_FENCED'::"MemorySafetyClassificationState"
-    )
-  )`;
-}
-
 /** The sole reusable-fact authority owner. Consumers may narrow the lifecycle
- * or classification phase, but must not restate either the direct/evidence or
- * evidence-less PATTERN branches. PATTERN admission is closed unless the
- * caller explicitly opts in. */
+ * or classification phase, but must not restate the direct/evidence branch.
+ * Retired synthesized PATTERN rows are never reusable. */
 export function memoryReusableFactAuthorityPredicate(
   userId: string | Prisma.Sql,
   input: MemoryReusableFactAuthorityInput = {}
@@ -561,9 +232,6 @@ export function memoryReusableFactAuthorityPredicate(
   const settings = input.settings ?? Prisma.sql`settings`;
   const classification = input.classification ?? "CLASSIFIED";
   const lifecycle = input.lifecycle ?? "CURRENT";
-  const includePatterns = input.includePatterns === true
-    ? Prisma.sql`TRUE`
-    : Prisma.sql`FALSE`;
   const common = commonAuthorityPredicate(
     userId,
     { fact, scope, settings, version },
@@ -573,39 +241,22 @@ export function memoryReusableFactAuthorityPredicate(
       lifecycle
     }
   );
-  const pattern = memorySynthesisPatternAuthorityPredicate(userId, {
-    allowLegacySafetyReprojection: input.allowLegacySafetyReprojection,
-    classification,
-    fact,
-    scope,
-    settings,
-    version
-  });
   return Prisma.sql`(
-    (
-      ${common}
-      AND ${directAuthorityPredicate(
-        userId,
-        version,
-        input.allowLegacySafetyReprojection === true
-      )}
-    )
-    OR (
-      ${includePatterns}
-      AND ${pattern}
-    )
+    ${common}
+    AND ${directAuthorityPredicate(
+      userId,
+      version,
+      input.allowLegacySafetyReprojection === true
+    )}
   )`;
 }
 
 /** Resolves the exact currently reusable subset for read-side projections and
- * action revalidation. Keeping this loader beside the canonical predicate
- * prevents evidence-less PATTERN rows from being silently dropped by a
- * direct-evidence-only helper after they were already frozen into a run. */
+ * action revalidation, beside the canonical predicate it applies. */
 export async function loadMemoryReusableFactVersionIds(
   client: Pick<PrismaClient, "$queryRaw">,
   userId: string,
-  factVersionIds: readonly string[],
-  options: Readonly<{ includePatterns?: boolean }> = {}
+  factVersionIds: readonly string[]
 ): Promise<ReadonlySet<string>> {
   const ids = [...new Set(factVersionIds.filter(Boolean))];
   if (ids.length === 0) return new Set();
@@ -620,9 +271,7 @@ export async function loadMemoryReusableFactVersionIds(
       ON settings."userId" = version."userId"
     WHERE version."userId" = ${userId}
       AND version."id" IN (${Prisma.join(ids)})
-      AND ${memoryReusableFactAuthorityPredicate(userId, {
-        includePatterns: options.includePatterns === true
-      })}
+      AND ${memoryReusableFactAuthorityPredicate(userId)}
   `);
   return new Set(rows.map(({ id }) => id));
 }

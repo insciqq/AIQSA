@@ -153,8 +153,8 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       // A search-index pointer swap is not a destructive Memory-content
       // generation. The active generation id plus memoryRevision fence every
       // reader, while source jobs are drained before cutover. Advancing the
-      // destructive generation here would invalidate otherwise current
-      // synthesized patterns whose immutable source proofs bind to it.
+      // destructive generation here would needlessly invalidate otherwise
+      // current generation-bound work.
       memoryGeneration: false,
       memoryRevision: true,
       sourceRevision: false

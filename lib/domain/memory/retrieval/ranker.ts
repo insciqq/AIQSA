@@ -8,7 +8,6 @@ import {
   MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES,
   MEMORY_RETRIEVAL_RRF_K,
   MEMORY_RETRIEVAL_SUPPORTING_AUTHORITY_MULTIPLIER,
-  MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER,
   memoryRetrievalLaneLimit,
   type MemoryRetrievalLane
 } from "./config";
@@ -64,7 +63,6 @@ function validMetadata(value: MemoryCandidateMetadata): boolean {
     (!value.validFrom || !value.validTo || value.validFrom < value.validTo) &&
     value.current !== value.historical &&
     Number.isSafeInteger(value.relationDepth) && value.relationDepth >= 0 &&
-    Number.isSafeInteger(value.synthesisDepth) && value.synthesisDepth >= 0 &&
     value.entityIds.length <= 32 && new Set(value.entityIds).size === value.entityIds.length &&
     value.entityIds.every((id) => id.length > 0 && id.length <= 256) &&
     (value.current
@@ -136,7 +134,7 @@ function sameMetadata(left: MemoryCandidateMetadata, right: MemoryCandidateMetad
     left.sourceAssistantId === right.sourceAssistantId &&
     left.sourceChatId === right.sourceChatId && left.sourceFolderId === right.sourceFolderId &&
     left.sourceMode === right.sourceMode && left.sourceAuthority === right.sourceAuthority &&
-    left.subjectKey === right.subjectKey && left.synthesisDepth === right.synthesisDepth &&
+    left.subjectKey === right.subjectKey &&
     sameDate(left.systemFrom, right.systemFrom) &&
     left.temperatureClass === right.temperatureClass &&
     left.temperatureScore === right.temperatureScore &&
@@ -157,9 +155,7 @@ export function memoryRetrievalAuthorityMultiplier(
     metadata.sourceAuthority === "TOOL_OBSERVATION") {
     return MEMORY_RETRIEVAL_SUPPORTING_AUTHORITY_MULTIPLIER;
   }
-  return metadata.sourceAuthority === "SYNTHESIS"
-    ? MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER
-    : 1;
+  return 1;
 }
 
 function authorityRank(metadata: MemoryCandidateMetadata): number {
@@ -167,7 +163,6 @@ function authorityRank(metadata: MemoryCandidateMetadata): number {
   switch (metadata.sourceAuthority) {
     case "EXPLICIT": return 3;
     case "DIRECT_AUTOMATIC": return 2;
-    case "SYNTHESIS": return 1;
     case "TOOL_OBSERVATION": return 1;
     case "PAST_CHAT": return 0;
   }
