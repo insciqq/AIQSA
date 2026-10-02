@@ -184,7 +184,8 @@ describe("maintenance transactional lifecycle", () => {
       expect(await prisma.memoryMaintenanceSuppression.findMany({ where: { userId }, select: { sourceMessageId: true } }))
         .toEqual([{ sourceMessageId: other.messageId }]);
       // A blocker found in apply is a failed attempt: once eligible again, one new job reviews it.
-      await prisma.memoryJob.update({ where: { id: work.claim.id }, data: { state: "SUCCEEDED", completedAt: new Date() } });
+      await prisma.memoryJob.update({ where: { id: work.claim.id }, data: { state: "SUCCEEDED", completedAt: new Date(),
+        leaseToken: null, leaseExpiresAt: null } });
       await prisma.memoryFact.update({ where: { id: target.factId }, data: { pinned: false } });
       await prisma.userMemorySettings.update({ where: { userId }, data: { maintenanceCursor: null } });
       expect(await scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).toBe(1);
