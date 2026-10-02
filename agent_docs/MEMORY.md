@@ -31,7 +31,7 @@ Inbound Memory MCP is a separate delegated owner-command boundary. An active own
 
 ## Learning And Evidence
 
-Only the exact direct-user target supplies automatic testimony. Bounded context may resolve references, time or an immediately preceding question's attribute; the user must supply the value, not merely confirm an assistant assertion. Context remains a revalidated dependency. Every reuse checks the active DAG path, source, pause, exclusion, deletion and generation fences. Maintenance-removed source facts skip these fences; evidence is purged. Durable imperative communication preferences require semantic adjudication; one-off instructions are ineligible. Assistant speech may support history recall, never user testimony.
+Only the exact direct-user target supplies automatic testimony. Bounded context may resolve references, time or an immediately preceding question's attribute; the user must supply the value, not merely confirm an assistant assertion. Context remains a revalidated dependency. Every reuse checks the active DAG path, source, pause, exclusion, deletion and generation fences. Maintenance-removed sources remain hints; chat and upstream fences apply. Durable imperative communication preferences require semantic adjudication; one-off instructions are ineligible. Assistant speech may support history recall, never user testimony.
 
 Direct personal reports retain attribution and uncertainty: “my brother told me he works nights” attests the user's report about the brother, never independent testimony or the user's schedule. Quotations, external material and assistant text alone cannot attest facts; reported speech within the user's own assertion remains eligible.
 

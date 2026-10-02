@@ -67,6 +67,40 @@ export type MaintenanceVersionSeed = Readonly<{
   usefulness?: "DURABLE" | "ONGOING" | "EPISODIC";
 }>;
 
+/** One automatic version of `factId` with its event and one evidence span. */
+async function insertMaintenanceVersion(tx: Prisma.TransactionClient, input: Readonly<{
+  userId: string; factId: string; id: string; createdAt: Date; classifiedAt: Date;
+  state: "ACTIVE" | "SUPERSEDED" | "PENDING_RELATION"; version: MaintenanceVersionSeed;
+}>): Promise<void> {
+  const { userId, factId, id, createdAt, version } = input;
+  const eventId = randomUUID();
+  const start = version.start ?? 0;
+  const end = version.end ?? version.source.text.length;
+  const excerpt = version.source.text.slice(start, end);
+  await tx.memoryEvent.create({ data: { id: eventId, userId, factId, factVersionId: id, operation: "AUTO_PROPOSE", actorType: "JOB" } });
+  await tx.memoryFactVersion.create({ data: { id, factId, userId, createdByEventId: eventId, category: "other",
+    displayText: version.statement, normalizedSearchText: normalizeMemorySearchText(version.statement),
+    structuredValue: { kind: "statement", value: version.statement }, languageCode: "en", modality: "STATE",
+    sourceMode: "AUTOMATIC", confidence: 0.6, importance: 0.4, directness: "DIRECT", sensitivityClass: "NORMAL",
+    ...memorySafetyLiteFactClassification(input.classifiedAt),
+    pipelineVersion: version.legacy ? "memory-maintenance-legacy-fixture-v1" : MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+    ingestionFingerprint: version.legacy ? null : memorySha256({ factId, id }),
+    observedAt: createdAt, createdAt, systemFrom: createdAt, state: input.state,
+    systemTo: input.state === "SUPERSEDED" ? new Date(createdAt.getTime() + 500) : null,
+    usefulness: version.usefulness ?? null,
+    ...(version.frame ? { semanticFrame: version.frame } : {}),
+    ...(version.dated ? { occurredAt: createdAt, rawTemporalExpression: "this morning", sourceTimezone: "UTC",
+      temporalResolverVersion: "memory-temporal-test-v1", temporalResolutionEvidence: { grounded: true } } : {}) } });
+  await tx.memoryEvidence.create({ data: { userId, factVersionId: id, chatId: version.source.chatId,
+    messageId: version.source.messageId, stance: "SUPPORTS", sourceType: "MESSAGE", sourceRole: "user", branchGeneration: 0,
+    observedAt: createdAt, createdAt, safeExcerpt: excerpt, safetyClass: "NORMAL",
+    ...(version.legacy
+      ? { safeSourceHash: memorySha256(excerpt), sourceProjectionVersion: "memory-maintenance-legacy-fixture-v1" }
+      : { safeSourceHash: memorySha256(version.source.text), sourceMessageContentHash: memorySha256(version.source.text),
+        sourceStartOffset: start, sourceEndOffset: end, sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+        evidenceFingerprint: memorySha256({ id, start, end }) }) } });
+}
+
 export async function createAutomaticMaintenanceFact(userId: string, versions: readonly MaintenanceVersionSeed[],
   options: Readonly<{ pinned?: boolean }> = {}): Promise<Readonly<{ factId: string; versionIds: readonly string[]; currentVersionId: string }>> {
   const base = maintenanceFixtureTime();
@@ -80,38 +114,24 @@ export async function createAutomaticMaintenanceFact(userId: string, versions: r
       canonicalKey: `prop:v2:${memorySha256({ factId })}`, state: "ORPHANED", pinned: options.pinned ?? false,
       identityKind: "PROPOSITION", identityVersion: "proposition-v2" } });
     for (const [index, version] of versions.entries()) {
-      const id = versionIds[index]!;
-      const eventId = randomUUID();
-      const createdAt = new Date(base.getTime() + index * 1_000);
-      const start = version.start ?? 0;
-      const end = version.end ?? version.source.text.length;
-      const excerpt = version.source.text.slice(start, end);
-      await tx.memoryEvent.create({ data: { id: eventId, userId, factId, factVersionId: id, operation: "AUTO_PROPOSE", actorType: "JOB" } });
-      await tx.memoryFactVersion.create({ data: { id, factId, userId, createdByEventId: eventId, category: "other",
-        displayText: version.statement, normalizedSearchText: normalizeMemorySearchText(version.statement),
-        structuredValue: { kind: "statement", value: version.statement }, languageCode: "en", modality: "STATE",
-        sourceMode: "AUTOMATIC", confidence: 0.6, importance: 0.4, directness: "DIRECT", sensitivityClass: "NORMAL",
-        ...memorySafetyLiteFactClassification(base),
-        pipelineVersion: version.legacy ? "memory-maintenance-legacy-fixture-v1" : MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
-        ingestionFingerprint: version.legacy ? null : memorySha256({ factId, id }),
-        observedAt: createdAt, createdAt, systemFrom: createdAt, state: states[index]!,
-        systemTo: states[index] === "SUPERSEDED" ? new Date(createdAt.getTime() + 500) : null,
-        usefulness: version.usefulness ?? null,
-        ...(version.frame ? { semanticFrame: version.frame } : {}),
-        ...(version.dated ? { occurredAt: createdAt, rawTemporalExpression: "this morning", sourceTimezone: "UTC",
-          temporalResolverVersion: "memory-temporal-test-v1", temporalResolutionEvidence: { grounded: true } } : {}) } });
-      await tx.memoryEvidence.create({ data: { userId, factVersionId: id, chatId: version.source.chatId,
-        messageId: version.source.messageId, stance: "SUPPORTS", sourceType: "MESSAGE", sourceRole: "user", branchGeneration: 0,
-        observedAt: createdAt, createdAt, safeExcerpt: excerpt, safetyClass: "NORMAL",
-        ...(version.legacy
-          ? { safeSourceHash: memorySha256(excerpt), sourceProjectionVersion: "memory-maintenance-legacy-fixture-v1" }
-          : { safeSourceHash: memorySha256(version.source.text), sourceMessageContentHash: memorySha256(version.source.text),
-            sourceStartOffset: start, sourceEndOffset: end, sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
-            evidenceFingerprint: memorySha256({ id, start, end }) }) } });
+      await insertMaintenanceVersion(tx, { userId, factId, id: versionIds[index]!, classifiedAt: base,
+        createdAt: new Date(base.getTime() + index * 1_000), state: states[index]!, version });
     }
     await tx.memoryFact.update({ where: { id: factId }, data: { state: "ACTIVE", currentVersionId } });
   });
   return { factId, versionIds, currentVersionId };
+}
+
+/** The same fact identity learned again after its automatic cleanup, as the
+ * extraction relearn path does: a new current version reactivates the fact. */
+export async function relearnMaintenanceFact(userId: string, factId: string, version: MaintenanceVersionSeed): Promise<string> {
+  const id = randomUUID();
+  const createdAt = new Date();
+  await prisma.$transaction(async (tx) => {
+    await insertMaintenanceVersion(tx, { userId, factId, id, classifiedAt: createdAt, createdAt, state: "ACTIVE", version });
+    await tx.memoryFact.update({ where: { id: factId }, data: { state: "ACTIVE", currentVersionId: id, forgottenAt: null } });
+  });
+  return id;
 }
 
 export type MaintenanceFixtureDecision = "KEEP" | "REMOVE" | "REJECT";

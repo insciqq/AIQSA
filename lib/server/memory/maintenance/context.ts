@@ -85,8 +85,9 @@ export async function loadMemoryMaintenanceContext(client: Pick<PrismaClient, "$
     if (!projected.eligible || projected.processingState !== "COMPLETE" || projected.providerSafeText === null) return null;
     messages.push({ row, text: projected.providerSafeText });
   }
-  // A source fact forgotten by this cleanup no longer has text to show; it
-  // stays a valid hint of the dependent fact and is simply omitted.
+  // A source removed by automatic cleanup has no text left. While its fences
+  // hold (aiqsa_memory_fact_dependencies_valid below) it stays a valid hint
+  // and is omitted here; it never leaves the dependent unreviewable.
   const dependencies = await client.$queryRaw<Array<{
     id: string; sourceMessageId: string | null; sourceMessageContentHash: string | null;
     sourceMessageUpdatedAt: Date | null; sourceFactVersionId: string | null; content: Prisma.JsonValue | null;
@@ -99,7 +100,7 @@ export async function loadMemoryMaintenanceContext(client: Pick<PrismaClient, "$
     LEFT JOIN "MemoryFactVersion" version ON version."userId" = dep."userId" AND version.id = dep."sourceFactVersionId"
     WHERE dep."userId" = ${userId} AND dep."targetFactVersionId" = ${versionId}
       AND (dep."sourceFactVersionId" IS NULL
-        OR NOT aiqsa_memory_dependency_source_auto_cleaned(${userId}, dep."sourceFactVersionId"))
+        OR NOT aiqsa_memory_dependency_source_removed(${userId}, dep."sourceFactVersionId"))
       AND aiqsa_memory_fact_dependencies_valid(${userId}, ${versionId}) ORDER BY dep.id LIMIT ${MAX_DEPENDENCIES + 1}
   `);
   if (dependencies.length > MAX_DEPENDENCIES) return null;
