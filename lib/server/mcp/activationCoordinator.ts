@@ -25,7 +25,6 @@ export type McpActivationClaim = Readonly<{
   serverId: string;
   validationUserId: string | null;
   values: Readonly<Record<string, McpSlotValue>>;
-  workloadToken: string;
 }>;
 
 export type McpActivationPublication = Readonly<{
@@ -71,7 +70,7 @@ const DEFAULT_MAX_PARALLEL = 2;
 const MAX_FAILURE_ISSUES = 20;
 const SAFE_TOKEN = /^[a-z0-9_.-]{1,128}$/u;
 const OBSERVED_STAGES: Record<McpDraftValidationStage | "publishing", LifecycleStage> = {
-  resolving: "prepare", preparing_runtime: "initialize", connecting: "dispatch", discovering_tools: "discover", publishing: "publish"
+  connecting: "dispatch", discovering_tools: "discover", publishing: "publish"
 };
 
 function safeIssues(issues: readonly McpValidationIssue[]): McpValidationIssue[] {
@@ -216,8 +215,7 @@ export class McpActivationCoordinator {
         onProgress: progress,
         serverId: claim.serverId,
         ...(claim.validationUserId ? { validationUserId: claim.validationUserId } : {}),
-        values: claim.values,
-        workloadToken: claim.workloadToken
+        values: claim.values
       });
       if (outcome.kind === "invalid") {
         logEvent("job_attempt", { subsystem: "mcp", stage: "validate", outcome: "failed",

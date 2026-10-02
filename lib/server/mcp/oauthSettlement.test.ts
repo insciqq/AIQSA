@@ -27,7 +27,6 @@ function adminServer(input: Readonly<{
     },
     activePersonalSlots: [],
     activeRevision: activeDraftHash ? {
-      artifactStatus: "not_applicable",
       createdAt: "2026-07-23T00:00:00.000Z",
       draftHash: activeDraftHash,
       id: "revision-1",

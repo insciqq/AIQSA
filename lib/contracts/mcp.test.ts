@@ -82,7 +82,7 @@ describe("MCP held-back tool contracts", () => {
 
   it("orders tool attention after authorization, failed checks and runtime repair", () => {
     const revision = (toolVerification?: McpRevisionSummary["toolVerification"]): McpRevisionSummary => ({
-      artifactStatus: "not_applicable", createdAt: "2026-09-27T00:00:00.000Z", draftHash: "hash", id: "revision-1",
+      createdAt: "2026-09-27T00:00:00.000Z", draftHash: "hash", id: "revision-1",
       identityHash: "identity", resolvedArtifact: null, revisionNumber: 1,
       ...(toolVerification ? { toolVerification } : {}),
       validationEvidence: { evidence: {}, testedAt: "2026-09-27T00:00:00.000Z", toolInventory: [] }

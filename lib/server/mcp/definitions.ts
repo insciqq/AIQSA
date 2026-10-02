@@ -11,24 +11,9 @@ import type {
   McpValidationIssue
 } from "@/lib/contracts/mcp";
 
-const MAX_ARGS = 64;
-const MAX_ARGUMENT_LENGTH = 2_048;
 const MAX_DISABLED_TOOL_NAMES = MCP_SERVER_TOOL_LIMIT;
 const MAX_SLOTS = 64;
 const MAX_SLOT_VALUE_LENGTH = 16_384;
-const RUNTIME_CONTROL_NAMES = new Set([
-  "BASH_ENV",
-  "ENV",
-  "LD_LIBRARY_PATH",
-  "LD_PRELOAD",
-  "NODE_OPTIONS",
-  "PATH",
-  "PERL5OPT",
-  "PYTHONHOME",
-  "PYTHONPATH",
-  "RUBYOPT"
-]);
-const TOOLHIVE_MANAGED_ENVIRONMENT_NAMES = new Set(["MCP_TRANSPORT"]);
 
 type ObjectValue = Record<string, unknown>;
 
@@ -96,66 +81,21 @@ function sourceFrom(value: unknown, issues: McpValidationIssue[]): McpSource | n
     }
   }
 
-  const args = stringArray(value.args ?? [], MAX_ARGS, MAX_ARGUMENT_LENGTH);
-  if (!args) issues.push({ code: "source_args_invalid", path: "source.args" });
-
-  if (value.kind === "npm" || value.kind === "pypi") {
-    const packageName = requiredString(value.packageName, 256);
-    const packagePattern = value.kind === "npm"
-      ? /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/iu
-      : /^[a-z0-9][a-z0-9._-]*$/iu;
-    if (!packageName || !packagePattern.test(packageName)) {
-      issues.push({ code: "package_name_invalid", path: "source.packageName" });
-    }
-    const versionSelector = optionalString(value.versionSelector, 256);
-    if (typeof value.versionSelector !== "undefined" && !versionSelector) {
-      issues.push({ code: "version_selector_invalid", path: "source.versionSelector" });
-    }
-    if (!packageName || !args) return null;
-    return {
-      args,
-      kind: value.kind,
-      packageName,
-      ...(versionSelector ? { versionSelector } : {})
-    };
-  }
-
-  if (value.kind === "oci") {
-    const image = requiredString(value.image, 512);
-    const command = typeof value.command === "undefined"
-      ? undefined
-      : stringArray(value.command, 32, MAX_ARGUMENT_LENGTH);
-    if (!image || /\s/u.test(image)) {
-      issues.push({ code: "oci_image_invalid", path: "source.image" });
-    } else if (!/^\S+@sha256:[a-f0-9]{64}$/u.test(image)) {
-      issues.push({ code: "oci_image_digest_required", path: "source.image" });
-    }
-    if (command === null) issues.push({ code: "oci_command_invalid", path: "source.command" });
-    if (command && command.length > 0) {
-      issues.push({ code: "oci_command_override_unsupported", path: "source.command" });
-    }
-    if (!image || !args || command === null) return null;
-    return { args, image, kind: "oci", ...(command ? { command } : {}) };
-  }
-
   issues.push({ code: "source_kind_unsupported", path: "source.kind" });
   return null;
 }
 
 function targetFrom(value: unknown, path: string, issues: McpValidationIssue[]): McpSlotTarget | null {
-  if (!isObject(value) || (value.kind !== "environment" && value.kind !== "header")) {
+  if (!isObject(value) || value.kind !== "header") {
     issues.push({ code: "slot_target_invalid", path });
     return null;
   }
   const name = requiredString(value.name, 128);
-  const valid = value.kind === "environment"
-    ? Boolean(name && /^[A-Z_][A-Z0-9_]*$/u.test(name))
-    : Boolean(name && /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/u.test(name));
-  if (!valid || !name) {
+  if (!name || !/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/u.test(name)) {
     issues.push({ code: "slot_target_invalid", path });
     return null;
   }
-  return { kind: value.kind, name };
+  return { kind: "header", name };
 }
 
 function primitiveSlotValue(value: unknown): value is McpSlotValue {
@@ -180,7 +120,7 @@ function policyFrom(value: unknown, path: string, issues: McpValidationIssue[]):
   return null;
 }
 
-function slotsFrom(value: unknown, source: McpSource | null, issues: McpValidationIssue[]): McpConfigurationSlot[] | null {
+function slotsFrom(value: unknown, issues: McpValidationIssue[]): McpConfigurationSlot[] | null {
   if (!Array.isArray(value) || value.length > MAX_SLOTS) {
     issues.push({ code: "slots_invalid", path: "slots" });
     return null;
@@ -227,16 +167,6 @@ function slotsFrom(value: unknown, source: McpSource | null, issues: McpValidati
       (maxLength !== undefined && (maxLength < 1 || maxLength > MAX_SLOT_VALUE_LENGTH)) ||
       (minLength !== undefined && maxLength !== undefined && minLength > maxLength)) {
       issues.push({ code: "slot_bounds_invalid", path });
-    }
-    if (target && source && ((source.kind === "remote") !== (target.kind === "header"))) {
-      issues.push({ code: "slot_target_transport_mismatch", path: `${path}.target` });
-    }
-    if (target?.kind === "environment" && TOOLHIVE_MANAGED_ENVIRONMENT_NAMES.has(target.name)) {
-      issues.push({ code: "slot_toolhive_environment_reserved", path: `${path}.target.name` });
-    }
-    const personal = policy?.kind === "personal" || (policy?.kind === "shared" && policy.allowPersonalOverride);
-    if (personal && target?.kind === "environment" && RUNTIME_CONTROL_NAMES.has(target.name)) {
-      issues.push({ code: "slot_runtime_control_forbidden", path: `${path}.target.name` });
     }
     if (policy?.kind === "literal" && sensitive === true) {
       issues.push({ code: "slot_sensitive_literal_forbidden", path: `${path}.policy` });
@@ -285,7 +215,7 @@ function authFrom(value: unknown, source: McpSource | null, issues: McpValidatio
     return null;
   }
   if (value.mode === "none" || value.mode === "static") return { mode: value.mode };
-  if (value.mode !== "oauth" || source?.kind !== "remote") {
+  if (value.mode !== "oauth" || !source) {
     issues.push({ code: "auth_mode_invalid", path: "auth.mode" });
     return null;
   }
@@ -349,12 +279,10 @@ export function validateMcpDraft(value: unknown): McpDraftValidationResult {
 
   const source = sourceFrom(value.source, issues);
   const transport = value.transport;
-  if (transport !== "stdio" && transport !== "streamable_http") {
+  if (transport !== "streamable_http") {
     issues.push({ code: "transport_invalid", path: "transport" });
-  } else if (source && ((source.kind === "remote") !== (transport === "streamable_http"))) {
-    issues.push({ code: "transport_source_mismatch", path: "transport" });
   }
-  const slots = slotsFrom(value.slots, source, issues);
+  const slots = slotsFrom(value.slots, issues);
   const auth = authFrom(value.auth, source, issues);
   const disabledToolNames = disabledToolNamesFrom(value.disabledToolNames, issues);
   const runtime = isObject(value.runtime) ? value.runtime : null;
@@ -364,7 +292,7 @@ export function validateMcpDraft(value: unknown): McpDraftValidationResult {
   if (!callTimeoutMs) issues.push({ code: "call_timeout_invalid", path: "runtime.callTimeoutMs" });
 
   if (issues.length || !source || !slots || !auth || !disabledToolNames || !startupTimeoutMs || !callTimeoutMs ||
-    (transport !== "stdio" && transport !== "streamable_http")) {
+    transport !== "streamable_http") {
     return { issues, ok: false };
   }
 
@@ -513,17 +441,13 @@ export function validateMcpSlotValue(slot: McpConfigurationSlot, value: unknown)
 
 /**
  * Destination a stored slot value was entered for: the remote origin plus the
- * same origin/path hash recorded in validation evidence. Packaged sources share
- * one local destination.
+ * same origin/path hash recorded in validation evidence.
  */
 export type McpEndpointBinding = Readonly<{ endpointHash: string; origin: string }>;
 
 const ENDPOINT_HASH = /^[0-9a-f]{64}$/u;
 
 export function mcpEndpointBinding(draft: McpDraftConfiguration): McpEndpointBinding {
-  if (draft.source.kind !== "remote") {
-    return { endpointHash: hashCanonicalMcpValue({ kind: "local" }), origin: "local" };
-  }
   const endpoint = new URL(draft.source.url);
   return {
     endpointHash: hashCanonicalMcpValue({ origin: endpoint.origin, pathname: endpoint.pathname }),

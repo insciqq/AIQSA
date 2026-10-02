@@ -60,7 +60,6 @@ import {
 import { buildMcpOAuthPolicy, mcpOAuthPolicyFingerprint } from "./oauthPolicy";
 import { correctedMcpDraft } from "./endpointCorrection";
 import { McpEndpointBindingChangedError, rebindMcpValidationEndpoint } from "./oauthRepository";
-import { parseMcpLocalResolvedArtifact } from "./localArtifact";
 import { mcpInventoryExclusions } from "./runPlan";
 import { nextPersonalMcpDisabledToolNames, personalMcpLiveTools } from "./personalCatalog";
 import type {
@@ -142,11 +141,6 @@ const adminServerInclude = {
       id: true,
       resolvedArtifact: true,
       revisionNumber: true,
-      runtimeGenerations: {
-        orderBy: { updatedAt: "desc" as const },
-        select: { errorCode: true, state: true },
-        take: 1
-      },
       validationEvidence: true
     }
   }
@@ -490,24 +484,12 @@ type RevisionRecord = {
   id: string;
   resolvedArtifact: Prisma.JsonValue | null;
   revisionNumber: number;
-  runtimeGenerations?: { errorCode: string | null; state: string }[];
   validationEvidence: Prisma.JsonValue;
 };
-
-function revisionArtifactStatus(revision: RevisionRecord): McpRevisionSummary["artifactStatus"] {
-  const configuration = draftFrom(revision.configuration);
-  if (configuration.source.kind === "remote") return "not_applicable";
-  if (!parseMcpLocalResolvedArtifact(revision.resolvedArtifact, configuration.source)) return "missing";
-  const latest = revision.runtimeGenerations?.[0];
-  if (latest?.errorCode === "mcp_artifact_missing") return "missing";
-  if (latest?.state === "ready") return "available";
-  return "unknown";
-}
 
 function serializeRevision(revision: RevisionRecord): McpRevisionSummary {
   const configuration = draftFrom(revision.configuration);
   return {
-    artifactStatus: revisionArtifactStatus(revision),
     createdAt: revision.createdAt.toISOString(),
     ...(configuration.disabledToolNames?.length
       ? { disabledToolNames: configuration.disabledToolNames }
@@ -979,9 +961,7 @@ function serializeUserServer(input: {
     enabled: preference?.enabled ?? false,
     ...(personalOwner ? { availableTools } : {}),
     ...(personalOwner ? { sourceType: "personal" as const } : { sourceType: "installation" as const }),
-    ...(personalOwner && draft.source.kind === "remote"
-      ? { endpoint: safeMcpEndpoint(draft.source.url) }
-      : {}),
+    ...(personalOwner ? { endpoint: safeMcpEndpoint(draft.source.url) } : {}),
     ...(personalOwner ? { userDisabledToolNames: [...(personalTools?.disabled ?? [])].sort() } : {}),
     ...(personalOwner ? {
       authHeaderName: draft.auth.mode === "static" ? personalAuthorizationSlot(draft)?.target.name ?? null : null,
@@ -1271,10 +1251,6 @@ const LIVE_ACTIVATION_STAGES = [
   "publishing"
 ] as const;
 
-function activationToken(): string {
-  return randomUUID().replaceAll("-", "");
-}
-
 type ActivationEnqueueResult = { kind: "ok" } | McpRepositoryError;
 
 /** Rolls back a credential replacement whose guarded write found a newer version. */
@@ -1368,8 +1344,7 @@ export function createPrismaMcpRepository(input: {
         id: randomUUID(),
         serverId,
         sharedConfigVersion: server.sharedConfigVersion,
-        validationUserId,
-        workloadToken: activationToken()
+        validationUserId
       }
     });
     return { kind: "ok" };
@@ -1525,9 +1500,6 @@ export function createPrismaMcpRepository(input: {
       const definition = validateMcpDraft(draft);
       if (!definition.ok) return { kind: "invalid_values" as const, issues: definition.issues };
       draft = definition.value;
-      if (draft.source.kind !== "remote" || draft.transport !== "streamable_http") {
-        return { kind: "invalid_values" as const, issues: [{ code: "personal_remote_required", path: "draft.source" }] };
-      }
       const user = await client.user.findFirst({ select: { id: true }, where: { id: userId, status: "active" } });
       if (!user) return { kind: "not_found" as const };
       const validation = draftValidationValues({ draft, oneTimeValues: values, sharedValues: {} });
@@ -1656,7 +1628,7 @@ export function createPrismaMcpRepository(input: {
       const expectedRevisionId = current.activeRevision.id;
       const draft = draftFrom(current.activeRevision.configuration);
       const slot = personalAuthorizationSlot(draft);
-      if (draft.auth.mode !== "static" || draft.source.kind !== "remote" || !slot) {
+      if (draft.auth.mode !== "static" || !slot) {
         return { kind: "auth_mode_invalid" as const };
       }
       const nextHeaderName = headerName ?? slot.target.name;
@@ -1857,8 +1829,7 @@ export function createPrismaMcpRepository(input: {
               id: randomUUID(),
               serverId: server.id,
               sharedConfigVersion,
-              validationUserId: validationUserId!,
-              workloadToken: activationToken()
+              validationUserId: validationUserId!
             }
           });
         }
@@ -2008,7 +1979,7 @@ export function createPrismaMcpRepository(input: {
           completedAt: new Date(), draftHash, errorCode: "mcp_draft_test_failed",
           issues: ("issues" in result ? result.issues : [{ code: "mcp_draft_changed", path: "draft" }]) as Prisma.InputJsonValue,
           serverId: server.id, sharedConfigVersion: server.sharedConfigVersion, stage: "failed",
-          validationUserId, workloadToken: activationToken()
+          validationUserId
         } });
         return true;
       })) { /* Drain durable upgrade markers before normal activation claims. */ }
@@ -2060,8 +2031,7 @@ export function createPrismaMcpRepository(input: {
             leaseId,
             stage: candidate.leaseId ? "queued" : undefined,
             startedAt: candidate.startedAt ?? now,
-            updatedAt: now,
-            ...(candidate.leaseId ? { workloadToken: activationToken() } : {})
+            updatedAt: now
           },
           where: { id: candidate.id }
         });
@@ -2123,8 +2093,7 @@ export function createPrismaMcpRepository(input: {
           leaseId,
           serverId: claimed.serverId,
           validationUserId: claimed.validationUserId,
-          values: validation.values,
-          workloadToken: claimed.workloadToken
+          values: validation.values
         } satisfies McpActivationClaim;
       }).catch(retainDatabaseFailure).then((result) => {
         if (invalidJobId) logEvent("job_persistence", { subsystem: "mcp", job_id: invalidJobId, stage: "fail", outcome: "confirmed" });
@@ -2357,40 +2326,23 @@ export function createPrismaMcpRepository(input: {
       return client.$transaction(async (tx) => {
         if (!await lockMcpServer(tx, serverId)) return { kind: "not_found" as const };
         const revision = await tx.mcpRevision.findFirst({
-          select: {
-            configuration: true,
-            createdAt: true,
-            draftHash: true,
-            id: true,
-            resolvedArtifact: true,
-            revisionNumber: true,
-            runtimeGenerations: {
-              orderBy: { updatedAt: "desc" },
-              select: { errorCode: true, state: true },
-              take: 1
-            },
-            validationEvidence: true
-          },
+          select: { configuration: true, id: true },
           where: { id: revisionId, serverId, server: { ownerUserId: null } }
         });
         if (!revision) return { kind: "not_found" as const };
-        if (revisionArtifactStatus(revision) === "missing") {
-          return { kind: "artifact_missing" as const };
-        }
+        // A stored revision that no longer validates fails before any write.
+        const next = draftFrom(revision.configuration);
         await tx.mcpActivationJob.deleteMany({ where: { serverId } });
-        const next = validateMcpDraft(revision.configuration);
-        if (next.ok) {
-          const current = await tx.mcpServer.findUnique({
-            select: { activeRevision: { select: { configuration: true } } },
-            where: { id: serverId, ownerUserId: null }
-          });
-          await pinLegacyEndpointBindings(tx, {
-            key,
-            next: next.value,
-            previous: current?.activeRevision?.configuration ?? null,
-            serverId
-          });
-        }
+        const current = await tx.mcpServer.findUnique({
+          select: { activeRevision: { select: { configuration: true } } },
+          where: { id: serverId, ownerUserId: null }
+        });
+        await pinLegacyEndpointBindings(tx, {
+          key,
+          next,
+          previous: current?.activeRevision?.configuration ?? null,
+          serverId
+        });
         await tx.mcpServer.update({
           data: { activeRevisionId: revision.id },
           where: { id: serverId }

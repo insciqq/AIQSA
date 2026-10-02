@@ -125,7 +125,6 @@ async function requireAdmin(request: Request, deps: McpHandlerDeps) {
 
 function repositoryError<T>(result: Exclude<McpRepositoryResult<T>, { kind: "ok" }>): Response {
   if (result.kind === "not_found") return errorJson("mcp_not_found", 404);
-  if (result.kind === "artifact_missing") return errorJson("mcp_artifact_missing", 409);
   if (result.kind === "draft_changed") return errorJson("mcp_draft_changed", 409);
   if (result.kind === "revision_required") return errorJson("mcp_revision_required", 409);
   if (result.kind === "draft_validation_failed") {

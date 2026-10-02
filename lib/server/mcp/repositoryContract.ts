@@ -7,7 +7,6 @@ import type {
 } from "@/lib/contracts/mcp";
 
 export type McpRepositoryError =
-  | { kind: "artifact_missing" }
   | { kind: "draft_changed" }
   | { kind: "draft_validation_failed"; issues: readonly McpValidationIssue[] }
   | { kind: "invalid_grant"; issues: readonly McpValidationIssue[] }

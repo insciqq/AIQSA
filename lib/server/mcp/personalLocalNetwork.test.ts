@@ -243,7 +243,7 @@ async function startFixture(): Promise<Fixture> {
 /** The app container: the NAS is on the LAN, outside every Compose network. */
 const networkHost: PersonalMcpNetworkHost = {
   detectContainer: () => true,
-  env: { AIQSA_TOOLHIVE_URL: "http://toolhive-runtime:8080" },
+  env: { AIQSA_OPENSEARCH_URL: "http://opensearch:9200" },
   interfaces: () => [{ address: "172.20.0.5", cidr: "172.20.0.5/16", internal: false, name: "eth0" }],
   lookupHostname: async (hostname) => {
     if (hostname === "host.docker.internal") return [{ address: "172.17.0.1", family: 4 }];
@@ -419,13 +419,10 @@ describe("default personal MCP transports", () => {
     });
 
     await expect(launchFetch(launch({ personalRuntime: true }))).resolves.toBe(baseFetch);
-    // The ToolHive probe is installation-owned even when the launch says personal.
-    await launchFetch(launch({ personalRuntime: true, trustedInternalHttp: true }));
     await launchFetch(launch({ allowPrivateNetwork: true }));
     await expect(launchFetch(launch({ oauthConnectionId: "connection-1", personalRuntime: true }))).resolves.toBe(oauthFetch);
     expect(created).toEqual([
       { addressPolicy: personalAddressPolicy, allowInsecureHttp: true, egressHeaders: PERSONAL_MCP_EGRESS_HEADERS },
-      { allowInsecureHttp: true, allowPrivateNetwork: true },
       { allowInsecureHttp: true, allowPrivateNetwork: true },
       { addressPolicy: personalAddressPolicy, allowInsecureHttp: true, egressHeaders: PERSONAL_MCP_EGRESS_HEADERS }
     ]);

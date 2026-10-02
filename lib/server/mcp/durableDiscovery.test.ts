@@ -293,7 +293,7 @@ describe("durable MCP discovery", () => {
 
   it("redacts unexpected materialization errors and does not checkpoint them", async () => {
     const state = harness();
-    const rawFailure = "PRIVATE_TOOLHIVE_ENDPOINT_FAILURE";
+    const rawFailure = "PRIVATE_RUNTIME_ENDPOINT_FAILURE";
     let failure: unknown;
     try {
       await executeDurableMcpDiscovery({ ...base(state), call: call("provider-materialization-exception"),
