@@ -14,7 +14,7 @@ import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import { ensureActiveLexicalGeneration, withLockedMemoryTransaction } from "../persistence/transaction";
 import { defaultMemoryDeletionContributorRegistry } from "../purge/defaultPurge";
 import { memorySafetyLiteFactClassification } from "../safetyLite";
-import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
+import { loadMemoryReusableFactVersionIds } from "../persistence/reusableFactAuthority";
 import { createPrismaMemoryMaintenanceHandler } from "./handler";
 import { scheduleOwnerMemoryMaintenance } from "./reconcile";
 import { createMemorySynthesizeJobDispatcher, reconcileRetiredMemorySynthesis } from "./retiredSynthesis";

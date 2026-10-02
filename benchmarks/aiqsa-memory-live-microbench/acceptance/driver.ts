@@ -24,7 +24,7 @@ export const PROFILE = Object.freeze({
   answer: "gpt-5.6-sol", judge: "gpt-5.6-sol", control: "gpt-5.6-terra",
   reasoning: "medium", embedding: "qwen/qwen3-embedding-8b",
   reranker: "voyageai/rerank-2.5", maxOutputTokens: 4_096,
-  learnAutomatically: true, referenceChatHistory: true, synthesisEnabled: true,
+  learnAutomatically: true, referenceChatHistory: true,
   decayEnabled: false, requestTimeoutMs: 600_000, settlementTimeoutMs: 600_000
 });
 export const EXECUTION_LIMITS = Object.freeze({ admissionTimeoutSeconds: 15, caseConcurrency: 1 });
@@ -110,7 +110,7 @@ export class AcceptanceDriver {
     await repository.patch(userId, { embeddingDeploymentId: this.roles.embeddingId,
       expectedMemoryRevision: settings.memoryRevision, expectedSettingsRevision: settings.settingsRevision,
       useMemoryFacts: memory, learnAutomatically: memory, referenceChatHistory: memory,
-      synthesisEnabled: memory, decayEnabled: false });
+      decayEnabled: false });
     const result = { userId, cookie: "" };
     await this.renew(result);
     if (memory) await this.rebuild(result);
@@ -329,8 +329,9 @@ export class AcceptanceDriver {
   }
 
   async quiesce(identity: Identity) {
-    // Retain synthetic evidence, but prevent future scheduled learning/synthesis.
-    await this.settings(identity, { learnAutomatically: false, synthesisEnabled: false, decayEnabled: false });
+    // Retain synthetic evidence, but prevent future scheduled learning and
+    // the background maintenance that follows it.
+    await this.settings(identity, { learnAutomatically: false, decayEnabled: false });
   }
 
   async usage() {

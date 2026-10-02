@@ -5,7 +5,7 @@ import {
   MEMORY_DECAY_TOUCH_INCREMENT
 } from "../../../domain/memory/retrieval";
 import { decodeMemoryPreparingSettingsSnapshot } from "../../runs/preparingRun";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 
 export type MemoryDecayTouchIdentity = Readonly<{
   bindingId?: string;

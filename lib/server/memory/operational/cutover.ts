@@ -9,11 +9,13 @@ import {
   MEMORY_FACT_SOURCE_PROJECTION_VERSION
 } from "../learning/extraction/contract";
 import { memoryReusableFactAuthorityPredicate } from
-  "../synthesis/eligibility";
-import { MEMORY_SYNTHESIS_PIPELINE_VERSION } from "../synthesis/policy";
+  "../persistence/reusableFactAuthority";
 
 export const MEMORY_SEMANTIC_CUTOVER_INVENTORY_VERSION =
   "memory-semantic-cutover-inventory-v1";
+
+/** Pipeline version of every PATTERN row retired Dream synthesis wrote. */
+const MEMORY_SYNTHESIS_PIPELINE_VERSION = "memory-synthesis-v2";
 
 export type MemorySemanticCutoverInventory = Readonly<{
   activeCurrentMissingExactAuthority: number;

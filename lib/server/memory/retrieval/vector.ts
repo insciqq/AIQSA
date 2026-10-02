@@ -16,7 +16,7 @@ import {
 import { MEMORY_RECALL_ROUND_SEGMENT_PROJECTION_VERSION } from
   "../history/segments";
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "../history/toolEvents";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import {
   memoryHistoryChunkSourceAuthorityPredicate,

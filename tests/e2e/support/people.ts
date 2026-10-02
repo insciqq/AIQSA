@@ -37,7 +37,7 @@ export type E2EUserOptions = Readonly<{
   groups?: readonly (E2EGroup | E2EGroupMembership)[];
   /**
    * Personal Memory as a new account has it (use, recall, learning,
-   * synthesis). Off by default: chats then create no Memory jobs.
+   * decay). Off by default: chats then create no Memory jobs.
    */
   memory?: boolean;
 }>;
@@ -138,7 +138,6 @@ export function createPeopleFixture(
         decayEnabled: memory,
         learnAutomatically: memory,
         referenceChatHistory: memory,
-        synthesisEnabled: memory,
         useMemoryFacts: memory
       };
       await tx.userMemorySettings.upsert({

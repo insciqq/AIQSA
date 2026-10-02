@@ -20,7 +20,7 @@ import {
   loadPersonalMemoryRunIds
 } from "../persistence/eligibility";
 import { canonicalGlobalMemoryScopeWhere } from "../persistence/scopes";
-import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
+import { loadMemoryReusableFactVersionIds } from "../persistence/reusableFactAuthority";
 import { loadDeliveredMemorySearchEvidence } from "./searchEvidence";
 
 type MemoryRunSourceClient = Pick<
