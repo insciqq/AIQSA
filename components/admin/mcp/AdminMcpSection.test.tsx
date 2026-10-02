@@ -63,11 +63,9 @@ function configuration(
   id: string,
   revisionNumber: number,
   identityHash: string,
-  artifactStatus: McpRevisionSummary["artifactStatus"] = "not_applicable",
   disabledToolNames?: string[]
 ): McpRevisionSummary {
   return {
-    artifactStatus,
     createdAt: NOW,
     ...(disabledToolNames ? { disabledToolNames } : {}),
     draftHash: `hash-${identityHash}`,
@@ -232,7 +230,7 @@ function fakeApi(state: ApiState) {
       }
       const update = body as AdminMcpUpdateRequest;
       const nextDraft = update.draft ?? current.draft;
-      const active = configuration("configuration-next", (current.activeRevision?.revisionNumber ?? 0) + 1, "identity-next", "not_applicable", nextDraft.disabledToolNames);
+      const active = configuration("configuration-next", (current.activeRevision?.revisionNumber ?? 0) + 1, "identity-next", nextDraft.disabledToolNames);
       return json({ server: replace({
         ...current,
         activeRevision: active,
@@ -387,20 +385,25 @@ describe("AdminMcpSection", () => {
     expect(sheet).toHaveAttribute("aria-modal", "true");
     const parse = within(sheet).getByRole("button", { name: "Parse" });
     expect(parse).toBeDisabled();
-    fireEvent.change(within(sheet).getByLabelText("Configuration JSON, URL, or install command"), {
+    fireEvent.change(within(sheet).getByLabelText("Configuration JSON or URL"), {
       target: { value: "{ not json" }
     });
     fireEvent.click(parse);
     expect(within(sheet).getByRole("alert")).toHaveTextContent("not valid JSON");
 
-    fireEvent.change(within(sheet).getByLabelText("Configuration JSON, URL, or install command"), {
+    fireEvent.change(within(sheet).getByLabelText("Configuration JSON or URL"), {
+      target: { value: "npx -y @example/mcp@latest" }
+    });
+    fireEvent.click(parse);
+    expect(within(sheet).getByRole("alert")).toHaveTextContent(/^Only remote MCP URLs are supported\.$/u);
+
+    fireEvent.change(within(sheet).getByLabelText("Configuration JSON or URL"), {
       target: {
         value: `{
   "mcpServers": {
     "browser-mcp": {
-      "args": ["-y", "@example/mcp@1.0.0",],
-      "command": "npx",
-      "env": { "API_KEY": "write-only-secret", },
+      "url": "https://browser.example/mcp",
+      "headers": { "Authorization": "write-only-secret", },
     },
   },
 }`
@@ -408,8 +411,10 @@ describe("AdminMcpSection", () => {
     });
     fireEvent.click(within(sheet).getByRole("button", { name: "Parse" }));
     expect(within(sheet).getByLabelText("Name")).toHaveValue("browser-mcp");
-    expect(within(sheet).getByLabelText("Source")).toHaveValue("npm");
-    const secret = within(sheet).getByLabelText("New shared value for API_KEY");
+    expect(within(sheet).getByLabelText(/^MCP endpoint URL/u)).toHaveValue("https://browser.example/mcp");
+    expect(within(sheet).queryByLabelText("Source")).not.toBeInTheDocument();
+    expect(within(sheet).queryByLabelText("Transport")).not.toBeInTheDocument();
+    const secret = within(sheet).getByLabelText("New shared value for Authorization");
     expectMaskedSecretInput(secret);
     expect(secret).toHaveValue("write-only-secret");
     expect(sheet.textContent).not.toMatch(bannedWords);
@@ -417,7 +422,7 @@ describe("AdminMcpSection", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Test & Save" }));
     await waitFor(() => expect(onSelectResource).toHaveBeenCalledWith("created-server"));
     const create = calls.find((call) => call.method === "POST" && call.url === "/api/admin/mcp");
-    expect(create?.body).toMatchObject({ activate: true, name: "browser-mcp", sharedValues: { api_key: "write-only-secret" } });
+    expect(create?.body).toMatchObject({ activate: true, name: "browser-mcp", sharedValues: { authorization: "write-only-secret" } });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
@@ -713,7 +718,7 @@ describe("AdminMcpSection", () => {
   });
 
   it("the ⋯ menu checks for updates, disables, restores an earlier configuration and deletes through the shared confirmation", async () => {
-    const older = configuration("configuration-0", 0, "identity-0", "available");
+    const older = configuration("configuration-0", 0, "identity-0");
     state.servers = [workingServer({ revisions: [workingServer().activeRevision!, older] })];
     const { calls, confirmations, onSelectResource } = renderSection(state, "server-1");
     await screen.findByTestId("mcp-server-page");
@@ -739,7 +744,6 @@ describe("AdminMcpSection", () => {
     const items = within(configurations).getAllByRole("listitem");
     expect(items[0]).toHaveTextContent("Configuration 1 · Current");
     expect(items[1]).toHaveTextContent("Configuration 0");
-    expect(within(items[1]!).getByTestId("mcp-configuration-build")).toHaveTextContent("Ready to restore");
     expect(configurations.textContent).not.toMatch(bannedWords);
     fireEvent.click(within(items[1]!).getByRole("button", { name: "Restore" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
