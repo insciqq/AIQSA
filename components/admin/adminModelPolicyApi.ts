@@ -48,8 +48,6 @@ export type AdminModelPolicyUpdateInput = Readonly<{
   maxMcpToolsPerDiscovery?: number;
   maxToolCalls?: number;
   maxToolRounds?: number;
-  mcpAutoDiscoveryTimeoutSeconds?: number | null;
-  mcpAutoDiscoveryMaxOutputTokens?: number | null;
   toolObservationPolicy?: ToolObservationPolicy;
 }>;
 

@@ -77,7 +77,6 @@ describe("administrator model policy handlers", () => {
       {
         body: JSON.stringify({
           expectedVersion: 2,
-          mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
           maxMcpToolsPerDiscovery: 10,
           maxToolCalls: 200,
           maxToolRounds: 200
@@ -89,7 +88,6 @@ describe("administrator model policy handlers", () => {
     expect(accepted.status).toBe(200);
     expect(service.update).toHaveBeenCalledWith({
       expectedVersion: 2,
-      mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192,
       maxMcpToolsPerDiscovery: 10,
       maxToolCalls: 200,
       maxToolRounds: 200,
@@ -97,10 +95,11 @@ describe("administrator model policy handlers", () => {
     });
 
     for (const body of [
-      { maxToolCalls: 0, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, mcpAutoDiscoveryTimeoutSeconds: 60 },
+      { maxToolCalls: 0, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10 },
       { maxToolCalls: 4, maxToolRounds: 8 },
+      { maxToolCalls: 4, maxToolRounds: 8, maxMcpToolsPerDiscovery: 129 },
       { expectedVersion: 2 },
-      { maxToolCalls: 4, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: 8192, extra: 1 }
+      { maxToolCalls: 4, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, extra: 1 }
     ]) {
       const rejected = await handlers.PATCH(new Request(
         "http://local.test/api/admin/providers/model-policy",
@@ -151,19 +150,21 @@ describe("administrator model policy handlers", () => {
     expect(service.update).not.toHaveBeenCalled();
   });
 
-  it.each([1024, 32768, 65536, 1023, 65537, 4096.5, "8192", null])("validates the MCP output allowance %s before dispatch", async (tokens) => {
+  it.each([
+    { mcpAutoDiscoveryTimeoutSeconds: 60 },
+    { mcpAutoDiscoveryMaxOutputTokens: 8192 },
+    { mcpAutoDiscoveryMaxOutputTokens: null, mcpAutoDiscoveryTimeoutSeconds: null }
+  ])("rejects the retired MCP Auto discovery settings as unknown fields: %o", async (retired) => {
     const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
     const handlers = createAdminModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });
     const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/model-policy", {
       method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({
-        expectedVersion: 2, maxToolCalls: 20, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10,
-        mcpAutoDiscoveryTimeoutSeconds: 60, mcpAutoDiscoveryMaxOutputTokens: tokens
+        expectedVersion: 2, maxToolCalls: 20, maxToolRounds: 8, maxMcpToolsPerDiscovery: 10, ...retired
       })
     }));
-    const valid = tokens === null || typeof tokens === "number" && Number.isInteger(tokens) && tokens >= 1024 && tokens <= 65536;
-    expect(response.status).toBe(valid ? 200 : 400);
-    expect(service.update).toHaveBeenCalledTimes(valid ? 1 : 0);
-    if (valid) expect(service.update).toHaveBeenCalledWith(expect.objectContaining({ mcpAutoDiscoveryMaxOutputTokens: tokens }));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "model_policy_update_invalid" });
+    expect(service.update).not.toHaveBeenCalled();
   });
 
   it("forwards the default model and tool limits as one validated update", async () => {
@@ -180,7 +181,6 @@ describe("administrator model policy handlers", () => {
           maxMcpToolsPerDiscovery: 12,
           maxToolCalls: 24,
           maxToolRounds: 8,
-          mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192,
           providerModelId: "model-1",
           reasoningEffort: "medium"
         }),
@@ -194,7 +194,6 @@ describe("administrator model policy handlers", () => {
       maxMcpToolsPerDiscovery: 12,
       maxToolCalls: 24,
       maxToolRounds: 8,
-      mcpAutoDiscoveryTimeoutSeconds: 20, mcpAutoDiscoveryMaxOutputTokens: 8192,
       providerModelId: "model-1",
       reasoningEffort: "medium",
       userId: "user-1"
