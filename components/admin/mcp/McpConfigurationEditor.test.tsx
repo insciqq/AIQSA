@@ -38,7 +38,7 @@ describe("MCP inline configuration editor", () => {
     expect(restored).toHaveAccessibleDescription(/Line 3, column 1/u);
   });
 
-  it.each(["https://mcp.example.test/api", "npx -y @example/mcp@latest", "pipx run example-mcp"])("keeps non-JSON input intact: %s", (value) => {
+  it.each(["https://mcp.example.test/api", "http://10.0.0.5:8080/mcp", "mcp.example.test/api"])("keeps non-JSON input intact: %s", (value) => {
     harness(value);
     expect(screen.getByRole("textbox")).toHaveValue(value);
     expect(screen.getByRole("button", { name: "Format" })).toBeDisabled();
