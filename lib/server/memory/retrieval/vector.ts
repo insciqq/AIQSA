@@ -1346,8 +1346,10 @@ type MemoryVectorReadOptions = Readonly<{
 }>;
 
 type MemoryVectorSearchOptions = MemoryVectorReadOptions & Readonly<{
-  /** Lane vector scans are LANE; the caller decides, never a default. */
-  admission: MemoryReadAdmissionClass;
+  /** Retrieval lane scans pass LANE. The default is REQUIRED, the safe side:
+   * an unclassified caller (action target search, consolidation) can at
+   * worst overtake lane reads, never starve behind them. */
+  admission?: MemoryReadAdmissionClass;
 }>;
 
 export function createPrismaMemoryVectorRepository(client: PrismaClient = prisma) {
@@ -1362,14 +1364,14 @@ export function createPrismaMemoryVectorRepository(client: PrismaClient = prisma
     },
     async search(
       input: MemoryVectorSearchInput,
-      options: MemoryVectorSearchOptions
+      options: MemoryVectorSearchOptions = {}
     ): Promise<MemoryVectorSearchResult> {
       return withMemoryReadBudget(
         client,
         MEMORY_READ_BUDGET_MS.VECTOR_METADATA_REJOIN,
         (tx) => searchMemoryVectorLanes(createPrismaLaneExecutor(tx), input),
         {
-          admission: options.admission,
+          admission: options.admission ?? "REQUIRED",
           isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
           signal: options.signal
         }
