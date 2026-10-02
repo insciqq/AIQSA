@@ -19,6 +19,7 @@ import { createWorkspaceFollowupRepository } from "@/lib/server/runs/workspaceFo
 import { createPrismaRunRepository } from "@/lib/server/runs/prismaRepository";
 import { createPrismaRunFollowupOperations } from "@/lib/server/runs/prismaRepositoryFollowups";
 import { loadProviderAdmissionPlan } from "@/lib/server/providerRuntime/admission";
+import { MEMORY_ACTION_NO_COMMIT_RESULT } from "@/lib/server/providers/memoryActionAnswer";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import type { PreparingRunAdmissionInput } from "@/lib/server/runs/runRepositoryContract";
 import { getWorkspaceConfig } from "./config";
@@ -266,6 +267,105 @@ describe("Prisma Workspace operation admission", () => {
     expect(await followups.claim()).toBeNull();
     await expect(followups.markAnswerDispatched(claim!)).rejects.toMatchObject({ code: "workspace_followup_unavailable" });
   });
+
+  it.each(["standing", "explicit", "expired", "unplaceable", "executed"] as const)(
+    "answers a crash-interrupted %s Memory read without Memory only when no effect or evidence is lost",
+    async (variation) => {
+      const value = await publishedPredecessor();
+      const next = await value.nextRequest();
+      const content = next.normalizedRequest.content;
+      const admission = { ...next, normalizedRequest: { ...next.normalizedRequest,
+        ...(variation === "explicit" ? {} : { memoryStandingVersion: 1 as const }),
+        context: { messages: [{ content, id: "current-user-message", role: "user" as const }], mode: "branch_path" as const },
+        prompt: { ...next.normalizedRequest.prompt, memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT } } };
+      const created = await admitPreparingRunWithClient(prisma, admission);
+      await value.releasePrevious();
+      const claim = await createWorkspaceFollowupRepository(prisma).claim();
+      const entered = barrier();
+      const crash = barrier();
+      const crashedRead = vi.fn(async () => {
+        entered.release();
+        await crash.wait;
+        throw new Error("PRIVATE_CRASHED_OWNER");
+      });
+      const memoryMaterializer: NonNullable<PreparingRunAdmissionInput["memoryMaterializer"]> = (personalContext, answer) => {
+        const normalizedRequest = { ...admission.normalizedRequest, ...(personalContext ? { personalContext } : {}),
+          prompt: { ...admission.normalizedRequest.prompt, ...(answer ? { memoryActionAnswerResult: answer } : {}) } };
+        return { contextTruncation: null, normalizedRequest, providerRequest: { ...normalizedRequest, attachments: [] },
+          providerRequestPreview: {} };
+      };
+      // The first owner stops inside its Memory read, leaving an EXECUTING attempt.
+      const first = createPrismaRunRepository(prisma, { memoryRetrieval: { retrieve: crashedRead } as never })
+        .continueWorkspacePreparedRun!({ admission: { ...admission, memoryMaterializer }, created, claimToken: claim!.claimToken });
+      const settledFirst = first.then(() => "finalized", () => "failed");
+      await entered.wait;
+      await expect(prisma.memoryRetrievalAttempt.findMany({ where: { modelRunId: created.runId } }))
+        .resolves.toEqual([expect.objectContaining({ state: "EXECUTING" })]);
+      if (variation === "expired") {
+        await prisma.memoryRetrievalAttempt.updateMany({ where: { modelRunId: created.runId },
+          data: { createdAt: new Date(Date.now() - 20 * 60_000), expiresAt: new Date(Date.now() - 10 * 60_000) } });
+      }
+      const [executing] = await prisma.memoryRetrievalAttempt.findMany({ where: { modelRunId: created.runId } });
+      if (variation === "executed") {
+        // The crashed owner had already settled a utility execution for this attempt.
+        const executionId = randomUUID();
+        const completedAt = new Date();
+        await prisma.memoryExecutionBinding.create({ data: {
+          acceptedOutputHash: "a".repeat(64), cachedInputTokens: 0, completedAt,
+          createdAt: new Date(completedAt.getTime() - 1), destinationFingerprint: "b".repeat(64), id: executionId,
+          inputHash: "c".repeat(64), inputTokens: 0, logicalRole: "MEMORY_CONTROL", ordinal: 0, outputTokens: 0,
+          ownerType: "RETRIEVAL_ATTEMPT", pipelineVersion: "interrupted-fixture-v1", policyVersion: "interrupted-fixture-v1",
+          promptVersion: "interrupted-fixture-v1", providerId: "interrupted-fixture", reasoningTokens: 0,
+          recoverableUntil: completedAt, relationsDetachedAt: completedAt, retrievalAttemptId: executing!.id,
+          schemaVersion: "interrupted-fixture-v1", secretFreeExecutionSnapshot: { version: 1 },
+          startedAt: new Date(completedAt.getTime() - 1), state: "SUCCEEDED", totalTokens: 0,
+          usageCompleteness: "COMPLETE", userId: value.userId
+        } });
+      }
+      if (variation === "unplaceable") {
+        // The read completed before the crash; its answer no longer fits the request.
+        expect(await value.repository.completePreparingRunAttempt({ attemptId: executing!.id, runId: created.runId,
+          userId: value.userId, result: { budgetSnapshot: { memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+            utilityEgressMode: "LOCAL_ONLY" }, items: [], outcome: "EMPTY", preparedContext: null, querySnapshot: null } }))
+          .toBe(true);
+      }
+      const survivorRead = vi.fn();
+      const second = createPrismaRunRepository(prisma, { memoryRetrieval: { retrieve: survivorRead } as never })
+        .continueWorkspacePreparedRun!({ admission: { ...admission,
+          memoryMaterializer: variation === "unplaceable" ? () => null : memoryMaterializer }, created,
+        claimToken: claim!.claimToken });
+      try {
+        if (variation === "explicit" || variation === "expired" || variation === "executed") {
+          await expect(second).rejects.toMatchObject({ code: "workspace_followup_interrupted" });
+          expect(await prisma.modelRunMemoryBinding.count({ where: { modelRunId: created.runId } })).toBe(0);
+          return;
+        }
+        const result = await second;
+        expect(result.materializedRequest).toBeUndefined();
+        expect(survivorRead).not.toHaveBeenCalled();
+        const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId } });
+        expect(run).toMatchObject({ status: "streaming", errorPayload: null });
+        expect(run.normalizedRequest).not.toHaveProperty("personalContext");
+        const [attempt] = await prisma.memoryRetrievalAttempt.findMany({ where: { modelRunId: created.runId } });
+        expect(attempt).toMatchObject({ degradationCode: "memory_preparation_skipped", outcome: "FAILED_SAFE",
+          state: "CONSUMED" });
+        expect(attempt!.budgetSnapshot).toMatchObject({ itemCount: 0,
+          memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+          preparationFailureCode: variation === "standing" ? "memory_preparation_interrupted" : "memory_final_request_invalid",
+          reason: "memory_preparation_skipped" });
+        expect(await prisma.modelRunMemoryBinding.findUniqueOrThrow({ where: { modelRunId: created.runId } }))
+          .toMatchObject({ degradationCode: "memory_preparation_skipped", outcome: "FAILED_SAFE", contextTokenCount: 0 });
+      } finally {
+        crash.release();
+        // The interrupted owner can no longer win: its own fallback is a no-op.
+        const firstOutcome = await settledFirst;
+        if (variation === "standing" || variation === "unplaceable") expect(firstOutcome).toBe("failed");
+      }
+      expect(await prisma.modelRunMemoryBinding.count({ where: { modelRunId: created.runId } })).toBe(1);
+      expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId } }))
+        .toMatchObject({ status: "streaming" });
+    }
+  );
 
   it("fences an expired waiting successor claim after another worker reclaims it", async () => {
     const value = await publishedPredecessor();

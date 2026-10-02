@@ -46,12 +46,19 @@ import { renderCodexManagedProfile } from "../agents/codexProfile";
 import { agentPrompts } from "../agents/prompt";
 import { DEFAULT_TOOL_RUN_BUDGETS } from "./toolBudgets";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
+import { logEvent } from "../observability";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { openAIResponsesToolBridge } from "../tools/bridges";
 import { followupRequestHeadroom, followupTokenCost } from "./runFollowups";
 import { prepareCompactedProviderRequest } from "./contextCompactionConsumer";
 import { contextCompactionCheckpoint, type BranchContextCheckpoint } from "./contextCompactionContract";
 import { createContextCompactionPublisher } from "./contextCompactionEvents";
+
+// Passthrough spy: content-free degradation events are asserted directly.
+vi.mock("../observability", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../observability")>();
+  return { ...actual, logEvent: vi.fn(actual.logEvent) };
+});
 
 // Passthrough spy: the Agent compatibility identity input is otherwise private.
 vi.mock("../mcp/definitions", async (importOriginal) => {
@@ -933,6 +940,19 @@ describe("standing Memory and optional search admission", () => {
     expect(admit).not.toHaveBeenCalled();
     expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
     expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+  });
+  it("accepts the run without memory_search when its admission throws", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const admit = vi.fn(async () => { throw new Error("PRIVATE_ADMISSION_FAILURE"); });
+    vi.mocked(logEvent).mockClear();
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } }, sendInput()));
+    expect(admit).toHaveBeenCalledOnce();
+    expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
+    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+    expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search") ?? false).toBe(false);
+    expect(vi.mocked(logEvent)).toHaveBeenCalledWith("service_operation", { subsystem: "memory_search",
+      stage: "preflight", outcome: "degraded", action: "degrade", code: "memory_search_admission_skipped" });
+    expect(JSON.stringify(vi.mocked(logEvent).mock.calls)).not.toContain("PRIVATE_ADMISSION_FAILURE");
   });
   it("keeps explicit /memory management on its existing synchronous path", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
