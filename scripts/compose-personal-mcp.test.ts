@@ -12,11 +12,13 @@ const load = (file: string) =>
 
 describe("personal MCP host gateway topology", () => {
   it.each(["compose.yaml", "docker-compose.dev.yml"])(
-    "%s maps the host gateway into the app alone and tells it the published app port",
+    "%s maps the host gateway into the app alone, pins container rules and tells it the published app port",
     (file) => {
       const services = load(file);
       expect(services.app?.extra_hosts).toEqual(["host.docker.internal:host-gateway"]);
       expect(services.app?.environment?.AIQSA_PORT).toBe("${AIQSA_PORT:-3000}");
+      // Never left to runtime detection: an unrecognised runtime must not get host rules.
+      expect(services.app?.environment?.AIQSA_PERSONAL_MCP_NETWORK_MODE).toBe("container");
       for (const [name, service] of Object.entries(services)) {
         if (name !== "app") expect(service.extra_hosts, name).toBeUndefined();
       }

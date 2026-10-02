@@ -2,6 +2,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { networkInterfaces } from "node:os";
+import { PERSONAL_MCP_EGRESS_HEADERS } from "./personalEgress";
 import {
   networkAddressScope,
   parseIpv4,
@@ -27,6 +28,8 @@ const FORBIDDEN = "mcp_http_address_forbidden" as const;
 /** How long one administrator setting read serves connections; the admin PATCH drops it at once. */
 export const PERSONAL_MCP_POLICY_TTL_MS = 5_000;
 const ENVIRONMENT_TTL_MS = 60_000;
+/** A degraded environment is rebuilt soon, so a transient lookup failure closes local access only briefly. */
+const DEGRADED_ENVIRONMENT_TTL_MS = 5_000;
 const ENDPOINT_LOOKUP_TIMEOUT_MS = 2_000;
 
 /** Overrides container detection with `container` or `host`; any other value fails closed to `container`. */
@@ -50,7 +53,11 @@ export type PersonalMcpNetworkInterface = Readonly<{
 
 /** The installation facts one policy decides with; built once and cached with it. */
 export type PersonalMcpNetworkEnvironment = Readonly<{
-  /** The facts could not be read: local network access is treated as off. */
+  /**
+   * A fact the policy depends on could not be read (the host gateway in a
+   * container, a configured endpoint on a host install, the interfaces):
+   * every local destination is refused with the generic code until it can.
+   */
   degraded: boolean;
   /** Denied whole: the app container's own networks, or the host's Docker bridges. */
   deniedSubnets: readonly PersonalMcpSubnet[];
@@ -105,11 +112,18 @@ const NAT64_LOCAL_USE = subnetOf(v6("64:ff9b:1::"), 48);
 const SIX_TO_FOUR = subnetOf(v6("2002::"), 16);
 const IPV4_COMPATIBLE = subnetOf(v6("::"), 96);
 
-/** Cloud metadata inside ranges the policy otherwise allows: Alibaba (CGNAT); AWS IMDS and DNS, Oracle and Google (ULA). */
-const METADATA_ADDRESSES: ReadonlySet<string> = new Set(
-  [v4("100.100.100.200"), v6("fd00:ec2::254"), v6("fd00:ec2::253"), v6("fd00:c1::a9fe:a9fe"), v6("fd20:ce::254")]
-    .map(addressKey)
-);
+/**
+ * Cloud platform endpoints outside link-local: Alibaba metadata (CGNAT),
+ * Azure WireServer (public), AWS IMDS and DNS, Oracle and Google metadata (ULA).
+ */
+const METADATA_ADDRESSES: ReadonlySet<string> = new Set([
+  v4("100.100.100.200"),
+  v4("168.63.129.16"),
+  v6("fd00:ec2::254"),
+  v6("fd00:ec2::253"),
+  v6("fd00:c1::a9fe:a9fe"),
+  v6("fd20:ce::254")
+].map(addressKey));
 
 /** Names of the host as seen from a container (Compose `extra_hosts`, Podman). */
 const HOST_GATEWAY_ALIASES: ReadonlySet<string> = new Set([
@@ -250,10 +264,21 @@ function parsePort(value: string | undefined): number | null {
 
 type Target = Readonly<{ hostname: string; port: number }>;
 
+/** A local destination (LAN, CGNAT, a shared host) once no AIQSA-internal rule applies. */
+function localDecision(environment: PersonalMcpNetworkEnvironment, localNetworkEnabled: boolean): McpAddressDenialCode | null {
+  if (!localNetworkEnabled) return DISABLED;
+  // Without every fact the policy cannot tell AIQSA's ports from others.
+  return environment.degraded ? FORBIDDEN : null;
+}
+
 /** The scope rules once every AIQSA-internal rule has passed. */
-function scopeDecision(address: Address, localNetworkEnabled: boolean): McpAddressDenialCode | null {
+function scopeDecision(
+  address: Address,
+  environment: PersonalMcpNetworkEnvironment,
+  localNetworkEnabled: boolean
+): McpAddressDenialCode | null {
   const scope = networkAddressScope(addressText(address));
-  if (scope === "private" || inSubnet(CGNAT, address)) return localNetworkEnabled ? null : DISABLED;
+  if (scope === "private" || inSubnet(CGNAT, address)) return localDecision(environment, localNetworkEnabled);
   // Only global unicast IPv6 is public; reserved and unassigned space never is.
   if (address.family === 6 && !inSubnet(GLOBAL_UNICAST_V6, address)) return FORBIDDEN;
   return scope === "public" ? null : FORBIDDEN;
@@ -282,7 +307,7 @@ function classifyAddress(
   if (isLoopback(address)) {
     // In a container loopback is the app container itself; on a host install it is a shared host.
     if (environment.mode === "container" || environment.reservedPorts.has(target.port)) return INTERNAL;
-    return localNetworkEnabled ? null : DISABLED;
+    return localDecision(environment, localNetworkEnabled);
   }
   const sharedHost = environment.sharedHosts.has(key) ||
     (environment.mode === "container" && HOST_GATEWAY_ALIASES.has(target.hostname));
@@ -291,7 +316,7 @@ function classifyAddress(
   } else if (environment.deniedSubnets.some((subnet) => inSubnet(subnet, address))) {
     return INTERNAL;
   }
-  return scopeDecision(address, localNetworkEnabled);
+  return scopeDecision(address, environment, localNetworkEnabled);
 }
 
 /**
@@ -360,11 +385,12 @@ function isLocalhostName(hostname: string): boolean {
   return hostname === "localhost" || hostname.endsWith(".localhost");
 }
 
-/** Builds the facts for one policy period. Never throws: unreadable facts degrade it to public-only. */
+/** Builds the facts for one policy period. Never throws: unreadable facts degrade it. */
 export async function buildPersonalMcpNetworkEnvironment(
   host: PersonalMcpNetworkHost
 ): Promise<PersonalMcpNetworkEnvironment> {
   const mode = networkMode(host);
+  let degraded = false;
   let interfaces: readonly PersonalMcpNetworkInterface[];
   try {
     interfaces = host.interfaces();
@@ -385,6 +411,8 @@ export async function buildPersonalMcpNetworkEnvironment(
     }
   } else {
     const gateways = await Promise.all([...HOST_GATEWAY_ALIASES].map((alias) => boundedLookup(host, alias)));
+    // Without the gateway address, AIQSA's ports on the host cannot be told apart.
+    if (gateways.every((addresses) => addresses.length === 0)) degraded = true;
     for (const address of gateways.flat()) sharedHosts.add(addressKey(address));
   }
   const env = host.env;
@@ -415,15 +443,20 @@ export async function buildPersonalMcpNetworkEnvironment(
     const hostname = normalizedHostname(url.hostname);
     const literal = isIP(hostname) !== 0;
     // The Agent gateway is runner-internal: denied by name, never resolved.
+    const resolved = endpoint.match !== "name_only" && !literal && !isLocalhostName(hostname);
     const addresses = endpoint.match === "name_only" ? []
       : literal ? [parseAddress(hostname)].filter((address): address is Address => address !== null)
         : isLocalhostName(hostname) ? [v4("127.0.0.1"), v6("::1")]
           : await boundedLookup(host, hostname);
-    return { addresses, defaulted: !configured, hostname, literal, match: endpoint.match, port };
+    return { addresses, defaulted: !configured, hostname, literal, match: endpoint.match, port, resolved };
   }));
   for (const endpoint of endpoints) {
     if (!endpoint) continue;
     const { addresses, hostname, port } = endpoint;
+    // On a host install a configured service may share the host's addresses;
+    // without its address its address-and-port denial would silently vanish.
+    // (In a container the Compose networks are denied whole either way.)
+    if (mode === "host" && endpoint.resolved && !endpoint.defaulted && addresses.length === 0) degraded = true;
     if (endpoint.match === "name_only") {
       internalHostnames.add(hostname);
       continue;
@@ -444,7 +477,7 @@ export async function buildPersonalMcpNetworkEnvironment(
   }
 
   return {
-    degraded: false,
+    degraded,
     deniedSubnets,
     internalAddressPorts,
     internalHostnamePorts,
@@ -455,7 +488,7 @@ export async function buildPersonalMcpNetworkEnvironment(
   };
 }
 
-/** Fails closed: container rules, no known host, local network off. */
+/** Fails closed: container rules, no known host, every local destination refused. */
 export function degradedPersonalMcpNetworkEnvironment(): PersonalMcpNetworkEnvironment {
   return {
     degraded: true,
@@ -516,20 +549,25 @@ export type PersonalMcpAddressPolicyState = Readonly<{
 type Cached<Value> = { expiresAt: number; value: Promise<Value> };
 
 /**
- * Caches the administrator setting briefly and the environment longer. A
- * failed setting read fails closed (local network off) for one period.
+ * Caches the administrator setting briefly and the environment longer; a
+ * degraded environment only briefly. A failed setting read fails closed
+ * (local network off) for one period.
  */
 export function createPersonalMcpAddressPolicy(input: Readonly<{
+  degradedEnvironmentTtlMs?: number;
   environment(): Promise<PersonalMcpNetworkEnvironment>;
   environmentTtlMs?: number;
   now?(): number;
+  /** Observes each built environment, for content-free health reporting. */
+  onEnvironment?(environment: PersonalMcpNetworkEnvironment): void;
   onReadFailure?(error: unknown): void;
   policyTtlMs?: number;
   readLocalNetworkEnabled(): Promise<boolean>;
 }>): PersonalMcpAddressPolicyState {
   const now = input.now ?? Date.now;
   let setting: Cached<boolean> | null = null;
-  let environment: Cached<PersonalMcpNetworkEnvironment> | null = null;
+  let environment: Promise<PersonalMcpNetworkEnvironment> | null = null;
+  let environmentExpiresAt = 0;
   const localNetworkEnabled = (): Promise<boolean> => {
     const at = now();
     if (!setting || setting.expiresAt <= at) {
@@ -547,25 +585,26 @@ export function createPersonalMcpAddressPolicy(input: Readonly<{
   };
   const currentEnvironment = (): Promise<PersonalMcpNetworkEnvironment> => {
     const at = now();
-    if (!environment || environment.expiresAt <= at) {
-      environment = {
-        expiresAt: at + (input.environmentTtlMs ?? ENVIRONMENT_TTL_MS),
-        value: Promise.resolve()
-          .then(() => input.environment())
-          .catch(() => degradedPersonalMcpNetworkEnvironment())
-      };
+    if (!environment || environmentExpiresAt <= at) {
+      environmentExpiresAt = at + (input.environmentTtlMs ?? ENVIRONMENT_TTL_MS);
+      const building: Promise<PersonalMcpNetworkEnvironment> = Promise.resolve()
+        .then(() => input.environment())
+        .catch(() => degradedPersonalMcpNetworkEnvironment())
+        .then((facts) => {
+          if (facts.degraded && environment === building) {
+            environmentExpiresAt = Math.min(environmentExpiresAt, now() + (input.degradedEnvironmentTtlMs ?? DEGRADED_ENVIRONMENT_TTL_MS));
+          }
+          try { input.onEnvironment?.(facts); } catch { /* reporting never changes the decision */ }
+          return facts;
+        });
+      environment = building;
     }
-    return environment.value;
+    return environment;
   };
   return {
     async decide(address, url) {
       const [enabled, facts] = await Promise.all([localNetworkEnabled(), currentEnvironment()]);
-      return classifyPersonalMcpAddress({
-        address: address.address,
-        environment: facts,
-        localNetworkEnabled: enabled && !facts.degraded,
-        url
-      });
+      return classifyPersonalMcpAddress({ address: address.address, environment: facts, localNetworkEnabled: enabled, url });
     },
     invalidate() {
       setting = null;
@@ -585,7 +624,8 @@ export function mcpDestinationSafeFetchOptions(
   if (!destination.personal) {
     return { allowInsecureHttp: destination.allowInsecureHttp, allowPrivateNetwork: destination.allowPrivateNetwork };
   }
+  // Every personal request carries the egress marker the app refuses.
   return personalAddressPolicy
-    ? { addressPolicy: personalAddressPolicy, allowInsecureHttp: destination.allowInsecureHttp }
-    : { allowInsecureHttp: destination.allowInsecureHttp, allowPrivateNetwork: false };
+    ? { addressPolicy: personalAddressPolicy, allowInsecureHttp: destination.allowInsecureHttp, egressHeaders: PERSONAL_MCP_EGRESS_HEADERS }
+    : { allowInsecureHttp: destination.allowInsecureHttp, allowPrivateNetwork: false, egressHeaders: PERSONAL_MCP_EGRESS_HEADERS };
 }

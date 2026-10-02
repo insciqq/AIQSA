@@ -9,6 +9,7 @@ import {
   type PersonalMcpNetworkHost,
   type PersonalMcpNetworkInterface
 } from "./personalNetworkPolicy";
+import { PERSONAL_MCP_EGRESS_HEADERS } from "./personalEgress";
 import type { McpResolvedAddress } from "./safeFetch";
 
 const INTERNAL = "mcp_internal_address_forbidden";
@@ -24,6 +25,8 @@ function host(input: Readonly<{
   dns?: Readonly<Record<string, readonly string[]>>;
   env?: Readonly<Record<string, string | undefined>>;
   interfaces: readonly PersonalMcpNetworkInterface[];
+  /** Names whose lookup never answers. */
+  stalled?: readonly string[];
 }>): PersonalMcpNetworkHost & { lookups: string[] } {
   const lookups: string[] = [];
   return {
@@ -31,8 +34,10 @@ function host(input: Readonly<{
     env: input.env ?? {},
     interfaces: () => input.interfaces,
     lookups,
+    lookupTimeoutMs: 20,
     async lookupHostname(hostname) {
       lookups.push(hostname);
+      if (input.stalled?.includes(hostname)) return new Promise<never>(() => undefined);
       const addresses = input.dns?.[hostname];
       if (!addresses) throw Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
       return addresses.map(record);
@@ -131,6 +136,7 @@ describe("personal MCP address policy in a container", async () => {
     ["the public application address on its port", "https://other-name.example.test/", "93.184.216.34"],
     ["the Agent gateway", "http://host.microsandbox.internal:4311/", "93.184.216.36"],
     ["link-local metadata", "http://169.254.169.254/latest/meta-data", "169.254.169.254"],
+    ["the Azure WireServer", "http://168.63.129.16/machine?comp=goalstate", "168.63.129.16"],
     ["ECS task metadata", "http://169.254.170.2/v2/metadata", "169.254.170.2"],
     ["IPv6 link-local", "http://[fe80::1]/", "fe80::1"],
     ["Alibaba metadata inside CGNAT", "http://100.100.100.200/latest/meta-data", "100.100.100.200"],
@@ -184,6 +190,7 @@ describe("personal MCP address policy in a container", async () => {
     for (const [url, address] of [
       ["http://localhost:8080/mcp", "127.0.0.1"],
       ["http://100.100.100.200/", "100.100.100.200"],
+      ["http://168.63.129.16/", "168.63.129.16"],
       ["http://sibling.example:8080/", "172.20.0.30"],
       ["http://host.docker.internal:3100/", "172.17.0.1"],
       ["http://meta.example/", "64:ff9b::a9fe:a9fe"]
@@ -193,6 +200,7 @@ describe("personal MCP address policy in a container", async () => {
   });
 
   it("does not reserve the port of a service shown on the app's own networks", () => {
+    expect(environment.degraded).toBe(false);
     expect(environment.reservedPorts.has(8080)).toBe(false);
     expect(environment.reservedPorts.has(5432)).toBe(true);
     expect(environment.reservedPorts.has(443)).toBe(true);
@@ -233,6 +241,65 @@ describe("personal MCP address policy on a host install", async () => {
     expect(decide(environment, "http://localhost:8080/mcp", "127.0.0.1", false)).toBe(DISABLED);
     expect(decide(environment, "http://192.168.1.20:8080/mcp", "192.168.1.20", false)).toBe(DISABLED);
     expect(decide(environment, "http://localhost:5432/", "127.0.0.1", false)).toBe(INTERNAL);
+  });
+});
+
+describe("personal MCP address policy without every host fact", () => {
+  const compose = (input: Readonly<{ dns?: Record<string, readonly string[]>; stalled?: readonly string[] }>) => host({
+    container: true,
+    dns: { postgres: ["172.20.0.10"], ...input.dns },
+    env: { AIQSA_PORT: "3100", DATABASE_URL: "postgresql://aiqsa:private-password@postgres:5432/aiqsa", NODE_ENV: "production" },
+    interfaces: [iface("lo", "127.0.0.1/8", true), iface("eth0", "172.20.0.5/16")],
+    ...(input.stalled ? { stalled: input.stalled } : {})
+  });
+
+  it.each([
+    ["fails", compose({})],
+    ["never answers", compose({ stalled: ["host.docker.internal", "host.containers.internal"] })]
+  ])("refuses every local destination with the generic reason when the gateway lookup %s", async (_label, network) => {
+    const environment = await buildPersonalMcpNetworkEnvironment(network);
+    expect(environment.degraded).toBe(true);
+    for (const [url, address] of [
+      ["http://172.17.0.1:3100/", "172.17.0.1"],
+      ["http://192.168.65.254:19200/", "192.168.65.254"],
+      ["http://nas.lan:8080/mcp", "192.168.1.20"],
+      ["http://laptop.tailnet.example/mcp", "100.101.102.103"]
+    ] as const) {
+      expect(decide(environment, url, address)).toBe(FORBIDDEN);
+    }
+    // The administrator's own choice keeps its reason; always-denied keeps its own.
+    expect(decide(environment, "http://nas.lan:8080/mcp", "192.168.1.20", false)).toBe(DISABLED);
+    expect(decide(environment, "http://localhost:8080/", "127.0.0.1")).toBe(INTERNAL);
+    expect(decide(environment, "http://172.20.0.10:5432/", "172.20.0.10")).toBe(INTERNAL);
+    expect(decide(environment, "http://169.254.169.254/", "169.254.169.254")).toBe(INTERNAL);
+    // Public destinations never depended on the gateway.
+    expect(decide(environment, "https://mcp.example.test/mcp", "93.184.216.35")).toBeNull();
+  });
+
+  it("is whole once one gateway name resolves", async () => {
+    const environment = await buildPersonalMcpNetworkEnvironment(compose({ dns: { "host.docker.internal": ["172.17.0.1"] } }));
+    expect(environment.degraded).toBe(false);
+    expect(decide(environment, "http://172.17.0.1:3100/", "172.17.0.1")).toBe(INTERNAL);
+    expect(decide(environment, "http://172.17.0.1:8080/", "172.17.0.1")).toBeNull();
+  });
+
+  it("degrades a host install whose configured service does not resolve, never an unset default", async () => {
+    const network = (env: Readonly<Record<string, string>>) => host({
+      container: false, dns: { "tika.lan": ["192.168.1.30"] }, env: { NODE_ENV: "production", ...env },
+      interfaces: [iface("lo", "127.0.0.1/8", true), iface("enp3s0", "192.168.1.10/24")]
+    });
+    const resolved = await buildPersonalMcpNetworkEnvironment(network({ AIQSA_TIKA_URL: "http://tika.lan:9998" }));
+    expect(resolved.degraded).toBe(false);
+    expect(decide(resolved, "http://192.168.1.30:9998/", "192.168.1.30")).toBe(INTERNAL);
+    expect(decide(resolved, "http://192.168.1.30:8080/", "192.168.1.30")).toBeNull();
+
+    const unresolved = await buildPersonalMcpNetworkEnvironment(network({ AIQSA_TIKA_URL: "http://tika.missing.lan:9998" }));
+    expect(unresolved.degraded).toBe(true);
+    expect(decide(unresolved, "http://192.168.1.30:9998/", "192.168.1.30")).toBe(FORBIDDEN);
+    expect(decide(unresolved, "http://localhost:8080/", "127.0.0.1")).toBe(FORBIDDEN);
+
+    // The parser defaults (toolhive-runtime, opensearch) resolve nowhere on a host install.
+    expect((await buildPersonalMcpNetworkEnvironment(network({}))).degraded).toBe(false);
   });
 });
 
@@ -306,12 +373,43 @@ describe("personal MCP address policy cache", () => {
     expect(onReadFailure).toHaveBeenCalledOnce();
   });
 
-  it("treats an unreadable environment as local network off", async () => {
+  it("refuses local destinations generically when the environment cannot be built", async () => {
     const policy = createPersonalMcpAddressPolicy({
       environment: async () => { throw new Error("unavailable"); },
       readLocalNetworkEnabled: async () => true
     });
-    await expect(policy.decide(lan, url)).resolves.toBe(DISABLED);
+    await expect(policy.decide(lan, url)).resolves.toBe(FORBIDDEN);
+  });
+
+  it("rebuilds a degraded environment after a few seconds and a whole one after a minute", async () => {
+    let now = 0;
+    let gateway: readonly string[] | undefined;
+    const network = () => host({
+      container: true,
+      dns: gateway ? { "host.docker.internal": gateway } : {},
+      interfaces: [iface("eth0", "172.20.0.5/16")]
+    });
+    const built = vi.fn(() => buildPersonalMcpNetworkEnvironment(network()));
+    const observed = vi.fn();
+    const policy = createPersonalMcpAddressPolicy({
+      environment: built, now: () => now, onEnvironment: observed, readLocalNetworkEnabled: async () => true
+    });
+    await expect(policy.decide(lan, url)).resolves.toBe(FORBIDDEN);
+    expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({ degraded: true }));
+    gateway = ["172.17.0.1"];
+    now += 4_000;
+    await expect(policy.decide(lan, url)).resolves.toBe(FORBIDDEN);
+    expect(built).toHaveBeenCalledOnce();
+    now += 1_000;
+    await expect(policy.decide(lan, url)).resolves.toBeNull();
+    expect(built).toHaveBeenCalledTimes(2);
+    expect(observed).toHaveBeenLastCalledWith(expect.objectContaining({ degraded: false }));
+    now += 59_000;
+    await policy.decide(lan, url);
+    expect(built).toHaveBeenCalledTimes(2);
+    now += 1_000;
+    await policy.decide(lan, url);
+    expect(built).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -323,10 +421,10 @@ describe("MCP destination transport options", () => {
       .toEqual({ allowInsecureHttp: true, allowPrivateNetwork: true });
   });
 
-  it("applies the personal policy, never a stored private-network permission", () => {
+  it("applies the personal policy and the egress marker, never a stored private-network permission", () => {
     expect(mcpDestinationSafeFetchOptions({ allowInsecureHttp: false, allowPrivateNetwork: true, personal: true }, addressPolicy))
-      .toEqual({ addressPolicy, allowInsecureHttp: false });
+      .toEqual({ addressPolicy, allowInsecureHttp: false, egressHeaders: PERSONAL_MCP_EGRESS_HEADERS });
     expect(mcpDestinationSafeFetchOptions({ allowInsecureHttp: true, allowPrivateNetwork: true, personal: true }, undefined))
-      .toEqual({ allowInsecureHttp: true, allowPrivateNetwork: false });
+      .toEqual({ allowInsecureHttp: true, allowPrivateNetwork: false, egressHeaders: PERSONAL_MCP_EGRESS_HEADERS });
   });
 });

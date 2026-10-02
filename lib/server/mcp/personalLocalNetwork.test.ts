@@ -233,7 +233,10 @@ const networkHost: PersonalMcpNetworkHost = {
   detectContainer: () => true,
   env: { AIQSA_TOOLHIVE_URL: "http://toolhive-runtime:8080" },
   interfaces: () => [{ address: "172.20.0.5", cidr: "172.20.0.5/16", internal: false, name: "eth0" }],
-  lookupHostname: async () => { throw new Error("ENOTFOUND"); }
+  lookupHostname: async (hostname) => {
+    if (hostname === "host.docker.internal") return [{ address: "172.17.0.1", family: 4 }];
+    throw new Error("ENOTFOUND");
+  }
 };
 
 function runtimeRepository(launch: McpRuntimeGenerationLaunch) {
