@@ -273,20 +273,23 @@ describe("administrator Memory processing aggregates", () => {
       const receipt = async (degradationCode: string | null, outcome: "FAILED_SAFE" | "EMPTY", ageMs: number) => {
         const runId = await run("complete");
         const finalizedAt = new Date(now.getTime() - ageMs);
-        const attempt = await prisma.memoryRetrievalAttempt.create({ data: {
-          admissionKind: "NORMAL_SEND", admittedAssistantLeafMessageId: f.leafMessageId,
-          admittedUserMessageId: f.sourceMessageId, attemptOrdinal: 0, baseRequestHash: "d".repeat(64),
-          boundedPrivateBaseRequestSnapshot: { request: "private fixture base request" }, budgetSnapshot: {},
-          chatId: f.chatId, chatMemoryModeSnapshot: "NORMAL", consumedAt: finalizedAt,
-          expiresAt: new Date(Date.now() + hour), externalRolesUsed: [],
-          memoryGenerationSnapshot: 0, modelRunId: runId, queryHash: "e".repeat(64), retrievalRevisionSnapshot: 0,
-          settingsSnapshot: {}, state: "CONSUMED", outcome, degradationCode, userId: f.userId, utilityEgressMode: "LOCAL_ONLY"
-        } });
-        await prisma.modelRunMemoryBinding.create({ data: { userId: f.userId, modelRunId: runId,
-          retrievalAttemptId: attempt.id, memoryGenerationSnapshot: 0, retrievalRevisionSnapshot: 0,
-          finalizedRevisionSnapshot: 0, settingsSnapshot: {}, queryHash: "e".repeat(64),
-          queryPlannerVersion: "fixture", retrievalPipelineVersion: "fixture", contextTextHash: "f".repeat(64),
-          contextTokenCount: 0, outcome, degradationCode, finalizedAt } });
+        // Attempt and receipt commit together, as finalization writes them.
+        await prisma.$transaction(async (tx) => {
+          const attempt = await tx.memoryRetrievalAttempt.create({ data: {
+            admissionKind: "NORMAL_SEND", admittedAssistantLeafMessageId: f.leafMessageId,
+            admittedUserMessageId: f.sourceMessageId, attemptOrdinal: 0, baseRequestHash: "d".repeat(64),
+            boundedPrivateBaseRequestSnapshot: { request: "private fixture base request" }, budgetSnapshot: {},
+            chatId: f.chatId, chatMemoryModeSnapshot: "NORMAL", consumedAt: finalizedAt,
+            expiresAt: new Date(Date.now() + hour), externalRolesUsed: [],
+            memoryGenerationSnapshot: 0, modelRunId: runId, queryHash: "e".repeat(64), retrievalRevisionSnapshot: 0,
+            settingsSnapshot: {}, state: "CONSUMED", outcome, degradationCode, userId: f.userId, utilityEgressMode: "LOCAL_ONLY"
+          } });
+          await tx.modelRunMemoryBinding.create({ data: { userId: f.userId, modelRunId: runId,
+            retrievalAttemptId: attempt.id, memoryGenerationSnapshot: 0, retrievalRevisionSnapshot: 0,
+            finalizedRevisionSnapshot: 0, settingsSnapshot: {}, queryHash: "e".repeat(64),
+            queryPlannerVersion: "fixture", retrievalPipelineVersion: "fixture", contextTextHash: "f".repeat(64),
+            contextTokenCount: 0, outcome, degradationCode, finalizedAt } });
+        });
       };
       await receipt("memory_preparation_skipped", "FAILED_SAFE", 2 * hour);
       await receipt("memory_admission_deadline_exceeded", "FAILED_SAFE", hour);
