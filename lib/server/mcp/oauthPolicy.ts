@@ -28,7 +28,7 @@ export type McpOAuthPolicy = Readonly<{
 }>;
 
 function normalizedResource(draft: McpDraftConfiguration): string {
-  if (draft.auth.mode !== "oauth" || draft.source.kind !== "remote") {
+  if (draft.auth.mode !== "oauth") {
     throw new Error("mcp_oauth_policy_invalid");
   }
   const resource = new URL(draft.auth.protectedResource ?? draft.source.url);
@@ -69,7 +69,7 @@ function sortedUnique(values: readonly string[]): string[] {
 }
 
 function effectiveAuthorizationServerOrigins(draft: McpDraftConfiguration): string[] {
-  if (draft.auth.mode !== "oauth" || draft.source.kind !== "remote") {
+  if (draft.auth.mode !== "oauth") {
     throw new Error("mcp_oauth_policy_invalid");
   }
   return sortedUnique(
@@ -106,7 +106,7 @@ export function buildMcpOAuthPolicy(input: Readonly<{
   serverId: string;
   userId: string;
 }>): McpOAuthPolicy {
-  if (input.draft.auth.mode !== "oauth" || input.draft.source.kind !== "remote") {
+  if (input.draft.auth.mode !== "oauth") {
     throw new Error("mcp_oauth_policy_invalid");
   }
   const explicitResource = input.draft.auth.protectedResource !== undefined;

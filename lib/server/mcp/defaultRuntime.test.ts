@@ -28,11 +28,7 @@ const projectLoader = vi.hoisted(() => vi.fn(async (_userId: string, _serverIds:
 const personalLoader = vi.hoisted(() => vi.fn(async (_userId: string, _serverIds: readonly string[]): Promise<unknown[]> => []));
 
 vi.mock("./runtimeRepository", () => ({ createPrismaMcpRuntimeRepository: () => repository }));
-vi.mock("./defaultToolHive", () => ({
-  createToolHiveRuntimeLifecycle: () => ({ cleanupOrphans: vi.fn(async () => undefined) }),
-  getDefaultToolHiveDriver: () => ({})
-}));
-vi.mock("./toolhiveSessionFactory", () => ({ createToolHiveMcpSessionFactory: () => sessions }));
+vi.mock("./clientSessionFactory", () => ({ createMcpClientSessionFactory: () => sessions }));
 vi.mock("./runPlanRepository", () => ({
   createPrismaMcpCapabilityCatalogLoader: () => vi.fn(),
   createPrismaMcpProjectRunPlanLoader: () => projectLoader,

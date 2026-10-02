@@ -14,12 +14,9 @@ export type McpDraftValidationInput = Readonly<{
   serverId?: string;
   validationUserId?: string;
   values: Readonly<Record<string, McpSlotValue>>;
-  workloadToken?: string;
 }>;
 
 export type McpDraftValidationStage =
-  | "resolving"
-  | "preparing_runtime"
   | "connecting"
   | "discovering_tools";
 

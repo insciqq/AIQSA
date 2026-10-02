@@ -13,13 +13,13 @@ import {
   validateMcpSlotValue
 } from "./definitions";
 
-function localDraft(source: unknown, slots: unknown[] = []) {
+function draftWithSlots(slots: unknown[]) {
   return {
     auth: { mode: "none" },
     runtime: { callTimeoutMs: 30_000, startupTimeoutMs: 45_000 },
     slots,
-    source,
-    transport: "stdio"
+    source: { kind: "remote", url: "https://mcp.example.test/mcp" },
+    transport: "streamable_http"
   };
 }
 
@@ -33,13 +33,13 @@ function remoteDraft(url: string) {
   };
 }
 
-function environmentSlot(overrides: Record<string, unknown> = {}) {
+function headerSlot(overrides: Record<string, unknown> = {}) {
   return {
     label: "API key",
     policy: { allowPersonalOverride: true, kind: "shared" },
     sensitive: true,
     slotKey: "api-key",
-    target: { kind: "environment", name: "API_KEY" },
+    target: { kind: "header", name: "X-Api-Key" },
     valueType: "secret",
     ...overrides
   };
@@ -100,25 +100,7 @@ describe("MCP definition validation", () => {
     });
   });
 
-  it("accepts the initial npm, PyPI, OCI, and remote source shapes", () => {
-    const ociImage = `example.invalid/mcp@sha256:${"a".repeat(64)}`;
-    const npm = validateMcpDraft(localDraft({
-      args: ["--stdio"],
-      kind: "npm",
-      packageName: "@modelcontextprotocol/server-sequential-thinking",
-      versionSelector: "2025.7.1"
-    }));
-    const pypi = validateMcpDraft(localDraft({
-      args: [],
-      kind: "pypi",
-      packageName: "mcp-server-fetch",
-      versionSelector: "2026.7.10"
-    }));
-    const oci = validateMcpDraft(localDraft({
-      args: ["server.js"],
-      image: ociImage,
-      kind: "oci"
-    }));
+  it("accepts the remote source shape and rejects every other source kind", () => {
     const remote = validateMcpDraft({
       auth: { mode: "none" },
       runtime: { callTimeoutMs: 60_000, startupTimeoutMs: 60_000 },
@@ -138,12 +120,6 @@ describe("MCP definition validation", () => {
       transport: "streamable_http"
     });
 
-    expect(npm).toMatchObject({ ok: true, value: { source: { kind: "npm" } } });
-    expect(pypi).toMatchObject({ ok: true, value: { source: { kind: "pypi" } } });
-    expect(oci).toMatchObject({
-      ok: true,
-      value: { source: { image: ociImage, kind: "oci" } }
-    });
     expect(remote).toMatchObject({
       ok: true,
       value: {
@@ -155,6 +131,15 @@ describe("MCP definition validation", () => {
         }
       }
     });
+    for (const source of [
+      { args: ["--serve"], kind: "package", packageName: "mcp-server", versionSelector: "1.0.0" },
+      { args: [], image: `example.invalid/mcp@sha256:${"a".repeat(64)}`, kind: "image" }
+    ]) {
+      expect(validateMcpDraft({ ...remoteDraft("https://mcp.example.test/api"), source })).toEqual({
+        issues: [{ code: "source_kind_unsupported", path: "source.kind" }],
+        ok: false
+      });
+    }
   });
 
   it("accepts opaque remote path segments without treating them as query data", () => {
@@ -210,68 +195,33 @@ describe("MCP definition validation", () => {
     }
   });
 
-  it("requires digest-pinned OCI images and rejects unsupported command overrides", () => {
-    const mutable = validateMcpDraft(localDraft({
-      args: [],
-      image: "example.invalid/mcp:latest",
-      kind: "oci"
-    }));
-    const command = validateMcpDraft(localDraft({
-      args: [],
-      command: ["node"],
-      image: `example.invalid/mcp@sha256:${"b".repeat(64)}`,
-      kind: "oci"
-    }));
-
-    expect(mutable).toMatchObject({
-      issues: expect.arrayContaining([{ code: "oci_image_digest_required", path: "source.image" }]),
-      ok: false
-    });
-    expect(command).toMatchObject({
-      issues: expect.arrayContaining([{
-        code: "oci_command_override_unsupported",
-        path: "source.command"
-      }]),
-      ok: false
-    });
-  });
-
-  it("rejects source/transport and slot-target mismatches", () => {
-    const localOverHttp = validateMcpDraft({
-      ...localDraft({ args: [], kind: "npm", packageName: "mcp-server" }),
-      transport: "streamable_http"
-    });
-    const localHeader = validateMcpDraft(localDraft(
-      { args: [], kind: "npm", packageName: "mcp-server" },
-      [environmentSlot({ target: { kind: "header", name: "Authorization" } })]
+  it("rejects transports other than Streamable HTTP and non-header slot targets", () => {
+    const otherTransport = validateMcpDraft({ ...remoteDraft("https://mcp.example.test/api"), transport: "process" });
+    const environment = validateMcpDraft(draftWithSlots(
+      [headerSlot({ target: { kind: "environment", name: "API_KEY" } })]
     ));
 
-    expect(localOverHttp).toMatchObject({
-      issues: expect.arrayContaining([{ code: "transport_source_mismatch", path: "transport" }]),
+    expect(otherTransport).toMatchObject({
+      issues: [{ code: "transport_invalid", path: "transport" }],
       ok: false
     });
-    expect(localHeader).toMatchObject({
-      issues: expect.arrayContaining([{
-        code: "slot_target_transport_mismatch",
-        path: "slots.0.target"
-      }]),
+    expect(environment).toMatchObject({
+      issues: [{ code: "slot_target_invalid", path: "slots.0.target" }],
       ok: false
     });
   });
 
   it("reports literal policy errors at the exact field and enforces the declared value type", () => {
-    const sensitiveLiteral = validateMcpDraft(localDraft(
-      { args: [], kind: "npm", packageName: "mcp-server" },
-      [environmentSlot({ policy: { kind: "literal", value: "secret" } })]
+    const sensitiveLiteral = validateMcpDraft(draftWithSlots(
+      [headerSlot({ policy: { kind: "literal", value: "secret" } })]
     ));
-    const wrongType = validateMcpDraft(localDraft(
-      { args: [], kind: "npm", packageName: "mcp-server" },
-      [environmentSlot({
+    const wrongType = validateMcpDraft(draftWithSlots(
+      [headerSlot({
         label: "Retries",
         policy: { kind: "literal", value: "three" },
         sensitive: false,
         slotKey: "retries",
-        target: { kind: "environment", name: "RETRIES" },
+        target: { kind: "header", name: "X-Retries" },
         valueType: "number"
       })]
     ));
@@ -287,36 +237,6 @@ describe("MCP definition validation", () => {
       issues: expect.arrayContaining([{
         code: "slot_literal_value_invalid",
         path: "slots.0.policy.value"
-      }]),
-      ok: false
-    });
-  });
-
-  it("forbids personal overrides of process-control environment variables", () => {
-    const result = validateMcpDraft(localDraft(
-      { args: [], kind: "npm", packageName: "mcp-server" },
-      [environmentSlot({ target: { kind: "environment", name: "NODE_OPTIONS" } })]
-    ));
-
-    expect(result).toMatchObject({
-      issues: expect.arrayContaining([{
-        code: "slot_runtime_control_forbidden",
-        path: "slots.0.target.name"
-      }]),
-      ok: false
-    });
-  });
-
-  it("reserves ToolHive-managed environment variables", () => {
-    const result = validateMcpDraft(localDraft(
-      { args: [], kind: "npm", packageName: "mcp-server" },
-      [environmentSlot({ target: { kind: "environment", name: "MCP_TRANSPORT" } })]
-    ));
-
-    expect(result).toMatchObject({
-      issues: expect.arrayContaining([{
-        code: "slot_toolhive_environment_reserved",
-        path: "slots.0.target.name"
       }]),
       ok: false
     });
@@ -340,7 +260,7 @@ describe("MCP definition helpers", () => {
       policy: { kind: "personal", required: true },
       sensitive: false,
       slotKey: "visibility",
-      target: { kind: "environment", name: "VISIBILITY" },
+      target: { kind: "header", name: "X-Visibility" },
       valueType: "enum"
     };
     const boundedString: McpConfigurationSlot = {
@@ -350,7 +270,7 @@ describe("MCP definition helpers", () => {
       policy: { allowPersonalOverride: false, kind: "shared" },
       sensitive: false,
       slotKey: "project",
-      target: { kind: "environment", name: "PROJECT" },
+      target: { kind: "header", name: "X-Project" },
       valueType: "string"
     };
 
@@ -362,9 +282,8 @@ describe("MCP definition helpers", () => {
   });
 
   it("keeps slot keys bound to one semantic identity across revisions", () => {
-    const historical = validateMcpDraft(localDraft(
-      { args: [], kind: "npm", packageName: "mcp-server" },
-      [environmentSlot({
+    const historical = validateMcpDraft(draftWithSlots(
+      [headerSlot({
         maxLength: 128,
         sensitive: false,
         valueType: "string"
@@ -387,7 +306,7 @@ describe("MCP definition helpers", () => {
         ...historical.value,
         slots: historical.value.slots.map((slot) => ({
           ...slot,
-          target: { kind: "environment" as const, name: "OTHER_API_KEY" }
+          target: { kind: "header" as const, name: "X-Other-Api-Key" }
         }))
       },
       {
@@ -427,25 +346,11 @@ describe("MCP stored value endpoint bindings", () => {
     return mcpEndpointBinding(draft.value);
   }
 
-  it("binds remote values to the validation endpoint hash and packaged values to one local destination", () => {
+  it("binds remote values to the validation endpoint hash", () => {
     expect(binding("https://mcp.example.test/api/mcp")).toEqual({
       endpointHash: hashCanonicalMcpValue({ origin: "https://mcp.example.test", pathname: "/api/mcp" }),
       origin: "https://mcp.example.test"
     });
-    const local = validateMcpDraft(localDraft({
-      args: [],
-      kind: "npm",
-      packageName: "example-mcp",
-      versionSelector: "1.0.0"
-    }));
-    const otherLocal = validateMcpDraft(localDraft({
-      args: [],
-      image: `example.invalid/mcp@sha256:${"b".repeat(64)}`,
-      kind: "oci"
-    }));
-    if (!local.ok || !otherLocal.ok) throw new Error("fixture_draft_invalid");
-    expect(mcpEndpointBinding(local.value)).toEqual(mcpEndpointBinding(otherLocal.value));
-    expect(mcpEndpointBinding(local.value).origin).toBe("local");
   });
 
   it("keeps same-origin values and withholds values entered for another origin", () => {
