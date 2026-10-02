@@ -24,7 +24,7 @@ import type {
 } from "./oauthRepository";
 import { MCP_OAUTH_REVOCATION_ABANDON_MS, McpOAuthError, McpOAuthService } from "./oauthService";
 import { McpClientSession } from "./clientSession";
-import { createMcpSafeFetch } from "./safeFetch";
+import { createMcpSafeFetch, McpSafeFetchError } from "./safeFetch";
 
 const SERVER_URL = "https://mcp.fixture.test/mcp";
 const AUTH_ORIGIN = "https://auth.fixture.test";
@@ -1604,6 +1604,25 @@ describe("bounded MCP OAuth refresh and revocation", () => {
     } finally {
       await tokenServer.close();
     }
+  });
+
+  it("keeps a network-policy refusal as the refresh reason without dropping the authorization", async () => {
+    const fixture = new StandardsOAuthFixture();
+    let refused = true;
+    const { connection, repository, service } = await connectedHttpsService({
+      fetchFn: async (input, init) => {
+        if (isRefreshRequest(input, init) && refused) throw new McpSafeFetchError("mcp_local_network_disabled");
+        return fixture.fetch(fetchedUrl(input), init);
+      },
+      fixture,
+      requestTimeoutMs: 5_000
+    });
+    await expect(service.tokensForConnection(connection.id)).rejects.toMatchObject({
+      code: "mcp_local_network_disabled"
+    } satisfies Partial<McpOAuthError>);
+    expect(repository.connections.get(connection.id)?.state).toBe("ready");
+    refused = false;
+    await expect(service.tokensForConnection(connection.id)).resolves.toMatchObject({ access_token: "access-refresh-1" });
   });
 
   it("settles the refresh singleflight even when a transport ignores its abort signal", async () => {

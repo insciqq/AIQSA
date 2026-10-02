@@ -45,6 +45,14 @@ describe("MCP runtime failure categories", () => {
     }
     expect(mcpRuntimeErrorMessage("mcp_tool_disabled")).not.toBe(mcpRuntimeErrorMessage("mcp_tool_definition_changed"));
   });
+
+  it("keeps the personal network policy reasons exact and other blocked ranges generic", () => {
+    for (const code of ["mcp_internal_address_forbidden", "mcp_local_network_disabled"]) {
+      expect(mcpRuntimeErrorCode(code)).toBe(code);
+      expect(mcpRuntimeErrorMessage(code)).not.toBe(mcpRuntimeErrorMessage("mcp_connect_failed"));
+    }
+    expect(mcpRuntimeErrorCode("mcp_connection_forbidden")).toBe("mcp_connect_failed");
+  });
 });
 
 describe("MCP run selection", () => {

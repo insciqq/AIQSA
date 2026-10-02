@@ -18,7 +18,13 @@ import {
 } from "@modelcontextprotocol/client";
 import { reportSubsystemFailure, reportSubsystemHealthy } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
-import { createMcpSafeFetch } from "./safeFetch";
+import { mcpDestinationSafeFetchOptions } from "./personalNetworkPolicy";
+import {
+  createMcpSafeFetch,
+  mcpNetworkPolicyRefusal,
+  type McpAddressPolicy,
+  type McpNetworkPolicyRefusalCode
+} from "./safeFetch";
 import type { McpEndpointCorrection } from "./draftValidator";
 import {
   bindMcpOAuthPolicyResource,
@@ -102,6 +108,7 @@ function reportRevocationFailure(connectionId: string, code: string, error?: unk
 }
 
 export type McpOAuthErrorCode =
+  | McpNetworkPolicyRefusalCode
   | "mcp_oauth_authorization_failed"
   | "mcp_oauth_configuration_changed"
   | "mcp_oauth_not_available"
@@ -267,6 +274,20 @@ function validateDiscovery(
       throw new McpOAuthError("mcp_oauth_policy_forbidden");
     }
   }
+}
+
+/** The first network-policy refusal of one OAuth operation, kept even when the SDK swallows it. */
+type NetworkPolicyRefusal = { code: McpNetworkPolicyRefusalCode | null };
+
+function refusalRecording(baseFetch: FetchLike, refusal: NetworkPolicyRefusal): FetchLike {
+  return async (input, init) => {
+    try {
+      return await baseFetch(input, init);
+    } catch (error) {
+      refusal.code ??= mcpNetworkPolicyRefusal(error);
+      throw error;
+    }
+  };
 }
 
 function policyFetch(
@@ -529,14 +550,20 @@ export class McpOAuthService {
     allowInsecureHttp?: boolean;
     fetchForPolicy?: (policy: McpOAuthPolicy) => FetchLike;
     now?: () => Date;
+    /** Applied to personal policies by the default transport; absent, personal OAuth stays public-only. */
+    personalAddressPolicy?: McpAddressPolicy;
     requestTimeoutMs?: number;
   }>) {
     this.#repository = input.repository;
     this.allowInsecureHttp = input.allowInsecureHttp ?? true;
-    this.#fetchForPolicy = input.fetchForPolicy ?? ((policy) => createMcpSafeFetch({
+    // A personal policy (derived from the server owner at load) uses the
+    // personal network policy; installation policies keep their reviewed
+    // per-server permission.
+    this.#fetchForPolicy = input.fetchForPolicy ?? ((policy) => createMcpSafeFetch(mcpDestinationSafeFetchOptions({
       allowInsecureHttp: this.allowInsecureHttp,
-      allowPrivateNetwork: policy.allowPrivateNetwork
-    }));
+      allowPrivateNetwork: policy.allowPrivateNetwork,
+      personal: policy.personal === true
+    }, input.personalAddressPolicy)));
     this.#now = input.now ?? (() => new Date());
     this.#requestTimeoutMs = input.requestTimeoutMs ?? OAUTH_REQUEST_TIMEOUT_MS;
   }
@@ -557,7 +584,8 @@ export class McpOAuthService {
     if (!loadedPolicy) throw new McpOAuthError("mcp_oauth_not_available");
     this.#validatePolicy(loadedPolicy);
     const deadline = this.#deadline();
-    const fetchFn = this.#oauthFetch(loadedPolicy, deadline);
+    const refusal: NetworkPolicyRefusal = { code: null };
+    const fetchFn = this.#oauthFetch(loadedPolicy, deadline, refusal);
     let discovered: OAuthDiscoveryState;
     let policy: McpOAuthPolicy;
     try {
@@ -569,6 +597,8 @@ export class McpOAuthService {
       this.#validatePolicy(policy);
       validateDiscovery(discovered, policy, this.allowInsecureHttp);
     } catch (error) {
+      // A network-policy refusal keeps its own reason for the user.
+      if (refusal.code) throw new McpOAuthError(refusal.code);
       if (error instanceof McpOAuthError) throw error;
       throw new McpOAuthError("mcp_oauth_authorization_failed");
     }
@@ -642,6 +672,7 @@ export class McpOAuthService {
         kind: "redirect"
       };
     } catch (error) {
+      if (refusal.code) throw new McpOAuthError(refusal.code);
       if (error instanceof McpOAuthError) throw error;
       throw new McpOAuthError("mcp_oauth_authorization_failed");
     }
@@ -958,8 +989,9 @@ export class McpOAuthService {
     return abort ? AbortSignal.any([timeout, abort]) : timeout;
   }
 
-  #oauthFetch(policy: McpOAuthPolicy, deadline: AbortSignal): FetchLike {
-    const baseFetch = this.#fetchForPolicy(policy);
+  #oauthFetch(policy: McpOAuthPolicy, deadline: AbortSignal, refusal?: NetworkPolicyRefusal): FetchLike {
+    const policyBaseFetch = this.#fetchForPolicy(policy);
+    const baseFetch = refusal ? refusalRecording(policyBaseFetch, refusal) : policyBaseFetch;
     return policyFetch(async (input, init) => boundedOAuthResponse(await baseFetch(input, {
       ...init,
       signal: init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline
@@ -1059,7 +1091,8 @@ export class McpOAuthService {
         throw new McpOAuthError("mcp_oauth_reauthorization_required");
       }
       if (error instanceof McpOAuthError) throw error;
-      throw new McpOAuthError("mcp_oauth_authorization_failed");
+      const refusal = mcpNetworkPolicyRefusal(error);
+      throw new McpOAuthError(refusal ?? "mcp_oauth_authorization_failed");
     }
   }
 

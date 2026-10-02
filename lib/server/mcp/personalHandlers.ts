@@ -22,6 +22,7 @@ import {
   type PersonalMcpOAuthDraft
 } from "./personalOAuthDiscovery";
 import { personalMcpRateLimitResponse, type PersonalMcpRateLimiter } from "./personalRateLimit";
+import { mcpNetworkPolicyRefusal } from "./safeFetch";
 
 type PersonalDeps = {
   /** On-demand runtime preparation; the handler starts it and never awaits it. */
@@ -246,6 +247,9 @@ async function authorizationTrust(
     if (error instanceof PersonalMcpOAuthDiscoveryError && error.code === "mcp_oauth_insecure_endpoint") {
       return errorJson("mcp_oauth_insecure_endpoint", 422);
     }
+    // The network policy's reason reaches the user, as from validation.
+    const refusal = error instanceof PersonalMcpOAuthDiscoveryError ? mcpNetworkPolicyRefusal(error) : null;
+    if (refusal) return errorJson(refusal, 422, [{ code: refusal, path: "url" }]);
     return errorJson("mcp_oauth_discovery_failed", 422);
   }
   const crossSite = crossSitePersonalMcpAuthorizationOrigins(discovered.authorizationOrigins);

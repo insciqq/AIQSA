@@ -3583,6 +3583,16 @@ model ModelRunEvent {
   @@unique([modelRunId, sequence])
 }
 
+/// Installation-wide MCP policy; one row, id `installation`.
+model McpPolicy {
+  id                          String   @id
+  /// Personal MCP may reach private, CGNAT and host addresses (never AIQSA's own services).
+  personalLocalNetworkEnabled Boolean  @default(true)
+  version                     Int      @default(1)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+}
+
 model McpServer {
   id                   String               @id @default(uuid())
   namespace            String               @unique

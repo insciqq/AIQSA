@@ -1,8 +1,15 @@
 import { discoverOAuthServerInfo, type FetchLike } from "@modelcontextprotocol/client";
 import { getDomain } from "tldts";
 import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
+import { personalMcpAddressPolicy } from "./defaultPersonalNetwork";
 import { personalMcpOAuthTransportAllowed } from "./oauthPolicy";
-import { createMcpSafeFetch } from "./safeFetch";
+import { mcpDestinationSafeFetchOptions } from "./personalNetworkPolicy";
+import {
+  createMcpSafeFetch,
+  mcpNetworkPolicyRefusal,
+  type McpAddressPolicy,
+  type McpNetworkPolicyRefusalCode
+} from "./safeFetch";
 
 const MAX_METADATA_BYTES = 512 * 1_024;
 const MAX_AUTHORIZATION_ORIGINS = 32;
@@ -22,7 +29,7 @@ export type PersonalMcpOAuthDraft = Readonly<{
 }>;
 
 export class PersonalMcpOAuthDiscoveryError extends Error {
-  readonly code: "mcp_oauth_discovery_failed" | "mcp_oauth_insecure_endpoint";
+  readonly code: McpNetworkPolicyRefusalCode | "mcp_oauth_discovery_failed" | "mcp_oauth_insecure_endpoint";
 
   constructor(code: PersonalMcpOAuthDiscoveryError["code"]) {
     super(code);
@@ -80,22 +87,25 @@ function checkedOrigin(endpoint: string, value: string): string {
   return url.origin;
 }
 
-/** Unauthenticated metadata discovery pins every public address through safe
- * fetch and applies the personal transport rule to every request and every
- * advertised URL. The resulting origins become the connection's durable OAuth
- * policy; the caller decides which of them need user confirmation. */
+/** Unauthenticated metadata discovery pins every address through safe fetch
+ * under the personal network policy and applies the personal transport rule
+ * to every request and every advertised URL. The resulting origins become the
+ * connection's durable OAuth policy; the caller decides which of them need
+ * user confirmation. */
 export async function preparePersonalMcpOAuthDraft(
   draft: McpDraftConfiguration,
-  input: Readonly<{ fetch?: FetchLike; timeoutMs?: number }> = {}
+  input: Readonly<{ addressPolicy?: McpAddressPolicy; fetch?: FetchLike; timeoutMs?: number }> = {}
 ): Promise<PersonalMcpOAuthDraft> {
   if (draft.auth.mode !== "oauth" || draft.source.kind !== "remote") return { authorizationOrigins: [], draft };
   const endpoint = draft.source.url;
   const deadline = AbortSignal.timeout(input.timeoutMs ?? 15_000);
-  const baseFetch = input.fetch ?? createMcpSafeFetch({
+  const baseFetch = input.fetch ?? createMcpSafeFetch(mcpDestinationSafeFetchOptions({
     allowInsecureHttp: new URL(endpoint).protocol === "http:",
-    allowPrivateNetwork: false
-  });
+    allowPrivateNetwork: false,
+    personal: true
+  }, input.addressPolicy ?? personalMcpAddressPolicy));
   let insecureRequest = false;
+  let networkRefusal: McpNetworkPolicyRefusalCode | null = null;
   const fetchFn: FetchLike = async (request, init) => {
     const target = new URL(request instanceof Request ? request.url : request.toString());
     if (!personalMcpOAuthTransportAllowed(endpoint, target)) {
@@ -104,11 +114,18 @@ export async function preparePersonalMcpOAuthDraft(
       insecureRequest = true;
       throw new PersonalMcpOAuthDiscoveryError("mcp_oauth_insecure_endpoint");
     }
-    const response = await baseFetch(request, {
-      ...init,
-      redirect: "error",
-      signal: init?.signal ? AbortSignal.any([deadline, init.signal]) : deadline
-    });
+    let response: Response;
+    try {
+      response = await baseFetch(request, {
+        ...init,
+        redirect: "error",
+        signal: init?.signal ? AbortSignal.any([deadline, init.signal]) : deadline
+      });
+    } catch (error) {
+      // Likewise a network-policy refusal keeps its own reason.
+      networkRefusal ??= mcpNetworkPolicyRefusal(error);
+      throw error;
+    }
     if (!response.body) return response;
     let count = 0;
     const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
@@ -127,9 +144,11 @@ export async function preparePersonalMcpOAuthDraft(
   try {
     discovery = await discoverOAuthServerInfo(endpoint, { fetchFn });
   } catch {
-    throw new PersonalMcpOAuthDiscoveryError(insecureRequest ? "mcp_oauth_insecure_endpoint" : "mcp_oauth_discovery_failed");
+    throw new PersonalMcpOAuthDiscoveryError(insecureRequest ? "mcp_oauth_insecure_endpoint" : networkRefusal ?? "mcp_oauth_discovery_failed");
   }
   if (insecureRequest) throw new PersonalMcpOAuthDiscoveryError("mcp_oauth_insecure_endpoint");
+  // A refused address anywhere means this connection cannot work as configured.
+  if (networkRefusal) throw new PersonalMcpOAuthDiscoveryError(networkRefusal);
   const metadata = discovery.authorizationServerMetadata;
   const revocation = metadata && "revocation_endpoint" in metadata ? metadata.revocation_endpoint : undefined;
   const advertised = [

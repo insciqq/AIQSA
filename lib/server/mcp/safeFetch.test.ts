@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createMcpSafeFetch,
   McpSafeFetchError,
+  mcpNetworkPolicyRefusal,
   mcpSafeFetch,
+  type McpAddressPolicy,
   type McpPinnedHttpRequest,
   type McpResolvedAddress
 } from "./safeFetch";
@@ -97,6 +99,116 @@ describe("MCP safe fetch URL and address policy", () => {
       dispatch: async () => new Response("unexpected"),
       lookupHostname: async () => [PUBLIC_IPV4, { address: "127.0.0.1", family: 4 }]
     }), "mcp_http_address_forbidden");
+  });
+});
+
+describe("MCP safe fetch reason-returning address policy", () => {
+  const LAN: McpResolvedAddress = { address: "192.168.1.20", family: 4 };
+  const METADATA: McpResolvedAddress = { address: "169.254.169.254", family: 4 };
+
+  it("pins the first record of an allowed answer after an asynchronous decision", async () => {
+    const decisions: string[] = [];
+    const addressPolicy: McpAddressPolicy = async (address, url) => {
+      decisions.push(`${url.hostname}=${address.address}`);
+      await Promise.resolve();
+      return null;
+    };
+    const dispatch = vi.fn(async (_request: McpPinnedHttpRequest) => new Response("ok"));
+
+    const response = await mcpSafeFetch("http://nas.lan:8080/mcp", undefined, {
+      addressPolicy,
+      allowInsecureHttp: true,
+      allowPrivateNetwork: false,
+      dispatch,
+      lookupHostname: async () => [LAN, { address: "192.168.1.21", family: 4 }]
+    });
+
+    expect(await response.text()).toBe("ok");
+    expect(decisions).toEqual(["nas.lan=192.168.1.20", "nas.lan=192.168.1.21"]);
+    expect(dispatch.mock.calls[0]?.[0].address).toEqual(LAN);
+  });
+
+  it.each(["mcp_internal_address_forbidden", "mcp_local_network_disabled", "mcp_http_address_forbidden"] as const)(
+    "refuses with the policy's own reason %s before dispatch",
+    async (reason) => {
+      const dispatch = vi.fn(async () => new Response("unexpected"));
+      await rejectedCode(mcpSafeFetch("http://nas.lan:8080/mcp", undefined, {
+        addressPolicy: async () => reason,
+        allowInsecureHttp: true,
+        dispatch,
+        lookupHostname: async () => [LAN]
+      }), reason);
+      expect(dispatch).not.toHaveBeenCalled();
+    }
+  );
+
+  it("names the most definitive reason across the records of one answer", async () => {
+    const reasons: Readonly<Record<string, ReturnType<McpAddressPolicy>>> = {
+      "10.0.0.5": "mcp_local_network_disabled",
+      "169.254.169.254": "mcp_internal_address_forbidden",
+      "224.0.0.1": "mcp_http_address_forbidden"
+    };
+    const addressPolicy: McpAddressPolicy = (address) => reasons[address.address] ?? null;
+    const fetchWith = (records: readonly McpResolvedAddress[]) => mcpSafeFetch("https://mixed.example.test/", undefined, {
+      addressPolicy,
+      dispatch: async () => new Response("unexpected"),
+      lookupHostname: async () => records
+    });
+
+    await rejectedCode(fetchWith([PUBLIC_IPV4, { address: "10.0.0.5", family: 4 }]), "mcp_local_network_disabled");
+    await rejectedCode(fetchWith([{ address: "10.0.0.5", family: 4 }, { address: "224.0.0.1", family: 4 }]),
+      "mcp_http_address_forbidden");
+    await rejectedCode(fetchWith([{ address: "224.0.0.1", family: 4 }, METADATA, { address: "10.0.0.5", family: 4 }]),
+      "mcp_internal_address_forbidden");
+  });
+
+  it("fails closed with the generic refusal when the policy throws or answers nonsense", async () => {
+    for (const addressPolicy of [
+      async () => { throw new Error("policy unavailable"); },
+      async () => "allow" as unknown as null
+    ] satisfies McpAddressPolicy[]) {
+      await rejectedCode(mcpSafeFetch("https://mcp.example.test/", undefined, {
+        addressPolicy,
+        dispatch: async () => new Response("unexpected"),
+        lookupHostname: async () => [PUBLIC_IPV4]
+      }), "mcp_http_address_forbidden");
+    }
+  });
+
+  it("decides every hop again, so a rebound redirect answer is refused", async () => {
+    const dispatch = vi.fn(async (request: McpPinnedHttpRequest) => request.url.pathname === "/start"
+      ? new Response(null, { headers: { location: "/next" }, status: 307 })
+      : new Response("must not run"));
+    const answers = [[LAN], [METADATA]];
+    const addressPolicy = vi.fn<McpAddressPolicy>(async (address) =>
+      address.address === METADATA.address ? "mcp_internal_address_forbidden" : null);
+
+    await rejectedCode(mcpSafeFetch("http://nas.lan:8080/start", undefined, {
+      addressPolicy,
+      allowInsecureHttp: true,
+      dispatch,
+      lookupHostname: async () => answers.shift() ?? []
+    }), "mcp_internal_address_forbidden");
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(addressPolicy).toHaveBeenCalledTimes(2);
+  });
+
+  it("takes precedence over the installation private-network permission", async () => {
+    await rejectedCode(mcpSafeFetch("http://nas.lan:8080/mcp", undefined, {
+      addressPolicy: async () => "mcp_local_network_disabled" as const,
+      allowInsecureHttp: true,
+      allowPrivateNetwork: true,
+      dispatch: async () => new Response("unexpected"),
+      lookupHostname: async () => [LAN]
+    }), "mcp_local_network_disabled");
+  });
+
+  it("recognizes a network-policy refusal on any MCP error by its code", () => {
+    expect(mcpNetworkPolicyRefusal(new McpSafeFetchError("mcp_local_network_disabled"))).toBe("mcp_local_network_disabled");
+    expect(mcpNetworkPolicyRefusal({ code: "mcp_internal_address_forbidden", name: "McpClientSessionError" }))
+      .toBe("mcp_internal_address_forbidden");
+    expect(mcpNetworkPolicyRefusal(new McpSafeFetchError("mcp_http_address_forbidden"))).toBeNull();
+    expect(mcpNetworkPolicyRefusal(null)).toBeNull();
   });
 });
 
