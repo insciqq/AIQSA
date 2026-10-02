@@ -86,9 +86,9 @@ function testedDraft(identityHash: string): McpDraftTestSummary {
     evidence: { fixture: "playwright" },
     identityHash,
     resolvedArtifact: {
-      kind: "npm",
-      packageName: "@example/mcp",
-      version: "1.0.0"
+      endpointHash: `endpoint-${identityHash}`,
+      kind: "remote",
+      transport: "streamable_http"
     },
     testedAt: fixedTime,
     toolInventory: [
@@ -101,17 +101,15 @@ function testedDraft(identityHash: string): McpDraftTestSummary {
 function revision(
   id: string,
   revisionNumber: number,
-  identityHash: string,
-  artifactStatus: McpRevisionSummary["artifactStatus"]
+  identityHash: string
 ): McpRevisionSummary {
   const evidence = testedDraft(identityHash);
   return {
-    artifactStatus,
     createdAt: fixedTime,
     draftHash: evidence.draftHash,
     id,
     identityHash,
-    resolvedArtifact: artifactStatus === "not_applicable" ? null : evidence.resolvedArtifact,
+    resolvedArtifact: evidence.resolvedArtifact,
     revisionNumber,
     validationEvidence: {
       evidence: evidence.evidence,
@@ -122,7 +120,7 @@ function revision(
 }
 
 function existingServer(): AdminMcpServer {
-  const active = revision("existing-revision", 1, "existing-identity", "not_applicable");
+  const active = revision("existing-revision", 1, "existing-identity");
   return {
     activePersonalSlots: [],
     activeRevision: active,
@@ -231,8 +229,8 @@ test("administrator adds a server from a pasted configuration, watches the setup
     if (method === "GET" && path === "/api/admin/mcp") {
       const pending = servers.find((server) => server.activation?.stage === "queued");
       if (pending) {
-        const active = revision("active-revision", 2, "activated-identity", "available");
-        const missing = revision("missing-revision", 1, "missing-identity", "missing");
+        const active = revision("active-revision", 2, "activated-identity");
+        const earlier = revision("earlier-revision", 1, "earlier-identity");
         servers = servers.map((server) => server.id === pending.id ? {
           ...server,
           activeRevision: active,
@@ -246,7 +244,7 @@ test("administrator adds a server from a pasted configuration, watches the setup
           draftTest: testedDraft("activated-identity"),
           draftTested: true,
           enabled: true,
-          revisions: [active, missing]
+          revisions: [active, earlier]
         } : server);
       }
       await route.fulfill({ contentType: "application/json", json: { servers } });
@@ -290,7 +288,7 @@ test("administrator adds a server from a pasted configuration, watches the setup
       }
       const update = body as AdminMcpUpdateRequest;
       const candidateDraft = update.draft ?? current.draft;
-      const active = { ...revision("saved-revision", 3, "tested-identity", "available"), disabledToolNames: candidateDraft.disabledToolNames };
+      const active = { ...revision("saved-revision", 3, "tested-identity"), disabledToolNames: candidateDraft.disabledToolNames };
       const tested = replace({
         ...current,
         draft: candidateDraft,
@@ -306,7 +304,7 @@ test("administrator adds a server from a pasted configuration, watches the setup
 
     if (method === "POST" && path.endsWith("/rebuild")) {
       const rebuiltTest = testedDraft("rebuilt-identity");
-      const rebuiltRevision = revision("rebuilt-revision", 3, "rebuilt-identity", "available");
+      const rebuiltRevision = revision("rebuilt-revision", 3, "rebuilt-identity");
       const rebuilt = replace({
         ...current,
         activeRevision: rebuiltRevision,
@@ -410,30 +408,34 @@ test("administrator adds a server from a pasted configuration, watches the setup
   await page.getByTestId("mcp-new-server").click();
   const sheet = page.getByRole("dialog", { name: "New server" });
   await expect(sheet).toBeVisible();
-  const importEditor = sheet.getByLabel("Configuration JSON, URL, or install command");
+  const importEditor = sheet.getByLabel("Configuration JSON or URL");
   const parse = sheet.getByRole("button", { name: "Parse" });
   await expect(parse).toBeDisabled();
 
   await page.setViewportSize({ height: 844, width: 390 });
   await expectNoHorizontalOverflow(page);
+  // A local launch command is not importable; only remote MCP endpoints are.
   await importEditor.fill("npx -y @example/mcp@latest");
   await expectTouchSafe(parse);
+  await parse.click();
+  await expect(sheet.getByRole("alert")).toHaveText("Only remote MCP URLs are supported.");
 
   await page.setViewportSize({ height: 900, width: 1440 });
   await importEditor.fill(`{
   "mcpServers": {
     "browser-mcp": {
-      "args": ["-y", "@example/mcp@1.0.0",],
-      "command": "npx",
-      "env": { "API_KEY": "browser-write-only-secret", },
+      "url": "https://browser-mcp.example.test/mcp",
+      "headers": { "Authorization": "browser-write-only-secret", },
     },
   },
 }`);
   await parse.click();
   await expect(sheet.getByLabel("Name")).toHaveValue("browser-mcp");
   await expect(sheet.getByLabel("Name")).toBeFocused();
-  await expect(sheet.getByLabel("Source")).toHaveValue("npm");
-  const importedSecret = sheet.getByLabel("New shared value for API_KEY");
+  await expect(sheet.getByLabel(/^MCP endpoint URL/u)).toHaveValue("https://browser-mcp.example.test/mcp");
+  await expect(sheet.getByLabel("Source", { exact: true })).toHaveCount(0);
+  await expect(sheet.getByLabel("Transport", { exact: true })).toHaveCount(0);
+  const importedSecret = sheet.getByLabel("New shared value for Authorization");
   await expect(importedSecret).toHaveAttribute("type", "text");
   await expect(importedSecret).toHaveAttribute("autocomplete", "off");
   await expect(importedSecret).toHaveCSS("-webkit-text-security", "disc");
@@ -450,7 +452,7 @@ test("administrator adds a server from a pasted configuration, watches the setup
   const page_ = section.getByTestId("mcp-server-page");
   const progress = section.getByTestId("admin-mcp-activation-progress");
   await expect(progress).toContainText("Starting");
-  await expect(progress).toContainText("Step 1 of 6");
+  await expect(progress).toContainText("Step 1 of 4");
   await expect(section.getByTestId("mcp-server-page-status")).toContainText("Applying");
   await expect(section.getByTestId("mcp-test-save")).toBeDisabled();
   await expect(progress).toHaveCount(0, { timeout: 10_000 });
@@ -528,7 +530,7 @@ test("administrator adds a server from a pasted configuration, watches the setup
   await expect(settings).toHaveCount(0);
   await expect(page.getByTestId("admin-topbar-title")).toContainText("browser-mcp");
 
-  // ⋯ menu: Check for update, Earlier configurations (rebuild a missing build), Disable/Enable, Delete.
+  // ⋯ menu: Check for update, Earlier configurations (rebuild and apply), Disable/Enable, Delete.
   const menu = page.getByRole("button", { name: "More actions for browser-mcp" });
   await menu.click();
   await page.getByRole("menuitem", { name: "Check for update" }).click();
@@ -539,10 +541,9 @@ test("administrator adds a server from a pasted configuration, watches the setup
   await page.getByRole("menuitem", { name: "Earlier configurations" }).click();
   const configurations = page.getByRole("dialog", { name: "Earlier configurations" });
   await expect(configurations).not.toContainText(bannedWords);
-  const missingConfiguration = configurations.getByTestId("mcp-configuration-missing-revision");
-  await expect(missingConfiguration.getByTestId("mcp-configuration-build")).toHaveText("Needs rebuild");
-  await expect(missingConfiguration.getByRole("button", { name: "Restore" })).toHaveCount(0);
-  await missingConfiguration.getByRole("button", { name: "Rebuild and apply" }).click();
+  const earlierConfiguration = configurations.getByTestId("mcp-configuration-earlier-revision");
+  await expect(earlierConfiguration.getByRole("button", { name: "Restore" })).toBeVisible();
+  await earlierConfiguration.getByRole("button", { name: "Rebuild and apply" }).click();
   await expect(configurations).toHaveCount(0);
   await expect(page.getByTestId("admin-feedback")).toContainText("Configuration rebuilt and applied.");
 
@@ -584,7 +585,7 @@ test("administrator adds a server from a pasted configuration, watches the setup
     expect.objectContaining({ body: { canUse: true, personalSlotKeys: [], userId: "user-alice" }, method: "PUT", path: "/api/admin/mcp/browser-mcp/grants" }),
     expect.objectContaining({ method: "POST", path: "/api/admin/mcp/browser-mcp/check-update" }),
     expect.objectContaining({
-      body: expect.objectContaining({ replaceDraft: true, revisionId: "missing-revision" }),
+      body: expect.objectContaining({ replaceDraft: true, revisionId: "earlier-revision" }),
       method: "POST",
       path: "/api/admin/mcp/browser-mcp/rebuild"
     }),

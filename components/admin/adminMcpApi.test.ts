@@ -208,7 +208,6 @@ describe("adminMcpApi", () => {
 
   it("decodes held-back tools and tool verification, and rejects malformed ones", async () => {
     const checked = {
-      artifactStatus: "not_applicable" as const,
       createdAt: "2026-07-22T00:00:00.000Z",
       draftHash: "hash-1",
       id: "revision-1",
@@ -254,7 +253,7 @@ describe("adminMcpApi", () => {
         id: "attempt-1",
         issues: [],
         requestedAt: "2026-07-22T01:00:00.000Z",
-        stage: "preparing_runtime",
+        stage: "connecting",
         startedAt: "2026-07-22T01:00:01.000Z",
         updatedAt: "2026-07-22T01:00:02.000Z"
       }
@@ -263,16 +262,10 @@ describe("adminMcpApi", () => {
 
     await expect(createAdminMcpServer({ activate: true, draft: server.draft, name: "Memory" }, fetcher))
       .resolves.toEqual({ data: activating, ok: true });
-  });
 
-  it("turns classified local startup issues into setup guidance without exposing process output", () => {
-    const message = adminMcpErrorMessage({
-      code: "mcp_draft_test_failed",
-      issues: [{ code: "mcp_local_environment_missing", path: "slots.CANVAS_BASE_URL" }]
-    });
-
-    expect(message).toContain("requires CANVAS_BASE_URL");
-    expect(message).toContain("Configuration fields");
-    expect(message).not.toContain("mcp_local_environment_missing");
+    // A job written by an earlier release may still sit in a stage this release no longer emits.
+    const leftover: AdminMcpServer = { ...activating, activation: { ...activating.activation!, stage: "resolving" } };
+    await expect(requestAdminMcpCatalog(vi.fn().mockResolvedValue(response({ servers: [leftover] }))))
+      .resolves.toEqual({ data: { servers: [leftover] }, ok: true });
   });
 });

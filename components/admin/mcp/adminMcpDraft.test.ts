@@ -34,27 +34,22 @@ describe("adminMcpDraft", () => {
     expect(withMcpToolEnabled(enabled, "remember", true)).not.toHaveProperty("disabledToolNames");
   });
 
-  it("starts with the one supported transport for each source kind", () => {
-    expect(defaultMcpDraft("remote")).toMatchObject({
-      source: { kind: "remote" },
+  it("starts as a remote Streamable HTTP draft", () => {
+    expect(defaultMcpDraft()).toMatchObject({
+      source: { kind: "remote", url: "" },
       transport: "streamable_http"
-    });
-    expect(defaultMcpDraft("npm")).toMatchObject({
-      source: { kind: "npm" },
-      transport: "stdio"
     });
   });
 
-  it("normalizes a common npx config and treats imported env values as write-only shared fields", () => {
+  it("normalizes a remote mcpServers entry and treats imported headers as write-only shared fields", () => {
     const normalized = normalizeMcpImport(JSON.stringify({
       mcpServers: {
         memory: {
-          args: ["-y", "@mem0/mcp-server@2.3.0", "--stdio"],
-          command: "npx",
-          env: {
-            MEM0_API_KEY: "secret-value",
-            MEM0_DEFAULT_USER_ID: "user123"
-          }
+          headers: {
+            Authorization: "Bearer secret-value",
+            "X-Default-User": "user123"
+          },
+          url: "https://mcp.example.test/mcp"
         }
       }
     }));
@@ -62,21 +57,16 @@ describe("adminMcpDraft", () => {
     expect(normalized.name).toBe("memory");
     expect(normalized.draft).toMatchObject({
       auth: { mode: "static" },
-      source: {
-        args: ["--stdio"],
-        kind: "npm",
-        packageName: "@mem0/mcp-server",
-        versionSelector: "2.3.0"
-      },
-      transport: "stdio"
+      source: { kind: "remote", url: "https://mcp.example.test/mcp" },
+      transport: "streamable_http"
     });
     expect(normalized.draft.slots).toEqual([
-      expect.objectContaining({ slotKey: "mem0_api_key", target: { kind: "environment", name: "MEM0_API_KEY" } }),
-      expect.objectContaining({ slotKey: "mem0_default_user_id", target: { kind: "environment", name: "MEM0_DEFAULT_USER_ID" } })
+      expect.objectContaining({ slotKey: "authorization", target: { kind: "header", name: "Authorization" } }),
+      expect.objectContaining({ slotKey: "x-default-user", target: { kind: "header", name: "X-Default-User" } })
     ]);
     expect(normalized.sharedValues).toEqual({
-      mem0_api_key: "secret-value",
-      mem0_default_user_id: "user123"
+      authorization: "Bearer secret-value",
+      "x-default-user": "user123"
     });
   });
 
@@ -84,10 +74,9 @@ describe("adminMcpDraft", () => {
     const normalized = normalizeMcpImport(`{
       "mcpServers": {
         "mem0": {
-          "command": "uvx",
-          "args": ["mem0-mcp-server",],
-          "env": {
-            "MEM0_API_KEY": "fixture,} value,]",
+          "url": "https://mcp.example.test/mcp",
+          "headers": {
+            "Authorization": "fixture,} value,]",
           },
         },
       },
@@ -97,29 +86,25 @@ describe("adminMcpDraft", () => {
       name: "mem0",
       draft: {
         auth: { mode: "static" },
-        source: {
-          args: [],
-          kind: "pypi",
-          packageName: "mem0-mcp-server"
-        },
+        source: { kind: "remote", url: "https://mcp.example.test/mcp" },
         slots: [expect.objectContaining({
-          target: { kind: "environment", name: "MEM0_API_KEY" }
+          target: { kind: "header", name: "Authorization" }
         })]
       },
-      sharedValues: { mem0_api_key: "fixture,} value,]" }
+      sharedValues: { authorization: "fixture,} value,]" }
     });
   });
 
   it("keeps malformed JSON and broader JSON5 syntax invalid", () => {
     expect(() => normalizeMcpImport('{"mcpServers": {,}}'))
       .toThrow(/not valid JSON/i);
-    expect(() => normalizeMcpImport('{"command": "uvx" "args": []}'))
+    expect(() => normalizeMcpImport('{"url": "https://mcp.example.test/mcp" "headers": {}}'))
       .toThrow(/not valid JSON/i);
-    expect(() => normalizeMcpImport('{// comment\n"command": "uvx", "args": ["server"]}'))
+    expect(() => normalizeMcpImport('{// comment\n"url": "https://mcp.example.test/mcp"}'))
       .toThrow(/not valid JSON/i);
   });
 
-  it("normalizes direct URLs and common uvx and OCI launch shapes", () => {
+  it("normalizes direct URLs and endpoint JSON", () => {
     expect(normalizeMcpImport("https://mcp.notion.com/mcp")).toMatchObject({
       draft: {
         auth: {
@@ -132,22 +117,16 @@ describe("adminMcpDraft", () => {
       name: "mcp.notion.com"
     });
     expect(normalizeMcpImport(JSON.stringify({
-      command: "uvx",
-      args: ["mcp-server-fetch==1.4.0", "--ignore-robots-txt"],
+      allowPrivateNetwork: true,
+      endpoint: "http://10.0.0.5:8080/mcp",
       name: "Fetch"
-    })).draft.source).toEqual({
-      args: ["--ignore-robots-txt"],
-      kind: "pypi",
-      packageName: "mcp-server-fetch",
-      versionSelector: "==1.4.0"
-    });
-    expect(normalizeMcpImport(JSON.stringify({
-      command: "docker",
-      args: ["run", "--rm", "-i", "ghcr.io/team/mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
-    })).draft.source).toEqual({
-      args: [],
-      image: "ghcr.io/team/mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      kind: "oci"
+    }))).toMatchObject({
+      draft: {
+        auth: { mode: "none" },
+        source: { allowPrivateNetwork: true, kind: "remote", url: "http://10.0.0.5:8080/mcp" },
+        transport: "streamable_http"
+      },
+      name: "Fetch"
     });
   });
 
@@ -198,7 +177,7 @@ describe("adminMcpDraft", () => {
       .toEqual({ allowedAuthorizationServerOrigins: [], mode: "oauth", scopes: [] });
 
     const sameOriginDraft = {
-      ...defaultMcpDraft("remote"),
+      ...defaultMcpDraft(),
       auth: {
         allowedAuthorizationServerOrigins: ["https://old.example.test"],
         mode: "oauth" as const,
@@ -228,64 +207,22 @@ describe("adminMcpDraft", () => {
     ).auth).toEqual(reviewed.auth);
   });
 
-  it("normalizes familiar pasted launch and install commands without executing shell", () => {
-    expect(normalizeMcpImport("npx -y @playwright/mcp@latest")).toMatchObject({
-      name: "@playwright/mcp",
-      draft: {
-        source: {
-          args: [],
-          kind: "npm",
-          packageName: "@playwright/mcp",
-          versionSelector: "latest"
-        }
-      }
-    });
-    expect(normalizeMcpImport("pip install canvas-local-mcp==0.1.1")).toMatchObject({
-      name: "canvas-local-mcp",
-      draft: {
-        source: {
-          args: [],
-          kind: "pypi",
-          packageName: "canvas-local-mcp",
-          versionSelector: "==0.1.1"
-        }
-      }
-    });
-    expect(normalizeMcpImport("python3 -m pip install --no-cache-dir canvas-local-mcp").draft.source)
-      .toEqual({ args: [], kind: "pypi", packageName: "canvas-local-mcp" });
-    expect(() => normalizeMcpImport("npx package && curl https://example.com"))
-      .toThrow(/without shell operators/i);
-    expect(() => normalizeMcpImport("canvas-local-mcp"))
-      .toThrow(/could not identify how that command is installed/i);
-  });
-
-  it("uses a pasted install command to resolve a JSON config with a bare executable", () => {
-    const normalized = normalizeMcpImport(`{
-      "mcpServers": {
-        "canvas-local": {
-          "args": ["--verbose",],
-          "command": "canvas-local-mcp",
-          "env": { "CANVAS_BASE_URL": "https://canvas.example.edu", },
-        },
-      },
+  it("rejects launch commands and command JSON because only remote servers are supported", () => {
+    const remoteOnly = "Only remote MCP URLs are supported.";
+    for (const pasted of [
+      "npx -y @playwright/mcp@latest",
+      "uvx mcp-server-fetch",
+      "pip install canvas-local-mcp==0.1.1",
+      "docker run --rm -i ghcr.io/team/mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "mcp.example.test/mcp",
+      JSON.stringify({ args: ["mcp-server-fetch"], command: "uvx", name: "Fetch" }),
+      JSON.stringify({ mcpServers: { memory: { args: ["-y", "@mem0/mcp-server"], command: "npx", env: { MEM0_API_KEY: "secret" } } } })
+    ]) {
+      expect(() => normalizeMcpImport(pasted)).toThrow(remoteOnly);
     }
-    pip install canvas-local-mcp==0.1.1`);
-
-    expect(normalized).toMatchObject({
-      name: "canvas-local",
-      draft: {
-        source: {
-          args: ["--verbose"],
-          kind: "pypi",
-          packageName: "canvas-local-mcp",
-          versionSelector: "==0.1.1"
-        },
-        slots: [expect.objectContaining({
-          target: { kind: "environment", name: "CANVAS_BASE_URL" }
-        })]
-      },
-      sharedValues: { canvas_base_url: "https://canvas.example.edu" }
-    });
+    expect(() => normalizeMcpImport("   ")).toThrow("Paste an MCP URL or JSON configuration.");
+    expect(() => normalizeMcpImport('{"mcpServers": {"canvas": {"command": "canvas-local-mcp",}}}\npip install canvas-local-mcp'))
+      .toThrow(/not valid JSON/i);
   });
 
   it("requires one pasted server and produces a stable tool diff", () => {

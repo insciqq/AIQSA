@@ -144,7 +144,7 @@ export function AdminMcpList({
       <div className="rounded-[12px] border border-trace-subtle bg-answer-paper px-5 py-10 text-center" role="status">
         <p className="text-sm font-semibold text-ink-secondary">No MCP servers yet</p>
         <p className="mx-auto mt-1 max-w-xl text-sm leading-6 text-ink-muted">
-          New server adds one from a pasted URL, JSON entry or install command, checks it and makes its tools available to the groups and users you choose.
+          New server adds one from a pasted URL or JSON entry, checks it and makes its tools available to the groups and users you choose.
         </p>
       </div>
     );

@@ -600,11 +600,11 @@ describe("McpSettingsSection", () => {
 
   it("omits internal failure details from ordinary settings", async () => {
     const server = { ...userServer("missing", "Unavailable server"), enabled: true,
-      readiness: "unavailable", errorCode: "mcp_artifact_missing", artifact: "private-image" };
+      readiness: "unavailable", errorCode: "mcp_private_runtime_failure", runtime: "private-runtime-host", artifact: "private-image" };
     vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [server] })));
     const { container } = render(<McpSettingsSection />);
     await screen.findByText("Runtime unavailable");
-    expect(container).not.toHaveTextContent(/mcp_artifact_missing|private-image|ToolHive|rebuild|container/i);
+    expect(container).not.toHaveTextContent(/mcp_private_runtime_failure|private-image|private-runtime-host|rebuild|container/i);
   });
 
   it("shows a runtime health failure beside valid OAuth without asking for reconnection", async () => {

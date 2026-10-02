@@ -87,7 +87,7 @@ export function mcpServerStatus(server: AdminMcpServer, now = new Date()): McpSe
     if (server.draft.auth.mode === "oauth" && server.validationOAuth?.state !== "ready") {
       return { detail: attention.label, kind: "setup_needed", label: "Setup needed", tone: "warn" };
     }
-    if (server.activeRevision?.artifactStatus === "missing" || server.runtimeProblem === "unavailable") {
+    if (server.runtimeProblem === "unavailable") {
       return { detail: attention.label, kind: "runtime_unavailable", label: "Runtime unavailable", tone: "critical" };
     }
     return { detail: attention.label, kind: "needs_attention", label: "Needs attention", tone: "warn" };
@@ -136,9 +136,7 @@ export function mcpHeaderStatus(server: AdminMcpServer, now = new Date()): strin
 }
 
 export function mcpSourceLabel(server: AdminMcpServer): string {
-  const kind = server.draft.source.kind;
-  const prefix = kind === "remote" ? "Remote" : kind === "npm" ? "npm" : kind === "pypi" ? "PyPI" : "Image";
-  return `${prefix} · ${sourceDisplay(server.draft.source)}`;
+  return `Remote · ${sourceDisplay(server.draft.source)}`;
 }
 
 /** `2 groups · 1 user` from the direct grants, or `No access yet`. */
@@ -174,25 +172,6 @@ export function mcpAuthorizationState(server: AdminMcpServer): McpAuthorizationS
     return { detail: "The saved authorization is being removed", label: "Disconnecting", tone: "neutral" };
   }
   return { detail: "Connect your account to check and apply the settings", label: "Not connected", tone: "neutral" };
-}
-
-export type McpConfigurationBuild = Readonly<{
-  label: "Needs rebuild" | "Not verified" | "Ready to restore" | "Remote";
-  tone: McpStatusTone;
-}>;
-
-/** Whether an earlier configuration can be restored as is or has to be rebuilt first. */
-export function mcpConfigurationBuild(configuration: McpRevisionSummary): McpConfigurationBuild {
-  switch (configuration.artifactStatus) {
-    case "available":
-      return { label: "Ready to restore", tone: "ok" };
-    case "missing":
-      return { label: "Needs rebuild", tone: "critical" };
-    case "not_applicable":
-      return { label: "Remote", tone: "neutral" };
-    default:
-      return { label: "Not verified", tone: "neutral" };
-  }
 }
 
 export function mcpConfigurationSummary(configuration: McpRevisionSummary, now = new Date()): string {
