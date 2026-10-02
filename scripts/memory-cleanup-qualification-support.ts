@@ -19,7 +19,8 @@ export const cleanupQualificationFixtureSchema = z.object({
     id: identifier,
     factIds: z.array(identifier).min(1).max(100),
     expected: z.enum(["RETAIN", "RETIRE", "OBSERVE"]),
-    protected: z.boolean()
+    protected: z.boolean(),
+    dated: z.boolean().optional()
   }).strict()).min(1).max(200)
 }).strict().superRefine((fixture, context) => {
   const ids = fixture.assertions.map(({ id }) => id);
@@ -278,15 +279,106 @@ export const MEMORY_CLEANUP_SYNTHETIC_CORPUS = Object.freeze([
     expected: "RETAIN", sourceMode: "AUTOMATIC", pinned: false }
 ] as const);
 
+/** Long-term cleanup scenarios from the v3 acceptance corpus. Each scenario is
+ * one chat; a version cites `quote` inside its message (the whole message by
+ * default) and the last version of a fact is current. */
+export type MemoryCleanupLifecycleFact = Readonly<{
+  id: string;
+  expected: "RETAIN" | "RETIRE";
+  versions: readonly Readonly<{
+    message: number; statement: string; quote?: string;
+    usefulness?: "DURABLE" | "ONGOING" | "EPISODIC"; remembered?: boolean;
+  }>[];
+  dated?: boolean;
+  /** A settled v2 KEEP EPISODIC review predates this pass. */
+  priorKeep?: boolean;
+}>;
+export type MemoryCleanupLifecycleScenario = Readonly<{
+  language: "ru" | "en"; messages: readonly string[]; facts: readonly MemoryCleanupLifecycleFact[];
+}>;
+const single = (language: "ru" | "en", id: string, text: string, expected: "RETAIN" | "RETIRE",
+  options: Partial<Pick<MemoryCleanupLifecycleFact, "dated" | "priorKeep">> & Readonly<{
+    usefulness?: "DURABLE" | "ONGOING" | "EPISODIC"; remembered?: boolean;
+  }> = {}): MemoryCleanupLifecycleScenario => ({ language, messages: [text], facts: [{ id, expected,
+  versions: [{ message: 0, statement: text, usefulness: options.usefulness, remembered: options.remembered }],
+  dated: options.dated, priorKeep: options.priorKeep }] });
+export const MEMORY_CLEANUP_LIFECYCLE_CORPUS: readonly MemoryCleanupLifecycleScenario[] = Object.freeze([
+  single("ru", "ru_v3_episode_episodic", "Вчера я ходил на концерт джазового трио в филармонии.", "RETIRE", { usefulness: "EPISODIC" }),
+  single("en", "en_v3_episode_episodic", "Yesterday I went to a jazz trio concert at the philharmonic.", "RETIRE", { usefulness: "EPISODIC" }),
+  single("ru", "ru_v3_episode_unlabeled", "В прошлую субботу я заблудился в новом торговом центре.", "RETIRE"),
+  single("en", "en_v3_episode_unlabeled", "Last Saturday I got lost in the new shopping mall.", "RETIRE"),
+  single("ru", "ru_v3_mislabeled_durable", "Сегодня утром я пролил кофе на клавиатуру.", "RETIRE", { usefulness: "DURABLE" }),
+  single("en", "en_v3_mislabeled_durable", "This morning I spilled coffee on my keyboard.", "RETIRE", { usefulness: "DURABLE" }),
+  single("ru", "ru_v3_mislabeled_ongoing", "На этой неделе я жду доставку нового офисного кресла.", "RETIRE", { usefulness: "ONGOING" }),
+  single("en", "en_v3_mislabeled_ongoing", "This week I am waiting for a new office chair to be delivered.", "RETIRE", { usefulness: "ONGOING" }),
+  single("ru", "ru_v3_prior_keep", "В прошлом месяце я был на свадьбе друга в Казани.", "RETIRE", { usefulness: "EPISODIC", priorKeep: true }),
+  single("en", "en_v3_prior_keep", "Last month I attended a friend's wedding in Denver.", "RETIRE", { usefulness: "EPISODIC", priorKeep: true }),
+  { language: "ru", messages: ["Посылка придёт во вторник.", "Уточнение: посылка теперь придёт в четверг."], facts: [{
+    id: "ru_v3_two_versions", expected: "RETIRE", versions: [
+      { message: 0, statement: "Посылка придёт во вторник.", usefulness: "ONGOING" },
+      { message: 1, statement: "Посылка придёт в четверг.", quote: "посылка теперь придёт в четверг.", usefulness: "ONGOING" }] }] },
+  { language: "en", messages: ["The parcel arrives on Tuesday.", "Correction: the parcel now arrives on Thursday."], facts: [{
+    id: "en_v3_two_versions", expected: "RETIRE", versions: [
+      { message: 0, statement: "The parcel arrives on Tuesday.", usefulness: "ONGOING" },
+      { message: 1, statement: "The parcel arrives on Thursday.", quote: "the parcel now arrives on Thursday.", usefulness: "ONGOING" }] }] },
+  { language: "ru", messages: ["Вчера я был у стоматолога, а потом обедал с Анной в кафе."], facts: [
+    { id: "ru_v3_overlap_dentist", expected: "RETIRE", versions: [{ message: 0, statement: "Вчера я был у стоматолога.",
+      quote: "Вчера я был у стоматолога, а потом обедал", usefulness: "EPISODIC" }] },
+    { id: "ru_v3_overlap_lunch", expected: "RETIRE", versions: [{ message: 0, statement: "Вчера я обедал с Анной в кафе.",
+      quote: "а потом обедал с Анной в кафе.", usefulness: "EPISODIC" }] }] },
+  { language: "en", messages: ["Yesterday I saw the dentist and then had lunch with Anna at the cafe."], facts: [
+    { id: "en_v3_overlap_dentist", expected: "RETIRE", versions: [{ message: 0, statement: "Yesterday I saw the dentist.",
+      quote: "Yesterday I saw the dentist and then had lunch", usefulness: "EPISODIC" }] },
+    { id: "en_v3_overlap_lunch", expected: "RETIRE", versions: [{ message: 0, statement: "Yesterday I had lunch with Anna at the cafe.",
+      quote: "and then had lunch with Anna at the cafe.", usefulness: "EPISODIC" }] }] },
+  { language: "ru", messages: ["Я вегетарианец уже десять лет; вчера я попробовал новое кафе с фалафелем."], facts: [
+    { id: "ru_v3_neighbour_lasting", expected: "RETAIN", versions: [{ message: 0, statement: "Я вегетарианец уже десять лет.",
+      quote: "Я вегетарианец уже десять лет", usefulness: "DURABLE" }] },
+    { id: "ru_v3_neighbour_episode", expected: "RETIRE", versions: [{ message: 0, statement: "Вчера я попробовал новое кафе с фалафелем.",
+      quote: "вчера я попробовал новое кафе с фалафелем.", usefulness: "EPISODIC" }] }] },
+  { language: "en", messages: ["I have been vegetarian for ten years; yesterday I tried a new falafel place."], facts: [
+    { id: "en_v3_neighbour_lasting", expected: "RETAIN", versions: [{ message: 0, statement: "I have been vegetarian for ten years.",
+      quote: "I have been vegetarian for ten years", usefulness: "DURABLE" }] },
+    { id: "en_v3_neighbour_episode", expected: "RETIRE", versions: [{ message: 0, statement: "Yesterday I tried a new falafel place.",
+      quote: "yesterday I tried a new falafel place.", usefulness: "EPISODIC" }] }] },
+  single("ru", "ru_v3_dated", "Сегодня в девять утра у меня был приём у окулиста.", "RETIRE", { usefulness: "EPISODIC", dated: true }),
+  single("en", "en_v3_dated", "This morning at nine I had an appointment with the eye doctor.", "RETIRE", { usefulness: "EPISODIC", dated: true }),
+  single("ru", "ru_v3_common_habit", "Я регулярно ем хлеб.", "RETIRE", { usefulness: "DURABLE" }),
+  single("en", "en_v3_common_habit", "I regularly eat bread.", "RETIRE", { usefulness: "DURABLE" }),
+  single("ru", "ru_v3_remembered", "Запомни: сегодня я поставил машину на третьем уровне парковки.", "RETAIN",
+    { usefulness: "EPISODIC", remembered: true }),
+  single("en", "en_v3_remembered", "Remember that today I parked on level three of the garage.", "RETAIN",
+    { usefulness: "EPISODIC", remembered: true })
+]);
+
+/** Exact span of a lifecycle version inside its scenario message. */
+export function memoryCleanupLifecycleSpan(scenario: MemoryCleanupLifecycleScenario,
+  version: MemoryCleanupLifecycleFact["versions"][number]): Readonly<{ start: number; end: number; text: string }> {
+  const text = scenario.messages[version.message];
+  const quote = version.quote ?? text;
+  const start = text === undefined ? -1 : text.indexOf(quote);
+  if (text === undefined || start < 0) throw new Error("memory_cleanup_lifecycle_corpus_invalid");
+  return { start, end: start + quote.length, text };
+}
+
+export const MEMORY_CLEANUP_QUALIFICATION_REASONS = Object.freeze([
+  "pending_relation", "evidence_without_offsets", "source_changed",
+  "unreviewable_context", "statement_too_long", "evidence_not_current"
+] as const);
+export type CleanupQualificationReason = (typeof MEMORY_CLEANUP_QUALIFICATION_REASONS)[number];
+
 /** Old KEEP is not current-policy coverage. Supported committed removals remain
- * provenance for rows already retired; they never authorize another call. */
+ * provenance for rows already retired; they never authorize another call.
+ * Current-policy blocked and unreviewable sources are settled for this pass,
+ * counted by fixed reason and never reported as reviewed or removed. */
 export function summarizeCleanupQualificationReviews(input: Readonly<{
   currentPolicy: string;
   supportedPolicies: readonly string[];
   succeededJobIds: readonly string[];
   activeFactIds: readonly string[];
   versions: readonly Readonly<{ id: string; factId: string }>[];
-  reviews: readonly Readonly<{ factVersionId: string; memoryJobId: string; policyVersion: string; disposition: string }>[];
+  reviews: readonly Readonly<{ factVersionId: string; memoryJobId: string | null; policyVersion: string;
+    disposition: string; reasonCode?: string | null }>[];
 }>) {
   const succeeded = new Set(input.succeededJobIds);
   const factByVersion = new Map(input.versions.map((item) => [item.id, item.factId]));
@@ -294,17 +386,33 @@ export function summarizeCleanupQualificationReviews(input: Readonly<{
   const active = new Set(input.activeFactIds);
   const reviewed = new Set<string>();
   const removed = new Set<string>();
+  const settled = new Set<string>();
+  const outcomes = { kept: 0, rejected: 0, removed: 0, blocked: 0, unreviewable: 0 };
+  const reasons = Object.fromEntries(MEMORY_CLEANUP_QUALIFICATION_REASONS.map((reason) => [reason, 0])) as Record<CleanupQualificationReason, number>;
   for (const item of input.reviews) {
     const factId = factByVersion.get(item.factVersionId);
-    if (!factId || !succeeded.has(item.memoryJobId) || !supported.has(item.policyVersion)) continue;
+    if (!factId || !supported.has(item.policyVersion)) continue;
+    const current = item.policyVersion === input.currentPolicy;
+    if (current && (item.disposition === "BLOCKED" || item.disposition === "UNREVIEWABLE") &&
+      (item.memoryJobId === null || succeeded.has(item.memoryJobId))) {
+      settled.add(factId);
+      outcomes[item.disposition === "BLOCKED" ? "blocked" : "unreviewable"]++;
+      if (MEMORY_CLEANUP_QUALIFICATION_REASONS.some((reason) => reason === item.reasonCode)) {
+        reasons[item.reasonCode as CleanupQualificationReason]++;
+      }
+      continue;
+    }
+    if (item.memoryJobId === null || !succeeded.has(item.memoryJobId)) continue;
     if (item.disposition === "REMOVED") {
       removed.add(factId);
-      if (!active.has(factId) || item.policyVersion === input.currentPolicy) reviewed.add(factId);
-    } else if (item.policyVersion === input.currentPolicy && ["KEEP", "REJECTED"].includes(item.disposition)) {
+      if (current) outcomes.removed++;
+      if (!active.has(factId) || current) reviewed.add(factId);
+    } else if (current && ["KEEP", "REJECTED"].includes(item.disposition)) {
       reviewed.add(factId);
+      outcomes[item.disposition === "KEEP" ? "kept" : "rejected"]++;
     }
   }
-  return { reviewed, removed, jobs: [...succeeded] };
+  return { reviewed, removed, settled, outcomes, reasons, jobs: [...succeeded] };
 }
 
 export type CleanupQualificationFactState = Readonly<{
@@ -335,7 +443,8 @@ export function evaluateCleanupQualification(
   before: readonly CleanupQualificationFactState[],
   after: readonly CleanupQualificationFactState[],
   reviewedFactIds?: ReadonlySet<string>
-): Readonly<{ checked: number; passed: number; protected: number; retained: number; retired: number }> {
+): Readonly<{ checked: number; passed: number; protected: number; retained: number; retired: number;
+  erroneousRemovals: number; remainingRetire: number }> {
   const previous = new Map(before.map((state) => [state.factId, state]));
   const current = new Map(after.map((state) => [state.factId, state]));
   let checked = 0;
@@ -343,6 +452,8 @@ export function evaluateCleanupQualification(
   let retained = 0;
   let retired = 0;
   let protectedCount = 0;
+  let erroneousRemovals = 0;
+  let remainingRetire = 0;
   // Protect every explicit/manual/pinned row, including rows outside a rubric.
   for (const state of before) {
     if (state.protected) {
@@ -363,9 +474,11 @@ export function evaluateCleanupQualification(
       if (assertion.expected === "OBSERVE") continue;
       checked++;
       if (assertion.expected === "RETAIN" ? now?.active && now.currentVersionId === was.currentVersionId : !now?.active) passed++;
+      else if (assertion.expected === "RETAIN") erroneousRemovals++;
+      else remainingRetire++;
     }
   }
-  return { checked, passed, protected: protectedCount, retained, retired };
+  return { checked, passed, protected: protectedCount, retained, retired, erroneousRemovals, remainingRetire };
 }
 
 /** A later batch may see only removals attested by committed earlier reviews. */
