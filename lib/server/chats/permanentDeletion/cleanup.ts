@@ -317,7 +317,8 @@ async function settleDestinationAttemptItems(
           'READY'::"MemoryRetrievalAttemptState"
         )
       RETURNING
-        attempt."admittedAssistantLeafMessageId", attempt."chatId",
+        attempt."admittedAssistantLeafMessageId",
+        attempt."boundedPrivateBaseRequestSnapshot", attempt."chatId",
         attempt."modelRunId", attempt."state", attempt."userId"
     ), settled_runs AS (
       UPDATE "ModelRun" AS run
@@ -325,6 +326,11 @@ async function settleDestinationAttemptItems(
         "errorPayload" = jsonb_build_object(
           'code', 'memory_source_deleted',
           'message', ${RUN_PREPARATION_FAILURE_MESSAGE}::text
+        ),
+        "normalizedRequest" = COALESCE(
+          run."normalizedRequest",
+          attempt."boundedPrivateBaseRequestSnapshot" -> 'normalizedRequest',
+          '{}'::jsonb
         ),
         "status" = 'error'::"ModelRunStatus",
         "updatedAt" = CURRENT_TIMESTAMP
