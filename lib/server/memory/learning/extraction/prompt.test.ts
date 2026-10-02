@@ -76,6 +76,7 @@ describe("Memory semantic-frame extraction prompt", () => {
       "a short task or deliverable is SHORT_TERM and gets no lifecycle SLOT",
       "only the profession qualifies",
       "classify the resulting state, not the moment of change",
+      "never omit it as a single event",
       "memory_directive EXPLICIT_REMEMBER, and its honest usefulness class, even a rejection class",
       "that the earlier restriction or state no longer holds",
       "copy its ref into dependency_refs",
