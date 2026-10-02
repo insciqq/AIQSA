@@ -817,6 +817,68 @@ describe("McpSettingsSection", () => {
     expect(await screen.findByRole("switch", { name: "Enable Mem0" })).toHaveAttribute("aria-checked", "false");
   });
 
+  it("keeps Save busy and every exit blocked across both setup requests, then releases them after a failed enable", async () => {
+    const mem0 = userServer("mem0", "Mem0");
+    const answers: Array<(answer: Response) => void> = [];
+    const patches: McpPatch[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (!init?.method || init.method === "GET") return response({ servers: [mem0] });
+      patches.push(JSON.parse(String(init.body)) as McpPatch);
+      return new Promise<Response>((resolve) => { answers.push(resolve); });
+    }));
+    const onBusyChange = vi.fn();
+    render(<McpSettingsSection onBusyChange={onBusyChange} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Complete setup for Mem0" }));
+    const sheet = await screen.findByRole("dialog", { name: "Mem0" });
+    fireEvent.change(within(sheet).getByLabelText("API key"), { target: { value: "personal-token" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save personal values" }));
+
+    const expectBlocked = () => {
+      expect(within(sheet).getByRole("button", { name: "Save personal values" })).toHaveAttribute("aria-busy", "true");
+      expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeDisabled();
+      expect(within(sheet).getByRole("button", { name: "Close" })).toBeDisabled();
+      expect(within(sheet).getByLabelText("API key")).toBeDisabled();
+      expect(onBusyChange).toHaveBeenLastCalledWith(true);
+      const leave = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(leave);
+      expect(leave.defaultPrevented).toBe(true);
+      // Escape and the scrim are ignored: no close, no discard confirmation.
+      fireEvent.keyDown(sheet, { key: "Escape" });
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss", hidden: true }));
+      expect(screen.getByRole("dialog", { name: "Mem0" })).toBe(sheet);
+      expect(screen.queryByRole("dialog", { name: "Unsaved MCP changes" })).toBeNull();
+    };
+
+    await waitFor(() => expect(answers).toHaveLength(1));
+    expect(patches).toEqual([{ values: { api_key: "personal-token" } }]);
+    expectBlocked();
+    await act(async () => {
+      answers[0]!(response({ server: { ...mem0, fields: mem0.fields.map((field) => ({
+        ...field, configured: true, source: "personal" as const })) } }));
+    });
+
+    await waitFor(() => expect(answers).toHaveLength(2));
+    expect(patches).toEqual([{ values: { api_key: "personal-token" } }, { enabled: true }]);
+    // The saved values cleared the draft; only the enable request keeps the sheet busy.
+    expect(within(sheet).queryByText("Unsaved personal values")).toBeNull();
+    expectBlocked();
+    await act(async () => { answers[1]!(new Response("{}", { status: 503 })); });
+
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("The MCP server could not be updated. Try again.");
+    expect(within(sheet).getByRole("button", { name: "Save personal values" })).not.toHaveAttribute("aria-busy");
+    expect(within(sheet).getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(within(sheet).getByRole("button", { name: "Close" })).toBeEnabled();
+    expect(within(sheet).getByRole("button", { name: "Refresh status" })).toBeEnabled();
+    expect(within(sheet).getByLabelText("API key")).toBeEnabled();
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+    const leave = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(leave);
+    expect(leave.defaultPrevented).toBe(false);
+    fireEvent.keyDown(sheet, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Mem0" })).toBeNull());
+    expect(screen.getByRole("switch", { name: "Enable Mem0" })).toHaveAttribute("aria-checked", "false");
+  });
+
   it("saves setup values without enabling past the enabled-server limit", async () => {
     const enabled = Array.from({ length: MCP_RUN_PLAN_LIMITS.maxEnabledServers }, (_, index) => ({
       ...userServer(`server-${index}`, `Server ${index}`), enabled: true, readiness: "ready" as const
