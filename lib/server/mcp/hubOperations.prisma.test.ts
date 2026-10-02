@@ -3,7 +3,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { createMcpHubOperationStore } from "./hubOperations";
 
-/** Discovery no longer calls a model; rows written before local search remain retired storage. */
+/** Discovery no longer calls a model; rows written before local search remain retired storage.
+ * A settled legacy receipt carries completedAt and one revision, as the retired settle wrote it. */
 async function legacyDiscoveryAttempt(authority: { userId: string; clientId: string; grantId: string }, data: Readonly<{
   createdAt?: Date; expiresAt: Date; state?: "DISPATCHED" | "COMPLETE"; totalTokens?: number;
 }>) {
@@ -11,6 +12,7 @@ async function legacyDiscoveryAttempt(authority: { userId: string; clientId: str
     userId: authority.userId, clientId: authority.clientId, grantId: authority.grantId,
     connectionId: "fixture-connection", providerModelId: "fixture-model", credentialVersionId: "fixture-credential-version",
     expiresAt: data.expiresAt, ...(data.state ? { state: data.state } : {}), ...(data.createdAt ? { createdAt: data.createdAt } : {}),
+    ...(data.state === "COMPLETE" ? { completedAt: data.createdAt ?? new Date(), revision: 1 } : {}),
     usageEvent: { create: { mcpHubDiscovery: true, userId: authority.userId, modelId: "fixture-router", provider: "openai",
       providerModelId: "fixture-model", ...(data.totalTokens ? { inputTokens: data.totalTokens - 2, outputTokens: 2, reasoningTokens: 0,
         totalTokens: data.totalTokens, usageCompleteness: "COMPLETE" as const } : {}) } }
