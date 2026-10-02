@@ -1,8 +1,6 @@
 import { Prisma } from "@prisma/client";
 import {
   canonicalMemoryPackedSafeText,
-  MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS,
-  MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS,
   type MemorySafeProjectionKind
 } from "../../domain/memory/retrieval";
 import {
@@ -17,8 +15,6 @@ import {
 } from "../memory/persistence/eligibility";
 import { memoryReusableFactAuthorityPredicate } from
   "../memory/synthesis/eligibility";
-import { memorySynthesisIsCombination, MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES } from
-  "../memory/synthesis/policy";
 import {
   memoryChunkConversationFeedbackPredicate,
   memoryFactConversationFeedbackPredicate,
@@ -177,29 +173,6 @@ type FactMessageEvidenceRow = Readonly<{
   startOffset: number;
 }>;
 
-type FactSynthesisRelationRow = Readonly<{
-  targetConfidence: number;
-  pipelineVersion: string;
-  sourceEligibilityHash: string;
-  targetDisplayText: string;
-  targetObservedAt: Date;
-  targetSourceMode: string;
-  targetVersionId: string;
-}>;
-
-type FactPatternEvidenceRow = FactMessageEvidenceRow & Readonly<{
-  evidenceObservedAt: Date;
-  targetVersionId: string;
-}>;
-
-type PatternSupportingEvidenceSnapshot = Readonly<{
-  factVersionId: string;
-  observedAt: string;
-  sourceAuthority: "learned_from_user" | "supporting_observation" | "user_saved";
-  sourceRootHash: string;
-  textHash: string;
-}>;
-
 type FactEntityRootRow = Readonly<{
   cycle: boolean;
   entityId: string;
@@ -315,57 +288,14 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function patternSupportingEvidenceSnapshot(
-  feature: Record<string, unknown> | null
-): readonly PatternSupportingEvidenceSnapshot[] {
-  const value = feature?.patternSupportingEvidence;
-  if (value === undefined) return Object.freeze([]);
-  if (!Array.isArray(value) || value.length > MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS) {
-    throw new MemoryPreparingRunConflictError(
-      "memory_attempt_item_pattern_support_invalid",
-      false
-    );
-  }
-  const decoded = value.flatMap((entry) => {
-    const item = record(entry);
-    if (!item || Object.keys(item).sort().join("\u0000") !==
-        "factVersionId\u0000observedAt\u0000sourceAuthority\u0000sourceRootHash\u0000textHash" ||
-      typeof item.factVersionId !== "string" || !item.factVersionId ||
-      item.factVersionId.length > 256 ||
-      typeof item.observedAt !== "string" ||
-      (item.sourceAuthority !== "learned_from_user" &&
-        item.sourceAuthority !== "supporting_observation" &&
-        item.sourceAuthority !== "user_saved") ||
-      typeof item.sourceRootHash !== "string" ||
-      !/^[a-f0-9]{64}$/u.test(item.sourceRootHash) ||
-      typeof item.textHash !== "string" || !/^[a-f0-9]{64}$/u.test(item.textHash)) {
-      return [];
-    }
-    const observedAt = new Date(item.observedAt);
-    return Number.isNaN(observedAt.getTime()) ||
-      observedAt.toISOString() !== item.observedAt
-      ? []
-      : [{
-          factVersionId: item.factVersionId,
-          observedAt: item.observedAt,
-          sourceAuthority: item.sourceAuthority as
-            "learned_from_user" | "supporting_observation" | "user_saved",
-          sourceRootHash: item.sourceRootHash,
-          textHash: item.textHash
-        }];
-  });
-  if (decoded.length !== value.length ||
-    new Set(decoded.map(({ factVersionId }) => factVersionId)).size !== decoded.length) {
-    throw new MemoryPreparingRunConflictError(
-      "memory_attempt_item_pattern_support_invalid",
-      false
-    );
-  }
-  return Object.freeze(decoded);
-}
-
-function compactFactProjection(value: string): string {
-  return value.normalize("NFKC").replace(/\s+/gu, " ").trim();
+/** Dream synthesis is retired. A frozen derived-pattern element (accepted
+ * before the retirement) can no longer be revalidated: it is dropped fail-closed
+ * as stale, so its attempt is retried or its replay fails, never admitted. */
+function retiredPatternElement(feature: Record<string, unknown> | null): boolean {
+  const supports = feature?.patternSupportingEvidence;
+  return feature?.evidenceType === "pattern" ||
+    feature?.sourceAuthority === "derived_pattern" ||
+    (supports !== undefined && (!Array.isArray(supports) || supports.length > 0));
 }
 
 function iso(value: Date | null): string | null {
@@ -449,7 +379,6 @@ function commonResolved(
 
 type FactRetrievalContract = Readonly<{
   historical: boolean;
-  includePatterns: boolean;
   mode: "CURRENT_PROFILE" | "HISTORICAL_MEMORY" | "HISTORY_OVERVIEW" |
     "PAST_CHAT_SEARCH" | "TARGETED_CURRENT";
 }>;
@@ -474,21 +403,23 @@ function factRetrievalContract(
 ): FactRetrievalContract {
   const mode = feature?.retrievalMode;
   const historical = feature?.historical;
-  const includePatterns = feature?.includePatterns;
+  // Items frozen before Dream synthesis was retired carry a boolean pattern
+  // opt-in. It is accepted and ignored: reusable authority is direct-only.
+  const legacyIncludePatterns = feature?.includePatterns;
   if (
     (mode !== "CURRENT_PROFILE" && mode !== "TARGETED_CURRENT" &&
       mode !== "HISTORICAL_MEMORY" && mode !== "PAST_CHAT_SEARCH" &&
       mode !== "HISTORY_OVERVIEW") ||
-    typeof historical !== "boolean" || typeof includePatterns !== "boolean" ||
+    typeof historical !== "boolean" ||
+    legacyIncludePatterns !== undefined && typeof legacyIncludePatterns !== "boolean" ||
     core && historical ||
     !core && mode === "HISTORY_OVERVIEW" ||
-    historical && mode !== "HISTORICAL_MEMORY" ||
-    includePatterns && mode !== "TARGETED_CURRENT"
+    historical && mode !== "HISTORICAL_MEMORY"
   ) throw new MemoryPreparingRunConflictError(
     "memory_attempt_item_fact_retrieval_invalid",
     false
   );
-  return { historical, includePatterns, mode };
+  return { historical, mode };
 }
 
 function exactEvidenceValid(row: FactMessageEvidenceRow): boolean {
@@ -571,7 +502,9 @@ async function resolveFact(
     );
   }
   const feature = record(input.featureSnapshot);
-  const patternSupports = patternSupportingEvidenceSnapshot(feature);
+  if (retiredPatternElement(feature)) {
+    throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
+  }
   const core = feature?.tier === "CORE";
   const retrieval = factRetrievalContract(feature, core);
   const direct = !core && feature?.directFactAuthority === true;
@@ -714,7 +647,6 @@ async function resolveFact(
         userId: authority.userId
       })}
       AND ${memoryReusableFactAuthorityPredicate(authority.userId, {
-        includePatterns: retrieval.includePatterns,
         lifecycle: retrieval.historical ? "CURRENT_OR_HISTORICAL" : "CURRENT"
       })}
       AND ${memoryFactConversationFeedbackPredicate(
@@ -745,27 +677,7 @@ async function resolveFact(
   ) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
-  const synthesisReason = record(row.structuredValue)?.reasonCode;
-  const combined = row.modality === "PATTERN" && typeof synthesisReason === "string" &&
-    memorySynthesisIsCombination(synthesisReason);
-  if (row.modality === "PATTERN") {
-    if (patternSupports.length < (combined
-      ? MEMORY_SYNTHESIS_MIN_COMBINED_SOURCES : MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS) ||
-      (synthesisReason !== "combined_episode_facts" &&
-        new Set(patternSupports.map(({ sourceRootHash }) => sourceRootHash)).size !== patternSupports.length)) {
-      throw new MemoryPreparingRunConflictError(
-        "memory_attempt_item_pattern_support_invalid",
-        false
-      );
-    }
-  }
-  else if (patternSupports.length > 0) {
-    throw new MemoryPreparingRunConflictError(
-      "memory_attempt_item_pattern_support_invalid",
-      false
-    );
-  }
-  const messageEvidence = row.sourceMode === "AUTOMATIC" && row.modality !== "PATTERN"
+  const messageEvidence = row.sourceMode === "AUTOMATIC"
     ? await tx.$queryRaw<FactMessageEvidenceRow[]>(Prisma.sql`
         SELECT
           support."branchGeneration", support."chatId",
@@ -802,124 +714,10 @@ async function resolveFact(
     : [];
   const exactMessageEvidence = messageEvidence.filter(exactEvidenceValid);
   const primaryEvidence = exactMessageEvidence[0] ?? null;
-  if (row.sourceMode === "AUTOMATIC" && row.modality !== "PATTERN" && !primaryEvidence) {
+  if (row.sourceMode === "AUTOMATIC" && !primaryEvidence) {
     throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
   }
-  const synthesisRelations = row.modality === "PATTERN"
-    ? await tx.$queryRaw<FactSynthesisRelationRow[]>(Prisma.sql`
-        SELECT relation."pipelineVersion", relation."sourceEligibilityHash",
-          relation."targetVersionId",
-          target_version."displayText" AS "targetDisplayText",
-          target_version."confidence" AS "targetConfidence",
-          target_version."observedAt" AS "targetObservedAt",
-          target_version."sourceMode"::text AS "targetSourceMode"
-        FROM "MemoryFactVersionRelation" AS relation
-        INNER JOIN "MemoryFactVersion" AS target_version
-          ON target_version."userId" = relation."userId"
-          AND target_version."id" = relation."targetVersionId"
-        WHERE relation."userId" = ${authority.userId}
-          AND relation."sourceVersionId" = ${input.factVersionId}
-          AND relation."kind" =
-            'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-        ORDER BY relation."targetVersionId"
-        FOR SHARE OF relation, target_version
-      `)
-    : [];
-  if (combined && synthesisRelations.length !== patternSupports.length) {
-    throw new MemoryPreparingRunConflictError("memory_attempt_item_pattern_support_invalid", false);
-  }
-  const automaticPatternSourceIds = patternSupports.flatMap((support) => {
-    const relation = synthesisRelations.find(({ targetVersionId }) =>
-      targetVersionId === support.factVersionId);
-    return relation?.targetSourceMode === "AUTOMATIC"
-      ? [support.factVersionId]
-      : [];
-  });
-  const patternEvidence = automaticPatternSourceIds.length > 0
-    ? await tx.$queryRaw<FactPatternEvidenceRow[]>(Prisma.sql`
-        SELECT
-          support."branchGeneration", support."chatId",
-          evidence_message."content", support."sourceEndOffset" AS "endOffset",
-          support."id" AS "evidenceId", support."evidenceFingerprint",
-          support."observedAt" AS "evidenceObservedAt",
-          support."messageId", support."safeExcerpt", support."safeSourceHash",
-          support."sourceMessageContentHash", support."sourceProjectionVersion",
-          support."sourceStartOffset" AS "startOffset",
-          relation."targetVersionId"
-        FROM "MemoryFactVersionRelation" AS relation
-        INNER JOIN "MemoryEvidence" AS support
-          ON support."userId" = relation."userId"
-          AND support."factVersionId" = relation."targetVersionId"
-        INNER JOIN "Chat" AS evidence_chat
-          ON evidence_chat."userId" = support."userId"
-          AND evidence_chat."id" = support."chatId"
-          AND evidence_chat."projectId" IS NULL
-          AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-          AND evidence_chat."permanentDeletionAt" IS NULL
-        INNER JOIN "Message" AS evidence_message
-          ON evidence_message."chatId" = support."chatId"
-          AND evidence_message."id" = support."messageId"
-          AND evidence_message."role" = 'user'
-        WHERE relation."userId" = ${authority.userId}
-          AND relation."sourceVersionId" = ${input.factVersionId}
-          AND relation."targetVersionId" IN (${Prisma.join(
-            automaticPatternSourceIds
-          )})
-          AND relation."kind" =
-            'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-          AND ${memoryPersonalEvidenceRowPredicate(
-            authority.userId,
-            Prisma.sql`relation."targetVersionId"`,
-            { exactVNext: true }
-          )}
-        ORDER BY relation."targetVersionId", support."observedAt" DESC, support."id"
-        FOR SHARE OF relation, support, evidence_chat, evidence_message
-      `)
-    : [];
-  const exactPatternEvidence = patternEvidence.filter(exactEvidenceValid);
-  const primaryPatternEvidence = new Map<string, FactPatternEvidenceRow>();
-  for (const evidence of exactPatternEvidence) {
-    if (!primaryPatternEvidence.has(evidence.targetVersionId)) {
-      primaryPatternEvidence.set(evidence.targetVersionId, evidence);
-    }
-  }
-  for (const support of patternSupports) {
-    const relation = synthesisRelations.find(({ targetVersionId }) =>
-      targetVersionId === support.factVersionId);
-    const projected = relation && typeof relation.targetDisplayText === "string"
-      ? safeFactProjectionText(relation.targetDisplayText)
-      : null;
-    const observedAt = relation?.targetObservedAt;
-    const sourceAuthority = relation?.targetSourceMode === "EXPLICIT"
-      ? "user_saved"
-      : relation?.targetSourceMode === "AUTOMATIC"
-        ? relation.targetConfidence < 1 ? "supporting_observation" : "learned_from_user"
-        : null;
-    const primary = relation?.targetSourceMode === "AUTOMATIC"
-      ? primaryPatternEvidence.get(support.factVersionId) ?? null
-      : null;
-    const rootHash = relation?.targetSourceMode === "EXPLICIT"
-      ? memorySha256(`explicit:${support.factVersionId}`)
-      : primary
-        ? memorySha256(`message:${primary.messageId}`)
-        : null;
-    if (!relation || !projected || !(observedAt instanceof Date) ||
-      !Number.isFinite(observedAt.getTime()) || sourceAuthority === null ||
-      support.observedAt !== observedAt.toISOString() ||
-      support.sourceAuthority !== sourceAuthority ||
-      support.textHash !== memoryPreparingTextHash(compactFactProjection(projected)) ||
-      support.sourceRootHash !== rootHash) {
-      throw new MemoryPreparingRunConflictError("memory_attempt_item_stale", true);
-    }
-  }
-  const synthesisRelationSnapshot = synthesisRelations.map((relation) => ({
-    pipelineVersion: relation.pipelineVersion,
-    sourceEligibilityHash: relation.sourceEligibilityHash,
-    targetVersionId: relation.targetVersionId
-  }));
-  const sourceMessageIds = row.modality === "PATTERN"
-    ? [...new Set(exactPatternEvidence.map(({ messageId }) => messageId))]
-    : primaryEvidence
+  const sourceMessageIds = primaryEvidence
     ? exactMessageEvidence.flatMap((evidence) =>
         evidence.chatId === primaryEvidence.chatId &&
           evidence.branchGeneration === primaryEvidence.branchGeneration
@@ -945,8 +743,10 @@ async function resolveFact(
     projectedTextHash: memoryPreparingTextHash(compactProjection(safeDisplayText)),
     projectionKind: projection.kind,
     schemaVersion: 3,
-    patternSupportingEvidence: patternSupports,
-    synthesisRelations: synthesisRelationSnapshot,
+    // Retired synthesis fields stay empty so a snapshot frozen before the
+    // retirement still compares equal when it is revalidated.
+    patternSupportingEvidence: [],
+    synthesisRelations: [],
     sourceMode: row.sourceMode
   };
   const entityRoots = await factEntityRoots(

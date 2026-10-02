@@ -384,9 +384,7 @@ export function createMemoryNativeFactSearchService(
         for (const candidate of ordered) {
           const factId = candidate.metadata.factId;
           const expansion = expansions.get(`${candidate.itemType}:${candidate.itemId}`);
-          if (candidate.itemType !== "FACT_VERSION" || !factId ||
-            candidate.metadata.sourceAuthority === "SYNTHESIS" || !expansion ||
-            (expansion.patternSupportingEvidence ?? []).length > 0 ||
+          if (candidate.itemType !== "FACT_VERSION" || !factId || !expansion ||
             !memoryCandidateMatchesRetrievalProjection(candidate, expansion, plan)) continue;
           const evidenceRoot = memoryRetrievalEvidenceRootKey(candidate);
           if (selectedFacts.has(factId) || selectedEvidenceRoots.has(evidenceRoot)) continue;

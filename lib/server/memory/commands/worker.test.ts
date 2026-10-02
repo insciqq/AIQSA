@@ -168,11 +168,49 @@ describe("durable Memory command worker", () => {
     expect(mocks.execute).not.toHaveBeenCalled();
   });
 
+  it("ignores a retained pattern exclusion when releasing learning for a v13 NONE", async () => {
+    const decoded = decodeMemoryActionControlDecision({ decision: {
+      action: "NONE", patternExclusionRequested: true, reasonCode: "no_memory_request"
+    } }, "Synthetic request");
+    if (!decoded.ok) throw new Error(decoded.code);
+    const f = fixture();
+    f.control.decide.mockResolvedValueOnce({ bindingId: "binding", status: "READY", intent: decoded.value });
+    await f.handler.execute(job, f.context);
+    expect(f.client.memoryJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ commandResult: { classification: "NONE" } })
+    }));
+    expect(mocks.execute).not.toHaveBeenCalled();
+  });
+
+  it("executes a stored checkpoint carrying the retired pattern exclusion", async () => {
+    // A checkpoint accepted before the retirement: the decoder keeps the
+    // field only beside a current targeted Memory read.
+    const excluded = { ...intent, memoryUseful: true, patternExclusionRequested: true,
+      queryText: "green notebooks" };
+    const saved = { ...excluded, action: "SAVE" as const, reasonCode: "save_request" as const,
+      statement: "I prefer green" };
+    const checkpoint = { bindingId: "binding", intent: saved };
+    expect(decodeMemoryCommandIntent(checkpoint)).toEqual(checkpoint);
+    const f = fixture("RUNNING", checkpoint);
+    mocks.execute.mockResolvedValueOnce({ operation: "SAVE", status: "COMMITTED" });
+    expect(await f.handler.execute(job, f.context)).toMatchObject({ stage: "command_committed" });
+    expect(f.control.decide).not.toHaveBeenCalled();
+    expect(mocks.execute).toHaveBeenCalledWith(expect.objectContaining({ intent: saved }));
+
+    const declined = { bindingId: "binding", intent: { ...excluded,
+      reasonCode: "no_memory_request" as const } };
+    expect(decodeMemoryCommandIntent(declined)).toEqual(declined);
+    const g = fixture("RUNNING", declined);
+    expect(await g.handler.execute(job, g.context)).toMatchObject({ stage: "command_rejected" });
+    expect(g.client.memoryJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ commandResult: { classification: "NONE" } })
+    }));
+  });
+
   it.each([
     { reasonCode: "uncertain", patternExclusionRequested: false },
     { reasonCode: "unsupported", patternExclusionRequested: false },
-    { reasonCode: "low_confidence", patternExclusionRequested: false },
-    { reasonCode: "no_memory_request", patternExclusionRequested: true }
+    { reasonCode: "low_confidence", patternExclusionRequested: false }
   ])("does not release learning for excluded v13 NONE $reasonCode/$patternExclusionRequested", async (decision) => {
     const decoded = decodeMemoryActionControlDecision({ decision: { action: "NONE", ...decision } }, "Synthetic request");
     if (!decoded.ok) throw new Error(decoded.code);

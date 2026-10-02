@@ -172,6 +172,27 @@ describe("Memory preparing context ceiling", () => {
     })).toThrow(MemoryPreparingRunConflictError);
   });
 
+  it("leaves a retired derived-pattern element to fail-closed item revalidation", () => {
+    const base = usedAttempt("SIMPLE", 1_024, 10_000);
+    // Formerly rejected as memory_attempt_item_pattern_authority_invalid,
+    // which failed preparation; item revalidation now drops it as stale.
+    expect(() => validateMemoryPreparingAttemptResult({
+      ...base,
+      budgetSnapshot: { ...base.budgetSnapshot,
+        plan: { aggregationRequested: false, includePatterns: false, mode: "PAST_CHAT_SEARCH" } },
+      items: [{
+        exactItemId: "pattern-version",
+        exactSafeText: "bounded safe history",
+        factVersionId: "pattern-version",
+        featureSnapshot: { evidenceType: "pattern", includePatterns: true,
+          sourceAuthority: "derived_pattern", tier: "DYNAMIC" },
+        finalScore: 0.4,
+        itemType: "FACT_VERSION" as const,
+        selectionReason: "rrf+pattern_relevance"
+      }]
+    })).not.toThrow();
+  });
+
   it("rejects a cap that exceeds the admitted provider envelope", () => {
     const accepted = usedAttempt("SIMPLE", 1_000, 1_000);
     expect(() => validateMemoryPreparingAttemptResult({

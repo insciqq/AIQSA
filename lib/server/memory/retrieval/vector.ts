@@ -90,7 +90,6 @@ export type MemoryVectorEligibility = Readonly<{
   factMode: "CURRENT" | "HISTORICAL";
   factTemporalAsOf: Date | null;
   folderId: string | null;
-  includePatterns: boolean;
   occurredFrom: Date | null;
   occurredTo: Date | null;
   sourceAssistantId: string | null;
@@ -297,8 +296,6 @@ function validateSearchInput(input: MemoryVectorSearchInput): void {
     !validDate(input.eligibility.occurredTo) ||
     !validDate(input.eligibility.factTemporalAsOf) ||
     !["CURRENT", "HISTORICAL"].includes(input.eligibility.factMode) ||
-    typeof input.eligibility.includePatterns !== "boolean" ||
-    input.eligibility.includePatterns && input.eligibility.factMode !== "CURRENT" ||
     Boolean(input.eligibility.factTemporalAsOf &&
       (input.eligibility.occurredFrom || input.eligibility.occurredTo)) ||
     Boolean(
@@ -581,7 +578,6 @@ function factEligibility(input: MemoryVectorSearchInput): EligibilitySql {
           AND ${memoryReusableFactAuthorityPredicate(
             Prisma.sql`entry."userId"`,
             {
-              includePatterns: input.eligibility.includePatterns,
               lifecycle: input.eligibility.factMode === "HISTORICAL"
                 ? "CURRENT_OR_HISTORICAL"
                 : "CURRENT",

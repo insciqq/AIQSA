@@ -8,7 +8,6 @@ import {
   executeMemoryRetrievalLaneTasks,
   fuseMemoryRetrievalCandidates,
   MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS,
-  MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS,
   MEMORY_CORE_MAX_FACTS,
   MEMORY_STANDING_MAX_FACTS,
   MEMORY_LEGACY_STANDING_MAX_FACTS,
@@ -89,7 +88,6 @@ import { memoryCanonicalGlobalScopePredicate } from "../persistence/scopes";
 import { memoryCanonicalFactRootIdSql } from "../persistence/canonicalFact";
 import {
   memoryAutomaticExplicitRememberPredicate,
-  memoryPersonalEvidenceRowPredicate,
   memoryPersonalFactEvidencePredicate
 } from "../persistence/eligibility";
 import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
@@ -355,7 +353,6 @@ type CandidateRow = Readonly<{
   sourceMode: string | null;
   sourceAuthority: string;
   subjectKey: string | null;
-  synthesisDepth: number;
   structuredValue: Prisma.JsonValue | null;
   systemFrom: Date | null;
   temperatureClass: string | null;
@@ -397,8 +394,6 @@ type ExpandedRow = Readonly<{
   sourceChatId: string | null;
   sourceMessageIds?: string[];
   userSpans?: Prisma.JsonValue;
-  patternSupportingEvidence: Prisma.JsonValue;
-  patternSourceCount?: number;
   supportingEvidence: Prisma.JsonValue;
   supportingItemId: string | null;
 }>;
@@ -427,7 +422,7 @@ const lifecycleStates = new Set(["ACTIVE", "SUPERSEDED"]);
 const entityRoles = new Set(["SUBJECT", "OBJECT", "MENTION"]);
 const roundSegmentPositions = new Set(["MIDDLE", "PREFIX", "SINGLE", "SUFFIX"]);
 const sourceAuthorities = new Set([
-  "EXPLICIT", "DIRECT_AUTOMATIC", "PAST_CHAT", "SYNTHESIS", "TOOL_OBSERVATION"
+  "EXPLICIT", "DIRECT_AUTOMATIC", "PAST_CHAT", "TOOL_OBSERVATION"
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -516,7 +511,6 @@ function decodeMetadata(row: CandidateRow): MemoryCandidateMetadata {
     new Set(row.entityIds).size !== row.entityIds.length ||
     row.entityIds.some((id) => !validToken(id)) ||
     !Number.isSafeInteger(row.relationDepth) || row.relationDepth < 0 ||
-    !Number.isSafeInteger(row.synthesisDepth) || row.synthesisDepth < 0 ||
     [row.expectedAt, row.expiresAt, row.lastConfirmedAt, row.lastUsedAt,
       row.observedAt, row.occurredAt,
       row.occurredFrom, row.occurredTo, row.systemFrom, row.validFrom, row.validTo]
@@ -536,30 +530,9 @@ function decodeMetadata(row: CandidateRow): MemoryCandidateMetadata {
       ].includes(row.safeContentHash)
     )
   ) throw new Error("memory_retrieval_result_invalid");
-  const synthesisValue = isRecord(row.structuredValue) ? row.structuredValue : null;
-  const combinedReason: MemoryCandidateMetadata["combinedMemoryReason"] =
-    row.modality === "PATTERN" &&
-    (synthesisValue?.reasonCode === "combined_overlapping_facts" ||
-      synthesisValue?.reasonCode === "combined_refined_facts" ||
-      synthesisValue?.reasonCode === "combined_episode_facts")
-    ? synthesisValue.reasonCode
-    : null;
-  const combinedClaims = Array.isArray(synthesisValue?.claims) &&
-    synthesisValue.claims.every((claim) => isRecord(claim) &&
-      typeof claim.statement === "string" &&
-      Array.isArray(claim.sourceVersionIds) &&
-      claim.sourceVersionIds.every((id: unknown) => typeof id === "string" && validToken(id)))
-    ? synthesisValue.claims.map((claim) => ({
-        sourceVersionIds: [...(claim as { sourceVersionIds: string[] }).sourceVersionIds],
-        statement: (claim as { statement: string }).statement
-      }))
-    : null;
   return {
     canonicalKey: row.canonicalKey,
     category: row.category,
-    combinedMemory: combinedReason !== null,
-    combinedMemoryReason: combinedReason,
-    combinedClaims,
     confidence: row.confidence,
     conflict: row.conflict,
     coreEligible: row.coreEligible,
@@ -600,7 +573,6 @@ function decodeMetadata(row: CandidateRow): MemoryCandidateMetadata {
     sourceMode: row.sourceMode as MemoryCandidateMetadata["sourceMode"],
     sourceAuthority: row.sourceAuthority as MemoryCandidateMetadata["sourceAuthority"],
     subjectKey: row.subjectKey,
-    synthesisDepth: row.synthesisDepth,
     systemFrom: row.systemFrom,
     temperatureClass: row.temperatureClass as MemoryCandidateMetadata["temperatureClass"],
     temperatureScore: row.temperatureScore,
@@ -714,48 +686,6 @@ function decodedContextualEvidence(row: ExpandedRow): Readonly<{
   };
 }
 
-function decodedPatternSupportingEvidence(
-  row: ExpandedRow
-): NonNullable<MemoryExpandedCandidate["patternSupportingEvidence"]> {
-  if (!Array.isArray(row.patternSupportingEvidence) ||
-    row.patternSupportingEvidence.length > MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS) {
-    return Object.freeze([]);
-  }
-  const decoded = row.patternSupportingEvidence.flatMap((value) => {
-    if (!isRecord(value) ||
-      Object.keys(value).filter((key) => key !== "confidence").sort().join("\u0000") !==
-        "itemId\u0000observedAt\u0000safeText\u0000sourceAuthority\u0000sourceChatId\u0000sourceRootHash" ||
-      !validToken(value.itemId) || typeof value.safeText !== "string" ||
-      (value.sourceAuthority !== "DIRECT_AUTOMATIC" &&
-        value.sourceAuthority !== "EXPLICIT") ||
-      (value.confidence !== undefined && (typeof value.confidence !== "number" ||
-        !Number.isFinite(value.confidence) || value.confidence <= 0 || value.confidence > 1)) ||
-      (value.sourceChatId !== null && !validToken(value.sourceChatId)) ||
-      typeof value.sourceRootHash !== "string" ||
-      !fingerprintPattern.test(value.sourceRootHash) ||
-      typeof value.observedAt !== "string") return [];
-    const observedAt = new Date(value.observedAt);
-    const safeText = safeMemoryProjectionText(value.safeText);
-    return safeText && !Number.isNaN(observedAt.getTime())
-      ? [{
-          ...(value.confidence === undefined ? {} : { confidence: value.confidence }),
-          itemId: value.itemId,
-          observedAt,
-          safeText,
-          sourceAuthority: value.sourceAuthority as
-            "DIRECT_AUTOMATIC" | "EXPLICIT",
-          sourceChatId: value.sourceChatId,
-          sourceRootHash: value.sourceRootHash
-        }]
-      : [];
-  });
-  if (decoded.length !== row.patternSupportingEvidence.length ||
-    new Set(decoded.map(({ itemId }) => itemId)).size !== decoded.length) {
-    return Object.freeze([]);
-  }
-  return Object.freeze(decoded);
-}
-
 function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
   const sourceMessageIds = row.sourceMessageIds;
   const suppliedDirectUserTexts = row.directUserTexts;
@@ -797,9 +727,7 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
       new Set(sourceMessageIds).size !== sourceMessageIds.length
     )) ||
     (row.supportingItemId !== null && !validToken(row.supportingItemId)) ||
-    !validDate(row.occurredFrom) || !validDate(row.occurredTo) ||
-    (row.patternSourceCount !== undefined &&
-      (!Number.isSafeInteger(row.patternSourceCount) || row.patternSourceCount < 0))
+    !validDate(row.occurredFrom) || !validDate(row.occurredTo)
   ) throw new Error("memory_expansion_result_invalid");
   const safeText = safeMemoryProjectionText(row.safeText);
   if (!safeText) return null;
@@ -807,10 +735,8 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
     ? directUserTexts
     : [];
   const contextual = decodedContextualEvidence(row);
-  const patternSupportingEvidence = decodedPatternSupportingEvidence(row);
   const {
     directUserTexts: _rawDirectUserTexts,
-    patternSupportingEvidence: _rawPatternSupportingEvidence,
     sourceMessageIds: _rawSourceMessageIds,
     userSpans: _rawUserSpans,
     ...projection
@@ -821,9 +747,6 @@ function decodeExpanded(row: ExpandedRow): MemoryExpandedCandidate | null {
       ? { directUserTexts: Object.freeze([...safeDirectUserTexts]) }
       : {}),
     itemType: row.itemType as MemoryExpandedCandidate["itemType"],
-    ...(patternSupportingEvidence.length > 0 ? { patternSupportingEvidence } : {}),
-    ...(row.patternSourceCount === undefined
-      ? {} : { patternSourceCount: row.patternSourceCount }),
     retrievalHint: contextual.retrievalHint,
     safeText,
     ...(sourceMessageIds !== undefined
@@ -1181,9 +1104,8 @@ function factKindPredicate(plan: MemoryRetrievalPlan): Prisma.Sql {
 }
 
 function factPlanPredicates(plan: MemoryRetrievalPlan): Prisma.Sql {
-  const patterns = plan.includePatterns
-    ? Prisma.sql`TRUE`
-    : Prisma.sql`version."modality" <> 'PATTERN'::"MemoryFactModality"`;
+  // Retired synthesized PATTERN rows are never retrieved.
+  const patterns = Prisma.sql`version."modality" <> 'PATTERN'::"MemoryFactModality"`;
   const scope = plan.filters.scopeType
     ? Prisma.sql`scope."scopeType"::text = ${plan.filters.scopeType}`
     : Prisma.sql`TRUE`;
@@ -1287,8 +1209,7 @@ function factColumns(
     version."languageCode", version."modality"::text AS "modality",
     version."sourceMode"::text AS "sourceMode", version."directness"::text AS "directness",
     CASE WHEN version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode" THEN 'EXPLICIT'
-      WHEN version."modality" = 'PATTERN'::"MemoryFactModality"
-        THEN 'SYNTHESIS' ELSE 'DIRECT_AUTOMATIC' END::text AS "sourceAuthority",
+      ELSE 'DIRECT_AUTOMATIC' END::text AS "sourceAuthority",
     version."sensitivityClass"::text AS "sensitivityClass",
     NULL::text AS "historySafetyClass", root_scope."scopeType"::text AS "scopeType",
     root_scope."folderId" AS "sourceFolderId",
@@ -1320,7 +1241,7 @@ function factColumns(
       ORDER BY aiqsa_memory_entity_root_id(link."userId", link."entityId")
       LIMIT 32)::text[] AS "entityIds",
     ${matchedEntityRole} AS "matchedEntityRole",
-    0::integer AS "relationDepth", version."synthesisDepth" AS "synthesisDepth",
+    0::integer AS "relationDepth",
     NULL::timestamp AS "occurredFrom", NULL::timestamp AS "occurredTo"
   `;
 }
@@ -1517,7 +1438,6 @@ function factEligibleSelect(
       AND ${factLifecyclePredicate(plan)}
       AND ${memoryFactScopePredicate(snapshot)}
       AND ${memoryReusableFactAuthorityPredicate(snapshot.userId, {
-        includePatterns: plan.includePatterns,
         lifecycle: plan.mode === "HISTORICAL_MEMORY"
           ? "CURRENT_OR_HISTORICAL"
           : "CURRENT"
@@ -1623,7 +1543,6 @@ function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot, limit: number)
       )
       AND ${memoryFactScopePredicate(snapshot)}
       AND ${memoryReusableFactAuthorityPredicate(snapshot.userId, {
-        includePatterns: false,
         lifecycle: "CURRENT"
       })}
       -- Standing keeps only long-term facts. Past events remain in chat history
@@ -1819,7 +1738,6 @@ function historyDigestEligibleSelect(
       TRUE AS "current", FALSE AS "historical", FALSE AS "conflict",
       NULL::text AS "lifecycleState", ARRAY[]::text[] AS "entityIds",
       NULL::text AS "matchedEntityRole", 0::integer AS "relationDepth",
-      0::integer AS "synthesisDepth",
       NULL::timestamp AS "observedAt", NULL::timestamp AS "occurredAt",
       NULL::timestamp AS "expectedAt", NULL::timestamp AS "expiresAt",
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
@@ -1992,7 +1910,6 @@ function historyChunkEligibleSelect(
       TRUE AS "current", FALSE AS "historical", FALSE AS "conflict",
       NULL::text AS "lifecycleState", ARRAY[]::text[] AS "entityIds",
       NULL::text AS "matchedEntityRole", 0::integer AS "relationDepth",
-      0::integer AS "synthesisDepth",
       NULL::timestamp AS "observedAt", NULL::timestamp AS "occurredAt",
       NULL::timestamp AS "expectedAt", NULL::timestamp AS "expiresAt",
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
@@ -2086,7 +2003,6 @@ function historyLegacyRoundEligibleSelect(
       TRUE AS "current", FALSE AS "historical", FALSE AS "conflict",
       NULL::text AS "lifecycleState", ARRAY[]::text[] AS "entityIds",
       NULL::text AS "matchedEntityRole", 0::integer AS "relationDepth",
-      0::integer AS "synthesisDepth",
       NULL::timestamp AS "observedAt", NULL::timestamp AS "occurredAt",
       NULL::timestamp AS "expectedAt", NULL::timestamp AS "expiresAt",
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
@@ -2193,7 +2109,6 @@ function historySegmentRoundEligibleSelect(
       TRUE AS "current", FALSE AS "historical", FALSE AS "conflict",
       NULL::text AS "lifecycleState", ARRAY[]::text[] AS "entityIds",
       NULL::text AS "matchedEntityRole", 0::integer AS "relationDepth",
-      0::integer AS "synthesisDepth",
       NULL::timestamp AS "observedAt", NULL::timestamp AS "occurredAt",
       NULL::timestamp AS "expectedAt", NULL::timestamp AS "expiresAt",
       NULL::timestamp AS "validFrom", NULL::timestamp AS "validTo",
@@ -2330,7 +2245,7 @@ function toolEventEligibleSelect(
       TRUE AS "current", FALSE AS "historical", FALSE AS "conflict",
       NULL::text AS "lifecycleState", ARRAY[]::text[] AS "entityIds",
       NULL::text AS "matchedEntityRole", 0::integer AS "relationDepth",
-      0::integer AS "synthesisDepth", tool_event."occurredAt" AS "observedAt",
+      tool_event."occurredAt" AS "observedAt",
       tool_event."occurredAt", NULL::timestamp AS "expectedAt",
       NULL::timestamp AS "expiresAt", NULL::timestamp AS "validFrom",
       NULL::timestamp AS "validTo", NULL::timestamp AS "systemFrom",
@@ -2651,7 +2566,7 @@ function candidateColumns(
     eligible."coreEligible", eligible."coreSalience", eligible."scopeAffinity",
     eligible."current", eligible."historical", eligible."conflict",
     eligible."observedAt", eligible."occurredAt", eligible."expectedAt", eligible."expiresAt",
-    eligible."relationDepth", eligible."synthesisDepth",
+    eligible."relationDepth",
     eligible."validFrom", eligible."validTo", eligible."systemFrom",
     eligible."occurredFrom", eligible."occurredTo", ${rawScore}::double precision AS "rawScore",
     ${deterministicMatch} AS "deterministicMatch"
@@ -4442,7 +4357,6 @@ function pushVectorTasks(
       assistantId: snapshot.assistantId,
       chatId: snapshot.chatId,
       factMode: input.plan.mode === "HISTORICAL_MEMORY" ? "HISTORICAL" : "CURRENT",
-      includePatterns: input.plan.includePatterns,
       factTemporalAsOf: null,
       folderId: snapshot.folderId,
       occurredFrom: null,
@@ -4781,7 +4695,6 @@ async function executeDigestIntraChatStage(input: Readonly<{
         assistantId: input.snapshot.assistantId,
         chatId: input.snapshot.chatId,
         factMode: "CURRENT",
-        includePatterns: false,
         factTemporalAsOf: null,
         folderId: input.snapshot.folderId,
         occurredFrom: null,
@@ -4996,99 +4909,9 @@ function currentFactExpansionSql(
       'FACT_DISPLAY_TEXT'::text AS "projectionKind", NULL::text AS "sourceChatId",
       NULL::text AS "supportingItemId", NULL::timestamp AS "occurredFrom",
       NULL::timestamp AS "occurredTo", NULL::text AS "retrievalHint",
-      COALESCE(pattern_supports."evidence", '[]'::jsonb) AS "patternSupportingEvidence",
-      CASE WHEN version."modality" = 'PATTERN'::"MemoryFactModality" THEN (
-        SELECT COUNT(*)::integer FROM "MemoryFactVersionRelation" AS all_sources
-        WHERE all_sources."userId" = version."userId"
-          AND all_sources."sourceVersionId" = version."id"
-          AND all_sources."kind" = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-      ) ELSE 0 END AS "patternSourceCount",
       '[]'::jsonb AS "supportingEvidence"
     FROM eligible INNER JOIN "MemoryFactVersion" AS version
       ON version."userId" = ${snapshot.userId} AND version."id" = eligible."itemId"
-    LEFT JOIN LATERAL (
-      SELECT COALESCE(jsonb_agg(jsonb_build_object(
-        'confidence', bounded."confidence",
-        'itemId', bounded."itemId",
-        'observedAt', bounded."observedAt",
-        'safeText', bounded."safeText",
-        'sourceAuthority', bounded."sourceAuthority",
-        'sourceChatId', bounded."sourceChatId",
-        'sourceRootHash', bounded."sourceRootHash"
-      ) ORDER BY bounded."observedAt" DESC, bounded."itemId"), '[]'::jsonb) AS "evidence"
-      FROM (
-        SELECT ranked."itemId", ranked."observedAt", ranked."safeText", ranked."confidence",
-          ranked."sourceAuthority", ranked."sourceChatId", ranked."sourceRootHash"
-        FROM (
-          SELECT support_source.*,
-            ROW_NUMBER() OVER (
-              PARTITION BY support_source."sourceRootHash"
-              ORDER BY support_source."observedAt" DESC, support_source."itemId"
-            ) AS "rootOrdinal"
-          FROM (
-            SELECT source_version."id" AS "itemId",
-              source_version."confidence",
-              source_version."displayText" AS "safeText",
-              source_version."observedAt",
-              CASE WHEN source_version."sourceMode" =
-                  'EXPLICIT'::"MemoryFactSourceMode"
-                THEN 'EXPLICIT' ELSE 'DIRECT_AUTOMATIC' END::text
-                AS "sourceAuthority",
-              automatic_root."chatId" AS "sourceChatId",
-              encode(digest(convert_to(
-                CASE WHEN source_version."sourceMode" =
-                    'EXPLICIT'::"MemoryFactSourceMode"
-                  THEN 'explicit:' || source_version."id"
-                  ELSE 'message:' || automatic_root."messageId" END,
-                'UTF8'
-              ), 'sha256'), 'hex') AS "sourceRootHash"
-            FROM "MemoryFactVersionRelation" AS relation
-            INNER JOIN "MemoryFactVersion" AS source_version
-              ON source_version."userId" = relation."userId"
-              AND source_version."id" = relation."targetVersionId"
-            LEFT JOIN LATERAL (
-              SELECT support."chatId", support."messageId"
-              FROM "MemoryEvidence" AS support
-              INNER JOIN "Chat" AS evidence_chat
-                ON evidence_chat."userId" = support."userId"
-                AND evidence_chat."id" = support."chatId"
-                AND evidence_chat."projectId" IS NULL
-                AND evidence_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-                AND evidence_chat."permanentDeletionAt" IS NULL
-              INNER JOIN "Message" AS evidence_message
-                ON evidence_message."chatId" = support."chatId"
-                AND evidence_message."id" = support."messageId"
-                AND evidence_message."role" = 'user'
-              WHERE source_version."sourceMode" =
-                  'AUTOMATIC'::"MemoryFactSourceMode"
-                AND ${memoryPersonalEvidenceRowPredicate(
-                  snapshot.userId,
-                  Prisma.sql`source_version."id"`,
-                  { exactVNext: true }
-                )}
-              ORDER BY support."observedAt" DESC, support."id"
-              LIMIT 1
-            ) AS automatic_root ON TRUE
-            WHERE relation."userId" = ${snapshot.userId}
-              AND relation."sourceVersionId" = eligible."itemId"
-              AND relation."kind" =
-                'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind"
-              AND (
-                source_version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-                OR automatic_root."messageId" IS NOT NULL
-              )
-          ) AS support_source
-        ) AS ranked
-        WHERE ranked."rootOrdinal" = 1 OR
-          version."structuredValue"->>'reasonCode' IN (
-            'combined_overlapping_facts', 'combined_refined_facts',
-            'combined_episode_facts'
-          )
-        ORDER BY ranked."observedAt" DESC, ranked."itemId"
-        LIMIT ${MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS}
-      ) AS bounded
-    ) AS pattern_supports
-      ON version."modality" = 'PATTERN'::"MemoryFactModality"
     WHERE eligible."itemId" IN (${valuesSql(ids)}) ORDER BY eligible."itemId"
   `;
 }
@@ -5114,7 +4937,6 @@ function chunkExpansionSql(
       'RECALL_CHUNK_SAFE_PROJECTED_TEXT'::text AS "projectionKind",
       chunk."chatId" AS "sourceChatId", NULL::text AS "supportingItemId",
       chunk."occurredFrom", chunk."occurredTo", NULL::text AS "retrievalHint",
-      '[]'::jsonb AS "patternSupportingEvidence",
       '[]'::jsonb AS "supportingEvidence", provenance."sourceMessageIds"
     FROM eligible INNER JOIN "MemoryRecallChunk" AS chunk
       ON chunk."userId" = ${snapshot.userId} AND chunk."id" = eligible."itemId"
@@ -5154,7 +4976,6 @@ function toolEventExpansionSql(
       tool_event."chatId" AS "sourceChatId", NULL::text AS "supportingItemId",
       tool_event."occurredAt" AS "occurredFrom",
       tool_event."occurredAt" AS "occurredTo", NULL::text AS "retrievalHint",
-      '[]'::jsonb AS "patternSupportingEvidence",
       '[]'::jsonb AS "supportingEvidence"
     FROM eligible
     INNER JOIN "MemoryToolEvent" AS tool_event
@@ -5192,7 +5013,6 @@ function rawRoundExpansionSql(
       'RECALL_ROUND_RAW_SAFE_TEXT'::text AS "projectionKind",
       round."chatId" AS "sourceChatId", round."parentChunkId" AS "supportingItemId",
       round."occurredFrom", round."occurredTo", NULL::text AS "retrievalHint",
-      '[]'::jsonb AS "patternSupportingEvidence",
       '[]'::jsonb AS "supportingEvidence", provenance."sourceMessageIds",
       COALESCE(user_spans."spans", '[]'::jsonb) AS "userSpans"
     FROM eligible INNER JOIN "MemoryRecallRound" AS round
@@ -5293,7 +5113,6 @@ function segmentRoundExpansionSql(
       CASE WHEN segment."contextualKeyState" = 'GENERATED'
           AND dependencies."allValid"
         THEN segment."contextualNarrativeText" ELSE NULL END AS "retrievalHint",
-      '[]'::jsonb AS "patternSupportingEvidence",
       CASE WHEN segment."contextualKeyState" = 'GENERATED'
           AND dependencies."allValid"
         THEN dependencies."supportingEvidence" ELSE '[]'::jsonb
@@ -5429,7 +5248,6 @@ function digestExpansionSql(
       'CHAT_DIGEST_SAFE_TEXT'::text AS "projectionKind",
       digest."chatId" AS "sourceChatId", digest."id" AS "supportingItemId",
       digest."occurredFrom", digest."occurredTo", NULL::text AS "retrievalHint",
-      '[]'::jsonb AS "patternSupportingEvidence",
       '[]'::jsonb AS "supportingEvidence"
     FROM eligible
     INNER JOIN "ChatMemoryDigest" AS digest
@@ -6001,8 +5819,6 @@ function validPlan(plan: MemoryRetrievalPlan): boolean {
       Number.isSafeInteger(mention.occurrenceIndex) && mention.occurrenceIndex >= 0 &&
       mention.occurrenceIndex <= 15 &&
       (mention.resolvedRef === null || opaqueEntityRefPattern.test(mention.resolvedRef))) &&
-    typeof plan.includePatterns === "boolean" &&
-    (!plan.includePatterns || plan.mode === "TARGETED_CURRENT") &&
     typeof plan.profileRequested === "boolean" &&
     retrievalModes.has(plan.mode) && temporalIntents.has(plan.temporalIntent) &&
     Array.isArray(requestedKinds) &&
@@ -6066,7 +5882,6 @@ function validDirectFactPlan(plan: MemoryRetrievalPlan): boolean {
     plan.filters.scopeTargetId === null &&
     !plan.aggregationRequested &&
     !plan.applyResponsePreferences &&
-    !plan.includePatterns &&
     !plan.profileRequested &&
     !plan.recencyRequested &&
     plan.answerFocus === null &&
@@ -6087,7 +5902,6 @@ function validBaselinePlan(
   const facts = kinds.includes("FACT") || kinds.includes("EVENT");
   return validPlan(baseline) && !baseline.aggregationRequested &&
     (!baseline.applyResponsePreferences || facts && snapshot.useMemoryFacts) &&
-    (!baseline.includePatterns || facts && snapshot.useMemoryFacts) &&
     !baseline.profileRequested && !baseline.recencyRequested &&
     baseline.mode === (facts ? "TARGETED_CURRENT" : "PAST_CHAT_SEARCH") &&
     baseline.temporalIntent === "ANY" &&
@@ -6577,7 +6391,6 @@ export function createPrismaLocalMemoryRetrievalRepository(
             assistantId: snapshot.assistantId,
             chatId: snapshot.chatId,
             factMode: "CURRENT",
-            includePatterns: false,
             factTemporalAsOf: null,
             folderId: snapshot.folderId,
             occurredFrom: null,

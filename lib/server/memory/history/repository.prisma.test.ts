@@ -3572,7 +3572,6 @@ describe("Memory lexical history index persistence", () => {
           factMode: "CURRENT",
           factTemporalAsOf: null,
           folderId: null,
-          includePatterns: false,
           occurredFrom: null,
           occurredTo: null,
           sourceAssistantId: null,

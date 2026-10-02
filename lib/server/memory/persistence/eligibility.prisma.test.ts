@@ -540,7 +540,6 @@ describe("Personal Memory DATA-002 eligibility on PostgreSQL", () => {
           factMode: "CURRENT",
           factTemporalAsOf: null,
           folderId: null,
-          includePatterns: false,
           occurredFrom: null,
           occurredTo: null,
           sourceAssistantId: null,
