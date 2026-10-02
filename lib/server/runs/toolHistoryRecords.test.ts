@@ -4,6 +4,7 @@ import { repeatBlockedToolCallResult } from "./toolCallRepeatGuard";
 import { toolCallRef } from "./toolHistoryContract";
 import {
   toolCallOutcome,
+  unavailableToolHistoryProjection,
   toolHistoryBlock,
   toolHistoryEntry,
   toolHistoryKind,
@@ -12,6 +13,8 @@ import {
 } from "./toolHistoryRecords";
 
 const id = "0f8fad5b-d9cb-469f-a165-70867728950e";
+const both = { call: true, result: true } as const;
+const none = { call: false, result: false } as const;
 const mcpRequest = { mcp: { version: 1, servers: [{ serverId: "s", serverName: "Tracker", fingerprint: "f".repeat(64), revisionId: "r" }],
   tools: [{ namespacedName: "mcp_tracker_create_issue_abc", serverId: "s", serverName: "Tracker", originalName: "create_issue" }] } };
 
@@ -95,7 +98,7 @@ describe("tool history records project only what each owner discloses", () => {
     const record = toolHistoryRecord(facts(), false);
     expect(record.arguments).toEqual({ state: "available", text: '{"title":"Synthetic","token":"[REDACTED]"}' });
     expect(record.result).toEqual({ state: "inline", text: "created #7" });
-    const entry = toolHistoryEntry(record, true);
+    const entry = toolHistoryEntry(record, both);
     expect(entry.full).toContain("[REDACTED]");
     expect(entry.full).not.toContain("s3cret");
     expect(entry.full).toContain(record.ref);
@@ -106,14 +109,14 @@ describe("tool history records project only what each owner discloses", () => {
     const record = toolHistoryRecord(facts({ mcp: { readable: true, redaction: { state: "incomplete", values: [] } } }), false);
     expect(record.arguments).toEqual({ state: "withheld", reason: "redaction_unavailable" });
     expect(record.outcome.status).toBe("succeeded");
-    expect(toolHistoryEntry(record, true).full).not.toContain("s3cret");
+    expect(toolHistoryEntry(record, both).full).not.toContain("s3cret");
   });
 
   it("hides MCP arguments and results from a reader without access, keeping identity and outcome", () => {
     const record = toolHistoryRecord(facts({ mcp: { readable: false, redaction: null } }), false);
     expect(record.arguments).toEqual({ state: "withheld", reason: "access_unavailable" });
     expect(record.result).toEqual({ state: "withheld", reason: "access_unavailable" });
-    const entry = toolHistoryEntry(record, true);
+    const entry = toolHistoryEntry(record, both);
     expect(entry.full).not.toContain("created #7");
     expect(entry.details).toBe(false);
     expect(entry.full).toContain("executed");
@@ -131,8 +134,8 @@ describe("tool history records project only what each owner discloses", () => {
         executionOutcome: "complete", preview: "secret preview" } }), false);
       expect(record.arguments).toEqual({ state: "not_applicable" });
       expect(record.result).toEqual({ state: "saved", handle: `tor1_${"b".repeat(32)}`, preview: null });
-      expect(toolHistoryEntry(record, true).full).not.toContain("secret preview");
-      expect(toolHistoryEntry(record, true).full).not.toContain("Synthetic");
+      expect(toolHistoryEntry(record, both).full).not.toContain("secret preview");
+      expect(toolHistoryEntry(record, both).full).not.toContain("Synthetic");
     }
   });
 
@@ -150,35 +153,68 @@ describe("tool history records project only what each owner discloses", () => {
     expect(record.arguments.state === "available" && record.arguments.text).not.toContain("s3cret");
   });
 
-  it("names values too large for a record by size, keeps their outcome and points to the reader", () => {
+  it("marks values too large for a record, keeps their outcome and points to the reader", () => {
     const envelope = { status: "error", rawPreview: { isError: true, unsupportedContentTypes: [] } };
-    const omitted = toolHistoryRecord(facts({ state: "complete", arguments: undefined, omittedArgumentsBytes: 40_000,
-      result: envelope, omittedResultBytes: 90_000 }), false);
-    expect(omitted.arguments).toEqual({ state: "omitted", bytes: 40_000 });
-    expect(omitted.result).toEqual({ state: "omitted", bytes: 90_000 });
+    const omitted = toolHistoryRecord(facts({ state: "complete", arguments: undefined, omittedArguments: true,
+      result: envelope, omittedResult: true }), false);
+    expect(omitted.arguments).toEqual({ state: "omitted" });
+    expect(omitted.result).toEqual({ state: "omitted" });
     // The envelope alone still proves the tool's own error.
     expect(omitted.outcome).toEqual({ status: "tool_error", dispatched: true });
-    const entry = toolHistoryEntry(omitted, true);
-    expect(entry.full).toContain("Arguments: about 40000 bytes, not shown here; read_tool_call returns them");
-    expect(entry.full).toContain("Result: about 90000 bytes, not shown here; read_tool_call returns it");
+    const entry = toolHistoryEntry(omitted, both);
+    expect(entry.full).toContain("Arguments: large, not shown here; read_tool_call returns them");
+    expect(entry.full).toContain("Result: large, not shown here; read_tool_call returns it");
     expect(entry.details).toBe(false);
-    expect(toolHistoryEntry(omitted, false).full).not.toContain("read_tool_call");
+    expect(toolHistoryEntry(omitted, none).full).not.toContain("read_tool_call");
     // Withheld details stay withheld whatever their size.
-    expect(toolHistoryRecord(facts({ arguments: undefined, omittedArgumentsBytes: 40_000,
+    expect(toolHistoryRecord(facts({ arguments: undefined, omittedArguments: true,
       mcp: { readable: true, redaction: { state: "incomplete", values: [] } } }), false).arguments)
       .toEqual({ state: "withheld", reason: "redaction_unavailable" });
     // A saved original is still named by its handle, with its stored preview.
-    expect(toolHistoryRecord(facts({ result: { status: "complete" }, omittedResultBytes: 90_000,
+    expect(toolHistoryRecord(facts({ result: { status: "complete" }, omittedResult: true,
       observation: { handle: `tor1_${"c".repeat(32)}`, executionOutcome: "complete", preview: "stored preview" } }), false).result)
       .toEqual({ state: "saved", handle: `tor1_${"c".repeat(32)}`, preview: "stored preview" });
   });
 
+  it("redacts result text and previews with the known values, escaped forms included, and withholds them when unverifiable", () => {
+    // Execution redacted raw values only; a JSON text part carries the escaped form.
+    const secret = 'se"cr\\et';
+    const text = JSON.stringify({ token: secret, note: "ok" });
+    expect(text).toContain(JSON.stringify(secret).slice(1, -1));
+    const result = { callId: "call_1", name: "mcp_tracker_create_issue_abc", status: "complete",
+      content: [{ type: "text", text }], rawPreview: { isError: false, unsupportedContentTypes: [] } };
+    const redacted = toolHistoryRecord(facts({ result, mcp: { readable: true, redaction: { state: "complete", values: [secret] } } }), false);
+    expect(redacted.result.state === "inline" && redacted.result.text).toContain("[REDACTED]");
+    for (const leaked of [secret, JSON.stringify(secret).slice(1, -1)]) {
+      expect(toolHistoryEntry(redacted, both).full).not.toContain(leaked);
+    }
+    const preview = toolHistoryRecord(facts({ result, mcp: { readable: true, redaction: { state: "complete", values: [secret] } },
+      observation: { handle: `tor1_${"d".repeat(32)}`, executionOutcome: "complete", preview: text } }), false);
+    expect(preview.result.state === "saved" && preview.result.preview).not.toContain(JSON.stringify(secret).slice(1, -1));
+    // Unverifiable redaction withholds the text and keeps only a saved original's handle.
+    const unverified = { mcp: { readable: true, redaction: { state: "incomplete" as const, values: [] } } };
+    expect(toolHistoryRecord(facts({ result, ...unverified }), false).result).toEqual({ state: "withheld", reason: "redaction_unavailable" });
+    expect(toolHistoryEntry(toolHistoryRecord(facts({ result, ...unverified }), false), both).full)
+      .toContain("Result: withheld (its secrets cannot be verified as redacted)");
+    expect(toolHistoryRecord(facts({ result, ...unverified, observation: { handle: `tor1_${"d".repeat(32)}`,
+      executionOutcome: "complete", preview: text } }), false).result).toEqual({ state: "saved", handle: `tor1_${"d".repeat(32)}`, preview: null });
+  });
+
+  it("names a saved original's handle only to a run that holds its reader", () => {
+    const saved = toolHistoryRecord(facts({ kind: "workspace", toolName: "x", mcp: undefined, observation: {
+      handle: `tor1_${"e".repeat(32)}`, executionOutcome: "complete", preview: null } }), false);
+    expect(toolHistoryEntry(saved, both).full).toContain(`read_tool_result handle tor1_${"e".repeat(32)}`);
+    const offRun = toolHistoryEntry(saved, { call: true, result: false });
+    expect(offRun.full).not.toContain("read_tool_result");
+    expect(offRun.full).not.toContain("tor1_");
+  });
+
   it("bounds long values and points to the reader", () => {
     const long = "x".repeat(5000);
-    const entry = toolHistoryEntry(toolHistoryRecord(facts({ arguments: { body: long } }), false), true);
+    const entry = toolHistoryEntry(toolHistoryRecord(facts({ arguments: { body: long } }), false), both);
     expect(Buffer.byteLength(entry.full)).toBeLessThan(2000);
     expect(entry.full).toContain("read_tool_call returns the rest");
-    expect(toolHistoryEntry(toolHistoryRecord(facts({ arguments: { body: long } }), false), false).full).not.toContain("read_tool_call");
+    expect(toolHistoryEntry(toolHistoryRecord(facts({ arguments: { body: long } }), false), none).full).not.toContain("read_tool_call");
   });
 });
 
@@ -188,15 +224,30 @@ describe("tool history blocks", () => {
     const earlier = toolHistoryRecord(facts({ id: "1".repeat(8) + "-1111-4111-8111-" + "1".repeat(12),
       ref: toolCallRef("1".repeat(8) + "-1111-4111-8111-" + "1".repeat(12))! }), true);
     const block = toolHistoryBlock({ turnMessageId: "answer-1", userMessageId: "question-1", currentTurn: false,
-      records: [current, earlier], unavailableCalls: 1, readerCalls: 12, reader: true });
+      records: [current, earlier], unavailableCalls: 1, readerCalls: 12, readers: both });
     expect(block.entries.map(entry => entry.ref)).toEqual([earlier.ref, current.ref]);
     expect(block.entries[0]!.full).toContain("earlier attempt, not the current branch");
     expect(block.footer).toContain("12 read, status or tool-search calls");
     expect(block.footer).toContain("1 recorded call has saved details that are no longer available");
     expect(block.header).toContain("read_tool_call");
     const noReader = toolHistoryBlock({ turnMessageId: "q", userMessageId: "q", currentTurn: true, records: [current],
-      unavailableCalls: 0, readerCalls: 0, reader: false });
+      unavailableCalls: 0, readerCalls: 0, readers: none });
     expect(noReader.header).toContain("earlier attempts to answer the next user message");
     expect(noReader.header).not.toContain("read_tool_call");
+  });
+
+  it("keeps every turn in place with its calls counted when the saved facts cannot be read", () => {
+    const projection = unavailableToolHistoryProjection({ currentUserMessageId: "question-2", readers: both, toolHistory: {
+      version: 1, omittedCalls: 4, turns: [
+        { turnMessageId: "answer-1", callRefs: [toolCallRef(id)!], digest: "d".repeat(64), readerCalls: 2 },
+        { turnMessageId: "question-2", callRefs: [toolCallRef(id)!, toolCallRef(id)!], digest: "d".repeat(64) }
+      ] } });
+    expect(projection.blocks.map(block => block.turnMessageId)).toEqual(["answer-1", "question-2"]);
+    expect(projection.blocks.every(block => block.entries.length === 0)).toBe(true);
+    expect(projection.blocks[0]!.footer).toContain("1 recorded call: saved details are temporarily unavailable");
+    expect(projection.blocks[0]!.footer).toContain("Also 2 read, status or tool-search calls");
+    expect(projection.blocks[0]!.footer).toContain("4 older tool calls of this chat are not listed");
+    expect(projection.blocks[1]!.header).toContain("earlier attempts to answer the next user message");
+    expect(projection.blocks[1]!.footer).toContain("2 recorded calls: saved details are temporarily unavailable");
   });
 });

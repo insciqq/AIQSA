@@ -7942,10 +7942,12 @@ describe("cross-turn tool history", () => {
       expect(text).toContain("Synthetic issue 7");
       expect(text).toContain(writeRef);
     }
-    // Every answer request re-projects with the run's own authority.
-    expect(projectToolHistory.mock.calls.length).toBeGreaterThanOrEqual(2);
-    expect(projectToolHistory).toHaveBeenCalledWith({ actor: { runId: "run-1", userId: "user-1" }, reader: true,
-      toolHistory: prepared.normalizedRequest.toolHistory });
+    // Every answer request re-projects with the run's own authority, the
+    // first request's consumer reusing the projection it was built with.
+    expect(projectToolHistory).toHaveBeenCalledTimes(2);
+    expect(projectToolHistory).toHaveBeenCalledWith({ actor: { runId: "run-1", userId: "user-1" },
+      readers: { call: true, result: prepared.normalizedRequest.toolObservationVersion === 1 },
+      toolHistory: prepared.normalizedRequest.toolHistory, cache: expect.any(Map) });
     // The accepted request never carries a record.
     expect(prepared.normalizedRequest.context).toEqual(acceptedContext);
     // The read returns the saved record; its row keeps only a receipt.
@@ -7965,8 +7967,8 @@ describe("cross-turn tool history", () => {
     const requests: ProviderRunRequest[] = [];
     const repository = createRepository();
     let call = 0;
-    // The first two projections serve round one (its start and its consumer).
-    const projectToolHistory = vi.fn(async () => ++call <= 2 ? historyProjection()
+    // The first projection serves round one (its start and its consumer).
+    const projectToolHistory = vi.fn(async () => ++call <= 1 ? historyProjection()
       : historyProjection("withheld (their secret values cannot be verified as redacted)"));
     const adapter = createAdapter(async function* (request) {
       requests.push(structuredClone(request));
@@ -7981,6 +7983,50 @@ describe("cross-turn tool history", () => {
     expect(JSON.stringify(requests[1]!.context)).not.toContain("Synthetic issue 7");
     // Without the reader the read is unavailable, never a business call.
     expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain("tool_call_unavailable");
+  });
+
+  it("keeps no call read output in a persisted continuation", async () => {
+    const prepared = historyPrepared();
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const batches: Parameters<RunExecutionRepository["persistToolLoopCallBatch"]>[0][] = [];
+    const persist = repository.repository.persistToolLoopCallBatch;
+    repository.repository.persistToolLoopCallBatch = async (value) => { batches.push(value); return persist(value); };
+    const readToolCall = vi.fn(async () => ({ ref: writeRef, kind: "mcp" as const, toolName: "mcp_tracker_create_issue_abc",
+      label: "MCP Tracker › create_issue", previousAttempt: false, roundIndex: 1, ordinal: 0,
+      outcome: { status: "succeeded" as const, dispatched: true }, arguments: { state: "available" as const, text: "{\"title\":\"READ_ONLY_DETAIL\"}" },
+      result: { state: "inline" as const, text: "created #7" } }));
+    const adapter = createAdapter(async function* (request) {
+      requests.push(structuredClone(request));
+      if (requests.length <= 2) return providerResult({ finalText: "", toolCalls: [{ arguments: { call_ref: writeRef },
+        id: `read-${requests.length}`, name: "read_tool_call" }] });
+      return providerResult({ finalText: "Done." });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, prepared,
+      repository: { ...repository.repository, projectToolHistory: vi.fn(async () => historyProjection()), readToolCall } })).text();
+    expect(repository.failedRuns).toEqual([]);
+    // The provider received the read; the second batch's continuation keeps only a stub of it.
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain("READ_ONLY_DETAIL");
+    expect(batches).toHaveLength(2);
+    expect(JSON.stringify(batches[1]!.providerContinuation)).not.toContain("READ_ONLY_DETAIL");
+    expect(JSON.stringify(batches[1]!.providerContinuation)).toContain("tool_call_read_not_kept");
+  });
+
+  it("degrades to temporarily unavailable records when the history read fails, never failing the run", async () => {
+    const prepared = historyPrepared();
+    const requests: ProviderRunRequest[] = [];
+    const repository = createRepository();
+    const projectToolHistory = vi.fn(async () => { throw new Error("synthetic_database_timeout"); });
+    const adapter = createAdapter(async function* (request) { requests.push(structuredClone(request)); return providerResult({ finalText: "Answer." }); });
+    await createRunExecutionResponse(executionInput({ adapter, prepared,
+      repository: { ...repository.repository, projectToolHistory } })).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.context!.messages.map((message) => message.id))
+      .toEqual(["question-1", "tch1_answer-1", "answer-1", "current-user-message"]);
+    const text = JSON.stringify(requests[0]!.context!.messages[1]!.content);
+    expect(text).toContain("1 recorded call: saved details are temporarily unavailable");
+    expect(text).not.toContain("Synthetic issue 7");
   });
 
   it("sends no records and no projection I/O for a run without a frozen history", async () => {

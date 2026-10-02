@@ -3,6 +3,7 @@ import { textMessageContent } from "../../domain/content";
 import { textConversationForRequest, conversationPreview } from "../providers/context";
 import type { ProviderConversationMessage, ProviderRunRequest } from "../providers/types";
 import {
+  fitCurrentTurnToolHistory,
   insertToolHistory,
   refreshToolHistory,
   renderToolHistoryBlock,
@@ -44,6 +45,18 @@ describe("tool history placement", () => {
     expect(placed.context!.messages.at(-1)!.id).toBe("q3");
   });
 
+  it("places the current message's record before the pins that precede it, whichever came first", () => {
+    const pin = message("evidence", "user", "pinned evidence", { purpose: "knowledge_evidence" });
+    const pinned = [message("q1", "user"), message("a1", "assistant"), pin, message("q2", "user")];
+    const expected = ["q1", "a1", toolHistoryMessageId("q2"), "evidence", "q2"];
+    expect(ids(insertToolHistory(request(pinned), { blocks: [block("q2", "q2")] }))).toEqual(expected);
+    // Pinned after the record was placed (the live order), the order is the same.
+    const placed = insertToolHistory(request([message("q1", "user"), message("a1", "assistant"), message("q2", "user")]),
+      { blocks: [block("q2", "q2")] });
+    const messages = placed.context!.messages;
+    expect([...messages.slice(0, -1), pin, messages.at(-1)!].map(entry => entry.id)).toEqual(expected);
+  });
+
   it("puts the record of an answer without text in that answer's place", () => {
     // q2's answer failed without text: it is not in the context.
     const placed = insertToolHistory(request([...branch.slice(0, 3), message("followup", "user", "more", { contextTurnId: "q2" }),
@@ -70,6 +83,42 @@ describe("tool history placement", () => {
     expect(textConversationForRequest(placed).map(entry => entry.id)).toContain(toolHistoryMessageId("a1"));
     expect(textConversationForRequest(placed, { redactSkillContext: true }).map(entry => entry.id)).not.toContain(toolHistoryMessageId("a1"));
     expect(conversationPreview(placed).map(entry => entry.id)).not.toContain(toolHistoryMessageId("a1"));
+  });
+});
+
+describe("fitting the current message's record", () => {
+  const estimate = (value: unknown) => Math.ceil(Buffer.byteLength(JSON.stringify(value) ?? "", "utf8") / 4);
+  const withRecord = (entries: number) => insertToolHistory(request([message("q1", "user"), message("a1", "assistant"),
+    message("q2", "user")]), { blocks: [block("q2", "q2", entries)] });
+  const record = (value: ProviderRunRequest) => value.context!.messages.find(entry => entry.id === toolHistoryMessageId("q2"))!;
+
+  it("renders it smaller by the excess, keeping the newest entries and naming the older ones", () => {
+    const original = withRecord(40);
+    const before = estimate(record(original).content);
+    const fitted = fitCurrentTurnToolHistory(original, 500, estimate)!;
+    const after = estimate(record(fitted.request).content);
+    expect(after).toBeLessThanOrEqual(before - 500);
+    expect(fitted.releasedTokens).toBe(before - after);
+    // Older entries become compact first, the newest keep their details.
+    const lines = record(fitted.request).content.blocks.map(entry => (entry as { text: string }).text);
+    expect(lines.find(line => line.includes("call 0:"))).toBe("- [tcr1_00000000000000000000000000000000] call 0: executed.");
+    expect(lines.at(-1)).toContain("call 39: executed. Arguments");
+    // A larger excess counts the oldest and names their call_refs.
+    const counted = fitCurrentTurnToolHistory(original, before - 150, estimate)!;
+    const text = JSON.stringify(record(counted.request).content);
+    expect(text).toContain("read_tool_call reads them by call_ref");
+    expect(text).toContain("call 39");
+    // Only that record changes; its id and place stay.
+    expect(ids(fitted.request)).toEqual(ids(original));
+  });
+
+  it("goes down to its header and count, then reports that it cannot shrink", () => {
+    const minimal = fitCurrentTurnToolHistory(withRecord(40), 1_000_000, estimate)!;
+    const text = JSON.stringify(record(minimal.request).content);
+    expect(text).toContain("[record q2]");
+    expect(text).toContain("40 earlier calls of this turn are not listed here");
+    expect(fitCurrentTurnToolHistory(minimal.request, 1_000_000, estimate)).toBeNull();
+    expect(fitCurrentTurnToolHistory(request([message("q1", "user")]), 100, estimate)).toBeNull();
   });
 });
 

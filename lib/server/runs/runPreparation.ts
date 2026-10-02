@@ -93,6 +93,9 @@ import { sessionStatusTool } from "../tools/sessionStatus";
 import { readToolCallTool } from "../tools/readToolCall";
 import { isToolHistoryMessageId, TOOL_HISTORY_VERSION } from "./toolHistoryContract";
 import { insertToolHistory } from "./toolHistory";
+import { toolHistoryReaders } from "./toolHistoryRecords";
+import { logEvent } from "../observability";
+import { databaseFailureCode } from "../observability/databaseFailure";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderToolBridge } from "../tools/types";
@@ -2125,8 +2128,14 @@ async function prepareRunWith(
   const toolHistoryLeafMessageId = input.source.kind === "send"
     ? input.source.draftProjectChat || input.source.draftPersonalChat ? null : input.source.chat.activeLeafMessageId
     : input.source.source.userMessage.id;
-  const toolHistory = await deps.repository.loadToolHistory?.({ chatId: chat.id, leafMessageId: toolHistoryLeafMessageId,
-    userId: input.userId }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
+  // A failed or slow history read never refuses the message: the run then
+  // freezes an empty history (content-free log), as a chat without calls.
+  const toolHistory = await (deps.repository.loadToolHistory?.({ chatId: chat.id, leafMessageId: toolHistoryLeafMessageId,
+    userId: input.userId }) ?? null)?.catch((error: unknown) => {
+    logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
+      code: "tool_history_unavailable", prisma_code: databaseFailureCode(error) });
+    return null;
+  }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
@@ -2392,10 +2401,14 @@ async function prepareRunWith(
     request: providerRequest,
     userId: input.userId,
     ...(projectHistory && toolHistory.turns.length > 0 ? {
-      withToolHistory: async (request: ProviderRunRequest) => insertToolHistory(request, await projectHistory({
-        actor: { chatId: chat.id, leafMessageId: toolHistoryLeafMessageId, userId: input.userId },
-        reader: normalizedRequest.toolCallReader === true, toolHistory
-      }))
+      // Without its records (a failed read) no carried notes bounded by one apply.
+      withToolHistory: async (request: ProviderRunRequest) => {
+        const projection = await projectHistory({
+          actor: { chatId: chat.id, leafMessageId: toolHistoryLeafMessageId, userId: input.userId },
+          readers: toolHistoryReaders(normalizedRequest), toolHistory
+        }).catch(() => null);
+        return projection ? insertToolHistory(request, projection) : request;
+      }
     } : {})
   });
   if (reuse && providerRequest.contextCompactionPolicy) {

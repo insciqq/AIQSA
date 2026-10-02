@@ -165,7 +165,9 @@ import { measureSessionContext, observationBatchShare, observationWholeResultTok
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
 import { executeReadToolCall, readToolCallReceipt, readToolCallTool, type ToolCallReader } from "../tools/readToolCall";
 import { insertToolHistory, refreshToolHistory, requestHasToolHistory, type ToolHistoryProjection } from "./toolHistory";
-import { READ_TOOL_CALL_NAME, toolCallRefEntry, type ToolCallRefEntry } from "./toolHistoryContract";
+import { READ_TOOL_CALL_NAME, toolCallRefEntry, type ToolCallRefEntry, type ToolHistoryCache } from "./toolHistoryContract";
+import { toolHistoryReaders, unavailableToolHistoryProjection } from "./toolHistoryRecords";
+import { callReadIds, withoutCallReadOutputs } from "./toolCallReadContinuation";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { memorySearchTool, MEMORY_SEARCH_TOOL_NAME } from "../memory/search/contract";
 import { revalidateMemorySearchDispatch } from "./memorySearchDispatch";
@@ -787,14 +789,30 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const entry = toolCallRefEntry(call);
         if (entry) runToolCallRefs.set(call.id, entry);
       };
+      // What never changes between this run's requests (accepted runs'
+      // classification); authority is read again for every request.
+      const toolHistoryCache: ToolHistoryCache = new Map();
+      /** The first request's projection, which its consumer reuses once
+       * instead of reading the same history twice in a row. */
+      let freshToolHistory: ToolHistoryProjection | null = null;
       /** This request's tool-history records of the accepted history, rebuilt
-       * with the reader's current authority; null without one. */
+       * with the reader's current authority; null without one. A failed or
+       * slow read never fails the run: the records then say the details are
+       * temporarily unavailable. */
       async function runToolHistoryProjection(): Promise<ToolHistoryProjection | null> {
         const history = normalizedRequest.toolHistory;
         const project = input.repository.projectToolHistory;
         if (!history?.turns.length || !project) return null;
-        return project({ actor: { runId, userId: input.userId }, reader: normalizedRequest.toolCallReader === true,
-          toolHistory: history });
+        const readers = toolHistoryReaders(normalizedRequest);
+        try {
+          return await project({ actor: { runId, userId: input.userId }, readers, toolHistory: history, cache: toolHistoryCache });
+        } catch (error) {
+          signal.throwIfAborted();
+          logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
+            code: "tool_history_unavailable", prisma_code: runDatabaseFailureCode(error), run_id: runId });
+          return unavailableToolHistoryProjection({ readers, toolHistory: history,
+            currentUserMessageId: normalizedRequest.context?.messages.at(-1)?.id ?? null });
+        }
       }
       const toolCallReader: ToolCallReader | undefined = input.repository.readToolCall
         ? { read: (actor, ref) => input.repository.readToolCall!(actor, ref) } : undefined;
@@ -1830,7 +1848,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         // a record covered by notes and released never returns.
         let request = unprojected;
         if (requestHasToolHistory(request)) {
-          const projection = await runToolHistoryProjection();
+          const projection = freshToolHistory ?? await runToolHistoryProjection();
+          freshToolHistory = null;
           if (projection) request = refreshToolHistory(request, projection);
         }
         request = { ...request, toolCallRefs: [...runToolCallRefs.values()] };
@@ -2137,6 +2156,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const isObservationRead = (name: string) => normalizedRequest.toolObservationVersion === 1 && name === READ_TOOL_RESULT_NAME;
         const isSessionCall = (name: string) => normalizedRequest.sessionStatusTool === true && name === SESSION_STATUS_TOOL_NAME;
         const isCallRead = (name: string) => normalizedRequest.toolCallReader === true && name === READ_TOOL_CALL_NAME;
+        const callReadOptions = { resultReader: normalizedRequest.toolObservationVersion === 1 } as const;
         /** A call read settles its content-free receipt; the model receives the read. */
         const settleCallRead = async (persistedId: string, call: ModelToolCall, read: ToolExecutionResult) => {
           const snapshot = snapshotToolExecutionResult(readToolCallReceipt(call, read), toolLoopPersistenceLimits.resultBytes);
@@ -2149,6 +2169,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         }
 
         const persistedCalls = new Map<string, PersistedToolLoopCall>();
+        /** A persisted continuation keeps no output of a call read; recovery
+         * reads it again with the run's current authority. */
+        const persistableContinuation = <T extends Readonly<{ providerToolMessages: readonly unknown[] }>>(continuation: T): T =>
+          withoutCallReadOutputs(continuation, callReadIds(persistedCalls.values()), toolBridge);
         // The rows this loop persisted and settled: the same basis recovery
         // reads for repeat decisions.
         const repeatHistory = new ToolCallRepeatHistory();
@@ -2326,7 +2350,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     }) }
                   : {}),
                 providerContinuation: toolLoopJson(
-                  continuation,
+                  persistableContinuation(continuation),
                   toolLoopPersistenceLimits.checkpointBytes,
                   "tool_loop_checkpoint_invalid"
                 ),
@@ -2409,7 +2433,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               if (claim.kind === "ambiguous" && isCallRead(call.name)) {
                 // A read has no external effect: it runs again with current authority.
                 const read = await executeReadToolCall(toolCallReader, call, { runId, userId: input.userId }, context.signal,
-                  observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))));
+                  observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))),
+                  callReadOptions);
                 await settleCallRead(persisted.id, call, read);
                 return { status: "complete", value: read };
               }
@@ -2505,7 +2530,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   // with current authority, never from a stored copy.
                   : isCallRead(call.name)
                   ? await executeReadToolCall(toolCallReader, call, { runId, userId: input.userId }, context.signal,
-                      observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))))
+                      observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))),
+                      callReadOptions)
                   : parsePersistedToolExecutionResult(call, claim.call.result);
                 if (isMemoryCall(call.name) && stored) await emit(controller, encoder, input.repository, runId,
                   memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex, state: stored.status, result: stored }));
@@ -2594,7 +2620,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
               if (isCallRead(call.name)) {
                 // Saved data only: no egress, discovery, runtime or OAuth.
                 const read = await executeReadToolCall(toolCallReader, call, { runId, userId: input.userId }, context.signal,
-                  observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))));
+                  observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))),
+                  callReadOptions);
                 await settleCallRead(claim.call.id, call, read);
                 return { status: "complete", value: read };
               }
@@ -2957,7 +2984,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           onFinalSynthesisTransition: async ({ continuation, round }) => {
             const started = await input.repository.beginToolLoopProviderRound({
               finalSynthesisOfRound: round,
-              providerContinuation: toolLoopJson(continuation, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+              providerContinuation: toolLoopJson(persistableContinuation(continuation), toolLoopPersistenceLimits.checkpointBytes,
+                "tool_loop_checkpoint_invalid"),
               roundIndex: round + 1,
               runId,
               userId: input.userId
@@ -2970,7 +2998,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           beforeSynthesisDispatch: async ({ continuation, round }) => {
             const marked = await input.repository.beginToolLoopProviderRound({
               finalSynthesisOfRound: round - 1,
-              providerContinuation: toolLoopJson(continuation, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+              providerContinuation: toolLoopJson(persistableContinuation(continuation), toolLoopPersistenceLimits.checkpointBytes,
+                "tool_loop_checkpoint_invalid"),
               roundIndex: round,
               runId,
               userId: input.userId
@@ -2994,7 +3023,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           onRequiredToolCorrection: async ({ continuation, round }) => {
             const started = await input.repository.beginToolLoopProviderRound({
               requiredToolCorrectionOfRound: round,
-              providerContinuation: toolLoopJson(continuation, toolLoopPersistenceLimits.checkpointBytes, "tool_loop_checkpoint_invalid"),
+              providerContinuation: toolLoopJson(persistableContinuation(continuation), toolLoopPersistenceLimits.checkpointBytes,
+                "tool_loop_checkpoint_invalid"),
               roundIndex: round + 1,
               runId,
               userId: input.userId
@@ -3073,7 +3103,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 };
               }),
               providerContinuation: toolLoopJson(
-                continuation,
+                persistableContinuation(continuation),
                 toolLoopPersistenceLimits.checkpointBytes,
                 "tool_loop_checkpoint_invalid"
               ),
@@ -3329,6 +3359,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const unprojectedRequest = input.images
           ? await input.images.withConversationPixels(input.prepared.providerRequest, input.userId, signal) : input.prepared.providerRequest;
         const historyProjection = await runToolHistoryProjection();
+        freshToolHistory = historyProjection;
         const preparedProviderRequest = await requestWithAutomaticKnowledgeEvidence(historyProjection
           ? insertToolHistory(unprojectedRequest, historyProjection) : unprojectedRequest);
         const providerRequest = preparedProviderRequest.request;

@@ -6,7 +6,13 @@ import { validateMcpDraft } from "../mcp/definitions";
 import { encryptMcpEnvelope, mcpRuntimeGenerationEnvelopeContext } from "../mcp/encryption";
 import { namespacedMcpToolName } from "../mcp/runPlan";
 import { prisma } from "../prisma";
+import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
+import { agentLimits } from "../agents/config";
+import { agentPrompts } from "../agents/prompt";
+import { createAgentRunStore } from "../agents/store";
+import type { ProviderRunRequest } from "../providers/types";
 import { createPrismaToolHistoryOperations } from "./prismaRepositoryToolHistory";
+import { insertToolHistory } from "./toolHistory";
 import { toolCallRef, toolHistoryDigest } from "./toolHistoryContract";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -16,7 +22,12 @@ afterEach(async () => {
 });
 
 const operations = createPrismaToolHistoryOperations(prisma);
-const syntheticSecret = "synthetic-tool-history-secret";
+// Quote and backslash: a JSON text result carries this secret only escaped.
+const syntheticSecret = 'synthetic-"tool\\history"-secret';
+const escapedSecret = JSON.stringify(syntheticSecret).slice(1, -1);
+const readers = { call: true, result: true } as const;
+const agentConfiguration = { ...agentLimits({ ...DEFAULT_AGENT_POLICY, limitsEnabled: true }, { AIQSA_AGENT_GATEWAY_URL: "http://agent.invalid" }),
+  compatibilityHash: "a".repeat(64), mcpMode: "auto" as const };
 const syntheticKey = Buffer.alloc(32, 41);
 const ref = (call: Readonly<{ id: string }>) => toolCallRef(call.id)!;
 
@@ -99,7 +110,7 @@ async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolea
       authorProjectRole: authorId === initiatorId ? "OWNER" as const : "CONTRIBUTOR" as const } : {}) } });
   /** One run answering `userMessage` with its own new answer message. */
   const answer = async (userMessage: Readonly<{ id: string }>, input: Readonly<{
-    eligible?: boolean; status?: RunStatus; userId?: string;
+    agent?: boolean; eligible?: boolean; status?: RunStatus; userId?: string;
   }> = {}) => {
     const userId = input.userId ?? initiatorId;
     const status = input.status ?? "complete";
@@ -107,7 +118,7 @@ async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolea
       status: status === "in_progress" ? "streaming" : status, content: textMessageContent("Synthetic answer") } });
     const run = await prisma.modelRun.create({ data: { chatId: chat.id, userId, userMessageId: userMessage.id,
       assistantMessageId: message.id, provider: "fake", modelId: "fake-qsa", status, createdAt: new Date(clock += 1000),
-      normalizedRequest: accepted(input.eligible ?? true),
+      normalizedRequest: { ...accepted(input.eligible ?? true), ...(input.agent ? { agent: agentConfiguration } : {}) },
       ...(projectId ? { projectRunBinding: { create: { projectId, initiatorUserId: userId,
         acceptedRole: userId === initiatorId ? "OWNER" as const : "CONTRIBUTOR" as const, accessRevision: 1, policyRevision: 1,
         instructionsRevision: 1, memoryRevision: 0, personalMemoryDisabled: true } } } : {}) } });
@@ -130,7 +141,7 @@ async function fixture(options: Readonly<{ project?: boolean; sensitive?: boolea
         content: [{ type: "text", text: `result ${input.item}` }], rawPreview: { isError: false, unsupportedContentTypes: [] } }
     } });
   };
-  return { chat, initiatorId, memberId, strangerId, serverId, toolName, question, answer, call };
+  return { chat, initiatorId, memberId, strangerId, serverId, revisionId, generationId, fingerprint, toolName, question, answer, call };
 }
 
 describe("Prisma cross-turn tool history", () => {
@@ -180,7 +191,7 @@ describe("Prisma cross-turn tool history", () => {
     const current = await f.answer(await f.question(regenerated.answer.id), { status: "in_progress" });
     const toolHistory = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: regenerated.answer.id, userId: f.initiatorId });
     const project = async (reader = true) =>
-      (await operations.projectToolHistory({ actor: current.actor, reader, toolHistory })).blocks;
+      (await operations.projectToolHistory({ actor: current.actor, readers: { call: reader, result: true }, toolHistory })).blocks;
 
     const [block] = await project();
     expect(block).toMatchObject({ turnMessageId: regenerated.answer.id, userMessageId: first.id });
@@ -211,30 +222,37 @@ describe("Prisma cross-turn tool history", () => {
     expect(changed.entries).toEqual([]);
     expect(changed.footer).toContain("3 recorded calls have saved details that are no longer available");
     // A reader without access to the chat learns nothing either.
-    const stranger = await operations.projectToolHistory({ reader: false, toolHistory,
+    const stranger = await operations.projectToolHistory({ readers: { call: false, result: false }, toolHistory,
       actor: { chatId: f.chat.id, leafMessageId: regenerated.answer.id, userId: f.strangerId } });
     expect(stranger.blocks[0]!.entries).toEqual([]);
   });
 
-  it("redacts known secret values and withholds arguments whose redaction cannot be proven", async () => {
+  it("redacts known secret values, escaped ones included, and withholds details whose redaction cannot be proven", async () => {
     const f = await fixture({ sensitive: true });
     const answered = await f.answer(await f.question(null));
-    await f.call(answered, { round: 1, ordinal: 0, item: 1 });
+    const echoed = await f.call(answered, { round: 1, ordinal: 0, item: 1 });
+    // Execution redacted only the raw value; the server echoed it escaped inside JSON text.
+    await prisma.modelRunToolCall.update({ where: { id: echoed.id }, data: { result: { callId: echoed.providerCallId, name: echoed.toolName,
+      status: "complete", content: [{ type: "text", text: JSON.stringify({ echoed: syntheticSecret, item: 1 }) }],
+      rawPreview: { isError: false, unsupportedContentTypes: [] } } } });
     const current = await f.answer(await f.question(answered.answer.id), { status: "in_progress" });
     const toolHistory = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: answered.answer.id, userId: f.initiatorId });
     const entry = async () =>
-      (await operations.projectToolHistory({ actor: current.actor, reader: true, toolHistory })).blocks[0]!.entries[0]!;
+      (await operations.projectToolHistory({ actor: current.actor, readers, toolHistory })).blocks[0]!.entries[0]!;
 
     const redacted = await entry();
     expect(redacted.full).toContain('Arguments: {"authorization":"[REDACTED]","query":"item 1"}');
-    expect(redacted.full).not.toContain(syntheticSecret);
+    expect(redacted.full).toContain("[REDACTED]\\\",\\\"item\\\":1");
+    for (const leaked of [syntheticSecret, escapedSecret]) expect(redacted.full).not.toContain(leaked);
+    const read = await operations.readToolCall(current.actor, ref(echoed));
+    for (const leaked of [syntheticSecret, escapedSecret]) expect(JSON.stringify(read)).not.toContain(leaked);
     // Another key cannot open the accepted generation: the sensitive slot is unverified.
     vi.stubEnv("AIQSA_ENCRYPTION_KEY", Buffer.alloc(32, 7).toString("base64"));
     const unverified = await entry();
+    expect(unverified.full).toContain("executed; the tool reported success");
     expect(unverified.full).toContain("Arguments: withheld (their secrets cannot be verified as redacted)");
-    expect(unverified.full).toContain('Result: "result 1"');
-    expect(unverified.full).not.toContain("item 1");
-    expect(unverified.full).not.toContain(syntheticSecret);
+    expect(unverified.full).toContain("Result: withheld (its secrets cannot be verified as redacted)");
+    for (const leaked of [syntheticSecret, escapedSecret, "item 1"]) expect(unverified.full).not.toContain(leaked);
     vi.stubEnv("AIQSA_ENCRYPTION_KEY", "");
     expect((await entry()).full).toContain("Arguments: withheld (their secrets cannot be verified as redacted)");
   });
@@ -249,7 +267,7 @@ describe("Prisma cross-turn tool history", () => {
     const toolHistory = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: answered.answer.id, userId: f.memberId });
     expect(toolHistory.turns[0]!.callRefs).toEqual([ref(saved)]);
     // The restricted participant sees that the call happened and its outcome, never its details.
-    const entry = (await operations.projectToolHistory({ actor: member.actor, reader: true, toolHistory })).blocks[0]!.entries[0]!;
+    const entry = (await operations.projectToolHistory({ actor: member.actor, readers, toolHistory })).blocks[0]!.entries[0]!;
     expect(entry.full).toContain("executed; the tool reported success");
     expect(entry.full).toContain("Arguments: unavailable to this run. Result: unavailable to this run.");
     expect(await operations.readToolCall(member.actor, ref(saved))).toMatchObject({
@@ -314,12 +332,12 @@ describe("Prisma cross-turn tool history", () => {
     await f.call(answered, { round: 1, ordinal: 1, item: 2 });
     const current = await f.answer(await f.question(answered.answer.id), { status: "in_progress" });
     const toolHistory = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: answered.answer.id, userId: f.initiatorId });
-    const [omitted, whole] = (await operations.projectToolHistory({ actor: current.actor, reader: true, toolHistory })).blocks[0]!.entries;
+    const [omitted, whole] = (await operations.projectToolHistory({ actor: current.actor, readers, toolHistory })).blocks[0]!.entries;
     expect(omitted!.ref).toBe(ref(large));
     // The envelope still proves the tool's own error; the values are named by size.
     expect(omitted!.full).toContain("executed; the tool reported an error");
-    expect(omitted!.full).toMatch(/Arguments: about \d+ bytes, not shown here; read_tool_call returns them/u);
-    expect(omitted!.full).toMatch(/Result: about \d+ bytes, not shown here; read_tool_call returns it/u);
+    expect(omitted!.full).toContain("Arguments: large, not shown here; read_tool_call returns them");
+    expect(omitted!.full).toContain("Result: large, not shown here; read_tool_call returns it");
     expect(omitted!.full).not.toContain("xxxx");
     expect(whole!.full).toContain('Arguments: {"query":"item 2"}');
     // The reader loads the one call whole and pages it.
@@ -338,5 +356,177 @@ describe("Prisma cross-turn tool history", () => {
     expect(await operations.toolCallsAvailable(current.actor, [ref(search)])).toBe(false);
     expect(await operations.toolCallsAvailable(current.actor, [])).toBe(true);
     expect(await operations.toolCallsAvailable(current.actor, ["not-a-ref"])).toBe(false);
+  });
+});
+
+describe("Agent runs", () => {
+  /** Agent turns of one chat on one Workspace session, with their admitted MCP tool. */
+  async function agentFixture() {
+    const f = await fixture();
+    const session = await prisma.workspaceSession.create({ data: { chatId: f.chat.id, sandboxName: `history-${randomUUID()}`,
+      imageRef: "aiqsa-workspace:0.1.30", internetEnabled: true, policyRevision: 1, runtimeSandboxId: "fixture-runtime",
+      state: "RUNNING", expiresAt: new Date(Date.now() + 600_000) } });
+    cleanups.push(async () => {
+      await prisma.modelRun.deleteMany({ where: { chatId: f.chat.id } });
+      await prisma.workspaceSession.deleteMany({ where: { id: session.id } });
+    });
+    const agentTurn = async (userMessage: Readonly<{ id: string }>, status: RunStatus) => {
+      const turn = await f.answer(userMessage, { agent: true, status });
+      await prisma.workspaceRunBinding.create({ data: { modelRunId: turn.run.id, workspaceSessionId: session.id,
+        imageRef: session.imageRef, internetEnabled: true, policyRevision: 1, runtimeVersion: "0.6.16", mcpVersion: "0.6.16",
+        toolCatalogHash: "a".repeat(64), toolDefinitions: [{ originalName: "sandbox_exec_start", namespacedName: "workspace__sandbox_exec_start",
+          description: "Fixture", inputSchema: { type: "object" } }], outputDirectory: `/workspace/output/${turn.run.id}` } });
+      await prisma.agentRunBinding.create({ data: { modelRunId: turn.run.id, configuration: agentConfiguration,
+        compatibilityHash: agentConfiguration.compatibilityHash,
+        ...(status === "complete" ? { startedAt: new Date(), completedAt: new Date(),
+          tokenHash: createHash("sha256").update(randomUUID()).digest("hex") } : {}) } });
+      await prisma.agentMcpTool.create({ data: { modelRunId: turn.run.id, toolId: f.toolName, version: "v".repeat(64), snapshot: {
+        servers: [{ serverId: f.serverId, revisionId: f.revisionId, fingerprint: f.fingerprint, serverName: "Synthetic Records" }],
+        tools: [{ namespacedName: f.toolName, originalName: "records", serverId: f.serverId, serverName: "Synthetic Records" }] } } });
+      return turn;
+    };
+    return { ...f, agentTurn };
+  }
+
+  it("projects earlier Agent calls into the first prompt of a run whose binding is not armed yet, and reads them once armed", async () => {
+    const f = await agentFixture();
+    const first = await f.question(null);
+    const earlier = await f.agentTurn(first, "complete");
+    // The gateway keeps only a content-free settlement of an Agent MCP call.
+    const write = await prisma.modelRunToolCall.create({ data: { modelRunId: earlier.run.id, mcpRunBindingId: earlier.binding.id,
+      roundIndex: 0, ordinal: 0, providerCallId: `agent-call-${randomUUID()}`, toolName: f.toolName, state: "complete",
+      startedAt: new Date(), arguments: { argumentHash: "h".repeat(64) }, result: { state: "COMPLETE", code: null } } });
+    const second = await f.question(earlier.answer.id);
+    const current = await f.agentTurn(second, "in_progress");
+    const toolHistory = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: earlier.answer.id, userId: f.initiatorId });
+    expect(toolHistory.turns.map(turn => turn.callRefs)).toEqual([[ref(write)]]);
+
+    // Before arming: the run's own projection reads; its saved-call reader does not.
+    const projection = await operations.projectToolHistory({ actor: current.actor, readers: { call: true, result: false }, toolHistory });
+    const [entry] = projection.blocks[0]!.entries;
+    expect(entry!.full).toContain(`[${ref(write)}] MCP Synthetic Records › records (tool ${f.toolName}): executed; the tool reported success`);
+    expect(entry!.full).toContain("Arguments: not retained");
+    expect(await operations.readToolCall(current.actor, ref(write))).toBeNull();
+    // A fresh native thread receives it in its full prompt; the real answer stays the predecessor.
+    const request = { attachments: [], content: textMessageContent("Did the write happen?"), prompt: { developer: null, system: "baseline" },
+      context: { mode: "branch_path", messages: [
+        { id: first.id, role: "user", content: textMessageContent("Write the record") },
+        { id: earlier.answer.id, role: "assistant", content: textMessageContent("Written.") },
+        { id: second.id, role: "user", content: textMessageContent("Did the write happen?") }
+      ] } } as unknown as ProviderRunRequest;
+    const prompts = agentPrompts(insertToolHistory(request, projection));
+    expect(prompts.prompt).toContain(ref(write));
+    expect(prompts.prompt).toContain("MCP Synthetic Records › records");
+    expect(prompts.previousAssistantMessageId).toBe(earlier.answer.id);
+
+    // A revoked binding is never read, armed or not.
+    await prisma.agentRunBinding.update({ where: { modelRunId: current.run.id }, data: { revokedAt: new Date() } });
+    const revoked = await operations.projectToolHistory({ actor: current.actor, readers: { call: true, result: false }, toolHistory });
+    expect(revoked.blocks[0]!.entries).toEqual([]);
+    await prisma.agentRunBinding.update({ where: { modelRunId: current.run.id }, data: { revokedAt: null } });
+
+    // Armed by its executor, the run's reader reads the call.
+    await createAgentRunStore(prisma, { runId: current.run.id, userId: f.initiatorId, configuration: agentConfiguration }).arm(null);
+    expect(await operations.readToolCall(current.actor, ref(write))).toMatchObject({ ref: ref(write), kind: "mcp",
+      outcome: { status: "succeeded" }, arguments: { state: "not_retained" } });
+  });
+});
+
+describe("admission listing bounds", () => {
+  /** A branch of `turns` user turns, each answered with `calls` MCP calls. */
+  async function branch(turns: number, calls: number) {
+    const f = await fixture();
+    const made: Array<Readonly<{ id: string }>> = [];
+    let leaf: string | null = null;
+    for (let turn = 0; turn < turns; turn += 1) {
+      const answered = await f.answer(await f.question(leaf));
+      for (let index = 0; index < calls; index += 1) made.push(await f.call(answered, { round: 1, ordinal: index, item: turn * 10 + index }));
+      leaf = answered.answer.id;
+    }
+    return { f, leaf: leaf!, made };
+  }
+
+  it("counts every older call beyond the call, turn and scanned-run bounds instead of dropping it", async () => {
+    const { f, leaf, made } = await branch(4, 2);
+    const load = (bounds: Parameters<typeof createPrismaToolHistoryOperations>[1]) =>
+      createPrismaToolHistoryOperations(prisma, bounds).loadToolHistory({ chatId: f.chat.id, leafMessageId: leaf, userId: f.initiatorId });
+    const listed = (history: Awaited<ReturnType<typeof load>>) => history.turns.flatMap(turn => turn.callRefs);
+    // The newest three calls stay listed.
+    const byCalls = await load({ calls: 3 });
+    expect(listed(byCalls)).toEqual(made.slice(-3).map(ref));
+    expect(byCalls.omittedCalls).toBe(5);
+    // Two turns at most: the older turns' calls are counted.
+    const byTurns = await load({ turns: 2, scanBatchRuns: 1 });
+    expect(byTurns.turns).toHaveLength(2);
+    expect(listed(byTurns)).toEqual(made.slice(-4).map(ref));
+    expect(byTurns.omittedCalls).toBe(4);
+    // Runs beyond the scan bound are counted without being read.
+    const byScan = await load({ scannedRuns: 1 });
+    expect(listed(byScan)).toEqual(made.slice(-2).map(ref));
+    expect(byScan.omittedCalls).toBe(6);
+    // Within every bound nothing is omitted.
+    const whole = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: leaf, userId: f.initiatorId });
+    expect(listed(whole)).toEqual(made.map(ref));
+    expect(whole.omittedCalls).toBeUndefined();
+  });
+});
+
+describe("history reads of a long chat", () => {
+  it("loads and projects a long chat with large accepted requests and values well within the transaction bound", { timeout: 300_000 }, async () => {
+    const f = await fixture();
+    const turns = 240;
+    const filler = "Synthetic accepted context line. ".repeat(3_000);
+    const bigValue = "v".repeat(40_000);
+    let parent: string | null = null;
+    const runIds: string[] = [];
+    let clock = Date.now() - 3_600_000;
+    for (let turn = 0; turn < turns; turn += 1) {
+      const question: Readonly<{ id: string }> = await prisma.message.create({ data: { chatId: f.chat.id, role: "user", status: "complete",
+        parentMessageId: parent, content: textMessageContent(`Synthetic question ${turn}`) } });
+      const answer: Readonly<{ id: string }> = await prisma.message.create({ data: { chatId: f.chat.id, role: "assistant", status: "complete",
+        parentMessageId: question.id, content: textMessageContent(`Synthetic answer ${turn}`) } });
+      const run = await prisma.modelRun.create({ data: { chatId: f.chat.id, userId: f.initiatorId, userMessageId: question.id,
+        assistantMessageId: answer.id, provider: "fake", modelId: "fake-qsa", status: "complete", createdAt: new Date(clock += 1_000),
+        normalizedRequest: { context: { mode: "branch_path", messages: [{ id: question.id, role: "user", content: textMessageContent(filler) }] },
+          workspace: { enabled: true }, toolHistory: { version: 1, turns: [] },
+          mcp: { version: 1, servers: [{ serverId: f.serverId, revisionId: f.revisionId, fingerprint: f.fingerprint, serverName: "Synthetic Records" }],
+            tools: [{ namespacedName: f.toolName, originalName: "records", serverId: f.serverId, serverName: "Synthetic Records" }] } } } });
+      runIds.push(run.id);
+      parent = answer.id;
+    }
+    const bindings = await Promise.all(runIds.map(async (modelRunId) => prisma.mcpRunBinding.create({ data: { modelRunId,
+      runtimeGenerationId: f.generationId, runtimeGenerationFingerprint: f.fingerprint } })));
+    // Three calls per turn; a third carry large arguments and a third large results.
+    await prisma.modelRunToolCall.createMany({ data: runIds.flatMap((modelRunId, turn) => [0, 1, 2].map((ordinal) => {
+      const providerCallId = `call-${turn}-${ordinal}`;
+      return { modelRunId, mcpRunBindingId: bindings[turn]!.id, roundIndex: 1, ordinal, providerCallId, toolName: f.toolName,
+        state: "complete" as const, startedAt: new Date(),
+        arguments: ordinal === 1 ? { query: `item ${turn}`, body: bigValue } : { query: `item ${turn}` },
+        result: { callId: providerCallId, name: f.toolName, status: "complete",
+          content: [{ type: "text", text: ordinal === 2 ? bigValue : `result ${turn}-${ordinal}` }],
+          rawPreview: { isError: false, unsupportedContentTypes: [] } } };
+    })) });
+    const current = await f.answer(await f.question(parent), { status: "in_progress" });
+
+    const loadStarted = performance.now();
+    const toolHistory = await operations.loadToolHistory({ chatId: f.chat.id, leafMessageId: parent, userId: f.initiatorId });
+    const loadMs = performance.now() - loadStarted;
+    expect(toolHistory.turns).toHaveLength(turns);
+    const cache = new Map<string, unknown>();
+    const projectStarted = performance.now();
+    const projection = await operations.projectToolHistory({ actor: current.actor, readers, toolHistory, cache });
+    const projectMs = performance.now() - projectStarted;
+    const repeatStarted = performance.now();
+    await operations.projectToolHistory({ actor: current.actor, readers, toolHistory, cache });
+    const repeatMs = performance.now() - repeatStarted;
+    expect(projection.blocks).toHaveLength(turns);
+    expect(projection.blocks.every((block) => block.entries.length === 3)).toBe(true);
+    const lines = projection.blocks.flatMap((block) => block.entries.map((entry) => entry.full));
+    expect(lines.filter((line) => line.includes("Arguments: large, not shown here"))).toHaveLength(turns);
+    expect(lines.filter((line) => line.includes("Result: large, not shown here"))).toHaveLength(turns);
+    process.stdout.write(JSON.stringify({ toolHistoryTiming: { turns, calls: turns * 3, loadMs: Math.round(loadMs),
+      projectMs: Math.round(projectMs), repeatProjectMs: Math.round(repeatMs) } }) + "\n");
+    // Far below the bound a slower read would degrade under.
+    for (const duration of [loadMs, projectMs, repeatMs]) expect(duration).toBeLessThan(5_000);
   });
 });

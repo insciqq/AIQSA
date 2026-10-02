@@ -797,8 +797,9 @@ export type RunRepository = {
    * authority; see `createPrismaToolHistoryOperations`. */
   projectToolHistory?(input: {
     actor: import("./prismaRepositoryToolHistory").ToolHistoryActor;
-    reader: boolean;
+    readers: import("./toolHistoryRecords").ToolHistoryReaders;
     toolHistory: import("./toolHistoryContract").ToolHistorySnapshot;
+    cache?: import("./toolHistoryContract").ToolHistoryCache;
   }): Promise<import("./toolHistory").ToolHistoryProjection>;
   /** The authorized record `read_tool_call` returns, or null when unavailable. */
   readToolCall?(

@@ -1,0 +1,58 @@
+import type { ProviderToolBridge, ToolExecutionResult } from "../tools/types";
+import { providerResultCallId } from "./contextCompactionPlanner";
+import { READ_TOOL_CALL_NAME } from "./toolHistoryContract";
+
+/**
+ * What a persisted tool-loop continuation keeps of a `read_tool_call` output:
+ * nothing of the read call's saved arguments or results. Its call row keeps
+ * only a content-free receipt; a recovery reads the call again, with the
+ * run's current authority, before the transcript reaches a provider again.
+ */
+const NOT_KEPT = Object.freeze({
+  code: "tool_call_read_not_kept",
+  message: "This earlier read is not kept. Read the call again with read_tool_call if it is still needed."
+});
+
+export function callReadStub(callId: string): ToolExecutionResult {
+  return { callId, name: READ_TOOL_CALL_NAME, status: "complete", content: [{ type: "json", value: NOT_KEPT }] };
+}
+
+/** Provider call ids of a run's persisted call reads. */
+export function callReadIds(calls: Iterable<Readonly<{ providerCallId: string; toolName: string }>>): ReadonlySet<string> {
+  return new Set([...calls].filter(call => call.toolName === READ_TOOL_CALL_NAME).map(call => call.providerCallId));
+}
+
+/** The continuation as it is persisted: every call read's output becomes a
+ * content-free stub; any other item stays exactly as the provider saw it. */
+export function withoutCallReadOutputs<T extends Readonly<{ providerToolMessages: readonly unknown[] }>>(
+  continuation: T,
+  readCallIds: ReadonlySet<string>,
+  bridge: ProviderToolBridge | undefined
+): T {
+  if (readCallIds.size === 0 || !bridge) return continuation;
+  let changed = false;
+  const providerToolMessages = continuation.providerToolMessages.map((message) => {
+    const callId = providerResultCallId(message);
+    if (callId === null || !readCallIds.has(callId)) return message;
+    changed = true;
+    return bridge.appendToolResult(undefined, callReadStub(callId));
+  });
+  return changed ? { ...continuation, providerToolMessages } : continuation;
+}
+
+/** A saved transcript with every call read read again (`read` reauthorizes
+ * and returns the call's current output or refusal). */
+export async function withRereadCallReads(
+  messages: readonly unknown[],
+  readCallIds: ReadonlySet<string>,
+  bridge: ProviderToolBridge | undefined,
+  read: (callId: string) => Promise<ToolExecutionResult>
+): Promise<unknown[]> {
+  if (readCallIds.size === 0 || !bridge) return [...messages];
+  const reread: unknown[] = [];
+  for (const message of messages) {
+    const callId = providerResultCallId(message);
+    reread.push(callId !== null && readCallIds.has(callId) ? bridge.appendToolResult(undefined, await read(callId)) : message);
+  }
+  return reread;
+}

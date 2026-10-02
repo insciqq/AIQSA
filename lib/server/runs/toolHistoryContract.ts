@@ -28,13 +28,26 @@ export const TOOL_HISTORY_LIMITS = Object.freeze({
   argumentsBytes: 640,
   resultBytes: 480,
   /** The largest saved arguments or result (JSON text) a projection loads
-   * for an excerpt: a larger value is named by its size, its result envelope
-   * still giving the outcome, and `read_tool_call` pages it. Keeps the
-   * per-request projection of many large calls bounded. */
+   * for an excerpt: a larger value is only named as large, its result
+   * envelope still giving the outcome, and `read_tool_call` pages it. Keeps
+   * the per-request projection of many large calls bounded. */
   projectionValueBytes: 16 * 1024,
   /** Calls whose saved values one projection query loads at once. */
-  projectionBatchCalls: 256
+  projectionBatchCalls: 256,
+  /** One history read inside a database transaction. The projection of a
+   * long chat stays far below it (the stateful timing check measures it); a
+   * slower read degrades to "details unavailable", never fails the run. */
+  transactionMs: 15_000,
+  transactionWaitMs: 5_000,
+  /** Runs with calls one admission reads, newest first, before the rest of
+   * the branch's calls are counted as omitted without being read. */
+  scannedRuns: 1024,
+  scanBatchRuns: 64
 });
+
+/** A per-run memo the history reader keeps between one run's requests: only
+ * what never changes for an accepted run. Authority is rechecked every time. */
+export type ToolHistoryCache = Map<string, unknown>;
 
 const CALL_REF_PREFIX = "tcr1_";
 const MESSAGE_PREFIX = "tch1_";

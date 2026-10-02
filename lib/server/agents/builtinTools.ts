@@ -90,7 +90,8 @@ export function createAgentBuiltinDispatcher(input: {
       }
       if (call.name === READ_TOOL_CALL_NAME) {
         // The row keeps a content-free receipt; a replay reads again.
-        const result = await executeReadToolCall(input.toolCalls, call, context, signal);
+        const result = await executeReadToolCall(input.toolCalls, call, context, signal, undefined,
+          { resultReader: input.request.toolObservationVersion === 1 });
         if (claim.claimed) await input.store.settleBuiltinTool(claim.id, readToolCallReceipt(call, result));
         return result;
       }

@@ -54,16 +54,27 @@ describe("read_tool_call", () => {
       offset = section.next_offset!;
     }
     expect(collected).toBe(text);
+    // Every page names the same whole value: a changed value is detectable between pages.
+    const first = value(await executeReadToolCall(source, call({ call_ref: ref, section: "arguments", max_bytes: 1000 }), actor));
+    const changed = value(await executeReadToolCall(reader(record({ arguments: { state: "available", text: text.replace("end", "END") } })),
+      call({ call_ref: ref, section: "arguments", offset: 1000, max_bytes: 1000 }), actor));
+    const digest = (output: Record<string, unknown>) => (output.arguments as { value_sha256: string }).value_sha256;
+    expect(digest(first)).toMatch(/^[a-f0-9]{16}$/u);
+    expect(digest(changed)).not.toBe(digest(first));
     // An offset beyond the value is an invalid selector, never an invented end.
     expect(value(await executeReadToolCall(source, call({ call_ref: ref, section: "arguments", offset: 10_000_000 }), actor)))
       .toMatchObject({ code: "tool_call_selector_invalid" });
   });
 
   it("names a saved original for read_tool_result and keeps withheld or absent data explicit", async () => {
-    const saved = value(await executeReadToolCall(reader(record({ result: { state: "saved", handle: `tor1_${"a".repeat(32)}`, preview: "{\"a\":1}" } })),
-      call({ call_ref: ref, section: "result" }), actor));
+    const savedRecord = reader(record({ result: { state: "saved", handle: `tor1_${"a".repeat(32)}`, preview: "{\"a\":1}" } }));
+    const saved = value(await executeReadToolCall(savedRecord, call({ call_ref: ref, section: "result" }), actor, undefined, undefined,
+      { resultReader: true }));
     expect(saved.result).toEqual({ state: "saved_original", reader: "read_tool_result", handle: `tor1_${"a".repeat(32)}`,
       beginning: "{\"a\":1}", beginning_complete: true });
+    // A run without the saved-result reader is never offered its handle.
+    const offRun = value(await executeReadToolCall(savedRecord, call({ call_ref: ref, section: "result" }), actor));
+    expect(offRun.result).toEqual({ state: "saved_original", beginning: "{\"a\":1}", beginning_complete: true });
     const withheld = value(await executeReadToolCall(reader(record({ arguments: { state: "withheld", reason: "redaction_unavailable" },
       result: { state: "withheld", reason: "access_unavailable" } })), call({ call_ref: ref }), actor));
     expect(withheld.arguments).toMatchObject({ state: "withheld" });
