@@ -7,7 +7,7 @@ import { memorySha256 } from "../../persistence/lexical";
 import {
   memoryExplicitFactReceiptAuthorityPredicate,
   memoryReusableFactAuthorityPredicate
-} from "../../synthesis/eligibility";
+} from "../../persistence/reusableFactAuthority";
 import {
   assertMemoryExplicitRelationSnapshot,
   isMemoryExplicitRelationJob,

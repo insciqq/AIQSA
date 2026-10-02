@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { projectMemoryHistorySourceText } from "../history/safety";
 import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../learning/extraction/contract";
 import { loadMemoryReusableFactSourceSnapshots } from
-  "../synthesis/authoritySnapshots";
+  "./reusableFactSourceSnapshots";
 import {
   buildMemoryFactSearchIdentity,
   type MemoryFactSearchIdentityInput

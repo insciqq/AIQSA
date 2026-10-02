@@ -90,7 +90,7 @@ import {
   memoryAutomaticExplicitRememberPredicate,
   memoryPersonalFactEvidencePredicate
 } from "../persistence/eligibility";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS } from "../maintenance/policy";
 import {
   memoryHistoryChunkSourceAuthorityPredicate,

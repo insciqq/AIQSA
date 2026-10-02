@@ -56,7 +56,7 @@ import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "../history/rounds";
-import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
+import { loadMemoryReusableFactVersionIds } from "../persistence/reusableFactAuthority";
 import { loadDeliveredMemorySearchEvidence } from "./searchEvidence";
 
 type SourceActionClient = Pick<

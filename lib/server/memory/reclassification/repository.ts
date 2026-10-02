@@ -21,7 +21,7 @@ import {
   MEMORY_SAFETY_LITE_POLICY_VERSION,
   memorySafetyLiteReasonForRedaction
 } from "../safetyLite";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
 import { removeUnsupportedMemoryEntityLinks } from "../learning/entities/lifecycle";
 import { MEMORY_V1_CATEGORY_ALLOWLIST } from "../learning/extraction/contract";

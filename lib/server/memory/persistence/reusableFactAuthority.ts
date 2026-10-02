@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   memoryExactVNextDirectAuthorityPredicate,
   memoryPersonalFactEvidencePredicate
-} from "../persistence/eligibility";
+} from "./eligibility";
 
 export type MemoryReusableFactAuthorityClassification =
   | "CLASSIFIED"
@@ -189,25 +189,25 @@ export function memoryExplicitFactReceiptAuthorityPredicate(
     ${version}."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
     OR EXISTS (
       SELECT 1
-      FROM "MemoryEvent" AS synthesis_explicit_event
-      WHERE synthesis_explicit_event."userId" = ${version}."userId"
-        AND synthesis_explicit_event."id" = ${version}."createdByEventId"
-        AND synthesis_explicit_event."factVersionId" = ${version}."id"
-        AND synthesis_explicit_event."operation" IN (
+      FROM "MemoryEvent" AS reusable_explicit_event
+      WHERE reusable_explicit_event."userId" = ${version}."userId"
+        AND reusable_explicit_event."id" = ${version}."createdByEventId"
+        AND reusable_explicit_event."factVersionId" = ${version}."id"
+        AND reusable_explicit_event."operation" IN (
           'EXPLICIT_SAVE'::"MemoryEventOperation",
           'EDIT'::"MemoryEventOperation",
           'SCOPE_CHANGE'::"MemoryEventOperation"
         )
         AND EXISTS (
           SELECT 1
-          FROM "MemoryOperationReceipt" AS synthesis_explicit_receipt
-          WHERE synthesis_explicit_receipt."userId" = ${version}."userId"
-            AND synthesis_explicit_receipt."targetFactId" = ${version}."factId"
-            AND synthesis_explicit_receipt."targetVersionId" = ${version}."id"
-            AND synthesis_explicit_receipt."outcome" =
+          FROM "MemoryOperationReceipt" AS reusable_explicit_receipt
+          WHERE reusable_explicit_receipt."userId" = ${version}."userId"
+            AND reusable_explicit_receipt."targetFactId" = ${version}."factId"
+            AND reusable_explicit_receipt."targetVersionId" = ${version}."id"
+            AND reusable_explicit_receipt."outcome" =
               'APPLIED'::"MemoryOperationOutcome"
-            AND synthesis_explicit_receipt."operation" =
-              CASE synthesis_explicit_event."operation"
+            AND reusable_explicit_receipt."operation" =
+              CASE reusable_explicit_event."operation"
                 WHEN 'EXPLICIT_SAVE'::"MemoryEventOperation"
                   THEN 'SAVE'::"MemoryMutationAction"
                 WHEN 'SCOPE_CHANGE'::"MemoryEventOperation"
