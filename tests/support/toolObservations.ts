@@ -54,7 +54,8 @@ export function memoryToolObservations(loadSource: (producer: ObservationProduce
     async read(actor, id) {
       const row = [...rows.values()].find(row => row.id === id && row.modelRunId === actor.runId);
       if (!allowed || row?.state !== "READY") throw new ObservationStoreError("tool_observation_unavailable");
-      return { ...row, modelRun: { chatId: "chat-1", assistantMessageId: "assistant-1" }, toolCall: { state: "complete" as const } };
+      return { ...row, modelRun: { chatId: "chat-1", assistantMessageId: "assistant-1", userMessageId: "user-message-1" },
+        toolCall: { state: "complete" as const } };
     },
     async available(actor, ids) {
       return allowed && ids.every(id => [...rows.values()].some(row => row.id === id && row.modelRunId === actor.runId &&
