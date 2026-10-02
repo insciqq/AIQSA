@@ -1382,13 +1382,11 @@ async function createBenchmarkIdentity(
       expectedSettingsRevision: settings.settingsRevision,
       learnAutomatically: profile === "product",
       referenceChatHistory: true,
-      synthesisEnabled: profile === "product",
       useMemoryFacts: true
     });
   });
   if (configured.embeddingProviderModelId !== roles.qwen.id ||
     configured.learnAutomatically !== (profile === "product") ||
-    configured.synthesisEnabled !== (profile === "product") ||
     !configured.referenceChatHistory ||
     !configured.useMemoryFacts) {
     throw new Error("longmemeval_memory_settings_invalid");
@@ -1831,7 +1829,6 @@ async function alignPreparedCaseIdentity(
           embeddingProviderModelId: true,
           learnAutomatically: true,
           referenceChatHistory: true,
-          synthesisEnabled: true,
           useMemoryFacts: true
         },
         where: { userId: input.userId }
@@ -1854,7 +1851,7 @@ async function alignPreparedCaseIdentity(
     !allowSystemModelSwap && (!systemModelAligned || !credentialAligned) ||
     !memorySettings ||
     memorySettings.decayEnabled || memorySettings.learnAutomatically ||
-    !memorySettings.referenceChatHistory || memorySettings.synthesisEnabled ||
+    !memorySettings.referenceChatHistory ||
     !memorySettings.useMemoryFacts) {
     throw new Error("longmemeval_prepared_case_identity_invalid");
   }
