@@ -26,7 +26,14 @@ export const TOOL_HISTORY_LIMITS = Object.freeze({
   blockBytes: 32 * 1024,
   /** Bounded excerpts of one entry; the reader pages through the rest. */
   argumentsBytes: 640,
-  resultBytes: 480
+  resultBytes: 480,
+  /** The largest saved arguments or result (JSON text) a projection loads
+   * for an excerpt: a larger value is named by its size, its result envelope
+   * still giving the outcome, and `read_tool_call` pages it. Keeps the
+   * per-request projection of many large calls bounded. */
+  projectionValueBytes: 16 * 1024,
+  /** Calls whose saved values one projection query loads at once. */
+  projectionBatchCalls: 256
 });
 
 const CALL_REF_PREFIX = "tcr1_";

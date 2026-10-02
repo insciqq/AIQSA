@@ -87,9 +87,11 @@ async function readingContext(tx: Prisma.TransactionClient, actor: ToolHistoryAc
   };
 }
 
-const callSelect = {
+/** Everything but the saved values: identity, state, receipts, observation
+ * and the owning run. Small for any call. */
+const callHeadSelect = {
   id: true, modelRunId: true, toolName: true, providerCallId: true, roundIndex: true, ordinal: true, state: true,
-  startedAt: true, arguments: true, result: true, workspaceRunBindingId: true,
+  startedAt: true, workspaceRunBindingId: true,
   mcpRunBinding: { select: { modelRunId: true, runtimeGenerationFingerprint: true, runtimeGenerationId: true } },
   observation: { select: { id: true, state: true, formatVersion: true, sourceKind: true, executionOutcome: true,
     projection: true, sourceBinding: true, modelRunId: true } },
@@ -97,7 +99,18 @@ const callSelect = {
   modelRun: { select: { id: true, chatId: true, userMessageId: true, assistantMessageId: true, status: true } }
 } satisfies Prisma.ModelRunToolCallSelect;
 
-type LoadedCall = Prisma.ModelRunToolCallGetPayload<{ select: typeof callSelect }>;
+type CallHead = Prisma.ModelRunToolCallGetPayload<{ select: typeof callHeadSelect }>;
+
+/** The saved values a record may excerpt: whole up to the projection bound,
+ * else only their size and the result's envelope. */
+type CallValues = Readonly<{
+  arguments: unknown;
+  result: unknown;
+  omittedArgumentsBytes?: number;
+  omittedResultBytes?: number;
+}>;
+
+type LoadedCall = CallHead & CallValues;
 
 type AcceptedRun = Readonly<{
   agent: boolean;
@@ -180,7 +193,7 @@ function mcpAuthority(tx: Prisma.TransactionClient, context: ReadingContext) {
   };
 }
 
-function observationFact(call: LoadedCall, identity: AcceptedMcpCallIdentity | null): ToolCallFacts["observation"] {
+function observationFact(call: CallHead, identity: AcceptedMcpCallIdentity | null): ToolCallFacts["observation"] {
   const observation = call.observation;
   if (!observation || observation.modelRunId !== call.modelRunId) return null;
   const binding = identity ? decodeToolObservationSourceBinding(observation.sourceBinding, "mcp") : null;
@@ -199,14 +212,8 @@ function observationFact(call: LoadedCall, identity: AcceptedMcpCallIdentity | n
   };
 }
 
-/** The persisted facts of one authorized call, with its owner's projection. */
-async function callFacts(input: Readonly<{
-  call: LoadedCall;
-  context: ReadingContext;
-  mcp: ReturnType<typeof mcpAuthority>;
-  run: AcceptedRun;
-}>): Promise<ToolCallFacts> {
-  const { call, context, run } = input;
+/** The server-owned class of one call and, for MCP, its exact accepted identity. */
+function classify(call: CallHead, run: AcceptedRun) {
   const classified = toolHistoryKind({ agent: run.agent, agentMcpTools: run.agentMcpTools, normalizedRequest: run.normalizedRequest,
     toolName: call.toolName });
   let identity: AcceptedMcpCallIdentity | null = null;
@@ -216,6 +223,18 @@ async function callFacts(input: Readonly<{
         ? acceptedMcpCallIdentity(run.normalizedRequest, call.toolName, call.mcpRunBinding.runtimeGenerationFingerprint)
         : null;
   }
+  return { ...classified, identity };
+}
+
+/** The persisted facts of one authorized call, with its owner's projection. */
+async function callFacts(input: Readonly<{
+  call: LoadedCall;
+  context: ReadingContext;
+  mcp: ReturnType<typeof mcpAuthority>;
+  run: AcceptedRun;
+}>): Promise<ToolCallFacts> {
+  const { call, context, run } = input;
+  const { identity, ...classified } = classify(call, run);
   const readable = identity ? await input.mcp.readable(identity) : false;
   const redaction = identity && readable && !run.agent
     ? await input.mcp.redaction(identity, call.mcpRunBinding?.runtimeGenerationId ?? null) : null;
@@ -230,6 +249,8 @@ async function callFacts(input: Readonly<{
     startedAt: call.startedAt?.toISOString() ?? null,
     arguments: call.arguments,
     result: call.result,
+    ...(call.omittedArgumentsBytes !== undefined ? { omittedArgumentsBytes: call.omittedArgumentsBytes } : {}),
+    ...(call.omittedResultBytes !== undefined ? { omittedResultBytes: call.omittedResultBytes } : {}),
     kind: classified.kind,
     label: classified.label,
     runTerminal: !activeModelRunStatuses.includes(call.modelRun.status),
@@ -243,19 +264,58 @@ async function callFacts(input: Readonly<{
 
 /** A call the reading context may describe: same chat, an eligible run on its
  * branch (or the reader's own run), never an Agent's internal execution. */
-function describable(call: LoadedCall, context: ReadingContext, run: AcceptedRun | undefined): run is AcceptedRun {
+function describable(call: CallHead, context: ReadingContext, run: AcceptedRun | undefined): run is AcceptedRun {
   return call.modelRun.chatId === context.chatId && run !== undefined && run.eligible &&
     (call.modelRunId === context.runId || runOnBranchPath(context.pathIds, call.modelRun)) &&
     !(call.toolName === MANAGED_AGENT_EXEC && call.workspaceRunBindingId !== null);
 }
 
-async function loadCalls(tx: Prisma.TransactionClient, ids: readonly string[]): Promise<LoadedCall[]> {
-  return ids.length ? tx.modelRunToolCall.findMany({ where: { id: { in: [...ids] } }, select: callSelect }) : [];
+async function loadCallHeads(tx: Prisma.TransactionClient, ids: readonly string[]): Promise<CallHead[]> {
+  return ids.length ? tx.modelRunToolCall.findMany({ where: { id: { in: [...ids] } }, select: callHeadSelect }) : [];
+}
+
+/** One call with its whole saved values, for the call reader. */
+async function loadWholeCall(tx: Prisma.TransactionClient, id: string): Promise<LoadedCall | null> {
+  return tx.modelRunToolCall.findUnique({ where: { id }, select: { ...callHeadSelect, arguments: true, result: true } });
+}
+
+/**
+ * The saved values of `ids` for records: each whole up to the projection
+ * bound, a larger one only by size (a result keeping its status and preview
+ * flags). A projection of many calls never loads their large values.
+ */
+async function projectionValues(tx: Prisma.TransactionClient, ids: readonly string[]): Promise<Map<string, CallValues>> {
+  const values = new Map<string, CallValues>();
+  if (ids.length === 0) return values;
+  const limit = TOOL_HISTORY_LIMITS.projectionValueBytes;
+  const rows = await tx.$queryRaw<Array<{
+    id: string; argumentsBytes: number; arguments: unknown; resultBytes: number | null; result: unknown;
+    resultStatus: unknown; resultRawPreview: unknown;
+  }>>`SELECT v."id", v."argumentsBytes", v."resultBytes",
+      CASE WHEN v."argumentsBytes" <= ${limit} THEN v."arguments" END AS "arguments",
+      CASE WHEN v."resultBytes" <= ${limit} THEN v."result" END AS "result",
+      CASE WHEN v."resultBytes" > ${limit} THEN v."result" -> 'status' END AS "resultStatus",
+      CASE WHEN v."resultBytes" > ${limit} THEN v."result" -> 'rawPreview' END AS "resultRawPreview"
+    FROM (SELECT c."id", c."arguments", c."result", octet_length(c."arguments"::text) AS "argumentsBytes",
+        octet_length(c."result"::text) AS "resultBytes"
+      FROM "ModelRunToolCall" c WHERE c."id" IN (${Prisma.join([...ids])})) v`;
+  for (const row of rows) {
+    const argumentsOmitted = row.argumentsBytes > limit;
+    const resultOmitted = row.resultBytes !== null && row.resultBytes > limit;
+    values.set(row.id, {
+      arguments: argumentsOmitted ? undefined : row.arguments,
+      result: row.resultBytes === null ? null : resultOmitted
+        ? { status: row.resultStatus, ...(record(row.resultRawPreview) ? { rawPreview: row.resultRawPreview } : {}) } : row.result,
+      ...(argumentsOmitted ? { omittedArgumentsBytes: row.argumentsBytes } : {}),
+      ...(resultOmitted ? { omittedResultBytes: row.resultBytes! } : {})
+    });
+  }
+  return values;
 }
 
 /** Search options the call's accepted plan routed it to must still be
  * enabled and, outside Projects, entitled, as the saved-result owner checks. */
-async function searchAvailable(tx: Prisma.TransactionClient, context: ReadingContext, call: LoadedCall, run: AcceptedRun): Promise<boolean> {
+async function searchAvailable(tx: Prisma.TransactionClient, context: ReadingContext, call: CallHead, run: AcceptedRun): Promise<boolean> {
   const plan = record(run.normalizedRequest.searchPlan) ? run.normalizedRequest.searchPlan : null;
   const options = Array.isArray(plan?.options)
     ? plan.options.filter(option => record(option) && option.adapterKind !== "answer_provider_hosted") as Record<string, unknown>[] : [];
@@ -369,45 +429,57 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient) {
           throw error;
         });
         const ids = turns.flatMap(turn => turn.callRefs.flatMap(ref => toolCallIdFromRef(ref) ?? []));
-        const calls = context ? await loadCalls(tx, ids) : [];
-        const byId = new Map(calls.map(call => [call.id, call]));
-        const runs = await acceptedRuns(tx, [...new Set(calls.map(call => call.modelRunId))]);
+        const heads = context ? await loadCallHeads(tx, ids) : [];
+        const byId = new Map(heads.map(call => [call.id, call]));
+        const runs = await acceptedRuns(tx, [...new Set(heads.map(call => call.modelRunId))]);
         const mcp = context ? mcpAuthority(tx, context) : null;
-        const blocks = [];
-        for (const [index, turn] of turns.entries()) {
-          const resolved = turn.callRefs.map(ref => byId.get(toolCallIdFromRef(ref) ?? ""));
-          const complete = resolved.every((call): call is LoadedCall => call !== undefined) &&
-            toolHistoryDigest(resolved as LoadedCall[]) === turn.digest;
-          const records: ToolHistoryRecord[] = [];
-          let unavailableCalls = complete ? 0 : turn.callRefs.length;
-          let userMessageId: string | null = null;
+        const states = turns.map(turn => ({ records: [] as ToolHistoryRecord[], unavailableCalls: 0, userMessageId: null as string | null,
           // Earlier attempts of the current message form their own record;
           // in a past turn they are marked beside the current branch's calls.
-          const currentTurn = context !== null && turn.turnMessageId === context.currentUserMessageId;
-          if (complete && context && mcp) {
-            for (const call of resolved as LoadedCall[]) {
-              const run = runs.get(call.modelRunId);
-              userMessageId ??= call.modelRun.userMessageId;
-              if (!describable(call, context, run)) {
-                unavailableCalls += 1;
-                continue;
-              }
-              records.push(toolHistoryRecord(await callFacts({ call, context, mcp, run }),
-                !currentTurn && call.modelRun.assistantMessageId !== turn.turnMessageId));
-            }
+          currentTurn: context !== null && turn.turnMessageId === context.currentUserMessageId }));
+        const describableCalls: Array<Readonly<{ turn: number; call: CallHead; run: AcceptedRun; previousAttempt: boolean }>> = [];
+        for (const [index, turn] of turns.entries()) {
+          const state = states[index]!;
+          const resolved = turn.callRefs.map(ref => byId.get(toolCallIdFromRef(ref) ?? ""));
+          const complete = resolved.every((call): call is CallHead => call !== undefined) &&
+            toolHistoryDigest(resolved as CallHead[]) === turn.digest;
+          if (!complete || !context) {
+            state.unavailableCalls = turn.callRefs.length;
+            continue;
           }
-          blocks.push(toolHistoryBlock({
-            turnMessageId: turn.turnMessageId,
-            userMessageId,
-            currentTurn,
-            records,
-            unavailableCalls,
-            readerCalls: turn.readerCalls ?? 0,
-            ...(index === 0 && input.toolHistory.omittedCalls ? { omittedCalls: input.toolHistory.omittedCalls } : {}),
-            reader: input.reader
-          }));
+          for (const call of resolved as CallHead[]) {
+            const run = runs.get(call.modelRunId);
+            state.userMessageId ??= call.modelRun.userMessageId;
+            if (!describable(call, context, run)) state.unavailableCalls += 1;
+            else describableCalls.push({ turn: index, call, run,
+              previousAttempt: !state.currentTurn && call.modelRun.assistantMessageId !== turn.turnMessageId });
+          }
         }
-        return { blocks };
+        // Saved values load in bounded batches, in order; each batch is
+        // released once its records are rendered.
+        for (let start = 0; context && mcp && start < describableCalls.length; start += TOOL_HISTORY_LIMITS.projectionBatchCalls) {
+          const batch = describableCalls.slice(start, start + TOOL_HISTORY_LIMITS.projectionBatchCalls);
+          const values = await projectionValues(tx, batch.map(entry => entry.call.id));
+          for (const entry of batch) {
+            const value = values.get(entry.call.id);
+            if (!value) {
+              states[entry.turn]!.unavailableCalls += 1;
+              continue;
+            }
+            states[entry.turn]!.records.push(toolHistoryRecord(await callFacts({ call: { ...entry.call, ...value }, context, mcp,
+              run: entry.run }), entry.previousAttempt));
+          }
+        }
+        return { blocks: turns.map((turn, index) => toolHistoryBlock({
+          turnMessageId: turn.turnMessageId,
+          userMessageId: states[index]!.userMessageId,
+          currentTurn: states[index]!.currentTurn,
+          records: states[index]!.records,
+          unavailableCalls: states[index]!.unavailableCalls,
+          readerCalls: turn.readerCalls ?? 0,
+          ...(index === 0 && input.toolHistory.omittedCalls ? { omittedCalls: input.toolHistory.omittedCalls } : {}),
+          reader: input.reader
+        })) };
       });
     },
 
@@ -423,7 +495,7 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient) {
           throw error;
         });
         if (!context) return null;
-        const [call] = await loadCalls(tx, [id]);
+        const call = await loadWholeCall(tx, id);
         if (!call) return null;
         const runs = await acceptedRuns(tx, [call.modelRunId]);
         const run = runs.get(call.modelRunId);
@@ -453,16 +525,16 @@ export function createPrismaToolHistoryOperations(prisma: PrismaClient) {
           throw error;
         });
         if (!context || context.retentionExpired) return false;
-        const calls = await loadCalls(tx, ids as string[]);
+        const calls = await loadCallHeads(tx, ids as string[]);
         if (calls.length !== ids.length) return false;
         const runs = await acceptedRuns(tx, [...new Set(calls.map(call => call.modelRunId))]);
         const mcp = mcpAuthority(tx, context);
         for (const call of calls) {
           const run = runs.get(call.modelRunId);
           if (!describable(call, context, run)) return false;
-          const facts = await callFacts({ call, context, mcp, run });
-          if (facts.kind === "mcp" && !facts.mcp?.readable) return false;
-          if (facts.kind === "web_search" && !run.agent && !await searchAvailable(tx, context, call, run)) return false;
+          const { kind, identity } = classify(call, run);
+          if (kind === "mcp" && !(identity && await mcp.readable(identity))) return false;
+          if (kind === "web_search" && !run.agent && !await searchAvailable(tx, context, call, run)) return false;
         }
         return true;
       });

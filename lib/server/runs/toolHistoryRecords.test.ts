@@ -150,6 +150,29 @@ describe("tool history records project only what each owner discloses", () => {
     expect(record.arguments.state === "available" && record.arguments.text).not.toContain("s3cret");
   });
 
+  it("names values too large for a record by size, keeps their outcome and points to the reader", () => {
+    const envelope = { status: "error", rawPreview: { isError: true, unsupportedContentTypes: [] } };
+    const omitted = toolHistoryRecord(facts({ state: "complete", arguments: undefined, omittedArgumentsBytes: 40_000,
+      result: envelope, omittedResultBytes: 90_000 }), false);
+    expect(omitted.arguments).toEqual({ state: "omitted", bytes: 40_000 });
+    expect(omitted.result).toEqual({ state: "omitted", bytes: 90_000 });
+    // The envelope alone still proves the tool's own error.
+    expect(omitted.outcome).toEqual({ status: "tool_error", dispatched: true });
+    const entry = toolHistoryEntry(omitted, true);
+    expect(entry.full).toContain("Arguments: about 40000 bytes, not shown here; read_tool_call returns them");
+    expect(entry.full).toContain("Result: about 90000 bytes, not shown here; read_tool_call returns it");
+    expect(entry.details).toBe(false);
+    expect(toolHistoryEntry(omitted, false).full).not.toContain("read_tool_call");
+    // Withheld details stay withheld whatever their size.
+    expect(toolHistoryRecord(facts({ arguments: undefined, omittedArgumentsBytes: 40_000,
+      mcp: { readable: true, redaction: { state: "incomplete", values: [] } } }), false).arguments)
+      .toEqual({ state: "withheld", reason: "redaction_unavailable" });
+    // A saved original is still named by its handle, with its stored preview.
+    expect(toolHistoryRecord(facts({ result: { status: "complete" }, omittedResultBytes: 90_000,
+      observation: { handle: `tor1_${"c".repeat(32)}`, executionOutcome: "complete", preview: "stored preview" } }), false).result)
+      .toEqual({ state: "saved", handle: `tor1_${"c".repeat(32)}`, preview: "stored preview" });
+  });
+
   it("bounds long values and points to the reader", () => {
     const long = "x".repeat(5000);
     const entry = toolHistoryEntry(toolHistoryRecord(facts({ arguments: { body: long } }), false), true);

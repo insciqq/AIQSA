@@ -9,7 +9,7 @@ import { CHECKPOINT_OUTPUTS_TOOL_NAME } from "../tools/checkpointOutputs";
 import { IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { READ_TOOL_RESULT_NAME } from "../tools/readToolResult";
 import { SESSION_STATUS_TOOL_NAME } from "../tools/sessionStatus";
-import { hasInvalidProviderToolArguments } from "../tools/types";
+import { hasInvalidProviderToolArguments, type ToolExecutionResult } from "../tools/types";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import { canonicalJsonText } from "./contextCompactionContract";
 import { repeatBlockedRounds } from "./toolCallRepeatGuard";
@@ -96,6 +96,11 @@ export type ToolCallFacts = Readonly<{
   startedAt: string | null;
   arguments: unknown;
   result: unknown;
+  /** The saved arguments were not loaded for this record: their JSON size. */
+  omittedArgumentsBytes?: number;
+  /** Only the result's envelope (status, preview flags, observation) was
+   * loaded, without its content: the content's JSON size. */
+  omittedResultBytes?: number;
   kind: ToolHistoryKind;
   label: string;
   runTerminal: boolean;
@@ -121,6 +126,8 @@ export type ToolHistoryArguments =
   | Readonly<{ state: "withheld"; reason: "access_unavailable" | "redaction_unavailable" }>
   | Readonly<{ state: "not_retained" }>
   | Readonly<{ state: "unavailable"; reason: "deleted" | "invalid" | "retention_expired" }>
+  /** Too large for a record: named by size; the call reader returns them. */
+  | Readonly<{ state: "omitted"; bytes: number }>
   | Readonly<{ state: "not_applicable" }>;
 
 export type ToolHistoryResult =
@@ -128,6 +135,7 @@ export type ToolHistoryResult =
   | Readonly<{ state: "saved"; handle: string; preview: string | null }>
   | Readonly<{ state: "withheld"; reason: "access_unavailable" }>
   | Readonly<{ state: "unavailable"; reason: "deleted" | "none" | "not_retained" | "retention_expired" | "too_large" }>
+  | Readonly<{ state: "omitted"; bytes: number }>
   | Readonly<{ state: "not_applicable" }>;
 
 export type ToolHistoryRecord = Readonly<{
@@ -155,7 +163,14 @@ function repeatBlocked(facts: ToolCallFacts): boolean {
   }) !== null;
 }
 
-function storedResult(facts: ToolCallFacts) {
+function storedResult(facts: ToolCallFacts): Pick<ToolExecutionResult, "content" | "rawPreview" | "status"> | null {
+  if (facts.omittedResultBytes !== undefined) {
+    // Only the envelope was loaded: its status and preview flags still
+    // decide the outcome; its content is never projected.
+    const envelope = record(facts.result) ? facts.result : null;
+    return envelope && (envelope.status === "complete" || envelope.status === "error")
+      ? { content: [], status: envelope.status, ...(record(envelope.rawPreview) ? { rawPreview: envelope.rawPreview } : {}) } : null;
+  }
   const snapshot = snapshotToolLoopJson(facts.result, toolLoopPersistenceLimits.resultBytes);
   return snapshot === null ? null : parsePersistedToolExecutionResult({ id: facts.providerCallId, name: facts.toolName }, snapshot);
 }
@@ -269,6 +284,7 @@ function mcpArguments(facts: ToolCallFacts): ToolHistoryArguments {
   if (!facts.mcp?.readable) return { state: "withheld", reason: "access_unavailable" };
   const redaction = facts.mcp.redaction;
   if (!redaction || redaction.state === "incomplete") return { state: "withheld", reason: "redaction_unavailable" };
+  if (facts.omittedArgumentsBytes !== undefined) return { state: "omitted", bytes: facts.omittedArgumentsBytes };
   return { state: "available", text: canonicalJsonText(redactMcpDisplayValue(facts.arguments, redaction.values)) };
 }
 
@@ -281,13 +297,14 @@ function mcpResult(facts: ToolCallFacts, outcome: ToolCallOutcome): ToolHistoryR
   if (facts.observation?.handle) {
     // A row holding the whole delivered result shows its beginning; a row
     // holding only the preview or the reference shows the stored preview.
-    const stored = storedResult(facts);
+    const stored = facts.omittedResultBytes === undefined ? storedResult(facts) : null;
     const whole = stored && !stored.content.some(part => part.type === "json" && record(part.value) && "observation" in part.value)
       ? mcpResultText(facts) : null;
     const preview = whole?.state === "inline" ? whole.text : facts.observation.preview;
     return { state: "saved", handle: facts.observation.handle, preview: preview ?? null };
   }
   if (facts.agent) return { state: "unavailable", reason: "not_retained" };
+  if (facts.omittedResultBytes !== undefined) return { state: "omitted", bytes: facts.omittedResultBytes };
   return mcpResultText(facts);
 }
 
@@ -345,6 +362,7 @@ function argumentsText(state: ToolHistoryArguments, reader: boolean): string | n
       ? "Arguments: withheld (their secrets cannot be verified as redacted)" : "Arguments: unavailable to this run";
     case "not_retained": return "Arguments: not retained";
     case "unavailable": return state.reason === "invalid" ? null : "Arguments: no longer available";
+    case "omitted": return `Arguments: about ${state.bytes} bytes, not shown here${reader ? "; read_tool_call returns them" : ""}`;
     case "not_applicable": return null;
   }
 }
@@ -365,6 +383,7 @@ function resultText(state: ToolHistoryResult, reader: boolean): string | null {
     case "withheld": return "Result: unavailable to this run";
     case "unavailable": return state.reason === "too_large" ? "Result: was too large to keep"
       : state.reason === "none" ? null : "Result: no longer available";
+    case "omitted": return `Result: about ${state.bytes} bytes, not shown here${reader ? "; read_tool_call returns it" : ""}`;
     case "not_applicable": return null;
   }
 }
