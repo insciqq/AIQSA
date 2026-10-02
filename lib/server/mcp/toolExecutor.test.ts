@@ -96,6 +96,10 @@ describe("MCP run tool executor helpers", () => {
     expect(callTool).not.toHaveBeenCalled();
     await expect(dispatchMcpTool({ ...input, arguments: { title: "Ship" } })).resolves.toBe(error);
     expect(callTool).toHaveBeenCalledOnce();
+    // The runtime compares the accepted definition right before it sends.
+    expect(callTool).toHaveBeenCalledWith(expect.objectContaining({
+      definitionHash: snapshot.tools[0]!.definitionHash, inputSchema: snapshot.tools[0]!.inputSchema, name: "create_task"
+    }));
   });
 
   it("exposes only immutable namespaced snapshot tools and exact routes", () => {

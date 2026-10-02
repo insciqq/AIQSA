@@ -7,6 +7,7 @@ import {
 } from "./clientSession";
 import { boundMcpToolDescription, type McpToolExclusionReason } from "@/lib/contracts/mcp";
 import type { McpPublishedToolDefinitions } from "./definitions";
+import { mcpDispatchError } from "./dispatchStatus";
 import { redactMcpToolCallResult } from "./resultRedaction";
 import { ToolHiveClientError } from "./toolhiveClient";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, type LifecycleStage } from "../observability";
@@ -533,6 +534,8 @@ export class McpRuntimeCoordinator {
   async callTool(input: {
     arguments: Record<string, unknown>;
     beforeDispatch?(): Promise<void>;
+    /** The accepted definition the arguments were validated against. */
+    definitionHash: string;
     generationId: string;
     inputSchema: Record<string, unknown>;
     name: string;
@@ -548,6 +551,11 @@ export class McpRuntimeCoordinator {
     input.signal?.throwIfAborted();
     await input.beforeDispatch?.();
     input.signal?.throwIfAborted();
+    // A refresh can apply a new definition while the caller rechecks its
+    // plan. Compare with no await before the send; nothing has left yet.
+    if (runtime.toolDefinitionHashes.get(input.name) !== input.definitionHash) {
+      throw mcpDispatchError("mcp_tool_definition_changed");
+    }
     try {
       const result = await runtime.session.callTool({
         arguments: input.arguments,
@@ -656,6 +664,7 @@ export class McpRuntimeCoordinator {
       onAbort = () => reject(controller.signal.reason);
       controller.signal.addEventListener("abort", onAbort, { once: true });
     });
+    let refreshInventory = false;
     try {
       await Promise.race([
         Promise.resolve().then(async () => {
@@ -675,16 +684,24 @@ export class McpRuntimeCoordinator {
           controller.signal.throwIfAborted();
           assertInventoryDoesNotExposeCredentials(tools, runtime.redactionValues, runtime.session);
           const hashes = new Map(tools.map((tool) => [tool.name, tool.definitionHash]));
-          for (const [name, hash] of runtime.toolDefinitionHashes) {
-            if (hashes.get(name) !== hash) throw runtimeStateError("mcp_inventory_changed");
+          const changed = [...runtime.toolDefinitionHashes].some(([name, hash]) => hashes.get(name) !== hash);
+          if (!runtime.allowUnpublishedTools) {
+            // A health response renews liveness only; it never publishes new tools.
+            if (changed) throw runtimeStateError("mcp_inventory_changed");
+            return;
           }
-          // A health response renews liveness only; it never publishes new tools.
+          // A personal runtime follows its live upstream inventory. A
+          // difference goes through the ordinary refresh, never eviction, so
+          // accepted runs keep dispatching their unchanged tools.
+          refreshInventory = changed || tools.some((tool) =>
+            !runtime.toolDefinitionHashes.has(tool.name) && !runtime.disabledToolNames.has(tool.name));
         }),
         cancelled
       ]);
       if (this.#live.get(generationId) !== runtime || this.#healthProbes.get(generationId) !== probe) return;
       if (isClosedSession(runtime.session)) throw runtimeStateError("mcp_session_closed");
       runtime.lastProtocolSuccessAt = this.#now().getTime();
+      if (refreshInventory) void this.#refresh(generationId, runtime.fingerprint, true).catch(() => undefined);
     } catch (error) {
       // Eviction removes live proof immediately; cleanup does not hold a probe slot.
       if (this.#live.get(generationId) === runtime) {
@@ -970,34 +987,9 @@ export class McpRuntimeCoordinator {
     }
     logEvent("job_attempt", { subsystem: "mcp", generation_id: generationId, stage: "refresh", outcome: "started" });
     try {
-      const startingWrite = this.#write(generationId, "claim", () => this.#repository.markStarting({
-        fingerprint,
-        generationId,
-        now: this.#now()
-      }));
-      live.repositoryStateWrite = startingWrite;
-      let started: boolean;
-      try {
-        started = await startingWrite;
-      } finally {
-        if (live.repositoryStateWrite === startingWrite) live.repositoryStateWrite = null;
-      }
-      if (!started) {
-        if (live.evictionErrorCode !== null) return false;
-        if (this.#live.get(generationId) === live) this.#live.delete(generationId);
-        await this.#close(generationId, () => live.session.close());
-        return false;
-      }
-      if (this.#live.get(generationId) !== live) {
-        if (live.evictionErrorCode !== null) return false;
-        await this.#markFailed({
-          errorCode: "mcp_session_closed",
-          fingerprint,
-          generationId,
-          now: this.#now()
-        });
-        return false;
-      }
+      // The generation stays ready while its inventory is re-read, so plan
+      // rechecks of accepted runs keep dispatching on it. markReady's guard
+      // decides whether the generation is still wanted.
       const tools = await live.session.listTools();
       const protocolSuccessAt = this.#now().getTime();
       if (isClosedSession(live.session)) throw runtimeStateError("mcp_session_closed");

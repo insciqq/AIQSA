@@ -248,7 +248,8 @@ describe("remote MCP runtime integration", () => {
       await coordinator.reconcileNow();
       expect(ready.at(-1)?.tools).toHaveLength(1_024);
       expect(ready.at(-1)?.exclusions).toEqual([]);
-      await expect(coordinator.callTool({ arguments: { value: "late" }, generationId: "generation-1",
+      await expect(coordinator.callTool({ arguments: { value: "late" },
+        definitionHash: ready.at(-1)!.tools.find(({ name }) => name === "tool_1023")!.definitionHash, generationId: "generation-1",
         inputSchema: { type: "object" }, name: "tool_1023" })).resolves.toMatchObject({ isError: false, text: ["Accepted"] });
 
       // One more upstream tool exceeds the per-server bound: no partial inventory is accepted.
@@ -552,10 +553,12 @@ describe("published MCP inventory over real list_changed delivery", () => {
       allowPrivateNetwork: true, callTimeoutMs: 5_000, fingerprint: `fingerprint-${generationId}`, generationId, headers: {},
       publishedTools, redactionValues: [], retryAt: null, startupTimeoutMs: 5_000, url: fixture.url.href
     });
-    const call = (generationId: string, name: string) => coordinator.callTool({
-      arguments: {}, generationId, inputSchema: { type: "object" }, name
-    });
     const latest = (generationId: string) => inventories.get(generationId)?.at(-1);
+    // A run accepts the definition the generation offers; a held-back name has none.
+    const call = (generationId: string, name: string) => coordinator.callTool({
+      arguments: {}, definitionHash: latest(generationId)?.tools.find((tool) => tool.name === name)?.definitionHash ?? "",
+      generationId, inputSchema: { type: "object" }, name
+    });
     // The standalone SSE stream opens after initialization; a notification sent
     // earlier is dropped by the server, so resend until the refresh lands.
     const changeUpstream = async (tools: Tool[], exclusions: McpRuntimeInventory["exclusions"]) => {

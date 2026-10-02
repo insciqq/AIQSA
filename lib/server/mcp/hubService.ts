@@ -14,7 +14,8 @@ import { filterMcpCatalog } from "./toolAccessProjection";
 import { MCP_HUB_DISCOVERY_RESPONSE_MAX_BYTES } from "./hubConfiguration";
 import type { McpToolAccessFilter } from "./toolAccess";
 import { McpClientSessionError, validateMcpToolArguments, type AiqsaMcpToolCallResult } from "./clientSession";
-import { dispatchMcpTool, resolveMcpRunTool } from "./toolExecutor";
+import { isMcpDispatchError } from "./dispatchStatus";
+import { dispatchMcpTool, resolveMcpRunTool, type McpToolRuntimeCall } from "./toolExecutor";
 import { discoverMcpTools, materializeMcpSelection, McpDiscoveryError } from "./discoveryService";
 import type { McpDiscoveryFailure } from "../../contracts/mcpDiscoveryFailure";
 import { decodeMcpToolFailure, type McpToolFailure } from "../../contracts/mcpToolFailure";
@@ -57,6 +58,11 @@ export class McpHubServiceError extends Error {
     return this.code === "result_unsupported" && McpClientSessionError.isInstance(this.cause)
       ? decodeMcpToolFailure(this.cause.code) : null;
   }
+
+  /** The runtime refused a changed definition after dispatch began, before anything was sent. */
+  get refusedBeforeSend(): boolean {
+    return this.code === "tool_definition_changed" && isMcpDispatchError(this.cause, "mcp_tool_definition_changed");
+  }
 }
 
 export type McpHubPreparedToolCall = Readonly<{
@@ -81,14 +87,7 @@ type SelectedTools = readonly Readonly<{
 }>[];
 
 export type McpHubServiceDependencies = Readonly<{
-  callRuntimeTool(input: Readonly<{
-    arguments: Record<string, unknown>;
-    beforeDispatch(): Promise<void>;
-    generationId: string;
-    inputSchema: Record<string, unknown>;
-    name: string;
-    signal?: AbortSignal;
-  }>): Promise<AiqsaMcpToolCallResult>;
+  callRuntimeTool: McpToolRuntimeCall;
   catalog(userId: string): Promise<McpCapabilityCatalog>;
   filterTools: McpToolAccessFilter;
   materialize(
@@ -432,6 +431,9 @@ export function createMcpToolService<Authority extends McpToolAuthority>(depende
         if (error instanceof McpHubServiceError) {
           failure = dispatched && error.code === "request_cancelled"
             ? new McpHubServiceError("execution_outcome_unknown") : error;
+        } else if (isMcpDispatchError(error, "mcp_tool_definition_changed")) {
+          // A known refusal, not an unknown outcome: the runtime sent nothing.
+          failure = new McpHubServiceError("tool_definition_changed", { cause: error });
         } else if (McpClientSessionError.isInstance(error) &&
           ["mcp_call_result_invalid", "mcp_call_result_too_large", "mcp_call_result_unsupported"].includes(error.code)) {
           failure = new McpHubServiceError("result_unsupported", { cause: error });

@@ -742,7 +742,7 @@ describe("Prisma MCP personal live catalog", () => {
     await expect(plan([write])).resolves.toMatchObject({ ok: true, snapshot: { tools: [{ originalName: "write" }] } });
     record.userDisabledToolNames = ["write"];
     await expect(plan([write])).resolves.toMatchObject({
-      code: "mcp_not_ready", issues: [{ errorCode: "mcp_tool_not_available" }], ok: false
+      code: "mcp_not_ready", issues: [{ errorCode: "mcp_tool_disabled" }], ok: false
     });
     const loadAll = await plan();
     if (!loadAll.ok) throw new Error(loadAll.code);
@@ -807,6 +807,57 @@ describe("Prisma MCP personal live catalog", () => {
       state: "ready"
     };
     expect(await catalogNames(client)).toEqual(["drive.read"]);
+  });
+
+  it.each([
+    ["needs a new sign-in", "reauthorization_required", "reauthorization_required", "oauth_reauthorization_required"],
+    ["was disconnected", "disconnecting", "needs_authorization", "oauth_required"],
+    ["never signed in", null, "needs_authorization", "oauth_required"]
+  ] as const)("names lost authorization when the owner's OAuth connection %s", async (_label, state, readiness, errorCode) => {
+    const record = personal(["read"]);
+    record.server.activeRevision!.configuration = { auth: { mode: "oauth" } };
+    record.desiredRuntimeGeneration!.oauthConnectionId = "oauth-1";
+    record.server.oauthConnections = state ? [{
+      disconnectRequestedAt: state === "disconnecting" ? NOW : null, id: "oauth-1", state, userId: "user-1"
+    }] : [];
+    const { client } = clientWith([record]);
+
+    const [loaded] = await loadMcpRunPlanRecordsForServers("user-1", ["server-1"], client);
+    expect(loaded).toMatchObject({ catalogTools: [], enabled: true, errorCode, generationId: null, readiness });
+    await expect(prepareMcpRunPlan({
+      allowedServerIds: ["server-1"],
+      allowedToolNames: [namespacedMcpToolName("example", "read")],
+      isGenerationLive: () => true,
+      load: () => loadMcpRunPlanRecordsForServers("user-1", ["server-1"], client),
+      now: () => NOW
+    })).resolves.toMatchObject({ code: "mcp_not_ready", issues: [{ readiness }], ok: false });
+    expect(await catalogNames(client)).toEqual([]);
+
+    // A disabled or deleted connection keeps its own state ahead of authorization.
+    record.enabled = false;
+    await expect(loadMcpRunPlanRecordsForServers("user-1", ["server-1"], client)).resolves.toMatchObject([{ readiness: "disabled" }]);
+    record.server.archivedAt = NOW;
+    await expect(loadMcpRunPlanRecordsForServers("user-1", ["server-1"], client))
+      .resolves.toMatchObject([{ errorCode: "mcp_server_unavailable", readiness: "unavailable" }]);
+  });
+
+  it("keeps a ready personal OAuth connection and an installation OAuth row on their runtime state", async () => {
+    const owned = personal(["read"]);
+    owned.server.activeRevision!.configuration = { auth: { mode: "oauth" } };
+    owned.desiredRuntimeGeneration!.oauthConnectionId = "oauth-1";
+    owned.server.oauthConnections = [
+      { disconnectRequestedAt: NOW, id: "oauth-old", state: "disconnecting", userId: "user-1" },
+      { disconnectRequestedAt: null, id: "oauth-1", state: "ready", userId: "user-1" }
+    ];
+    await expect(loadMcpRunPlanRecords("user-1", clientWith([owned]).client))
+      .resolves.toMatchObject([{ generationId: "generation-1", readiness: "ready", userDisabledToolNames: [] }]);
+
+    const installation = preference({ desiredRuntimeGeneration: null, desiredRuntimeGenerationId: null });
+    installation.server.activeRevision!.configuration = { auth: { mode: "oauth" } };
+    installation.server.oauthConnections = [{ disconnectRequestedAt: null, id: "oauth-2", state: "reauthorization_required", userId: "user-1" }];
+    const [loaded] = await loadMcpRunPlanRecords("user-1", clientWith([installation]).client);
+    expect(loaded).toMatchObject({ errorCode: null, readiness: "queued" });
+    expect(loaded).not.toHaveProperty("userDisabledToolNames");
   });
 
   it("bounds live descriptions in the personal catalog", async () => {

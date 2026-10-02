@@ -2939,9 +2939,10 @@ export function createPrismaMcpRepository(input: {
               mcpPersonalConfigEnvelopeContext(preferenceId, personalConfigVersion)
             )
           : null;
-        // Switching a tool is a projection change: the runtime and its desired
-        // generation stay, so accepted runs and the next run keep dispatching.
-        const toolSwitchOnly = tool !== undefined && enabled === undefined && values === undefined;
+        // Only switching the connection off or new values replace the runtime.
+        // A tool switch is a projection change and an enable of an enabled row
+        // changes nothing, so accepted runs and the next run keep dispatching.
+        const replacesRuntime = enabled === false || hasValuesPatch;
         await tx.mcpUserServer.upsert({
           create: {
             enabled: enabled ?? false,
@@ -2953,7 +2954,7 @@ export function createPrismaMcpRepository(input: {
             userId
           },
           update: {
-            ...(toolSwitchOnly ? {} : { desiredRuntimeGenerationId: null }),
+            ...(replacesRuntime ? { desiredRuntimeGenerationId: null } : {}),
             ...(enabled !== undefined ? { enabled } : {}),
             ...(userDisabledToolNames !== null ? { userDisabledToolNames } : {}),
             ...(hasValuesPatch ? {
