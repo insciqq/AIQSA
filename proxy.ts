@@ -14,6 +14,11 @@ import {
 import { applyRuntimeSecurityHeaders } from "./lib/server/security/headers";
 import { ARTIFACT_RESPONSE_CSP } from "./lib/server/artifacts/contentSecurity";
 import { applyPublicSharePrivacyHeaders } from "./lib/server/shares/privacy";
+import {
+  isPersonalMcpEgressRequest,
+  PERSONAL_MCP_EGRESS_HEADERS,
+  PERSONAL_MCP_EGRESS_REFUSAL_STATUS
+} from "./lib/server/mcp/personalEgress";
 
 const publicPrefixes = [
   "/_next",
@@ -85,6 +90,18 @@ function secured(response: NextResponse, artifactViewer = false, artifactContent
   return response;
 }
 
+/**
+ * Personal MCP never reaches AIQSA itself, whichever address it used: its
+ * marked requests are refused before routing, with no body.
+ */
+function personalMcpEgressRefusal(request: NextRequest): NextResponse | null {
+  if (!isPersonalMcpEgressRequest(request.headers)) return null;
+  return secured(new NextResponse(null, {
+    headers: PERSONAL_MCP_EGRESS_HEADERS,
+    status: PERSONAL_MCP_EGRESS_REFUSAL_STATUS
+  }));
+}
+
 function securedPublicShare(response: NextResponse, artifactViewer = false, artifactContent = false): NextResponse {
   secured(response, artifactViewer, artifactContent);
   applyPublicSharePrivacyHeaders(response.headers);
@@ -95,6 +112,8 @@ export function proxyWithEnv(
   request: NextRequest,
   env: Record<string, string | undefined>
 ) {
+  const egressRefusal = personalMcpEgressRefusal(request);
+  if (egressRefusal) return egressRefusal;
   const { pathname } = request.nextUrl;
   // Every chat address (`/`, `/c/…`, `/p/…`, `/assistant/…`) hosts the artifact side panel.
   const artifactViewer = pathname === "/" || ["/a", "/artifacts", "/assistant", "/c", "/p"].some(
@@ -158,6 +177,9 @@ export function proxyWithEnv(
 }
 
 export async function proxy(request: NextRequest) {
+  // Before any rate-limit or route work.
+  const egressRefusal = personalMcpEgressRefusal(request);
+  if (egressRefusal) return egressRefusal;
   if (["/a", "/api/artifact-public"].some(prefix => request.nextUrl.pathname === prefix || request.nextUrl.pathname.startsWith(`${prefix}/`))) {
     const { publicArtifactRateLimit } = await import("./lib/server/artifacts/publicRateLimit");
     const decision = await publicArtifactRateLimit(request).catch(() => ({ allowed: false, retryAfterSeconds: 60 }));

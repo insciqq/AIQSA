@@ -19,6 +19,8 @@ services:
       AIQSA_BIND_ADDRESS: ${AIQSA_BIND_ADDRESS:-127.0.0.1}
       # Published application port: personal MCP never reaches it through the host gateway.
       AIQSA_PORT: ${AIQSA_PORT:-3000}
+      # The app always runs in a container here; never rely on runtime detection.
+      AIQSA_PERSONAL_MCP_NETWORK_MODE: container
       AIQSA_BOOTSTRAP_AUTH_TOKEN: ${AIQSA_BOOTSTRAP_AUTH_TOKEN:-}
       AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256: ${AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256:-}
       AIQSA_BOOTSTRAP_LOGIN_ENABLED: ${AIQSA_BOOTSTRAP_LOGIN_ENABLED:-}

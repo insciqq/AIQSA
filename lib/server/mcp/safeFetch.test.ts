@@ -203,6 +203,43 @@ describe("MCP safe fetch reason-returning address policy", () => {
     }), "mcp_local_network_disabled");
   });
 
+  it("sets the egress headers last on every hop, over request headers and after redirect filtering", async () => {
+    const requests: McpPinnedHttpRequest[] = [];
+    const response = await mcpSafeFetch("https://first.example.test/rpc", {
+      headers: { authorization: "Bearer private", "x-aiqsa-egress": "user-chosen" },
+      method: "POST"
+    }, {
+      dispatch: async (request) => {
+        requests.push(request);
+        return requests.length === 1
+          ? new Response(null, { headers: { location: "https://second.example.test/rpc" }, status: 307 })
+          : new Response("complete");
+      },
+      egressHeaders: { "x-aiqsa-egress": "personal-mcp" },
+      lookupHostname: async () => [PUBLIC_IPV4]
+    });
+
+    expect(await response.text()).toBe("complete");
+    expect(requests.map((request) => request.headers.get("x-aiqsa-egress"))).toEqual(["personal-mcp", "personal-mcp"]);
+    expect(requests[1]!.headers.get("authorization")).toBeNull();
+  });
+
+  it("names the app's refusal of its own egress and leaves other 421 answers alone", async () => {
+    const egressHeaders = { "x-aiqsa-egress": "personal-mcp" };
+    const fetchAnswering = (answer: Response) => mcpSafeFetch("https://mcp.example.test/rpc", undefined, {
+      dispatch: async () => answer,
+      egressHeaders,
+      lookupHostname: async () => [PUBLIC_IPV4]
+    });
+
+    await rejectedCode(fetchAnswering(new Response(null, { headers: egressHeaders, status: 421 })), "mcp_internal_address_forbidden");
+    await expect(fetchAnswering(new Response("misdirected", { status: 421 }))).resolves.toMatchObject({ status: 421 });
+    await expect(mcpSafeFetch("https://mcp.example.test/rpc", undefined, {
+      dispatch: async () => new Response(null, { headers: egressHeaders, status: 421 }),
+      lookupHostname: async () => [PUBLIC_IPV4]
+    })).resolves.toMatchObject({ status: 421 });
+  });
+
   it("recognizes a network-policy refusal on any MCP error by its code", () => {
     expect(mcpNetworkPolicyRefusal(new McpSafeFetchError("mcp_local_network_disabled"))).toBe("mcp_local_network_disabled");
     expect(mcpNetworkPolicyRefusal({ code: "mcp_internal_address_forbidden", name: "McpClientSessionError" }))

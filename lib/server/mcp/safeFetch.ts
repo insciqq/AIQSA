@@ -58,6 +58,12 @@ export type McpSafeFetchOptions = {
   allowInsecureHttp?: boolean;
   allowPrivateNetwork?: boolean;
   dispatch?: (request: McpPinnedHttpRequest) => Promise<Response>;
+  /**
+   * Set on every hop after all other headers, so request headers can neither
+   * replace nor remove them. A 421 response echoing every one of them is the
+   * destination refusing this egress: the AIQSA app itself.
+   */
+  egressHeaders?: Readonly<Record<string, string>>;
   lookupHostname?: (hostname: string) => Promise<readonly McpResolvedAddress[]>;
   maxRedirects?: number;
   requestBodyMaxBytes?: number;
@@ -517,6 +523,19 @@ async function defaultDispatch(input: McpPinnedHttpRequest): Promise<Response> {
   });
 }
 
+function withEgressHeaders(headers: Headers, egressHeaders: McpSafeFetchOptions["egressHeaders"]): Headers {
+  if (!egressHeaders) return headers;
+  const marked = new Headers(headers);
+  for (const [name, value] of Object.entries(egressHeaders)) marked.set(name, value);
+  return marked;
+}
+
+function isEgressRefusal(response: Response, egressHeaders: McpSafeFetchOptions["egressHeaders"]): boolean {
+  if (!egressHeaders || response.status !== 421) return false;
+  const entries = Object.entries(egressHeaders);
+  return entries.length > 0 && entries.every(([name, value]) => response.headers.get(name) === value);
+}
+
 function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
@@ -645,7 +664,7 @@ async function mcpSafeFetchUnobserved(
     if (current.signal.aborted) throw abortReason(current.signal);
     validateUrl(current.url, options);
     const address = await resolvePinnedAddress(current.url, options, current.signal);
-    const pinnedRequest = { ...current, address };
+    const pinnedRequest = { ...current, address, headers: withEgressHeaders(current.headers, options.egressHeaders) };
     let response: Response;
     try {
       response = await (options.dispatch ?? defaultDispatch)(pinnedRequest);
@@ -656,6 +675,10 @@ async function mcpSafeFetchUnobserved(
         throw new McpSafeFetchError(error.code);
       }
       throw error;
+    }
+    if (isEgressRefusal(response, options.egressHeaders)) {
+      await discardResponse(response);
+      throw new McpSafeFetchError("mcp_internal_address_forbidden");
     }
     if (!isRedirectStatus(response.status) || !response.headers.has("location")) {
       return attachFinalResponseMetadata(response, current.url, redirectCount > 0);
