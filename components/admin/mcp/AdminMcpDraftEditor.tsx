@@ -2,11 +2,8 @@
 
 import {
   type AdminMcpSharedValueDraft,
-  changeMcpSourceKind,
   changeMcpRemoteSource,
-  joinMcpArguments,
   preparedMcpOAuthPolicy,
-  splitMcpArguments,
   splitMcpList
 } from "@/components/admin/mcp/adminMcpDraft";
 import {
@@ -52,10 +49,7 @@ function defaultSlot(draft: McpDraftConfiguration): McpConfigurationSlot {
     policy: { allowPersonalOverride: false, kind: "shared" },
     sensitive: true,
     slotKey,
-    target: {
-      kind: draft.source.kind === "remote" ? "header" : "environment",
-      name: draft.source.kind === "remote" ? "Authorization" : "API_KEY"
-    },
+    target: { kind: "header", name: "Authorization" },
     valueType: "secret"
   };
 }
@@ -108,141 +102,42 @@ function SourceEditor({
   onChange
 }: Pick<AdminMcpDraftEditorProps, "disabled" | "draft" | "onChange">) {
   const source = draft.source;
-  const setSource = (next: McpSource) => onChange(
-    next.kind === "remote" ? changeMcpRemoteSource(draft, next) : { ...draft, source: next }
-  );
+  const setSource = (next: McpSource) => onChange(changeMcpRemoteSource(draft, next));
 
   return (
     <section className="grid min-w-0 gap-3 rounded-panel bg-workspace-rail/45 p-3">
       <div>
-        <h4 className="text-xs font-semibold text-ink">Source and transport</h4>
-        <p className={helpText}>Package selectors are pinned to an exact build when the settings are checked.</p>
+        <h4 className="text-xs font-semibold text-ink">Endpoint</h4>
+        <p className={helpText}>AIQSA connects to the remote MCP server over Streamable HTTP.</p>
       </div>
-      <div className="grid min-w-0 gap-3 md:grid-cols-2">
-        <label className="min-w-0">
-          <span className={fieldLabel}>Source</span>
-          <select
-            className={inputClass}
-            disabled={disabled}
-            onChange={(event) => onChange(changeMcpSourceKind(draft, event.currentTarget.value as McpSource["kind"]))}
-            value={source.kind}
-          >
-            <option value="remote">Remote URL</option>
-            <option value="npm">npm / npx package</option>
-            <option value="pypi">PyPI / uvx package</option>
-            <option value="oci">OCI image</option>
-          </select>
-        </label>
-        <label className="min-w-0">
-          <span className={fieldLabel}>Transport</span>
-          <select
-            className={inputClass}
-            disabled={disabled}
-            onChange={(event) => onChange({
-              ...draft,
-              transport: event.currentTarget.value as McpDraftConfiguration["transport"]
-            })}
-            value={draft.transport}
-          >
-            <option disabled={source.kind !== "remote"} value="streamable_http">Streamable HTTP</option>
-            <option disabled={source.kind === "remote"} value="stdio">stdio</option>
-          </select>
-        </label>
-      </div>
-
-      {source.kind === "remote" ? (
-        <>
-          <label>
-            <span className={fieldLabel}>MCP endpoint URL</span>
-            <input
-              className={inputClass}
-              disabled={disabled}
-              onChange={(event) => setSource({ ...source, url: event.currentTarget.value })}
-              placeholder="https://mcp.example.com/mcp"
-              type="url"
-              value={source.url}
-            />
-            <span className={helpText}>Stored as non-secret admin configuration. Do not put credentials in the path; query strings are rejected. Use a static header field or OAuth.</span>
-          </label>
-          <label className={`flex min-h-control items-center gap-2 text-xs text-ink-secondary ${touchTarget}`}>
-            <input
-              checked={source.allowPrivateNetwork === true}
-              className={checkboxClass}
-              disabled={disabled}
-              onChange={(event) => setSource({
-                ...source,
-                ...(event.currentTarget.checked ? { allowPrivateNetwork: true } : { allowPrivateNetwork: undefined })
-              })}
-              type="checkbox"
-            />
-            Allow this endpoint to resolve to the installation&apos;s private network
-          </label>
-          {source.allowPrivateNetwork ? (
-            <p className="rounded-control bg-caution/10 px-3 py-2 text-xs leading-5 text-caution">
-              Private-network access weakens the default SSRF boundary. Use it only for an endpoint you operate.
-            </p>
-          ) : null}
-        </>
-      ) : source.kind === "npm" || source.kind === "pypi" ? (
-        <div className="grid min-w-0 gap-3 md:grid-cols-2">
-          <label>
-            <span className={fieldLabel}>{source.kind === "npm" ? "npm package" : "PyPI package"}</span>
-            <input
-              className={inputClass}
-              disabled={disabled}
-              onChange={(event) => setSource({ ...source, packageName: event.currentTarget.value })}
-              placeholder={source.kind === "npm" ? "@scope/mcp-server" : "mcp-server"}
-              value={source.packageName}
-            />
-          </label>
-          <label>
-            <span className={fieldLabel}>Requested release (optional)</span>
-            <input
-              className={inputClass}
-              disabled={disabled}
-              onChange={(event) => setSource({ ...source, versionSelector: event.currentTarget.value || undefined })}
-              placeholder={source.kind === "npm" ? "^2.0.0 or latest" : "==2.0.0"}
-              value={source.versionSelector ?? ""}
-            />
-          </label>
-          <label className="md:col-span-2">
-            <span className={fieldLabel}>Arguments, one per line</span>
-            <textarea
-              className={`${inputClass} min-h-24 py-2 font-mono text-xs`}
-              disabled={disabled}
-              onChange={(event) => setSource({ ...source, args: splitMcpArguments(event.currentTarget.value) })}
-              value={joinMcpArguments(source.args)}
-            />
-          </label>
-        </div>
-      ) : (
-        <div className="grid min-w-0 gap-3">
-          <label>
-            <span className={fieldLabel}>OCI image digest</span>
-            <input
-              className={`${inputClass} font-mono text-xs`}
-              disabled={disabled}
-              onChange={(event) => setSource({ ...source, image: event.currentTarget.value })}
-              placeholder="ghcr.io/team/server@sha256:…"
-              value={source.image}
-            />
-            <p className={helpText}>An immutable sha256 digest is required; mutable image tags are rejected.</p>
-          </label>
-          <label>
-            <span className={fieldLabel}>Arguments, one per line</span>
-            <textarea
-              className={`${inputClass} min-h-24 py-2 font-mono text-xs`}
-              disabled={disabled}
-              onChange={(event) => setSource({ ...source, args: splitMcpArguments(event.currentTarget.value) })}
-              value={joinMcpArguments(source.args)}
-            />
-          </label>
-        </div>
-      )}
-
-      {source.kind !== "remote" ? (
+      <label>
+        <span className={fieldLabel}>MCP endpoint URL</span>
+        <input
+          className={inputClass}
+          disabled={disabled}
+          onChange={(event) => setSource({ ...source, url: event.currentTarget.value })}
+          placeholder="https://mcp.example.com/mcp"
+          type="url"
+          value={source.url}
+        />
+        <span className={helpText}>Stored as non-secret admin configuration. Do not put credentials in the path; query strings are rejected. Use a static header field or OAuth.</span>
+      </label>
+      <label className={`flex min-h-control items-center gap-2 text-xs text-ink-secondary ${touchTarget}`}>
+        <input
+          checked={source.allowPrivateNetwork === true}
+          className={checkboxClass}
+          disabled={disabled}
+          onChange={(event) => setSource({
+            ...source,
+            ...(event.currentTarget.checked ? { allowPrivateNetwork: true } : { allowPrivateNetwork: undefined })
+          })}
+          type="checkbox"
+        />
+        Allow this endpoint to resolve to the installation&apos;s private network
+      </label>
+      {source.allowPrivateNetwork ? (
         <p className="rounded-control bg-caution/10 px-3 py-2 text-xs leading-5 text-caution">
-          Local MCP code runs in a ToolHive-managed sibling container with unrestricted outbound networking. Its effective environment is visible in Docker metadata to trusted host administrators.
+          Private-network access weakens the default SSRF boundary. Use it only for an endpoint you operate.
         </p>
       ) : null}
     </section>
@@ -256,7 +151,6 @@ function AuthEditor({
 }: Pick<AdminMcpDraftEditorProps, "disabled" | "draft" | "onChange">) {
   const setMode = (mode: "none" | "oauth" | "static") => {
     if (mode === "oauth") {
-      if (draft.source.kind !== "remote") return;
       onChange({
         ...draft,
         auth: preparedMcpOAuthPolicy(draft.source)
@@ -271,7 +165,7 @@ function AuthEditor({
     <section className="grid min-w-0 gap-3 rounded-panel bg-workspace-rail/45 p-3">
       <div>
         <h4 className="text-xs font-semibold text-ink">Authentication</h4>
-        <p className={helpText}>Static credentials come from the explicit fields below. OAuth is available only for remote MCP servers.</p>
+        <p className={helpText}>Static credentials come from the explicit fields below.</p>
       </div>
       <label>
         <span className={fieldLabel}>Mode</span>
@@ -283,7 +177,7 @@ function AuthEditor({
         >
           <option value="none">No authentication</option>
           <option value="static">Static fields</option>
-          <option disabled={draft.source.kind !== "remote"} value="oauth">Per-user OAuth</option>
+          <option value="oauth">Per-user OAuth</option>
         </select>
       </label>
       {oauth ? (
@@ -469,7 +363,7 @@ function SlotEditor({
           />
         </label>
         <label>
-          <span className={fieldLabel}>{slot.target.kind === "header" ? "HTTP header" : "Environment variable"}</span>
+          <span className={fieldLabel}>HTTP header</span>
           <input
             className={`${inputClass} font-mono text-xs`}
             disabled={disabled}
@@ -669,7 +563,7 @@ export function AdminMcpDraftEditor(props: AdminMcpDraftEditorProps) {
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h4 className="text-xs font-semibold text-ink">Configuration fields</h4>
-            <p className={helpText}>Bind only declared values to an HTTP header or process environment variable.</p>
+            <p className={helpText}>Bind only declared values to an HTTP header.</p>
           </div>
           <button
             className={quietButton}
