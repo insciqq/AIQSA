@@ -108,7 +108,7 @@ test("accepted Memory survives closing its tab, reconnects once, and still honor
     await prisma.userSettings.update({ where: { userId }, data: { defaultProviderModelId: model.id,
       defaultWorkspaceEnabled: false, defaultSearchPlan: { mode: "all_selected", optionIds: [] } } });
     await prisma.userMemorySettings.update({ where: { userId }, data: {
-      learnAutomatically: false, referenceChatHistory: false, synthesisEnabled: false
+      learnAutomatically: false, referenceChatHistory: false
     } });
     await page.goto("about:blank");
     await page.request.post("/api/auth/logout", { data: {} });

@@ -298,8 +298,7 @@ async function worker(): Promise<Record<string, unknown>> {
               email: `${userId}@example.invalid`, id: userId, role: "user", status: "active" } });
             await provisionActiveUser(tx, { groups: [{ groupId: group.id, role: "member" }], userId });
             await tx.userMemorySettings.update({ data: {
-              learnAutomatically: true, referenceChatHistory: false, synthesisEnabled: false,
-              useMemoryFacts: true
+              learnAutomatically: true, referenceChatHistory: false, useMemoryFacts: true
             }, where: { userId } });
           });
           const chat = await prisma.chat.create({ data: { title: "Synthetic extraction qualification", userId } });
