@@ -51,7 +51,7 @@ Serialize stateful/container/browser-reset checks. Reusable-server specs may ove
 | UI | Affected browser states, themes, viewports, focus transitions, containment and overflow; see [Frontend](FRONTEND.md). |
 | Provider | Deterministic request/stream/parser/fake checks first; real calls require the permission below. |
 | Dependencies/security | Focused threat checks and `npm run security:deps`; review manifest, lockfile, lifecycle scripts, overrides and upstream compatibility. |
-| MCP/ToolHive/OAuth | Deterministic protocol/security tests, then relevant disposable runtime. Registry pulls, hosted consent, upstream OAuth and Docker side effects require their own authority. |
+| MCP/OAuth | Deterministic protocol/security tests, then relevant disposable runtime. Hosted consent and upstream OAuth require their own authority. |
 | Workspace/KVM | Policy/protocol/output tests, disposable database race checks, release/runner/guest image builds and reproducible guest identity, isolated browser flows, then opt-in real KVM evidence. Cover execution loss, Stop without delayed side effects, runner restart, export/recovery, file integrity, network modes and cleanup. A fake runtime is never live evidence. |
 | Upload/parser sidecars | Deterministic routing/bounds/decoders, then disposable parser smoke; stopped parsers degrade locally without breaking core readiness. |
 | Memory/Knowledge/recovery | Focused policy/handler tests, then disposable PostgreSQL/pgvector for persistence/concurrency and isolated OpenSearch for retrieval/projection changes. Integrity/rebuild output is content-free. |
