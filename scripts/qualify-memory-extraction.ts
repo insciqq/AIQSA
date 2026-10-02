@@ -24,7 +24,9 @@
 // Output: the parent prints, and the report file holds, only content-free
 // aggregates per scenario group (saved/not saved, false saves, misses, receipt
 // outcome or rejection codes, job stages, degraded codes, provider calls by
-// role and state, tokens and cost). status=passed requires zero false saves,
+// role and state, tokens and cost). Like the coordinator, a retryable job
+// failure is retried within its attempt budget; a settled transient call whose
+// job then succeeded is reported as RETRIED, any other failure as degraded. status=passed requires zero false saves,
 // every strict group (MIXED, PROTECTED, CHANGE and all "no" groups) passing,
 // at most one miss in DURABLE and in ONGOING, and zero degradation. The miss
 // budget of the acceptance criteria spans both runs and is summed by hand.
@@ -77,7 +79,8 @@ async function worker(): Promise<Record<string, unknown>> {
         { lockMemorySourceChat, applyMemorySourceMutations }, { defaultMemorySourceMutationHooks },
         { createPrismaMemoryCoordinatorRepository }, { MemoryCoordinatorError },
         { defaultMemoryExecutionAuthority }, { createPrismaMemoryFactExtractionHandler },
-        { createPrismaMemoryRelationHandler }] = await Promise.all([
+        { createPrismaMemoryRelationHandler }, { reconcileMemoryFactRelationJobs },
+        { loadMemoryCoordinatorPolicy, memoryRetryDelay }, { memoryCoordinatorJobMaxAttempts }] = await Promise.all([
         import("@prisma/client"), import("../lib/server/prisma"), import("../lib/domain/content"),
         import("../lib/server/auth/provisioning"), import("../lib/server/memory/sourceState"),
         import("../lib/server/memory/sourceHooks"),
@@ -85,7 +88,10 @@ async function worker(): Promise<Record<string, unknown>> {
         import("../lib/server/memory/coordinator/errors"),
         import("../lib/server/memory/execution/defaultAuthority"),
         import("../lib/server/memory/learning/extraction/handler"),
-        import("../lib/server/memory/learning/relations/handler")
+        import("../lib/server/memory/learning/relations/handler"),
+        import("../lib/server/memory/learning/relations/reconcile"),
+        import("../lib/server/memory/coordinator/policy"),
+        import("../lib/server/memory/coordinator/registry")
       ]);
       try {
         currentPhase = "database_identity";
@@ -105,20 +111,46 @@ async function worker(): Promise<Record<string, unknown>> {
           EXTRACT_FACTS: createPrismaMemoryFactExtractionHandler(defaultMemoryExecutionAuthority, prisma),
           RESOLVE_FACT_RELATIONS: createPrismaMemoryRelationHandler(prisma)
         };
+        const policy = loadMemoryCoordinatorPolicy();
         const degradedCodes: string[] = [];
+        const jobRetries: string[] = [];
         const jobStages: string[] = [];
         const ownerIds: string[] = [];
 
-        /** Runs every queued learning job of the owner like one coordinator worker. */
-        const drain = async (userId: string): Promise<void> => {
+        /** Runs queued learning jobs like one coordinator worker, including the
+         * coordinator's relation reconciliation that enqueues RESOLVE_FACT_RELATIONS
+         * for versions an extraction staged as PENDING_RELATION. */
+        const drain = async (): Promise<void> => {
+          // A pending version resolves in one relation job; two passes cover a
+          // relation job that itself leaves another version pending.
+          let reconciles = 0;
           for (let index = 0; index < MAX_JOBS_PER_MESSAGE; index++) {
             const now = new Date();
             const claim: MemoryJobClaim | null = await coordinator.claimJob({
               claimToken: randomUUID(), kinds: ["EXTRACT_FACTS", "RESOLVE_FACT_RELATIONS"],
               leaseExpiresAt: new Date(now.getTime() + JOB_TIMEOUT_MS), now
             });
-            if (!claim) return;
-            if (claim.userId !== userId) throw new Error("memory_extraction_foreign_job_claimed");
+            if (!claim) {
+              // A retryable failure waits for its due time like the coordinator's
+              // requeue pass, then runs again within the job's attempt budget.
+              const retry = await prisma.memoryJob.findFirst({
+                orderBy: { nextAttemptAt: "asc" }, select: { nextAttemptAt: true },
+                where: { kind: { in: ["EXTRACT_FACTS", "RESOLVE_FACT_RELATIONS"] }, state: "RETRYABLE_FAILED" }
+              });
+              if (retry) {
+                const wait = Math.min(60_000, Math.max(0, (retry.nextAttemptAt?.getTime() ?? 0) - Date.now()));
+                await new Promise((resolve) => setTimeout(resolve, wait));
+                await coordinator.requeueDueJobs({
+                  kinds: ["EXTRACT_FACTS", "RESOLVE_FACT_RELATIONS"], limit: 8, now: new Date()
+                });
+                continue;
+              }
+              if (reconciles >= 2) return;
+              currentPhase = "relation_reconcile";
+              if (await reconcileMemoryFactRelationJobs(prisma) === 0) return;
+              reconciles++;
+              continue;
+            }
             const handler = handlers[claim.kind]!;
             currentPhase = claim.kind === "EXTRACT_FACTS" ? "extraction_job" : "relation_job";
             try {
@@ -162,9 +194,22 @@ async function worker(): Promise<Record<string, unknown>> {
               if (error instanceof Error && error.message === "memory_extraction_utility_binding_unavailable") {
                 throw error;
               }
-              const code = error instanceof MemoryCoordinatorError ? error.code : "memory_job_failed";
-              await coordinator.terminalJob({ claim, errorCode: code, now: new Date() }).catch(() => false);
-              degradedCodes.push(code);
+              const failure = error instanceof MemoryCoordinatorError
+                ? error : new MemoryCoordinatorError("memory_job_failed", true);
+              if (failure.retryable && claim.attemptCount <
+                memoryCoordinatorJobMaxAttempts(claim.kind, policy.maxJobAttempts)) {
+                const now = new Date();
+                if (await coordinator.retryJob({
+                  claim, errorCode: failure.code, now,
+                  nextAttemptAt: new Date(now.getTime() +
+                    memoryRetryDelay(policy.jobRetryDelaysMs, claim.attemptCount))
+                })) {
+                  jobRetries.push(failure.code);
+                  continue;
+                }
+              }
+              await coordinator.terminalJob({ claim, errorCode: failure.code, now: new Date() }).catch(() => false);
+              degradedCodes.push(failure.code);
             }
           }
           throw new Error("memory_extraction_job_budget_exhausted");
@@ -202,7 +247,7 @@ async function worker(): Promise<Record<string, unknown>> {
                   terminalSettlement: { assistantMessageId: assistantMessage.id, runId: run.id, status: "complete" } });
             });
           }
-          await drain(userId);
+          await drain();
           return { assistantMessageId: assistantMessage.id, userMessageId: userMessage.id };
         };
 
@@ -298,16 +343,26 @@ async function worker(): Promise<Record<string, unknown>> {
           results.push(await runScenario(scenario));
         }
         currentPhase = "usage";
-        const usage = (await prisma.memoryExecutionBinding.findMany({
-          select: { estimatedCostMicros: true, inputTokens: true, logicalRole: true,
-            outputTokens: true, state: true, totalTokens: true },
+        const bindings = await prisma.memoryExecutionBinding.findMany({
+          select: { errorCode: true, estimatedCostMicros: true, inputTokens: true, logicalRole: true,
+            memoryJobId: true, outputTokens: true, state: true, totalTokens: true },
           where: { userId: { in: ownerIds } }
-        })).map((row) => ({
+        });
+        const succeededJobs = new Set((await prisma.memoryJob.findMany({
+          select: { id: true },
+          where: { id: { in: bindings.flatMap(({ memoryJobId }) => memoryJobId ? [memoryJobId] : []) },
+            state: "SUCCEEDED" }
+        })).map(({ id }) => id));
+        const usage = bindings.map((row) => ({
           estimatedCostMicros: row.estimatedCostMicros === null ? null : Number(row.estimatedCostMicros),
-          inputTokens: row.inputTokens, outputTokens: row.outputTokens,
-          role: row.logicalRole, state: row.state, totalTokens: row.totalTokens
+          inputTokens: row.inputTokens, outputTokens: row.outputTokens, role: row.logicalRole,
+          // A settled replay-safe transient call whose job then succeeded on
+          // the coordinator's retry is reported, not degraded.
+          state: row.state === "FAILED" && /_transient$/u.test(row.errorCode ?? "") &&
+            row.memoryJobId !== null && succeededJobs.has(row.memoryJobId) ? "RETRIED" : row.state,
+          totalTokens: row.totalTokens
         }));
-        const report = summarizeExtractionQualification({ degradedCodes, jobStages, results, usage });
+        const report = summarizeExtractionQualification({ degradedCodes, jobRetries, jobStages, results, usage });
         currentPhase = "write_report";
         await files.report.write(report);
         return report;
