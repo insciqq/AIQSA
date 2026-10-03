@@ -9,8 +9,10 @@ import {
   type ResolvedMemoryExecutionTarget
 } from "../lib/server/memory/execution";
 import {
+  MEMORY_SEMANTIC_SMOKE_HISTORY_SEARCH_CODES,
   MEMORY_SEMANTIC_SMOKE_SCENARIOS,
   MemorySemanticSmokePreflightError,
+  assessMemorySemanticSmokeHistorySearch,
   createMemorySemanticSmokeScenarioLedger,
   createPrismaMemorySemanticSmokeVerifier,
   memorySemanticSmokeRerankerReady,
@@ -88,7 +90,9 @@ function consumerSettings(
   };
 }
 
-function strictExecutionSnapshot(role: "MEMORY_CONTROL" | "MEMORY_RERANK") {
+function strictExecutionSnapshot(
+  role: "MEMORY_CONTROL" | "MEMORY_QUERY_EMBED" | "MEMORY_RERANK"
+) {
   const target: ResolvedMemoryExecutionTarget = {
     authority: {
       connectionId: "private-connection",
@@ -119,23 +123,46 @@ function strictExecutionSnapshot(role: "MEMORY_CONTROL" | "MEMORY_RERANK") {
       connectionId: "private-connection",
       credentialId: "private-credential",
       credentialVersionId: "private-credential-version",
-      model: {
-        adapterKind: "openai_responses_compatible",
-        answerSelectable: true,
-        capabilities: {
-          forcedToolCalling: true,
-          nativePdfInput: false,
-          nativeSearch: false,
-          pdf: false,
-          reasoning: false,
-          structuredOutput: true,
-          toolCalling: true,
-          vision: false
-        },
-        defaultParams: {},
-        modelClass: "answer",
-        upstreamModelId: "private-upstream-model"
-      },
+      model: role === "MEMORY_QUERY_EMBED"
+        ? {
+            adapterKind: "openai_embeddings_compatible",
+            answerSelectable: false,
+            capabilities: {
+              nativePdfInput: false,
+              nativeSearch: false,
+              pdf: false,
+              reasoning: false,
+              toolCalling: false,
+              vision: false
+            },
+            defaultParams: {},
+            embedding: {
+              nativeDimension: 4_096,
+              providerFamily: "openai_compatible",
+              queryInstructionTemplate: null,
+              supportsMrl: true,
+              targetDimension: 1_536
+            },
+            modelClass: "embedding",
+            upstreamModelId: "private-embedding-model"
+          }
+        : {
+            adapterKind: "openai_responses_compatible",
+            answerSelectable: true,
+            capabilities: {
+              forcedToolCalling: true,
+              nativePdfInput: false,
+              nativeSearch: false,
+              pdf: false,
+              reasoning: false,
+              structuredOutput: true,
+              toolCalling: true,
+              vision: false
+            },
+            defaultParams: {},
+            modelClass: "answer",
+            upstreamModelId: "private-upstream-model"
+          },
       modelDisplayName: "Private system model",
       providerFamily: "openai_compatible",
       providerModelId: "private-system-model",
@@ -159,6 +186,117 @@ function strictExecutionSnapshot(role: "MEMORY_CONTROL" | "MEMORY_RERANK") {
     target,
     utilityPolicyVersion: "memory-utility-egress-v2"
   });
+}
+
+const historySearchInput = Object.freeze({
+  irrelevant: { chatId: "irrelevant-chat", messageId: "irrelevant-message" },
+  recallModelRunId: "private-recall-run",
+  relevant: { chatId: "relevant-chat", messageId: "relevant-message" },
+  userId: "private-owner"
+});
+
+function searchResult(overrides: Record<string, unknown>) {
+  return {
+    exactItemId: "item",
+    factVersionId: null,
+    featureSnapshot: { finalScore: 0.1 },
+    includedText: "private evidence",
+    itemType: "RECALL_CHUNK",
+    recallChunkId: null,
+    recallRoundId: null,
+    selectionReason: "rrf+semantic_sort.direct_relevance",
+    sourceBranchGenerationSnapshot: 3,
+    sourceChatId: null,
+    sourceContentHashSnapshot: null,
+    sourceMessageIds: [],
+    sourceRevisionSnapshot: 5,
+    ...overrides
+  };
+}
+
+function historySearchClient(input: Readonly<{
+  bindings: Partial<Record<"MEMORY_QUERY_EMBED" | "MEMORY_RERANK", unknown[]>>;
+  calls?: readonly Readonly<{ id: string; state: string }>[];
+  receipt?: Readonly<Record<string, unknown>>;
+}>) {
+  const chunkByChat: Record<string, string> = {
+    "irrelevant-chat": "irrelevant-chunk",
+    "relevant-chat": "relevant-chunk"
+  };
+  return {
+    chat: {
+      findFirst: vi.fn().mockResolvedValue({
+        memoryBranchGeneration: 3,
+        memorySourceRevision: 5
+      })
+    },
+    memoryExecutionBinding: {
+      findMany: vi.fn().mockImplementation(({ where }: {
+        where: { logicalRole: "MEMORY_QUERY_EMBED" | "MEMORY_RERANK" };
+      }) => Promise.resolve((input.bindings[where.logicalRole] ?? []).map((snapshot) => ({
+        secretFreeExecutionSnapshot: snapshot
+      }))))
+    },
+    memoryHistoryRun: {
+      findMany: vi.fn().mockResolvedValue([{
+        executionBindingIds: ["embed-binding", "rerank-binding"],
+        indexingEvidence: { delivered: true },
+        modelRunToolCallId: "search-call",
+        outcome: "RESULTS",
+        results: {
+          version: "memory-search-v1",
+          results: [
+            searchResult({
+              exactItemId: "relevant-chunk",
+              featureSnapshot: { finalScore: 0.9 },
+              recallChunkId: "relevant-chunk",
+              sourceChatId: "relevant-chat"
+            }),
+            searchResult({
+              exactItemId: "irrelevant-round",
+              featureSnapshot: { finalScore: 0.4 },
+              itemType: "RECALL_ROUND",
+              recallRoundId: "irrelevant-round",
+              sourceChatId: "irrelevant-chat"
+            }),
+            searchResult({
+              exactItemId: "unrelated-fact",
+              factVersionId: "unrelated-fact",
+              featureSnapshot: { finalScore: 0.95 },
+              itemType: "FACT_VERSION"
+            })
+          ]
+        },
+        retentionState: "RETAINED",
+        state: "COMPLETE",
+        ...input.receipt
+      }])
+    },
+    memoryRecallChunk: {
+      findMany: vi.fn().mockImplementation(({ where }: { where: { id: { in: string[] } } }) =>
+        Promise.resolve(where.id.in.map((id) => ({ id }))))
+    },
+    memoryRecallChunkMessage: {
+      findMany: vi.fn().mockImplementation(({ where }: { where: { chatId: string } }) =>
+        Promise.resolve([{ chunkId: chunkByChat[where.chatId] }]))
+    },
+    memoryRecallRound: {
+      findMany: vi.fn().mockResolvedValue([{
+        chatId: "irrelevant-chat",
+        id: "irrelevant-round",
+        parentChunkId: "irrelevant-chunk"
+      }])
+    },
+    modelRunToolCall: {
+      findMany: vi.fn().mockResolvedValue(input.calls ?? [{ id: "search-call", state: "complete" }])
+    }
+  } as unknown as PrismaClient & Readonly<{
+    memoryExecutionBinding: { findMany: ReturnType<typeof vi.fn> };
+    memoryHistoryRun: { findMany: ReturnType<typeof vi.fn> };
+    memoryRecallChunk: { findMany: ReturnType<typeof vi.fn> };
+    memoryRecallRound: { findMany: ReturnType<typeof vi.fn> };
+    modelRunToolCall: { findMany: ReturnType<typeof vi.fn> };
+  }>;
 }
 
 describe("Memory semantic smoke support", () => {
@@ -411,7 +549,7 @@ describe("Memory semantic smoke support", () => {
     expect(client.$queryRaw).toHaveBeenCalledOnce();
   });
 
-  it("proves vector recall only through the current exact source chunk", async () => {
+  it("waits for indexed history only through the current exact source chunk", async () => {
     const client = {
       chat: {
         findFirst: vi.fn().mockResolvedValue({
@@ -428,12 +566,6 @@ describe("Memory semantic smoke support", () => {
       memoryRecallChunkMessage: {
         findMany: vi.fn().mockResolvedValue([{ chunkId: "private-chunk" }])
       },
-      memoryRetrievalAttempt: {
-        findMany: vi.fn().mockResolvedValue([{ id: "private-attempt" }])
-      },
-      memoryRetrievalAttemptItem: {
-        count: vi.fn().mockResolvedValue(1)
-      },
       memorySearchEntry: {
         findMany: vi.fn().mockResolvedValue([{ recallChunkId: "private-chunk" }])
       },
@@ -446,10 +578,9 @@ describe("Memory semantic smoke support", () => {
     } as unknown as PrismaClient;
     const verifier = createPrismaMemorySemanticSmokeVerifier(client);
 
-    await expect(verifier.recalledHistorySourceCount({
+    await expect(verifier.indexedHistorySourceCount({
       chatId: "private-source-chat",
       messageId: "private-source-message",
-      recallModelRunId: "private-recall-run",
       userId: "private-owner"
     })).resolves.toBe(1);
 
@@ -468,11 +599,179 @@ describe("Memory semantic smoke support", () => {
         userId: "private-owner"
       })
     }));
-    expect(client.memoryRetrievalAttemptItem.count).toHaveBeenCalledWith({
+    expect(client.memorySearchEntry.findMany).toHaveBeenCalledWith({
+      distinct: ["recallChunkId"],
+      select: { recallChunkId: true },
       where: {
-        attemptId: { in: ["private-attempt"] },
+        embeddingState: "READY",
+        indexGenerationId: "private-generation",
         itemType: "RECALL_CHUNK",
         recallChunkId: { in: ["private-chunk"] },
+        userId: "private-owner"
+      }
+    });
+  });
+
+  it("proves history recall only through delivered memory_search receipts of the exact sources", async () => {
+    const embed = strictExecutionSnapshot("MEMORY_QUERY_EMBED");
+    const rerank = strictExecutionSnapshot("MEMORY_RERANK");
+    const client = historySearchClient({
+      bindings: { MEMORY_QUERY_EMBED: [embed], MEMORY_RERANK: [rerank] }
+    });
+    const verifier = createPrismaMemorySemanticSmokeVerifier(client);
+
+    const evidence = await verifier.historySearchEvidence(historySearchInput);
+    expect(evidence).toEqual({
+      calls: 1,
+      irrelevantResults: 1,
+      irrelevantTopScore: 0.4,
+      queryEmbedExecutions: 1,
+      receipts: 1,
+      relevantResults: 1,
+      relevantSemanticallySorted: 1,
+      relevantTopScore: 0.9,
+      rerankExecutions: 1,
+      unhealthy: 0
+    });
+    expect(assessMemorySemanticSmokeHistorySearch(evidence)).toEqual({ ok: true });
+
+    expect(client.modelRunToolCall.findMany).toHaveBeenCalledWith({
+      select: { id: true, state: true },
+      where: {
+        modelRun: { userId: "private-owner" },
+        modelRunId: "private-recall-run",
+        toolName: "memory_search"
+      }
+    });
+    expect(client.memoryHistoryRun.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { modelRunId: "private-recall-run", userId: "private-owner" }
+    }));
+    expect(client.memoryRecallChunk.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        branchGeneration: 3,
+        chatId: "relevant-chat",
+        sourceRevisionAtCreation: 5,
+        userId: "private-owner"
+      })
+    }));
+    expect(client.memoryRecallRound.findMany).toHaveBeenCalledWith({
+      select: { chatId: true, id: true, parentChunkId: true },
+      where: { id: { in: ["irrelevant-round"] }, userId: "private-owner" }
+    });
+    for (const logicalRole of ["MEMORY_QUERY_EMBED", "MEMORY_RERANK"]) {
+      expect(client.memoryExecutionBinding.findMany).toHaveBeenCalledWith({
+        select: { secretFreeExecutionSnapshot: true },
+        where: {
+          id: { in: ["embed-binding", "rerank-binding"] },
+          logicalRole,
+          modelRunId: "private-recall-run",
+          modelRunToolCallId: { in: ["search-call"] },
+          ownerType: "MODEL_RUN_TOOL_CALL",
+          state: "SUCCEEDED",
+          userId: "private-owner"
+        }
+      });
+    }
+  });
+
+  it("does not count undelivered, degraded or receipt-less searches as history evidence", async () => {
+    const client = historySearchClient({
+      bindings: {},
+      calls: [
+        { id: "search-call", state: "complete" },
+        { id: "malformed-call", state: "error" }
+      ],
+      receipt: { indexingEvidence: { delivered: false }, outcome: "DEGRADED" }
+    });
+    const verifier = createPrismaMemorySemanticSmokeVerifier(client);
+
+    const evidence = await verifier.historySearchEvidence(historySearchInput);
+    expect(evidence).toMatchObject({
+      calls: 2,
+      queryEmbedExecutions: 0,
+      receipts: 1,
+      relevantResults: 0,
+      rerankExecutions: 0,
+      unhealthy: 2
+    });
+    expect(client.memoryExecutionBinding.findMany).not.toHaveBeenCalled();
+    expect(assessMemorySemanticSmokeHistorySearch(evidence)).toEqual({
+      code: "memory_smoke_history_search_degraded",
+      ok: false
+    });
+  });
+
+  it("assigns distinct stable codes to each missing history-search proof", () => {
+    const healthy = {
+      calls: 1,
+      irrelevantResults: 0,
+      irrelevantTopScore: null,
+      queryEmbedExecutions: 1,
+      receipts: 1,
+      relevantResults: 1,
+      relevantSemanticallySorted: 1,
+      relevantTopScore: 0.8,
+      rerankExecutions: 1,
+      unhealthy: 0
+    };
+    const code = (overrides: Partial<typeof healthy> | Record<string, unknown>) => {
+      const assessed = assessMemorySemanticSmokeHistorySearch({ ...healthy, ...overrides });
+      return assessed.ok ? null : assessed.code;
+    };
+    expect(code({})).toBeNull();
+    expect(code({ calls: 0, receipts: 0 })).toBe("memory_smoke_history_search_not_called");
+    expect(code({ receipts: 0 })).toBe("memory_smoke_history_search_not_called");
+    expect(code({ unhealthy: 1 })).toBe("memory_smoke_history_search_degraded");
+    expect(code({ queryEmbedExecutions: 0 })).toBe(
+      "memory_smoke_history_search_embedding_missing"
+    );
+    expect(code({ relevantResults: 0 })).toBe("memory_smoke_history_recall_failed");
+    expect(code({ rerankExecutions: 0 })).toBe("memory_smoke_irrelevant_rerank_failed");
+    expect(code({ relevantSemanticallySorted: 0 })).toBe(
+      "memory_smoke_irrelevant_rerank_failed"
+    );
+    expect(code({ irrelevantResults: 1, irrelevantTopScore: 0.8 })).toBe(
+      "memory_smoke_irrelevant_rerank_failed"
+    );
+    expect(code({ irrelevantResults: 1, irrelevantTopScore: null })).toBe(
+      "memory_smoke_irrelevant_rerank_failed"
+    );
+    expect(code({ irrelevantResults: 1, irrelevantTopScore: 0.5 })).toBeNull();
+    expect(MEMORY_SEMANTIC_SMOKE_HISTORY_SEARCH_CODES).toHaveLength(5);
+  });
+
+  it("binds natural-language command control to the exact source message's command job", async () => {
+    const strictControl = strictExecutionSnapshot("MEMORY_CONTROL");
+    const client = {
+      memoryExecutionBinding: {
+        findMany: vi.fn().mockResolvedValue([{ secretFreeExecutionSnapshot: strictControl }])
+      },
+      memoryJob: {
+        findMany: vi.fn().mockResolvedValue([{ id: "private-command-job" }])
+      }
+    } as unknown as PrismaClient;
+    const verifier = createPrismaMemorySemanticSmokeVerifier(client);
+
+    await expect(verifier.successfulCommandControlCount({
+      chatId: "private-chat",
+      messageId: "private-message",
+      userId: "private-owner"
+    })).resolves.toBe(1);
+    expect(client.memoryJob.findMany).toHaveBeenCalledWith({
+      select: { id: true },
+      where: {
+        chatId: "private-chat",
+        kind: "MEMORY_COMMAND",
+        sourceMessageId: "private-message",
+        userId: "private-owner"
+      }
+    });
+    expect(client.memoryExecutionBinding.findMany).toHaveBeenCalledWith({
+      select: { secretFreeExecutionSnapshot: true },
+      where: {
+        logicalRole: "MEMORY_CONTROL",
+        memoryJobId: { in: ["private-command-job"] },
+        state: "SUCCEEDED",
         userId: "private-owner"
       }
     });
@@ -647,10 +946,21 @@ describe("Memory semantic smoke support", () => {
       /\/api\/me\/memory\/settings[\s\S]{0,160}method:\s*"PATCH"/u
     );
     expect(source).toContain("/api/me/chats/${encodeURIComponent(chatId)}/memory-mode");
-    expect(source).toContain('"/api/me/memory/source-actions"');
-    expect(source.match(/await commitMemoryTargetSelection\(/gu)).toHaveLength(2);
-    expect(source).toContain('secretAction.operation !== "SAVE"');
-    expect(source).toContain('secretAction.status !== "REJECTED"');
+    // Natural-language commands are durable background work: outcomes come
+    // from content-free command feedback, ambiguity is resolved in the Library.
+    expect(source).toContain("/api/me/chats/${encodeURIComponent(source.chat.id)}/memory-commands");
+    expect(source).not.toContain("/api/me/memory/source-actions");
+    expect(source.match(/await requiredMemoryCommand\(/gu)).toHaveLength(5);
+    expect(source.match(/await editConsumerMemory\(/gu)).toHaveLength(1);
+    expect(source).toContain('secretCommand.operation !== "SAVE"');
+    expect(source).toContain('secretCommand.status !== "REJECTED"');
+    // Standing-v1 turns admit no dynamic history: recall must be proven
+    // through the answer model's memory_search receipts.
+    expect(source).not.toContain("recalledHistorySourceCount");
+    expect(source).toContain(
+      "Search your memory of our past conversations before answering. Для ${marker} aquarium launch"
+    );
+    expect(source).toContain("assessMemorySemanticSmokeHistorySearch(historySearch)");
     expect(source).toContain("memory_smoke_expected_fact_missing");
     expect(source).toContain('mcp: { mode: "off" }');
     expect(source).toContain('process.argv.includes("--actions-only")');
