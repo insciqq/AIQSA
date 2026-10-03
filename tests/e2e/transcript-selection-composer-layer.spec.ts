@@ -401,6 +401,25 @@ test.describe("desktop 1440x900", () => {
     await expect(quoteButton(page)).toBeVisible();
   });
 
+  test("Escape closes the open composer layer after focus has left it", async ({ page }) => {
+    await prepare(page);
+    await composer(page).fill("Draft survives Escape");
+    const layers: Array<Readonly<{ name: string; layer: Locator; open(): Promise<unknown> }>> = [
+      { name: "Add", layer: addMenu(page), open: () => openAdd(page) },
+      { name: "Reasoning effort", layer: page.getByRole("menu", { name: "Reasoning effort" }),
+        open: () => page.getByTestId("composer-v2").getByRole("button", { name: /^Reasoning effort:/u }).click() }
+    ];
+    for (const { layer, name, open } of layers) {
+      await open();
+      await expect(layer, name).toBeVisible();
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      expect(await page.evaluate(() => document.activeElement === document.body), `${name}: focus left the layer`).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect(layer, `${name} closed by Escape`).toHaveCount(0);
+    }
+    await expect(composer(page)).toHaveValue("Draft survives Escape");
+  });
+
   test("one click on a pending-comment mark closes Add and opens its editor; draft, attachment and comment survive", async ({ page }, testInfo) => {
     await prepare(page, paragraphs.slice(0, 3).join("\n\n"));
     const marked = markdown(page).locator("p").first();
