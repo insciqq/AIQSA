@@ -30,6 +30,14 @@ export type MemoryMaintenanceDecision = Readonly<{
   reason: "useful_personal_context" | MemoryMaintenanceRemovalReason;
 }>;
 export type MemoryMaintenanceOutput = Readonly<{ decisions: readonly MemoryMaintenanceDecision[] }>;
+/** A decoded review answer, with the number of its decisions whose labels were
+ * derived from their scope basis (`normalized`) and of those whose labels
+ * contradicted each other and were kept instead (`conservative`). */
+export type MemoryMaintenanceReviewDecoding = Readonly<{
+  output: MemoryMaintenanceOutput;
+  normalized: number;
+  conservative: number;
+}>;
 export type MemoryMaintenanceVerification = Readonly<{ decisions: readonly Readonly<{
   sourceRef: string;
   approve: boolean;
@@ -54,16 +62,42 @@ export class MemoryMaintenanceOutputError extends MemoryOutputViolationError {
 function invalid(reason: ConstructorParameters<typeof MemoryMaintenanceOutputError>[0]): never {
   throw new MemoryMaintenanceOutputError(reason);
 }
-const KEEP_USEFULNESS: Readonly<Partial<Record<MemoryMaintenanceScopeBasis, readonly (MemoryMaintenanceKeepUsefulness | null)[]>>> =
-  Object.freeze({ general_personal: ["DURABLE"], ongoing_personal: ["ONGOING"], explicit_remember: ["DURABLE", "ONGOING", null],
-    unresolved_scope: [null] });
+/** The usefulness label each keep basis but explicit_remember determines. */
+const KEEP_USEFULNESS: Readonly<Partial<Record<MemoryMaintenanceScopeBasis, MemoryMaintenanceKeepUsefulness | null>>> =
+  Object.freeze({ general_personal: "DURABLE", ongoing_personal: "ONGOING", unresolved_scope: null });
 
-export function decodeMemoryMaintenanceOutput(value: unknown, plan: MemoryMaintenanceRefs): MemoryMaintenanceOutput {
+/** The scope basis decides the action and determines the labels; only explicit
+ * remember intent keeps the reviewer's usefulness label. A removal needs every
+ * label to agree: a keep basis, a usefulness label or the keep reason
+ * contradicts it, as a removal basis contradicts a keep. A removal's
+ * usefulness label claims lasting value, so it is such a contradiction, never
+ * a slip to discard. Null marks a contradiction. */
+function consistentDecision(sourceRef: string, scopeBasis: MemoryMaintenanceScopeBasis, action: MemoryMaintenanceDecision["action"],
+  usefulness: MemoryMaintenanceKeepUsefulness | null, reason: MemoryMaintenanceDecision["reason"]): MemoryMaintenanceDecision | null {
+  const removalReason = REMOVAL_REASON_BY_BASIS[scopeBasis];
+  if (action === "KEEP") {
+    if (removalReason !== undefined) return null;
+    return { sourceRef, scopeBasis, action, reason: "useful_personal_context",
+      usefulness: scopeBasis === "explicit_remember" ? usefulness : KEEP_USEFULNESS[scopeBasis] ?? null };
+  }
+  if (removalReason === undefined || usefulness !== null || reason === "useful_personal_context") return null;
+  return { sourceRef, scopeBasis, action, usefulness: null, reason: removalReason };
+}
+
+/** Shape, coverage, refs and vocabulary stay strict. Within them every
+ * decision decodes: labels its scope basis determines are derived from it, and
+ * contradictory labels keep the source with unresolved scope and no usefulness
+ * label, so they neither remove nor promote it. One inconsistent decision
+ * therefore no longer rejects the batch. A decoded answer decodes to itself,
+ * so a staged receipt keeps its accepted output hash. */
+export function decodeMemoryMaintenanceReview(value: unknown, plan: MemoryMaintenanceRefs): MemoryMaintenanceReviewDecoding {
   if (!object(value) || !exact(value, ["decisions"]) || !Array.isArray(value.decisions)) invalid("maintenance_contract_shape");
   if (value.decisions.length !== plan.sources.length || value.decisions.length > MEMORY_MAINTENANCE_BATCH_SIZE) {
     invalid("maintenance_contract_count");
   }
   const refs = new Set(plan.sources.map(({ ref }) => ref));
+  let normalized = 0;
+  let conservative = 0;
   const decisions = value.decisions.map((decision): MemoryMaintenanceDecision => {
     if (!object(decision) || !exact(decision, ["source_ref", "scope_basis", "action", "usefulness", "reason"])) {
       invalid("maintenance_contract_shape");
@@ -75,24 +109,23 @@ export function decodeMemoryMaintenanceOutput(value: unknown, plan: MemoryMainte
       (decision.reason !== "useful_personal_context" && !MEMORY_MAINTENANCE_REMOVAL_REASONS.some((reason) => reason === decision.reason))) {
       invalid("maintenance_contract_enum");
     }
-    const scopeBasis = decision.scope_basis as MemoryMaintenanceScopeBasis;
     const usefulness = decision.usefulness as MemoryMaintenanceKeepUsefulness | null;
-    // The scope basis decides the action, its usefulness label and its reason.
-    const removalReason = REMOVAL_REASON_BY_BASIS[scopeBasis];
-    if (decision.action === "KEEP") {
-      const labels = KEEP_USEFULNESS[scopeBasis];
-      if (!labels) invalid("maintenance_contract_combination_action");
-      if (!labels.includes(usefulness)) invalid("maintenance_contract_combination_usefulness");
-      if (decision.reason !== "useful_personal_context") invalid("maintenance_contract_combination_reason");
-      return { sourceRef: decision.source_ref, scopeBasis, action: "KEEP", usefulness, reason: "useful_personal_context" };
+    const reason = decision.reason as MemoryMaintenanceDecision["reason"];
+    const resolved = consistentDecision(decision.source_ref, decision.scope_basis as MemoryMaintenanceScopeBasis,
+      decision.action as MemoryMaintenanceDecision["action"], usefulness, reason);
+    if (!resolved) {
+      conservative += 1;
+      return { sourceRef: decision.source_ref, scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null,
+        reason: "useful_personal_context" };
     }
-    if (removalReason === undefined) invalid("maintenance_contract_combination_action");
-    if (usefulness !== null) invalid("maintenance_contract_combination_usefulness");
-    if (decision.reason !== removalReason) invalid("maintenance_contract_combination_reason");
-    return { sourceRef: decision.source_ref, scopeBasis, action: "REMOVE_TRANSIENT", usefulness: null, reason: removalReason };
+    if (resolved.usefulness !== usefulness || resolved.reason !== reason) normalized += 1;
+    return resolved;
   });
   if (refs.size > 0) invalid("maintenance_contract_ref");
-  return { decisions };
+  return { output: { decisions }, normalized, conservative };
+}
+export function decodeMemoryMaintenanceOutput(value: unknown, plan: MemoryMaintenanceRefs): MemoryMaintenanceOutput {
+  return decodeMemoryMaintenanceReview(value, plan).output;
 }
 
 export function decodeMemoryMaintenanceVerification(
