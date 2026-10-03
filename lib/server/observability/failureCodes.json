@@ -446,6 +446,7 @@
   "memory_chat_digest_unavailable",
   "memory_classifier_binding_invalid",
   "memory_classifier_cancelled",
+  "memory_classifier_dispatch_fenced",
   "memory_classifier_output_invalid",
   "memory_classifier_output_limit_exceeded",
   "memory_classifier_provider_unavailable",
