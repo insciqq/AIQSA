@@ -117,6 +117,10 @@ function FieldEditor({
     : field.source === "shared"
       ? "Using the administrator’s shared value"
       : "No value configured";
+  // Mirrors the server's send-time rule for text values in the Authorization header.
+  const authorizationHelpId = field.authorizationHeader && (field.valueType === "secret" || field.valueType === "string")
+    ? `${inputId}-authorization-help`
+    : undefined;
 
   return (
     <div className="v2-settings-field">
@@ -153,6 +157,7 @@ function FieldEditor({
           </select>
         ) : (
           <input
+            aria-describedby={authorizationHelpId}
             autoCapitalize={secret ? "none" : undefined}
             autoComplete="off"
             autoCorrect={secret ? "off" : undefined}
@@ -180,6 +185,11 @@ function FieldEditor({
           Clear personal value
         </UiV2Button>
       </div>
+      {authorizationHelpId ? (
+        <p className="v2-settings-field-note" id={authorizationHelpId}>
+          A bare token is sent as “Bearer &lt;token&gt;”. A value that already names a scheme is sent as entered.
+        </p>
+      ) : null}
       {field.sensitive ? (
         <p className="v2-settings-field-note">
           <UiV2Icon name="lock" />

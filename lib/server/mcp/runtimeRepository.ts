@@ -3,10 +3,11 @@ import { databaseFailureCode, retainDatabaseFailure } from "../observability/dat
 import { observedFailureCode } from "../providers/providerObservability";
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type {
-  McpCredentialSource,
-  McpDraftConfiguration,
-  McpSlotValue
+import {
+  mcpHeaderValue,
+  type McpCredentialSource,
+  type McpDraftConfiguration,
+  type McpSlotValue
 } from "@/lib/contracts/mcp";
 import { prisma } from "@/lib/server/prisma";
 import {
@@ -154,8 +155,9 @@ function revisionConfiguration(value: Prisma.JsonValue): McpDraftConfiguration |
   return validated.ok ? validated.value : null;
 }
 
-function headerValue(value: McpSlotValue): string {
-  return typeof value === "string" ? value : String(value);
+/** The stored value as entered; the secret a runtime redacts, whatever header form it is sent in. */
+function storedSlotText(value: McpSlotValue): string {
+  return (typeof value === "string" ? value : String(value)).trim();
 }
 
 type DesiredRecord = Prisma.McpUserServerGetPayload<{
@@ -241,7 +243,9 @@ function effectiveRedactionValues(
 ): readonly string[] {
   return [...new Set(configuration.slots.flatMap((slot) => {
     if (!slot.sensitive || !Object.hasOwn(values, slot.slotKey)) return [];
-    const value = headerValue(values[slot.slotKey]!);
+    // A bare Authorization token is sent with a scheme; redacting the stored
+    // text covers both forms.
+    const value = storedSlotText(values[slot.slotKey]!);
     return value ? [value] : [];
   }))];
 }
@@ -358,7 +362,7 @@ function remoteRuntimeFields(base: EffectiveRuntimeBase): RemoteRuntimeFields {
   const headers: Record<string, string> = {};
   for (const slot of configuration.slots) {
     if (slot.target.kind === "header" && Object.hasOwn(base.effectiveEnvelope.values, slot.slotKey)) {
-      headers[slot.target.name] = headerValue(base.effectiveEnvelope.values[slot.slotKey]!);
+      headers[slot.target.name] = mcpHeaderValue(slot.target.name, base.effectiveEnvelope.values[slot.slotKey]!);
     }
   }
   return {
@@ -557,7 +561,7 @@ export function createPrismaMcpRuntimeRepository(input: {
         const headers: Record<string, string> = {};
         for (const slot of configuration.slots) {
           if (slot.target.kind === "header") {
-            headers[slot.target.name] = headerValue(snapshot.values[slot.slotKey]!);
+            headers[slot.target.name] = mcpHeaderValue(slot.target.name, snapshot.values[slot.slotKey]!);
           }
         }
         reportSubsystemHealthy("mcp", "recovery", generation.id);

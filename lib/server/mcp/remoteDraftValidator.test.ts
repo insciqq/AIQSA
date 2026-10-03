@@ -339,6 +339,25 @@ describe("remote MCP draft validator", () => {
     expect(harness.options[0]?.headers).toEqual({});
   });
 
+  it("checks a bare Authorization value as a Bearer token and sends other values as entered", async () => {
+    const sent = async (authorization: string, workspace = "workspace-a") => {
+      const harness = sessionHarness();
+      const outcome = await createRemoteMcpDraftValidator({ fetch: safeFetch, sessionFactory: harness.sessionFactory })
+        .validate({ draft: remoteDraft(), values: { authorization, retries: 3, workspace } });
+      expect(outcome.kind).toBe("ok");
+      return harness.options[0]?.headers;
+    };
+
+    await expect(sent(" synthetic-draft-token \n", " Token raw ")).resolves.toEqual({
+      authorization: "Bearer synthetic-draft-token",
+      "x-retries": "3",
+      "x-workspace": "Token raw"
+    });
+    for (const scheme of ["Bearer synthetic-draft-token", "bearer synthetic-draft-token", "Token synthetic", "Basic c3ludGhldGlj"]) {
+      await expect(sent(scheme)).resolves.toMatchObject({ authorization: scheme });
+    }
+  });
+
   it("rejects exact known secrets anywhere in the complete tool inventory", async () => {
     const leakingHarness = sessionHarness({
       tools: [
