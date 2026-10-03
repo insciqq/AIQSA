@@ -111,10 +111,15 @@ export const MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS = 3;
 export const MEMORY_STRUCTURED_OUTPUT_INVALID_OUTPUT_BREAKER = 4;
 
 /** Opt-in retry of a settled invalid answer. `attempt` counts retries from 1;
- * the first call uses the input ordinal. Each retry needs a fresh ordinal. */
+ * the first call uses the input ordinal. Each retry needs a fresh ordinal.
+ * A retry discloses its input again, so `beforeRetry` revalidates whatever the
+ * caller proved before the first call (source versions, fences); it runs after
+ * the previous call settled and before binding, and its error stops the call.
+ * Owner liveness and Memory authority are rechecked by every bind and start. */
 export type MemoryStructuredOutputValidationRetry = Readonly<{
   maxAttempts: number;
   allocateOrdinal(attempt: number): number | Promise<number>;
+  beforeRetry?(attempt: number): void | Promise<void>;
 }>;
 
 export const unavailableMemoryReportedUsage: MemoryReportedUsage = Object.freeze({
@@ -365,10 +370,11 @@ function settledInvalidOutputs<Value>(
 /** Execute one accepted structured call. With `validationRetry`, an answer
  * that was received but rejected, and durably settled FAILED as invalid
  * output, buys a new call with the identical request and input hash: each call
- * binds a fresh ordinal, reauthorizes at start and records its own usage.
- * Cancellation, unavailable providers, output limits, invalid bindings, fenced
- * dispatch and failed settlement are never retried. When retries stop, the
- * last call's own error is rethrown unchanged for the caller's mapping. */
+ * is revalidated by `beforeRetry`, binds a fresh ordinal, reauthorizes at
+ * start and records its own usage. Cancellation, unavailable providers, output
+ * limits, invalid bindings, fenced dispatch and failed settlement are never
+ * retried. When retries stop, the last call's own error is rethrown unchanged
+ * for the caller's mapping; an error from the retry hooks is rethrown as is. */
 export async function executeGovernedMemoryStructuredOutput<Value>(
   input: GovernedMemoryStructuredOutputInput<Value>
 ): Promise<GovernedMemoryStructuredOutput<Value>> {
@@ -377,7 +383,8 @@ export async function executeGovernedMemoryStructuredOutput<Value>(
   if (
     !Number.isSafeInteger(maxAttempts) || maxAttempts < 1 ||
     maxAttempts > MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS ||
-    (retry !== undefined && typeof retry.allocateOrdinal !== "function")
+    (retry !== undefined && (typeof retry.allocateOrdinal !== "function" ||
+      (retry.beforeRetry !== undefined && typeof retry.beforeRetry !== "function")))
   ) {
     return memoryExecutionFailure("memory_execution_input_invalid");
   }
@@ -390,6 +397,7 @@ export async function executeGovernedMemoryStructuredOutput<Value>(
   for (let attempt = 1; retry && outcome.kind === "output_invalid" && attempt < maxAttempts; attempt += 1) {
     if (input.signal.aborted ||
       await settledInvalidOutputs(input) >= MEMORY_STRUCTURED_OUTPUT_INVALID_OUTPUT_BREAKER) break;
+    await retry.beforeRetry?.(attempt);
     const ordinal = await retry.allocateOrdinal(attempt);
     if (!Number.isSafeInteger(ordinal) || ordinals.includes(ordinal)) {
       return memoryExecutionFailure("memory_execution_input_invalid");

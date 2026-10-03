@@ -421,7 +421,11 @@ describe("Memory chat digest dispatch", () => {
     decode(value: unknown): unknown;
     ordinal: number;
     request: ProviderStructuredOutputRequest;
-    validationRetry?: { allocateOrdinal(attempt: number): Promise<number>; maxAttempts: number };
+    validationRetry?: {
+      allocateOrdinal(attempt: number): Promise<number>;
+      beforeRetry?(attempt: number): Promise<void>;
+      maxAttempts: number;
+    };
   };
 
   function durableJob(highestOrdinal: number | null) {
@@ -449,7 +453,9 @@ describe("Memory chat digest dispatch", () => {
       job.record(call.ordinal);
       const entry: { ordinal: number; retryOrdinal?: number } = { ordinal: call.ordinal };
       if (calls.length === 0) {
-        // The first segment's answer was rejected once and repaired.
+        // The first segment's answer was rejected once and repaired: like the
+        // executor, revalidate the job before binding the retry.
+        await call.validationRetry!.beforeRetry?.(1);
         entry.retryOrdinal = await call.validationRetry!.allocateOrdinal(1);
         job.record(entry.retryOrdinal);
       }

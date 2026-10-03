@@ -1090,3 +1090,29 @@ describe("history fence casualties left by an earlier release", () => {
     expect(f.run).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("history validation retries across fences", () => {
+  it.each([
+    ["forget", "STALE", "memory_source_stale"],
+    ["exclusion", "STALE", "memory_source_stale"],
+    ["disabled", "CANCELLED", "memory_history_disabled"]
+  ] as const)("never discloses the source again once %s lands between a rejected answer and its retry", async (fence, state, errorCode) => {
+    const f = await fixture();
+    f.run.mockImplementationOnce(async () => {
+      await landFence(f, fence);
+      return { output: {}, providerResponseId: null,
+        usage: { inputTokens: 20, outputTokens: 9, totalTokens: 29, completeness: "complete" } };
+    });
+    await f.drive();
+    // The rejected answer was settled and paid for; the revalidation before
+    // its retry found the fence, so nothing was bound or sent again.
+    expect(f.run).toHaveBeenCalledOnce();
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } }))
+      .toMatchObject({ state, errorCode, stage: "contextual_key_generation", leaseToken: null });
+    expect(await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId } })).toEqual([
+      expect.objectContaining({ ordinal: 0, state: "FAILED", errorCode: "memory_classifier_output_invalid",
+        decodeReason: "contextual_key_output_invalid" })
+    ]);
+    expect(await prisma.usageEvent.count({ where: { userId: f.userId } })).toBe(1);
+  });
+});

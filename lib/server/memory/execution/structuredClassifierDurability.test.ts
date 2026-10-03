@@ -154,17 +154,20 @@ type Run = ReturnType<typeof input>["provider"]["run"];
 
 function retryInput(options: Readonly<{
   allocateOrdinal?: (attempt: number) => number | Promise<number>;
+  beforeRetry?: (attempt: number) => Promise<void>;
   invalidBindings?: number;
   maxAttempts?: number;
 }> = {}) {
   const count = vi.fn().mockResolvedValue(options.invalidBindings ?? 0);
   const allocateOrdinal = vi.fn(options.allocateOrdinal ?? ((attempt: number) => 10 + attempt));
+  const beforeRetry = vi.fn<(attempt: number) => Promise<void>>(options.beforeRetry ?? (async () => undefined));
   return {
     ...input(),
     allocateOrdinal,
+    beforeRetry,
     client: { memoryExecutionBinding: { count } } as unknown as PrismaClient,
     count,
-    validationRetry: { allocateOrdinal, maxAttempts: options.maxAttempts ?? 3 }
+    validationRetry: { allocateOrdinal, beforeRetry, maxAttempts: options.maxAttempts ?? 3 }
   };
 }
 
@@ -199,6 +202,9 @@ describe("governed structured output validation retries", () => {
     const result = await executeGovernedMemoryStructuredOutput({ ...request, decode: strictDecode });
 
     expect(result).toMatchObject({ bindingId: "binding-11", value: { admitted: true } });
+    expect(request.beforeRetry).toHaveBeenCalledExactlyOnceWith(1);
+    expect(request.beforeRetry.mock.invocationCallOrder[0]).toBeGreaterThan(settle.mock.invocationCallOrder[0]!);
+    expect(request.beforeRetry.mock.invocationCallOrder[0]).toBeLessThan(bind.mock.invocationCallOrder[1]!);
     expect(request.allocateOrdinal).toHaveBeenCalledExactlyOnceWith(1);
     expect(bind.mock.calls.map(([, call]) => [call.ordinal, call.inputHash])).toEqual([
       [0, request.inputHash], [11, request.inputHash]
@@ -337,6 +343,21 @@ describe("governed structured output validation retries", () => {
     expect(lost.allocateOrdinal).not.toHaveBeenCalled();
   });
 
+  it("stops before a second dispatch when a fence lands between attempts", async () => {
+    const fence = new Error("fixture_source_fenced");
+    const request = retryInput({ beforeRetry: async () => { throw fence; } });
+    (request.provider.run as Run).mockResolvedValue(answer(false));
+    await expect(executeGovernedMemoryStructuredOutput({ ...request, decode: strictDecode })).rejects.toBe(fence);
+    expect(request.beforeRetry).toHaveBeenCalledExactlyOnceWith(1);
+    expect(request.provider.run).toHaveBeenCalledOnce();
+    expect(bind).toHaveBeenCalledOnce();
+    expect(request.allocateOrdinal).not.toHaveBeenCalled();
+    expect(settle).toHaveBeenCalledExactlyOnceWith("owner", "binding-0", expect.objectContaining({
+      state: "FAILED", errorCode: "memory_classifier_output_invalid"
+    }));
+    expect(logEvent).not.toHaveBeenCalled();
+  });
+
   it("settles a pre-dispatch fence CANCELLED without usage and never retries it", async () => {
     const request = retryInput();
     const fence = new MemoryStructuredOutputDispatchFenced("memory_maintenance_source_stale");
@@ -382,6 +403,14 @@ describe("governed structured output validation retries", () => {
   it.each([0, 4, 2.5])("refuses a budget of %s calls before binding", async (maxAttempts) => {
     const request = retryInput({ maxAttempts });
     await expect(executeGovernedMemoryStructuredOutput({ ...request, decode: strictDecode }))
+      .rejects.toEqual(new MemoryExecutionError("memory_execution_input_invalid"));
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it("refuses a malformed revalidation hook before binding", async () => {
+    const request = retryInput();
+    await expect(executeGovernedMemoryStructuredOutput({ ...request, decode: strictDecode,
+      validationRetry: { ...request.validationRetry, beforeRetry: "revalidate" as never } }))
       .rejects.toEqual(new MemoryExecutionError("memory_execution_input_invalid"));
     expect(bind).not.toHaveBeenCalled();
   });
