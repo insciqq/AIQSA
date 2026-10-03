@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync,
   symlinkSync, writeFileSync
@@ -12,8 +13,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 const script = path.resolve("aiqsa.sh");
 const template = readFileSync(path.resolve(".env.example"), "utf8");
 const toolNames = ["awk", "basename", "bash", "cat", "chmod", "cp", "cut", "date", "dirname", "env", "git", "grep",
-  "head", "id", "ln", "ls", "mkdir", "mktemp", "mv", "od", "openssl", "readlink", "rm", "sed", "sh", "sleep", "sort", "stat",
-  "tail", "tee", "timeout", "touch", "tr", "uname", "wc"];
+  "head", "id", "ln", "ls", "mkdir", "mktemp", "mv", "od", "openssl", "readlink", "rm", "rmdir", "sed", "sh", "sha256sum",
+  "sleep", "sort", "stat", "tail", "tee", "timeout", "touch", "tr", "uname", "wc"];
 const generatedKeys = ["AIQSA_INITIAL_ADMIN_PASSWORD", "AIQSA_AUTH_SESSION_SECRET", "AIQSA_ENCRYPTION_KEY",
   "AIQSA_MEMORY_FINGERPRINT_KEYRING", "AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY", "AIQSA_POSTGRES_PASSWORD",
   "AIQSA_S3_SECRET_ACCESS_KEY"];
@@ -33,6 +34,9 @@ const readyRows = "app|running|healthy|0|c1\nmigrate-bootstrap|exited||0|c2\npos
 const fakeDocker = `#!/usr/bin/env bash
 args="$*"
 printf '%s\\n' "$args" >> "$FAKE_STATE/docker.log"
+for arg in "$@"; do [[ $arg == *restore-override.yaml ]] && cp "$arg" "$FAKE_STATE/restore-override.yaml"; done
+# Simulates an interrupt of the CLI while this docker command runs.
+[[ -n \${FAKE_TERM_ON:-} && $args =~ \${FAKE_TERM_ON} ]] && kill -TERM "$PPID"
 while IFS=$'\\x1f' read -r pattern code out err delay; do
   [[ -n $pattern && $args =~ $pattern ]] || continue
   [[ -n $delay ]] && sleep "$delay"
@@ -184,7 +188,8 @@ describe("aiqsa.sh lint", () => {
     expect(sh.status).toBe(3);
     expect(sh.stderr).toContain("requires bash 4");
     expect(fixture.run(["help"]).stdout).toContain("Exit codes:");
-    for (const args of [["bogus"], ["doctor", "--to", "v1.0.0"], ["up", "--timeout", "0"], ["upgrade", "--to", "latest"]]) {
+    for (const args of [["bogus"], ["doctor", "--to", "v1.0.0"], ["up", "--timeout", "0"], ["upgrade", "--to", "latest"],
+      ["backup", "--to", "v1.0.0"], ["restore"], ["restore", "a", "b"], ["backup", "extra"]]) {
       expect(fixture.run(args).status, args.join(" ")).toBe(2);
     }
     expect(fixture.dockerLog).toBe("");
@@ -703,7 +708,7 @@ describe("upgrade", () => {
     ["a MinIO-era volume without a valid marker", (f: Fixture) => {
       f.rules.push({ match: "^volume inspect aiqsa-test_minio_data", exit: 0 }, { match: "storage-init status", exit: 3 });
     }, [], /aiqsa-test_minio_data volume exists/u],
-    ["a missing backup confirmation", () => undefined, null, /backup was not confirmed/u],
+    ["a missing backup confirmation", () => undefined, null, /backup was not confirmed\.\nRerun with --backup to create one first/u],
     ["a downgrade", () => undefined, ["--to", "v0.2.0"], /older than the current 0\.3\.0/u],
     ["an unknown tag", () => undefined, ["--to", "v9.9.9"], /tag v9\.9\.9 does not exist/u]
   ])("refuses %s without moving the checkout or replacing containers", (_name, setup, extra, message) => {
@@ -865,5 +870,288 @@ describe("upgrade", () => {
     expect(appended).not.toHaveProperty("AIQSA_COMMENTED_SETTING");
     expect(result.output).not.toContain(appended.AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY);
     expect(git(fixture.project, "describe", "--tags")).toBe("v0.3.1");
+  });
+
+  it("creates the backup with --backup after the guards and before the checkout moves", () => {
+    const { fixture, git, seed } = repository();
+    release(seed, git);
+    const body = fixture.writeEnv();
+    backupFixture(fixture);
+    const result = fixture.run(["upgrade", "--backup"]);
+    expect(result.status, result.stderr).toBe(0);
+    expectOrdered(fixture.dockerLog, [/ pg_dump -Fc /u, / up -d --no-recreate --wait /u, / pull --quiet$/u, / up -d --remove-orphans --wait /u]);
+    const [directory] = backupDirectories(fixture);
+    expect(path.basename(directory)).toMatch(/-v0\.3\.0$/u);
+    expect(readFileSync(path.join(directory, "env"), "utf8")).toBe(body);
+    expect(readFileSync(fixture.file("package.json"), "utf8")).toContain("0.3.1");
+    expectNoSecrets(result.output, body);
+  });
+
+  it.each([
+    ["the backup fails", (f: Fixture) => { f.rules.unshift({ match: " pg_dump -Fc ", exit: 1 }); }, /Upgrade refused: the backup failed/u, true],
+    ["the backup cannot start", (f: Fixture) => { f.env.FAKE_DF_AVAILABLE = "100"; }, /Upgrade refused: the backup could not start: not enough free space/u, false]
+  ])("refuses the upgrade with exit 6 when %s, after restarting the stack", (_name, setup, message, restarted) => {
+    const { fixture, git, seed } = repository();
+    release(seed, git);
+    fixture.writeEnv();
+    backupFixture(fixture);
+    setup(fixture);
+    const before = git(fixture.project, "rev-parse", "HEAD");
+    const result = fixture.run(["upgrade", "--backup"]);
+    expect(result.stderr).toMatch(message);
+    expect(result.status).toBe(6);
+    expect(git(fixture.project, "rev-parse", "HEAD")).toBe(before);
+    expect(fixture.dockerLog).not.toMatch(/ pull /u);
+    expect(fixture.dockerLog.includes(" up -d --no-recreate --wait")).toBe(restarted);
+    expect(backupDirectories(fixture)).toEqual([]);
+  });
+
+  it("rejects --backup together with --backup-confirmed", () => {
+    const fixture = new Fixture();
+    const result = fixture.run(["upgrade", "--backup", "--backup-confirmed"]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--backup and --backup-confirmed are mutually exclusive");
+  });
+});
+
+const keyringKey = (letter: string) => `${letter.repeat(43)}=`;
+const keyring = `current=v2,v1=${keyringKey("A")},v2=${keyringKey("B")}`;
+const latestMigration = "20261002000000_latest";
+const runningRows = ["app|running|healthy|0|c1", "memory-worker|running||0|c5", "knowledge-search-worker|running||0|c6",
+  "migrate-bootstrap|exited||0|c2", "storage-init|exited||0|c7", "postgres|running|healthy|0|c3",
+  "opensearch|running|healthy|0|c4", "seaweedfs|running|healthy|0|c8", "minio|running|healthy|0|c9"].join("\n") + "\n";
+const restartSet = "app memory-worker knowledge-search-worker postgres opensearch seaweedfs minio";
+
+// A running installation whose schema matches the checkout's newest migration.
+function backupFixture(fixture: Fixture, migrationRow = `${latestMigration}|0`): void {
+  for (const name of ["20261001000000_init", latestMigration]) mkdirSync(fixture.file(`prisma/migrations/${name}`), { recursive: true });
+  fixture.rules.push(
+    { match: " ps -a --format \\{\\{\\.Service\\}\\} \\{\\{\\.Image", stdout: "app ghcr.io/insciqq/aiqsa:0.3.0\npostgres ghcr.io/insciqq/aiqsa-postgres:18\n" },
+    { match: " ps -a --format", stdout: runningRows },
+    { match: "_prisma_migrations", stdout: `${migrationRow}\n` },
+    { match: "pg_database_size", stdout: "1048576\n" },
+    { match: "^volume inspect aiqsa-test_seaweedfs_data", exit: 0 },
+    { match: "--entrypoint du ", stdout: "2048\t/data\n" },
+    { match: " pg_dump -Fc ", stdout: "PGDMP-dump" },
+    { match: "--entrypoint tar .* -czf ", stdout: "objects-archive" }
+  );
+}
+
+function backupDirectories(fixture: Fixture): string[] {
+  const root = fixture.file("backups");
+  return existsSync(root) ? readdirSync(root).map((name) => path.join(root, name)) : [];
+}
+
+// Line numbers of the first docker.log line matching each pattern, in order.
+function positions(log: string, patterns: RegExp[]): number[] {
+  const lines = log.split("\n");
+  return patterns.map((pattern) => lines.findIndex((line) => pattern.test(line)));
+}
+
+function expectOrdered(log: string, patterns: RegExp[]): void {
+  const found = positions(log, patterns);
+  patterns.forEach((pattern, index) => expect(found[index], pattern.source).toBeGreaterThanOrEqual(0));
+  expect([...found].sort((a, b) => a - b)).toEqual(found);
+}
+
+describe("backup", () => {
+  it("stops writers, dumps, stops storage, archives, restarts the same set and writes a private verified backup", () => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv({ AIQSA_MEMORY_FINGERPRINT_KEYRING: keyring });
+    backupFixture(fixture);
+    const result = fixture.run(["backup"]);
+    expect(result.status, result.stderr).toBe(0);
+    expectOrdered(fixture.dockerLog, [/ stop app memory-worker knowledge-search-worker$/u, / pg_dump -Fc -U aiqsa -d aiqsa$/u,
+      / stop minio seaweedfs$/u, /^run --rm --network none --user 0:0 -v aiqsa-test_seaweedfs_data:\/data:ro --entrypoint tar /u,
+      / exec -T postgres pg_restore --list$/u, / --entrypoint tar .* -tzf -$/u,
+      new RegExp(` up -d --no-recreate --wait --wait-timeout 600 ${restartSet}$`, "u")]);
+    expect(fixture.dockerLog).not.toMatch(/ stop .*(postgres|opensearch)/u);
+    const [directory] = backupDirectories(fixture);
+    expect(path.basename(directory)).toMatch(/^\d{8}T\d{6}Z-v0\.3\.0$/u);
+    expect(statSync(directory).mode & 0o777).toBe(0o700);
+    expect(readdirSync(directory).sort()).toEqual(["SHA256SUMS", "env", "manifest", "objects.tar.gz", "postgres.dump"]);
+    for (const name of readdirSync(directory)) expect(statSync(path.join(directory, name)).mode & 0o777, name).toBe(0o600);
+    expect(readFileSync(path.join(directory, "env"), "utf8")).toBe(body);
+    expect(readFileSync(path.join(directory, "postgres.dump"), "utf8")).toBe("PGDMP-dump");
+    const sums = readFileSync(path.join(directory, "SHA256SUMS"), "utf8");
+    for (const name of ["env", "manifest", "postgres.dump", "objects.tar.gz"]) {
+      const digest = createHash("sha256").update(readFileSync(path.join(directory, name))).digest("hex");
+      expect(sums).toContain(`${digest}  ${name}\n`);
+    }
+    const manifest = readFileSync(path.join(directory, "manifest"), "utf8");
+    for (const line of ["format=1", "aiqsa_version=0.3.0", "project=aiqsa-test", `migration=${latestMigration}`, "objects=bundled",
+      "size.postgres.dump=10", "image.app=ghcr.io/insciqq/aiqsa:0.3.0", "memory_fingerprint_key_ids=v1,v2",
+      "memory_fingerprint_current=v2", "memory_opensearch_routing_key_id=v1"]) {
+      expect(manifest).toMatch(new RegExp(`^${line.replaceAll(".", "\\.")}$`, "mu"));
+    }
+    expectNoSecrets(manifest, body);
+    expect(manifest).not.toContain(keyringKey("A"));
+    expectNoSecrets(result.output, body);
+    expect(result.stdout).toContain("The file env is a copy of .env and holds this installation's secrets");
+    expect(result.stdout).toContain("Copy the backup to another host or medium");
+  });
+
+  it.each([
+    ["pg_dump fails", { match: " pg_dump -Fc ", exit: 1, stderr: "pg_dump: error: connection lost\n" }, undefined, false],
+    ["the archive fails", { match: "--entrypoint tar .* -czf ", exit: 2, stderr: "tar: write error\n" }, undefined, true],
+    ["the CLI is interrupted during the dump", undefined, " pg_dump -Fc ", false]
+  ])("restarts the stopped services and removes the partial backup when %s", (_name, rule, term, storageStopped) => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv();
+    backupFixture(fixture);
+    if (rule) fixture.rules.unshift(rule);
+    const result = fixture.run(["backup"], term ? { FAKE_TERM_ON: term } : {});
+    expect(result.status).toBe(1);
+    expectOrdered(fixture.dockerLog, [/ stop app memory-worker knowledge-search-worker$/u, / pg_dump -Fc /u,
+      new RegExp(` up -d --no-recreate --wait --wait-timeout 600 ${restartSet}$`, "u")]);
+    expect(fixture.dockerLog.includes(" stop minio seaweedfs")).toBe(storageStopped);
+    expect(fixture.dockerLog.match(/ up -d /gu)).toHaveLength(1);
+    expect(backupDirectories(fixture)).toEqual([]);
+    expect(result.stderr).toContain("The incomplete backup in backups/");
+    expectNoSecrets(result.output, body);
+  });
+
+  it.each([
+    ["low free space", (f: Fixture) => { f.env.FAKE_DF_AVAILABLE = "100"; }, /not enough free space: about 3\.7 MB is needed/u],
+    ["no postgres container", (f: Fixture) => { f.rules.unshift({ match: " ps -a --format \\{\\{\\.Service\\}\\}\\|", stdout: "app|running|healthy|0|c1\n" }); },
+      /has no postgres container/u],
+    ["a migration mismatch", (f: Fixture) => { f.rules.unshift({ match: "_prisma_migrations", stdout: "20261001000000_init|0\n" }); },
+      /database is at migration 20261001000000_init, but the newest migration of this checkout is 20261002000000_latest/u],
+    ["a failed migration", (f: Fixture) => { f.rules.unshift({ match: "_prisma_migrations", stdout: `${latestMigration}|1\n` }); },
+      /1 migration\(s\) are unfinished or failed/u],
+    ["a non-empty target", (f: Fixture) => { mkdirSync(f.file("target")); writeFileSync(f.file("target/x"), ""); }, /target is not empty/u]
+  ])("refuses %s with exit 4 before stopping anything", (_name, setup, message) => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    backupFixture(fixture);
+    setup(fixture);
+    const result = fixture.run(["backup", "--output", "target"]);
+    expect(result.stderr).toMatch(message);
+    expect(result.status).toBe(4);
+    expect(fixture.dockerLog).not.toMatch(/ (stop|up|pg_dump) /u);
+    expect(existsSync(fixture.file("target/env"))).toBe(false);
+  });
+
+  it("backs up only PostgreSQL and .env with external object storage and says so", () => {
+    const fixture = new Fixture();
+    const body = fixture.writeEnv({ AIQSA_S3_ENDPOINT: "https://s3.example.com" });
+    backupFixture(fixture);
+    const result = fixture.run(["backup", "--output", "external-backup"]);
+    expect(result.status, result.stderr).toBe(0);
+    const directory = fixture.file("external-backup");
+    expect(readdirSync(directory).sort()).toEqual(["SHA256SUMS", "env", "manifest", "postgres.dump"]);
+    expect(readFileSync(path.join(directory, "manifest"), "utf8")).toContain("objects=external\n");
+    expect(fixture.dockerLog).not.toMatch(/stop minio|--entrypoint (tar|du)/u);
+    expect(result.stderr).toContain("Back up the bucket with its provider in the same window");
+    expect(result.stdout).toContain("Objects: external.");
+    expectNoSecrets(result.output, body);
+  });
+});
+
+describe("restore", () => {
+  interface BackupOptions { manifest?: Record<string, string>; tamper?: boolean; env?: Record<string, string> }
+
+  // Writes a backup directory as `backup` would and returns its env body.
+  function makeBackup(fixture: Fixture, options: BackupOptions = {}): { directory: string; body: string } {
+    copyFileSync(path.resolve("compose.yaml"), fixture.file("compose.yaml"));
+    const directory = path.join(fixture.root, "backup");
+    mkdirSync(directory, { mode: 0o700 });
+    const body = fixture.writeEnv(options.env);
+    copyFileSync(fixture.file(".env"), path.join(directory, "env"));
+    rmSync(fixture.file(".env"));
+    const manifest = { format: "1", aiqsa_version: "0.3.0", project: "aiqsa-test", objects: "bundled", ...options.manifest };
+    writeFileSync(path.join(directory, "manifest"), Object.entries(manifest).map(([key, value]) => `${key}=${value}\n`).join(""));
+    writeFileSync(path.join(directory, "postgres.dump"), "PGDMP-dump");
+    writeFileSync(path.join(directory, "objects.tar.gz"), "objects-archive");
+    const names = ["env", "manifest", "postgres.dump", "objects.tar.gz"];
+    writeFileSync(path.join(directory, "SHA256SUMS"), names.map((name) =>
+      `${createHash("sha256").update(readFileSync(path.join(directory, name))).digest("hex")}  ${name}\n`).join(""));
+    if (options.tamper) writeFileSync(path.join(directory, "postgres.dump"), "PGDMP-changed");
+    fixture.rules.push({ match: "^volume ls -q --filter label=com.docker.compose.project=aiqsa-restore-", stdout: "aiqsa-restore-x_storage_socket\n" });
+    return { directory, body };
+  }
+
+  it("restores through an isolated internal project before starting the real one", () => {
+    const fixture = new Fixture();
+    const { directory, body } = makeBackup(fixture);
+    writeFileSync(fixture.file("subnets.yaml"), "networks: {}\n");
+    const result = fixture.run(["restore", directory], { AIQSA_CLI_RESTORE_OVERRIDE: "subnets.yaml" });
+    expect(result.status, result.stderr).toBe(0);
+    const isolated = `-p aiqsa-restore-\\d{14} -f ${fixture.project}/compose.yaml -f \\S+/restore-override.yaml -f ${fixture.project}/subnets.yaml`;
+    expectOrdered(fixture.dockerLog, [/ create postgres seaweedfs$/u,
+      /^run --rm --network none --user 0:0 -i -v aiqsa-test_seaweedfs_data:\/data --entrypoint tar \S+ --numeric-owner -xzf - -C \/data$/u,
+      new RegExp(`${isolated} up -d --wait --wait-timeout 600 postgres seaweedfs minio$`, "u"),
+      new RegExp(`${isolated} exec -T postgres .* pg_restore --no-owner --exit-on-error -U aiqsa -d aiqsa$`, "u"),
+      /-e AIQSA_RESTORE_RECONCILIATION=YES -e AIQSA_RESTORE_NETWORK_ISOLATED=YES -e AIQSA_RESTORE_POSTGRES_SERVICE=postgres -e AIQSA_RESTORE_MINIO_SERVICE=minio --entrypoint npm memory-worker run memory:restore:reconcile$/u,
+      / --entrypoint npm memory-worker run knowledge:restore:reconcile$/u,
+      new RegExp(`${isolated} down$`, "u"), /^volume rm aiqsa-restore-x_storage_socket$/u,
+      /^compose --project-directory \S+ up -d --remove-orphans --wait /u, / storage-init status$/u]);
+    expect(fixture.dockerLog).not.toMatch(/ down -v|-p aiqsa-test /u);
+    expect(readFileSync(fixture.file(".env"), "utf8")).toBe(body);
+    expect(statSync(fixture.file(".env")).mode & 0o777).toBe(0o600);
+    const override = readFileSync(path.join(fixture.state, "restore-override.yaml"), "utf8");
+    for (const network of ["default", "parser-control", "search-control", "workspace-control", "workspace-egress"]) {
+      expect(override).toContain(`  ${network}:\n    internal: true\n`);
+    }
+    expect(override).toContain("  postgres18_data:\n    external: true\n    name: aiqsa-test_postgres18_data\n");
+    expect(override).toContain("  seaweedfs_data:\n    external: true\n    name: aiqsa-test_seaweedfs_data\n");
+    expect(override).not.toContain("ports");
+    expect(result.stdout).toContain("Restore complete.");
+    expectNoSecrets(result.output, body);
+  });
+
+  it("stops before the real project starts when reconciliation leaves duties and prints the cleanup", () => {
+    const fixture = new Fixture();
+    const { directory, body } = makeBackup(fixture);
+    const password = values(body).AIQSA_POSTGRES_PASSWORD;
+    fixture.rules.unshift({ match: "memory:restore:reconcile", exit: 1,
+      stdout: `{"event":"runtime_lifecycle","code":"memory_restore_reconciliation_pending","detail":"${password}"}\n` });
+    const result = fixture.run(["restore", directory]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("memory:restore:reconcile failed with memory_restore_reconciliation_pending");
+    expect(result.stderr).toContain("  docker compose down -v\n  rm .env\n");
+    expect(fixture.dockerLog).toMatch(/-p aiqsa-restore-\d{14} .* down$/mu);
+    expect(fixture.dockerLog).not.toMatch(/knowledge:restore:reconcile|--remove-orphans|storage-init/u);
+    expectNoSecrets(result.output, body);
+  });
+
+  it("publishes this host's KVM group when the backup's Workspace used another one", () => {
+    const fixture = new Fixture();
+    fixture.kvmDevice(0o660);
+    const gid = String(statSync(fixture.kvm).gid);
+    copyFileSync(path.resolve("compose.yaml"), fixture.file("compose.yaml"));
+    const { directory } = makeBackup(fixture, { env: { COMPOSE_PROFILES: "workspace",
+      AIQSA_WORKSPACE_RUNNER_URL: "http://workspace-runner:4310", AIQSA_WORKSPACE_RUNNER_TOKEN: secretOf("TOKEN"), AIQSA_KVM_GID: "424242" } });
+    const backupEnv = readFileSync(path.join(directory, "env"), "utf8");
+    const result = fixture.run(["restore", directory]);
+    expect(result.status, result.output).toBe(0);
+    expect(result.stdout).toContain(`PASS kvm: ${fixture.kvm} usable by group ${gid}`);
+    expect(result.stdout).not.toContain("kvm-gid");
+    expect(result.stderr).toContain(`AIQSA_KVM_GID changed from '424242' to ${gid} in .env`);
+    expect(readFileSync(fixture.file(".env"), "utf8")).toBe(backupEnv.replace("AIQSA_KVM_GID=424242", `AIQSA_KVM_GID=${gid}`));
+    expect(statSync(fixture.file(".env")).mode & 0o777).toBe(0o600);
+    expectNoSecrets(result.output, backupEnv);
+  });
+
+  it.each([
+    ["a checksum mismatch", { tamper: true }, () => undefined, /do not match SHA256SUMS/u],
+    ["another version", { manifest: { aiqsa_version: "0.2.0" } }, () => undefined, /git checkout v0\.2\.0/u],
+    ["an unknown format", { manifest: { format: "9" } }, () => undefined, /backup format '9' is unknown/u],
+    ["external object storage", { manifest: { objects: "external" } }, () => undefined, /uses external object storage/u],
+    ["an existing .env", {}, (f: Fixture) => writeFileSync(f.file(".env"), "KEEP=1\n"), /\.env exists; restore only fills an empty installation/u],
+    ["existing containers", {}, (f: Fixture) => { f.rules.unshift({ match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test$", stdout: "c1\n" }); },
+      /already has containers/u],
+    ["an existing volume", {}, (f: Fixture) => { f.rules.unshift({ match: "^volume inspect aiqsa-test_postgres18_data", exit: 0 }); },
+      /volumes of the Compose project aiqsa-test already exist: +aiqsa-test_postgres18_data/u]
+  ])("refuses %s with exit 4 before any change", (_name, options, setup, message) => {
+    const fixture = new Fixture();
+    const { directory } = makeBackup(fixture, options);
+    setup(fixture);
+    const before = existsSync(fixture.file(".env")) ? readFileSync(fixture.file(".env"), "utf8") : null;
+    const result = fixture.run(["restore", directory]);
+    expect(result.stderr).toMatch(message);
+    expect(result.status).toBe(4);
+    expect(fixture.dockerLog).not.toMatch(/ (create|up|run|exec|down) /u);
+    expect(existsSync(fixture.file(".env")) ? readFileSync(fixture.file(".env"), "utf8") : null).toBe(before);
   });
 });

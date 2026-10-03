@@ -13,6 +13,8 @@ node_modules/
 .next/
 /next-env.d.ts
 .aiqsa/
+# aiqsa.sh backup output holds installation secrets.
+/backups/
 tsconfig.tsbuildinfo
 coverage/
 playwright-report/

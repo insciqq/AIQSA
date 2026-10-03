@@ -6,6 +6,7 @@ AGENTS.override.md
 .claude
 CLAUDE.local.md
 .aiqsa
+backups
 node_modules
 public/agents/skills-client.mjs
 .next
