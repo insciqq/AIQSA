@@ -25,6 +25,7 @@ import {
 } from "../learning/relations/policy";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
+import { enqueueMemoryAutomaticExplicitEquivalence } from "../persistence/jobs";
 import { isMemoryMaintenanceEvidenceSuppressed } from "../maintenance/suppression";
 import { isSupportedMemoryMaintenancePolicy } from "../maintenance/policy";
 import { memoryPurgeTargetType } from "../purge/contract";
@@ -958,6 +959,9 @@ async function createFirstOrReactivatedVersion(
     bindingId,
     now
   );
+  // An explicit save with the same normalized text gets one semantic
+  // equivalence check of this version; only full equivalence merges it.
+  await enqueueMemoryAutomaticExplicitEquivalence(tx, settings, factVersionId);
   return { attachedEvidence: 1, createdVersions: 1 };
 }
 
