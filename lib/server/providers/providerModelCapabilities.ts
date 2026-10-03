@@ -24,13 +24,35 @@ export function supportsConfiguredReasoningEffort(
 
 /** Cheap probes still have to use a reasoning level the deployment supports. */
 export function lowestConfiguredReasoningEffort(
-  configuration: ProviderModelConfiguration,
+  configuration: Parameters<typeof configuredModelParameterControls>[0],
   providerFamily: string
 ): string {
   const controls = configuredModelParameterControls(configuration, providerFamily).reasoningEffort;
   if (!controls.supported) return "none";
   return ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
     .find((effort) => controls.options.includes(effort)) ?? controls.defaultValue;
+}
+
+export const GEMINI_THINKING_LEVELS: readonly string[] = ["minimal", "low", "medium", "high"];
+
+/** Gemini thinking levels that the exact deployment's configured reasoning
+ * control offers (the reviewed catalog template, else saved capabilities).
+ * Gemini rejects a level the model does not support with HTTP 400, so request
+ * builders refuse such a level locally instead of dispatching it. */
+export function geminiConfiguredThinkingLevels(
+  upstreamModelId: string,
+  capabilities: ProviderModelCapabilities
+): readonly string[] {
+  if (!capabilities.reasoning) return [];
+  const control = configuredModelParameterControls({
+    adapterKind: "gemini_interactions_native",
+    capabilities,
+    defaultParams: {},
+    upstreamModelId
+  }, "gemini").reasoningEffort;
+  return control.supported
+    ? GEMINI_THINKING_LEVELS.filter((level) => control.options.includes(level))
+    : [];
 }
 
 export function configuredModelParameterControls(
