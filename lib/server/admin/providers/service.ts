@@ -11,6 +11,8 @@ import { capabilitySetupIncomplete, decodeCapabilitySetupEvidence, initiallyVeri
   initialModelConfiguration,
   INITIAL_CAPABILITY_BATCH_TIMEOUT_MS, reusableCapabilitySetupEvidence, settledUnsupportedImageCapabilities } from "./initialCapabilitySetup";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
+import type { AdminProviderAssignedRole, AdminProviderRoleRoutingConflict } from "../../../contracts/adminProviderRoleRouting";
+import { roleRoutingConflicts, rolesNeedingRoutingCheck } from "./roleRouting";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   AdminProviderActiveCheck,
@@ -126,18 +128,24 @@ export type AdminProviderServiceErrorCode =
   | "provider_paid_test_confirmation_required"
   | "provider_revoke_confirmation_required"
   | "provider_refresh_failed"
+  | "provider_routing_role_incompatible"
+  | "provider_routing_role_unverified"
   | "provider_test_evidence_invalid"
   | "provider_test_mode_invalid";
 
 export class AdminProviderServiceError extends Error {
   readonly code: AdminProviderServiceErrorCode;
   readonly resourceIds: string[];
+  /** Installation roles a refused routing change would stop, with what they miss. */
+  readonly roles: readonly AdminProviderRoleRoutingConflict[];
 
-  constructor(code: AdminProviderServiceErrorCode, resourceIds: string[] = []) {
+  constructor(code: AdminProviderServiceErrorCode, resourceIds: string[] = [],
+    roles: readonly AdminProviderRoleRoutingConflict[] = []) {
     super(code);
     this.code = code;
     this.name = "AdminProviderServiceError";
     this.resourceIds = [...new Set(resourceIds)].sort();
+    this.roles = roles;
   }
 }
 
@@ -888,6 +896,43 @@ export function createAdminProviderService(input: Readonly<{
       .map(({ id }) => id);
   }
 
+  /**
+   * A changed OpenRouter provider restriction must still serve every request
+   * kind of the installation roles pinned to this deployment. With
+   * `require_parameters`, OpenRouter filters endpoints by the same catalog
+   * parameters, so a catalog gap is a deterministic outage, not a transient
+   * failure: refuse before the draft goes live. An unreadable catalog keeps the
+   * active version too, because nothing proves the roles keep working.
+   */
+  async function assertRoutingServesAssignedRoles(
+    candidate: ProviderModelActivationCandidate,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const assigned = candidate.model.assignedRoles ?? [];
+    if (candidate.connection.family !== "openrouter" || !assigned.length) return;
+    const draft = normalizeProviderModelConfiguration(candidate.model.configuration);
+    let active: ProviderModelConfiguration | null = null;
+    try {
+      active = candidate.model.activeConfiguration ? normalizeProviderModelConfiguration(candidate.model.activeConfiguration) : null;
+    } catch { active = null; }
+    const needed = rolesNeedingRoutingCheck({ roles: assigned, draft, active });
+    if (!needed) return;
+    const unverified = () => new AdminProviderServiceError("provider_routing_role_unverified", [],
+      needed.roles.map((role) => ({ role, missingParameters: [] })));
+    const credential = candidate.connection.defaultCredential;
+    if (!credential?.usable) throw unverified();
+    let endpoints: Awaited<ReturnType<OpenRouterDiscoveryClient["listModelEndpoints"]>>;
+    try {
+      const client = await discoveryClient({ connectionId: candidate.connection.id, credentialId: credential.id });
+      endpoints = await client.listModelEndpoints(draft.upstreamModelId, { signal });
+    } catch {
+      signal?.throwIfAborted();
+      throw unverified();
+    }
+    const conflicts = roleRoutingConflicts({ roles: needed.roles, providers: needed.providers, endpoints });
+    if (conflicts.length) throw new AdminProviderServiceError("provider_routing_role_incompatible", [], conflicts);
+  }
+
   /** Publish a never-live model draft without starting a second check run. */
   async function activateModelDraft(
     candidate: ProviderModelActivationCandidate,
@@ -1363,7 +1408,10 @@ export function createAdminProviderService(input: Readonly<{
      * Model `Test & Save` (PRD B2): the model draft goes live through the
      * narrow CAS, then the default key checks it inline within the model's
      * deadline. A temporary check failure keeps the activation and shows up
-     * as `Check failed` through the catalog's check-run projection.
+     * as `Check failed` through the catalog's check-run projection; the result
+     * names the installation roles that stay paused until a check passes.
+     * A provider restriction that cannot serve an assigned role is refused
+     * before activation.
      */
     async activateModel(value: {
       connectionId: string;
@@ -1372,12 +1420,13 @@ export function createAdminProviderService(input: Readonly<{
       signal?: AbortSignal;
       onProgress?(value: AdminProviderSetupProgress): void;
       onActivated?(): void;
-    }): Promise<{ check: "checked" | "failed" | "skipped" }> {
+    }): Promise<{ check: "checked" | "failed" | "skipped"; affectedRoles?: AdminProviderAssignedRole[] }> {
       const candidate = await input.repository.loadModelActivationCandidate(value);
       if (!candidate) throw new AdminProviderServiceError("provider_model_not_found");
       if (value.expectedDraftVersion !== undefined && candidate.model.draftVersion !== value.expectedDraftVersion) {
         throw new AdminProviderServiceError("provider_draft_stale");
       }
+      await assertRoutingServesAssignedRoles(candidate, value.signal);
       const initial = await activateModelDraft(candidate, value.signal);
       value.onActivated?.();
       const credential = candidate.connection.defaultCredential;
@@ -1401,7 +1450,9 @@ export function createAdminProviderService(input: Readonly<{
       try { await checkRuns.settled(run.id); }
       finally { value.signal?.removeEventListener("abort", cancel); }
       const failed = checkRuns.get(run.id)?.failed.includes(candidate.model.id) ?? false;
-      return { check: failed || checkRuns.get(run.id)?.state === "cancelled" ? "failed" : "checked" };
+      if (!failed && checkRuns.get(run.id)?.state !== "cancelled") return { check: "checked" };
+      const affectedRoles = [...candidate.model.assignedRoles ?? []];
+      return { check: "failed", ...(affectedRoles.length ? { affectedRoles } : {}) };
     },
 
     activateNewCredential: (value: {
