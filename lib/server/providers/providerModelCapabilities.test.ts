@@ -18,8 +18,7 @@ describe("provider model capability resolution", () => {
     ["gpt-6-astra", "low"], ["gpt-5.6-terra", "none"]
   ])("uses the lowest supported effort for %s probes", (upstreamModelId, expected) => {
     expect(lowestConfiguredReasoningEffort({
-      adapterKind: "openai_responses_native", answerSelectable: true,
-      capabilities, defaultParams: {}, modelClass: "answer", upstreamModelId
+      adapterKind: "openai_responses_native", capabilities, defaultParams: {}, upstreamModelId
     }, "openai")).toBe(expected);
   });
 
