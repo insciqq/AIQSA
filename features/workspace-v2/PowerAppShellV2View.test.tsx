@@ -4,7 +4,9 @@ import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2G
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { resetSkillLibraryStoreForTest } from "@/components/app-shell/skillLibraryStore";
 import { initialSettingsDestinationSnapshot, useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
-import { resetComposerControlStoreForTest } from "@/tests/support/appShellStores";
+import { resetComposerControlStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
+import { isCurrentChatRouteResolution, navigateToChatAddress, resolveChatRoute, type ChatRoute } from "@/components/app-shell/chatRoute";
+import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import {
   AnswerSoundSettingsRowV2,
   RunSetupV2,
@@ -24,13 +26,14 @@ import {
   BackgroundRunStatusV2,
   ComposerOperationErrorV2,
   SkillLibraryOverlayV2,
+  selectNavigationChatV2,
   type RunSetupComposerV2
 } from "./PowerAppShellV2View";
 import { formatTemporaryRetentionDeadlineV2 } from "./WorkspaceHeaderV2";
 import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import { presentRunLifecycleV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import { RunLifecycleAnnouncerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
-import type { RunEventView, ThreadMessage } from "@/components/app-shell/types";
+import type { RunEventView, ThreadMessage, WorkspaceChatSummary } from "@/components/app-shell/types";
 
 const galleryModels = composerGalleryConfig.catalog.models;
 
@@ -102,6 +105,100 @@ describe("MCP discovery failure actions v2", () => {
     applyLoadAllAfterMcpDiscoveryFailureV2(regenerate);
     expect(useComposerControlStore.getState().mcpSelection).toEqual({ mode: "load_all" });
     expect(regenerate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Navigation chat selection v2", () => {
+  const chatSummary = (id: string): WorkspaceChatSummary => ({
+    activeLeafMessageId: null,
+    createdAt: "2026-10-03T00:00:00.000Z",
+    defaultModelId: "model",
+    defaultProvider: "provider",
+    folderId: null,
+    id,
+    messageCount: 0,
+    pinned: false,
+    projectId: null,
+    title: "Chat",
+    updatedAt: "2026-10-03T00:00:00.000Z"
+  });
+
+  afterEach(() => {
+    resetWorkspaceStoreForTest();
+    window.history.replaceState(null, "", "/");
+  });
+
+  // The shell's address action over a fake route owner whose personal list
+  // arrives only after the click, as on a reload of a busy server.
+  function addressOwner() {
+    let loadList!: () => void;
+    const listLoaded = new Promise<void>((resolve) => { loadList = resolve; });
+    const activated: string[] = [];
+    let shown: ChatRoute = { chatId: null, projectId: null };
+    const settled: Promise<ChatRoute | null>[] = [];
+    const openChatAddress = vi.fn((chatId: string) => navigateToChatAddress(
+      { chatId, projectId: null },
+      (route, resolution) => {
+        settled.push(resolveChatRoute(route, resolution, {
+          openAssistant: async () => "opened",
+          openBlank: () => { shown = { chatId: null, projectId: null }; },
+          async openChat(id) {
+            await listLoaded;
+            useWorkspaceStore.getState().setChats([chatSummary(id)]);
+            // Like the shell's workspace read, a superseded address activates nothing.
+            if (!isCurrentChatRouteResolution(resolution)) return "failed";
+            activated.push(id);
+            shown = { chatId: id, projectId: null };
+            return "opened";
+          },
+          openProject: async () => "unavailable",
+          showUnavailable: vi.fn(),
+          stateRoute: () => shown
+        }));
+      }
+    ));
+    return { activated, loadList, openChatAddress, settled };
+  }
+
+  it("opens a row the unloaded workspace list does not hold yet once the list arrives", async () => {
+    const owner = addressOwner();
+    const actions = { activateChat: vi.fn(), openChatAddress: owner.openChatAddress };
+    const leaveProject = vi.fn();
+
+    selectNavigationChatV2("chat-1", actions, leaveProject);
+
+    expect(owner.openChatAddress).toHaveBeenCalledExactlyOnceWith("chat-1");
+    expect(actions.activateChat).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/c/chat-1");
+    owner.loadList();
+    await expect(Promise.all(owner.settled)).resolves.toEqual([{ chatId: "chat-1", projectId: null }]);
+    expect(owner.activated).toEqual(["chat-1"]);
+    expect(window.location.pathname).toBe("/c/chat-1");
+  });
+
+  it("lets a later row choice supersede a row still waiting for the list", async () => {
+    const owner = addressOwner();
+    const actions = { activateChat: vi.fn(), openChatAddress: owner.openChatAddress };
+
+    selectNavigationChatV2("chat-1", actions, vi.fn());
+    selectNavigationChatV2("chat-2", actions, vi.fn());
+    owner.loadList();
+    await expect(Promise.all(owner.settled)).resolves.toEqual([null, { chatId: "chat-2", projectId: null }]);
+    expect(owner.activated).toEqual(["chat-2"]);
+    expect(window.location.pathname).toBe("/c/chat-2");
+  });
+
+  it("activates a known row directly, leaving an open Project", () => {
+    const known = chatSummary("chat-1");
+    useWorkspaceStore.getState().setChats([known]);
+    const actions = { activateChat: vi.fn(), openChatAddress: vi.fn() };
+    const leaveProject = vi.fn();
+
+    selectNavigationChatV2("chat-1", actions, leaveProject);
+
+    expect(leaveProject).toHaveBeenCalledOnce();
+    expect(actions.activateChat).toHaveBeenCalledExactlyOnceWith(known);
+    expect(actions.openChatAddress).not.toHaveBeenCalled();
   });
 });
 

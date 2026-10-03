@@ -80,6 +80,8 @@ export type ShellWorkspacePaneState = {
 
 export type ShellWorkspacePaneActions = {
   openChat?(chatId: string): Promise<boolean>;
+  /** Opens a personal chat by its address, as `/c/<id>` does, for a chat the workspace list does not hold yet. */
+  openChatAddress(chatId: string): void;
   openContinuedChat?(chat: ChatDetail, sourceKey: ComposerSessionKey): Promise<boolean>;
   activateChat(chat: WorkspaceChatSummary): void;
   cancelChatEdit(): void;
