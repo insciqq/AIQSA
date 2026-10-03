@@ -136,6 +136,11 @@ export type NavigationSidebarProps = Readonly<{
   onSelectChat(chat: ChatNavigationSummaryWire): void;
   onShare?(chat: ChatNavigationSummaryWire): void;
   onSettings?(): void;
+  /**
+   * The account menu's Settings: always the account's own Settings, also
+   * where `onSettings` opens a Project's settings. Defaults to `onSettings`.
+   */
+  onAccountSettings?(): void;
   onSearch(value: string): void;
   /** A selected Project owns the sidebar list region; personal chats stay hidden until it is left. */
   projectContextActive?: boolean;
@@ -1025,7 +1030,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             accountId={props.accountId ?? null}
             accountLabel={props.accountLabel}
             adminEntryVisible={props.adminEntryVisible}
-            onSettings={props.onSettings}
+            onSettings={props.onAccountSettings ?? props.onSettings}
           />
         </div>
       ) : null}
@@ -1526,6 +1531,12 @@ export function ReadingRoomShellV2({
         navigationOwnerProps.onSettings?.();
       }
     : undefined;
+  const showAccountSettings = navigationOwnerProps.onAccountSettings
+    ? () => {
+        closeDrawers();
+        navigationOwnerProps.onAccountSettings?.();
+      }
+    : showSettings;
   const navigation = typeof sidebar === "function" ? sidebar(closeSidebar) : sidebar ?? (
     <NavigationSidebarContainer
       {...navigationOwnerProps}
@@ -1539,6 +1550,7 @@ export function ReadingRoomShellV2({
         createPersonalChat(mode);
       }}
       onSettings={showSettings}
+      onAccountSettings={showAccountSettings}
       onBranches={navigationOwnerProps.onBranches ? chat => requestNavigation(() => navigationOwnerProps.onBranches?.(chat)) : undefined}
       onSelectChat={(chat) => requestNavigation(() => {
         setProjectsView(false);
@@ -1585,6 +1597,7 @@ export function ReadingRoomShellV2({
           onNewChat={() => createPersonalChat("NORMAL")}
           onProjects={navigationOwnerProps.projectsSlot ? showProjects : undefined}
           onSettings={showSettings}
+          onAccountSettings={showAccountSettings}
         />
       ) : null}
       <button

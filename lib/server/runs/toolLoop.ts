@@ -1,3 +1,4 @@
+import { contextFailureMessage } from "./contextCompactionEvents";
 import { executionFailure } from "./executionFailure";
 import type { ImageFailureEvidence } from "../images/errors";
 import {
@@ -604,6 +605,7 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
           : settlement?.code ?? providerErrorCode ?? "provider_round_failed",
         message: streamSafetyReport?.message ??
           providerHttpFailureMessage(providerRound.error) ??
+          (providerErrorCode ? contextFailureMessage(providerErrorCode) : null) ??
           errorMessage(providerRound.error, `Provider round ${round} failed.`),
         round,
         stage: signalFailure ? "signal" : settlement || providerErrorCode && isRunPersistenceFailureCode(providerErrorCode) ? "persistence" : "provider",
