@@ -74,7 +74,6 @@ function consumerSettings(
       pastChatIndexingAvailable: true,
       permanentChatDeletion: true,
       retrievalAvailable: true,
-      synthesisAvailable: true,
       temporaryChats: true,
       ...overrides.capabilities
     },
@@ -83,7 +82,6 @@ function consumerSettings(
       decayEnabled: false,
       learnAutomatically: true,
       referenceChatHistory: true,
-      synthesisEnabled: false,
       useMemoryFacts: true,
       ...overrides.settings
     },
