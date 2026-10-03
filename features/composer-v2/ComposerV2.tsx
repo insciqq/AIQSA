@@ -228,7 +228,6 @@ function externalLayerAnchor(
   };
 }
 
-/** Where a toolbar-anchored layer opens; "over" covers the draft above its trigger. */
 /** A modal dialog outside the layer is open, or isolates the page around the layer. */
 function modalAboveLayer(layer: HTMLElement | null): boolean {
   if (!layer?.isConnected || layer.closest("[inert]")) return true;
@@ -236,6 +235,7 @@ function modalAboveLayer(layer: HTMLElement | null): boolean {
     .some(dialog => !dialog.contains(layer) && !layer.contains(dialog));
 }
 
+/** Where a toolbar-anchored layer opens; "over" covers the draft above its trigger. */
 type ComposerLayerSide = "above" | "below" | "over";
 
 type ComposerLayerPlacement = Readonly<{
