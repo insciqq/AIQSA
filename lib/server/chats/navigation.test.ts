@@ -184,7 +184,7 @@ describe("chat navigation handlers", () => {
     };
     const updatedAt = new Date("2026-09-28T00:00:00.000Z");
     const row = (id: string, assistantId: string | null) => ({
-      assistantId, folderId: null, id, modelRuns: [], title: id, updatedAt
+      assistantId, folderId: null, id, modelRuns: [], scheduledTasks: [], title: id, updatedAt
     });
     const queryRaw = vi.fn(async () => [{ avatar, id: "assistant-live", name: "Live helper" }]);
     const client = {
@@ -217,5 +217,33 @@ describe("chat navigation handlers", () => {
     await createPrismaChatNavigationRepository(client as never)
       .listPage({ cursor: null, limit: 30, userId: "user-1" });
     expect(queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("projects only a task chat's task id and unread marker", async () => {
+    const updatedAt = new Date("2026-10-04T09:00:00.000Z");
+    const client = {
+      $queryRaw: vi.fn(async () => []),
+      chat: {
+        findMany: vi.fn(async () => [
+          { assistantId: null, folderId: null, id: "chat-unread", modelRuns: [], title: "Brief", updatedAt,
+            scheduledTasks: [{ id: "task-1", unseenResultAt: updatedAt }] },
+          { assistantId: null, folderId: null, id: "chat-read", modelRuns: [], title: "Summary", updatedAt,
+            scheduledTasks: [{ id: "task-2", unseenResultAt: null }] },
+          { assistantId: null, folderId: null, id: "chat-plain", modelRuns: [], title: "Plain", updatedAt, scheduledTasks: [] }
+        ])
+      },
+      folder: { findMany: vi.fn(async () => []) }
+    };
+    const result = await createPrismaChatNavigationRepository(client as never)
+      .listPage({ cursor: null, limit: 30, userId: "user-1" });
+    const chats = result.kind === "ok" ? result.page.chats : [];
+    expect(chats.map((chat) => [chat.id, chat.scheduledTask])).toEqual([
+      ["chat-unread", { taskId: "task-1", unseen: true }],
+      ["chat-read", { taskId: "task-2", unseen: false }],
+      ["chat-plain", null]
+    ]);
+    expect(client.chat.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({ scheduledTasks: expect.objectContaining({ select: { id: true, unseenResultAt: true } }) })
+    }));
   });
 });

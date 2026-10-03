@@ -251,6 +251,8 @@ function ChatRow({
   const closeMenu = () => setMenuOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({ onClose: closeMenu, open: menuOpen });
   const drag = useChatDraggable(chat.id, disabled || editing);
+  const unread = Boolean(chat.scheduledTask?.unseen);
+  const unreadId = `v2-chat-unread-${chat.id}`;
   const rowState = chatStateFor?.(chat) ?? null;
   const memoryUsed = (rowState?.memoryMode ?? "NORMAL") !== "EXCLUDED";
   if (editing) {
@@ -281,6 +283,7 @@ function ChatRow({
     >
       <button
         aria-current={active ? "page" : undefined}
+        aria-describedby={unread ? unreadId : undefined}
         disabled={disabled}
         aria-label={displayTitle}
         aria-level={level}
@@ -304,7 +307,10 @@ function ChatRow({
           <span className="v2-chat-pulse" aria-label="Answer in progress" />
         ) : <span aria-hidden="true" />}
         <span className="v2-chat-title">{displayTitle}</span>
+        {unread ? <span className="v2-chat-unread" aria-hidden="true" /> : null}
       </button>
+      {/* A description, not a name suffix, keeps the row name the chat title. */}
+      {unread ? <span hidden id={unreadId}>New scheduled result</span> : null}
       <UiV2IconButton
         className="v2-chat-menu-trigger"
         icon="more"

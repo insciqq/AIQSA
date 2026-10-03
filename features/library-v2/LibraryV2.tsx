@@ -57,13 +57,13 @@ function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
 export const libraryTabGroups: readonly Readonly<{ label: string | null; tabs: readonly LibraryTabIdV2[] }>[] = [
   { label: "Behavior", tabs: ["assistants", "instructions", "skills"] },
   { label: "Content", tabs: ["knowledge", "memory", "files", "artifacts"] },
-  { label: "Tools", tabs: ["mcp", "secrets"] },
+  { label: "Tools", tabs: ["scheduled", "mcp", "secrets"] },
   { label: null, tabs: ["defaults"] }
 ];
 const tabIcons: Record<LibraryTabIdV2, UiV2IconName> = {
   assistants: "assistant", instructions: "file-text", skills: "wand",
   knowledge: "book", memory: "memory", files: "file", artifacts: "artifact",
-  mcp: "plug", secrets: "key", defaults: "sliders"
+  mcp: "plug", secrets: "key", scheduled: "clock", defaults: "sliders"
 };
 
 export function LibraryV2({
