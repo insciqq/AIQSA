@@ -16,7 +16,7 @@ import {
 } from "./explicitAuxiliary";
 import {
   isMemoryExplicitRelationJob,
-  MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
+  type MemoryExplicitRelationPipelineVersion,
   type MemoryExplicitRelationSnapshot
 } from "./explicitPolicy";
 import { createMemoryExplicitRelationRecovery } from "./explicitRecovery";
@@ -27,8 +27,8 @@ import {
 import {
   buildMemoryExplicitRelationRequest,
   decodeMemoryExplicitRelationDecisions,
-  MEMORY_EXPLICIT_RELATION_VERSIONS,
-  memoryExplicitRelationInputHash
+  memoryExplicitRelationInputHash,
+  memoryExplicitRelationVersions
 } from "./explicitResolver";
 
 export type MemoryExplicitRelationHandlerDependencies = Readonly<{
@@ -37,7 +37,7 @@ export type MemoryExplicitRelationHandlerDependencies = Readonly<{
     snapshot: MemoryExplicitRelationSnapshot,
     signal: AbortSignal
   ): Promise<MemoryExplicitRelationRetainedResult>;
-  probeAuthority(userId: string): Promise<void>;
+  probeAuthority(job: MemoryJobDescriptor): Promise<void>;
   repository: MemoryExplicitRelationRepository;
 }>;
 
@@ -45,7 +45,7 @@ function terminal(job: MemoryJobDescriptor, reason: string) {
   return {
     acceptedResultHash: memoryExecutionSha256({
       domain: "aiqsa.memory.explicit-relation-terminal", jobId: job.id,
-      pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION, reason
+      pipelineVersion: job.pipelineVersion, reason
     }),
     stage: reason
   };
@@ -63,7 +63,7 @@ export function createMemoryExplicitRelationHandler(
       const decision = await deps.repository.preflight(job);
       if (decision.status !== "READY" || await deps.repository.loadResult(job)) return decision;
       try {
-        await deps.probeAuthority(job.userId);
+        await deps.probeAuthority(job);
         return decision;
       } catch (error) {
         if (!(error instanceof MemoryExecutionError)) throw error;
@@ -100,7 +100,7 @@ export function createMemoryExplicitRelationHandler(
       return {
         acceptedResultHash: memoryExecutionSha256({
           domain: "aiqsa.memory.explicit-relation-result", jobId: job.id,
-          result: accepted, pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION
+          result: accepted, pipelineVersion: job.pipelineVersion
         }),
         apply: (tx, claim) => deps.repository.apply(tx, claim, accepted, context.now()),
         stage: "explicit_relation_compared"
@@ -121,8 +121,9 @@ export function createPrismaMemoryExplicitRelationHandler(
   const provider = options.structuredProvider ?? createAcceptedMemoryStructuredOutputProvider(client);
   return createMemoryExplicitRelationHandler({
     repository,
-    probeAuthority: (userId) => probeMemoryStructuredOutputAuthority({
-      authority, client, role: "MEMORY_CONSOLIDATE", userId, versions: MEMORY_EXPLICIT_RELATION_VERSIONS
+    probeAuthority: (job) => probeMemoryStructuredOutputAuthority({
+      authority, client, role: "MEMORY_CONSOLIDATE", userId: job.userId,
+      versions: memoryExplicitRelationVersions(job.pipelineVersion as MemoryExplicitRelationPipelineVersion)
     }),
     async classify(job, snapshot, signal) {
       const result = await executeGovernedMemoryStructuredOutput({
@@ -134,7 +135,7 @@ export function createPrismaMemoryExplicitRelationHandler(
         persistResult: (tx, output) => repository.persistResult(tx, job, snapshot, output),
         provider, request: buildMemoryExplicitRelationRequest(snapshot),
         role: "MEMORY_CONSOLIDATE", signal, userId: job.userId,
-        versions: MEMORY_EXPLICIT_RELATION_VERSIONS
+        versions: memoryExplicitRelationVersions(snapshot.pipelineVersion)
       });
       return {
         bindingId: result.bindingId,

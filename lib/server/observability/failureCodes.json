@@ -181,6 +181,7 @@
   "evidence_invalid",
   "execution_outcome_unknown",
   "execution_unavailable",
+  "explicit-equivalence-sweep-v1",
   "extraction-heal-v1",
   "fence-repair-v1",
   "followup_accept_failed",
