@@ -571,6 +571,7 @@
   "memory_maintenance_outcome_unknown",
   "memory_maintenance_output_invalid",
   "memory_maintenance_policy_stale",
+  "memory_maintenance_related_context_unavailable",
   "memory_maintenance_source_stale",
   "memory_mutation_authorization_invalid",
   "memory_not_found",
