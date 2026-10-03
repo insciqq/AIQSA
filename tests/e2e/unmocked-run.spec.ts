@@ -86,16 +86,6 @@ async function prepareFakeBlankChat(page: Page) {
   await expect(page.getByTestId("header-model-trigger")).toContainText("Fake QSA");
 }
 
-/** A fake answer can fill most of the small fake window, so the product
- * suggests a continuation by opening the Chat context panel. Stay here. */
-async function stayInChat(page: Page): Promise<void> {
-  await expect(page.getByTestId("header-context-indicator")).toHaveAttribute("data-context-estimate", "snapshot", { timeout: 20_000 });
-  const context = page.getByRole("dialog", { name: "Chat context", exact: true });
-  if (!await context.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false)) return;
-  await context.getByRole("button", { name: "Stay here", exact: true }).click();
-  await expect(context).toHaveCount(0);
-}
-
 async function latestRunForChat(page: Page, chatId: string): Promise<RunBody["run"] | null> {
   const chatResponse = await page.request.get(`/api/chats/${chatId}`);
   if (!chatResponse.ok()) {
@@ -220,7 +210,6 @@ test("streams a new answer on the branch created by editing an answered question
     await expect(page.getByTestId("conversation-thread")).toContainText(`Fake answer: ${prompt}`, {
       timeout: 20_000
     });
-    await stayInChat(page);
 
     const question = page.locator('article[data-role="user"]').last();
     await question.hover();

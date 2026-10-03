@@ -51,16 +51,6 @@ async function reachable(control: Locator): Promise<Locator> {
   return control;
 }
 
-/** One fake-model Workspace turn nearly fills the 8k context, so the product
- * suggests a continuation by opening the Chat context panel. Stay here. */
-async function stayInChat(page: Page): Promise<void> {
-  await expect(page.getByTestId("header-context-indicator")).toHaveAttribute("data-context-estimate", "snapshot", { timeout: STEP_TIMEOUT });
-  const context = page.getByRole("dialog", { name: "Chat context", exact: true });
-  if (!await context.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false)) return;
-  await context.getByRole("button", { name: "Stay here", exact: true }).click({ timeout: STEP_TIMEOUT });
-  await expect(context).toHaveCount(0, { timeout: STEP_TIMEOUT });
-}
-
 test("saves, reuses and downloads a Workspace checkpoint draft", async ({ page }) => {
   test.setTimeout(240_000);
   const userId = randomUUID(), email = `checkpoint-save-${userId}@example.com`, password = `Synthetic-${randomUUID()}`;
@@ -91,7 +81,6 @@ test("saves, reuses and downloads a Workspace checkpoint draft", async ({ page }
     expect(checkpoint.state).toBe("SETTLED");
     const storageKey = checkpoint.files[0]!.attachment.storageKey;
     expect(await prisma.attachmentDeletionJob.count({ where: { storageKey } })).toBe(0);
-    await stayInChat(page);
     return { files, storageKey };
   });
 

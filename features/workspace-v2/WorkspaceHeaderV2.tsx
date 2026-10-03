@@ -17,7 +17,7 @@ import { NameFieldFormV2, type NameSaveOutcome } from "@/features/navigation-v2/
 import { CHAT_TITLE_MAX_LENGTH, type ChatUsageStats } from "@/lib/contracts/chats";
 import { useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
-import { ChatContextIndicatorV2, useChatContextPanelV2 } from "./ChatContextIndicatorV2";
+import { CONTINUATION_SUGGESTED_DESCRIPTION, ChatContextIndicatorV2, useChatContextPanelV2 } from "./ChatContextIndicatorV2";
 import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
 import type { ChatContinuationControl } from "@/components/app-shell/useChatContinuation";
 
@@ -108,11 +108,14 @@ export type HeaderOverflowActionV2 = UiV2MenuAction;
  * without a replacement. Dismissal follows the shared wave-1 contract (Escape,
  * outside pointer, focus-out).
  */
-export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
+export function HeaderOverflowMenuV2({ actions, attention, label }: Readonly<{
   actions: readonly HeaderOverflowActionV2[];
+  /** Marks the trigger with a dot; the text is its accessible description. */
+  attention?: string;
   label: string;
 }>) {
   const [open, setOpen] = useState(false);
+  const attentionId = useId();
   const close = () => setOpen(false);
   const { menuRef, triggerRef } = useMenuDismissalV2({
     onClose: close,
@@ -125,12 +128,15 @@ export function HeaderOverflowMenuV2({ actions, label }: Readonly<{
         ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="menu"
+        aria-describedby={attention ? attentionId : undefined}
+        data-attention={attention ? "true" : undefined}
         data-testid="header-more-trigger"
         icon="more"
         label={label}
         tooltip={label}
         onClick={() => (open ? close() : setOpen(true))}
       />
+      {attention ? <span hidden id={attentionId}>{attention}</span> : null}
       {open ? (
         <UiV2MenuSurface
           className="v2-live-more-menu"
@@ -426,7 +432,9 @@ export function WorkspaceHeaderV2({
         {active ? (
           <>
             <UiV2Button disabled={shareDisabled} icon="share" onClick={onShare}>Share</UiV2Button>
-            <HeaderOverflowMenuV2 label="Chat actions" actions={overflowActions} />
+            {/* Phones have no gauge: "⋯" carries the suggested continuation's dot. */}
+            <HeaderOverflowMenuV2 label="Chat actions" actions={overflowActions}
+              attention={contextStats && contextPanel.sheet && continuation?.suggested ? CONTINUATION_SUGGESTED_DESCRIPTION : undefined} />
           </>
         ) : null}
       </div>

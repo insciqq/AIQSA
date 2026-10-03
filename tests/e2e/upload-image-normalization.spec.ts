@@ -43,18 +43,9 @@ async function openComposer(page: Page, workspace: boolean): Promise<void> {
   await startNewChat(page);
   await selectFakeModel(page);
   await setWorkspaceEnabled(page, workspace);
-  // The toggle step can leave the composer's Workspace layer open over the
-  // composer notices; close it so later assertions and screenshots see them.
-  // Escape closes it when focus is inside; otherwise its trigger toggles it.
-  const layer = page.getByRole("menu", { name: "Workspace", exact: true });
-  let attempt = 0;
-  await expect(async () => {
-    if (await layer.isVisible()) {
-      if (attempt++ % 2 === 0) await page.keyboard.press("Escape");
-      else await page.getByRole("button", { name: /^Workspace details\./u }).click();
-    }
-    await expect(layer).toBeHidden({ timeout: 1_000 });
-  }).toPass({ timeout: 10_000 });
+  // The toggle step closes the Workspace layer with Escape wherever focus went,
+  // so later assertions and screenshots see the composer notices.
+  await expect(page.getByRole("menu", { name: "Workspace", exact: true })).toBeHidden();
 }
 
 /** Every sampled point of the element hits the element itself, not a layer above it. */

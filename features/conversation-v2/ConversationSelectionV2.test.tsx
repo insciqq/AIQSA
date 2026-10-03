@@ -2,15 +2,22 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PendingComposerComment } from "@/components/app-shell/composerComments";
 import { commentTextFingerprint } from "./commentAnchors";
-import type { ConversationQuoteV2 } from "./ConversationSelectionV2";
+import { SELECTION_SETTLE_MS, type ConversationQuoteV2 } from "./ConversationSelectionV2";
 import { ConversationV2 } from "./ConversationV2";
 
+function setSelection(element: Element, length?: number) {
+  const range = document.createRange();
+  if (length === undefined) range.selectNodeContents(element);
+  else { const text = element.querySelector("p")!.firstChild!; range.setStart(text, 0); range.setEnd(text, length); }
+  window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+  document.dispatchEvent(new Event("selectionchange"));
+}
+
+/** A finished mouse drag over `element`: the toolbar shows on release. */
 function select(element: Element) {
-  act(() => {
-    const range = document.createRange(); range.selectNodeContents(element);
-    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
-    document.dispatchEvent(new Event("selectionchange"));
-  });
+  fireEvent.pointerDown(element, { pointerType: "mouse", button: 0, buttons: 1 });
+  act(() => setSelection(element));
+  fireEvent.pointerUp(element, { pointerType: "mouse", button: 0 });
 }
 
 function fixture(touch = false) {
@@ -86,6 +93,66 @@ describe("transcript Quote selection", () => {
     f.rerender(<ConversationV2 messages={f.messages} quote={{ ...f.quote, scopeKey: "chat:other" }} />);
     expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
     expect(f.onQuote).not.toHaveBeenCalled();
+  });
+
+  it("shows nothing while the mouse drags and appears once on release", () => {
+    const f = fixture(); const root = f.markdown("assistant");
+    select(f.markdown("user"));
+    expect(screen.getByRole("button", { name: "Quote" })).toBeVisible();
+    // Pressing in the transcript hides the previous toolbar; the drag never shows or moves it.
+    fireEvent.pointerDown(root, { pointerType: "mouse", button: 0, buttons: 1 });
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+    for (const length of [2, 8, 12]) {
+      act(() => setSelection(root, length));
+      fireEvent.pointerMove(root, { pointerType: "mouse", buttons: 1 });
+      expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+    }
+    fireEvent.pointerUp(root, { pointerType: "mouse", button: 0 });
+    // A late selectionchange for the same selection keeps the toolbar in place.
+    act(() => { document.dispatchEvent(new Event("selectionchange")); });
+    fireEvent.click(screen.getByRole("button", { name: "Quote" }));
+    expect(f.onQuote).toHaveBeenCalledExactlyOnceWith("A finished a", false);
+  });
+
+  it("ends a drag released outside the window on the next move without buttons", () => {
+    const f = fixture(); const root = f.markdown("assistant");
+    fireEvent.pointerDown(root, { pointerType: "pen", button: 0, buttons: 1 });
+    act(() => setSelection(root));
+    expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+    fireEvent.pointerMove(document.body, { pointerType: "pen", buttons: 0 });
+    expect(screen.getByRole("button", { name: "Quote" })).toBeVisible();
+  });
+
+  it("shows a keyboard or touch selection after it settles and hides a collapsed one at once", () => {
+    const f = fixture(); const root = f.markdown("assistant");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      act(() => setSelection(root, 2));
+      act(() => { vi.advanceTimersByTime(SELECTION_SETTLE_MS - 50); });
+      act(() => setSelection(root, 8));
+      act(() => { vi.advanceTimersByTime(SELECTION_SETTLE_MS - 50); });
+      expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+      act(() => { vi.advanceTimersByTime(50); });
+      expect(screen.getByRole("button", { name: "Quote" })).toBeVisible();
+      // Extending the selection hides the toolbar until it settles again.
+      act(() => setSelection(root, 12));
+      expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+      act(() => { vi.advanceTimersByTime(SELECTION_SETTLE_MS); });
+      expect(screen.getByRole("button", { name: "Quote" })).toBeVisible();
+      act(() => { window.getSelection()!.removeAllRanges(); document.dispatchEvent(new Event("selectionchange")); });
+      expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+      // Escape, scrolling and a composer layer cancel a pending toolbar.
+      for (const dismiss of [() => fireEvent.keyDown(document, { key: "Escape" }),
+        () => fireEvent.scroll(screen.getByTestId("conversation-scroll")),
+        () => f.rerender(<ConversationV2 messages={f.messages} quote={{ ...f.quote, suppressed: true }} />)]) {
+        f.rerender(<ConversationV2 messages={f.messages} quote={f.quote} />);
+        // jsdom, like browsers, also queues its own selectionchange events; they arrive before the key or scroll.
+        act(() => { setSelection(root, 5); vi.advanceTimersByTime(0); });
+        dismiss();
+        act(() => { vi.advanceTimersByTime(SELECTION_SETTLE_MS); });
+        expect(screen.queryByRole("button", { name: "Quote" })).toBeNull();
+      }
+    } finally { vi.useRealTimers(); }
   });
 
   it("gives way to a composer layer and returns only with the next selection", () => {

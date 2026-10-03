@@ -130,18 +130,22 @@ async function selectContents(locator: Locator) {
     selection.removeAllRanges();
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
+    // Outlast the 250 ms settle delay of a selection made without a mouse drag.
+    await new Promise<void>(resolve => setTimeout(resolve, 300));
   });
 }
 
 /** Selects the contents again without scrolling or moving focus, as a selection made while a layer is open. */
 async function reselect(locator: Locator) {
-  await locator.evaluate(element => {
+  await locator.evaluate(async element => {
     const range = document.createRange();
     range.selectNodeContents(element);
     const selection = window.getSelection()!;
     selection.removeAllRanges();
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
+    // Outlast the 250 ms settle delay of a selection made without a mouse drag.
+    await new Promise<void>(resolve => setTimeout(resolve, 300));
   });
 }
 
@@ -252,6 +256,8 @@ async function selectOver(page: Page, target: Box, toolbarHeight: number): Promi
     selection.removeAllRanges();
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
+    // Outlast the 250 ms settle delay of a selection made without a mouse drag.
+    await new Promise<void>(resolve => setTimeout(resolve, 300));
     const rect = range.getBoundingClientRect();
     return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top };
   }, { answer: answerId, height: toolbarHeight, box: target });
@@ -393,6 +399,25 @@ test.describe("desktop 1440x900", () => {
     }
     await selectContents(line);
     await expect(quoteButton(page)).toBeVisible();
+  });
+
+  test("Escape closes the open composer layer after focus has left it", async ({ page }) => {
+    await prepare(page);
+    await composer(page).fill("Draft survives Escape");
+    const layers: Array<Readonly<{ name: string; layer: Locator; open(): Promise<unknown> }>> = [
+      { name: "Add", layer: addMenu(page), open: () => openAdd(page) },
+      { name: "Reasoning effort", layer: page.getByRole("menu", { name: "Reasoning effort" }),
+        open: () => page.getByTestId("composer-v2").getByRole("button", { name: /^Reasoning effort:/u }).click() }
+    ];
+    for (const { layer, name, open } of layers) {
+      await open();
+      await expect(layer, name).toBeVisible();
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      expect(await page.evaluate(() => document.activeElement === document.body), `${name}: focus left the layer`).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect(layer, `${name} closed by Escape`).toHaveCount(0);
+    }
+    await expect(composer(page)).toHaveValue("Draft survives Escape");
   });
 
   test("one click on a pending-comment mark closes Add and opens its editor; draft, attachment and comment survive", async ({ page }, testInfo) => {
