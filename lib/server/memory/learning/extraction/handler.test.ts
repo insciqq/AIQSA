@@ -7,6 +7,7 @@ import type { MemoryJobClaim } from "../../coordinator/types";
 import { MemoryExecutionError } from "../../execution";
 import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
+  MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS,
   MEMORY_FACT_EXTRACTION_VERSIONS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionInputHash,
@@ -18,8 +19,10 @@ import {
 } from "./contract";
 import {
   createMemoryFactExtractionHandler,
+  MEMORY_FACT_EXTRACTION_MAX_INVALID_OUTPUT_CALLS_PER_INPUT,
   type MemoryFactExtractionHandlerDependencies
 } from "./handler";
+import { invalidProviderToolArguments } from "../../../tools/types";
 import {
   memorySemanticAdjudicationInput,
   MEMORY_SEMANTIC_ADJUDICATION_VERSIONS
@@ -785,6 +788,10 @@ describe("Memory fact extraction handler", () => {
         state: "FAILED"
       })
     );
+    // The in-attempt budget stops repeated invalid packets even when the
+    // durable read does not yet show them.
+    expect(fixture.base.provider.run)
+      .toHaveBeenCalledTimes(MEMORY_FACT_EXTRACTION_MAX_INVALID_OUTPUT_CALLS_PER_INPUT);
     expect(fixture.apply).not.toHaveBeenCalled();
   });
 
@@ -1375,5 +1382,383 @@ describe("Memory fact extraction handler", () => {
     await result.apply?.({} as never, claim());
     expect(continueCoverage)
       .toHaveBeenCalledWith({}, expect.anything(), pageInput, undefined);
+  });
+});
+
+type StoredFactBinding = {
+  acceptedOutputHash: string | null;
+  errorCode: string | null;
+  id: string;
+  inputHash: string;
+  ordinal: number;
+  pipelineVersion: string;
+  policyVersion: string;
+  promptVersion: string;
+  schemaVersion: string;
+  secretFreeExecutionSnapshot: Record<string, never>;
+  state: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "OUTCOME_UNKNOWN";
+};
+
+function storedFactBinding(
+  ordinal: number,
+  state: StoredFactBinding["state"],
+  errorCode: string | null,
+  inputHash: string
+): StoredFactBinding {
+  return {
+    acceptedOutputHash: null,
+    errorCode,
+    id: `seeded-${ordinal}`,
+    inputHash,
+    ordinal,
+    ...storedVersions(MEMORY_FACT_EXTRACTION_VERSIONS),
+    secretFreeExecutionSnapshot: {},
+    state
+  };
+}
+
+function invalidPacket(index: number, argumentsValue: Record<string, unknown> = {
+  observations: "invalid"
+}) {
+  return {
+    providerResponseId: `invalid-response-${index}`,
+    toolCalls: [{
+      arguments: argumentsValue,
+      id: `invalid-call-${index}`,
+      name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+    }],
+    usage: {
+      cachedInputTokens: 0,
+      inputTokens: 100 + index,
+      outputTokens: 10 + index,
+      reasoningTokens: 0,
+      totalTokens: 110 + 2 * index
+    }
+  };
+}
+
+type RecordedSettlement = {
+  acceptedOutputHash: string | null;
+  errorCode: string | null;
+  state: StoredFactBinding["state"];
+  usage: unknown;
+};
+
+/** Mirrors the durable binding rules the handler relies on: a unique
+ * (job, role, ordinal), start only from PENDING, one settlement per call. */
+function durableExtraction(seeded: readonly StoredFactBinding[] = []) {
+  const fixture = dependencies();
+  const bindings: StoredFactBinding[] = seeded.map((binding) => ({ ...binding }));
+  const settlements: Array<RecordedSettlement & { bindingId: string }> = [];
+  const bind = vi.fn(async (_userId: string, request: {
+    inputHash: string;
+    ordinal: number;
+  }) => {
+    if (bindings.some(({ ordinal }) => ordinal === request.ordinal)) {
+      throw new MemoryExecutionError("memory_execution_binding_conflict");
+    }
+    const id = `binding-${request.ordinal}`;
+    bindings.push({
+      ...storedFactBinding(request.ordinal, "PENDING", null, request.inputHash),
+      id
+    });
+    return { id };
+  });
+  const start = vi.fn(async (_userId: string, bindingId: string) => {
+    const binding = bindings.find(({ id }) => id === bindingId)!;
+    if (binding.state !== "PENDING") {
+      throw new MemoryExecutionError("memory_execution_state_conflict");
+    }
+    binding.state = "RUNNING";
+    return {
+      bindingId,
+      snapshot: {
+        logicalRole: "MEMORY_FACT_EXTRACT",
+        providerExecutionSnapshot: {
+          connectionId: "connection-1",
+          credentialId: "credential-1",
+          credentialVersionId: "credential-version-1",
+          providerModelId: "model-1"
+        },
+        requiresStrictStructuredOutput: true
+      }
+    };
+  });
+  const record = (bindingId: string, result: RecordedSettlement) => {
+    const binding = bindings.find(({ id }) => id === bindingId)!;
+    if (binding.state !== "RUNNING" && binding.state !== "PENDING") {
+      throw new MemoryExecutionError("memory_execution_state_conflict");
+    }
+    binding.acceptedOutputHash = result.acceptedOutputHash;
+    binding.errorCode = result.errorCode;
+    binding.state = result.state;
+    settlements.push({ ...result, bindingId });
+    return { state: result.state };
+  };
+  const settle = vi.fn(async (
+    _userId: string,
+    bindingId: string,
+    result: RecordedSettlement
+  ) => record(bindingId, result));
+  const settleSucceededWithDurableResult = vi.fn(async (
+    _userId: string,
+    bindingId: string,
+    result: RecordedSettlement,
+    persist: (tx: never, evidence: never) => Promise<void>
+  ) => {
+    await persist({} as never, {
+      recoverableUntil: new Date("2026-08-12T12:00:00.000Z")
+    } as never);
+    return record(bindingId, result);
+  });
+  const handler = (run: MemoryFactExtractionHandlerDependencies["provider"]["run"]) =>
+    createMemoryFactExtractionHandler({
+      ...fixture.base,
+      execution: {
+        ...fixture.base.execution,
+        admission: { ...fixture.base.execution.admission, bind, start },
+        lifecycle: {
+          ...fixture.base.execution.lifecycle,
+          settle,
+          settleSucceededWithDurableResult
+        }
+      },
+      provider: { run },
+      repository: {
+        ...fixture.base.repository,
+        bindings: vi.fn(async () => bindings.map((binding) => ({ ...binding })))
+      }
+    } as unknown as MemoryFactExtractionHandlerDependencies);
+  return { bind, bindings, fixture, handler, settlements };
+}
+
+function retryLogs() {
+  return vi.mocked(logEvent).mock.calls.filter(([event, fields]) =>
+    event === "service_operation" && (fields as { action?: string }).action === "retry");
+}
+
+describe("Memory fact extraction invalid-output budget", () => {
+  it("retries an invalid packet at the next ordinal and accounts both calls", async () => {
+    const durable = durableExtraction();
+    const run = vi.fn()
+      .mockResolvedValueOnce(invalidPacket(1))
+      .mockResolvedValueOnce(providerOutput());
+    const result = await durable.handler(run).execute(claim(), context());
+
+    expect(result.stage).toBe("fact_observations_committed");
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(durable.bindings).toMatchObject([
+      { errorCode: "memory_fact_output_invalid", id: "binding-0", ordinal: 0, state: "FAILED" },
+      { errorCode: null, id: "binding-1", ordinal: 1, state: "SUCCEEDED" }
+    ]);
+    expect(durable.settlements).toEqual([
+      expect.objectContaining({
+        bindingId: "binding-0",
+        usage: expect.objectContaining({ inputTokens: 101, outputTokens: 11 })
+      }),
+      expect.objectContaining({
+        bindingId: "binding-1",
+        usage: expect.objectContaining({ inputTokens: 10, outputTokens: 5 })
+      })
+    ]);
+    expect(durable.fixture.stage).toHaveBeenCalledOnce();
+    expect(durable.fixture.stage).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), "binding-1", expect.any(Date)
+    );
+    expect(durable.fixture.apply).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), expect.anything(),
+      "binding-1", expect.any(Date), null, "binding-1"
+    );
+    expect(retryLogs()).toEqual([["service_operation", {
+      action: "retry",
+      attempt: 2,
+      code: "memory_fact_output_invalid",
+      job_id: expect.any(String),
+      outcome: "failed",
+      stage: "validate",
+      subsystem: "memory"
+    }]]);
+  });
+
+  it("retries truncated tool arguments as an invalid whole packet", async () => {
+    const durable = durableExtraction();
+    const run = vi.fn()
+      .mockResolvedValueOnce(invalidPacket(1, invalidProviderToolArguments()))
+      .mockResolvedValueOnce(providerOutput());
+    await expect(durable.handler(run).execute(claim(), context()))
+      .resolves.toMatchObject({ stage: "fact_observations_committed" });
+    expect(durable.bindings.map(({ errorCode }) => errorCode))
+      .toEqual(["memory_fact_output_invalid", null]);
+  });
+
+  it("stops repeated invalid packets at the budget with the original code", async () => {
+    const durable = durableExtraction();
+    let calls = 0;
+    const run = vi.fn(async () => invalidPacket(++calls));
+    const result = await durable.handler(run).execute(claim(), context());
+
+    expect(result.stage).toBe("fact_output_rejected");
+    expect(run).toHaveBeenCalledTimes(MEMORY_FACT_EXTRACTION_MAX_INVALID_OUTPUT_CALLS_PER_INPUT);
+    expect(durable.bindings).toMatchObject([0, 1, 2].map((ordinal) => ({
+      errorCode: "memory_fact_output_invalid",
+      ordinal,
+      state: "FAILED"
+    })));
+    expect(durable.settlements.map(({ usage }) =>
+      (usage as { outputTokens: number }).outputTokens)).toEqual([11, 12, 13]);
+    expect(retryLogs().map(([, fields]) => (fields as { attempt: number }).attempt))
+      .toEqual([2, 3]);
+    expect(durable.fixture.stage).not.toHaveBeenCalled();
+    expect(durable.fixture.apply).not.toHaveBeenCalled();
+  });
+
+  it("keeps a replay-safe transient outside the budget and holds it across a retry", async () => {
+    const durable = durableExtraction();
+    let invalid = 0;
+    const run = vi.fn()
+      .mockResolvedValueOnce(invalidPacket(++invalid))
+      .mockRejectedValueOnce(providerFailure("REPLAY_SAFE_TRANSIENT"))
+      .mockImplementation(async () => invalidPacket(++invalid));
+    const handler = durable.handler(run);
+    const firstClaim = claim();
+
+    await expect(handler.execute(firstClaim, context())).rejects.toMatchObject({
+      code: "memory_fact_provider_transient",
+      retryable: true
+    } satisfies Partial<MemoryCoordinatorError>);
+    expect(durable.bindings.map(({ errorCode }) => errorCode)).toEqual([
+      "memory_fact_output_invalid",
+      "memory_fact_provider_transient"
+    ]);
+
+    // The coordinator retry spends only what the budget has left.
+    await expect(handler.execute({ ...firstClaim, attemptCount: 2 }, context()))
+      .resolves.toMatchObject({ stage: "fact_output_rejected" });
+    expect(run).toHaveBeenCalledTimes(4);
+    expect(durable.bindings.map(({ errorCode, ordinal }) => [ordinal, errorCode])).toEqual([
+      [0, "memory_fact_output_invalid"],
+      [1, "memory_fact_provider_transient"],
+      [2, "memory_fact_output_invalid"],
+      [3, "memory_fact_output_invalid"]
+    ]);
+  });
+
+  it.each([
+    ["UNKNOWN", "OUTCOME_UNKNOWN", "fact_outcome_unknown"],
+    ["PERMANENT", "FAILED", "fact_provider_unavailable"]
+  ] as const)(
+    "ends a validation retry on a %s provider failure without another call",
+    async (classification, state, stage) => {
+      const durable = durableExtraction();
+      const run = vi.fn()
+        .mockResolvedValueOnce(invalidPacket(1))
+        .mockRejectedValueOnce(providerFailure(classification))
+        .mockResolvedValue(providerOutput());
+      await expect(durable.handler(run).execute(claim(), context()))
+        .resolves.toMatchObject({ stage });
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(durable.bindings).toMatchObject([
+        { ordinal: 0, state: "FAILED" },
+        { ordinal: 1, state }
+      ]);
+    }
+  );
+
+  it.each(["UNKNOWN", "PERMANENT"] as const)(
+    "never spends the budget on a first %s provider failure",
+    async (classification) => {
+      const durable = durableExtraction();
+      const run = vi.fn()
+        .mockRejectedValueOnce(providerFailure(classification))
+        .mockResolvedValue(providerOutput());
+      await durable.handler(run).execute(claim(), context());
+      expect(run).toHaveBeenCalledOnce();
+      expect(retryLogs()).toEqual([]);
+    }
+  );
+
+  it("never dispatches on a re-claim after a crash left a RUNNING retry", async () => {
+    const input = extractionInput();
+    const durable = durableExtraction([
+      storedFactBinding(0, "FAILED", "memory_fact_output_invalid", input.inputHash),
+      storedFactBinding(1, "RUNNING", null, input.inputHash)
+    ]);
+    const run = vi.fn(async () => providerOutput());
+    await expect(durable.handler(run).execute(claim(), context()))
+      .resolves.toMatchObject({ stage: "fact_outcome_unknown" });
+    expect(run).not.toHaveBeenCalled();
+    expect(durable.bind).not.toHaveBeenCalled();
+    expect(durable.bindings[1]).toMatchObject({
+      errorCode: "memory_fact_recovered_uncertain",
+      state: "OUTCOME_UNKNOWN"
+    });
+  });
+
+  it("never dispatches past an ambiguous sibling that appears between calls", async () => {
+    const durable = durableExtraction();
+    const run = vi.fn(async () => {
+      durable.bindings.push({
+        ...storedFactBinding(7, "OUTCOME_UNKNOWN", "memory_fact_provider_outcome_unknown",
+          extractionInput().inputHash),
+        id: "sibling"
+      });
+      return invalidPacket(1);
+    });
+    await expect(durable.handler(run).execute(claim(), context()))
+      .resolves.toMatchObject({ stage: "fact_outcome_unknown" });
+    expect(run).toHaveBeenCalledOnce();
+    expect(retryLogs()).toEqual([]);
+  });
+
+  it("does not retry after the job attempt was cancelled", async () => {
+    const durable = durableExtraction();
+    const abort = new AbortController();
+    const run = vi.fn(async () => {
+      abort.abort();
+      return invalidPacket(1);
+    });
+    await expect(durable.handler(run).execute(claim(), {
+      ...context(),
+      signal: abort.signal
+    })).resolves.toMatchObject({ stage: "fact_output_rejected" });
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("holds the durable budget on a re-claim and spends only the remainder", async () => {
+    const input = extractionInput();
+    const exhausted = durableExtraction([0, 1, 2].map((ordinal) =>
+      storedFactBinding(ordinal, "FAILED", "memory_fact_output_invalid", input.inputHash)));
+    const neverRun = vi.fn(async () => providerOutput());
+    await expect(exhausted.handler(neverRun).execute(claim(), context()))
+      .resolves.toMatchObject({ stage: "fact_output_rejected" });
+    expect(neverRun).not.toHaveBeenCalled();
+    expect(exhausted.bind).not.toHaveBeenCalled();
+
+    const partial = durableExtraction([0, 1].map((ordinal) =>
+      storedFactBinding(ordinal, "FAILED", "memory_fact_output_invalid", input.inputHash)));
+    const run = vi.fn(async () => invalidPacket(3));
+    await expect(partial.handler(run).execute(claim(), context()))
+      .resolves.toMatchObject({ stage: "fact_output_rejected" });
+    expect(run).toHaveBeenCalledOnce();
+    expect(partial.bind).toHaveBeenCalledExactlyOnceWith(source.userId,
+      expect.objectContaining({ ordinal: 2 }));
+  });
+
+  it("counts only invalid packets of the same input and versions", async () => {
+    const input = extractionInput();
+    const durable = durableExtraction([
+      storedFactBinding(0, "FAILED", "memory_fact_output_invalid", "e".repeat(64)),
+      storedFactBinding(1, "FAILED", "memory_fact_output_invalid", "f".repeat(64)),
+      { ...storedFactBinding(2, "FAILED", "memory_fact_output_invalid", input.inputHash),
+        promptVersion: MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS.promptVersion },
+      storedFactBinding(3, "FAILED", "memory_fact_provider_transient", input.inputHash),
+      storedFactBinding(4, "FAILED", "memory_fact_execution_abandoned", input.inputHash)
+    ]);
+    const run = vi.fn(async () => providerOutput());
+    await expect(durable.handler(run).execute(claim(), context()))
+      .resolves.toMatchObject({ stage: "fact_observations_committed" });
+    expect(run).toHaveBeenCalledOnce();
+    expect(durable.bind).toHaveBeenCalledExactlyOnceWith(source.userId,
+      expect.objectContaining({ ordinal: 5 }));
   });
 });
