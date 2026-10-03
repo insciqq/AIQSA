@@ -285,8 +285,13 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     await stopButton.click();
     await expect(stopButton).toHaveCount(0, { timeout: 60_000 });
     await expect(lastAnswer(page)).toContainText("Stopped");
-    // The stopped turn's own timeline shows the terminated command.
-    await expect(liveActivity).toContainText("Stopped sleep 300", { timeout: 30_000 });
+    // The stopped turn's own timeline closes the terminated command without
+    // inventing an exit, as in the deterministic Stop scenario.
+    await expect(liveActivity).toContainText(
+      "sleep 300; echo late > /workspace/project/sync-after-stop.txt · exit not observed",
+      { timeout: 30_000 }
+    );
+    await expect(liveActivity).toContainText("Workspace work stopped");
     await expect(workspaceDetails(page)).not.toHaveAccessibleName(/Running a command/u, { timeout: 30_000 });
     await page.waitForTimeout(13_000);
     const stoppedSession = await prisma.workspaceSession.findUniqueOrThrow({
