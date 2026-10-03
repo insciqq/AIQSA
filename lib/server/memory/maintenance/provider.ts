@@ -1,13 +1,17 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { executeGovernedMemoryStructuredOutput, type MemoryExecutionAuthorityDependencies,
+import { logEvent } from "../../observability";
+import { MemoryJobFencedError } from "../coordinator/errors";
+import { executeGovernedMemoryStructuredOutput, MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS,
+  MemoryStructuredOutputDispatchFenced, type MemoryExecutionAuthorityDependencies,
   type MemoryStructuredOutputProvider } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { createAcceptedMemoryStructuredOutputProvider } from "../execution/structuredClassifier";
 import { buildMemoryMaintenanceRequest, buildMemoryMaintenanceVerificationRequest,
-  decodeMemoryMaintenanceOutput, decodeMemoryMaintenanceVerification,
-  type MemoryMaintenanceOutput, type MemoryMaintenanceVerification } from "./contract";
-import { MEMORY_MAINTENANCE_VERSIONS, type MemoryMaintenancePlan, type MemoryMaintenanceSource } from "./policy";
+  decodeMemoryMaintenanceReview, decodeMemoryMaintenanceVerification, type MemoryMaintenanceOutput,
+  type MemoryMaintenanceReviewDecoding, type MemoryMaintenanceVerification } from "./contract";
+import { MEMORY_MAINTENANCE_CALL_ATTEMPTS, MEMORY_MAINTENANCE_FAILURE_CODES, MEMORY_MAINTENANCE_VERSIONS, memoryMaintenanceOrdinal,
+  type MemoryMaintenanceCall, type MemoryMaintenancePlan, type MemoryMaintenanceSource } from "./policy";
 import { loadMemoryMaintenanceSources } from "./source";
 
 export type MemoryMaintenanceResult<T> = Readonly<{
@@ -26,47 +30,91 @@ export function memoryMaintenanceInputHash(reviewed: Readonly<{ sourceSnapshotHa
 export function memoryMaintenanceOutputHash(inputHash: string, output: unknown): string {
   return memoryExecutionSha256({ inputHash, output, role: "MEMORY_SYNTHESIZE", version: 1 });
 }
+/** A disclosed source changed before dispatch, so nothing more is sent. The
+ * re-run gate decides STALE or keeps it terminal after a paid review; this
+ * decision settles only when that gate cannot decide. */
+export function memoryMaintenanceDispatchStale(): MemoryJobFencedError {
+  const code = MEMORY_MAINTENANCE_FAILURE_CODES.dispatchStale;
+  return new MemoryJobFencedError(code, { errorCode: code, status: "STALE" });
+}
+type MemoryMaintenanceReviewRepairs = Pick<MemoryMaintenanceReviewDecoding, "normalized" | "conservative">;
+/** Content-free counts of the accepted review's repaired decisions; both codes
+ * are registered in observability/failureCodes.json. */
+function logMemoryMaintenanceReviewRepairs(jobId: string, repairs: MemoryMaintenanceReviewRepairs): void {
+  if (repairs.normalized > 0) {
+    logEvent("service_operation", { subsystem: "memory", stage: "validate", outcome: "completed",
+      code: "memory_maintenance_labels_normalized", count: repairs.normalized, job_id: jobId });
+  }
+  if (repairs.conservative > 0) {
+    logEvent("service_operation", { subsystem: "memory", stage: "validate", outcome: "degraded",
+      code: "memory_maintenance_contradictions_kept", count: repairs.conservative, job_id: jobId });
+  }
+}
 export function createPrismaMemoryMaintenanceProvider(client: PrismaClient, options: Readonly<{
   authority?: MemoryExecutionAuthorityDependencies; provider?: MemoryStructuredOutputProvider;
+  sources?: typeof loadMemoryMaintenanceSources;
 }> = {}) {
   const authority = options.authority ?? defaultMemoryExecutionAuthority;
   const provider = options.provider ?? createAcceptedMemoryStructuredOutputProvider(client);
-  /** Revalidates every disclosed source just before dispatch. */
-  async function run<T>(owner: Owner, disclosed: readonly MemoryMaintenanceSource[], signal: AbortSignal, ordinal: number, inputHash: string,
-    request: ReturnType<typeof buildMemoryMaintenanceRequest>, decode: (value: unknown) => T): Promise<MemoryMaintenanceResult<T>> {
-    const result = await executeGovernedMemoryStructuredOutput({
-      authority, client, decode, inputHash, ordinal, owner: { memoryJobId: owner.jobId, type: "JOB" },
-      provider: { async run(snapshot, request, signal) {
-        const current = await loadMemoryMaintenanceSources(client, owner.userId, {
-          versionIds: disclosed.map(({ versionId }) => versionId), now: new Date()
-        });
-        if (disclosed.some((source) => current.sources.get(source.versionId)?.sourceSnapshotHash !== source.sourceSnapshotHash)) {
-          throw new Error("memory_maintenance_source_stale");
+  const loadSources = options.sources ?? loadMemoryMaintenanceSources;
+  async function current(userId: string, disclosed: readonly MemoryMaintenanceSource[]): Promise<boolean> {
+    const loaded = await loadSources(client, userId, { versionIds: disclosed.map(({ versionId }) => versionId), now: new Date() });
+    return disclosed.every((source) => loaded.sources.get(source.versionId)?.sourceSnapshotHash === source.sourceSnapshotHash);
+  }
+  /** Every disclosed source is revalidated before a call binds (the first
+   * call and each validation retry), so a changed one costs no binding or paid
+   * call, and again inside the bound call just before dispatch, where a fence
+   * settles that binding CANCELLED without usage. Each attempt has its own
+   * ordinal of the call's parity. */
+  async function run<T>(owner: Owner, call: MemoryMaintenanceCall, disclosed: readonly MemoryMaintenanceSource[], signal: AbortSignal,
+    inputHash: string, request: ReturnType<typeof buildMemoryMaintenanceRequest>, decode: (value: unknown) => T): Promise<MemoryMaintenanceResult<T>> {
+    const revalidate = async () => { if (!await current(owner.userId, disclosed)) throw memoryMaintenanceDispatchStale(); };
+    await revalidate();
+    try {
+      const result = await executeGovernedMemoryStructuredOutput({
+        authority, client, decode, inputHash, ordinal: memoryMaintenanceOrdinal(call, 0), owner: { memoryJobId: owner.jobId, type: "JOB" },
+        provider: { async run(snapshot, request, signal) {
+          if (!await current(owner.userId, disclosed)) throw new MemoryStructuredOutputDispatchFenced(MEMORY_MAINTENANCE_FAILURE_CODES.dispatchStale);
+          return provider.run(snapshot, request, signal);
+        } }, request,
+        role: "MEMORY_SYNTHESIZE", signal, userId: owner.userId, versions: MEMORY_MAINTENANCE_VERSIONS,
+        // The receipt check admits only the maintenance attempts' ordinals.
+        validationRetry: { maxAttempts: Math.min(MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS, MEMORY_MAINTENANCE_CALL_ATTEMPTS),
+          beforeRetry: revalidate, allocateOrdinal: (attempt) => memoryMaintenanceOrdinal(call, attempt) },
+        persistResult: async (tx, durable) => {
+          await tx.memoryMaintenanceExecution.create({ data: {
+            userId: owner.userId, memoryJobId: owner.jobId, executionBindingId: durable.bindingId,
+            ordinal: durable.ordinal, inputHash, acceptedOutputHash: durable.acceptedOutputHash,
+            acceptedOutput: durable.value as unknown as Prisma.InputJsonValue
+          } });
         }
-        return provider.run(snapshot, request, signal);
-      } }, request,
-      role: "MEMORY_SYNTHESIZE", signal, userId: owner.userId, versions: MEMORY_MAINTENANCE_VERSIONS,
-      persistResult: async (tx, durable) => {
-        await tx.memoryMaintenanceExecution.create({ data: {
-          userId: owner.userId, memoryJobId: owner.jobId, executionBindingId: durable.bindingId,
-          ordinal, inputHash, acceptedOutputHash: durable.acceptedOutputHash,
-          acceptedOutput: durable.value as unknown as Prisma.InputJsonValue
-        } });
-      }
-    });
-    return { acceptedOutputHash: result.acceptedOutputHash, executionId: result.bindingId, inputHash: result.inputHash,
-      modelId: result.modelId, output: result.value, policyVersion: result.policyVersion, providerId: result.providerId };
+      });
+      return { acceptedOutputHash: result.acceptedOutputHash, executionId: result.bindingId, inputHash: result.inputHash,
+        modelId: result.modelId, output: result.value, policyVersion: result.policyVersion, providerId: result.providerId };
+    } catch (error) {
+      // The executor settled the fenced binding CANCELLED; the job ends as staleness before dispatch.
+      if (error instanceof MemoryStructuredOutputDispatchFenced) throw memoryMaintenanceDispatchStale();
+      throw error;
+    }
   }
   return Object.freeze({
-    review(plan: MemoryMaintenancePlan, signal: AbortSignal, owner: Owner) {
-      return run(owner, plan.sources, signal, 0, memoryMaintenanceInputHash(plan), buildMemoryMaintenanceRequest(plan),
-        (value) => decodeMemoryMaintenanceOutput(value, plan));
+    /** Counts the repairs of the accepted answer only, once it settled. */
+    async review(plan: MemoryMaintenancePlan, signal: AbortSignal, owner: Owner) {
+      let repairs: MemoryMaintenanceReviewRepairs = { normalized: 0, conservative: 0 };
+      const result = await run(owner, "review", plan.sources, signal, memoryMaintenanceInputHash(plan), buildMemoryMaintenanceRequest(plan),
+        (value) => {
+          const decoded = decodeMemoryMaintenanceReview(value, plan);
+          repairs = decoded;
+          return decoded.output;
+        });
+      logMemoryMaintenanceReviewRepairs(owner.jobId, repairs);
+      return result;
     },
     /** `disclosed` holds the still-matching removal sources of `proposal`. */
     verify(reviewed: Readonly<{ sourceSnapshotHash: string }>, disclosed: readonly MemoryMaintenanceSource[],
       proposal: MemoryMaintenanceOutput, signal: AbortSignal, owner: Owner) {
       const plan: MemoryMaintenancePlan = { sources: disclosed, sourceSnapshotHash: reviewed.sourceSnapshotHash };
-      return run(owner, disclosed, signal, 1, memoryMaintenanceInputHash(reviewed, proposal),
+      return run(owner, "verify", disclosed, signal, memoryMaintenanceInputHash(reviewed, proposal),
         buildMemoryMaintenanceVerificationRequest(plan, proposal), (value) => decodeMemoryMaintenanceVerification(value, proposal));
     }
   });

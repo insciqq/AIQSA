@@ -39,6 +39,7 @@ export const memoryExecutionBindingSelect = {
   createdAt: true,
   credentialId: true,
   credentialVersionId: true,
+  decodeReason: true,
   destinationFingerprint: true,
   errorCode: true,
   id: true,

@@ -4,8 +4,9 @@ import { memorySha256 } from "../persistence/lexical";
 import { redactMemorySecrets } from "../explicit/safety";
 import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { loadMemoryMaintenanceContext } from "./context";
-import { MEMORY_MAINTENANCE_BATCH_SIZE, MEMORY_MAINTENANCE_BLOCKED_RECHECK_MS, MEMORY_MAINTENANCE_POLICY_VERSION,
-  MEMORY_MAINTENANCE_QUIET_MS, memoryMaintenancePlan, memoryMaintenanceReasonDisposition,
+import { MEMORY_MAINTENANCE_BATCH_SIZE, MEMORY_MAINTENANCE_BLOCKED_RECHECK_MS, MEMORY_MAINTENANCE_FAILURE_CODES,
+  MEMORY_MAINTENANCE_MAX_FAILED_ATTEMPTS, MEMORY_MAINTENANCE_MAX_INVALID_OUTPUT_ATTEMPTS, MEMORY_MAINTENANCE_POLICY_VERSION,
+  MEMORY_MAINTENANCE_QUIET_MS, MEMORY_MAINTENANCE_TRANSIENT_RETRY_MS, memoryMaintenancePlan, memoryMaintenanceReasonDisposition,
   type MemoryMaintenanceEvidence, type MemoryMaintenancePlan, type MemoryMaintenanceReasonCode,
   type MemoryMaintenanceSource, type MemoryUsefulness } from "./policy";
 
@@ -53,10 +54,16 @@ export function memoryMaintenanceSourcePredicate(userId: string | Prisma.Sql): P
 /** The single v3 coverage rule of the planner scan and the owner query.
  * Callers expose `version`, `fact` and `latest`, the newest SUPPORTS evidence
  * time of the version. A settled decision or a job in flight covers it; a
- * planner blocker covers for a week while the lineage is unchanged; two failed
- * attempts cover it (a blocker found in apply only for a week). */
+ * planner blocker covers for a week while the lineage is unchanged. Failed
+ * attempts of its current evidence (a blocker found in apply only for a week)
+ * admit new jobs by the outcome of their job: two ordinary failures or three
+ * invalid answers cover it; a transient provider failure only delays the next
+ * job, doubling; a source changed before dispatch and a failure recorded
+ * before causes were stable (memory_job_failed) cost nothing. */
 export function memoryMaintenanceUncoveredPredicate(latest: Prisma.Sql, now: Date): Prisma.Sql {
   const recheckAfter = new Date(now.getTime() - MEMORY_MAINTENANCE_BLOCKED_RECHECK_MS);
+  const { dispatchStale, invalidOutput, legacy, transient } = MEMORY_MAINTENANCE_FAILURE_CODES;
+  const outcome = Prisma.sql`COALESCE(attempt."errorCode", '')`;
   return Prisma.sql`
     NOT EXISTS (SELECT 1 FROM "MemoryMaintenanceReview" AS covered
       WHERE covered."userId" = version."userId" AND covered."factVersionId" = version."id"
@@ -68,18 +75,28 @@ export function memoryMaintenanceUncoveredPredicate(latest: Prisma.Sql, now: Dat
             AND NOT EXISTS (SELECT 1 FROM "MemoryFactVersion" AS changed
               WHERE changed."userId" = fact."userId" AND changed."factId" = fact."id"
                 AND changed."createdAt" > covered."createdAt"))))
-    AND (SELECT COUNT(*) FROM "MemoryMaintenanceReview" AS failed
+    AND (SELECT COUNT(*) FILTER (WHERE ${outcome} NOT IN (${invalidOutput}, ${transient}, ${dispatchStale}, ${legacy}))
+        < ${MEMORY_MAINTENANCE_MAX_FAILED_ATTEMPTS}
+      AND COUNT(*) FILTER (WHERE ${outcome} = ${invalidOutput}) < ${MEMORY_MAINTENANCE_MAX_INVALID_OUTPUT_ATTEMPTS}
+      AND COALESCE(MAX(attempt."completedAt") FILTER (WHERE ${outcome} = ${transient})
+        + LEAST(POWER(2::double precision, (COUNT(*) FILTER (WHERE ${outcome} = ${transient}) - 1)::double precision)
+          * ${MEMORY_MAINTENANCE_TRANSIENT_RETRY_MS.first}::double precision,
+          ${MEMORY_MAINTENANCE_TRANSIENT_RETRY_MS.max}::double precision) * INTERVAL '1 millisecond'
+        <= ${now}, TRUE)
+      FROM "MemoryMaintenanceReview" AS failed
+      LEFT JOIN "MemoryJob" AS attempt ON attempt."userId" = failed."userId" AND attempt."id" = failed."memoryJobId"
       WHERE failed."userId" = version."userId" AND failed."factVersionId" = version."id"
         AND failed."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION}
         AND failed."evidenceThrough" >= ${latest}
         AND (failed."disposition" IN ('STALE', 'UNKNOWN')
           OR (failed."disposition" = 'BLOCKED' AND failed."memoryJobId" IS NOT NULL
-            AND failed."reviewedAt" >= ${recheckAfter}))) < 2
+            AND failed."reviewedAt" >= ${recheckAfter})))
   `;
 }
 
 /** Earlier non-final v3 rows of the version. Both counts only grow while its
- * evidence is unchanged, so a recheck or retry always gets a new source hash. */
+ * evidence is unchanged, so a recheck or retry always gets a new source hash;
+ * the attempt count includes failures that spend no budget. */
 function priorOrdinals(latest: Prisma.Sql): Prisma.Sql {
   return Prisma.sql`
     (SELECT COUNT(*)::integer FROM "MemoryMaintenanceReview" AS prior

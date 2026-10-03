@@ -23,6 +23,7 @@ import { probeMemoryStructuredOutputAuthority } from "../execution";
 import { createPrismaMemoryRebuildHandler } from "../rebuild/handler";
 import { memoryHistoryClearDeletionHandler } from "../history/purge";
 import { createPrismaMemoryFactExtractionHandler } from "../learning/extraction/handler";
+import { healFailedMemoryFactExtractions } from "../learning/extractionHeal";
 import { createPrismaMemoryReclassificationHandler } from "../reclassification/handler";
 import { reconcileMemoryFactReclassificationJobs } from "../reclassification/reconcile";
 import { createPrismaMemoryRelationHandler } from "../learning/relations/handler";
@@ -43,6 +44,7 @@ import {
   reconcileMemoryHistoryBackfills,
   resolveMemoryHistoryBackfillWindow
 } from "../history/backfill";
+import { repairFencedMemoryHistoryJobs } from "../history/fenceRepair";
 import { workspaceRuntime } from "../../workspace/defaultServices";
 import { createPrismaMemoryEmbeddingSetup } from "../embedding/setup";
 
@@ -60,8 +62,10 @@ export const defaultMemoryCoordinatorRepository =
 type DefaultMemoryReconciliationWork = Readonly<{
   embeddingSetup?: () => Promise<unknown>;
   cutover?: () => Promise<unknown>;
+  historyFenceRepair?: () => Promise<unknown>;
   historyBackfill?: () => Promise<unknown>;
   historyAutoHeal?: () => Promise<unknown>;
+  extractionHeal?: () => Promise<unknown>;
   reclassification?: () => Promise<unknown>;
   relations?: () => Promise<unknown>;
   maintenance?: () => Promise<unknown>;
@@ -74,6 +78,7 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   Object.freeze({
     embeddingSetup: () => defaultMemoryEmbeddingSetup.reconcile(),
     cutover: () => createPrismaMemoryRetrievalCutoverRepository(prisma).reconcile(),
+    historyFenceRepair: () => repairFencedMemoryHistoryJobs(prisma, { now: new Date() }),
     historyBackfill: () => reconcileMemoryHistoryBackfills(
       prisma,
       resolveMemoryHistoryBackfillWindow(
@@ -81,6 +86,7 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
       )
     ),
     historyAutoHeal: () => autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: new Date() }),
+    extractionHeal: () => healFailedMemoryFactExtractions(prisma, { now: new Date() }),
     reclassification: () => reconcileMemoryFactReclassificationJobs(prisma),
     relations: () => reconcileMemoryFactRelationJobs(prisma),
     maintenance: () => reconcileMemoryMaintenanceWork(prisma, new Date(), async (userId) => {
@@ -99,8 +105,12 @@ export async function reconcileDefaultMemoryWork(
   // durable shadow rebuild. It must never replay source content from this
   // periodic maintenance pass.
   await work.cutover?.();
+  // Released fence casualties are indexed by the same pass's backfill.
+  await work.historyFenceRepair?.();
   await work.historyBackfill?.();
   await work.historyAutoHeal?.();
+  // Bounded per pass and owner; each source holds one key per policy version.
+  await work.extractionHeal?.();
   await work.reclassification?.();
   await work.relations?.();
   await work.maintenance?.();

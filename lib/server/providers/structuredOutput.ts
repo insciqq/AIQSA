@@ -274,8 +274,15 @@ function schemaForProvider(
   return { rootWrapped, schema };
 }
 
+/** Content-free reasons a received structured answer failed transport decoding. */
+export const STRUCTURED_OUTPUT_DECODE_REASONS = Object.freeze([
+  "empty_output", "invalid_json", "non_object", "invalid_wrapper"
+] as const);
+
+export type StructuredOutputDecodeReason = (typeof STRUCTURED_OUTPUT_DECODE_REASONS)[number];
+
 export class StructuredOutputDecodeError extends Error {
-  constructor(readonly reason: "empty_output" | "invalid_json" | "non_object" | "invalid_wrapper") {
+  constructor(readonly reason: StructuredOutputDecodeReason) {
     super("structured_output_invalid");
     this.name = "StructuredOutputDecodeError";
   }

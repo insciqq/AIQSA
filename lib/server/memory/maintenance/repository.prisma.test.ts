@@ -1,22 +1,30 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import type { MemoryExecutionState, Prisma } from "@prisma/client";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { createTestProviderExecutionAuthority, deleteTestProviderExecutionAuthority,
+  type TestProviderExecutionAuthority } from "@/tests/support/providerExecutionAuthority";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
 import type { MemoryJobClaim } from "../coordinator/types";
+import { memoryExecutionSha256 } from "../execution/canonical";
+import { resolveMemoryExecutionCompatibility } from "../execution/compatibility";
+import type { ResolvedMemoryExecutionTarget } from "../execution/policy";
+import { createMemoryExecutionSnapshot } from "../execution/snapshot";
 import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION, MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../learning/extraction/contract";
 import { memorySha256 } from "../persistence/lexical";
 import { withLockedMemoryTransaction, type MemoryTransaction } from "../persistence/transaction";
 import { memorySafetyLiteFactClassification } from "../safetyLite";
 import type { MemoryMaintenanceDecision } from "./contract";
-import { memoryMaintenanceInputHash, memoryMaintenanceOutputHash, type MemoryMaintenanceReviewResult,
-  type MemoryMaintenanceVerificationResult } from "./provider";
+import { createPrismaMemoryMaintenanceHandler } from "./handler";
+import { createPrismaMemoryMaintenanceProvider, memoryMaintenanceInputHash, memoryMaintenanceOutputHash,
+  type MemoryMaintenanceProvider, type MemoryMaintenanceReviewResult, type MemoryMaintenanceVerificationResult } from "./provider";
 import { createPrismaMemoryMaintenanceRepository } from "./repository";
 import { scheduleOwnerMemoryMaintenance } from "./reconcile";
 import { isMemoryMaintenanceEvidenceSuppressed } from "./suppression";
 import { loadMemoryMaintenanceContext } from "./context";
 import { createMemorySuppressionInTransaction } from "../persistence/suppressions";
 import { MemorySuppressionKeyring } from "../suppressionKeyring";
-import { MEMORY_MAINTENANCE_POLICY_VERSION } from "./policy";
+import { MEMORY_MAINTENANCE_POLICY_VERSION, MEMORY_MAINTENANCE_VERSIONS } from "./policy";
 import { loadMemoryMaintenanceSources } from "./source";
 
 const old = new Date(Date.now() - 2 * 60 * 60_000);
@@ -86,6 +94,49 @@ async function planned(userId: string, keep: ReadonlySet<string> = new Set()) {
 function apply(work: Awaited<ReturnType<typeof planned>>, wrap: (tx: MemoryTransaction) => MemoryTransaction = (tx) => tx) {
   return withLockedMemoryTransaction(prisma, work.claim.userId, (tx) => work.repository.apply(wrap(tx), work.claim,
     work.snapshot, work.review, work.verification, new Date()));
+}
+/** Writes MEMORY_SYNTHESIZE bindings of one job directly, as earlier attempts left them. */
+function maintenanceBindings(userId: string, memoryJobId: string, authority: TestProviderExecutionAuthority) {
+  const target: ResolvedMemoryExecutionTarget = {
+    authority: { ...authority, connectionVersion: 1, modelVersion: 1 },
+    credentialSource: "default", destinationFingerprint: "1".repeat(64), executionTargetFingerprint: "2".repeat(64), policyRevision: 1,
+    compatibilityFingerprints: { configFingerprint: "3".repeat(64), deploymentFingerprint: "4".repeat(64),
+      modelFingerprint: "5".repeat(64), providerFingerprint: "6".repeat(64) },
+    snapshot: { version: 1, connectionId: authority.connectionId, credentialId: authority.credentialId,
+      credentialVersionId: authority.credentialVersionId, providerModelId: authority.providerModelId,
+      connectionDisplayName: "Parity provider", modelDisplayName: "Parity model", providerFamily: "openai_compatible",
+      connection: { allowPrivateNetwork: false, apiRoot: "https://provider-authority.example.test/v1", authenticationMode: "bearer", responseTimeoutMs: 30_000 },
+      model: { adapterKind: "openai_responses_compatible", answerSelectable: true, modelClass: "answer",
+        upstreamModelId: "provider-authority-test-model", defaultParams: {}, capabilities: { nativePdfInput: false,
+          nativeSearch: false, pdf: false, reasoning: false, vision: false, structuredOutput: true, toolCalling: true, forcedToolCalling: true } }
+    }
+  };
+  const compatibility = resolveMemoryExecutionCompatibility({ role: "MEMORY_SYNTHESIZE", target, versions: MEMORY_MAINTENANCE_VERSIONS });
+  const snapshot = createMemoryExecutionSnapshot({ role: "MEMORY_SYNTHESIZE", target, acceptedUtilityEgressFingerprint: "7".repeat(64),
+    compatibilityId: compatibility.compatibilityId, compatibilityRequirement: compatibility.requirement,
+    requiresStrictStructuredOutput: true, utilityPolicyVersion: "parity-test-v1" });
+  const createdAt = new Date(Date.now() - 60_000);
+  return {
+    insert: (client: Prisma.TransactionClient, input: Readonly<{ ordinal: number; state: MemoryExecutionState; inputHash: string;
+      errorCode?: string; acceptedOutputHash?: string; schemaVersion?: string }>) => client.memoryExecutionBinding.create({ data: { ...authority, userId,
+      ownerType: "JOB", memoryJobId, logicalRole: "MEMORY_SYNTHESIZE", ordinal: input.ordinal, state: input.state, createdAt,
+      startedAt: input.state === "PENDING" ? null : createdAt,
+      completedAt: input.state === "PENDING" || input.state === "RUNNING" ? null : createdAt,
+      errorCode: input.errorCode ?? null, acceptedOutputHash: input.acceptedOutputHash ?? null,
+      providerId: "openai_compatible", destinationFingerprint: target.destinationFingerprint, inputHash: input.inputHash,
+      pipelineVersion: MEMORY_MAINTENANCE_VERSIONS.pipelineVersion, policyVersion: MEMORY_MAINTENANCE_VERSIONS.policyVersion,
+      promptVersion: MEMORY_MAINTENANCE_VERSIONS.promptVersion, schemaVersion: input.schemaVersion ?? MEMORY_MAINTENANCE_VERSIONS.schemaVersion,
+      secretFreeExecutionSnapshot: snapshot as unknown as Prisma.InputJsonValue } }),
+    usage: (bindingId: string) => prisma.usageEvent.create({ data: { userId, memoryExecutionBindingId: bindingId,
+      provider: "openai_compatible", modelId: "provider-authority-test-model", providerModelId: authority.providerModelId } }),
+    /** Settles a started attempt with its receipt, as the governed executor commits it. */
+    succeed: (bindingId: string, ordinal: number, inputHash: string, acceptedOutputHash: string, acceptedOutput: unknown) =>
+      prisma.$transaction(async (tx) => {
+        await tx.memoryExecutionBinding.update({ where: { id: bindingId }, data: { state: "SUCCEEDED", completedAt: new Date(), acceptedOutputHash } });
+        await tx.memoryMaintenanceExecution.create({ data: { userId, memoryJobId, executionBindingId: bindingId, ordinal, inputHash,
+          acceptedOutputHash, acceptedOutput: acceptedOutput as Prisma.InputJsonValue } });
+      })
+  };
 }
 afterAll(async () => { await prisma.$disconnect(); });
 
@@ -224,6 +275,139 @@ describe("maintenance transactional lifecycle", () => {
       expect(await prisma.memoryMaintenanceReview.count({ where: { userId, disposition: "PENDING" } })).toBe(2);
       expect(await prisma.memoryMaintenanceSuppression.count({ where: { userId } })).toBe(0);
       expect(await prisma.memoryDeletionOutbox.count({ where: { userId } })).toBe(0);
+    } finally { await cleanup(userId); }
+  });
+});
+
+describe("maintenance call attempts", () => {
+  it("separates review and verification attempts by ordinal parity and reuses only a settled success", async () => {
+    const userId = await owner();
+    const authority = await createTestProviderExecutionAuthority(prisma, "maintenance-parity");
+    try {
+      await fact(userId, "The parcel arrives at noon today.");
+      const work = await planned(userId);
+      const { claim, repository, snapshot, review } = work;
+      const bindings = maintenanceBindings(userId, claim.id, authority);
+      // A failed attempt without its usage is not a known outcome; with it, it is consumed.
+      const failed = await bindings.insert(prisma, { ordinal: 0, state: "FAILED", inputHash: review.inputHash,
+        errorCode: "memory_classifier_output_invalid" });
+      expect(await repository.callState(claim, "review")).toEqual({ status: "UNKNOWN", ambiguous: true });
+      await bindings.usage(failed.id);
+      expect(await repository.callState(claim, "review")).toEqual({ status: "CONSUMED", errorCode: "memory_classifier_output_invalid" });
+      expect(await repository.callState(claim, "verify")).toEqual({ status: "UNUSED" });
+      // A retry that never started was not dispatched; a running one may have been.
+      const retry = await bindings.insert(prisma, { ordinal: 2, state: "PENDING", inputHash: review.inputHash });
+      expect(await repository.callState(claim, "review")).toEqual({ status: "UNKNOWN", ambiguous: false });
+      await prisma.memoryExecutionBinding.update({ where: { id: retry.id }, data: { state: "RUNNING", startedAt: new Date() } });
+      expect(await repository.callState(claim, "review")).toEqual({ status: "UNKNOWN", ambiguous: true });
+      expect(await repository.stagedReview(claim, snapshot, review.inputHash)).toBeNull();
+      await bindings.succeed(retry.id, 2, review.inputHash, review.acceptedOutputHash, review.output);
+      expect(await repository.callState(claim, "review")).toEqual({ status: "SUCCEEDED" });
+      expect(await repository.stagedReview(claim, snapshot, review.inputHash)).toMatchObject({
+        executionId: retry.id, inputHash: review.inputHash, acceptedOutputHash: review.acceptedOutputHash, output: review.output });
+      // The verifier's attempts keep the odd ordinals.
+      const proposal = { decisions: review.output.decisions.filter(({ action }) => action === "REMOVE_TRANSIENT") };
+      const verifyHash = memoryMaintenanceInputHash(snapshot, proposal);
+      const cancelled = await bindings.insert(prisma, { ordinal: 1, state: "CANCELLED", inputHash: verifyHash,
+        errorCode: "memory_classifier_cancelled" });
+      await bindings.usage(cancelled.id);
+      expect(await repository.callState(claim, "verify")).toEqual({ status: "CONSUMED", errorCode: "memory_classifier_cancelled" });
+      expect(await repository.stagedVerification(claim, snapshot, review.output)).toBeNull();
+      const verified = await bindings.insert(prisma, { ordinal: 3, state: "RUNNING", inputHash: verifyHash });
+      const approvals = { decisions: proposal.decisions.map(({ sourceRef }) => ({ sourceRef, approve: true })) };
+      await bindings.succeed(verified.id, 3, verifyHash, memoryMaintenanceOutputHash(verifyHash, approvals), approvals);
+      expect(await repository.stagedVerification(claim, snapshot, review.output)).toMatchObject({ executionId: verified.id, output: approvals });
+      expect(await repository.callState(claim, "verify")).toEqual({ status: "SUCCEEDED" });
+      // The receipt check admits reviews 0, 2, 4 and verifications 1, 3, 5, each under its own binding's ordinal.
+      for (const [bindingOrdinal, receiptOrdinal] of [[6, 6], [4, 0]] as const) {
+        await expect(prisma.$transaction(async (tx) => {
+          const extra = await bindings.insert(tx, { ordinal: bindingOrdinal, state: "SUCCEEDED", inputHash: review.inputHash,
+            acceptedOutputHash: review.acceptedOutputHash });
+          await tx.memoryMaintenanceExecution.create({ data: { userId, memoryJobId: claim.id, executionBindingId: extra.id,
+            ordinal: receiptOrdinal, inputHash: review.inputHash, acceptedOutputHash: review.acceptedOutputHash,
+            acceptedOutput: review.output as unknown as Prisma.InputJsonValue } });
+        })).rejects.toThrow();
+      }
+      expect((await prisma.memoryMaintenanceExecution.findMany({ where: { userId }, orderBy: { ordinal: "asc" } }))
+        .map(({ ordinal }) => ordinal)).toEqual([2, 3]);
+    } finally {
+      await prisma.memoryMaintenanceExecution.deleteMany({ where: { userId } });
+      await prisma.usageEvent.deleteMany({ where: { userId } });
+      await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
+      await cleanup(userId);
+      await deleteTestProviderExecutionAuthority(prisma, authority);
+    }
+  });
+  it("never adopts or replays a review receipt staged under the previous decoder's schema version", async () => {
+    const userId = await owner();
+    const authority = await createTestProviderExecutionAuthority(prisma, "maintenance-schema");
+    try {
+      const target = await fact(userId, "The parcel arrives at noon today.");
+      const { claim, repository, snapshot, review } = await planned(userId);
+      const bindings = maintenanceBindings(userId, claim.id, authority);
+      // The previous release keyed the same reviewed plan to its own schema version.
+      const schemaVersion = "memory-maintenance-schema-v3";
+      const previous = memoryExecutionSha256({ versions: { ...MEMORY_MAINTENANCE_VERSIONS, schemaVersion },
+        sourceSnapshotHash: snapshot.sourceSnapshotHash, stage: "REVIEW" });
+      expect(previous).not.toBe(review.inputHash);
+      const staged = await bindings.insert(prisma, { ordinal: 0, state: "RUNNING", inputHash: previous, schemaVersion });
+      await bindings.succeed(staged.id, 0, previous, memoryMaintenanceOutputHash(previous, review.output), review.output);
+      expect(await repository.stagedReview(claim, snapshot, review.inputHash)).toBeNull();
+      expect(await repository.callState(claim, "review")).toEqual({ status: "SUCCEEDED" });
+      const provider = { review: vi.fn(), verify: vi.fn() };
+      const handler = createPrismaMemoryMaintenanceHandler(prisma, { repository,
+        provider: provider as unknown as MemoryMaintenanceProvider });
+      await expect(handler.execute(claim, { now: () => new Date(), setStage: async () => {}, signal: new AbortController().signal }))
+        .rejects.toThrow(expect.objectContaining({ name: "MemoryCoordinatorError", code: "memory_maintenance_outcome_unknown", retryable: false }));
+      expect(provider.review).not.toHaveBeenCalled();
+      expect(provider.verify).not.toHaveBeenCalled();
+      expect(await prisma.memoryFact.findUniqueOrThrow({ where: { id: target.factId } })).toMatchObject({ state: "ACTIVE" });
+    } finally {
+      await prisma.memoryMaintenanceExecution.deleteMany({ where: { userId } });
+      await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
+      await cleanup(userId);
+      await deleteTestProviderExecutionAuthority(prisma, authority);
+    }
+  });
+  it("treats an attempt fenced before dispatch as consumed with or without usage, unlike another unaccounted cancellation", async () => {
+    const userId = await owner();
+    const authority = await createTestProviderExecutionAuthority(prisma, "maintenance-fenced");
+    try {
+      await fact(userId, "The parcel arrives at noon today.");
+      const { claim, repository, review } = await planned(userId);
+      const bindings = maintenanceBindings(userId, claim.id, authority);
+      const fenced = await bindings.insert(prisma, { ordinal: 0, state: "CANCELLED", inputHash: review.inputHash,
+        errorCode: "memory_classifier_dispatch_fenced" });
+      expect(await repository.callState(claim, "review")).toEqual({ status: "CONSUMED", errorCode: "memory_classifier_dispatch_fenced" });
+      await bindings.usage(fenced.id);
+      expect(await repository.callState(claim, "review")).toEqual({ status: "CONSUMED", errorCode: "memory_classifier_dispatch_fenced" });
+      await bindings.insert(prisma, { ordinal: 1, state: "CANCELLED", inputHash: review.inputHash, errorCode: "memory_classifier_cancelled" });
+      expect(await repository.callState(claim, "verify")).toEqual({ status: "UNKNOWN", ambiguous: true });
+    } finally {
+      await prisma.usageEvent.deleteMany({ where: { userId } });
+      await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
+      await cleanup(userId);
+      await deleteTestProviderExecutionAuthority(prisma, authority);
+    }
+  });
+  it("revalidates disclosed sources before any binding or paid call, and stales the changed plan", async () => {
+    const userId = await owner();
+    try {
+      const target = await fact(userId, "The parcel arrives at noon today.");
+      const work = await planned(userId);
+      await prisma.memoryFact.update({ where: { id: target.factId }, data: { pinned: true } });
+      const run = vi.fn();
+      const provider = createPrismaMemoryMaintenanceProvider(prisma, { provider: { run } });
+      const jobOwner = { userId, jobId: work.claim.id };
+      const stale = expect.objectContaining({ name: "MemoryJobFencedError", code: "memory_maintenance_dispatch_stale", retryable: false,
+        decision: { errorCode: "memory_maintenance_dispatch_stale", status: "STALE" } });
+      await expect(provider.review(work.plan, new AbortController().signal, jobOwner)).rejects.toThrow(stale);
+      await expect(provider.verify(work.snapshot, work.plan.sources, work.review.output, new AbortController().signal, jobOwner))
+        .rejects.toThrow(stale);
+      expect(run).not.toHaveBeenCalled();
+      expect(await prisma.memoryExecutionBinding.count({ where: { userId } })).toBe(0);
+      await expect(createPrismaMemoryMaintenanceHandler(prisma, { provider }).preflight(work.claim))
+        .resolves.toEqual({ status: "STALE", errorCode: "memory_maintenance_source_stale" });
     } finally { await cleanup(userId); }
   });
 });
