@@ -25,7 +25,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v7 long-term forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v51");
+      .toBe("memory-fact-extraction-prompt-v52");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v7");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -67,6 +67,22 @@ describe("Memory semantic-frame extraction prompt", () => {
     expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE);
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE);
+  });
+
+  it("limits the product_status subject to an identifiable or help-relevant item", () => {
+    // A generic purchase is a completed action, not durable ownership.
+    for (const rule of [
+      "A named PRODUCT, DEVICE, or SERVICE is an item the source identifies as a specific " +
+        "product by a brand, model, or service name, or an item of a kind for which later help " +
+        "depends on which one the user has",
+      "An ordinary item identified only by a generic category is not one and gets no " +
+        "product_status SLOT: acquiring it is a single completed action classified EPISODIC, " +
+        "and lasting ownership of an ordinary item almost everyone has is COMMON."
+    ]) expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(rule);
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT.split("A named PRODUCT, DEVICE, or SERVICE is ")
+      .length).toBe(2);
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .not.toContain("A named PRODUCT, DEVICE, or SERVICE is ");
   });
 
   it("states the long-term criterion once and keeps the adjudication plan wording", () => {
