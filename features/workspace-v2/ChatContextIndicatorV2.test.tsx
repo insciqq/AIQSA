@@ -255,7 +255,8 @@ describe("header context indicator", () => {
     expect(within(sheet).getByRole("button", { name: "Summarize and open new chat" })).toBeVisible();
     fireEvent.click(within(sheet).getByRole("button", { name: "Close chat context" }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
-    expect(continuation.onDismiss).toHaveBeenCalledOnce();
+    // Nothing was suggested, so closing leaves a later suggestion possible.
+    expect(continuation.onDismiss).not.toHaveBeenCalled();
   });
 
   it("stays open when the window narrows the popover into the sheet and widens it back", async () => {

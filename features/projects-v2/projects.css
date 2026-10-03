@@ -593,6 +593,12 @@
     display: none;
   }
 
+  /* The model island and the chip centre together with the header's 0.5rem
+     gap; the island's own auto margins would push the narrow chip to "⋯". */
+  .v2-live-header:has(> .v2-live-title > .v2-project-context) > .v2-live-header-island {
+    margin: 0;
+  }
+
   /* The details anchor to the full header so they fit beside a centred chip. */
   .v2-live-title .v2-project-context {
     position: static;

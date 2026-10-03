@@ -16,14 +16,14 @@ const child = {
     content: { blocks: [{ type: "text", text: "Conversation summary" }] }, modelId: null, modelRunId: null,
     provider: null, errorMessage: null, artifactSummary: null, citationMessageId: null }]
 };
-function Harness({ chatId = "source", leaf = "answer", eligible = true, recommended = true, uploading = false, modelSelection }: {
+type IndicatorStats = Parameters<typeof ChatContextIndicatorV2>[0]["stats"];
+const defaultStats: IndicatorStats = { approximateInputTokens: 700, safeInputBudgetTokens: 1000, totalContextTokens: 1500 };
+function Harness({ chatId = "source", leaf = "answer", eligible = true, recommended = true, uploading = false, modelSelection, stats = defaultStats }: {
   chatId?: string; leaf?: string; eligible?: boolean; recommended?: boolean; uploading?: boolean;
-  modelSelection?: ChatContinuationModelSelection;
+  modelSelection?: ChatContinuationModelSelection; stats?: IndicatorStats;
 }) {
   const control = useChatContinuation({ accountId: "owner", chatId, leafMessageId: leaf, eligible, recommended, uploading, modelSelection, onOpen });
-  return <ChatContextIndicatorV2 continuation={eligible ? control : null} stats={{
-    approximateInputTokens: 700, safeInputBudgetTokens: 1000, totalContextTokens: 1500
-  }} />;
+  return <ChatContextIndicatorV2 continuation={eligible ? control : null} stats={stats} />;
 }
 
 /** A suggestion only marks the gauge; the person opens the panel. */
@@ -60,6 +60,29 @@ it("waits for a completed answer and remembers dismissal across later messages a
   expect(screen.queryByRole("dialog")).toBeNull();
   fireEvent.click(screen.getByTestId("header-context-indicator"));
   expect(screen.getByRole("dialog")).toBeVisible();
+});
+
+it("keeps a later suggestion after the panel was opened and closed while none was shown", async () => {
+  const view = render(<Harness recommended={false} />);
+  await act(async () => {});
+  const indicator = screen.getByTestId("header-context-indicator");
+  for (const closeWith of ["Escape", "click"] as const) {
+    fireEvent.click(indicator);
+    expect(screen.getByRole("dialog", { name: "Chat context" })).toBeVisible();
+    if (closeWith === "Escape") fireEvent.keyDown(document, { key: "Escape" });
+    else fireEvent.click(indicator);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  }
+  // A live answer then measures omitted history near the limit.
+  view.rerender(<Harness leaf="later-answer" stats={{ approximateInputTokens: 700, safeInputBudgetTokens: 1000,
+    totalContextTokens: 1500, session: { approximateInputTokens: 700, contextWindow: 1500, droppedMessages: 4,
+      loadedTools: 0, maxOutputTokens: 300, modelId: "model", phase: "after_answer", provider: "fake",
+      safetyMarginTokens: 200, version: 1 } }} />);
+  expect(indicator).toHaveAttribute("data-context-tone", "warning");
+  expect(indicator).toHaveAttribute("data-context-estimate", "snapshot");
+  await waitFor(() => expect(indicator).toHaveAttribute("data-suggested", "true"));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(localStorage.length).toBe(0);
 });
 
 it("opens the saved summary after one action and ignores a second click", async () => {
