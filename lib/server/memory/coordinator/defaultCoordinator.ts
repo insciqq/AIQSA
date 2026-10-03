@@ -43,6 +43,7 @@ import {
   reconcileMemoryHistoryBackfills,
   resolveMemoryHistoryBackfillWindow
 } from "../history/backfill";
+import { repairFencedMemoryHistoryJobs } from "../history/fenceRepair";
 import { workspaceRuntime } from "../../workspace/defaultServices";
 import { createPrismaMemoryEmbeddingSetup } from "../embedding/setup";
 
@@ -60,6 +61,7 @@ export const defaultMemoryCoordinatorRepository =
 type DefaultMemoryReconciliationWork = Readonly<{
   embeddingSetup?: () => Promise<unknown>;
   cutover?: () => Promise<unknown>;
+  historyFenceRepair?: () => Promise<unknown>;
   historyBackfill?: () => Promise<unknown>;
   historyAutoHeal?: () => Promise<unknown>;
   reclassification?: () => Promise<unknown>;
@@ -74,6 +76,7 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   Object.freeze({
     embeddingSetup: () => defaultMemoryEmbeddingSetup.reconcile(),
     cutover: () => createPrismaMemoryRetrievalCutoverRepository(prisma).reconcile(),
+    historyFenceRepair: () => repairFencedMemoryHistoryJobs(prisma, { now: new Date() }),
     historyBackfill: () => reconcileMemoryHistoryBackfills(
       prisma,
       resolveMemoryHistoryBackfillWindow(
@@ -99,6 +102,8 @@ export async function reconcileDefaultMemoryWork(
   // durable shadow rebuild. It must never replay source content from this
   // periodic maintenance pass.
   await work.cutover?.();
+  // Released fence casualties are indexed by the same pass's backfill.
+  await work.historyFenceRepair?.();
   await work.historyBackfill?.();
   await work.historyAutoHeal?.();
   await work.reclassification?.();

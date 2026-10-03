@@ -2,7 +2,7 @@ import { memoryRecoveryStatusFixture } from "@/tests/support/memoryStatus";
 import { rememberDatabaseFailure } from "../../observability/databaseFailure";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryCoordinator } from "./coordinator";
-import { MemoryCoordinatorError } from "./errors";
+import { MemoryCoordinatorError, MemoryJobFencedError } from "./errors";
 import type { MemoryCoordinatorRepository } from "./prismaRepository";
 import { MemoryCoordinatorRegistry } from "./registry";
 import { getContext, reportSubsystemHealthy, runWithContext, type ObservabilityContext } from "../../observability";
@@ -15,6 +15,8 @@ import {
 import type {
   MemoryDeletionClaim,
   MemoryJobClaim,
+  MemoryJobGateDecision,
+  MemoryJobHandler,
   MemoryWaitingJob
 } from "./types";
 
@@ -1125,6 +1127,133 @@ describe("Memory job diagnostics", () => {
       expect(record).not.toHaveProperty("job_id");
       expect(record).not.toHaveProperty("trace_id");
     }
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+});
+
+describe("Memory job fences outrank failures", () => {
+  const fenced = () => new MemoryJobFencedError("memory_history_job_invalid", {
+    errorCode: "memory_source_stale", status: "STALE"
+  });
+
+  beforeEach(() => {
+    for (const stage of ["claim", "discover", "reconcile", "preflight", "heartbeat", "health"] as const) {
+      reportSubsystemHealthy("memory", stage);
+    }
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  /** The first gate admits the claim; the job then fails and `regate`
+   * answers every later gate run. */
+  async function failedJob(input: Readonly<{
+    claim?: MemoryJobClaim;
+    failure: unknown;
+    regate: () => Promise<MemoryJobGateDecision>;
+  }>) {
+    const claim = input.claim ?? jobClaim();
+    const repo = repository({
+      claimJob: vi.fn().mockResolvedValueOnce(claim).mockResolvedValue(null)
+    });
+    const preflight = vi.fn<MemoryJobHandler["preflight"]>()
+      .mockResolvedValueOnce({ status: "READY" })
+      .mockImplementation(input.regate);
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({ kind: claim.kind, preflight, execute: async () => { throw input.failure; } });
+    const service = coordinator(registry, repo);
+    await service.reconcileNow();
+    await service.stop();
+    return { claim, preflight, repo };
+  }
+
+  it.each([
+    { errorCode: "memory_source_stale", status: "STALE" },
+    { errorCode: "memory_history_disabled", status: "CANCELLED" }
+  ] as const)("settles a fenced job with the re-run gate's $status decision", async (decision) => {
+    const { claim, preflight, repo } = await failedJob({ failure: fenced(), regate: async () => decision });
+    expect(preflight).toHaveBeenCalledTimes(2);
+    expect(repo.settleJobGate).toHaveBeenCalledExactlyOnceWith({ claim, decision, now: NOW });
+    expect(repo.terminalJob).not.toHaveBeenCalled();
+    expect(repo.retryJob).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["throws", async (): Promise<MemoryJobGateDecision> => { throw new Error("PRIVATE_GATE"); }],
+    ["waits for configuration", async (): Promise<MemoryJobGateDecision> => ({
+      errorCode: "memory_execution_target_unavailable", status: "WAITING_FOR_CONFIGURATION"
+    })],
+    ["returns an invalid decision", async (): Promise<MemoryJobGateDecision> => ({
+      errorCode: "Private gate detail", status: "STALE"
+    })]
+  ] as const)("keeps a proven fence's own decision when the re-run gate %s", async (_name, regate) => {
+    const { claim, repo } = await failedJob({ failure: fenced(), regate });
+    expect(repo.settleJobGate).toHaveBeenCalledExactlyOnceWith({ claim, now: NOW,
+      decision: { errorCode: "memory_source_stale", status: "STALE" } });
+    expect(repo.terminalJob).not.toHaveBeenCalled();
+  });
+
+  it("keeps today's terminal failure when the re-run gate still accepts a fenced claim", async () => {
+    const { claim, preflight, repo } = await failedJob({ failure: fenced(), regate: async () => ({ status: "READY" }) });
+    expect(preflight).toHaveBeenCalledTimes(2);
+    expect(repo.terminalJob).toHaveBeenCalledExactlyOnceWith({ claim, errorCode: "memory_history_job_invalid", now: NOW });
+    expect(repo.settleJobGate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a non-retryable failure", jobClaim(), new MemoryCoordinatorError("memory_fact_binding_stale", false)],
+    ["an exhausted retryable failure", jobClaim({ attemptCount: 3 }), new Error("PRIVATE_PROCESSING")]
+  ] as const)("settles %s whose gate now rejects the job instead of failing it", async (_name, claim, failure) => {
+    const decision = { errorCode: "memory_maintenance_source_stale", status: "STALE" } as const;
+    const { preflight, repo } = await failedJob({ claim, failure, regate: async () => decision });
+    expect(preflight).toHaveBeenCalledTimes(2);
+    expect(repo.settleJobGate).toHaveBeenCalledExactlyOnceWith({ claim, decision, now: NOW });
+    expect(repo.terminalJob).not.toHaveBeenCalled();
+    expect(repo.retryJob).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["accepts the job", async (): Promise<MemoryJobGateDecision> => ({ status: "READY" })],
+    ["waits for configuration", async (): Promise<MemoryJobGateDecision> => ({
+      errorCode: "memory_execution_target_unavailable", status: "WAITING_FOR_CONFIGURATION"
+    })],
+    ["throws", async (): Promise<MemoryJobGateDecision> => { throw new Error("PRIVATE_GATE"); }],
+    ["returns an invalid decision", async (): Promise<MemoryJobGateDecision> => ({
+      errorCode: "Private gate detail", status: "CANCELLED"
+    })]
+  ] as const)("keeps a genuine failure terminal when the re-run gate %s", async (_name, regate) => {
+    const { claim, preflight, repo } = await failedJob({
+      failure: new MemoryCoordinatorError("memory_history_classification_invalid", false), regate
+    });
+    expect(preflight).toHaveBeenCalledTimes(2);
+    expect(repo.terminalJob).toHaveBeenCalledExactlyOnceWith({
+      claim, errorCode: "memory_history_classification_invalid", now: NOW
+    });
+    expect(repo.settleJobGate).not.toHaveBeenCalled();
+  });
+
+  it("neither re-gates a failure that will be retried nor an owned lease loss", async () => {
+    const regate = vi.fn(async (): Promise<MemoryJobGateDecision> => ({
+      errorCode: "memory_source_stale", status: "STALE"
+    }));
+    const retried = await failedJob({ failure: new MemoryCoordinatorError("memory_job_failed", true), regate });
+    expect(retried.repo.retryJob).toHaveBeenCalledOnce();
+    const lost = await failedJob({ failure: new MemoryCoordinatorError("memory_job_lease_lost", false), regate });
+    expect(lost.repo.terminalJob).toHaveBeenCalledOnce();
+    expect(regate).not.toHaveBeenCalled();
+    for (const { repo } of [retried, lost]) expect(repo.settleJobGate).not.toHaveBeenCalled();
+  });
+
+  it("records the fenced failure and the settled gate decision content-free", async () => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const records = () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+    await failedJob({ failure: fenced(), regate: async () => ({ errorCode: "memory_source_stale", status: "STALE" }) });
+    expect(records().filter((record) => record.job_id === "job-1").slice(-3)).toEqual([
+      expect.objectContaining({ event: "job_attempt", code: "memory_history_job_invalid",
+        outcome: "stale", action: "none", level: "info" }),
+      expect.objectContaining({ event: "job_attempt", stage: "preflight", code: "memory_source_stale",
+        outcome: "stale", level: "info" }),
+      expect.objectContaining({ event: "job_persistence", stage: "preflight", code: "memory_source_stale",
+        outcome: "confirmed" })
+    ]);
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 });

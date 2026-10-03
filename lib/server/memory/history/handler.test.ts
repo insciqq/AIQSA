@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { MemoryJobFencedError } from "../coordinator/errors";
 import type { MemoryJobClaim } from "../coordinator/types";
 import { memorySha256 } from "../persistence/lexical";
 import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
@@ -831,4 +832,35 @@ describe("Memory INDEX_HISTORY handler", () => {
       digestSourceChunksProcessed: 0
     });
   });
+});
+
+describe("Memory INDEX_HISTORY fences during classification", () => {
+  it.each(["contextual_key_generation", "digest_generation"] as const)(
+    "hands a fence raised during %s to the coordinator instead of degrading the source",
+    async (stage) => {
+      const fence = new MemoryJobFencedError("memory_history_job_invalid", {
+        errorCode: "memory_source_stale", status: "STALE"
+      });
+      const parent = chunk("chunk-fenced", 0);
+      const apply = vi.fn();
+      const handler = createMemoryHistoryIndexHandler({
+        ...(stage === "contextual_key_generation"
+          ? { contextualKeyGenerator: { generate: vi.fn(async () => { throw fence; }) } }
+          : {}),
+        digestGenerator: { generate: vi.fn(async () => { throw fence; }) },
+        repository: {
+          apply,
+          preflight: vi.fn(async () => ({ status: "READY" as const })),
+          prepare: vi.fn(async () => ({ plan: plan([parent], [round("round-fenced", parent.id, 0)]) }))
+        } as unknown as MemoryHistoryIndexRepository
+      });
+      const executionContext = context();
+
+      await expect(handler.execute(claim(), executionContext)).rejects.toBe(fence);
+      expect(fence).toMatchObject({ code: "memory_history_job_invalid", retryable: false,
+        decision: { errorCode: "memory_source_stale", status: "STALE" } });
+      expect(executionContext.setStage.mock.calls.at(-1)?.[0]).toBe(stage);
+      expect(apply).not.toHaveBeenCalled();
+    }
+  );
 });

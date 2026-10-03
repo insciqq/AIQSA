@@ -11,7 +11,6 @@ import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryIndexJobFingerprint
 } from "./contract";
-import { MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE } from "./incremental";
 import { MEMORY_TOOL_EVENT_PROJECTION_VERSION } from "./toolEvents";
 
 export const MEMORY_HISTORY_BACKFILL_WINDOW = 4;
@@ -290,40 +289,6 @@ export async function seedMemoryHistoryBackfill(
     }
   }
   return Object.freeze({ activeJobs, enqueuedJobs });
-}
-
-export async function authorizeMemoryHistoryTerminalRetries(
-  tx: MemoryTransaction,
-  settings: LockedMemorySettings,
-  now = new Date()
-): Promise<number> {
-  if (!settings.useMemoryFacts || !settings.referenceChatHistory) return 0;
-  const updated = await tx.$executeRaw(Prisma.sql`
-    UPDATE "MemoryJob" AS job
-    SET
-      "state" = 'STALE'::"MemoryJobState",
-      "updatedAt" = ${now}
-    FROM "Chat" AS chat
-    INNER JOIN "Message" AS leaf
-      ON leaf."chatId" = chat."id"
-     AND leaf."id" = chat."activeLeafMessageId"
-     AND leaf."role" = 'assistant'
-     AND leaf."status" = 'complete'::"MessageStatus"
-    WHERE job."userId" = ${settings.userId}
-      AND job."kind" = 'INDEX_HISTORY'::"MemoryJobKind"
-      AND job."state" = 'TERMINAL_FAILED'::"MemoryJobState"
-      AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
-      AND job."userId" = chat."userId"
-      AND job."chatId" = chat."id"
-      AND job."activeLeafMessageId" = chat."activeLeafMessageId"
-      AND job."branchGeneration" = chat."memoryBranchGeneration"
-      AND job."sourceRevision" = chat."memorySourceRevision"
-      -- The explicit path ceiling is deterministic for this source; a retry
-      -- would only repeat the same bounded path walk.
-      AND job."errorCode" IS DISTINCT FROM ${MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE}
-      AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
-  `);
-  return updated;
 }
 
 export async function readMemoryHistoryIndexingProgress(
