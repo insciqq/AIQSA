@@ -55,7 +55,8 @@ export async function reconcileMemoryMaintenanceWork(client: PrismaClient, now: 
   // Settle content-free checkpoints for terminal jobs without retrying their
   // possibly dispatched calls. A failed attempt admits new jobs only within the
   // budgets of memoryMaintenanceUncoveredPredicate, each under a new source
-  // hash; new independent evidence or a future policy admits another pass.
+  // hash; an expired decision, new independent evidence or a future policy
+  // admits another pass.
   await client.$executeRaw(Prisma.sql`
     DELETE FROM "MemoryMaintenanceReview" review USING "MemoryJob" job
     WHERE job."userId" = review."userId" AND job.id = review."memoryJobId" AND review.disposition = 'PENDING'
