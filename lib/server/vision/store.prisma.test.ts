@@ -95,7 +95,7 @@ describe("durable auxiliary Vision accounting", () => {
     // create its own hash-only pending call through the real Agent store.
     await f.db.modelRunToolCall.delete({ where: { id: f.context.toolCallId } });
     const session = await f.db.workspaceSession.create({ data: {
-      chatId: f.context.chatId, sandboxName: `native-vision-${randomUUID()}`, imageRef: "aiqsa-workspace:0.1.30",
+      chatId: f.context.chatId, sandboxName: `native-vision-${randomUUID()}`, imageRef: "aiqsa-workspace:0.1.31",
       internetEnabled: false, policyRevision: 1, state: "RUNNING", runtimeSandboxId: "synthetic-capture-runtime",
       operationOwner: `run:${f.context.runId}`, version: 1, expiresAt: new Date(Date.now() + 600000)
     } });
