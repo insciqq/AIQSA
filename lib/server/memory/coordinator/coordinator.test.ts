@@ -1258,7 +1258,7 @@ describe("Memory job fences outrank failures", () => {
   });
 });
 
-describe("Memory discovery cadence", () => {
+describe("Memory coordinator while one job runs long", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(NOW); });
   afterEach(() => { vi.useRealTimers(); });
 
@@ -1401,5 +1401,92 @@ describe("Memory discovery cadence", () => {
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(reconcileWork).toHaveBeenCalledTimes(settled);
+  });
+
+  function idleSlotCoordinator() {
+    const longJob = gated();
+    const queue: MemoryJobClaim[] = [jobClaim({ id: "job-long", kind: "INDEX_HISTORY" })];
+    const claimJob = vi.fn(async () => queue.shift() ?? null);
+    const executed: string[] = [];
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({
+      execute: async (claim) => {
+        executed.push(claim.id);
+        if (claim.id === "job-long") await longJob.wait();
+        return { acceptedResultHash: RESULT_HASH };
+      },
+      kind: "INDEX_HISTORY",
+      preflight: async () => ({ status: "READY" })
+    });
+    const reconcileWork = vi.fn(async () => undefined);
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      policy: { heartbeatMs: 10, intervalMs: 100, leaseMs: 1_000, maxDeletionParallel: 1, maxJobParallel: 2 },
+      reconcileWork,
+      registry,
+      repository: repository({ claimJob })
+    });
+    return { claimJob, executed, queue, reconcileWork, release: () => longJob.release(0), service };
+  }
+
+  it("lets an idle slot claim work enqueued during a long job once per interval", async () => {
+    const { claimJob, executed, queue, release, service } = idleSlotCoordinator();
+    try {
+      service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(executed).toEqual(["job-long"]);
+      expect(claimJob).toHaveBeenCalledTimes(2);
+      // The idle slot claims again once per interval, never in a tight loop.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(claimJob).toHaveBeenCalledTimes(12);
+
+      queue.push(jobClaim({ id: "job-later", kind: "INDEX_HISTORY", userId: "user-2" }));
+      await vi.advanceTimersByTimeAsync(99);
+      expect(executed).toEqual(["job-long"]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(executed).toEqual(["job-long", "job-later"]);
+      expect(claimJob).toHaveBeenCalledTimes(14);
+    } finally {
+      release();
+      await service.stop();
+    }
+  });
+
+  it("releases a waiting idle slot at shutdown", async () => {
+    const { claimJob, release, service } = idleSlotCoordinator();
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(claimJob).toHaveBeenCalledTimes(2);
+    await service.stop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(claimJob).toHaveBeenCalledTimes(2);
+
+    release();
+    await service.reconcileNow();
+    expect(claimJob).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("ends the pass as before once the long job settles", async () => {
+    const { claimJob, reconcileWork, release, service } = idleSlotCoordinator();
+    try {
+      service.start();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(claimJob).toHaveBeenCalledTimes(4);
+      expect(reconcileWork).toHaveBeenCalledTimes(2);
+
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      // Only the finished slot's own empty claim; the idle slot exits unclaimed.
+      expect(claimJob).toHaveBeenCalledTimes(5);
+      expect(reconcileWork).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(99);
+      expect(claimJob).toHaveBeenCalledTimes(5);
+      // The next ordinary pass starts from the coordinator timer.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(claimJob).toHaveBeenCalledTimes(7);
+    } finally {
+      await service.stop();
+    }
   });
 });
