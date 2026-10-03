@@ -600,6 +600,7 @@ describe("up and install", () => {
     expect(result.status).toBe(status);
     expect(existsSync(fixture.file(".env"))).toBe(false);
     expect(fixture.dockerLog).not.toMatch(/ (up|config) /u);
+    if (args.includes("on")) expect(result.stdout).toContain("rerun with --workspace auto (or off)");
   });
 });
 

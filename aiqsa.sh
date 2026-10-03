@@ -581,9 +581,12 @@ doctor_kvm() {
       # Workspace off: the KVM facts are informational only.
       check INFO kvm "Workspace unavailable: $KVM_REASON (virtualization: $KVM_VIRT)" \
         "Workspace needs KVM; on virtual machines enable nested virtualization or use a bare-metal host."
-    else
+    elif [[ -f $ENV_FILE ]]; then
       check FAIL kvm "Workspace is enabled but $KVM_REASON (virtualization: $KVM_VIRT)" \
         "Enable nested virtualization or use a bare-metal host, or disable Workspace by commenting out COMPOSE_PROFILES=workspace in .env."
+    else
+      check FAIL kvm "--workspace on needs KVM, but $KVM_REASON (virtualization: $KVM_VIRT)" \
+        "Enable nested virtualization or use a bare-metal host, or rerun with --workspace auto (or off) to install without Workspace."
     fi
     return 0
   fi
