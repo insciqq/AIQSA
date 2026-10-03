@@ -319,7 +319,7 @@ test.describe("shell touch targets · phone portrait 390×844", () => {
       await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-chat-active", "true");
       await expectPhoneIslandGaps(page, true);
       await expectPhoneIslandSegments(page);
-      // Account Settings from a personal chat (a Project chat's menu opens Project settings).
+      // Account Settings from a personal chat.
       await expectSettingsHeaderRoom(page);
 
       const project = await createOwnedProjectChat(page);

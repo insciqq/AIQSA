@@ -22,6 +22,33 @@ export function contextCompactionFailureOutcome(code: string): ContextCompaction
   return "unknown";
 }
 
+const CONTEXT_FAILURE_ACTION =
+  "Continue in a new chat from a summary, or choose a model with a larger context window.";
+
+/** Codes of a run that failed while fitting its context: the irreducible
+ * overflow and every failed compaction cycle that ends the run. */
+const CONTEXT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "context_too_large",
+  "context_compaction_outcome_unknown",
+  "context_compaction_provider_failed",
+  "context_compaction_source_check_failed",
+  "context_compaction_source_unavailable",
+  "context_compaction_summary_failed",
+  "context_compaction_summary_invalid",
+  "context_compaction_summary_no_progress"
+]);
+
+/** Safe user-facing text for a run that failed while fitting its context, or
+ * null for any other code. It derives only from the stable code, which it
+ * names, never from exception or provider prose. */
+export function contextFailureMessage(code: string): string | null {
+  if (!CONTEXT_FAILURE_CODES.has(code)) return null;
+  const cause = code === "context_too_large"
+    ? "This conversation no longer fits the model's context window"
+    : "The earlier conversation could not be compacted to fit the model's context window";
+  return `${cause} (${code}). ${CONTEXT_FAILURE_ACTION}`;
+}
+
 export function createContextCompactionPublisher(
   append: (status: ContextCompactionStatus) => Promise<void>,
   initial?: ContextCompactionStatus | null

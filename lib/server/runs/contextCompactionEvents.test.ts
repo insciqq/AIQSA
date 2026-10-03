@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeContextCompactionStatus, mergeContextCompactionStatus, type ContextCompactionStatus, type ContextPlanMeasurement } from "../../contracts/contextCompaction";
-import { contextCompactionFailureOutcome, createContextCompactionPublisher } from "./contextCompactionEvents";
+import { contextCompactionFailureOutcome, contextFailureMessage, createContextCompactionPublisher } from "./contextCompactionEvents";
 
 const measured = (beforeTokens: number, afterTokens: number): ContextPlanMeasurement => ({
   afterTokens, beforeTokens, budgetTokens: 1_000, legacyFallback: false,
@@ -68,5 +68,18 @@ describe("compaction failure outcome", () => {
     ["project_access_changed", "unknown"]
   ] as const)("maps the run code %s to the published %s", (code, outcome) => {
     expect(contextCompactionFailureOutcome(code)).toBe(outcome);
+  });
+});
+
+describe("context failure copy", () => {
+  it("names the stable code with one action only for context failures", () => {
+    expect(contextFailureMessage("context_compaction_provider_failed")).toBe(
+      "The earlier conversation could not be compacted to fit the model's context window (context_compaction_provider_failed). " +
+      "Continue in a new chat from a summary, or choose a model with a larger context window."
+    );
+    expect(contextFailureMessage("context_too_large")).toMatch(/^This conversation no longer fits .* \(context_too_large\)\. Continue in a new chat/);
+    for (const code of ["provider_round_failed", "provider_context_length_exceeded", "context_compaction_policy_retired", "agent_context_too_large"]) {
+      expect(contextFailureMessage(code)).toBeNull();
+    }
   });
 });
