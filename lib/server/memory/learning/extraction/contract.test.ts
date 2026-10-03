@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { MemoryJobDescriptor } from "../../coordinator/types";
 import { memorySha256 } from "../../persistence/lexical";
 import {
+  MEMORY_FACT_EXTRACTION_HEAL_JOB_PREFIX,
   MEMORY_FACT_EXTRACTION_JOB_PREFIX,
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS,
@@ -10,6 +11,8 @@ import {
   MEMORY_FACT_MAX_TARGET_CHARACTERS,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
   memoryFactExtractionClaimIsValid,
+  memoryFactExtractionHealJobFingerprint,
+  memoryFactExtractionHealJobPrefix,
   memoryFactExtractionJobFingerprint,
   memoryFactExtractionJobIdentity,
   memoryFactNextPage,
@@ -123,6 +126,44 @@ describe("Memory fact extraction pages", () => {
       cursor: 10,
       ordinal: MEMORY_FACT_MAX_SOURCE_PAGES + 1
     })).toThrow("memory_fact_source_invalid");
+  });
+
+  it("proves only the two first-page re-extraction keys of one Memory-role policy version", () => {
+    const key = (samePolicy: boolean, utilityPolicyVersion = 22) => ({ samePolicy, utilityPolicyVersion });
+    const newer = memoryFactExtractionHealJobFingerprint(source, "UNICODE_V2", key(false));
+    const same = memoryFactExtractionHealJobFingerprint(source, "UNICODE_V2", key(true));
+    expect(newer).toMatch(/^extract-facts:vnext:heal\.u22:[a-f0-9]{64}$/u);
+    expect(same).toMatch(/^extract-facts:vnext:heal\.u22\.same-policy:[a-f0-9]{64}$/u);
+    expect(memoryFactExtractionHealJobFingerprint(source, "UNICODE_V2", key(true, 2_147_483_647)).length)
+      .toBeLessThanOrEqual(128);
+    // A new job of the same source: neither the ordinary first page nor the
+    // other key, nor the same key of another policy version.
+    expect(new Set([newer, same, memoryFactExtractionJobFingerprint(source, "UNICODE_V2"),
+      memoryFactExtractionHealJobFingerprint(source, "UNICODE_V2", key(false, 23))]).size).toBe(4);
+    for (const fingerprint of [newer, same]) {
+      expect(fingerprint.startsWith(MEMORY_FACT_EXTRACTION_HEAL_JOB_PREFIX)).toBe(true);
+      expect(memoryFactExtractionJobIdentity(job(fingerprint))).toEqual({
+        identityProfile: "UNICODE_V2",
+        page: { cursor: 0, ordinal: 0 }
+      });
+      expect(memoryFactExtractionClaimIsValid(job(fingerprint))).toBe(true);
+      expect(memoryFactExtractionClaimIsValid({ ...job(fingerprint), sourceMessageId: "message-2" }))
+        .toBe(false);
+    }
+    expect(newer.startsWith(memoryFactExtractionHealJobPrefix(key(false)))).toBe(true);
+    expect(same.startsWith(memoryFactExtractionHealJobPrefix(key(false)))).toBe(false);
+    expect(same.startsWith(memoryFactExtractionHealJobPrefix(key(true)))).toBe(true);
+    for (const forged of [
+      newer.replace("heal.u22:", "heal.u23:"),
+      newer.replace("heal.u22:", "heal.u022:"),
+      same.replace(".same-policy:", ":"),
+      same.replace(".same-policy:", ".same:"),
+      newer.replace("heal.u22:", "heal.u22.p1.20000:")
+    ]) {
+      expect(memoryFactExtractionJobIdentity(job(forged)), forged).toBeNull();
+    }
+    expect(() => memoryFactExtractionHealJobFingerprint(source, "UNICODE_V2", key(false, 0)))
+      .toThrow("memory_fact_source_invalid");
   });
 
   it("keeps a target that fits one input whole and pages a longer one", () => {

@@ -1,10 +1,18 @@
-import { describe, expect, it } from "vitest";
+import type { PrismaClient } from "@prisma/client";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildMemoryReclassificationRequest,
   createMemoryReclassificationProvider,
+  createPrismaMemoryReclassificationProvider,
   decodeMemoryReclassificationDecision,
   MemoryReclassificationError
 } from "./classifier";
+
+const governed = vi.hoisted(() => vi.fn());
+vi.mock("../execution", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../execution")>(),
+  executeGovernedMemoryStructuredOutput: governed
+}));
 
 const role = {
   credentialSource: "default" as const,
@@ -127,5 +135,25 @@ describe("memory reclassification classifier", () => {
       policyVersion: "memory-safety-policy-v3:7",
       providerId: "openai"
     });
+  });
+
+  it("opts in to bounded validation retries on the job's next durable ordinal", async () => {
+    const highest = [1, 4];
+    const aggregate = vi.fn(async () => ({ _max: { ordinal: highest.shift() ?? null } }));
+    governed.mockImplementation(async (call: {
+      ordinal: number;
+      validationRetry: { allocateOrdinal(attempt: number): Promise<number>; maxAttempts: number };
+    }) => {
+      expect(call.ordinal).toBe(4);
+      expect(call.validationRetry.maxAttempts).toBe(3);
+      await expect(call.validationRetry.allocateOrdinal(1)).resolves.toBe(5);
+      throw new Error("provider_unavailable");
+    });
+    await expect(createPrismaMemoryReclassificationProvider(
+      { memoryExecutionBinding: { aggregate } } as unknown as PrismaClient,
+      { provider: { run: vi.fn() } }
+    ).classify("Synthetic statement.", undefined, "EXPLICIT", { jobId: "job-1", ordinal: 4, userId: "owner-1" }))
+      .rejects.toEqual(new MemoryReclassificationError("memory_reclassification_unavailable"));
+    expect(governed).toHaveBeenCalledOnce();
   });
 });

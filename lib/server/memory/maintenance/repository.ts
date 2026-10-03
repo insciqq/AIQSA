@@ -1,11 +1,14 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { isMemoryCoordinatorErrorCode } from "../coordinator/errors";
 import type { MemoryJobClaim, MemoryJobDescriptor } from "../coordinator/types";
+import { MEMORY_STRUCTURED_OUTPUT_DISPATCH_FENCED_CODE } from "../execution/structuredClassifier";
 import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { advanceMemoryMutation, lockMemorySettings, type MemoryTransaction } from "../persistence/transaction";
 import { memoryPurgeTargetType } from "../purge/contract";
 import { decodeMemoryMaintenanceOutput, decodeMemoryMaintenanceVerification, type MemoryMaintenanceOutput } from "./contract";
-import { MEMORY_MAINTENANCE_POLICY_VERSION, memoryMaintenancePlanHash, type MemoryMaintenanceBlockedReason,
-  type MemoryMaintenancePlan, type MemoryMaintenanceSource, type MemoryMaintenanceSourceIdentity } from "./policy";
+import { MEMORY_MAINTENANCE_POLICY_VERSION, memoryMaintenanceOrdinal, memoryMaintenanceOrdinals, memoryMaintenancePlanHash,
+  type MemoryMaintenanceBlockedReason, type MemoryMaintenanceCall, type MemoryMaintenancePlan, type MemoryMaintenanceSource,
+  type MemoryMaintenanceSourceIdentity } from "./policy";
 import { memoryMaintenanceInputHash, memoryMaintenanceOutputHash, type MemoryMaintenanceResult,
   type MemoryMaintenanceReviewResult, type MemoryMaintenanceVerificationResult } from "./provider";
 import { loadMemoryMaintenanceSources } from "./source";
@@ -100,11 +103,25 @@ type Outcome = Readonly<{ source: MemoryMaintenanceSnapshotSource } & (
   | { disposition: "REMOVED" | "REJECTED" }
   | { disposition: "BLOCKED"; reasonCode: MemoryMaintenanceBlockedReason })>;
 
+/** What the earlier attempts of one call left. Attempts that all settled
+ * FAILED or CANCELLED with their usage, or were fenced before dispatch, are a
+ * known, consumed outcome with the last one's cause; anything else is neither
+ * reused nor replayed. */
+export type MemoryMaintenanceCallState =
+  | Readonly<{ status: "UNUSED" }>
+  | Readonly<{ status: "SUCCEEDED" }>
+  | Readonly<{ status: "CONSUMED"; errorCode: string }>
+  | Readonly<{ status: "UNKNOWN"; ambiguous: boolean }>;
+
 export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
-  async function staged<T>(job: MemoryJobDescriptor, ordinal: number, inputHash: string,
+  /** The newest unapplied receipt of the call; one attempt succeeds at most. */
+  function receipt(job: MemoryJobDescriptor, call: MemoryMaintenanceCall) {
+    return client.memoryMaintenanceExecution.findFirst({ where: { userId: job.userId, memoryJobId: job.id,
+      ordinal: { in: [...memoryMaintenanceOrdinals(call)] }, appliedAt: null }, orderBy: { ordinal: "desc" } });
+  }
+  async function staged<T>(job: MemoryJobDescriptor, call: MemoryMaintenanceCall, inputHash: string,
     decode: (value: unknown) => T): Promise<MemoryMaintenanceResult<T> | null> {
-    const stored = await client.memoryMaintenanceExecution.findFirst({ where: { userId: job.userId,
-      memoryJobId: job.id, ordinal, appliedAt: null } });
+    const stored = await receipt(job, call);
     if (!stored || stored.inputHash !== inputHash || stored.acceptedOutput === null) return null;
     const binding = await client.memoryExecutionBinding.findFirst({ where: { userId: job.userId,
       id: stored.executionBindingId, state: "SUCCEEDED", inputHash, acceptedOutputHash: stored.acceptedOutputHash,
@@ -118,12 +135,30 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
   }
   return Object.freeze({
     snapshot: (job: MemoryJobDescriptor) => snapshot(client, job),
-    async bindingExists(job: MemoryJobDescriptor, ordinal: number) {
-      return (await client.memoryExecutionBinding.count({ where: { userId: job.userId, memoryJobId: job.id,
-        logicalRole: "MEMORY_SYNTHESIZE", ordinal } })) > 0;
+    /** Every binding of the job whose ordinal parity belongs to the call,
+     * including any outside the receipt range, so none is overlooked. */
+    async callState(job: MemoryJobDescriptor, call: MemoryMaintenanceCall): Promise<MemoryMaintenanceCallState> {
+      const parity = memoryMaintenanceOrdinal(call, 0);
+      const attempts = (await client.memoryExecutionBinding.findMany({ where: { userId: job.userId, memoryJobId: job.id,
+        logicalRole: "MEMORY_SYNTHESIZE" }, orderBy: { ordinal: "asc" },
+      select: { id: true, ordinal: true, state: true, errorCode: true } })).filter(({ ordinal }) => ordinal % 2 === parity);
+      if (attempts.length === 0) return { status: "UNUSED" };
+      if (attempts.some(({ state }) => state === "SUCCEEDED")) return { status: "SUCCEEDED" };
+      const usage = new Set((await client.usageEvent.findMany({ where: { userId: job.userId,
+        memoryExecutionBindingId: { in: attempts.map(({ id }) => id) } }, select: { memoryExecutionBindingId: true } }))
+        .map(({ memoryExecutionBindingId }) => memoryExecutionBindingId));
+      // A call fenced before dispatch sent nothing, so it needs no accounting.
+      const settled = (attempt: (typeof attempts)[number]) => (attempt.state === "FAILED" || attempt.state === "CANCELLED") &&
+        (usage.has(attempt.id) || (attempt.state === "CANCELLED" && attempt.errorCode === MEMORY_STRUCTURED_OUTPUT_DISPATCH_FENCED_CODE));
+      const last = attempts.at(-1)!;
+      if (attempts.every(settled) && last.errorCode !== null && isMemoryCoordinatorErrorCode(last.errorCode)) {
+        return { status: "CONSUMED", errorCode: last.errorCode };
+      }
+      // A never-started binding was not dispatched; anything else unsettled may have been.
+      return { status: "UNKNOWN", ambiguous: attempts.some((attempt) => attempt.state !== "PENDING" && !settled(attempt)) };
     },
     stagedReview(job: MemoryJobDescriptor, reviewed: MemoryMaintenanceSnapshot, inputHash: string) {
-      return staged(job, 0, inputHash, (value) => {
+      return staged(job, "review", inputHash, (value) => {
         const saved = value as MemoryMaintenanceOutput;
         return decodeMemoryMaintenanceOutput({ decisions: saved?.decisions?.map((decision) => ({
           source_ref: decision.sourceRef, scope_basis: decision.scopeBasis, action: decision.action, usefulness: decision.usefulness, reason: decision.reason
@@ -133,15 +168,14 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
     /** The verified removals are those the settled verifier output names; its
      * input hash proves it was produced for exactly that disclosed subset. */
     async stagedVerification(job: MemoryJobDescriptor, reviewed: Readonly<{ sourceSnapshotHash: string }>, review: MemoryMaintenanceOutput) {
-      const stored = await client.memoryMaintenanceExecution.findFirst({ where: { userId: job.userId,
-        memoryJobId: job.id, ordinal: 1, appliedAt: null }, select: { acceptedOutput: true } });
+      const stored = await receipt(job, "verify");
       const saved = stored?.acceptedOutput as { decisions?: unknown } | null | undefined;
       if (!saved || !Array.isArray(saved.decisions)) return null;
       const refs = new Set(saved.decisions.map((decision) => (decision as { sourceRef?: unknown } | null)?.sourceRef));
       const proposal: MemoryMaintenanceOutput = { decisions: review.decisions.filter(({ action, sourceRef }) =>
         action === "REMOVE_TRANSIENT" && refs.has(sourceRef)) };
       if (proposal.decisions.length === 0) return null;
-      return staged(job, 1, memoryMaintenanceInputHash(reviewed, proposal), (value) => {
+      return staged(job, "verify", memoryMaintenanceInputHash(reviewed, proposal), (value) => {
         const output = value as { decisions?: Array<{ sourceRef: string; approve: boolean }> };
         return decodeMemoryMaintenanceVerification({ decisions: output?.decisions?.map((decision) => ({
           source_ref: decision.sourceRef, approve: decision.approve

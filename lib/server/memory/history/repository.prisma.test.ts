@@ -49,11 +49,11 @@ import {
 } from "../temporaryRetention";
 import { createMemoryToolEgressReceiptService } from "../egress/receipts";
 import {
-  authorizeMemoryHistoryTerminalRetries,
   MEMORY_HISTORY_BACKFILL_WINDOW,
   readMemoryHistoryIndexingProgress,
   seedMemoryHistoryBackfill
 } from "./backfill";
+import { repairFencedMemoryHistoryJobs } from "./fenceRepair";
 import {
   MEMORY_HISTORY_MAX_CHECKPOINT_MESSAGES,
   MEMORY_HISTORY_PATH_LIMIT_EXCEEDED_CODE,
@@ -1132,6 +1132,79 @@ describe("Memory lexical history index persistence", () => {
           userId
         }
       })).resolves.toBe(2);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("releases only fence casualties and revives them at the current generation", async () => {
+    const userId = await createOwner("memory-history-fence-repair");
+    try {
+      for (let ordinal = 0; ordinal < 2; ordinal += 1) {
+        const updatedAt = new Date(`2026-08-10T${String(ordinal + 8).padStart(2, "0")}:00:00.000Z`);
+        const chat = await prisma.chat.create({ data: { title: `Fence repair ${ordinal}`, userId } });
+        const turn = await createTurn({
+          assistantText: `Fence repair assistant ${ordinal}`,
+          chatId: chat.id,
+          createdAt: updatedAt,
+          parentMessageId: null,
+          userId,
+          userText: `Fence repair user ${ordinal}`
+        });
+        await prisma.chat.update({
+          data: { activeLeafMessageId: turn.assistantMessage.id, updatedAt },
+          where: { id: chat.id }
+        });
+      }
+      await seedHistoryBackfill(userId);
+      const [casualty, genuine] = await prisma.memoryJob.findMany({
+        orderBy: { chatId: "asc" },
+        where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
+      });
+      if (!casualty || !genuine) throw new Error("memory_history_fence_repair_fixture_missing");
+      // Previous-release outcomes of a Forget race and of a genuine failure.
+      const failedAt = new Date("2000-01-01T00:00:00.000Z");
+      for (const [job, errorCode] of [
+        [casualty, "memory_history_job_invalid"],
+        [genuine, "memory_history_classification_unavailable"]
+      ] as const) {
+        await prisma.memoryJob.update({
+          data: { completedAt: failedAt, errorCode, nextAttemptAt: null, stage: "digest_generation",
+            state: "TERMINAL_FAILED" },
+          where: { id: job.id }
+        });
+      }
+      const forgotten = await prisma.userMemorySettings.update({
+        data: { memoryGeneration: { increment: 1 } },
+        where: { userId }
+      });
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
+
+      await repairFencedMemoryHistoryJobs(prisma, { now: new Date() });
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: casualty.id } })).resolves
+        .toMatchObject({ completedAt: failedAt, errorCode: "memory_history_job_invalid", state: "STALE" });
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: genuine.id } })).resolves
+        .toMatchObject({ errorCode: "memory_history_classification_unavailable", state: "TERMINAL_FAILED" });
+
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 1 });
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: casualty.id } })).resolves
+        .toMatchObject({ attemptCount: 0, completedAt: null, errorCode: null,
+          memoryGenerationSnapshot: forgotten.memoryGeneration, state: "QUEUED" });
+      const { claim } = await processHistoryJob(userId);
+      expect(claim.id).toBe(casualty.id);
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: casualty.id } })).resolves
+        .toMatchObject({ state: "SUCCEEDED" });
+
+      // A genuine terminal failure is never retried and keeps its source visible.
+      await repairFencedMemoryHistoryJobs(prisma, { now: new Date() });
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: genuine.id } })).resolves
+        .toMatchObject({ state: "TERMINAL_FAILED" });
+      await expect(readMemoryHistoryIndexingProgress(prisma, userId, true)).resolves.toEqual({
+        completedChats: 1,
+        state: "INDEXING",
+        totalChats: 2
+      });
     } finally {
       await cleanupOwner(userId);
     }
@@ -2655,10 +2728,12 @@ describe("Memory lexical history index persistence", () => {
           state: "TERMINAL_FAILED"
         }
       });
-      await expect(withLockedMemoryTransaction(prisma, userId, (tx, locked) =>
-        authorizeMemoryHistoryTerminalRetries(tx, locked))).resolves.toBe(0);
+      // The deterministic ceiling is not a fence casualty; repair never
+      // releases it to repeat the same bounded path walk.
+      await repairFencedMemoryHistoryJobs(prisma, { now: new Date() });
       await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: terminal.id } }))
         .resolves.toMatchObject({ state: "TERMINAL_FAILED" });
+      await expect(seedHistoryBackfill(userId)).resolves.toMatchObject({ enqueuedJobs: 0 });
     } finally {
       await cleanupOwner(userId);
     }

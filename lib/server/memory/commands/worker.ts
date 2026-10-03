@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient, type MemoryCommandStatus } from "@prisma/client";
 import { decodeMemoryActionIntent, type MemoryActionIntent } from "../../../contracts/memoryActionIntent";
 import { prisma } from "../../prisma";
+import { logEvent } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import { memoryAttempt } from "../coordinator/observability";
 import { memoryPersistenceFailureCode } from "../persistence/errors";
@@ -43,6 +44,26 @@ function commandMutationFailure(error: unknown): Readonly<{ code: string; prisma
     (error instanceof ExplicitMemoryServiceError || error instanceof MemoryLifecycleServiceError ? error.code : null);
   return { code: domainCode ?? (prismaCode !== "unknown" ? "memory_command_database_failed" : "memory_command_failed"),
     prisma_code: prismaCode };
+}
+
+/** Classifier failures that may buy the reserved ordinal-2 call: a
+ * replay-safe transient failure before any response, or an answer that
+ * failed validation after its FAILED settlement accounted usage. Statement
+ * overflow, unknown outcomes and unavailable providers stay terminal. */
+const retryableClassifierFailures: ReadonlySet<string> = new Set([
+  "memory_action_intent_invalid",
+  "memory_action_intent_transient"
+]);
+
+function retryableClassifierFailure(code: string | null | undefined): code is string {
+  return typeof code === "string" && retryableClassifierFailures.has(code);
+}
+
+function logClassifierRetry(job: MemoryJobClaim, code: string): void {
+  logEvent("service_operation", {
+    action: "retry", attempt: 2, code, job_id: job.id, outcome: "failed",
+    stage: code === "memory_action_intent_invalid" ? "validate" : "dispatch", subsystem: "memory"
+  });
 }
 
 function result(job: MemoryJobClaim, status: MemoryCommandStatus): MemoryJobExecutionResult {
@@ -112,8 +133,10 @@ export function createPrismaMemoryCommandHandler(
         }, orderBy: { ordinal: "desc" } });
         // A dispatched classifier with no durable decoded result cannot be bought
         // again, even if the provider outcome was accepted before process loss.
+        // Only a settled FAILED first call that never reached the provider, or
+        // whose answer was settled invalid with its usage, earns slot 2.
         const safeRetry = previous?.ordinal === 0 && previous.state === "FAILED" &&
-          previous.errorCode === "memory_action_intent_transient";
+          retryableClassifierFailure(previous.errorCode);
         if (previous && !safeRetry && (previous.state !== "PENDING" || previous.startedAt !== null)) {
           return terminal(job, "UNKNOWN");
         }
@@ -128,9 +151,13 @@ export function createPrismaMemoryCommandHandler(
           }, signal: context.signal, userId: job.userId
         };
         const ordinal = safeRetry || previous?.ordinal === 2 ? 2 as const : 0 as const;
+        if (safeRetry && previous?.errorCode) logClassifierRetry(job, previous.errorCode);
         let classified = await control.decide({ ...request, ordinal });
+        // Slot 2 is the single reserved retry for both causes: an in-process
+        // retry follows only slot 0, and slot 2 itself never retries.
         if (ordinal === 0 && classified.status === "UNAVAILABLE" &&
-          classified.reason === "memory_action_intent_transient" && !context.signal.aborted) {
+          retryableClassifierFailure(classified.reason) && !context.signal.aborted) {
+          logClassifierRetry(job, classified.reason);
           classified = await control.decide({ ...request, ordinal: 2 });
         }
         if (classified.status !== "READY") {

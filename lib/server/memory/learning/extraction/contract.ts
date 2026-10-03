@@ -526,17 +526,44 @@ const pageFingerprintPattern = new RegExp(
   "u"
 );
 
+/** A page-0 re-extraction admitted after a settled provider failure that
+ * produced no output. Its key is the Memory-role policy version under which it
+ * was admitted: one job after the failure under an older version, and one
+ * delayed `same-policy` retry under that same version. */
+export type MemoryFactExtractionHealKey = Readonly<{
+  samePolicy: boolean;
+  utilityPolicyVersion: number;
+}>;
+
+const healFingerprintPattern = new RegExp(
+  `^${MEMORY_FACT_EXTRACTION_JOB_PREFIX}heal\\.u([1-9][0-9]{0,9})(\\.same-policy)?:[a-f0-9]{64}$`,
+  "u"
+);
+
+/** Shared prefix of every re-extraction job. */
+export const MEMORY_FACT_EXTRACTION_HEAL_JOB_PREFIX =
+  `${MEMORY_FACT_EXTRACTION_JOB_PREFIX}heal.`;
+
+/** Prefix that identifies one heal key independently of source identity. */
+export function memoryFactExtractionHealJobPrefix(key: MemoryFactExtractionHealKey): string {
+  if (!validCounter(key.utilityPolicyVersion) || key.utilityPolicyVersion < 1) {
+    throw new Error("memory_fact_source_invalid");
+  }
+  return `${MEMORY_FACT_EXTRACTION_HEAL_JOB_PREFIX}u${key.utilityPolicyVersion}` +
+    `${key.samePolicy ? ".same-policy" : ""}:`;
+}
+
 function validPage(page: MemoryFactJobPage): boolean {
   return Number.isSafeInteger(page.ordinal) && page.ordinal >= 0 &&
     page.ordinal <= MEMORY_FACT_MAX_SOURCE_PAGES && validCounter(page.cursor) &&
     (page.ordinal === 0) === (page.cursor === 0);
 }
 
-export function memoryFactExtractionJobFingerprint(
+function extractionJobIdentity(
   source: MemoryFactSourceIdentity,
-  identityProfile: MemoryIdentityProfile = MEMORY_DEFAULT_IDENTITY_PROFILE,
-  page: MemoryFactJobPage = MEMORY_FACT_FIRST_PAGE
-): string {
+  identityProfile: MemoryIdentityProfile,
+  page: MemoryFactJobPage
+) {
   if (
     !validIdentity(source.activeLeafMessageId) ||
     !validIdentity(source.chatId) ||
@@ -548,7 +575,7 @@ export function memoryFactExtractionJobFingerprint(
     !sha256Pattern.test(source.sourceHash) ||
     !validPage(page)
   ) throw new Error("memory_fact_source_invalid");
-  const identity = {
+  return {
     chatId: source.chatId,
     memoryGenerationSnapshot: source.memoryGenerationSnapshot,
     identityProfile,
@@ -556,6 +583,14 @@ export function memoryFactExtractionJobFingerprint(
     sourceMessageId: source.sourceMessageId,
     userId: source.userId
   };
+}
+
+export function memoryFactExtractionJobFingerprint(
+  source: MemoryFactSourceIdentity,
+  identityProfile: MemoryIdentityProfile = MEMORY_DEFAULT_IDENTITY_PROFILE,
+  page: MemoryFactJobPage = MEMORY_FACT_FIRST_PAGE
+): string {
+  const identity = extractionJobIdentity(source, identityProfile, page);
   // Page 0 keeps the established job identity, so admission and identity
   // cutover still create exactly one first page per source message.
   if (page.ordinal === 0) {
@@ -563,6 +598,27 @@ export function memoryFactExtractionJobFingerprint(
   }
   return `${MEMORY_FACT_EXTRACTION_JOB_PREFIX}p${page.ordinal}.${page.cursor}:` +
     memorySha256({ ...identity, page: { cursor: page.cursor, ordinal: page.ordinal } });
+}
+
+/** A new first-page job of the same source message, never a revival of the
+ * failed one. Its continuation pages keep the ordinary page identities. */
+export function memoryFactExtractionHealJobFingerprint(
+  source: MemoryFactSourceIdentity,
+  identityProfile: MemoryIdentityProfile,
+  key: MemoryFactExtractionHealKey
+): string {
+  const prefix = memoryFactExtractionHealJobPrefix(key);
+  return prefix + memorySha256({
+    ...extractionJobIdentity(source, identityProfile, MEMORY_FACT_FIRST_PAGE),
+    heal: { samePolicy: key.samePolicy, utilityPolicyVersion: key.utilityPolicyVersion }
+  });
+}
+
+function claimedHealKey(job: MemoryJobDescriptor): MemoryFactExtractionHealKey | null {
+  const match = healFingerprintPattern.exec(job.idempotencyFingerprint);
+  return match
+    ? { samePolicy: match[2] !== undefined, utilityPolicyVersion: Number(match[1]) }
+    : null;
 }
 
 function claimedPage(job: MemoryJobDescriptor): MemoryFactJobPage | null {
@@ -578,22 +634,25 @@ export function memoryFactExtractionJobIdentity(
 ): Readonly<{ identityProfile: MemoryIdentityProfile; page: MemoryFactJobPage }> | null {
   const page = claimedPage(job);
   if (!page) return null;
+  // A re-extraction fingerprint never matches the page pattern: page 0.
+  const heal = claimedHealKey(job);
   for (const profile of MEMORY_IDENTITY_PROFILES) {
     try {
-      if (job.idempotencyFingerprint === memoryFactExtractionJobFingerprint(
-        {
-          activeLeafMessageId: job.activeLeafMessageId!,
-          branchGeneration: job.branchGeneration!,
-          chatId: job.chatId!,
-          memoryGenerationSnapshot: job.memoryGenerationSnapshot,
-          sourceHash: job.sourceHash!,
-          sourceMessageId: job.sourceMessageId!,
-          sourceRevision: job.sourceRevision!,
-          userId: job.userId
-        },
-        profile,
-        page
-      )) return { identityProfile: profile, page };
+      const source: MemoryFactSourceIdentity = {
+        activeLeafMessageId: job.activeLeafMessageId!,
+        branchGeneration: job.branchGeneration!,
+        chatId: job.chatId!,
+        memoryGenerationSnapshot: job.memoryGenerationSnapshot,
+        sourceHash: job.sourceHash!,
+        sourceMessageId: job.sourceMessageId!,
+        sourceRevision: job.sourceRevision!,
+        userId: job.userId
+      };
+      if (job.idempotencyFingerprint === (heal
+        ? memoryFactExtractionHealJobFingerprint(source, profile, heal)
+        : memoryFactExtractionJobFingerprint(source, profile, page))) {
+        return { identityProfile: profile, page };
+      }
     } catch {
       return null;
     }

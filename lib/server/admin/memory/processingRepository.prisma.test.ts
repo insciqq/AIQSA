@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import type { MemoryJobKind, MemoryJobState } from "@prisma/client";
+import { createAutomaticMaintenanceFact, createMaintenanceMessage, createMaintenanceOwner, deleteMaintenanceOwner,
+  settleMaintenanceJob } from "@/tests/support/memoryMaintenance";
 import { prisma } from "../../prisma";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../../memory/history/contract";
+import { repairFencedMemoryHistoryJobs } from "../../memory/history/fenceRepair";
+import { scheduleOwnerMemoryMaintenance } from "../../memory/maintenance/reconcile";
 import { readAdminMemoryProcessing } from "./processingRepository";
 import { textMessageContent } from "../../../domain/content";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
@@ -101,22 +106,169 @@ describe("administrator Memory processing aggregates", () => {
     } finally { await f.cleanup(); }
   });
 
-  it("reports background maintenance under its own stage and never retired Dream synthesis", async () => {
+  it("treats history output repaired by an in-job validation retry as complete", async () => {
     const f = await fixture();
     try {
       resolution.available = true;
-      // Maintenance is the only SYNTHESIZE_MEMORIES pipeline; it owns no chat source.
-      const synthesizeJob = (pipelineVersion: string) => prisma.memoryJob.create({ data: {
-        userId: f.userId, state: "TERMINAL_FAILED", kind: "SYNTHESIZE_MEMORIES", pipelineVersion,
-        memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0, idempotencyFingerprint: randomUUID(),
-        createdAt: new Date(f.now.getTime() - 1865 * 1000), completedAt: new Date(f.now.getTime() - 60_000)
+      const job = await f.job("SUCCEEDED", { kind: "INDEX_HISTORY", age: 20 });
+      const settledAt = new Date(f.now.getTime() - 60_000);
+      // Settled, usage-detached evidence needs no live provider rows.
+      const binding = (ordinal: number, state: "FAILED" | "SUCCEEDED", inputHash: string,
+        errorCode: string | null = null) => prisma.memoryExecutionBinding.create({ data: {
+        userId: f.userId, ownerType: "JOB", memoryJobId: job.id, logicalRole: "MEMORY_HISTORY_CLASSIFY",
+        ordinal, state, inputHash, errorCode, providerId: "fixture-provider",
+        decodeReason: errorCode === "memory_classifier_output_invalid" ? "invalid_json" : null,
+        acceptedOutputHash: state === "SUCCEEDED" ? "e".repeat(64) : null,
+        destinationFingerprint: "d".repeat(64), pipelineVersion: "fixture", policyVersion: "fixture",
+        promptVersion: "fixture", schemaVersion: "fixture", secretFreeExecutionSnapshot: {},
+        createdAt: settledAt, startedAt: settledAt, completedAt: settledAt,
+        recoverableUntil: settledAt, relationsDetachedAt: settledAt
       } });
-      await synthesizeJob("memory-synthesis-v2");
-      expect((await readAdminMemoryProcessing(prisma, f.now)).issues).toEqual([]);
-      await synthesizeJob("memory-maintenance-v1");
-      expect((await readAdminMemoryProcessing(prisma, f.now)).issues).toEqual([
+      const history = async () => (await readAdminMemoryProcessing(prisma, f.now)).issues
+        .filter(({ stage }) => stage === "HISTORY").map(({ reason }) => reason);
+      await binding(0, "FAILED", "a".repeat(64), "memory_classifier_output_invalid");
+      expect(await history()).toEqual(["HISTORY_INCOMPLETE"]);
+      await binding(1, "SUCCEEDED", "a".repeat(64));
+      expect(await history()).toEqual([]);
+      // A repair of one input never hides another input's failure.
+      await binding(2, "FAILED", "b".repeat(64), "memory_classifier_output_limit_exceeded");
+      expect(await history()).toEqual(["OUTPUT_LIMIT"]);
+      await binding(3, "SUCCEEDED", "b".repeat(64));
+      expect(await history()).toEqual([]);
+    } finally {
+      await prisma.memoryExecutionBinding.deleteMany({ where: { userId: f.userId } });
+      await f.cleanup();
+    }
+  });
+
+  /** An owner whose planned maintenance job reviews one automatic fact per statement. */
+  async function maintenanceFixture(statements: readonly string[] = ["The parcel arrives at noon today."]) {
+    const userId = await createMaintenanceOwner("memory-status-maintenance");
+    try {
+      const facts: Awaited<ReturnType<typeof createAutomaticMaintenanceFact>>[] = [];
+      for (const statement of statements) {
+        const source = await createMaintenanceMessage(userId, statement);
+        facts.push(await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]));
+      }
+      const now = new Date();
+      expect(await scheduleOwnerMemoryMaintenance(prisma, userId, now)).toBe(1);
+      const job = await prisma.memoryJob.findFirstOrThrow({ where: { userId, kind: "SYNTHESIZE_MEMORIES", state: "QUEUED" } });
+      const fail = (failedAt: Date) => prisma.memoryJob.update({ where: { id: job.id },
+        data: { state: "TERMINAL_FAILED", errorCode: "memory_maintenance_failed", completedAt: failedAt } });
+      // Jobs are created after `now`; read at the time of the call.
+      const maintenance = async () => (await readAdminMemoryProcessing(prisma, new Date())).issues
+        .filter(({ stage }) => stage === "MAINTENANCE");
+      return { userId, facts, job, now, fail, maintenance, cleanup: () => deleteMaintenanceOwner(userId) };
+    } catch (error) {
+      await deleteMaintenanceOwner(userId);
+      throw error;
+    }
+  }
+
+  /** The current-pointer writes of an automatic removal; the generation stays. */
+  const forgetFact = (userId: string, factId: string, at: Date) => prisma.$transaction([
+    prisma.$executeRaw`UPDATE "MemoryFactVersion" SET state = 'FORGOTTEN'::"MemoryFactVersionState",
+      "systemTo" = COALESCE("systemTo", GREATEST(${at}, "systemFrom" + INTERVAL '1 millisecond'))
+      WHERE "userId" = ${userId} AND "factId" = ${factId}`,
+    prisma.memoryFact.update({ where: { id: factId }, data: { currentVersionId: null, state: "FORGOTTEN", forgottenAt: at } })
+  ]);
+
+  it("reports background maintenance under its own stage and never retired Dream synthesis", async () => {
+    const m = await maintenanceFixture();
+    try {
+      resolution.available = true;
+      // Maintenance is the only SYNTHESIZE_MEMORIES pipeline; it owns no chat source.
+      await prisma.memoryJob.create({ data: {
+        userId: m.userId, state: "TERMINAL_FAILED", kind: "SYNTHESIZE_MEMORIES", pipelineVersion: "memory-synthesis-v2",
+        memoryGenerationSnapshot: m.job.memoryGenerationSnapshot, memoryRevisionSnapshot: 0, idempotencyFingerprint: randomUUID(),
+        createdAt: new Date(m.now.getTime() - 1865 * 1000), completedAt: new Date(m.now.getTime() - 60_000)
+      } });
+      expect(await m.maintenance()).toEqual([]);
+      await m.fail(new Date(m.now.getTime() - 60_000));
+      expect(await m.maintenance()).toEqual([
         expect.objectContaining({ stage: "MAINTENANCE", reason: "PROCESSING_FAILED", severity: "bad", count: 1 })
       ]);
+    } finally { await m.cleanup(); }
+  });
+
+  it("clears a failed maintenance review once a re-admitted job of the owner succeeds", async () => {
+    const m = await maintenanceFixture();
+    try {
+      resolution.available = true;
+      await m.fail(new Date(m.now.getTime() - 60_000));
+      expect(await m.maintenance()).toEqual([expect.objectContaining({ reason: "PROCESSING_FAILED", count: 1 })]);
+      // The reconcile pass settles the failed attempt and its budget admits a
+      // new job once the owner's scan cursor wraps around on a later pass.
+      await prisma.memoryMaintenanceReview.updateMany({ where: { userId: m.userId, memoryJobId: m.job.id,
+        disposition: "PENDING" }, data: { disposition: "UNKNOWN", reviewedAt: m.now } });
+      await prisma.userMemorySettings.update({ where: { userId: m.userId }, data: { maintenanceCursor: null } });
+      expect(await scheduleOwnerMemoryMaintenance(prisma, m.userId, m.now)).toBe(1);
+      expect(await m.maintenance()).toEqual([expect.objectContaining({ reason: "PROCESSING_FAILED", count: 1 })]);
+      await settleMaintenanceJob(m.userId, () => "KEEP", m.now);
+      expect(await m.maintenance()).toEqual([]);
+    } finally { await m.cleanup(); }
+  });
+
+  it("clears a failed maintenance review once none of its reviewed facts is current, without changing the job", async () => {
+    const m = await maintenanceFixture(["The parcel arrives at noon today.", "The plumber comes on Friday."]);
+    try {
+      resolution.available = true;
+      await m.fail(new Date(m.now.getTime() - 60_000));
+      const failed = await prisma.memoryJob.findUniqueOrThrow({ where: { id: m.job.id } });
+      expect(await prisma.memoryMaintenanceReview.count({ where: { userId: m.userId, memoryJobId: m.job.id } })).toBe(2);
+      expect(await m.maintenance()).toEqual([expect.objectContaining({ reason: "PROCESSING_FAILED", count: 1 })]);
+      await forgetFact(m.userId, m.facts[0]!.factId, m.now);
+      expect(await m.maintenance()).toEqual([expect.objectContaining({ reason: "PROCESSING_FAILED", count: 1 })]);
+      await forgetFact(m.userId, m.facts[1]!.factId, m.now);
+      expect(await m.maintenance()).toEqual([]);
+      expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: m.job.id } })).toEqual(failed);
+    } finally { await m.cleanup(); }
+  });
+
+  it("keeps a failed Memory command in the maintenance notice for 24 hours only", async () => {
+    const f = await fixture();
+    try {
+      resolution.available = true;
+      const failedAt = new Date(f.now.getTime() - 60 * 60_000);
+      await prisma.memoryJob.create({ data: {
+        userId: f.userId, state: "TERMINAL_FAILED", kind: "MEMORY_COMMAND", pipelineVersion: "processing-fixture-v1",
+        memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0, idempotencyFingerprint: randomUUID(),
+        chatId: f.chatId, sourceMessageId: f.sourceMessageId, activeLeafMessageId: f.leafMessageId,
+        branchGeneration: 0, sourceRevision: 0, sourceHash: "a".repeat(64), errorCode: "memory_command_failed",
+        commandSequence: 1, commandStatus: "PENDING", commandOperation: "UNKNOWN",
+        createdAt: new Date(failedAt.getTime() - 1_000), completedAt: failedAt
+      } });
+      const maintenance = async (at: Date) => (await readAdminMemoryProcessing(prisma, at)).issues
+        .filter(({ stage }) => stage === "MAINTENANCE");
+      expect(await maintenance(f.now)).toEqual([
+        { stage: "MAINTENANCE", reason: "PROCESSING_FAILED", severity: "bad", count: 1, oldestAgeSeconds: 3601 }
+      ]);
+      const day = 24 * 60 * 60_000;
+      expect(await maintenance(new Date(failedAt.getTime() + day - 1_000))).toHaveLength(1);
+      expect(await maintenance(new Date(failedAt.getTime() + day + 1_000))).toEqual([]);
+    } finally { await f.cleanup(); }
+  });
+
+  it("never counts a history fence casualty after its repair or once its source moved on", async () => {
+    const f = await fixture();
+    try {
+      resolution.available = true;
+      const history = async () => (await readAdminMemoryProcessing(prisma, f.now)).issues
+        .filter(({ stage }) => stage === "HISTORY");
+      const casualty = async () => {
+        const job = await f.job("TERMINAL_FAILED", { kind: "INDEX_HISTORY", errorCode: "memory_history_job_invalid" });
+        await prisma.memoryJob.update({ where: { id: job.id }, data: { pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION } });
+        return job;
+      };
+      const repaired = await casualty();
+      expect(await history()).toEqual([expect.objectContaining({ reason: "PROCESSING_FAILED", count: 1 })]);
+      await repairFencedMemoryHistoryJobs(prisma, { now: f.now });
+      expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: repaired.id } })).toMatchObject({ state: "STALE" });
+      expect(await history()).toEqual([]);
+      await casualty();
+      expect(await history()).toEqual([expect.objectContaining({ reason: "PROCESSING_FAILED", count: 1 })]);
+      await prisma.chat.update({ where: { id: f.chatId }, data: { memorySourceRevision: { increment: 1 } } });
+      expect(await history()).toEqual([]);
     } finally { await f.cleanup(); }
   });
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   createTestProviderExecutionAuthority,
   deleteTestProviderExecutionAuthority,
@@ -78,6 +78,10 @@ import {
 } from "./adjudication";
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
 import { createPrismaMemoryFactExtractionRepository } from "./repository";
+import {
+  createMemoryFactExtractionHandler,
+  type MemoryFactExtractionHandlerDependencies
+} from "./handler";
 import { materializeMemoryCandidateEntityIdentity } from "../entities/repository";
 import { registerMemoryIdentityCompatibility } from "../identity/compatibility";
 import { createMemorySuppressionInTransaction } from "../../persistence/suppressions";
@@ -1462,6 +1466,210 @@ async function seedAutomaticallyPurgedFact(
     await cleanupOwner(userId);
     throw error;
   }
+}
+
+type BudgetSettlement = Readonly<{
+  acceptedOutputHash: string | null;
+  errorCode: string | null;
+  providerResponseId: string | null;
+  state: "SUCCEEDED" | "FAILED" | "OUTCOME_UNKNOWN" | "CANCELLED";
+  usage: Readonly<{
+    cachedInputTokens: number | null;
+    completeness: "COMPLETE" | "PARTIAL" | "UNAVAILABLE";
+    estimatedCostMicros: number | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    reasoningTokens: number | null;
+    totalTokens: number | null;
+  }>;
+}>;
+
+/** Writes real binding and usage rows, so the unique job/role/ordinal index,
+ * the binding shape check and the per-binding usage event hold, while the
+ * provider and its authority stay fake. */
+async function budgetExecution(userId: string) {
+  const authority = await loadExecutionAuthority();
+  const settleRow = async (
+    tx: MemoryTransaction,
+    bindingId: string,
+    result: BudgetSettlement,
+    recoverableUntil: Date
+  ) => {
+    const binding = await tx.memoryExecutionBinding.findUniqueOrThrow({
+      where: { id: bindingId }
+    });
+    if (binding.state !== "RUNNING") throw new Error("memory_execution_state_conflict");
+    await tx.memoryExecutionBinding.update({
+      data: {
+        acceptedOutputHash: result.acceptedOutputHash,
+        cachedInputTokens: result.usage.cachedInputTokens,
+        completedAt: new Date(Math.max(Date.now(), binding.startedAt!.getTime())),
+        errorCode: result.errorCode,
+        estimatedCostMicros: result.usage.estimatedCostMicros,
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        providerResponseId: result.providerResponseId,
+        reasoningTokens: result.usage.reasoningTokens,
+        recoverableUntil,
+        state: result.state,
+        totalTokens: result.usage.totalTokens,
+        usageCompleteness: result.usage.completeness
+      },
+      where: { id: bindingId }
+    });
+    await tx.usageEvent.create({
+      data: {
+        cachedInputTokens: result.usage.cachedInputTokens,
+        estimatedCostMicros: result.usage.estimatedCostMicros,
+        inputTokens: result.usage.inputTokens,
+        memoryExecutionBindingId: bindingId,
+        modelId: "memory-vnext-test-model",
+        outputTokens: result.usage.outputTokens,
+        provider: "openai_compatible",
+        providerModelId: authority.providerModelId,
+        reasoningTokens: result.usage.reasoningTokens,
+        totalTokens: result.usage.totalTokens,
+        usageCompleteness: result.usage.completeness,
+        userId
+      }
+    });
+    return { state: result.state };
+  };
+  return {
+    admission: {
+      async bind(_userId: string, request: Readonly<{
+        inputHash: string;
+        ordinal: number;
+        owner: Readonly<{ memoryJobId: string }>;
+        versions: Readonly<{
+          pipelineVersion: string;
+          policyVersion: string;
+          promptVersion: string;
+          schemaVersion: string;
+        }>;
+      }>) {
+        const binding = await prisma.memoryExecutionBinding.create({
+          data: {
+            connectionId: authority.connectionId,
+            // The database clock may lead this process; keep startedAt valid.
+            createdAt: new Date(Date.now() - 1_000),
+            credentialId: authority.credentialId,
+            credentialVersionId: authority.credentialVersionId,
+            destinationFingerprint: "d".repeat(64),
+            inputHash: request.inputHash,
+            logicalRole: "MEMORY_FACT_EXTRACT",
+            memoryJobId: request.owner.memoryJobId,
+            ordinal: request.ordinal,
+            ownerType: "JOB",
+            pipelineVersion: request.versions.pipelineVersion,
+            policyVersion: request.versions.policyVersion,
+            promptVersion: request.versions.promptVersion,
+            providerId: "openai_compatible",
+            providerModelId: authority.providerModelId,
+            schemaVersion: request.versions.schemaVersion,
+            secretFreeExecutionSnapshot: {},
+            userId
+          }
+        });
+        return { id: binding.id };
+      },
+      async start(_userId: string, bindingId: string) {
+        const started = await prisma.memoryExecutionBinding.updateMany({
+          data: { startedAt: new Date(), state: "RUNNING" },
+          where: { id: bindingId, state: "PENDING", userId }
+        });
+        if (started.count !== 1) throw new Error("memory_execution_state_conflict");
+        return {
+          bindingId,
+          snapshot: {
+            logicalRole: "MEMORY_FACT_EXTRACT",
+            providerExecutionSnapshot: {
+              connectionId: authority.connectionId,
+              credentialId: authority.credentialId,
+              credentialVersionId: authority.credentialVersionId,
+              providerModelId: authority.providerModelId
+            },
+            requiresStrictStructuredOutput: true
+          }
+        };
+      }
+    },
+    lifecycle: {
+      settle(_userId: string, bindingId: string, result: BudgetSettlement) {
+        return withLockedMemoryTransaction(prisma, userId, (tx) =>
+          settleRow(tx, bindingId, result, new Date(Date.now() + 86_400_000)));
+      },
+      settleSucceededWithDurableResult(
+        _userId: string,
+        bindingId: string,
+        result: BudgetSettlement,
+        persist: (tx: MemoryTransaction, evidence: Readonly<{
+          recoverableUntil: Date;
+        }>) => Promise<void>
+      ) {
+        const recoverableUntil = new Date(Date.now() + 86_400_000);
+        return withLockedMemoryTransaction(prisma, userId, async (tx) => {
+          await persist(tx, { recoverableUntil });
+          return settleRow(tx, bindingId, result, recoverableUntil);
+        });
+      },
+      withAuthorizedResultCommit<T>(
+        _userId: string,
+        _result: unknown,
+        commit: (tx: MemoryTransaction, evidence: Readonly<{ settings: unknown }>) => Promise<T>
+      ) {
+        return withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
+          commit(tx, { settings }));
+      }
+    }
+  } as unknown as MemoryFactExtractionHandlerDependencies["execution"];
+}
+
+function budgetPacket(index: number, observations: unknown) {
+  return {
+    providerResponseId: `budget-response-${index}`,
+    toolCalls: [{
+      arguments: { observations },
+      id: `budget-call-${index}`,
+      name: MEMORY_FACT_EXTRACTION_TOOL_NAME
+    }],
+    usage: {
+      cachedInputTokens: 0,
+      inputTokens: 100 + index,
+      outputTokens: 10 + index,
+      reasoningTokens: 0,
+      totalTokens: 110 + 2 * index
+    }
+  };
+}
+
+async function reclaimFactJob(claim: MemoryJobClaim): Promise<MemoryJobClaim> {
+  const claimToken = randomUUID();
+  const leaseExpiresAt = new Date(Date.now() + 120_000);
+  const row = await prisma.memoryJob.update({
+    data: { attemptCount: { increment: 1 }, leaseExpiresAt, leaseToken: claimToken },
+    where: { id: claim.id }
+  });
+  return {
+    ...claim,
+    attemptCount: row.attemptCount,
+    claimToken,
+    leaseExpiresAt,
+    recoveredLease: true
+  };
+}
+
+async function budgetBindings(userId: string, jobId: string) {
+  const bindings = await prisma.memoryExecutionBinding.findMany({
+    orderBy: { ordinal: "asc" },
+    select: { errorCode: true, id: true, ordinal: true, outputTokens: true, state: true },
+    where: { logicalRole: "MEMORY_FACT_EXTRACT", memoryJobId: jobId, userId }
+  });
+  const usage = await prisma.usageEvent.findMany({
+    select: { memoryExecutionBindingId: true, outputTokens: true },
+    where: { memoryExecutionBindingId: { in: bindings.map(({ id }) => id) } }
+  });
+  return { bindings, usage };
 }
 
 describe("Prisma Memory vNext source-message ingestion", () => {
@@ -6619,6 +6827,122 @@ describe("Prisma Memory vNext source-message ingestion", () => {
               status: "CANCELLED"
             }
           });
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
+  });
+
+  describe("Prisma Memory fact extraction invalid-output budget", () => {
+    const context = () => ({
+      now: () => new Date(),
+      setStage: async () => undefined,
+      signal: new AbortController().signal
+    });
+
+    async function budgetFixture(label: string) {
+      const userId = await createOwner(label);
+      const chat = await prisma.chat.create({ data: { title: "Budget", userId } });
+      const turn = await createTurn({
+        assistantText: "Noted.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-22T11:00:00.000Z"),
+        parentMessageId: null,
+        userId,
+        userText: "Hello there!"
+      });
+      await settleChat(userId, chat.id, turn);
+      const claim = await claimFactJob(userId, turn.userMessage.id);
+      return { claim, execution: await budgetExecution(userId), userId };
+    }
+
+    it("holds the durable invalid-output budget across re-claims", async () => {
+      const { claim, execution, userId } = await budgetFixture("invalid-budget");
+      try {
+        let calls = 0;
+        const run = vi.fn(async () => budgetPacket(++calls, "invalid"));
+        const crashingRepository = (crashAfterReads: number) => {
+          const base = repository();
+          let reads = 0;
+          return {
+            ...base,
+            async bindings(owner: string, jobId: string) {
+              reads += 1;
+              if (reads > crashAfterReads) throw new Error("memory_test_process_lost");
+              return base.bindings(owner, jobId);
+            }
+          };
+        };
+        const handler = (repo: MemoryFactExtractionHandlerDependencies["repository"]) =>
+          createMemoryFactExtractionHandler({
+            execution,
+            now: () => new Date(),
+            probeAuthority: async () => undefined,
+            provider: { run },
+            repository: repo
+          });
+
+        // The process is lost after two settled invalid packets.
+        await expect(handler(crashingRepository(3)).execute(claim, context()))
+          .rejects.toThrow("memory_test_process_lost");
+        let stored = await budgetBindings(userId, claim.id);
+        expect(stored.bindings).toMatchObject([0, 1].map((ordinal) => ({
+          errorCode: "memory_fact_output_invalid",
+          ordinal,
+          state: "FAILED"
+        })));
+
+        // A re-claim spends only the remaining call.
+        const reclaimed = await reclaimFactJob(claim);
+        await expect(handler(repository()).execute(reclaimed, context()))
+          .resolves.toMatchObject({ stage: "fact_output_rejected" });
+        expect(run).toHaveBeenCalledTimes(3);
+        stored = await budgetBindings(userId, claim.id);
+        expect(stored.bindings).toMatchObject([0, 1, 2].map((ordinal) => ({
+          errorCode: "memory_fact_output_invalid",
+          ordinal,
+          outputTokens: 11 + ordinal,
+          state: "FAILED"
+        })));
+        expect(stored.usage.map(({ outputTokens }) => outputTokens).sort())
+          .toEqual([11, 12, 13]);
+
+        // A further re-claim never dispatches past the exhausted budget.
+        await expect(handler(repository()).execute(await reclaimFactJob(reclaimed), context()))
+          .resolves.toMatchObject({ stage: "fact_output_rejected" });
+        expect(run).toHaveBeenCalledTimes(3);
+        expect((await budgetBindings(userId, claim.id)).bindings).toHaveLength(3);
+      } finally {
+        await cleanupOwner(userId);
+      }
+    });
+
+    it("stages one receipt for the call that succeeded after an invalid packet", async () => {
+      const { claim, execution, userId } = await budgetFixture("invalid-then-valid");
+      try {
+        const run = vi.fn()
+          .mockResolvedValueOnce(budgetPacket(1, "invalid"))
+          .mockResolvedValueOnce(budgetPacket(2, []));
+        const result = await createMemoryFactExtractionHandler({
+          execution,
+          now: () => new Date(),
+          probeAuthority: async () => undefined,
+          provider: { run },
+          repository: repository()
+        }).execute(claim, context());
+
+        expect(result.stage).toBe("fact_observations_empty");
+        const stored = await budgetBindings(userId, claim.id);
+        expect(stored.bindings).toMatchObject([
+          { errorCode: "memory_fact_output_invalid", ordinal: 0, state: "FAILED" },
+          { errorCode: null, ordinal: 1, state: "SUCCEEDED" }
+        ]);
+        expect(stored.usage).toHaveLength(2);
+        const receipts = await prisma.memoryFactExtractionExecution.findMany({
+          select: { executionBindingId: true },
+          where: { memoryJobId: claim.id, userId }
+        });
+        expect(receipts).toEqual([{ executionBindingId: stored.bindings[1]!.id }]);
       } finally {
         await cleanupOwner(userId);
       }

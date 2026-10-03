@@ -10,16 +10,35 @@ import { withLockedMemoryTransaction, type MemoryTransaction } from "../persiste
 import { loadMemorySourceSnapshot } from "../sourceState";
 import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS, MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION, MEMORY_HISTORY_INDEX_PIPELINE_VERSION, memoryHistoryAutoHealJobFingerprint } from "./contract";
 
-/** Known settled output failures, not transport ambiguity or successful work. */
-export function memoryHistoryIncompleteOutputSql(): Prisma.Sql {
-  return Prisma.sql`job.kind = 'INDEX_HISTORY' AND job.state = 'SUCCEEDED' AND EXISTS (
+/** A settled output failure of this job that an in-job validation retry did
+ * not repair: no binding of the same job, role and input later SUCCEEDED. */
+export function memoryHistoryUnrepairedOutputFailureSql(
+  errorCodes: readonly string[]
+): Prisma.Sql {
+  return Prisma.sql`EXISTS (
     SELECT 1 FROM "MemoryExecutionBinding" binding
     WHERE binding."memoryJobId" = job.id AND binding."userId" = job."userId"
       AND binding.state = 'FAILED'
-      AND binding."errorCode" IN ('memory_classifier_output_limit_exceeded', 'memory_classifier_output_invalid')
+      AND binding."errorCode" IN (${Prisma.join(errorCodes)})
+      AND NOT EXISTS (
+        SELECT 1 FROM "MemoryExecutionBinding" repaired
+        WHERE repaired."userId" = binding."userId" AND repaired."memoryJobId" = binding."memoryJobId"
+          AND repaired."ownerType" = binding."ownerType" AND repaired."logicalRole" = binding."logicalRole"
+          AND repaired."inputHash" = binding."inputHash" AND repaired.state = 'SUCCEEDED'
+      )
   )`;
 }
 
+/** Known settled output failures, not transport ambiguity or successful work. */
+export function memoryHistoryIncompleteOutputSql(): Prisma.Sql {
+  return Prisma.sql`job.kind = 'INDEX_HISTORY' AND job.state = 'SUCCEEDED' AND ${memoryHistoryUnrepairedOutputFailureSql([
+    "memory_classifier_output_limit_exceeded", "memory_classifier_output_invalid"
+  ])}`;
+}
+
+/** Repairs of this exact source under the current auto-heal version and
+ * Memory-role policy only: a repair settled under an earlier version or role
+ * revision never counts toward, nor exhausts, the current budget. */
 export function memoryHistoryAutoHealAttemptsSql(): Prisma.Sql {
   return Prisma.sql`COALESCE((SELECT max(right(repair."idempotencyFingerprint", 1)::int)
     FROM "MemoryJob" repair WHERE repair."userId" = job."userId" AND repair.kind = job.kind

@@ -144,6 +144,27 @@ function bindingUsesVersions(
     binding.schemaVersion === versions.schemaVersion;
 }
 
+const MEMORY_FACT_OUTPUT_INVALID = "memory_fact_output_invalid";
+
+/** Provider calls one extraction input may spend on an invalid whole packet
+ * (including truncated tool arguments), counting the first call: settled
+ * FAILED bindings of the same versions, input and code bound it across job
+ * attempts and re-claims. Transient, unknown and permanent provider outcomes
+ * never consume it. Like semantic adjudication, a retry runs only after the
+ * previous call settled with its usage. */
+export const MEMORY_FACT_EXTRACTION_MAX_INVALID_OUTPUT_CALLS_PER_INPUT = 3;
+
+function invalidOutputCalls(
+  bindings: Awaited<ReturnType<MemoryFactExtractionRepository["bindings"]>>,
+  inputHash: string
+): number {
+  return bindings.filter((binding) =>
+    bindingUsesVersions(binding, MEMORY_FACT_EXTRACTION_VERSIONS) &&
+    binding.inputHash === inputHash &&
+    binding.state === "FAILED" &&
+    binding.errorCode === MEMORY_FACT_OUTPUT_INVALID).length;
+}
+
 function bindingUsesRetainedFactVersions(
   binding: Awaited<ReturnType<MemoryFactExtractionRepository["bindings"]>>[number]
 ): boolean {
@@ -517,6 +538,153 @@ async function adjudicatePlan(
   };
 }
 
+type ExtractionDispatch =
+  | Readonly<{ kind: "PLAN"; bindingId: string; plan: MemoryFactExtractionPlan }>
+  | Readonly<{ kind: "TERMINAL"; result: MemoryJobExecutionResult }>;
+
+/** Binds, dispatches and decodes one extraction packet. An invalid whole
+ * packet settles FAILED with its usage and then buys a new call at the next
+ * ordinal while the per-input budget lasts; every other outcome keeps its
+ * single-call handling. */
+async function extractWithinBudget(
+  deps: MemoryFactExtractionHandlerDependencies,
+  job: MemoryJobDescriptor,
+  input: MemoryFactExtractionInput,
+  context: Readonly<{
+    setStage(stage: string): Promise<void>;
+    signal: AbortSignal;
+  }>
+): Promise<ExtractionDispatch> {
+  const rejected = (reason: string): ExtractionDispatch => ({
+    kind: "TERMINAL",
+    result: continuingCoverage(deps, terminalResult(job, input, reason), input)
+  });
+  // The durable count makes the budget survive a re-claim; the local count
+  // also bounds this attempt if the durable read lags.
+  let spentInvalidCalls = 0;
+  for (;;) {
+    const priorBindings = await deps.repository.bindings(job.userId, job.id);
+    spentInvalidCalls = Math.max(
+      spentInvalidCalls,
+      invalidOutputCalls(priorBindings, input.inputHash)
+    );
+    // Invalid output authorizes no mutation of this page; later pages are
+    // separate inputs and still run.
+    if (spentInvalidCalls >= MEMORY_FACT_EXTRACTION_MAX_INVALID_OUTPUT_CALLS_PER_INPUT) {
+      return rejected("fact_output_rejected");
+    }
+    if (spentInvalidCalls > 0) {
+      // Never buy another call past an ambiguous dispatch or a lost lease.
+      if (priorBindings.some(({ state }) =>
+        state === "PENDING" || state === "RUNNING" || state === "OUTCOME_UNKNOWN")) {
+        return rejected("fact_outcome_unknown");
+      }
+      if (context.signal.aborted) return rejected("fact_output_rejected");
+      logEvent("service_operation", {
+        action: "retry",
+        attempt: spentInvalidCalls + 1,
+        code: MEMORY_FACT_OUTPUT_INVALID,
+        job_id: job.id,
+        outcome: "failed",
+        stage: "validate",
+        subsystem: "memory"
+      });
+    }
+
+    await context.setStage("binding");
+    const binding = await deps.execution.admission.bind(job.userId, {
+      inputHash: input.inputHash,
+      ordinal: maxOrdinal(priorBindings) + 1,
+      owner: { memoryJobId: job.id, type: "JOB" },
+      role: "MEMORY_FACT_EXTRACT",
+      versions: MEMORY_FACT_EXTRACTION_VERSIONS
+    });
+    const started = await deps.execution.admission.start(job.userId, binding.id);
+    if (
+      started.snapshot.logicalRole !== "MEMORY_FACT_EXTRACT" ||
+      !started.snapshot.requiresStrictStructuredOutput
+    ) {
+      await deps.execution.lifecycle.settle(job.userId, binding.id, {
+        acceptedOutputHash: null,
+        errorCode: "memory_fact_binding_invalid",
+        providerResponseId: null,
+        state: "FAILED",
+        usage: unavailableUsage
+      });
+      return { kind: "TERMINAL", result: terminalResult(job, input, "fact_binding_invalid") };
+    }
+
+    await context.setStage("provider_call");
+    let result: Awaited<ReturnType<MemoryFactProvider["run"]>>;
+    try {
+      result = await deps.provider.run(
+        memoryFactProviderEvidence(started.snapshot),
+        input,
+        context.signal
+      );
+    } catch (error) {
+      const failure = providerFailureState(error);
+      await deps.execution.lifecycle.settle(job.userId, binding.id, {
+        acceptedOutputHash: null,
+        errorCode: failure.errorCode,
+        providerResponseId: null,
+        state: failure.state,
+        usage: failure.usage
+      });
+      if (failure.classification === "REPLAY_SAFE_TRANSIENT") {
+        throw new MemoryCoordinatorError(failure.errorCode, true);
+      }
+      return rejected(failure.classification === "UNKNOWN"
+        ? "fact_outcome_unknown"
+        : "fact_provider_unavailable");
+    }
+
+    let plan: MemoryFactExtractionPlan;
+    try {
+      plan = decodeMemoryFactExtraction(result.toolCalls, input);
+    } catch (error) {
+      const code = error instanceof MemoryFactDecodeError
+        ? error.code
+        : MEMORY_FACT_OUTPUT_INVALID;
+      await deps.execution.lifecycle.settle(job.userId, binding.id, {
+        acceptedOutputHash: null,
+        errorCode: code,
+        providerResponseId: result.providerResponseId,
+        state: "FAILED",
+        usage: reportedUsage(result.usage)
+      });
+      // Only a typed whole-packet rejection, settled with its usage, may buy
+      // another call; source, evidence and secret fences stay terminal.
+      if (error instanceof MemoryFactDecodeError && code === MEMORY_FACT_OUTPUT_INVALID) {
+        spentInvalidCalls += 1;
+        continue;
+      }
+      return rejected("fact_output_rejected");
+    }
+
+    const accepted = plan;
+    await deps.execution.lifecycle.settleSucceededWithDurableResult(
+      job.userId,
+      binding.id,
+      {
+        acceptedOutputHash: accepted.outputHash,
+        errorCode: null,
+        providerResponseId: result.providerResponseId,
+        state: "SUCCEEDED",
+        usage: reportedUsage(result.usage)
+      },
+      (tx, evidence) => deps.repository.stage(
+        tx,
+        job,
+        accepted,
+        binding.id,
+        evidence.recoverableUntil
+      )
+    );
+    return { bindingId: binding.id, kind: "PLAN", plan: accepted };
+  }
+}
+
 export function createMemoryFactExtractionHandler(
   deps: MemoryFactExtractionHandlerDependencies
 ): MemoryJobHandler {
@@ -591,101 +759,10 @@ export function createMemoryFactExtractionHandler(
           const decision = authorityGate(error);
           throw new MemoryCoordinatorError(decision.errorCode, true);
         });
-        const priorBindings = await deps.repository.bindings(job.userId, job.id);
-
-        await context.setStage("binding");
-        const binding = await deps.execution.admission.bind(job.userId, {
-          inputHash: input.inputHash,
-          ordinal: maxOrdinal(priorBindings) + 1,
-          owner: { memoryJobId: job.id, type: "JOB" },
-          role: "MEMORY_FACT_EXTRACT",
-          versions: MEMORY_FACT_EXTRACTION_VERSIONS
-        });
-        bindingId = binding.id;
-        const started = await deps.execution.admission.start(job.userId, binding.id);
-        if (
-          started.snapshot.logicalRole !== "MEMORY_FACT_EXTRACT" ||
-          !started.snapshot.requiresStrictStructuredOutput
-        ) {
-          await deps.execution.lifecycle.settle(job.userId, binding.id, {
-            acceptedOutputHash: null,
-            errorCode: "memory_fact_binding_invalid",
-            providerResponseId: null,
-            state: "FAILED",
-            usage: unavailableUsage
-          });
-          return terminalResult(job, input, "fact_binding_invalid");
-        }
-
-        await context.setStage("provider_call");
-        let result: Awaited<ReturnType<MemoryFactProvider["run"]>>;
-        try {
-          result = await deps.provider.run(
-            memoryFactProviderEvidence(started.snapshot),
-            input,
-            context.signal
-          );
-        } catch (error) {
-          const failure = providerFailureState(error);
-          await deps.execution.lifecycle.settle(job.userId, binding.id, {
-            acceptedOutputHash: null,
-            errorCode: failure.errorCode,
-            providerResponseId: null,
-            state: failure.state,
-            usage: failure.usage
-          });
-          if (failure.classification === "REPLAY_SAFE_TRANSIENT") {
-            throw new MemoryCoordinatorError(failure.errorCode, true);
-          }
-          return continuingCoverage(deps, terminalResult(
-            job,
-            input,
-            failure.classification === "UNKNOWN"
-              ? "fact_outcome_unknown"
-              : "fact_provider_unavailable"
-          ), input);
-        }
-
-        try {
-          plan = decodeMemoryFactExtraction(result.toolCalls, input);
-        } catch (error) {
-          const code = error instanceof MemoryFactDecodeError
-            ? error.code
-            : "memory_fact_output_invalid";
-          await deps.execution.lifecycle.settle(job.userId, binding.id, {
-            acceptedOutputHash: null,
-            errorCode: code,
-            providerResponseId: result.providerResponseId,
-            state: "FAILED",
-            usage: reportedUsage(result.usage)
-          });
-          // Invalid output authorizes no mutation of this page; later pages
-          // are separate inputs and still run.
-          return continuingCoverage(
-            deps,
-            terminalResult(job, input, "fact_output_rejected"),
-            input
-          );
-        }
-
-        await deps.execution.lifecycle.settleSucceededWithDurableResult(
-          job.userId,
-          binding.id,
-          {
-            acceptedOutputHash: plan.outputHash,
-            errorCode: null,
-            providerResponseId: result.providerResponseId,
-            state: "SUCCEEDED",
-            usage: reportedUsage(result.usage)
-          },
-          (tx, evidence) => deps.repository.stage(
-            tx,
-            job,
-            plan,
-            binding.id,
-            evidence.recoverableUntil
-          )
-        );
+        const extracted = await extractWithinBudget(deps, job, input, context);
+        if (extracted.kind === "TERMINAL") return extracted.result;
+        bindingId = extracted.bindingId;
+        plan = extracted.plan;
       }
       const semanticAuthority = await adjudicatePlan(
         deps,
