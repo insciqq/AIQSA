@@ -1,7 +1,7 @@
 import { WORKSPACE_PROJECT_DIRECTORY } from "@/lib/domain/workspace";
 import { providerResponseTimeoutSeconds } from "@/lib/contracts/providerResponseTimeout";
 
-export const CODEX_VERSION = "0.159.3";
+export const CODEX_VERSION = "0.160.0";
 /** Bump when managed profile semantics change; accepted thread compatibility includes it.
  * The optional observation reader changes the profile only for accepted
  * observation-v1 runs, whose identity names that version separately; an
