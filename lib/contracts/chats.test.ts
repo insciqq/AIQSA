@@ -213,6 +213,36 @@ describe("chat wire contracts", () => {
     })).toBeNull();
   });
 
+  it("decodes a scheduled task chat's unread marker and rejects extra or malformed fields", () => {
+    const chat = {
+      activeRun: false, assistant: null, folderId: null, id: "chat-1", title: "Morning brief",
+      updatedAt: "2026-10-04T09:00:00.000Z"
+    };
+    const page = (row: Record<string, unknown>) => ({ chats: [row], folders: [], nextCursor: null });
+    const unread = { ...chat, scheduledTask: { taskId: "task-1", unseen: true } };
+    expect(decodeChatNavigationPage(page(unread))?.chats[0]).toEqual(unread);
+    expect(decodeChatNavigationPage(page({ ...chat, scheduledTask: null }))?.chats[0]).toEqual(chat);
+    expect(decodeChatNavigationPage(page(chat))?.chats[0]).toEqual(chat);
+    for (const scheduledTask of [{ taskId: "task-1" }, { taskId: "", unseen: true }, { taskId: "task-1", unseen: "yes" },
+      { taskId: "task-1", unseen: true, title: "Morning brief" }, "task-1"]) {
+      expect(decodeChatNavigationPage(page({ ...chat, scheduledTask }))).toBeNull();
+    }
+  });
+
+  it("keeps a scheduled user turn's task marker and rejects a malformed one", () => {
+    const decode = (scheduledTask: unknown) => decodeChatDetailResponse({ chat: detailChat({
+      messages: [{ ...message, role: "user", scheduledTask }], usageStats
+    }) });
+    expect(decode({ taskId: "task-1", title: "Morning brief" })?.messages[0]?.scheduledTask)
+      .toEqual({ taskId: "task-1", title: "Morning brief" });
+    expect(decode(null)?.messages[0]?.scheduledTask).toBeNull();
+    expect(decode(undefined)?.messages[0]).not.toHaveProperty("scheduledTask");
+    for (const marker of [{ taskId: "task-1" }, { taskId: "task-1", title: "" }, { taskId: "task-1", title: "x", prompt: "secret" },
+      { taskId: "task-1", title: "x".repeat(CHAT_TITLE_MAX_LENGTH + 1) }]) {
+      expect(decode(marker)).toBeNull();
+    }
+  });
+
   it("decodes workspace summaries without allowing additive thread fields into the result", () => {
     const workspace = decodeWorkspaceChatsResponse({
       chats: [{ ...summary, messages: [message], usageStats }],

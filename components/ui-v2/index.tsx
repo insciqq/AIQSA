@@ -28,6 +28,7 @@ export type UiV2IconName =
   | "check"
   | "chevron-down"
   | "chevron-right"
+  | "clock"
   | "close"
   | "collapse"
   | "copy"
@@ -147,6 +148,10 @@ export function UiV2IconSprite() {
         </symbol>
         <symbol id="v2-icon-chevron-right" viewBox="0 0 24 24">
           <path d="m9 6 6 6-6 6" />
+        </symbol>
+        <symbol id="v2-icon-clock" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3.5 2" />
         </symbol>
         <symbol id="v2-icon-eye" viewBox="0 0 24 24">
           <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />

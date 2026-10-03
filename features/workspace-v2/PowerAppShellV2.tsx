@@ -6,6 +6,7 @@ import type { WorkspaceUploadConfigWire } from "@/lib/contracts/workspaceUploads
 import { createChatSearchPreferences } from "@/components/app-shell/chatSearchPreferences";
 
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
+import { useScheduledTaskUpdates } from "@/features/scheduled-tasks/useScheduledTaskUpdates";
 
 import { removePermanentlyDeletedChat } from "@/components/app-shell/permanentChatDeletionReconciliation";
 import { useComposerContextConfigurationKey } from "@/components/app-shell/composerContextConfiguration";
@@ -1718,7 +1719,7 @@ export function PowerAppShellV2({
     }
   });
   const studio = useStudioNavigation({
-    available: ["assistants", "instructions", "skills", "knowledge", "memory", "files", "artifacts", "mcp", "secrets", "defaults"],
+    available: ["assistants", "instructions", "skills", "knowledge", "memory", "files", "artifacts", "scheduled", "mcp", "secrets", "defaults"],
     onExit() {
       assistantLibraryActions.closeLibrary();
       knowledgeLibraryActions.closeLibrary();
@@ -2209,6 +2210,28 @@ export function PowerAppShellV2({
     runCatalogRef.current = projectCatalog;
     projectRunContextRef.current = projectContext;
   }, [projectCatalog, projectContext]);
+  // Scheduled results: unread rows, one notice per new result, seen on open.
+  useScheduledTaskUpdates({
+    accountId,
+    activeChatId,
+    chatVisible: !projectContext && !librarySnapshot.open && !knowledgeSnapshot.open && !memoryOpen && !settingsOpen,
+    onNewResult: (task) => {
+      const chatId = task.chatId;
+      if (!chatId) return;
+      setNotice({
+        action: {
+          label: chatId === useWorkspaceStore.getState().activeChatId ? "Show" : "Open",
+          onClick: () => {
+            setNotice(null);
+            if (chatId === useWorkspaceStore.getState().activeChatId) retryActiveChatDetail();
+            else void activatePersonalChatDeepLink(chatId);
+          }
+        },
+        kind: "success",
+        text: `“${task.title}” has a new result`
+      });
+    }
+  });
   const projectCurrentModel = projectContext
     ? projectCatalog?.models.find((model) =>
         model.provider === selectedProvider && model.modelId === selectedModelId

@@ -1248,3 +1248,11 @@ html[data-motion="off"] .v2-chat-pulse {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* An unopened scheduled-task result: a still accent dot, never animated. */
+.v2-chat-unread {
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 50%;
+  background: var(--v2-color-accent);
+}

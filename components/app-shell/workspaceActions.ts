@@ -292,6 +292,7 @@ export function useWorkspaceActions({
         assistant: assistant !== undefined ? assistant : existing?.assistant ?? null,
         folderId: resolvedChat.folderId,
         id: resolvedChat.id,
+        ...(existing?.scheduledTask ? { scheduledTask: existing.scheduledTask } : {}),
         title: resolvedChat.title,
         updatedAt: resolvedChat.updatedAt
       });

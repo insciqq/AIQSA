@@ -2,6 +2,7 @@
 
 import { libraryTabGroups } from "@/features/library-v2/LibraryV2";
 import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
+import { ScheduledMessageChipV2 } from "@/features/scheduled-tasks/ScheduledMessageChipV2";
 import { openAssistantDetail } from "@/components/app-shell/assistantGalleryActions";
 
 import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
@@ -1292,6 +1293,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             : undefined}
           beforeContent={activeProject && source.author ? (
             <span className="v2-project-message-author">{source.author.displayName}</span>
+          ) : source.scheduledTask && !projectContext ? (
+            <ScheduledMessageChipV2
+              title={source.scheduledTask.title}
+              onOpen={settings.studio ? () => settings.studio?.open("scheduled") : undefined}
+            />
           ) : undefined}
           content={messageText(source)}
           quoteEligible={source.status === "complete"}
