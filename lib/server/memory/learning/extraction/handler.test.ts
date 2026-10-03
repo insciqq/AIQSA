@@ -876,15 +876,15 @@ describe("Memory fact extraction handler", () => {
   });
 
   it.each([
-    ["retained v6", {
+    ["retained v50", {
+      policyVersion: "memory-fact-extraction-policy-v38",
+      promptVersion: "memory-fact-extraction-prompt-v50",
+      schemaVersion: "memory-fact-extraction-schema-v7"
+    }, true],
+    ["retired v49", {
       policyVersion: "memory-fact-extraction-policy-v37",
       promptVersion: "memory-fact-extraction-prompt-v49",
       schemaVersion: "memory-fact-extraction-schema-v6"
-    }, true],
-    ["retired v5", {
-      policyVersion: "memory-fact-extraction-policy-v35",
-      promptVersion: "memory-fact-extraction-prompt-v47",
-      schemaVersion: "memory-fact-extraction-schema-v5"
     }, false]
   ] as const)("recovers a %s staged output only by its recorded semantics", async (_label, versions, retained) => {
     const fixture = dependencies();
@@ -892,9 +892,9 @@ describe("Memory fact extraction handler", () => {
     const recordedHash = memoryFactExtractionInputHash(sourceInput, versions);
     const recordedInput = { ...fixture.input, inputHash: recordedHash };
     const current = decodeMemoryFactExtraction(providerOutput().toolCalls, fixture.input);
-    // A v6 plan carries its own class and never a change-only marker.
+    // The recorded plan keeps its own classes; recovery never re-decodes it.
     const candidates = current.candidates.map((candidate) => ({
-      ...candidate, usefulness: "EPISODIC" as const
+      ...candidate, usefulness: "ONGOING" as const
     }));
     const plan: MemoryFactExtractionPlan = {
       ...current, candidates, input: recordedInput,
@@ -924,7 +924,6 @@ describe("Memory fact extraction handler", () => {
       });
       expect(discardStale).not.toHaveBeenCalled();
       expect(fixture.apply.mock.calls[0]?.[3]).toBe(plan);
-      expect(plan.candidates.every((candidate) => candidate.changeOnly === undefined)).toBe(true);
     } else {
       await expect(handler.execute(claim(), context()))
         .rejects.toMatchObject({ code: "memory_fact_binding_stale" });
