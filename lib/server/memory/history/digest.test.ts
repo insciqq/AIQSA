@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ProviderStructuredOutputRequest } from "../../providers/structuredOutput";
+import { MEMORY_OUTPUT_DECODE_REASONS } from "../execution/outputViolation";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
 import {
   MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
@@ -20,6 +22,12 @@ import {
   selectMemoryChatDigestSourceChunks
 } from "./digest";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
+
+const governed = vi.hoisted(() => vi.fn());
+vi.mock("../execution", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../execution")>(),
+  executeGovernedMemoryStructuredOutput: governed
+}));
 
 function expectDigestOutputInvalid(
   value: unknown,
@@ -405,5 +413,93 @@ describe("Memory chat digests", () => {
     }).mode).toBe("FULL_REBUILD");
     expect(memoryChatDigestSourceFingerprint(current, "UTC"))
       .not.toBe(memoryChatDigestSourceFingerprint(current, "Europe/Moscow"));
+  });
+});
+
+describe("Memory chat digest dispatch", () => {
+  type GovernedCall = {
+    decode(value: unknown): unknown;
+    ordinal: number;
+    request: ProviderStructuredOutputRequest;
+    validationRetry?: {
+      allocateOrdinal(attempt: number): Promise<number>;
+      beforeRetry?(attempt: number): Promise<void>;
+      maxAttempts: number;
+    };
+  };
+
+  function durableJob(highestOrdinal: number | null) {
+    let max = highestOrdinal;
+    const currency = vi.fn(async () => [{ id: "job-digest" }]);
+    const aggregate = vi.fn(async () => ({ _max: { ordinal: max } }));
+    const client = {
+      $queryRaw: currency,
+      chatMemoryDigest: { findFirst: vi.fn(async () => null) },
+      memoryExecutionBinding: { aggregate, findMany: vi.fn(async () => []) },
+      memoryJob: { findFirst: vi.fn(async () => null) }
+    };
+    return { aggregate, client, currency, record: (ordinal: number) => { max = Math.max(max ?? -1, ordinal); } };
+  }
+
+  const options = { jobId: "job-digest", signal: new AbortController().signal, timeZone: "UTC", userId: source.userId };
+
+  it("binds every segment, reduction and validation retry on the next durable ordinal", async () => {
+    // Contextual keys already used ordinals 0-5 of this job and role.
+    const job = durableJob(5);
+    const calls: Array<{ ordinal: number; retryOrdinal?: number }> = [];
+    governed.mockReset();
+    governed.mockImplementation(async (call: GovernedCall) => {
+      expect(call.validationRetry?.maxAttempts).toBe(3);
+      job.record(call.ordinal);
+      const entry: { ordinal: number; retryOrdinal?: number } = { ordinal: call.ordinal };
+      if (calls.length === 0) {
+        // The first segment's answer was rejected once and repaired: like the
+        // executor, revalidate the job before binding the retry.
+        await call.validationRetry!.beforeRetry?.(1);
+        entry.retryOrdinal = await call.validationRetry!.allocateOrdinal(1);
+        job.record(entry.retryOrdinal);
+      }
+      calls.push(entry);
+      const value = call.decode({ decisions: [], open_loops: [], summary: "The user discussed several topics.", topics: ["Topics"] });
+      return { acceptedOutputHash: "a".repeat(64), bindingId: `binding-${entry.retryOrdinal ?? entry.ordinal}`, value };
+    });
+    const chunks = Array.from({ length: 30 }, (_, ordinal) => chunk(ordinal));
+    const generated = await createPrismaMemoryChatDigestGenerator(job.client as never, {
+      provider: { run: vi.fn() } as never
+    }).generate(source, chunks, options);
+
+    expect(calls).toEqual([{ ordinal: 6, retryOrdinal: 7 }, { ordinal: 8 }, { ordinal: 9 }]);
+    expect(generated.executions.map(({ bindingId }) => bindingId)).toEqual(["binding-7", "binding-8", "binding-9"]);
+    expect(generated.digest).not.toBeNull();
+    expect(job.currency).toHaveBeenCalledTimes(4);
+  });
+
+  it("never dispatches or retries from recovery", async () => {
+    const job = durableJob(null);
+    governed.mockReset();
+    await expect(createPrismaMemoryChatDigestGenerator(job.client as never, {
+      provider: { run: vi.fn() } as never
+    }).generate(source, [chunk(0)], { ...options, recoveryOnly: true })).rejects.toMatchObject({
+      code: "memory_chat_digest_unavailable"
+    });
+    expect(governed).not.toHaveBeenCalled();
+    expect(job.aggregate).not.toHaveBeenCalled();
+  });
+
+  it("reports each rejected digest field as a closed decode reason", () => {
+    for (const [output, decodeReason] of [
+      [null, "digest_contract_root_type"],
+      [{ summary: "s".repeat(2_001), topics: [], decisions: [], open_loops: [] }, "digest_contract_summary_length"],
+      [{ summary: "Valid summary.", topics: [], decisions: [], open_loops: [null] }, "digest_contract_open_loops_item_invalid"]
+    ] as const) {
+      try { decodeMemoryChatDigest(output); throw new Error("expected_rejection"); }
+      catch (error) {
+        expect(error).toMatchObject({ code: "memory_chat_digest_output_invalid", decodeReason });
+        expect(MEMORY_OUTPUT_DECODE_REASONS).toContain(decodeReason);
+      }
+    }
+    expect(new MemoryChatDigestOutputError("aggregate_limit").decodeReason).toBe("digest_aggregate_limit");
+    expect(new MemoryChatDigestOutputError("safety_rejected").decodeReason).toBe("digest_safety_rejected");
+    expect(new MemoryChatDigestOutputError("contract").decodeReason).toBe("digest_contract");
   });
 });

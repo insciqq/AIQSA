@@ -1,7 +1,8 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { adminMemoryProcessingIssueKey, type AdminMemoryProcessingIssue, type AdminMemoryStatus } from "../../../contracts/adminMemory";
 import { currentMemoryJobsSql } from "../../memory/coordinator/currentJobs";
-import { memoryHistoryActiveWorkSql, memoryHistoryAutoHealAttemptsSql, memoryHistoryAutoHealProtectedSql, memoryHistoryIncompleteOutputSql } from "../../memory/history/autoHeal";
+import { memoryHistoryActiveWorkSql, memoryHistoryAutoHealAttemptsSql, memoryHistoryAutoHealProtectedSql, memoryHistoryIncompleteOutputSql,
+  memoryHistoryUnrepairedOutputFailureSql } from "../../memory/history/autoHeal";
 import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS } from "../../memory/history/contract";
 import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
 import { MEMORY_PREPARATION_FAILURE_CODES } from "../../runs/preparingFailOpen";
@@ -98,11 +99,9 @@ export async function readAdminMemoryProcessing(
                 WHEN 'memory_execution_capability_unavailable' THEN 'CAPABILITY_UNAVAILABLE'
                 ELSE 'CONFIGURATION_REQUIRED'
               END
-            WHEN job.kind = 'INDEX_HISTORY' AND job.state = 'SUCCEEDED' AND EXISTS (
-              SELECT 1 FROM "MemoryExecutionBinding" AS binding
-              WHERE binding."memoryJobId" = job.id AND binding."userId" = job."userId"
-                AND binding."errorCode" = 'memory_classifier_output_limit_exceeded'
-            ) THEN 'OUTPUT_LIMIT'
+            WHEN job.kind = 'INDEX_HISTORY' AND job.state = 'SUCCEEDED' AND ${memoryHistoryUnrepairedOutputFailureSql([
+              "memory_classifier_output_limit_exceeded"
+            ])} THEN 'OUTPUT_LIMIT'
             WHEN ${memoryHistoryIncompleteOutputSql()} THEN 'HISTORY_INCOMPLETE'
             WHEN job.state = 'TERMINAL_FAILED' THEN 'PROCESSING_FAILED'
             WHEN job.state = 'RETRYABLE_FAILED' AND job."createdAt" <= ${new Date(now.getTime() - RETRY_WARNING_MS)} THEN 'RETRYING'

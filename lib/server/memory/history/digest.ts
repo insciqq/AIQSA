@@ -13,6 +13,7 @@ import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { createAcceptedMemoryStructuredOutputProvider, MemoryStructuredOutputProviderError } from
   "../execution/structuredClassifier";
 import { MEMORY_HISTORY_OUTPUT_PIPELINE_VERSION } from "../execution/historyOutputBudget";
+import { MemoryOutputViolationError, type MemoryOutputDecodeReason } from "../execution/outputViolation";
 import { memorySha256 } from "../persistence/lexical";
 import { detectMemoryTextLanguage } from "./language";
 import { projectMemoryHistorySafeText } from "./safety";
@@ -114,10 +115,21 @@ export class MemoryChatDigestError extends Error {
   }
 }
 
-export class MemoryChatDigestOutputError extends MemoryChatDigestError {
+function digestDecodeReason(
+  reason: MemoryChatDigestOutputInvalidReason,
+  violation?: MemoryChatDigestContractViolation
+): MemoryOutputDecodeReason {
+  if (reason !== "contract") return `digest_${reason}`;
+  return violation ? `digest_contract_${violation}` : "digest_contract";
+}
+
+/** A rejected digest answer. Its closed reason is persisted on the binding;
+ * callers keep matching `code`, `reason` and `violation`. */
+export class MemoryChatDigestOutputError extends MemoryOutputViolationError {
+  readonly code = "memory_chat_digest_output_invalid" as const;
   constructor(readonly reason: MemoryChatDigestOutputInvalidReason,
     readonly violation?: MemoryChatDigestContractViolation) {
-    super("memory_chat_digest_output_invalid");
+    super("memory_chat_digest_output_invalid", digestDecodeReason(reason, violation));
     this.name = "MemoryChatDigestOutputError";
   }
 }
@@ -793,16 +805,6 @@ export function createPrismaMemoryChatDigestGenerator(
           }
         }
 
-        const prior = await client.memoryExecutionBinding.aggregate({
-          _max: { ordinal: true },
-          where: {
-            logicalRole: "MEMORY_HISTORY_CLASSIFY",
-            memoryJobId: generateOptions.jobId,
-            ownerType: "JOB",
-            userId: generateOptions.userId
-          }
-        });
-        let ordinal = (prior._max.ordinal ?? -1) + 1;
         const executions: Array<{
           acceptedOutputHash: string;
           bindingId: string;
@@ -840,7 +842,6 @@ export function createPrismaMemoryChatDigestGenerator(
               source,
               versions: MEMORY_CHAT_DIGEST_VERSIONS
             }),
-            ordinal,
             provider,
             request: feedback ? { ...request, responseReminder:
               `The previous attempt failed server validation: ${feedback}. Generate a fresh valid object from the source. Shorten the offending field or lists and respect both individual and total character limits. Do not repeat or quote a rejected answer.` } : request,
@@ -848,7 +849,6 @@ export function createPrismaMemoryChatDigestGenerator(
             userId: generateOptions.userId,
             versions: MEMORY_CHAT_DIGEST_VERSIONS
           });
-          ordinal += 1;
           executions.push({
             acceptedOutputHash: governed.acceptedOutputHash,
             bindingId: governed.bindingId
@@ -944,7 +944,7 @@ export function createPrismaMemoryChatDigestGenerator(
       } catch (error) {
         if (generateOptions.signal.aborted) throw generateOptions.signal.reason;
         if (error instanceof MemoryCoordinatorError) throw error;
-        if (error instanceof MemoryChatDigestError) throw error;
+        if (error instanceof MemoryChatDigestError || error instanceof MemoryChatDigestOutputError) throw error;
         if (error instanceof MemoryStructuredOutputProviderError && error.outputLimitExceeded) {
           throw new MemoryChatDigestError("memory_chat_digest_output_limit");
         }

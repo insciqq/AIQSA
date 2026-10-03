@@ -6831,6 +6831,7 @@ model MemoryExecutionBinding {
   recoverableUntil            DateTime?
   relationsDetachedAt         DateTime?
   errorCode                   String?                  @db.VarChar(64)
+  decodeReason                String?                  @db.VarChar(64)
   createdAt                   DateTime                 @default(now())
   startedAt                   DateTime?
   completedAt                 DateTime?
