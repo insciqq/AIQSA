@@ -167,11 +167,12 @@ async function extractionAuthorityAvailable(client: PrismaClient, now: Date, use
   }
 }
 
+/** The key of new re-extractions; none without a usable Memory-role policy. */
 async function currentPolicyVersion(client: Pick<PrismaClient, "$queryRaw">): Promise<number | null> {
   const [policy] = await client.$queryRaw<Array<{ version: number }>>(Prisma.sql`
     SELECT version FROM "MemoryUtilityModelPolicy" WHERE id = 'installation'
   `);
-  return policy?.version ?? null;
+  return policy && Number.isSafeInteger(policy.version) && policy.version >= 1 ? policy.version : null;
 }
 
 /**
