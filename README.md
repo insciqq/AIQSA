@@ -23,8 +23,9 @@ AIQSA is pre-1.0 and designed for small, operator-managed installations with a s
 For local use by one person with external model providers:
 
 - 64-bit Linux on amd64 or arm64, Docker Engine 25.0 or newer with Compose 2.29.7 or newer, bash 4 or newer, git, and OpenSSL.
+- **KVM (`/dev/kvm`) is required.** Workspace runs commands in KVM virtual machines and much of AIQSA depends on it; installations without it are not supported. On cloud and other virtual machines enable nested virtualization, or use a bare-metal host.
 - **Minimum for basic chat: 2 CPU cores, 4 GB RAM, and 50 GB free SSD space**, plus storage for uploads and backups.
-- **Recommended: 8 GB RAM.** Active Knowledge ingestion, OCR, and Workspace need additional memory. Workspace also requires `/dev/kvm`; each workspace defaults to 4 GB RAM and 10 GB disk.
+- **Recommended: 8 GB RAM.** Active Knowledge ingestion, OCR, and Workspace need additional memory; each workspace defaults to 4 GB RAM and 10 GB disk.
 
 Memory use depends on document size and workload. No GPU is required; locally hosted model servers need their own resources. OpenSearch requires [`vm.max_map_count` of at least 262144](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/docker/#linux-settings).
 
@@ -36,7 +37,7 @@ cd AIQSA
 ./aiqsa.sh install --base-url http://localhost:3000 --admin-email admin@example.com
 ```
 
-`install` checks the host (Docker, Compose, `vm.max_map_count`, memory, disk, port, clock and KVM), creates `.env` with unique secrets unless it already exists, starts the stack and waits until it is ready. Without flags it asks for the URL users will open and the administrator email. It never changes host settings: a failed check prints the exact command to fix it. Workspace is enabled automatically when `/dev/kvm` is usable; `--workspace off` skips it and `--workspace on` requires it. `./aiqsa.sh doctor` rechecks the host, `.env` and the running stack at any time, and `./aiqsa.sh help` lists every command and flag.
+`install` checks the host (Docker, Compose, `vm.max_map_count`, memory, disk, port, clock and KVM), creates `.env` with unique secrets unless it already exists, starts the stack and waits until it is ready. Without flags it asks for the URL users will open and the administrator email. It never changes host settings: a failed check prints the exact command to fix it. It refuses a host without usable `/dev/kvm` before changing anything and enables Workspace with the matching KVM group. `./aiqsa.sh doctor` rechecks the host, `.env` and the running stack at any time, and `./aiqsa.sh help` lists every command and flag.
 
 Open the configured URL ([localhost:3000](http://localhost:3000) by default) and sign in with the email and generated `AIQSA_INITIAL_ADMIN_PASSWORD` from `.env`. Configure model providers in the Control Center. For internet access, put an HTTPS reverse proxy in front of port 3000 and set the public URL in `.env`. Its upstream read timeout must exceed the Memory admission timeout (30 seconds by default, up to 120), because sending a message waits for Memory preparation.
 
