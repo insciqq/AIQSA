@@ -204,6 +204,7 @@ import {
   isAssistantEntry,
   isCurrentChatRouteResolution,
   navigateChatRoute,
+  navigateToChatAddress,
   resolveChatRoute,
   settleChatRouteResolution,
   useChatRouteHistory,
@@ -2079,6 +2080,12 @@ export function PowerAppShellV2({
       moveFolder: updateFolderParent,
       openChatMessage: openPersonalChatMessageEvent,
       openChat: activatePersonalChatDeepLink,
+      openChatAddress: (chatId: string) => navigateToChatAddress(
+        { chatId, projectId: null },
+        (route, resolution) => {
+          void resolveChatAddress(route, resolution, useWorkspaceStore.getState().catalog);
+        }
+      ),
       retry: retryWorkspace,
       saveChatTitle: renameChat,
       saveFolder: renameFolder,

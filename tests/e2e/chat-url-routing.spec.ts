@@ -710,8 +710,9 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
 
     // Restoring from Settings replaces the address with the restored chat and
     // keeps both Project drafts through the personal refresh. Inside a Project
-    // the rail's Settings opens that Project's settings, so the restore runs
-    // from the personal scope; the in-Project restore path is unit-covered.
+    // the rail's Settings opens that Project's settings (only the account menu
+    // opens account Settings there), so the restore runs from the personal
+    // scope; the in-Project restore path is unit-covered.
     const beforeRestore = await historyLength();
     await page.getByTestId("workspace-rail").getByRole("button", { name: "Settings" }).click();
     const settings = page.getByRole("dialog", { name: "Settings" });
@@ -771,6 +772,54 @@ test("archive, restore and an unknown chat address keep Project drafts and the a
     for (const projectId of [projectOne, projectTwo]) {
       await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
     }
+  }
+});
+
+test("inside a Project chat the account menu opens account Settings and the Settings destination the Project's", async ({ page, context, baseURL }, testInfo) => {
+  test.setTimeout(150_000);
+  await useAppearance(page, context, baseURL!, "light");
+  await signInWithLocalToken(page);
+  const suffix = randomUUID().slice(0, 8);
+  const projectName = `Settings Project ${suffix}`;
+  const chatTitle = `Settings Project chat ${suffix}`;
+  const projectId = await createFakeProject(page, projectName);
+  try {
+    const chatResponse = await page.request.post(`/api/projects/${projectId}/chats`, { data: { title: chatTitle } });
+    expect(chatResponse.status()).toBe(201);
+    const chatId = (await chatResponse.json()).chat.id as string;
+    const accountSettings = page.getByRole("dialog", { exact: true, name: "Settings" });
+    const projectSettings = page.getByRole("dialog", { exact: true, name: `${projectName} settings` });
+    for (const size of [desktop, phone]) {
+      await page.setViewportSize(size);
+      await page.goto(`/p/${projectId}/c/${chatId}`);
+      await expect(page.getByTestId("header-title")).toHaveText(chatTitle, { timeout: 30_000 });
+      await expect(page.getByRole("complementary", { name: "Shared project context" })).toContainText(projectName);
+
+      // The account menu is the account's own entry, also inside a Project.
+      await runAccountMenuAction(page, "Settings");
+      await expect(accountSettings).toBeVisible({ timeout: 20_000 });
+      await expect(projectSettings).toHaveCount(0);
+      await expect(page).toHaveURL(exactPath(`/p/${projectId}/c/${chatId}`));
+      await page.screenshot({ path: testInfo.outputPath(`account-settings-in-project-${size.width}.png`) });
+      await accountSettings.getByRole("button", { name: "Close settings" }).click();
+      await expect(accountSettings).toHaveCount(0);
+
+      // The Settings destination (rail, or the phone drawer footer) keeps opening the Project's settings.
+      const rail = page.getByTestId("workspace-rail");
+      if (await rail.isVisible()) {
+        await rail.getByRole("button", { exact: true, name: "Settings" }).click();
+      } else {
+        const navigation = page.getByRole("complementary", { name: /^(Chat|Project) navigation$/ });
+        if (!(await navigation.isVisible())) await page.getByRole("button", { name: "Open sidebar" }).click();
+        await navigation.getByRole("button", { exact: true, name: "Settings" }).click();
+      }
+      await expect(projectSettings).toBeVisible({ timeout: 20_000 });
+      await expect(accountSettings).toHaveCount(0);
+      await projectSettings.getByRole("button", { name: "Close project settings" }).click();
+      await expect(projectSettings).toHaveCount(0);
+    }
+  } finally {
+    await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
   }
 });
 

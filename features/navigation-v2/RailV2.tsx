@@ -59,6 +59,7 @@ export function RailV2({
   onChats,
   onLibrary,
   onNewChat,
+  onAccountSettings,
   onProjects,
   onSettings
 }: Readonly<{
@@ -72,6 +73,8 @@ export function RailV2({
   onNewChat(): void;
   onProjects?(): void;
   onSettings?(): void;
+  /** The account menu's Settings; defaults to `onSettings`. */
+  onAccountSettings?(): void;
 }>) {
   // Control Center returns to the chat it was opened from.
   const controlCenterHref = useControlCenterHref();
@@ -105,7 +108,7 @@ export function RailV2({
           accountId={accountId}
           accountLabel={accountLabel}
           adminEntryVisible={adminEntryVisible}
-          onSettings={onSettings}
+          onSettings={onAccountSettings ?? onSettings}
           variant="avatar"
         />
       </div>
