@@ -1049,14 +1049,14 @@ describe("backup", () => {
 });
 
 describe("restore", () => {
-  interface BackupOptions { manifest?: Record<string, string>; tamper?: boolean }
+  interface BackupOptions { manifest?: Record<string, string>; tamper?: boolean; env?: Record<string, string> }
 
   // Writes a backup directory as `backup` would and returns its env body.
   function makeBackup(fixture: Fixture, options: BackupOptions = {}): { directory: string; body: string } {
     copyFileSync(path.resolve("compose.yaml"), fixture.file("compose.yaml"));
     const directory = path.join(fixture.root, "backup");
     mkdirSync(directory, { mode: 0o700 });
-    const body = fixture.writeEnv();
+    const body = fixture.writeEnv(options.env);
     copyFileSync(fixture.file(".env"), path.join(directory, "env"));
     rmSync(fixture.file(".env"));
     const manifest = { format: "1", aiqsa_version: "0.3.0", project: "aiqsa-test", objects: "bundled", ...options.manifest };
@@ -1113,6 +1113,24 @@ describe("restore", () => {
     expect(fixture.dockerLog).toMatch(/-p aiqsa-restore-\d{14} .* down$/mu);
     expect(fixture.dockerLog).not.toMatch(/knowledge:restore:reconcile|--remove-orphans|storage-init/u);
     expectNoSecrets(result.output, body);
+  });
+
+  it("publishes this host's KVM group when the backup's Workspace used another one", () => {
+    const fixture = new Fixture();
+    fixture.kvmDevice(0o660);
+    const gid = String(statSync(fixture.kvm).gid);
+    copyFileSync(path.resolve("compose.yaml"), fixture.file("compose.yaml"));
+    const { directory } = makeBackup(fixture, { env: { COMPOSE_PROFILES: "workspace",
+      AIQSA_WORKSPACE_RUNNER_URL: "http://workspace-runner:4310", AIQSA_WORKSPACE_RUNNER_TOKEN: secretOf("TOKEN"), AIQSA_KVM_GID: "424242" } });
+    const backupEnv = readFileSync(path.join(directory, "env"), "utf8");
+    const result = fixture.run(["restore", directory]);
+    expect(result.status, result.output).toBe(0);
+    expect(result.stdout).toContain(`PASS kvm: ${fixture.kvm} usable by group ${gid}`);
+    expect(result.stdout).not.toContain("kvm-gid");
+    expect(result.stderr).toContain(`AIQSA_KVM_GID changed from '424242' to ${gid} in .env`);
+    expect(readFileSync(fixture.file(".env"), "utf8")).toBe(backupEnv.replace("AIQSA_KVM_GID=424242", `AIQSA_KVM_GID=${gid}`));
+    expect(statSync(fixture.file(".env")).mode & 0o777).toBe(0o600);
+    expectNoSecrets(result.output, backupEnv);
   });
 
   it.each([

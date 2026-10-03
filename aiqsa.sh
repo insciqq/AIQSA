@@ -93,7 +93,7 @@ BACKUP_STOPPED=0 BACKUP_DIR="" BACKUP_CREATED_DIR=0 BACKUP_COMPLETE=0 BACKUP_CON
 RESTART_SERVICES=()
 # Restore: RESTORE_PHASE is "isolated" from publishing .env until the real
 # project starts; RC_ARGS selects the isolated aiqsa-restore-* project.
-RESTORE_PHASE="" RESTORE_PROJECT="" RESTORE_OVERRIDE=""
+RESTORE_PHASE="" RESTORE_PROJECT="" RESTORE_OVERRIDE="" RESTORE_KVM_GID="" RESTORE_KVM_GID_FROM=""
 RC_ARGS=()
 
 # ---------------------------------------------------------------- output
@@ -1894,13 +1894,36 @@ restore_target_empty() {
   fi
 }
 
-# Hard-link publication is atomic and never replaces an existing file.
+# AIQSA_KVM_GID is host-specific, neither a secret nor an identity: when
+# Workspace is enabled and this host's usable KVM device belongs to another
+# group, the new .env gets the host's group. Sets RESTORE_KVM_GID.
+restore_kvm_gid() {
+  local configured=${ENV_VALUES[AIQSA_KVM_GID]:-}
+  RESTORE_KVM_GID=""
+  profile_enabled workspace || return 0
+  [[ -z ${AIQSA_KVM_GID+set} ]] || return 0
+  kvm_probe
+  if (( KVM_OK )) && [[ $configured != "$KVM_GID" ]]; then
+    RESTORE_KVM_GID=$KVM_GID RESTORE_KVM_GID_FROM=$configured
+    ENV_VALUES[AIQSA_KVM_GID]=$KVM_GID
+  fi
+}
+
+# Hard-link publication is atomic and never replaces an existing file. Only
+# the AIQSA_KVM_GID line of this new file may differ from the backup.
 restore_publish_env() {
-  local source=$1 old_umask
+  local source=$1 old_umask line
   old_umask=$(umask)
   umask 077
   CONFIGURE_TMP=$(mktemp "$(dirname -- "$ENV_FILE")/.env.tmp.XXXXXX")
-  cat -- "$source" > "$CONFIGURE_TMP"
+  if [[ -z $RESTORE_KVM_GID ]]; then
+    cat -- "$source" > "$CONFIGURE_TMP"
+  else
+    while IFS= read -r line || [[ -n $line ]]; do
+      if [[ $line =~ ^[[:space:]]*(export[[:space:]]+)?AIQSA_KVM_GID[[:space:]]*= ]]; then line="AIQSA_KVM_GID=$RESTORE_KVM_GID"; fi
+      printf '%s\n' "$line"
+    done < "$source" > "$CONFIGURE_TMP"
+  fi
   ln -- "$CONFIGURE_TMP" "$ENV_FILE" || die "$EXIT_FAILURE" "$(display_path "$ENV_FILE") appeared meanwhile; it was preserved and nothing was restored."
   rm -f -- "$CONFIGURE_TMP"
   CONFIGURE_TMP=""
@@ -1974,6 +1997,7 @@ cmd_restore() {
   [[ $PROJECT_NAME =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
     || restore_refuse "the Compose project name could not be resolved from the backup's environment."
   restore_target_empty
+  restore_kvm_gid
   if (( ! SKIP_PREFLIGHT )); then
     doctor_host
     if (( FAIL_COUNT )); then
@@ -1987,6 +2011,9 @@ cmd_restore() {
   say "Restoring AIQSA $version from $(display_path "$dir") into the Compose project $PROJECT_NAME."
   restore_publish_env "$dir/env"
   RESTORE_PHASE=isolated
+  if [[ -n $RESTORE_KVM_GID ]]; then
+    note "AIQSA_KVM_GID changed from '$RESTORE_KVM_GID_FROM' to $RESTORE_KVM_GID in $(display_path "$ENV_FILE"): the group of $KVM_DEVICE on this host."
+  fi
   env_load
   say "Creating the volumes and containers of $PROJECT_NAME without starting them."
   dc create postgres seaweedfs >"$log" 2>&1 || restore_step_failed "docker compose create postgres seaweedfs failed" "$log"
@@ -2049,7 +2076,8 @@ Commands:
   upgrade    Update the checkout to the next release and restart safely.
   backup     Cold backup of PostgreSQL, bundled object storage and .env (writers stop briefly).
   restore <backup-dir>
-             Restore a backup into an empty installation of the same version.
+             Restore a backup into an empty installation of the same version;
+             backups made with external object storage are refused (restore those by hand).
   version    Print the checkout version.
   help       Print this help.
 
