@@ -178,13 +178,19 @@ async function currentPolicyVersion(client: Pick<PrismaClient, "$queryRaw">): Pr
 /**
  * Re-extracts direct user messages whose fact extraction ended on a provider
  * failure that produced no output, such as an outage of the Memory model. Each
- * admission is a new first-page EXTRACT_FACTS job carrying the failed job's
- * exact source snapshot and keyed by the current Memory-role policy version;
- * the failed row, its bindings and usage stay untouched. The extraction
- * handler re-proves the source, command, suppression, pause and generation
- * fences before any provider call. Continuation pages of a long message are
- * not re-extracted. The predicate stops matching once the newest attempt of a
- * source succeeded, was fenced or holds its key, so the pass ends by itself.
+ * admission is a new first-page EXTRACT_FACTS job keyed by the current
+ * Memory-role policy version; the failed row, its bindings and usage stay
+ * untouched. Continuation pages of a long message are not re-extracted.
+ *
+ * The job carries the failed job's admission snapshot, as any delayed
+ * extraction does after its chat moved on: the leaf selects the source turn's
+ * own run for its temporal snapshot, and the input is the source message and
+ * its ancestors. Claims, both gates and the commit prove the source is on the
+ * current active path at the current generation, never that the chat stood
+ * still. The handler re-proves the command, suppression, pause and generation
+ * fences before any provider call. The predicate stops matching once the newest
+ * attempt of a source succeeded, was fenced or holds its key, so the pass ends
+ * by itself.
  */
 export async function healFailedMemoryFactExtractions(
   client: PrismaClient = prisma,
