@@ -33,6 +33,18 @@ import {
   installAssistantEditor
 } from "@/tests/support/assistantLibraryFixtures";
 import type { ComposerAssistantDefinition } from "./composerAssistantState";
+import type { ChatPdfRouteAvailability } from "@/lib/contracts/chatPdfPreparation";
+
+const pdfRoutePreview = vi.hoisted(() => ({
+  current: null as ChatPdfRouteAvailability | null,
+  targets: [] as unknown[]
+}));
+vi.mock("./useChatPdfRoutePreview", () => ({
+  latestChatPdfRouteAvailability: (target: unknown) => {
+    pdfRoutePreview.targets.push(target);
+    return pdfRoutePreview.current;
+  }
+}));
 
 const hostedSearchOptionId = "hosted-openai-search";
 const clientSearchOptionId = "client-openai-search";
@@ -863,6 +875,65 @@ describe("message run actions", () => {
     expect(actions.setNotice).not.toHaveBeenCalledWith(expect.objectContaining({
       text: expect.stringContaining("before sending")
     }));
+  });
+
+  describe("PDF route preview at send time", () => {
+    const scan = (status: "failed" | "processing" | "ready", extra: Partial<ComposerAttachment> = {}): ComposerAttachment => ({
+      fileName: "scan.pdf", id: "scan-pdf", kind: "pdf", processingErrorCode: status === "failed" ? "parser_unavailable" : null,
+      status, ...extra
+    });
+    const noText = scan("ready", { processing: { extractedCharacterCount: 0, pageCount: 2, pagesProcessed: 2, status: "no_text" } });
+    afterEach(() => { pdfRoutePreview.current = null; pdfRoutePreview.targets = []; });
+
+    it.each([
+      ["system_vision", "processing", scan("processing")],
+      ["system_pdf", "parser failure", scan("failed")],
+      ["system_vision", "no text", noText]
+    ] as const)("sends what admission accepts once the %s route exists (%s)", async (route, _state, attachment) => {
+      pdfRoutePreview.current = { available: true, route };
+      const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({ attachments: [attachment], draft: "Read the scan" });
+
+      await actions.submitComposer();
+
+      expect(pdfRoutePreview.targets).toContainEqual({ projectId: null, providerConnectionId: "openai", providerModelId: "gpt-5.5" });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(actions.setNotice).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
+    });
+
+    it.each([
+      ["processing", scan("processing"), "Wait for scan.pdf to finish processing before sending."],
+      ["no text", noText, "No extractable text was found. Choose a model with native PDF support or remove this file."]
+    ] as const)("keeps today's local block while the route is unknown (%s)", async (_state, attachment, text) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({ attachments: [attachment], draft: "Read the scan" });
+
+      await actions.submitComposer();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(actions.setNotice).toHaveBeenCalledWith({ kind: "error", text });
+    });
+
+    it("still blocks a storage failure and a PDF without any route", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      pdfRoutePreview.current = { available: true, route: "system_vision" };
+      const storage = useMessageRunActionsForTest({
+        attachments: [scan("failed", { processingErrorCode: "attachment_checksum_mismatch" })], draft: "Read the scan"
+      });
+      await storage.submitComposer();
+      expect(storage.setNotice).toHaveBeenCalledWith({ kind: "error", text: expect.stringMatching(/scan\.pdf before sending\.$/u) });
+
+      pdfRoutePreview.current = { available: false, reasonCode: "pdf_processing_configuration_incomplete" };
+      const missing = useMessageRunActionsForTest({ attachments: [scan("processing")], draft: "Read the scan" });
+      await missing.submitComposer();
+      expect(missing.setNotice).toHaveBeenCalledWith({
+        kind: "error", text: "No PDF-reading model is configured for this installation."
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 
   it.each([

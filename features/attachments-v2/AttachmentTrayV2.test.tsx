@@ -259,6 +259,23 @@ describe("AttachmentTrayV2", () => {
       expect(screen.queryByText("Ask an administrator to set one up.")).toBeNull();
     });
 
+    it("names the assigned reader instead of the answer provider for a system route", () => {
+      const available = { available: true, route: "system_pdf" } as const;
+      const attachments: ComposerAttachment[] = [
+        { fileName: "parsing.pdf", id: "parsing", kind: "pdf", status: "processing" },
+        { fileName: "failed.pdf", id: "failed", kind: "pdf", processingErrorCode: "pdf_extraction_failed", status: "failed" }
+      ];
+      const mapped = attachmentItemsForV2(attachments, attachmentWarningsForModel(attachments, model, false, available),
+        model, false, available, null);
+      expect(mapped.map(({ blocksSend, detail }) => ({ blocksSend, detail }))).toEqual([
+        { blocksSend: false, detail: "The assigned PDF reader can read the original PDF while local text extraction continues." },
+        { blocksSend: false, detail: "Local text extraction failed. The assigned PDF reader will read the original PDF." }
+      ]);
+      expect(attachmentSendBlockReasonV2(mapped, null, false)).toBeNull();
+      const unknown = attachmentItemsForV2(attachments, [], model, false, null, null);
+      expect(unknown.every((item) => item.blocksSend)).toBe(true);
+    });
+
     it("keeps the PDF Ready once a route is available", () => {
       const available = { available: true, route: "system_vision" } as const;
       const attachments: ComposerAttachment[] = [{ fileName: "report.pdf", id: "pdf", kind: "pdf", status: "ready" }];

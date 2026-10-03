@@ -355,6 +355,72 @@ describe("attachment capabilities", () => {
       expect(attachmentWarningsForModel([pdf], selected, true, available)).toEqual([]);
     });
 
+    describe("extraction state once a route reads the original", () => {
+      const base = { fileName: "scan.pdf", id: "scan", kind: "pdf" as const };
+      const states = {
+        complete: { ...base, status: "ready" as const, processing: {
+          extractedCharacterCount: 40, pageCount: 2, pagesProcessed: 2, status: "complete" as const } },
+        failed: { ...base, processingErrorCode: "pdf_extraction_failed", status: "failed" as const },
+        noText: { ...base, status: "ready" as const, processing: {
+          extractedCharacterCount: 0, pageCount: 2, pagesProcessed: 2, status: "no_text" as const } },
+        processing: { ...base, status: "processing" as const },
+        zeroPartial: { ...base, status: "ready" as const, processing: {
+          extractedCharacterCount: 0, pageCount: 9, pagesProcessed: 1, status: "partial" as const,
+          truncationReason: "text_limit" as const } }
+      };
+      const extraction = model("pdf_text_extraction", false);
+      const native = model("native_pdf", false);
+      const blocked = (attachment: (typeof states)[keyof typeof states], selected: CatalogModel,
+        route: Parameters<typeof attachmentBlocksSend>[3]) =>
+        attachmentBlocksSend(attachment, selected, false, route) ||
+        Boolean(firstBlockingAttachmentWarning([attachment], selected, false, route));
+
+      it.each([
+        ["direct_pdf", native],
+        ["system_pdf", extraction],
+        ["system_vision", extraction],
+        ["system_vision", native]
+      ] as const)("accepts every extraction state with the %s route", (route, selected) => {
+        const available = { available: true, route } as const;
+        for (const attachment of Object.values(states)) {
+          expect(blocked(attachment, selected, available), attachment.status).toBe(false);
+        }
+        expect(attachmentWarningsForModel([states.noText], selected, false, available)).toEqual([
+          expect.objectContaining({ blocking: false, label: "No text", message: route === "direct_pdf"
+            ? "No extractable text was found. This model can use the original PDF."
+            : "No extractable text was found. The assigned PDF reader will read the original PDF." })
+        ]);
+      });
+
+      it("keeps storage and integrity failures blocking with a route", () => {
+        const available = { available: true, route: "system_vision" } as const;
+        for (const code of ["attachment_checksum_mismatch", "attachment_object_read_failed",
+          "attachment_object_size_mismatch", "attachment_unavailable"]) {
+          expect(attachmentBlocksSend({ ...states.failed, processingErrorCode: code }, extraction, false, available)).toBe(true);
+        }
+      });
+
+      it("keeps today's behavior while the route is unknown or reads only local text", () => {
+        for (const route of [null, { available: true, route: "local_text" } as const]) {
+          expect(blocked(states.complete, extraction, route)).toBe(false);
+          expect(blocked(states.processing, extraction, route)).toBe(true);
+          expect(blocked(states.failed, extraction, route)).toBe(true);
+          expect(blocked(states.noText, extraction, route)).toBe(true);
+          expect(blocked(states.zeroPartial, extraction, route)).toBe(true);
+        }
+        for (const attachment of Object.values(states)) {
+          expect(blocked(attachment, native, null), attachment.status).toBe(false);
+        }
+      });
+
+      it("blocks every extraction state when no route exists", () => {
+        const unavailable = { available: false, reasonCode: "pdf_processing_configuration_incomplete" } as const;
+        for (const attachment of Object.values(states)) {
+          expect(blocked(attachment, native, unavailable), attachment.status).toBe(true);
+        }
+      });
+    });
+
     it("keeps only the local checks while the route is unknown", () => {
       const selected = model("pdf_text_extraction", false);
       expect(attachmentWarningsForModel([pdf], selected, false, null)).toEqual([]);

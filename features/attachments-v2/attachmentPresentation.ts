@@ -14,7 +14,7 @@ import type {
   ComposerAttachment,
   ComposerAttachmentWarning
 } from "@/components/app-shell/attachmentContracts";
-import { attachmentBlocksSend } from "@/components/app-shell/attachmentCapabilities";
+import { attachmentBlocksSend, pdfOriginalReadable } from "@/components/app-shell/attachmentCapabilities";
 import type { CatalogModel } from "@/components/app-shell/types";
 
 export type ComposerAttachmentItemV2 = Readonly<{
@@ -90,17 +90,22 @@ export function attachmentItemsForV2(
   return attachments.map((attachment) => {
     const status = attachment.status ?? "ready";
     const warning = warningById.get(attachment.id);
-    const blocksSend = attachmentBlocksSend(attachment, model, workspaceEnabled);
-    const directPdf = attachment.kind === "pdf" &&
-      model?.capabilities.documentInputMode === "native_pdf";
+    const blocksSend = attachmentBlocksSend(attachment, model, workspaceEnabled, pdfRoute);
+    const directPdf = pdfOriginalReadable(attachment, model, pdfRoute);
+    // A system reader is another destination than the selected answer model.
+    const systemReader = pdfRoute?.available === true && pdfRoute.route !== "direct_pdf";
     const detail = workspaceEnabled && status === "failed" && !blocksSend
       ? "Parser processing failed. Workspace can use the stored original file."
       : workspaceEnabled && status === "processing" && !blocksSend
         ? "Workspace can use the stored original while parsing continues."
         : status === "failed" && directPdf && !blocksSend
-      ? "Local text extraction failed. The original PDF will be sent directly to the selected provider."
+      ? systemReader
+        ? "Local text extraction failed. The assigned PDF reader will read the original PDF."
+        : "Local text extraction failed. The original PDF will be sent directly to the selected provider."
       : status === "processing" && directPdf && !blocksSend
-        ? "The original PDF can be sent directly while local text extraction continues."
+        ? systemReader
+          ? "The assigned PDF reader can read the original PDF while local text extraction continues."
+          : "The original PDF can be sent directly while local text extraction continues."
         : status === "failed"
           ? failureDetail(attachment)
           : null;
