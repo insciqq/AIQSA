@@ -57,8 +57,6 @@ import { excludeBenchmarkQuestion } from "./queryIsolation";
 import { longMemEvalAnswerParams } from "./answerParams";
 import { defaultMemoryExecutionAuthority } from
   "../../lib/server/memory/execution/defaultAuthority";
-import { probeMemoryStructuredOutputAuthority } from
-  "../../lib/server/memory/execution/structuredClassifier";
 import {
   MEMORY_ITEM_EMBEDDING_VERSIONS,
   memoryItemEmbeddingGenerationMatchesPin
@@ -129,22 +127,6 @@ import {
   applyMemorySourceMutations,
   lockMemorySourceChat
 } from "../../lib/server/memory/sourceState";
-import { memorySynthesisSourceAuthorityPredicate } from
-  "../../lib/server/memory/synthesis/eligibility";
-import {
-  MEMORY_SYNTHESIS_LOW_ACTIVITY_FALLBACK_MS,
-  MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES,
-  MEMORY_SYNTHESIS_POLICY_VERSION,
-  MEMORY_SYNTHESIS_QUIET_PERIOD_MS
-} from
-  "../../lib/server/memory/synthesis/policy";
-import { MEMORY_SYNTHESIS_VERSIONS } from
-  "../../lib/server/memory/synthesis/provider";
-import {
-  loadMemorySynthesisScheduleStatus,
-  reconcileMemorySynthesisWork
-} from
-  "../../lib/server/memory/synthesis/reconcile";
 import {
   LONGMEMEVAL_EVALUATOR_SHA256,
   LONGMEMEVAL_MAX_CASE_CONCURRENCY,
@@ -376,7 +358,6 @@ type CliOptions = Readonly<{
   caseConcurrency: number;
   confirmPaid: boolean;
   debugMemory: boolean;
-  forceDreamDiagnostic: boolean;
   indexTimeoutMs: number;
   onlineEvaluation: boolean;
   outputDirectory: string;
@@ -564,7 +545,6 @@ function parseCli(argv: readonly string[]): CliOptions {
   let caseConcurrency = 2;
   let confirmPaid = false;
   let debugMemory = false;
-  let forceDreamDiagnostic = false;
   let indexTimeoutMinutes = 45;
   let onlineEvaluation = false;
   let output = `results/${new Date().toISOString().replaceAll(/[:.]/gu, "-")}`;
@@ -603,10 +583,6 @@ function parseCli(argv: readonly string[]): CliOptions {
       case "--debug-memory":
         qualificationOverridePresent = true;
         debugMemory = true;
-        break;
-      case "--force-dream-diagnostic":
-        qualificationOverridePresent = true;
-        forceDreamDiagnostic = true;
         break;
       case "--index-timeout-minutes":
         qualificationOverridePresent = true;
@@ -706,14 +682,10 @@ function parseCli(argv: readonly string[]): CliOptions {
   if (!resume && (resumeCaseConcurrency !== null || retryUnhealthy)) {
     throw new Error("longmemeval_resume_required");
   }
-  if (forceDreamDiagnostic && profile !== "product") {
-    throw new Error("longmemeval_dream_diagnostic_requires_product_profile");
-  }
   return Object.freeze({
     caseConcurrency,
     confirmPaid,
     debugMemory,
-    forceDreamDiagnostic,
     indexTimeoutMs: indexTimeoutMinutes * 60_000,
     onlineEvaluation,
     outputDirectory: resolveBenchmarkOutputDirectory(benchmarkRoot, output),
@@ -819,7 +791,6 @@ function applyQualificationManifest(
     ...options,
     caseConcurrency: options.resumeCaseConcurrency ?? manifest.runtime.caseConcurrency,
     debugMemory: manifest.runtime.debugMemory,
-    forceDreamDiagnostic: manifest.runtime.forceDreamDiagnostic,
     indexTimeoutMs: manifest.runtime.indexTimeoutMinutes * 60_000,
     onlineEvaluation: true,
     memoryReadUtilityPolicy: manifestReadUtilityPolicy,
@@ -1393,13 +1364,11 @@ async function createBenchmarkIdentity(
       expectedSettingsRevision: settings.settingsRevision,
       learnAutomatically: profile === "product",
       referenceChatHistory: true,
-      synthesisEnabled: profile === "product",
       useMemoryFacts: true
     });
   });
   if (configured.embeddingProviderModelId !== roles.qwen.id ||
     configured.learnAutomatically !== (profile === "product") ||
-    configured.synthesisEnabled !== (profile === "product") ||
     !configured.referenceChatHistory ||
     !configured.useMemoryFacts) {
     throw new Error("longmemeval_memory_settings_invalid");
@@ -1431,57 +1400,6 @@ async function createBenchmarkSession(
     sessionId: session.sessionId,
     userId
   });
-}
-
-function forcedDreamBoundary(entry: LongMemEvalCase): Date {
-  const earliest = Math.min(...entry.haystackDates.map((value) =>
-    parseLongMemEvalDate(value).getTime()));
-  if (!Number.isFinite(earliest) || earliest <= Number.MIN_SAFE_INTEGER) {
-    throw new Error("longmemeval_dream_diagnostic_boundary_invalid");
-  }
-  return new Date(earliest - 1);
-}
-
-async function prepareForcedDreamDiagnostic(
-  prisma: PrismaClient,
-  userId: string,
-  entry: LongMemEvalCase
-): Promise<Date> {
-  const [user, settings] = await Promise.all([
-    prisma.user.findUnique({ select: { email: true }, where: { id: userId } }),
-    prisma.userMemorySettings.findUnique({
-      select: {
-        lastSynthesisAt: true,
-        synthesisEnabled: true,
-        synthesisPolicyVersion: true
-      },
-      where: { userId }
-    })
-  ]);
-  if (typeof user?.email !== "string" ||
-    !user.email.endsWith(benchmarkEmailSuffix) || !settings?.synthesisEnabled ||
-    settings.lastSynthesisAt !== null ||
-    settings.synthesisPolicyVersion !== MEMORY_SYNTHESIS_POLICY_VERSION) {
-    throw new Error("longmemeval_dream_diagnostic_owner_invalid");
-  }
-  const boundary = forcedDreamBoundary(entry);
-  const updated = await prisma.userMemorySettings.updateMany({
-    data: { synthesisEnabledAt: boundary },
-    where: {
-      lastSynthesisAt: null,
-      synthesisEnabled: true,
-      synthesisPolicyVersion: MEMORY_SYNTHESIS_POLICY_VERSION,
-      userId
-    }
-  });
-  if (updated.count !== 1) {
-    throw new Error("longmemeval_dream_diagnostic_boundary_conflict");
-  }
-  emit("dream_diagnostic_boundary_prepared", {
-    boundary: boundary.toISOString(),
-    questionId: entry.questionId
-  });
-  return boundary;
 }
 
 type ImportedSession = Readonly<{
@@ -1842,7 +1760,6 @@ async function alignPreparedCaseIdentity(
           embeddingProviderModelId: true,
           learnAutomatically: true,
           referenceChatHistory: true,
-          synthesisEnabled: true,
           useMemoryFacts: true
         },
         where: { userId: input.userId }
@@ -1865,7 +1782,7 @@ async function alignPreparedCaseIdentity(
     !allowSystemModelSwap && (!systemModelAligned || !credentialAligned) ||
     !memorySettings ||
     memorySettings.decayEnabled || memorySettings.learnAutomatically ||
-    !memorySettings.referenceChatHistory || memorySettings.synthesisEnabled ||
+    !memorySettings.referenceChatHistory ||
     !memorySettings.useMemoryFacts) {
     throw new Error("longmemeval_prepared_case_identity_invalid");
   }
@@ -2304,31 +2221,6 @@ function diagnosticToken(value: string | null): string {
     .slice(0, 48) || "none";
 }
 
-async function countEligibleSynthesisSources(
-  prisma: PrismaClient,
-  userId: string
-): Promise<number> {
-  const rows = await prisma.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
-    SELECT COUNT(DISTINCT source_fact."id")::bigint AS count
-    FROM "MemoryFactVersion" AS source_version
-    INNER JOIN "MemoryFact" AS source_fact
-      ON source_fact."userId" = source_version."userId"
-     AND source_fact."id" = source_version."factId"
-    INNER JOIN "MemoryScope" AS source_scope
-      ON source_scope."userId" = source_fact."userId"
-     AND source_scope."id" = source_fact."scopeId"
-    INNER JOIN "UserMemorySettings" AS settings
-      ON settings."userId" = source_version."userId"
-    WHERE source_version."userId" = ${userId}
-      AND ${memorySynthesisSourceAuthorityPredicate(userId)}
-  `);
-  const count = Number(rows[0]?.count ?? -1n);
-  if (!Number.isSafeInteger(count) || count < 0) {
-    throw new Error("longmemeval_synthesis_source_count_invalid");
-  }
-  return count;
-}
-
 async function loadLearningEvidence(
   prisma: PrismaClient,
   userId: string,
@@ -2336,35 +2228,13 @@ async function loadLearningEvidence(
   expectedSettlements: number,
   automaticFactLearning: boolean
 ): Promise<LongMemEvalLearningEvidence> {
-  const [
-    versions,
-    patterns,
-    factExtractionBindings,
-    synthesisBindings,
-    synthesisExecutions,
-    settings,
-    eligibleSynthesisSources,
-    synthesisSchedule
-  ] = await Promise.all([
+  const [versions, factExtractionBindings] = await Promise.all([
     prisma.memoryFactVersion.findMany({
       select: {
         id: true,
         safetyClassificationState: true
       },
-      where: { modality: { not: "PATTERN" }, sourceMode: "AUTOMATIC", userId }
-    }),
-    prisma.memoryFactVersion.findMany({
-      select: {
-        id: true,
-        safetyClassificationState: true
-      },
-      where: {
-        modality: "PATTERN",
-        sourceMode: "AUTOMATIC",
-        state: "ACTIVE",
-        systemTo: null,
-        userId
-      }
+      where: { sourceMode: "AUTOMATIC", userId }
     }),
     prisma.memoryExecutionBinding.findMany({
       select: { id: true, memoryJobId: true },
@@ -2375,37 +2245,13 @@ async function loadLearningEvidence(
         state: "SUCCEEDED",
         userId
       }
-    }),
-    prisma.memoryExecutionBinding.findMany({
-      select: { id: true, memoryJobId: true },
-      where: {
-        logicalRole: "MEMORY_SYNTHESIZE",
-        state: "SUCCEEDED",
-        userId
-      }
-    }),
-    prisma.memorySynthesisExecution.findMany({
-      select: {
-        acceptedOutput: true,
-        appliedAt: true,
-        sourceBindings: true
-      },
-      where: { userId }
-    }),
-    prisma.userMemorySettings.findUniqueOrThrow({
-      select: { lastSynthesisAt: true, synthesisEnabled: true },
-      where: { userId }
-    }),
-    countEligibleSynthesisSources(prisma, userId),
-    loadMemorySynthesisScheduleStatus(prisma, userId, new Date())
+    })
   ]);
   const versionIds = versions.map(({ id }) => id);
-  const patternIds = patterns.map(({ id }) => id);
   const [
     assistantEvidence,
     directUserEvidence,
-    factVersionRelations,
-    synthesizedFromRelations
+    factVersionRelations
   ] = await Promise.all([
     versionIds.length === 0
       ? Promise.resolve(0)
@@ -2435,49 +2281,22 @@ async function loadLearningEvidence(
             ],
             userId
           }
-        }),
-    patternIds.length === 0
-      ? Promise.resolve(0)
-      : prisma.memoryFactVersionRelation.count({
-          where: {
-            kind: "SYNTHESIZED_FROM",
-            sourceVersionId: { in: patternIds },
-            userId
-          }
         })
   ]);
   return Object.freeze({
-    appliedSynthesisExecutions: synthesisExecutions.filter(({ appliedAt }) =>
-      appliedAt !== null).length,
     assistantEvidence,
     automaticFactLearning,
     automaticFactVersions: versions.length,
     classifiedAutomaticFactVersions: versions.filter(({ safetyClassificationState }) =>
       safetyClassificationState === "CLASSIFIED").length,
-    classifiedPatternVersions: patterns.filter(({ safetyClassificationState }) =>
-      safetyClassificationState === "CLASSIFIED").length,
     directUserEvidence,
-    eligibleSynthesisSources,
     expectedSettlements,
     extractionJobs: jobs.filter(({ kind }) => kind === "EXTRACT_FACTS").length,
     factVersionRelations,
-    lastSynthesisAtRecorded: settings.lastSynthesisAt !== null,
-    patternVersions: patterns.length,
     relationJobs: jobs.filter(({ kind }) => kind === "RESOLVE_FACT_RELATIONS").length,
-    retainedSynthesisPayloads: synthesisExecutions.filter((execution) =>
-      execution.acceptedOutput !== null || execution.sourceBindings !== null).length,
     successfulFactExtractionExecutions: factExtractionBindings.length,
     successfulFactExtractionJobs: new Set(factExtractionBindings.flatMap(
-      ({ memoryJobId }) => memoryJobId ? [memoryJobId] : [])).size,
-    successfulSynthesisExecutions: synthesisBindings.length,
-    successfulSynthesisJobs: new Set(synthesisBindings.flatMap(
-      ({ memoryJobId }) => memoryJobId ? [memoryJobId] : [])).size,
-    synthesizedFromRelations,
-    synthesisDue: synthesisSchedule.decision.due,
-    synthesisEnabled: settings.synthesisEnabled,
-    synthesisJobs: jobs.filter(({ kind }) => kind === "SYNTHESIZE_MEMORIES").length,
-    synthesisScheduleReason: synthesisSchedule.decision.reason,
-    synthesisThreshold: MEMORY_SYNTHESIS_MIN_ELIGIBLE_SOURCES
+      ({ memoryJobId }) => memoryJobId ? [memoryJobId] : [])).size
   });
 }
 
@@ -2492,7 +2311,6 @@ async function waitForHistoryIndex(
 ): Promise<LongMemEvalLearningEvidence> {
   const deadline = Date.now() + timeoutMs;
   const sourceChats = await prisma.chat.findMany({ where: { userId, memoryMode: "NORMAL" }, select: { id: true } });
-  let eligibleSynthesisSources: number | null = null;
   let nextProgressAt = 0;
   let quietProductObservations = 0;
   while (Date.now() < deadline) {
@@ -2523,6 +2341,8 @@ async function waitForHistoryIndex(
       ].join(":"));
     }
     const historyJobs = jobs.filter(({ kind }) => kind === "INDEX_HISTORY");
+    // Background maintenance (SYNTHESIZE_MEMORIES) runs only with automatic
+    // learning, so the official profile must schedule none of these jobs.
     const learningJobs = jobs.filter(({ kind }) =>
       kind === "EXTRACT_FACTS" || kind === "CONSOLIDATE_CANDIDATE" ||
       kind === "VERIFY_CANDIDATE" || kind === "RESOLVE_FACT_RELATIONS" ||
@@ -2532,7 +2352,7 @@ async function waitForHistoryIndex(
     }
     const extractionJobs = learningJobs.filter(({ kind }) =>
       kind === "EXTRACT_FACTS");
-    const synthesisJobs = learningJobs.filter(({ kind }) =>
+    const maintenanceJobs = learningJobs.filter(({ kind }) =>
       kind === "SYNTHESIZE_MEMORIES");
     const ready = checkpoints.filter(({ status }) => status === "READY").length;
     const historyReady = historyJobs.length === expectedChats &&
@@ -2556,17 +2376,9 @@ async function waitForHistoryIndex(
         expectedAutomaticSettlements,
         true
       );
-      eligibleSynthesisSources = evidence.eligibleSynthesisSources;
-      if (longMemEvalProductMemoryPipelineComplete(evidence)) {
-        emit("product_memory_evidence", { ...evidence, questionId });
-        return evidence;
-      }
-      if (evidence.synthesisDue && evidence.synthesisJobs === 0) {
-        quietProductObservations = 0;
-      } else {
-        emit("product_memory_evidence", { ...evidence, questionId });
-        throw new Error("longmemeval_product_memory_pipeline_incomplete");
-      }
+      emit("product_memory_evidence", { ...evidence, questionId });
+      if (longMemEvalProductMemoryPipelineComplete(evidence)) return evidence;
+      throw new Error("longmemeval_product_memory_pipeline_incomplete");
     }
     if (Date.now() >= nextProgressAt) {
       emit("history_index_progress", {
@@ -2574,11 +2386,10 @@ async function waitForHistoryIndex(
         extractionJobs: extractionJobs.length,
         expectedExtractionJobs: expectedAutomaticSettlements,
         historyJobs: historyJobs.length,
+        maintenanceJobs: maintenanceJobs.length,
         profile,
         questionId,
         readyChats: ready,
-        synthesisEligibleSources: eligibleSynthesisSources,
-        synthesisJobs: synthesisJobs.length,
         totalChats: expectedChats
       });
       nextProgressAt = Date.now() + 15_000;
@@ -2586,67 +2397,6 @@ async function waitForHistoryIndex(
     await sleep(2_000);
   }
   throw new Error("longmemeval_history_index_timeout");
-}
-
-async function admitForcedDreamDiagnostic(
-  prisma: PrismaClient,
-  userId: string,
-  questionId: string
-): Promise<Readonly<{ reason: string; schedulerNow: Date }>> {
-  const wallNow = new Date();
-  let schedulerNow = new Date(
-    wallNow.getTime() + MEMORY_SYNTHESIS_QUIET_PERIOD_MS + 1_000
-  );
-  let status = await loadMemorySynthesisScheduleStatus(
-    prisma,
-    userId,
-    schedulerNow
-  );
-  if (!status.decision.due && status.decision.reason === "ACCUMULATING") {
-    schedulerNow = new Date(
-      wallNow.getTime() + MEMORY_SYNTHESIS_LOW_ACTIVITY_FALLBACK_MS + 1_000
-    );
-    status = await loadMemorySynthesisScheduleStatus(
-      prisma,
-      userId,
-      schedulerNow
-    );
-  }
-  if (!status.decision.due) {
-    throw new Error(
-      `longmemeval_dream_diagnostic_not_due:${diagnosticToken(status.decision.reason)}`
-    );
-  }
-  await reconcileMemorySynthesisWork(
-    prisma,
-    schedulerNow,
-    async (ownerId) => {
-      await probeMemoryStructuredOutputAuthority({
-        authority: defaultMemoryExecutionAuthority,
-        client: prisma,
-        role: "MEMORY_SYNTHESIZE",
-        userId: ownerId,
-        versions: MEMORY_SYNTHESIS_VERSIONS
-      });
-      return true;
-    }
-  );
-  const synthesisJobs = await prisma.memoryJob.count({
-    where: { kind: "SYNTHESIZE_MEMORIES", userId }
-  });
-  if (synthesisJobs < 1) {
-    throw new Error("longmemeval_dream_diagnostic_no_valid_cluster");
-  }
-  emit("dream_diagnostic_admitted", {
-    eligibleSources: status.activity?.eligibleSourceCount ?? 0,
-    questionId,
-    reason: status.decision.reason,
-    schedulerNow: schedulerNow.toISOString()
-  });
-  return Object.freeze({
-    reason: status.decision.reason,
-    schedulerNow
-  });
 }
 
 async function startHybridRebuild(
@@ -3433,208 +3183,6 @@ async function writeMemoryDebugArtifact(
   return artifactName;
 }
 
-async function writeDreamDiagnosticArtifact(
-  prisma: PrismaClient,
-  input: Readonly<{
-    chatIds: readonly string[];
-    entry: LongMemEvalCase;
-    outputDirectory: string;
-    phase: "post" | "pre";
-    userId: string;
-  }>
-): Promise<string> {
-  const facts = await prisma.memoryFact.findMany({
-    orderBy: [{ category: "asc" }, { canonicalKey: "asc" }, { id: "asc" }],
-    select: {
-      canonicalKey: true,
-      category: true,
-      currentVersionId: true,
-      dimensionKey: true,
-      predicateKey: true,
-      subjectKey: true
-    },
-    where: {
-      currentVersionId: { not: null },
-      state: "ACTIVE",
-      userId: input.userId
-    }
-  });
-  const versionIds = facts.flatMap(({ currentVersionId }) =>
-    currentVersionId ? [currentVersionId] : []);
-  const [versions, evidence, relations, executions, versionEntities] =
-    await Promise.all([
-    prisma.memoryFactVersion.findMany({
-      orderBy: [{ modality: "asc" }, { displayText: "asc" }, { id: "asc" }],
-      select: {
-        confidence: true,
-        directness: true,
-        displayText: true,
-        id: true,
-        modality: true,
-        observedAt: true,
-        semanticAdjudication: true,
-        structuredValue: true,
-        synthesisDepth: true,
-        synthesisGeneration: true
-      },
-      where: { id: { in: versionIds }, userId: input.userId }
-    }),
-    prisma.memoryEvidence.findMany({
-      orderBy: [{ observedAt: "asc" }, { id: "asc" }],
-      select: {
-        chatId: true,
-        factVersionId: true,
-        observedAt: true,
-        safeExcerpt: true,
-        sourceRole: true,
-        sourceType: true,
-        stance: true
-      },
-      where: { factVersionId: { in: versionIds }, userId: input.userId }
-    }),
-    prisma.memoryFactVersionRelation.findMany({
-      orderBy: [{ sourceVersionId: "asc" }, { targetVersionId: "asc" }],
-      select: {
-        confidence: true,
-        kind: true,
-        reasonCode: true,
-        sourceEligibilityHash: true,
-        sourceVersionId: true,
-        targetVersionId: true
-      },
-      where: {
-        kind: "SYNTHESIZED_FROM",
-        sourceVersionId: { in: versionIds },
-        targetVersionId: { in: versionIds },
-        userId: input.userId
-      }
-    }),
-    prisma.memorySynthesisExecution.findMany({
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      select: {
-        acceptedOutput: true,
-        appliedAt: true,
-        sourceBindings: true,
-        sourceSetFingerprint: true
-      },
-      where: { userId: input.userId }
-    }),
-    prisma.memoryFactVersionEntity.findMany({
-      orderBy: [{ factVersionId: "asc" }, { role: "asc" }, { entityId: "asc" }],
-      select: { entityId: true, factVersionId: true, role: true },
-      where: { factVersionId: { in: versionIds }, userId: input.userId }
-    })
-  ]);
-  const entities = await prisma.memoryEntity.findMany({
-    orderBy: [{ entityType: "asc" }, { canonicalKey: "asc" }, { id: "asc" }],
-    select: {
-      canonicalKey: true,
-      displayName: true,
-      entityType: true,
-      id: true
-    },
-    where: {
-      id: { in: [...new Set(versionEntities.map(({ entityId }) => entityId))] },
-      userId: input.userId
-    }
-  });
-  const entityById = new Map(entities.map((entity) => [entity.id, entity]));
-  const factByVersionId = new Map(facts.flatMap((fact) =>
-    fact.currentVersionId ? [[fact.currentVersionId, fact] as const] : []));
-  const versionById = new Map(versions.map((version) => [version.id, version]));
-  const evidenceByVersionId = new Map<string, typeof evidence>();
-  for (const item of evidence) {
-    const current = evidenceByVersionId.get(item.factVersionId) ?? [];
-    evidenceByVersionId.set(item.factVersionId, [...current, item]);
-  }
-  const projectEvidence = (versionId: string) =>
-    (evidenceByVersionId.get(versionId) ?? []).map((item) => ({
-      observedAt: item.observedAt,
-      safeExcerpt: item.safeExcerpt,
-      sourceRole: item.sourceRole,
-      sourceSession: debugSessionReference(item.chatId, input.chatIds, input.entry),
-      sourceType: item.sourceType,
-      stance: item.stance
-    }));
-  const projectFact = (versionId: string) => {
-    const fact = factByVersionId.get(versionId);
-    const version = versionById.get(versionId);
-    if (!fact || !version) {
-      throw new Error("longmemeval_dream_diagnostic_fact_projection_missing");
-    }
-    return {
-      canonicalKey: fact.canonicalKey,
-      category: fact.category,
-      confidence: version.confidence,
-      dimensionKey: fact.dimensionKey,
-      directness: version.directness,
-      entities: versionEntities
-        .filter(({ factVersionId }) => factVersionId === versionId)
-        .map(({ entityId, role }) => {
-          const entity = entityById.get(entityId);
-          if (!entity) {
-            throw new Error("longmemeval_dream_diagnostic_entity_missing");
-          }
-          return {
-            canonicalKey: entity.canonicalKey,
-            displayName: entity.displayName,
-            entityType: entity.entityType,
-            role
-          };
-        }),
-      evidence: projectEvidence(versionId),
-      modality: version.modality,
-      observedAt: version.observedAt,
-      predicateKey: fact.predicateKey,
-      semanticAdjudication: version.semanticAdjudication,
-      statement: version.displayText,
-      structuredValue: version.structuredValue,
-      subjectKey: fact.subjectKey,
-      synthesisDepth: version.synthesisDepth,
-      synthesisGeneration: version.synthesisGeneration
-    };
-  };
-  const patternVersions = versions.filter(({ modality }) => modality === "PATTERN");
-  const directVersions = versions.filter(({ modality }) => modality !== "PATTERN");
-  const artifactName = `dream-diagnostic-${input.phase}-${createHash("sha256")
-    .update(input.entry.questionId)
-    .digest("hex")
-    .slice(0, 16)}.json`;
-  await writeJsonAtomic(resolve(input.outputDirectory, artifactName),
-    redactLongMemEvalDebugArtifact({
-      directFacts: directVersions.map(({ id }) => projectFact(id)),
-      patterns: patternVersions.map(({ id }) => ({
-        ...projectFact(id),
-        sources: relations
-          .filter(({ sourceVersionId }) => sourceVersionId === id)
-          .map((relation) => ({
-            confidence: relation.confidence,
-            fact: projectFact(relation.targetVersionId),
-            reasonCode: relation.reasonCode,
-            sourceEligibilityHash: relation.sourceEligibilityHash
-          }))
-      })),
-      question: input.entry.question,
-      questionId: input.entry.questionId,
-      phase: input.phase,
-      synthesisExecutions: executions.map((execution) => ({
-        appliedAt: execution.appliedAt,
-        recoveryOutputCleared: execution.acceptedOutput === null,
-        recoverySourceBindingsCleared: execution.sourceBindings === null,
-        sourceSetFingerprint: execution.sourceSetFingerprint
-      })),
-      version: 1,
-      warning: "Contains secret-screened benchmark facts and Dream lineage. Keep this ignored 0600 artifact local."
-    }));
-  emit("dream_diagnostic_written", {
-    artifact: artifactName,
-    directFacts: directVersions.length,
-    patterns: patternVersions.length,
-    questionId: input.entry.questionId
-  });
-  return artifactName;
-}
-
 async function assertExecutionModels(
   prisma: PrismaClient,
   userId: string,
@@ -3707,8 +3255,7 @@ async function runCase(
   options: CliOptions,
   cacheRuntime: PreparedCaseCacheRuntime
 ): Promise<Readonly<{ hypothesis: string; summary: CaseSummary }>> {
-  const cacheEnabled = options.profile === "official" &&
-    !options.forceDreamDiagnostic;
+  const cacheEnabled = options.profile === "official";
   // The active fast-model matrix is an answer-time A/B over the already
   // prepared Luna projection.  It must fail closed if promotion cannot find
   // a settled compatible cache; silently falling through to buildFresh would
@@ -3765,12 +3312,6 @@ async function runCase(
               : undefined
           )
         );
-        if (options.forceDreamDiagnostic) {
-          await withFailureCode(
-            "longmemeval_dream_diagnostic_boundary_failed",
-            () => prepareForcedDreamDiagnostic(prisma, identity!.userId, entry)
-          );
-        }
         await withFailureCode(
           "longmemeval_catalog_preflight_failed",
           () => catalogSystemModel(
@@ -3805,55 +3346,6 @@ async function runCase(
             entry.questionId
           )
         );
-        if (options.forceDreamDiagnostic) {
-          await withFailureCode(
-            "longmemeval_dream_diagnostic_artifact_failed",
-            () => writeDreamDiagnosticArtifact(prisma, {
-              chatIds: imported.chatIds,
-              entry,
-              outputDirectory: options.outputDirectory,
-              phase: "pre",
-              userId: identity!.userId
-            })
-          );
-          if (learning.synthesisJobs === 0) {
-            await withFailureCode(
-              "longmemeval_dream_diagnostic_admission_failed",
-              () => admitForcedDreamDiagnostic(
-                prisma,
-                identity!.userId,
-                entry.questionId
-              )
-            );
-            learning = await withFailureCode(
-              "longmemeval_dream_diagnostic_pipeline_failed",
-              () => waitForHistoryIndex(
-                prisma,
-                identity!.userId,
-                imported.chatIds.length,
-                imported.automaticSettlements,
-                options.profile,
-                options.indexTimeoutMs,
-                entry.questionId
-              )
-            );
-          }
-          if (learning.synthesisJobs < 1 ||
-            learning.successfulSynthesisJobs !== learning.synthesisJobs ||
-            learning.appliedSynthesisExecutions !== learning.synthesisJobs) {
-            throw new Error("longmemeval_dream_diagnostic_not_applied");
-          }
-          await withFailureCode(
-            "longmemeval_dream_diagnostic_artifact_failed",
-            () => writeDreamDiagnosticArtifact(prisma, {
-              chatIds: imported.chatIds,
-              entry,
-              outputDirectory: options.outputDirectory,
-              phase: "post",
-              userId: identity!.userId
-            })
-          );
-        }
         lexicalIndexCompletedAt = Date.now();
         const rebuildJobId = await withFailureCode(
           "longmemeval_hybrid_rebuild_start_failed",
@@ -4333,7 +3825,6 @@ function buildCheckpointIdentity(input: Readonly<{
     runtime: Object.freeze({
       debugMemory: input.options.debugMemory,
       embeddingModel: qualificationEmbeddingModelId,
-      forceDreamDiagnostic: input.options.forceDreamDiagnostic,
       indexTimeoutMs: input.options.indexTimeoutMs,
       lexicalBackend: process.env.AIQSA_MEMORY_LEXICAL_BACKEND ?? "POSTGRES",
       lexicalIndexBuildId: process.env.AIQSA_MEMORY_OPENSEARCH_INDEX_BUILD_ID ?? null,
@@ -4350,8 +3841,7 @@ function buildCheckpointIdentity(input: Readonly<{
         version: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION
       }),
       preparedCaseCache: Object.freeze({
-        enabled: input.options.profile === "official" &&
-          !input.options.forceDreamDiagnostic,
+        enabled: input.options.profile === "official",
         migrationFingerprint: input.cacheRuntime.migrationFingerprint,
         version: LONGMEMEVAL_PREPARED_CASE_CACHE_VERSION
       }),
@@ -4572,11 +4062,9 @@ async function main(): Promise<void> {
       caseConcurrency: options.caseConcurrency,
       cases: selection.cases.length,
       debugMemory: options.debugMemory,
-      forceDreamDiagnostic: options.forceDreamDiagnostic,
       memoryReadUtilityPolicy: options.memoryReadUtilityPolicy,
       onlineEvaluation: options.onlineEvaluation,
-      preparedCaseCache: options.profile === "official" &&
-        !options.forceDreamDiagnostic,
+      preparedCaseCache: options.profile === "official",
       profile: options.profile,
       remainingCases: pendingCases.length,
       resume: options.resume,
@@ -4595,7 +4083,6 @@ async function main(): Promise<void> {
       options.caseConcurrency,
       async (entry) => {
         emit("case_start", {
-          forceDreamDiagnostic: options.forceDreamDiagnostic,
           profile: options.profile,
           questionId: entry.questionId,
           questionType: entry.questionType,
@@ -4815,15 +4302,6 @@ async function main(): Promise<void> {
         referenceSha256: LONGMEMEVAL_ORACLE_SHA256,
         sha256: LONGMEMEVAL_EVALUATOR_SHA256
       },
-      dreamDiagnostic: options.forceDreamDiagnostic
-        ? {
-            enabled: true,
-            optInBoundary: "backdated_before_earliest_unchanged_session",
-            productPolicyChanged: false,
-            schedulerClock: "advanced_to_first_product_due_point",
-            scoring: "separate_non_official_diagnostic"
-          }
-        : { enabled: false },
       failures,
       memoryEmbeddingModel: {
         provider: "OpenRouter",
@@ -4874,7 +4352,7 @@ async function main(): Promise<void> {
           "CACHED_PRIOR_SYSTEM_MODEL").length,
         compatibilityPromotions: summaries.filter(({ preparedCase }) =>
           preparedCase?.sourceCompatibilityPromoted).length,
-        enabled: options.profile === "official" && !options.forceDreamDiagnostic,
+        enabled: options.profile === "official",
         hybridHits: summaries.filter(({ preparedCase }) =>
           preparedCase?.hybridCacheHit).length,
         migrationFingerprint: cacheRuntime.migrationFingerprint,

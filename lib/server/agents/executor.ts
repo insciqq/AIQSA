@@ -95,6 +95,7 @@ export async function executeCodexTurn(input: Readonly<{
       visionAnalysis: Boolean(input.request.visionAnalysis),
       checkpoints: input.request.workspaceCheckpoints === true,
       toolObservations: input.request.toolObservationVersion === 1,
+      toolCallReader: input.request.toolCallReader === true,
       mcpTimeoutSeconds: agentMcpEnvelopeTimeoutSeconds(input.request),
       ...(effort && ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)
         ? { reasoningEffort: effort as CodexManagedProfile["reasoningEffort"] } : {})
@@ -108,8 +109,11 @@ export async function executeCodexTurn(input: Readonly<{
       const clarification = additions.length ? JSON.stringify(additions.map(entry => ({ role: "user", text: entry.text }))) : "";
       const prompt = previousToolCallId ? clarification : [prompts.prompt, clarification].filter(Boolean).join("\n\n");
       const resumePrompt = previousToolCallId ? clarification : [prompts.resumePrompt, clarification].filter(Boolean).join("\n\n");
-      if (previousToolCallId && !clarification || Buffer.byteLength(prompt) > AGENT_PROMPT_MAX_BYTES ||
-        Buffer.byteLength(resumePrompt) > AGENT_PROMPT_MAX_BYTES) throw new Error("agent_context_too_large");
+      // A continuation always carries accepted input; this guard keeps its generic failure.
+      if (previousToolCallId && !clarification) throw new Error("agent_followup_input_missing");
+      if (Buffer.byteLength(prompt) > AGENT_PROMPT_MAX_BYTES || Buffer.byteLength(resumePrompt) > AGENT_PROMPT_MAX_BYTES) {
+        throw new AgentExecutionError("agent_context_too_large");
+      }
       callId = await store.toolCall(namespacedWorkspaceToolName("sandbox_exec_start"), { managedAgent: true }, true);
       // Native item IDs restart at zero in every exec; retain earlier activity.
       const projectActivity = createCodexActivityProjection(`${input.runId}\0${callId}`, input.request);

@@ -56,8 +56,8 @@ import {
   normalizeMemorySearchText
 } from "../persistence/lexical";
 import { loadMemoryReusableFactSourceSnapshots } from
-  "../synthesis/authoritySnapshots";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+  "../persistence/reusableFactSourceSnapshots";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import {
   memoryHistoryChunkSourceAuthorityPredicate,
   memoryHistoryRoundSourceAuthorityPredicate
@@ -547,7 +547,6 @@ async function eligibleFacts(
           AND fact."movedToFactId" IS NOT NULL)
       )
       AND ${memoryReusableFactAuthorityPredicate(settings.userId, {
-        includePatterns: true,
         lifecycle: "CURRENT_OR_HISTORICAL"
       })}
     ORDER BY fact."id",
@@ -1381,7 +1380,6 @@ async function potentiallyCompatibleAutomaticFactCount(
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
       AND ${memoryReusableFactAuthorityPredicate(settings.userId, {
-        includePatterns: true,
         lifecycle: "CURRENT_OR_HISTORICAL"
       })}
   `);

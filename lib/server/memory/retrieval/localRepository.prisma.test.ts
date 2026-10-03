@@ -34,7 +34,7 @@ import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_SOURCE_PROJECTION_VERSION
 } from "../learning/extraction/contract";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../maintenance/policy";
 import { createPrismaLocalMemoryRetrievalRepository } from "./localRepository";
 import { createMemoryNativeFactSearchPlan } from "./nativeFactSearch";
@@ -333,6 +333,8 @@ async function createFact(input: Readonly<{
   canonicalKey: string;
   coreEligible?: boolean;
   displayText: string;
+  /** Ends the automatic evidence span early, so two facts can cite one message. */
+  evidenceEnd?: number;
   expiresAt?: Date;
   generationId: string;
   holdUntilExpired?: boolean;
@@ -345,6 +347,7 @@ async function createFact(input: Readonly<{
   sensitivityClass?: "NORMAL" | "SECRET" | "SENSITIVE";
   source?: Readonly<{ branchGeneration: number; chatId: string; messageId: string }>;
   sourceMode?: "AUTOMATIC" | "EXPLICIT";
+  usefulness?: "DURABLE" | "ONGOING" | "EPISODIC";
   userId: string;
 }>): Promise<string> {
   const sourceMode = input.sourceMode ?? "EXPLICIT";
@@ -452,6 +455,7 @@ async function createFact(input: Readonly<{
         sourceMode,
         state: "ACTIVE",
         structuredValue,
+        usefulness: input.usefulness ?? null,
         userId: input.userId
       }
     });
@@ -473,7 +477,7 @@ async function createFact(input: Readonly<{
             branchGeneration: input.source!.branchGeneration,
             chatId: input.source!.chatId,
             evidenceFingerprint: memorySha256({
-              endOffset: sourceText!.length,
+              endOffset: input.evidenceEnd ?? sourceText!.length,
               messageId: input.source!.messageId,
               sourceHash,
               startOffset: 0,
@@ -482,10 +486,10 @@ async function createFact(input: Readonly<{
             factVersionId: versionId,
             messageId: input.source!.messageId,
             observedAt: fixtureNow,
-            safeExcerpt: sourceText!,
+            safeExcerpt: sourceText!.slice(0, input.evidenceEnd ?? sourceText!.length),
             safeSourceHash: sourceHash!,
             safetyClass: input.sensitivityClass ?? "NORMAL",
-            sourceEndOffset: sourceText!.length,
+            sourceEndOffset: input.evidenceEnd ?? sourceText!.length,
             sourceMessageContentHash: sourceHash!,
             sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION,
             sourceRole: "user",
@@ -1226,6 +1230,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
       sensitivityClass: "SENSITIVE",
       source: { branchGeneration: 0, chatId: source.chatId, messageId: source.messageId },
       sourceMode: "AUTOMATIC",
+      usefulness: "DURABLE",
       userId
     });
     const staleSourceMessage = await prisma.message.create({
@@ -1359,7 +1364,7 @@ describe("local Memory retrieval on PostgreSQL", () => {
     }
   });
 
-  it("keeps unknown usefulness visible, excludes exactly reviewed episodes, and protects pins", async () => {
+  it("admits only long-term automatic facts and orders protected facts first", async () => {
     const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
     const plan = planMemoryRetrieval({ currentUserText: "An unrelated question.", now: fixtureNow });
     const snapshot = await repository.snapshot({
@@ -1368,14 +1373,18 @@ describe("local Memory retrieval on PostgreSQL", () => {
     });
     const versionId = fixture.automaticSensitiveFactVersionId;
     const version = await prisma.memoryFactVersion.findUniqueOrThrow({
-      select: { factId: true, usefulness: true }, where: { id: versionId }
+      select: { factId: true, semanticFrame: true, usefulness: true }, where: { id: versionId }
     });
     const latestEvidence = await prisma.memoryEvidence.findFirstOrThrow({
-      orderBy: { createdAt: "desc" }, select: { createdAt: true },
+      orderBy: { createdAt: "desc" },
+      select: { branchGeneration: true, chatId: true, createdAt: true, messageId: true },
       where: { factVersionId: versionId, stance: "SUPPORTS", userId: fixture.userId }
     });
-    const visible = async () => (await repository.loadStandingFacts(snapshot))
-      .some(({ candidate }) => candidate.itemId === versionId);
+    const standingIds = async () => (await repository.loadStandingFacts(snapshot))
+      .map(({ candidate }) => candidate.itemId);
+    const visible = async () => (await standingIds()).includes(versionId);
+    const setLabel = (usefulness: "DURABLE" | "ONGOING" | "EPISODIC" | null) =>
+      prisma.memoryFactVersion.update({ data: { usefulness }, where: { id: versionId } });
     const settings = await prisma.userMemorySettings.findUniqueOrThrow({
       select: { memoryGeneration: true, memoryRevision: true },
       where: { userId: fixture.userId }
@@ -1389,32 +1398,122 @@ describe("local Memory retrieval on PostgreSQL", () => {
       userId: fixture.userId
     } });
     const reviewIds: string[] = [];
-    expect(version.usefulness).toBeNull();
-    expect(await visible()).toBe(true);
+    let reviewClock = fixtureNow.getTime();
+    const review = async (input: Readonly<{
+      disposition: "KEEP" | "REMOVED" | "REJECTED" | "STALE" | "UNKNOWN";
+      evidenceThrough?: Date;
+      policyVersion?: string;
+      usefulness?: "DURABLE" | "ONGOING" | "EPISODIC" | null;
+    }>) => {
+      reviewClock += 1_000;
+      const created = await prisma.memoryMaintenanceReview.create({ data: {
+        disposition: input.disposition,
+        evidenceThrough: input.evidenceThrough ?? latestEvidence.createdAt,
+        factVersionId: versionId, memoryJobId: reviewJob.id,
+        policyVersion: input.policyVersion ?? MEMORY_MAINTENANCE_POLICY_VERSION,
+        reviewedAt: new Date(reviewClock),
+        sourceSnapshotHash: memorySha256({ review: reviewIds.length, suffix }),
+        usefulness: input.usefulness ?? null,
+        userId: fixture.userId
+      } });
+      reviewIds.push(created.id);
+    };
+    const companionVersionId = await createFact({
+      canonicalKey: "profile.automatic_durable_order_sentinel",
+      displayText: "Automatic durable ordering sentinel.",
+      evidenceEnd: 1,
+      generationId: fixture.generationId,
+      indexed: false,
+      languageCode: "en",
+      source: {
+        branchGeneration: latestEvidence.branchGeneration!,
+        chatId: latestEvidence.chatId!,
+        messageId: latestEvidence.messageId!
+      },
+      sourceMode: "AUTOMATIC",
+      usefulness: "ONGOING",
+      userId: fixture.userId
+    });
     try {
-      const stale = await prisma.memoryMaintenanceReview.create({ data: {
-        disposition: "KEEP", evidenceThrough: new Date(latestEvidence.createdAt.getTime() - 1),
-        factVersionId: versionId, memoryJobId: reviewJob.id,
-        policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION, reviewedAt: fixtureNow,
-        sourceSnapshotHash: "a".repeat(64), usefulness: "EPISODIC",
-        userId: fixture.userId
-      } });
-      reviewIds.push(stale.id);
+      // An old DURABLE or ONGOING label admits the fact without any review.
+      expect(version.usefulness).toBe("DURABLE");
       expect(await visible()).toBe(true);
-      const current = await prisma.memoryMaintenanceReview.create({ data: {
-        disposition: "KEEP", evidenceThrough: latestEvidence.createdAt,
-        factVersionId: versionId, memoryJobId: reviewJob.id,
-        policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION,
-        reviewedAt: new Date(fixtureNow.getTime() + 1),
-        sourceSnapshotHash: "b".repeat(64), usefulness: "EPISODIC",
-        userId: fixture.userId
-      } });
-      reviewIds.push(current.id);
+      await setLabel("ONGOING");
+      expect(await visible()).toBe(true);
+      // Missing (formerly UNKNOWN) and EPISODIC labels never enter standing.
+      await setLabel(null);
+      expect(await visible()).toBe(false);
+      await setLabel("EPISODIC");
+      expect(await visible()).toBe(false);
+
+      // KEEP of any supported policy decides by its own label.
+      await setLabel(null);
+      await review({ disposition: "KEEP", policyVersion: "memory-maintenance-policy-v1", usefulness: "DURABLE" });
+      expect(await visible()).toBe(true);
+      // A newer non-decisive review never overrides that decision.
+      await review({ disposition: "STALE" });
+      await review({ disposition: "UNKNOWN" });
+      expect(await visible()).toBe(true);
+      // A KEEP without a label falls back to the version label.
+      await review({ disposition: "KEEP", usefulness: null });
+      expect(await visible()).toBe(false);
+      await setLabel("DURABLE");
+      expect(await visible()).toBe(true);
+      // A decisive removal or rejection also falls back to the version label.
+      await review({ disposition: "REJECTED" });
+      expect(await visible()).toBe(true);
+      await setLabel(null);
+      await review({ disposition: "REMOVED" });
+      expect(await visible()).toBe(false);
+      await setLabel("ONGOING");
+      expect(await visible()).toBe(true);
+      // A current KEEP EPISODIC excludes the fact; a review that predates the
+      // latest evidence is ignored.
+      await review({ disposition: "KEEP", usefulness: "EPISODIC" });
+      expect(await visible()).toBe(false);
+      await review({
+        disposition: "KEEP",
+        evidenceThrough: new Date(latestEvidence.createdAt.getTime() - 1),
+        usefulness: "DURABLE"
+      });
+      expect(await visible()).toBe(false);
+
+      // An automatically saved "remember this" is protected and ordered after
+      // explicit facts and before ordinary automatic facts.
+      await prisma.memoryFactVersion.update({
+        data: { semanticFrame: { memoryDirective: "EXPLICIT_REMEMBER" } },
+        where: { id: versionId }
+      });
+      const remembered = await repository.loadStandingFacts(snapshot);
+      const modes = remembered.map(({ candidate }) => candidate.metadata.sourceMode);
+      const rememberedAt = remembered.findIndex(({ candidate }) => candidate.itemId === versionId);
+      const companionAt = remembered.findIndex(({ candidate }) => candidate.itemId === companionVersionId);
+      expect(rememberedAt).toBeGreaterThan(-1);
+      expect(companionAt).toBeGreaterThan(rememberedAt);
+      expect(modes.slice(0, rememberedAt).every((mode) => mode === "EXPLICIT")).toBe(true);
+      expect(modes.slice(0, rememberedAt).length).toBeGreaterThan(0);
+
+      // A pin is protected and ordered before explicit facts.
+      await prisma.memoryFactVersion.update({
+        data: { semanticFrame: version.semanticFrame ?? Prisma.DbNull },
+        where: { id: versionId }
+      });
       expect(await visible()).toBe(false);
       await prisma.memoryFact.update({ data: { pinned: true }, where: { id: version.factId } });
-      expect(await visible()).toBe(true);
+      expect((await standingIds())[0]).toBe(versionId);
     } finally {
       await prisma.memoryFact.update({ data: { pinned: false }, where: { id: version.factId } });
+      await prisma.memoryFactVersion.update({
+        data: {
+          semanticFrame: version.semanticFrame ?? Prisma.DbNull,
+          usefulness: version.usefulness
+        },
+        where: { id: versionId }
+      });
+      // The companion stays outside every later standing and search read.
+      await prisma.memoryFactVersion.update({
+        data: { usefulness: null }, where: { id: companionVersionId }
+      });
       await prisma.memoryMaintenanceReview.deleteMany({ where: { id: { in: reviewIds } } });
       await prisma.memoryJob.delete({ where: { id: reviewJob.id } });
     }

@@ -10,11 +10,16 @@ export const MEMORY_RETRIEVAL_RRF_K = 60;
 export const MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES = 160;
 export const MEMORY_RETRIEVAL_MAX_AGGREGATION_PRE_FUSION_CANDIDATES = 400;
 // Each lane is an independent, bounded read against the same stable snapshot.
-// Sixteen workers keep the bounded Unicode exact/lexical/n-gram/vector set
-// in one SQL wave on the qualification topology. PostgreSQL/Prisma retain the
-// installation-level connection ceiling; candidate limits, fusion, and source
-// diversity are unchanged.
+// Sixteen workers only schedule the bounded Unicode exact/lexical/n-gram/vector
+// set of one retrieval; they do not decide database concurrency. Every Memory
+// read transaction of the process, including eager vector, expansion, snapshot
+// and profile reads outside this pool, first takes one of the process-wide
+// read admission permits below and holds it until its transaction has ended.
 export const MEMORY_RETRIEVAL_MAX_PARALLEL_LANES = 16;
+// Process-local cap on concurrent Memory read transactions. It is a resource
+// fence for one application or worker process, not an installation-wide limit;
+// waiting is bounded by the read budget or the caller's deadline and signal.
+export const MEMORY_READ_ADMISSION_MAX_CONCURRENT_TRANSACTIONS = 4;
 export const MEMORY_RETRIEVAL_MAX_RANKED_CANDIDATES = 100;
 export const MEMORY_RETRIEVAL_MAX_AGGREGATION_RANKED_CANDIDATES = 250;
 export const MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES = 60;
@@ -44,7 +49,6 @@ export const MEMORY_RETRIEVAL_VECTOR_CANDIDATE_FLOOR = -1;
 // still reaches the reranker, exact deterministic anchors remain admissible,
 // and an unavailable or structurally incomplete rerank keeps the full RRF set.
 export const MEMORY_RETRIEVAL_RERANK_SCORE_FLOOR: number | null = 0.01;
-export const MEMORY_RETRIEVAL_SYNTHESIS_AUTHORITY_MULTIPLIER = 0.5;
 export const MEMORY_RETRIEVAL_SUPPORTING_AUTHORITY_MULTIPLIER = 0.65;
 
 export const MEMORY_RETRIEVAL_LANE_WEIGHTS = Object.freeze({
@@ -96,8 +100,6 @@ export const MEMORY_CONTEXT_MAX_ITEMS = 20;
 export const MEMORY_CONTEXT_AGGREGATION_MAX_ITEMS = MEMORY_ANSWER_SOURCE_MAX_ITEMS;
 export const MEMORY_CONTEXT_MAX_DYNAMIC_FACTS = 6;
 export const MEMORY_CONTEXT_PROFILE_MAX_FACTS = 12;
-export const MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS = 3;
-export const MEMORY_CONTEXT_PATTERN_MAX_SUPPORTS = 8;
 export const MEMORY_CONTEXT_MAX_HISTORY_SNIPPETS = 20;
 export const MEMORY_CONTEXT_MAX_SOURCE_CHATS = 20;
 export const MEMORY_CONTEXT_AGGREGATION_MAX_HISTORY_SNIPPETS = 40;

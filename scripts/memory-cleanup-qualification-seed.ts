@@ -4,7 +4,9 @@ import {
   cleanupQualificationDatabase,
   cleanupQualificationFixtureSchema,
   freshCleanupQualificationOwner,
+  MEMORY_CLEANUP_LIFECYCLE_CORPUS,
   MEMORY_CLEANUP_SYNTHETIC_CORPUS,
+  memoryCleanupLifecycleSpan,
   type CleanupQualificationFixture
 } from "./memory-cleanup-qualification-support";
 
@@ -43,15 +45,53 @@ export async function materializeMemoryCleanupSyntheticFixture(
       email: `${userId}@example.invalid`, role: "user", status: "active", createdAt: observedAt } });
     await provisionActiveUser(tx, { userId, groups: [{ groupId: group.id, role: "member" }] });
     await tx.userMemorySettings.update({ where: { userId }, data: {
-      useMemoryFacts: true, learnAutomatically: true, synthesisEnabled: true,
-      referenceChatHistory: false, synthesisEnabledAt: observedAt, createdAt: observedAt
+      useMemoryFacts: true, learnAutomatically: true, referenceChatHistory: false,
+      createdAt: observedAt
     } });
     const settings = await tx.userMemorySettings.findUniqueOrThrow({ where: { userId } });
     const scope = await tx.memoryScope.create({ data: { userId, scopeType: "GLOBAL_USER" } });
+    /** One automatic or explicit version with its event and one evidence span. */
+    async function version(input: Readonly<{
+      factId: string; versionId: string; statement: string; language: string; sourceMode: "AUTOMATIC" | "EXPLICIT";
+      chatId: string; messageId: string; messageText: string; start: number; end: number; at: Date;
+      state?: "ACTIVE" | "SUPERSEDED"; usefulness?: "DURABLE" | "ONGOING" | "EPISODIC"; remembered?: boolean; dated?: boolean;
+    }>): Promise<void> {
+      const eventId = randomUUID();
+      const automatic = input.sourceMode === "AUTOMATIC";
+      await tx.memoryEvent.create({ data: { id: eventId, userId, factId: input.factId, factVersionId: input.versionId,
+        operation: automatic ? "PROMOTE" : "EXPLICIT_SAVE", actorType: automatic ? "JOB" : "USER",
+        actorUserId: automatic ? null : userId, sourceChatId: input.chatId, sourceGeneration: settings.memoryGeneration,
+        metadata: { qualificationFixture: true, paidExtraction: false }, createdAt: input.at } });
+      const sourceHash = memorySha256(input.messageText);
+      await tx.memoryFactVersion.create({ data: {
+        id: input.versionId, userId, factId: input.factId, createdByEventId: eventId, category: "other",
+        displayText: input.statement, normalizedSearchText: normalizeMemorySearchText(input.statement),
+        structuredValue: { statement: input.statement }, languageCode: input.language, modality: "STATE",
+        sourceMode: input.sourceMode, directness: "DIRECT", confidence: 1, importance: 0.5,
+        sensitivityClass: "NORMAL", observedAt: input.at, createdAt: input.at, systemFrom: input.at,
+        state: input.state ?? "ACTIVE", systemTo: input.state === "SUPERSEDED" ? new Date(input.at.getTime() + 500) : null,
+        usefulness: input.usefulness ?? null,
+        ...(input.remembered ? { semanticFrame: { memoryDirective: "EXPLICIT_REMEMBER" } } : {}),
+        ...(input.dated ? { occurredAt: input.at, rawTemporalExpression: input.language === "ru" ? "сегодня утром" : "this morning",
+          sourceTimezone: "UTC", temporalResolverVersion: "memory-cleanup-qualification-temporal-v1",
+          temporalResolutionEvidence: { qualificationFixture: true } } : {}),
+        pipelineVersion: automatic ? extraction.MEMORY_FACT_EXTRACTION_PIPELINE_VERSION : "memory-explicit-api-v1",
+        ingestionFingerprint: automatic ? memorySha256({ runId, versionId: input.versionId, messageId: input.messageId }) : null,
+        ...memorySafetyLiteFactClassification(input.at)
+      } });
+      await tx.memoryEvidence.create({ data: {
+        userId, factVersionId: input.versionId, stance: "SUPPORTS", sourceType: "MESSAGE", sourceRole: "user",
+        chatId: input.chatId, messageId: input.messageId, branchGeneration: 0,
+        safeExcerpt: input.messageText.slice(input.start, input.end),
+        sourceStartOffset: input.start, sourceEndOffset: input.end, sourceMessageContentHash: sourceHash,
+        safeSourceHash: sourceHash, sourceProjectionVersion: extraction.MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+        evidenceFingerprint: memorySha256({ domain: "memory-cleanup-synthetic-evidence", messageId: input.messageId, versionId: input.versionId }),
+        safetyClass: "NORMAL", observedAt: input.at, createdAt: input.at
+      } });
+    }
     for (const item of MEMORY_CLEANUP_SYNTHETIC_CORPUS) {
       const factId = randomUUID();
       const versionId = randomUUID();
-      const eventId = randomUUID();
       const chat = await tx.chat.create({ data: { userId, title: "Synthetic cleanup fixture", createdAt: observedAt } });
       let parentMessageId: string | null = null;
       if ("context" in item) {
@@ -85,31 +125,8 @@ export async function materializeMemoryCleanupSyntheticFixture(
       await tx.memoryFact.create({ data: { id: factId, userId, scopeId: scope.id,
         canonicalKey: `qualification:${item.id}`, category: "other", currentVersionId: versionId,
         pinned: item.pinned, createdAt: observedAt, updatedAt: observedAt } });
-      await tx.memoryEvent.create({ data: { id: eventId, userId, factId, factVersionId: versionId,
-        operation: item.sourceMode === "EXPLICIT" ? "EXPLICIT_SAVE" : "PROMOTE",
-        actorType: item.sourceMode === "EXPLICIT" ? "USER" : "JOB",
-        actorUserId: item.sourceMode === "EXPLICIT" ? userId : null,
-        sourceChatId: chat.id, sourceGeneration: settings.memoryGeneration,
-        metadata: { qualificationFixture: true, paidExtraction: false }, createdAt: observedAt } });
-      const sourceHash = memorySha256(item.text);
-      await tx.memoryFactVersion.create({ data: {
-        id: versionId, userId, factId, createdByEventId: eventId, category: "other",
-        displayText: item.text, normalizedSearchText: normalizeMemorySearchText(item.text),
-        structuredValue: { statement: item.text }, languageCode: item.language, modality: "STATE",
-        sourceMode: item.sourceMode, directness: "DIRECT", confidence: 1, importance: 0.5,
-        sensitivityClass: "NORMAL", observedAt, createdAt: observedAt, systemFrom: observedAt,
-        pipelineVersion: item.sourceMode === "AUTOMATIC" ? extraction.MEMORY_FACT_EXTRACTION_PIPELINE_VERSION : "memory-explicit-api-v1",
-        ingestionFingerprint: item.sourceMode === "AUTOMATIC" ? memorySha256({ runId, id: item.id, messageId: message.id }) : null,
-        ...memorySafetyLiteFactClassification(observedAt)
-      } });
-      await tx.memoryEvidence.create({ data: {
-        userId, factVersionId: versionId, stance: "SUPPORTS", sourceType: "MESSAGE", sourceRole: "user",
-        chatId: chat.id, messageId: message.id, branchGeneration: 0, safeExcerpt: item.text,
-        sourceStartOffset: 0, sourceEndOffset: item.text.length, sourceMessageContentHash: sourceHash,
-        safeSourceHash: sourceHash, sourceProjectionVersion: extraction.MEMORY_FACT_SOURCE_PROJECTION_VERSION,
-        evidenceFingerprint: memorySha256({ domain: "memory-cleanup-synthetic-evidence", messageId: message.id, versionId }),
-        safetyClass: "NORMAL", observedAt, createdAt: observedAt
-      } });
+      await version({ factId, versionId, statement: item.text, language: item.language, sourceMode: item.sourceMode,
+        chatId: chat.id, messageId: message.id, messageText: item.text, start: 0, end: item.text.length, at: observedAt });
       const manuallyEdited = "manuallyEdited" in item && item.manuallyEdited;
       if (manuallyEdited) await tx.memoryEvent.create({ data: {
         userId, factId, factVersionId: versionId, operation: "EDIT", actorType: "USER",
@@ -119,6 +136,44 @@ export async function materializeMemoryCleanupSyntheticFixture(
       assertions.push({ id: item.id, factIds: [factId], expected: item.expected,
         protected: item.sourceMode === "EXPLICIT" || item.pinned || manuallyEdited });
     }
-  }, { timeout: 30_000 });
+    // A settled v2 decision that kept an episode: v3 must review it again.
+    const priorJob = await tx.memoryJob.create({ data: { userId, kind: "SYNTHESIZE_MEMORIES",
+      pipelineVersion: "memory-maintenance-v1", state: "SUCCEEDED", completedAt: observedAt,
+      idempotencyFingerprint: memorySha256({ domain: "memory-cleanup-qualification-prior-v2", runId }),
+      memoryGenerationSnapshot: settings.memoryGeneration, memoryRevisionSnapshot: settings.memoryRevision, createdAt: observedAt } });
+    for (const scenario of MEMORY_CLEANUP_LIFECYCLE_CORPUS) {
+      const chat = await tx.chat.create({ data: { userId, title: "Synthetic cleanup fixture", createdAt: observedAt } });
+      const messages: Array<{ id: string; text: string; at: Date }> = [];
+      for (const [index, text] of scenario.messages.entries()) {
+        const at = new Date(observedAt.getTime() + index * 60_000);
+        const created: { id: string } = await tx.message.create({ data: { chatId: chat.id, role: "user", status: "complete",
+          content: textMessageContent(text), parentMessageId: messages.at(-1)?.id ?? null, createdAt: at, updatedAt: at } });
+        messages.push({ id: created.id, text, at });
+      }
+      await tx.chat.update({ where: { id: chat.id }, data: { activeLeafMessageId: messages.at(-1)!.id, memorySourceRevision: 1 } });
+      for (const fact of scenario.facts) {
+        const factId = randomUUID();
+        const versionIds = fact.versions.map(() => randomUUID());
+        await tx.memoryFact.create({ data: { id: factId, userId, scopeId: scope.id, canonicalKey: `qualification:${fact.id}`,
+          category: "other", currentVersionId: versionIds.at(-1)!, pinned: false, createdAt: observedAt, updatedAt: observedAt } });
+        for (const [index, seed] of fact.versions.entries()) {
+          const span = memoryCleanupLifecycleSpan(scenario, seed);
+          const source = messages[seed.message]!;
+          await version({ factId, versionId: versionIds[index]!, statement: seed.statement, language: scenario.language,
+            sourceMode: "AUTOMATIC", chatId: chat.id, messageId: source.id, messageText: span.text, start: span.start, end: span.end,
+            at: source.at, state: index === fact.versions.length - 1 ? "ACTIVE" : "SUPERSEDED", usefulness: seed.usefulness,
+            remembered: seed.remembered, dated: fact.dated });
+        }
+        if (fact.priorKeep) {
+          await tx.memoryMaintenanceReview.create({ data: { userId, factVersionId: versionIds.at(-1)!, memoryJobId: priorJob.id,
+            policyVersion: "memory-maintenance-policy-v2", disposition: "KEEP", usefulness: "EPISODIC",
+            sourceSnapshotHash: memorySha256({ domain: "memory-cleanup-qualification-prior-v2", factId }),
+            evidenceThrough: messages[fact.versions.at(-1)!.message]!.at, reviewedAt: observedAt } });
+        }
+        assertions.push({ id: fact.id, factIds: [factId], expected: fact.expected,
+          protected: fact.versions.some(({ remembered }) => remembered === true), ...(fact.dated ? { dated: true } : {}) });
+      }
+    }
+  }, { timeout: 60_000 });
   return cleanupQualificationFixtureSchema.parse({ version: 1, runId, corpus: "SYNTHETIC", userId, assertions });
 }

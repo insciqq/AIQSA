@@ -2,7 +2,6 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import type { MemoryActionFeedback } from "../../../contracts/memoryClient";
 import {
   MEMORY_CONTEXT_HARD_CAP_TOKENS,
-  MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS,
   MEMORY_CONTEXT_AGGREGATION_MAX_SOURCE_CHATS,
   MEMORY_CARDINALITY_PARSER_VERSION,
   MEMORY_CONTEXT_TARGET_TOKENS,
@@ -517,9 +516,11 @@ function acceptedMemoryTimeZone(request: NormalizedRunRequest): string {
   return request.prompt.baseline?.timeZone ?? "UTC";
 }
 
+/** Real answers only: a provider-only tool-history record is never a chat
+ * message, so it can neither be a control ref nor a control input. */
 function recentAssistantMessageIds(request: NormalizedRunRequest): readonly string[] {
   return (request.context?.messages ?? []).flatMap((message) =>
-    message.role === "assistant" && message.id ? [message.id] : [])
+    message.role === "assistant" && message.id && message.historyClass === undefined ? [message.id] : [])
     .slice(-2);
 }
 
@@ -529,7 +530,7 @@ function recentControlMessages(
   request: NormalizedRunRequest
 ): MemoryControlContext["recentMessages"] {
   return (request.context?.messages ?? []).flatMap((message) => {
-    if (message.role !== "assistant" && message.role !== "user") return [];
+    if (message.role !== "assistant" && message.role !== "user" || message.historyClass !== undefined) return [];
     const text = textFromContentBlocks(message.content);
     const safeText = sanitizeMemoryUtilityText(text).safeText;
     return safeText ? [{ role: message.role, text: safeText }] : [];
@@ -578,8 +579,7 @@ function memoryControlReuseScopeHash(
 
 function deterministicBaseReadPlan(
   input: MemoryRunRetrievalInput,
-  originalSanitizedQuery: string,
-  includePatterns = false
+  originalSanitizedQuery: string
 ): MemoryRetrievalPlan {
   const sourceKinds = [
     ...(input.expected.settings.useMemoryFacts
@@ -591,7 +591,6 @@ function deterministicBaseReadPlan(
     applyResponsePreferences: input.expected.settings.useMemoryFacts,
     currentUserText: originalSanitizedQuery,
     filters: { sourceKinds },
-    includePatterns: input.expected.settings.useMemoryFacts && includePatterns,
     now: input.now,
     temporalIntent: "ANY",
     timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
@@ -604,8 +603,7 @@ function deterministicBaseReadPlan(
  * quantity, language keyword, or benchmark category participates. */
 function deterministicBroadFallbackReadPlans(
   input: MemoryRunRetrievalInput,
-  originalSanitizedQuery: string,
-  includePatterns = false
+  originalSanitizedQuery: string
 ): Readonly<{
   baseline: MemoryRetrievalPlan | null;
   enriched: MemoryRetrievalPlan;
@@ -613,7 +611,7 @@ function deterministicBroadFallbackReadPlans(
   if (!input.expected.settings.referenceChatHistory) {
     return {
       baseline: null,
-      enriched: deterministicBaseReadPlan(input, originalSanitizedQuery, includePatterns)
+      enriched: deterministicBaseReadPlan(input, originalSanitizedQuery)
     };
   }
   const baseline = input.expected.settings.useMemoryFacts
@@ -621,7 +619,6 @@ function deterministicBroadFallbackReadPlans(
         applyResponsePreferences: true,
         currentUserText: originalSanitizedQuery,
         filters: { sourceKinds: ["FACT", "EVENT"] },
-        includePatterns,
         now: input.now,
         temporalIntent: "ANY",
         timeZone: acceptedMemoryTimeZone(input.normalizedRequest)
@@ -966,8 +963,7 @@ function attemptItems(
   standing: readonly MemoryCoreCandidate[],
   core: readonly MemoryCoreCandidate[],
   dynamic: readonly MemoryRankedCandidate[],
-  plan: MemoryRetrievalPlan,
-  factPlan: MemoryRetrievalPlan
+  plan: MemoryRetrievalPlan
 ): readonly MemoryPreparingItemInput[] {
   const candidates = candidateMap(core, dynamic);
   const standingCandidates = candidateMap(standing, []);
@@ -978,13 +974,12 @@ function attemptItems(
       : candidates.get(key);
     if (!candidate) throw new Error("memory_retrieval_pack_identity_invalid");
     const standingFact = packed.section === "STANDING";
-    const itemPlan = packed.evidenceType === "pattern" ? factPlan : plan;
     const base = {
       exactItemId: packed.itemId,
       exactSafeText: packed.exactSafeText,
       featureSnapshot: {
         ...candidate.featureSnapshot,
-        aggregationRequested: standingFact ? false : itemPlan.aggregationRequested,
+        aggregationRequested: standingFact ? false : plan.aggregationRequested,
         derived: packed.derived,
         documentTime: packed.documentTime,
         eventTimeEnd: packed.eventTimeEnd,
@@ -1001,13 +996,6 @@ function attemptItems(
         finalScore: candidate.finalScore,
         lastConfirmedAt: packed.lastConfirmedAt,
         observedAt: packed.observedAt,
-        patternSupportingEvidence: (packed.patternSupportingEvidence ?? []).map((support) => ({
-          factVersionId: support.itemId,
-          observedAt: support.documentTime,
-          sourceAuthority: support.sourceAuthority,
-          sourceRootHash: support.sourceRootHash,
-          textHash: memorySha256(support.rawSafeText)
-        })),
         projectionKind: packed.projectionKind,
         retrievalReason: packed.retrievalReason,
         rrfScore: candidate.rrfScore,
@@ -1021,12 +1009,11 @@ function attemptItems(
         ...(candidate.historyEvidenceView
           ? { historyEvidenceView: candidate.historyEvidenceView }
           : {}),
-        includePatterns: !standingFact && packed.tier !== "CORE" && itemPlan.includePatterns,
         lifecycleState: candidate.metadata.lifecycleState,
         matchedSegmentId: candidate.matchedSegmentId ?? null,
         matchedSegmentPosition: candidate.matchedSegmentPosition ?? null,
-        retrievalMode: standingFact ? "TARGETED_CURRENT" : itemPlan.mode,
-        temporalIntent: standingFact ? "CURRENT" : itemPlan.temporalIntent,
+        retrievalMode: standingFact ? "TARGETED_CURRENT" : plan.mode,
+        temporalIntent: standingFact ? "CURRENT" : plan.temporalIntent,
         tier: packed.tier,
         ...(packed.tier === "CORE" ? { responsePreferenceCore: true } : {}),
         validFrom: packed.validFrom,
@@ -1068,7 +1055,6 @@ function planEvidence(plan: MemoryRetrievalPlan): Readonly<Record<string, unknow
     filterScopeType: plan.filters.scopeType,
     filterSourceKinds: plan.filters.sourceKinds,
     filterTo: plan.filters.to?.toISOString() ?? null,
-    includePatterns: plan.includePatterns,
     lexicalAvailable: plan.lexicalQuery !== null,
     mode: plan.mode,
     originalQueryHash: memorySha256(plan.originalSanitizedQuery),
@@ -1280,9 +1266,6 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
   const matchedSegmentHits = (position: "MIDDLE" | "PREFIX" | "SUFFIX"): number =>
     expandedSegmentCandidates.filter((candidate) =>
       candidate.matchedSegmentPosition === position).length;
-  const patternItems = input.pack.items.filter((item) => item.evidenceType === "pattern");
-  const patternDirectSupportCount = patternItems.reduce((count, item) =>
-    count + (item.patternSupportingEvidence?.length ?? 0), 0);
   const baselineOnlySelectedCount = input.selectedDynamic.filter((candidate) =>
     candidate.laneRanks.FACT_BASELINE_ORIGINAL !== undefined ||
     candidate.laneRanks.HISTORY_BASELINE_ORIGINAL !== undefined).length;
@@ -1319,16 +1302,6 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
     matchedSegmentSuffixHits: matchedSegmentHits("SUFFIX"),
     packedEvidenceItems: input.pack.items.length,
     packedEvidenceTokens: input.preparedTokens,
-    patternContextCount: patternItems.length,
-    patternDirectSupportCount,
-    patternMissingSupportContextCount: patternItems.filter((item) =>
-      (item.patternSupportingEvidence?.length ?? 0) <
-        (item.combinedMemoryReason ? 2 : MEMORY_CONTEXT_PATTERN_MIN_SUPPORTS)).length,
-    patternOnlyContextCount: patternItems.length > 0 &&
-      input.pack.items.every((item) => item.evidenceType === "pattern") &&
-      patternDirectSupportCount === 0
-      ? patternItems.length
-      : 0,
     plannerExcludedSourceKinds,
     plannerExcludedFamilyRecoveredCount:
       input.sourceFamilyEvidence.plannerExcludedFamilyRecoveredCount,
@@ -1619,7 +1592,7 @@ function standingDeadlineAttempt(
       ...fallback,
       budgetSnapshot: { ...fallback.budgetSnapshot, omissionCounts: pack.omissionCounts }
     };
-    const items = attemptItems(pack, standing, [], [], plan, plan);
+    const items = attemptItems(pack, standing, [], [], plan);
     return {
       budgetSnapshot: {
         ...fallback.budgetSnapshot,
@@ -2593,7 +2566,7 @@ async function retrieveStandingContext(
       maximumTokens: normalizedRequestPersonalContextTokenLimit(input.normalizedRequest)
     }));
     if (deadline.signal.aborted || deadline.expired()) return fail();
-    const items = attemptItems(pack, standing, [], [], plan, plan);
+    const items = attemptItems(pack, standing, [], [], plan);
     return {
       budgetSnapshot: {
         ...baseBudget("standing_context", input.expected, evidence),
@@ -2866,8 +2839,7 @@ export function createMemoryRunRetrievalService(
       const standingRead = loadStanding();
       const baselineReadPlan = deterministicBaseReadPlan(
         input,
-        provisionalPlan.originalSanitizedQuery,
-        deterministicRead
+        provisionalPlan.originalSanitizedQuery
       );
       const executeQueryResolver = async (
         sources: readonly MemoryQueryResolverSource[],
@@ -3191,13 +3163,10 @@ export function createMemoryRunRetrievalService(
       let plannerFallbackReason: string | null = null;
       let broadPlannerFallback = false;
       let broadFallbackBaselinePlan: MemoryRetrievalPlan | null = null;
-      const includePatternsInFallback = deterministicRead &&
-        !(control.status === "READY" && control.intent.patternExclusionRequested);
       if (deterministicRead) {
         const deterministic = deterministicBroadFallbackReadPlans(
           input,
-          provisionalPlan.originalSanitizedQuery,
-          includePatternsInFallback
+          provisionalPlan.originalSanitizedQuery
         );
         plan = deterministic.enriched;
         broadFallbackBaselinePlan = deterministic.baseline;
@@ -3206,8 +3175,7 @@ export function createMemoryRunRetrievalService(
         plannerFallbackReason = control.reason;
         const fallback = deterministicBroadFallbackReadPlans(
           input,
-          provisionalPlan.originalSanitizedQuery,
-          includePatternsInFallback
+          provisionalPlan.originalSanitizedQuery
         );
         plan = fallback.enriched;
         broadFallbackBaselinePlan = fallback.baseline;
@@ -3218,8 +3186,7 @@ export function createMemoryRunRetrievalService(
         plannerFallbackReason = "memory_plan_query_missing";
         const fallback = deterministicBroadFallbackReadPlans(
           input,
-          provisionalPlan.originalSanitizedQuery,
-          includePatternsInFallback
+          provisionalPlan.originalSanitizedQuery
         );
         plan = fallback.enriched;
         broadFallbackBaselinePlan = fallback.baseline;
@@ -3241,11 +3208,6 @@ export function createMemoryRunRetrievalService(
           const projected = sanitizeMemoryUtilityText(value);
           return projected.eligible && projected.safeText ? [projected.safeText] : [];
         });
-        const includePatterns = factsRequested &&
-          control.intent.retrievalMode === "TARGETED_CURRENT" &&
-          control.intent.temporalIntent === "CURRENT" &&
-          !control.intent.profileRequested &&
-          !control.intent.patternExclusionRequested;
         try {
           plan = planMemoryRetrieval({
             aggregationRequested: control.intent.aggregationRequested,
@@ -3265,7 +3227,6 @@ export function createMemoryRunRetrievalService(
                 ? new Date(control.intent.temporalTo)
                 : null
             },
-            includePatterns,
             mode: control.intent.retrievalMode,
             now: input.now,
             profileRequested: control.intent.profileRequested,
@@ -3279,8 +3240,7 @@ export function createMemoryRunRetrievalService(
           plannerFallbackReason = "memory_plan_invalid";
           const fallback = deterministicBroadFallbackReadPlans(
             input,
-            provisionalPlan.originalSanitizedQuery,
-            includePatternsInFallback
+            provisionalPlan.originalSanitizedQuery
           );
           plan = fallback.enriched;
           broadFallbackBaselinePlan = fallback.baseline;
@@ -3318,10 +3278,6 @@ export function createMemoryRunRetrievalService(
         enriched: plan,
         hardExclusionReasons: Object.freeze(hardExclusionReasons)
       });
-      // Only the deterministic mixed read carries a separate current-fact
-      // policy through its history envelope. Genuine history/aggregation and
-      // profile operations cannot inherit PATTERN authority from a baseline.
-      const factPlan = broadPlannerFallback ? plans.baseline ?? plan : plan;
       const admittedSourceKinds = [...new Set([
         ...(plans.baseline?.filters.sourceKinds ?? []),
         ...plan.filters.sourceKinds
@@ -3352,8 +3308,7 @@ export function createMemoryRunRetrievalService(
       let speculativeBaselineUsed = false;
       let speculativeHybridUsed = false;
       try {
-        const speculationUsable = (broadPlannerFallback || plan === baselineReadPlan) &&
-          baselineReadPlan.includePatterns === factPlan.includePatterns;
+        const speculationUsable = broadPlannerFallback || plan === baselineReadPlan;
         // The fast hedge intentionally omits broad digest navigation. It may
         // replace the enriched plan only while dense original-query evidence
         // is available; otherwise the existing bounded broad lexical plan is
@@ -3876,7 +3831,6 @@ export function createMemoryRunRetrievalService(
         const basePack = packMemoryPersonalContext({
           core: selectedCore,
           expanded: dynamicExpanded,
-          factPlan,
           maximumTokens: normalizedRequestPersonalContextTokenLimit(input.normalizedRequest),
           now: input.now,
           plan,
@@ -4018,9 +3972,6 @@ export function createMemoryRunRetrievalService(
         packedTokens: preparedTokens,
         packerVersion: pack.packerVersion,
         plan: planEvidence(plan),
-        ...(pack.items.some(({ evidenceType }) => evidenceType === "pattern")
-          ? { factPlan: planEvidence(factPlan) }
-          : {}),
         plannerFallbackReason,
         broadLexicalFallbackUsed,
         speculativeBaselineUsed,
@@ -4063,7 +4014,7 @@ export function createMemoryRunRetrievalService(
           commonEvidence
         );
       }
-      const items = attemptItems(pack, selectedStanding, selectedCore, selectedDynamic, plan, factPlan);
+      const items = attemptItems(pack, selectedStanding, selectedCore, selectedDynamic, plan);
       return {
         budgetSnapshot: {
           admissionVersion: MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION,

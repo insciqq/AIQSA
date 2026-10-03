@@ -51,7 +51,6 @@ const archiveMemorySettings: MemoryConsumerSettingsResponse = {
     permanentChatDeletion: true,
     pastChatIndexingAvailable: true,
     retrievalAvailable: true,
-    synthesisAvailable: true,
     temporaryChats: true
   },
   resetState: "IDLE",
@@ -59,7 +58,6 @@ const archiveMemorySettings: MemoryConsumerSettingsResponse = {
     decayEnabled: false,
     learnAutomatically: true,
     referenceChatHistory: true,
-    synthesisEnabled: false,
     useMemoryFacts: true
   },
   status: "ON"

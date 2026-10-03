@@ -11,7 +11,7 @@ import { ChatImageV2 } from "@/features/attachments-v2/ChatImageV2";
 import { SaveFileButtonV2 } from "@/features/attachments-v2/SaveFileButtonV2";
 
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
-import { memoryMutationOutcomeIsUnknown, submitMemorySourceAction } from "@/components/app-shell/memoryApi";
+import { submitMemorySourceAction } from "@/components/app-shell/memoryApi";
 import { formatAttachmentBytes } from "@/components/app-shell/attachmentLimitUsage";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import {
@@ -115,26 +115,6 @@ function KnowledgeStateV2({ state }: Readonly<{ state: ThreadKnowledgeAnswerStat
   );
 }
 
-function MemoryStatusV2({ status }: Readonly<{
-  status: NonNullable<ThreadArtifactSummary["memoryStatus"]>;
-}>) {
-  const presentation = status === "INPUT_TOO_LONG"
-    ? { copy: mt("answer.inputTooLong"), testId: "memory-input-too-long-status" }
-    : status === "LIMITED"
-      ? { copy: mt("answer.limited"), testId: "memory-limited-status" }
-      : { copy: mt("answer.unavailable"), testId: "memory-unavailable-status" };
-  return (
-    <p
-      className="v2-memory-answer-state"
-      data-testid={presentation.testId}
-      role="status"
-    >
-      <UiV2Icon name="memory" />
-      <span>{presentation.copy}</span>
-    </p>
-  );
-}
-
 /* Knowledge rows carry the violet handle mark and a book glyph; the only
    action is "Open document ›" because the citation projection exposes no
    private base/document name (CRITICAL_INVARIANTS §9). */
@@ -198,19 +178,22 @@ function memorySourceActionMessage(action: Exclude<MemorySourceAction, "OPEN_SOU
   }
 }
 
+export type MemorySourceMutationV2 = Exclude<MemorySourceAction, "OPEN_SOURCE">;
+
+/** One delivered Memory source. An unavailable source is not listed, and a
+ * failed or unconfirmed action shows nothing: the row keeps its controls. */
 export function MemorySourceRowV2({ source, onSettled }: Readonly<{
   source: MemoryAnswerSource;
-  onSettled?: () => void;
+  onSettled?: (action: MemorySourceMutationV2) => void;
 }>) {
   const [textExpanded, setTextExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [statement, setStatement] = useState(source.text ?? "");
   const [pending, setPending] = useState<MemorySourceAction | null>(null);
-  const [completed, setCompleted] = useState<Exclude<MemorySourceAction, "OPEN_SOURCE"> | null>(null);
+  const [completed, setCompleted] = useState<MemorySourceMutationV2 | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [openHref, setOpenHref] = useState<string | null>(null);
-  const [outcomeUncertain, setOutcomeUncertain] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const rowId = useId();
   const statementId = `memory-source-statement-${rowId}`;
@@ -240,10 +223,10 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
 
   async function runAction(action: MemorySourceAction, nextStatement?: string): Promise<void> {
     if (!source.sourceAvailable || !source.memoryRef) return;
-    if (pending || (action !== "OPEN_SOURCE" && (completed || outcomeUncertain))) return;
+    if (pending || (action !== "OPEN_SOURCE" && completed)) return;
     setPending(action);
     setNotice(null);
-    setError(null);
+    setValidationError(null);
     try {
       const response = await submitMemorySourceAction(action, source.memoryRef, nextStatement);
       if (action === "OPEN_SOURCE") {
@@ -259,11 +242,11 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
         setCompleted(action);
         setEditing(false);
         setNotice(memorySourceActionMessage(action));
-        onSettled?.();
+        onSettled?.(action);
       }
-    } catch (error) {
-      if (action !== "OPEN_SOURCE") setOutcomeUncertain(memoryMutationOutcomeIsUnknown(error));
-      setError(mt(action === "OPEN_SOURCE" ? "source.openError" : "source.actionError"));
+    } catch {
+      // Success needs a committed receipt; a failed or unknown outcome and a
+      // source that cannot open end quietly with the controls restored.
     } finally {
       setPending(null);
     }
@@ -273,7 +256,7 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
     event.preventDefault();
     const nextStatement = statement.trim();
     if (!nextStatement || nextStatement.length > MEMORY_STATEMENT_MAX_LENGTH) {
-      setError(formatMemoryUiCopy("action.correctionLength", {
+      setValidationError(formatMemoryUiCopy("action.correctionLength", {
         count: MEMORY_STATEMENT_MAX_LENGTH.toLocaleString(MEMORY_UI_LOCALE)
       }));
       return;
@@ -288,7 +271,6 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
   // mutation commits, leave the historical receipt readable but remove every
   // control that would replay that now-stale authority.
   const mutationDone = completed !== null;
-  const sourceAvailable = source.sourceAvailable && completed !== "FORGET";
   // One row per fact: the verbs live behind "⋯" so recall reads as a quiet
   // list; Forget keeps its destructive tone inside the menu.
   const menuActions: UiV2MenuAction[] = [
@@ -297,7 +279,7 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
       onSelect: () => {
         setStatement(source.text ?? "");
         setNotice(null);
-        setError(null);
+        setValidationError(null);
         setEditing(true);
       }
     }] : []),
@@ -312,7 +294,8 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
       tone: "destructive" as const
     }] : [])
   ];
-  const showMenu = !mutationDone && !outcomeUncertain && !editing && menuActions.length > 0;
+  const showMenu = !mutationDone && !editing && menuActions.length > 0;
+  if (!source.sourceAvailable || completed === "FORGET") return null;
 
   return (
     <article
@@ -328,20 +311,12 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
         <span className="v2-sr-only">{memorySourceTypeLabel(source.sourceType)}</span>
         <span className="v2-memory-source-main">
           <p className="v2-memory-source-text" data-expanded={textExpanded || undefined} id={`${statementId}-excerpt`}>
-            {sourceAvailable
-              ? completed === "CORRECT" ? statement : source.text
-              : mt("source.unavailableBody")}
+            {completed === "CORRECT" ? statement : source.text}
           </p>
           <span className="v2-memory-source-meta">
-            {sourceAvailable ? (
-              <>
-                <span>{memorySourceOriginLabel(source)}</span>
-                <span aria-hidden="true">·</span>
-                <time dateTime={source.date}>{memorySourceDate(source.date)}</time>
-              </>
-            ) : (
-              <UiV2Chip tone="warn">{mt("source.unavailableLabel")}</UiV2Chip>
-            )}
+            <span>{memorySourceOriginLabel(source)}</span>
+            <span aria-hidden="true">·</span>
+            <time dateTime={source.date}>{memorySourceDate(source.date)}</time>
           </span>
         </span>
         {!mutationDone && hasAction("OPEN_SOURCE") ? (
@@ -393,13 +368,11 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
           </span>
         ) : null}
       </div>
-      {sourceAvailable ? (
-        <button type="button" className="v2-memory-source-expand v2-focusable"
-          aria-controls={`${statementId}-excerpt`} aria-expanded={textExpanded}
-          onClick={() => setTextExpanded((value) => !value)}>
-          {mt(textExpanded ? "source.showLess" : "source.details")}
-        </button>
-      ) : null}
+      <button type="button" className="v2-memory-source-expand v2-focusable"
+        aria-controls={`${statementId}-excerpt`} aria-expanded={textExpanded}
+        onClick={() => setTextExpanded((value) => !value)}>
+        {mt(textExpanded ? "source.showLess" : "source.details")}
+      </button>
       {editing ? (
         <form className="v2-memory-source-correction" onSubmit={submitCorrection}>
           <label htmlFor={statementId}>{mt("source.correctStatement")}</label>
@@ -418,7 +391,7 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
           <div className="v2-memory-action-buttons">
             <UiV2Button
               busy={pending === "CORRECT"}
-              disabled={pending !== null || outcomeUncertain}
+              disabled={pending !== null}
               type="submit"
               tone="primary"
             >
@@ -428,7 +401,7 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
               disabled={pending !== null}
               onClick={() => {
                 setEditing(false);
-                setError(null);
+                setValidationError(null);
               }}
               type="button"
             >
@@ -438,10 +411,8 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
         </form>
       ) : null}
       {notice ? <p aria-live="polite" className="v2-memory-source-notice" role="status">{notice}</p> : null}
-      {outcomeUncertain || error ? (
-        <p aria-live="assertive" className="v2-memory-source-error" role="alert">
-          {outcomeUncertain ? mt("source.actionError") : error}
-        </p>
+      {validationError ? (
+        <p aria-live="assertive" className="v2-memory-source-error" role="alert">{validationError}</p>
       ) : null}
     </article>
   );
@@ -545,8 +516,9 @@ export function useAnswerSourcesV2({ artifact, knowledgeReference }: Readonly<{
 }
 
 /**
- * Quiet status lines between the answer body and its actions row: Memory
- * limited/unavailable, Knowledge answer state, Gemini search suggestions.
+ * Quiet status lines between the answer body and its actions row: Knowledge
+ * answer state, Gemini search suggestions. Memory limits and unavailability
+ * stay with the model and administrators, never on the answer.
  * The process fold above the text and the Sources chip in the row own the
  * rest of the anatomy.
  */
@@ -576,8 +548,6 @@ export function AnswerOutputsV2({
     </div> : null;
   }
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
-  const hasMemoryStatus = artifact?.memoryStatus === "INPUT_TOO_LONG" ||
-    artifact?.memoryStatus === "LIMITED" || artifact?.memoryStatus === "UNAVAILABLE";
   const hasKnowledgeState = Boolean(artifact?.knowledgeState && (
     artifact.knowledgeState.answer === "insufficient_evidence" ||
     artifact.knowledgeState.scope === "partial_sources_ready"
@@ -591,14 +561,13 @@ export function AnswerOutputsV2({
   );
 
   if ((!artifact || (
-    !hasSuggestions && !hasMemoryStatus && !hasKnowledgeState && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts
+    !hasSuggestions && !hasKnowledgeState && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts
   )) && !outputStatusCopy) {
     return null;
   }
 
   return (
     <div className="v2-answer-outputs" data-testid="answer-outputs">
-      {artifact?.memoryStatus ? <MemoryStatusV2 status={artifact.memoryStatus} /> : null}
       {artifact?.knowledgeState ? <KnowledgeStateV2 state={artifact.knowledgeState} /> : null}
       {outputStatusCopy ? (
         <p

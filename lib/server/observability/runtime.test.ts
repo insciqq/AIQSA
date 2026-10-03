@@ -83,25 +83,27 @@ describe("bounded observability runtime", () => {
       .toMatchObject({ code, outcome: "failed", level: "error" });
   });
 
-  it("reports a Dream no-plan evaluation with only an allowlisted code and source count", () => {
+  it.each([
+    ["memory_synthesis_retired", "reconcile", "cancelled"],
+    ["memory_synthesis_retired_forgotten", "cleanup", "completed"],
+    ["memory_synthesis_retired_pinned", "cleanup", "skipped"]
+  ] as const)("reports retired Dream cleanup %s with only an allowlisted code and count", (code, stage, outcome) => {
     const line = serializeEvent("runtime_lifecycle", {
       subsystem: "memory",
-      stage: "reconcile",
-      outcome: "skipped",
-      code: "memory_synthesis_plan_unavailable",
+      stage,
+      outcome,
+      code,
       count: 3,
       userId: "PRIVATE_USER",
-      messageId: "PRIVATE_MESSAGE",
       factId: "PRIVATE_FACT",
-      sourceText: "PRIVATE_SOURCE"
+      statement: "PRIVATE_STATEMENT"
     } as never)!;
     expect(JSON.parse(line)).toMatchObject({
-      code: "memory_synthesis_plan_unavailable",
+      code,
       count: 3,
       event: "runtime_lifecycle",
-      level: "info",
-      outcome: "skipped",
-      stage: "reconcile",
+      outcome,
+      stage,
       subsystem: "memory"
     });
     expect(line).not.toContain("PRIVATE_");
@@ -163,6 +165,25 @@ describe("bounded observability runtime", () => {
     expect(record("provider_operation", { outcome: "failed", httpStatus: 503 }).level).toBe("error");
     expect(record("process.failure", { stage: "unhandled_rejection", outcome: "framework_managed" }).level).toBe("error");
     expect(record("process.failure", { stage: "uncaught_exception", outcome: "terminated" }).level).toBe("fatal");
+  });
+
+  it("reports a preparation that continued without Memory as a content-free warning", () => {
+    const line = serializeEvent("run_preparation", { run_id: "run-1", stage: "preparing", outcome: "degraded",
+      code: "memory_attempt_item_stale", message: "PRIVATE_FACT", statement: "PRIVATE_STATEMENT" } as never)!;
+    expect(JSON.parse(line)).toMatchObject({ event: "run_preparation", level: "warn", outcome: "degraded",
+      code: "memory_attempt_item_stale", stage: "preparing" });
+    expect(line).not.toContain("PRIVATE_");
+    expect(record("run_preparation", { run_id: "run-1", stage: "preparing", outcome: "failed",
+      code: "memory_preparing_failed" })).toMatchObject({ level: "error", outcome: "failed" });
+    expect(record("run_preparation", { run_id: "run-1", stage: "preparing", outcome: "completed" }).level).toBe("info");
+    for (const code of ["memory_preparation_skipped", "memory_preparation_interrupted", "memory_search_admission_skipped",
+      "memory_utility_egress_changed", "memory_final_request_invalid"]) {
+      expect(record("run_preparation", { run_id: "run-1", stage: "preparing", outcome: "degraded", code }).code).toBe(code);
+    }
+    // Other accepted-operation events keep their outcome set.
+    for (const event of ["run_execution", "provider_operation", "transport_stage"] as const) {
+      expect(record(event, { run_id: "run-1", stage: "execution", outcome: "degraded" } as never)).not.toHaveProperty("outcome");
+    }
   });
 
   it("keeps the bounded provider cause separately from the public run failure", () => {

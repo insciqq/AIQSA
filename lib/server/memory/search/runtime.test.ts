@@ -8,7 +8,7 @@ vi.mock("../persistence/transaction", () => ({ withLockedMemoryTransaction: (_cl
 vi.mock("./retrieval", () => ({ createMemorySearchRetrieval: () => vi.fn() }));
 vi.mock("../../runs/preparingMemoryItems", () => ({ resolvePreparingMemoryItem: vi.fn(), samePreparingMemoryItemSnapshot: vi.fn(() => true) }));
 import { createPrismaMemorySearchService } from "./runtime";
-import { MemoryReadBudgetError } from "../retrieval/readBudget";
+import { MEMORY_READ_BUDGET_ERROR_CODES, MemoryReadBudgetError } from "../retrieval/readBudget";
 import { resolvePreparingMemoryItem } from "../../runs/preparingMemoryItems";
 
 function fixture() {
@@ -60,6 +60,20 @@ describe("native Memory search execution", () => {
     expect(f.receipts[0]).toMatchObject({ results: { diagnosticEvidence } });
     expect(JSON.stringify(output)).not.toContain("diagnosticEvidence");
     expect(JSON.stringify(output)).not.toContain("memory_read_statement_timeout");
+    expect(output).toMatchObject({ content: [{ value: { outcome: "limited",
+      guidance: expect.stringContaining("Do not tell the user that Memory") } }] });
+  });
+  it("keeps the structured failure for the model while telling it not to narrate the fault", async () => {
+    const f = fixture();
+    f.retrieve.mockRejectedValueOnce(new Error("private provider payload"));
+    const output = await f.service.execute(f.call, f.context);
+    expect(output).toMatchObject({ status: "error", content: [{ value: { outcome: "failure", reason: "unavailable" } }] });
+    const guidance = (output.content[0] as { value: { guidance: string } }).value.guidance;
+    expect(guidance).toContain("Do not tell the user that Memory or memory search failed");
+    expect(guidance).toContain("say that you do not know it");
+    const ok = fixture();
+    const settled = await ok.service.execute(ok.call, ok.context);
+    expect((settled.content[0] as { value: { guidance: string } }).value.guidance).not.toContain("Do not tell the user");
   });
   it("allows a visible search lasting twenty seconds within the thirty-second budget", async () => {
     vi.useFakeTimers();
@@ -91,6 +105,24 @@ describe("native Memory search execution", () => {
     await other.service.execute(other.call, other.context);
     expect(other.receipts[0]).toMatchObject({ errorCode: "memory_search_retrieval_failed" });
     expect(JSON.stringify(other.receipts)).not.toContain("private provider payload");
+  });
+  it.each(MEMORY_READ_BUDGET_ERROR_CODES)("keeps the distinct read-budget cause %s on the receipt", async (code) => {
+    const f = fixture();
+    f.retrieve.mockRejectedValueOnce(new MemoryReadBudgetError(code));
+    expect(await f.service.execute(f.call, f.context)).toMatchObject({ status: "error" });
+    expect(f.receipts[0]).toMatchObject({ state: "ERROR", errorCode: code });
+  });
+  it("classifies raw pool acquisition and expired transaction failures without their text", async () => {
+    for (const [message, code] of [
+      ["Transaction API error: Unable to start a transaction in the given time.", "memory_read_connection_timeout"],
+      ["Transaction API error: Transaction already closed.", "memory_read_transaction_expired"]
+    ] as const) {
+      const f = fixture();
+      f.retrieve.mockRejectedValueOnce(Object.assign(new Error(message), { code: "P2028" }));
+      await f.service.execute(f.call, f.context);
+      expect(f.receipts[0]).toMatchObject({ errorCode: code });
+      expect(JSON.stringify(f.receipts)).not.toContain("Transaction API");
+    }
   });
   it("rejects an index replacement during search with a distinct private receipt reason", async () => {
     const f = fixture();

@@ -38,7 +38,7 @@ embeddings. The current qualification freezes the dedicated reranker route as
 Voyage Rerank 2.5, Cohere Rerank 4 Pro, then Qwen3 Reranker 8B; every fallback
 restarts the whole logical rerank so model score scales are never mixed. The
 `official` profile intentionally disables
-automatic fact learning and pattern synthesis so the result measures recall
+automatic fact learning so the result measures recall
 from imported chat history and remains comparable with the upstream oracle.
 Each official timestamped session becomes one ordinary source chat;
 when an external session ends on a user turn, the adapter appends one
@@ -65,37 +65,15 @@ The adapter waits for exclusion cleanup before any reuse: terminal runs and
 immutable usage receipts remain for accounting, while the question cannot
 become a future Memory source. Starting the question as `EXCLUDED` would disable
 the very Memory read being evaluated. A fresh auth
-session is removed after every attempt. Product and forced Dream diagnostics
-continue to use disposable one-run users because those profiles intentionally
-mutate learned state.
+session is removed after every attempt. The product profile continues to use
+disposable one-run users because it intentionally mutates learned state.
 
 The non-comparable `product` profile replays those same unchanged sessions
 through the ordinary persisted-chat settlement lifecycle. It enables automatic
-fact learning and forward-only Dream synthesis, waits for every expected fact
-extraction, and then rebuilds and queries the complete Memory index. Normal
-Dream admission follows product cadence: at least three eligible direct sources,
-thirty quiet minutes, a twelve-hour hard cooldown after a previous successful
-Dream, and either eight new evidence-bearing chats, twelve changed facts, or a
-twenty-four-hour low-activity fallback. Historical LongMemEval timestamps may
-correctly fall before the new benchmark user's first-enable boundary; in that
-case the profile proves that no Dream call was admitted. Its
-content-free summary records direct-user evidence, classification, eligible
-source count, governed provider bindings, cleared recovery payloads, and—when
-Dream runs—either classified patterns with at least three exact source
-relations each or a structurally valid empty result. It never inserts
-benchmark-selected facts or rerolls an unchanged source set to force a
-model-authored pattern.
-
-`--force-dream-diagnostic` is an explicit product-only inspection mode, kept in
-a separate output directory and never treated as official-comparable evidence.
-For only the disposable benchmark owner it moves the Dream opt-in boundary to
-one millisecond before the earliest unchanged source session, lets extraction
-finish normally, and invokes the production scheduler at its first legitimate
-quiet/fallback due point. It does not alter source text, extraction, clustering,
-minimum pattern evidence, prompts, or product policy. A secret-screened ignored
-`dream-diagnostic-*.json` artifact records current direct facts, safe evidence,
-generated patterns, and every exact `SYNTHESIZED_FROM` source so grounding can
-be reviewed manually before the disposable user is deleted.
+fact learning, waits for every expected fact extraction and for every Memory job
+to settle, and then rebuilds and queries the complete Memory index. Its
+content-free summary records direct-user evidence, classification and governed
+provider bindings. It never inserts benchmark-selected facts.
 
 The overlay has an explicit compose name, container names, network names,
 volume names, database identity, and loopback-only ports. Its defaults are app
@@ -244,9 +222,7 @@ the runner fails closed unless its allowlisted model, the installation policy,
 the authenticated catalog, and the governed runtime binding all agree, and the
 actual selected model is recorded in the summary.
 Pass `--profile product` only for the full non-comparable automatic-learning
-and Dream replay described above. The default remains `official`.
-Add `--force-dream-diagnostic` to that product command only when the explicit
-historical-data Dream inspection described above is intended.
+replay described above. The default remains `official`.
 
 Add `--debug-memory` only for an explicitly disposable diagnostic run. The
 runner then captures the secret-screened normalized pre-provider request, prepared

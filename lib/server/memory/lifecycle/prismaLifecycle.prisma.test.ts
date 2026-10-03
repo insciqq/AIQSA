@@ -9,6 +9,7 @@ import {
 import {
   MEMORY_CONFIRMATION_COPY_VERSION
 } from "../../../contracts/memory";
+import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../../contracts/runs";
 import { textMessageContent } from "../../../domain/content";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { prisma } from "../../prisma";
@@ -1266,12 +1267,14 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
         state: "STALE"
       });
       expect(settledRun).toMatchObject({
-        errorPayload: { code: "memory_item_forgotten" },
+        errorPayload: {
+          code: "memory_item_forgotten",
+          message: RUN_PREPARATION_FAILURE_MESSAGE
+        },
         status: "error"
       });
       expect(settledMessage).toMatchObject({
-        errorMessage:
-          "Memory preparation stopped because a selected Memory item was forgotten.",
+        errorMessage: RUN_PREPARATION_FAILURE_MESSAGE,
         status: "error"
       });
       await expect(prisma.memoryRetrievalAttemptItem.count({
@@ -1721,7 +1724,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
     }
   });
 
-  it.each([false, true])("preserves separate source evidence or atomically refuses overlap (overlap=%s)", async (overlap) => {
+  it.each([false, true])("preserves separate or overlapping peer evidence while fencing the forgotten source (overlap=%s)", async (overlap) => {
     const userId = await createActiveUser("selective-source");
     const { explicit, lifecycle } = services(purgeRegistry());
     const first = "My lamp is amber.";
@@ -1766,29 +1769,25 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       const forget = () => lifecycle.forget(userId, forgotten!.factId, {
         expectedVersionId: forgotten!.versionId, mutationAuthorizationId: authorization.mutationAuthorizationId
       });
-      if (overlap) {
-        await expect(forget()).rejects.toMatchObject({ code: "memory_action_failed" });
-        expect(await loadPersonalEligibleFactVersionIds(prisma, userId, ids)).toEqual(new Set(ids));
-        expect(await prisma.memorySuppression.count({ where: { userId } })).toBe(0);
-        expect(await prisma.memoryDeletionOutbox.count({ where: { userId } })).toBe(0);
-      } else {
-        await expect(forget()).resolves.toMatchObject({ memory: { factState: "FORGOTTEN" } });
-        await expect(forget()).resolves.toMatchObject({ memory: { factState: "FORGOTTEN" } });
-        const support = await loadPersonalMemoryEvidenceSnapshots(prisma, userId, [retained!.versionId], { exactVNext: true });
-        expect(support).toHaveLength(1);
-        expect(await prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: retained!.versionId } }))
-          .toMatchObject({ state: "ACTIVE", displayText: second });
-        const suppression = await prisma.memorySuppression.findFirstOrThrow({ where: { userId, scope: "SOURCE_MESSAGE" } });
-        expect(suppression.preservedEvidenceIds).toEqual([support[0]!.id]);
-        await expect(prisma.memorySuppression.update({ where: { id: suppression.id }, data: { preservedEvidenceIds: ["unknown-evidence"] } })).rejects.toThrow();
-        await expect(facts.save(userId, {
-          evidence: { branchGeneration: 0, chatId: chat.id, kind: "MESSAGE", messageId: message.id,
-            observedAt: message.createdAt, safeExcerpt: first, safeSourceHash: memorySha256(statement), safetyClass: "NORMAL",
-            sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION, sourceRole: "user" },
-          explicitSuppressionOverride: false, idempotencyFingerprint: randomUUID(), requestId: randomUUID(), scopeId: scope.id,
-          value: automaticValue("learned.selective.replayed", "The lamp has an amber colour.")
-        })).rejects.toMatchObject({ code: "memory_fact_suppressed" });
-      }
+      // Overlapping spans of a direct shared source no longer block Forget:
+      // the whole message stays fenced, the independent peer keeps its version.
+      await expect(forget()).resolves.toMatchObject({ memory: { factState: "FORGOTTEN" } });
+      await expect(forget()).resolves.toMatchObject({ memory: { factState: "FORGOTTEN" } });
+      const support = await loadPersonalMemoryEvidenceSnapshots(prisma, userId, [retained!.versionId], { exactVNext: true });
+      expect(support).toHaveLength(1);
+      expect(await loadPersonalEligibleFactVersionIds(prisma, userId, ids)).toEqual(new Set([retained!.versionId]));
+      expect(await prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: retained!.versionId } }))
+        .toMatchObject({ state: "ACTIVE", displayText: second });
+      const suppression = await prisma.memorySuppression.findFirstOrThrow({ where: { userId, scope: "SOURCE_MESSAGE" } });
+      expect(suppression.preservedEvidenceIds).toEqual([support[0]!.id]);
+      await expect(prisma.memorySuppression.update({ where: { id: suppression.id }, data: { preservedEvidenceIds: ["unknown-evidence"] } })).rejects.toThrow();
+      await expect(facts.save(userId, {
+        evidence: { branchGeneration: 0, chatId: chat.id, kind: "MESSAGE", messageId: message.id,
+          observedAt: message.createdAt, safeExcerpt: overlap ? statement : first, safeSourceHash: memorySha256(statement), safetyClass: "NORMAL",
+          sourceProjectionVersion: MEMORY_FACT_SOURCE_PROJECTION_VERSION, sourceRole: "user" },
+        explicitSuppressionOverride: false, idempotencyFingerprint: randomUUID(), requestId: randomUUID(), scopeId: scope.id,
+        value: automaticValue("learned.selective.replayed", "The lamp has an amber colour.")
+      })).rejects.toMatchObject({ code: "memory_fact_suppressed" });
     } finally { await cleanupUsers([userId]); }
   });
 
@@ -2670,7 +2669,12 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
           memoryRevision: before.memoryRevision + 1,
           referenceChatHistory: false,
           settingsRevision: before.settingsRevision + 1,
-          useMemoryFacts: false
+          useMemoryFacts: false,
+          // Retired Dream fence values, still written for previous-release workers.
+          lastSynthesisAt: null,
+          synthesisEnabled: false,
+          synthesisEnabledAt: null,
+          synthesisPolicyVersion: null
         });
       const barrier = await prisma.memorySourceBarrier.findFirstOrThrow({
         where: { kind: "ALL_REUSABLE", userId }
@@ -2756,6 +2760,16 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       await expect(prisma.modelRun.findUniqueOrThrow({
         where: { id: unacceptedAttempt.runId }
       })).resolves.toMatchObject({
+        errorPayload: {
+          code: "memory_all_reusable_deleted",
+          message: RUN_PREPARATION_FAILURE_MESSAGE
+        },
+        status: "error"
+      });
+      await expect(prisma.message.findUniqueOrThrow({
+        where: { id: unacceptedAttempt.assistantMessageId }
+      })).resolves.toMatchObject({
+        errorMessage: RUN_PREPARATION_FAILURE_MESSAGE,
         status: "error"
       });
       await expect(prisma.memoryFeedback.findUniqueOrThrow({

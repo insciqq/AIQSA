@@ -251,6 +251,16 @@ export function decodeMemoryScopeSelection(
   return decode(memoryScopeSelectionSchema, value);
 }
 
+/** Settings a patch can change. */
+export const MEMORY_SETTINGS_PATCH_KEYS = [
+  "decayEnabled",
+  "embeddingDeploymentId",
+  "learnAutomatically",
+  "referenceChatHistory",
+  "sensitiveAutomaticPolicy",
+  "useMemoryFacts"
+] as const;
+
 const memorySettingsPatchSchema = z.strictObject({
   decayEnabled: z.boolean().optional(),
   embeddingDeploymentId: idSchema.nullable().optional(),
@@ -259,18 +269,12 @@ const memorySettingsPatchSchema = z.strictObject({
   learnAutomatically: z.boolean().optional(),
   referenceChatHistory: z.boolean().optional(),
   sensitiveAutomaticPolicy: z.literal("EXPLICIT_ONLY").optional(),
+  // Retired Dream toggle: still accepted from stale tabs for one release and
+  // ignored by the server; a patch carrying only this key is a no-op.
   synthesisEnabled: z.boolean().optional(),
   useMemoryFacts: z.boolean().optional()
 }).superRefine((value, context) => {
-  const mutationKeys = [
-    "decayEnabled",
-    "embeddingDeploymentId",
-    "learnAutomatically",
-    "referenceChatHistory",
-    "sensitiveAutomaticPolicy",
-    "synthesisEnabled",
-    "useMemoryFacts"
-  ] as const;
+  const mutationKeys = [...MEMORY_SETTINGS_PATCH_KEYS, "synthesisEnabled"] as const;
   const changed = mutationKeys.filter((key) => Object.hasOwn(value, key));
   if (changed.length === 0) {
     context.addIssue({ code: "custom", message: "empty settings patch" });
@@ -376,7 +380,6 @@ export function decodeMemoryCreateInput(
 const memoryListSearchInputSchema = z.strictObject({
   category: categorySchema.optional(),
   cursor: cursorSchema.optional(),
-  includePatterns: z.boolean().optional(),
   pageSize: positiveInteger.max(MEMORY_PAGE_SIZE_MAX).optional(),
   query: safeText(MEMORY_QUERY_MAX_LENGTH),
   scope: memoryScopeSelectionSchema.optional(),
@@ -387,7 +390,6 @@ const memoryListSearchInputSchema = z.strictObject({
 const memoryListInputSchema = z.strictObject({
   category: categorySchema.optional(),
   cursor: cursorSchema.optional(),
-  includePatterns: z.boolean().optional(),
   pageSize: positiveInteger.max(MEMORY_PAGE_SIZE_MAX).optional(),
   scope: memoryScopeSelectionSchema.optional(),
   sourceMode: z.enum(MEMORY_SOURCE_MODES).optional(),
@@ -552,6 +554,8 @@ const memorySettingsResponseSchema = z.strictObject({
     permanentChatDeletion: z.boolean(),
     pastChatIndexingAvailable: z.boolean(),
     retrievalAvailable: z.boolean(),
+    // Name retained for one release so stale tabs keep decoding; it now means
+    // that background maintenance is available.
     synthesisAvailable: z.boolean(),
     temporaryChats: z.boolean()
   }),
@@ -573,7 +577,8 @@ const memorySettingsResponseSchema = z.strictObject({
     referenceChatHistory: z.boolean(),
     sensitiveAutomaticPolicy: z.literal("EXPLICIT_ONLY"),
     settingsRevision: safeInteger,
-    synthesisEnabled: z.boolean(),
+    // Dream synthesis is retired: always false, kept one release for stale tabs.
+    synthesisEnabled: z.literal(false),
     updatedAt: isoTimestampSchema,
     useMemoryFacts: z.boolean()
   })
@@ -600,20 +605,9 @@ export function decodeMemorySettingsResponse(
   return decode(memorySettingsResponseSchema, value);
 }
 
-const combinedSourceSchema = z.strictObject({
-  category: categorySchema,
-  createdAt: isoTimestampSchema,
-  factId: idSchema,
-  sourceMode: z.enum(MEMORY_SOURCE_MODES),
-  versionId: idSchema,
-  statement: safeText(MEMORY_STATEMENT_MAX_LENGTH),
-  updatedAt: isoTimestampSchema
-});
-
 const memorySummarySchema = z.strictObject({
   actionVersionId: idSchema.nullable().optional(),
   category: categorySchema,
-  combinedSources: z.array(combinedSourceSchema).min(3).max(40).optional(),
   createdAt: isoTimestampSchema,
   currentVersionId: idSchema.nullable(),
   deferredCandidateCount: safeInteger.optional(),

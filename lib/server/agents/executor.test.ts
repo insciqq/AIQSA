@@ -21,8 +21,8 @@ const store = vi.hoisted(() => ({
 vi.mock("../prisma", () => ({ prisma: {} }));
 vi.mock("./store", () => ({ createAgentRunStore: () => store }));
 vi.mock("./mcpResume", () => ({ restoreAgentMcpTools: vi.fn(async () => new Map()) }));
-vi.mock("./prompt", () => ({ agentPrompts: () => ({ previousAssistantMessageId: null,
-  developerInstructions: "fixture", prompt: "fixture", resumePrompt: "fixture" }) }));
+const prompts = vi.hoisted(() => ({ agentPrompts: vi.fn() }));
+vi.mock("./prompt", () => prompts);
 
 function fixture(executeAgent: NonNullable<WorkspaceCoordinator["executeAgent"]>, signal = new AbortController().signal) {
   const events: ModelRunSseEvent[] = [];
@@ -46,6 +46,8 @@ describe("Agent executor terminal behavior", () => {
     store.usage.mockResolvedValue([]);
     store.failure.mockResolvedValue(null);
     vi.mocked(restoreAgentMcpTools).mockResolvedValue(new Map());
+    prompts.agentPrompts.mockReturnValue({ previousAssistantMessageId: null,
+      developerInstructions: "fixture", prompt: "fixture", resumePrompt: "fixture" });
   });
 
   it("finishes fresh MCP admission before starting even a turn with no MCP calls", async () => {
@@ -143,6 +145,18 @@ describe("Agent executor terminal behavior", () => {
     expect(executeAgent).not.toHaveBeenCalled();
     expect(f.events).toEqual([]);
     expect(store.revoke).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
+  it("fails a turn whose prompt cannot fit with its own code before arming any grant", async () => {
+    const executeAgent = vi.fn<NonNullable<WorkspaceCoordinator["executeAgent"]>>(async () => undefined);
+    const f = fixture(executeAgent);
+    prompts.agentPrompts.mockImplementation(() => { throw new AgentExecutionError("agent_context_too_large"); });
+    await expect(executeCodexTurn(f.input)).rejects.toMatchObject({ code: "agent_context_too_large" });
+    expect(store.arm).not.toHaveBeenCalled();
+    expect(store.fail).not.toHaveBeenCalled();
+    expect(store.toolCall).not.toHaveBeenCalled();
+    expect(executeAgent).not.toHaveBeenCalled();
+    expect(f.events).toEqual([]);
   });
 
   it("delivers received text before a later gateway failure and retains its original cause", async () => {

@@ -41,7 +41,6 @@ describe("MemorySettingsRowsV2", () => {
     ["Use memories in answers", "useMemoryFacts"],
     ["Search past chats", "referenceChatHistory"],
     ["Learn automatically", "learnAutomatically"],
-    ["Notice repeated details", "synthesisEnabled"],
     ["Learn from what you use", "decayEnabled"]
   ] as const)("can enable %s while its runtime capability is inactive", async (label, key) => {
     const data = memoryConsumerSettingsFixture({
@@ -82,18 +81,18 @@ describe("MemorySettingsRowsV2", () => {
     useMemorySettingsStore.setState({ data, loadState: "ready" });
     render(<MemorySettingsRowsV2 />);
 
-    expect(screen.getAllByRole("switch")).toHaveLength(5);
+    expect(screen.getAllByRole("switch")).toHaveLength(4);
     expect(screen.getByRole("switch", { name: "Use memories in answers: off" })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Search past chats: on" })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Learn automatically: on" })).toBeEnabled();
-    expect(screen.getByRole("switch", { name: "Notice repeated details: off" })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Learn from what you use: off" })).toBeEnabled();
+    expect(screen.queryByRole("switch", { name: /Notice repeated details/u })).toBeNull();
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
     expect(screen.getByTestId("settings-memory-status")).toHaveTextContent("Memory is paused");
     expect(screen.queryByRole("button", { name: "Open in Library" })).toBeNull();
   });
 
-  it("shows a lost acknowledgement and reconciles by reading without repeating the mutation", async () => {
+  it("hides a lost acknowledgement and reconciles by reading without repeating the mutation", async () => {
     const original = memoryConsumerSettingsFixture({ settings: { learnAutomatically: true }, status: "ON" });
     const current = memoryConsumerSettingsFixture({ settings: { learnAutomatically: false }, status: "ON" });
     useMemorySettingsStore.setState({ data: original, loadState: "ready" });
@@ -103,13 +102,81 @@ describe("MemorySettingsRowsV2", () => {
     render(<MemorySettingsRowsV2 />);
     fireEvent.click(screen.getByRole("switch", { name: "Learn automatically: on" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("could not be confirmed");
-    for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Reload settings" }));
     await waitFor(() => expect(screen.getByRole("switch", { name: "Learn automatically: off" })).toBeEnabled());
+    for (const control of screen.getAllByRole("switch")) expect(control).toBeEnabled();
     expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/could not|confirmed|error/iu)).toBeNull();
     expect(memoryApi.patchMemorySettings).toHaveBeenCalledOnce();
     expect(memoryApi.loadMemorySettings).toHaveBeenCalledOnce();
+  });
+
+  it("returns a failed switch to its saved value and keeps every switch usable", async () => {
+    const original = memoryConsumerSettingsFixture({ settings: { referenceChatHistory: false }, status: "ON" });
+    useMemorySettingsStore.setState({ data: original, loadState: "ready" });
+    memoryApi.patchMemorySettings.mockRejectedValue(Object.assign(new Error("memory_action_failed"), { status: 500 }));
+    memoryApi.loadMemorySettings.mockRejectedValue(new TypeError("offline"));
+    vi.useFakeTimers();
+    render(<MemorySettingsRowsV2 />);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("switch", { name: "Search past chats: off" }));
+      await vi.advanceTimersByTimeAsync(7_000);
+    });
+
+    expect(screen.getByRole("switch", { name: "Search past chats: off" })).toBeEnabled();
+    for (const control of screen.getAllByRole("switch")) expect(control).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(useMemorySettingsStore.getState()).toMatchObject({ busy: null, data: original, error: null });
+  });
+
+  it("shows no status for temporarily unavailable Memory and keeps the switches usual", () => {
+    useMemorySettingsStore.setState({
+      data: memoryConsumerSettingsFixture({ settings: { useMemoryFacts: true }, status: "UNAVAILABLE" }),
+      loadState: "ready"
+    });
+    render(<MemorySettingsRowsV2 />);
+
+    expect(screen.queryByTestId("settings-memory-status")).toBeNull();
+    expect(screen.queryByText(/unavailable/iu)).toBeNull();
+    expect(screen.getByRole("switch", { name: "Use memories in answers: on" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows administrator setup as a neutral status without an alert", () => {
+    useMemorySettingsStore.setState({
+      data: memoryConsumerSettingsFixture({ status: "NEEDS_ADMIN_SETUP" }),
+      loadState: "ready"
+    });
+    render(<MemorySettingsRowsV2 />);
+
+    const status = screen.getByTestId("settings-memory-status");
+    expect(status).toHaveTextContent("Memory needs administrator setup");
+    expect(status).toHaveAttribute("data-state", "off");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("offers a calm Reload after a failed first load, without an alert", async () => {
+    vi.useFakeTimers();
+    memoryApi.loadMemorySettings.mockReset()
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValue(memoryConsumerSettingsFixture({ status: "ON" }));
+    render(<MemorySettingsRowsV2 />);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading Memory settings");
+    await act(async () => { await vi.advanceTimersByTimeAsync(7_000); });
+
+    expect(memoryApi.loadMemorySettings).toHaveBeenCalledTimes(4);
+    const reload = screen.getByTestId("memory-settings-reload");
+    expect(reload).toHaveTextContent("Reload to see your Memory settings.");
+    expect(reload).not.toHaveAttribute("role");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/error|could not/iu)).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getAllByRole("switch")).toHaveLength(4);
   });
 
   it("shows durable reset progress and prevents a second reset", () => {
@@ -193,7 +260,7 @@ describe("MemorySettingsRowsV2", () => {
     expect(screen.getByRole("button", { name: "Forget everything…" })).toBeEnabled();
   });
 
-  it("keeps reset open on failure and suppresses a duplicate in-flight request", async () => {
+  it("keeps reset open without a message on failure and suppresses a duplicate in-flight request", async () => {
     const retained = memoryConsumerItemFixture({ statement: "Still saved after an unconfirmed reset." });
     memoryApi.listMemories.mockResolvedValue(memoryConsumerListFixture([retained]));
     useMemorySettingsStore.setState({
@@ -213,13 +280,14 @@ describe("MemorySettingsRowsV2", () => {
     expect(memoryApi.resetPersonalMemory).toHaveBeenCalledOnce();
     rejectReset?.(new Error("offline"));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The reset could not be confirmed."
-    );
-    expect(screen.getByRole("alertdialog", { name: "Forget everything?" })).toBeVisible();
     await waitFor(() => expect(useMemoryManagerStore.getState()).toMatchObject({
       memories: [retained], resetPending: false, listLoadState: "ready"
     }));
+    expect(screen.getByRole("alertdialog", { name: "Forget everything?" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Forget everything" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/could not be confirmed/iu)).toBeNull();
+    expect(screen.getByTestId("settings-memory-reset")).not.toHaveTextContent(/reset/iu);
   });
 
   it("reconciles a background reset after reopening the Memory page", async () => {

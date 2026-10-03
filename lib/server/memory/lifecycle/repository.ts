@@ -14,7 +14,10 @@ import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { memoryPersistenceFailure } from "../persistence/errors";
 import { memoryExplicitEquivalentFactIdsSql } from "../persistence/explicitEquivalence";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
-import { createMemorySuppressionInTransaction } from "../persistence/suppressions";
+import {
+  createMemorySourceSuppressionsInTransaction,
+  createMemorySuppressionInTransaction
+} from "../persistence/suppressions";
 import type { MemorySuppressionCreateInput } from "../persistence/suppressions";
 import {
   advanceMemoryMutation,
@@ -41,6 +44,7 @@ import { invalidateMemoryFactExtractionStaging } from
 import {
   assertMemoryForgetPeersRetained,
   prepareMemoryForgetSourcePreservation,
+  rememberMemoryForgetPeerCascade,
   type MemoryForgetSource
 } from "./sourcePreservation";
 
@@ -75,6 +79,14 @@ type FactVersionRow = Readonly<{
 }>;
 
 type SourceEvidenceRow = MemoryForgetSource;
+
+/** Explicit bounds of the owner Forget transaction: lock waits behind
+ * background Memory commits and large fenced source sets fit, while maxWait
+ * plus timeout stay inside the inbound MCP request deadline. */
+export const MEMORY_FORGET_TRANSACTION_BOUNDS = Object.freeze({
+  maxWaitMs: 2_000,
+  timeoutMs: 15_000
+});
 
 type LifecycleMutationCommon = Readonly<{
   authorization: MemoryMutationAuthorizationUse;
@@ -639,7 +651,8 @@ async function applyForgetFence(
   roots: readonly ActiveFactRow[],
   now: Date,
   deletionId: string,
-  preservePeers = true
+  preservePeers = true,
+  outcome?: { cascadedPeers: number }
 ): Promise<ReadonlyMap<string, string>> {
   const aliases = roots.length === 0 ? [] : await tx.$queryRaw<ActiveFactRow[]>(Prisma.sql`
     SELECT fact."id" AS "factId", fact."scopeId", fact."canonicalKey", fact."category",
@@ -664,8 +677,7 @@ async function applyForgetFence(
   const versions = await factVersions(tx, settings.userId, facts.map(({ factId }) => factId));
   const sources = await sourceEvidence(tx, settings.userId, versions.map(({ id }) => id));
   const preservation = preservePeers ? await prepareMemoryForgetSourcePreservation(
-    tx, settings.userId, facts.map(({ factId }) => factId),
-    versions.map(({ id }) => id), sources
+    tx, settings.userId, facts.map(({ factId }) => factId), sources
   ) : { peerVersionIds: [], sources };
   const latestSystemFromByFact = new Map<string, number>();
   for (const version of versions) {
@@ -677,7 +689,9 @@ async function applyForgetFence(
       )
     );
   }
-  for (const suppression of suppressionInputs(facts, versions, preservation.sources)) {
+  const suppressions = suppressionInputs(facts, versions, preservation.sources);
+  for (const suppression of suppressions) {
+    if (suppression.scope === "SOURCE_MESSAGE") continue;
     await createMemorySuppressionInTransaction(
       tx,
       settings,
@@ -686,6 +700,14 @@ async function applyForgetFence(
       { advanceMemory: false }
     );
   }
+  await createMemorySourceSuppressionsInTransaction(
+    tx,
+    settings,
+    keyring,
+    suppressions.flatMap((suppression) =>
+      suppression.scope === "SOURCE_MESSAGE" ? [suppression] : []),
+    { advanceMemory: false }
+  );
 
   const events = new Map<string, string>();
   for (const fact of facts) {
@@ -744,7 +766,13 @@ async function applyForgetFence(
     `);
     events.set(fact.factId, eventId);
   }
-  await assertMemoryForgetPeersRetained(tx, settings.userId, preservation.peerVersionIds);
+  const cascadedPeers = await assertMemoryForgetPeersRetained(
+    tx, settings.userId, preservation.peerVersionIds, {
+      messageIds: preservation.sources.map(({ messageId }) => messageId),
+      versionIds: versions.map(({ id }) => id)
+    }
+  );
+  if (outcome) outcome.cascadedPeers = cascadedPeers;
   await retractUnsupportedAutomaticMemoryEntities(tx, settings.userId);
   return events;
 }
@@ -1056,6 +1084,8 @@ async function applyAllReusableDeletionFence(
       learnAutomatically: false,
       referenceChatHistory: false,
       settingsRevision,
+      // Retired Dream columns: written only as the fence values a
+      // previous-release worker still checks during Compose replacement.
       synthesisEnabled: false,
       synthesisEnabledAt: null,
       synthesisPolicyVersion: null,
@@ -1078,10 +1108,6 @@ async function applyAllReusableDeletionFence(
   settings.learnAutomatically = false;
   settings.referenceChatHistory = false;
   settings.settingsRevision = settingsRevision;
-  settings.synthesisEnabled = false;
-  settings.synthesisEnabledAt = null;
-  settings.synthesisPolicyVersion = null;
-  settings.lastSynthesisAt = null;
   settings.useMemoryFacts = false;
   await retractUnsupportedAutomaticMemoryEntities(tx, settings.userId);
   return affectedFacts;
@@ -1510,13 +1536,16 @@ export function createPrismaMemoryLifecycleRepository(
           targetId: fact.factId,
           targetType: memoryPurgeTargetType("MEMORY_FACT")
         });
+        const fence = { cascadedPeers: 0 };
         const events = await applyForgetFence(
           tx,
           settings,
           keyring,
           [fact],
           input.now,
-          deletion.id
+          deletion.id,
+          true,
+          fence
         );
         const eventId = events.get(fact.factId);
         if (!eventId) return memoryPersistenceFailure("memory_counter_contract_invalid");
@@ -1536,8 +1565,12 @@ export function createPrismaMemoryLifecycleRepository(
           factId: fact.factId,
           versionId: fact.currentVersionId
         });
+        rememberMemoryForgetPeerCascade(result, fence.cascadedPeers);
         return result;
-      }, { deadlineAtMs: input.authorization.admissionDeadlineAtMs });
+      }, {
+        deadlineAtMs: input.authorization.admissionDeadlineAtMs,
+        interactiveBounds: MEMORY_FORGET_TRANSACTION_BOUNDS
+      });
     },
 
     async status(userId: string, deletionId: string): Promise<MemoryDeletionStatus | null> {

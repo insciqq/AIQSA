@@ -7,7 +7,8 @@ import { TOOL_OBSERVATION_LIMITS, type ToolObservationBudgetUsage } from "./cont
 
 const actor = { runId: "run-2", userId: "user-1" };
 
-type Row = ToolObservation & Readonly<{ modelRun: { chatId: string; assistantMessageId: string | null }; toolCall: { state: string } }>;
+type Row = ToolObservation & Readonly<{ modelRun: { chatId: string; assistantMessageId: string | null; userMessageId?: string };
+  toolCall: { state: string } }>;
 
 function row(index: number, input: Partial<Row> = {}): Row {
   const own = index % 2 === 0;
@@ -87,6 +88,22 @@ describe("observation availability", () => {
     const f = fixture(rows, ancestors);
     await expect(f.repository.available(actor, ids)).resolves.toBe(false);
     expect(f.authorizeSource).not.toHaveBeenCalled();
+  });
+
+  it("accepts an earlier attempt of a user message on the branch, never another edit of it", async () => {
+    // The earlier attempt's answer is a sibling; its question is on the path.
+    const attempt = row(1, { modelRun: { chatId: "chat-1", assistantMessageId: "answer-sibling", userMessageId: "question-1" } });
+    const accepted = fixture([attempt], ["answer-2", "question-1"]);
+    await expect(accepted.repository.available(actor, [attempt.id])).resolves.toBe(true);
+    expect(accepted.authorizeSource).toHaveBeenCalledOnce();
+    // Another edit answers a different user message that is not on the path.
+    const edit = row(1, { modelRun: { chatId: "chat-1", assistantMessageId: "answer-edit", userMessageId: "question-edit" } });
+    const refused = fixture([edit], ["answer-2", "question-1"]);
+    await expect(refused.repository.available(actor, [edit.id])).resolves.toBe(false);
+    expect(refused.authorizeSource).not.toHaveBeenCalled();
+    // A run without a surviving answer still qualifies by its question.
+    const orphan = row(1, { modelRun: { chatId: "chat-1", assistantMessageId: null, userMessageId: "question-1" } });
+    await expect(fixture([orphan], ["answer-2", "question-1"]).repository.available(actor, [orphan.id])).resolves.toBe(true);
   });
 
   it("refuses a run that lost its authority", async () => {

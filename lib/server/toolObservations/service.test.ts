@@ -39,8 +39,8 @@ function fixture(storage: StorageAdapter = createMemoryStorageAdapter()) {
   let row: ToolObservation | null = null;
   let allowed = true;
   let sourceOriginal: unknown = null;
-  const source = () => ({ ...row!, modelRun: { chatId: "synthetic-chat", assistantMessageId: "synthetic-answer" },
-    toolCall: { state: "complete" as const } });
+  const source = () => ({ ...row!, modelRun: { chatId: "synthetic-chat", assistantMessageId: "synthetic-answer",
+    userMessageId: "synthetic-question" }, toolCall: { state: "complete" as const } });
   const repository = {
     reserve: vi.fn<ToolObservationRepository["reserve"]>(async (_context, sourceKind, reservedBytes) => {
       if (row) return { claimed: row.sourceKind === "skill" && row.state === "RESERVED", observation: row };

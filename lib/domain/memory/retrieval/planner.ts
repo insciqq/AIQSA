@@ -346,9 +346,6 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     typeof input.aggregationRequested !== "boolean") {
     throw new Error("memory_retrieval_plan_invalid");
   }
-  if (input.includePatterns !== undefined && typeof input.includePatterns !== "boolean") {
-    throw new Error("memory_retrieval_plan_invalid");
-  }
   if (input.profileRequested !== undefined && typeof input.profileRequested !== "boolean") {
     throw new Error("memory_retrieval_plan_invalid");
   }
@@ -385,7 +382,6 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
   const filters = filtersFor(input, applyResponsePreferences);
   const mode = inferredMode(input, filters, profileRequested);
   const temporalIntent = inferredTemporalIntent(input, filters, mode);
-  const includePatterns = input.includePatterns === true;
   const aggregationRequested = input.aggregationRequested === true;
   if (
     !MEMORY_RETRIEVAL_MODES.includes(mode) ||
@@ -396,7 +392,7 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
       filters,
       profileRequested,
       input.recencyRequested === true
-    ) || includePatterns && mode !== "TARGETED_CURRENT" ||
+    ) ||
     aggregationRequested && mode !== "PAST_CHAT_SEARCH" &&
       mode !== "HISTORY_OVERVIEW"
   ) throw new Error("memory_retrieval_plan_invalid");
@@ -412,7 +408,6 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
     applyResponsePreferences,
     entityMentions,
     filters,
-    includePatterns,
     lexicalQuery: lexicalQuery(semanticQueryVariants.map(({ text }) => text)),
     mode,
     normalizedExactQuery: normalizeMemoryLexicalProjection(normalizedQuery),

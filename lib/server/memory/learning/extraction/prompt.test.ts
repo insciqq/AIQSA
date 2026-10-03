@@ -13,16 +13,23 @@ import {
   memoryFactExtractionTool
 } from "./prompt";
 import { MEMORY_PREFERENCE_DIMENSION_PREFIXES } from "../identity/registry";
+import { MEMORY_LONG_TERM_USEFULNESS_GUIDANCE } from "../../../../domain/memory/usefulness";
+import {
+  MEMORY_ASSERTED_PLAN_GUIDANCE,
+  MEMORY_FACT_EXTRACTION_PLAN_GUIDANCE,
+  MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE
+} from "./contract";
+import { MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT } from "./adjudication";
 import { memorySha256 } from "../../persistence/lexical";
 
 describe("Memory semantic-frame extraction prompt", () => {
-  it("locks the v6 usefulness-aware forced-strict wire shape under the current prompt policy", () => {
+  it("locks the v7 long-term forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v49");
+      .toBe("memory-fact-extraction-prompt-v52");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
-      .toBe("memory-fact-extraction-schema-v6");
+      .toBe("memory-fact-extraction-schema-v7");
     expect(memoryFactExtractionTool).toMatchObject({
-      name: "submit_memory_fact_observations_v6",
+      name: "submit_memory_fact_observations_v7",
       strict: true
     });
     const observation = (memoryFactExtractionTool.inputSchema as {
@@ -30,10 +37,84 @@ describe("Memory semantic-frame extraction prompt", () => {
     }).properties.observations.items.properties;
     expect(Object.keys(observation).sort()).toEqual([
       "candidate_ref", "confidence_band", "dependency_refs", "entities",
-      "evidence", "future_useful", "identity", "memory_type", "reason_code",
+      "evidence", "identity", "memory_type", "reason_code",
       "semantic_frame", "sensitivity", "statement", "temporal", "temporary", "usefulness",
       "value"
     ]);
+    const items = (memoryFactExtractionTool.inputSchema as {
+      properties: { observations: { items: { required: string[] } } };
+    }).properties.observations.items;
+    expect(items.required).toContain("usefulness");
+    expect(items.required).not.toContain("future_useful");
+    expect(observation.usefulness).toEqual({
+      enum: ["DURABLE", "ONGOING", "EPISODIC", "SHORT_TERM", "COMMON", "TRANSIENT"],
+      type: "string"
+    });
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT)
+      .toContain("Return exactly one submit_memory_fact_observations_v7 tool call");
+  });
+
+  it("scopes the user's own unmentioned relationship status as CURRENT_USER in both prompts", () => {
+    // USER_RELATIONSHIP_CONTEXT needs a grounded non-self SUBJECT; without a
+    // mention the status or role is the user's own state.
+    expect(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE).toContain(
+      "A relationship to a person or animal that the evidence mentions by name or description"
+    );
+    expect(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE).toContain(
+      "The user's own relationship status or family role stated without such a mention is " +
+      "the user's own state and has CURRENT_USER scope."
+    );
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE);
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE);
+  });
+
+  it("limits the product_status subject to an identifiable or help-relevant item", () => {
+    // A generic purchase is a completed action, not durable ownership.
+    for (const rule of [
+      "A named PRODUCT, DEVICE, or SERVICE is an item the source identifies as a specific " +
+        "product by a brand, model, or service name, or an item of a kind for which later help " +
+        "depends on which one the user has",
+      "An ordinary item identified only by a generic category is not one and gets no " +
+        "product_status SLOT: acquiring it is a single completed action classified EPISODIC, " +
+        "and lasting ownership of an ordinary item almost everyone has is COMMON."
+    ]) expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(rule);
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT.split("A named PRODUCT, DEVICE, or SERVICE is ")
+      .length).toBe(2);
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .not.toContain("A named PRODUCT, DEVICE, or SERVICE is ");
+  });
+
+  it("states the long-term criterion once and keeps the adjudication plan wording", () => {
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE);
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(MEMORY_FACT_EXTRACTION_PLAN_GUIDANCE);
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).not.toContain(MEMORY_ASSERTED_PLAN_GUIDANCE);
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT).toContain(MEMORY_ASSERTED_PLAN_GUIDANCE);
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).not.toContain("future_useful");
+    for (const retired of [
+      "Retain directly asserted personal plans, goals, scheduled activities",
+      "independently meaningful past or scheduled event",
+      "independently stated dated vacation",
+      "but remains future-useful",
+      "plan, or errand"
+    ]) expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).not.toContain(retired);
+    for (const rule of [
+      "Rejection classes, never stored",
+      "SHORT_TERM for an active but brief matter",
+      "COMMON for a lasting habit or trait shared by almost everyone",
+      "is applied only to an existing stored fact",
+      "considering, planned, and ordered are passing steps",
+      "returned, sold, cancelled, and no_longer_owned only update an existing product fact",
+      "a short task or deliverable is SHORT_TERM and gets no lifecycle SLOT",
+      "only the profession qualifies",
+      "classify the resulting state, not the moment of change",
+      "never omit it as a single event",
+      "memory_directive EXPLICIT_REMEMBER, and its honest usefulness class, even a rejection class",
+      "that the earlier restriction or state no longer holds",
+      "copy its ref into dependency_refs",
+      "running every morning or learning a language, does qualify",
+      "Every product_status SLOT, whether its state is lasting, passing, or terminal, uses the same shape"
+    ]) expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(rule);
   });
 
   it("makes semantic authority and exact occurrences explicit", () => {
@@ -55,7 +136,7 @@ describe("Memory semantic-frame extraction prompt", () => {
       "question, condition, hypothesis, quotation",
       "must produce one HIGH-confidence observation",
       "synthetic-looking, hyphenated, non-Latin",
-      "memory_type STATE, confidence_band HIGH, future_useful true",
+      "memory_type STATE, confidence_band HIGH, usefulness DURABLE",
       "Put X in value.value, use value.kind name and value.state known",
       "Apply this semantic rule language-neutrally",
       "predicate_key product_status",
@@ -80,7 +161,7 @@ describe("Memory semantic-frame extraction prompt", () => {
       "unscoped rhetorical, comparative, or evaluative self-description",
       "no concrete object, domain, dimension, behavior, or preferred value",
       "taste or selectiveness are not themselves a preference value",
-      "limited to a local choice or episode",
+      "limited to a local choice, one episode, or the present moment",
       "MEDIUM PROPOSITION",
       "pure present withdrawal",
       "Do not invent an opposite assertion or a new value",
@@ -112,13 +193,13 @@ describe("Memory semantic-frame extraction prompt", () => {
       "active license or subscription with no matching state",
       "imperative addressed to the assistant may still assert a durable response preference",
       "current assistant task or artifact",
-      "A recurring activity or commitment spanning multiple sessions is ONGOING",
-      "even with a stated end date or limited duration",
-      "EPISODIC describes a single bounded occurrence or a completed experience",
-      "Classify the complete assertion",
-      "Preserve the recurrence and time bounds without inferring completion or expiration",
+      "ONGOING for a current circumstance, routine, commitment, or long-term goal",
+      "even with a stated end date",
+      "EPISODIC for a single event or completed experience",
+      "judging the complete assertion",
+      "Preserve recurrence and time bounds without inferring completion or expiration",
       "A need to change an arrangement that only explains why the user wants the assistant to prepare documents",
-      "independently stated dated vacation",
+      "A dated vacation or other single scheduled activity is SHORT_TERM or EPISODIC",
       "cannot form an employment_status SLOT",
       "structured temporal normalization",
       "target_message.created_at in time_zone",

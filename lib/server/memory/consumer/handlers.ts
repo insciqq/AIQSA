@@ -8,6 +8,8 @@ import {
   decodeMemoryConsumerStatementMutation
 } from "../../../contracts/memoryConsumer";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
+import { logEvent } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
@@ -78,6 +80,25 @@ function serviceError(error: unknown): Response {
   return error instanceof MemoryConsumerServiceError
     ? json({ error: error.code }, status(error.code))
     : json({ error: "memory_action_failed" }, 500);
+}
+
+/** The consumer service already records each Forget it mapped; only an
+ * exception that escaped it is diagnosed here, with a fixed category. */
+function unexpectedForgetFailure(error: unknown): void {
+  if (error instanceof MemoryConsumerServiceError) return;
+  try {
+    const prismaCode = databaseFailureCode(error);
+    logEvent("service_operation", {
+      action: "fail",
+      code: prismaCode === "unknown" ? "memory_forget_failed" : "memory_forget_database_failed",
+      outcome: "failed",
+      prisma_code: prismaCode,
+      stage: "delete",
+      subsystem: "memory"
+    });
+  } catch {
+    // Diagnostics cannot replace the safe response.
+  }
 }
 
 function routeRef(value: string | undefined): string | null {
@@ -249,6 +270,7 @@ export function createForgetMemoryConsumerItemHandler(
     try {
       return json(await deps.service.forget(session.userId, memoryRef, decoded.value));
     } catch (error) {
+      unexpectedForgetFailure(error);
       return serviceError(error);
     }
   };

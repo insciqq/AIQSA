@@ -7,10 +7,12 @@ import type {
 import { memoryTargetAuthorizationPayloadHash } from "../persistence/authorizations";
 import {
   createMemoryLifecycleService,
+  MemoryForgetCommittedResponseError,
   MemoryLifecycleServiceError,
   type MemoryLifecycleAuthorizationRepository,
   type MemoryLifecycleMutationRepository
 } from "./service";
+import { memoryForgetPeerCascadeCount, rememberMemoryForgetPeerCascade } from "./sourcePreservation";
 
 const NOW = new Date("2026-08-10T12:00:00.000Z");
 
@@ -108,15 +110,49 @@ function mutations(): MemoryLifecycleMutationRepository {
 describe("Memory lifecycle service", () => {
   it("retains a precise persistence failure for server diagnostics after public mapping", async () => {
     const mutationRepository = mutations();
-    vi.mocked(mutationRepository.forget).mockRejectedValueOnce(new MemoryPersistenceError("memory_partial_forget_ambiguous"));
+    vi.mocked(mutationRepository.forget).mockRejectedValueOnce(new MemoryPersistenceError("memory_forget_source_limit"));
     const service = createMemoryLifecycleService({ authorizationRepository: authorizations(), mutationRepository,
       readRepository: { get: vi.fn(async () => forgottenSummary) } });
     const error = await service.forget("user-1", "fact-1", {
       expectedVersionId: "version-1", mutationAuthorizationId: "authorization-1"
     }).catch((error: unknown) => error);
     expect(error).toEqual(new MemoryLifecycleServiceError("memory_action_failed"));
-    expect(memoryPersistenceFailureCode(error)).toBe("memory_partial_forget_ambiguous");
-    expect(JSON.stringify(error)).not.toContain("memory_partial_forget_ambiguous");
+    expect(memoryPersistenceFailureCode(error)).toBe("memory_forget_source_limit");
+    expect(JSON.stringify(error)).not.toContain("memory_forget_source_limit");
+  });
+
+  it("marks a committed Forget whose response cannot be projected without changing its public failure", async () => {
+    const mutationRepository = mutations();
+    const committed = await mutationRepository.forget("user-1", {} as never);
+    vi.mocked(mutationRepository.forget).mockResolvedValueOnce({
+      ...committed,
+      tombstone: { ...committed.tombstone, factState: "PRIVATE_STATE" as never }
+    });
+    const kick = vi.fn();
+    const service = createMemoryLifecycleService({ authorizationRepository: authorizations(), kick, mutationRepository,
+      readRepository: { get: vi.fn(async () => forgottenSummary) } });
+    const error = await service.forget("user-1", "fact-1", {
+      expectedVersionId: "version-1", mutationAuthorizationId: "authorization-1"
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(MemoryForgetCommittedResponseError);
+    expect(error).toBeInstanceOf(MemoryLifecycleServiceError);
+    expect(error).toMatchObject({ code: "memory_action_failed", name: "MemoryLifecycleServiceError" });
+    expect(kick).toHaveBeenCalledOnce();
+    expect(mutationRepository.forget).toHaveBeenCalledTimes(2);
+  });
+
+  it("carries a legitimate peer cascade count to the projected response only", async () => {
+    const mutationRepository = mutations();
+    const committed = await mutationRepository.forget("user-1", {} as never);
+    rememberMemoryForgetPeerCascade(committed, 3);
+    vi.mocked(mutationRepository.forget).mockResolvedValueOnce(committed);
+    const service = createMemoryLifecycleService({ authorizationRepository: authorizations(), mutationRepository,
+      readRepository: { get: vi.fn(async () => forgottenSummary) } });
+    const response = await service.forget("user-1", "fact-1", {
+      expectedVersionId: "version-1", mutationAuthorizationId: "authorization-1"
+    });
+    expect(memoryForgetPeerCascadeCount(response)).toBe(3);
+    expect(JSON.stringify(response)).not.toContain("cascade");
   });
 
   it("forgets only through the exact target authorization and wakes durable purge", async () => {

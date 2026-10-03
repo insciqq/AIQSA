@@ -11,7 +11,6 @@ const controls = [
   ["useMemoryFacts", "Use memories in answers"],
   ["referenceChatHistory", "Search past chats"],
   ["learnAutomatically", "Learn automatically"],
-  ["synthesisEnabled", "Notice repeated details"],
   ["decayEnabled", "Learn from what you use"]
 ] as const;
 
@@ -73,8 +72,8 @@ test("new accounts start with all Memory controls on and later choices survive l
       await expect(control).not.toBeChecked();
     }
     const disabled = Object.fromEntries(controls.map(([key]) => [key, false]));
-    await expect.poll(async () => (await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: user.id } })).settingsRevision).toBe(5);
-    expect(preferenceWrites).toBe(5);
+    await expect.poll(async () => (await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: user.id } })).settingsRevision).toBe(4);
+    expect(preferenceWrites).toBe(4);
     await page.reload();
     expect((await (await page.request.get("/api/me/memory/settings")).json()).settings).toMatchObject(disabled);
     await page.goto("about:blank");
@@ -83,7 +82,7 @@ test("new accounts start with all Memory controls on and later choices survive l
     await login(page, user);
     const reloaded = await openMemory(page);
     for (const [, label] of controls) await expect(reloaded.getByRole("switch", { name: new RegExp(`^${label}:`) })).not.toBeChecked();
-    expect(preferenceWrites).toBe(5);
+    expect(preferenceWrites).toBe(4);
     expect(await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: user.id } })).toMatchObject(disabled);
   } finally {
     await prisma.user.deleteMany({ where: { id: { in: users.map(({ id }) => id) } } });

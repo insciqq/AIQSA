@@ -24,7 +24,7 @@ import type { AdminConfirmationController } from "@/components/admin/useAdminCon
 import type { AdminFeedbackController } from "@/components/admin/useAdminFeedback";
 import { UiV2Button } from "@/components/ui-v2";
 import { ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS, adminMemoryProcessingIssueKey, type AdminMemoryStatus } from "@/lib/contracts/adminMemory";
-import { adminMemoryProcessingCopy } from "@/lib/domain/adminMemoryProcessing";
+import { adminMemoryProcessingCopy, isAdminMemoryRecentActivityIssue } from "@/lib/domain/adminMemoryProcessing";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 const POLL_MS = 30_000;
@@ -33,12 +33,14 @@ function memoryState(status: AdminMemoryStatus): Readonly<{ label: string; statu
   if (!status.processing.enabled) return { label: "Paused", status: "not_assigned" };
   if (status.worker.state === "NOT_RUNNING") return { label: "Worker not running", status: "unavailable" };
   if (status.worker.state === "STALLED") return { label: "Queue stalled", status: "unavailable" };
-  if (status.processing.issues.some((issue) => issue.severity === "bad")) return { label: "Processing blocked", status: "unavailable" };
-  if (status.processing.issues.length > 0 && status.processing.issues.every((issue) => issue.reason === "OUTPUT_LIMIT" || issue.reason === "HISTORY_INCOMPLETE")) {
-    return { label: status.processing.issues.every((issue) => issue.autoHeal === "RETRYING")
+  // Recent command/search outcomes are listed below but are not processing state.
+  const issues = status.processing.issues.filter((issue) => !isAdminMemoryRecentActivityIssue(issue));
+  if (issues.some((issue) => issue.severity === "bad")) return { label: "Processing blocked", status: "unavailable" };
+  if (issues.length > 0 && issues.every((issue) => issue.reason === "OUTPUT_LIMIT" || issue.reason === "HISTORY_INCOMPLETE")) {
+    return { label: issues.every((issue) => issue.autoHeal === "RETRYING")
       ? "Recovering history" : "Limited history context", status: "reindexing" };
   }
-  if (status.processing.issues.length > 0) return { label: "Processing delayed", status: "reindexing" };
+  if (issues.length > 0) return { label: "Processing delayed", status: "reindexing" };
   switch (status.index.readiness) {
     case "READY":
       return { label: "Working", status: "working" };

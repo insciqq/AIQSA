@@ -17,6 +17,7 @@ describe("Memory settings store", () => {
   beforeEach(() => resetMemorySettingsStoreForTest());
 
   afterEach(() => {
+    vi.useRealTimers();
     resetMemorySettingsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -32,12 +33,10 @@ describe("Memory settings store", () => {
         "useMemoryFacts",
         "referenceChatHistory",
         "learnAutomatically",
-        "synthesisEnabled",
         "decayEnabled"
       ].find(
         (candidate) => typeof body[candidate] === "boolean"
-      ) as "decayEnabled" | "learnAutomatically" | "referenceChatHistory" | "synthesisEnabled" |
-        "useMemoryFacts";
+      ) as "decayEnabled" | "learnAutomatically" | "referenceChatHistory" | "useMemoryFacts";
       server = memoryConsumerSettingsFixture({
         settings: { ...server.settings, [key]: body[key] as boolean },
         status: key === "useMemoryFacts" && body[key] === true ? "ON" : server.status
@@ -49,21 +48,19 @@ describe("Memory settings store", () => {
     await updateMemoryGate("useMemoryFacts", true);
     await updateMemoryGate("referenceChatHistory", true);
     await updateMemoryGate("learnAutomatically", true);
-    await updateMemoryGate("synthesisEnabled", true);
     await updateMemoryGate("decayEnabled", true);
 
     expect(useMemorySettingsStore.getState().data?.settings).toEqual({
       decayEnabled: true,
       learnAutomatically: true,
       referenceChatHistory: true,
-      synthesisEnabled: true,
+      synthesisEnabled: false,
       useMemoryFacts: true
     });
     expect(bodies).toEqual([
       { useMemoryFacts: true },
       { referenceChatHistory: true },
       { learnAutomatically: true },
-      { synthesisEnabled: true },
       { decayEnabled: true }
     ]);
     expect(JSON.stringify(bodies)).not.toMatch(/revision|generation|fingerprint|deployment/iu);
@@ -84,6 +81,79 @@ describe("Memory settings store", () => {
 
     expect(useMemorySettingsStore.getState().data).toEqual(current);
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads settings with or without the retired Dream fields and never sends them", async () => {
+    const retained = memoryConsumerSettingsFixture({ status: "ON" });
+    const { synthesisAvailable: _available, ...capabilities } = retained.capabilities;
+    const { synthesisEnabled: _enabled, ...settings } = retained.settings;
+    const current = { ...retained, capabilities, settings };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json(retained))
+      .mockResolvedValueOnce(json(current))
+      .mockResolvedValueOnce(json(current));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(refreshMemorySettings(true)).resolves.toEqual(retained);
+    await expect(refreshMemorySettings(true)).resolves.toEqual(current);
+    expect(useMemorySettingsStore.getState()).toMatchObject({ data: current, error: null, loadState: "ready" });
+    await expect(updateMemoryGate("decayEnabled", true)).resolves.toEqual(current);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({ decayEnabled: true });
+  });
+
+  it("keeps the committed value and stays usable after a failed change, reconciling silently", async () => {
+    const initial = memoryConsumerSettingsFixture();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ error: "memory_action_failed" }, 500))
+      .mockResolvedValueOnce(json(initial));
+    vi.stubGlobal("fetch", fetchMock);
+    useMemorySettingsStore.setState({ data: initial, error: null, loadState: "ready" });
+
+    await expect(updateMemoryGate("useMemoryFacts", true)).rejects.toThrow("memory_action_failed");
+
+    expect(useMemorySettingsStore.getState()).toMatchObject({
+      busy: null, data: initial, error: null, loadState: "ready"
+    });
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: "GET" });
+    fetchMock.mockResolvedValueOnce(json(initial));
+    await expect(updateMemoryGate("useMemoryFacts", true)).resolves.toEqual(initial);
+  });
+
+  it("keeps last known settings when a reload keeps failing, after three bounded retries", async () => {
+    vi.useFakeTimers();
+    const known = memoryConsumerSettingsFixture();
+    const fetchMock = vi.fn().mockResolvedValue(json({ error: "memory_action_failed" }, 503));
+    vi.stubGlobal("fetch", fetchMock);
+    useMemorySettingsStore.setState({ data: known, error: null, loadState: "ready" });
+
+    const reload = refreshMemorySettings(true);
+    const settled = expect(reload).rejects.toMatchObject({ status: 503 });
+    await vi.advanceTimersByTimeAsync(7_000);
+    await settled;
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(useMemorySettingsStore.getState()).toMatchObject({ data: known, error: null, loadState: "ready" });
+  });
+
+  it("records a neutral load failure only when no settings are known", async () => {
+    vi.useFakeTimers();
+    const settings = memoryConsumerSettingsFixture();
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValueOnce(json(settings));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const load = refreshMemorySettings();
+    expect(useMemorySettingsStore.getState().loadState).toBe("loading");
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(load).resolves.toEqual(settings);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    resetMemorySettingsStoreForTest();
+    fetchMock.mockReset().mockResolvedValue(json({ error: "unauthorized" }, 401));
+    await expect(refreshMemorySettings()).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(useMemorySettingsStore.getState()).toMatchObject({ data: null, loadState: "error" });
   });
 
   it("deduplicates concurrent settings loads", async () => {

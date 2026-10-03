@@ -37,14 +37,25 @@ export const ADMIN_MEMORY_SEARCH_TIMEOUT_LIMITS = Object.freeze({
 
 const safeInteger = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const safeLabel = z.string().trim().min(1).max(200);
-const processingStage = z.enum(["LEARNING", "HISTORY", "INDEXING", "SYNTHESIS", "MAINTENANCE", "DELETION"]);
+const processingStage = z.enum(["LEARNING", "HISTORY", "INDEXING", "MAINTENANCE", "DELETION"]);
+/** Recent-activity stages aggregate the last 24 hours of command, search and
+ * answer-preparation outcomes. They are administrator diagnostics, never
+ * worker stages. */
+export const ADMIN_MEMORY_RECENT_ACTIVITY_STAGES = ["COMMAND", "SEARCH", "PREPARATION"] as const;
+const issueStage = z.enum([...processingStage.options, ...ADMIN_MEMORY_RECENT_ACTIVITY_STAGES]);
+const issueReasons = [
+  "MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED", "OUTPUT_LIMIT",
+  "HISTORY_INCOMPLETE", "RETRYING", "STALLED", "COMMAND_FAILED", "COMMAND_UNKNOWN", "SEARCH_DEGRADED", "SEARCH_FAILED",
+  "PREPARATION_SKIPPED", "PREPARATION_FAILED"
+] as const;
+const autoHealStates = ["RETRYING", "EXHAUSTED", "UNAVAILABLE"] as const;
 export const adminMemoryProcessingIssueSchema = z.strictObject({
-  stage: processingStage,
-  reason: z.enum(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED", "OUTPUT_LIMIT", "HISTORY_INCOMPLETE", "RETRYING", "STALLED"]),
+  stage: issueStage,
+  reason: z.enum(issueReasons),
   severity: z.enum(["bad", "warn"]),
   count: safeInteger,
   oldestAgeSeconds: safeInteger.nullable(),
-  autoHeal: z.enum(["RETRYING", "EXHAUSTED", "UNAVAILABLE"]).optional()
+  autoHeal: z.enum(autoHealStates).optional()
 });
 
 export type AdminMemoryProcessingIssue = z.infer<typeof adminMemoryProcessingIssueSchema>;
@@ -61,7 +72,8 @@ export const adminMemoryStatusSchema = z.strictObject({
   }),
   processing: z.strictObject({
     enabled: z.boolean(),
-    issues: z.array(adminMemoryProcessingIssueSchema).max(6 * 8 * 4)
+    issues: z.array(adminMemoryProcessingIssueSchema)
+      .max(issueStage.options.length * issueReasons.length * (autoHealStates.length + 1))
   }),
   configuredTargets: z.array(z.strictObject({
     model: safeLabel,

@@ -1,6 +1,7 @@
 import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { describe, expect, it } from "vitest";
 import {
+  ADMIN_MEMORY_RECENT_ACTIVITY_STAGES,
   decodeAdminMemorySearchTimeoutInput,
   decodeAdminMemoryActionInput,
   decodeAdminMemoryRebuildInput,
@@ -54,6 +55,54 @@ describe("administrator Memory status contract", () => {
     expect(decodeAdminMemoryStatusResponse({
       memory: { ...response().memory, destinationMatrix: [] }
     })).toBeNull();
+  });
+
+  it("accepts recent command/search/preparation issues only as stages, never as worker stages", () => {
+    const memory = response().memory;
+    const issues = [
+      { stage: "COMMAND", reason: "COMMAND_FAILED", severity: "warn", count: 1, oldestAgeSeconds: 60 },
+      { stage: "SEARCH", reason: "SEARCH_DEGRADED", severity: "warn", count: 2, oldestAgeSeconds: 600 },
+      { stage: "PREPARATION", reason: "PREPARATION_SKIPPED", severity: "warn", count: 3, oldestAgeSeconds: 900 },
+      { stage: "PREPARATION", reason: "PREPARATION_FAILED", severity: "warn", count: 1, oldestAgeSeconds: 30 }
+    ];
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true, issues } } }))
+      .toEqual({ memory: { ...memory, processing: { enabled: true, issues } } });
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true,
+      issues: [{ ...issues[0], errorCode: "memory_command_failed" }] } } })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      worker: memoryWorkerStatusFixture({ activeStages: ["COMMAND"] as never }) } })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      worker: memoryWorkerStatusFixture({ activeStages: ["PREPARATION"] as never }) } })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true,
+      issues: [{ ...issues[2], degradationCode: "memory_preparation_skipped" }] } } })).toBeNull();
+  });
+
+  it("bounds the issue list by every distinct stage, reason and healing combination", () => {
+    const memory = response().memory;
+    const stages = ["LEARNING", "HISTORY", "INDEXING", "MAINTENANCE", "DELETION", ...ADMIN_MEMORY_RECENT_ACTIVITY_STAGES];
+    const reasons = ["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED",
+      "OUTPUT_LIMIT", "HISTORY_INCOMPLETE", "RETRYING", "STALLED", "COMMAND_FAILED", "COMMAND_UNKNOWN",
+      "SEARCH_DEGRADED", "SEARCH_FAILED", "PREPARATION_SKIPPED", "PREPARATION_FAILED"];
+    const issues = stages.flatMap((stage) => reasons.flatMap((reason) =>
+      [undefined, "RETRYING", "EXHAUSTED", "UNAVAILABLE"].map((autoHeal) => ({
+        stage, reason, severity: "warn", count: 1, oldestAgeSeconds: 1, ...(autoHeal ? { autoHeal } : {})
+      }))));
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true, issues } } }))
+      .not.toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true,
+      issues: [...issues, { ...issues[0], stage: "OTHER" }] } } })).toBeNull();
+  });
+
+  it("reports maintenance under its own stage and has no retired synthesis stage", () => {
+    const memory = response().memory;
+    const maintenance = { stage: "MAINTENANCE", reason: "PROCESSING_FAILED", severity: "bad",
+      count: 1, oldestAgeSeconds: 60 };
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      processing: { enabled: true, issues: [maintenance] } } })).not.toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      processing: { enabled: true, issues: [{ ...maintenance, stage: "SYNTHESIS" }] } } })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory,
+      worker: memoryWorkerStatusFixture({ activeStages: ["SYNTHESIS"] as never }) } })).toBeNull();
   });
 
   it("keeps queue age and rebuild readiness internally consistent", () => {

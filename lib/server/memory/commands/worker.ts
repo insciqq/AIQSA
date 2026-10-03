@@ -151,8 +151,11 @@ export function createPrismaMemoryCommandHandler(
       }
       const { intent, bindingId } = checkpoint;
       if (intent.action !== "SAVE" && intent.action !== "UPDATE" && intent.action !== "FORGET") {
+        // `patternExclusionRequested` stays in the accepted intent schema one
+        // release so stored checkpoints decode; synthesized patterns are
+        // retired, so it no longer marks a Memory request.
         return terminal(job, "REJECTED", intent.action === "NONE" && !intent.thisChatOnly &&
-          !intent.patternExclusionRequested && ["none", "no_memory_request", "past_chats_request", "response_preference"].includes(intent.reasonCode));
+          ["none", "no_memory_request", "past_chats_request", "response_preference"].includes(intent.reasonCode));
       }
       let targetCheckpoint = decodeMemoryCommandTargetCheckpoint(existing.commandResult);
       if (intent.action !== "SAVE") {

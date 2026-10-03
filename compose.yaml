@@ -471,7 +471,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-    cpus: ${AIQSA_POSTGRES_CPU_LIMIT:-1.0}
+    cpus: ${AIQSA_POSTGRES_CPU_LIMIT:-2.0}
     logging: *default-logging
     mem_limit: ${AIQSA_POSTGRES_MEMORY_LIMIT:-1g}
     restart: unless-stopped

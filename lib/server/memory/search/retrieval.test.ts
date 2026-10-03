@@ -6,6 +6,7 @@ import { createMemorySearchRetrieval } from "./retrieval";
 import type { MemorySearchSnapshot } from "./contract";
 import type { MemoryLocalRetrievalInput, MemoryLocalRetrievalResult, MemoryLocalRetrievalSnapshot } from "../retrieval/localRepository";
 import type { MemoryRunRerankResult } from "../retrieval/runUtilities";
+import { MEMORY_READ_BUDGET_ERROR_CODES, MemoryReadBudgetError } from "../retrieval/readBudget";
 
 function fixture(history = true) {
   const now = new Date("2026-09-01T00:00:00Z");
@@ -17,7 +18,7 @@ function fixture(history = true) {
     lifecycleState: "ACTIVE", matchedEntityRole: null, modality: "STATE", observedAt: now, occurredAt: null,
     occurredFrom: null, occurredTo: null, pinned: false, predicateKey: null, relationDepth: 0, scopeAffinity: 0,
     scopeType: "GLOBAL_USER", sensitivityClass: "NORMAL", sourceAssistantId: null, sourceChatId: null,
-    sourceFolderId: null, sourceMode: "EXPLICIT", sourceAuthority: "EXPLICIT", subjectKey: null, synthesisDepth: 0,
+    sourceFolderId: null, sourceMode: "EXPLICIT", sourceAuthority: "EXPLICIT", subjectKey: null,
     systemFrom: now, temperatureClass: null, temperatureScore: 0, validFrom: null, validTo: null
   };
   const fact: MemoryLaneCandidate = { itemId: "overflow-version", itemType: "FACT_VERSION", entryId: "entry",
@@ -34,8 +35,10 @@ function fixture(history = true) {
     retrieve: vi.fn(async (input: MemoryLocalRetrievalInput) => ({ core: [],
       laneResults: [{ lane: input.plan.mode === "TARGETED_CURRENT" ? fact.lane : past.lane,
         candidates: [input.plan.mode === "TARGETED_CURRENT" ? fact : past] }], lexicalEvidence: [], lexicalFailures: [],
-      lexicalState: "READY" as const, vectorEvidence: [], vectorState: "NOT_CONFIGURED" as MemoryLocalRetrievalResult["vectorState"], snapshot })),
-    expand: vi.fn(async (_snapshot: MemoryLocalRetrievalSnapshot, _plan: unknown, ranked: readonly MemoryRankedCandidate[]) =>
+      lexicalState: "READY" as const, vectorEvidence: [], vectorFailureCodes: [] as MemoryLocalRetrievalResult["vectorFailureCodes"],
+      vectorState: "NOT_CONFIGURED" as MemoryLocalRetrievalResult["vectorState"], snapshot })),
+    expand: vi.fn(async (_snapshot: MemoryLocalRetrievalSnapshot, _plan: unknown, ranked: readonly MemoryRankedCandidate[],
+      _options?: Readonly<{ signal?: AbortSignal }>) =>
       ranked.map(candidate => ({ itemId: candidate.itemId, itemType: candidate.itemType,
         safeText: candidate.itemType === "FACT_VERSION" ? "The user prefers green tea." : "user: We agreed to meet on Tuesday.",
         projectionKind: candidate.itemType === "FACT_VERSION" ? "FACT_DISPLAY_TEXT" as const : "RECALL_CHUNK_SAFE_PROJECTED_TEXT" as const,
@@ -109,10 +112,62 @@ describe("native search retrieval composition", () => {
     const output = await f.retrieve(f.input);
     expect(output.limited).toBe(true);
     expect(output.diagnosticEvidence).toMatchObject({ version: 1,
-      reasons: [{ stage: "facts", code: "memory_read_statement_timeout" }, { stage: "history", code: "retrieval_read_failed" }],
+      reasons: [{ stage: "facts", code: "memory_read_transaction_expired" }, { stage: "history", code: "retrieval_read_failed" }],
       factsLexicalState: "UNAVAILABLE", historyLexicalState: "UNAVAILABLE", fusedCount: 0,
       expandedBeforeRerankCount: 0, rerankCandidateCount: 0, expandedFinalCount: 0, packedCount: 0 });
     expect(JSON.stringify(output.diagnosticEvidence)).not.toMatch(/private|query|endpoint|token-value/u);
     expect(JSON.stringify(output.diagnosticEvidence)).not.toContain(f.input.userId);
+  });
+  it.each(MEMORY_READ_BUDGET_ERROR_CODES)("keeps the read-budget cause %s distinct", async (code) => {
+    const f = fixture();
+    f.repository.retrieve.mockRejectedValue(new MemoryReadBudgetError(code));
+    const output = await f.retrieve(f.input);
+    expect(output.limited).toBe(true);
+    expect(output.diagnosticEvidence.reasons).toEqual([{ stage: "facts", code }, { stage: "history", code }]);
+  });
+  it("keeps P2028 pool acquisition distinct from an expired transaction", async () => {
+    const f = fixture();
+    f.repository.retrieve.mockImplementation(async input => {
+      throw Object.assign(new Error(input.plan.mode === "PAST_CHAT_SEARCH"
+        ? "Transaction API error: Unable to start a transaction in the given time."
+        : "Transaction API error: Transaction already closed."), { code: "P2028" });
+    });
+    const output = await f.retrieve(f.input);
+    expect(output.diagnosticEvidence.reasons).toEqual([
+      { stage: "facts", code: "memory_read_transaction_expired" },
+      { stage: "history", code: "memory_read_connection_timeout" }
+    ]);
+    expect(JSON.stringify(output.diagnosticEvidence)).not.toMatch(/Transaction API|given time/u);
+  });
+  it("adds the allowlisted source code of degraded vector work beside vector_degraded", async () => {
+    const f = fixture();
+    const original = f.repository.retrieve.getMockImplementation()!;
+    f.repository.retrieve.mockImplementation(async input => ({ ...await original(input), vectorState: "DEGRADED",
+      vectorFailureCodes: input.plan.mode === "PAST_CHAT_SEARCH"
+        ? ["memory_read_admission_timeout", "memory_vector_generation_stale"]
+        : ["private-vector-detail" as "memory_vector_unavailable"] }));
+    const output = await f.retrieve(f.input);
+    expect(output.limited).toBe(true);
+    expect(output.diagnosticEvidence.version).toBe(1);
+    expect(output.diagnosticEvidence.reasons).toEqual([
+      { stage: "facts", code: "vector_degraded" },
+      { stage: "facts", code: "vector_failure_unclassified" },
+      { stage: "history", code: "vector_degraded" },
+      { stage: "history", code: "memory_read_admission_timeout" },
+      { stage: "history", code: "memory_vector_generation_stale" }
+    ]);
+    expect(JSON.stringify(output.diagnosticEvidence)).not.toContain("private");
+  });
+  it("excludes tool events only from its own vector reads and passes the search signal", async () => {
+    const f = fixture();
+    await f.retrieve(f.input);
+    for (const [input] of f.repository.retrieve.mock.calls) {
+      expect(input).toMatchObject({ excludeToolEvents: true, settleSignal: f.input.signal });
+    }
+    expect(f.repository.snapshot).toHaveBeenCalledWith(expect.objectContaining({ settleSignal: f.input.signal }));
+    expect(f.repository.expand).toHaveBeenCalled();
+    for (const call of f.repository.expand.mock.calls) {
+      expect(call[3]).toEqual({ signal: f.input.signal });
+    }
   });
 });

@@ -20,7 +20,7 @@ import {
   loadPersonalMemoryRunIds
 } from "../persistence/eligibility";
 import { canonicalGlobalMemoryScopeWhere } from "../persistence/scopes";
-import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
+import { loadMemoryReusableFactVersionIds } from "../persistence/reusableFactAuthority";
 import { loadDeliveredMemorySearchEvidence } from "./searchEvidence";
 
 type MemoryRunSourceClient = Pick<
@@ -321,9 +321,7 @@ export async function loadMemoryRunSources(
   ]);
   const versionById = new Map(versions.map((version) => [version.id, version]));
   const [eligibleVersionIds, evidenceSnapshots] = await Promise.all([
-    loadMemoryReusableFactVersionIds(client, input.userId, factVersionIds, {
-      includePatterns: true
-    }),
+    loadMemoryReusableFactVersionIds(client, input.userId, factVersionIds),
     loadPersonalMemoryEvidenceSnapshots(client, input.userId, factVersionIds)
   ]);
   const evidenceByVersionId = new Map<string, typeof evidenceSnapshots>();

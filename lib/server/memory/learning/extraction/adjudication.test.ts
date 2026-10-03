@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import observedFailureCodes from "../../../observability/failureCodes.json";
 import { memorySha256 } from "../../persistence/lexical";
 import {
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
@@ -19,6 +20,10 @@ import {
   memorySemanticAdjudicationPacketIsValid,
   memorySemanticAdjudicationPromptPayload,
   memorySemanticAdjudicationTool,
+  MemorySemanticAdjudicationOutputError,
+  MEMORY_SEMANTIC_ADJUDICATION_NORMALIZED_REASON_CODES,
+  MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES,
+  MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_VIOLATIONS,
   MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
   MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION,
   MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT,
@@ -194,6 +199,26 @@ function relationshipPlan(): MemoryFactExtractionPlan {
     contextRefs: [context, { ...context, ref: "F2", entityId: "another-private-entity-id" }] } };
 }
 
+/** The exact content-free code a rejected adjudication output carries. */
+function outputViolation(decode: () => unknown): string | null {
+  try {
+    decode();
+    return null;
+  } catch (error) {
+    return error instanceof MemorySemanticAdjudicationOutputError
+      ? error.code
+      : "unexpected_error";
+  }
+}
+
+const normalizedAmbiguous = {
+  entityRef: null,
+  operation: "AMBIGUOUS",
+  reasonCode: "normalized_not_entailed_high",
+  subjectIdentity: "UNRESOLVED",
+  targetRef: null
+} as const;
+
 function subjectIdentityDecision() {
   return {
     assertion_status: "ASSERTED", candidate_ref: "C1", confidence_band: "HIGH",
@@ -218,11 +243,17 @@ describe("batched Memory semantic adjudication", () => {
     expect(() => decode(missingIdentity)).toThrow("memory_semantic_adjudication_output_invalid");
     for (const change of [
       { entity_ref: null }, { target_ref: "F2" }, { subject_scope: "CURRENT_USER" },
-      { confidence_band: "LOW" }, { operation: "RETRACT_TARGET" }
+      { operation: "RETRACT_TARGET" }
     ]) {
-      expect(() => decode({ ...subjectIdentityDecision(), ...change }))
-        .toThrow("memory_semantic_adjudication_output_invalid");
+      expect(outputViolation(() => decode({ ...subjectIdentityDecision(), ...change })))
+        .toBe("memory_semantic_adjudication_output_invalid_subject_identity");
     }
+    // A weak identity claim loses its authority instead of the whole packet.
+    const weak = decode({ ...subjectIdentityDecision(), confidence_band: "LOW" });
+    expect(weak.decisions[0]).toMatchObject({ ...normalizedAmbiguous, confidenceBand: "LOW" });
+    expect(memorySemanticAuthorityAdmitsCandidate(
+      input.plan.candidates[0]!, weak.decisions[0]!, input.plan.input.contextRefs
+    )).toBe(false);
   });
 
   it("supplies bounded entity annotations without database identity", () => {
@@ -263,13 +294,18 @@ describe("batched Memory semantic adjudication", () => {
       .toEqual(packet);
     expect(memorySemanticAuthorityAdmitsCandidate(observation, decision, input.plan.input.contextRefs))
       .toBe(true);
-    for (const change of [
-      { entity_ref: null }, { entity_ref: "F99" }, { target_ref: "F1" },
-      { subject_scope: "CURRENT_USER" }, { confidence_band: "LOW" },
-      { operation: "AMBIGUOUS" }
-    ]) {
-      expect(() => decode({ ...raw, ...change })).toThrow("memory_semantic_adjudication_output_invalid");
+    for (const [change, violation] of [
+      [{ entity_ref: null }, "subject_identity"], [{ entity_ref: "F99" }, "entity_ref"],
+      [{ target_ref: "F1" }, "operation_target"], [{ subject_scope: "CURRENT_USER" }, "subject_identity"],
+      [{ operation: "AMBIGUOUS" }, "subject_identity"]
+    ] as const) {
+      expect(outputViolation(() => decode({ ...raw, ...change })))
+        .toBe(`memory_semantic_adjudication_output_invalid_${violation}`);
     }
+    const weak = decode({ ...raw, confidence_band: "LOW" }).decisions[0]!;
+    expect(weak).toMatchObject({ ...normalizedAmbiguous, confidenceBand: "LOW" });
+    expect(memorySemanticAuthorityAdmitsCandidate(observation, weak, input.plan.input.contextRefs))
+      .toBe(false);
     for (const changed of [
       { ...observation, dependencies: [] },
       { ...observation, entities: original.entities },
@@ -320,12 +356,22 @@ describe("batched Memory semantic adjudication", () => {
     expect(memorySemanticAdjudicationPacketIsValid(input.plan, packet)).toBe(true);
     expect(decodeStoredMemorySemanticAdjudication(encodeStoredMemorySemanticAdjudication(packet)))
       .toEqual(packet);
-    for (const overrides of [
-      { entity_ref: "F1" }, { target_ref: null }, { target_ref: "unprovided" },
-      { subject_identity: "SAME_ENTITY" }, { subject_scope: "CURRENT_USER" },
-      { temporal_perspective: "FORMER" }, { assertion_status: "HYPOTHETICAL" },
-      { confidence_band: "MEDIUM" }, { entailment: "UNKNOWN" }
-    ]) expect(() => decode(overrides)).toThrow("memory_semantic_adjudication_output_invalid");
+    for (const [overrides, violation] of [
+      [{ entity_ref: "F1" }, "subject_identity"], [{ target_ref: null }, "operation_target"],
+      [{ target_ref: "unprovided" }, "target_ref"],
+      [{ subject_identity: "SAME_ENTITY" }, "subject_identity"],
+      [{ subject_scope: "CURRENT_USER" }, "subject_identity"],
+      [{ temporal_perspective: "FORMER" }, "subject_identity"],
+      [{ assertion_status: "HYPOTHETICAL" }, "subject_identity"]
+    ] as const) {
+      expect(outputViolation(() => decode(overrides)))
+        .toBe(`memory_semantic_adjudication_output_invalid_${violation}`);
+    }
+    for (const [confidenceBand, entailment] of [["MEDIUM", "ENTAILED"], ["HIGH", "UNKNOWN"]]) {
+      const weak = decode({ confidence_band: confidenceBand, entailment }).decisions[0]!;
+      expect(weak).toMatchObject({ ...normalizedAmbiguous, confidenceBand, entailment });
+      expect(memoryRelationshipReplacementIsAuthorized(weak)).toBe(false);
+    }
     for (const schemaVersion of [
       "memory-semantic-adjudication-schema-v1", "memory-semantic-adjudication-schema-v2"
     ]) {
@@ -350,7 +396,7 @@ describe("batched Memory semantic adjudication", () => {
 
   it("makes new-fact ref nullability explicit without weakening the decoder", () => {
     expect(MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION)
-      .toBe("memory-semantic-adjudication-prompt-v20");
+      .toBe("memory-semantic-adjudication-prompt-v21");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .toContain("A candidate_ref is never an entity_ref or target_ref");
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
@@ -839,40 +885,34 @@ describe("batched Memory semantic adjudication", () => {
     })).toThrow("memory_semantic_adjudication_result_invalid");
   });
 
-  it("rejects invented refs and non-HIGH pointer operations", () => {
+  it("rejects invented refs and strips authority from non-HIGH pointer operations", () => {
     const input = memorySemanticAdjudicationInput(plan())!;
-    for (const decision of [
-      {
-        assertion_status: "ASSERTED",
-        candidate_ref: "C1",
-        confidence_band: "HIGH",
-        entailment: "ENTAILED",
-        subject_identity: "UNRESOLVED", entity_ref: null,
-        operation: "SUPERSEDE_TARGET",
-        reason_code: "invented_target",
-        subject_scope: "CURRENT_USER",
-        target_ref: "F99",
-        temporal_perspective: "CURRENT"
-      },
-      {
-        assertion_status: "ASSERTED",
-        candidate_ref: "C1",
-        confidence_band: "LOW",
-        entailment: "ENTAILED",
-        subject_identity: "UNRESOLVED", entity_ref: null,
-        operation: "SUPERSEDE_TARGET",
-        reason_code: "weak_target",
-        subject_scope: "CURRENT_USER",
-        target_ref: "F1",
-        temporal_perspective: "CURRENT"
-      }
-    ]) {
-      expect(() => decodeMemorySemanticAdjudication([{
-        arguments: { decisions: [decision] },
-        id: "call-1",
-        name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
-      }], input)).toThrow("memory_semantic_adjudication_output_invalid");
-    }
+    const decode = (decision: Record<string, unknown>) => decodeMemorySemanticAdjudication([{
+      arguments: { decisions: [decision] },
+      id: "call-1",
+      name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+    }], input);
+    const pointer = {
+      assertion_status: "ASSERTED",
+      candidate_ref: "C1",
+      confidence_band: "HIGH",
+      entailment: "ENTAILED",
+      subject_identity: "UNRESOLVED", entity_ref: null,
+      operation: "SUPERSEDE_TARGET",
+      reason_code: "invented_target",
+      subject_scope: "CURRENT_USER",
+      target_ref: "F99",
+      temporal_perspective: "CURRENT"
+    };
+    expect(outputViolation(() => decode(pointer)))
+      .toBe("memory_semantic_adjudication_output_invalid_target_ref");
+    const weak = decode({
+      ...pointer, confidence_band: "LOW", reason_code: "weak_target", target_ref: "F1"
+    });
+    expect(weak.decisions[0]).toMatchObject({ ...normalizedAmbiguous, confidenceBand: "LOW" });
+    expect(memorySemanticAuthorityAdmitsCandidate(
+      input.plan.candidates[0]!, weak.decisions[0]!, input.plan.input.contextRefs
+    )).toBe(false);
   });
 
   it.each([
@@ -993,5 +1033,230 @@ describe("batched Memory semantic adjudication", () => {
       targetRef: null,
       temporalPerspective: "CURRENT"
     })).toBe(false);
+  });
+});
+
+describe("Memory semantic adjudication output reliability", () => {
+  const currentUserDecision = (overrides: Record<string, unknown> = {}) => ({
+    assertion_status: "ASSERTED", candidate_ref: "C1", confidence_band: "HIGH",
+    entailment: "ENTAILED", entity_ref: null, operation: "NO_RELATION",
+    reason_code: "direct_assertion", subject_identity: "UNRESOLVED",
+    subject_scope: "CURRENT_USER", target_ref: null, temporal_perspective: "CURRENT",
+    ...overrides
+  });
+  const call = (decisions: unknown, overrides: Record<string, unknown> = {}) => [{
+    arguments: { decisions }, id: "reliability-call",
+    name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME, ...overrides
+  }];
+  const pairPlan = () => {
+    const base = plan();
+    return { ...base, candidateOrdinals: [0, 1], candidates: [
+      candidate(), candidate({ candidateRef: "C2", id: "2".repeat(64) })
+    ] };
+  };
+
+  it("registers every content-free code within the job, binding and log limits", () => {
+    expect(MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_VIOLATIONS).toHaveLength(14);
+    expect(Object.isFrozen(MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_VIOLATIONS)).toBe(true);
+    expect([...MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES]).toEqual([
+      "memory_semantic_adjudication_output_invalid",
+      ...MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_VIOLATIONS.map((violation) =>
+        `memory_semantic_adjudication_output_invalid_${violation}`)
+    ]);
+    const registered = new Set<string>(observedFailureCodes);
+    for (const code of [...MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES,
+      "memory_fact_provider_transient"]) {
+      expect(registered.has(code)).toBe(true);
+      expect(code).toMatch(/^[a-z][a-z0-9_]{0,63}$/u);
+      expect(code).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,63}$/u);
+    }
+    expect(Math.max(...[...MEMORY_SEMANTIC_ADJUDICATION_OUTPUT_INVALID_CODES]
+      .map(({ length }) => length))).toBe(60);
+    expect([...MEMORY_SEMANTIC_ADJUDICATION_NORMALIZED_REASON_CODES])
+      .toEqual(["normalized_not_entailed_high", "normalized_reason_code"]);
+    const error = new MemorySemanticAdjudicationOutputError("enum");
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({
+      code: "memory_semantic_adjudication_output_invalid_enum",
+      message: "memory_semantic_adjudication_output_invalid_enum",
+      violation: "enum"
+    });
+  });
+
+  it("names the first violated packet invariant", () => {
+    const input = memorySemanticAdjudicationInput(plan())!;
+    const pair = memorySemanticAdjudicationInput(pairPlan())!;
+    const valid = currentUserDecision();
+    for (const [decode, violation] of [
+      [() => decodeMemorySemanticAdjudication(undefined, input), "call_count"],
+      [() => decodeMemorySemanticAdjudication([], input), "call_count"],
+      [() => decodeMemorySemanticAdjudication([...call([valid]), ...call([valid])], input), "call_count"],
+      [() => decodeMemorySemanticAdjudication(call([valid], { name: "other_tool" }), input), "tool_name"],
+      [() => decodeMemorySemanticAdjudication(call([valid], { arguments: [] }), input), "arguments"],
+      [() => decodeMemorySemanticAdjudication(call([valid], {
+        arguments: { decisions: [valid], extra: true }
+      }), input), "arguments"],
+      [() => decodeMemorySemanticAdjudication(call({ C1: valid }), input), "arguments"],
+      [() => decodeMemorySemanticAdjudication(call([]), input), "decision_count"],
+      [() => decodeMemorySemanticAdjudication(call([valid, valid]), input), "decision_count"],
+      [() => decodeMemorySemanticAdjudication(call([valid, valid]), pair), "candidate_set"],
+      // An invalid decision is reported before the set is checked.
+      [() => decodeMemorySemanticAdjudication(call([valid, { ...valid, operation: "MAYBE" }]), pair),
+        "operation"]
+    ] as const) {
+      expect(outputViolation(decode)).toBe(`memory_semantic_adjudication_output_invalid_${violation}`);
+    }
+  });
+
+  it("names the first violated decision invariant in decoder order", () => {
+    const input = memorySemanticAdjudicationInput(referenceKindsPlan())!;
+    const decode = (decision: unknown) => () =>
+      decodeMemorySemanticAdjudication(call([decision]), input);
+    const { reason_code: _reason, ...missingReason } = currentUserDecision();
+    for (const [decision, violation] of [
+      [null, "decision_shape"],
+      [missingReason, "decision_shape"],
+      [currentUserDecision({ extra: "field" }), "decision_shape"],
+      [currentUserDecision({ candidate_ref: "C9" }), "candidate_ref"],
+      [currentUserDecision({ candidate_ref: "C 1" }), "candidate_ref"],
+      [currentUserDecision({ operation: "MERGE" }), "operation"],
+      [currentUserDecision({ operation: 7 }), "operation"],
+      [currentUserDecision({ entailment: "MAYBE" }), "enum"],
+      [currentUserDecision({ confidence_band: "VERY_HIGH" }), "enum"],
+      [currentUserDecision({ assertion_status: "DOUBTFUL" }), "enum"],
+      [currentUserDecision({ subject_identity: "OTHER" }), "enum"],
+      [currentUserDecision({ subject_scope: "SOMEONE" }), "enum"],
+      [currentUserDecision({ temporal_perspective: null }), "enum"],
+      [currentUserDecision({ operation: "REINFORCE", target_ref: "F 1" }), "target_ref"],
+      [currentUserDecision({ operation: "REINFORCE", target_ref: "M1" }), "target_ref"],
+      [currentUserDecision({ operation: "REINFORCE", target_ref: "C1" }), "target_ref"],
+      [currentUserDecision({ entity_ref: 3 }), "entity_ref"],
+      [currentUserDecision({ entity_ref: "F2" }), "entity_ref"],
+      [currentUserDecision({ entity_ref: "M1" }), "entity_ref"],
+      [currentUserDecision({ operation: "REINFORCE" }), "operation_target"],
+      [currentUserDecision({ target_ref: "F1" }), "operation_target"],
+      [currentUserDecision({ operation: "AMBIGUOUS", target_ref: "F1" }), "operation_target"],
+      [currentUserDecision({ reason_code: 42 }), "reason_code"],
+      [currentUserDecision({ reason_code: null }), "reason_code"],
+      [currentUserDecision({ entity_ref: "F1", subject_identity: "SAME_ENTITY" }), "subject_identity"],
+      // Ordering: refs and enums are decided before the band can normalize.
+      [currentUserDecision({ confidence_band: "LOW", target_ref: "F1" }), "operation_target"],
+      [currentUserDecision({ confidence_band: "LOW", entity_ref: "M1" }), "entity_ref"],
+      [currentUserDecision({ entailment: "UNKNOWN", operation: "REINFORCE", target_ref: "M1" }), "target_ref"],
+      [currentUserDecision({ confidence_band: "LOW", subject_scope: "SOMEONE" }), "enum"],
+      [currentUserDecision({ confidence_band: "LOW", reason_code: 42 }), "reason_code"],
+      [currentUserDecision({ target_ref: "M1", entity_ref: "M1", operation: "REINFORCE" }), "target_ref"],
+      [currentUserDecision({ entity_ref: "M1", operation: "REINFORCE" }), "entity_ref"]
+    ] as const) {
+      expect(outputViolation(decode(decision)))
+        .toBe(`memory_semantic_adjudication_output_invalid_${violation}`);
+    }
+  });
+
+  it("keeps identity defects fatal at every band", () => {
+    const input = memorySemanticAdjudicationInput(relationshipPlan())!;
+    const decode = (decision: unknown) => () =>
+      decodeMemorySemanticAdjudication(call([decision]), input);
+    for (const entailment of ["ENTAILED", "CONTRADICTED", "UNKNOWN"]) {
+      for (const confidenceBand of ["HIGH", "MEDIUM", "LOW"]) {
+        expect(outputViolation(decode({
+          ...subjectIdentityDecision(), confidence_band: confidenceBand, entailment,
+          operation: "AMBIGUOUS", target_ref: null
+        }))).toBe("memory_semantic_adjudication_output_invalid_subject_identity");
+      }
+    }
+    expect(outputViolation(decode({ ...subjectIdentityDecision(), subject_scope: "CURRENT_USER" })))
+      .toBe("memory_semantic_adjudication_output_invalid_subject_identity");
+  });
+
+  it("normalizes every non-ENTAILED/HIGH relation decision to authority-free ambiguity", () => {
+    const relationship = relationshipPlan();
+    const input = memorySemanticAdjudicationInput(relationship)!;
+    const observation = input.plan.candidates[0]!;
+    const pairs = ["ENTAILED", "CONTRADICTED", "UNKNOWN"].flatMap((entailment) =>
+      ["HIGH", "MEDIUM", "LOW"].map((confidenceBand) => ({ confidenceBand, entailment })))
+      .filter(({ confidenceBand, entailment }) =>
+        confidenceBand !== "HIGH" || entailment !== "ENTAILED");
+    expect(pairs).toHaveLength(8);
+    const relations = [
+      { entity_ref: null, operation: "NO_RELATION", subject_identity: "UNRESOLVED", target_ref: null },
+      { entity_ref: "F1", operation: "NO_RELATION", subject_identity: "SAME_ENTITY", target_ref: null },
+      ...["REINFORCE", "MERGE_NEW_INTO_TARGET", "MERGE_TARGET_INTO_NEW", "SUPERSEDE_TARGET",
+        "MOVE_TO_DISTINCT_FACT", "RETRACT_TARGET"].map((operation) => ({
+        entity_ref: "F1", operation, subject_identity: "SAME_ENTITY", target_ref: "F1"
+      })),
+      { entity_ref: null, operation: "REPLACE_RELATIONSHIP_TARGET",
+        subject_identity: "UNRESOLVED", target_ref: "F2" }
+    ];
+    for (const relation of relations) {
+      for (const { confidenceBand, entailment } of pairs) {
+        const packet = decodeMemorySemanticAdjudication(call([{
+          ...subjectIdentityDecision(), ...relation, confidence_band: confidenceBand, entailment,
+          reason_code: "model_label"
+        }]), input);
+        const decision = packet.decisions[0]!;
+        expect(decision).toEqual({
+          ...normalizedAmbiguous, assertionStatus: "ASSERTED", candidateRef: "C1",
+          confidenceBand, entailment, subjectScope: "USER_RELATIONSHIP_CONTEXT",
+          temporalPerspective: "CURRENT"
+        });
+        expect(memorySemanticAuthorityAdmitsCandidate(
+          observation, decision, input.plan.input.contextRefs
+        )).toBe(false);
+        expect(memoryRelationshipReplacementIsAuthorized(decision)).toBe(false);
+        expect(memorySemanticAdjudicationPacketIsValid(input.plan, packet)).toBe(true);
+        expect(decodeStoredMemorySemanticAdjudication(encodeStoredMemorySemanticAdjudication(packet)))
+          .toEqual(packet);
+      }
+    }
+  });
+
+  it("replaces only an invalid reason label and leaves accepted output byte-identical", () => {
+    const input = memorySemanticAdjudicationInput(plan())!;
+    const decode = (overrides: Record<string, unknown>) =>
+      decodeMemorySemanticAdjudication(call([currentUserDecision(overrides)]), input);
+    for (const label of ["новый_факт", "explicit current state", "", "a".repeat(65), "_leading"]) {
+      expect(decode({ reason_code: label }).decisions[0]).toMatchObject({
+        operation: "NO_RELATION", reasonCode: "normalized_reason_code"
+      });
+      expect(decode({ confidence_band: "MEDIUM", reason_code: label }).decisions[0])
+        .toMatchObject({ ...normalizedAmbiguous, confidenceBand: "MEDIUM" });
+    }
+    const accepted = decode({ entity_ref: "F1", operation: "REINFORCE", reason_code: "a".repeat(64),
+      target_ref: "F1" });
+    const expected = [{
+      assertionStatus: "ASSERTED", candidateRef: "C1", confidenceBand: "HIGH",
+      entailment: "ENTAILED", entityRef: "F1", operation: "REINFORCE", reasonCode: "a".repeat(64),
+      subjectIdentity: "UNRESOLVED", subjectScope: "CURRENT_USER", targetRef: "F1",
+      temporalPerspective: "CURRENT"
+    }] as const;
+    expect(accepted.decisions).toEqual(expected);
+    expect(Object.keys(accepted.decisions[0]!)).toEqual(Object.keys(expected[0]));
+    expect(accepted.outputHash)
+      .toBe(memorySemanticAdjudicationOutputHash(input.inputHash, expected));
+    const ambiguous = decode({ confidence_band: "LOW", entailment: "UNKNOWN", operation: "AMBIGUOUS",
+      reason_code: "unclear" });
+    expect(ambiguous.decisions[0]).toMatchObject({
+      confidenceBand: "LOW", entailment: "UNKNOWN", operation: "AMBIGUOUS", reasonCode: "unclear"
+    });
+    expect(memorySemanticAdjudicationPacketIsValid(input.plan, accepted)).toBe(true);
+  });
+
+  it("applies the other decisions of a packet with one normalized decision", () => {
+    const input = memorySemanticAdjudicationInput(pairPlan())!;
+    const packet = decodeMemorySemanticAdjudication(call([
+      currentUserDecision({ candidate_ref: "C2", confidence_band: "LOW", entity_ref: "F1",
+        operation: "SUPERSEDE_TARGET", target_ref: "F1" }),
+      currentUserDecision()
+    ]), input);
+    expect(packet.decisions.map(({ candidateRef, operation }) => [candidateRef, operation]))
+      .toEqual([["C1", "NO_RELATION"], ["C2", "AMBIGUOUS"]]);
+    expect(memorySemanticAdjudicationPacketIsValid(input.plan, packet)).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(
+      input.plan.candidates[0]!, packet.decisions[0]!, input.plan.input.contextRefs
+    )).toBe(true);
+    expect(memorySemanticAuthorityAdmitsCandidate(
+      input.plan.candidates[1]!, packet.decisions[1]!, input.plan.input.contextRefs
+    )).toBe(false);
   });
 });

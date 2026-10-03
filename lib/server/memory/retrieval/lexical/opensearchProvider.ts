@@ -19,6 +19,7 @@ import {
 import {
   MEMORY_READ_BUDGET_MS,
   MemoryReadBudgetError,
+  memoryReadBudgetTimedOut,
   withMemoryReadBudget
 } from "../readBudget";
 import {
@@ -92,16 +93,11 @@ async function queryMemoryOpenSearchProjectionReadiness(
   env: NodeJS.ProcessEnv = process.env
 ): Promise<MemoryOpenSearchProjectionReadiness> {
   assertMemoryLexicalSearchRequest(request);
-  const remainingMs = Math.min(
-    MEMORY_READ_BUDGET_MS.PROJECTION_READINESS,
-    request.deadlineAtMs - Date.now()
-  );
-  if (!Number.isSafeInteger(remainingMs) || remainingMs < 1) {
-    throw new MemoryReadBudgetError("memory_read_statement_timeout");
-  }
+  // The readiness result is shared by every lane of one snapshot, so it uses
+  // only the request deadline, never one lane's settlement signal.
   const [row] = await withMemoryReadBudget(
     client,
-    remainingMs,
+    MEMORY_READ_BUDGET_MS.PROJECTION_READINESS,
     (tx) => tx.$queryRaw<ProjectionReadinessRow[]>(Prisma.sql`
       /* aiqsa_memory_retrieval_lane:OPENSEARCH_PROJECTION_READINESS */
       SELECT
@@ -141,7 +137,9 @@ async function queryMemoryOpenSearchProjectionReadiness(
       WHERE state."userId" = ${request.userId}
         AND state."indexGenerationId" = ${request.activeGenerationId}
       LIMIT 1
-    `)
+    `),
+    // Readiness gates every provider lane of the snapshot: structural.
+    { admission: "REQUIRED", deadlineAtMs: request.deadlineAtMs }
   );
   if (!row) return Object.freeze({
     caughtUp: false,
@@ -234,7 +232,10 @@ function openSearchFailureCode(error: unknown): Readonly<{
   timedOut: boolean;
 }> {
   if (error instanceof MemoryReadBudgetError) {
-    return Object.freeze({ code: error.code, timedOut: true });
+    return Object.freeze({
+      code: error.code,
+      timedOut: memoryReadBudgetTimedOut(error.code)
+    });
   }
   if (error instanceof OpenSearchTransportError) {
     const mapped = `memory_${error.code}`;

@@ -234,7 +234,7 @@ test("opens an exact Personal Memory source through the opaque action redirect",
   expect(navigationRequests).toEqual(["opaque-past-chat-source"]);
 });
 
-test("redirects an unavailable Memory source back to a bounded app notice", async ({ page }) => {
+test("redirects an unavailable Memory source back to the app without a notice", async ({ page }) => {
   const messages = [
     message({ id: "user-stale-source", parentMessageId: null, role: "user", text: "Open it." }),
     message({
@@ -300,10 +300,10 @@ test("redirects an unavailable Memory source back to a bounded app notice", asyn
   await openLink.evaluate((element) => element.removeAttribute("target"));
   await openLink.click();
 
-  await expect(page.getByTestId("shell-notice")).toContainText(
-    "This Memory source is unavailable."
-  );
   await expect(page).toHaveURL(/\/$/u);
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
+  await expect(page.getByTestId("shell-notice")).toHaveCount(0);
+  await expect(page.getByText(/Memory source is unavailable/u)).toHaveCount(0);
   await expect(page.getByText("opaque-stale-source")).toHaveCount(0);
 });
 
@@ -362,7 +362,7 @@ for (const locale of ["EN", "RU"] as const) {
   });
 }
 
-test("shows a rejected Memory action without post-hoc controls", async ({ page }) => {
+test("keeps a rejected Memory action silent without post-hoc controls", async ({ page }) => {
   const messages = [
     message({
       id: "user-automatic",
@@ -410,9 +410,12 @@ test("shows a rejected Memory action without post-hoc controls", async ({ page }
   });
   await signInWithLocalToken(page, "/c/chat-memory-feedback-action");
 
-  await expect(page.getByText("Memory action was not applied.", {
-    exact: true
-  })).toBeVisible();
+  const rejected = page.locator('[data-message-id="assistant-mark-incorrect"]');
+  await expect(rejected.getByText("I recorded that feedback.")).toBeVisible();
+  await expect(rejected.getByTestId("memory-action-confirmation")).toHaveCount(0);
+  await expect(page.getByText(/not applied/iu)).toHaveCount(0);
+  // Next.js keeps its route announcer as a permanent role=alert region.
+  await expect(page.locator("[role='alert']:not(#__next-route-announcer__)")).toHaveCount(0);
   const answer = page.locator('[data-message-id="assistant-automatic"]');
   await expect(answer.getByRole("button", { name: "This is incorrect" })).toHaveCount(0);
 });

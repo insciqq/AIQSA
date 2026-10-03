@@ -14,6 +14,7 @@ import {
   answerProcessLabelV2,
   contextCompactionCopyV2,
   describeToolCallV2,
+  memorySearchCallHiddenV2,
   toolActivityOriginV2
 } from "@/features/run-lifecycle-v2/runPresentation";
 import { WorkspaceActivityTimelineV2 } from "@/features/run-lifecycle-v2/WorkspaceActivityTimelineV2";
@@ -136,11 +137,18 @@ export function AnswerProcessV2({
   workspaceActivity = null
 }: AnswerProcessV2Props) {
   const [open, setOpen] = useDisclosurePreference(disclosureId ? `workspace:${disclosureId}` : null);
-  const { memories, pastChats } = presentMemorySourcesV2(memorySources);
+  // Unavailable and forgotten sources are not listed, so counts describe only
+  // the rows a user can still read.
+  const [forgottenRefs, setForgottenRefs] = useState<ReadonlySet<string>>(() => new Set());
+  const listedMemorySources = memorySources.filter((source) =>
+    source.sourceAvailable && !forgottenRefs.has(source.memoryRef));
+  const { memories, pastChats } = presentMemorySourcesV2(listedMemorySources);
   const reasoning = reasoningTexts.map((text) => text.trim()).filter(Boolean).join("\n\n");
   // Workspace steps are rendered by the timeline; the generic list keeps only
   // other tools so no raw sandbox identifier can reach the thread.
-  const calls = (toolActivity?.calls ?? []).filter((call) => toolActivityOriginV2(call) !== "workspace");
+  // A failed Memory search leaves no step: the answer continues without it.
+  const calls = (toolActivity?.calls ?? []).filter((call) =>
+    toolActivityOriginV2(call) !== "workspace" && !memorySearchCallHiddenV2(call));
   const searchEngines = toolActivity?.searchEngines ?? [];
   const searchSummary = searchActivitySummary(searchEngines);
   const timeline = visibleWorkspaceActivityV2(workspaceActivity, generatedFileCount);
@@ -295,8 +303,9 @@ export function AnswerProcessV2({
               </ol>
             </section>
           ) : null}
-          {memorySources.length > 0 ? (
-            <MemorySourcesV2 memories={memories} pastChats={pastChats} />
+          {listedMemorySources.length > 0 ? (
+            <MemorySourcesV2 memories={memories} pastChats={pastChats}
+              onForgotten={(memoryRef) => setForgottenRefs((current) => new Set(current).add(memoryRef))} />
           ) : null}
         </div>
       </details>

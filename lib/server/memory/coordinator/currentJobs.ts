@@ -16,7 +16,6 @@ export function currentMemoryJobsSql(now: Date): Prisma.Sql {
             WHEN job.kind IN ('EXTRACT_FACTS', 'CONSOLIDATE_CANDIDATE', 'VERIFY_CANDIDATE', 'RESOLVE_FACT_RELATIONS') THEN 'LEARNING'
             WHEN job.kind = 'INDEX_HISTORY' THEN 'HISTORY'
             WHEN job.kind IN ('EMBED_ITEMS', 'REBUILD_INDEX') THEN 'INDEXING'
-            WHEN job.kind = 'SYNTHESIZE_MEMORIES' THEN 'SYNTHESIS'
             ELSE 'MAINTENANCE'
           END AS stage
         FROM "MemoryJob" AS job
@@ -26,14 +25,16 @@ export function currentMemoryJobsSql(now: Date): Prisma.Sql {
         LEFT JOIN "Chat" AS chat ON chat.id = job."chatId" AND chat."userId" = job."userId"
         LEFT JOIN "Message" AS source ON source.id = job."sourceMessageId" AND source."chatId" = chat.id
         WHERE job.state NOT IN ('CANCELLED', 'STALE') AND job."createdAt" <= ${now}
-          AND (job.state = 'SUCCEEDED' OR job.kind NOT IN ('RECLASSIFY_FACTS', 'SYNTHESIZE_MEMORIES')
-            OR job."pipelineVersion" = 'memory-maintenance-v1'
+          -- Background maintenance is the only SYNTHESIZE_MEMORIES pipeline;
+          -- jobs of retired Dream synthesis are not current work.
+          AND (job.kind <> 'SYNTHESIZE_MEMORIES' OR job."pipelineVersion" = 'memory-maintenance-v1')
+          AND (job.state = 'SUCCEEDED' OR job.kind <> 'RECLASSIFY_FACTS'
             OR job."memoryRevisionSnapshot" = settings."memoryRevision")
           AND CASE
             WHEN job.kind = 'INDEX_HISTORY' THEN settings."useMemoryFacts" AND settings."referenceChatHistory"
             WHEN job.kind IN ('EXTRACT_FACTS', 'CONSOLIDATE_CANDIDATE', 'VERIFY_CANDIDATE', 'RESOLVE_FACT_RELATIONS')
               THEN settings."useMemoryFacts" AND settings."learnAutomatically"
-            WHEN job.kind = 'SYNTHESIZE_MEMORIES' THEN settings."useMemoryFacts" AND settings."synthesisEnabled"
+            WHEN job.kind = 'SYNTHESIZE_MEMORIES' THEN settings."useMemoryFacts" AND settings."learnAutomatically"
             ELSE settings."useMemoryFacts"
           END
           AND (job."chatId" IS NULL OR (

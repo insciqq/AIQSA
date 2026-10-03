@@ -118,7 +118,7 @@ import {
   previousVisibleAnswersV2
 } from "@/features/answer-outputs-v2/AnswerIdentityV2";
 import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
-import { MemoryCommandStatusV2 } from "@/features/answer-outputs-v2/MemoryCommandStatusV2";
+import { MemoryCommandStatusV2, memoryCommandIsVisible } from "@/features/answer-outputs-v2/MemoryCommandStatusV2";
 import { useMemoryCommands } from "@/components/app-shell/useMemoryCommands";
 import {
   ReadingRoomShellV2,
@@ -1319,10 +1319,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         href={`/api/chats/${encodeURIComponent(activeChatSummary.id)}/continuation-source`}>Previous chat</a>
     ) : identity ? <AnswerIdentityChipV2 identity={identity} /> : null;
     const command = source.parentMessageId ? memoryCommands.get(source.parentMessageId) : undefined;
-    const noticeSlot = command && (command.operation !== "UNKNOWN" ||
-      ["FAILED", "UNKNOWN", "STALE"].includes(command.status)) ? (
+    // A background command owns the notice slot; its failed, unknown, stale
+    // and rejected outcomes stay silent instead of reviving older feedback.
+    const noticeSlot = command && memoryCommandIsVisible(command) ? (
       <MemoryCommandStatusV2 command={command} onOpenMemory={settings.openMemory} />
-    ) : settled && artifact?.memoryAction ? (
+    ) : command && (command.operation !== "UNKNOWN" ||
+      ["FAILED", "UNKNOWN", "STALE"].includes(command.status)) ? null
+    : settled && artifact?.memoryAction ? (
       <MemoryActionConfirmationV2
         action={artifact.memoryAction}
         onOpenMemoryReset={settings.openMemory}

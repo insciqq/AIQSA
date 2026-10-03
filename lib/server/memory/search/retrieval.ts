@@ -13,9 +13,10 @@ import { estimateApproxTokens } from "../../../domain/contextBudget";
 import { memoryReadBudgetFailureCode } from "../retrieval/readBudget";
 
 const diagnosticCodes = new Set([
-  "memory_read_lock_timeout", "memory_read_statement_timeout", "memory_execution_policy_drift",
+  "memory_read_admission_timeout", "memory_read_connection_timeout", "memory_read_deadline_exhausted",
+  "memory_read_lock_timeout", "memory_read_statement_timeout", "memory_read_transaction_expired", "memory_execution_policy_drift",
   "memory_execution_target_unavailable", "memory_execution_state_conflict", "memory_execution_binding_conflict",
-  "memory_vector_generation_stale", "memory_vector_profile_unsupported", "memory_vector_unavailable",
+  "memory_vector_generation_stale", "memory_vector_profile_unsupported", "memory_vector_settle_timeout", "memory_vector_unavailable",
   "memory_query_embedding_attempt_timed_out", "memory_query_embedding_failed", "memory_query_embedding_outcome_unknown",
   "memory_query_embedding_output_invalid", "memory_query_embedding_profile_changed", "memory_query_embedding_runtime_unavailable",
   "memory_query_embedding_transient_http_failure", "memory_reranker_failed", "memory_reranker_model_unavailable",
@@ -64,10 +65,10 @@ function itemsFor(pack: MemoryContextPack, ranked: readonly MemoryRankedCandidat
         contextualSupportingEvidenceHashes: (item.supportingEvidence ?? []).map(value => memorySha256(value.rawSafeText)),
         contextualSupportingRoundIds: (item.supportingEvidence ?? []).map(value => value.itemId),
         finalScore: candidate.finalScore, lastConfirmedAt: item.lastConfirmedAt, observedAt: item.observedAt,
-        patternSupportingEvidence: [], projectionKind: item.projectionKind, retrievalReason: item.retrievalReason,
+        projectionKind: item.projectionKind, retrievalReason: item.retrievalReason,
         rrfScore: candidate.rrfScore, sourceAuthority: item.sourceAuthority, sourceSessionHandle: item.sourceSessionHandle,
         speakerScope: item.speakerScope, status: item.recordStatus, supportingItemId: item.supportingItemId,
-        temporalReason: item.temporalReason, historical: candidate.metadata.historical, includePatterns: false,
+        temporalReason: item.temporalReason, historical: candidate.metadata.historical,
         lifecycleState: candidate.metadata.lifecycleState, matchedSegmentId: candidate.matchedSegmentId ?? null,
         matchedSegmentPosition: candidate.matchedSegmentPosition ?? null, retrievalMode: plan.mode,
         temporalIntent: plan.temporalIntent, tier: item.tier, validFrom: item.validFrom, validTo: item.validTo }
@@ -107,7 +108,7 @@ export function createMemorySearchRetrieval(client: PrismaClient, dependencies: 
     const factPlan = planMemoryRetrieval({ currentUserText: input.query, now, applyResponsePreferences: false,
       filters: { sourceKinds: ["FACT", "EVENT"] }, mode: "TARGETED_CURRENT", temporalIntent: "CURRENT" });
     const base = { assistantId: input.assistantId, chatId: input.chatId, now, userId: input.userId,
-      settleSignal: input.signal, plan: factPlan };
+      settleSignal: input.signal, plan: factPlan, excludeToolEvents: true as const };
     const snapshot = await repository.snapshot(base);
     if (snapshot.status !== "READY" || !snapshot.useMemoryFacts || snapshot.chatMemoryMode !== "NORMAL" ||
       input.assistantId !== snapshot.assistantId ||
@@ -121,7 +122,7 @@ export function createMemorySearchRetrieval(client: PrismaClient, dependencies: 
     if (limited) reason("snapshot", "history_index_unavailable");
     let vector: Parameters<typeof repository.retrieve>[0]["vector"];
     if (input.accepted.destinations.some(value => value.role === "MEMORY_QUERY_EMBED")) {
-      const profile = await optional("embedding_profile", () => vectors.resolveActiveProfile(input.userId), 6000);
+      const profile = await optional("embedding_profile", signal => vectors.resolveActiveProfile(input.userId, { signal }), 6000);
       if (profile?.status === "READY") {
         const embedded = await optional("embedding", signal => utilities.embedQuery({ owner, userId: input.userId, signal,
           profile: profile.profile, query: input.query }), 6000);
@@ -140,7 +141,10 @@ export function createMemorySearchRetrieval(client: PrismaClient, dependencies: 
     if (pastRead.status === "rejected") reason("history", diagnosticCode(pastRead.reason, "retrieval_read_failed"));
     for (const [stage, read] of [["facts", facts], ["history", past]] as const) {
       if (read?.lexicalState === "DEGRADED" || read?.lexicalState === "FAILED") reason(stage, "lexical_degraded");
-      if (read?.vectorState === "DEGRADED") reason(stage, "vector_degraded");
+      if (read?.vectorState === "DEGRADED") {
+        reason(stage, "vector_degraded");
+        for (const code of read.vectorFailureCodes ?? []) reason(stage, diagnosticCode(code, "vector_failure_unclassified"));
+      }
     }
     limited ||= !facts || history && !past || facts?.lexicalState === "DEGRADED" || facts?.lexicalState === "FAILED" ||
       past?.lexicalState === "DEGRADED" || past?.lexicalState === "FAILED" ||
@@ -151,8 +155,8 @@ export function createMemorySearchRetrieval(client: PrismaClient, dependencies: 
       .sort((a, b) => b.finalScore - a.finalScore).slice(0, 80);
     const fusedCount = ranked.length;
     const expand = async () => [
-      ...await repository.expand(snapshot, factPlan, ranked.filter(value => value.itemType === "FACT_VERSION")),
-      ...(history ? await repository.expand(snapshot, plan, ranked.filter(value => value.itemType !== "FACT_VERSION")) : [])
+      ...await repository.expand(snapshot, factPlan, ranked.filter(value => value.itemType === "FACT_VERSION"), { signal: input.signal }),
+      ...(history ? await repository.expand(snapshot, plan, ranked.filter(value => value.itemType !== "FACT_VERSION"), { signal: input.signal }) : [])
     ];
     let expanded = await expand();
     const expandedBeforeRerankCount = expanded.length;
@@ -172,7 +176,7 @@ export function createMemorySearchRetrieval(client: PrismaClient, dependencies: 
     const cap = (input.comparison && history ? input.accepted.comparisonResultTokens : input.accepted.resultTokens) - 384;
     const selected = ranked.slice(0, input.comparison ? 30 : 15);
     const packSelected = () => packMemoryPersonalContext({ expanded, ranked: selected,
-      plan, factPlan, questionDirectedTemporalFallback: history, now,
+      plan, questionDirectedTemporalFallback: history, now,
       targetTokens: Math.min(cap, history && input.comparison ? cap : 6000), hardCapTokens: cap });
     let pack = packSelected();
     const resultLimit = input.comparison ? input.accepted.comparisonResultTokens : input.accepted.resultTokens;

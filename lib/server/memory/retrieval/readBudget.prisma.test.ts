@@ -7,7 +7,7 @@ describe("Memory read budget PostgreSQL boundary", () => {
   it("terminates server work at statement_timeout", async () => {
     const startedAt = performance.now();
     const failure = await withMemoryReadBudget(prisma, 40, async (tx) =>
-      tx.$queryRaw(Prisma.sql`SELECT pg_sleep(1)`)).then(
+      tx.$queryRaw(Prisma.sql`SELECT pg_sleep(1)`), { admission: "REQUIRED" }).then(
         () => null,
         (error: unknown) => error
       );
@@ -18,7 +18,7 @@ describe("Memory read budget PostgreSQL boundary", () => {
 
   it("keeps a bounded healthy read available", async () => {
     await expect(withMemoryReadBudget(prisma, 500, async (tx) =>
-      tx.$queryRaw<Array<{ value: number }>>(Prisma.sql`SELECT 1::integer AS value`)))
+      tx.$queryRaw<Array<{ value: number }>>(Prisma.sql`SELECT 1::integer AS value`), { admission: "REQUIRED" }))
       .resolves.toEqual([{ value: 1 }]);
   });
 });

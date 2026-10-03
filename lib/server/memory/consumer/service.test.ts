@@ -1,14 +1,26 @@
-import { describe, expect, it, vi } from "vitest";
+import { Prisma } from "@prisma/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   memoryDeletionFixture,
   memoryDetailFixture,
   memorySettingsFixture,
   memorySummaryFixture
 } from "@/tests/support/memoryFixtures";
-import { createMemoryConsumerService } from "./service";
+import { createMemoryConsumerService, MemoryConsumerServiceError } from "./service";
 import type { MemoryConsumerRefService } from "./ref";
 import { ExplicitMemoryServiceError } from "../explicit/service";
+import { MemoryForgetCommittedResponseError, MemoryLifecycleServiceError } from "../lifecycle/service";
+import { rememberMemoryForgetPeerCascade } from "../lifecycle/sourcePreservation";
+import { MemoryPersistenceError, rememberMemoryPersistenceFailure } from "../persistence/errors";
 import { MEMORY_CONSUMER_CATEGORIES } from "../../../contracts/memoryConsumer";
+import { logEvent, type LifecycleFields } from "../../observability";
+import { rememberDatabaseFailure } from "../../observability/databaseFailure";
+import { serializeEvent } from "../../observability/runtime.cjs";
+
+vi.mock("../../observability", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../observability")>(),
+  logEvent: vi.fn()
+}));
 
 const now = new Date("2026-08-21T10:00:00.000Z");
 
@@ -75,61 +87,24 @@ function dependencies(input: Readonly<{
 }
 
 describe("Memory consumer service", () => {
-  it("projects combined memories with opaque source refs and Forget-only actions", async () => {
+  it("lists every memory with Edit and Forget and never a combination block", async () => {
     const deps = dependencies();
-    const refService = refs();
-    vi.mocked(refService.mintItem).mockImplementation((_userId, target) =>
-      `opaque-${target.factId}`);
-    const summary = memorySummaryFixture({
-      combinedSources: [1, 2, 3].map((index) => ({
-        category: "habits",
-        createdAt: now.toISOString(),
-        factId: `internal-source-${index}`,
-        sourceMode: "AUTOMATIC" as const,
-        statement: `I use a checklist for workflow ${index}.`,
-        updatedAt: now.toISOString(),
-        versionId: `internal-source-version-${index}`
-      })),
-      currentVersionId: "internal-pattern-version",
-      id: "internal-pattern",
-      modality: "PATTERN",
-      sourceMode: "AUTOMATIC"
-    });
-    deps.explicitService.list.mockResolvedValue({ memories: [summary], nextCursor: null });
-    deps.explicitService.get.mockResolvedValue(memoryDetailFixture(summary));
     const service = createMemoryConsumerService({
       clock: () => now,
       explicitService: deps.explicitService as never,
       lifecycleService: deps.lifecycleService as never,
       readResetState: deps.readResetState,
-      refs: refService,
+      refs: refs(),
       settingsService: deps.settingsService as never
     });
     const listed = await service.list("user-1", {});
-    expect(listed.items[0]).toMatchObject({
-      allowedActions: ["FORGET"],
-      combined: {
-        sourceCount: 3,
-        sources: [
-          { memoryRef: "opaque-internal-source-1" },
-          { memoryRef: "opaque-internal-source-2" },
-          { memoryRef: "opaque-internal-source-3" }
-        ]
-      },
-      memoryRef: "opaque-internal-pattern"
-    });
-    expect(JSON.stringify(listed)).not.toMatch(/versionId|factId|PATTERN/u);
-    expect(refService.mintItem).toHaveBeenCalledWith("user-1", {
-      allowedOperations: ["READ", "FORGET"],
-      factId: "internal-source-1",
-      factVersionId: "internal-source-version-1"
-    }, now);
-    await expect(service.get("user-1", "opaque-internal-pattern", {
-      authority: "DELEGATED_MCP"
-    })).rejects.toMatchObject({ code: "memory_not_found" });
+    expect(listed.items[0]).toMatchObject({ allowedActions: ["EDIT", "FORGET"] });
+    expect(listed.items[0]).not.toHaveProperty("combined");
     await service.list("user-1", {}, { authority: "DELEGATED_MCP" });
-    expect(deps.explicitService.list).toHaveBeenLastCalledWith("user-1",
-      expect.objectContaining({ includePatterns: false }));
+    await service.search("user-1", { query: "workflow" }, { authority: "DELEGATED_MCP" });
+    const withoutPatternOptIn = expect.not.objectContaining({ includePatterns: expect.anything() });
+    expect(deps.explicitService.list).toHaveBeenLastCalledWith("user-1", withoutPatternOptIn);
+    expect(deps.explicitService.search).toHaveBeenLastCalledWith("user-1", withoutPatternOptIn);
   });
 
   it("resolves equivalent references before reading or minting exact mutation authority", async () => {
@@ -292,7 +267,6 @@ describe("Memory consumer service", () => {
     expect(deps.explicitService.list).toHaveBeenCalledWith("user-1", {
       category: "constraints_routines",
       cursor: null,
-      includePatterns: true,
       pageSize: 7,
       scope: { type: "GLOBAL_USER" },
       sourceMode: "AUTOMATIC",
@@ -301,7 +275,6 @@ describe("Memory consumer service", () => {
     expect(deps.explicitService.search).toHaveBeenCalledWith("user-1", {
       category: "about_you",
       cursor: null,
-      includePatterns: true,
       pageSize: undefined,
       query: "medical accommodation",
       scope: { type: "GLOBAL_USER" },
@@ -437,7 +410,6 @@ describe("Memory consumer service", () => {
           decayEnabled: true,
           learnAutomatically: true,
           referenceChatHistory: true,
-          synthesisEnabled: true,
           useMemoryFacts: true
         }
       }));
@@ -482,6 +454,30 @@ describe("Memory consumer service", () => {
       },
       status: "NEEDS_ADMIN_SETUP"
     });
+  });
+
+  it("reports unavailable maintenance only while automatic learning is on", async () => {
+    for (const [learnAutomatically, status] of [[true, "UNAVAILABLE"], [false, "ON"]] as const) {
+      const deps = dependencies();
+      deps.settingsService.get.mockResolvedValue(memorySettingsFixture({
+        capabilities: { synthesisAvailable: false },
+        historyIndexing: { state: "READY" },
+        settings: { learnAutomatically, referenceChatHistory: true, useMemoryFacts: true }
+      }));
+      const service = createMemoryConsumerService({
+        clock: () => now,
+        explicitService: deps.explicitService as never,
+        lifecycleService: deps.lifecycleService as never,
+        readResetState: deps.readResetState,
+        refs: refs(),
+        settingsService: deps.settingsService as never
+      });
+      await expect(service.settings("user-1")).resolves.toMatchObject({
+        capabilities: { synthesisAvailable: false },
+        settings: { synthesisEnabled: false },
+        status
+      });
+    }
   });
 
   it("preserves classifier outages as a consumer-safe unavailable failure", async () => {
@@ -640,5 +636,160 @@ describe("Memory consumer service", () => {
       requestId: "request-id-0000000004"
     })).resolves.toEqual({ status: "IN_PROGRESS" });
     expect(activeDeps.explicitService.mintAuthorization).not.toHaveBeenCalled();
+  });
+});
+
+describe("Memory consumer Forget diagnostics", () => {
+  const CANARY = "PRIVATE_CANARY_6f1c";
+
+  afterEach(() => {
+    vi.mocked(logEvent).mockReset();
+  });
+
+  function forgetService(failure?: unknown, resolved?: unknown) {
+    const deps = dependencies();
+    if (failure !== undefined) deps.lifecycleService.forget.mockRejectedValueOnce(failure);
+    if (resolved !== undefined) deps.lifecycleService.forget.mockResolvedValueOnce(resolved as never);
+    const service = createMemoryConsumerService({
+      clock: () => now,
+      explicitService: deps.explicitService as never,
+      lifecycleService: deps.lifecycleService as never,
+      readResetState: deps.readResetState,
+      refs: refs(),
+      settingsService: deps.settingsService as never
+    });
+    return { deps, service };
+  }
+
+  function events() {
+    return vi.mocked(logEvent).mock.calls.filter(([event]) => event === "service_operation")
+      .map(([, fields]) => fields as LifecycleFields);
+  }
+
+  function hostile(error: Error): Error {
+    return Object.assign(error, { cause: CANARY, code: CANARY, meta: { statement: CANARY }, name: CANARY, stack: CANARY });
+  }
+
+  it.each([
+    ["a retained persistence reason", () => {
+      const error = new MemoryLifecycleServiceError("memory_action_failed");
+      rememberMemoryPersistenceFailure(error, "memory_forget_peer_retrieval_inexact");
+      return error;
+    }, "memory_forget_peer_retrieval_inexact", "unknown"],
+    ["a lifecycle failure without a retained reason", () =>
+      new MemoryLifecycleServiceError("memory_action_failed"), "memory_forget_failed", "unknown"],
+    ["a forged lifecycle code", () =>
+      hostile(new MemoryLifecycleServiceError(CANARY as never)), "memory_forget_failed", "unknown"],
+    ["a forged persistence code", () =>
+      hostile(new MemoryPersistenceError(CANARY as never)), "memory_forget_failed", "unknown"],
+    ["a raw Prisma timeout", () => new Prisma.PrismaClientKnownRequestError(CANARY, {
+      clientVersion: "test", code: "P2028", meta: { statement: CANARY }
+    }), "memory_forget_database_failed", "P2028"],
+    ["a Prisma error with a forged code", () => new Prisma.PrismaClientKnownRequestError(CANARY, {
+      clientVersion: "test", code: CANARY, meta: { statement: CANARY }
+    }), "memory_forget_failed", "unknown"],
+    ["a database failure retained at the transaction boundary", () => {
+      const error = hostile(new Error(CANARY));
+      rememberDatabaseFailure(error, "P2034");
+      return error;
+    }, "memory_forget_database_failed", "P2034"],
+    ["a generic exception", () => hostile(new TypeError(CANARY)), "memory_forget_failed", "unknown"]
+  ])("records %s as one content-free failure and returns the safe code", async (_label, make, code, prismaCode) => {
+    const { deps, service } = forgetService(make());
+    const error = await service.forget("user-1", "opaque-item-ref", { requestId: "request-id-forget-0001" })
+      .catch((caught: unknown) => caught);
+    expect(error).toEqual(new MemoryConsumerServiceError("memory_action_failed"));
+    expect(JSON.stringify(error)).not.toContain(CANARY);
+    expect(events()).toEqual([{ action: "fail", code, outcome: "failed", prisma_code: prismaCode,
+      stage: "delete", subsystem: "memory" }]);
+    const line = serializeEvent("service_operation", events()[0]!);
+    expect(JSON.parse(line!)).toMatchObject({ code, event: "service_operation", level: "error", prisma_code: prismaCode });
+    expect(line).not.toContain(CANARY);
+    expect(line).not.toContain("internal-");
+    expect(deps.lifecycleService.forget).toHaveBeenCalledOnce();
+  });
+
+  it("records expected conflicts and missing targets below the failure class", async () => {
+    const stale = forgetService(new MemoryLifecycleServiceError("memory_version_stale"));
+    await expect(stale.service.forget("user-1", "opaque-item-ref", { requestId: "request-id-forget-0002" }))
+      .rejects.toEqual(new MemoryConsumerServiceError("memory_changed"));
+    const staleRef = refs();
+    vi.mocked(staleRef.resolveItem).mockReturnValueOnce(null);
+    const missing = createMemoryConsumerService({
+      clock: () => now,
+      explicitService: stale.deps.explicitService as never,
+      lifecycleService: stale.deps.lifecycleService as never,
+      readResetState: stale.deps.readResetState,
+      refs: staleRef,
+      settingsService: stale.deps.settingsService as never
+    });
+    await expect(missing.forget("user-1", "unknown-ref", { requestId: "request-id-forget-0003" }))
+      .rejects.toEqual(new MemoryConsumerServiceError("memory_not_found"));
+    expect(events()).toEqual([
+      { action: "skip", code: "memory_version_stale", outcome: "stale", prisma_code: "unknown", stage: "delete", subsystem: "memory" },
+      { action: "skip", code: "memory_not_found", outcome: "skipped", prisma_code: "unknown", stage: "delete", subsystem: "memory" }
+    ]);
+    expect(JSON.parse(serializeEvent("service_operation", events()[0]!)!)).toMatchObject({ level: "info" });
+  });
+
+  it("returns FORGOTTEN with a degraded event when only the committed response projection failed", async () => {
+    const { deps, service } = forgetService(new MemoryForgetCommittedResponseError());
+    await expect(service.forget("user-1", "opaque-item-ref", { requestId: "request-id-forget-0004" }))
+      .resolves.toEqual({ status: "FORGOTTEN" });
+    expect(events()).toEqual([{ action: "complete", code: "memory_forget_post_commit_degraded",
+      outcome: "degraded", stage: "complete", subsystem: "memory" }]);
+    expect(JSON.parse(serializeEvent("service_operation", events()[0]!)!)).toMatchObject({
+      code: "memory_forget_post_commit_degraded", level: "warn", stage: "complete"
+    });
+    expect(deps.lifecycleService.forget).toHaveBeenCalledOnce();
+  });
+
+  it("reports a legitimate dependency cascade as degraded success", async () => {
+    const response = { memory: memorySummaryFixture({ factState: "FORGOTTEN" }) };
+    rememberMemoryForgetPeerCascade(response, 2);
+    const { service } = forgetService(undefined, response);
+    await expect(service.forget("user-1", "opaque-item-ref", { requestId: "request-id-forget-0005" }))
+      .resolves.toEqual({ status: "FORGOTTEN" });
+    expect(events()).toEqual([{ action: "complete", code: "memory_forget_peer_dependency_cascade", count: 2,
+      outcome: "degraded", stage: "delete", subsystem: "memory" }]);
+  });
+
+  it("keeps the delegated MCP path on the same single diagnostic", async () => {
+    const error = new MemoryLifecycleServiceError("memory_action_failed");
+    rememberMemoryPersistenceFailure(error, "memory_forget_source_limit");
+    const { service } = forgetService(error);
+    await expect(service.forget("user-1", "opaque-item-ref", { requestId: "request-id-forget-0006" },
+      { authority: "DELEGATED_MCP" })).rejects.toEqual(new MemoryConsumerServiceError("memory_action_failed"));
+    expect(events()).toEqual([expect.objectContaining({ code: "memory_forget_source_limit", outcome: "failed" })]);
+  });
+
+  it("does not let a failing sink change the outcome or repeat the mutation", async () => {
+    vi.mocked(logEvent).mockImplementation(() => { throw new Error(CANARY); });
+    const failed = forgetService(new MemoryLifecycleServiceError("memory_action_failed"));
+    await expect(failed.service.forget("user-1", "opaque-item-ref", { requestId: "request-id-forget-0007" }))
+      .rejects.toEqual(new MemoryConsumerServiceError("memory_action_failed"));
+    expect(failed.deps.lifecycleService.forget).toHaveBeenCalledOnce();
+    const committed = forgetService(new MemoryForgetCommittedResponseError());
+    await expect(committed.service.forget("user-1", "opaque-item-ref", { requestId: "request-id-forget-0008" }))
+      .resolves.toEqual({ status: "FORGOTTEN" });
+    expect(committed.deps.lifecycleService.forget).toHaveBeenCalledOnce();
+  });
+
+  it("leaves other consumer operations without Forget diagnostics", async () => {
+    const deps = dependencies();
+    deps.explicitService.update.mockRejectedValueOnce(new ExplicitMemoryServiceError("memory_action_failed"));
+    const service = createMemoryConsumerService({
+      clock: () => now,
+      explicitService: deps.explicitService as never,
+      lifecycleService: deps.lifecycleService as never,
+      readResetState: deps.readResetState,
+      refs: refs(),
+      settingsService: deps.settingsService as never
+    });
+    await expect(service.edit("user-1", "opaque-item-ref", { requestId: "request-id-edit-0001", statement: "Updated" }))
+      .rejects.toEqual(new MemoryConsumerServiceError("memory_action_failed"));
+    await expect(service.forget("user-1", "opaque-item-ref", { requestId: "request-id-forget-0009" }))
+      .resolves.toEqual({ status: "FORGOTTEN" });
+    expect(logEvent).not.toHaveBeenCalled();
   });
 });

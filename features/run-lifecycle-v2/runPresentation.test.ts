@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { RunEventView } from "@/lib/contracts/runs";
-import { TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
   answerProcessLabelV2,
   contextCompactionCopyV2,
   describeToolCallV2,
+  memorySearchCallHiddenV2,
   formatWorkDurationV2,
   presentRunLifecycleV2,
   presentToolActivityV2,
@@ -54,10 +56,24 @@ describe("native Memory search activity", () => {
   });
   it.each([
     ["results", "Searched memory"], ["no_results", "No matching memories found"],
-    ["limited", "Memory search returned limited results"], ["failure", "Memory search unavailable"],
-    ["cancelled", "Memory search stopped"]
-  ])("uses a distinct safe label for %s", (memorySearchOutcome, label) => {
+    ["limited", "Searched memory"], ["cancelled", "Memory search stopped"]
+  ])("uses a safe label without limits for %s", (memorySearchOutcome, label) => {
     expect(describeToolCallV2({ origin: "memory", toolName: "memory_search", memorySearchOutcome }, "settled")).toBe(label);
+  });
+
+  it("drops a failed Memory search step entirely and keeps other calls", () => {
+    const failed = event({ status: "error", outcome: "failure" });
+    expect(presentToolActivityV2([event({ status: "running" }), failed])).toBeNull();
+    const kept = presentToolActivityV2([failed, event({ call: 2, status: "complete", outcome: "results" }),
+      event({ call: 3, status: "cancelled", outcome: "cancelled" })]);
+    expect(kept?.calls.map(call => call.memorySearchOutcome)).toEqual(["results", "cancelled"]);
+    expect(memorySearchCallHiddenV2({ origin: "memory", toolName: "memory_search", status: "complete",
+      memorySearchOutcome: "failure" })).toBe(true);
+    expect(memorySearchCallHiddenV2({ origin: "knowledge", toolName: "search_knowledge", status: "error" })).toBe(false);
+    for (const phase of ["failed", "settled"] as const) {
+      expect(describeToolCallV2({ origin: "memory", toolName: "memory_search", memorySearchOutcome: "failure" }, phase))
+        .not.toMatch(/unavailable|fail|limit/iu);
+    }
   });
 });
 
@@ -463,6 +479,98 @@ describe("run lifecycle v2 presentation", () => {
     }))).toMatchObject({ kind: "recoverable_error", failure: {
       code: "provider_stream_reset", message: "Connection interrupted.", recovery: "retry"
     } });
+  });
+
+  it.each([
+    ["memory_preparing_failed", "Memory preparation failed before provider dispatch."],
+    ["memory_preparing_attempt_expired", "Memory preparation expired before dispatch."],
+    ["memory_preparing_recovery_required", "Memory preparation was interrupted before dispatch."],
+    ["memory_all_reusable_deleted", "Memory preparation stopped because reusable Memory was deleted."],
+    ["memory_item_forgotten", "Memory preparation stopped because a selected Memory item was forgotten."],
+    ["memory_preparing_failed", "The answer could not be prepared. Try again."]
+  ])("neutralizes a Memory run failure %s by code and text", (code, message) => {
+    const live = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code, message, recovery: "change_parameters" } }]
+    }));
+    expect(live).toMatchObject({ kind: "terminal_error", failure: {
+      code: "preparation_failed", message: "The answer could not be prepared. Try again.", recovery: "change_parameters"
+    } });
+    // Historical persisted text without a live code is neutralized too.
+    const persisted = presentRunLifecycleV2(state({ failure: { message }, status: "error" }));
+    expect(persisted.failure?.message).toBe("The answer could not be prepared. Try again.");
+    expect(JSON.stringify([live, persisted])).not.toMatch(/memory/iu);
+  });
+
+  it("neutralizes the settle failure text while keeping its non-Memory code", () => {
+    expect(presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code: "tool_call_settle_conflict", message: "Memory search could not be settled." } }]
+    }))).toMatchObject({ failure: {
+      code: "tool_call_settle_conflict", message: "The answer could not be prepared. Try again."
+    } });
+    expect(presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code: "context_budget_exceeded", message: "Choose a model with a larger context." } }]
+    })).failure).toMatchObject({ code: "context_budget_exceeded", message: "Choose a model with a larger context." });
+  });
+
+  it.each([
+    ["memory_egress_destination_revoked", "Knowledge access changed before answer dispatch", "egress_destination_revoked"],
+    ["memory_egress_receipt_conflict", "Provider dispatch evidence could not be completed.", "egress_receipt_conflict"],
+    ["memory_egress_receipt_unavailable", "Provider dispatch evidence is unavailable.", "egress_receipt_unavailable"]
+  ])("keeps the egress-ledger failure %s visible with an egress support code", (code, message, shown) => {
+    const live = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code, message, recovery: "change_parameters" } }]
+    }));
+    expect(live.failure).toMatchObject({ code: shown, message });
+    expect(JSON.stringify(live)).not.toMatch(/memory_/u);
+  });
+
+  it.each([
+    ["memory_egress_receipt_unavailable", "Memory egress evidence is unavailable."],
+    [null, "This run uses a retired answer-model Memory tool contract."],
+    [null, "Checkpointed answer-model Memory tools cannot be replayed."]
+  ])("neutralizes Memory-worded egress and retired-tool text (%s)", (code, message) => {
+    const live = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { ...(code ? { code } : {}), message, recovery: "change_parameters" } }]
+    }));
+    expect(live.failure?.message).toBe("The answer could not be prepared. Try again.");
+    const persisted = presentRunLifecycleV2(state({ failure: { message }, status: "error" }));
+    expect(persisted.failure?.message).toBe("The answer could not be prepared. Try again.");
+    expect(JSON.stringify([live, persisted])).not.toMatch(/memory/iu);
+  });
+
+  it.each([
+    "A retired answer-model Memory tool request cannot be rebuilt.",
+    "This saved run uses a retired answer-model Memory tool contract."
+  ])("neutralizes the historical retired-tool text %s live and after reload", (message) => {
+    const coded = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code: "memory_answer_model_tools_retired", message, recovery: "change_parameters" } }]
+    }));
+    expect(coded.failure).toMatchObject({ code: "preparation_failed", message: RUN_PREPARATION_FAILURE_MESSAGE });
+    const uncoded = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { message, recovery: "change_parameters" } }]
+    }));
+    expect(uncoded.failure?.message).toBe(RUN_PREPARATION_FAILURE_MESSAGE);
+    const persisted = presentRunLifecycleV2(state({ failure: { message }, status: "error" }));
+    expect(persisted.failure?.message).toBe(RUN_PREPARATION_FAILURE_MESSAGE);
+    expect(JSON.stringify([coded, uncoded, persisted])).not.toMatch(/memory/iu);
+  });
+
+  it("keeps a retired non-Memory runtime failure unchanged", () => {
+    const message = "The retired Knowledge planning runtime cannot be replayed.";
+    const live = presentRunLifecycleV2(state({
+      events: [{ type: "error", data: { code: "knowledge_legacy_runtime_retired", message } }]
+    }));
+    expect(live.failure).toMatchObject({ code: "knowledge_legacy_runtime_retired", message });
+    const persisted = presentRunLifecycleV2(state({ failure: { message }, status: "error" }));
+    expect(persisted.failure?.message).toBe(message);
+  });
+
+  it("shows the server-written neutral text exactly as the live neutralization does", () => {
+    expect(memoryUiCopy("answer.preparationFailed")).toBe(RUN_PREPARATION_FAILURE_MESSAGE);
+    const persisted = presentRunLifecycleV2(state({
+      failure: { message: RUN_PREPARATION_FAILURE_MESSAGE }, status: "error"
+    }));
+    expect(persisted.failure?.message).toBe(RUN_PREPARATION_FAILURE_MESSAGE);
   });
 
   it("bounds malformed error state and supplies factual fallback copy", () => {
