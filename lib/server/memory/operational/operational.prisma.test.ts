@@ -229,7 +229,7 @@ describe("Memory operational PostgreSQL contracts", () => {
       await review(active, { settled: false });
       await review(paused, { settled: false });
       const snapshot = await loadMemoryOperationalSnapshot(prisma, { from, to });
-      expect(snapshot.version).toBe("memory-operational-snapshot-v7");
+      expect(snapshot.version).toBe("memory-operational-snapshot-v8");
       expect(snapshot.maintenance).toEqual({
         blocked: before.maintenance.blocked + 2,
         blockedReasons: [{ code: "pending_relation", count: 1 }, { code: "source_changed", count: 1 }],
@@ -249,6 +249,55 @@ describe("Memory operational PostgreSQL contracts", () => {
     } finally {
       await cleanupOwner(active);
       await cleanupOwner(paused);
+    }
+  });
+
+  it("counts settled invalid answers by role and closed decode reason", async () => {
+    const userId = await createOwner();
+    const jobId = randomUUID();
+    try {
+      const before = await loadMemoryOperationalSnapshot(prisma, { from, to });
+      await prisma.memoryJob.create({ data: {
+        id: jobId, idempotencyFingerprint: memorySha256({ jobId, userId }), kind: "CONSOLIDATE_CANDIDATE",
+        memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0, pipelineVersion: "memory-operational-test-v1",
+        state: "QUEUED", userId
+      } });
+      let ordinal = 0;
+      // Settled, usage-detached evidence needs no live provider rows.
+      const binding = (state: "FAILED" | "SUCCEEDED", decodeReason: string | null, logicalRole = "MEMORY_HISTORY_CLASSIFY") =>
+        prisma.memoryExecutionBinding.create({ data: {
+          userId, ownerType: "JOB", memoryJobId: jobId, logicalRole, ordinal: ordinal++, state, decodeReason,
+          errorCode: state === "FAILED" ? "memory_classifier_output_invalid" : null,
+          acceptedOutputHash: state === "SUCCEEDED" ? "e".repeat(64) : null,
+          inputHash: "a".repeat(64), providerId: "memory-operational-private-provider",
+          destinationFingerprint: "d".repeat(64), pipelineVersion: "fixture", policyVersion: "fixture",
+          promptVersion: "fixture", schemaVersion: "fixture", secretFreeExecutionSnapshot: {},
+          createdAt: completedAt, startedAt: completedAt, completedAt,
+          recoverableUntil: completedAt, relationsDetachedAt: completedAt
+        } });
+      await binding("FAILED", "contextual_key_output_invalid");
+      await binding("FAILED", "contextual_key_output_invalid");
+      await binding("FAILED", "invalid_json");
+      await binding("FAILED", "invalid_json", "MEMORY_STATEMENT_CLASSIFY");
+      await binding("FAILED", null);
+      await binding("SUCCEEDED", null);
+      const snapshot = await loadMemoryOperationalSnapshot(prisma, { from, to });
+      const added = snapshot.outputDecode.map((row) => ({
+        ...row,
+        count: row.count - (before.outputDecode.find((prior) =>
+          prior.role === row.role && prior.reason === row.reason)?.count ?? 0)
+      })).filter(({ count }) => count > 0);
+      expect(added).toEqual([
+        { count: 2, reason: "contextual_key_output_invalid", role: "MEMORY_HISTORY_CLASSIFY" },
+        { count: 1, reason: "invalid_json", role: "MEMORY_HISTORY_CLASSIFY" },
+        { count: 1, reason: "invalid_json", role: "MEMORY_STATEMENT_CLASSIFY" }
+      ]);
+      const serialized = JSON.stringify(snapshot.outputDecode);
+      expect(serialized).not.toContain(userId);
+      expect(serialized).not.toContain(jobId);
+    } finally {
+      await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
+      await cleanupOwner(userId);
     }
   });
 

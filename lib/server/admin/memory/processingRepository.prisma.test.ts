@@ -101,6 +101,41 @@ describe("administrator Memory processing aggregates", () => {
     } finally { await f.cleanup(); }
   });
 
+  it("treats history output repaired by an in-job validation retry as complete", async () => {
+    const f = await fixture();
+    try {
+      resolution.available = true;
+      const job = await f.job("SUCCEEDED", { kind: "INDEX_HISTORY", age: 20 });
+      const settledAt = new Date(f.now.getTime() - 60_000);
+      // Settled, usage-detached evidence needs no live provider rows.
+      const binding = (ordinal: number, state: "FAILED" | "SUCCEEDED", inputHash: string,
+        errorCode: string | null = null) => prisma.memoryExecutionBinding.create({ data: {
+        userId: f.userId, ownerType: "JOB", memoryJobId: job.id, logicalRole: "MEMORY_HISTORY_CLASSIFY",
+        ordinal, state, inputHash, errorCode, providerId: "fixture-provider",
+        decodeReason: errorCode === "memory_classifier_output_invalid" ? "invalid_json" : null,
+        acceptedOutputHash: state === "SUCCEEDED" ? "e".repeat(64) : null,
+        destinationFingerprint: "d".repeat(64), pipelineVersion: "fixture", policyVersion: "fixture",
+        promptVersion: "fixture", schemaVersion: "fixture", secretFreeExecutionSnapshot: {},
+        createdAt: settledAt, startedAt: settledAt, completedAt: settledAt,
+        recoverableUntil: settledAt, relationsDetachedAt: settledAt
+      } });
+      const history = async () => (await readAdminMemoryProcessing(prisma, f.now)).issues
+        .filter(({ stage }) => stage === "HISTORY").map(({ reason }) => reason);
+      await binding(0, "FAILED", "a".repeat(64), "memory_classifier_output_invalid");
+      expect(await history()).toEqual(["HISTORY_INCOMPLETE"]);
+      await binding(1, "SUCCEEDED", "a".repeat(64));
+      expect(await history()).toEqual([]);
+      // A repair of one input never hides another input's failure.
+      await binding(2, "FAILED", "b".repeat(64), "memory_classifier_output_limit_exceeded");
+      expect(await history()).toEqual(["OUTPUT_LIMIT"]);
+      await binding(3, "SUCCEEDED", "b".repeat(64));
+      expect(await history()).toEqual([]);
+    } finally {
+      await prisma.memoryExecutionBinding.deleteMany({ where: { userId: f.userId } });
+      await f.cleanup();
+    }
+  });
+
   it("reports background maintenance under its own stage and never retired Dream synthesis", async () => {
     const f = await fixture();
     try {
