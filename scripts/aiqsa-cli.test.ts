@@ -615,7 +615,10 @@ describe("up and install", () => {
     expect(result.status).toBe(status);
     expect(existsSync(fixture.file(".env"))).toBe(false);
     expect(fixture.dockerLog).not.toMatch(/ (up|config) /u);
-    if (status === 4) expect(result.output).toContain("are not supported");
+    if (status === 4) {
+      expect(result.output).toContain("are not supported");
+      expect(result.output).not.toContain("rerun with --skip-preflight");
+    }
   });
 });
 
