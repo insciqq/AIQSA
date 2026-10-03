@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GeminiHttpError } from "../providers/geminiInteractionsTransport";
+import { ContextSummaryError } from "./contextCompactionSummarizer";
 import {
   continueToolLoop,
   type ToolLoopBudgets,
@@ -581,6 +582,52 @@ describe("provider-neutral tool loop", () => {
       status: "failed"
     });
     expect(executeTool).not.toHaveBeenCalled();
+    expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+  });
+
+  it("names the stable cause and the next action when a round fails while fitting its context", async () => {
+    const action = "Continue in a new chat from a summary, or choose a model with a larger context window.";
+    const cases = [
+      {
+        error: new ContextSummaryError("context_compaction_summary_no_progress", "PRIVATE_PROMPT_CANARY summary text"),
+        message: `The earlier conversation could not be compacted to fit the model's context window (context_compaction_summary_no_progress). ${action}`
+      },
+      {
+        // The run pipeline raises the irreducible overflow as its own typed error.
+        error: Object.assign(new Error("PRIVATE_PROMPT_CANARY did not fit"), { code: "context_too_large" }),
+        message: `This conversation no longer fits the model's context window (context_too_large). ${action}`
+      }
+    ] as const;
+    for (const { error, message } of cases) {
+      const executeTool = vi.fn();
+      const outcome = await continueToolLoop({
+        budgets: defaultBudgets,
+        executeTool,
+        initialContinuation: null,
+        runProviderRound: async () => { throw error; }
+      });
+
+      expect(outcome).toMatchObject({
+        failure: { code: error.code, message, round: 1, stage: "provider" },
+        status: "failed"
+      });
+      expect(executeTool).not.toHaveBeenCalled();
+      expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
+    }
+  });
+
+  it("keeps the generic round failure for an unclassified provider error", async () => {
+    const outcome = await continueToolLoop({
+      budgets: defaultBudgets,
+      executeTool: vi.fn(),
+      initialContinuation: null,
+      runProviderRound: async () => { throw new Error("PRIVATE_PROVIDER_MESSAGE_CANARY"); }
+    });
+
+    expect(outcome).toMatchObject({
+      failure: { code: "provider_round_failed", message: "Provider round 1 failed.", round: 1, stage: "provider" },
+      status: "failed"
+    });
     expect(JSON.stringify(outcome)).not.toContain("PRIVATE_");
   });
 

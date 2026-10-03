@@ -668,6 +668,37 @@ describe("Navigation v2", () => {
       .getByRole("button", { name: "Chats" })).not.toHaveAttribute("aria-current");
   });
 
+  it.each([1440, 390])("gives the account menu its own Settings beside the Settings destination at width %s", (width) => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
+    const onSettings = vi.fn();
+    const onAccountSettings = vi.fn();
+    render(
+      <ReadingRoomShellV2
+        accountLabel="operator@aiqsa.local"
+        onAccountSettings={onAccountSettings}
+        onNewChat={vi.fn()}
+        onSelectChat={vi.fn()}
+        onSettings={onSettings}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    const owner = () => width > 390
+      ? screen.getByRole("navigation", { name: "Workspace" })
+      : screen.getByRole("complementary", { name: "Chat navigation" });
+    if (width <= 390) fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    fireEvent.click(within(owner()).getByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+    expect(onAccountSettings).toHaveBeenCalledOnce();
+    expect(onSettings).not.toHaveBeenCalled();
+
+    if (width <= 390) fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    fireEvent.click(within(owner()).getByRole("button", { name: "Settings" }));
+    expect(onSettings).toHaveBeenCalledOnce();
+    expect(onAccountSettings).toHaveBeenCalledOnce();
+  });
+
   it("moves the rail destinations into the drawer footer on mobile", () => {
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
     render(

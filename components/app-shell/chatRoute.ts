@@ -150,6 +150,23 @@ export function beginChatRouteResolution(): ChatRouteResolution {
   return resolution;
 }
 
+/**
+ * Opens a chat the shell cannot activate yet (its workspace list is still
+ * loading) as an explicit user navigation: the address becomes one new
+ * history entry at once and resolves exactly like a typed address, so a later
+ * navigation or traversal supersedes it and a stale result applies nothing.
+ */
+export function navigateToChatAddress(
+  route: ChatRoute,
+  resolve: (route: ChatRoute, resolution: ChatRouteResolution) => void
+): void {
+  navigateChatRoute(() => {
+    resolve(route, beginChatRouteResolution());
+    // Whatever the resolution wrote on the way gives way to the chosen address.
+    writeChatRoute(route);
+  });
+}
+
 export function isCurrentChatRouteResolution(resolution: ChatRouteResolution): boolean {
   return pendingResolution === resolution;
 }
