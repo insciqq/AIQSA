@@ -66,7 +66,7 @@ git fetch --tags && git checkout vX.Y.Z     # installation on a release tag (det
 ./aiqsa.sh upgrade --to vX.Y.Z    # installation on a release tag (detached HEAD): always pass --to
 ```
 
-`upgrade` stops on local changes to tracked files or a MinIO-era installation and asks you to confirm a current backup of PostgreSQL, object storage and `.env` (`--backup-confirmed` without a prompt). It then updates the checkout with `git pull --ff-only`, or moves it to the release tag given with `--to`. Images follow the image settings in `.env` (`AIQSA_IMAGE`, `AIQSA_WORKSPACE_RUNNER_IMAGE`), otherwise the newest release: `upgrade` refuses before changing anything when a pinned image belongs to another release, or when `--to` names an older release while the images are unpinned, and prints the exact `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z` line to set. It then pulls the images before any container is replaced, restarts with `--remove-orphans` and waits until the stack is ready; a Workspace runner that is not ready is only a warning, because the rest of AIQSA works without it. It never rewrites `.env`: keys new in `.env.example` are reported, and `--add-missing-keys` appends them.
+`upgrade` stops on local changes to tracked files or a MinIO-era installation and offers to create a backup first (`--backup` without a prompt), or asks you to confirm a current backup of PostgreSQL, object storage and `.env` (`--backup-confirmed`). It then updates the checkout with `git pull --ff-only`, or moves it to the release tag given with `--to`. Images follow the image settings in `.env` (`AIQSA_IMAGE`, `AIQSA_WORKSPACE_RUNNER_IMAGE`), otherwise the newest release: `upgrade` refuses before changing anything when a pinned image belongs to another release, or when `--to` names an older release while the images are unpinned, and prints the exact `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z` line to set. It then pulls the images before any container is replaced, restarts with `--remove-orphans` and waits until the stack is ready; a Workspace runner that is not ready is only a warning, because the rest of AIQSA works without it. It never rewrites `.env`: keys new in `.env.example` are reported, and `--add-missing-keys` appends them.
 
 The equivalent manual update: update the checkout first so Compose uses the release's configuration, then pull the images and restart:
 
@@ -78,6 +78,18 @@ docker compose pull && docker compose up -d --remove-orphans
 This tracks stable releases and applies database migrations before starting the application. See the [release notes](https://github.com/insciqq/AIQSA/releases) before updating. Images are published on [GHCR](https://github.com/insciqq/AIQSA/pkgs/container/aiqsa); their digests are included in each release.
 
 If `docker compose pull` reports `pull access denied for minio/mc`, the checkout is older than v0.2.31: stop at v0.2.34 and follow its runbook as described above.
+
+## Backup and restore
+
+```bash
+./aiqsa.sh backup                       # backups/<UTC time>-v<version>/ in the checkout
+./aiqsa.sh backup --output /srv/aiqsa-backup
+./aiqsa.sh restore /srv/aiqsa-backup    # only into an empty installation of the same version
+```
+
+`backup` is a cold copy: it stops the application and workers, dumps PostgreSQL, stops object storage, archives its volume, copies `.env` as `env`, verifies the copies and restarts exactly the services that were running, usually within minutes. It writes `postgres.dump`, `objects.tar.gz`, `env`, `manifest` and `SHA256SUMS` with private permissions. `env` holds the installation secrets, so keep backups private, and copy them to another host: a copy on the same disk does not survive the loss of the host. Schedules, retention and off-site copies are up to you. With external object storage (`AIQSA_S3_ENDPOINT`) only PostgreSQL and `.env` are copied; back up the bucket with its provider at the same time.
+
+`restore` needs a fresh checkout of the backup's release (`git checkout vX.Y.Z`) without `.env`, Compose containers or volumes. It verifies the checksums, restores into the new volumes from an isolated project without network access or published ports, runs the Memory and Knowledge deletion reconciliation, and only then starts the installation; search indexes are rebuilt from PostgreSQL afterwards. If reconciliation fails, nothing starts and the command prints how to discard the attempt. Backups made with external object storage are restored by hand.
 
 ## Development
 
