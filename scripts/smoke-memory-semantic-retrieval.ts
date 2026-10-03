@@ -797,19 +797,33 @@ async function savedMarkerMemories(marker: string): Promise<MemoryConsumerItem[]
 }
 
 async function waitForAmbiguityTargets(marker: string): Promise<MemoryConsumerItem[]> {
-  return poll("automatic_learning", async () => {
-    const [candidates, readyEmbeddings] = await Promise.all([
-      searchConsumerMemories(`${marker} reporting format`).then((memories) =>
-        memories.filter((item) =>
-          item.provenance === "SAVED" && item.statement.includes(marker)
-        )),
-      verifier.readyExplicitFactEmbeddingCount({
-        query: marker,
-        userId: authenticatedUserId
-      })
-    ]);
-    return candidates.length >= 2 && readyEmbeddings >= 2 ? candidates : null;
-  });
+  // Background commands store a model-normalized statement, so only the
+  // synthetic marker is a stable search term; extra wording need not survive.
+  let last = { listed: 0, readyEmbeddings: 0, searched: 0 };
+  try {
+    return await poll("automatic_learning", async () => {
+      const [candidates, listed, readyEmbeddings] = await Promise.all([
+        searchConsumerMemories(marker).then((memories) =>
+          memories.filter((item) =>
+            item.provenance === "SAVED" && item.statement.includes(marker)
+          )),
+        savedMarkerMemories(marker),
+        verifier.readyExplicitFactEmbeddingCount({
+          query: marker,
+          userId: authenticatedUserId
+        })
+      ]);
+      last = { listed: listed.length, readyEmbeddings, searched: candidates.length };
+      return candidates.length >= 2 && readyEmbeddings >= 2 ? candidates : null;
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      diagnostic: "ambiguity_targets",
+      ...last,
+      sanitizedAggregatesOnly: true
+    }));
+    throw error;
+  }
 }
 
 async function cleanupSmokeState(
