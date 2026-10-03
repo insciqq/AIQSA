@@ -8,7 +8,7 @@ import {
 } from "@/components/admin/adminApi";
 import type { AdminRunAction } from "@/components/admin/useAdminActionRunner";
 import type { AdminConfirmationController } from "@/components/admin/useAdminConfirmationController";
-import type { AdminActionRequest, AdminDashboard, AdminGroupGrantChange, AdminUserRecord } from "@/lib/contracts/admin";
+import type { AdminActionRequest, AdminDashboard, AdminGroupGrantChange, AdminUserRecord, AdminUserRole } from "@/lib/contracts/admin";
 import { useCallback, useMemo } from "react";
 
 export type UseAdminUsersControllerOptions = Readonly<{
@@ -31,6 +31,8 @@ export type AdminUsersController = Readonly<{
     requestReject(user: AdminUserActionTarget): void;
     requestRevokeAllSessions(): void;
     requestRevokeSessions(user: AdminUserActionTarget): void;
+    /** Grants (`admin`) or revokes (`user`) the admin role of another active user after a confirmation. */
+    requestSetRole(user: AdminUserActionTarget, role: AdminUserRole): void;
     saveGroups(user: AdminUserActionTarget, groupIds: readonly string[], expectedGroupIds: readonly string[]): Promise<boolean>;
     saveGrants(user: Pick<AdminUserRecord, "id" | "directGrants">, changes: readonly AdminGroupGrantChange[]): Promise<AdminUserAccessResult>;
     saveCredential(user: AdminUserActionTarget, input: Omit<Extract<AdminActionRequest, { action: "set_user_credential" }>, "action" | "userId">): Promise<AdminUserAccessResult>;
@@ -55,8 +57,8 @@ function soleOwnedProjectsLabel(result: AdminActionResult): string {
 }
 
 /**
- * Mutations of the Users page: approval, membership, session and account
- * lifecycle actions. Selection lives in the URL (`?resource=`), list and form
+ * Mutations of the Users page: approval, membership, session, admin role and
+ * account lifecycle actions. Selection lives in the URL (`?resource=`), list and form
  * state in the components; this hook owns only the server calls and the
  * confirmations they need.
  */
@@ -178,6 +180,35 @@ export function useAdminUsersController({
     });
   }, [requestConfirmedAction]);
 
+  const requestSetRole = useCallback((user: AdminUserActionTarget, role: AdminUserRole) => {
+    const label = userLabel(user);
+    requestConfirmedAction(role === "admin"
+      ? {
+          body: { action: "set_user_role", role, userId: user.id },
+          confirmLabel: "Make administrator",
+          dialogLabel: `Make ${label} an administrator`,
+          icon: "check",
+          message: "Administrator rights granted.",
+          prompt: `Make ${label} an administrator? Administrators can manage users, providers, models, MCP and installation settings. ` +
+            "This does not give access to other users' private chats, Assistants or Knowledge. The change applies from their next request.",
+          testId: "admin-confirm-grant-admin-role",
+          title: "Make administrator?",
+          tone: "warning"
+        }
+      : {
+          body: { action: "set_user_role", role, userId: user.id },
+          confirmLabel: "Remove administrator rights",
+          dialogLabel: `Remove administrator rights from ${label}`,
+          icon: "x",
+          message: "Administrator rights removed.",
+          prompt: `Remove administrator rights from ${label}? They lose access to the admin console and admin actions from their next request. ` +
+            "Their own chats, Assistants, Knowledge and group access stay unchanged.",
+          testId: "admin-confirm-revoke-admin-role",
+          title: "Remove administrator rights?",
+          tone: "warning"
+        });
+  }, [requestConfirmedAction]);
+
   const requestRevokeAllSessions = useCallback(() => {
     requestConfirmedAction({
       body: { action: "revoke_all_sessions" },
@@ -200,6 +231,7 @@ export function useAdminUsersController({
       requestReject,
       requestRevokeAllSessions,
       requestRevokeSessions,
+      requestSetRole,
       saveCredential,
       saveGrants,
       saveGroups
@@ -215,6 +247,7 @@ export function useAdminUsersController({
     requestReject,
     requestRevokeAllSessions,
     requestRevokeSessions,
+    requestSetRole,
     saveCredential,
     saveGrants,
     saveGroups

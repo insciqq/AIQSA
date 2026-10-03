@@ -6,7 +6,8 @@ import type {
   AdminActionResponse,
   AdminDashboard,
   AdminDashboardErrorResponse,
-  AdminInviteEmailDelivery
+  AdminInviteEmailDelivery,
+  AdminUserRole
 } from "@/lib/contracts/admin";
 import type { AuthConfig } from "./config";
 import type { AdminRepository } from "./adminRepositoryContract";
@@ -15,6 +16,7 @@ import type { RequestAuthResolver } from "./requestAuth";
 import { createSessionToken } from "./session";
 import { hashToken } from "./token";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
+import { logEvent } from "../observability";
 
 export type AdminHandlerDeps = {
   getConfig(): Pick<AuthConfig, "appBaseUrl">;
@@ -88,6 +90,10 @@ function groupIds(value: unknown): string[] {
 
 function accessRuleKind(value: unknown): AdminAccessRuleKind | null {
   return value === "domain" || value === "email" ? value : null;
+}
+
+function userRole(value: unknown): AdminUserRole | null {
+  return value === "admin" || value === "user" ? value : null;
 }
 
 function booleanField(value: unknown): boolean | null {
@@ -371,6 +377,42 @@ export function createAdminActionHandler(deps: AdminActionHandlerDeps) {
       return result === "applied"
         ? json({ ok: true })
         : json({ error: result }, { status: result === "user_access_stale" ? 409 : 404 });
+    }
+
+    if (action.action === "set_user_role") {
+      const userId = stringField(action.userId);
+      const role = userRole(action.role);
+
+      if (!userId) {
+        return json({ error: "user_required" }, { status: 400 });
+      }
+      if (!role) {
+        return json({ error: "user_role_required" }, { status: 400 });
+      }
+
+      // Only the target and the role leave the body; the actor is the authenticated admin.
+      const result = await deps.repository.setUserRole({ actingAdminUserId: admin.userId, role, userId });
+
+      switch (result) {
+        case "granted":
+        case "revoked":
+          logEvent("service_operation", {
+            subsystem: "admin", stage: "write", outcome: "completed",
+            code: result === "granted" ? "user_role_granted" : "user_role_revoked"
+          });
+          return json({ ok: true });
+        case "unchanged":
+          return json({ ok: true });
+        case "actor_forbidden":
+          return json({ error: "forbidden" }, { status: 403 });
+        case "self_role_change_forbidden":
+          return json({ error: result }, { status: 403 });
+        case "last_admin_forbidden":
+        case "user_not_active":
+          return json({ error: result }, { status: 409 });
+        case "not_found":
+          return json({ error: "user_not_found" }, { status: 404 });
+      }
     }
 
     if (action.action === "set_user_grants") {

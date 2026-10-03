@@ -244,6 +244,15 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
           ) : null}
           {active && !isSelf ? (
             <>
+              <UiV2Button
+                disabled={busy}
+                icon="shield"
+                onClick={() => users.actions.requestSetRole(user, user.role === "admin" ? "user" : "admin")}
+                tone="ghost"
+                type="button"
+              >
+                {user.role === "admin" ? "Remove administrator rights" : "Make administrator"}
+              </UiV2Button>
               <UiV2Button disabled={busy} icon="logout" onClick={() => users.actions.requestRevokeSessions(user)} tone="ghost" type="button">
                 Revoke sessions
               </UiV2Button>
@@ -269,7 +278,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
         ) : null}
         {isSelf ? (
           <p className="border-l-2 border-proof/35 bg-proof/5 px-3 py-2 text-xs leading-5 text-ink-secondary">
-            This is your own account. Self-disable and self-delete are not exposed here.
+            This is your own account. Self-disable, self-delete and changing your own administrator role are not exposed here.
           </p>
         ) : (
           <DeletionHint info={deletion} />

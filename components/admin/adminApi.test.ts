@@ -62,7 +62,7 @@ function invalidJsonResponse(status = 200): Response {
 
 describe("admin API client", () => {
   it("keeps the exact shared action discriminant inventory visible", () => {
-    expect(adminActionNames).toHaveLength(19);
+    expect(adminActionNames).toHaveLength(20);
     expectTypeOf<Exclude<AdminActionRequest["action"], (typeof adminActionNames)[number]>>().toEqualTypeOf<never>();
     expectTypeOf<Exclude<(typeof adminActionNames)[number], AdminActionRequest["action"]>>().toEqualTypeOf<never>();
   });
@@ -259,6 +259,9 @@ describe("admin API client", () => {
     expect(adminActionErrorMessage("invite_email_delivery_invalid")).toContain("whether to email");
     expect(adminActionErrorMessage("self_disable_forbidden")).toContain("cannot disable itself");
     expect(adminActionErrorMessage("last_admin_forbidden")).toContain("final active administrator");
+    expect(adminActionErrorMessage("self_role_change_forbidden")).toContain("your own administrator role");
+    expect(adminActionErrorMessage("user_not_active")).toContain("Only active users");
+    expect(adminActionErrorMessage("user_role_required")).toContain("should be an administrator");
     expect(adminActionErrorMessage("future_action_error")).toBe(
       "The admin action could not be completed. Review the current data and try again."
     );

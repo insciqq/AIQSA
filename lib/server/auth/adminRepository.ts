@@ -38,6 +38,8 @@ export type {
   AdminSetGroupGrantsInput,
   AdminSetGroupGrantsResult,
   AdminSetUserGroupsInput,
+  AdminSetUserRoleInput,
+  AdminSetUserRoleResult,
   AdminUsageDashboard,
   AdminUsageGroupRecord,
   AdminUsageProviderModelRecord,

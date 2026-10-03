@@ -981,6 +981,8 @@
   "upstream_unavailable",
   "user_id_invalid",
   "user_not_available",
+  "user_role_granted",
+  "user_role_revoked",
   "vision_analysis_access_denied",
   "vision_analysis_cancelled",
   "vision_analysis_input_invalid",
