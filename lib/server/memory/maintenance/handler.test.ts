@@ -9,6 +9,7 @@ import { createPrismaMemoryMaintenanceHandler } from "./handler";
 import { memoryMaintenancePlanHash, MEMORY_MAINTENANCE_POLICY_VERSION, type MemoryMaintenanceCall,
   type MemoryMaintenanceSource } from "./policy";
 import type { MemoryMaintenanceProvider } from "./provider";
+import type { MemoryMaintenanceRelatedStatement } from "./related";
 import type { MemoryMaintenanceCallState, MemoryMaintenanceRepository, MemoryMaintenanceSnapshot } from "./repository";
 
 function source(ref: string): MemoryMaintenanceSource {
@@ -44,7 +45,9 @@ function setup(options: { staged?: boolean; verified?: boolean; calls?: Partial<
     stagedReview: vi.fn(async () => options.staged ? result : null),
     stagedVerification: vi.fn(async () => options.verified ? approvals : null),
     callState: vi.fn(async (_job: unknown, call: MemoryMaintenanceCall): Promise<MemoryMaintenanceCallState> =>
-      calls[call] ?? { status: "UNUSED" }), apply: vi.fn() };
+      calls[call] ?? { status: "UNUSED" }), apply: vi.fn(),
+    relatedStatements: vi.fn(async (_job: unknown, _versionIds: readonly string[]) =>
+      new Map<string, MemoryMaintenanceRelatedStatement>()) };
   const provider = { review: vi.fn(async () => result), verify: vi.fn(async () => approvals) };
   const handler = createPrismaMemoryMaintenanceHandler((options.client ?? {}) as PrismaClient, {
     repository: repository as unknown as MemoryMaintenanceRepository, provider: provider as unknown as MemoryMaintenanceProvider
@@ -245,6 +248,46 @@ describe("maintenance staleness after the paid review", () => {
     const { handler, provider } = setup({ snapshots: [snapshotOf(), snapshotOf(["S1", "S2"])] });
     const completed = await handler.execute(claim, context);
     expect(provider.verify).not.toHaveBeenCalled();
+    expect(completed.stage).toBe("maintenance_authorized_apply");
+  });
+});
+
+describe("maintenance contradiction verification", () => {
+  const named = { ref: "S2M1", factId: "fact-explicit", versionId: "version-explicit" };
+  const contradiction = { sourceRef: "S2", scopeBasis: "general_personal", action: "REMOVE_TRANSIENT", usefulness: null,
+    reason: "contradicted", contradictedBy: named };
+  const statement = { factId: named.factId, versionId: named.versionId, statement: "I always want complete code.", observedAt: null };
+  function contradicted(decisions: readonly unknown[] = [decision("S1"), contradiction]) {
+    const work = setup();
+    work.provider.review.mockResolvedValue({ ...result, output: { decisions } } as unknown as typeof result);
+    return work;
+  }
+  it("verifies a contradiction together with the exact related memory it names, read again before disclosure", async () => {
+    const { handler, provider, repository } = contradicted();
+    repository.relatedStatements.mockResolvedValue(new Map([[named.versionId, statement]]));
+    await handler.execute(claim, context);
+    expect(repository.relatedStatements).toHaveBeenCalledWith(expect.objectContaining({ id: "job" }), [named.versionId]);
+    const [, disclosed, proposal] = provider.verify.mock.calls[0] as unknown as [unknown, MemoryMaintenanceSource[],
+      { decisions: Array<{ sourceRef: string }> }];
+    expect(disclosed.map(({ ref, related }) => ({ ref, related }))).toEqual([{ ref: "S1", related: undefined },
+      { ref: "S2", related: [{ ...statement, ref: "S2M1" }] }]);
+    expect(proposal.decisions.map(({ sourceRef }) => sourceRef)).toEqual(["S1", "S2"]);
+  });
+  it("never discloses a contradiction whose related memory changed, was forgotten or now belongs to another fact", async () => {
+    for (const current of [new Map(), new Map([[named.versionId, { ...statement, factId: "fact-other" }]])]) {
+      const { handler, provider, repository } = contradicted();
+      repository.relatedStatements.mockResolvedValue(current);
+      await handler.execute(claim, context);
+      const [, disclosed, proposal] = provider.verify.mock.calls[0] as unknown as [unknown, MemoryMaintenanceSource[],
+        { decisions: Array<{ sourceRef: string }> }];
+      expect(disclosed.map(({ ref }) => ref)).toEqual(["S1"]);
+      expect(proposal.decisions.map(({ sourceRef }) => sourceRef)).toEqual(["S1"]);
+    }
+    // With nothing else to verify there is no verifier call; apply keeps that source.
+    const only = contradicted([{ ...decision("S1"), action: "KEEP", scopeBasis: "general_personal", usefulness: "DURABLE",
+      reason: "useful_personal_context" }, contradiction]);
+    const completed = await only.handler.execute(claim, context);
+    expect(only.provider.verify).not.toHaveBeenCalled();
     expect(completed.stage).toBe("maintenance_authorized_apply");
   });
 });

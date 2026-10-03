@@ -66,9 +66,9 @@ export const MEMORY_MAINTENANCE_SCHEDULE_TRANSACTION_BOUNDS = Object.freeze({
 export const MEMORY_MAINTENANCE_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_MAINTENANCE_PIPELINE_VERSION,
   policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION,
-  promptVersion: "memory-maintenance-prompt-v3",
-  schemaVersion: "memory-maintenance-schema-v5",
-  retrievalConfigFingerprint: "memory-maintenance-exact-sources-v2"
+  promptVersion: "memory-maintenance-prompt-v4",
+  schemaVersion: "memory-maintenance-schema-v6",
+  retrievalConfigFingerprint: "memory-maintenance-exact-sources-related-v3"
 });
 export type MemoryUsefulness = "DURABLE" | "ONGOING" | "EPISODIC";
 /** Fixed, content-free reasons of a non-final outcome. Only the planner (or
@@ -97,6 +97,16 @@ export type MemoryMaintenanceEvidence = Readonly<{
   observedAt: Date;
   createdAt: Date;
 }>;
+/** Another current memory of the owner, most similar to a reviewed source and
+ * shown only to judge whether it contradicts or supersedes that source. It is
+ * never reviewed or removed here. `ref` is the source ref, `M` and its rank. */
+export type MemoryMaintenanceRelatedMemory = Readonly<{
+  ref: string;
+  factId: string;
+  versionId: string;
+  statement: string;
+  observedAt: Date | null;
+}>;
 export type MemoryMaintenanceSource = Readonly<{
   ref: string;
   factId: string;
@@ -110,6 +120,9 @@ export type MemoryMaintenanceSource = Readonly<{
   evidence: readonly MemoryMaintenanceEvidence[];
   context?: readonly Readonly<{ kind: "SOURCE_MESSAGE" | "REFERENCE_MESSAGE" | "FACT_DEPENDENCY";
     role: string; text: string; identityHash: string; observedAt?: string }>[];
+  /** Outside the source hash: attached for a call and revalidated before
+   * every disclosure. */
+  related?: readonly MemoryMaintenanceRelatedMemory[];
   evidenceThrough: Date;
   sourceSnapshotHash: string;
 }>;

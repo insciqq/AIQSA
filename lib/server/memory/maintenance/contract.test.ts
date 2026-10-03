@@ -15,8 +15,10 @@ export const source: MemoryMaintenanceSource = {
     startOffset: 0, endOffset: 32, quote: "The appointment is tomorrow.", observedAt: new Date("2026-09-01"), createdAt: new Date("2026-09-01") }]
 };
 const plan = memoryMaintenancePlan([source]);
-const remove = { source_ref: "S1", scope_basis: "single_episode", action: "REMOVE_TRANSIENT", usefulness: null, reason: "episode" };
-const keep = { source_ref: "S1", scope_basis: "general_personal", action: "KEEP", usefulness: "DURABLE", reason: "useful_personal_context" };
+const remove = { source_ref: "S1", scope_basis: "single_episode", action: "REMOVE_TRANSIENT", usefulness: null, reason: "episode",
+  contradicted_by: null };
+const keep = { source_ref: "S1", scope_basis: "general_personal", action: "KEEP", usefulness: "DURABLE", reason: "useful_personal_context",
+  contradicted_by: null };
 /** What every contradictory decision becomes: kept, with nothing promoted, and marked. */
 const conservative = { sourceRef: "S1", scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null, reason: "useful_personal_context",
   conservative: true };
@@ -26,19 +28,19 @@ const REMOVAL_BASES = MEMORY_MAINTENANCE_SCOPE_BASES.filter((basis) => !(KEEP_BA
 const BASIS_REMOVAL_REASONS = [["single_episode", "episode"], ["short_term_matter", "short_term"], ["common_habit", "not_distinctive"],
   ["current_task_only", "one_off_task_detail"], ["generic_desideratum", "one_off_task_detail"],
   ["context_fragment", "context_dependent_fragment"]] as const;
-const wire = ({ sourceRef, scopeBasis, action, usefulness, reason }: MemoryMaintenanceDecision) =>
-  ({ source_ref: sourceRef, scope_basis: scopeBasis, action, usefulness, reason });
-const decodeOne = (decision: Record<string, unknown>) => decodeMemoryMaintenanceReview({ decisions: [decision] }, plan);
+const wire = ({ sourceRef, scopeBasis, action, usefulness, reason, contradictedBy }: MemoryMaintenanceDecision) =>
+  ({ source_ref: sourceRef, scope_basis: scopeBasis, action, usefulness, reason, contradicted_by: contradictedBy?.ref ?? null });
+const decodeOne = (decision: Record<string, unknown>) => decodeMemoryMaintenanceReview({ decisions: [{ contradicted_by: null, ...decision }] }, plan);
 
 describe("governed automatic Memory maintenance", () => {
   it("keeps lasting utility independent of confidence and never keeps an episode", () => {
     for (const [usefulness, scope_basis] of [["DURABLE", "general_personal"], ["ONGOING", "ongoing_personal"]]) {
-      expect(decodeMemoryMaintenanceOutput({ decisions: [{ source_ref: "S1", scope_basis, action: "KEEP", usefulness, reason: "useful_personal_context" }] }, plan)
-        .decisions[0]).toMatchObject({ action: "KEEP", usefulness });
+      expect(decodeMemoryMaintenanceOutput({ decisions: [{ source_ref: "S1", scope_basis, action: "KEEP", usefulness, reason: "useful_personal_context",
+        contradicted_by: null }] }, plan).decisions[0]).toMatchObject({ action: "KEEP", usefulness });
     }
     for (const scope_basis of ["significant_episode", "general_personal", "ongoing_personal", "explicit_remember", "unresolved_scope"]) {
       expect(() => decodeMemoryMaintenanceOutput({ decisions: [{ source_ref: "S1", scope_basis, action: "KEEP",
-        usefulness: "EPISODIC", reason: "useful_personal_context" }] }, plan)).toThrow("memory_maintenance_output_invalid");
+        usefulness: "EPISODIC", reason: "useful_personal_context", contradicted_by: null }] }, plan)).toThrow("memory_maintenance_output_invalid");
     }
   });
   it("removes episodes, short-term matters and common habits under their basis's own reason", () => {
@@ -72,7 +74,8 @@ describe("governed automatic Memory maintenance", () => {
   it("rejects non-string usefulness instead of coercing malformed JSON", () => {
     for (const usefulness of [["DURABLE"], ["ONGOING"], { value: "DURABLE" }, 1]) {
       expect(() => decodeMemoryMaintenanceOutput({ decisions: [{ source_ref: "S1", action: "KEEP",
-        scope_basis: "general_personal", usefulness, reason: "useful_personal_context" }] }, plan)).toThrow("memory_maintenance_output_invalid");
+        scope_basis: "general_personal", usefulness, reason: "useful_personal_context", contradicted_by: null }] }, plan))
+        .toThrow("memory_maintenance_output_invalid");
     }
   });
   it("prevents task-local constraints and generic reactions from being promoted to personal state", () => {
@@ -88,11 +91,12 @@ describe("governed automatic Memory maintenance", () => {
   it("retains unresolved scope and explicit remember intent without inventing a lasting preference", () => {
     for (const scope_basis of ["unresolved_scope", "explicit_remember"]) {
       expect(decodeMemoryMaintenanceOutput({ decisions: [{ source_ref: "S1", scope_basis, action: "KEEP", usefulness: null,
-        reason: "useful_personal_context" }] }, plan).decisions[0]).toMatchObject({ action: "KEEP", usefulness: null });
+        reason: "useful_personal_context", contradicted_by: null }] }, plan).decisions[0]).toMatchObject({ action: "KEEP", usefulness: null });
       expect(decodeOne({ ...remove, scope_basis })).toEqual({ normalized: 0, conservative: 1, output: { decisions: [conservative] } });
     }
     expect(decodeMemoryMaintenanceOutput({ decisions: [{ source_ref: "S1", scope_basis: "explicit_remember", action: "KEEP",
-      usefulness: "ONGOING", reason: "useful_personal_context" }] }, plan).decisions[0]).toMatchObject({ usefulness: "ONGOING" });
+      usefulness: "ONGOING", reason: "useful_personal_context", contradicted_by: null }] }, plan).decisions[0])
+      .toMatchObject({ usefulness: "ONGOING" });
     expect(decodeOne({ source_ref: "S1", scope_basis: "unresolved_scope", action: "KEEP", usefulness: "DURABLE",
       reason: "useful_personal_context" })).toMatchObject({ normalized: 1, output: { decisions: [{ scopeBasis: "unresolved_scope", usefulness: null }] } });
   });
@@ -145,7 +149,7 @@ describe("governed automatic Memory maintenance", () => {
   });
   it("tells a resolved contradiction from a model's unresolved keep without trusting a stored mark", () => {
     const modelKeep = decodeMemoryMaintenanceOutput({ decisions: [{ source_ref: "S1", scope_basis: "unresolved_scope", action: "KEEP",
-      usefulness: null, reason: "useful_personal_context" }] }, plan).decisions[0]!;
+      usefulness: null, reason: "useful_personal_context", contradicted_by: null }] }, plan).decisions[0]!;
     const resolved = decodeOne({ ...remove, usefulness: "DURABLE" }).output.decisions[0]!;
     expect(modelKeep).toEqual({ ...resolved, conservative: undefined });
     expect(memoryMaintenanceDecisionReasonCode(modelKeep)).toBeNull();
@@ -160,8 +164,8 @@ describe("governed automatic Memory maintenance", () => {
     expect(() => memoryMaintenanceDecisionReasonCode({ ...removal, reason: "useful_personal_context" }))
       .toThrow("memory_maintenance_output_invalid");
     // Every recorded code fits the review row's closed VARCHAR(32) vocabulary.
-    expect([...MEMORY_MAINTENANCE_REMOVAL_REASONS, "unresolved_scope"].every((code) => code.length <= 32 && /^[a-z_]+$/u.test(code)))
-      .toBe(true);
+    expect([...MEMORY_MAINTENANCE_REMOVAL_REASONS, "unresolved_scope", "conflict_unresolved"]
+      .every((code) => code.length <= 32 && /^[a-z_]+$/u.test(code))).toBe(true);
   });
   it("decodes a batch whose only defects are labels, reviews every source and verifies only consistent removals", () => {
     const sources = ["S1", "S2", "S3", "S4"].map((ref, index): MemoryMaintenanceSource => ({ ...source, ref,
@@ -186,14 +190,14 @@ describe("governed automatic Memory maintenance", () => {
   });
   it("applies the long-term criterion without protecting episodes or shared excerpts", () => {
     const request = buildMemoryMaintenanceRequest(plan);
-    expect(request.name).toBe("review_memory_usefulness_v3");
+    expect(request.name).toBe("review_memory_usefulness_v4");
     expect(request.userPrompt).toContain(source.statement);
     expect(request.userPrompt).not.toMatch(/fact-1|version-1|chat-1|messageId|sourceTextHash/u);
     expect(request.systemPrompt).toContain(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE);
     expect(request.systemPrompt).not.toMatch(/never justify deletion|significant_episode|KEEP EPISODIC/u);
     expect(JSON.stringify(request.schema)).not.toContain("EPISODIC");
     const verification = buildMemoryMaintenanceVerificationRequest(plan, decodeMemoryMaintenanceOutput({ decisions: [remove] }, plan));
-    expect(verification.name).toBe("verify_memory_cleanup_v3");
+    expect(verification.name).toBe("verify_memory_cleanup_v4");
     expect(verification.systemPrompt).toContain(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE);
     expect(verification.systemPrompt).not.toMatch(/independent useful personal assertion|active plans, significant historical events/u);
     expect(verification.systemPrompt).toContain("not a reason to reject");
@@ -240,11 +244,118 @@ describe("governed automatic Memory maintenance", () => {
       statement: "I have kept a vegetarian diet for ten years.", sourceSnapshotHash: "c".repeat(64) };
     const pair = memoryMaintenancePlan([source, kept]);
     const output = decodeMemoryMaintenanceOutput({ decisions: [remove, { source_ref: "S2", scope_basis: "general_personal",
-      action: "KEEP", usefulness: "DURABLE", reason: "useful_personal_context" }] }, pair);
+      action: "KEEP", usefulness: "DURABLE", reason: "useful_personal_context", contradicted_by: null }] }, pair);
     const request = buildMemoryMaintenanceVerificationRequest(pair,
       { decisions: output.decisions.filter(({ action }) => action === "REMOVE_TRANSIENT") });
     expect(request.userPrompt).toContain(source.statement);
     expect(request.userPrompt).not.toContain(kept.statement);
     expect(JSON.parse(request.userPrompt).proposals).toEqual([expect.objectContaining({ sourceRef: "S1" })]);
+  });
+});
+
+describe("maintenance contradictions with related memories", () => {
+  const memory = (ref: string, statement: string) => ({ ref, factId: `fact-${ref}`, versionId: `version-${ref}`, statement,
+    observedAt: new Date("2026-09-15") });
+  const lasting: MemoryMaintenanceSource = { ...source, statement: "I prefer short code snippets.",
+    related: [memory("S1M1", "I always want complete code with every fix applied."), memory("S1M2", "I write Python at work.")] };
+  const other: MemoryMaintenanceSource = { ...source, ref: "S2", factId: "fact-2", versionId: "version-2", sourceSnapshotHash: "c".repeat(64),
+    statement: "I live in Berlin.", related: [memory("S2M1", "I live in Moscow.")] };
+  const batch = memoryMaintenancePlan([lasting, other]);
+  const keepOther = { ...keep, source_ref: "S2" };
+  const contradiction = { source_ref: "S1", scope_basis: "general_personal", action: "REMOVE_TRANSIENT", usefulness: null,
+    reason: "contradicted", contradicted_by: "S1M1" };
+  const decode = (decision: Record<string, unknown>) => decodeMemoryMaintenanceReview({ decisions: [decision, keepOther] }, batch);
+  const named = { ref: "S1M1", factId: "fact-S1M1", versionId: "version-S1M1" };
+
+  it("decodes a contradiction with the exact identity of the related memory it names", () => {
+    for (const scope_basis of ["general_personal", "ongoing_personal", "unresolved_scope"]) {
+      const decoded = decode({ ...contradiction, scope_basis });
+      expect(decoded).toMatchObject({ normalized: 0, conservative: 0 });
+      expect(decoded.output.decisions[0]).toEqual({ sourceRef: "S1", scopeBasis: scope_basis, action: "REMOVE_TRANSIENT",
+        usefulness: null, reason: "contradicted", contradictedBy: named });
+      expect(memoryMaintenanceDecisionReasonCode(decoded.output.decisions[0]!)).toBe("contradicted");
+      // A decoded contradiction is canonical: it decodes to itself, also from a staged receipt that holds no related memories.
+      expect(decode(wire(decoded.output.decisions[0]!)).output).toEqual(decoded.output);
+      expect(decodeStagedMemoryMaintenanceOutput(JSON.parse(JSON.stringify(decoded.output)), memoryMaintenancePlan([source,
+        { ...other, related: undefined }]))).toEqual(decoded.output);
+    }
+    // A usefulness label is derived, never a reason to keep the contradiction.
+    expect(decode({ ...contradiction, usefulness: "DURABLE" })).toMatchObject({ normalized: 1, conservative: 0,
+      output: { decisions: [{ reason: "contradicted", usefulness: null, contradictedBy: named }, {}] } });
+  });
+  it("keeps a contradiction that lacks its own related memory or contradicts explicit remember intent", () => {
+    for (const decision of [{ ...contradiction, contradicted_by: null }, { ...contradiction, contradicted_by: "S2M1" },
+      { ...contradiction, scope_basis: "explicit_remember" }]) {
+      expect(decode(decision)).toEqual({ normalized: 0, conservative: 1, output: { decisions: [conservative,
+        { sourceRef: "S2", scopeBasis: "general_personal", action: "KEEP", usefulness: "DURABLE", reason: "useful_personal_context" }] } });
+    }
+  });
+  it("removes a transient memory as transient and drops a related memory named outside a contradiction", () => {
+    expect(decode({ ...contradiction, scope_basis: "single_episode" })).toMatchObject({ normalized: 1, conservative: 0, output: { decisions: [
+      { sourceRef: "S1", scopeBasis: "single_episode", action: "REMOVE_TRANSIENT", usefulness: null, reason: "episode" }, {}] } });
+    for (const decision of [{ ...keep, contradicted_by: "S1M1" }, { ...keep, reason: "contradicted" },
+      { ...keep, reason: "contradicted", contradicted_by: "S1M2" }]) {
+      const decoded = decode(decision);
+      expect(decoded).toMatchObject({ normalized: 1, conservative: 0 });
+      expect(decoded.output.decisions[0]).toEqual({ sourceRef: "S1", scopeBasis: "general_personal", action: "KEEP",
+        usefulness: "DURABLE", reason: "useful_personal_context" });
+    }
+    expect(decode({ ...remove, contradicted_by: "S1M2" }).output.decisions[0]).toEqual({ sourceRef: "S1", scopeBasis: "single_episode",
+      action: "REMOVE_TRANSIENT", usefulness: null, reason: "episode" });
+  });
+  it("rejects an unknown or malformed related ref and a missing contradicted_by", () => {
+    const rejected = (decision: Record<string, unknown>) => {
+      try { decode(decision); } catch (error) { return memoryOutputDecodeReason(error); }
+      return null;
+    };
+    expect(rejected({ ...contradiction, contradicted_by: "S1M9" })).toBe("maintenance_contract_ref");
+    expect(rejected({ ...contradiction, contradicted_by: "S1" })).toBe("maintenance_contract_ref");
+    for (const contradicted_by of [1, { ref: "S1M1" }, ["S1M1"]]) expect(rejected({ ...contradiction, contradicted_by })).toBe("maintenance_contract_enum");
+    const { contradicted_by: _omitted, ...missing } = contradiction;
+    expect(rejected(missing)).toBe("maintenance_contract_shape");
+  });
+  it("re-decodes a staged contradiction only with its stored identity bound to its own source", () => {
+    const decoded = decode(contradiction).output;
+    const stored = (contradictedBy: unknown) => ({ decisions: [{ ...decoded.decisions[0], contradictedBy }, decoded.decisions[1]] });
+    for (const contradictedBy of [{ ...named, extra: true }, { ref: "S2M1", factId: "f", versionId: "v" }, { ref: "S1M1", factId: "f" },
+      { ref: "S1M1", factId: "", versionId: "v" }, "S1M1", null]) {
+      expect(() => decodeStagedMemoryMaintenanceOutput(stored(contradictedBy), batch)).toThrow("memory_maintenance_output_invalid");
+    }
+    // An identity stored on another decision is dropped, so its receipt no longer matches the accepted output hash.
+    const keepOnly = decodeStagedMemoryMaintenanceOutput({ decisions: [{ ...decoded.decisions[1], contradictedBy: { ...named, ref: "S2M1" } },
+      { ...decoded.decisions[0], sourceRef: "S1" }] }, batch);
+    expect(keepOnly.decisions[0]).not.toHaveProperty("contradictedBy");
+  });
+  it("shows related memories by ref only and offers exactly their refs to contradicted_by", () => {
+    const request = buildMemoryMaintenanceRequest(batch);
+    const payload = JSON.parse(request.userPrompt) as { sources: Array<{ related_memories?: unknown }> };
+    expect(payload.sources.map(({ related_memories }) => related_memories)).toEqual([
+      [{ ref: "S1M1", statement: "I always want complete code with every fix applied.", observed_at: "2026-09-15T00:00:00.000Z" },
+        { ref: "S1M2", statement: "I write Python at work.", observed_at: "2026-09-15T00:00:00.000Z" }],
+      [{ ref: "S2M1", statement: "I live in Moscow.", observed_at: "2026-09-15T00:00:00.000Z" }]]);
+    expect(request.userPrompt).not.toMatch(/fact-S|version-S/u);
+    const decision = (request.schema.properties as { decisions: { items: { properties: Record<string, unknown>; required: string[] } } })
+      .decisions.items;
+    expect(decision.required).toContain("contradicted_by");
+    expect(decision.properties.contradicted_by).toEqual({ type: ["string", "null"], enum: ["S1M1", "S1M2", "S2M1", null] });
+    expect(request.systemPrompt).toContain("cannot both be true now");
+    expect(request.systemPrompt).toContain("that is decided separately");
+    // Without related memories the plan offers no ref and no related_memories field.
+    const plain = buildMemoryMaintenanceRequest(plan);
+    expect((plain.schema.properties as { decisions: { items: { properties: Record<string, unknown> } } }).decisions.items.properties
+      .contradicted_by).toEqual({ type: "null" });
+    expect(plain.userPrompt).not.toContain("related_memories");
+  });
+  it("verifies a contradiction against the related memory it names, by ref only", () => {
+    const output = decode(contradiction).output;
+    const disclosed = memoryMaintenancePlan([{ ...lasting, related: [lasting.related![0]!] }]);
+    const request = buildMemoryMaintenanceVerificationRequest(disclosed, { decisions: output.decisions.slice(0, 1) });
+    const payload = JSON.parse(request.userPrompt) as { sources: Array<{ related_memories: unknown }>; proposals: unknown[] };
+    expect(payload.proposals).toEqual([{ sourceRef: "S1", scopeBasis: "general_personal", action: "REMOVE_TRANSIENT",
+      usefulness: null, reason: "contradicted", contradictedBy: "S1M1" }]);
+    expect(payload.sources[0]!.related_memories).toEqual([{ ref: "S1M1", statement: "I always want complete code with every fix applied.",
+      observed_at: "2026-09-15T00:00:00.000Z" }]);
+    expect(request.userPrompt).not.toMatch(/fact-S|version-S/u);
+    expect(request.systemPrompt).toContain("cannot both be true now");
   });
 });
