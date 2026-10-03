@@ -794,17 +794,20 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
       input: Readonly<{ chatId: string; userId: string }>
     ): Promise<Readonly<{
       active: number;
+      /** Extractions cancelled by the documented fence for a Memory command source. */
+      commandExcludedExtractions: number;
       successfulEmptyExtraction: boolean;
       total: number;
       unsuccessfulTerminal: number;
     }>> {
       const jobs = await client.memoryJob.findMany({
-        select: { id: true, kind: true, stage: true, state: true },
+        select: { errorCode: true, id: true, kind: true, stage: true, state: true },
         where: { chatId: input.chatId, userId: input.userId }
       });
       if (jobs.length === 0) {
         return {
           active: 0,
+          commandExcludedExtractions: 0,
           successfulEmptyExtraction: false,
           total: 0,
           unsuccessfulTerminal: 0
@@ -841,6 +844,9 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
       }
       return {
         active: jobs.filter(({ state }) => activeStates.has(state)).length,
+        commandExcludedExtractions: jobs.filter((job) =>
+          job.kind === "EXTRACT_FACTS" && job.state === "CANCELLED" &&
+          job.errorCode === "memory_fact_source_command_excluded").length,
         successfulEmptyExtraction: jobs.some((job) =>
           job.kind === "EXTRACT_FACTS" &&
           job.stage === "fact_observations_empty" &&

@@ -700,7 +700,10 @@ async function waitForNoAutomaticFact(source: SourceRun, notBefore: Date): Promi
       chatId: source.chat.id,
       userId: authenticatedUserId
     });
-    if (jobs.unsuccessfulTerminal > 0) {
+    // A recognized Memory command (even a rejected or safe-remainder save)
+    // fences its source from automatic extraction by cancelling that job; this
+    // is the documented no-extraction outcome, not a failed job.
+    if (jobs.unsuccessfulTerminal - jobs.commandExcludedExtractions > 0) {
       fail("automatic_learning", "memory_smoke_source_job_failed");
     }
     if (jobs.total < 1 || jobs.active > 0) return null;

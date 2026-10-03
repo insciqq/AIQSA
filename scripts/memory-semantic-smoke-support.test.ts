@@ -1017,20 +1017,37 @@ describe("Memory semantic smoke support", () => {
             state: "SUCCEEDED"
           },
           { id: "job-unknown", kind: "INDEX_HISTORY", stage: null, state: "SUCCEEDED" },
-          { id: "job-retried", kind: "INDEX_HISTORY", stage: null, state: "SUCCEEDED" }
+          { id: "job-retried", kind: "INDEX_HISTORY", stage: null, state: "SUCCEEDED" },
+          {
+            errorCode: "memory_fact_source_command_excluded",
+            id: "job-command-fenced",
+            kind: "EXTRACT_FACTS",
+            stage: null,
+            state: "CANCELLED"
+          },
+          {
+            errorCode: "memory_source_stale",
+            id: "job-stale-extraction",
+            kind: "EXTRACT_FACTS",
+            stage: null,
+            state: "CANCELLED"
+          }
         ])
       }
     } as unknown as PrismaClient;
     const verifier = createPrismaMemorySemanticSmokeVerifier(client);
 
+    // The command fence still counts as terminal, so learned-fact waits fail
+    // fast; only the no-fact wait subtracts the separately reported fence.
     await expect(verifier.sourceJobStateCounts({
       chatId: "private-source-chat",
       userId: "private-owner"
     })).resolves.toEqual({
       active: 0,
+      commandExcludedExtractions: 1,
       successfulEmptyExtraction: true,
-      total: 3,
-      unsuccessfulTerminal: 1
+      total: 5,
+      unsuccessfulTerminal: 3
     });
   });
 
@@ -1057,6 +1074,13 @@ describe("Memory semantic smoke support", () => {
     expect(source.match(/await requiredMemoryCommand\(/gu)).toHaveLength(5);
     expect(source.match(/await editConsumerMemory\(/gu)).toHaveLength(1);
     expect(source).toContain("assessMemorySemanticSmokeSecretCommand({");
+    const noFactWait = source.slice(
+      source.indexOf("async function waitForNoAutomaticFact("),
+      source.indexOf("function memoryAction(")
+    );
+    expect(noFactWait).toContain(
+      "jobs.unsuccessfulTerminal - jobs.commandExcludedExtractions > 0"
+    );
     expect(source).toContain("await waitForNoAutomaticFact(secret, secretStartedAt);");
     expect(source).toContain(".includes(secretToken)");
     // Standing-v1 turns admit no dynamic history: recall must be proven
