@@ -27,7 +27,6 @@ const response: MemorySettingsResponse = {
     pastChatIndexingAvailable: false,
     permanentChatDeletion: false,
     retrievalAvailable: false,
-    synthesisAvailable: false,
     temporaryChats: false
   },
   historyIndexing: {
@@ -44,7 +43,6 @@ const response: MemorySettingsResponse = {
     referenceChatHistory: false,
     sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
     settingsRevision: 0,
-    synthesisEnabled: false,
     updatedAt: "2026-08-10T12:00:00.000Z",
     useMemoryFacts: false
   }

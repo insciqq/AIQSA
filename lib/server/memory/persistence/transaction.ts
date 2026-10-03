@@ -323,6 +323,7 @@ export async function ensureActiveLexicalGeneration(
   });
   await tx.userMemorySettings.update({
     data: { activeIndexGenerationId: generation.id },
+    select: { userId: true },
     where: { userId: settings.userId }
   });
   settings.activeIndexGenerationId = generation.id;

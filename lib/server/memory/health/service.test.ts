@@ -27,7 +27,6 @@ function settings(
       pastChatIndexingAvailable: true,
       permanentChatDeletion: true,
       retrievalAvailable: true,
-      synthesisAvailable: true,
       temporaryChats: true
     },
     historyIndexing: {
@@ -48,7 +47,6 @@ function settings(
       referenceChatHistory,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
       settingsRevision: 1,
-      synthesisEnabled: false,
       updatedAt: "2026-08-12T08:00:00.000Z",
       useMemoryFacts: true,
       ...overrides

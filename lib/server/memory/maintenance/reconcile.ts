@@ -12,7 +12,8 @@ export async function scheduleOwnerMemoryMaintenance(client: PrismaClient, userI
     if (await tx.memoryJob.count({ where: { userId, kind: "SYNTHESIZE_MEMORIES", state: { in: ["QUEUED", "CLAIMED", "RETRYABLE_FAILED", "WAITING_FOR_CONFIGURATION"] } } })) return 0;
     const cursor = await tx.userMemorySettings.findUniqueOrThrow({ where: { userId }, select: { maintenanceCursor: true } });
     const scan = await scanMemoryMaintenanceSources(tx, userId, now, cursor.maintenanceCursor);
-    await tx.userMemorySettings.update({ where: { userId }, data: { maintenanceCursor: scan.cursor, maintenanceScannedAt: now } });
+    await tx.userMemorySettings.update({ where: { userId }, data: { maintenanceCursor: scan.cursor, maintenanceScannedAt: now },
+      select: { userId: true } });
     // A blocked or unreviewable source is settled here, before any provider
     // call and without a job; its row covers it until the weekly recheck.
     if (scan.blockers.length) {
