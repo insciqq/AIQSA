@@ -259,6 +259,37 @@ describe("maintenance transactional lifecycle", () => {
       expect(await prisma.memoryMaintenanceReview.findFirst({ where: { userId } })).toMatchObject({ disposition: "REMOVED" });
     } finally { await cleanup(userId); }
   });
+  it("records the closed reason of every settled decision and nothing else", async () => {
+    const userId = await owner();
+    try {
+      const removed = await fact(userId, "The parcel arrives at noon today.");
+      const rejected = await fact(userId, "I drink water every day.");
+      const kept = await fact(userId, "I might move to the coast one day.");
+      const contradicted = await fact(userId, "I like the blue one.");
+      const work = await planned(userId);
+      const decided = new Map<string, Omit<MemoryMaintenanceDecision, "sourceRef">>([
+        [removed.factId, { scopeBasis: "short_term_matter", action: "REMOVE_TRANSIENT", usefulness: null, reason: "short_term" }],
+        [rejected.factId, { scopeBasis: "common_habit", action: "REMOVE_TRANSIENT", usefulness: null, reason: "not_distinctive" }],
+        [kept.factId, { scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null, reason: "useful_personal_context" }],
+        [contradicted.factId, { scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null, reason: "useful_personal_context",
+          conservative: true }]
+      ]);
+      const refOf = (factId: string) => work.plan.sources.find((source) => source.factId === factId)!.ref;
+      const output = { decisions: work.plan.sources.map(({ ref, factId }) => ({ sourceRef: ref, ...decided.get(factId)! })) };
+      const review = { ...work.review, output, acceptedOutputHash: memoryMaintenanceOutputHash(work.review.inputHash, output) };
+      const verification = { ...work.verification, output: { decisions: [{ sourceRef: refOf(removed.factId), approve: true },
+        { sourceRef: refOf(rejected.factId), approve: false }] } };
+      await expect(withLockedMemoryTransaction(prisma, userId, (tx) => work.repository.apply(tx, work.claim, work.snapshot,
+        review, verification, new Date()))).resolves.toMatchObject({ reviewed: 4, removed: 1, blocked: 0 });
+      const settled = ({ versionId }: Readonly<{ versionId: string }>) => prisma.memoryMaintenanceReview.findFirstOrThrow({
+        where: { userId, factVersionId: versionId }, select: { disposition: true, usefulness: true, reasonCode: true } });
+      expect(await settled(removed)).toEqual({ disposition: "REMOVED", usefulness: null, reasonCode: "short_term" });
+      expect(await settled(rejected)).toEqual({ disposition: "REJECTED", usefulness: null, reasonCode: "not_distinctive" });
+      // A model's own unresolved keep and a resolved contradiction differ only by the recorded reason.
+      expect(await settled(kept)).toEqual({ disposition: "KEEP", usefulness: null, reasonCode: null });
+      expect(await settled(contradicted)).toEqual({ disposition: "KEEP", usefulness: null, reasonCode: "unresolved_scope" });
+    } finally { await cleanup(userId); }
+  });
   it("rolls the whole batch back on an unexpected database error", async () => {
     const userId = await owner();
     try {
@@ -346,7 +377,7 @@ describe("maintenance call attempts", () => {
       const { claim, repository, snapshot, review } = await planned(userId);
       const bindings = maintenanceBindings(userId, claim.id, authority);
       // The previous release keyed the same reviewed plan to its own schema version.
-      const schemaVersion = "memory-maintenance-schema-v3";
+      const schemaVersion = "memory-maintenance-schema-v4";
       const previous = memoryExecutionSha256({ versions: { ...MEMORY_MAINTENANCE_VERSIONS, schemaVersion },
         sourceSnapshotHash: snapshot.sourceSnapshotHash, stage: "REVIEW" });
       expect(previous).not.toBe(review.inputHash);
