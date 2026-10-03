@@ -252,9 +252,41 @@ describe("history recovery without repeated provider work", () => {
     await assertRecall(f);
   });
 
-  it("keeps incomplete history and a failed auto-heal successor as separate admin issues", async () => {
+  it("repairs an invalid answer inside the job without auto-heal or an incomplete notice", async () => {
     const f = await fixture();
     f.run.mockResolvedValueOnce({ output: {}, providerResponseId: null,
+      usage: { inputTokens: 20, outputTokens: 9, totalTokens: 29, completeness: "complete" } });
+    await f.drive();
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } }))
+      .toMatchObject({ state: "SUCCEEDED", stage: "lexical_ready" });
+    expect(f.run).toHaveBeenCalledTimes(4);
+    const bindings = await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { ordinal: "asc" } });
+    expect(bindings.map(({ ordinal, state, errorCode, decodeReason }) => ({ ordinal, state, errorCode, decodeReason }))).toEqual([
+      { ordinal: 0, state: "FAILED", errorCode: "memory_classifier_output_invalid", decodeReason: "contextual_key_output_invalid" },
+      { ordinal: 1, state: "SUCCEEDED", errorCode: null, decodeReason: null },
+      { ordinal: 2, state: "SUCCEEDED", errorCode: null, decodeReason: null },
+      { ordinal: 3, state: "SUCCEEDED", errorCode: null, decodeReason: null }
+    ]);
+    // The retry reused the identical input and paid for its own call.
+    expect(bindings[1]!.inputHash).toBe(bindings[0]!.inputHash);
+    expect(await prisma.usageEvent.findMany({ where: { userId: f.userId }, select: { memoryExecutionBindingId: true, totalTokens: true } }))
+      .toEqual(expect.arrayContaining([{ memoryExecutionBindingId: bindings[0]!.id, totalTokens: 29 },
+        { memoryExecutionBindingId: bindings[1]!.id, totalTokens: 25 }]));
+    expect(await prisma.usageEvent.count({ where: { userId: f.userId } })).toBe(4);
+    expect(await prisma.memoryRecallRound.findFirstOrThrow({ where: { userId: f.userId } }))
+      .toMatchObject({ state: "ACTIVE", contextualKeyState: "GENERATED" });
+    expect((await readAdminMemoryProcessing(prisma, f.now())).issues.filter(({ stage }) => stage === "HISTORY")).toEqual([]);
+    f.advance(MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS[0]);
+    expect(await autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: f.now() })).toBe(0);
+    await f.drive();
+    expect(f.run).toHaveBeenCalledTimes(4);
+    await assertRecall(f);
+  });
+
+  it("keeps incomplete history and a failed auto-heal successor as separate admin issues", async () => {
+    const f = await fixture();
+    // Every in-job validation retry of the first input is rejected too.
+    for (let call = 0; call < 3; call += 1) f.run.mockResolvedValueOnce({ output: {}, providerResponseId: null,
       usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25, completeness: "complete" } });
     await f.drive();
     expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ state: "SUCCEEDED" });
@@ -432,7 +464,13 @@ describe("history recovery without repeated provider work", () => {
     f.advance(24 * 60 * 60_000);
     expect(await autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: f.now() })).toBe(0);
     expect(await prisma.memoryJob.count({ where: { userId: f.userId, kind: "INDEX_HISTORY" } })).toBe(4);
-    expect(f.run).toHaveBeenCalledTimes(8);
+    // Per job: three calls for the contextual input, then the breaker (four
+    // invalid answers for the role) leaves the digest a single call.
+    expect(f.run).toHaveBeenCalledTimes(16);
+    for (const job of await prisma.memoryJob.findMany({ where: { userId: f.userId, kind: "INDEX_HISTORY" } })) {
+      expect(await prisma.memoryExecutionBinding.count({ where: { memoryJobId: job.id, state: "FAILED",
+        errorCode: "memory_classifier_output_invalid" } })).toBe(4);
+    }
     expect((await readAdminMemoryProcessing(prisma, f.now())).issues).toContainEqual(
       expect.objectContaining({ reason: "HISTORY_INCOMPLETE", autoHeal: "EXHAUSTED", count: 1 }));
     await assertRecall(f);
@@ -441,10 +479,11 @@ describe("history recovery without repeated provider work", () => {
   it.each(["summary_length", "response_json"] as const)("repairs a known %s failure with precise feedback, preserving successful stages", async (violation) => {
     const f = await fixture();
     const produce = f.run.getMockImplementation()!;
-    let rejected = false;
+    // The first job's digest call and both of its in-job retries are rejected.
+    let rejected = 0;
     f.run.mockImplementation(async (...args) => {
-      if (args[1].name.startsWith("memory_chat_digest") && !rejected) {
-        rejected = true;
+      if (args[1].name.startsWith("memory_chat_digest") && rejected < 3) {
+        rejected += 1;
         if (violation === "response_json") throw new MemoryStructuredOutputProviderError(null,
           { inputTokens: 20, outputTokens: 8, totalTokens: 28 }, { cause: new StructuredOutputDecodeError("invalid_json") });
         return { output: { summary: "s".repeat(2_761), topics: [], decisions: [], open_loops: [] },
@@ -458,11 +497,14 @@ describe("history recovery without repeated provider work", () => {
     });
     const original = await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
     const usage = await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
-    expect(original.filter(b => b.state === "FAILED")).toEqual([expect.objectContaining({ errorCode: "memory_classifier_output_invalid" })]);
+    const failed = expect.objectContaining({ errorCode: "memory_classifier_output_invalid",
+      decodeReason: violation === "response_json" ? "invalid_json" : "digest_contract_summary_length" });
+    expect(original.filter(b => b.state === "FAILED")).toEqual([failed, failed, failed]);
+    expect(new Set(original.filter(b => b.state === "FAILED").map(b => b.inputHash)).size).toBe(1);
     f.advance(MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS[0]);
     expect(await autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: f.now() })).toBe(1);
     await f.drive();
-    expect(f.run).toHaveBeenCalledTimes(4);
+    expect(f.run).toHaveBeenCalledTimes(6);
     expect(f.run.mock.calls.at(-1)![1].responseReminder).toContain(`contract_${violation}`);
     expect(await prisma.memoryExecutionBinding.findMany({ where: { id: { in: original.map(b => b.id) } }, orderBy: { id: "asc" } })).toEqual(original);
     expect(await prisma.usageEvent.findMany({ where: { id: { in: usage.map(u => u.id) } }, orderBy: { id: "asc" } })).toEqual(usage);
@@ -543,7 +585,7 @@ describe("history recovery without repeated provider work", () => {
     await f.drive();
     expect(observed).toEqual(["RETRYING", "RETRYING", "RETRYING"]);
     expect(duplicates).toEqual([0, 0, 0]);
-    expect(f.run).toHaveBeenCalledTimes(5);
+    expect(f.run).toHaveBeenCalledTimes(7);
     expect((await readAdminMemoryProcessing(prisma, f.now())).issues.filter(({ stage }) => stage === "HISTORY")).toEqual([]);
   });
 
@@ -600,16 +642,16 @@ describe("history recovery without repeated provider work", () => {
     if (fence === "ambiguous") {
       const binding = await prisma.memoryExecutionBinding.findFirstOrThrow({ where: { userId: f.userId } });
       await prisma.memoryExecutionBinding.create({ data: {
-        ...binding, id: randomUUID(), ordinal: 3, state: "OUTCOME_UNKNOWN", acceptedOutputHash: null,
+        ...binding, id: randomUUID(), ordinal: 99, state: "OUTCOME_UNKNOWN", acceptedOutputHash: null,
         secretFreeExecutionSnapshot: binding.secretFreeExecutionSnapshot as Prisma.InputJsonValue,
-        errorCode: "memory_execution_outcome_unknown", completedAt: f.now()
+        errorCode: "memory_execution_outcome_unknown", decodeReason: null, completedAt: f.now()
       } });
     }
     if (fence === "unsettled") await prisma.usageEvent.deleteMany({ where: { userId: f.userId } });
     f.advance(MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS[0]);
     expect(await autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: f.now() })).toBe(0);
     expect(await prisma.memoryJob.count({ where: { userId: f.userId, kind: "INDEX_HISTORY", idempotencyFingerprint: { startsWith: "heal-history:" } } })).toBe(0);
-    expect(f.run).toHaveBeenCalledTimes(2);
+    expect(f.run).toHaveBeenCalledTimes(4);
   });
 
   it("keeps raw history and paid usage after output exhaustion, with truthful current admin status and no replay", async () => {

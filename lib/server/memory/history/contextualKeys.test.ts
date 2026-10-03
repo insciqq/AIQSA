@@ -11,6 +11,7 @@ import {
 } from "./rounds";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 import { MemoryStructuredOutputProviderError } from "../execution/structuredClassifier";
+import { MemoryCoordinatorError } from "../coordinator/errors";
 
 const execute = vi.hoisted(() => vi.fn());
 vi.mock("../execution", async (importOriginal) => ({
@@ -218,5 +219,92 @@ describe("contextual Memory semantic grounding", () => {
     expect(proposalResult.fallbackDiagnostics).toContainEqual({
       reason: "GROUNDING_INVALID", roundId: source.id
     });
+  });
+});
+
+type GovernedCall = {
+  decode(value: unknown): unknown;
+  ordinal: number;
+  request: ProviderStructuredOutputRequest;
+  validationRetry?: { allocateOrdinal(attempt: number): Promise<number>; maxAttempts: number };
+};
+
+describe("contextual key dispatch ordinals and validation retries", () => {
+  beforeEach(() => { execute.mockReset(); });
+
+  function durableJob(current: () => boolean = () => true) {
+    let max: number | null = null;
+    const currency = vi.fn(async () => current() ? [{ id: "private-contextual-job" }] : []);
+    const aggregate = vi.fn(async () => ({ _max: { ordinal: max } }));
+    const client = {
+      $queryRaw: currency,
+      memoryExecutionBinding: { aggregate, findMany: vi.fn(async () => []) }
+    } as unknown as PrismaClient;
+    return { aggregate, client, currency, record: (ordinal: number) => { max = Math.max(max ?? -1, ordinal); } };
+  }
+
+  function respond(call: GovernedCall, source: MemoryHistoryPreparedRound) {
+    return call.request.name === "memory_contextual_grounding_v1"
+      ? { decisions: [{ handle: "s0", support: "SUPPORTED" }] }
+      : { rounds: [{ handle: "r0", language_code: source.languageCode,
+        statements: [{ source_refs: ["r0c"], text: "My preference is tea." }] }] };
+  }
+
+  it("binds a repaired retry on the next durable ordinal without colliding with grounding", async () => {
+    const source = round("I prefer tea.", "en");
+    const job = durableJob();
+    const ordinals: number[] = [];
+    execute.mockImplementation(async (call: GovernedCall) => {
+      expect(call.validationRetry?.maxAttempts).toBe(3);
+      let ordinal = call.ordinal;
+      job.record(ordinal);
+      ordinals.push(ordinal);
+      if (call.request.name !== "memory_contextual_grounding_v1") {
+        // The executor's first answer was rejected; it asks for one retry.
+        ordinal = await call.validationRetry!.allocateOrdinal(1);
+        job.record(ordinal);
+        ordinals.push(ordinal);
+      }
+      const value = call.decode(respond(call, source));
+      return { acceptedOutputHash: memorySha256(value), bindingId: "execution-" + ordinal, value };
+    });
+    const generated = await createPrismaMemoryContextualKeyGenerator(job.client).generate(
+      [source], [source.id],
+      { jobId: "private-contextual-job", signal: new AbortController().signal, userId: source.userId }
+    );
+    expect(ordinals).toEqual([0, 1, 2]);
+    expect(generated.executions.map(({ bindingId }) => bindingId)).toEqual(["execution-1", "execution-2"]);
+    expect(generated.providerRequests).toBe(3);
+    // Each dispatch, including the retry, first proves the claimed job current.
+    expect(job.currency).toHaveBeenCalledTimes(3);
+    expect(generated.fallbackRoundIds).toEqual([]);
+  });
+
+  it("refuses a retry once the claimed job stopped being current", async () => {
+    const source = round("I prefer tea.", "en");
+    let checks = 0;
+    const job = durableJob(() => ++checks === 1);
+    execute.mockImplementation(async (call: GovernedCall) => {
+      await call.validationRetry!.allocateOrdinal(1);
+      throw new Error("unreachable");
+    });
+    await expect(createPrismaMemoryContextualKeyGenerator(job.client).generate(
+      [source], [source.id],
+      { jobId: "private-contextual-job", signal: new AbortController().signal, userId: source.userId }
+    )).rejects.toEqual(new MemoryCoordinatorError("memory_history_job_invalid", false));
+    expect(execute).toHaveBeenCalledOnce();
+    expect(job.aggregate).toHaveBeenCalledOnce();
+  });
+
+  it("never dispatches or retries from recovery", async () => {
+    const source = round("I prefer tea.", "en");
+    const job = durableJob();
+    const generated = await createPrismaMemoryContextualKeyGenerator(job.client).generate(
+      [source], [source.id],
+      { jobId: "private-contextual-job", recoveryOnly: true, signal: new AbortController().signal, userId: source.userId }
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(job.aggregate).not.toHaveBeenCalled();
+    expect(generated).toMatchObject({ executions: [], fallbackRoundIds: [source.id], providerRequests: 0 });
   });
 });

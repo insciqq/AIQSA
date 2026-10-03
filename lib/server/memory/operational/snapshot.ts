@@ -2,14 +2,16 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { memoryAdmissibleEntityAliasPredicate } from
   "../learning/entities/authority";
+import { MEMORY_OUTPUT_DECODE_REASON_PATTERN } from "../execution/outputViolation";
 import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../maintenance/policy";
 import {
   MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS,
   MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS
 } from "./counters";
 
-const SNAPSHOT_VERSION = "memory-operational-snapshot-v7";
+const SNAPSHOT_VERSION = "memory-operational-snapshot-v8";
 const codePattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
+const rolePattern = /^[A-Z][A-Z0-9_]{0,63}$/u;
 const contextualFallbackCounterKeys = Object.values(
   MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS
 );
@@ -45,10 +47,19 @@ type UsageRow = Readonly<{
   reasoningTokens: string;
   totalTokens: string;
 }>;
+type OutputDecodeRow = Readonly<{ count: string; reason: string; role: string }>;
 
 export type MemoryOperationalCodeCount = Readonly<{
   code: string;
   count: number;
+}>;
+
+/** Settled invalid answers in the window by logical role and closed decode
+ * reason. Retried and exhausted calls each count once per binding. */
+export type MemoryOperationalOutputDecodeCount = Readonly<{
+  count: number;
+  reason: string;
+  role: string;
 }>;
 
 export type MemoryOperationalDistribution = Readonly<{
@@ -136,6 +147,7 @@ export type MemoryOperationalSnapshot = Readonly<{
     rejected: number;
     rejectionReasons: readonly MemoryOperationalCodeCount[];
   }>;
+  outputDecode: readonly MemoryOperationalOutputDecodeCount[];
   pendingAge: Readonly<{
     relation: MemoryOperationalDistribution;
     safety: MemoryOperationalDistribution;
@@ -207,6 +219,17 @@ function codeCounts(
   }));
 }
 
+function outputDecodeCounts(
+  rows: readonly OutputDecodeRow[]
+): readonly MemoryOperationalOutputDecodeCount[] {
+  return Object.freeze(rows.map((row) => {
+    if (!rolePattern.test(row.role) || !MEMORY_OUTPUT_DECODE_REASON_PATTERN.test(row.reason)) {
+      throw new Error("memory_operational_reason_invalid");
+    }
+    return Object.freeze({ count: safeCount(row.count), reason: row.reason, role: row.role });
+  }));
+}
+
 function validWindow(from: Date, to: Date): boolean {
   const duration = to.getTime() - from.getTime();
   return Number.isFinite(from.getTime()) && Number.isFinite(to.getTime()) &&
@@ -220,7 +243,7 @@ export async function loadMemoryOperationalSnapshot(
   if (!validWindow(input.from, input.to)) {
     throw new Error("memory_operational_window_invalid");
   }
-  const [countRows, groupedRows, latencyRows, pendingRows, usageRows, maintenanceRows] =
+  const [countRows, groupedRows, latencyRows, pendingRows, usageRows, maintenanceRows, outputDecodeRows] =
     await Promise.all([
       client.$queryRaw<CountRow[]>(Prisma.sql`
         SELECT
@@ -625,6 +648,17 @@ export async function loadMemoryOperationalSnapshot(
         WHERE review."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION}
           AND (review."disposition" = 'PENDING'
             OR (review."reviewedAt" >= ${input.from} AND review."reviewedAt" < ${input.to}))
+      `),
+      client.$queryRaw<OutputDecodeRow[]>(Prisma.sql`
+        SELECT binding."logicalRole" AS role, binding."decodeReason" AS reason,
+          COUNT(*)::text AS count
+        FROM "MemoryExecutionBinding" binding
+        WHERE binding."completedAt" >= ${input.from} AND binding."completedAt" < ${input.to}
+          AND binding."state" = 'FAILED'::"MemoryExecutionState"
+          AND binding."decodeReason" IS NOT NULL
+        GROUP BY binding."logicalRole", binding."decodeReason"
+        ORDER BY binding."logicalRole", binding."decodeReason"
+        LIMIT 256
       `)
     ]);
 
@@ -710,6 +744,7 @@ export async function loadMemoryOperationalSnapshot(
       rejected: safeCount(counts.observationsRejected),
       rejectionReasons: codeCounts(groupedRows, "observation_rejection")
     }),
+    outputDecode: outputDecodeCounts(outputDecodeRows),
     pendingAge: Object.freeze({
       relation: pending.get("pending.relation") ?? emptyPending("pending.relation"),
       safety: pending.get("pending.safety") ?? emptyPending("pending.safety")

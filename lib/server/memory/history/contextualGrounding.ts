@@ -2,6 +2,7 @@ import type { ProviderStructuredOutputRequest } from "../../providers/structured
 import type { MemoryExecutionVersions } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { MEMORY_HISTORY_OUTPUT_PIPELINE_VERSION } from "../execution/historyOutputBudget";
+import { MemoryOutputViolationError } from "../execution/outputViolation";
 import { projectMemoryHistorySafeText } from "./safety";
 import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
@@ -36,9 +37,14 @@ export const MEMORY_CONTEXTUAL_GROUNDING_VERSIONS: MemoryExecutionVersions =
     schemaVersion: "memory-contextual-grounding-schema-v1"
   });
 
-export class MemoryContextualGroundingError extends Error {
-  constructor(readonly reason: MemoryContextualFallbackReason = "GROUNDING_INVALID") {
-    super("memory_contextual_grounding_invalid");
+type MemoryContextualGroundingReason = Extract<MemoryContextualFallbackReason,
+  "GROUNDING_INVALID" | "SAFETY_REDACTED_OR_REJECTED">;
+
+export class MemoryContextualGroundingError extends MemoryOutputViolationError {
+  constructor(readonly reason: MemoryContextualGroundingReason = "GROUNDING_INVALID") {
+    super("memory_contextual_grounding_invalid", reason === "GROUNDING_INVALID"
+      ? "contextual_grounding_invalid"
+      : "contextual_grounding_safety_rejected");
     this.name = "MemoryContextualGroundingError";
   }
 }
