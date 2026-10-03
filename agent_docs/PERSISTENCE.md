@@ -67,7 +67,7 @@ Agent threads remain outside exported `project/`, without independent retention/
 
 ## Backup And Restore
 
-Orchestration belongs to the separate infrastructure workspace. Verify migrated schema, stop all writers, release/fence claimed Memory, Knowledge, and object-deletion work, then copy PostgreSQL and private objects together. Record format/schema and required non-secret Memory key IDs; restore exactly the prior writer set afterward. Preserve chat PDF artifacts and dispatch ambiguity. Back up required secrets separately under [Environment](ENV_VARIABLES.md).
+[`aiqsa.sh`](../aiqsa.sh) `backup`/`restore` own single-host cold backup and empty-target restore under this procedure; off-site copies, schedules, retention and multi-host recovery belong to infrastructure. Verify migrated schema, stop all writers, release/fence claimed Memory, Knowledge, and object-deletion work, then copy PostgreSQL and private objects together. Record format/schema and required non-secret Memory key IDs; restore exactly the prior writer set afterward. Preserve chat PDF artifacts and dispatch ambiguity. Back up required secrets separately under [Environment](ENV_VARIABLES.md).
 
 Restore accepts only an acknowledged empty internal `aiqsa-restore-*` project with no published ports or application writer. Preflight format, schema, identities, keys, and objects before producing a pending review manifest. Review performs credential-free Memory/Knowledge deletion reconciliation and blocks promotion while deletion/account/barrier duties, leases, uncertain executions, missing keys, or object failures remain. Helpers never cut over production automatically.
 
