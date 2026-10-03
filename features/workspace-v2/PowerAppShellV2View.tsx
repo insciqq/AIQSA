@@ -1443,6 +1443,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     );
   };
 
+  // The account menu always opens the account's own Settings, also in a Project.
+  const openAccountSettings = () => {
+    setDataSubview(null);
+    settings.open();
+  };
   // Choosing a chat or a new chat in navigation adds one history entry.
   const selectNavigationChat = (chat: ChatNavigationSummaryWire) =>
     selectNavigationChatV2(chat.id, workspace.pane.actions, workspace.projects.actions.leave);
@@ -1636,10 +1641,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           }}
           onSettings={projectContext && workspace.projects.detail
             ? () => workspace.projects.actions.openSettings("general")
-            : () => {
-                setDataSubview(null);
-                settings.open();
-              }}
+            : openAccountSettings}
+          onAccountSettings={openAccountSettings}
           projectComposerAvailable={Boolean(
             workspace.projects.detail &&
             workspace.projects.detail.status === "ACTIVE" &&
