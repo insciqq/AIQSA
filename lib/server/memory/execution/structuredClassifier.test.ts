@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunUsage } from "../../../domain/modelRunEvents";
 import type { MemorySecretFreeExecutionSnapshot } from "./snapshot";
-import { StructuredOutputDecodeError } from "../../providers/structuredOutput";
+import { STRUCTURED_OUTPUT_DECODE_REASONS, StructuredOutputDecodeError } from "../../providers/structuredOutput";
+import {
+  isMemoryOutputDecodeReason,
+  MEMORY_OUTPUT_DECODE_REASON_PATTERN,
+  MEMORY_OUTPUT_DECODE_REASONS,
+  memoryOutputDecodeReason,
+  MemoryOutputViolationError
+} from "./outputViolation";
 import {
   createAcceptedMemoryStructuredOutputProvider,
   memoryReportedUsage,
@@ -74,5 +81,37 @@ describe("Memory structured classifier usage", () => {
       await expect(result).resolves.toMatchObject({ output: { accepted: true }, usage });
     }
     expect(execute).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Memory structured output decode reasons", () => {
+  it("keeps the closed vocabulary unique, bounded and storable", () => {
+    expect(new Set(MEMORY_OUTPUT_DECODE_REASONS).size).toBe(MEMORY_OUTPUT_DECODE_REASONS.length);
+    expect(MEMORY_OUTPUT_DECODE_REASONS).toEqual(expect.arrayContaining([...STRUCTURED_OUTPUT_DECODE_REASONS]));
+    for (const reason of MEMORY_OUTPUT_DECODE_REASONS) {
+      expect(reason).toMatch(MEMORY_OUTPUT_DECODE_REASON_PATTERN);
+      expect(isMemoryOutputDecodeReason(reason)).toBe(true);
+    }
+    for (const value of ["", "Invalid JSON", "role_contract\nprivate", "x".repeat(65), null]) {
+      expect(isMemoryOutputDecodeReason(value)).toBe(false);
+    }
+  });
+
+  it.each(STRUCTURED_OUTPUT_DECODE_REASONS)("carries the transport reason %s only for a received answer", (reason) => {
+    expect(new MemoryStructuredOutputProviderError(null, null,
+      { cause: new StructuredOutputDecodeError(reason) })).toMatchObject({ decodeReason: reason, outputInvalid: true });
+  });
+
+  it("maps every rejection to a closed content-free reason", () => {
+    expect(new MemoryStructuredOutputProviderError(null, null, { cause: Object.assign(new Error("bounded"),
+      { code: "structured_output_output_limit_exceeded" }) }).decodeReason).toBeNull();
+    expect(new MemoryStructuredOutputProviderError(null, null, { cause: new Error("transport") }).decodeReason).toBeNull();
+    expect(memoryOutputDecodeReason(new StructuredOutputDecodeError("non_object"))).toBe("non_object");
+    expect(memoryOutputDecodeReason(new MemoryOutputViolationError("fixture", "statement_contract_field")))
+      .toBe("statement_contract_field");
+    expect(memoryOutputDecodeReason(new Error("private rejected answer text"))).toBe("role_contract");
+    const forged = new MemoryOutputViolationError("fixture", "private text" as never);
+    expect(forged.decodeReason).toBe("role_contract");
+    expect(JSON.stringify(forged)).not.toContain("private");
   });
 });

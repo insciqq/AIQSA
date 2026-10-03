@@ -21,7 +21,10 @@ import {
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
-import { createAcceptedMemoryStructuredOutputProvider } from "../execution/structuredClassifier";
+import {
+  createAcceptedMemoryStructuredOutputProvider,
+  MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS
+} from "../execution/structuredClassifier";
 
 export const MEMORY_RECLASSIFICATION_PIPELINE_VERSION =
   "memory-safety-reclassification-v2";
@@ -390,28 +393,35 @@ export function createPrismaMemoryReclassificationProvider(
         );
       }
       try {
-        const prior = await client.memoryExecutionBinding.aggregate({
-          _max: { ordinal: true },
-          where: {
-            logicalRole: "MEMORY_RECLASSIFY",
-            memoryJobId: execution.jobId,
-            ownerType: "JOB",
-            userId: execution.userId
-          }
-        });
+        const nextOrdinal = async () => {
+          const prior = await client.memoryExecutionBinding.aggregate({
+            _max: { ordinal: true },
+            where: {
+              logicalRole: "MEMORY_RECLASSIFY",
+              memoryJobId: execution.jobId,
+              ownerType: "JOB",
+              userId: execution.userId
+            }
+          });
+          return (prior._max.ordinal ?? -1) + 1;
+        };
         const inputHash = memoryReclassificationInputHash(statement, sourceMode);
         const governed = await executeGovernedMemoryStructuredOutput({
           authority,
           client,
           decode: decodeMemoryReclassificationDecision,
           inputHash,
-          ordinal: Math.max(execution.ordinal, (prior._max.ordinal ?? -1) + 1),
+          ordinal: Math.max(execution.ordinal, await nextOrdinal()),
           owner: { memoryJobId: execution.jobId, type: "JOB" },
           provider,
           request: buildMemoryReclassificationRequest(statement, sourceMode),
           role: "MEMORY_RECLASSIFY",
           signal: signal ?? new AbortController().signal,
           userId: execution.userId,
+          validationRetry: {
+            allocateOrdinal: nextOrdinal,
+            maxAttempts: MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS
+          },
           versions: MEMORY_RECLASSIFICATION_VERSIONS
         });
         return {

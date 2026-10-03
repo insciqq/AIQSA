@@ -16,7 +16,11 @@ import {
 } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
-import { createAcceptedMemoryStructuredOutputProvider } from "../execution/structuredClassifier";
+import { MemoryOutputViolationError, type MemoryOutputDecodeReason } from "../execution/outputViolation";
+import {
+  createAcceptedMemoryStructuredOutputProvider,
+  MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS
+} from "../execution/structuredClassifier";
 import {
   MEMORY_V1_CATEGORY_ALLOWLIST,
   type MemoryV1Category
@@ -175,6 +179,26 @@ export class MemoryStatementClassificationError extends Error {
   }
 }
 
+/** A rejected classification answer. Its closed reason is persisted on the
+ * binding; classifier callers still receive the stable invalid code. */
+export class MemoryStatementClassificationOutputError extends MemoryOutputViolationError {
+  readonly code = "memory_statement_classification_invalid" as const;
+  constructor(decodeReason: Extract<MemoryOutputDecodeReason, `statement_contract_${string}`>) {
+    super("memory_statement_classification_invalid", decodeReason);
+    this.name = "MemoryStatementClassificationOutputError";
+  }
+}
+
+/** Classifier callers see only the two stable classification codes. */
+function statementClassificationFailure(error: unknown): MemoryStatementClassificationError {
+  if (error instanceof MemoryStatementClassificationError) return error;
+  return new MemoryStatementClassificationError(
+    error instanceof MemoryStatementClassificationOutputError
+      ? "memory_statement_classification_invalid"
+      : "memory_statement_classification_unavailable"
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -182,8 +206,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function decodeMemoryStatementClassification(
   value: unknown
 ): MemoryStatementClassification {
-  if (!isRecord(value) || Object.keys(value).sort().join("\u0000") !== exactKeys.join("\u0000") ||
-    typeof value.category !== "string" || !categories.has(value.category) ||
+  if (!isRecord(value) || Object.keys(value).sort().join("\u0000") !== exactKeys.join("\u0000")) {
+    throw new MemoryStatementClassificationOutputError("statement_contract_keys");
+  }
+  if (typeof value.category !== "string" || !categories.has(value.category) ||
     typeof value.normalized_statement !== "string" ||
     value.normalized_statement.length < 1 || value.normalized_statement.length > 2_000 ||
     value.normalized_statement.trim() !== value.normalized_statement ||
@@ -192,8 +218,10 @@ export function decodeMemoryStatementClassification(
     typeof value.response_preference !== "boolean" ||
     typeof value.sensitivity !== "string" || !sensitivities.has(value.sensitivity as never) ||
     typeof value.storage_decision !== "string" ||
-    !storageDecisions.has(value.storage_decision as never) ||
-    (value.response_preference && value.category !== "preferences" && !(
+    !storageDecisions.has(value.storage_decision as never)) {
+    throw new MemoryStatementClassificationOutputError("statement_contract_field");
+  }
+  if ((value.response_preference && value.category !== "preferences" && !(
       value.sensitivity === "SENSITIVE" && value.category === "sensitive"
     )) ||
     (value.storage_decision === "ALLOW" &&
@@ -201,7 +229,7 @@ export function decodeMemoryStatementClassification(
     (value.storage_decision !== "ALLOW" && value.response_preference) ||
     ((value.sensitivity === "SECRET" || value.sensitivity === "UNCERTAIN") &&
       !["secret_material", "uncertain"].includes(value.reason_code))) {
-    throw new MemoryStatementClassificationError("memory_statement_classification_invalid");
+    throw new MemoryStatementClassificationOutputError("statement_contract_consistency");
   }
   const formerlySensitive = value.sensitivity === "SENSITIVE";
   return {
@@ -298,10 +326,7 @@ export function createMemoryStatementClassifier(input: Readonly<{
         );
         return decodeMemoryStatementClassification(output);
       } catch (error) {
-        if (error instanceof MemoryStatementClassificationError) throw error;
-        throw new MemoryStatementClassificationError(
-          "memory_statement_classification_unavailable"
-        );
+        throw statementClassificationFailure(error);
       }
     }
   });
@@ -326,22 +351,25 @@ export function createDefaultMemoryStatementClassifier(
         );
       }
       try {
-        const prior = await client.memoryExecutionBinding.aggregate({
-          _max: { ordinal: true },
-          where: {
-            logicalRole: "MEMORY_STATEMENT_CLASSIFY",
-            mutationAuthorizationId: execution.mutationAuthorizationId,
-            ownerType: "MUTATION_AUTHORIZATION",
-            userId: execution.userId
-          }
-        });
+        const nextOrdinal = async () => {
+          const prior = await client.memoryExecutionBinding.aggregate({
+            _max: { ordinal: true },
+            where: {
+              logicalRole: "MEMORY_STATEMENT_CLASSIFY",
+              mutationAuthorizationId: execution.mutationAuthorizationId,
+              ownerType: "MUTATION_AUTHORIZATION",
+              userId: execution.userId
+            }
+          });
+          return (prior._max.ordinal ?? -1) + 1;
+        };
         const inputHash = memoryStatementClassificationInputHash(statement);
         const governed = await executeGovernedMemoryStructuredOutput({
           authority,
           client,
           decode: decodeMemoryStatementClassification,
           inputHash,
-          ordinal: (prior._max.ordinal ?? -1) + 1,
+          ordinal: await nextOrdinal(),
           owner: {
             mutationAuthorizationId: execution.mutationAuthorizationId,
             type: "MUTATION_AUTHORIZATION"
@@ -351,6 +379,10 @@ export function createDefaultMemoryStatementClassifier(
           role: "MEMORY_STATEMENT_CLASSIFY",
           signal: classifyOptions.signal ?? new AbortController().signal,
           userId: execution.userId,
+          validationRetry: {
+            allocateOrdinal: nextOrdinal,
+            maxAttempts: MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS
+          },
           versions: MEMORY_STATEMENT_CLASSIFICATION_VERSIONS
         });
         return {
@@ -364,10 +396,7 @@ export function createDefaultMemoryStatementClassifier(
           providerId: governed.providerId
         };
       } catch (error) {
-        if (error instanceof MemoryStatementClassificationError) throw error;
-        throw new MemoryStatementClassificationError(
-          "memory_statement_classification_unavailable"
-        );
+        throw statementClassificationFailure(error);
       }
     }
   });
