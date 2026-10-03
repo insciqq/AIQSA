@@ -28,6 +28,8 @@ export type MemoryMaintenanceDecision = Readonly<{
   action: "KEEP" | "REMOVE_TRANSIENT";
   usefulness: MemoryMaintenanceKeepUsefulness | null;
   reason: "useful_personal_context" | MemoryMaintenanceRemovalReason;
+  /** Present only on a keep that resolved contradictory labels. */
+  conservative?: true;
 }>;
 export type MemoryMaintenanceOutput = Readonly<{ decisions: readonly MemoryMaintenanceDecision[] }>;
 /** A decoded review answer, with the number of its decisions whose labels were
@@ -65,6 +67,12 @@ function invalid(reason: ConstructorParameters<typeof MemoryMaintenanceOutputErr
 /** The usefulness label each keep basis but explicit_remember determines. */
 const KEEP_USEFULNESS: Readonly<Partial<Record<MemoryMaintenanceScopeBasis, MemoryMaintenanceKeepUsefulness | null>>> =
   Object.freeze({ general_personal: "DURABLE", ongoing_personal: "ONGOING", unresolved_scope: null });
+/** What a contradiction becomes: kept with unresolved scope and no usefulness
+ * label, so it neither removes nor promotes the source, and marked as such. */
+function conservativeKeep(sourceRef: string): MemoryMaintenanceDecision {
+  return { sourceRef, scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null, reason: "useful_personal_context",
+    conservative: true };
+}
 
 /** The scope basis decides the action and determines the labels; only explicit
  * remember intent keeps the reviewer's usefulness label. A removal needs every
@@ -88,8 +96,9 @@ function consistentDecision(sourceRef: string, scopeBasis: MemoryMaintenanceScop
  * decision decodes: labels its scope basis determines are derived from it, and
  * contradictory labels keep the source with unresolved scope and no usefulness
  * label, so they neither remove nor promote it. One inconsistent decision
- * therefore no longer rejects the batch. A decoded answer decodes to itself,
- * so a staged receipt keeps its accepted output hash. */
+ * therefore no longer rejects the batch. A decoded answer decodes to itself
+ * through decodeStagedMemoryMaintenanceOutput, so a staged receipt keeps its
+ * accepted output hash. */
 export function decodeMemoryMaintenanceReview(value: unknown, plan: MemoryMaintenanceRefs): MemoryMaintenanceReviewDecoding {
   if (!object(value) || !exact(value, ["decisions"]) || !Array.isArray(value.decisions)) invalid("maintenance_contract_shape");
   if (value.decisions.length !== plan.sources.length || value.decisions.length > MEMORY_MAINTENANCE_BATCH_SIZE) {
@@ -115,8 +124,7 @@ export function decodeMemoryMaintenanceReview(value: unknown, plan: MemoryMainte
       decision.action as MemoryMaintenanceDecision["action"], usefulness, reason);
     if (!resolved) {
       conservative += 1;
-      return { sourceRef: decision.source_ref, scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null,
-        reason: "useful_personal_context" };
+      return conservativeKeep(decision.source_ref);
     }
     if (resolved.usefulness !== usefulness || resolved.reason !== reason) normalized += 1;
     return resolved;
@@ -126,6 +134,30 @@ export function decodeMemoryMaintenanceReview(value: unknown, plan: MemoryMainte
 }
 export function decodeMemoryMaintenanceOutput(value: unknown, plan: MemoryMaintenanceRefs): MemoryMaintenanceOutput {
   return decodeMemoryMaintenanceReview(value, plan).output;
+}
+/** A staged receipt holds a decoded answer. Its labels re-enter the strict
+ * decoder in wire form; a decision stored as a conservative keep stays one,
+ * whatever else it claims, so a receipt never turns into a removal and any
+ * altered decision fails its accepted output hash. */
+export function decodeStagedMemoryMaintenanceOutput(value: unknown, plan: MemoryMaintenanceRefs): MemoryMaintenanceOutput {
+  const saved = object(value) && Array.isArray(value.decisions) ? value.decisions : null;
+  const marked = new Set(saved?.flatMap((decision) => object(decision) && decision.conservative === true ? [decision.sourceRef] : []));
+  const { decisions } = decodeMemoryMaintenanceOutput({ decisions: saved?.map((decision) => object(decision) ? {
+    source_ref: decision.sourceRef, scope_basis: decision.scopeBasis, action: decision.action, usefulness: decision.usefulness,
+    reason: decision.reason
+  } : decision) }, plan);
+  return { decisions: decisions.map((decision) => marked.has(decision.sourceRef) ? conservativeKeep(decision.sourceRef) : decision) };
+}
+
+/** The closed, content-free reason a settled decision records. */
+export type MemoryMaintenanceDecisionReasonCode = MemoryMaintenanceRemovalReason | "unresolved_scope";
+/** A removal, verified or not, records its removal reason; a keep records
+ * unresolved_scope only when it resolved contradictory labels. */
+export function memoryMaintenanceDecisionReasonCode(decision: MemoryMaintenanceDecision): MemoryMaintenanceDecisionReasonCode | null {
+  if (decision.action === "KEEP") return decision.conservative === true ? "unresolved_scope" : null;
+  const removal = MEMORY_MAINTENANCE_REMOVAL_REASONS.find((reason) => reason === decision.reason);
+  if (!removal) throw new Error("memory_maintenance_output_invalid");
+  return removal;
 }
 
 export function decodeMemoryMaintenanceVerification(

@@ -255,16 +255,17 @@ describe("maintenance outcomes through the coordinator and governed executor", (
     const outcome = async (index: number) => {
       const fact = facts[index]!;
       return { review: await prisma.memoryMaintenanceReview.findFirstOrThrow({ where: { userId, factVersionId: fact.currentVersionId },
-        select: { disposition: true, usefulness: true } }),
+        select: { disposition: true, usefulness: true, reasonCode: true } }),
       fact: await prisma.memoryFact.findUniqueOrThrow({ where: { id: fact.factId }, select: { state: true, currentVersionId: true } }) };
     };
-    const removed = { disposition: "REMOVED", usefulness: null };
+    // Each removal keeps the closed reason its basis determines, the slipped one included.
+    const removed = { disposition: "REMOVED", usefulness: null, reasonCode: "short_term" };
     expect(await outcome(0)).toEqual({ review: removed, fact: { state: "FORGOTTEN", currentVersionId: null } });
     expect(await outcome(1)).toEqual({ review: removed, fact: { state: "FORGOTTEN", currentVersionId: null } });
-    expect(await outcome(2)).toEqual({ review: { disposition: "KEEP", usefulness: "DURABLE" },
+    expect(await outcome(2)).toEqual({ review: { disposition: "KEEP", usefulness: "DURABLE", reasonCode: null },
       fact: { state: "ACTIVE", currentVersionId: facts[2]!.currentVersionId } });
-    // The contradiction is kept without a label, so nothing is removed or promoted.
-    expect(await outcome(3)).toEqual({ review: { disposition: "KEEP", usefulness: null },
+    // The contradiction is kept without a label, so nothing is removed or promoted; its keep says so.
+    expect(await outcome(3)).toEqual({ review: { disposition: "KEEP", usefulness: null, reasonCode: "unresolved_scope" },
       fact: { state: "ACTIVE", currentVersionId: facts[3]!.currentVersionId } });
     const forgotten = [facts[0]!.factId, facts[1]!.factId].sort();
     expect((await prisma.memoryEvent.findMany({ where: { userId, operation: "FORGET" }, select: { factId: true } }))

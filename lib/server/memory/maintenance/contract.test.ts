@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { MEMORY_LONG_TERM_USEFULNESS_GUIDANCE } from "../../../domain/memory/usefulness";
 import { memoryOutputDecodeReason } from "../execution/outputViolation";
 import { buildMemoryMaintenanceRequest, buildMemoryMaintenanceVerificationRequest, decodeMemoryMaintenanceOutput,
-  decodeMemoryMaintenanceReview, decodeMemoryMaintenanceVerification, MEMORY_MAINTENANCE_REMOVAL_REASONS,
-  MEMORY_MAINTENANCE_SCOPE_BASES, MemoryMaintenanceOutputError, type MemoryMaintenanceDecision } from "./contract";
+  decodeMemoryMaintenanceReview, decodeMemoryMaintenanceVerification, decodeStagedMemoryMaintenanceOutput,
+  MEMORY_MAINTENANCE_REMOVAL_REASONS, MEMORY_MAINTENANCE_SCOPE_BASES, memoryMaintenanceDecisionReasonCode,
+  MemoryMaintenanceOutputError, type MemoryMaintenanceDecision } from "./contract";
 import { memoryMaintenancePlan, type MemoryMaintenanceSource } from "./policy";
 
 export const source: MemoryMaintenanceSource = {
@@ -16,10 +17,15 @@ export const source: MemoryMaintenanceSource = {
 const plan = memoryMaintenancePlan([source]);
 const remove = { source_ref: "S1", scope_basis: "single_episode", action: "REMOVE_TRANSIENT", usefulness: null, reason: "episode" };
 const keep = { source_ref: "S1", scope_basis: "general_personal", action: "KEEP", usefulness: "DURABLE", reason: "useful_personal_context" };
-/** What every contradictory decision becomes: kept, with nothing promoted. */
-const conservative = { sourceRef: "S1", scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null, reason: "useful_personal_context" };
+/** What every contradictory decision becomes: kept, with nothing promoted, and marked. */
+const conservative = { sourceRef: "S1", scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null, reason: "useful_personal_context",
+  conservative: true };
 const KEEP_BASES = ["general_personal", "ongoing_personal", "explicit_remember", "unresolved_scope"] as const;
 const REMOVAL_BASES = MEMORY_MAINTENANCE_SCOPE_BASES.filter((basis) => !(KEEP_BASES as readonly string[]).includes(basis));
+/** Each removal basis with the one removal reason it determines. */
+const BASIS_REMOVAL_REASONS = [["single_episode", "episode"], ["short_term_matter", "short_term"], ["common_habit", "not_distinctive"],
+  ["current_task_only", "one_off_task_detail"], ["generic_desideratum", "one_off_task_detail"],
+  ["context_fragment", "context_dependent_fragment"]] as const;
 const wire = ({ sourceRef, scopeBasis, action, usefulness, reason }: MemoryMaintenanceDecision) =>
   ({ source_ref: sourceRef, scope_basis: scopeBasis, action, usefulness, reason });
 const decodeOne = (decision: Record<string, unknown>) => decodeMemoryMaintenanceReview({ decisions: [decision] }, plan);
@@ -36,9 +42,7 @@ describe("governed automatic Memory maintenance", () => {
     }
   });
   it("removes episodes, short-term matters and common habits under their basis's own reason", () => {
-    const combinations = [["single_episode", "episode"], ["short_term_matter", "short_term"], ["common_habit", "not_distinctive"],
-      ["current_task_only", "one_off_task_detail"], ["generic_desideratum", "one_off_task_detail"],
-      ["context_fragment", "context_dependent_fragment"]] as const;
+    const combinations = BASIS_REMOVAL_REASONS;
     for (const [scope_basis, reason] of combinations) {
       expect(decodeOne({ ...remove, scope_basis, reason })).toEqual({ normalized: 0, conservative: 0, output: { decisions: [
         { sourceRef: "S1", scopeBasis: scope_basis, action: "REMOVE_TRANSIENT", usefulness: null, reason }] } });
@@ -126,14 +130,38 @@ describe("governed automatic Memory maintenance", () => {
             expect(decoded.conservative).toBe(contradiction ? 1 : 0);
             if (contradiction) expect(decision).toEqual(conservative);
             else expect(decision.scopeBasis).toBe(scope_basis);
-            // A decoded decision is a canonical combination: a staged receipt re-decodes unchanged.
-            expect(decodeOne(wire(decision))).toEqual({ normalized: 0, conservative: 0, output: decoded.output });
+            // The settled review records the basis's removal reason or the resolved contradiction, never a model keep.
+            expect(memoryMaintenanceDecisionReasonCode(decision)).toBe(unanimousRemoval
+              ? BASIS_REMOVAL_REASONS.find(([basis]) => basis === scope_basis)![1] : contradiction ? "unresolved_scope" : null);
+            // A decoded decision is a canonical combination: a staged receipt re-decodes unchanged, mark included.
+            if (!contradiction) expect(decodeOne(wire(decision))).toEqual({ normalized: 0, conservative: 0, output: decoded.output });
+            expect(decodeStagedMemoryMaintenanceOutput(JSON.parse(JSON.stringify(decoded.output)), plan)).toEqual(decoded.output);
             if (unanimousRemoval) removals += 1;
           }
         }
       }
     }
     expect(removals).toBe(REMOVAL_BASES.length * MEMORY_MAINTENANCE_REMOVAL_REASONS.length);
+  });
+  it("tells a resolved contradiction from a model's unresolved keep without trusting a stored mark", () => {
+    const modelKeep = decodeMemoryMaintenanceOutput({ decisions: [{ source_ref: "S1", scope_basis: "unresolved_scope", action: "KEEP",
+      usefulness: null, reason: "useful_personal_context" }] }, plan).decisions[0]!;
+    const resolved = decodeOne({ ...remove, usefulness: "DURABLE" }).output.decisions[0]!;
+    expect(modelKeep).toEqual({ ...resolved, conservative: undefined });
+    expect(memoryMaintenanceDecisionReasonCode(modelKeep)).toBeNull();
+    expect(memoryMaintenanceDecisionReasonCode(resolved)).toBe("unresolved_scope");
+    // A receipt staged before the mark existed stays an ordinary keep; a mark on a removal makes it a keep, never the reverse.
+    expect(decodeStagedMemoryMaintenanceOutput({ decisions: [modelKeep] }, plan).decisions).toEqual([modelKeep]);
+    const removal = decodeMemoryMaintenanceOutput({ decisions: [remove] }, plan).decisions[0]!;
+    expect(decodeStagedMemoryMaintenanceOutput({ decisions: [{ ...removal, conservative: true }] }, plan).decisions).toEqual([conservative]);
+    for (const saved of [null, {}, { decisions: [{ ...removal, reason: "old_and_unused" }] }]) {
+      expect(() => decodeStagedMemoryMaintenanceOutput(saved, plan)).toThrow("memory_maintenance_output_invalid");
+    }
+    expect(() => memoryMaintenanceDecisionReasonCode({ ...removal, reason: "useful_personal_context" }))
+      .toThrow("memory_maintenance_output_invalid");
+    // Every recorded code fits the review row's closed VARCHAR(32) vocabulary.
+    expect([...MEMORY_MAINTENANCE_REMOVAL_REASONS, "unresolved_scope"].every((code) => code.length <= 32 && /^[a-z_]+$/u.test(code)))
+      .toBe(true);
   });
   it("decodes a batch whose only defects are labels, reviews every source and verifies only consistent removals", () => {
     const sources = ["S1", "S2", "S3", "S4"].map((ref, index): MemoryMaintenanceSource => ({ ...source, ref,

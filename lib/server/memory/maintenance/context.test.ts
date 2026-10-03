@@ -1,5 +1,37 @@
-import { describe, expect, it } from "vitest";
-import { memoryMaintenanceEvidenceWindow, memoryMaintenanceTailWindow } from "./context";
+import type { PrismaClient } from "@prisma/client";
+import { describe, expect, it, vi } from "vitest";
+import { textMessageContent } from "../../../domain/content";
+import { loadMemoryMaintenanceContext, memoryMaintenanceEvidenceWindow, memoryMaintenanceTailWindow } from "./context";
+
+describe("maintenance context walk", () => {
+  const at = (minute: number) => new Date(Date.UTC(2026, 9, 1, 12, minute));
+  /** One walked message as the context query returns it; the query never reads a passed-over reply's content. */
+  const walked = (id: string, role: string, depth: number, text: string | null, flags: Readonly<{ eligible: boolean; transparent: boolean }>) =>
+    ({ id, role, depth, content: text === null ? null : textMessageContent(text), createdAt: at(10 - depth), updatedAt: at(10 - depth), ...flags });
+  const shown = { eligible: true, transparent: false };
+  const passedOver = { eligible: false, transparent: true };
+  const load = (rows: readonly unknown[]) => {
+    const results = [rows, []];
+    const client = { $queryRaw: vi.fn(async () => results.shift()) } as unknown as Pick<PrismaClient, "$queryRaw">;
+    return loadMemoryMaintenanceContext(client, "owner", "version", [{ messageId: "source", startOffset: 0, endOffset: 24 }]);
+  };
+  it("passes over a failed or cancelled reply without its text", async () => {
+    const context = await load([walked("source", "user", 0, "I train in the evenings.", shown),
+      walked("reply", "assistant", 1, "Unsettled partial reply.", passedOver),
+      walked("question", "user", 2, "Which club suits my schedule?", shown)]);
+    expect(context?.map(({ kind, role, text }) => ({ kind, role, text }))).toEqual([
+      { kind: "REFERENCE_MESSAGE", role: "user", text: "Which club suits my schedule?" },
+      { kind: "SOURCE_MESSAGE", role: "user", text: "I train in the evenings." }]);
+    expect(JSON.stringify(context)).not.toContain("Unsettled partial reply.");
+  });
+  it("keeps any other hidden boundary unreviewable, before or beyond a passed-over reply", async () => {
+    const source = walked("source", "user", 0, "I train in the evenings.", shown);
+    const hidden = { eligible: false, transparent: false };
+    expect(await load([source, walked("reply", "assistant", 1, null, hidden)])).toBeNull();
+    expect(await load([source, walked("reply", "assistant", 1, null, passedOver), walked("question", "user", 2, null, hidden)]))
+      .toBeNull();
+  });
+});
 
 describe("bounded maintenance context windows", () => {
   const text = `${"a".repeat(20_000)}EVIDENCE${"b".repeat(20_000)}`;

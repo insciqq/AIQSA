@@ -56,7 +56,7 @@ export const MEMORY_MAINTENANCE_VERSIONS: MemoryExecutionVersions = Object.freez
   pipelineVersion: MEMORY_MAINTENANCE_PIPELINE_VERSION,
   policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION,
   promptVersion: "memory-maintenance-prompt-v3",
-  schemaVersion: "memory-maintenance-schema-v4",
+  schemaVersion: "memory-maintenance-schema-v5",
   retrievalConfigFingerprint: "memory-maintenance-exact-sources-v2"
 });
 export type MemoryUsefulness = "DURABLE" | "ONGOING" | "EPISODIC";

@@ -379,4 +379,33 @@ describe("maintenance policy v3 cleanup pass", () => {
     await expect(prisma.memoryMaintenanceReview.update({ where: { id: pending.id }, data: {
       disposition: "BLOCKED", reasonCode: "source_changed", reviewedAt: new Date() } })).resolves.toMatchObject({ reasonCode: "source_changed" });
   });
+
+  it("settles a decision only with a closed reason of its own disposition, once", async () => {
+    const userId = await owner();
+    const source = await createMaintenanceMessage(userId, "The delivery arrives at noon.");
+    const fact = await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]);
+    const job = await prisma.memoryJob.create({ data: { userId, kind: "SYNTHESIZE_MEMORIES", pipelineVersion: "memory-maintenance-v1",
+      idempotencyFingerprint: randomUUID(), memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0 } });
+    let ordinal = 0;
+    const settle = async (data: Readonly<{ disposition: string; reasonCode: string | null; usefulness?: string | null }>) => {
+      const pending = await prisma.memoryMaintenanceReview.create({ data: { userId, factVersionId: fact.currentVersionId,
+        memoryJobId: job.id, policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION, evidenceThrough: maintenanceFixtureTime(),
+        sourceSnapshotHash: (++ordinal).toString(16).padStart(64, "0") } });
+      return prisma.memoryMaintenanceReview.update({ where: { id: pending.id }, data: { ...data, reviewedAt: new Date() } });
+    };
+    for (const accepted of [
+      { disposition: "REMOVED", reasonCode: "episode" }, { disposition: "REJECTED", reasonCode: "context_dependent_fragment" },
+      { disposition: "KEEP", reasonCode: "unresolved_scope", usefulness: null },
+      // Previous-release writers settle without a reason during Compose replacement.
+      { disposition: "REMOVED", reasonCode: null }, { disposition: "KEEP", reasonCode: null, usefulness: "DURABLE" }
+    ]) await expect(settle(accepted)).resolves.toMatchObject(accepted);
+    for (const rejected of [
+      { disposition: "REMOVED", reasonCode: "unresolved_scope" }, { disposition: "REJECTED", reasonCode: "source_changed" },
+      { disposition: "KEEP", reasonCode: "episode", usefulness: null },
+      { disposition: "KEEP", reasonCode: "unresolved_scope", usefulness: "DURABLE" },
+      { disposition: "UNKNOWN", reasonCode: "episode" }, { disposition: "REMOVED", reasonCode: "removed the parcel note" }
+    ]) await expect(settle(rejected)).rejects.toThrow();
+    const settled = await settle({ disposition: "REMOVED", reasonCode: "short_term" });
+    await expect(prisma.memoryMaintenanceReview.update({ where: { id: settled.id }, data: { reasonCode: "episode" } })).rejects.toThrow();
+  });
 });

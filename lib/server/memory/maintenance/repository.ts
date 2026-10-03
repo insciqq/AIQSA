@@ -5,7 +5,8 @@ import { MEMORY_STRUCTURED_OUTPUT_DISPATCH_FENCED_CODE } from "../execution/stru
 import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { advanceMemoryMutation, lockMemorySettings, type MemoryTransaction } from "../persistence/transaction";
 import { memoryPurgeTargetType } from "../purge/contract";
-import { decodeMemoryMaintenanceOutput, decodeMemoryMaintenanceVerification, type MemoryMaintenanceOutput } from "./contract";
+import { decodeMemoryMaintenanceVerification, decodeStagedMemoryMaintenanceOutput, memoryMaintenanceDecisionReasonCode,
+  type MemoryMaintenanceDecisionReasonCode, type MemoryMaintenanceOutput } from "./contract";
 import { MEMORY_MAINTENANCE_POLICY_VERSION, memoryMaintenanceOrdinal, memoryMaintenanceOrdinals, memoryMaintenancePlanHash,
   type MemoryMaintenanceBlockedReason, type MemoryMaintenanceCall, type MemoryMaintenancePlan, type MemoryMaintenanceSource,
   type MemoryMaintenanceSourceIdentity } from "./policy";
@@ -98,9 +99,12 @@ async function removeAutomaticFact(tx: MemoryTransaction, job: MemoryJobClaim,
     targetType: memoryPurgeTargetType("MEMORY_FACT") });
 }
 
+/** Every settled review keeps a closed, content-free reason where one exists:
+ * removed facts are purged with their text and evidence, so it is their only
+ * audit trail. */
 type Outcome = Readonly<{ source: MemoryMaintenanceSnapshotSource } & (
-  | { disposition: "KEEP"; usefulness: "DURABLE" | "ONGOING" | null }
-  | { disposition: "REMOVED" | "REJECTED" }
+  | { disposition: "KEEP"; usefulness: "DURABLE" | "ONGOING" | null; reasonCode: MemoryMaintenanceDecisionReasonCode | null }
+  | { disposition: "REMOVED" | "REJECTED"; reasonCode: MemoryMaintenanceDecisionReasonCode | null }
   | { disposition: "BLOCKED"; reasonCode: MemoryMaintenanceBlockedReason })>;
 
 /** What the earlier attempts of one call left. Attempts that all settled
@@ -158,12 +162,7 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
       return { status: "UNKNOWN", ambiguous: attempts.some((attempt) => attempt.state !== "PENDING" && !settled(attempt)) };
     },
     stagedReview(job: MemoryJobDescriptor, reviewed: MemoryMaintenanceSnapshot, inputHash: string) {
-      return staged(job, "review", inputHash, (value) => {
-        const saved = value as MemoryMaintenanceOutput;
-        return decodeMemoryMaintenanceOutput({ decisions: saved?.decisions?.map((decision) => ({
-          source_ref: decision.sourceRef, scope_basis: decision.scopeBasis, action: decision.action, usefulness: decision.usefulness, reason: decision.reason
-        })) }, reviewed);
-      });
+      return staged(job, "review", inputHash, (value) => decodeStagedMemoryMaintenanceOutput(value, reviewed));
     },
     /** The verified removals are those the settled verifier output names; its
      * input hash proves it was produced for exactly that disclosed subset. */
@@ -201,8 +200,9 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
       const outcomes = review.output.decisions.map((decision): Outcome => {
         const source = byRef.get(decision.sourceRef)!;
         if (!source.current) return { source, disposition: "BLOCKED", reasonCode: source.blockedReason ?? "source_changed" };
-        if (decision.action === "KEEP") return { source, disposition: "KEEP", usefulness: decision.usefulness };
-        return { source, disposition: approvals.has(decision.sourceRef) ? "REMOVED" : "REJECTED" };
+        const reasonCode = memoryMaintenanceDecisionReasonCode(decision);
+        if (decision.action === "KEEP") return { source, disposition: "KEEP", usefulness: decision.usefulness, reasonCode };
+        return { source, disposition: approvals.has(decision.sourceRef) ? "REMOVED" : "REJECTED", reasonCode };
       });
       let removed = 0;
       for (const outcome of outcomes) {
@@ -214,7 +214,7 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
           userId: job.userId, disposition: "PENDING" }, data: {
           disposition: outcome.disposition, reviewedAt: now,
           usefulness: outcome.disposition === "KEEP" ? outcome.usefulness : null,
-          reasonCode: outcome.disposition === "BLOCKED" ? outcome.reasonCode : null
+          reasonCode: outcome.reasonCode
         } });
         if (updated.count !== 1) throw new Error("memory_maintenance_source_stale");
       }
