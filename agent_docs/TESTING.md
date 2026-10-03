@@ -47,7 +47,7 @@ Serialize stateful/container/browser-reset checks. Reusable-server specs may ove
 | --- | --- |
 | Schema, migration, bootstrap | `npm run db:migration:smoke`; `npm run db:baseline:contract` for baseline/custom PostgreSQL DDL/adoption. Only acknowledged disposable databases. |
 | Compose, image, installation | Focused config tests; image builds under the criteria below, disposable startup/bootstrap only for changed behavior. Preserve non-root roles and isolated identities. |
-| Backup/restore, destructive retention | Dry run first; real backup/empty-target restore/deletion only with explicit authority over disposable/intended targets. Production procedures belong to the separate infrastructure workspace. |
+| Backup/restore, destructive retention | Dry run first; real backup/empty-target restore/deletion only with explicit authority over disposable/intended targets. The CLI's single-host backup/restore is verified on disposable targets; off-site, scheduled and multi-host procedures stay with infrastructure. |
 | UI | Affected browser states, themes, viewports, focus transitions, containment and overflow; see [Frontend](FRONTEND.md). |
 | Provider | Deterministic request/stream/parser/fake checks first; real calls require the permission below. |
 | Dependencies/security | Focused threat checks and `npm run security:deps`; review manifest, lockfile, lifecycle scripts, overrides and upstream compatibility. |
