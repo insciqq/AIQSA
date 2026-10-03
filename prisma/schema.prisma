@@ -829,6 +829,7 @@ model User {
   artifactBlobs ArtifactBlob[]
   instructionPresets InstructionPreset[]
   chatContinuations ChatContinuation[]
+  scheduledTasks ScheduledTask[]
   id                                  String                             @id @default(uuid())
   email                               String?                            @unique
   displayName                         String
@@ -3183,6 +3184,8 @@ model Chat {
   sharedSnapshots                 SharedChatSnapshot[]
   user                            User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspaceSession                WorkspaceSession?
+  scheduledTasks                  ScheduledTask[]
+  scheduledTaskOccurrences        ScheduledTaskOccurrence[]
 
   @@unique([userId, id])
   @@index([activeLeafMessageId])
@@ -3302,6 +3305,7 @@ model Message {
   parent                 Message?          @relation("MessageBranches", fields: [chatId, parentMessageId], references: [chatId, id], onDelete: Restrict, onUpdate: Restrict, map: "Message_chatId_parentMessageId_fkey")
   memoryToolEvents       MemoryToolEvent[]
   userModelRuns          ModelRun[]        @relation("UserMessageRun")
+  scheduledTaskOccurrences ScheduledTaskOccurrence[]
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@index([chatId, parentMessageId])
@@ -3495,6 +3499,7 @@ model ModelRun {
   workspaceExecutions          WorkspaceExecution[]
   workspaceProducedAttachments Attachment[]                        @relation("WorkspaceProducedAttachment")
   workspaceCaptureReferences   WorkspaceCaptureReference[]
+  scheduledTaskOccurrences     ScheduledTaskOccurrence[]
 
   @@unique([userId, id])
   @@unique([chatId, id], map: "ModelRun_chatId_id_key")
@@ -7123,4 +7128,106 @@ model CatalogCostBackfill {
   runCursor String?
   usageFinished Boolean @default(false)
   completedAt DateTime?
+}
+
+enum ScheduledTaskScheduleKind {
+  ONCE
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum ScheduledTaskStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum ScheduledTaskOccurrenceState {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+/// A personal prompt the scheduler posts into its own chat. Schedule columns are
+/// wall-clock values in `timeZone`; lib/domain/scheduledTaskSchedule.ts computes
+/// `nextRunAt`, which is null unless ACTIVE. Model identity is revalidated at save
+/// and run, never a foreign key. `revision` changes on every owner mutation and on
+/// runner status transitions (auto-pause, once completion), not on bookkeeping
+/// (`nextRunAt`, `consecutiveFailures`, `unseenResultAt`, `chatId`).
+model ScheduledTask {
+  id                  String                    @id @default(uuid())
+  userId              String
+  title               String                    @db.VarChar(120)
+  prompt              String
+  scheduleKind        ScheduledTaskScheduleKind
+  /// Local wall-clock minute of the day, 0..1439.
+  timeOfDayMinutes    Int
+  /// ISO weekdays, Monday = bit 0 .. Sunday = bit 6; 0 unless WEEKLY.
+  daysOfWeekMask      Int                       @default(0)
+  /// 1..31 for MONTHLY, clamped to the month's last day; otherwise null.
+  dayOfMonth          Int?
+  /// Local `YYYY-MM-DD` for ONCE; otherwise null.
+  onceLocalDate       String?                   @db.VarChar(10)
+  timeZone            String                    @db.VarChar(64)
+  modelId             String                    @db.VarChar(256)
+  provider            String                    @db.VarChar(256)
+  searchEnabled       Boolean                   @default(false)
+  emailNotify         Boolean                   @default(false)
+  status              ScheduledTaskStatus       @default(ACTIVE)
+  /// Stable code of an automatic pause; null for owner pauses and other states.
+  pauseReason         String?                   @db.VarChar(64)
+  nextRunAt           DateTime?
+  /// The task's personal chat; deleting the chat clears only this column.
+  chatId              String?
+  consecutiveFailures Int                       @default(0)
+  unseenResultAt      DateTime?
+  revision            Int                       @default(1)
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  user                User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// The migration uses column-scoped SET NULL so chat deletion never clears userId.
+  chat                Chat?                     @relation(fields: [userId, chatId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
+  occurrences         ScheduledTaskOccurrence[]
+
+  @@unique([userId, id])
+  @@index([status, nextRunAt])
+  @@index([userId, createdAt])
+  @@index([chatId])
+}
+
+/// One scheduled instant or manual request of a task, filled by the runner.
+/// Content-free: identifiers, timestamps and stable codes only.
+model ScheduledTaskOccurrence {
+  id             String                       @id @default(uuid())
+  taskId         String
+  userId         String
+  /// `schedule` or `manual`.
+  trigger        String                       @db.VarChar(16)
+  scheduledFor   DateTime
+  state          ScheduledTaskOccurrenceState @default(PENDING)
+  reasonCode     String?                      @db.VarChar(64)
+  chatId         String?
+  userMessageId  String?
+  runId          String?
+  leaseExpiresAt DateTime?
+  startedAt      DateTime?
+  /// Set exactly when the state is COMPLETED, FAILED or SKIPPED.
+  finishedAt     DateTime?
+  notifiedAt     DateTime?
+  createdAt      DateTime                     @default(now())
+  task           ScheduledTask                @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  /// The migration uses column-scoped SET NULL for chat and run references.
+  chat           Chat?                        @relation(fields: [userId, chatId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
+  userMessage    Message?                     @relation(fields: [userMessageId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+  run            ModelRun?                    @relation(fields: [userId, runId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
+
+  @@unique([taskId, trigger, scheduledFor])
+  @@index([taskId, scheduledFor])
+  @@index([state, leaseExpiresAt])
+  @@index([chatId])
+  @@index([runId])
+  @@index([userMessageId])
 }
