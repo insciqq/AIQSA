@@ -86,3 +86,45 @@ for (const viewport of [
     await expect(chip).toHaveCount(0);
   });
 }
+
+for (const viewport of [
+  { width: 1440, height: 900, theme: "light" },
+  { width: 390, height: 844, theme: "dark" }
+] as const) {
+  test(`a scanned PDF is sendable once the assigned reader can read it at ${viewport.width}x${viewport.height}`, async ({ page, context, baseURL }, testInfo) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize(viewport);
+    await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: baseURL! }]);
+    await installMatrixCatalogFixture(page);
+    const scan = { attachment: { ...pdf.attachment, fileName: "scanned-pages.pdf", id: "pdf-route-scan-e2e",
+      processing: { extractedCharacterCount: 0, pageCount: 1, pagesProcessed: 1, status: "no_text" } } };
+    await page.route("**/api/uploads", (route) => route.fulfill({ json: scan, status: 201 }));
+    let routeKnown = false;
+    await page.route("**/api/uploads/pdf-route", (route) => route.fulfill(routeKnown
+      ? { headers: { "Cache-Control": "no-store" }, json: { route: "system_vision", version: 1 } }
+      : { json: { error: "model_not_available" }, status: 409 }));
+
+    await signInWithLocalToken(page);
+    const send = page.getByRole("button", { name: "Send message" });
+    await page.getByRole("textbox", { name: "Message" }).fill("Read the scanned pages.");
+    await page.getByLabel("Attach files").setInputFiles({
+      buffer: Buffer.from("%PDF-1.4 synthetic scanned fixture"),
+      mimeType: "application/pdf",
+      name: scan.attachment.fileName
+    });
+    const chip = page.getByRole("region", { name: "Attachments" })
+      .getByRole("listitem").filter({ hasText: scan.attachment.fileName });
+    // Unknown route: the local no-text block stays as before.
+    await expect(chip).toContainText("Choose a model with native PDF support or remove this file.");
+    await expect(send).toBeDisabled();
+
+    routeKnown = true;
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(chip).toContainText("The assigned PDF reader will read the original PDF.");
+    await expect(chip).not.toHaveAttribute("data-warning-blocking", "true");
+    await expect(send).toBeEnabled();
+    await expectNoHorizontalOverflow(page);
+    await expectWithinViewport(page, chip);
+    await page.screenshot({ path: testInfo.outputPath(`pdf-route-scan-ready-${viewport.width}x${viewport.height}.png`) });
+  });
+}

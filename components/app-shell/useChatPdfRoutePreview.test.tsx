@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { shellFetch } from "./shellApi";
-import { useChatPdfRoutePreview } from "./useChatPdfRoutePreview";
+import { latestChatPdfRouteAvailability, useChatPdfRoutePreview } from "./useChatPdfRoutePreview";
 
 vi.mock("./shellApi", () => ({ shellFetch: vi.fn() }));
 const target = { projectId: null, providerConnectionId: "connection", providerModelId: "A" };
@@ -62,5 +62,17 @@ describe("server-owned PDF route preview", () => {
       hook.unmount();
     }
     expect(shellFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("shares the preview with the send gate only for the exact previewed target", async () => {
+    vi.mocked(shellFetch).mockResolvedValueOnce(Response.json({ version: 1, route: "system_pdf" }));
+    const hook = renderHook(({ enabled }) => useChatPdfRoutePreview(enabled ? target : null), { initialProps: { enabled: true } });
+    await act(async () => {});
+    expect(latestChatPdfRouteAvailability({ ...target })).toEqual({ available: true, route: "system_pdf" });
+    expect(latestChatPdfRouteAvailability({ ...target, providerModelId: "B" })).toBeNull();
+    expect(latestChatPdfRouteAvailability({ ...target, projectId: "project" })).toBeNull();
+    hook.rerender({ enabled: false });
+    expect(latestChatPdfRouteAvailability(target)).toBeNull();
+    hook.unmount();
   });
 });
