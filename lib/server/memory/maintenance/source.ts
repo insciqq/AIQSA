@@ -182,7 +182,7 @@ async function scanSources(
       ` : Prisma.empty}
     ORDER BY version."id" LIMIT ${MEMORY_MAINTENANCE_BATCH_SIZE}
   `);
-  const cursor = rows.at(-1)?.versionId ?? null;
+  let cursor = rows.at(-1)?.versionId ?? null;
   if (rows.length === 0) return { sources: [], blockers: [], cursor };
   const factIds = [...new Set(rows.map(({ factId }) => factId))];
   const [lineageRows, withoutOffsets, newer] = await Promise.all([
@@ -226,7 +226,7 @@ async function scanSources(
   const sources: MemoryMaintenanceSource[] = [];
   const blockers: MemoryMaintenanceBlocker[] = [];
   let characters = 0;
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     const lineage = lineageRows.filter(({ factId }) => factId === row.factId).map(({ id, state }) => ({ id, state }));
     const ordinals = { recheckOrdinal: row.recheckOrdinal, attemptOrdinal: row.attemptOrdinal, rereviewOrdinal: row.rereviewOrdinal };
     const block = (reasonCode: MemoryMaintenanceReasonCode, identity: unknown) => {
@@ -242,19 +242,38 @@ async function scanSources(
     if (row.statement.length > MAX_STATEMENT_CHARACTERS) { block("statement_too_long", row.statement.length); continue; }
     // The newest exact current supports; older ones stay in the hash through
     // evidenceThrough and supportCount.
-    const supports = evidence.filter(({ factVersionId }) => factVersionId === row.versionId)
+    let supports = evidence.filter(({ factVersionId }) => factVersionId === row.versionId)
       .filter((support) => Number.isSafeInteger(support.startOffset) && Number.isSafeInteger(support.endOffset) &&
         support.endOffset > support.startOffset && Boolean(support.sourceTextHash))
       .slice(-MAX_REVIEWED_EVIDENCE);
     if (supports.length === 0) { block("evidence_not_current", row.supportCount); continue; }
-    const context = await loadMemoryMaintenanceContext(client, userId, row.versionId,
-      supports.map(({ messageId, startOffset, endOffset }) => ({ messageId, startOffset, endOffset })));
-    if (!context) { block("unreviewable_context", [...new Set(supports.map(({ messageId }) => messageId))].sort()); continue; }
     const statement = redactMemorySecrets(row.statement).redactedText;
-    const safeEvidence = supports.map(({ factVersionId: _factVersionId, ...support }) => ({
-      ...support, quote: boundedQuote(redactMemorySecrets(support.quote).redactedText) }));
-    const size = statement.length + safeEvidence.reduce((sum, item) => sum + item.quote.length, 0) + context.reduce((sum, item) => sum + item.text.length, 0);
-    if (input.unreviewed && characters + size > MAX_BATCH_CHARACTERS) continue;
+    // A source larger than a whole batch alone is reviewed with fewer of its
+    // newest supports, so every review request stays within the batch budget;
+    // one that still cannot fit is recorded, never skipped. Both scans trim
+    // alike, so the apply recomputes the planned snapshot hash.
+    let reviewed: Readonly<{ context: NonNullable<MemoryMaintenanceSource["context"]>;
+      safeEvidence: readonly MemoryMaintenanceEvidence[]; size: number }> | null = null;
+    for (;;) {
+      const context = await loadMemoryMaintenanceContext(client, userId, row.versionId,
+        supports.map(({ messageId, startOffset, endOffset }) => ({ messageId, startOffset, endOffset })));
+      if (!context) break;
+      const safeEvidence = supports.map(({ factVersionId: _factVersionId, ...support }) => ({
+        ...support, quote: boundedQuote(redactMemorySecrets(support.quote).redactedText) }));
+      const size = statement.length + safeEvidence.reduce((sum, item) => sum + item.quote.length, 0) +
+        context.reduce((sum, item) => sum + item.text.length, 0);
+      if (size <= MAX_BATCH_CHARACTERS) { reviewed = { context, safeEvidence, size }; break; }
+      if (supports.length === 1) break;
+      supports = supports.slice(1);
+    }
+    if (!reviewed) { block("unreviewable_context", [...new Set(supports.map(({ messageId }) => messageId))].sort()); continue; }
+    const { context, safeEvidence, size } = reviewed;
+    // A full batch ends before this source and the next scan starts at it, so
+    // the cursor never passes a source without planning or recording it.
+    if (input.unreviewed && sources.length > 0 && characters + size > MAX_BATCH_CHARACTERS) {
+      cursor = rows[index - 1]!.versionId;
+      break;
+    }
     characters += size;
     const sourceSnapshotHash = memorySha256({ factId: row.factId, versionId: row.versionId, statement,
       category: row.category, modality: row.modality, confidence: row.confidence, usefulness: row.usefulness,
@@ -280,6 +299,9 @@ export async function loadMemoryMaintenanceSources(client: QueryClient, userId: 
  * planner records them inside its locked transaction. */
 export async function scanMemoryMaintenanceSources(client: QueryClient, userId: string, now: Date,
   cursor: string | null): Promise<MemoryMaintenanceScan> {
-  const scan = await scanSources(client, userId, { now, cursor, unreviewed: true });
+  let scan = await scanSources(client, userId, { now, cursor, unreviewed: true });
+  // Past the last uncovered source, start over at once: a scan that returns
+  // nothing means the owner has nothing uncovered to plan or record.
+  if (cursor !== null && scan.cursor === null) scan = await scanSources(client, userId, { now, cursor: null, unreviewed: true });
   return { plan: scan.sources.length ? memoryMaintenancePlan(scan.sources) : null, blockers: scan.blockers, cursor: scan.cursor };
 }
