@@ -242,32 +242,23 @@ async function scanSources(
     if (row.statement.length > MAX_STATEMENT_CHARACTERS) { block("statement_too_long", row.statement.length); continue; }
     // The newest exact current supports; older ones stay in the hash through
     // evidenceThrough and supportCount.
-    let supports = evidence.filter(({ factVersionId }) => factVersionId === row.versionId)
+    const supports = evidence.filter(({ factVersionId }) => factVersionId === row.versionId)
       .filter((support) => Number.isSafeInteger(support.startOffset) && Number.isSafeInteger(support.endOffset) &&
         support.endOffset > support.startOffset && Boolean(support.sourceTextHash))
       .slice(-MAX_REVIEWED_EVIDENCE);
     if (supports.length === 0) { block("evidence_not_current", row.supportCount); continue; }
+    const context = await loadMemoryMaintenanceContext(client, userId, row.versionId,
+      supports.map(({ messageId, startOffset, endOffset }) => ({ messageId, startOffset, endOffset })));
+    const contextIdentity = () => [...new Set(supports.map(({ messageId }) => messageId))].sort();
+    if (!context) { block("unreviewable_context", contextIdentity()); continue; }
     const statement = redactMemorySecrets(row.statement).redactedText;
-    // A source larger than a whole batch alone is reviewed with fewer of its
-    // newest supports, so every review request stays within the batch budget;
-    // one that still cannot fit is recorded, never skipped. Both scans trim
-    // alike, so the apply recomputes the planned snapshot hash.
-    let reviewed: Readonly<{ context: NonNullable<MemoryMaintenanceSource["context"]>;
-      safeEvidence: readonly MemoryMaintenanceEvidence[]; size: number }> | null = null;
-    for (;;) {
-      const context = await loadMemoryMaintenanceContext(client, userId, row.versionId,
-        supports.map(({ messageId, startOffset, endOffset }) => ({ messageId, startOffset, endOffset })));
-      if (!context) break;
-      const safeEvidence = supports.map(({ factVersionId: _factVersionId, ...support }) => ({
-        ...support, quote: boundedQuote(redactMemorySecrets(support.quote).redactedText) }));
-      const size = statement.length + safeEvidence.reduce((sum, item) => sum + item.quote.length, 0) +
-        context.reduce((sum, item) => sum + item.text.length, 0);
-      if (size <= MAX_BATCH_CHARACTERS) { reviewed = { context, safeEvidence, size }; break; }
-      if (supports.length === 1) break;
-      supports = supports.slice(1);
-    }
-    if (!reviewed) { block("unreviewable_context", [...new Set(supports.map(({ messageId }) => messageId))].sort()); continue; }
-    const { context, safeEvidence, size } = reviewed;
+    const safeEvidence = supports.map(({ factVersionId: _factVersionId, ...support }) => ({
+      ...support, quote: boundedQuote(redactMemorySecrets(support.quote).redactedText) }));
+    const size = statement.length + safeEvidence.reduce((sum, item) => sum + item.quote.length, 0) + context.reduce((sum, item) => sum + item.text.length, 0);
+    // The statement, exact quotes (at most 2,000 characters each in the
+    // database) and context bounds keep one source well within a batch; a
+    // source that still exceeds it is recorded, never sent over budget.
+    if (size > MAX_BATCH_CHARACTERS) { block("unreviewable_context", contextIdentity()); continue; }
     // A full batch ends before this source and the next scan starts at it, so
     // the cursor never passes a source without planning or recording it.
     if (input.unreviewed && sources.length > 0 && characters + size > MAX_BATCH_CHARACTERS) {
