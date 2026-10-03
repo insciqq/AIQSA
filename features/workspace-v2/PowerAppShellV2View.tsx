@@ -70,7 +70,7 @@ import {
 } from "@/components/app-shell/skillLibraryStore";
 import { resolveEffectiveSkillIds } from "@/lib/contracts/skills";
 import { pinSkillForNextTurn } from "@/components/app-shell/skillPinActions";
-import type { PowerAppShellV2Props, ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
+import type { PowerAppShellV2Props, ShellComposerView, ShellWorkspacePaneActions } from "@/components/app-shell/powerAppShellV2Contracts";
 import type {
   RunEventView,
   ThreadArtifactSummary,
@@ -255,6 +255,27 @@ function messageText(message: ThreadMessage): string {
 
 function currentWorkspaceChat(chatId: string): WorkspaceChatSummary | null {
   return useWorkspaceStore.getState().chats.find((chat) => chat.id === chatId) ?? null;
+}
+
+/**
+ * Opens a navigation row as one history entry. The navigation list can arrive
+ * before the workspace list; a row the workspace does not hold yet opens by
+ * its address, exactly as `/c/<id>` does, instead of losing the click.
+ */
+export function selectNavigationChatV2(
+  chatId: string,
+  actions: Pick<ShellWorkspacePaneActions, "activateChat" | "openChatAddress">,
+  leaveProject: () => void
+): void {
+  navigateChatRoute(() => {
+    const full = currentWorkspaceChat(chatId);
+    if (full) {
+      leaveProject();
+      actions.activateChat(full);
+    } else {
+      actions.openChatAddress(chatId);
+    }
+  });
 }
 
 function currentWorkspaceFolder(folderId: string) {
@@ -1423,14 +1444,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   };
 
   // Choosing a chat or a new chat in navigation adds one history entry.
-  const selectNavigationChat = (chat: ChatNavigationSummaryWire) => navigateChatRoute(() => {
-    const full = currentWorkspaceChat(chat.id);
-    if (full) {
-      workspace.projects.actions.leave();
-      workspace.pane.actions.activateChat(full);
-    }
-    else void workspace.pane.actions.retry();
-  });
+  const selectNavigationChat = (chat: ChatNavigationSummaryWire) =>
+    selectNavigationChatV2(chat.id, workspace.pane.actions, workspace.projects.actions.leave);
   const setNavigationMemoryMode = (chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL") => {
     const full = currentWorkspaceChat(chat.id);
     if (full && full.memoryMode !== mode) {

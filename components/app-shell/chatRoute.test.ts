@@ -15,6 +15,7 @@ import {
   chatSendUnderWay,
   isCurrentChatRouteResolution,
   navigateChatRoute,
+  navigateToChatAddress,
   resolveChatRoute,
   settleChatRouteResolution,
   useChatRouteHistory,
@@ -360,6 +361,61 @@ describe("resolving an address", () => {
     const pending = resolveChatRoute({ chatId: "chat-1", projectId: null }, beginChatRouteResolution(), fake);
     navigateChatRoute(() => writeChatRoute({ chatId: "chat-2", projectId: null }));
     finish("missing");
+    await expect(pending).resolves.toBeNull();
+    expect(fake.openBlank).not.toHaveBeenCalled();
+    expect(fake.showUnavailable).not.toHaveBeenCalled();
+    expect(address()).toBe("/c/chat-2");
+  });
+});
+
+describe("navigating to an address the shell cannot activate yet", () => {
+  it("adds the chosen address as one entry at once and resolves it like a typed address", async () => {
+    const push = vi.spyOn(window.history, "pushState");
+    let release!: () => void;
+    const listLoaded = new Promise<void>((resolve) => { release = resolve; });
+    let shown: ChatRoute = BLANK;
+    const fake = targets({
+      openBlank: vi.fn(() => {
+        shown = BLANK;
+        writeChatRoute(BLANK);
+      }),
+      openChat: vi.fn(async (chatId: string) => {
+        await listLoaded;
+        shown = { chatId, projectId: null };
+        return "opened" as const;
+      }),
+      stateRoute: vi.fn(() => shown)
+    });
+    let pending: Promise<ChatRoute | null> | null = null;
+    navigateToChatAddress({ chatId: "chat-1", projectId: null }, (route, resolution) => {
+      // An owner writing the blank route on the way never wins over the choice.
+      fake.openBlank();
+      pending = resolveChatRoute(route, resolution, fake);
+    });
+    expect(push).toHaveBeenCalledExactlyOnceWith(null, "", "/c/chat-1");
+    expect(address()).toBe("/c/chat-1");
+    release();
+    await expect(pending).resolves.toEqual({ chatId: "chat-1", projectId: null });
+    expect(fake.openChat).toHaveBeenCalledExactlyOnceWith("chat-1");
+    expect(push).toHaveBeenCalledOnce();
+    expect(address()).toBe("/c/chat-1");
+  });
+
+  it("applies nothing once a later navigation chose another chat", async () => {
+    let release!: () => void;
+    const listLoaded = new Promise<void>((resolve) => { release = resolve; });
+    const fake = targets({
+      openChat: vi.fn(async () => {
+        await listLoaded;
+        return "missing" as const;
+      })
+    });
+    let pending: Promise<ChatRoute | null> | null = null;
+    navigateToChatAddress({ chatId: "chat-1", projectId: null }, (route, resolution) => {
+      pending = resolveChatRoute(route, resolution, fake);
+    });
+    navigateChatRoute(() => writeChatRoute({ chatId: "chat-2", projectId: null }));
+    release();
     await expect(pending).resolves.toBeNull();
     expect(fake.openBlank).not.toHaveBeenCalled();
     expect(fake.showUnavailable).not.toHaveBeenCalled();
