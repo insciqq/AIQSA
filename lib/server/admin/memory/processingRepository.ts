@@ -4,6 +4,7 @@ import { currentMemoryJobsSql } from "../../memory/coordinator/currentJobs";
 import { memoryHistoryActiveWorkSql, memoryHistoryAutoHealAttemptsSql, memoryHistoryAutoHealProtectedSql, memoryHistoryIncompleteOutputSql,
   memoryHistoryUnrepairedOutputFailureSql } from "../../memory/history/autoHeal";
 import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS } from "../../memory/history/contract";
+import { memoryMaintenanceSourcePredicate } from "../../memory/maintenance/source";
 import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
 import { MEMORY_PREPARATION_FAILURE_CODES } from "../../runs/preparingFailOpen";
 
@@ -75,6 +76,28 @@ function recentActivitySql(now: Date): Prisma.Sql {
   `;
 }
 
+/** Uses current_jobs `job`. A failed command is never re-run: it stays a
+ * processing failure only for the window in which the command aggregate also
+ * reports it. A failed maintenance review has not recovered only while some
+ * version it reviewed is still a maintenance source; once none is, nothing
+ * remains to retry. Neither rule changes a job. */
+function unresolvedTerminalFailureSql(now: Date): Prisma.Sql {
+  return Prisma.sql`CASE
+    WHEN job.state <> 'TERMINAL_FAILED' THEN TRUE
+    WHEN job.kind = 'MEMORY_COMMAND' THEN COALESCE(job."completedAt", job."createdAt") >
+      ${new Date(now.getTime() - RECENT_ACTIVITY_MS)}
+    WHEN job.kind = 'SYNTHESIZE_MEMORIES' THEN EXISTS (
+      SELECT 1 FROM "MemoryMaintenanceReview" AS reviewed
+      JOIN "MemoryFactVersion" AS version ON version."userId" = reviewed."userId" AND version.id = reviewed."factVersionId"
+      JOIN "MemoryFact" AS fact ON fact."userId" = version."userId" AND fact.id = version."factId"
+      JOIN "MemoryScope" AS scope ON scope."userId" = fact."userId" AND scope.id = fact."scopeId"
+      JOIN "UserMemorySettings" AS settings ON settings."userId" = fact."userId"
+      WHERE reviewed."userId" = job."userId" AND reviewed."memoryJobId" = job.id
+        AND ${memoryMaintenanceSourcePredicate(Prisma.sql`job."userId"`)})
+    ELSE TRUE
+  END`;
+}
+
 /** Read-only aggregates. Source identities stay inside PostgreSQL; worker
  * heartbeat and renewable leases are deliberately not evidence of progress. */
 export async function readAdminMemoryProcessing(
@@ -132,6 +155,7 @@ export async function readAdminMemoryProcessing(
               AND recovered."targetFactVersionId" IS NOT DISTINCT FROM job."targetFactVersionId"
               AND recovered."chatId" IS NOT DISTINCT FROM job."chatId"
           ))
+          AND ${unresolvedTerminalFailureSql(now)}
         UNION ALL
         SELECT 'DELETION', CASE WHEN deletion.state IN ('PENDING', 'RETRY_WAIT')
           THEN GREATEST(deletion."createdAt", deletion."nextAttemptAt") ELSE deletion."createdAt" END,
