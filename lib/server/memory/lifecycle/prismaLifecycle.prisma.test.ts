@@ -2669,12 +2669,7 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
           memoryRevision: before.memoryRevision + 1,
           referenceChatHistory: false,
           settingsRevision: before.settingsRevision + 1,
-          useMemoryFacts: false,
-          // Retired Dream fence values, still written for previous-release workers.
-          lastSynthesisAt: null,
-          synthesisEnabled: false,
-          synthesisEnabledAt: null,
-          synthesisPolicyVersion: null
+          useMemoryFacts: false
         });
       const barrier = await prisma.memorySourceBarrier.findFirstOrThrow({
         where: { kind: "ALL_REUSABLE", userId }

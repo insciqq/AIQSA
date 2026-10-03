@@ -41,7 +41,6 @@ function settingsResponse() {
       pastChatIndexingAvailable: true,
       permanentChatDeletion: false,
       retrievalAvailable: true,
-      synthesisAvailable: true,
       temporaryChats: true
     },
     historyIndexing: {
@@ -62,7 +61,6 @@ function settingsResponse() {
       referenceChatHistory: true,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
       settingsRevision: 12,
-      synthesisEnabled: false,
       updatedAt: now,
       useMemoryFacts: true
     }
@@ -260,24 +258,26 @@ describe("Memory response contracts", () => {
     })).toMatchObject({ ok: false });
   });
 
-  it("keeps the retired Dream setting false and its toggle-only patch decodable", () => {
+  it("rejects the retired Dream fields in settings responses and patches", () => {
     expect(decodeMemorySettingsResponse({
       ...settingsResponse(),
-      settings: { ...settingsResponse().settings, synthesisEnabled: true }
+      settings: { ...settingsResponse().settings, synthesisEnabled: false }
     })).toMatchObject({ ok: false });
-    const { synthesisEnabled: _retired, ...withoutRetired } = settingsResponse().settings;
-    expect(decodeMemorySettingsResponse({ ...settingsResponse(), settings: withoutRetired }))
-      .toMatchObject({ ok: false });
+    expect(decodeMemorySettingsResponse({
+      ...settingsResponse(),
+      capabilities: { ...settingsResponse().capabilities, synthesisAvailable: true }
+    })).toMatchObject({ ok: false });
     expect(decodeMemorySettingsMutation({
       expectedMemoryRevision: 1,
       expectedSettingsRevision: 2,
       synthesisEnabled: true
-    })).toEqual({
-      ok: true,
-      value: { kind: "patch", value: { expectedMemoryRevision: 1, expectedSettingsRevision: 2, synthesisEnabled: true } }
-    });
-    expect(decodeMemorySettingsMutation({ expectedSettingsRevision: 2, synthesisEnabled: true }))
-      .toMatchObject({ ok: false });
+    })).toMatchObject({ ok: false });
+    expect(decodeMemorySettingsMutation({
+      expectedMemoryRevision: 1,
+      expectedSettingsRevision: 2,
+      learnAutomatically: false,
+      synthesisEnabled: false
+    })).toMatchObject({ ok: false });
   });
 
   it("strictly decodes list and mutation projections", () => {

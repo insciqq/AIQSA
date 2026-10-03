@@ -475,6 +475,7 @@ export async function bootstrapInstallationDatabase(
         await ensureFullAccessGroup(tx, state.adoptedUserId);
         await tx.userMemorySettings.upsert({
           create: { userId: state.adoptedUserId },
+          select: { userId: true },
           update: {},
           where: { userId: state.adoptedUserId }
         });

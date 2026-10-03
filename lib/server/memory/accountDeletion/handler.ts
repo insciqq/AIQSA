@@ -290,15 +290,10 @@ async function purgeReusableAndPrivateMemory(
       learnAutomatically: false,
       referenceChatHistory: false,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
-      // Retired Dream columns: written only as the fence values a
-      // previous-release worker still checks during Compose replacement.
-      synthesisEnabled: false,
-      synthesisEnabledAt: null,
-      synthesisPolicyVersion: null,
-      lastSynthesisAt: null,
       useMemoryFacts: false,
       updatedAt: now
     },
+    select: { userId: true },
     where: { userId }
   });
 }
