@@ -1,0 +1,319 @@
+/**
+ * Scheduled tasks wire contract, shared by the owner API (`/api/me/scheduled-tasks`),
+ * the runner and the Studio UI. Schedule computation lives in
+ * `lib/domain/scheduledTaskSchedule.ts`; this leaf only owns shapes and bounds.
+ */
+
+export const SCHEDULED_TASK_MAX_ACTIVE = 10;
+export const SCHEDULED_TASK_MAX_TOTAL = 50;
+/** Code points after trimming; equals the chat title bound because the title names the task's chat. */
+export const SCHEDULED_TASK_TITLE_MAX_LENGTH = 120;
+/** Code points. */
+export const SCHEDULED_TASK_PROMPT_MAX_LENGTH = 8_000;
+export const SCHEDULED_TASK_TIME_ZONE_MAX_LENGTH = 64;
+export const SCHEDULED_TASK_MODEL_IDENTITY_MAX_LENGTH = 256;
+/** A once task must start later than now plus this lead on create, edit and resume. */
+export const SCHEDULED_TASK_ONCE_MIN_LEAD_MS = 60_000;
+export const SCHEDULED_TASK_RECENT_RUNS_LIMIT = 10;
+
+export const SCHEDULED_TASK_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+export type ScheduledTaskWeekday = (typeof SCHEDULED_TASK_WEEKDAYS)[number];
+
+/**
+ * Wall-clock schedule in the task's IANA time zone: `time` is "HH:MM" (24-hour),
+ * `date` is "YYYY-MM-DD". Weekly `days` are unique and listed Monday first;
+ * "weekdays" is a UI preset of mon..fri. A monthly day past the month's end runs
+ * on its last day.
+ */
+export type ScheduledTaskSchedule =
+  | { kind: "once"; date: string; time: string }
+  | { kind: "daily"; time: string }
+  | { kind: "weekly"; time: string; days: ScheduledTaskWeekday[] }
+  | { kind: "monthly"; time: string; dayOfMonth: number };
+
+export type ScheduledTaskStatus = "active" | "paused" | "completed";
+export type ScheduledTaskRunState = "pending" | "running" | "completed" | "failed" | "skipped";
+export type ScheduledTaskSettledRunState = Extract<ScheduledTaskRunState, "completed" | "failed" | "skipped">;
+export type ScheduledTaskRunTrigger = "schedule" | "manual";
+
+/** The newest settled occurrence. */
+export type ScheduledTaskLastRun = {
+  scheduledFor: string;
+  state: ScheduledTaskSettledRunState;
+  reasonCode: string | null;
+  finishedAt: string;
+};
+
+export type ScheduledTask = {
+  id: string;
+  title: string;
+  prompt: string;
+  schedule: ScheduledTaskSchedule;
+  timeZone: string;
+  modelId: string;
+  provider: string;
+  searchEnabled: boolean;
+  emailNotify: boolean;
+  status: ScheduledTaskStatus;
+  /** Stable code of an automatic pause; null for owner pauses and other states. */
+  pauseReason: string | null;
+  /** Null unless active. */
+  nextRunAt: string | null;
+  lastRun: ScheduledTaskLastRun | null;
+  /** A pending or running occurrence exists. */
+  running: boolean;
+  /** The task's chat while it is usable; null before the first run or after its deletion. */
+  chatId: string | null;
+  unseenResult: boolean;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Content-free occurrence history. */
+export type ScheduledTaskRun = {
+  scheduledFor: string;
+  trigger: ScheduledTaskRunTrigger;
+  state: ScheduledTaskRunState;
+  reasonCode: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  chatId: string | null;
+};
+
+export type ScheduledTaskLimits = { maxActive: number; maxTotal: number };
+/** `GET /api/me/scheduled-tasks`, newest first. `emailAvailable`: installation SMTP is configured and the account has an address. */
+export type ScheduledTaskListResponse = { tasks: ScheduledTask[]; limits: ScheduledTaskLimits; emailAvailable: boolean };
+/** `GET /api/me/scheduled-tasks/[taskId]`; `recentRuns` holds the newest occurrences first. */
+export type ScheduledTaskDetailResponse = { task: ScheduledTask; recentRuns: ScheduledTaskRun[] };
+/** Response of create (201) and update (200). */
+export type ScheduledTaskResponse = { task: ScheduledTask };
+
+/** Every editable field; also the `POST /api/me/scheduled-tasks` body, which creates an active task. */
+export type ScheduledTaskDraft = {
+  title: string;
+  prompt: string;
+  schedule: ScheduledTaskSchedule;
+  timeZone: string;
+  /** The composer's `modelId` and `provider`; they travel together. */
+  modelId: string;
+  provider: string;
+  searchEnabled: boolean;
+  emailNotify: boolean;
+};
+export type ScheduledTaskCreateRequest = ScheduledTaskDraft;
+/**
+ * `PATCH /api/me/scheduled-tasks/[taskId]`: `expectedRevision` plus at least one
+ * change. Pausing clears the next run; resuming or changing the schedule or time
+ * zone takes the next occurrence from now without catch-up, while other edits
+ * keep an active task's due run. Every update clears the failure count and the
+ * pause reason. A schedule change reactivates a completed once task.
+ */
+export type ScheduledTaskUpdateRequest = Partial<ScheduledTaskDraft> & {
+  expectedRevision: number;
+  status?: "active" | "paused";
+};
+
+export const SCHEDULED_TASK_ERROR_CODES = [
+  "scheduled_task_invalid",
+  "scheduled_task_schedule_invalid",
+  "scheduled_task_time_zone_invalid",
+  "scheduled_task_once_in_past",
+  "scheduled_task_model_unavailable",
+  "scheduled_task_search_unavailable",
+  "scheduled_task_limit",
+  "scheduled_task_stale",
+  "scheduled_task_not_found",
+  "scheduled_tasks_unavailable"
+] as const;
+export type ScheduledTaskErrorCode = (typeof SCHEDULED_TASK_ERROR_CODES)[number];
+
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/u;
+const DATE = /^(\d{4})-(\d{2})-(\d{2})$/u;
+const TIME_ZONE = /^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/u;
+const CODE = /^[a-z][a-z0-9_]{0,63}$/u;
+
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function keys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).length === allowed.length && Object.keys(value).every((key) => allowed.includes(key));
+}
+function id(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+function instant(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 64 && Number.isFinite(Date.parse(value));
+}
+function nullable<T>(value: unknown, check: (entry: unknown) => entry is T): value is T | null {
+  return value === null || check(value);
+}
+function code(value: unknown): value is string {
+  return typeof value === "string" && CODE.test(value);
+}
+function count(value: unknown, minimum: number): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum;
+}
+
+function codePointLength(value: string): number {
+  return Array.from(value).length;
+}
+
+/** Proleptic Gregorian month length; `month` is 1..12. */
+export function scheduledTaskDaysInMonth(year: number, month: number): number {
+  if (month === 2) return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28;
+  return month === 4 || month === 6 || month === 9 || month === 11 ? 30 : 31;
+}
+/** A real calendar date written as "YYYY-MM-DD". */
+export function isScheduledTaskLocalDate(value: unknown): value is string {
+  const match = typeof value === "string" ? DATE.exec(value) : null;
+  if (!match) return false;
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  return year >= 1 && month >= 1 && month <= 12 && day >= 1 && day <= scheduledTaskDaysInMonth(year, month);
+}
+export function isScheduledTaskTime(value: unknown): value is string {
+  return typeof value === "string" && TIME.test(value);
+}
+/** Bounded IANA-shaped name; the runtime decides whether it resolves. */
+export function isScheduledTaskTimeZoneShape(value: unknown): value is string {
+  return typeof value === "string" && value.length <= SCHEDULED_TASK_TIME_ZONE_MAX_LENGTH && TIME_ZONE.test(value);
+}
+/** The trimmed title when it has 1..120 code points, else null. */
+export function normalizeScheduledTaskTitle(value: unknown): string | null {
+  if (typeof value !== "string" || value.includes("\0")) return null;
+  const title = value.trim();
+  return title && codePointLength(title) <= SCHEDULED_TASK_TITLE_MAX_LENGTH ? title : null;
+}
+/** Stored as written; it must contain non-whitespace text within the bound. */
+export function isScheduledTaskPrompt(value: unknown): value is string {
+  return typeof value === "string" && !value.includes("\0") && value.trim().length > 0 &&
+    codePointLength(value) <= SCHEDULED_TASK_PROMPT_MAX_LENGTH;
+}
+export function isScheduledTaskModelIdentity(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= SCHEDULED_TASK_MODEL_IDENTITY_MAX_LENGTH;
+}
+
+/** Strict schedule decoding: exact keys, valid wall-clock values, weekly days normalized Monday first. */
+export function decodeScheduledTaskSchedule(value: unknown): ScheduledTaskSchedule | null {
+  if (!record(value) || !isScheduledTaskTime(value.time)) return null;
+  switch (value.kind) {
+    case "once":
+      return keys(value, ["kind", "date", "time"]) && isScheduledTaskLocalDate(value.date)
+        ? { kind: "once", date: value.date, time: value.time }
+        : null;
+    case "daily":
+      return keys(value, ["kind", "time"]) ? { kind: "daily", time: value.time } : null;
+    case "weekly": {
+      const days = value.days;
+      if (!keys(value, ["kind", "time", "days"]) || !Array.isArray(days) || days.length < 1 ||
+        days.length > SCHEDULED_TASK_WEEKDAYS.length || new Set(days).size !== days.length ||
+        !days.every((day) => (SCHEDULED_TASK_WEEKDAYS as readonly unknown[]).includes(day))) return null;
+      return { kind: "weekly", time: value.time, days: SCHEDULED_TASK_WEEKDAYS.filter((day) => days.includes(day)) };
+    }
+    case "monthly":
+      return keys(value, ["kind", "time", "dayOfMonth"]) && count(value.dayOfMonth, 1) && value.dayOfMonth <= 31
+        ? { kind: "monthly", time: value.time, dayOfMonth: value.dayOfMonth }
+        : null;
+    default:
+      return null;
+  }
+}
+
+const TASK_KEYS = [
+  "id", "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "status",
+  "pauseReason", "nextRunAt", "lastRun", "running", "chatId", "unseenResult", "revision", "createdAt", "updatedAt"
+] as const;
+const STATUSES: readonly unknown[] = ["active", "paused", "completed"] satisfies ScheduledTaskStatus[];
+const RUN_STATES: readonly unknown[] = ["pending", "running", "completed", "failed", "skipped"] satisfies ScheduledTaskRunState[];
+const SETTLED_RUN_STATES: readonly unknown[] = ["completed", "failed", "skipped"] satisfies ScheduledTaskSettledRunState[];
+
+function lastRun(value: unknown): value is ScheduledTaskLastRun {
+  return record(value) && keys(value, ["scheduledFor", "state", "reasonCode", "finishedAt"]) &&
+    instant(value.scheduledFor) && SETTLED_RUN_STATES.includes(value.state) &&
+    nullable(value.reasonCode, code) && instant(value.finishedAt);
+}
+
+export function decodeScheduledTask(value: unknown): ScheduledTask | null {
+  if (!record(value) || !keys(value, TASK_KEYS)) return null;
+  const schedule = decodeScheduledTaskSchedule(value.schedule);
+  const title = normalizeScheduledTaskTitle(value.title), prompt = value.prompt;
+  if (!schedule || !id(value.id) || !title || title !== value.title || !isScheduledTaskPrompt(prompt) ||
+    !isScheduledTaskTimeZoneShape(value.timeZone) || !isScheduledTaskModelIdentity(value.modelId) ||
+    !isScheduledTaskModelIdentity(value.provider) || typeof value.searchEnabled !== "boolean" ||
+    typeof value.emailNotify !== "boolean" || !STATUSES.includes(value.status) || !nullable(value.pauseReason, code) ||
+    !nullable(value.nextRunAt, instant) || (value.status !== "active" && value.nextRunAt !== null) ||
+    !nullable(value.lastRun, lastRun) || typeof value.running !== "boolean" || !nullable(value.chatId, id) ||
+    typeof value.unseenResult !== "boolean" || !count(value.revision, 1) || !instant(value.createdAt) ||
+    !instant(value.updatedAt)) return null;
+  const run = value.lastRun as ScheduledTaskLastRun | null;
+  return {
+    id: value.id, title, prompt, schedule, timeZone: value.timeZone, modelId: value.modelId, provider: value.provider,
+    searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, status: value.status as ScheduledTaskStatus,
+    pauseReason: value.pauseReason, nextRunAt: value.nextRunAt,
+    lastRun: run && { scheduledFor: run.scheduledFor, state: run.state, reasonCode: run.reasonCode, finishedAt: run.finishedAt },
+    running: value.running, chatId: value.chatId, unseenResult: value.unseenResult, revision: value.revision,
+    createdAt: value.createdAt, updatedAt: value.updatedAt
+  };
+}
+
+export function decodeScheduledTaskRun(value: unknown): ScheduledTaskRun | null {
+  if (!record(value) || !keys(value, ["scheduledFor", "trigger", "state", "reasonCode", "startedAt", "finishedAt", "chatId"]) ||
+    !instant(value.scheduledFor) || (value.trigger !== "schedule" && value.trigger !== "manual") ||
+    !RUN_STATES.includes(value.state) || !nullable(value.reasonCode, code) || !nullable(value.startedAt, instant) ||
+    !nullable(value.finishedAt, instant) || !nullable(value.chatId, id)) return null;
+  return {
+    scheduledFor: value.scheduledFor, trigger: value.trigger, state: value.state as ScheduledTaskRunState,
+    reasonCode: value.reasonCode, startedAt: value.startedAt, finishedAt: value.finishedAt, chatId: value.chatId
+  };
+}
+
+export function decodeScheduledTaskListResponse(value: unknown): ScheduledTaskListResponse | null {
+  if (!record(value) || !keys(value, ["tasks", "limits", "emailAvailable"]) || !Array.isArray(value.tasks) ||
+    value.tasks.length > SCHEDULED_TASK_MAX_TOTAL || typeof value.emailAvailable !== "boolean" ||
+    !record(value.limits) || !keys(value.limits, ["maxActive", "maxTotal"]) ||
+    !count(value.limits.maxActive, 0) || !count(value.limits.maxTotal, 0)) return null;
+  const tasks = value.tasks.map(decodeScheduledTask);
+  if (tasks.some((task) => !task) || new Set(tasks.map((task) => task!.id)).size !== tasks.length) return null;
+  return {
+    tasks: tasks as ScheduledTask[],
+    limits: { maxActive: value.limits.maxActive, maxTotal: value.limits.maxTotal },
+    emailAvailable: value.emailAvailable
+  };
+}
+
+export function decodeScheduledTaskDetailResponse(value: unknown): ScheduledTaskDetailResponse | null {
+  if (!record(value) || !keys(value, ["task", "recentRuns"]) || !Array.isArray(value.recentRuns) ||
+    value.recentRuns.length > SCHEDULED_TASK_RECENT_RUNS_LIMIT) return null;
+  const task = decodeScheduledTask(value.task);
+  const recentRuns = value.recentRuns.map(decodeScheduledTaskRun);
+  return task && recentRuns.every(Boolean) ? { task, recentRuns: recentRuns as ScheduledTaskRun[] } : null;
+}
+
+export function scheduledTaskErrorMessage(errorCode: unknown): string {
+  switch (errorCode) {
+    case "scheduled_task_invalid": return "Check the task name, instructions and settings.";
+    case "scheduled_task_schedule_invalid": return "Check the schedule.";
+    case "scheduled_task_time_zone_invalid": return "Choose a valid time zone.";
+    case "scheduled_task_once_in_past": return "Choose a time at least a minute from now.";
+    case "scheduled_task_model_unavailable": return "This model is no longer available to you. Choose another model.";
+    case "scheduled_task_search_unavailable": return "Web search is not available with this model. Turn it off or choose another model.";
+    case "scheduled_task_limit":
+      return `You can have up to ${SCHEDULED_TASK_MAX_ACTIVE} active and ${SCHEDULED_TASK_MAX_TOTAL} saved scheduled tasks.`;
+    case "scheduled_task_stale": return "This task was changed elsewhere. Reload it and try again; your unsaved changes are kept.";
+    case "scheduled_task_not_found": return "This task is no longer available.";
+    default: return "Scheduled tasks are unavailable right now. Try again.";
+  }
+}
+
+/** Human copy for a pause reason or an occurrence reason code; unknown codes get a generic line. */
+export function scheduledTaskReasonMessage(reasonCode: string | null): string | null {
+  switch (reasonCode) {
+    case null: return null;
+    case "model_unavailable": return "The model is no longer available. Choose another model and resume.";
+    case "search_unavailable": return "Web search is no longer available with this model. Turn it off or choose another model and resume.";
+    case "repeated_failures": return "Paused after three failed runs in a row.";
+    case "missed": return "Skipped: the scheduled time passed while runs were unavailable.";
+    case "chat_busy": return "Skipped: the task's chat was busy.";
+    default: return "The run did not complete.";
+  }
+}

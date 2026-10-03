@@ -1,0 +1,199 @@
+import { describe, expect, it, vi } from "vitest";
+import type { ScheduledTask, ScheduledTaskDraft } from "../../contracts/scheduledTasks";
+import type { ScheduledTaskCatalog } from "./catalog";
+import { createScheduledTaskHandlers } from "./handlers";
+import { ScheduledTaskError, type ScheduledTaskUpdateWrite } from "./store";
+
+const NOW = new Date("2026-10-04T08:00:00.000Z"); // 11:00 in Moscow
+const catalog: ScheduledTaskCatalog = {
+  models: [
+    { modelId: "model-search", provider: "connection-a", searchStrategyIds: ["off", "web"] },
+    { modelId: "model-plain", provider: "connection-a", searchStrategyIds: ["off"] }
+  ],
+  searchStrategies: [{ kind: "none", strategyId: "off" }, { kind: "web_search", strategyId: "web" }]
+};
+const draft = {
+  title: "Morning brief", prompt: "fixture-private-prompt", schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow",
+  modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false
+} as const;
+
+function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
+  return {
+    ...draft, id: "task-1", schedule: { kind: "daily", time: "09:00" }, status: "active", pauseReason: null,
+    nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false, revision: 2,
+    createdAt: "2026-10-01T08:00:00.000Z", updatedAt: "2026-10-01T08:00:00.000Z", ...overrides
+  };
+}
+
+function fixture(current: ScheduledTask | null = task()) {
+  const store = {
+    list: vi.fn().mockResolvedValue({ tasks: [current], limits: { maxActive: 10, maxTotal: 50 }, emailAvailable: false }),
+    get: vi.fn().mockResolvedValue(current),
+    detail: vi.fn().mockResolvedValue(current ? { task: current, recentRuns: [] } : null),
+    create: vi.fn(async (_userId: string, value: ScheduledTaskDraft, nextRunAt: Date) =>
+      task({ ...value, nextRunAt: nextRunAt.toISOString(), revision: 1 })),
+    update: vi.fn(async (_userId: string, _taskId: string, write: ScheduledTaskUpdateWrite) =>
+      task({ ...write.draft, status: write.status, revision: write.expectedRevision + 1 })),
+    delete: vi.fn().mockResolvedValue(true),
+    markSeen: vi.fn().mockResolvedValue(true)
+  };
+  const loadCatalog = vi.fn().mockResolvedValue(catalog);
+  const resolveAuth = vi.fn().mockResolvedValue({ userId: "owner", user: { id: "owner", status: "active" } });
+  const handlers = createScheduledTaskHandlers({ loadCatalog, now: () => NOW, resolveAuth, store });
+  return { handlers, loadCatalog, resolveAuth, store };
+}
+
+const json = (method: string, body: unknown, path = "") =>
+  new Request(`http://localhost/api/me/scheduled-tasks${path}`, { body: JSON.stringify(body), method });
+const patch = (body: unknown, id = "task-1") => json("PATCH", body, `/${id}`);
+const lastWrite = (f: ReturnType<typeof fixture>) => f.store.update.mock.calls.at(-1)?.[2];
+
+describe("scheduled tasks owner API", () => {
+  it("authenticates before reading a body and keeps inactive accounts out", async () => {
+    const f = fixture();
+    f.resolveAuth.mockResolvedValueOnce(null);
+    const request = json("POST", draft);
+    expect((await f.handlers.create(request)).status).toBe(401);
+    expect(request.bodyUsed).toBe(false);
+    f.resolveAuth.mockResolvedValueOnce({ userId: "owner", user: { id: "owner", status: "disabled" } });
+    expect((await f.handlers.list(new Request("http://localhost/api/me/scheduled-tasks"))).status).toBe(403);
+    expect(f.store.list).not.toHaveBeenCalled();
+    expect(f.store.create).not.toHaveBeenCalled();
+  });
+
+  it("creates an active task for the authenticated owner with its first run and private responses", async () => {
+    const f = fixture();
+    const response = await f.handlers.create(json("POST", { ...draft, title: "  Morning brief  " }));
+    expect(response.status).toBe(201);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(f.store.create).toHaveBeenCalledWith("owner", draft, new Date("2026-10-05T06:00:00.000Z"));
+    expect(f.loadCatalog).toHaveBeenCalledWith("owner");
+    expect((await response.json()).task).toMatchObject({ title: "Morning brief", nextRunAt: "2026-10-05T06:00:00.000Z" });
+  });
+
+  it("rejects invalid input with stable codes before writing", async () => {
+    const f = fixture();
+    const cases: Array<[unknown, string]> = [
+      [{ ...draft, userId: "other" }, "scheduled_task_invalid"],
+      [{ ...draft, title: " " }, "scheduled_task_invalid"],
+      [{ ...draft, searchEnabled: "yes" }, "scheduled_task_invalid"],
+      [{ ...draft, schedule: { kind: "weekly", time: "09:00", days: [] } }, "scheduled_task_schedule_invalid"],
+      [{ ...draft, timeZone: "Mars/Olympus" }, "scheduled_task_time_zone_invalid"],
+      [{ ...draft, schedule: { kind: "once", date: "2026-10-04", time: "11:01" } }, "scheduled_task_once_in_past"],
+      [{ ...draft, modelId: "model-gone" }, "scheduled_task_model_unavailable"],
+      [{ ...draft, modelId: "model-plain" }, "scheduled_task_search_unavailable"]
+    ];
+    for (const [body, error] of cases) {
+      const response = await f.handlers.create(json("POST", body));
+      expect([response.status, await response.json()]).toEqual([400, { error }]);
+    }
+    const malformed = await f.handlers.create(new Request("http://localhost/api/me/scheduled-tasks", { body: "{", method: "POST" }));
+    expect(await malformed.json()).toEqual({ error: "scheduled_task_invalid" });
+    expect(f.store.create).not.toHaveBeenCalled();
+    const accepted = await f.handlers.create(json("POST", {
+      ...draft, modelId: "model-plain", searchEnabled: false, schedule: { kind: "once", date: "2026-10-04", time: "11:02" }
+    }));
+    expect(accepted.status).toBe(201);
+  });
+
+  it("maps store limits and hides unexpected failures", async () => {
+    const f = fixture();
+    f.store.create.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_limit"));
+    const limited = await f.handlers.create(json("POST", draft));
+    expect([limited.status, await limited.json()]).toEqual([409, { error: "scheduled_task_limit" }]);
+    f.store.create.mockRejectedValueOnce(new Error(draft.prompt));
+    const failed = await f.handlers.create(json("POST", draft));
+    expect(failed.status).toBe(503);
+    expect(await failed.text()).not.toContain(draft.prompt);
+    f.store.list.mockRejectedValueOnce(new Error("boom"));
+    expect((await f.handlers.list(new Request("http://localhost/api/me/scheduled-tasks"))).status).toBe(503);
+  });
+
+  it("scopes reads to the owner and answers missing or malformed ids alike", async () => {
+    const f = fixture(null);
+    const missing = await f.handlers.detail(new Request("http://localhost/api/me/scheduled-tasks/other"), "other");
+    expect([missing.status, await missing.json()]).toEqual([404, { error: "scheduled_task_not_found" }]);
+    expect(f.store.detail).toHaveBeenCalledWith("owner", "other");
+    const malformed = await f.handlers.detail(new Request("http://localhost/api/me/scheduled-tasks/x"), "../x");
+    expect(malformed.status).toBe(404);
+    expect(f.store.detail).toHaveBeenCalledTimes(1);
+    expect((await f.handlers.update(patch({ expectedRevision: 2, title: "New" }, "other"), "other")).status).toBe(404);
+    expect(f.store.update).not.toHaveBeenCalled();
+    const listed = await fixture().handlers.list(new Request("http://localhost/api/me/scheduled-tasks"));
+    expect(await listed.json()).toMatchObject({ limits: { maxActive: 10, maxTotal: 50 }, emailAvailable: false });
+  });
+
+  it("enforces optimistic concurrency and a well-formed patch", async () => {
+    const f = fixture();
+    const stale = await f.handlers.update(patch({ expectedRevision: 1, title: "New" }), "task-1");
+    expect([stale.status, await stale.json()]).toEqual([409, { error: "scheduled_task_stale" }]);
+    for (const body of [{ expectedRevision: 2 }, { expectedRevision: 2, modelId: "model-plain" }, { title: "New" },
+      { expectedRevision: 2, status: "completed" }, { expectedRevision: 2, chatId: "chat" }]) {
+      expect(await (await f.handlers.update(patch(body), "task-1")).json()).toEqual({ error: "scheduled_task_invalid" });
+    }
+    f.store.update.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_stale"));
+    expect((await f.handlers.update(patch({ expectedRevision: 2, title: "New" }), "task-1")).status).toBe(409);
+    expect(f.store.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("pauses without a due time or model check and resumes from now", async () => {
+    const f = fixture();
+    expect((await f.handlers.update(patch({ expectedRevision: 2, status: "paused" }), "task-1")).status).toBe(200);
+    expect(lastWrite(f)).toMatchObject({ expectedRevision: 2, nextRunAt: null, status: "paused" });
+    expect(f.loadCatalog).not.toHaveBeenCalled();
+
+    const paused = fixture(task({ nextRunAt: null, pauseReason: "repeated_failures", status: "paused" }));
+    await paused.handlers.update(patch({ expectedRevision: 2, status: "active" }), "task-1");
+    expect(lastWrite(paused)).toMatchObject({ nextRunAt: new Date("2026-10-05T06:00:00.000Z"), status: "active" });
+    paused.loadCatalog.mockResolvedValueOnce({ ...catalog, models: [] });
+    const unavailable = await paused.handlers.update(patch({ expectedRevision: 2, status: "active" }), "task-1");
+    expect(await unavailable.json()).toEqual({ error: "scheduled_task_model_unavailable" });
+    paused.store.update.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_limit"));
+    expect((await paused.handlers.update(patch({ expectedRevision: 2, status: "active" }), "task-1")).status).toBe(409);
+
+    // A changed once schedule must lie ahead even while the task stays paused.
+    const past = await paused.handlers.update(patch({ expectedRevision: 2, schedule: { kind: "once", date: "2026-10-03", time: "09:00" } }), "task-1");
+    expect(await past.json()).toEqual({ error: "scheduled_task_once_in_past" });
+    await paused.handlers.update(patch({ expectedRevision: 2, schedule: { kind: "once", date: "2026-10-12", time: "09:00" } }), "task-1");
+    expect(lastWrite(paused)).toMatchObject({ nextRunAt: null, status: "paused" });
+  });
+
+  it("keeps an unchanged active due time and rearms a changed schedule", async () => {
+    const f = fixture(task({ nextRunAt: "2026-10-04T06:00:00.000Z" })); // already due, not yet claimed
+    await f.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1");
+    expect(lastWrite(f)).toMatchObject({ nextRunAt: undefined, status: "active", draft: { ...draft, title: "Renamed" } });
+    expect(f.loadCatalog).toHaveBeenCalledTimes(1);
+    await f.handlers.update(patch({ expectedRevision: 2, schedule: { kind: "daily", time: "12:30" } }), "task-1");
+    expect(lastWrite(f)?.nextRunAt).toEqual(new Date("2026-10-04T09:30:00.000Z"));
+
+    // A claimed once task has no due time; renaming it while it runs is not "in the past".
+    const claimed = fixture(task({ nextRunAt: null, schedule: { kind: "once", date: "2026-10-04", time: "10:00" } }));
+    expect((await claimed.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1")).status).toBe(200);
+    expect(lastWrite(claimed)).toMatchObject({ nextRunAt: undefined, status: "active" });
+  });
+
+  it("reactivates a completed once task only for a new future schedule", async () => {
+    const once = { kind: "once", date: "2026-10-01", time: "09:00" } as const;
+    const f = fixture(task({ nextRunAt: null, schedule: once, status: "completed" }));
+    await f.handlers.update(patch({ expectedRevision: 2, title: "Renamed", schedule: once }), "task-1");
+    expect(lastWrite(f)).toMatchObject({ nextRunAt: null, status: "completed" });
+    expect(f.loadCatalog).not.toHaveBeenCalled();
+    const past = await f.handlers.update(patch({ expectedRevision: 2, status: "active" }), "task-1");
+    expect(await past.json()).toEqual({ error: "scheduled_task_once_in_past" });
+    await f.handlers.update(patch({ expectedRevision: 2, schedule: { ...once, date: "2026-10-12" } }), "task-1");
+    expect(lastWrite(f)).toMatchObject({ nextRunAt: new Date("2026-10-12T06:00:00.000Z"), status: "active" });
+  });
+
+  it("deletes and marks results seen for the owner only", async () => {
+    const f = fixture();
+    const removed = await f.handlers.remove(new Request("http://localhost/api/me/scheduled-tasks/task-1", { method: "DELETE" }), "task-1");
+    expect(removed.status).toBe(204);
+    expect(f.store.delete).toHaveBeenCalledWith("owner", "task-1");
+    f.store.delete.mockResolvedValueOnce(false);
+    expect((await f.handlers.remove(new Request("http://localhost/x", { method: "DELETE" }), "task-2")).status).toBe(404);
+    expect((await f.handlers.markSeen(new Request("http://localhost/x", { method: "POST" }), "task-1")).status).toBe(204);
+    expect(f.store.markSeen).toHaveBeenCalledWith("owner", "task-1");
+    f.store.markSeen.mockResolvedValueOnce(false);
+    expect((await f.handlers.markSeen(new Request("http://localhost/x", { method: "POST" }), "task-2")).status).toBe(404);
+  });
+});
