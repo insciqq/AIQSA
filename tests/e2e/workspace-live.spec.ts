@@ -153,15 +153,28 @@ async function setAdminPolicy(
   await page.goto("/admin?section=workspace");
   const policy = page.getByRole("region", { name: "Workspace policy" });
   await expect(policy.getByText("Ready", { exact: true })).toBeVisible({ timeout: 120_000 });
+  // The installation may already match (the seed enables both); the admin
+  // confirms only an actual change, so check the persisted policy as well.
+  let changed = false;
   const enabled = policy.getByLabel("Enable Workspace");
-  if ((await enabled.isChecked()) !== input.enabled) await enabled.click();
+  if ((await enabled.isChecked()) !== input.enabled) {
+    await enabled.click();
+    changed = true;
+  }
   if (input.enabled) await expect(enabled).toBeChecked();
   else await expect(enabled).not.toBeChecked();
   const internet = policy.getByLabel("Allow public internet in new workspaces");
-  if ((await internet.isChecked()) !== input.internetEnabled) await internet.click();
+  if ((await internet.isChecked()) !== input.internetEnabled) {
+    await internet.click();
+    changed = true;
+  }
   if (input.internetEnabled) await expect(internet).toBeChecked();
   else await expect(internet).not.toBeChecked();
-  await expect(page.getByTestId("admin-feedback")).toContainText("Workspace policy updated.");
+  if (changed) await expect(page.getByTestId("admin-feedback")).toContainText("Workspace policy updated.");
+  await expect.poll(() => prisma.workspacePolicy.findUniqueOrThrow({
+    select: { enabled: true, internetEnabled: true },
+    where: { id: "installation" }
+  })).toEqual(input);
 }
 
 async function generatedArchive(page: Page, chatId: string): Promise<Readonly<{
