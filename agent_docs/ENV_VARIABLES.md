@@ -5,7 +5,7 @@ Scope: Environment ownership, secret rotation, and Compose selection.
 
 ## Canonical Sources
 
-[Examples](../.env.example), [production](../compose.yaml)/[development Compose](../docker-compose.dev.yml), and parsers/tests own keys, defaults, validation and ceilings; update together. [Configure](../scripts/configure.sh) creates secrets once, preserving `.env`. Prose owns operator/security contracts; malformed security settings fail closed. Infrastructure owns provisioning.
+[Examples](../.env.example), [production](../compose.yaml)/[development Compose](../docker-compose.dev.yml), and parsers/tests own keys, defaults, validation and ceilings; update together. [`aiqsa.sh configure`](../aiqsa.sh) creates secrets once, preserving `.env`. Prose owns operator/security contracts; malformed security settings fail closed. Infrastructure owns provisioning.
 
 Mutable provider/Search credentials/configuration belong in encrypted database records. Administrator-owned Agent limits default Off, independent of Workspace networking. Environment supplies installation wiring and bounded policy/recovery inputs. Roles receive only consumed authority: parsers no data/provider credentials; runner only its internal token/runtime policy; maintenance database/runner access without object/provider credentials; restore review no provider credentials or ordinary execution.
 
@@ -19,7 +19,7 @@ Keep `.env` restricted and outside Git, images, logs, transcripts, and support b
 
 Session/flow signing, `AIQSA_ENCRYPTION_KEY`, Memory fingerprint/routing keys and Workspace token are cryptographically independent; never derive one from another. Back up encryption/Memory keys separately from data.
 
-Replacing `AIQSA_ENCRYPTION_KEY` without migration loses encrypted provider/SMTP/MCP/OAuth readability and changes ToolHive ownership markers: drain/clean exact owned workloads first. Fingerprint rotation is additive; missing historical versions block affected state, and backup preflight records required IDs without keys. Routing-key or ID rotation requires a full derived lexical rebuild before readiness; canonical PostgreSQL survives but mixed-key fallback is forbidden. Missing key history or destination authority never weakens suppression or selects another destination.
+Replacing `AIQSA_ENCRYPTION_KEY` without migration loses encrypted provider/SMTP/MCP/OAuth readability. Fingerprint rotation is additive; missing historical versions block affected state, and backup preflight records required IDs without keys. Routing-key or ID rotation requires a full derived lexical rebuild before readiness; canonical PostgreSQL survives but mixed-key fallback is forbidden. Missing key history or destination authority never weakens suppression or selects another destination.
 
 The trusted base URL determines callback/email origins, cookie/HSTS defaults, and same-origin policy; request Host/forwarding never selects it. Changing it is an identity/security migration. Direct non-loopback HTTP gives no confidentiality; [Security](SECURITY.md) owns exposure rules.
 

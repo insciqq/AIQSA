@@ -62,7 +62,6 @@ export async function discoverGitLabMcpEndpoint(input: {
   fetch: FetchLike;
   authProvider: McpValidationOAuthProvider | null;
 }): Promise<string | null> {
-  if (input.draft.source.kind !== "remote") return null;
   const original = cleanUrl(input.draft.source.url);
   if (!original) return null;
   const signal = AbortSignal.timeout(Math.min(5_000, input.draft.runtime.startupTimeoutMs));
@@ -94,7 +93,6 @@ export async function discoverGitLabMcpEndpoint(input: {
 
 export function correctedMcpDraft(draft: McpDraftConfiguration, correction?: McpEndpointCorrection): McpDraftConfiguration | null {
   if (!correction) return draft;
-  if (draft.source.kind !== "remote") return null;
   const original = cleanUrl(draft.source.url);
   const candidate = cleanUrl(correction.toUrl);
   if (correction.kind !== "gitlab" || !original || correction.fromUrl !== draft.source.url || !candidate ||

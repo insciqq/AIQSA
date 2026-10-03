@@ -56,13 +56,11 @@ const containerHost = host({
     "host.docker.internal": ["172.17.0.1"],
     minio: ["172.20.0.11"],
     opensearch: ["192.168.73.9"],
-    postgres: ["172.20.0.10"],
-    "toolhive-runtime": ["192.168.73.7"]
+    postgres: ["172.20.0.10"]
   },
   env: {
     AIQSA_APP_BASE_URL: "https://aiqsa.example.test",
     AIQSA_PORT: "3100",
-    AIQSA_TOOLHIVE_URL: "http://toolhive-runtime:8080",
     DATABASE_URL: "postgresql://aiqsa:private-password@postgres:5432/aiqsa?schema=public",
     NODE_ENV: "development",
     S3_ENDPOINT: "http://minio:9000"
@@ -126,7 +124,6 @@ describe("personal MCP address policy in a container", async () => {
     ["OpenSearch by name on another port", "http://opensearch:9300/", "203.0.113.200"],
     ["OpenSearch through its address", "http://search.internal.example:9200/", "192.168.73.9"],
     ["Postgres by name", "http://postgres:5432/", "172.20.0.10"],
-    ["the ToolHive controller", "http://toolhive-runtime:8080/mcp", "192.168.73.7"],
     ["the object storage relay", "http://minio:9000/", "172.20.0.11"],
     ["the host gateway on the published app port", "http://host.docker.internal:3100/mcp", "172.17.0.1"],
     ["the host gateway on the listener port", "http://host.docker.internal:3000/mcp", "172.17.0.1"],
@@ -232,9 +229,11 @@ describe("personal MCP address policy on a host install", async () => {
     expect(decide(environment, url, address)).toBe(INTERNAL);
   });
 
-  it("does not reserve the port of an unset default that resolves nowhere", () => {
-    expect(environment.reservedPorts.has(8080)).toBe(false);
-    expect(environment.internalHostnames.has("toolhive-runtime")).toBe(true);
+  it("does not reserve the port of an unset default that resolves nowhere", async () => {
+    const { AIQSA_OPENSEARCH_URL: _configured, ...env } = workstation.env;
+    const unset = await buildPersonalMcpNetworkEnvironment({ ...workstation, env });
+    expect(unset.reservedPorts.has(9200)).toBe(false);
+    expect(unset.internalHostnames.has("opensearch")).toBe(true);
   });
 
   it("closes the shared hosts and the LAN when the switch is off", () => {
@@ -298,7 +297,7 @@ describe("personal MCP address policy without every host fact", () => {
     expect(decide(unresolved, "http://192.168.1.30:9998/", "192.168.1.30")).toBe(FORBIDDEN);
     expect(decide(unresolved, "http://localhost:8080/", "127.0.0.1")).toBe(FORBIDDEN);
 
-    // The parser defaults (toolhive-runtime, opensearch) resolve nowhere on a host install.
+    // The parser default (opensearch) resolves nowhere on a host install.
     expect((await buildPersonalMcpNetworkEnvironment(network({}))).degraded).toBe(false);
   });
 });

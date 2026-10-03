@@ -1500,7 +1500,6 @@ if (target) fs.appendFileSync(target, process.argv.slice(2).join(" ") + "\\n", {
       AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID: "e2e-v1",
       AIQSA_OPENSEARCH_URL: "http://127.0.0.1:1",
       AIQSA_TEST_MODE: "1",
-      AIQSA_TOOLHIVE_URL: "http://127.0.0.1:1",
       DATABASE_URL: databaseUrl,
       NEXT_TELEMETRY_DISABLED: "1",
       NODE_ENV: "development",

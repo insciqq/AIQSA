@@ -67,14 +67,14 @@ export function McpConfigurationEditor({ disabled, error, id, onChange, onError,
   const content = <>
     <CodeEditor allowPlainText className={expanded ? "" : "h-72 flex-none rounded-control border border-trace-strong"}
       describedBy={`${helpId}${error ? ` ${errorId}` : ""}`} disabled={disabled} id={id} invalid={Boolean(error)}
-      label="Configuration JSON, URL, or install command" onChange={onChange}
+      label="Configuration JSON or URL" onChange={onChange}
       onValidation={(result) => onError(result ? `Line ${result.line}, column ${result.column}: ${result.message}` : null)}
-      placeholder={'{\n  "mcpServers": {\n    "example": { "command": "npx", "args": ["-y", "@example/mcp"] }\n  }\n}\n\nor paste: npx -y @example/mcp@latest'}
+      placeholder={'{\n  "mcpServers": {\n    "example": {\n      "url": "https://mcp.example.com/mcp",\n      "headers": { "Authorization": "Bearer …" }\n    }\n  }\n}\n\nor paste: https://mcp.example.com/mcp'}
       textareaRef={textareaRef} textareaTestId="mcp-configuration-document"
       toolbar={!expanded ? <UiV2Button aria-label="Expand configuration editor" className="ml-auto" disabled={disabled} onClick={() => changePresentation(true)} tone="ghost" type="button">Expand</UiV2Button> : undefined}
       value={value} />
     <div className={`shrink-0 text-xs leading-5 text-ink-muted ${expanded ? "px-4 py-2" : "mt-2"}`}>
-      <p id={helpId}>Paste JSON, a URL, or an install command. Format changes JSON only. Trailing commas are accepted on Parse. Nothing is saved until you review the settings.</p>
+      <p id={helpId}>Paste JSON or a remote MCP URL. Format changes JSON only. Trailing commas are accepted on Parse. Nothing is saved until you review the settings.</p>
       {error ? <p className="mt-2 max-h-24 overflow-auto text-critical" id={errorId} role="alert">{error}</p> : null}
     </div>
   </>;

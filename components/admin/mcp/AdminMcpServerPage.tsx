@@ -316,7 +316,6 @@ function ToolsSection({ checking, controller, groups, onTestAndSave, server, tes
       </div>
       <McpNote tone="warn">
         Tools that are on can act and change data without a per-call confirmation. A tool the server adds or changes later stays unavailable until Test &amp; Save checks it; tools found by a check are on until turned off.
-        {server.draft.source.kind !== "remote" ? " Local servers run in an isolated runtime with unrestricted outbound network access." : ""}
       </McpNote>
       {verification === "invalid" ? (
         <McpNote data-testid="mcp-tool-verification" role="status" tone="critical">

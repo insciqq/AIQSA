@@ -602,7 +602,7 @@ describe("deriveAdminAttentionItems", () => {
 
   it("asks for a new check when enabled servers hold back changed tools or were checked without definitions", () => {
     const revision = (toolVerification: "definitions" | "invalid" | "names") => ({
-      artifactStatus: "not_applicable" as const, createdAt: at, draftHash: "hash", id: "revision-1", identityHash: "identity",
+      createdAt: at, draftHash: "hash", id: "revision-1", identityHash: "identity",
       resolvedArtifact: null, revisionNumber: 1, toolVerification,
       validationEvidence: { evidence: {}, testedAt: at, toolInventory: [] }
     });

@@ -5,17 +5,12 @@ import {
   createDefaultMcpOAuthRuntimeProvider,
   mcpOAuthService
 } from "./defaultOAuth";
-import {
-  createToolHiveRuntimeLifecycle,
-  getDefaultToolHiveDriver
-} from "./defaultToolHive";
 import { personalMcpAddressPolicy } from "./defaultPersonalNetwork";
 import { mcpDestinationSafeFetchOptions } from "./personalNetworkPolicy";
 import { McpRuntimeCoordinator, type McpRuntimeLaunch } from "./runtimeCoordinator";
 import { createPrismaMcpRuntimeRepository } from "./runtimeRepository";
 import { createMcpSafeFetch, type McpAddressPolicy, type McpSafeFetchOptions } from "./safeFetch";
 import type { McpOAuthService } from "./oauthService";
-import { createToolHiveMcpSessionFactory } from "./toolhiveSessionFactory";
 import { prepareMcpRunPlan } from "./runPlan";
 import {
   createPrismaMcpCapabilityCatalogLoader,
@@ -39,8 +34,8 @@ type LaunchFetch = Awaited<ReturnType<McpOAuthService["createRuntimeFetch"]>>;
 
 /**
  * The transport of one runtime launch. Each request of a personal runtime
- * re-checks the personal network policy; installation runtimes and the
- * ToolHive probe keep their reviewed permission. Seams are injectable for tests.
+ * re-checks the personal network policy; installation runtimes keep their
+ * reviewed permission. Seams are injectable for tests.
  */
 export function createDefaultMcpLaunchFetch(deps: Readonly<{
   createSafeFetch?: (options: McpSafeFetchOptions) => LaunchFetch;
@@ -54,15 +49,14 @@ export function createDefaultMcpLaunchFetch(deps: Readonly<{
   return async (launch) => {
     const baseFetch = createSafeFetch(mcpDestinationSafeFetchOptions({
       allowInsecureHttp: true,
-      allowPrivateNetwork: launch.trustedInternalHttp === true || launch.allowPrivateNetwork === true,
-      personal: launch.personalRuntime === true && launch.trustedInternalHttp !== true
+      allowPrivateNetwork: launch.allowPrivateNetwork === true,
+      personal: launch.personalRuntime === true
     }, personalAddressPolicy));
     return launch.oauthConnectionId ? oauthRuntimeFetch(launch.oauthConnectionId, baseFetch, launch.url) : baseFetch;
   };
 }
 
 function createDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
-  const toolHiveDriver = getDefaultToolHiveDriver();
   const directSessions = createMcpClientSessionFactory({
     authProviderForLaunch: async (launch) => launch.oauthConnectionId
       ? createDefaultMcpOAuthRuntimeProvider(launch.oauthConnectionId)
@@ -79,11 +73,7 @@ function createDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
       ).toString(),
       reconcileOAuthConnections: () => mcpOAuthService.reconcileDisconnecting()
     }),
-    runtimeLifecycle: createToolHiveRuntimeLifecycle(toolHiveDriver),
-    sessions: createToolHiveMcpSessionFactory({
-      directSessions,
-      driver: toolHiveDriver
-    })
+    sessions: directSessions
   });
 }
 

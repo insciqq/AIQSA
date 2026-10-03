@@ -14,7 +14,7 @@ const slots: McpConfigurationSlot[] = [
     policy: { kind: "literal", value: "eu" },
     sensitive: false,
     slotKey: "region",
-    target: { kind: "environment", name: "REGION" },
+    target: { kind: "header", name: "X-Region" },
     valueType: "string"
   },
   {
@@ -22,7 +22,7 @@ const slots: McpConfigurationSlot[] = [
     policy: { allowPersonalOverride: true, kind: "shared" },
     sensitive: true,
     slotKey: "api-key",
-    target: { kind: "environment", name: "API_KEY" },
+    target: { kind: "header", name: "X-Api-Key" },
     valueType: "secret"
   },
   {
@@ -30,7 +30,7 @@ const slots: McpConfigurationSlot[] = [
     policy: { allowPersonalOverride: false, kind: "shared" },
     sensitive: false,
     slotKey: "endpoint",
-    target: { kind: "environment", name: "ENDPOINT" },
+    target: { kind: "header", name: "X-Endpoint" },
     valueType: "string"
   },
   {
@@ -38,7 +38,7 @@ const slots: McpConfigurationSlot[] = [
     policy: { kind: "personal", required: true },
     sensitive: false,
     slotKey: "workspace",
-    target: { kind: "environment", name: "WORKSPACE" },
+    target: { kind: "header", name: "X-Workspace" },
     valueType: "string"
   }
 ];

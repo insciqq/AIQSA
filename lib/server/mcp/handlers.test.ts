@@ -37,7 +37,6 @@ const validationEvidence = {
   toolInventory: [{ description: "Create a task", name: "create_task" }]
 };
 const revision = {
-  artifactStatus: "not_applicable" as const,
   createdAt: NOW,
   draftHash: "draft-hash-1",
   id: "revision-1",
@@ -55,16 +54,11 @@ const draft: McpDraftConfiguration = {
     policy: { allowPersonalOverride: true, kind: "shared" },
     sensitive: true,
     slotKey: "api-key",
-    target: { kind: "environment", name: "API_KEY" },
+    target: { kind: "header", name: "X-Api-Key" },
     valueType: "secret"
   }],
-  source: {
-    args: ["--stdio"],
-    kind: "npm",
-    packageName: "@example/mcp-server",
-    versionSelector: "1.2.3"
-  },
-  transport: "stdio"
+  source: { kind: "remote", url: "https://mcp.example.test/mcp" },
+  transport: "streamable_http"
 };
 
 function adminServer(input: Partial<AdminMcpServer> = {}): AdminMcpServer {
@@ -417,7 +411,7 @@ describe("MCP handler authorization", () => {
       const repository = new MemoryMcpRepository();
       vi.spyOn(repository, "listUserServers").mockResolvedValue([{
         ...userServer({ enabled: readiness !== "disabled", fields: [], readiness, runtimeGenerationId: "generation-1" }),
-        errorCode: "mcp_artifact_missing"
+        errorCode: "mcp_session_configuration_invalid"
       }]);
       const onActivationRequested = vi.fn();
       const onRuntimeChanged = vi.fn();
@@ -430,7 +424,7 @@ describe("MCP handler authorization", () => {
         "accountLabel", "description", "enabled", "fields", "id", "knownToolCount", "name",
         "oauthAvailable", "oauthState", "readiness", "runtimeErrorCode", "tools"
       ]);
-      expect(JSON.stringify(body)).not.toMatch(/generation-1|runtimeGenerationId|mcp_artifact_missing/);
+      expect(JSON.stringify(body)).not.toMatch(/generation-1|runtimeGenerationId|mcp_session_configuration_invalid/);
       expect(response.headers.get("cache-control")).toBe("no-store");
       expect(onActivationRequested).not.toHaveBeenCalled();
       expect(onRuntimeChanged).not.toHaveBeenCalled();
@@ -615,7 +609,7 @@ describe("MCP handler input validation", () => {
     const create = createAdminMcpCreateHandler(deps(repository));
     const response = await create(request({
       body: {
-        draft: { ...draft, source: { args: [], image: "bad image", kind: "oci" } },
+        draft: { ...draft, source: { kind: "remote", url: "https://user:secret@mcp.example.test/mcp" } },
         name: "Broken"
       },
       contentType: "application/json",
@@ -625,7 +619,7 @@ describe("MCP handler input validation", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({
       error: "invalid_draft",
-      issues: expect.arrayContaining([{ code: "oci_image_invalid", path: "source.image" }])
+      issues: expect.arrayContaining([{ code: "remote_url_invalid", path: "source.url" }])
     });
     expect(repository.createCalls).toEqual([]);
   });
@@ -1026,7 +1020,6 @@ describe("MCP handler input validation", () => {
 describe("MCP repository error mapping", () => {
   const cases: Array<[McpRepositoryError, number, Record<string, unknown>]> = [
     [{ kind: "not_found" }, 404, { error: "mcp_not_found" }],
-    [{ kind: "artifact_missing" }, 409, { error: "mcp_artifact_missing" }],
     [{ kind: "draft_changed" }, 409, { error: "mcp_draft_changed" }],
     [{ kind: "revision_required" }, 409, { error: "mcp_revision_required" }],
     [{
