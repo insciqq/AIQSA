@@ -22,10 +22,12 @@ afterEach(async () => {
 afterAll(async () => { await prisma.$disconnect(); });
 
 /** An 8,000-character message and its exact 2,000-character quote: about
- * 10,000 characters a source, so three fill a batch and a fourth does not. */
+ * 10,000 characters a source, so three fill a batch and a fourth does not.
+ * The text ends in a non-space: the safe projection trims trailing
+ * whitespace, and the fixture hashes the raw text as the exact source. */
 async function longWalkingFact(userId: string, label: string): Promise<string> {
   const source = await createMaintenanceMessage(userId,
-    `My ${label} long note about evening walks near the river. `.repeat(200).slice(0, 8_000));
+    `${`My ${label} long note about evening walks near the river. `.repeat(200).slice(0, 7_999)}.`);
   return (await createAutomaticMaintenanceFact(userId, [{ statement: `The ${label} walking habit.`, source, end: 2_000 }]))
     .currentVersionId;
 }
@@ -45,10 +47,10 @@ describe("maintenance source scan", () => {
     const now = new Date();
 
     const full = await scanMemoryMaintenanceSources(prisma, userId, now, null);
+    expect(full.blockers.map(({ versionId, reasonCode }) => ({ versionId, reasonCode }))).toEqual([]);
     expect(full.plan?.sources.map(({ versionId }) => versionId)).toEqual(ordered.slice(0, 3));
     expect(full.plan!.sources.every((source) => reviewSize(source) > BATCH_CHARACTERS / 4)).toBe(true);
     expect(full.plan!.sources.reduce((sum, source) => sum + reviewSize(source), 0)).toBeLessThanOrEqual(BATCH_CHARACTERS);
-    expect(full.blockers).toEqual([]);
     // The cursor stops before the source that did not fit, not at the last row.
     expect(full.cursor).toBe(ordered[2]);
 
@@ -70,6 +72,9 @@ describe("maintenance source scan", () => {
 
     expect(await scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).toBe(1);
     await settle();
+    // A blocker row would cover its source without a job; none is blocked.
+    expect(await prisma.memoryMaintenanceReview.findMany({ where: { userId, disposition: { not: "PENDING" } },
+      select: { disposition: true, reasonCode: true } })).toEqual([]);
     expect(await scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).toBe(1);
     await settle();
     expect(await prisma.memoryMaintenanceReview.count({ where: { userId, policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION,
