@@ -8,7 +8,7 @@ import { decodeMemoryActionControlDecision, type MemoryActionIntent } from "../.
 import type { MemoryJobClaim } from "../coordinator/types";
 import { createPrismaMemoryCommandHandler, decodeMemoryCommandIntent } from "./worker";
 
-const mocks = vi.hoisted(() => ({ source: vi.fn(), execute: vi.fn(), attempt: vi.fn() }));
+const mocks = vi.hoisted(() => ({ source: vi.fn(), execute: vi.fn(), attempt: vi.fn(), log: vi.fn() }));
 vi.mock("../coordinator/observability", () => ({ memoryAttempt: mocks.attempt }));
 vi.mock("./sourceAuthority", () => ({ requireMemoryCommandSource: mocks.source }));
 vi.mock("../persistence/transaction", () => ({ withLockedMemoryTransaction: (
@@ -16,6 +16,9 @@ vi.mock("../persistence/transaction", () => ({ withLockedMemoryTransaction: (
 ) => callback(client, { useMemoryFacts: true, learnAutomatically: true, referenceChatHistory: true }) }));
 vi.mock("../actions/intentExecutor", () => ({ createMemoryIntentActionExecutor: () => ({ execute: mocks.execute }) }));
 vi.mock("./services", () => ({ createMemoryCommandServices: () => ({ explicitService: {}, lifecycleService: {} }) }));
+vi.mock("../../observability", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../observability")>(), logEvent: mocks.log
+}));
 
 const intent: MemoryActionIntent = { action: "NONE", aggregationRequested: false,
   applyResponsePreferences: false, category: null, categoryHint: null, confidenceBand: "HIGH",
@@ -80,6 +83,82 @@ describe("durable Memory command worker", () => {
     expect(f.control.decide).toHaveBeenCalledTimes(2);
     expect(f.control.decide).toHaveBeenNthCalledWith(1, expect.objectContaining({ ordinal: 0 }));
     expect(f.control.decide).toHaveBeenNthCalledWith(2, expect.objectContaining({ ordinal: 2 }));
+  });
+
+  it("retries a settled invalid classifier answer once in the reserved slot and logs it content-free", async () => {
+    const f = fixture();
+    f.control.decide.mockResolvedValueOnce({ bindingId: "binding-0", reason: "memory_action_intent_invalid", status: "UNAVAILABLE" } as never);
+    expect(await f.handler.execute(job, f.context)).toMatchObject({ stage: "command_rejected" });
+    expect(f.control.decide.mock.calls.map(([request]) => (request as { ordinal: number }).ordinal)).toEqual([0, 2]);
+    expect(mocks.log).toHaveBeenCalledExactlyOnceWith("service_operation", {
+      action: "retry", attempt: 2, code: "memory_action_intent_invalid", job_id: job.id,
+      outcome: "failed", stage: "validate", subsystem: "memory"
+    });
+    expect(JSON.parse(serializeEvent("service_operation", mocks.log.mock.calls[0]![1])!))
+      .toMatchObject({ code: "memory_action_intent_invalid", attempt: 2, action: "retry" });
+  });
+
+  it("stops after the reserved slot when transient and invalid failures repeat", async () => {
+    for (const [first, second] of [
+      ["memory_action_intent_invalid", "memory_action_intent_invalid"],
+      ["memory_action_intent_transient", "memory_action_intent_invalid"],
+      ["memory_action_intent_invalid", "memory_action_intent_transient"]
+    ]) {
+      const f = fixture();
+      f.control.decide.mockResolvedValueOnce({ reason: first, status: "UNAVAILABLE" } as never)
+        .mockResolvedValueOnce({ reason: second, status: "UNAVAILABLE" } as never);
+      expect(await f.handler.execute(job, f.context)).toMatchObject({ stage: "command_failed" });
+      expect(f.control.decide.mock.calls.map(([request]) => (request as { ordinal: number }).ordinal)).toEqual([0, 2]);
+    }
+  });
+
+  it.each([
+    ["memory_action_intent_statement_too_long", "command_failed"],
+    ["memory_action_intent_unavailable", "command_failed"],
+    ["memory_action_intent_input_too_long", "command_failed"],
+    ["memory_action_intent_outcome_unknown", "command_unknown"]
+  ])("never retries a %s classifier failure", async (reason, stage) => {
+    const f = fixture();
+    f.control.decide.mockResolvedValueOnce({ reason, status: "UNAVAILABLE" } as never);
+    expect(await f.handler.execute(job, f.context)).toMatchObject({ stage });
+    expect(f.control.decide).toHaveBeenCalledOnce();
+    expect(mocks.log).not.toHaveBeenCalled();
+  });
+
+  it("does not retry an invalid answer after cancellation", async () => {
+    const f = fixture();
+    const abort = new AbortController();
+    f.control.decide.mockImplementationOnce(async () => {
+      abort.abort();
+      return { reason: "memory_action_intent_invalid", status: "UNAVAILABLE" };
+    });
+    expect(await f.handler.execute(job, { ...f.context, signal: abort.signal })).toMatchObject({ stage: "command_failed" });
+    expect(f.control.decide).toHaveBeenCalledOnce();
+  });
+
+  it.each(["memory_action_intent_invalid", "memory_action_intent_transient"])(
+    "spends the reserved slot once on a re-claim after a settled %s first call", async (errorCode) => {
+      const f = fixture();
+      f.client.memoryExecutionBinding.findFirst.mockResolvedValue({ ordinal: 0, state: "FAILED", errorCode, startedAt: new Date() } as never);
+      f.control.decide.mockResolvedValueOnce({ reason: "memory_action_intent_invalid", status: "UNAVAILABLE" } as never);
+      expect(await f.handler.execute(job, f.context)).toMatchObject({ stage: "command_failed" });
+      expect(f.control.decide).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ordinal: 2 }));
+      expect(mocks.log).toHaveBeenCalledExactlyOnceWith("service_operation", expect.objectContaining({ code: errorCode }));
+    });
+
+  it.each([
+    { ordinal: 0, state: "FAILED", errorCode: "memory_action_intent_statement_too_long" },
+    { ordinal: 0, state: "FAILED", errorCode: "memory_action_intent_unavailable" },
+    { ordinal: 0, state: "RUNNING", errorCode: null },
+    { ordinal: 0, state: "OUTCOME_UNKNOWN", errorCode: "memory_action_intent_outcome_unknown" },
+    { ordinal: 2, state: "FAILED", errorCode: "memory_action_intent_invalid" },
+    { ordinal: 2, state: "FAILED", errorCode: "memory_action_intent_transient" },
+    { ordinal: 2, state: "RUNNING", errorCode: null }
+  ])("never dispatches again on a re-claim after $state $errorCode at ordinal $ordinal", async (binding) => {
+    const f = fixture();
+    f.client.memoryExecutionBinding.findFirst.mockResolvedValue({ ...binding, startedAt: new Date() } as never);
+    expect(await f.handler.execute(job, f.context)).toMatchObject({ stage: "command_unknown" });
+    expect(f.control.decide).not.toHaveBeenCalled();
   });
 
   it("fails closed after a selector dispatch without its exact target checkpoint", async () => {

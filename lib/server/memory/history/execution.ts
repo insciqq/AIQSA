@@ -1,5 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { MemoryCoordinatorError } from "../coordinator/errors";
+import { MemoryCoordinatorError, MemoryJobFencedError } from "../coordinator/errors";
 import { currentMemoryJobsSql } from "../coordinator/currentJobs";
 import { memoryRecoverableFailureSql } from "../coordinator/recoveryPolicy";
 import {
@@ -102,7 +102,13 @@ export async function executeRecoverableMemoryHistoryOutput<Value>(input: Omit<
     SELECT id FROM current_jobs WHERE id = ${input.jobId} AND "userId" = ${input.userId}
       AND state = 'CLAIMED'
   `);
-  if (current.length !== 1) throw new MemoryCoordinatorError("memory_history_job_invalid", false);
+  // An append, settlement, branch change, Forget, exclusion or setting that
+  // landed during classification fences this job before any further binding.
+  if (current.length !== 1) {
+    throw new MemoryJobFencedError("memory_history_job_invalid", {
+      errorCode: "memory_source_stale", status: "STALE"
+    });
+  }
   const prior = await input.client.memoryExecutionBinding.findMany({
     orderBy: { ordinal: "desc" },
     select: {
