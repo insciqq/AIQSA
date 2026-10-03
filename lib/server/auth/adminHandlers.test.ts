@@ -12,6 +12,9 @@ import type { AdminRepository } from "./adminRepositoryContract";
 import { createMemoryAuthMailer, createNoopAuthMailer } from "@/tests/support/authMailers";
 import { createTestAuth } from "@/tests/support/auth";
 import { hashToken } from "./token";
+import { logEvent } from "../observability";
+
+vi.mock("../observability", () => ({ logEvent: vi.fn() }));
 
 const admin = createTestAuth();
 const baseDashboard = {
@@ -156,6 +159,7 @@ function createRepository(
     setUserCredential: async () => "applied",
     setUserGrants: async () => "applied",
     setUserGroups: async () => "applied",
+    setUserRole: async () => "granted",
     ...overrides
   };
 }
@@ -562,6 +566,114 @@ describe("admin route handlers", () => {
         { name: "Launch", status: "ACTIVE" }
       ]
     });
+  });
+
+  it("changes another user's admin role with only the target and role from the body", async () => {
+    const setUserRole = vi.fn<AdminRepository["setUserRole"]>(async (input) => input.role === "admin" ? "granted" : "revoked");
+    const POST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({ setUserRole }),
+      resolveAuth: admin.resolveAuth
+    });
+    vi.mocked(logEvent).mockClear();
+
+    const granted = await POST(jsonRequest({
+      action: "set_user_role",
+      actingAdminUserId: "attacker-chosen",
+      revokedByUserId: "attacker-chosen",
+      role: "admin",
+      status: "active",
+      userId: " target-user "
+    }));
+    const revoked = await POST(jsonRequest({ action: "set_user_role", role: "user", userId: "target-user" }));
+
+    expect(granted.status).toBe(200);
+    await expect(granted.json()).resolves.toEqual({ ok: true });
+    expect(revoked.status).toBe(200);
+    expect(setUserRole.mock.calls).toEqual([
+      [{ actingAdminUserId: admin.session.userId, role: "admin", userId: "target-user" }],
+      [{ actingAdminUserId: admin.session.userId, role: "user", userId: "target-user" }]
+    ]);
+    expect(vi.mocked(logEvent).mock.calls).toEqual([
+      ["service_operation", { subsystem: "admin", stage: "write", outcome: "completed", code: "user_role_granted" }],
+      ["service_operation", { subsystem: "admin", stage: "write", outcome: "completed", code: "user_role_revoked" }]
+    ]);
+  });
+
+  it("validates role changes, maps refusals, and logs nothing without a write", async () => {
+    const cases: {
+      body: Record<string, unknown>;
+      response: Record<string, unknown>;
+      result?: Awaited<ReturnType<AdminRepository["setUserRole"]>>;
+      status: number;
+    }[] = [
+      { body: { action: "set_user_role", role: "admin" }, response: { error: "user_required" }, status: 400 },
+      { body: { action: "set_user_role", role: "owner", userId: "user-1" }, response: { error: "user_role_required" }, status: 400 },
+      { body: { action: "set_user_role", role: ["admin"], userId: "user-1" }, response: { error: "user_role_required" }, status: 400 },
+      { body: { action: "set_user_role", role: "user", userId: "user-1" }, response: { ok: true }, result: "unchanged", status: 200 },
+      { body: { action: "set_user_role", role: "user", userId: "user-1" }, response: { error: "forbidden" }, result: "actor_forbidden", status: 403 },
+      {
+        body: { action: "set_user_role", role: "user", userId: "user-1" },
+        response: { error: "self_role_change_forbidden" },
+        result: "self_role_change_forbidden",
+        status: 403
+      },
+      { body: { action: "set_user_role", role: "user", userId: "user-1" }, response: { error: "last_admin_forbidden" }, result: "last_admin_forbidden", status: 409 },
+      { body: { action: "set_user_role", role: "admin", userId: "user-1" }, response: { error: "user_not_active" }, result: "user_not_active", status: 409 },
+      { body: { action: "set_user_role", role: "admin", userId: "user-1" }, response: { error: "user_not_found" }, result: "not_found", status: 404 }
+    ];
+    vi.mocked(logEvent).mockClear();
+
+    for (const testCase of cases) {
+      const setUserRole = vi.fn(async () => testCase.result ?? "granted");
+      const POST = createAdminActionHandler({
+        getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+        mailer: createNoopAuthMailer(),
+        repository: createRepository({ setUserRole }),
+        resolveAuth: admin.resolveAuth
+      });
+      const response = await POST(jsonRequest(testCase.body));
+      const name = JSON.stringify(testCase.body) + String(testCase.result);
+
+      expect(response.status, name).toBe(testCase.status);
+      expect(await response.json(), name).toEqual(testCase.response);
+      expect(setUserRole, name).toHaveBeenCalledTimes(testCase.result ? 1 : 0);
+    }
+    expect(logEvent).not.toHaveBeenCalled();
+  });
+
+  it("refuses role changes from non-admin and unauthenticated callers before the repository", async () => {
+    const setUserRole = vi.fn(async () => "granted" as const);
+    const body = { action: "set_user_role", role: "admin", userId: "self-promotion" };
+    const nonAdminPOST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({ setUserRole }, { role: "user", status: "active" }),
+      resolveAuth: createTestAuth({ user: { role: "user" } }).resolveAuth
+    });
+    const disabledAdminPOST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({ setUserRole }, { role: "admin", status: "disabled" }),
+      resolveAuth: admin.resolveAuth
+    });
+    const anonymousPOST = createAdminActionHandler({
+      getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+      mailer: createNoopAuthMailer(),
+      repository: createRepository({ setUserRole }),
+      resolveAuth: async () => null
+    });
+
+    const nonAdmin = await nonAdminPOST(jsonRequest(body));
+    const disabledAdmin = await disabledAdminPOST(jsonRequest(body));
+    const anonymous = await anonymousPOST(jsonRequest(body));
+
+    expect(nonAdmin.status).toBe(403);
+    await expect(nonAdmin.json()).resolves.toEqual({ error: "forbidden" });
+    expect(disabledAdmin.status).toBe(403);
+    expect(anonymous.status).toBe(401);
+    expect(setUserRole).not.toHaveBeenCalled();
   });
 
   it("acknowledges durable account deletion while private cleanup is pending", async () => {

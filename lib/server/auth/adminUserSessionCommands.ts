@@ -32,6 +32,7 @@ export type AdminUserSessionCommands = Pick<
   | "rejectUser"
   | "revokeAllSessions"
   | "revokeUserSessions"
+  | "setUserRole"
 >;
 
 class AccountDeletionPurgeUnavailableError extends Error {
@@ -325,6 +326,60 @@ export function createAdminUserSessionCommands(
     },
     async revokeUserSessions(input) {
       return prisma.$transaction((tx) => revokeUserSessions(tx, input));
+    },
+    async setUserRole(input) {
+      if (input.userId === input.actingAdminUserId) {
+        return "self_role_change_forbidden";
+      }
+
+      // Same lock order as disableUser: the active-admin set first, then the target row. Under
+      // READ COMMITTED a waiting transaction re-checks locked rows, so after a concurrent demotion
+      // or disable commits, the demoted actor is no longer in the set and is refused.
+      return prisma.$transaction(async (tx) => {
+        const activeAdmins = await lockActiveAdmins(tx);
+        if (!activeAdmins.some((admin) => admin.id === input.actingAdminUserId)) {
+          return "actor_forbidden";
+        }
+
+        await lockAuthUser(tx, input.userId);
+        const target = await tx.user.findUnique({
+          select: {
+            id: true,
+            role: true,
+            status: true
+          },
+          where: {
+            id: input.userId
+          }
+        });
+
+        if (!target) {
+          return "not_found";
+        }
+
+        if (target.status !== "active") {
+          return "user_not_active";
+        }
+
+        if (target.role === input.role) {
+          return "unchanged";
+        }
+
+        if (input.role === "user" && activeAdmins.length <= 1) {
+          return "last_admin_forbidden";
+        }
+
+        await tx.user.update({
+          data: {
+            role: input.role
+          },
+          where: {
+            id: target.id
+          }
+        });
+
+        return input.role === "admin" ? "granted" : "revoked";
+      });
     }
   };
 }

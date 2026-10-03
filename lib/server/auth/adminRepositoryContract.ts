@@ -7,7 +7,8 @@ import type {
   AdminGroupGrantChange,
   AdminInviteRecord as AdminInviteWire,
   AdminSoleOwnedProject,
-  AdminUserRecord as AdminUserWire
+  AdminUserRecord as AdminUserWire,
+  AdminUserRole
 } from "@/lib/contracts/admin";
 
 export type {
@@ -63,6 +64,19 @@ export type AdminDisableUserResult =
   | "self_disable_forbidden"
   | AdminDisableUserProjectOwnerRequired;
 export type AdminRejectUserResult = "not_found" | "rejected";
+/**
+ * `granted`/`revoked` changed the role; `unchanged` wrote nothing. `actor_forbidden` means the
+ * acting administrator was no longer an active admin once the admin set was locked.
+ */
+export type AdminSetUserRoleResult =
+  | "actor_forbidden"
+  | "granted"
+  | "last_admin_forbidden"
+  | "not_found"
+  | "revoked"
+  | "self_role_change_forbidden"
+  | "unchanged"
+  | "user_not_active";
 
 export type AdminDashboard = Omit<AdminDashboardWire, "groups" | "invites" | "users"> & {
   groups: AdminGroupRecord[];
@@ -131,6 +145,12 @@ export type AdminSetGroupGrantsResult =
   | { kind: "system_group_forbidden" }
   | { change: number; kind: "invalid_change" };
 
+export type AdminSetUserRoleInput = {
+  actingAdminUserId: string;
+  role: AdminUserRole;
+  userId: string;
+};
+
 export type AdminSetUserGroupsInput = {
   expectedGroupIds: string[];
   groupIds: string[];
@@ -175,6 +195,8 @@ export type AdminRepository = {
     expectedUpdatedAt: string | null;
     userId: string;
   }): Promise<"applied" | "user_not_found" | "user_access_stale" | "user_credential_invalid">;
+  /** Grants or revokes the admin role of another active user under the active-admin lock. */
+  setUserRole(input: AdminSetUserRoleInput): Promise<AdminSetUserRoleResult>;
   /** Compares active memberships and replaces them atomically, preserving unchanged roles and archived rows. */
   setUserGroups(input: AdminSetUserGroupsInput): Promise<"applied" | "user_not_found" | "user_access_stale">;
 };
