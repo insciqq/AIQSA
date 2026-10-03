@@ -52,7 +52,6 @@ function SheetBody({
   const importRef = useRef<HTMLTextAreaElement>(null);
   const busy = controller.state.busy || saving;
   const oauth = form.draft.auth.mode === "oauth";
-  const local = form.draft.source.kind !== "remote";
   const dirty = stage === "import" ? importValue.length > 0 : JSON.stringify(form) !== baseline;
   const canSave = !busy && form.name.trim() !== "";
 
@@ -131,7 +130,7 @@ function SheetBody({
 
   const title = creating ? "New server" : "Settings";
   const description = stage === "import"
-    ? "Paste what the MCP provider gives you: a direct HTTP URL, one mcpServers JSON entry, or an npx, uvx, pipx, pip install, docker or podman command."
+    ? "Paste what the MCP provider gives you: a remote MCP URL or one mcpServers JSON entry with its url and headers."
     : creating
       ? imported
         ? "Review the parsed settings before the first check."
@@ -152,7 +151,7 @@ function SheetBody({
           </UiV2Button>
           <UiV2Button disabled={busy} onClick={requestClose} tone="ghost" type="button">Cancel</UiV2Button>
           <span className="min-w-0 text-xs leading-5 text-ink-muted">
-            Pasted commands are never executed; secrets become write-only fields.
+            Pasted text is never executed; secrets become write-only fields.
           </span>
         </>
       ) : (
@@ -185,7 +184,7 @@ function SheetBody({
       >
         {stage === "import" ? (
           <div className="flex flex-col gap-2">
-            <label className={fieldLabelClass} htmlFor={importId}>Configuration JSON, URL, or install command</label>
+            <label className={fieldLabelClass} htmlFor={importId}>Configuration JSON or URL</label>
             <McpConfigurationEditor
               disabled={busy}
               error={importError}
@@ -237,7 +236,6 @@ function SheetBody({
                 {oauth
                   ? "After saving, connect your account on the server page; AIQSA then checks the settings and applies them automatically."
                   : "Applying trusts this server as one unit, including every current or future valid tool it exposes."}
-                {local ? " Local servers run in an isolated runtime with unrestricted outbound network access." : ""}
               </McpNote>
             ) : null}
             {error ? <p className={errorClass} id={errorId} role="alert">{error}</p> : null}

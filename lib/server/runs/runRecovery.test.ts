@@ -8997,7 +8997,7 @@ describe("run recovery", () => {
 
   it.each(["unexpected", "cancelled"] as const)(
     "settles a recovered discovery activation %s with a safe error and preserved historical usage", async (outcome) => {
-    const rawFailure = "PRIVATE_RECOVERY_TOOLHIVE_FAILURE";
+    const rawFailure = "PRIVATE_RECOVERY_RUNTIME_FAILURE";
     const recoveryRegistry = registry();
     const materialize = vi.fn(async (): Promise<McpRunPlanResult> => {
       if (outcome === "cancelled") expect(recoveryRegistry.abort(runId)).toBe(true);

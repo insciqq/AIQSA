@@ -148,7 +148,6 @@ const CONFIGURED_ENDPOINTS: readonly Readonly<{ fallback?: string; match: Endpoi
   { match: "any_port", variable: "DATABASE_URL" },
   { match: "any_port", variable: "S3_ENDPOINT" },
   { match: "own_port", variable: "S3_PUBLIC_ENDPOINT" },
-  { fallback: "http://toolhive-runtime:8080", match: "any_port", variable: "AIQSA_TOOLHIVE_URL" },
   { match: "any_port", variable: "AIQSA_TIKA_URL" },
   { match: "any_port", variable: "AIQSA_DOCLING_URL" },
   { fallback: "http://opensearch:9200", match: "any_port", variable: "AIQSA_OPENSEARCH_URL" },

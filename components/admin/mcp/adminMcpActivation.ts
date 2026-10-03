@@ -21,23 +21,6 @@ const REMOTE_STAGES: readonly ActivationStage[] = [
   "publishing"
 ];
 
-const LOCAL_STAGES: readonly ActivationStage[] = [
-  "queued",
-  "resolving",
-  "preparing_runtime",
-  "connecting",
-  "discovering_tools",
-  "publishing"
-];
-
-const OCI_STAGES: readonly ActivationStage[] = [
-  "queued",
-  "preparing_runtime",
-  "connecting",
-  "discovering_tools",
-  "publishing"
-];
-
 const STAGE_COPY: Record<TransientStage, Readonly<{
   detail: string;
   label: string;
@@ -51,8 +34,8 @@ const STAGE_COPY: Record<TransientStage, Readonly<{
     label: "Discovering tools"
   },
   preparing_runtime: {
-    detail: "Preparing the isolated runtime that will host this local MCP server.",
-    label: "Preparing runtime"
+    detail: "Preparing the connection to this MCP server.",
+    label: "Preparing"
   },
   publishing: {
     detail: "Applying the checked configuration for use in chats.",
@@ -63,8 +46,8 @@ const STAGE_COPY: Record<TransientStage, Readonly<{
     label: "Starting"
   },
   resolving: {
-    detail: "Resolving the exact package or image for this installation.",
-    label: "Resolving package"
+    detail: "Checking the saved configuration before connecting.",
+    label: "Checking configuration"
   }
 };
 
@@ -87,19 +70,13 @@ export function adminMcpActivationStage(server: AdminMcpServer): Readonly<{
   const activation = server.activation;
   if (!activation || !isAdminMcpActivationPending(activation)) return null;
 
-  const stages = server.draft.source.kind === "remote"
-    ? REMOTE_STAGES
-    : server.draft.source.kind === "oci"
-      ? OCI_STAGES
-      : LOCAL_STAGES;
-  const stageIndex = stages.indexOf(activation.stage);
-  const fallbackIndex = LOCAL_STAGES.indexOf(activation.stage);
-  const index = stageIndex >= 0 ? stageIndex : Math.max(fallbackIndex, 0);
+  // Stages outside the remote sequence come only from jobs written by an earlier release.
+  const index = Math.max(REMOTE_STAGES.indexOf(activation.stage), 0);
   const copy = STAGE_COPY[activation.stage];
 
   return {
     ...copy,
-    step: Math.min(index + 1, stages.length),
-    total: stages.length
+    step: index + 1,
+    total: REMOTE_STAGES.length
   };
 }

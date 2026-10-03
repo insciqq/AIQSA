@@ -25,8 +25,7 @@ function claim(id = "activation-1"): McpActivationClaim {
     leaseId: `lease-${id}`,
     serverId: `server-${id}`,
     validationUserId: "admin-1",
-    values: {},
-    workloadToken: `workload-${id}`
+    values: {}
   };
 }
 
@@ -162,7 +161,6 @@ describe("MCP activation coordinator", () => {
     const storage = repository([claim()]);
     const validator: McpDraftValidator = {
       async validate(input) {
-        expect(input.workloadToken).toBe("workload-activation-1");
         await input.onProgress?.("connecting");
         await input.onProgress?.("discovering_tools");
         return {

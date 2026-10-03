@@ -440,7 +440,7 @@ export async function rebindMcpValidationEndpoint(input: {
   }), prior.policy.resource);
   const oldPolicy = makePolicy(input.fromDraft);
   const nextPolicy = makePolicy(input.toDraft);
-  if (!oldPolicy || !nextPolicy || input.toDraft.source.kind !== "remote" ||
+  if (!oldPolicy || !nextPolicy ||
     new URL(prior.policy.resource).href !== new URL(input.toDraft.source.url).href ||
     hashCanonicalMcpValue(oldPolicy) !== hashCanonicalMcpValue(prior.policy) ||
     mcpOAuthPolicyFingerprint(oldPolicy, connection.oauthClient.clientId) !== binding.policyFingerprint) {

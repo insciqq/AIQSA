@@ -3,7 +3,6 @@ import type { AdminMcpServer, McpRevisionSummary } from "@/lib/contracts/mcp";
 import {
   mcpAccessSummary,
   mcpAuthorizationState,
-  mcpConfigurationBuild,
   mcpHasUnappliedCheck,
   mcpHeaderStatus,
   mcpServerStatus,
@@ -17,7 +16,6 @@ const bannedWords = /\bdraft\b|revision|pending|probe|evidence|adapter|fingerpri
 
 function configuration(overrides: Partial<McpRevisionSummary> = {}): McpRevisionSummary {
   return {
-    artifactStatus: "not_applicable",
     createdAt: "2026-09-07T10:00:00.000Z",
     draftHash: "hash-1",
     id: "configuration-1",
@@ -173,8 +171,6 @@ describe("mcpServerStatus", () => {
     for (const variant of variants) {
       expect(mcpHeaderStatus(variant, NOW)).not.toMatch(bannedWords);
     }
-    expect(mcpConfigurationBuild(configuration({ artifactStatus: "missing" }))).toEqual({ label: "Needs rebuild", tone: "critical" });
-    expect(mcpConfigurationBuild(configuration({ artifactStatus: "available" }))).toEqual({ label: "Ready to restore", tone: "ok" });
   });
 });
 

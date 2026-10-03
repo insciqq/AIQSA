@@ -32,6 +32,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint operator CLI
+        run: |
+          bash -n aiqsa.sh
+          command -v shellcheck >/dev/null || { echo "shellcheck is missing on this runner" >&2; exit 1; }
+          shellcheck aiqsa.sh
+
       - name: Run authoritative hermetic checks
         env:
           NODE_OPTIONS: --max-old-space-size=8192

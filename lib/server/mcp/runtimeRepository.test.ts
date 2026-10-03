@@ -14,7 +14,6 @@ import {
 } from "./oauthPolicy";
 import {
   createPrismaMcpRuntimeRepository,
-  localRuntimeCandidate,
   remoteRuntimeCandidate,
   sharedRuntimeCandidate
 } from "./runtimeRepository";
@@ -115,33 +114,6 @@ const sharedOnlyConfiguration: McpDraftConfiguration = {
   slots: [configuration.slots[0]!]
 };
 
-const localConfiguration: McpDraftConfiguration = {
-  auth: { mode: "static" },
-  runtime: { callTimeoutMs: 15_000, startupTimeoutMs: 120_000 },
-  slots: [{
-    label: "API key",
-    policy: { allowPersonalOverride: true, kind: "shared" },
-    sensitive: true,
-    slotKey: "api-key",
-    target: { kind: "environment", name: "API_KEY" },
-    valueType: "secret"
-  }, {
-    label: "Mode",
-    policy: { kind: "literal", value: "safe" },
-    sensitive: false,
-    slotKey: "mode",
-    target: { kind: "environment", name: "MODE" },
-    valueType: "string"
-  }],
-  source: {
-    args: ["--stdio"],
-    kind: "npm",
-    packageName: "example-mcp",
-    versionSelector: "^1.0.0"
-  },
-  transport: "stdio"
-};
-
 const oauthConfiguration: McpDraftConfiguration = {
   auth: {
     allowedAuthorizationServerOrigins: ["https://auth.example.test"],
@@ -152,19 +124,6 @@ const oauthConfiguration: McpDraftConfiguration = {
   slots: [],
   source: { kind: "remote", url: "https://mcp.example.test/rpc" },
   transport: "streamable_http"
-};
-
-const localArtifact = {
-  exactVersion: "1.2.3",
-  imageRef: "toolhivelocal/example-mcp:resolved-1-2-3",
-  imageReferenceKind: "toolhive_generated_tag",
-  kind: "toolhive_local",
-  materializer: "npx",
-  packageName: "example-mcp",
-  registryArtifactUrl: "https://registry.npmjs.org/example-mcp/-/example-mcp-1.2.3.tgz",
-  registryIntegrity: "sha512-YWJjZA==",
-  sourceKind: "npm",
-  toolhiveVersion: "v0.40.1"
 };
 
 function grant(input: GrantFixture, index: number) {
@@ -619,6 +578,17 @@ describe("remote MCP runtime candidates", () => {
     expect(oauth).toBeNull();
   });
 
+  it("never launches a stored revision that no longer validates", () => {
+    const leftover = {
+      ...configuration,
+      source: { args: [], kind: "package", packageName: "example-mcp" },
+      transport: "process"
+    } as unknown as McpDraftConfiguration;
+
+    expect(remoteRuntimeCandidate({ key: KEY, record: runtimeRecord({ configuration: leftover }) })).toBeNull();
+    expect(sharedRuntimeCandidate({ key: KEY, server: sharedServer({ configuration: leftover }) })).toBeNull();
+  });
+
   it("derives deterministic sanitized fingerprints from selected sources and value versions", () => {
     const firstRecord = runtimeRecord();
     const secondRecord = runtimeRecord();
@@ -643,83 +613,6 @@ describe("remote MCP runtime candidates", () => {
     expect(safeIdentity).not.toContain("personal-secret");
     expect(safeIdentity).not.toContain("shared-secret");
     expect(safeIdentity).not.toContain(firstRecord.personalConfigEnvelope ?? "missing-envelope");
-  });
-});
-
-describe("local MCP runtime candidates", () => {
-  it("does not launch a locally hosted runtime for a personal server", () => {
-    const record = runtimeRecord({
-      configuration: localConfiguration,
-      ownerUserId: USER_ID,
-      resolvedArtifact: localArtifact
-    });
-
-    expect(localRuntimeCandidate({ key: KEY, record })).toBeNull();
-  });
-
-  it("maps the per-user effective values exactly into the ToolHive workload environment", () => {
-    const candidate = localRuntimeCandidate({
-      key: KEY,
-      record: runtimeRecord({
-        configuration: localConfiguration,
-        grants: [{
-          canUse: true,
-          groupId: null,
-          personalSlotKeys: ["api-key"],
-          userId: USER_ID
-        }],
-        groupIds: [],
-        personalValues: { "api-key": "personal-key" },
-        resolvedArtifact: localArtifact,
-        sharedValues: { "api-key": "shared-key" }
-      })
-    });
-
-    expect(candidate).toMatchObject({
-      callTimeoutMs: 15_000,
-      credentialSources: ["personal"],
-      revisionId: REVISION_ID,
-      startupTimeoutMs: 120_000,
-      toolHive: {
-        cmdArguments: ["--stdio"],
-        envVars: { API_KEY: "personal-key", MODE: "safe" },
-        generationToken: expect.stringMatching(/^[a-f0-9]{64}$/u),
-        image: localArtifact.imageRef
-      },
-      userId: USER_ID,
-      userServerId: USER_SERVER_ID
-    });
-    expect(candidate?.toolHive.generationToken).toBe(candidate?.fingerprint);
-    expect(candidate?.publishedTools).toEqual(CHECKED_DEFINITIONS);
-    expect(candidate?.effectiveEnvelope.plan).toEqual([{
-      authorized: true,
-      slotKey: "api-key",
-      source: "personal",
-      valueVersion: 9
-    }, {
-      authorized: true,
-      slotKey: "mode",
-      source: "literal",
-      valueVersion: null
-    }]);
-  });
-
-  it("does not launch a local revision without its matching immutable artifact", () => {
-    const record = runtimeRecord({
-      configuration: localConfiguration,
-      grants: [{
-        canUse: true,
-        groupId: null,
-        personalSlotKeys: [],
-        userId: USER_ID
-      }],
-      groupIds: [],
-      personalValues: {},
-      resolvedArtifact: null,
-      sharedValues: { "api-key": "shared-key" }
-    });
-
-    expect(localRuntimeCandidate({ key: KEY, record })).toBeNull();
   });
 });
 
@@ -775,26 +668,12 @@ describe("shared Project runtime candidates", () => {
     expect(sharedRuntimeCandidate({ key: KEY, server: sharedServer(options) })).toBeNull();
   });
 
-  it("runs a no-auth server without shared values and a local server with shared environment values", () => {
+  it("runs a no-auth server without shared values", () => {
     const noAuth = sharedRuntimeCandidate({
       key: KEY,
       server: sharedServer({ configuration: { ...oauthConfiguration, auth: { mode: "none" } }, sharedEnvelope: false })
     });
     expect(noAuth).toMatchObject({ credentialSources: [], effectiveEnvelope: { plan: [], values: {} }, headers: {} });
-
-    const local = sharedRuntimeCandidate({ key: KEY, server: sharedServer({
-      configuration: localConfiguration,
-      resolvedArtifact: localArtifact,
-      sharedValues: { "api-key": "shared-key" }
-    }) });
-    expect(local).toMatchObject({
-      credentialSources: ["shared"],
-      toolHive: {
-        envVars: { API_KEY: "shared-key", MODE: "safe" },
-        image: localArtifact.imageRef
-      }
-    });
-    expect(local && "toolHive" in local ? local.toolHive.generationToken : null).toBe(local?.fingerprint);
   });
 });
 
@@ -1229,65 +1108,6 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     }));
   });
 
-  it("restores an accepted local generation with its exact artifact and effective environment", async () => {
-    const record = runtimeRecord({
-      configuration: localConfiguration,
-      grants: [{
-        canUse: true,
-        groupId: null,
-        personalSlotKeys: ["api-key"],
-        userId: USER_ID
-      }],
-      groupIds: [],
-      personalValues: { "api-key": "personal-key" },
-      resolvedArtifact: localArtifact,
-      sharedValues: { "api-key": "shared-key" }
-    });
-    const expected = localRuntimeCandidate({ key: KEY, record });
-    if (!expected) throw new Error("expected local runtime candidate");
-    const client = {
-      mcpRuntimeGeneration: {
-        findFirst: vi.fn(async () => ({
-          effectiveConfigEnvelope: encryptMcpEnvelope(
-            expected.effectiveEnvelope,
-            KEY,
-            mcpRuntimeGenerationEnvelopeContext("generation-local", expected.fingerprint)
-          ),
-          fingerprint: expected.fingerprint,
-          id: "generation-local",
-          inventoryUpdatedAt: null,
-          oauthConnectionId: null,
-          retryAt: null,
-          revision: {
-            configuration: localConfiguration,
-            id: REVISION_ID,
-            resolvedArtifact: localArtifact,
-            serverId: SERVER_ID,
-            validationEvidence: { evidence: {}, testedAt: NOW.toISOString(), toolInventory: [{ description: null, name: "example.run" }] }
-          },
-          userServer: { serverId: SERVER_ID, userId: USER_ID }
-        }))
-      }
-    } as unknown as PrismaClient;
-    const repository = createPrismaMcpRuntimeRepository({
-      encryptionKey: () => KEY,
-      prisma: client
-    });
-
-    await expect(repository.loadAcceptedGeneration("generation-local", NOW)).resolves.toEqual({
-      callTimeoutMs: 15_000,
-      fingerprint: expected.fingerprint,
-      generationId: "generation-local",
-      headers: {},
-      inventoryRefreshRequired: true,
-      publishedTools: { kind: "names", names: new Set(["example.run"]) },
-      redactionValues: expected.redactionValues,
-      retryAt: null,
-      startupTimeoutMs: 120_000,
-      toolHive: expected.toolHive
-    });
-  });
-
   it("refuses an accepted generation whose stored identity no longer verifies", async () => {
     const expected = remoteRuntimeCandidate({ key: KEY, record: runtimeRecord() });
     if (!expected) throw new Error("expected runtime candidate");
@@ -1315,36 +1135,6 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     });
 
     await expect(repository.loadAcceptedGeneration("generation-tampered", NOW)).resolves.toBeNull();
-  });
-
-  it("retains both user-runtime and live activation workload identities during orphan cleanup", async () => {
-    const activationFindMany = vi.fn(async () => [{ workloadToken: "activation-workload" }]);
-    const generationFindMany = vi.fn(async () => [{ fingerprint: "runtime-fingerprint" }]);
-    const client = {
-      mcpActivationJob: { findMany: activationFindMany },
-      mcpRuntimeGeneration: { findMany: generationFindMany }
-    } as unknown as PrismaClient;
-    const repository = createPrismaMcpRuntimeRepository({ prisma: client });
-
-    await expect(repository.listGenerationFingerprints?.()).resolves.toEqual([
-      "runtime-fingerprint",
-      "activation-workload"
-    ]);
-    expect(activationFindMany).toHaveBeenCalledWith({
-      select: { workloadToken: true },
-      where: {
-        stage: {
-          in: [
-            "queued",
-            "resolving",
-            "preparing_runtime",
-            "connecting",
-            "discovering_tools",
-            "publishing"
-          ]
-        }
-      }
-    });
   });
 
   it("finalizes only tombstoned server graphs without runtime generations or stored tokens", async () => {
