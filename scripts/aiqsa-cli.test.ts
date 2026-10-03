@@ -12,15 +12,15 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 const script = path.resolve("aiqsa.sh");
 const template = readFileSync(path.resolve(".env.example"), "utf8");
 const toolNames = ["awk", "basename", "bash", "cat", "chmod", "cp", "cut", "date", "dirname", "env", "git", "grep",
-  "head", "id", "ln", "ls", "mkdir", "mktemp", "mv", "od", "openssl", "readlink", "rm", "sed", "sh", "sort", "stat",
-  "tail", "tee", "touch", "tr", "uname", "wc"];
+  "head", "id", "ln", "ls", "mkdir", "mktemp", "mv", "od", "openssl", "readlink", "rm", "sed", "sh", "sleep", "sort", "stat",
+  "tail", "tee", "timeout", "touch", "tr", "uname", "wc"];
 const generatedKeys = ["AIQSA_INITIAL_ADMIN_PASSWORD", "AIQSA_AUTH_SESSION_SECRET", "AIQSA_ENCRYPTION_KEY",
   "AIQSA_MEMORY_FINGERPRINT_KEYRING", "AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY", "AIQSA_POSTGRES_PASSWORD",
   "AIQSA_S3_SECRET_ACCESS_KEY"];
 const directories: string[] = [];
 let toolbox = "";
 
-interface Rule { match: string; exit?: number; stdout?: string; stderr?: string }
+interface Rule { match: string; exit?: number; stdout?: string; stderr?: string; delay?: number }
 interface Result { status: number | null; stdout: string; stderr: string; output: string }
 
 const escape = (text: string) => text.replaceAll("\\", "\\\\").replaceAll("\n", "\\n").replaceAll("\t", "\\t");
@@ -33,8 +33,9 @@ const readyRows = "app|running|healthy|0|c1\nmigrate-bootstrap|exited||0|c2\npos
 const fakeDocker = `#!/usr/bin/env bash
 args="$*"
 printf '%s\\n' "$args" >> "$FAKE_STATE/docker.log"
-while IFS=$'\\x1f' read -r pattern code out err; do
+while IFS=$'\\x1f' read -r pattern code out err delay; do
   [[ -n $pattern && $args =~ $pattern ]] || continue
+  [[ -n $delay ]] && sleep "$delay"
   printf '%b' "$out"
   printf '%b' "$err" >&2
   exit "$code"
@@ -118,7 +119,7 @@ class Fixture {
       { match: "^volume inspect", exit: 1 }
     ];
     writeFileSync(path.join(this.state, "docker.rules"), [...this.rules, ...defaults]
-      .map((rule) => [rule.match, rule.exit ?? 0, escape(rule.stdout ?? ""), escape(rule.stderr ?? "")].join("\x1f")).join("\n") + "\n");
+      .map((rule) => [rule.match, rule.exit ?? 0, escape(rule.stdout ?? ""), escape(rule.stderr ?? ""), rule.delay ?? ""].join("\x1f")).join("\n") + "\n");
     const result = spawnSync("bash", [executable, ...args], {
       cwd: this.project,
       encoding: "utf8",
@@ -504,6 +505,21 @@ describe("up and install", () => {
     expect(result.stderr).toContain("Last 60 log lines of opensearch:");
     expect(fixture.dockerLog).toContain("logs --no-color --tail 60 opensearch");
     expect(fixture.dockerLog).not.toContain("logs --no-color --tail 60 app");
+  });
+
+  it("bounds the whole start, including the wait for migrate-bootstrap, by --timeout", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    fixture.rules.push(
+      { match: " up -d ", delay: 30 },
+      { match: " ps -a --format", stdout: "app|created||0|c1\nmigrate-bootstrap|running||0|c2\n" }
+    );
+    const started = Date.now();
+    const result = fixture.run(["up", "--timeout", "1"]);
+    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(result.status).toBe(5);
+    expect(result.stderr).toContain("did not finish within 1 s");
+    expect(result.stderr).toContain("Last 60 log lines of migrate-bootstrap:");
   });
 
   it.each([
