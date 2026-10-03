@@ -2,6 +2,7 @@ import { shellFetch } from "./shellApi";
 import {
   isMcpToolName,
   MCP_SERVER_TOOL_LIMIT,
+  mcpHeaderValue,
   mcpRuntimeErrorCode,
   type McpReadiness,
   type McpRuntimeErrorCode,
@@ -103,18 +104,12 @@ const readinessValues = new Set<McpReadiness>([
   "reauthorization_required", "restarting", "starting", "unavailable"
 ]);
 
-const AUTHORIZATION_SCHEME = /^[A-Za-z][A-Za-z0-9._~+-]*\s+\S/u;
-
 /**
- * The value sent for a personal static credential. A bare token in the
- * `Authorization` header becomes a Bearer token; a value that already names a
- * scheme, and any custom header such as `X-API-Key`, is sent as entered.
- * Surrounding whitespace is never part of an HTTP header value.
+ * The value sent for a personal static credential: the shared header rule,
+ * so a bare `Authorization` token becomes a Bearer token.
  */
 export function personalMcpAuthorizationValue(headerName: string, value: string): string {
-  const trimmed = value.trim();
-  if (headerName.trim().toLowerCase() !== "authorization" || !trimmed) return trimmed;
-  return AUTHORIZATION_SCHEME.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
+  return mcpHeaderValue(headerName, value);
 }
 
 export function personalMcpOAuthConnectAction(connectionId: string): string {

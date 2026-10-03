@@ -82,6 +82,26 @@ export type McpSlotTarget = { kind: "header"; name: string };
 
 export type McpSlotValue = boolean | number | string;
 
+const AUTHORIZATION_SCHEME = /^[A-Za-z][A-Za-z0-9._~+-]*\s+\S/u;
+
+/** Whether a header slot targets `Authorization`, whose bare values gain a scheme. */
+export function isMcpAuthorizationHeader(headerName: string): boolean {
+  return headerName.trim().toLowerCase() === "authorization";
+}
+
+/**
+ * The HTTP value a header slot sends. A bare value in the `Authorization`
+ * header becomes a Bearer token; a value that already names a scheme, and any
+ * custom header such as `X-API-Key`, is sent as entered. Surrounding
+ * whitespace is never part of an HTTP header value. Stored values are never
+ * rewritten: this applies only where a value becomes a header.
+ */
+export function mcpHeaderValue(headerName: string, value: McpSlotValue): string {
+  const trimmed = (typeof value === "string" ? value : String(value)).trim();
+  if (!trimmed || !isMcpAuthorizationHeader(headerName)) return trimmed;
+  return AUTHORIZATION_SCHEME.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
+}
+
 export type McpSlotPolicy =
   | { kind: "literal"; value: McpSlotValue }
   | { allowPersonalOverride: boolean; kind: "shared" }
@@ -382,6 +402,8 @@ export function isMcpReadinessStartable(readiness: McpReadiness): boolean {
 export type McpCredentialSource = "oauth" | "personal" | "shared";
 
 export type UserMcpConfigurationField = {
+  /** The value is sent in the `Authorization` header, where a bare token becomes `Bearer <token>`. */
+  authorizationHeader?: true;
   configured: boolean;
   description?: string;
   enumValues?: string[];

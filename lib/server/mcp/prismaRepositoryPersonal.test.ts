@@ -97,6 +97,32 @@ describe("personal MCP Settings projection", () => {
     expect(listed?.unavailableTools).toEqual([]);
   });
 
+  it("marks only personal fields sent in the Authorization header for the Bearer hint", async () => {
+    const base = personalServer({ current: { inventory: runtimeInventory(["read"]), oauthConnectionId: null, state: "ready" } });
+    const slot = (slotKey: string, header: string) => ({
+      label: slotKey, policy: { kind: "personal", required: true }, sensitive: true, slotKey,
+      target: { kind: "header", name: header }, valueType: "secret"
+    });
+    const server = {
+      ...base,
+      activeRevision: {
+        ...base.activeRevision,
+        configuration: {
+          ...base.activeRevision.configuration,
+          auth: { mode: "static" },
+          slots: [slot("kaiten_token", "authorization"), slot("api_key", "X-API-Key")]
+        }
+      },
+      grants: [{ canUse: true, groupId: null, personalSlotKeys: ["kaiten_token", "api_key"], userId: "user-1" }]
+    };
+    const [listed] = await repository(server as unknown as typeof base).storage.listUserServers("user-1");
+
+    expect(listed?.fields.map((field) => [field.slotKey, field.authorizationHeader ?? false])).toEqual([
+      ["kaiten_token", true],
+      ["api_key", false]
+    ]);
+  });
+
   it("applies the run plan's OAuth identity rule to the Settings fallback", async () => {
     const discovered = { inventory: { tools: [{ description: "Read mail", name: "mail.read" }], version: 1 }, oauthConnectionId: "oauth-1" };
     const restarting = personalServer({
