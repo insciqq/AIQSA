@@ -508,6 +508,8 @@ export function SkillLibraryOverlayV2({
   ) : null;
 }
 
+/** Defaults & roles > PDF processing in chats, where the PDF reader is assigned. */
+const PDF_PROCESSING_SETTINGS = { resource: "chat_pdf", section: "roles" } as const;
 
 export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
@@ -950,6 +952,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         )
       : skillCatalog?.skills ?? []
   }) : null, [activeProject, composer.assistant.pickerItems, composer.catalog, composer.knowledge.bases, composer.knowledge.documentTotal, composer.knowledge.sources, mcpServers, personalConnections, projectContext, skillCatalog?.skills]);
+  const pdfSettingsHref = useControlCenterHref(PDF_PROCESSING_SETTINGS);
   const pdfRoutePreview = useChatPdfRoutePreview(composer.currentModel && composer.attachments.some((item) => item.kind === "pdf") ? {
     projectId: activeProject?.id ?? null, providerConnectionId: composer.currentModel.provider, providerModelId: composer.currentModel.modelId
   } : null);
@@ -959,11 +962,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       attachmentWarningsForModel(
         composer.attachments,
         composer.currentModel,
-        composer.workspace.enabled
+        composer.workspace.enabled,
+        pdfRoutePreview
       ),
       composer.currentModel,
       composer.workspace.enabled,
-      pdfRoutePreview
+      pdfRoutePreview,
+      session.adminEntryVisible ? pdfSettingsHref : null
     ), ...pendingUploads.map(item => ({
       id: item.id, fileName: item.fileName, byteSize: item.byteSize, blocksSend: true, upload: true,
       status: item.state === "verifying" ? "processing" as const : item.state,
@@ -971,7 +976,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       statusLabel: item.state === "verifying" ? "Verifying file…" : item.state === "failed" ? "Upload interrupted" : undefined,
       detail: item.message ?? uploadProgressBytes(item.sentBytes, item.byteSize)
     }))],
-    [composer.attachments, composer.currentModel, composer.workspace.enabled, pdfRoutePreview, pendingUploads]
+    [composer.attachments, composer.currentModel, composer.workspace.enabled, pdfRoutePreview, pdfSettingsHref, pendingUploads, session.adminEntryVisible]
   );
   const attachmentUsage = useMemo(
     () => calculateAttachmentLimitUsage(

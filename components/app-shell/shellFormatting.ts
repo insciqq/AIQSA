@@ -1,6 +1,10 @@
 import { WORKSPACE_OPERATION_FAILURE_MESSAGES } from "@/lib/contracts/workspaceFailure";
 import { CHAT_TITLE_MAX_LENGTH, PERSONAL_FOLDER_NAME_MAX_LENGTH } from "@/lib/contracts/chats";
 import { MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
+import {
+  CHAT_PDF_ROUTE_UNAVAILABLE_CODE,
+  CHAT_PDF_ROUTE_UNAVAILABLE_MESSAGE
+} from "@/lib/contracts/chatPdfPreparation";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type { CatalogModel } from "@/components/app-shell/types";
 
@@ -122,6 +126,8 @@ export function humanizeErrorCode(code: string): string {
       "OpenRouter could not route the answer request with its required parameters. Ask an administrator to review the selected model's routing and tool support before retrying",
     openrouter_routing_unavailable:
       "OpenRouter could not route the answer request. Ask an administrator to review the selected model's routing settings before retrying",
+    [CHAT_PDF_ROUTE_UNAVAILABLE_CODE]:
+      `${CHAT_PDF_ROUTE_UNAVAILABLE_MESSAGE} Remove the PDF, choose a model that can read PDFs, or ask an administrator`,
     project_default_model_unavailable:
       "The Project default model is unavailable. Review Project resources and choose an available default",
     project_setup_required:
