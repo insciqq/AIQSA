@@ -6,12 +6,16 @@ import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { advanceMemoryMutation, lockMemorySettings, type MemoryTransaction } from "../persistence/transaction";
 import { memoryPurgeTargetType } from "../purge/contract";
 import { decodeMemoryMaintenanceVerification, decodeStagedMemoryMaintenanceOutput, memoryMaintenanceDecisionReasonCode,
-  type MemoryMaintenanceDecisionReasonCode, type MemoryMaintenanceOutput } from "./contract";
+  memoryMaintenanceKeepUsefulness, type MemoryMaintenanceDecision, type MemoryMaintenanceDecisionReasonCode,
+  type MemoryMaintenanceOutput } from "./contract";
 import { MEMORY_MAINTENANCE_POLICY_VERSION, memoryMaintenanceOrdinal, memoryMaintenanceOrdinals, memoryMaintenancePlanHash,
   type MemoryMaintenanceBlockedReason, type MemoryMaintenanceCall, type MemoryMaintenancePlan, type MemoryMaintenanceSource,
   type MemoryMaintenanceSourceIdentity } from "./policy";
+import { memoryMaintenanceContradictionPrecedence, settleMemoryMaintenanceContradictions,
+  type MemoryMaintenanceContradictionOutcome } from "./precedence";
 import { memoryMaintenanceInputHash, memoryMaintenanceOutputHash, type MemoryMaintenanceResult,
   type MemoryMaintenanceReviewResult, type MemoryMaintenanceVerificationResult } from "./provider";
+import { loadMemoryMaintenanceContradictionStates, loadMemoryMaintenanceRelatedStatements } from "./related";
 import { loadMemoryMaintenanceSources } from "./source";
 
 export type MemoryMaintenanceSnapshotSource = MemoryMaintenanceSourceIdentity & Readonly<{
@@ -107,6 +111,36 @@ type Outcome = Readonly<{ source: MemoryMaintenanceSnapshotSource } & (
   | { disposition: "REMOVED" | "REJECTED"; reasonCode: MemoryMaintenanceDecisionReasonCode | null }
   | { disposition: "BLOCKED"; reasonCode: MemoryMaintenanceBlockedReason })>;
 
+/** Verified contradictions of unchanged sources, settled by the precedence
+ * rule against the memories they name as those are now, inside the
+ * settlement transaction: never by the model's judgment of which one stays. */
+async function settleContradictions(tx: MemoryTransaction, userId: string, decisions: readonly MemoryMaintenanceDecision[],
+  byRef: ReadonlyMap<string, MemoryMaintenanceSnapshotSource>, verdicts: ReadonlyMap<string, boolean>
+): Promise<ReadonlyMap<string, MemoryMaintenanceContradictionOutcome>> {
+  /** The unchanged source of a removal the verifier approved. */
+  const approved = (decision: MemoryMaintenanceDecision) => decision.action === "REMOVE_TRANSIENT" &&
+    verdicts.get(decision.sourceRef) === true ? byRef.get(decision.sourceRef)?.current ?? null : null;
+  const verified = decisions.flatMap((decision) => {
+    const source = approved(decision);
+    return source && decision.contradictedBy ? [{ decision, source, named: decision.contradictedBy }] : [];
+  });
+  if (verified.length === 0) return new Map();
+  const states = await loadMemoryMaintenanceContradictionStates(tx, userId, {
+    sourceVersionIds: verified.map(({ source }) => source.versionId), targetVersionIds: verified.map(({ named }) => named.versionId) });
+  const removedFactIds = new Set(decisions.flatMap((decision) => {
+    const source = approved(decision);
+    return source && !decision.contradictedBy ? [source.factId] : [];
+  }));
+  return settleMemoryMaintenanceContradictions(verified.map(({ decision, source, named }) => {
+    const target = states.targets.get(named.versionId);
+    return { sourceRef: decision.sourceRef, sourceFactId: source.factId, targetFactId: named.factId,
+      precedence: target && target.factId === named.factId && target.factId !== source.factId
+        ? memoryMaintenanceContradictionPrecedence({ source: states.testimony.get(source.versionId) ?? [],
+          target: { protected: target.protected, testimony: states.testimony.get(target.versionId) ?? [] } })
+        : null };
+  }), removedFactIds);
+}
+
 /** What the earlier attempts of one call left. Attempts that all settled
  * FAILED or CANCELLED with their usage, or were fenced before dispatch, are a
  * known, consumed outcome with the last one's cause; anything else is neither
@@ -139,6 +173,9 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
   }
   return Object.freeze({
     snapshot: (job: MemoryJobDescriptor) => snapshot(client, job),
+    /** Related memories by exact version, while still current and shown whole. */
+    relatedStatements: (job: MemoryJobDescriptor, versionIds: readonly string[]) =>
+      loadMemoryMaintenanceRelatedStatements(client, job.userId, versionIds),
     /** Every binding of the job whose ordinal parity belongs to the call,
      * including any outside the receipt range, so none is overlooked. */
     async callState(job: MemoryJobDescriptor, call: MemoryMaintenanceCall): Promise<MemoryMaintenanceCallState> {
@@ -183,7 +220,11 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
     },
     /** Lease and settings fence the batch. Each source is checked before the
      * first write; a changed one is BLOCKED alone under its reviewed hash.
-     * An unexpected database error still rolls the whole batch back. */
+     * A verified contradiction removes its source only when the memory it
+     * names is still current and outranks it; otherwise the source is kept
+     * with its basis's usefulness, recording conflict_unresolved while both
+     * memories stay. An unexpected database error still rolls the whole batch
+     * back. */
     async apply(tx: MemoryTransaction, job: MemoryJobClaim, expected: Readonly<{ sourceSnapshotHash: string }>,
       review: MemoryMaintenanceReviewResult, verification: MemoryMaintenanceVerificationResult | null, now: Date) {
       const settings = await lockMemorySettings(tx, job.userId, true);
@@ -196,13 +237,21 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
       const byRef = new Map(current.sources.map((source) => [source.ref, source]));
       if (review.output.decisions.length !== current.sources.length ||
         review.output.decisions.some(({ sourceRef }) => !byRef.has(sourceRef))) throw new Error("memory_maintenance_output_invalid");
-      const approvals = new Set(verification?.output.decisions.filter(({ approve }) => approve).map(({ sourceRef }) => sourceRef) ?? []);
+      const verdicts = new Map(verification?.output.decisions.map(({ sourceRef, approve }) => [sourceRef, approve]) ?? []);
+      const contradictions = await settleContradictions(tx, job.userId, review.output.decisions, byRef, verdicts);
       const outcomes = review.output.decisions.map((decision): Outcome => {
         const source = byRef.get(decision.sourceRef)!;
         if (!source.current) return { source, disposition: "BLOCKED", reasonCode: source.blockedReason ?? "source_changed" };
         const reasonCode = memoryMaintenanceDecisionReasonCode(decision);
         if (decision.action === "KEEP") return { source, disposition: "KEEP", usefulness: decision.usefulness, reasonCode };
-        return { source, disposition: approvals.has(decision.sourceRef) ? "REMOVED" : "REJECTED", reasonCode };
+        const verdict = verdicts.get(decision.sourceRef);
+        if (!decision.contradictedBy || verdict === false) return { source, disposition: verdict === true ? "REMOVED" : "REJECTED", reasonCode };
+        // A contradiction never disclosed to the verifier, because the memory it
+        // names changed first, settles like one whose memory is gone.
+        const settled = contradictions.get(decision.sourceRef);
+        if (settled === "REMOVE") return { source, disposition: "REMOVED", reasonCode };
+        return { source, disposition: "KEEP", usefulness: memoryMaintenanceKeepUsefulness(decision.scopeBasis),
+          reasonCode: settled === "CONFLICT" ? "conflict_unresolved" : null };
       });
       let removed = 0;
       for (const outcome of outcomes) {
