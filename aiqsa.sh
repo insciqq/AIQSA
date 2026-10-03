@@ -4,18 +4,29 @@
 # Usage: ./aiqsa.sh <command> [options]; ./aiqsa.sh help lists commands and flags.
 #
 # Exit codes: 0 ok, 1 failure, 2 usage, 3 unsupported host, 4 preflight or
-# doctor check failed (install/up/upgrade: before any container change),
-# 5 stack not ready (Compose up failed, the wait timed out or the post-start
-# check failed), 6 upgrade refused.
+# doctor check failed (install/up/upgrade/backup/restore: before any container
+# change), 5 stack not ready (Compose up failed, the wait timed out or the
+# post-start check failed), 6 upgrade refused.
 #
 # The project directory is the directory containing this script. Compose
 # chooses the project name (COMPOSE_PROJECT_NAME, else `name:` in compose.yaml).
-# The CLI never sources .env, never prints its values, never runs
-# `docker compose down` or sudo, and never changes sysctls, groups or packages.
+# The CLI never sources .env, never prints its values, never runs sudo, never
+# runs `docker compose down` on the installation's project (restore only removes
+# its own isolated aiqsa-restore-* project) and never changes sysctls, groups or
+# packages.
+#
+# `backup` is a cold copy: application writers and object storage stop while
+# PostgreSQL and the bundled object volume are copied, and a trap restarts
+# exactly the services that were running on any failure or interrupt.
+# `restore` only fills an empty installation of the same version, reconciling
+# in an isolated internal project before anything of the real project starts.
 #
 # Test-only hooks; never set them on a real installation:
-#   AIQSA_CLI_KVM_DEVICE  KVM device path (default /dev/kvm)
-#   AIQSA_CLI_PROC_ROOT   proc root for meminfo and cpuinfo (default /proc)
+#   AIQSA_CLI_KVM_DEVICE        KVM device path (default /dev/kvm)
+#   AIQSA_CLI_PROC_ROOT         proc root for meminfo and cpuinfo (default /proc)
+#   AIQSA_CLI_RESTORE_OVERRIDE  extra Compose file appended to the isolated
+#                               restore project (for example explicit subnets
+#                               on hosts without free Docker address pools)
 #
 # `upgrade` re-executes the updated script as
 #   aiqsa.sh __upgrade-apply --previous-ref <commit> [options]
@@ -48,13 +59,20 @@ PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 readonly PROJECT_DIR
 readonly KVM_DEVICE=${AIQSA_CLI_KVM_DEVICE:-/dev/kvm}
 readonly PROC_ROOT=${AIQSA_CLI_PROC_ROOT:-/proc}
+RESTORE_OVERRIDE_HOOK=${AIQSA_CLI_RESTORE_OVERRIDE:-}
+readonly BACKUP_FORMAT=1
+# Services that keep running while the backup stops application writers.
+readonly BACKUP_KEEP_RUNNING=" postgres opensearch seaweedfs minio docling tika workspace-runner "
+readonly ONE_SHOT_SERVICES=" migrate-bootstrap storage-init "
+readonly KEY_ID_PATTERN='^[a-z][a-z0-9_-]{0,63}$'
 
 # Options.
 COMMAND=""
 YES=0 QUIET=0 VERBOSE=0 TIMEOUT=600
 ENV_FILE="" BASE_URL="" ADMIN_EMAIL="" WORKSPACE_MODE=""
 HOST_ONLY=0 STACK_ONLY=0 NO_START=0 SKIP_PREFLIGHT=0 HELP=0
-TARGET_TAG="" BACKUP_CONFIRMED=0 ADD_MISSING_KEYS=0 PREVIOUS_REF=""
+TARGET_TAG="" BACKUP_CONFIRMED=0 BACKUP_NOW=0 ADD_MISSING_KEYS=0 PREVIOUS_REF=""
+OUTPUT_DIR="" RESTORE_DIR=""
 declare -A GIVEN=()
 
 # State.
@@ -68,11 +86,21 @@ DOCKER_STATE="" DOCKER_SERVER_VERSION="" DOCKER_ERROR=""
 PROJECT_NAME=""
 KVM_OK=0 KVM_GID="" KVM_REASON="" KVM_VIRT=""
 COLOR=0
+# Backup: the writers are stopped while BACKUP_STOPPED=1; RESTART_SERVICES is
+# exactly the set that was running before. BACKUP_CONTEXT=upgrade turns every
+# backup failure into an upgrade refusal (exit 6).
+BACKUP_STOPPED=0 BACKUP_DIR="" BACKUP_CREATED_DIR=0 BACKUP_COMPLETE=0 BACKUP_CONTEXT=backup
+RESTART_SERVICES=()
+# Restore: RESTORE_PHASE is "isolated" from publishing .env until the real
+# project starts; RC_ARGS selects the isolated aiqsa-restore-* project.
+RESTORE_PHASE="" RESTORE_PROJECT="" RESTORE_OVERRIDE="" RESTORE_KVM_GID="" RESTORE_KVM_GID_FROM=""
+RC_ARGS=()
 
 # ---------------------------------------------------------------- output
 
 if [[ -t 1 && -z ${NO_COLOR:-} && ${TERM:-dumb} != dumb ]]; then COLOR=1; fi
-exec 3>&2
+# fd 3 and 4 keep the original stderr and stdout for traces and exit handling.
+exec 3>&2 4>&1
 
 say() { (( QUIET )) || printf '%s\n' "$@"; }
 note() { printf '%s\n' "$@" >&2; }
@@ -108,7 +136,7 @@ check() {
 # Traces go to fd 3 (the original stderr) so redirected commands still show them.
 run() {
   if (( VERBOSE )); then printf '+ %s\n' "$*" >&3; fi
-  "$@" 3>&-
+  "$@" 3>&- 4>&-
 }
 
 # Replaces every non-empty secret-like .env value with ***.
@@ -138,7 +166,27 @@ cleanup() {
   if [[ -n $TEMP_DIR ]]; then rm -rf -- "$TEMP_DIR"; fi
   if [[ -n $CONFIGURE_TMP ]]; then rm -f -- "$CONFIGURE_TMP"; fi
 }
-trap cleanup EXIT
+
+# Any exit, including errors and interrupts, first restarts writers a backup
+# stopped and explains how to discard an unfinished restore.
+on_exit() {
+  local status=$? code=0
+  set +e
+  # An interrupt is handled inside the interrupted command's redirections.
+  exec 1>&4 2>&3
+  backup_discard
+  if (( BACKUP_STOPPED )); then
+    BACKUP_STOPPED=0
+    note "Restarting the services that were stopped for the backup."
+    ( backup_restart )
+    code=$?
+    (( code == 0 )) || status=$code
+  fi
+  if [[ $RESTORE_PHASE == isolated ]] && (( status )); then restore_abort; fi
+  cleanup
+  exit "$status"
+}
+trap on_exit EXIT
 trap 'exit 1' HUP INT TERM
 
 # ---------------------------------------------------------------- .env
@@ -1077,9 +1125,36 @@ report_stack_failure() {
   note "Nothing was rolled back. Fix the cause and rerun ./aiqsa.sh up; ./aiqsa.sh doctor shows the full state."
 }
 
+# compose_up_wait [OPTION...] [-- SERVICE...]: `docker compose up -d --wait`
+# within the readiness budget; on failure it diagnoses the stack and exits 5.
+compose_up_wait() {
+  local options=() output code=0
+  while (( $# )) && [[ $1 != -- ]]; do options+=("$1"); shift; done
+  if (( $# )); then shift; fi
+  ensure_temp_dir
+  output=$TEMP_DIR/compose-up.log
+  # --wait-timeout bounds only the final wait: Compose first blocks on
+  # migrate-bootstrap and dependency health, so the whole command gets the budget.
+  local up=(docker compose --project-directory "$PROJECT_DIR" ${COMPOSE_ENV_ARGS[@]+"${COMPOSE_ENV_ARGS[@]}"}
+    up -d ${options[@]+"${options[@]}"} --wait --wait-timeout "$TIMEOUT" "$@")
+  if command -v timeout >/dev/null 2>&1; then up=(timeout -k 20 "$TIMEOUT" "${up[@]}"); fi
+  if (( QUIET )); then
+    run "${up[@]}" >"$output" 2>&1 || code=$?
+  else
+    run "${up[@]}" 2>&1 | mask_stream | tee "$output" >&2 || code=${PIPESTATUS[0]}
+  fi
+  (( code != 0 )) || return 0
+  if (( code == 124 )); then
+    note "docker compose up did not finish within ${TIMEOUT} s; services that were already created keep starting."
+  fi
+  note "The stack did not become ready (docker compose up failed or the wait timed out)."
+  report_stack_failure "$output"
+  exit "$EXIT_NOT_READY"
+}
+
 # up_stack SECTIONS: SECTIONS is "host+config", "config" or "none".
 up_stack() {
-  local sections=$1 output
+  local sections=$1
   [[ -f $ENV_FILE ]] || die "$EXIT_FAILURE" "$(display_path "$ENV_FILE") does not exist; run ./aiqsa.sh install or ./aiqsa.sh configure first."
   env_load
   if (( ! SKIP_PREFLIGHT )) && [[ $sections != none ]]; then
@@ -1091,30 +1166,11 @@ up_stack() {
     fi
   fi
   docker_ready || die "$EXIT_PREFLIGHT" "Docker is not usable ($DOCKER_STATE); run ./aiqsa.sh doctor."
-  ensure_temp_dir
-  output=$TEMP_DIR/compose-up.log
   say "Starting the stack; waiting up to ${TIMEOUT} s for every service to become ready."
-  # --wait-timeout bounds only the final wait: Compose first blocks on
-  # migrate-bootstrap and dependency health, so the whole command gets the budget.
-  local up=(docker compose --project-directory "$PROJECT_DIR" ${COMPOSE_ENV_ARGS[@]+"${COMPOSE_ENV_ARGS[@]}"}
-    up -d --remove-orphans --wait --wait-timeout "$TIMEOUT") code=0
-  if command -v timeout >/dev/null 2>&1; then up=(timeout -k 20 "$TIMEOUT" "${up[@]}"); fi
-  if (( QUIET )); then
-    run "${up[@]}" >"$output" 2>&1 || code=$?
-  else
-    run "${up[@]}" 2>&1 | mask_stream | tee "$output" >&2 || code=${PIPESTATUS[0]}
-  fi
-  if (( code != 0 )); then
-    if (( code == 124 )); then
-      note "docker compose up did not finish within ${TIMEOUT} s; services that were already created keep starting."
-    fi
-    note "The stack did not become ready (docker compose up failed or the wait timed out)."
-    report_stack_failure "$output"
-    exit "$EXIT_NOT_READY"
-  fi
+  compose_up_wait --remove-orphans
   if ! app_ready; then
     note "The application readiness check answered $APP_STATUS."
-    report_stack_failure "$output"
+    report_stack_failure "$TEMP_DIR/compose-up.log"
     exit "$EXIT_NOT_READY"
   fi
   if profile_enabled workspace; then
@@ -1329,15 +1385,21 @@ legacy_guard() {
   fi
 }
 
+# Decides before anything changes; the backup itself runs right before the
+# checkout moves, after every other refusal.
 confirm_backup() {
-  (( BACKUP_CONFIRMED )) && return 0
+  (( BACKUP_CONFIRMED || BACKUP_NOW )) && return 0
   if can_prompt; then
     local answer
+    read -r -p "Create a backup now with ./aiqsa.sh backup (the stack stops briefly)? [Y/n] " answer || answer=no
+    case ${answer,,} in
+      '' | y | yes) BACKUP_NOW=1; return 0 ;;
+    esac
     read -r -p "Is there a current backup of PostgreSQL, object storage and .env? Type yes to continue: " answer || answer=""
     [[ $answer == yes ]] && return 0
   fi
   refuse "a current backup was not confirmed." \
-    "Back up PostgreSQL, object storage and .env, then rerun with --backup-confirmed (non-interactive) or answer yes."
+    "Rerun with --backup to create one first, or with --backup-confirmed when a current backup of PostgreSQL, object storage and .env exists."
 }
 
 cmd_upgrade() {
@@ -1387,6 +1449,11 @@ cmd_upgrade() {
   git_in cat-file -e "$target_ref:aiqsa.sh" 2>/dev/null \
     || refuse "the target release has no aiqsa.sh." "Update it by hand as described in README.md."
   image_guard "$target"
+  if (( BACKUP_NOW )); then
+    BACKUP_CONTEXT=upgrade
+    backup_create "$(default_backup_dir)"
+    BACKUP_CONTEXT=backup
+  fi
   say "Upgrading from $current to $target. Release notes: $REPOSITORY_URL/releases/tag/v$target"
   previous=$(git_in rev-parse HEAD)
   if [[ -n $TARGET_TAG ]]; then
@@ -1471,6 +1538,523 @@ cmd_upgrade_apply() {
   say "Upgrade complete."
 }
 
+# ---------------------------------------------------------------- backup
+
+human_size() {
+  local bytes=$1
+  if (( bytes >= 1000000000 )); then printf '%d.%d GB' "$((bytes / 1000000000))" "$((bytes % 1000000000 / 100000000))"
+  elif (( bytes >= 1000000 )); then printf '%d.%d MB' "$((bytes / 1000000))" "$((bytes % 1000000 / 100000))"
+  elif (( bytes >= 1000 )); then printf '%d.%d kB' "$((bytes / 1000))" "$((bytes % 1000 / 100))"
+  else printf '%d B' "$bytes"
+  fi
+}
+
+checkout_version() {
+  local version
+  version=$(package_version < "$PROJECT_DIR/package.json" 2>/dev/null) || version=""
+  printf '%s' "${version:-unknown}"
+}
+
+default_backup_dir() {
+  printf '%s/backups/%s-v%s' "$PROJECT_DIR" "$(date -u +%Y%m%dT%H%M%SZ)" "$(checkout_version)"
+}
+
+app_image() {
+  local image
+  image=$(env_value AIQSA_IMAGE)
+  printf '%s' "${image:-$OFFICIAL_IMAGE:latest}"
+}
+
+objects_external() {
+  local endpoint
+  endpoint=$(env_value AIQSA_S3_ENDPOINT)
+  [[ -n $endpoint && $endpoint != http://minio:9000 ]]
+}
+
+# helper OPTION... IMAGE ARG...: a throwaway root container without network;
+# root reads and restores the object store's own file ownership.
+helper() { run docker run --rm --network none --user 0:0 "$@"; }
+
+pg_user() { local user; user=$(env_value AIQSA_POSTGRES_USER); printf '%s' "${user:-aiqsa}"; }
+pg_db() { local db; db=$(env_value AIQSA_POSTGRES_DB); printf '%s' "${db:-aiqsa}"; }
+
+# pg_tool COMPOSE TOOL ARG...: a PostgreSQL client in the postgres service of
+# the dc or rc project; the password stays in the container's environment.
+pg_tool() {
+  local compose=$1
+  shift
+  # shellcheck disable=SC2016 # Expands in the container shell.
+  "$compose" exec -T postgres sh -c 'PGPASSWORD=$POSTGRES_PASSWORD; export PGPASSWORD; exec "$@"' sh "$@"
+}
+
+pg_query() {
+  pg_tool dc psql -X -A -t -q -v ON_ERROR_STOP=1 -U "$(pg_user)" -d "$(pg_db)" -c "$1" </dev/null
+}
+
+newest_migration() {
+  local entry newest=""
+  for entry in "$PROJECT_DIR"/prisma/migrations/*/; do
+    entry=${entry%/}
+    entry=${entry##*/}
+    if [[ $entry != '*' && $entry > $newest ]]; then newest=$entry; fi
+  done
+  printf '%s' "$newest"
+}
+
+# Sets REPLY to the applied migration when the schema matches this checkout,
+# otherwise to the reason, and fails.
+schema_check() {
+  local newest row applied pending
+  newest=$(newest_migration)
+  if [[ -z $newest ]]; then REPLY="this checkout has no migrations in prisma/migrations"; return 1; fi
+  ensure_temp_dir
+  if ! row=$(pg_query "select coalesce(max(migration_name) filter (where finished_at is not null and rolled_back_at is null), '') || '|' || count(*) filter (where finished_at is null and rolled_back_at is null) from _prisma_migrations" 2>"$TEMP_DIR/psql.err"); then
+    REPLY="the applied migrations could not be read: $(head -n 1 "$TEMP_DIR/psql.err" | mask_stream)"
+    return 1
+  fi
+  applied=${row%%|*} pending=${row#*|}
+  if [[ $pending != 0 ]]; then REPLY="$pending migration(s) are unfinished or failed"; return 1; fi
+  if [[ $applied != "$newest" ]]; then
+    REPLY="the database is at migration ${applied:-none}, but the newest migration of this checkout is $newest"
+    return 1
+  fi
+  REPLY=$applied
+}
+
+existing_ancestor() {
+  local path=$1
+  while [[ ! -d $path ]]; do path=$(dirname -- "$path"); done
+  printf '%s' "$path"
+}
+
+backup_refuse() {
+  if [[ $BACKUP_CONTEXT == upgrade ]]; then refuse "the backup could not start: $1" "${@:2}"; fi
+  die "$EXIT_PREFLIGHT" "Backup refused: $1" "${@:2}"
+}
+
+# After the target directory exists: removes the partial backup, restarts the
+# stopped services (exit 5 when they do not become ready) and exits.
+backup_fail() {
+  printf '%s\n' "Backup failed: $1" "${@:2}" | mask_stream >&2
+  backup_discard
+  if (( BACKUP_STOPPED )); then
+    BACKUP_STOPPED=0
+    backup_restart
+  fi
+  if [[ $BACKUP_CONTEXT == upgrade ]]; then refuse "the backup failed; the checkout and the images were not changed."; fi
+  exit "$EXIT_FAILURE"
+}
+
+# An unfinished backup never stays behind: without SHA256SUMS it could not be
+# restored anyway, and its env file holds the installation secrets.
+backup_discard() {
+  if [[ -z $BACKUP_DIR ]] || (( BACKUP_COMPLETE )); then return 0; fi
+  local file
+  for file in env manifest postgres.dump objects.tar.gz SHA256SUMS SHA256SUMS.tmp; do rm -f -- "${BACKUP_DIR:?}/$file"; done
+  if (( BACKUP_CREATED_DIR )); then rmdir -- "$BACKUP_DIR" 2>/dev/null || true; fi
+  note "The incomplete backup in $(display_path "$BACKUP_DIR") was removed."
+  BACKUP_DIR=""
+}
+
+# Starts exactly the services that were running before, without recreating
+# them, and waits like `up`.
+backup_restart() {
+  (( ${#RESTART_SERVICES[@]} )) || return 0
+  say "Restarting ${RESTART_SERVICES[*]}; waiting up to ${TIMEOUT} s."
+  compose_up_wait --no-recreate -- "${RESTART_SERVICES[@]}"
+  if [[ " ${RESTART_SERVICES[*]} " == *" app "* ]] && ! app_ready; then
+    note "The application readiness check answered $APP_STATUS."
+    report_stack_failure ""
+    exit "$EXIT_NOT_READY"
+  fi
+}
+
+# The non-secret Memory key IDs a restore needs: never key material.
+manifest_key_ids() {
+  local entries=() entry ids="" current="" routing
+  IFS=',' read -r -a entries <<< "$(env_value AIQSA_MEMORY_FINGERPRINT_KEYRING)"
+  for entry in ${entries[@]+"${entries[@]}"}; do
+    entry=${entry//[[:space:]]/}
+    if [[ $entry == current=* ]]; then
+      current=${entry#current=}
+    elif [[ $entry == *=?* && ${entry%%=*} =~ $KEY_ID_PATTERN ]]; then
+      ids+="${ids:+,}${entry%%=*}"
+    fi
+  done
+  [[ $current =~ $KEY_ID_PATTERN ]] || current=""
+  routing=$(env_value AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY_ID)
+  routing=${routing:-v1}
+  [[ $routing =~ $KEY_ID_PATTERN ]] || routing=invalid
+  printf '%s\n' "memory_fingerprint_key_ids=$ids" "memory_fingerprint_current=$current" \
+    "memory_opensearch_routing_key_id=$routing"
+}
+
+# backup_manifest DIR MIGRATION OBJECTS IMAGES: plain key=value lines, no secrets.
+backup_manifest() {
+  local dir=$1 migration=$2 objects=$3 images=$4 file service image seen=" " commit
+  commit=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null) || commit=unknown
+  {
+    printf '%s\n' "format=$BACKUP_FORMAT" "aiqsa_version=$(checkout_version)" "git_commit=${commit:-unknown}" \
+      "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" "project=$PROJECT_NAME" "migration=$migration" "objects=$objects"
+    for file in env postgres.dump objects.tar.gz; do
+      if [[ -f $dir/$file ]]; then printf 'size.%s=%s\n' "$file" "$(stat -c %s -- "$dir/$file")"; fi
+    done
+    while read -r service image; do
+      [[ -n $service && $seen != *" $service "* ]] || continue
+      seen+="$service "
+      printf 'image.%s=%s\n' "$service" "$image"
+    done <<< "$images"
+    manifest_key_ids
+  } > "$dir/manifest"
+}
+
+# backup_create DIR: cold backup of PostgreSQL, the bundled object volume and
+# .env into DIR. Refusals (exit 4, or 6 for upgrade) change nothing; a later
+# failure restarts the stopped services and removes the partial backup.
+backup_create() {
+  local dir=$1 started=$SECONDS rows service state postgres="" running=" " writers=() restart=()
+  local external=0 size_db size_objects=0 available required volume image images migration old_umask errors log file files
+  [[ -f $ENV_FILE ]] || backup_refuse "$(display_path "$ENV_FILE") does not exist; there is no installation to back up."
+  [[ -r $ENV_FILE ]] || backup_refuse "$(display_path "$ENV_FILE") is not readable by $(id -un); run ./aiqsa.sh as its owner."
+  env_load
+  docker_ready || backup_refuse "Docker is not usable ($DOCKER_STATE); run ./aiqsa.sh doctor."
+  if [[ -e $dir || -L $dir ]]; then
+    [[ -d $dir && ! -L $dir ]] || backup_refuse "$(display_path "$dir") exists and is not a directory."
+    [[ -z $(ls -A -- "$dir") ]] || backup_refuse "$(display_path "$dir") is not empty; choose a new --output directory."
+  fi
+  load_project_name
+  [[ $PROJECT_NAME =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
+    || backup_refuse "the Compose project name could not be resolved; run ./aiqsa.sh doctor."
+  rows=$(stack_containers) || rows=""
+  while IFS='|' read -r service state _; do
+    [[ -n $service ]] || continue
+    if [[ $service == postgres ]]; then postgres=$state; fi
+    if [[ $state == running && $running != *" $service "* ]]; then running+="$service "; fi
+  done <<< "$rows"
+  [[ -n $postgres ]] || backup_refuse "the project $PROJECT_NAME has no postgres container." "Start the installation with ./aiqsa.sh up first."
+  [[ $postgres == running ]] || backup_refuse "PostgreSQL is $postgres." "Start the installation with ./aiqsa.sh up first."
+  for service in $running; do
+    if [[ $BACKUP_KEEP_RUNNING != *" $service "* ]]; then writers+=("$service"); fi
+    if [[ $ONE_SHOT_SERVICES != *" $service "* ]]; then restart+=("$service"); fi
+  done
+  schema_check || backup_refuse "the database schema does not match this checkout: $REPLY." \
+    "Bring the installation to this checkout's release first (./aiqsa.sh up), then back up."
+  ensure_temp_dir
+  errors=$TEMP_DIR/backup.err log=$TEMP_DIR/backup.log
+  size_db=$(pg_query "select pg_database_size(current_database())" 2>"$errors") || size_db=""
+  [[ $size_db =~ ^[0-9]+$ ]] || backup_refuse "the database size could not be read: $(head -n 1 "$errors" | mask_stream)"
+  image=$(app_image)
+  volume=${PROJECT_NAME}_seaweedfs_data
+  if objects_external; then
+    external=1
+  else
+    run docker volume inspect "$volume" >/dev/null 2>&1 || backup_refuse "the object storage volume $volume does not exist."
+    size_objects=$(helper -v "$volume:/data:ro" --entrypoint du "$image" -sk /data 2>"$errors" | cut -f1) || size_objects=""
+    [[ $size_objects =~ ^[0-9]+$ ]] || backup_refuse "the size of $volume could not be measured: $(head -n 1 "$errors" | mask_stream)"
+  fi
+  required=$(( (size_db / 1024 + size_objects) * 12 / 10 ))
+  available=$(df -Pk -- "$(existing_ancestor "$dir")" 2>/dev/null | awk 'NR == 2 { print $4 }') || available=""
+  [[ $available =~ ^[0-9]+$ ]] || backup_refuse "the free space at $(display_path "$dir") could not be read."
+  if (( available < required )); then
+    backup_refuse "not enough free space: about $(human_size $((required * 1024))) is needed at $(display_path "$dir"), $(human_size $((available * 1024))) is free." \
+      "Free space or choose another --output directory."
+  fi
+  images=$(dc ps -a --format '{{.Service}} {{.Image}}' 2>/dev/null) || images=""
+
+  old_umask=$(umask)
+  umask 077
+  if [[ ! -d $dir ]]; then
+    mkdir -p -- "$dir" || backup_refuse "$(display_path "$dir") could not be created."
+    BACKUP_CREATED_DIR=1
+  fi
+  chmod 700 -- "$dir"
+  BACKUP_DIR=$dir BACKUP_COMPLETE=0
+  if (( external )); then
+    note "AIQSA_S3_ENDPOINT selects external object storage: this backup holds PostgreSQL and .env only." \
+      "Back up the bucket with its provider in the same window; the manifest records objects=external."
+  fi
+  RESTART_SERVICES=(${restart[@]+"${restart[@]}"})
+  BACKUP_STOPPED=1
+  if (( ${#writers[@]} )); then
+    say "Stopping application writers for a consistent copy: ${writers[*]}."
+    dc stop "${writers[@]}" >"$log" 2>&1 || backup_fail "docker compose stop failed: $(tail -n 3 "$log" | tr '\n' ' ')"
+  fi
+  schema_check || backup_fail "the database schema changed while the writers stopped: $REPLY."
+  migration=$REPLY
+  say "Dumping PostgreSQL."
+  pg_tool dc pg_dump -Fc -U "$(pg_user)" -d "$(pg_db)" </dev/null >"$dir/postgres.dump" 2>"$errors" \
+    || backup_fail "pg_dump failed: $(tail -n 3 "$errors" | tr '\n' ' ')"
+  if (( ! external )); then
+    say "Stopping object storage and archiving $volume."
+    dc stop minio seaweedfs >"$log" 2>&1 || backup_fail "docker compose stop failed: $(tail -n 3 "$log" | tr '\n' ' ')"
+    helper -v "$volume:/data:ro" --entrypoint tar "$image" --numeric-owner -czf - -C /data . >"$dir/objects.tar.gz" 2>"$errors" \
+      || backup_fail "archiving $volume failed: $(tail -n 3 "$errors" | tr '\n' ' ')"
+  fi
+  cp -- "$ENV_FILE" "$dir/env" || backup_fail "copying $(display_path "$ENV_FILE") failed."
+  if (( external )); then file=external; else file=bundled; fi
+  backup_manifest "$dir" "$migration" "$file" "$images"
+  say "Checking the copies."
+  dc exec -T postgres pg_restore --list <"$dir/postgres.dump" >/dev/null 2>"$errors" \
+    || backup_fail "the dump is not readable (pg_restore --list): $(tail -n 3 "$errors" | tr '\n' ' ')"
+  files=(env manifest postgres.dump)
+  if (( ! external )); then
+    helper -i --entrypoint tar "$image" -tzf - <"$dir/objects.tar.gz" >/dev/null 2>"$errors" \
+      || backup_fail "the object archive is not readable (tar -tzf): $(tail -n 3 "$errors" | tr '\n' ' ')"
+    files+=(objects.tar.gz)
+  fi
+  if ! (cd -- "$dir" && sha256sum -- "${files[@]}") >"$dir/SHA256SUMS.tmp" || ! mv -- "$dir/SHA256SUMS.tmp" "$dir/SHA256SUMS"; then
+    backup_fail "writing SHA256SUMS failed."
+  fi
+  for file in "${files[@]}" SHA256SUMS; do chmod 600 -- "$dir/$file"; done
+  BACKUP_COMPLETE=1
+  BACKUP_STOPPED=0
+  backup_restart
+  umask "$old_umask"
+  say "" "Backup written in $((SECONDS - started)) s to $(display_path "$dir"):"
+  for file in "${files[@]}" SHA256SUMS; do say "$(printf '  %-15s %s' "$file" "$(human_size "$(stat -c %s -- "$dir/$file")")")"; done
+  if (( external )); then say "Objects: external. Back up the bucket with its provider for the same point in time."; fi
+  say "The file env is a copy of .env and holds this installation's secrets: keep the backup private." \
+    "Copy the backup to another host or medium; a copy on this disk does not survive the loss of the host."
+}
+
+cmd_backup() {
+  require_linux
+  backup_create "${OUTPUT_DIR:-$(default_backup_dir)}"
+}
+
+# ---------------------------------------------------------------- restore
+
+manifest_get() {
+  local line
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ ${line%%=*} == "$1" ]]; then printf '%s' "${line#*=}"; return 0; fi
+  done < "$2"
+}
+
+restore_refuse() { die "$EXIT_PREFLIGHT" "Restore refused: $1" "${@:2}"; }
+
+# Checksums, format, version and object mode; sets REPLY to the version.
+restore_verify() {
+  local dir=$1 line listed=" " file version current objects
+  local pattern='^[0-9a-f]{64} [ *](env|manifest|postgres\.dump|objects\.tar\.gz)$'
+  [[ -d $dir ]] || restore_refuse "$(display_path "$dir") is not a directory."
+  [[ -f $dir/SHA256SUMS && -f $dir/manifest ]] \
+    || restore_refuse "$(display_path "$dir") is not an AIQSA backup: SHA256SUMS or manifest is missing."
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line =~ $pattern ]] || restore_refuse "SHA256SUMS contains an unexpected line."
+    listed+="${BASH_REMATCH[1]} "
+  done < "$dir/SHA256SUMS"
+  for file in env manifest postgres.dump; do
+    [[ $listed == *" $file "* ]] || restore_refuse "SHA256SUMS does not cover $file."
+  done
+  for file in $listed; do
+    [[ -f $dir/$file && ! -L $dir/$file ]] || restore_refuse "$file is missing from the backup."
+  done
+  ensure_temp_dir
+  if ! (cd -- "$dir" && sha256sum --quiet --strict -c SHA256SUMS) >"$TEMP_DIR/sha256sum.log" 2>&1; then
+    restore_refuse "the backup files do not match SHA256SUMS:" "$(head -n 5 "$TEMP_DIR/sha256sum.log")"
+  fi
+  [[ $(manifest_get format "$dir/manifest") == "$BACKUP_FORMAT" ]] \
+    || restore_refuse "the backup format '$(manifest_get format "$dir/manifest")' is unknown to this release."
+  version=$(manifest_get aiqsa_version "$dir/manifest")
+  current=$(checkout_version)
+  if [[ $version != "$current" ]]; then
+    restore_refuse "the backup is from AIQSA $version, but this checkout is $current." \
+      "Restore into a checkout of the same release, then upgrade: git checkout v$version"
+  fi
+  objects=$(manifest_get objects "$dir/manifest")
+  case $objects in
+    bundled) [[ $listed == *" objects.tar.gz "* ]] || restore_refuse "SHA256SUMS does not cover objects.tar.gz." ;;
+    external)
+      restore_refuse "this backup uses external object storage (objects=external)." \
+        "Its deletion reconciliation needs the bucket inside the isolated restore project, which the CLI cannot provide;" \
+        "restore it by hand as described in README.md." ;;
+    *) restore_refuse "the manifest has an unknown object mode '$objects'." ;;
+  esac
+  REPLY=$version
+}
+
+# The target project must have no container and no volume at all.
+restore_target_empty() {
+  local found="" name
+  found=$(run docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" 2>/dev/null) \
+    || restore_refuse "the containers of $PROJECT_NAME could not be listed."
+  if [[ -n $found ]]; then
+    restore_refuse "the Compose project $PROJECT_NAME already has containers; restore only fills an empty installation." \
+      "Remove that installation first, or set another COMPOSE_PROJECT_NAME in the backup's environment."
+  fi
+  found=$(run docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT_NAME" 2>/dev/null) \
+    || restore_refuse "the volumes of $PROJECT_NAME could not be listed."
+  for name in postgres18_data seaweedfs_data opensearch_data storage_socket workspace_runtime_data; do
+    if run docker volume inspect "${PROJECT_NAME}_$name" >/dev/null 2>&1; then found+=" ${PROJECT_NAME}_$name"; fi
+  done
+  if [[ -n ${found//[[:space:]]/} ]]; then
+    restore_refuse "volumes of the Compose project $PROJECT_NAME already exist: $(printf '%s' "$found" | tr '\n' ' ')" \
+      "Restore only fills an empty installation; remove that installation first."
+  fi
+}
+
+# AIQSA_KVM_GID is host-specific, neither a secret nor an identity: when
+# Workspace is enabled and this host's usable KVM device belongs to another
+# group, the new .env gets the host's group. Sets RESTORE_KVM_GID.
+restore_kvm_gid() {
+  local configured=${ENV_VALUES[AIQSA_KVM_GID]:-}
+  RESTORE_KVM_GID=""
+  profile_enabled workspace || return 0
+  [[ -z ${AIQSA_KVM_GID+set} ]] || return 0
+  kvm_probe
+  if (( KVM_OK )) && [[ $configured != "$KVM_GID" ]]; then
+    RESTORE_KVM_GID=$KVM_GID RESTORE_KVM_GID_FROM=$configured
+    ENV_VALUES[AIQSA_KVM_GID]=$KVM_GID
+  fi
+}
+
+# Hard-link publication is atomic and never replaces an existing file. Only
+# the AIQSA_KVM_GID line of this new file may differ from the backup.
+restore_publish_env() {
+  local source=$1 old_umask line
+  old_umask=$(umask)
+  umask 077
+  CONFIGURE_TMP=$(mktemp "$(dirname -- "$ENV_FILE")/.env.tmp.XXXXXX")
+  if [[ -z $RESTORE_KVM_GID ]]; then
+    cat -- "$source" > "$CONFIGURE_TMP"
+  else
+    while IFS= read -r line || [[ -n $line ]]; do
+      if [[ $line =~ ^[[:space:]]*(export[[:space:]]+)?AIQSA_KVM_GID[[:space:]]*= ]]; then line="AIQSA_KVM_GID=$RESTORE_KVM_GID"; fi
+      printf '%s\n' "$line"
+    done < "$source" > "$CONFIGURE_TMP"
+  fi
+  ln -- "$CONFIGURE_TMP" "$ENV_FILE" || die "$EXIT_FAILURE" "$(display_path "$ENV_FILE") appeared meanwhile; it was preserved and nothing was restored."
+  rm -f -- "$CONFIGURE_TMP"
+  CONFIGURE_TMP=""
+  umask "$old_umask"
+}
+
+rc() { run docker compose "${RC_ARGS[@]}" "$@"; }
+
+# Every network internal, no published ports (compose.yaml publishes only the
+# app, which never starts here) and the real project's data volumes as external.
+restore_override() {
+  local network volume
+  {
+    printf '%s\n' "# Generated by aiqsa.sh restore for $RESTORE_PROJECT." "networks:" "  default:" "    internal: true"
+    while IFS= read -r network; do
+      printf '  %s:\n    internal: true\n' "$network"
+    done < <(awk '/^networks:/ { inside = 1; next } /^[^ #]/ { inside = 0 } inside && /^  [A-Za-z0-9_.-]+:/ { sub(/^  /, ""); sub(/:.*/, ""); print }' "$PROJECT_DIR/compose.yaml")
+    printf '%s\n' "volumes:"
+    for volume in postgres18_data seaweedfs_data; do
+      printf '  %s:\n    external: true\n    name: %s_%s\n' "$volume" "$PROJECT_NAME" "$volume"
+    done
+  } > "$RESTORE_OVERRIDE"
+}
+
+restore_step_failed() {
+  die "$EXIT_FAILURE" "Restore failed: $1." "$(tail -n 20 "$2" | sed 's/^/  /')"
+}
+
+# Removes the isolated project; its data volumes are external and stay.
+restore_project_remove() {
+  local volumes=()
+  ensure_temp_dir
+  if ! rc down >"$TEMP_DIR/restore-down.log" 2>&1; then
+    note "docker compose down of $RESTORE_PROJECT failed:"
+    tail -n 5 "$TEMP_DIR/restore-down.log" | mask_stream | sed 's/^/  /' >&2
+  fi
+  mapfile -t volumes < <(run docker volume ls -q --filter "label=com.docker.compose.project=$RESTORE_PROJECT" 2>/dev/null)
+  if (( ${#volumes[@]} )) && ! run docker volume rm "${volumes[@]}" >/dev/null 2>&1; then
+    note "Remove the leftover volumes of $RESTORE_PROJECT by hand: docker volume rm ${volumes[*]}"
+  fi
+  RESTORE_PROJECT=""
+}
+
+restore_abort() {
+  local compose=docker\ compose
+  if [[ -n $RESTORE_PROJECT ]]; then restore_project_remove; fi
+  if (( ${#COMPOSE_ENV_ARGS[@]} )); then compose+=" --env-file $(printf '%q' "$ENV_FILE")"; fi
+  note "" "Nothing of the project $PROJECT_NAME was started. Its restored volumes and $(display_path "$ENV_FILE") are kept for inspection." \
+    "To discard this attempt and restore again, run in $PROJECT_DIR:" \
+    "  $compose down -v" "  rm $(printf '%q' "$(display_path "$ENV_FILE")")"
+}
+
+cmd_restore() {
+  require_linux
+  local dir=$RESTORE_DIR version target=$ENV_FILE saved=() log script code
+  restore_verify "$dir"
+  version=$REPLY
+  if [[ -e $ENV_FILE || -L $ENV_FILE ]]; then
+    restore_refuse "$(display_path "$ENV_FILE") exists; restore only fills an empty installation." \
+      "Use a fresh checkout of v$version."
+  fi
+  [[ -r $dir/env ]] || restore_refuse "$(display_path "$dir/env") is not readable by $(id -un)."
+  # The backup's environment drives masking, the project name and the preflight.
+  ENV_FILE=$dir/env
+  env_load
+  docker_ready || restore_refuse "Docker is not usable ($DOCKER_STATE); run ./aiqsa.sh doctor."
+  saved=(${COMPOSE_ENV_ARGS[@]+"${COMPOSE_ENV_ARGS[@]}"})
+  COMPOSE_ENV_ARGS=(--env-file "$dir/env")
+  load_project_name
+  COMPOSE_ENV_ARGS=(${saved[@]+"${saved[@]}"})
+  [[ $PROJECT_NAME =~ ^[a-z0-9][a-z0-9_-]*$ ]] \
+    || restore_refuse "the Compose project name could not be resolved from the backup's environment."
+  restore_target_empty
+  restore_kvm_gid
+  if (( ! SKIP_PREFLIGHT )); then
+    doctor_host
+    if (( FAIL_COUNT )); then
+      doctor_summary
+      restore_refuse "host preflight failed; fix the FAIL lines above (or rerun with --skip-preflight)."
+    fi
+  fi
+  ENV_FILE=$target
+  ensure_temp_dir
+  log=$TEMP_DIR/restore.log
+  say "Restoring AIQSA $version from $(display_path "$dir") into the Compose project $PROJECT_NAME."
+  restore_publish_env "$dir/env"
+  RESTORE_PHASE=isolated
+  if [[ -n $RESTORE_KVM_GID ]]; then
+    note "AIQSA_KVM_GID changed from '$RESTORE_KVM_GID_FROM' to $RESTORE_KVM_GID in $(display_path "$ENV_FILE"): the group of $KVM_DEVICE on this host."
+  fi
+  env_load
+  say "Creating the volumes and containers of $PROJECT_NAME without starting them."
+  dc create postgres seaweedfs >"$log" 2>&1 || restore_step_failed "docker compose create postgres seaweedfs failed" "$log"
+  say "Unpacking the objects into ${PROJECT_NAME}_seaweedfs_data."
+  helper -i -v "${PROJECT_NAME}_seaweedfs_data:/data" --entrypoint tar "$(app_image)" --numeric-owner -xzf - -C /data \
+    <"$dir/objects.tar.gz" >"$log" 2>&1 || restore_step_failed "unpacking objects.tar.gz failed" "$log"
+
+  RESTORE_PROJECT=aiqsa-restore-$(date -u +%Y%m%d%H%M%S)
+  RESTORE_OVERRIDE=$TEMP_DIR/restore-override.yaml
+  restore_override
+  RC_ARGS=(--project-directory "$PROJECT_DIR" -p "$RESTORE_PROJECT" -f "$PROJECT_DIR/compose.yaml" -f "$RESTORE_OVERRIDE")
+  if [[ -n $RESTORE_OVERRIDE_HOOK ]]; then RC_ARGS+=(-f "$RESTORE_OVERRIDE_HOOK"); fi
+  RC_ARGS+=(${COMPOSE_ENV_ARGS[@]+"${COMPOSE_ENV_ARGS[@]}"})
+  say "Starting the isolated project $RESTORE_PROJECT: postgres, seaweedfs and minio on internal networks, no published ports."
+  local up=(docker compose "${RC_ARGS[@]}" up -d --wait --wait-timeout "$TIMEOUT" postgres seaweedfs minio)
+  if command -v timeout >/dev/null 2>&1; then up=(timeout -k 20 "$TIMEOUT" "${up[@]}"); fi
+  run "${up[@]}" >"$log" 2>&1 || restore_step_failed "the isolated project did not become ready" "$log"
+  say "Restoring PostgreSQL."
+  pg_tool rc pg_restore --no-owner --exit-on-error -U "$(pg_user)" -d "$(pg_db)" <"$dir/postgres.dump" >"$log" 2>&1 \
+    || restore_step_failed "pg_restore failed" "$log"
+  for script in memory:restore:reconcile knowledge:restore:reconcile; do
+    say "Reconciling: $script."
+    if ! rc run --rm --no-deps -T -e AIQSA_RESTORE_RECONCILIATION=YES -e AIQSA_RESTORE_NETWORK_ISOLATED=YES \
+      -e AIQSA_RESTORE_POSTGRES_SERVICE=postgres -e AIQSA_RESTORE_MINIO_SERVICE=minio \
+      --entrypoint npm memory-worker run "$script" </dev/null >"$log" 2>&1; then
+      code=$(sed -n 's/.*"code":"\([A-Za-z0-9_]*\)".*/\1/p' "$log" | tail -n 1)
+      restore_step_failed "$script failed with ${code:-an unknown code}; deletion duties remain, so the restore is not promoted" "$log"
+    fi
+  done
+  say "Removing the isolated project $RESTORE_PROJECT."
+  restore_project_remove
+  RESTORE_PHASE=started
+  FAIL_COUNT=0 WARN_COUNT=0 PASS_COUNT=0
+  up_stack none
+  # The reconciliation reset both search projections to pending; the running
+  # search workers recreate the indexes and project everything from PostgreSQL.
+  say "Memory and Knowledge search indexes are being rebuilt from PostgreSQL by the search workers."
+  post_start_check
+  say "Restore complete."
+}
+
 # ---------------------------------------------------------------- version and help
 
 cmd_version() {
@@ -1490,6 +2074,10 @@ Commands:
   doctor     Read-only checks of the host, .env and the running stack.
   up         Preflight, then start or update containers and wait until ready.
   upgrade    Update the checkout to the next release and restart safely.
+  backup     Cold backup of PostgreSQL, bundled object storage and .env (writers stop briefly).
+  restore <backup-dir>
+             Restore a backup into an empty installation of the same version;
+             backups made with external object storage are refused (restore those by hand).
   version    Print the checkout version.
   help       Print this help.
 
@@ -1506,16 +2094,21 @@ Options:
   --no-start             install: stop after creating .env.
   --host-only, --stack-only
                          doctor: limit the checks to one section.
-  --skip-preflight       up/install/upgrade: continue despite failed preflight checks.
+  --skip-preflight       up/install/upgrade/restore: continue despite failed preflight checks.
   --to vX.Y.Z            upgrade: move to this release tag instead of the branch upstream
                          (required on a detached HEAD). Images follow the .env image
                          settings, otherwise the newest release.
+  --backup               upgrade: create a backup (default location) before the checkout moves.
   --backup-confirmed     upgrade: confirm a current backup without prompting.
+  --output <dir>         backup: new or empty target directory
+                         (default backups/<UTC time>-v<version> in the checkout).
   --add-missing-keys     upgrade: append keys new in .env.example to .env.
 
 Exit codes: 0 ok, 1 failure, 2 usage, 3 unsupported host, 4 preflight or doctor
 check failed (before any container change), 5 stack not ready after a start,
-6 upgrade refused. A Workspace runner that is not ready is a warning.
+6 upgrade refused (also when its backup fails). A Workspace runner that is not
+ready is a warning. A failed backup restarts the stopped services and removes
+its partial files; a failed restore starts nothing and prints how to discard it.
 EOF
 }
 
@@ -1565,12 +2158,19 @@ parse_args() {
       --stack-only) STACK_ONLY=1 ;;
       --no-start) NO_START=1 ;;
       --skip-preflight) SKIP_PREFLIGHT=1 ;;
+      --backup) BACKUP_NOW=1 ;;
       --backup-confirmed) BACKUP_CONFIRMED=1 ;;
+      --output) option_value "$argument" "$@"; OUTPUT_DIR=$1; shift ;;
       --add-missing-keys) ADD_MISSING_KEYS=1 ;;
       -*) usage_error "Unknown option: $argument" ;;
       *)
-        [[ -z $COMMAND ]] || usage_error "Unexpected argument: $argument"
-        COMMAND=$argument
+        if [[ -z $COMMAND ]]; then
+          COMMAND=$argument
+        elif [[ $COMMAND == restore && -z $RESTORE_DIR ]]; then
+          RESTORE_DIR=$argument
+        else
+          usage_error "Unexpected argument: $argument"
+        fi
         continue ;;
     esac
     GIVEN[$argument]=1
@@ -1584,7 +2184,9 @@ validate_args() {
     configure) allowed=" --base-url --admin-email --workspace " ;;
     doctor) allowed=" --host-only --stack-only " ;;
     up) allowed=" --skip-preflight " ;;
-    upgrade) allowed=" --to --backup-confirmed --add-missing-keys --skip-preflight " ;;
+    upgrade) allowed=" --to --backup --backup-confirmed --add-missing-keys --skip-preflight " ;;
+    backup) allowed=" --output " ;;
+    restore) allowed=" --skip-preflight " ;;
     __upgrade-apply) allowed=" --previous-ref --add-missing-keys --skip-preflight " ;;
     version | help) allowed=" " ;;
     "") usage_error "Missing command." ;;
@@ -1596,6 +2198,8 @@ validate_args() {
   done
   if (( QUIET && VERBOSE )); then usage_error "--quiet and --verbose are mutually exclusive."; fi
   if (( HOST_ONLY && STACK_ONLY )); then usage_error "--host-only and --stack-only are mutually exclusive."; fi
+  if (( BACKUP_NOW && BACKUP_CONFIRMED )); then usage_error "--backup and --backup-confirmed are mutually exclusive."; fi
+  if [[ $COMMAND == restore && -z $RESTORE_DIR ]]; then usage_error "restore needs the backup directory: ./aiqsa.sh restore <backup-dir>"; fi
   [[ $TIMEOUT =~ ^[1-9][0-9]{0,4}$ ]] || usage_error "--timeout must be a number of seconds (1-99999)."
   if [[ -n $BASE_URL ]] && ! valid_base_url "$BASE_URL"; then
     usage_error "--base-url must be an http(s) URL without path, query or fragment, for example https://chat.example.com"
@@ -1616,6 +2220,9 @@ main() {
     [[ $ENV_FILE == /* ]] || ENV_FILE=$invocation_dir/$ENV_FILE
     [[ $ENV_FILE == "$PROJECT_DIR/.env" ]] || COMPOSE_ENV_ARGS=(--env-file "$ENV_FILE")
   fi
+  if [[ -n $OUTPUT_DIR && $OUTPUT_DIR != /* ]]; then OUTPUT_DIR=$invocation_dir/$OUTPUT_DIR; fi
+  if [[ -n $RESTORE_DIR && $RESTORE_DIR != /* ]]; then RESTORE_DIR=$invocation_dir/$RESTORE_DIR; fi
+  if [[ -n $RESTORE_OVERRIDE_HOOK && $RESTORE_OVERRIDE_HOOK != /* ]]; then RESTORE_OVERRIDE_HOOK=$invocation_dir/$RESTORE_OVERRIDE_HOOK; fi
   cd -- "$PROJECT_DIR"
   case $COMMAND in
     install) cmd_install ;;
@@ -1624,6 +2231,8 @@ main() {
     up) cmd_up ;;
     upgrade) cmd_upgrade ;;
     __upgrade-apply) cmd_upgrade_apply ;;
+    backup) cmd_backup ;;
+    restore) cmd_restore ;;
     version) cmd_version ;;
     help) cmd_help ;;
   esac
