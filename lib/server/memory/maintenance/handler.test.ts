@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import { StructuredOutputDecodeError } from "../../providers/structuredOutput";
-import { MemoryCoordinatorError } from "../coordinator/errors";
+import { MemoryJobFencedError } from "../coordinator/errors";
 import type { MemoryJobClaim } from "../coordinator/types";
 import { MemoryExecutionError, MemoryStructuredOutputProviderError } from "../execution";
 import { createPrismaMemoryMaintenanceHandler } from "./handler";
@@ -167,7 +167,8 @@ describe("maintenance failure causes", () => {
     }
   });
   it("rethrows aborts and coordinator errors, including a source changed before dispatch, unchanged", async () => {
-    const stale = new MemoryCoordinatorError("memory_maintenance_dispatch_stale", false);
+    const stale = new MemoryJobFencedError("memory_maintenance_dispatch_stale",
+      { errorCode: "memory_maintenance_dispatch_stale", status: "STALE" });
     const { handler, provider, repository } = setup();
     provider.review.mockRejectedValue(stale);
     await expect(handler.execute(claim, context)).rejects.toBe(stale);

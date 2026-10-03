@@ -346,7 +346,8 @@ describe("maintenance call attempts", () => {
       const run = vi.fn();
       const provider = createPrismaMemoryMaintenanceProvider(prisma, { provider: { run } });
       const jobOwner = { userId, jobId: work.claim.id };
-      const stale = expect.objectContaining({ code: "memory_maintenance_dispatch_stale", retryable: false });
+      const stale = expect.objectContaining({ name: "MemoryJobFencedError", code: "memory_maintenance_dispatch_stale", retryable: false,
+        decision: { errorCode: "memory_maintenance_dispatch_stale", status: "STALE" } });
       await expect(provider.review(work.plan, new AbortController().signal, jobOwner)).rejects.toThrow(stale);
       await expect(provider.verify(work.snapshot, work.plan.sources, work.review.output, new AbortController().signal, jobOwner))
         .rejects.toThrow(stale);

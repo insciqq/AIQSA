@@ -1,5 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { MemoryCoordinatorError } from "../coordinator/errors";
+import { MemoryJobFencedError } from "../coordinator/errors";
 import { executeGovernedMemoryStructuredOutput, type MemoryExecutionAuthorityDependencies,
   type MemoryStructuredOutputProvider } from "../execution";
 import { memoryExecutionSha256 } from "../execution/canonical";
@@ -38,7 +38,10 @@ export function createPrismaMemoryMaintenanceProvider(client: PrismaClient, opti
       versionIds: disclosed.map(({ versionId }) => versionId), now: new Date()
     });
     if (disclosed.some((source) => current.sources.get(source.versionId)?.sourceSnapshotHash !== source.sourceSnapshotHash)) {
-      throw new MemoryCoordinatorError(MEMORY_MAINTENANCE_FAILURE_CODES.dispatchStale, false);
+      // The re-run gate decides STALE or keeps this terminal after a paid review;
+      // the proven fence settles STALE only when that gate cannot decide.
+      const code = MEMORY_MAINTENANCE_FAILURE_CODES.dispatchStale;
+      throw new MemoryJobFencedError(code, { errorCode: code, status: "STALE" });
     }
   }
   /** Revalidates every disclosed source before any binding exists, so a
