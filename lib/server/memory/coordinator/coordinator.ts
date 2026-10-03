@@ -83,7 +83,9 @@ export class MemoryCoordinator {
   #busyDiscoveryPhase: object | null = null;
   #discoveryPending: Promise<void> | null = null;
   #discoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  readonly #idleJobSlots = new Set<() => void>();
   #pending: Promise<void> | null = null;
+  #runningJobs = 0;
   #rerun = false;
   #running = false;
   #stopped = false;
@@ -137,6 +139,7 @@ export class MemoryCoordinator {
     this.#rerun = false;
     this.#running = false;
     this.#stopped = true;
+    this.#wakeIdleJobSlots();
     for (const controller of this.#activeControllers) {
       controller.abort(new Error("memory_coordinator_stopped"));
     }
@@ -390,14 +393,46 @@ export class MemoryCoordinator {
         reportFailure("claim", error);
         return;
       }
-      if (!claim) return;
+      if (!claim) {
+        // A sibling's long job keeps this pass open. Rather than leave work
+        // enqueued meanwhile waiting for it, the idle slot claims again once
+        // per interval (or when a job settles); with no running sibling it
+        // ends the pass as before.
+        if (this.#runningJobs === 0) return;
+        await this.#waitForIdleJobSlotTick();
+        if (this.#runningJobs === 0) return;
+        continue;
+      }
       claims += 1;
       const claimedJob = claim;
-      await runInBackground(() => runWithContext(
-        { job_id: claimedJob.id },
-        () => this.#processJob(claimedJob)
-      ));
+      this.#runningJobs += 1;
+      try {
+        await runInBackground(() => runWithContext(
+          { job_id: claimedJob.id },
+          () => this.#processJob(claimedJob)
+        ));
+      } finally {
+        this.#runningJobs -= 1;
+        this.#wakeIdleJobSlots();
+      }
     }
+  }
+
+  #waitForIdleJobSlotTick(): Promise<void> {
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        this.#idleJobSlots.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, this.#policy.intervalMs);
+      timer.unref?.();
+      this.#idleJobSlots.add(wake);
+    });
+  }
+
+  #wakeIdleJobSlots(): void {
+    for (const wake of [...this.#idleJobSlots]) wake();
   }
 
   async #deletionWorker(observeClaim: (success: boolean) => void): Promise<void> {
