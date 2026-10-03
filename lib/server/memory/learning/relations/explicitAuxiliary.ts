@@ -9,7 +9,7 @@ import {
 } from "../../persistence/transaction";
 import {
   isMemoryExplicitRelationJob,
-  MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
+  MEMORY_EXPLICIT_RELATION_V1_PIPELINE_VERSION,
   type MemoryExplicitRelationDecision,
   type MemoryExplicitRelationSnapshot
 } from "./explicitPolicy";
@@ -112,7 +112,7 @@ export function createPrismaMemoryExplicitRelationAuxiliaryStore(client: PrismaC
             leaseExpiresAt: { gt: now },
             leaseToken: claim.claimToken,
             memoryGenerationSnapshot: settings.memoryGeneration,
-            pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
+            pipelineVersion: claim.pipelineVersion,
             state: "CLAIMED",
             targetFactVersionId: claim.targetFactVersionId,
             userId: claim.userId
@@ -142,7 +142,7 @@ export function createPrismaMemoryExplicitRelationAuxiliaryStore(client: PrismaC
         if (executions.length > 1 || executions.some((execution) =>
           !row || execution.state !== "PENDING" || execution.inputHash !== inputHash ||
           execution.ordinal !== MEMORY_EXPLICIT_RELATION_EXECUTION_ORDINAL ||
-          execution.pipelineVersion !== MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION)) {
+          execution.pipelineVersion !== claim.pipelineVersion)) {
           return { status: "UNAVAILABLE" as const };
         }
         if (!row) await tx.memoryAuxiliarySemanticCall.create({
@@ -150,7 +150,8 @@ export function createPrismaMemoryExplicitRelationAuxiliaryStore(client: PrismaC
             createdAt: now,
             id: memoryExecutionSha256({
               domain: "aiqsa.memory.explicit-relation-call", userId: claim.userId,
-              versionId: claim.targetFactVersionId, version: 1
+              versionId: claim.targetFactVersionId,
+              version: claim.pipelineVersion === MEMORY_EXPLICIT_RELATION_V1_PIPELINE_VERSION ? 1 : 2
             }),
             ownerJobId: claim.id,
             purpose,
