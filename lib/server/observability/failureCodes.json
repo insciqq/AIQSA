@@ -866,6 +866,7 @@
   "s3_endpoint",
   "s3_region",
   "s3_secret_key",
+  "scheduled_tasks_unavailable",
   "search_adapter_not_available",
   "search_cancelled",
   "search_execution_failed",
