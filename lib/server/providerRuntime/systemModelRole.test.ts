@@ -1,5 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { buildGeminiInteractionsRequest } from "../providers/geminiInteractionsRequest";
+import type { ProviderRunRequest } from "../providers/types";
 import { ProviderAdmissionError, type ProviderAdmissionRole } from "./admission";
 import {
   applySystemModelReasoningEffort,
@@ -125,6 +127,56 @@ describe("system model role resolver", () => {
       providerModelId: "model-1",
       reasoningEffort: "xhigh",
       role
+    });
+  });
+
+  describe("Memory or System role on gemini-3.8-flash", () => {
+    const geminiModel = {
+      adapterKind: "gemini_interactions_native",
+      capabilities: {
+        nativePdfInput: false, nativeSearch: true, pdf: true, reasoning: true, toolCalling: true, vision: true
+      },
+      defaultParams: { reasoning: { effort: "medium" } },
+      upstreamModelId: "gemini-3.8-flash"
+    };
+    const geminiRole = {
+      ...role,
+      snapshot: { model: geminiModel, providerFamily: "gemini", providerModelId: "gemini-row" }
+    } as unknown as ProviderAdmissionRole;
+    const providerRequest = (snapshot: ProviderAdmissionRole["snapshot"]): ProviderRunRequest => ({
+      attachmentIds: [],
+      attachments: [],
+      chatId: "memory-role",
+      content: { blocks: [{ text: "Classify.", type: "text" }] },
+      knowledgePlan: { baseIds: [], mode: "none", sourceIds: [], version: 1 },
+      modelCapabilities: snapshot.model.capabilities,
+      modelId: snapshot.model.upstreamModelId,
+      params: { ...snapshot.model.defaultParams, stream: false },
+      prompt: { developer: null, system: "Return the result." },
+      provider: "gemini",
+      searchPlan: { mode: "all_selected", options: [] },
+      toolMode: "none"
+    });
+
+    it("cannot resolve a minimal policy effort the catalog controls exclude", async () => {
+      const loadRole = vi.fn().mockResolvedValue(geminiRole);
+      await expect(createSystemModelRoleResolver(database({
+        providerModelId: "gemini-row", reasoningEffort: "minimal", updatedByUserId: "admin-1", version: 3
+      }), { loadRole }).resolve()).resolves.toEqual({ code: SYSTEM_MODEL_UNAVAILABLE, ok: false });
+      await expect(createSystemModelRoleResolver(database({
+        providerModelId: "gemini-row", reasoningEffort: "low", updatedByUserId: "admin-1", version: 4
+      }), { loadRole }).resolve()).resolves.toMatchObject({ ok: true, reasoningEffort: "low" });
+    });
+
+    it("sends the resolved role effort and refuses a stale saved minimal default before dispatch", () => {
+      const applied = applySystemModelReasoningEffort(geminiRole.snapshot, "low");
+      expect(buildGeminiInteractionsRequest(providerRequest(applied)).generation_config.thinking_level).toBe("low");
+      expect(buildGeminiInteractionsRequest(providerRequest(applySystemModelReasoningEffort(geminiRole.snapshot, null)))
+        .generation_config.thinking_level).toBe("medium");
+      const stale = { ...geminiRole.snapshot, model: { ...geminiModel, defaultParams: { reasoning: { effort: "minimal" } } } } as
+        unknown as ProviderAdmissionRole["snapshot"];
+      expect(() => buildGeminiInteractionsRequest(providerRequest(applySystemModelReasoningEffort(stale, null))))
+        .toThrow("gemini_interactions_reasoning_effort_unsupported");
     });
   });
 
