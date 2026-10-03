@@ -9,6 +9,7 @@ import { MemoryCoordinator } from "../coordinator/coordinator";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import { MemoryCoordinatorRegistry } from "../coordinator/registry";
 import type { MemoryReportedUsage } from "../execution";
+import { loadPersonalEligibleFactVersionIds } from "../persistence/eligibility";
 import { withLockedMemoryTransaction, type MemoryTransaction } from "../persistence/transaction";
 import { defaultMemorySourceMutationHooks } from "../sourceHooks";
 import { applyMemorySourceMutations, lockMemorySourceChat } from "../sourceState";
@@ -160,23 +161,31 @@ async function fixture(texts: readonly string[] = ["I moved to Lisbon last sprin
   await prisma.user.create({ data: { id: userId, email: `${userId}@example.test`, displayName: "Extraction heal fixture", status: "active" } });
   await prisma.userMemorySettings.update({ where: { userId }, data: { learnAutomatically: true, referenceChatHistory: false } });
   const chat = await prisma.chat.create({ data: { userId, title: "Synthetic extraction heal" } });
-  let parentMessageId: string | null = null;
   const turns: Array<{ userMessageId: string; assistantId: string; runId: string; createdAt: Date }> = [];
-  for (const [index, text] of texts.entries()) {
-    const createdAt = new Date(Date.now() - (texts.length - index) * 60_000);
+  /** Appends and settles one turn below `parentMessageId` (the last turn by
+   * default), making it the active leaf, as a completed answer does. */
+  const addTurn = async (text: string, options: Readonly<{ at?: Date; parentMessageId?: string | null;
+    timeZone?: string }> = {}) => {
+    const createdAt = options.at ?? new Date();
+    const parentMessageId = options.parentMessageId === undefined
+      ? turns.at(-1)?.assistantId ?? null : options.parentMessageId;
     const user: Message = await prisma.message.create({ data: { chatId: chat.id, role: "user", status: "complete",
       parentMessageId, content: textMessageContent(text), createdAt, updatedAt: createdAt } });
     const assistant: Message = await prisma.message.create({ data: { chatId: chat.id, role: "assistant", status: "complete",
       parentMessageId: user.id, content: textMessageContent("Noted."), createdAt, updatedAt: createdAt } });
     const run = await prisma.modelRun.create({ data: { assistantMessageId: assistant.id, chatId: chat.id,
       modelId: "extraction-heal-model", provider: "extraction-heal-provider", status: "complete", userId,
-      userMessageId: user.id, normalizedRequest: { prompt: { baseline: { source: "standard_chat", timeZone: "UTC",
-        timeZoneSource: "client" } } } } });
+      userMessageId: user.id, normalizedRequest: { prompt: { baseline: { source: "standard_chat",
+        timeZone: options.timeZone ?? "UTC", timeZoneSource: "client" } } } } });
     const turn = { assistantId: assistant.id, runId: run.id };
     await settle(userId, chat.id, "NORMAL_APPEND", turn);
     await settle(userId, chat.id, "TERMINAL_SETTLEMENT", turn);
-    turns.push({ userMessageId: user.id, createdAt, ...turn });
-    parentMessageId = assistant.id;
+    const settled = { userMessageId: user.id, createdAt, ...turn };
+    turns.push(settled);
+    return settled;
+  };
+  for (const [index, text] of texts.entries()) {
+    await addTurn(text, { at: new Date(Date.now() - (texts.length - index) * 60_000), timeZone: "Europe/Lisbon" });
   }
   let clock = Date.now() + 1_000;
   const now = () => new Date(clock);
@@ -200,7 +209,41 @@ async function fixture(texts: readonly string[] = ["I moved to Lisbon last sprin
   };
   const bindings = (memoryJobId: string) => prisma.memoryExecutionBinding.findMany({ where: { userId, memoryJobId },
     orderBy: { ordinal: "asc" } });
-  return { userId, chat, turns, now, drive, sweep, heal, jobs, bindings, advance: (ms: number) => { clock += ms; } };
+  return { userId, chat, turns, addTurn, now, drive, sweep, heal, jobs, bindings,
+    advance: (ms: number) => { clock += ms; } };
+}
+
+/** Moves the active leaf to `leafId` as a branch switch or regeneration does. */
+async function switchBranch(f: Readonly<{ userId: string; chat: Readonly<{ id: string }> }>, leafId: string) {
+  await prisma.$transaction(async (tx) => {
+    const chat = await lockMemorySourceChat(tx, { userId: f.userId, chatId: f.chat.id, lock: "UPDATE" });
+    if (!chat) throw new Error("extraction_heal_fixture_chat_missing");
+    await applyMemorySourceMutations(tx, { chat, hooks: defaultMemorySourceMutationHooks,
+      mutations: ["BRANCH_PATH_CHANGE"], patch: { activeLeafMessageId: leafId } });
+  });
+}
+
+/** An answer to every extraction input: one durable preference observed in
+ * `quote` for the source message that contains it, nothing for other sources. */
+function extracting(sourceMessageId: string, quote: string) {
+  return { run: vi.fn<MemoryFactProvider["run"]>(async (_evidence, input) => ({ providerResponseId: "heal-response",
+    toolCalls: [{ id: `heal-call-${randomUUID()}`, name: MEMORY_FACT_EXTRACTION_TOOL_NAME, arguments: {
+      observations: input.source.sourceMessageId !== sourceMessageId ? [] : [{
+        candidate_ref: "C-heal-preference", confidence_band: "HIGH", dependency_refs: [], entities: [],
+        evidence: { occurrence_index: 0, text: quote }, usefulness: "DURABLE",
+        identity: { dimension_key: null, mode: "PROPOSITION", predicate_key: null,
+          subject: { canonical_label: null, entity_type: "NONE", qualifiers: { brand: null, model: null } } },
+        memory_type: "PREFERENCE", reason_code: "durable_direct_preference",
+        semantic_frame: { assertion_status: "ASSERTED", change_intent: "NONE", memory_directive: "NONE",
+          polarity: "AFFIRMED", speech_act: "ASSERTION", subject_scope: "CURRENT_USER", temporal_perspective: "CURRENT" },
+        sensitivity: "NORMAL", statement: "The user prefers written instructions.",
+        temporal: { expiration_intent: "NONE", normalization: { kind: "NONE" }, perspective: "CURRENT", raw_expression: null },
+        temporary: false,
+        value: { frequency: null, kind: null, limit: null, place: null, role: null, schedule: null, state: null,
+          strength: null, value: null }
+      }]
+    } }],
+    usage: { cachedInputTokens: 0, inputTokens: 40, outputTokens: 12, reasoningTokens: 0, totalTokens: 52 } })) };
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -281,6 +324,121 @@ describe("re-extraction after a provider failure that produced no output", () =>
     await changePolicy();
     expect(await f.heal()).toBe(0);
     expect(await f.jobs()).toHaveLength(2);
+  });
+
+  it("heals a source whose chat moved on twice from its original turn, linking the facts to that message", async () => {
+    const quote = "I prefer written instructions.";
+    const f = await fixture(["I am planning my week.", `Also, ${quote}`]);
+    await f.drive(failing("PERMANENT"));
+    const source = f.turns[1]!;
+    const failed = (await f.jobs()).find(({ sourceMessageId }) => sourceMessageId === source.userMessageId)!;
+    expect(failed).toMatchObject({ state: "SUCCEEDED", stage: "fact_provider_unavailable" });
+    // The chat moves on twice: each append and settlement admits its own extraction.
+    const later = [await f.addTurn("What should I cook tonight?", { timeZone: "Asia/Tokyo" }),
+      await f.addTurn("Thanks, that works.", { timeZone: "Asia/Tokyo" })];
+    const chat = await prisma.chat.findUniqueOrThrow({ where: { id: f.chat.id } });
+    expect(chat.activeLeafMessageId).toBe(later[1]!.assistantId);
+    expect(chat.memorySourceRevision).toBeGreaterThan(failed.sourceRevision!);
+    await changePolicy();
+    expect(await f.heal()).toBe(2);
+    const healJob = (await f.jobs()).find(({ idempotencyFingerprint, sourceMessageId }) =>
+      idempotencyFingerprint.startsWith("extract-facts:vnext:heal.") && sourceMessageId === source.userMessageId)!;
+    // The new job keeps the frozen admission snapshot of its own turn.
+    expect(healJob).toMatchObject({ state: "QUEUED", activeLeafMessageId: source.assistantId,
+      branchGeneration: failed.branchGeneration, sourceRevision: failed.sourceRevision, sourceHash: failed.sourceHash });
+
+    const provider = extracting(source.userMessageId, quote);
+    await f.drive(provider);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: healJob.id } }))
+      .toMatchObject({ state: "SUCCEEDED", stage: "fact_observations_committed" });
+    const healInput = provider.run.mock.calls.map(([, input]) => input)
+      .filter(({ source: { sourceMessageId } }) => sourceMessageId === source.userMessageId);
+    expect(healInput).toHaveLength(1);
+    // The input is the source and its ancestors under its own turn's time
+    // zone; later turns neither enter it nor replace that temporal snapshot.
+    expect(healInput[0]!.timeZone).toBe("Europe/Lisbon");
+    const laterIds = new Set(later.flatMap(({ assistantId, userMessageId }) => [assistantId, userMessageId]));
+    expect(healInput[0]!.messages.some(({ id }) => laterIds.has(id))).toBe(false);
+    expect(healInput[0]!.messages.filter(({ evidenceEligible }) => evidenceEligible).map(({ id }) => id))
+      .toEqual([source.userMessageId]);
+    expect(await prisma.memoryEvidence.findMany({ where: { userId: f.userId },
+      select: { chatId: true, messageId: true, safeExcerpt: true } }))
+      .toEqual([{ chatId: f.chat.id, messageId: source.userMessageId, safeExcerpt: quote }]);
+    const fact = await prisma.memoryFact.findFirstOrThrow({ where: { userId: f.userId } });
+    expect(fact.state).toBe("ACTIVE");
+    expect(await loadPersonalEligibleFactVersionIds(prisma, f.userId, [fact.currentVersionId!]))
+      .toEqual(new Set([fact.currentVersionId]));
+    // The later turns' own extractions ran as usual, and nothing heals twice.
+    expect((await f.jobs()).filter(({ sourceMessageId }) => laterIds.has(sourceMessageId!))
+      .map(({ state, stage }) => ({ state, stage })))
+      .toEqual(later.map(() => ({ state: "SUCCEEDED", stage: "fact_observations_empty" })));
+    expect(await f.heal(MEMORY_FACT_EXTRACTION_HEAL_SAME_POLICY_DELAY_MS + 60_000)).toBe(0);
+  });
+
+  it("admits a source only while it is on the active path", async () => {
+    const f = await fixture(["I am planning my week.", "Also, I prefer written instructions."]);
+    await f.drive(failing("PERMANENT"));
+    const [first, source] = f.turns as [Fixture["turns"][number], Fixture["turns"][number]];
+    await changePolicy();
+    const heals = async () => (await f.jobs()).filter(({ idempotencyFingerprint, sourceMessageId }) =>
+      idempotencyFingerprint.startsWith("extract-facts:vnext:heal.") && sourceMessageId === source.userMessageId);
+    // An edit of the source and a regenerated earlier answer both leave it behind.
+    const edited = await f.addTurn("Also, I prefer phone calls.", { parentMessageId: first.assistantId });
+    const regenerated = await prisma.message.create({ data: { chatId: f.chat.id, role: "assistant", status: "complete",
+      parentMessageId: first.userMessageId, content: textMessageContent("Another answer.") } });
+    for (const leaf of [edited.assistantId, regenerated.id]) {
+      await switchBranch(f, leaf);
+      await f.sweep();
+      expect(await heals()).toEqual([]);
+    }
+    // A regenerated answer of the source turn itself keeps the source current.
+    const answer = await prisma.message.create({ data: { chatId: f.chat.id, role: "assistant", status: "complete",
+      parentMessageId: source.userMessageId, content: textMessageContent("A regenerated answer.") } });
+    await switchBranch(f, answer.id);
+    await f.sweep();
+    expect(await heals()).toEqual([expect.objectContaining({ state: "QUEUED", activeLeafMessageId: source.assistantId })]);
+  });
+
+  it("extracts after the chat moves on before execution and consumes the key when a branch switch fences it", async () => {
+    const quote = "I prefer written instructions.";
+    const f = await fixture([`Also, ${quote}`]);
+    const failed = await failPermanently(f);
+    await changePolicy();
+    expect(await f.heal()).toBe(1);
+    // Appended turns keep the source on the active path: the job still runs.
+    const later = await f.addTurn("What should I cook tonight?");
+    await f.drive(extracting(failed.sourceMessageId!, quote));
+    const [, healed] = await f.jobs();
+    expect(healed).toMatchObject({ sourceMessageId: failed.sourceMessageId, state: "SUCCEEDED",
+      stage: "fact_observations_committed" });
+    expect(await prisma.memoryEvidence.count({ where: { userId: f.userId, messageId: failed.sourceMessageId! } })).toBe(1);
+    expect((await f.jobs()).find(({ sourceMessageId }) => sourceMessageId === later.userMessageId))
+      .toMatchObject({ state: "SUCCEEDED", stage: "fact_observations_empty" });
+
+    // A second source is fenced by a branch switch between enqueue and execution.
+    const g = await fixture(["I prefer phone calls."]);
+    const fenced = await failPermanently(g);
+    await changePolicy();
+    expect(await g.heal()).toBe(1);
+    const [, healJob] = await g.jobs();
+    const sibling = await g.addTurn("Never mind that.", { parentMessageId: null });
+    const provider = extracting(fenced.sourceMessageId!, "I prefer phone calls.");
+    await g.drive(provider);
+    expect(provider.run.mock.calls.some(([, input]) => input.source.sourceMessageId === fenced.sourceMessageId))
+      .toBe(false);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: healJob!.id } }))
+      .toMatchObject({ state: "STALE", errorCode: "memory_fact_source_stale" });
+    // The key is spent: no loop, not even after switching back or later.
+    await switchBranch(g, g.turns[0]!.assistantId);
+    for (const offset of [0, MEMORY_FACT_EXTRACTION_HEAL_SAME_POLICY_DELAY_MS + 60_000]) {
+      expect(await g.heal(offset)).toBe(0);
+    }
+    expect((await g.jobs()).map(({ id, sourceMessageId }) => ({ id, sourceMessageId }))).toEqual([
+      { id: fenced.id, sourceMessageId: fenced.sourceMessageId },
+      { id: healJob!.id, sourceMessageId: fenced.sourceMessageId },
+      { id: expect.any(String), sourceMessageId: sibling.userMessageId }
+    ]);
+    expect(await prisma.memoryEvidence.count({ where: { userId: g.userId } })).toBe(0);
   });
 
   it("retries exhausted transient failures once after six hours", async () => {
