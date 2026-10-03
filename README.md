@@ -24,8 +24,8 @@ For local use by one person with external model providers:
 
 - 64-bit Linux on amd64 or arm64, Docker Engine 25.0 or newer with Compose 2.29.7 or newer, bash 4 or newer, git, and OpenSSL.
 - **KVM (`/dev/kvm`) is required.** Workspace runs commands in KVM virtual machines and much of AIQSA depends on it; installations without it are not supported. On cloud and other virtual machines enable nested virtualization, or use a bare-metal host.
-- **Minimum for basic chat: 2 CPU cores, 4 GB RAM, and 50 GB free SSD space**, plus storage for uploads and backups.
-- **Recommended: 8 GB RAM.** Active Knowledge ingestion, OCR, and Workspace need additional memory; each workspace defaults to 4 GB RAM and 10 GB disk.
+- **Minimum: 2 CPU cores, 8 GB RAM, and 50 GB free SSD space**, plus storage for uploads and backups. Each workspace defaults to 4 GB RAM and 10 GB disk.
+- **Recommended: 16 GB RAM** for several concurrent workspaces, active Knowledge ingestion and OCR.
 
 Memory use depends on document size and workload. No GPU is required; locally hosted model servers need their own resources. OpenSearch requires [`vm.max_map_count` of at least 262144](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/docker/#linux-settings).
 
