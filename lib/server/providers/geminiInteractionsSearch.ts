@@ -9,14 +9,13 @@ import {
 } from "./geminiInteractionsResponse";
 import type { GeminiInteractionsClient } from "./geminiInteractionsTransport";
 import { citedSearchSources } from "../search/evidence";
+import { geminiConfiguredThinkingLevels } from "./providerModelCapabilities";
 import {
   ProviderSearchExecutionError,
   type ProviderModelCapabilities,
   type ProviderSearchAdapter,
   type ProviderSearchRequest
 } from "./types";
-
-const thinkingLevelOrder = ["minimal", "low", "medium", "high"] as const;
 
 export type GeminiInteractionsSearchRequestBody = Readonly<{
   generation_config: Readonly<{
@@ -62,12 +61,16 @@ function geminiSearchPolicy(request: ProviderSearchRequest) {
   return policy;
 }
 
+/** Saved capability levels narrowed to the deployment's configured reasoning
+ * control: a reviewed catalog model never receives a level its template
+ * excludes, even when stale saved capabilities still list it. */
 function lowestSupportedThinkingLevel(
+  modelId: string,
   capabilities: ProviderModelCapabilities
 ): string | undefined {
   if (!capabilities.reasoning) return undefined;
-  const supported = new Set(capabilities.reasoningEfforts ?? []);
-  return thinkingLevelOrder.find((level) => supported.has(level));
+  const saved = new Set(capabilities.reasoningEfforts ?? []);
+  return geminiConfiguredThinkingLevels(modelId, capabilities).find((level) => saved.has(level));
 }
 
 export function buildGeminiInteractionsSearchRequest(
@@ -75,7 +78,7 @@ export function buildGeminiInteractionsSearchRequest(
 ): GeminiInteractionsSearchRequestBody {
   const policy = geminiSearchPolicy(request);
   const thinkingLevel = policy.reasoningPolicy === "lowest_supported"
-    ? lowestSupportedThinkingLevel(policy.modelCapabilities)
+    ? lowestSupportedThinkingLevel(policy.modelId.trim(), policy.modelCapabilities)
     : undefined;
   const body: GeminiInteractionsSearchRequestBody = {
     generation_config: {
