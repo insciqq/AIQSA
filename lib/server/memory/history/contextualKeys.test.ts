@@ -11,7 +11,7 @@ import {
 } from "./rounds";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 import { MemoryStructuredOutputProviderError } from "../execution/structuredClassifier";
-import { MemoryCoordinatorError } from "../coordinator/errors";
+import { MemoryJobFencedError } from "../coordinator/errors";
 
 const execute = vi.hoisted(() => vi.fn());
 vi.mock("../execution", async (importOriginal) => ({
@@ -226,8 +226,18 @@ type GovernedCall = {
   decode(value: unknown): unknown;
   ordinal: number;
   request: ProviderStructuredOutputRequest;
-  validationRetry?: { allocateOrdinal(attempt: number): Promise<number>; maxAttempts: number };
+  validationRetry?: {
+    allocateOrdinal(attempt: number): Promise<number>;
+    beforeRetry?(attempt: number): Promise<void>;
+    maxAttempts: number;
+  };
 };
+
+/** Mirrors the executor: revalidate, then bind the retry on a fresh ordinal. */
+async function retryOrdinal(call: GovernedCall): Promise<number> {
+  await call.validationRetry!.beforeRetry?.(1);
+  return call.validationRetry!.allocateOrdinal(1);
+}
 
 describe("contextual key dispatch ordinals and validation retries", () => {
   beforeEach(() => { execute.mockReset(); });
@@ -261,7 +271,7 @@ describe("contextual key dispatch ordinals and validation retries", () => {
       ordinals.push(ordinal);
       if (call.request.name !== "memory_contextual_grounding_v1") {
         // The executor's first answer was rejected; it asks for one retry.
-        ordinal = await call.validationRetry!.allocateOrdinal(1);
+        ordinal = await retryOrdinal(call);
         job.record(ordinal);
         ordinals.push(ordinal);
       }
@@ -280,19 +290,23 @@ describe("contextual key dispatch ordinals and validation retries", () => {
     expect(generated.fallbackRoundIds).toEqual([]);
   });
 
-  it("refuses a retry once the claimed job stopped being current", async () => {
+  it("fences a retry once the claimed job stopped being current", async () => {
     const source = round("I prefer tea.", "en");
     let checks = 0;
     const job = durableJob(() => ++checks === 1);
     execute.mockImplementation(async (call: GovernedCall) => {
-      await call.validationRetry!.allocateOrdinal(1);
+      await retryOrdinal(call);
       throw new Error("unreachable");
     });
-    await expect(createPrismaMemoryContextualKeyGenerator(job.client).generate(
+    const generated = createPrismaMemoryContextualKeyGenerator(job.client).generate(
       [source], [source.id],
       { jobId: "private-contextual-job", signal: new AbortController().signal, userId: source.userId }
-    )).rejects.toEqual(new MemoryCoordinatorError("memory_history_job_invalid", false));
+    );
+    await expect(generated).rejects.toBeInstanceOf(MemoryJobFencedError);
+    await expect(generated).rejects.toMatchObject({ code: "memory_history_job_invalid",
+      decision: { errorCode: "memory_source_stale", status: "STALE" } });
     expect(execute).toHaveBeenCalledOnce();
+    // The fence wins before the retry's ordinal is even allocated.
     expect(job.aggregate).toHaveBeenCalledOnce();
   });
 

@@ -97,18 +97,7 @@ export async function executeRecoverableMemoryHistoryOutput<Value>(input: Omit<
   restore(value: unknown): Value;
 }>) {
   const role = "MEMORY_HISTORY_CLASSIFY";
-  const current = await input.client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    WITH ${currentMemoryJobsSql(memoryExecutionNow(input.authority))}
-    SELECT id FROM current_jobs WHERE id = ${input.jobId} AND "userId" = ${input.userId}
-      AND state = 'CLAIMED'
-  `);
-  // An append, settlement, branch change, Forget, exclusion or setting that
-  // landed during classification fences this job before any further binding.
-  if (current.length !== 1) {
-    throw new MemoryJobFencedError("memory_history_job_invalid", {
-      errorCode: "memory_source_stale", status: "STALE"
-    });
-  }
+  await assertMemoryHistoryJobCurrent(input);
   const prior = await input.client.memoryExecutionBinding.findMany({
     orderBy: { ordinal: "desc" },
     select: {
@@ -173,11 +162,9 @@ export async function executeRecoverableMemoryHistoryOutput<Value>(input: Omit<
     role,
     validationRetry: {
       maxAttempts: MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS,
+      // A retry discloses the source again: revalidate it like the first call.
+      beforeRetry: () => assertMemoryHistoryJobCurrent(input),
       allocateOrdinal: async () => {
-        // A retry is a new dispatch: the claimed job must still be current.
-        if (!await memoryHistoryJobIsCurrent(input.client, input.authority, input.userId, input.jobId)) {
-          throw new MemoryCoordinatorError("memory_history_job_invalid", false);
-        }
         const retryOrdinal = await nextOrdinal();
         input.onDispatch?.();
         return retryOrdinal;
@@ -220,17 +207,24 @@ export async function executeRecoverableMemoryHistoryOutput<Value>(input: Omit<
   });
 }
 
-/** The claimed job is still current; checked again before a retry dispatch. */
-async function memoryHistoryJobIsCurrent(
-  client: PrismaClient,
-  authority: MemoryExecutionAuthorityDependencies,
-  userId: string,
-  jobId: string
-): Promise<boolean> {
-  const current = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    WITH ${currentMemoryJobsSql(memoryExecutionNow(authority))}
-    SELECT id FROM current_jobs WHERE id = ${jobId} AND "userId" = ${userId}
+/** Proves the claimed job current before every dispatch, including each
+ * validation retry. An append, settlement, branch change, Forget, exclusion or
+ * setting that landed during classification fences this job before any
+ * further binding. */
+async function assertMemoryHistoryJobCurrent(input: Readonly<{
+  authority: MemoryExecutionAuthorityDependencies;
+  client: PrismaClient;
+  jobId: string;
+  userId: string;
+}>): Promise<void> {
+  const current = await input.client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    WITH ${currentMemoryJobsSql(memoryExecutionNow(input.authority))}
+    SELECT id FROM current_jobs WHERE id = ${input.jobId} AND "userId" = ${input.userId}
       AND state = 'CLAIMED'
   `);
-  return current.length === 1;
+  if (current.length !== 1) {
+    throw new MemoryJobFencedError("memory_history_job_invalid", {
+      errorCode: "memory_source_stale", status: "STALE"
+    });
+  }
 }
