@@ -1071,13 +1071,20 @@ up_stack() {
   ensure_temp_dir
   output=$TEMP_DIR/compose-up.log
   say "Starting the stack; waiting up to ${TIMEOUT} s for every service to become ready."
-  local started=0
+  # --wait-timeout bounds only the final wait: Compose first blocks on
+  # migrate-bootstrap and dependency health, so the whole command gets the budget.
+  local up=(docker compose --project-directory "$PROJECT_DIR" ${COMPOSE_ENV_ARGS[@]+"${COMPOSE_ENV_ARGS[@]}"}
+    up -d --remove-orphans --wait --wait-timeout "$TIMEOUT") code=0
+  if command -v timeout >/dev/null 2>&1; then up=(timeout -k 20 "$TIMEOUT" "${up[@]}"); fi
   if (( QUIET )); then
-    dc up -d --remove-orphans --wait --wait-timeout "$TIMEOUT" >"$output" 2>&1 && started=1
+    run "${up[@]}" >"$output" 2>&1 || code=$?
   else
-    dc up -d --remove-orphans --wait --wait-timeout "$TIMEOUT" 2>&1 | mask_stream | tee "$output" >&2 && started=1
+    run "${up[@]}" 2>&1 | mask_stream | tee "$output" >&2 || code=${PIPESTATUS[0]}
   fi
-  if (( ! started )); then
+  if (( code != 0 )); then
+    if (( code == 124 )); then
+      note "docker compose up did not finish within ${TIMEOUT} s; services that were already created keep starting."
+    fi
     note "The stack did not become ready (docker compose up failed or the wait timed out)."
     report_stack_failure "$output"
     exit "$EXIT_NOT_READY"
