@@ -12,6 +12,9 @@ import type { ChatWorkspaceState } from "@/lib/contracts/workspace";
 import type { ChatUsageStats } from "@/lib/contracts/chats";
 import { costCoverageNote, formatEstimatedCostMicros } from "@/lib/domain/formatEstimatedCost";
 
+/** The description of a gauge, or of the phone "⋯", that marks a suggested continuation. */
+export const CONTINUATION_SUGGESTED_DESCRIPTION = "Continuing in a new chat with a summary is suggested";
+
 /** Below this width the header has no room for the gauge (workspace.css). */
 const PHONE_QUERY = "(max-width: 767px)";
 
@@ -94,7 +97,8 @@ function ChatContextSheetV2({ children, onClose, panelRef }: Readonly<{
  * The header's context gauge and its panel: an anchored popover beside the
  * gauge, or a bottom sheet on phones (`sheet`), where the gauge stays hidden
  * and the header "⋯" menu opens the panel instead. A suggested continuation
- * opens it on every width.
+ * only marks the gauge (and "⋯" on phones); the panel opens on click, so it
+ * never covers the answer by itself.
  */
 export function ChatContextIndicatorV2({
   stats, usageStats, continuation, continuationFiles, open: openProp, onOpenChange, sheet = false
@@ -111,7 +115,9 @@ export function ChatContextIndicatorV2({
   const manualOpen = openProp ?? ownOpen;
   const setOpen = onOpenChange ?? setOwnOpen;
   const fillMaskId = useId();
-  const open = manualOpen || Boolean(continuation?.suggested);
+  const suggestedId = useId();
+  const open = manualOpen;
+  const suggested = Boolean(continuation?.suggested);
   // Owned here so the popover and the sheet share it across a width change;
   // a closed panel reopens folded.
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -225,6 +231,8 @@ export function ChatContextIndicatorV2({
         className="v2-chat-context-trigger v2-focusable"
         data-context-tone={gauge.tone}
         data-context-estimate={measured ? "snapshot" : "preliminary"}
+        data-suggested={suggested || undefined}
+        aria-describedby={suggested ? suggestedId : undefined}
         data-testid="header-context-indicator"
         title={`${label}. ${estimateDescription}`}
         type="button"
@@ -243,6 +251,7 @@ export function ChatContextIndicatorV2({
         </svg>
         <span>{stats.requestRejected && gauge.percent === null ? "!" : gauge.percent === null ? "?" : `${gauge.percent}%`}</span>
       </button>
+      {suggested ? <span hidden id={suggestedId}>{CONTINUATION_SUGGESTED_DESCRIPTION}</span> : null}
       {open && !sheet ? (
         <section ref={menuRef} aria-label="Chat context" className="v2-chat-context-popover" role="dialog">{panel}</section>
       ) : null}
