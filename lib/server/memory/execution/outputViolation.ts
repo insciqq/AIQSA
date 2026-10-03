@@ -43,7 +43,20 @@ export const MEMORY_OUTPUT_DECODE_REASONS = Object.freeze([
   "contextual_grounding_safety_rejected",
   "statement_contract_keys",
   "statement_contract_field",
-  "statement_contract_consistency"
+  "statement_contract_consistency",
+  // Maintenance review: structure, coverage, vocabulary, then which field of
+  // a decision contradicts its scope basis.
+  "maintenance_contract_shape",
+  "maintenance_contract_count",
+  "maintenance_contract_ref",
+  "maintenance_contract_enum",
+  "maintenance_contract_combination_action",
+  "maintenance_contract_combination_usefulness",
+  "maintenance_contract_combination_reason",
+  "verification_contract_shape",
+  "verification_contract_count",
+  "verification_contract_ref",
+  "verification_contract_approve"
 ] as const);
 
 export type MemoryOutputDecodeReason = (typeof MEMORY_OUTPUT_DECODE_REASONS)[number];

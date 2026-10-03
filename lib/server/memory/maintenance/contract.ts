@@ -1,5 +1,6 @@
 import type { ProviderStructuredOutputRequest } from "../../providers/structuredOutput";
 import { MEMORY_LONG_TERM_USEFULNESS_GUIDANCE } from "../../../domain/memory/usefulness";
+import { MemoryOutputViolationError, type MemoryOutputDecodeReason } from "../execution/outputViolation";
 import { MEMORY_MAINTENANCE_BATCH_SIZE, type MemoryMaintenancePlan } from "./policy";
 
 export const MEMORY_MAINTENANCE_REMOVAL_REASONS = [
@@ -42,34 +43,55 @@ function object(value: unknown): value is Record<string, unknown> {
 function exact(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return Object.keys(value).length === keys.length && keys.every((key) => key in value);
 }
-function invalid(): never { throw new Error("memory_maintenance_output_invalid"); }
+/** A rejected review or verification answer. Only its closed reason reaches
+ * the binding; callers keep the stable invalid-output message. */
+export class MemoryMaintenanceOutputError extends MemoryOutputViolationError {
+  constructor(decodeReason: Extract<MemoryOutputDecodeReason, `maintenance_contract_${string}` | `verification_contract_${string}`>) {
+    super("memory_maintenance_output_invalid", decodeReason);
+    this.name = "MemoryMaintenanceOutputError";
+  }
+}
+function invalid(reason: ConstructorParameters<typeof MemoryMaintenanceOutputError>[0]): never {
+  throw new MemoryMaintenanceOutputError(reason);
+}
+const KEEP_USEFULNESS: Readonly<Partial<Record<MemoryMaintenanceScopeBasis, readonly (MemoryMaintenanceKeepUsefulness | null)[]>>> =
+  Object.freeze({ general_personal: ["DURABLE"], ongoing_personal: ["ONGOING"], explicit_remember: ["DURABLE", "ONGOING", null],
+    unresolved_scope: [null] });
 
 export function decodeMemoryMaintenanceOutput(value: unknown, plan: MemoryMaintenanceRefs): MemoryMaintenanceOutput {
-  if (!object(value) || !exact(value, ["decisions"]) || !Array.isArray(value.decisions) ||
-    value.decisions.length !== plan.sources.length || value.decisions.length > MEMORY_MAINTENANCE_BATCH_SIZE) invalid();
+  if (!object(value) || !exact(value, ["decisions"]) || !Array.isArray(value.decisions)) invalid("maintenance_contract_shape");
+  if (value.decisions.length !== plan.sources.length || value.decisions.length > MEMORY_MAINTENANCE_BATCH_SIZE) {
+    invalid("maintenance_contract_count");
+  }
   const refs = new Set(plan.sources.map(({ ref }) => ref));
   const decisions = value.decisions.map((decision): MemoryMaintenanceDecision => {
-    if (!object(decision) || !exact(decision, ["source_ref", "scope_basis", "action", "usefulness", "reason"]) ||
-      typeof decision.source_ref !== "string" || !refs.delete(decision.source_ref) ||
-      !MEMORY_MAINTENANCE_SCOPE_BASES.some((scope) => scope === decision.scope_basis)) invalid();
+    if (!object(decision) || !exact(decision, ["source_ref", "scope_basis", "action", "usefulness", "reason"])) {
+      invalid("maintenance_contract_shape");
+    }
+    if (typeof decision.source_ref !== "string" || !refs.delete(decision.source_ref)) invalid("maintenance_contract_ref");
+    if (!MEMORY_MAINTENANCE_SCOPE_BASES.some((scope) => scope === decision.scope_basis) ||
+      (decision.action !== "KEEP" && decision.action !== "REMOVE_TRANSIENT") ||
+      (decision.usefulness !== "DURABLE" && decision.usefulness !== "ONGOING" && decision.usefulness !== null) ||
+      (decision.reason !== "useful_personal_context" && !MEMORY_MAINTENANCE_REMOVAL_REASONS.some((reason) => reason === decision.reason))) {
+      invalid("maintenance_contract_enum");
+    }
     const scopeBasis = decision.scope_basis as MemoryMaintenanceScopeBasis;
-    const usefulness: MemoryMaintenanceKeepUsefulness | null = decision.usefulness === "DURABLE" ? "DURABLE"
-      : decision.usefulness === "ONGOING" ? "ONGOING" : null;
-    const unlabeled = decision.usefulness === null;
-    const keepCompatible = scopeBasis === "general_personal" && usefulness === "DURABLE" ||
-      scopeBasis === "ongoing_personal" && usefulness === "ONGOING" ||
-      scopeBasis === "explicit_remember" && (usefulness !== null || unlabeled) ||
-      scopeBasis === "unresolved_scope" && unlabeled;
-    if (decision.action === "KEEP" && decision.reason === "useful_personal_context" && keepCompatible) {
+    const usefulness = decision.usefulness as MemoryMaintenanceKeepUsefulness | null;
+    // The scope basis decides the action, its usefulness label and its reason.
+    const removalReason = REMOVAL_REASON_BY_BASIS[scopeBasis];
+    if (decision.action === "KEEP") {
+      const labels = KEEP_USEFULNESS[scopeBasis];
+      if (!labels) invalid("maintenance_contract_combination_action");
+      if (!labels.includes(usefulness)) invalid("maintenance_contract_combination_usefulness");
+      if (decision.reason !== "useful_personal_context") invalid("maintenance_contract_combination_reason");
       return { sourceRef: decision.source_ref, scopeBasis, action: "KEEP", usefulness, reason: "useful_personal_context" };
     }
-    const removalReason = REMOVAL_REASON_BY_BASIS[scopeBasis];
-    if (decision.action === "REMOVE_TRANSIENT" && unlabeled && removalReason !== undefined && decision.reason === removalReason) {
-      return { sourceRef: decision.source_ref, scopeBasis, action: "REMOVE_TRANSIENT", usefulness: null, reason: removalReason };
-    }
-    return invalid();
+    if (removalReason === undefined) invalid("maintenance_contract_combination_action");
+    if (usefulness !== null) invalid("maintenance_contract_combination_usefulness");
+    if (decision.reason !== removalReason) invalid("maintenance_contract_combination_reason");
+    return { sourceRef: decision.source_ref, scopeBasis, action: "REMOVE_TRANSIENT", usefulness: null, reason: removalReason };
   });
-  if (refs.size > 0) invalid();
+  if (refs.size > 0) invalid("maintenance_contract_ref");
   return { decisions };
 }
 
@@ -77,13 +99,15 @@ export function decodeMemoryMaintenanceVerification(
   value: unknown, proposed: MemoryMaintenanceOutput
 ): MemoryMaintenanceVerification {
   const refs = new Set(proposed.decisions.filter(({ action }) => action === "REMOVE_TRANSIENT").map(({ sourceRef }) => sourceRef));
-  if (!object(value) || !exact(value, ["decisions"]) || !Array.isArray(value.decisions) || value.decisions.length !== refs.size) invalid();
+  if (!object(value) || !exact(value, ["decisions"]) || !Array.isArray(value.decisions)) invalid("verification_contract_shape");
+  if (value.decisions.length !== refs.size) invalid("verification_contract_count");
   const decisions = value.decisions.map((decision) => {
-    if (!object(decision) || !exact(decision, ["source_ref", "approve"]) || typeof decision.source_ref !== "string" ||
-      !refs.delete(decision.source_ref) || typeof decision.approve !== "boolean") invalid();
+    if (!object(decision) || !exact(decision, ["source_ref", "approve"])) invalid("verification_contract_shape");
+    if (typeof decision.source_ref !== "string" || !refs.delete(decision.source_ref)) invalid("verification_contract_ref");
+    if (typeof decision.approve !== "boolean") invalid("verification_contract_approve");
     return { sourceRef: decision.source_ref, approve: decision.approve };
   });
-  if (refs.size) invalid();
+  if (refs.size) invalid("verification_contract_ref");
   return { decisions };
 }
 

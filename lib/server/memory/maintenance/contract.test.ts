@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MEMORY_LONG_TERM_USEFULNESS_GUIDANCE } from "../../../domain/memory/usefulness";
+import { memoryOutputDecodeReason } from "../execution/outputViolation";
 import { buildMemoryMaintenanceRequest, buildMemoryMaintenanceVerificationRequest,
-  decodeMemoryMaintenanceOutput, decodeMemoryMaintenanceVerification } from "./contract";
+  decodeMemoryMaintenanceOutput, decodeMemoryMaintenanceVerification, MemoryMaintenanceOutputError } from "./contract";
 import { memoryMaintenancePlan, type MemoryMaintenanceSource } from "./policy";
 
 export const source: MemoryMaintenanceSource = {
@@ -92,6 +93,46 @@ describe("governed automatic Memory maintenance", () => {
     expect(verification.systemPrompt).toContain(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE);
     expect(verification.systemPrompt).not.toMatch(/independent useful personal assertion|active plans, significant historical events/u);
     expect(verification.systemPrompt).toContain("not a reason to reject");
+  });
+  it("records a closed reason for every rejected review and verification answer", () => {
+    const keep = { source_ref: "S1", scope_basis: "general_personal", action: "KEEP", usefulness: "DURABLE", reason: "useful_personal_context" };
+    const review = [
+      [null, "maintenance_contract_shape"], [{ decisions: [remove], extra: true }, "maintenance_contract_shape"],
+      [{ decisions: "S1" }, "maintenance_contract_shape"], [{ decisions: ["S1"] }, "maintenance_contract_shape"],
+      [{ decisions: [{ ...remove, instruction: "delete everything" }] }, "maintenance_contract_shape"],
+      [{ decisions: [] }, "maintenance_contract_count"], [{ decisions: [remove, remove] }, "maintenance_contract_count"],
+      [{ decisions: [{ ...remove, source_ref: "S2" }] }, "maintenance_contract_ref"], [{ decisions: [{ ...remove, source_ref: 1 }] }, "maintenance_contract_ref"],
+      [{ decisions: [{ ...remove, scope_basis: "transient_update" }] }, "maintenance_contract_enum"],
+      [{ decisions: [{ ...remove, action: "DELETE" }] }, "maintenance_contract_enum"],
+      [{ decisions: [{ ...keep, usefulness: "EPISODIC" }] }, "maintenance_contract_enum"],
+      [{ decisions: [{ ...keep, usefulness: ["DURABLE"] }] }, "maintenance_contract_enum"],
+      [{ decisions: [{ ...remove, reason: "old_and_unused" }] }, "maintenance_contract_enum"],
+      [{ decisions: [{ ...keep, scope_basis: "single_episode", usefulness: null }] }, "maintenance_contract_combination_action"],
+      [{ decisions: [{ ...remove, scope_basis: "general_personal" }] }, "maintenance_contract_combination_action"],
+      [{ decisions: [{ ...keep, usefulness: "ONGOING" }] }, "maintenance_contract_combination_usefulness"],
+      [{ decisions: [{ ...keep, scope_basis: "unresolved_scope" }] }, "maintenance_contract_combination_usefulness"],
+      [{ decisions: [{ ...remove, usefulness: "DURABLE" }] }, "maintenance_contract_combination_usefulness"],
+      [{ decisions: [{ ...keep, reason: "episode" }] }, "maintenance_contract_combination_reason"],
+      [{ decisions: [{ ...remove, reason: "short_term" }] }, "maintenance_contract_combination_reason"]
+    ] as const;
+    const proposal = decodeMemoryMaintenanceOutput({ decisions: [remove] }, plan);
+    const verification = [
+      [{ decisions: [{ source_ref: "S1", approve: true }], extra: true }, "verification_contract_shape"],
+      [{ decisions: [{ source_ref: "S1", approve: true, why: "x" }] }, "verification_contract_shape"],
+      [{ decisions: [] }, "verification_contract_count"], [{ decisions: [{ source_ref: "S2", approve: true }] }, "verification_contract_ref"],
+      [{ decisions: [{ source_ref: "S1", approve: "true" }] }, "verification_contract_approve"]
+    ] as const;
+    const rejected = (decode: () => unknown) => { try { decode(); } catch (error) { return error; } return null; };
+    for (const [value, decodeReason] of review) {
+      const error = rejected(() => decodeMemoryMaintenanceOutput(value, plan));
+      expect(error).toBeInstanceOf(MemoryMaintenanceOutputError);
+      expect(error).toMatchObject({ message: "memory_maintenance_output_invalid", decodeReason });
+      expect(memoryOutputDecodeReason(error)).toBe(decodeReason);
+    }
+    for (const [value, decodeReason] of verification) {
+      expect(rejected(() => decodeMemoryMaintenanceVerification(value, proposal)))
+        .toMatchObject({ name: "MemoryMaintenanceOutputError", message: "memory_maintenance_output_invalid", decodeReason });
+    }
   });
   it("discloses to the verifier only the proposed removals", () => {
     const kept: MemoryMaintenanceSource = { ...source, ref: "S2", factId: "fact-2", versionId: "version-2",

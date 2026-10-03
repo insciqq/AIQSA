@@ -3,8 +3,8 @@ import { databaseFailureCode, rememberDatabaseFailure } from "../../observabilit
 import { MemoryCoordinatorError } from "../coordinator/errors";
 import type { MemoryJobClaim, MemoryJobDescriptor, MemoryJobExecutionContext, MemoryJobExecutionResult,
   MemoryJobHandler } from "../coordinator/types";
-import { authorizeMemoryExecutionResultsForCommit, MemoryExecutionError, MemoryStructuredOutputProviderError,
-  probeMemoryStructuredOutputAuthority, type MemoryExecutionAuthorityDependencies,
+import { authorizeMemoryExecutionResultsForCommit, MEMORY_STRUCTURED_OUTPUT_DISPATCH_FENCED_CODE, MemoryExecutionError,
+  MemoryStructuredOutputProviderError, probeMemoryStructuredOutputAuthority, type MemoryExecutionAuthorityDependencies,
   type MemoryStructuredOutputProvider } from "../execution";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { memoryExecutionSha256 } from "../execution/canonical";
@@ -12,8 +12,8 @@ import { lockMemorySettings } from "../persistence/transaction";
 import type { MemoryMaintenanceOutput } from "./contract";
 import { MEMORY_MAINTENANCE_PIPELINE_VERSION, MEMORY_MAINTENANCE_POLICY_VERSION, MEMORY_MAINTENANCE_VERSIONS,
   type MemoryMaintenanceCall } from "./policy";
-import { createPrismaMemoryMaintenanceProvider, memoryMaintenanceInputHash, type MemoryMaintenanceProvider,
-  type MemoryMaintenanceVerificationResult } from "./provider";
+import { createPrismaMemoryMaintenanceProvider, memoryMaintenanceDispatchStale, memoryMaintenanceInputHash,
+  type MemoryMaintenanceProvider, type MemoryMaintenanceVerificationResult } from "./provider";
 import { createPrismaMemoryMaintenanceRepository, type MemoryMaintenanceRepository } from "./repository";
 
 export function isMemoryMaintenanceJob(job: MemoryJobDescriptor): boolean {
@@ -26,6 +26,11 @@ function maintenanceFailure(code: string, cause: unknown): MemoryCoordinatorErro
   const failure = new MemoryCoordinatorError(code, false);
   rememberDatabaseFailure(failure, cause instanceof Prisma.PrismaClientKnownRequestError ? cause.code : databaseFailureCode(cause));
   return failure;
+}
+/** A consumed call ends with its last binding's cause; one fenced before
+ * dispatch ends as staleness before dispatch, which spends no budget. */
+function consumedFailure(errorCode: string, cause: unknown): MemoryCoordinatorError {
+  return errorCode === MEMORY_STRUCTURED_OUTPUT_DISPATCH_FENCED_CODE ? memoryMaintenanceDispatchStale() : maintenanceFailure(errorCode, cause);
 }
 /** The structured executor's settlement mapping, for a call whose binding never settled. */
 function unsettledCallFailureCode(error: unknown): string {
@@ -49,7 +54,8 @@ export function createPrismaMemoryMaintenanceHandler(client: PrismaClient, optio
   async function assertCallUnused(job: MemoryJobDescriptor, call: MemoryMaintenanceCall): Promise<void> {
     const prior = await repository.callState(job, call);
     if (prior.status === "UNUSED") return;
-    throw new MemoryCoordinatorError(prior.status === "CONSUMED" ? prior.errorCode : "memory_maintenance_outcome_unknown", false);
+    if (prior.status === "CONSUMED") throw consumedFailure(prior.errorCode, null);
+    throw new MemoryCoordinatorError("memory_maintenance_outcome_unknown", false);
   }
   /** The settled binding of a failed call holds its stable cause; a dispatch
    * without a settled outcome stays unknown. */
@@ -60,9 +66,9 @@ export function createPrismaMemoryMaintenanceHandler(client: PrismaClient, optio
     } catch (error) {
       if (signal.aborted || error instanceof MemoryCoordinatorError) throw error;
       const settled = await repository.callState(job, call).catch(() => null);
-      throw maintenanceFailure(settled?.status === "CONSUMED" ? settled.errorCode
-        : settled?.status === "SUCCEEDED" || (settled?.status === "UNKNOWN" && settled.ambiguous)
-          ? "memory_maintenance_outcome_unknown" : unsettledCallFailureCode(error), error);
+      if (settled?.status === "CONSUMED") throw consumedFailure(settled.errorCode, error);
+      throw maintenanceFailure(settled?.status === "SUCCEEDED" || (settled?.status === "UNKNOWN" && settled.ambiguous)
+        ? "memory_maintenance_outcome_unknown" : unsettledCallFailureCode(error), error);
     }
   }
   async function execute(job: MemoryJobClaim, context: MemoryJobExecutionContext): Promise<MemoryJobExecutionResult> {
