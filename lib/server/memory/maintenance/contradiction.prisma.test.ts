@@ -7,14 +7,27 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   createMaintenanceMessage, createMaintenanceOwner, deleteMaintenanceOwner, type MaintenanceFixtureMessage
 } from "@/tests/support/memoryMaintenance";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
 import { prisma } from "../../prisma";
 import type { MemoryJobClaim } from "../coordinator/types";
+import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
+import { createExplicitMemoryService } from "../explicit/service";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION, MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../learning/extraction/contract";
+import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
+import { createMemoryLifecycleService } from "../lifecycle/service";
+import { createPrismaMemoryMutationAuthorizationRepository } from "../persistence/authorizations";
+import { resolveMemoryExplicitEquivalentTarget } from "../persistence/explicitEquivalence";
+import { createPrismaMemoryFactRepository } from "../persistence/facts";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
+import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
+import { MEMORY_PURGE_REQUIRED_CONTRIBUTORS } from "../purge/contract";
+import { registerMemoryDeletionContributors } from "../purge/leaves";
+import { MemoryDeletionContributorRegistry } from "../purge/registry";
 import { MEMORY_VECTOR_RETRIEVAL_PIPELINE_VERSION } from "../retrieval/vector";
 import { memorySafetyLiteFactClassification } from "../safetyLite";
+import { MemorySuppressionKeyring } from "../suppressionKeyring";
 import type { MemoryMaintenanceDecision } from "./contract";
 import { MEMORY_MAINTENANCE_PIPELINE_VERSION, MEMORY_MAINTENANCE_POLICY_VERSION } from "./policy";
 import { createPrismaMemoryMaintenanceProvider, memoryMaintenanceInputHash, memoryMaintenanceOutputHash,
@@ -78,45 +91,52 @@ async function automaticFact(userId: string, statement: string, turns: readonly 
   });
   return { factId, versionId };
 }
-/** An explicitly saved current fact: no message testimony, owner authority. */
-async function explicitFact(userId: string, statement: string, at: Date): Promise<Fact> {
-  const factId = randomUUID(), versionId = randomUUID(), eventId = randomUUID();
-  const scopeId = await scopeOf(userId);
-  await prisma.$transaction(async (tx) => {
-    await tx.memoryFact.create({ data: { id: factId, userId, scopeId, category: "other", canonicalKey: `prop:v2:${memorySha256({ factId })}`,
-      state: "ORPHANED", identityKind: "PROPOSITION", identityVersion: "proposition-v2" } });
-    await tx.memoryEvent.create({ data: { id: eventId, userId, factId, factVersionId: versionId, operation: "EXPLICIT_SAVE",
-      actorType: "USER", actorUserId: userId } });
-    await tx.memoryFactVersion.create({ data: { id: versionId, factId, userId, createdByEventId: eventId, category: "other",
-      displayText: statement, normalizedSearchText: normalizeMemorySearchText(statement),
-      structuredValue: { kind: "statement", value: statement }, languageCode: "en", modality: "STATE", sourceMode: "EXPLICIT",
-      confidence: 1, importance: 0.5, directness: "DIRECT", sensitivityClass: "NORMAL", ...memorySafetyLiteFactClassification(at),
-      pipelineVersion: "memory-explicit-api-v1", observedAt: at, createdAt: at, systemFrom: at, state: "ACTIVE" } });
-    await tx.memoryFact.update({ where: { id: factId }, data: { state: "ACTIVE", currentVersionId: versionId } });
-  });
-  return { factId, versionId };
+/** The owner's own Memory services: explicit saves, edits and Forget run their
+ * real authority and lifecycle. */
+function ownerServices() {
+  const keyring = MemorySuppressionKeyring.parse(
+    `current=test,test=${Buffer.from(Array.from({ length: 32 }, (_, index) => index + 41)).toString("base64")}`);
+  const registry = new MemoryDeletionContributorRegistry({ operation: "FORGET_PURGE", requirements: MEMORY_PURGE_REQUIRED_CONTRIBUTORS });
+  registerMemoryDeletionContributors(registry);
+  const authorizationRepository = createPrismaMemoryMutationAuthorizationRepository(prisma);
+  const readRepository = createPrismaExplicitMemoryRepository(prisma);
+  return {
+    explicit: createExplicitMemoryService({ authorizationRepository, factRepository: createPrismaMemoryFactRepository(keyring, prisma),
+      readRepository, resolveEquivalentTarget: (userId, target, now) => resolveMemoryExplicitEquivalentTarget(prisma, userId, target, now),
+      scopeRepository: createPrismaMemoryScopeRepository(prisma) }),
+    lifecycle: createMemoryLifecycleService({ authorizationRepository,
+      mutationRepository: createPrismaMemoryLifecycleRepository(keyring, registry, prisma), readRepository })
+  };
 }
-/** As a forget does before purging: no current version is left. */
-async function forget(fact: Fact): Promise<void> {
-  const now = new Date();
-  await prisma.memoryFactVersion.updateMany({ where: { factId: fact.factId }, data: { state: "FORGOTTEN", systemTo: now } });
-  await prisma.memoryFact.update({ where: { id: fact.factId }, data: { state: "FORGOTTEN", currentVersionId: null, forgottenAt: now } });
+const services = ownerServices();
+/** An explicit save through the owner service. */
+async function explicitFact(userId: string, statement: string): Promise<Fact> {
+  const authorization = await services.explicit.mintAuthorization(userId, { action: "SAVE",
+    confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, exactStatementHash: memorySha256(statement), requestNonce: randomUUID() });
+  const created = await services.explicit.create(userId, { category: "about_you", mutationAuthorizationId: authorization.mutationAuthorizationId,
+    scope: { type: "GLOBAL_USER" }, statement });
+  return { factId: created.memory.id, versionId: created.memory.currentVersionId! };
 }
-/** An owner edit: a new explicit current version replaces the shown one. */
+/** An owner Forget through the lifecycle service; it advances the Memory generation. */
+async function forget(userId: string, fact: Fact): Promise<void> {
+  const authorization = await services.explicit.mintAuthorization(userId, { action: "FORGET",
+    confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, expectedTargetVersionId: fact.versionId, requestNonce: randomUUID(),
+    targetFactId: fact.factId });
+  await services.lifecycle.forget(userId, fact.factId, { expectedVersionId: fact.versionId,
+    mutationAuthorizationId: authorization.mutationAuthorizationId });
+}
+/** An owner edit through the explicit service: a new current version replaces the shown one. */
 async function edit(userId: string, fact: Fact, statement: string): Promise<string> {
-  const versionId = randomUUID(), eventId = randomUUID(), now = new Date();
-  await prisma.$transaction(async (tx) => {
-    await tx.memoryFactVersion.update({ where: { id: fact.versionId }, data: { state: "SUPERSEDED", systemTo: now } });
-    await tx.memoryEvent.create({ data: { id: eventId, userId, factId: fact.factId, factVersionId: versionId, operation: "EDIT",
-      actorType: "USER", actorUserId: userId } });
-    await tx.memoryFactVersion.create({ data: { id: versionId, factId: fact.factId, userId, createdByEventId: eventId, category: "other",
-      displayText: statement, normalizedSearchText: normalizeMemorySearchText(statement),
-      structuredValue: { kind: "statement", value: statement }, languageCode: "en", modality: "STATE", sourceMode: "EXPLICIT",
-      confidence: 1, importance: 0.5, directness: "DIRECT", sensitivityClass: "NORMAL", ...memorySafetyLiteFactClassification(now),
-      pipelineVersion: "memory-explicit-api-v1", observedAt: now, createdAt: now, systemFrom: new Date(now.getTime() + 1), state: "ACTIVE" } });
-    await tx.memoryFact.update({ where: { id: fact.factId }, data: { currentVersionId: versionId } });
-  });
-  return versionId;
+  const authorization = await services.explicit.mintAuthorization(userId, { action: "EDIT",
+    confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, expectedTargetVersionId: fact.versionId, requestNonce: randomUUID(),
+    targetFactId: fact.factId });
+  const edited = await services.explicit.update(userId, fact.factId, { expectedVersionId: fact.versionId,
+    mutationAuthorizationId: authorization.mutationAuthorizationId, statement });
+  return edited.memory.currentVersionId!;
+}
+function displayText(fact: Fact) {
+  return prisma.memoryFactVersion.findUniqueOrThrow({ where: { id: fact.versionId }, select: { displayText: true } })
+    .then(({ displayText: text }) => text!);
 }
 
 /** What the review decided for a source, by fact. */
@@ -172,7 +192,7 @@ const kept = { disposition: "KEEP", usefulness: "DURABLE", reasonCode: null };
 describe("maintenance contradiction settlement", () => {
   it("removes only an automatic source that an explicit, pinned or newer automatic memory outranks", async () => {
     const userId = await owner();
-    const explicit = await explicitFact(userId, "I always want complete code with every fix applied.", daysAgo(20));
+    const explicit = await explicitFact(userId, "I always want complete code with every fix applied.");
     const snippets = await automaticFact(userId, "I prefer short code snippets.", [await said(userId, "I prefer short code snippets.", daysAgo(5))]);
     const pinned = await automaticFact(userId, "I live in Berlin.", [await said(userId, "I live in Berlin.", daysAgo(20))], { pinned: true });
     const moscow = await automaticFact(userId, "I live in Moscow.", [await said(userId, "I live in Moscow.", daysAgo(5))]);
@@ -211,32 +231,45 @@ describe("maintenance contradiction settlement", () => {
     expect(await state(pinned)).toMatchObject({ pinned: true });
     expect(await prisma.memoryMaintenanceReview.count({ where: { userId, factVersionId: { in: [explicit.versionId, pinned.versionId] } } })).toBe(0);
   });
-  it("keeps a source whose contradicting memory changed, went or was never verified before settlement", async () => {
+  it("keeps a source whose contradicting memory changed, goes in the same settlement or was never verified", async () => {
     const userId = await owner();
-    const forgottenTarget = await explicitFact(userId, "I am allergic to cats.", daysAgo(20));
-    const editedTarget = await explicitFact(userId, "I prefer window seats.", daysAgo(20));
-    const undisclosedTarget = await explicitFact(userId, "I never drink coffee.", daysAgo(20));
-    const cats = await automaticFact(userId, "I have three cats at home.", [await said(userId, "I have three cats at home.", daysAgo(5))]);
+    const editedTarget = await explicitFact(userId, "I prefer window seats.");
+    const undisclosedTarget = await explicitFact(userId, "I never drink coffee.");
     const aisle = await automaticFact(userId, "I always book aisle seats.", [await said(userId, "I always book aisle seats.", daysAgo(5))]);
     const coffee = await automaticFact(userId, "I drink two coffees every morning.",
       [await said(userId, "I drink two coffees every morning.", daysAgo(5))]);
     const transientTarget = await automaticFact(userId, "Today I ran ten kilometres.", [await said(userId, "Today I ran ten kilometres.", daysAgo(3))]);
     const running = await automaticFact(userId, "I never run.", [await said(userId, "I never run.", daysAgo(15))]);
     const work = await planned(userId);
-    await forget(forgottenTarget);
-    await edit(userId, editedTarget, "I prefer aisle seats now.");
-    const decided = new Map<string, Decided>([[cats.factId, { contradictedBy: forgottenTarget }], [aisle.factId, { contradictedBy: editedTarget }],
+    // An owner edit after the review replaces the version the review named.
+    const editedVersionId = await edit(userId, editedTarget, "I prefer aisle seats now.");
+    const decided = new Map<string, Decided>([[aisle.factId, { contradictedBy: editedTarget }],
       [coffee.factId, { contradictedBy: undisclosedTarget }], [running.factId, { contradictedBy: transientTarget }],
       [transientTarget.factId, "TRANSIENT"]]);
     await expect(work.settle((factId) => decided.get(factId) ?? "KEEP", new Map(), (factId) => factId !== coffee.factId))
-      .resolves.toMatchObject({ reviewed: 5, removed: 1, blocked: 0 });
-    // No conflict remains with a memory that is gone, changed, or removed in this very settlement.
-    for (const source of [cats, aisle, coffee, running]) {
+      .resolves.toMatchObject({ reviewed: 4, removed: 1, blocked: 0 });
+    // No conflict remains with a memory that changed or that this very settlement removes.
+    for (const source of [aisle, coffee, running]) {
       expect(await settled(userId, source)).toEqual(kept);
       expect(await state(source)).toMatchObject({ state: "ACTIVE", currentVersionId: source.versionId });
     }
     expect(await settled(userId, transientTarget)).toEqual({ disposition: "REMOVED", usefulness: null, reasonCode: "episode" });
+    expect(await state({ ...editedTarget, versionId: editedVersionId })).toMatchObject({ state: "ACTIVE", currentVersionId: editedVersionId });
     expect(await state(undisclosedTarget)).toMatchObject({ state: "ACTIVE", currentVersionId: undisclosedTarget.versionId });
+  });
+  it("stales the whole settlement when the owner forgets a contradicting memory before it", async () => {
+    const userId = await owner();
+    const allergy = await explicitFact(userId, "I am allergic to cats.");
+    const cats = await automaticFact(userId, "I have three cats at home.", [await said(userId, "I have three cats at home.", daysAgo(5))]);
+    const work = await planned(userId);
+    // Forget advances the Memory generation, which fences the job's settlement as a whole.
+    await forget(userId, allergy);
+    await expect(work.settle((factId) => factId === cats.factId ? { contradictedBy: allergy } : "KEEP"))
+      .rejects.toThrow("memory_maintenance_source_stale");
+    expect(await state(cats)).toMatchObject({ state: "ACTIVE", currentVersionId: cats.versionId });
+    expect(await prisma.memoryMaintenanceReview.findFirstOrThrow({ where: { userId, factVersionId: cats.versionId,
+      policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION }, select: { disposition: true } })).toEqual({ disposition: "PENDING" });
+    expect(await state(allergy)).toMatchObject({ state: "FORGOTTEN" });
   });
   it("lets a newer automatic memory outrank only once maintenance confirmed it lasting", async () => {
     const userId = await owner();
@@ -385,12 +418,12 @@ describe("maintenance related memories over the owner's embeddings", () => {
       pinned: "I paste whole files into my editor.", automatic: "I review code on a large monitor.", far: "I keep two cats.",
       forgotten: "I like code golf." };
     const source = await automaticFact(userId, statements.source, [await said(userId, statements.source, daysAgo(5))]);
-    const explicit = await explicitFact(userId, statements.explicit, daysAgo(20));
+    const explicit = await explicitFact(userId, statements.explicit);
     const pinned = await automaticFact(userId, statements.pinned, [await said(userId, statements.pinned, daysAgo(20))], { pinned: true });
     const automatic = await automaticFact(userId, statements.automatic, [await said(userId, statements.automatic, daysAgo(10))]);
     const far = await automaticFact(userId, statements.far, [await said(userId, statements.far, daysAgo(10))]);
     const forgotten = await automaticFact(userId, statements.forgotten, [await said(userId, statements.forgotten, daysAgo(10))]);
-    await forget(forgotten);
+    await forget(userId, forgotten);
     const work = await planned(userId);
     // Without an active embedding profile the review simply has no related memories.
     expect(await loadMemoryMaintenanceRelatedMemories(prisma, userId, work.plan.sources, { jobId: work.claim.id })).toEqual(new Map());
@@ -402,7 +435,7 @@ describe("maintenance related memories over the owner's embeddings", () => {
     const ref = work.refOf(source);
     // The forgotten memory ranks first by vector but is no longer current; the source never relates to itself.
     expect(related.get(ref)?.map(({ ref: shown, factId, versionId, statement }) => ({ shown, factId, versionId, statement }))).toEqual([
-      { shown: `${ref}M1`, ...explicit, statement: statements.explicit },
+      { shown: `${ref}M1`, ...explicit, statement: await displayText(explicit) },
       { shown: `${ref}M2`, ...pinned, statement: statements.pinned },
       { shown: `${ref}M3`, ...automatic, statement: statements.automatic }
     ]);
@@ -410,11 +443,10 @@ describe("maintenance related memories over the owner's embeddings", () => {
   it("never discloses a related memory forgotten after it was read", async () => {
     const userId = await owner();
     const source = await automaticFact(userId, "I prefer short code snippets.", [await said(userId, "I prefer short code snippets.", daysAgo(5))]);
-    const explicit = await explicitFact(userId, "I always want complete code with every fix applied.", daysAgo(20));
+    const explicit = await explicitFact(userId, "I always want complete code with every fix applied.");
     const work = await planned(userId);
-    const shown = { ref: `${work.refOf(source)}M1`, ...explicit, statement: "I always want complete code with every fix applied.",
-      observedAt: daysAgo(20) };
-    await forget(explicit);
+    const shown = { ref: `${work.refOf(source)}M1`, ...explicit, statement: await displayText(explicit), observedAt: new Date() };
+    await forget(userId, explicit);
     const run = vi.fn();
     const provider = createPrismaMemoryMaintenanceProvider(prisma, { provider: { run },
       related: async () => new Map([[work.refOf(source), [shown]]]) });
