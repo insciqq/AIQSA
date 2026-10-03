@@ -15,7 +15,7 @@ export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
   "memory-fact-extraction-policy-v38";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v51";
+  "memory-fact-extraction-prompt-v52";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v7";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
@@ -268,7 +268,7 @@ export const MEMORY_FACT_EXTRACTION_VERSIONS: MemoryExecutionVersions =
 export const MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS: MemoryExecutionVersions =
   Object.freeze({
     ...MEMORY_FACT_EXTRACTION_VERSIONS,
-    promptVersion: "memory-fact-extraction-prompt-v50"
+    promptVersion: "memory-fact-extraction-prompt-v51"
   });
 
 export type MemoryFactSourceIdentity = Readonly<{
