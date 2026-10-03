@@ -17,7 +17,7 @@ import {
 } from "./mcp";
 
 describe("MCP header values", () => {
-  it("sends a bare Authorization value as Bearer and everything else as entered, trimmed", () => {
+  it("sends a bare personal Authorization value as Bearer and everything else as entered, trimmed", () => {
     const cases: [string, string, string][] = [
       ["Authorization", "synthetic-token", "Bearer synthetic-token"],
       ["authorization", " synthetic-token \n", "Bearer synthetic-token"],
@@ -31,9 +31,18 @@ describe("MCP header values", () => {
       ["X-API-Key", "synthetic-key", "synthetic-key"],
       ["X-API-Key", " Bearer synthetic-key ", "Bearer synthetic-key"]
     ];
-    for (const [header, value, sent] of cases) expect(mcpHeaderValue(header, value)).toBe(sent);
-    expect(mcpHeaderValue("Authorization", 42)).toBe("Bearer 42");
-    expect(mcpHeaderValue("X-Retries", 3)).toBe("3");
+    const personal = { source: "personal" } as const;
+    for (const [header, value, sent] of cases) expect(mcpHeaderValue(header, value, personal)).toBe(sent);
+    expect(mcpHeaderValue("Authorization", 42, personal)).toBe("Bearer 42");
+    expect(mcpHeaderValue("X-Retries", 3, personal)).toBe("3");
+  });
+
+  it("sends administrator values verbatim, trimmed, because some servers take a raw Authorization key", () => {
+    for (const source of ["shared", "literal", "missing"] as const) {
+      expect(mcpHeaderValue("Authorization", " synthetic-raw-key \n", { source })).toBe("synthetic-raw-key");
+      expect(mcpHeaderValue("authorization", "Bearer synthetic-token", { source })).toBe("Bearer synthetic-token");
+      expect(mcpHeaderValue("X-API-Key", " synthetic-key ", { source })).toBe("synthetic-key");
+    }
     expect(isMcpAuthorizationHeader("authorization")).toBe(true);
     expect(isMcpAuthorizationHeader("Proxy-Authorization")).toBe(false);
   });
