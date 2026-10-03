@@ -368,10 +368,10 @@ describe("governed structured output validation retries", () => {
   });
 
   it.each([
-    ["a reused ordinal", { allocateOrdinal: () => 0 }],
-    ["a fractional ordinal", { allocateOrdinal: () => 1.5 }]
-  ] as const)("rejects %s before any retry dispatch", async (_name, options) => {
-    const request = retryInput(options);
+    ["a reused ordinal", 0],
+    ["a fractional ordinal", 1.5]
+  ] as const)("rejects %s before any retry dispatch", async (_name, ordinal) => {
+    const request = retryInput({ allocateOrdinal: () => ordinal });
     (request.provider.run as Run).mockResolvedValue(answer(false));
     await expect(executeGovernedMemoryStructuredOutput({ ...request, decode: strictDecode }))
       .rejects.toEqual(new MemoryExecutionError("memory_execution_input_invalid"));

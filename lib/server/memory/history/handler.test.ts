@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { MemoryCoordinatorError } from "../coordinator/errors";
 import type { MemoryJobClaim } from "../coordinator/types";
 import { memorySha256 } from "../persistence/lexical";
 import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
@@ -727,6 +728,30 @@ describe("Memory INDEX_HISTORY handler", () => {
       }),
       new Date("2026-08-10T12:00:00.000Z")
     );
+  });
+
+  it.each(["contextual", "digest"] as const)("propagates a job fence found before a %s validation retry instead of degrading", async (stage) => {
+    const parent = chunk("chunk-fenced", 0);
+    const currentPlan = plan([parent], [round("round-fenced", parent.id, 0)]);
+    const apply = vi.fn(async () => undefined);
+    const fenced = vi.fn(async () => {
+      throw new MemoryCoordinatorError("memory_history_job_invalid", false);
+    });
+    const handler = createMemoryHistoryIndexHandler({
+      ...(stage === "contextual"
+        ? { contextualKeyGenerator: { generate: fenced } }
+        : { digestGenerator: { generate: fenced } }),
+      repository: {
+        apply,
+        preflight: vi.fn(async () => ({ status: "READY" as const })),
+        prepare: vi.fn(async () => ({ plan: currentPlan }))
+      } as unknown as MemoryHistoryIndexRepository
+    });
+    await expect(handler.execute(claim(), context())).rejects.toEqual(
+      new MemoryCoordinatorError("memory_history_job_invalid", false)
+    );
+    expect(fenced).toHaveBeenCalledOnce();
+    expect(apply).not.toHaveBeenCalled();
   });
 
   it.each(["unavailable", "output_limit"] as const)("commits safe chunks when optional digest generation is %s", async (reason) => {
