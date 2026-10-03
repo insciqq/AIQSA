@@ -6,12 +6,17 @@ import {
 } from "../lib/contracts/adminMemory";
 import {
   decodeMemoryConsumerChatModeResponse,
-  decodeMemorySourceActionResponse,
   type MemoryActionFeedback
 } from "../lib/contracts/memoryClient";
 import {
+  decodeMemoryCommandListResponse,
+  memoryCommandIsPending,
+  type MemoryCommandFeedback
+} from "../lib/contracts/memoryCommand";
+import {
   decodeMemoryConsumerForgetResponse,
   decodeMemoryConsumerListResponse,
+  decodeMemoryConsumerMutationResponse,
   decodeMemoryConsumerSettingsResponse,
   type MemoryConsumerItem,
   type MemoryConsumerSettingsResponse
@@ -34,11 +39,13 @@ import { RERANKER_ROUTE_POLICY_VERSION } from
   "../lib/domain/rerankerModels";
 import {
   MemorySemanticSmokePreflightError,
+  assessMemorySemanticSmokeHistorySearch,
   createMemorySemanticSmokeScenarioLedger,
   createPrismaMemorySemanticSmokeVerifier,
   preflightPrismaMemorySemanticSmoke,
   readCgroupResourceLimits,
   validateMemorySemanticSmokeConsumerPreparation,
+  type MemorySemanticSmokeHistorySearchEvidence,
   type MemorySemanticSmokeTarget
 } from "./memory-semantic-smoke-support";
 
@@ -479,25 +486,15 @@ async function excludeChatFromMemory(chatId: string): Promise<void> {
   }
 }
 
-async function commitMemoryTargetSelection(input: Readonly<{
-  action: "CORRECT" | "FORGET";
-  memoryRef: string;
-  statement?: string;
-}>): Promise<void> {
-  const decoded = decodeMemorySourceActionResponse(await requestJson(
+/** The owner's direct Library edit: the documented resolution of an ambiguous
+ * natural-language command, whose feedback never exposes candidates. */
+async function editConsumerMemory(memoryRef: string, statement: string): Promise<void> {
+  const decoded = decodeMemoryConsumerMutationResponse(await requestJson(
     "automatic_learning",
-    "/api/me/memory/source-actions",
-    {
-      body: {
-        action: input.action,
-        memoryRef: input.memoryRef,
-        requestNonce: randomUUID(),
-        ...(input.action === "CORRECT" ? { statement: input.statement } : {})
-      },
-      method: "POST"
-    }
+    `/api/me/memories/${encodeURIComponent(memoryRef)}`,
+    { body: { requestId: randomUUID(), statement }, method: "PATCH" }
   ));
-  if (!decoded.ok || decoded.value.status !== "COMMITTED") {
+  if (!decoded.ok || decoded.value.item.statement !== statement) {
     fail("automatic_learning", decoded.ok
       ? "memory_smoke_target_selection_failed"
       : decoded.code);
@@ -755,6 +752,48 @@ async function assertStrictControlSucceeded(source: SourceRun): Promise<void> {
     userId: authenticatedUserId
   });
   if (count < 1) fail("answer_recall", "memory_smoke_strict_control_missing");
+}
+
+/** Ordinary natural-language saves, updates and forgets are durable background
+ * commands: the answer never waits for them and the accepted run carries no
+ * action artifact. Their content-free feedback is polled per source message. */
+async function settledMemoryCommand(source: SourceRun): Promise<MemoryCommandFeedback> {
+  const path = `/api/me/chats/${encodeURIComponent(source.chat.id)}/memory-commands`;
+  return poll("answer_recall", async () => {
+    const decoded = decodeMemoryCommandListResponse(await requestJson("answer_recall", path));
+    if (!decoded) return fail("answer_recall", "memory_smoke_command_response_invalid");
+    const command = decoded.commands.find(({ messageId }) =>
+      messageId === source.userMessage.id)?.feedback;
+    // Message acceptance enqueues the command in the same transaction.
+    if (!command) return fail("answer_recall", "memory_smoke_command_missing");
+    return memoryCommandIsPending(command) ? null : command;
+  });
+}
+
+async function assertCommandControlSucceeded(source: SourceRun): Promise<void> {
+  const count = await verifier.successfulCommandControlCount({
+    chatId: source.chat.id,
+    messageId: source.userMessage.id,
+    userId: authenticatedUserId
+  });
+  if (count < 1) fail("answer_recall", "memory_smoke_strict_control_missing");
+}
+
+async function requiredMemoryCommand(
+  source: SourceRun,
+  operation: "FORGET" | "SAVE" | "UPDATE",
+  status: "AMBIGUOUS" | "COMMITTED"
+): Promise<void> {
+  const command = await settledMemoryCommand(source);
+  if (command.operation !== operation || command.status !== status) {
+    fail("answer_recall", "memory_smoke_command_result_invalid");
+  }
+  await assertCommandControlSucceeded(source);
+}
+
+async function savedMarkerMemories(marker: string): Promise<MemoryConsumerItem[]> {
+  return (await allConsumerMemories()).filter((item) =>
+    item.provenance === "SAVED" && item.statement.includes(marker));
 }
 
 async function waitForAmbiguityTargets(marker: string): Promise<MemoryConsumerItem[]> {
@@ -1340,7 +1379,9 @@ async function main(): Promise<void> {
   let scenarioEvidence: Readonly<{
     automaticFactsSourceBound: number;
     automaticRecallAnswers: number;
+    historySearch: MemorySemanticSmokeHistorySearchEvidence;
     historySourceBound: boolean;
+    memoryCommands: number;
     scenarioCount: number;
   }> | null = null;
   let primaryError: unknown = null;
@@ -1432,64 +1473,68 @@ async function main(): Promise<void> {
     }
     scenarios.complete("english");
 
+    // Standing-v1 ordinary turns admit no dynamic history. Past chats reach
+    // the answer only through the model's optional read-only memory_search
+    // tool, so the turn asks for that search explicitly.
     const vectorRecall = await sourceRun(
       `Memory smoke vector recall ${marker}`,
-      `Для ${marker} aquarium launch, what codename did I choose?`,
+      `Search your memory of our past conversations before answering. Для ${marker} aquarium launch, what codename did I choose?`,
       answer
     );
     const historyRecalled = /(silver|mangrove|серебр|мангр)/iu.test(
       textFromContent(vectorRecall.assistant.content)
     );
-    const historySourceBound = await verifier.recalledHistorySourceCount({
-      chatId: historySource.chat.id,
-      messageId: historySource.userMessage.id,
+    const historySearch = await verifier.historySearchEvidence({
+      irrelevant: {
+        chatId: irrelevantHistorySource.chat.id,
+        messageId: irrelevantHistorySource.userMessage.id
+      },
       recallModelRunId: vectorRecall.modelRunId,
-      userId: authenticatedUserId
-    }) > 0;
-    const irrelevantSourceExcluded = await verifier.recalledHistorySourceCount({
-      chatId: irrelevantHistorySource.chat.id,
-      messageId: irrelevantHistorySource.userMessage.id,
-      recallModelRunId: vectorRecall.modelRunId,
-      userId: authenticatedUserId
-    }) === 0;
-    const successfulReranks = await verifier.successfulRetrievalExecutionCount({
-      modelRunId: vectorRecall.modelRunId,
-      role: "MEMORY_RERANK",
+      relevant: {
+        chatId: historySource.chat.id,
+        messageId: historySource.userMessage.id
+      },
       userId: authenticatedUserId
     });
-    if (!historyRecalled || !historySourceBound) {
-      fail("vector_recall", "memory_smoke_history_recall_failed");
-    }
-    if (!irrelevantSourceExcluded || successfulReranks < 1) {
-      fail("vector_recall", "memory_smoke_irrelevant_rerank_failed");
+    const historySearchAssessment = assessMemorySemanticSmokeHistorySearch(historySearch);
+    if (!historySearchAssessment.ok || !historyRecalled) {
+      console.error(JSON.stringify({
+        diagnostic: "history_search",
+        answerRecalled: historyRecalled,
+        ...historySearch,
+        sanitizedAggregatesOnly: true
+      }));
+      fail("vector_recall", historySearchAssessment.ok
+        ? "memory_smoke_history_recall_failed"
+        : historySearchAssessment.code);
     }
     scenarios.complete("relevant_rerank");
     scenarios.complete("irrelevant_rerank");
     scenarios.complete("mixed_language");
 
+    let memoryCommands = 0;
     const firstSave = await sourceRun(
       `Memory smoke implicit save weekly ${marker}`,
       `Please carry this preference into future conversations: my ${marker} weekly reporting format is concise.`,
       answer
     );
-    const firstSaveAction = memoryAction(firstSave);
-    if (firstSaveAction.operation === "SAVE" && firstSaveAction.status === "COMMITTED" &&
-      firstSaveAction.statement) explicitStatements.add(firstSaveAction.statement);
-    requiredMemoryAction(firstSave, "SAVE", "COMMITTED");
-    await assertStrictControlSucceeded(firstSave);
+    await requiredMemoryCommand(firstSave, "SAVE", "COMMITTED");
+    memoryCommands += 1;
+    const savedAfterFirst = await savedMarkerMemories(marker);
+    for (const item of savedAfterFirst) explicitStatements.add(item.statement);
 
     const secondSave = await sourceRun(
       `Memory smoke implicit save monthly ${marker}`,
       `Please carry this preference into future conversations too: my ${marker} monthly reporting format is detailed.`,
       answer
     );
-    const secondSaveAction = memoryAction(secondSave);
-    if (secondSaveAction.operation === "SAVE" && secondSaveAction.status === "COMMITTED" &&
-      secondSaveAction.statement) explicitStatements.add(secondSaveAction.statement);
-    requiredMemoryAction(secondSave, "SAVE", "COMMITTED");
-    await assertStrictControlSucceeded(secondSave);
-    if (![firstSaveAction, secondSaveAction].every((action) =>
-      action.statement?.includes(marker))) {
+    await requiredMemoryCommand(secondSave, "SAVE", "COMMITTED");
+    memoryCommands += 1;
+    const savedAfterSecond = await savedMarkerMemories(marker);
+    for (const item of savedAfterSecond) explicitStatements.add(item.statement);
+    // A committed receipt is written with its mutation, so both distinct
+    // preferences are already directly manageable Saved Memories.
+    if (savedAfterFirst.length < 1 || savedAfterSecond.length < 2) {
       fail("answer_recall", "memory_smoke_implicit_intent_failed");
     }
     scenarios.complete("intent_without_exact_keywords");
@@ -1505,24 +1550,20 @@ async function main(): Promise<void> {
       `Change one of my saved ${marker} reporting-format preferences, but I am not specifying whether weekly or monthly. Use this exact replacement statement: "${expectedUpdateStatement}"`,
       answer
     );
-    const updateAction = requiredMemoryAction(update, "UPDATE", "AMBIGUOUS");
-    await assertStrictControlSucceeded(update);
-    const updateCandidates = (updateAction.candidates ?? []).filter((candidate) =>
-      candidate.provenance === "SAVED" && candidate.statement.includes(marker));
-    const selectedUpdate = updateCandidates[0];
-    if (updateCandidates.length < 2 || !selectedUpdate ||
-      updateAction.statement !== expectedUpdateStatement) {
+    await requiredMemoryCommand(update, "UPDATE", "AMBIGUOUS");
+    memoryCommands += 1;
+    // An ambiguous command changes nothing and exposes no candidates; the
+    // owner chooses the exact Saved Memory in the Library.
+    const updateTargets = await waitForAmbiguityTargets(marker);
+    const selectedUpdate = updateTargets[0];
+    if (updateTargets.length < 2 || !selectedUpdate) {
       fail("answer_recall", "memory_smoke_update_selection_failed");
     }
-    explicitStatements.add(updateAction.statement);
-    await commitMemoryTargetSelection({
-      action: "CORRECT",
-      memoryRef: selectedUpdate.memoryRef,
-      statement: updateAction.statement
-    });
+    explicitStatements.add(expectedUpdateStatement);
+    await editConsumerMemory(selectedUpdate.memoryRef, expectedUpdateStatement);
     await poll("automatic_learning", async () =>
       (await allConsumerMemories()).some((item) =>
-        item.provenance === "SAVED" && item.statement === updateAction.statement)
+        item.provenance === "SAVED" && item.statement === expectedUpdateStatement)
         ? true
         : null);
     scenarios.complete("update_target_selection");
@@ -1532,14 +1573,9 @@ async function main(): Promise<void> {
       `Please carry this preference into future conversations too: my ${marker} quarterly reporting format is graphical.`,
       answer
     );
-    const thirdSaveAction = memoryAction(thirdSave);
-    if (thirdSaveAction.operation === "SAVE" && thirdSaveAction.status === "COMMITTED" &&
-      thirdSaveAction.statement) explicitStatements.add(thirdSaveAction.statement);
-    requiredMemoryAction(thirdSave, "SAVE", "COMMITTED");
-    await assertStrictControlSucceeded(thirdSave);
-    if (!thirdSaveAction.statement?.includes(marker)) {
-      fail("answer_recall", "memory_smoke_implicit_intent_failed");
-    }
+    await requiredMemoryCommand(thirdSave, "SAVE", "COMMITTED");
+    memoryCommands += 1;
+    for (const item of await savedMarkerMemories(marker)) explicitStatements.add(item.statement);
 
     const postUpdateTargets = await waitForAmbiguityTargets(marker);
     if (postUpdateTargets.length < 2) {
@@ -1550,18 +1586,14 @@ async function main(): Promise<void> {
       `Forget one of my saved ${marker} reporting-format preferences so it no longer follows me into future conversations.`,
       answer
     );
-    const forgetAction = requiredMemoryAction(forget, "FORGET", "AMBIGUOUS");
-    await assertStrictControlSucceeded(forget);
-    const forgetCandidates = (forgetAction.candidates ?? []).filter((candidate) =>
-      candidate.provenance === "SAVED" && candidate.statement.includes(marker));
-    const selectedForget = forgetCandidates[0];
-    if (forgetCandidates.length < 2 || !selectedForget) {
+    await requiredMemoryCommand(forget, "FORGET", "AMBIGUOUS");
+    memoryCommands += 1;
+    const forgetTargets = await waitForAmbiguityTargets(marker);
+    const selectedForget = forgetTargets[0];
+    if (forgetTargets.length < 2 || !selectedForget) {
       fail("answer_recall", "memory_smoke_forget_selection_failed");
     }
-    await commitMemoryTargetSelection({
-      action: "FORGET",
-      memoryRef: selectedForget.memoryRef
-    });
+    await forgetConsumerMemory(selectedForget.memoryRef);
     await poll("automatic_learning", async () =>
       (await allConsumerMemories()).some((item) =>
         item.provenance === "SAVED" && item.statement === selectedForget.statement)
@@ -1576,12 +1608,12 @@ async function main(): Promise<void> {
       `Add this to my reusable Personal Memory for future conversations: the password for my demonstration account is ${secretToken}.`,
       answer
     );
-    await assertStrictControlSucceeded(secret);
-    const secretAction = secret.assistant.artifactSummary?.memoryAction;
-    if (!secretAction || secretAction.operation !== "SAVE" ||
-      secretAction.status !== "REJECTED") {
+    const secretCommand = await settledMemoryCommand(secret);
+    if (secretCommand.operation !== "SAVE" || secretCommand.status !== "REJECTED") {
       fail("answer_recall", "memory_smoke_secret_rejection_failed");
     }
+    await assertCommandControlSucceeded(secret);
+    memoryCommands += 1;
     await waitForNoAutomaticFact(secret, secretStartedAt);
     const secretMutationRows = await verifier.mutationPersistenceCount({
       modelRunId: secret.modelRunId,
@@ -1598,7 +1630,9 @@ async function main(): Promise<void> {
     scenarioEvidence = {
       automaticFactsSourceBound: 2,
       automaticRecallAnswers: 2,
+      historySearch,
       historySourceBound: true,
+      memoryCommands,
       scenarioCount: scenarios.assertComplete()
     };
   } catch (error) {
