@@ -34,20 +34,24 @@ export type MemoryMaintenanceScan = Readonly<{
 
 /** Protection is independent of model decisions and applies to the entire fact
  * lineage, including an explicit owner action on an automatic current row and
- * an automatic version whose source turn asked Memory to remember it. */
+ * an automatic version whose source turn asked Memory to remember it. `fact`
+ * is the alias of the fact row being tested. */
+export function memoryMaintenanceProtectedFactPredicate(): Prisma.Sql {
+  return Prisma.sql`(fact."pinned" = TRUE
+    OR EXISTS (SELECT 1 FROM "MemoryFactVersion" AS lineage
+      WHERE lineage."userId" = fact."userId" AND lineage."factId" = fact."id"
+        AND (lineage."sourceMode" <> 'AUTOMATIC'::"MemoryFactSourceMode"
+          OR ${memoryAutomaticExplicitRememberPredicate(Prisma.sql`lineage`)}))
+    OR EXISTS (SELECT 1 FROM "MemoryEvent" AS owner_event
+      WHERE owner_event."userId" = fact."userId" AND owner_event."factId" = fact."id"
+        AND owner_event."actorType" = 'USER'::"MemoryActorType"))`;
+}
 export function memoryMaintenanceSourcePredicate(userId: string | Prisma.Sql): Prisma.Sql {
   return Prisma.sql`
     ${memoryReusableFactAuthorityPredicate(userId, { lifecycle: "CURRENT" })}
     AND settings."learnAutomatically" = TRUE
     AND version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
-    AND fact."pinned" = FALSE AND fact."movedToFactId" IS NULL
-    AND NOT EXISTS (SELECT 1 FROM "MemoryFactVersion" AS lineage
-      WHERE lineage."userId" = fact."userId" AND lineage."factId" = fact."id"
-        AND (lineage."sourceMode" <> 'AUTOMATIC'::"MemoryFactSourceMode"
-          OR ${memoryAutomaticExplicitRememberPredicate(Prisma.sql`lineage`)}))
-    AND NOT EXISTS (SELECT 1 FROM "MemoryEvent" AS owner_event
-      WHERE owner_event."userId" = fact."userId" AND owner_event."factId" = fact."id"
-        AND owner_event."actorType" = 'USER'::"MemoryActorType")
+    AND fact."movedToFactId" IS NULL AND NOT ${memoryMaintenanceProtectedFactPredicate()}
   `;
 }
 

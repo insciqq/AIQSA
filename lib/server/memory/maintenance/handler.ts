@@ -14,6 +14,7 @@ import { MEMORY_MAINTENANCE_PIPELINE_VERSION, MEMORY_MAINTENANCE_POLICY_VERSION,
   type MemoryMaintenanceCall } from "./policy";
 import { createPrismaMemoryMaintenanceProvider, memoryMaintenanceDispatchStale, memoryMaintenanceInputHash,
   type MemoryMaintenanceProvider, type MemoryMaintenanceVerificationResult } from "./provider";
+import type { MemoryMaintenanceRelatedStatement } from "./related";
 import { createPrismaMemoryMaintenanceRepository, type MemoryMaintenanceRepository } from "./repository";
 
 export function isMemoryMaintenanceJob(job: MemoryJobDescriptor): boolean {
@@ -99,8 +100,21 @@ export function createPrismaMemoryMaintenanceHandler(client: PrismaClient, optio
         if (current?.sourceSnapshotHash !== reviewed.sourceSnapshotHash) {
           throw new MemoryCoordinatorError("memory_maintenance_source_stale", false);
         }
-        const removals = new Set(review.output.decisions.filter(({ action }) => action === "REMOVE_TRANSIENT").map(({ sourceRef }) => sourceRef));
-        const disclosed = current.sources.flatMap(({ ref, current: content }) => removals.has(ref) && content ? [content] : []);
+        const removals = new Map(review.output.decisions.filter(({ action }) => action === "REMOVE_TRANSIENT")
+          .map((decision) => [decision.sourceRef, decision]));
+        const matching = current.sources.flatMap(({ ref, current: content }) => removals.has(ref) && content ? [content] : []);
+        // A contradiction is verified together with the exact related memory
+        // it names; one whose memory is no longer current is not disclosed,
+        // and apply keeps its source.
+        const named = matching.flatMap(({ ref }) => removals.get(ref)?.contradictedBy ?? []);
+        const related: ReadonlyMap<string, MemoryMaintenanceRelatedStatement> = named.length
+          ? await repository.relatedStatements(job, named.map(({ versionId }) => versionId)) : new Map();
+        const disclosed = matching.flatMap((source) => {
+          const contradiction = removals.get(source.ref)?.contradictedBy;
+          if (!contradiction) return [source];
+          const memory = related.get(contradiction.versionId);
+          return memory?.factId === contradiction.factId ? [{ ...source, related: [{ ...memory, ref: contradiction.ref }] }] : [];
+        });
         const proposal: MemoryMaintenanceOutput = { decisions: review.output.decisions.filter(({ sourceRef }) =>
           disclosed.some(({ ref }) => ref === sourceRef)) };
         if (disclosed.length) {
