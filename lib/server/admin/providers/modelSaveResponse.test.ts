@@ -3,7 +3,8 @@ import { createAdminProviderCatalogHandler, createAdminProviderModelCreateHandle
 import { createAdminProviderService, AdminProviderServiceError } from "./service";
 import { createPrismaAdminProviderRepository } from "./prismaRepository";
 import { adminProviderModelConfiguration } from "./adminConfiguration";
-import { createAdminProviderModel, getAdminProviderConnections, updateAdminProviderModel } from "@/components/admin/adminProvidersApi";
+import { adminProviderErrorMessage, createAdminProviderModel, getAdminProviderConnections, updateAdminProviderModel,
+  type AdminProviderClientError } from "@/components/admin/adminProvidersApi";
 import { fixtureCheck, fixtureConnection, fixtureModel } from "@/components/admin/providers/providerFixtures";
 import type { PrismaClient } from "@prisma/client";
 import type { AdminProviderRepository } from "./repositoryContract";
@@ -94,6 +95,29 @@ describe("bounded model save producer and browser reader", () => {
     expect(f.model().displayName).toBe("Модель сохранена");
     expect(f.repository.updateModelDraft).toHaveBeenCalledOnce();
     expect(f.probe).not.toHaveBeenCalled();
+  });
+
+  it("carries the refused role and its missing parameters beside the unpublished draft receipt", async () => {
+    const f = harness();
+    f.activateModel.mockRejectedValue(new AdminProviderServiceError("provider_routing_role_incompatible", [],
+      [{ role: "memory", missingParameters: ["response_format", "structured_outputs"] }]));
+    const result = await updateAdminProviderModel("provider", "model", f.body, f.fetcher, undefined, vi.fn());
+    expect(result).toMatchObject({ ok: false, status: 409, error: { code: "provider_routing_role_incompatible",
+      roles: [{ role: "memory", missingParameters: ["response_format", "structured_outputs"] }] },
+    receipt: { publication: "draft", checks: "not_requested" } });
+    expect(adminProviderErrorMessage((result as { error: AdminProviderClientError }).error))
+      .toBe("Memory uses this model and needs structured output, which the selected providers do not support. " +
+        "Choose Automatic or providers that support it, or assign Memory to another model first.");
+  });
+
+  it("names the roles paused by a failed check of the live model", async () => {
+    const f = harness();
+    f.activateModel.mockImplementation(async (value) => {
+      value.onActivated?.();
+      return { check: "failed", affectedRoles: ["memory", "system_model"] };
+    });
+    expect(await updateAdminProviderModel("provider", "model", f.body, f.fetcher, undefined, vi.fn()))
+      .toMatchObject({ ok: true, data: { publication: "active", checks: "failed", affectedRoles: ["memory", "system_model"] } });
   });
 
   it("does not activate a newer concurrent draft or claim the captured write was published", async () => {

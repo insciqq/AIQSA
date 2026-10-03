@@ -17,6 +17,8 @@ import { normalizeImageModelConfiguration } from "@/lib/contracts/imageGeneratio
 import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } from "@/lib/contracts/adminProviderSetupProgress";
 import { adminProviderSetupFailureCode, readAdminProviderSetupResponse } from "./adminProviderSetupStream";
 import { decodeAdminProviderModelSaveReceipt, type AdminProviderModelSaveReceipt } from "@/lib/contracts/adminProviderModelSave";
+import { decodeAdminProviderRoleRoutingConflicts, type AdminProviderAssignedRole,
+  type AdminProviderRoleRoutingConflict } from "@/lib/contracts/adminProviderRoleRouting";
 import {
   ADMIN_PROVIDER_CAPABILITY_CHECKS,
   ADMIN_PROVIDER_RESPONSE_TIMEOUT_MAX_SECONDS,
@@ -31,6 +33,8 @@ export type AdminProviderClientError = Readonly<{
   /** The rejected form field, when the server names one. */
   field?: string;
   resourceIds: string[];
+  /** Installation roles a refused or failed model change affects. */
+  roles?: readonly AdminProviderRoleRoutingConflict[];
 }>;
 
 export type AdminProviderClientResult<T> =
@@ -242,11 +246,14 @@ function clientError(value: unknown, fallback: string): AdminProviderClientError
     ? body.blockers.filter((entry): entry is { count: number; kind: string } =>
         record(entry) && typeof entry.kind === "string" && typeof entry.count === "number")
     : [];
+  const roles = typeof body.error === "string" && body.roles !== undefined
+    ? decodeAdminProviderRoleRoutingConflicts(body.roles) : null;
   return {
     blockers,
     code: typeof body.error === "string" ? body.error : fallback,
     ...(typeof body.error === "string" && typeof body.field === "string" ? { field: body.field } : {}),
-    resourceIds: stringArray(body.resourceIds) ? body.resourceIds : []
+    resourceIds: stringArray(body.resourceIds) ? body.resourceIds : [],
+    ...(roles ? { roles } : {})
   };
 }
 
@@ -566,7 +573,43 @@ export function getAdminProviderCheckRun(
   );
 }
 
+const assignedRoleLabels: Record<AdminProviderAssignedRole, string> = {
+  memory: "Memory", system_model: "System model", chat_titles: "Chat titles", vision: "Vision Model",
+  chat_pdf: "PDF processing in chats", chat_pdf_native: "PDF reader"
+};
+const routingParameterLabels: Record<string, string> = {
+  response_format: "structured output", structured_outputs: "structured output", tools: "tool calling"
+};
+
+function listText(values: readonly string[]): string {
+  return values.length < 2 ? values.join("") : `${values.slice(0, -1).join(", ")} and ${values.at(-1)}`;
+}
+
+/** Names the installation roles a refused routing change or failed check affects. */
+function assignedRoleMessage(error: AdminProviderClientError): string | null {
+  const roles = error.roles ?? [];
+  if (!roles.length) return null;
+  const names = listText(roles.map(({ role }) => assignedRoleLabels[role]));
+  const plural = roles.length > 1;
+  if (error.code === "provider_routing_role_incompatible") {
+    const needs = listText([...new Set(roles.flatMap(({ missingParameters }) =>
+      missingParameters.map((parameter) => routingParameterLabels[parameter] ?? parameter)))]);
+    return `${names} ${plural ? "use" : "uses"} this model and ${plural ? "need" : "needs"} ${needs}, which the selected providers do not support. ` +
+      `Choose Automatic or providers that support it, or assign ${names} to another model first.`;
+  }
+  if (error.code === "provider_routing_role_unverified") {
+    return `${names} ${plural ? "use" : "uses"} this model, and OpenRouter could not confirm that the selected providers support ${plural ? "them" : "it"}. ` +
+      "Check the default key and try again, or choose Automatic.";
+  }
+  if (error.code === "provider_model_check_failed_roles") {
+    return `Its check failed, so ${names} ${plural ? "are" : "is"} paused until a check passes. Restore the previous settings or run the check again.`;
+  }
+  return null;
+}
+
 export function adminProviderErrorMessage(error: AdminProviderClientError): string {
+  const roleMessage = assignedRoleMessage(error);
+  if (roleMessage) return roleMessage;
   const messages: Record<string, string> = {
     provider_model_pricing_invalid: "One or more prices are invalid. Review the decimal values and try again.",
     provider_model_pricing_unavailable: "These prices cannot be applied to this model. Refresh its settings and try again.",
@@ -606,6 +649,8 @@ export function adminProviderErrorMessage(error: AdminProviderClientError): stri
     provider_paid_test_confirmation_required: "Confirm the provider requests before running the check.",
     provider_revoke_confirmation_required: "This key action requires confirmation.",
     provider_refresh_failed: "The check could not be completed. Saved capability results were kept.",
+    provider_routing_role_incompatible: "A system role uses this model and the selected providers cannot serve it. Choose Automatic or other providers.",
+    provider_routing_role_unverified: "A system role uses this model and the selected providers could not be confirmed. Try again or choose Automatic.",
     unauthorized: "Your administrator session is no longer valid. Sign in again."
   };
   const blockerLabels: Record<string, string> = {
