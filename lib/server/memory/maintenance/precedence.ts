@@ -18,12 +18,15 @@ function newer(candidate: readonly MemoryMaintenanceTestimony[], other: readonly
  * automatic facts, one outranks the other only with testimony from another
  * message later than all of the other's; facts resting on the same single
  * message, or whose latest testimony is shared or simultaneous, have no
- * clear order. */
+ * clear order. A newer automatic target outranks only once maintenance
+ * confirmed it `lasting`: a short-lived newer fact never purges a lasting
+ * one. */
 export function memoryMaintenanceContradictionPrecedence(input: Readonly<{
   source: readonly MemoryMaintenanceTestimony[];
-  target: Readonly<{ protected: boolean; testimony: readonly MemoryMaintenanceTestimony[] }>;
+  target: Readonly<{ protected: boolean; lasting: boolean; testimony: readonly MemoryMaintenanceTestimony[] }>;
 }>): MemoryMaintenancePrecedence {
-  if (input.target.protected || newer(input.target.testimony, input.source)) return "TARGET";
+  if (input.target.protected) return "TARGET";
+  if (newer(input.target.testimony, input.source)) return input.target.lasting ? "TARGET" : "NONE";
   return newer(input.source, input.target.testimony) ? "SOURCE" : "NONE";
 }
 

@@ -11,11 +11,14 @@
 //   explicit_vs_automatic (gated): an explicit "A" and a newer automatic
 //     "not A"; the automatic fact is removed with reason contradicted.
 //   ambiguous_automatic_pair (gated): two automatic facts from one message that
-//     contradict each other; both stay with reason conflict_unresolved.
+//     contradict each other; both stay, recording conflict_unresolved on each
+//     fact the review named as contradicted (ambiguousPairBothFlagged reports
+//     whether it named both directions; one suffices).
 //   compatible_pair (gated): two automatic facts that can both be true;
 //     nothing is removed.
 //   newer_automatic (observed): an older automatic fact superseded by a newer
-//     one from another message.
+//     one from another message, which goes only if the review also judges the
+//     newer one lasting.
 //   pinned_vs_automatic (observed): a pinned fact and a newer automatic
 //     contradiction of it.
 //
@@ -329,7 +332,8 @@ async function worker(): Promise<Record<string, unknown>> {
         const protectedUnchanged = PROTECTED.every((key) => unchanged(key) && !review(key));
         const scenarios = {
           explicitVsAutomatic: removedFor("snippets") && unchanged("explicitCode") ? "passed" : "failed",
-          ambiguousPair: conflict("vegetarian") && conflict("steak") ? "passed" : "failed",
+          ambiguousPair: unchanged("vegetarian") && unchanged("steak") && (conflict("vegetarian") || conflict("steak"))
+            ? "passed" : "failed",
           compatiblePair: unchanged("berlin") && unchanged("munich") ? "passed" : "failed",
           newerAutomatic: removedFor("car") && unchanged("soldCar") ? "observed_passed" : "observed_failed",
           pinnedVsAutomatic: removedFor("russian") && unchanged("english") ? "observed_passed" : "observed_failed"
@@ -341,7 +345,8 @@ async function worker(): Promise<Record<string, unknown>> {
           job.state === "SUCCEEDED" && failedCalls === 0;
         const report = {
           status: passed ? "passed" : "failed", reportVersion: 1, sanitizedAggregatesOnly: true, paidExtraction: false,
-          ...scenarios, protectedUnchanged, relatedPairsVisible, relatedPairsExpected: RELATED_PAIRS.length,
+          ...scenarios, ambiguousPairBothFlagged: conflict("vegetarian") && conflict("steak"),
+          protectedUnchanged, relatedPairsVisible, relatedPairsExpected: RELATED_PAIRS.length,
           jobSucceeded: job.state === "SUCCEEDED", reviewed: reviews.length,
           removed: count(({ disposition }) => disposition === "REMOVED"), kept: count(({ disposition }) => disposition === "KEEP"),
           rejected: count(({ disposition }) => disposition === "REJECTED"), blocked: count(({ disposition }) => disposition === "BLOCKED"),
@@ -394,7 +399,7 @@ function sanitized(message: unknown): Record<string, string | number | boolean> 
   for (const key of VERDICT_KEYS) {
     if (["passed", "failed", "observed_passed", "observed_failed"].includes(String(raw[key]))) safe[key] = String(raw[key]);
   }
-  for (const key of ["protectedUnchanged", "jobSucceeded"]) {
+  for (const key of ["protectedUnchanged", "jobSucceeded", "ambiguousPairBothFlagged"]) {
     if (typeof raw[key] === "boolean") safe[key] = raw[key];
   }
   if (typeof raw.code === "string" && /^memory_[a-z0-9_]{1,88}$/u.test(raw.code)) safe.code = raw.code;
