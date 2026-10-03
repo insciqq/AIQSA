@@ -36,6 +36,9 @@ export function memoryHistoryIncompleteOutputSql(): Prisma.Sql {
   ])}`;
 }
 
+/** Repairs of this exact source under the current auto-heal version and
+ * Memory-role policy only: a repair settled under an earlier version or role
+ * revision never counts toward, nor exhausts, the current budget. */
 export function memoryHistoryAutoHealAttemptsSql(): Prisma.Sql {
   return Prisma.sql`COALESCE((SELECT max(right(repair."idempotencyFingerprint", 1)::int)
     FROM "MemoryJob" repair WHERE repair."userId" = job."userId" AND repair.kind = job.kind
