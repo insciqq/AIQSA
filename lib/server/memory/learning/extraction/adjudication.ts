@@ -23,7 +23,7 @@ export const MEMORY_SEMANTIC_ADJUDICATION_PIPELINE_VERSION =
 export const MEMORY_SEMANTIC_ADJUDICATION_POLICY_VERSION =
   "memory-semantic-adjudication-policy-v18";
 export const MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION =
-  "memory-semantic-adjudication-prompt-v20";
+  "memory-semantic-adjudication-prompt-v21";
 export const MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION =
   "memory-semantic-adjudication-schema-v3";
 export const MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME =

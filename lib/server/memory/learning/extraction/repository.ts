@@ -1151,10 +1151,11 @@ function onlyAddsUnreferencedFactContext(
     memorySha256(stableProjection(current));
 }
 
-/** A settled pre-v6 extraction may be applied after a policy/schema bump only
- * when the binding proves that exact retained contract and every source field
- * that can affect evidence is unchanged. Suppression state is deliberately
- * rechecked separately at candidate apply, so a later forget fence still wins. */
+/** A settled extraction under the retained previous contract may be applied
+ * after a version bump only when the binding proves that exact contract and
+ * every source field that can affect evidence is unchanged. Suppression state
+ * is deliberately rechecked separately at candidate apply, so a later forget
+ * fence still wins. */
 function retainedPlanSourceMatchesCurrent(
   plan: MemoryFactExtractionPlan,
   current: MemoryFactExtractionInput,

@@ -369,7 +369,7 @@ function parseTemporal(
     value.perspective,
     temporalPerspectives
   );
-  if (perspective !== frame.temporalPerspective) fail();
+  if (perspective !== frame.temporalPerspective) fail("memory_fact_temporal_invalid");
   let rawExpression: string | null = null;
   if (value.raw_expression !== null) {
     const ref = decodeMemoryExactTextRef(value.raw_expression, 512);

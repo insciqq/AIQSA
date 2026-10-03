@@ -16,7 +16,8 @@ import { MEMORY_PREFERENCE_DIMENSION_PREFIXES } from "../identity/registry";
 import { MEMORY_LONG_TERM_USEFULNESS_GUIDANCE } from "../../../../domain/memory/usefulness";
 import {
   MEMORY_ASSERTED_PLAN_GUIDANCE,
-  MEMORY_FACT_EXTRACTION_PLAN_GUIDANCE
+  MEMORY_FACT_EXTRACTION_PLAN_GUIDANCE,
+  MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE
 } from "./contract";
 import { MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT } from "./adjudication";
 import { memorySha256 } from "../../persistence/lexical";
@@ -24,7 +25,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v7 long-term forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v50");
+      .toBe("memory-fact-extraction-prompt-v51");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v7");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -51,6 +52,21 @@ describe("Memory semantic-frame extraction prompt", () => {
     });
     expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT)
       .toContain("Return exactly one submit_memory_fact_observations_v7 tool call");
+  });
+
+  it("scopes the user's own unmentioned relationship status as CURRENT_USER in both prompts", () => {
+    // USER_RELATIONSHIP_CONTEXT needs a grounded non-self SUBJECT; without a
+    // mention the status or role is the user's own state.
+    expect(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE).toContain(
+      "A relationship to a person or animal that the evidence mentions by name or description"
+    );
+    expect(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE).toContain(
+      "The user's own relationship status or family role stated without such a mention is " +
+      "the user's own state and has CURRENT_USER scope."
+    );
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE);
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE);
   });
 
   it("states the long-term criterion once and keeps the adjudication plan wording", () => {

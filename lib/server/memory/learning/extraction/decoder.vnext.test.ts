@@ -3,6 +3,7 @@ import { MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE } from "../../../../contracts/
 import { memorySha256 } from "../../persistence/lexical";
 import {
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+  MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE,
   memoryFactNextPage,
   memoryFactTargetView,
   type MemoryFactContextRef,
@@ -10,10 +11,18 @@ import {
   type MemoryFactJobPage
 } from "./contract";
 import { decodeMemoryFactExtraction } from "./decoder";
-import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
 import {
+  MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT,
+  MEMORY_FACT_EXTRACTION_TOOL_NAME
+} from "./prompt";
+import {
+  decodeMemorySemanticAdjudication,
   memoryCandidateRequiresSemanticAdjudication,
-  memorySemanticAuthorityAdmitsCandidate
+  memorySemanticAdjudicationInput,
+  memorySemanticAuthorityAdmitsCandidate,
+  MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
+  MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT,
+  MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
 } from "./adjudication";
 import { memoryPropositionCanonicalKey } from "../identity/normalization";
 
@@ -289,6 +298,8 @@ describe("Memory v7 long-term semantic-frame decoder", () => {
       ["dependency", { dependency_refs: ["missing"] }, "REJECT_DEPENDENCY_UNSUPPORTED"],
       ["temporal", { temporal: { expiration_intent: "NONE", normalization: { kind: "NONE" },
         perspective: "CURRENT", raw_expression: textRef("tomorrow") } }, "REJECT_TEMPORAL_UNSUPPORTED"],
+      ["temporal perspective", { temporal: { expiration_intent: "NONE", normalization: { kind: "NONE" },
+        perspective: "EVENT", raw_expression: null } }, "REJECT_TEMPORAL_UNSUPPORTED"],
       ["temporary", { temporal: { expiration_intent: "EXPLICIT", normalization: { kind: "NONE" },
         perspective: "CURRENT", raw_expression: null } }, "REJECT_TEMPORARY"],
       ["product identity", { ...product, identity: { ...(product.identity as object),
@@ -1984,5 +1995,104 @@ describe("Memory v7 long-term semantic-frame decoder", () => {
       expect(lasting).toMatchObject({ usefulness: "DURABLE" });
       expect(lasting).not.toHaveProperty("changeOnly");
     }
+  });
+});
+
+describe("Memory extraction regressions recorded from the production Memory model", () => {
+  it("names a duplicated temporal perspective mismatch on a dated state change", () => {
+    const quote = "I switched from my iPhone to a Pixel last week.";
+    const prior: MemoryFactContextRef = {
+      aliases: [], displayName: null, entityId: null, entityType: null,
+      identitySubjectKey: null, kind: "FACT_VERSION", ref: "F1",
+      source: { contentHash: null, factVersionId: "version-1", messageId: null,
+        messageUpdatedAt: null, projectionVersion: null },
+      text: "bounded current state"
+    };
+    // Exact rejected observation; only its two perspective fields disagree.
+    const recorded = observation(quote, {
+      candidate_ref: "pixel_switch_state_change",
+      dependency_refs: ["F1"],
+      entities: [{ aliases: [], canonical_label: "Pixel", context_entity_ref: null,
+        entity_type: "PRODUCT", mention: textRef("Pixel"), mention_kind: "NAMED",
+        qualifier_supports: [], role: "OBJECT" }],
+      reason_code: "state_change_replacement_device",
+      semantic_frame: { ...frame, change_intent: "STATE_CHANGE" },
+      statement: "The user switched from their iPhone to a Pixel last week " +
+        "and now uses a Pixel instead of the iPhone.",
+      temporal: { expiration_intent: "NONE",
+        normalization: { amount: -1, kind: "CALENDAR_OFFSET", unit: "WEEK" },
+        perspective: "EVENT", raw_expression: textRef("last week") }
+    });
+    const rejected = decode(quote, [recorded], [prior]);
+    expect(rejected.candidates).toEqual([]);
+    expect(rejected.rejections).toEqual([
+      { candidateOrdinal: 0, reasonCode: "REJECT_TEMPORAL_UNSUPPORTED" }
+    ]);
+
+    const current = decode(quote, [{ ...recorded,
+      temporal: { ...(recorded.temporal as object), perspective: "CURRENT" } }], [prior]);
+    expect(current.rejections).toEqual([]);
+    expect(current.candidates[0]?.semanticFrame).toMatchObject({
+      changeIntent: "STATE_CHANGE", temporalPerspective: "CURRENT"
+    });
+    expect(current.candidates[0]?.dependencies.map(({ ref }) => ref)).toEqual(["F1"]);
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(
+      "temporal.perspective and semantic_frame.temporal_perspective always carry the same value"
+    );
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(
+      "a completed action that asserts no resulting state keeps EVENT perspective"
+    );
+  });
+
+  it("defines relationship existence once for extraction and adjudication", () => {
+    const quote = "I have two cats named Miso and Tofu.";
+    const pet = (name: string) => ({
+      aliases: [], canonical_label: name, context_entity_ref: null, entity_type: "OTHER",
+      mention: textRef(name), mention_kind: "NAMED", qualifier_supports: [], role: "SUBJECT"
+    });
+    const plan = decode(quote, [observation(quote, {
+      candidate_ref: "cats", entities: [pet("Miso"), pet("Tofu")],
+      reason_code: "pet_ownership",
+      semantic_frame: { ...frame, subject_scope: "USER_RELATIONSHIP_CONTEXT" },
+      statement: "The user has two cats named Miso and Tofu."
+    })]);
+    expect(plan.rejections).toEqual([]);
+    const candidate = plan.candidates[0]!;
+    expect(memoryCandidateRequiresSemanticAdjudication(candidate)).toBe(true);
+    const input = memorySemanticAdjudicationInput(plan)!;
+    // Every recorded decision is ENTAILED/HIGH/NO_RELATION; only the scope varies.
+    const decision = (scope: string, reasonCode: string) =>
+      decodeMemorySemanticAdjudication([{
+        arguments: { decisions: [{
+          assertion_status: "ASSERTED", candidate_ref: "cats", confidence_band: "HIGH",
+          entailment: "ENTAILED", entity_ref: null, operation: "NO_RELATION",
+          reason_code: reasonCode, subject_identity: "UNRESOLVED", subject_scope: scope,
+          target_ref: null, temporal_perspective: "CURRENT"
+        }] },
+        id: "call-1",
+        name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+      }], input).decisions[0]!;
+
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate,
+      decision("USER_RELATIONSHIP_CONTEXT", "NEW_USER_PET_RELATIONSHIP"))).toBe(true);
+    // The admission gate keeps requiring scope agreement.
+    for (const reasonCode of [
+      "current_user_own_pet_possession_no_target",
+      "new_current_user_fact_no_target",
+      "current_user_owns_named_pets"
+    ]) {
+      expect(memorySemanticAuthorityAdmitsCandidate(candidate,
+        decision("CURRENT_USER", reasonCode)), reasonCode).toBe(false);
+    }
+    // Both prompts carry the same definition of the relationship class.
+    const definition = "A relationship to a person or animal that the evidence mentions by " +
+      "name or description, including the existence of that relationship and that subject's " +
+      "identity or name";
+    expect(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE).toContain(definition);
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE);
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE);
+    expect(MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION)
+      .toBe("memory-semantic-adjudication-prompt-v21");
   });
 });

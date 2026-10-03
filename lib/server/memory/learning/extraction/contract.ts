@@ -15,7 +15,7 @@ export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
   "memory-fact-extraction-policy-v38";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
-  "memory-fact-extraction-prompt-v50";
+  "memory-fact-extraction-prompt-v51";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
   "memory-fact-extraction-schema-v7";
 export const MEMORY_FACT_TEMPORAL_RESOLVER_VERSION =
@@ -26,7 +26,7 @@ export const MEMORY_FACT_EXTRACTION_JOB_PREFIX = "extract-facts:vnext:";
 
 /** Extraction and adjudication must agree on the scope of the same assertion. */
 export const MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE =
-  "The user's own action or experience has CURRENT_USER scope, including when another person or pet participates. A relationship to someone, or that person's or pet's own state or property, has USER_RELATIONSHIP_CONTEXT scope. Classify the asserted information, not merely the type or role of a mentioned entity. Reporting another subject's property does not turn it into the user's own state or action. Preserve the actor, recipient, and ownership roles without inferring possession.";
+  "The user's own action or experience has CURRENT_USER scope, including when another person or pet participates. A relationship to a person or animal that the evidence mentions by name or description, including the existence of that relationship and that subject's identity or name, or that subject's own state or property, has USER_RELATIONSHIP_CONTEXT scope, also when stated with a first-person verb or possessive. The user's own relationship status or family role stated without such a mention is the user's own state and has CURRENT_USER scope. Classify the asserted information, not merely the type or role of a mentioned entity. Reporting another subject's property does not turn it into the user's own state or action. Preserve the actor, recipient, and ownership roles without inferring possession.";
 
 export const MEMORY_ASSERTED_PLAN_GUIDANCE =
   "A directly stated personal intention or commitment is an ASSERTED plan only when it describes the user's own future activity or durable goal beyond the present assistant task. Preserve its prerequisite and prospective wording in the proposition; the asserted fact is the user's plan, not that its condition is met or its future event has happened. Use PLAN with FUTURE perspective for that activity. A stated need or desired outcome that merely motivates a request for the assistant's immediate deliverable is task context, not an independent personal plan; preparing documents for a change does not establish a lasting plan to make that change. First-person necessity alone is insufficient. In a mixed message, retain an independently asserted scheduled activity or durable goal, including its date, but omit the assistant task and its motivating need. A possible future state never replaces an actual current residence, role, schedule, or ownership. An imagined example, question, or conditional possibility without a stated intention or commitment remains hypothetical; do not invent a plan from it.";
@@ -262,15 +262,13 @@ export const MEMORY_FACT_EXTRACTION_VERSIONS: MemoryExecutionVersions =
     schemaVersion: MEMORY_FACT_EXTRACTION_SCHEMA_VERSION
   });
 
-/** Only settled outputs and ambiguous calls may retain this exact contract.
- * New dispatches always use the current long-term schema; a retained staged
- * plan applies with its recorded semantics and no change-only marker. */
+/** Only settled outputs and ambiguous calls may retain this exact previous
+ * contract. New dispatches always use the current prompt; a retained staged
+ * plan applies with its recorded semantics. */
 export const MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS: MemoryExecutionVersions =
   Object.freeze({
     ...MEMORY_FACT_EXTRACTION_VERSIONS,
-    policyVersion: "memory-fact-extraction-policy-v37",
-    promptVersion: "memory-fact-extraction-prompt-v49",
-    schemaVersion: "memory-fact-extraction-schema-v6"
+    promptVersion: "memory-fact-extraction-prompt-v50"
   });
 
 export type MemoryFactSourceIdentity = Readonly<{
