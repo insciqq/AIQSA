@@ -227,6 +227,56 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
 }
 
 describe("remote MCP runtime candidates", () => {
+  it("sends a bare personal Authorization value as Bearer without rewriting it or changing identity", async () => {
+    const prefixed = remoteRuntimeCandidate({ key: KEY, record: runtimeRecord() });
+    const bareRecord = runtimeRecord({ personalValues: { authorization: " synthetic-bare-token ", workspace: "Token raw" } });
+    const bare = remoteRuntimeCandidate({ key: KEY, record: bareRecord });
+
+    expect(bare?.headers).toEqual({
+      Authorization: "Bearer synthetic-bare-token",
+      "X-Mode": "sync",
+      "X-Tenant": "42",
+      // Only the Authorization header gains a scheme.
+      "X-Workspace": "Token raw"
+    });
+    // The stored value is never rewritten; the effective snapshot keeps it as entered.
+    expect(bare?.effectiveEnvelope.values.authorization).toBe(" synthetic-bare-token ");
+    expect(bare?.redactionValues).toContain("synthetic-bare-token");
+    // Values never enter the runtime identity, so a prefixed value keeps its generation.
+    expect(bare?.fingerprint).toBe(prefixed?.fingerprint);
+    expect(prefixed?.headers.Authorization).toBe("Bearer personal-secret");
+    for (const scheme of ["bearer synthetic-lower", "Token synthetic-token", "Basic c3ludGhldGlj"]) {
+      const candidate = remoteRuntimeCandidate({
+        key: KEY,
+        record: runtimeRecord({ personalValues: { authorization: scheme, workspace: "workspace-a" } })
+      });
+      expect(candidate?.headers.Authorization).toBe(scheme);
+    }
+
+    // An accepted generation restored from its snapshot sends the same header.
+    const findFirst = vi.fn(async () => ({
+      effectiveConfigEnvelope: encryptMcpEnvelope(
+        bare!.effectiveEnvelope,
+        KEY,
+        mcpRuntimeGenerationEnvelopeContext("generation-bare", bare!.fingerprint)
+      ),
+      fingerprint: bare!.fingerprint,
+      id: "generation-bare",
+      inventoryUpdatedAt: NOW,
+      oauthConnectionId: null,
+      retryAt: null,
+      revision: { configuration, id: REVISION_ID, serverId: SERVER_ID, validationEvidence: checkedEvidence(CHECKED_TOOLS) },
+      userServer: { serverId: SERVER_ID, userId: USER_ID }
+    }));
+    const repository = createPrismaMcpRuntimeRepository({
+      encryptionKey: () => KEY,
+      prisma: { mcpRuntimeGeneration: { findFirst } } as unknown as PrismaClient
+    });
+    const restored = await repository.loadAcceptedGeneration("generation-bare", NOW);
+    expect(restored?.headers).toEqual(bare?.headers);
+    expect(restored?.redactionValues).toEqual(bare?.redactionValues);
+  });
+
   it("rejects a personal server for a different user even when a grant is present", () => {
     const candidate = remoteRuntimeCandidate({
       key: KEY,
