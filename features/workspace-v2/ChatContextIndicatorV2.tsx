@@ -122,7 +122,9 @@ export function ChatContextIndicatorV2({
   // a closed panel reopens folded.
   const [detailsOpen, setDetailsOpen] = useState(false);
   if (!open && detailsOpen) setDetailsOpen(false);
-  const close = () => { setOpen(false); continuation?.onDismiss(); };
+  // Closing dismisses only a suggestion that is shown: looking at the panel
+  // earlier must not silence a later suggestion for this chat.
+  const close = () => { setOpen(false); if (suggested) continuation?.onDismiss(); };
   const { menuRef, triggerRef } = useMenuDismissalV2<HTMLButtonElement, HTMLElement>({
     onClose: close, open: open && !sheet
   });
