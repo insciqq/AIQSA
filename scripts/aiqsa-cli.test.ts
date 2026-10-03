@@ -329,10 +329,10 @@ describe("doctor", () => {
       f.rules.push({ match: "^compose version", exit: 1, stderr: "docker: 'compose' is not a docker command.\n" });
       f.tool("docker-compose", "echo 1.29.2");
     }, expected: [/FAIL compose: only Compose v1/u] },
-    { name: "too little memory", status: 4, setup: (f) => writeFileSync(path.join(f.proc, "meminfo"), "MemTotal: 3000000 kB\n"),
-      expected: [/FAIL memory: 2\.8 GiB; at least 4 GB is required/u] },
-    { name: "less than recommended memory", status: 0, setup: (f) => writeFileSync(path.join(f.proc, "meminfo"), "MemTotal: 6000000 kB\n"),
-      expected: [/WARN memory: 5\.7 GiB; 8 GB is recommended/u] },
+    { name: "too little memory", status: 4, setup: (f) => writeFileSync(path.join(f.proc, "meminfo"), "MemTotal: 6000000 kB\n"),
+      expected: [/FAIL memory: 5\.7 GiB; at least 8 GB is required/u] },
+    { name: "nominal 8 GB host", status: 0, setup: (f) => writeFileSync(path.join(f.proc, "meminfo"), "MemTotal: 8000000 kB\n"),
+      expected: [/WARN memory: 7\.6 GiB; 16 GB is recommended/u] },
     { name: "small Docker root", status: 0, setup: (f) => { f.env.FAKE_DF_AVAILABLE = "10000000"; },
       expected: [/WARN disk: 10 GB free in .*docker-root; 50 GB is recommended/u] },
     { name: "unsynchronised clock", status: 0, setup: (f) => { f.env.FAKE_NTP = "no"; },
@@ -436,6 +436,29 @@ describe("doctor", () => {
     for (const pattern of expected) expect(result.stdout).toMatch(pattern);
     expect(result.status).toBe(status);
     expectNoSecrets(result.output, readFileSync(fixture.file(".env"), "utf8"));
+  });
+
+  it("lists ToolHive leftovers with exact removal commands and stays quiet without them", () => {
+    const fixture = new Fixture();
+    fixture.writeEnv();
+    const clean = fixture.run(["doctor", "--stack-only"]);
+    expect(clean.status).toBe(0);
+    expect(clean.stdout).not.toContain("toolhive");
+    fixture.rules.push(
+      { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=toolhive-runtime", stdout: "c99\n" },
+      { match: "^volume inspect aiqsa-test_toolhive_data", stdout: "[]\n" },
+      { match: "^ps -a --format \\{\\{\\.Names\\}\\}", stdout: "aiqsa-test-app-1\naiqsa-0123456789abcdef-0123456789abcdefghijklmn\n" },
+      { match: "^images --format", stdout: "postgres:18\ntoolhivelocal/example-mcp:1.0.0\n" }
+    );
+    const result = fixture.run(["doctor", "--stack-only"]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("WARN toolhive-leftovers: local MCP servers were removed");
+    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the toolhive-runtime container");
+    expect(result.stdout).toContain("docker volume rm aiqsa-test_toolhive_data");
+    expect(result.stdout).toContain("docker rm -f aiqsa-0123456789abcdef-0123456789abcdefghijklmn\n");
+    expect(result.stdout).not.toContain("rm -f aiqsa-test-app-1");
+    expect(result.stdout).toContain("docker image rm toolhivelocal/example-mcp:1.0.0\n");
+    expect(fixture.dockerLog).not.toMatch(/^(rm|volume rm|image rm) /mu);
   });
 
   it("reads .env strictly: quotes, CRLF, spaces, export and shell metacharacters", () => {

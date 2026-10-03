@@ -37,7 +37,7 @@ IFS=$' \t\n'
 readonly EXIT_FAILURE=1 EXIT_USAGE=2 EXIT_UNSUPPORTED=3 EXIT_PREFLIGHT=4 EXIT_NOT_READY=5 EXIT_REFUSED=6
 readonly COMPOSE_FLOOR=2.29.7 ENGINE_TECHNICAL_FLOOR=20.10 ENGINE_SUPPORTED_FLOOR=25.0
 readonly MAX_MAP_COUNT_FLOOR=262144
-readonly MEMORY_FAIL_KIB=3774873 MEMORY_WARN_KIB=7549747   # 90% of 4 GiB and 8 GiB
+readonly MEMORY_FAIL_KIB=7549747 MEMORY_WARN_KIB=15099494   # 90% of 8 GiB and 16 GiB
 readonly DISK_WARN_KIB=48828125                              # 50 GB
 readonly REPOSITORY_URL=https://github.com/insciqq/AIQSA
 readonly LEGACY_RUNBOOK_URL=$REPOSITORY_URL/blob/v0.2.34/UPGRADING_FROM_MINIO.md
@@ -477,9 +477,9 @@ doctor_memory() {
   else
     local gib="$((kib / 1048576)).$(((kib % 1048576) * 10 / 1048576)) GiB"
     if (( kib < MEMORY_FAIL_KIB )); then
-      check FAIL memory "$gib; at least 4 GB is required"
+      check FAIL memory "$gib; at least 8 GB is required (each Workspace session runs in a 4 GB virtual machine)"
     elif (( kib < MEMORY_WARN_KIB )); then
-      check WARN memory "$gib; 8 GB is recommended for Knowledge ingestion, OCR and Workspace"
+      check WARN memory "$gib; 16 GB is recommended for several Workspace sessions, Knowledge ingestion and OCR"
     else
       check PASS memory "$gib"
     fi
@@ -778,11 +778,35 @@ doctor_stack() {
   if (( runner )) && profile_enabled workspace; then doctor_runner; fi
   doctor_storage
   doctor_host_probe
+  doctor_toolhive_leftovers
   local usage="" entry
   while IFS= read -r entry; do
     [[ -n $entry ]] && usage+="${usage:+; }$entry"
   done < <(run docker system df --format '{{.Type}} {{.Size}} (reclaimable {{.Reclaimable}})' 2>/dev/null || true)
   [[ -z $usage ]] || check INFO docker-disk "$usage"
+}
+
+# Releases after v0.2.34 removed the ToolHive runtime; its volume, workload
+# containers and generated images are not Compose-managed and stay behind.
+doctor_toolhive_leftovers() {
+  local lines=() names images
+  load_project_name
+  if [[ -n $PROJECT_NAME ]]; then
+    if [[ -n $(run docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" \
+      --filter label=com.docker.compose.service=toolhive-runtime 2>/dev/null) ]]; then
+      lines+=("./aiqsa.sh up   # --remove-orphans removes the toolhive-runtime container")
+    fi
+    if run docker volume inspect "${PROJECT_NAME}_toolhive_data" >/dev/null 2>&1; then
+      lines+=("docker volume rm ${PROJECT_NAME}_toolhive_data")
+    fi
+  fi
+  names=$(run docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^aiqsa-[a-z0-9]{16,24}-[a-z0-9]{24,64}$' | tr '\n' ' ') || names=""
+  [[ -z ${names// /} ]] || lines+=("docker rm -f ${names% }")
+  images=$(run docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep '^toolhivelocal/' | tr '\n' ' ') || images=""
+  [[ -z ${images// /} ]] || lines+=("docker image rm ${images% }")
+  (( ${#lines[@]} )) || return 0
+  check WARN toolhive-leftovers "local MCP servers were removed; the old ToolHive runtime left Docker state behind" \
+    "Once this release works, remove it with:" "${lines[@]/#/  }"
 }
 
 doctor_runner() {
