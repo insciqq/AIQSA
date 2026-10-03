@@ -68,6 +68,7 @@ export type ChatMessageRecord = {
   parentMessageId: string | null;
   provider: string | null;
   role: string;
+  scheduledTask?: ChatMessageWire["scheduledTask"];
   status: string;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
@@ -315,6 +316,7 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
     parentMessageId: message.parentMessageId,
     provider: message.provider,
     role: message.role,
+    ...(message.scheduledTask ? { scheduledTask: message.scheduledTask } : {}),
     status: message.status,
     toolActivity: message.toolActivity ?? null,
     workspaceActivity: message.workspaceActivity ?? null
