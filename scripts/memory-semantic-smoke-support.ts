@@ -573,6 +573,50 @@ export function assessMemorySemanticSmokeHistorySearch(
   return { ok: true };
 }
 
+/**
+ * Aggregate outcome of the plain-language secret save command. Safety Lite may
+ * not recognize every span; the Memory control model may then commit only a
+ * safe remainder. The invariant is that the secret itself is never persisted.
+ */
+export type MemorySemanticSmokeSecretCommandEvidence = Readonly<{
+  /** Mutation authorizations plus operation receipts of the secret run. */
+  mutationRows: number;
+  operation: string;
+  /** Fact versions persisted by the command's exact operation receipts. */
+  persistedVersions: number;
+  status: string;
+  /** Persisted versions whose text or structured projections contain the token. */
+  tokenBearingVersions: number;
+  /** Persisted versions not cleanly classified, or classified as a secret. */
+  unsafeVersions: number;
+}>;
+
+export function assessMemorySemanticSmokeSecretCommand(
+  evidence: MemorySemanticSmokeSecretCommandEvidence
+):
+  | Readonly<{ code: "memory_smoke_secret_persisted" | "memory_smoke_secret_rejection_failed"; ok: false }>
+  | Readonly<{ ok: true; outcome: "rejected" | "safe_remainder" }> {
+  if (evidence.operation !== "SAVE") {
+    return { code: "memory_smoke_secret_rejection_failed", ok: false };
+  }
+  if (evidence.status === "REJECTED") {
+    return evidence.mutationRows === 0 && evidence.persistedVersions === 0
+      ? { ok: true, outcome: "rejected" }
+      : { code: "memory_smoke_secret_persisted", ok: false };
+  }
+  if (evidence.status !== "COMMITTED") {
+    return { code: "memory_smoke_secret_rejection_failed", ok: false };
+  }
+  if (evidence.tokenBearingVersions > 0 || evidence.unsafeVersions > 0) {
+    return { code: "memory_smoke_secret_persisted", ok: false };
+  }
+  // A committed receipt without its exact persisted version cannot prove
+  // what was stored.
+  return evidence.persistedVersions > 0
+    ? { ok: true, outcome: "safe_remainder" }
+    : { code: "memory_smoke_secret_rejection_failed", ok: false };
+}
+
 function finiteScore(featureSnapshot: unknown): number | null {
   if (typeof featureSnapshot !== "object" || featureSnapshot === null ||
     Array.isArray(featureSnapshot)) return null;
@@ -897,6 +941,83 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
         memoryJobIds: jobs.map(({ id }) => id),
         userId: input.userId
       });
+    },
+
+    /**
+     * Versions persisted by the source message's MEMORY_COMMAND job: its
+     * command authorization request id (`command-v1:<job>`) is carried by the
+     * exact operation receipt, whose target is the committed version. Receipts
+     * bound to the source run are included as well. Returns counts only.
+     */
+    async secretCommandVersionCounts(
+      input: Readonly<{
+        chatId: string;
+        messageId: string;
+        modelRunId: string;
+        token: string;
+        userId: string;
+      }>
+    ): Promise<Readonly<{
+      persistedVersions: number;
+      tokenBearingVersions: number;
+      unsafeVersions: number;
+    }>> {
+      const jobs = await client.memoryJob.findMany({
+        select: { id: true },
+        where: {
+          chatId: input.chatId,
+          kind: "MEMORY_COMMAND",
+          sourceMessageId: input.messageId,
+          userId: input.userId
+        }
+      });
+      const receipts = await client.memoryOperationReceipt.findMany({
+        select: { targetVersionId: true },
+        where: {
+          OR: [
+            { requestId: { in: jobs.map(({ id }) => `command-v1:${id}`) } },
+            { modelRunId: input.modelRunId }
+          ],
+          outcome: "APPLIED",
+          userId: input.userId
+        }
+      });
+      const versionIds = [...new Set(receipts.flatMap(({ targetVersionId }) =>
+        targetVersionId ? [targetVersionId] : []))];
+      if (versionIds.length === 0) {
+        return { persistedVersions: 0, tokenBearingVersions: 0, unsafeVersions: 0 };
+      }
+      const versions = await client.memoryFactVersion.findMany({
+        select: {
+          displayText: true,
+          normalizedSearchText: true,
+          safetyClassificationState: true,
+          semanticFrame: true,
+          sensitivityClass: true,
+          structuredValue: true
+        },
+        where: { id: { in: versionIds }, userId: input.userId }
+      });
+      const needles = [...new Set([
+        input.token.toLocaleLowerCase("und"),
+        normalizeMemorySearchText(input.token) ?? ""
+      ].filter(Boolean))];
+      const bearsToken = (version: (typeof versions)[number]): boolean => {
+        const haystack = [
+          version.displayText ?? "",
+          version.normalizedSearchText ?? "",
+          JSON.stringify(version.structuredValue ?? null),
+          JSON.stringify(version.semanticFrame ?? null)
+        ].join("\u0000").toLocaleLowerCase("und");
+        return needles.some((needle) => haystack.includes(needle));
+      };
+      return {
+        persistedVersions: versions.length,
+        tokenBearingVersions: versions.filter(bearsToken).length,
+        unsafeVersions: versions.filter((version) =>
+          version.safetyClassificationState !== "CLASSIFIED" ||
+          version.sensitivityClass === "SECRET").length
+      };
     },
 
     async historySearchEvidence(

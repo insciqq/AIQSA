@@ -13,6 +13,7 @@ import {
   MEMORY_SEMANTIC_SMOKE_SCENARIOS,
   MemorySemanticSmokePreflightError,
   assessMemorySemanticSmokeHistorySearch,
+  assessMemorySemanticSmokeSecretCommand,
   createMemorySemanticSmokeScenarioLedger,
   createPrismaMemorySemanticSmokeVerifier,
   memorySemanticSmokeRerankerReady,
@@ -740,6 +741,109 @@ describe("Memory semantic smoke support", () => {
     expect(MEMORY_SEMANTIC_SMOKE_HISTORY_SEARCH_CODES).toHaveLength(5);
   });
 
+  it("accepts a rejected secret save or a token-free safe remainder only", () => {
+    const evidence = {
+      mutationRows: 0,
+      operation: "SAVE",
+      persistedVersions: 0,
+      status: "REJECTED",
+      tokenBearingVersions: 0,
+      unsafeVersions: 0
+    };
+    const assess = (overrides: Partial<typeof evidence>) =>
+      assessMemorySemanticSmokeSecretCommand({ ...evidence, ...overrides });
+    expect(assess({})).toEqual({ ok: true, outcome: "rejected" });
+    expect(assess({ mutationRows: 1 })).toEqual({
+      code: "memory_smoke_secret_persisted", ok: false
+    });
+    const committed = { mutationRows: 2, persistedVersions: 1, status: "COMMITTED" };
+    expect(assess(committed)).toEqual({ ok: true, outcome: "safe_remainder" });
+    expect(assess({ ...committed, tokenBearingVersions: 1 })).toEqual({
+      code: "memory_smoke_secret_persisted", ok: false
+    });
+    expect(assess({ ...committed, unsafeVersions: 1 })).toEqual({
+      code: "memory_smoke_secret_persisted", ok: false
+    });
+    expect(assess({ ...committed, persistedVersions: 0 })).toEqual({
+      code: "memory_smoke_secret_rejection_failed", ok: false
+    });
+    for (const overrides of [
+      { operation: "UNKNOWN" },
+      { operation: "UPDATE", status: "COMMITTED" },
+      { status: "FAILED" },
+      { status: "UNKNOWN" }
+    ]) {
+      expect(assess(overrides)).toEqual({ code: "memory_smoke_secret_rejection_failed", ok: false });
+    }
+  });
+
+  it("finds secret-command versions through the exact command receipt and checks the token", async () => {
+    const client = {
+      memoryFactVersion: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            displayText: "Demonstration account password exists",
+            normalizedSearchText: "demonstration account password exists",
+            safetyClassificationState: "CLASSIFIED",
+            semanticFrame: null,
+            sensitivityClass: "NORMAL",
+            structuredValue: null
+          },
+          {
+            displayText: "Safe",
+            normalizedSearchText: "safe",
+            safetyClassificationState: "CLASSIFIED",
+            semanticFrame: { value: "Blue-Orchard-abcdefghijkl" },
+            sensitivityClass: "NORMAL",
+            structuredValue: null
+          },
+          {
+            displayText: "Safe",
+            normalizedSearchText: "safe",
+            safetyClassificationState: "SECRET_FENCED",
+            semanticFrame: null,
+            sensitivityClass: "NORMAL",
+            structuredValue: null
+          }
+        ])
+      },
+      memoryJob: {
+        findMany: vi.fn().mockResolvedValue([{ id: "private-command-job" }])
+      },
+      memoryOperationReceipt: {
+        findMany: vi.fn().mockResolvedValue([
+          { targetVersionId: "version-1" },
+          { targetVersionId: "version-2" },
+          { targetVersionId: "version-3" },
+          { targetVersionId: null }
+        ])
+      }
+    } as unknown as PrismaClient;
+    const verifier = createPrismaMemorySemanticSmokeVerifier(client);
+
+    await expect(verifier.secretCommandVersionCounts({
+      chatId: "private-chat",
+      messageId: "private-message",
+      modelRunId: "private-run",
+      token: "blue-orchard-abcdefghijkl",
+      userId: "private-owner"
+    })).resolves.toEqual({ persistedVersions: 3, tokenBearingVersions: 1, unsafeVersions: 1 });
+    expect(client.memoryOperationReceipt.findMany).toHaveBeenCalledWith({
+      select: { targetVersionId: true },
+      where: {
+        OR: [
+          { requestId: { in: ["command-v1:private-command-job"] } },
+          { modelRunId: "private-run" }
+        ],
+        outcome: "APPLIED",
+        userId: "private-owner"
+      }
+    });
+    expect(client.memoryFactVersion.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: { in: ["version-1", "version-2", "version-3"] }, userId: "private-owner" }
+    }));
+  });
+
   it("binds natural-language command control to the exact source message's command job", async () => {
     const strictControl = strictExecutionSnapshot("MEMORY_CONTROL");
     const client = {
@@ -952,8 +1056,9 @@ describe("Memory semantic smoke support", () => {
     expect(source).not.toContain("/api/me/memory/source-actions");
     expect(source.match(/await requiredMemoryCommand\(/gu)).toHaveLength(5);
     expect(source.match(/await editConsumerMemory\(/gu)).toHaveLength(1);
-    expect(source).toContain('secretCommand.operation !== "SAVE"');
-    expect(source).toContain('secretCommand.status !== "REJECTED"');
+    expect(source).toContain("assessMemorySemanticSmokeSecretCommand({");
+    expect(source).toContain("await waitForNoAutomaticFact(secret, secretStartedAt);");
+    expect(source).toContain(".includes(secretToken)");
     // Standing-v1 turns admit no dynamic history: recall must be proven
     // through the answer model's memory_search receipts.
     expect(source).not.toContain("recalledHistorySourceCount");
