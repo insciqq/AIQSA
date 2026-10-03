@@ -1148,6 +1148,8 @@ cmd_install() {
   doctor_host
   if (( FAIL_COUNT )) && (( ! SKIP_PREFLIGHT )); then
     doctor_summary
+    # --skip-preflight cannot help without KVM: install always enables Workspace.
+    if (( ! existing && ! KVM_OK )); then die "$EXIT_PREFLIGHT" "Host preflight failed; fix the FAIL lines above."; fi
     die "$EXIT_PREFLIGHT" "Host preflight failed; fix the FAIL lines above (or rerun with --skip-preflight)."
   fi
   if (( existing )); then
