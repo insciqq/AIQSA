@@ -112,12 +112,13 @@ describe("automatic and explicit equivalence policy", () => {
   it("never compares two automatic facts, a pinned automatic fact, or automatic facts under v1", () => {
     const learned = fact("learned", "AUTOMATIC", 0);
     const saved = fact("saved", "EXPLICIT", 30);
-    for (const invalid of [
+    const invalid: readonly MemoryExplicitRelationSnapshot[] = [
       snapshot(learned, [fact("other", "AUTOMATIC", 5)]),
       snapshot(saved, [{ ...learned, pinned: true }]),
       { ...snapshot(saved, [learned]), pipelineVersion: MEMORY_EXPLICIT_RELATION_V1_PIPELINE_VERSION }
-    ]) {
-      expect(() => assertMemoryExplicitRelationSnapshot(invalid))
+    ];
+    for (const changed of invalid) {
+      expect(() => assertMemoryExplicitRelationSnapshot(changed))
         .toThrow("memory_explicit_relation_snapshot_invalid");
     }
   });
