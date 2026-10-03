@@ -40,13 +40,16 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-  for (const userId of owners) {
+  const pending = [...owners];
+  owners.clear();
+  for (const userId of pending) {
+    // Staged extraction rows restrict their binding; remove them first.
+    await prisma.memoryFactExtractionExecution.deleteMany({ where: { userId } });
     await prisma.usageEvent.deleteMany({ where: { userId } });
     await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
     await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await prisma.user.deleteMany({ where: { id: userId } });
   }
-  owners.clear();
 });
 
 afterAll(async () => {
@@ -186,12 +189,18 @@ async function fixture(texts: readonly string[] = ["I moved to Lisbon last sprin
       policy: { maxJobParallel: 1, maxJobParallelPerUser: 1, maxDeletionParallel: 1 } });
     try { await worker.reconcileNow(); } finally { await worker.stop(); }
   };
-  const heal = (offsetMs = 0, available = true) => healFailedMemoryFactExtractions(prisma,
+  const sweep = (offsetMs = 0, available = true) => healFailedMemoryFactExtractions(prisma,
     { now: new Date(clock + offsetMs), authorityAvailable: async () => available });
   const jobs = () => prisma.memoryJob.findMany({ where: { userId, kind: "EXTRACT_FACTS" }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
+  /** The pass is installation-wide: count only this owner's new jobs. */
+  const heal = async (offsetMs = 0, available = true) => {
+    const before = (await jobs()).length;
+    await sweep(offsetMs, available);
+    return (await jobs()).length - before;
+  };
   const bindings = (memoryJobId: string) => prisma.memoryExecutionBinding.findMany({ where: { userId, memoryJobId },
     orderBy: { ordinal: "asc" } });
-  return { userId, chat, turns, now, drive, heal, jobs, bindings, advance: (ms: number) => { clock += ms; } };
+  return { userId, chat, turns, now, drive, sweep, heal, jobs, bindings, advance: (ms: number) => { clock += ms; } };
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -245,8 +254,8 @@ describe("re-extraction after a provider failure that produced no output", () =>
     const usage = await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
     await changePolicy();
     const policy = await policyVersion();
-    const admissions = await Promise.all([f.heal(), f.heal()]);
-    expect(admissions.reduce((sum, count) => sum + count, 0)).toBe(1);
+    await Promise.all([f.sweep(), f.sweep()]);
+    expect(await f.jobs()).toHaveLength(2);
     expect(await f.heal()).toBe(0);
     const [, healJob] = await f.jobs();
     expect(healKeyOf(healJob!)).toBe(`extract-facts:vnext:heal.u${policy}`);
