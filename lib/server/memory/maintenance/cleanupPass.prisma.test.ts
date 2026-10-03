@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   createAutomaticMaintenanceFact, createMaintenanceMessage, createMaintenanceOwner, deleteMaintenanceOwner,
-  drainMaintenanceForgetPurges, maintenanceFixtureTime, settleMaintenanceJob
+  drainMaintenanceForgetPurges, maintenanceFixtureTime, settleMaintenanceJob, type MaintenanceFixtureDecision
 } from "@/tests/support/memoryMaintenance";
 import { prisma } from "../../prisma";
 import type { MemoryJobClaim } from "../coordinator/types";
@@ -41,8 +41,18 @@ async function failQueued(userId: string, errorCode: string | null, completedAt 
 function minutes(from: Date, count: number): Date {
   return new Date(from.getTime() + count * 60_000);
 }
+function hours(from: Date, count: number): Date {
+  return minutes(from, count * 60);
+}
+function days(from: Date, count: number): Date {
+  return hours(from, count * 24);
+}
+/** Versions with an open review of the owner's job in flight. */
+async function pendingVersions(userId: string): Promise<string[]> {
+  return (await reviews(userId)).filter(({ disposition }) => disposition === "PENDING").map(({ factVersionId }) => factVersionId).sort();
+}
 
-describe("maintenance policy v3 cleanup pass", () => {
+describe("maintenance cleanup pass", () => {
   it("removes a two-version fact with different spans in one apply without affecting the batch", async () => {
     const userId = await owner();
     const before = await createMaintenanceMessage(userId, "The parcel ships on Tuesday.");
@@ -277,6 +287,106 @@ describe("maintenance policy v3 cleanup pass", () => {
     expect(await prisma.memoryJob.count({ where: { userId } })).toBe(6);
   });
 
+  it("re-reviews a kept or rejected fact once its cadence passes, never while the decision is fresh", async () => {
+    const userId = await owner();
+    const decisions = new Map<string, MaintenanceFixtureDecision>();
+    const versions = new Map<MaintenanceFixtureDecision, string>();
+    for (const [decision, text] of [["KEEP", "I have kept a vegetarian diet for ten years."],
+      ["KEEP_ONGOING", "I am renovating my flat this year."], ["KEEP_UNRESOLVED", "I like the blue one."],
+      ["REJECT", "I drink tea in the evening."]] as const) {
+      const source = await createMaintenanceMessage(userId, text);
+      const fact = await createAutomaticMaintenanceFact(userId, [{ statement: text, source }]);
+      decisions.set(fact.factId, decision);
+      versions.set(decision, fact.currentVersionId);
+    }
+    const decidedAt = new Date();
+    expect(await plan(userId, decidedAt)).toBe(1);
+    await settleMaintenanceJob(userId, (factId) => decisions.get(factId)!, decidedAt);
+    expect(await plan(userId, hours(decidedAt, 1))).toBe(0);
+    // Only a durable keep outlasts the ongoing cadence; an unlabelled keep and a rejected removal follow it.
+    expect(await plan(userId, days(decidedAt, 29))).toBe(0);
+    expect(await plan(userId, days(decidedAt, 31))).toBe(1);
+    expect(await pendingVersions(userId)).toEqual([versions.get("KEEP_ONGOING"), versions.get("KEEP_UNRESOLVED"),
+      versions.get("REJECT")].sort());
+    await settleMaintenanceJob(userId, () => "KEEP", days(decidedAt, 31));
+    expect(await plan(userId, days(decidedAt, 119))).toBe(0);
+    expect(await plan(userId, days(decidedAt, 121))).toBe(1);
+    expect(await pendingVersions(userId)).toEqual([versions.get("KEEP")]);
+    // Every re-review of a version is a new source snapshot under the same policy.
+    const rows = await reviews(userId);
+    expect(rows).toHaveLength(8);
+    expect(new Set(rows.map(({ sourceSnapshotHash }) => sourceSnapshotHash)).size).toBe(rows.length);
+  });
+
+  it("retries a contradiction keep after a day at most three times in a row, then after the ongoing cadence", async () => {
+    const userId = await owner();
+    const source = await createMaintenanceMessage(userId, "I like the blue one.");
+    await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]);
+    let decidedAt = new Date();
+    expect(await plan(userId, decidedAt)).toBe(1);
+    await settleMaintenanceJob(userId, () => "KEEP_CONTRADICTION", decidedAt);
+    for (let retry = 0; retry < 3; retry++) {
+      expect(await plan(userId, hours(decidedAt, 23))).toBe(0);
+      decidedAt = hours(decidedAt, 25);
+      expect(await plan(userId, decidedAt)).toBe(1);
+      await settleMaintenanceJob(userId, () => "KEEP_CONTRADICTION", decidedAt);
+    }
+    // The fourth contradiction in a row waits for the ongoing cadence.
+    expect(await plan(userId, hours(decidedAt, 25))).toBe(0);
+    expect(await plan(userId, days(decidedAt, 29))).toBe(0);
+    decidedAt = days(decidedAt, 31);
+    expect(await plan(userId, decidedAt)).toBe(1);
+    // Another decision ends the run, so the next contradiction is retried after a day again.
+    await settleMaintenanceJob(userId, () => "KEEP_UNRESOLVED", decidedAt);
+    decidedAt = days(decidedAt, 31);
+    expect(await plan(userId, decidedAt)).toBe(1);
+    await settleMaintenanceJob(userId, () => "KEEP_CONTRADICTION", decidedAt);
+    expect(await plan(userId, hours(decidedAt, 25))).toBe(1);
+    const rows = await reviews(userId);
+    expect(rows.map(({ disposition, reasonCode }) => `${disposition}:${reasonCode}`)).toEqual([
+      ...Array.from({ length: 4 }, () => "KEEP:unresolved_scope"), "KEEP:null", "KEEP:unresolved_scope", "PENDING:null"]);
+    expect(new Set(rows.map(({ sourceSnapshotHash }) => sourceSnapshotHash)).size).toBe(rows.length);
+  });
+
+  it("gives each review cycle its own failure budget and reopens an exhausted one after the ongoing cadence", async () => {
+    const userId = await owner();
+    const source = await createMaintenanceMessage(userId, "I like the blue one.");
+    await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]);
+    const start = new Date();
+    expect(await plan(userId, start)).toBe(1);
+    await failQueued(userId, "memory_maintenance_outcome_unknown", start);
+    expect(await plan(userId, start)).toBe(1);
+    await settleMaintenanceJob(userId, () => "KEEP_CONTRADICTION", minutes(start, 1));
+    // The retry cycle does not inherit the earlier failure: two failures of its own end it.
+    const retry = hours(start, 25);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await plan(userId, retry)).toBe(1);
+      await failQueued(userId, "memory_maintenance_outcome_unknown", retry);
+    }
+    expect(await plan(userId, retry)).toBe(0);
+    expect(await plan(userId, days(retry, 29))).toBe(0);
+    expect(await plan(userId, days(retry, 31))).toBe(1);
+    expect((await reviews(userId)).map(({ disposition }) => disposition))
+      .toEqual(["UNKNOWN", "KEEP", "UNKNOWN", "UNKNOWN", "PENDING"]);
+  });
+
+  it("never re-reviews a fact pinned or edited by its owner after its review, however old the decision", async () => {
+    const userId = await owner();
+    const fact = async (text: string) => createAutomaticMaintenanceFact(userId,
+      [{ statement: text, source: await createMaintenanceMessage(userId, text) }]);
+    const kept = await fact("I have kept a vegetarian diet for ten years.");
+    const pinned = await fact("I am renovating my flat this year.");
+    const edited = await fact("I like the blue one.");
+    const decidedAt = new Date();
+    expect(await plan(userId, decidedAt)).toBe(1);
+    await settleMaintenanceJob(userId, () => "KEEP_ONGOING", decidedAt);
+    await prisma.memoryFact.update({ where: { id: pinned.factId }, data: { pinned: true } });
+    await prisma.memoryEvent.create({ data: { userId, factId: edited.factId, factVersionId: edited.currentVersionId,
+      operation: "EDIT", actorType: "USER", actorUserId: userId } });
+    expect(await plan(userId, days(decidedAt, 121))).toBe(1);
+    expect(await pendingVersions(userId)).toEqual([kept.currentVersionId]);
+  });
+
   it("never reviews explicit, pinned, owner-touched or remembered-on-request lineages, even when labelled episodic", async () => {
     const userId = await owner();
     const remembered = await createMaintenanceMessage(userId, "Remember that my locker number is 27.");
@@ -350,7 +460,7 @@ describe("maintenance policy v3 cleanup pass", () => {
     expect(offered.filter((userId) => mine.has(userId))).toEqual([]);
   });
 
-  it("accepts previous-release v2 writes during replacement and stales an old v2 job", async () => {
+  it("accepts previous-release v3 writes during replacement and stales an old v3 job", async () => {
     const userId = await owner();
     const source = await createMaintenanceMessage(userId, "The delivery arrives at noon.");
     const fact = await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]);
@@ -358,22 +468,22 @@ describe("maintenance policy v3 cleanup pass", () => {
       idempotencyFingerprint: randomUUID(), memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0 } });
     const base = { userId, factVersionId: fact.currentVersionId, evidenceThrough: maintenanceFixtureTime() };
     const legacy = await prisma.memoryMaintenanceReview.create({ data: { ...base, memoryJobId: job.id,
-      policyVersion: "memory-maintenance-policy-v2", sourceSnapshotHash: "a".repeat(64) } });
-    await prisma.memoryMaintenanceReview.update({ where: { id: legacy.id }, data: { disposition: "KEEP", usefulness: "EPISODIC", reviewedAt: new Date() } });
+      policyVersion: "memory-maintenance-policy-v3", sourceSnapshotHash: "a".repeat(64) } });
+    await prisma.memoryMaintenanceReview.update({ where: { id: legacy.id }, data: { disposition: "KEEP", usefulness: "DURABLE", reviewedAt: new Date() } });
     const handler = createPrismaMemoryMaintenanceHandler(prisma);
     await expect(handler.preflight({ ...job, claimToken: "", recoveredLease: false } as MemoryJobClaim))
       .resolves.toEqual({ status: "STALE", errorCode: "memory_maintenance_source_stale" });
-    const v3 = { ...base, policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION };
+    const current = { ...base, policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION };
     for (const data of [
-      { ...v3, memoryJobId: null, sourceSnapshotHash: "b".repeat(64) },
-      { ...v3, memoryJobId: job.id, sourceSnapshotHash: "c".repeat(64), reasonCode: "source_changed" },
-      { ...v3, memoryJobId: null, sourceSnapshotHash: "d".repeat(64), disposition: "BLOCKED", reasonCode: "statement_too_long", reviewedAt: new Date() },
-      { ...v3, memoryJobId: null, sourceSnapshotHash: "e".repeat(64), disposition: "KEEP", usefulness: "DURABLE", reviewedAt: new Date() }
+      { ...current, memoryJobId: null, sourceSnapshotHash: "b".repeat(64) },
+      { ...current, memoryJobId: job.id, sourceSnapshotHash: "c".repeat(64), reasonCode: "source_changed" },
+      { ...current, memoryJobId: null, sourceSnapshotHash: "d".repeat(64), disposition: "BLOCKED", reasonCode: "statement_too_long", reviewedAt: new Date() },
+      { ...current, memoryJobId: null, sourceSnapshotHash: "e".repeat(64), disposition: "KEEP", usefulness: "DURABLE", reviewedAt: new Date() }
     ]) await expect(prisma.memoryMaintenanceReview.create({ data })).rejects.toThrow();
-    const blocker = await prisma.memoryMaintenanceReview.create({ data: { ...v3, memoryJobId: null, sourceSnapshotHash: "f".repeat(64),
+    const blocker = await prisma.memoryMaintenanceReview.create({ data: { ...current, memoryJobId: null, sourceSnapshotHash: "f".repeat(64),
       disposition: "UNREVIEWABLE", reasonCode: "statement_too_long", reviewedAt: new Date() } });
     await expect(prisma.memoryMaintenanceReview.update({ where: { id: blocker.id }, data: { reasonCode: "evidence_not_current" } })).rejects.toThrow();
-    const pending = await prisma.memoryMaintenanceReview.create({ data: { ...v3, memoryJobId: job.id, sourceSnapshotHash: "1".repeat(64) } });
+    const pending = await prisma.memoryMaintenanceReview.create({ data: { ...current, memoryJobId: job.id, sourceSnapshotHash: "1".repeat(64) } });
     await expect(prisma.memoryMaintenanceReview.update({ where: { id: pending.id }, data: {
       disposition: "UNREVIEWABLE", reasonCode: "unreviewable_context", reviewedAt: new Date() } })).rejects.toThrow();
     await expect(prisma.memoryMaintenanceReview.update({ where: { id: pending.id }, data: {
