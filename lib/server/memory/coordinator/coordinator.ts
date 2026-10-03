@@ -80,6 +80,9 @@ export class MemoryCoordinator {
   readonly #repository: MemoryCoordinatorRepository;
   readonly #reconcileWork: (() => Promise<void>) | null;
   readonly #scheduler: MemoryScheduler;
+  #busyDiscoveryPhase: object | null = null;
+  #discoveryPending: Promise<void> | null = null;
+  #discoveryTimer: ReturnType<typeof setTimeout> | null = null;
   #pending: Promise<void> | null = null;
   #rerun = false;
   #running = false;
@@ -127,6 +130,7 @@ export class MemoryCoordinator {
 
   async stop(): Promise<void> {
     if (this.#timer) clearTimeout(this.#timer);
+    this.#stopBusyDiscovery();
     if (this.#workerHeartbeatTimer) clearInterval(this.#workerHeartbeatTimer);
     this.#timer = null;
     this.#workerHeartbeatTimer = null;
@@ -207,24 +211,70 @@ export class MemoryCoordinator {
         claimObserved = true;
         if (!success) claimFailed = true;
       };
-      await Promise.all([
-        ...Array.from({ length: this.#policy.maxJobParallel }, () => this.#jobWorker(observeClaim)),
-        ...Array.from(
-          { length: this.#policy.maxDeletionParallel },
-          () => this.#deletionWorker(observeClaim)
-        )
-      ]);
+      const jobLane = Promise.all(
+        Array.from({ length: this.#policy.maxJobParallel }, () => this.#jobWorker(observeClaim))
+      );
+      const deletionLane = Promise.all(Array.from(
+        { length: this.#policy.maxDeletionParallel },
+        () => this.#deletionWorker(observeClaim)
+      ));
+      // One long job must not starve optional discovery for the rest of the
+      // pass. Its own cadence starts only after this pass reconciled jobs and
+      // drained privacy-critical deletions, so their precedence is unchanged.
+      const phase = {};
+      this.#busyDiscoveryPhase = phase;
+      void deletionLane.then(() => this.#armBusyDiscovery(phase), () => undefined);
+      try {
+        await Promise.all([jobLane, deletionLane]);
+      } finally {
+        this.#stopBusyDiscovery();
+      }
       if (claimObserved && !claimFailed && !this.#stopped) reportSubsystemHealthy("memory", "claim");
       await this.#reconcileJobs();
+      // The pass still ends with discovery that starts after its claims and
+      // reconciliation; it waits for a busy-phase pass instead of overlapping.
+      while (this.#discoveryPending) await this.#discoveryPending;
+      await this.#discover();
+    } while (this.#rerun && !this.#stopped);
+  }
+
+  /** Single-flight per process: callers start a pass only when none is pending. */
+  #discover(): Promise<void> {
+    const reconcileWork = this.#reconcileWork;
+    if (!reconcileWork) return Promise.resolve();
+    if (this.#discoveryPending) return this.#discoveryPending;
+    const pass = runInBackground(async () => {
       try {
-        await this.#reconcileWork?.();
-        if (this.#reconcileWork) reportSubsystemHealthy("memory", "discover");
+        await reconcileWork();
+        reportSubsystemHealthy("memory", "discover");
       } catch (error) {
         reportFailure("discover", error);
-        // The timer retries optional durable work discovery after existing
-        // jobs and privacy-critical deletions have had their pass.
+        // A later cadence tick or pass retries optional durable work
+        // discovery; queue contents remain authoritative.
       }
-    } while (this.#rerun && !this.#stopped);
+    }).finally(() => {
+      if (this.#discoveryPending === pass) this.#discoveryPending = null;
+    });
+    this.#discoveryPending = pass;
+    return pass;
+  }
+
+  /** Re-arms only after a pass settles, so a slow pass cannot cause catch-up. */
+  #armBusyDiscovery(phase: object): void {
+    if (!this.#reconcileWork || !this.#running || this.#stopped ||
+      this.#busyDiscoveryPhase !== phase || this.#discoveryTimer) return;
+    this.#discoveryTimer = setTimeout(() => {
+      this.#discoveryTimer = null;
+      if (this.#stopped || this.#busyDiscoveryPhase !== phase) return;
+      void this.#discover().finally(() => this.#armBusyDiscovery(phase));
+    }, this.#policy.intervalMs);
+    this.#discoveryTimer.unref?.();
+  }
+
+  #stopBusyDiscovery(): void {
+    if (this.#discoveryTimer) clearTimeout(this.#discoveryTimer);
+    this.#discoveryTimer = null;
+    this.#busyDiscoveryPhase = null;
   }
 
   async #reconcileJobs(): Promise<void> {

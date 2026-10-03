@@ -1257,3 +1257,149 @@ describe("Memory job fences outrank failures", () => {
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 });
+
+describe("Memory discovery cadence", () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(NOW); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function gated() {
+    const releases: Array<() => void> = [];
+    return {
+      release: (index: number) => releases[index]!(),
+      wait: () => new Promise<void>((resolve) => { releases.push(resolve); })
+    };
+  }
+
+  function busyCoordinator(input: Readonly<{
+    deletion?: () => Promise<void>;
+    job: () => Promise<void>;
+    reconcileWork: () => Promise<void>;
+  }>) {
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({
+      execute: async () => { await input.job(); return { acceptedResultHash: RESULT_HASH }; },
+      kind: "INDEX_HISTORY",
+      preflight: async () => ({ status: "READY" })
+    });
+    if (input.deletion) {
+      const deletion = input.deletion;
+      registry.registerDeletion({
+        execute: async () => { await deletion(); return {}; },
+        operation: "TEMPORARY_DELETE"
+      });
+    }
+    const commitJobSuccess = vi.fn(async () => true);
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      policy: { heartbeatMs: 10, intervalMs: 100, leaseMs: 1_000, maxDeletionParallel: 1, maxJobParallel: 1 },
+      reconcileWork: input.reconcileWork,
+      registry,
+      repository: repository({
+        claimDeletion: vi.fn().mockResolvedValueOnce(deletionClaim()).mockResolvedValue(null),
+        claimJob: vi.fn().mockResolvedValueOnce(jobClaim({ kind: "INDEX_HISTORY" })).mockResolvedValue(null),
+        commitJobSuccess
+      })
+    });
+    return { commitJobSuccess, service };
+  }
+
+  it("keeps discovering at the coordinator interval while one job outlasts it", async () => {
+    const job = gated();
+    const reconcileWork = vi.fn(async () => undefined);
+    const { commitJobSuccess, service } = busyCoordinator({ job: job.wait, reconcileWork });
+    try {
+      service.start();
+      await vi.advanceTimersByTimeAsync(99);
+      expect(reconcileWork).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reconcileWork).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reconcileWork).toHaveBeenCalledTimes(11);
+      expect(commitJobSuccess).not.toHaveBeenCalled();
+
+      job.release(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(commitJobSuccess).toHaveBeenCalledOnce();
+      // The pass still ends with its own discovery after claims and reconciliation.
+      expect(reconcileWork).toHaveBeenCalledTimes(12);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("never overlaps discovery passes across cadence ticks and the end of the pass", async () => {
+    const job = gated();
+    const discovery = gated();
+    let active = 0;
+    let maximumActive = 0;
+    const reconcileWork = vi.fn(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await discovery.wait();
+      active -= 1;
+    });
+    const { service } = busyCoordinator({ job: job.wait, reconcileWork });
+    try {
+      service.start();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(reconcileWork).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reconcileWork).toHaveBeenCalledTimes(1);
+
+      job.release(0);
+      await vi.advanceTimersByTimeAsync(0);
+      // The end-of-pass discovery waits for the busy-phase pass.
+      expect(reconcileWork).toHaveBeenCalledTimes(1);
+      discovery.release(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reconcileWork).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(reconcileWork).toHaveBeenCalledTimes(2);
+      discovery.release(1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(maximumActive).toBe(1);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("lets privacy-critical deletions of the pass finish before busy-phase discovery", async () => {
+    const job = gated();
+    const deletion = gated();
+    const reconcileWork = vi.fn(async () => undefined);
+    const { service } = busyCoordinator({ deletion: deletion.wait, job: job.wait, reconcileWork });
+    try {
+      service.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(reconcileWork).not.toHaveBeenCalled();
+      deletion.release(0);
+      await vi.advanceTimersByTimeAsync(99);
+      expect(reconcileWork).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reconcileWork).toHaveBeenCalledTimes(1);
+    } finally {
+      job.release(0);
+      await service.stop();
+    }
+  });
+
+  it("stops the discovery cadence at shutdown even while a job is still running", async () => {
+    const job = gated();
+    const reconcileWork = vi.fn(async () => undefined);
+    const { service } = busyCoordinator({ job: job.wait, reconcileWork });
+    service.start();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(reconcileWork).toHaveBeenCalledTimes(1);
+    await service.stop();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(reconcileWork).toHaveBeenCalledTimes(1);
+
+    // A stopped coordinator arms neither cadence once the running job settles.
+    job.release(0);
+    await vi.advanceTimersByTimeAsync(0);
+    const settled = reconcileWork.mock.calls.length;
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(reconcileWork).toHaveBeenCalledTimes(settled);
+  });
+});
