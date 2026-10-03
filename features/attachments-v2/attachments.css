@@ -294,6 +294,11 @@
 
   .v2-attachment-list {
     display: grid;
+    /* Content-sized rows: a capped grid otherwise squeezes its rows to the
+       max-height, which the tray then measures back as its three-row cap, so
+       a card that grows (a blocking reason with its recovery link) stays
+       clipped instead of the tray growing to show it. */
+    grid-auto-rows: max-content;
     max-height: var(--v2-attachment-list-max-height, 9rem);
   }
 
