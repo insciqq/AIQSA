@@ -577,6 +577,81 @@ describe("Prisma Memory execution", () => {
     }
   });
 
+  it("persists a closed decode reason only on a settled rejected answer", async () => {
+    const fixture = await createEmbeddingFixture();
+    try {
+      const policy = await prisma.$transaction(async (tx) => {
+        const settings = await tx.userMemorySettings.findUniqueOrThrow({
+          where: { userId: fixture.userId }
+        });
+        return resolveCurrentMemoryUtilityPolicy(tx, fixture.userId, settings);
+      });
+      await prisma.userMemorySettings.update({
+        data: {
+          acceptedUtilityEgressAt: INITIAL_NOW,
+          acceptedUtilityEgressFingerprint: policy.fingerprint,
+          acceptedUtilityPolicyVersion: MEMORY_UTILITY_EGRESS_POLICY_VERSION
+        },
+        where: { userId: fixture.userId }
+      });
+      const service = createPrismaMemoryExecutionService({ now: () => INITIAL_NOW }, prisma);
+      const owner = { inboundMcpRequestId: `decode-reason-${randomUUID()}`, type: "INBOUND_MCP_REQUEST" } as const;
+      const started = async (ordinal: number) => {
+        const binding = await service.admission.bind(fixture.userId, {
+          inputHash: "6".repeat(64), ordinal, owner, role: "MEMORY_QUERY_EMBED", versions: VERSIONS
+        });
+        await service.admission.start(fixture.userId, binding.id);
+        return binding.id;
+      };
+      const rejected = await started(0);
+      const settlement = {
+        acceptedOutputHash: null,
+        decodeReason: "invalid_json" as const,
+        errorCode: "memory_classifier_output_invalid",
+        providerResponseId: "rejected-response",
+        state: "FAILED" as const,
+        usage: completeUsage(3)
+      };
+      await expect(service.lifecycle.settle(fixture.userId, rejected, settlement))
+        .resolves.toMatchObject({ replayed: false, state: "FAILED" });
+      await expect(service.lifecycle.settle(fixture.userId, rejected, settlement))
+        .resolves.toMatchObject({ replayed: true, state: "FAILED" });
+      await expect(service.lifecycle.settle(fixture.userId, rejected, {
+        ...settlement, decodeReason: "non_object"
+      })).rejects.toMatchObject({ code: "memory_execution_state_conflict" });
+      expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
+        select: { decodeReason: true, errorCode: true, state: true }, where: { id: rejected }
+      })).toEqual({ decodeReason: "invalid_json", errorCode: "memory_classifier_output_invalid", state: "FAILED" });
+      expect(await prisma.usageEvent.count({ where: { memoryExecutionBindingId: rejected } })).toBe(1);
+
+      const accepted = await started(1);
+      for (const invalid of [
+        { ...settlement, acceptedOutputHash: "5".repeat(64), errorCode: null, state: "SUCCEEDED" as const },
+        { ...settlement, decodeReason: "Private rejected text" as never }
+      ]) {
+        await expect(service.lifecycle.settle(fixture.userId, accepted, invalid))
+          .rejects.toMatchObject({ code: "memory_execution_output_invalid" });
+      }
+      await service.lifecycle.settle(fixture.userId, accepted, {
+        acceptedOutputHash: "5".repeat(64), errorCode: null, providerResponseId: null,
+        state: "SUCCEEDED", usage: completeUsage(2)
+      });
+      // PostgreSQL keeps every value a bounded code on a FAILED settlement,
+      // whatever the writer.
+      for (const [id, value] of [
+        [rejected, "Invalid JSON"], [rejected, "1_leading_digit"], [accepted, "invalid_json"]
+      ] as const) {
+        await expect(prisma.$executeRaw`UPDATE "MemoryExecutionBinding" SET "decodeReason" = ${value} WHERE id = ${id}`)
+          .rejects.toMatchObject({ code: "P2010", meta: { code: "23514" } });
+      }
+      expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
+        select: { decodeReason: true }, where: { id: accepted }
+      })).toEqual({ decodeReason: null });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("rejects linked result use and rebound dispatch after target drift", async () => {
     const fixture = await createEmbeddingFixture();
     try {

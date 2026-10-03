@@ -15,6 +15,7 @@ import {
   type MemoryHistoryPreparedRound
 } from "./contract";
 import { MEMORY_HISTORY_OUTPUT_PIPELINE_VERSION } from "../execution/historyOutputBudget";
+import { MemoryOutputViolationError, type MemoryOutputDecodeReason } from "../execution/outputViolation";
 import { MemoryStructuredOutputProviderError } from "../execution/structuredClassifier";
 import { projectMemoryHistorySafeText } from "./safety";
 import { normalizeMemoryLanguageCode } from "./language";
@@ -91,14 +92,28 @@ type BatchItem = Readonly<{
   roundId: string;
 }>;
 
-class MemoryContextualKeyOutputError extends Error {
-  constructor(readonly reason: MemoryContextualFallbackReason) {
-    super("memory_contextual_key_output_invalid");
+type MemoryContextualKeyOutputReason = Extract<MemoryContextualFallbackReason,
+  | "EMPTY_STATEMENTS" | "HANDLE_MISMATCH" | "PROVIDER_OUTPUT_INVALID" | "SAFETY_REDACTED_OR_REJECTED"
+  | "SOURCE_REF_INVALID" | "STATEMENT_COUNT_INVALID" | "STATEMENT_TOO_LONG">;
+
+const contextualKeyDecodeReasons: Readonly<Record<MemoryContextualKeyOutputReason, MemoryOutputDecodeReason>> = {
+  EMPTY_STATEMENTS: "contextual_key_empty_statements",
+  HANDLE_MISMATCH: "contextual_key_handle_mismatch",
+  PROVIDER_OUTPUT_INVALID: "contextual_key_output_invalid",
+  SAFETY_REDACTED_OR_REJECTED: "contextual_key_safety_rejected",
+  SOURCE_REF_INVALID: "contextual_key_source_ref_invalid",
+  STATEMENT_COUNT_INVALID: "contextual_key_statement_count_invalid",
+  STATEMENT_TOO_LONG: "contextual_key_statement_too_long"
+};
+
+class MemoryContextualKeyOutputError extends MemoryOutputViolationError {
+  constructor(readonly reason: MemoryContextualKeyOutputReason) {
+    super("memory_contextual_key_output_invalid", contextualKeyDecodeReasons[reason]);
     this.name = "MemoryContextualKeyOutputError";
   }
 }
 
-function outputError(reason: MemoryContextualFallbackReason): never {
+function outputError(reason: MemoryContextualKeyOutputReason): never {
   throw new MemoryContextualKeyOutputError(reason);
 }
 
@@ -427,16 +442,6 @@ export function createPrismaMemoryContextualKeyGenerator(
           providerRequests: 0
         });
       }
-      const prior = await client.memoryExecutionBinding.aggregate({
-        _max: { ordinal: true },
-        where: {
-          logicalRole: "MEMORY_HISTORY_CLASSIFY",
-          memoryJobId: generateOptions.jobId,
-          ownerType: "JOB",
-          userId: generateOptions.userId
-        }
-      });
-      let ordinal = (prior._max.ordinal ?? -1) + 1;
       let providerRequests = 0;
       const executions: Array<{ acceptedOutputHash: string; bindingId: string }> = [];
       const outputs: MemoryContextualRoundOutput[] = [];
@@ -445,8 +450,6 @@ export function createPrismaMemoryContextualKeyGenerator(
       for (const batch of partitioned.batches) {
         if (generateOptions.signal.aborted) throw generateOptions.signal.reason;
         const built = buildMemoryContextualKeyRequest(batch);
-        const executionOrdinal = ordinal;
-        ordinal += 1;
         try {
           const governed = await executeRecoverableMemoryHistoryOutput({
             authority,
@@ -465,7 +468,6 @@ export function createPrismaMemoryContextualKeyGenerator(
               inputs: batch.map((item) => item.input),
               versions: MEMORY_CONTEXTUAL_KEY_VERSIONS
             }),
-            ordinal: executionOrdinal,
             provider,
             request: built.request,
             signal: generateOptions.signal,
@@ -481,8 +483,6 @@ export function createPrismaMemoryContextualKeyGenerator(
             outputs.push(...governed.value);
             continue;
           }
-          const reviewOrdinal = ordinal;
-          ordinal += 1;
           const grounded = await executeRecoverableMemoryHistoryOutput({
             authority,
             client,
@@ -511,7 +511,6 @@ export function createPrismaMemoryContextualKeyGenerator(
               outputs: governed.value,
               versions: MEMORY_CONTEXTUAL_GROUNDING_VERSIONS
             }),
-            ordinal: reviewOrdinal,
             provider,
             request: review.request,
             signal: generateOptions.signal,
