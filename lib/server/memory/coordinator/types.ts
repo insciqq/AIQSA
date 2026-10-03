@@ -57,6 +57,12 @@ export type MemoryJobGateDecision =
       status: "WAITING_FOR_CONFIGURATION" | "STALE" | "CANCELLED";
     }>;
 
+/** A gate decision that ends the job's authority instead of pausing it. */
+export type MemoryJobFenceDecision = Readonly<{
+  errorCode: string;
+  status: "STALE" | "CANCELLED";
+}>;
+
 export type MemoryJobApply = (
   tx: Prisma.TransactionClient,
   claim: MemoryJobClaim
