@@ -46,6 +46,7 @@ export function AdminMcpConfigurationsSheet({
   return (
     <UiV2Sheet
       closeBlocked={controller.state.busy}
+      description="Restore switches back to a configuration as it was checked. Rebuild and apply checks it with the server again, then applies it."
       onClose={onClose}
       open
       testId="mcp-configurations-sheet"

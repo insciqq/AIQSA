@@ -151,7 +151,7 @@ function SheetBody({
           </UiV2Button>
           <UiV2Button disabled={busy} onClick={requestClose} tone="ghost" type="button">Cancel</UiV2Button>
           <span className="min-w-0 text-xs leading-5 text-ink-muted">
-            Pasted commands are never executed; secrets become write-only fields.
+            Pasted text is never executed; secrets become write-only fields.
           </span>
         </>
       ) : (
