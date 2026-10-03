@@ -550,6 +550,42 @@ describe("history recovery without repeated provider work", () => {
     expect((await readAdminMemoryProcessing(prisma, f.now())).issues.filter(i => i.stage === "HISTORY")).toEqual([]);
   });
 
+  it("keeps queued v2 repairs valid and reopens a chat exhausted under v2 until a v3 repair heals it", async () => {
+    const f = await fixture();
+    const produce = f.run.getMockImplementation()!;
+    f.run.mockResolvedValue({ output: {}, providerResponseId: null,
+      usage: { inputTokens: 20, outputTokens: 5, totalTokens: 25, completeness: "complete" } });
+    await f.drive();
+    // Three repairs admitted before the upgrade carry the v2 identity. Each
+    // stays a valid claim until it settles, and none counts toward v3.
+    for (const [index, delay] of MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS.entries()) {
+      f.advance(delay);
+      expect(await autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: f.now() })).toBe(1);
+      const repair = await prisma.memoryJob.findFirstOrThrow({ where: { userId: f.userId, state: "QUEUED",
+        idempotencyFingerprint: { startsWith: "heal-history:" } } });
+      expect(repair.idempotencyFingerprint).toMatch(/:v3:[1-9][0-9]*:1$/u);
+      await prisma.memoryJob.update({ where: { id: repair.id }, data: { idempotencyFingerprint:
+        repair.idempotencyFingerprint.replace(/:v3:([1-9][0-9]*):1$/u, `:v2:$1:${index + 1}`) } });
+      await f.drive();
+      expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: repair.id } })).toMatchObject({ state: "SUCCEEDED" });
+    }
+    expect(await prisma.memoryJob.count({ where: { userId: f.userId, idempotencyFingerprint: { contains: ":v2:" } } })).toBe(3);
+    const history = async () => (await readAdminMemoryProcessing(prisma, f.now())).issues
+      .filter(({ stage }) => stage === "HISTORY");
+    // Exhausted under v2, the chat has a fresh v3 budget: recovering, not failed.
+    expect(await history()).toEqual([expect.objectContaining({ reason: "HISTORY_INCOMPLETE", autoHeal: "RETRYING", count: 1 })]);
+    f.run.mockImplementation(produce);
+    f.advance(MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS[0]);
+    expect(await autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: f.now() })).toBe(1);
+    const healed = await prisma.memoryJob.findFirstOrThrow({ where: { userId: f.userId, state: "QUEUED" } });
+    expect(healed.idempotencyFingerprint).toMatch(/:v3:[1-9][0-9]*:1$/u);
+    await f.drive();
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: healed.id } })).toMatchObject({ state: "SUCCEEDED" });
+    expect(await history()).toEqual([]);
+    expect(await autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: f.now() })).toBe(0);
+    await assertRecall(f);
+  });
+
   it("reuses a completed digest and source projections while healing only failed context", async () => {
     const f = await fixture();
     const produce = f.run.getMockImplementation()!;

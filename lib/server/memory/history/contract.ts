@@ -16,7 +16,14 @@ export const MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION =
 export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v5";
 export const MEMORY_HISTORY_INDEX_JOB_PREFIX = "index-history:";
 const HISTORY_AUTO_HEAL_PREFIX = "heal-history:";
-export const MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION = "v2";
+/** v3 repairs run with in-call validation retries, so chats exhausted under v2
+ * get a fresh bounded cycle. Only the current version admits new repairs and
+ * counts attempts. */
+export const MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION = "v3";
+/** A repair admitted before an upgrade keeps a valid claim until it settles;
+ * its attempts never count toward the current version's budget. */
+const MEMORY_HISTORY_AUTO_HEAL_CLAIMABLE_POLICY_VERSIONS: ReadonlySet<string> =
+  new Set(["v2", MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION]);
 export const MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS = Object.freeze([60_000, 5 * 60_000, 15 * 60_000]);
 export const MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS = 512;
 export const MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES = 8_192;
@@ -235,8 +242,11 @@ export function memoryHistoryAutoHealJobFingerprint(
   }
   // Accepted legacy attempts remain valid. A repaired generator or a deliberate
   // Memory role change admits a separate bounded cycle without rewriting them.
-  const policy = utilityPolicyVersion === undefined ? ""
-    : `${MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION}:${utilityPolicyVersion}:`;
+  return autoHealJobFingerprint(source, attempt, utilityPolicyVersion === undefined ? ""
+    : `${MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION}:${utilityPolicyVersion}:`);
+}
+
+function autoHealJobFingerprint(source: FingerprintSource, attempt: number, policy: string): string {
   return `${HISTORY_AUTO_HEAL_PREFIX}${memoryHistoryIndexJobFingerprint(source).slice(MEMORY_HISTORY_INDEX_JOB_PREFIX.length)}:${policy}${attempt}`;
 }
 
@@ -273,9 +283,9 @@ export function memoryHistoryIndexClaimIsValid(
   const match = /^heal-history:[a-f0-9]{64}:([1-3])$/u.exec(job.idempotencyFingerprint);
   if (match) return job.idempotencyFingerprint === memoryHistoryAutoHealJobFingerprint(source, Number(match[1]));
   const versioned = /^heal-history:[a-f0-9]{64}:(v[1-9][0-9]*):([1-9][0-9]{0,9}):([1-3])$/u.exec(job.idempotencyFingerprint);
-  return Boolean(versioned && versioned[1] === MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION &&
+  return Boolean(versioned && MEMORY_HISTORY_AUTO_HEAL_CLAIMABLE_POLICY_VERSIONS.has(versioned[1]!) &&
     validCounter(Number(versioned[2])) && job.idempotencyFingerprint ===
-    memoryHistoryAutoHealJobFingerprint(source, Number(versioned[3]), Number(versioned[2])));
+    autoHealJobFingerprint(source, Number(versioned[3]), `${versioned[1]}:${Number(versioned[2])}:`));
 }
 
 export function memoryHistoryChunkId(
