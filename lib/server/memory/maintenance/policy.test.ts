@@ -24,10 +24,10 @@ describe("versioned maintenance provenance", () => {
       expect(isSupportedMemoryMaintenancePolicy(unsupported)).toBe(false);
     }
   });
-  it("re-keys staged receipts for the label-tolerant decoder without reopening review coverage", () => {
+  it("re-keys staged receipts for the marked conservative keep without reopening review coverage", () => {
     // Coverage and plan identity follow the policy version; the request is unchanged, so only the schema moved.
     expect(MEMORY_MAINTENANCE_VERSIONS).toMatchObject({ policyVersion: "memory-maintenance-policy-v3",
-      promptVersion: "memory-maintenance-prompt-v3", schemaVersion: "memory-maintenance-schema-v4" });
+      promptVersion: "memory-maintenance-prompt-v3", schemaVersion: "memory-maintenance-schema-v5" });
     expect(memoryMaintenancePlan([]).sourceSnapshotHash)
       .toBe(memorySha256({ policyVersion: "memory-maintenance-policy-v3", sources: [] }));
   });
