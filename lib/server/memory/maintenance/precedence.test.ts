@@ -4,13 +4,17 @@ import { memoryMaintenanceContradictionPrecedence, settleMemoryMaintenanceContra
 
 const day = (value: number) => new Date(Date.UTC(2026, 8, value));
 const said = (messageId: string, at: number): MemoryMaintenanceTestimony => ({ messageId, observedAt: day(at) });
-const target = (testimony: readonly MemoryMaintenanceTestimony[], protectedFact = false) => ({ protected: protectedFact, testimony });
+const target = (testimony: readonly MemoryMaintenanceTestimony[], protectedFact = false, lasting = true) =>
+  ({ protected: protectedFact, lasting, testimony });
 
 describe("contradiction precedence", () => {
   it("lets an explicit, owner-edited, pinned or remember-requested memory outrank the automatic source, whatever its age", () => {
-    // Protection covers explicit saves without testimony and older protected automatic facts alike.
+    // Protection covers explicit saves without testimony and older protected automatic facts alike, confirmed lasting or not.
     for (const testimony of [[], [said("old", 1)], [said("same", 5)], [said("new", 9)]]) {
-      expect(memoryMaintenanceContradictionPrecedence({ source: [said("same", 5)], target: target(testimony, true) })).toBe("TARGET");
+      for (const lasting of [true, false]) {
+        expect(memoryMaintenanceContradictionPrecedence({ source: [said("same", 5)], target: target(testimony, true, lasting) }))
+          .toBe("TARGET");
+      }
     }
   });
   it("lets an automatic memory outrank the source only with later testimony from another message", () => {
@@ -22,6 +26,11 @@ describe("contradiction precedence", () => {
     expect(memoryMaintenanceContradictionPrecedence({ source, target: target([said("m0", 1)]) })).toBe("SOURCE");
     // Interleaved: the latest testimony decides, so the source's later repetition keeps it ahead.
     expect(memoryMaintenanceContradictionPrecedence({ source, target: target([said("m5", 3)]) })).toBe("SOURCE");
+  });
+  it("never lets a newer automatic memory that maintenance has not confirmed lasting outrank the source", () => {
+    const source = [said("m1", 2)];
+    expect(memoryMaintenanceContradictionPrecedence({ source, target: target([said("m3", 6)], false, false) })).toBe("NONE");
+    expect(memoryMaintenanceContradictionPrecedence({ source, target: target([said("m0", 1)], false, false) })).toBe("SOURCE");
   });
   it("finds no clear order between automatic memories resting on the same message or on simultaneous testimony", () => {
     // The same single message.

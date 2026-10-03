@@ -5,7 +5,7 @@ import { loadPersonalMemoryEvidenceSnapshots } from "../persistence/eligibility"
 import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { createPrismaMemoryVectorRepository, type MemoryVectorProfile, type MemoryVectorRepository,
   type MemoryVectorSearchInput } from "../retrieval/vector";
-import type { MemoryMaintenanceRelatedMemory, MemoryMaintenanceSource } from "./policy";
+import { MEMORY_MAINTENANCE_POLICY_VERSION, type MemoryMaintenanceRelatedMemory, type MemoryMaintenanceSource } from "./policy";
 import type { MemoryMaintenanceTestimony } from "./precedence";
 import { memoryMaintenanceProtectedFactPredicate } from "./source";
 
@@ -128,10 +128,13 @@ export async function loadMemoryMaintenanceRelatedMemories(client: QueryClient, 
   }
 }
 
-export type MemoryMaintenanceContradictionTarget = Readonly<{ factId: string; versionId: string; protected: boolean }>;
+/** `lasting`: the latest settled current-policy decision on this version kept
+ * it as DURABLE or ONGOING. */
+export type MemoryMaintenanceContradictionTarget = Readonly<{ factId: string; versionId: string; protected: boolean; lasting: boolean }>;
 /** What settlement's precedence rule reads, inside its locked transaction:
  * which contradicting memories are still current and authorized, whether each
- * is protected, and the exact current testimony of every version involved. */
+ * is protected or confirmed lasting, and the exact current testimony of every
+ * version involved. */
 export async function loadMemoryMaintenanceContradictionStates(client: QueryClient, userId: string,
   input: Readonly<{ sourceVersionIds: readonly string[]; targetVersionIds: readonly string[] }>): Promise<Readonly<{
     targets: ReadonlyMap<string, MemoryMaintenanceContradictionTarget>;
@@ -139,7 +142,12 @@ export async function loadMemoryMaintenanceContradictionStates(client: QueryClie
   }>> {
   const targetIds = [...new Set(input.targetVersionIds)];
   const rows = targetIds.length === 0 ? [] : await client.$queryRaw<Array<MemoryMaintenanceContradictionTarget>>(Prisma.sql`
-    SELECT fact."id" AS "factId", version."id" AS "versionId", ${memoryMaintenanceProtectedFactPredicate()} AS "protected"
+    SELECT fact."id" AS "factId", version."id" AS "versionId", ${memoryMaintenanceProtectedFactPredicate()} AS "protected",
+      COALESCE((SELECT decided."disposition" = 'KEEP' AND decided."usefulness" IN ('DURABLE', 'ONGOING')
+        FROM "MemoryMaintenanceReview" AS decided
+        WHERE decided."userId" = version."userId" AND decided."factVersionId" = version."id"
+          AND decided."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION} AND decided."disposition" IN ('KEEP', 'REJECTED')
+        ORDER BY decided."reviewedAt" DESC, decided."id" DESC LIMIT 1), FALSE) AS "lasting"
     FROM "MemoryFactVersion" AS version
     JOIN "MemoryFact" AS fact ON fact."id" = version."factId" AND fact."userId" = version."userId"
     JOIN "MemoryScope" AS scope ON scope."id" = fact."scopeId" AND scope."userId" = fact."userId"

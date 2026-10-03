@@ -120,7 +120,7 @@ async function edit(userId: string, fact: Fact, statement: string): Promise<stri
 }
 
 /** What the review decided for a source, by fact. */
-type Decided = "KEEP" | "TRANSIENT" | Readonly<{ contradictedBy: Fact }>;
+type Decided = "KEEP" | "KEEP_UNRESOLVED" | "TRANSIENT" | Readonly<{ contradictedBy: Fact }>;
 /** Plans the owner's batch, claims it and returns its snapshot and settlement. */
 async function planned(userId: string) {
   expect(await scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).toBe(1);
@@ -141,6 +141,8 @@ async function planned(userId: string) {
     const output = { decisions: plan.sources.map(({ ref, factId }): MemoryMaintenanceDecision => {
       const decided = decide(factId);
       if (decided === "KEEP") return { sourceRef: ref, scopeBasis: "general_personal", action: "KEEP", usefulness: "DURABLE",
+        reason: "useful_personal_context" };
+      if (decided === "KEEP_UNRESOLVED") return { sourceRef: ref, scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null,
         reason: "useful_personal_context" };
       if (decided === "TRANSIENT") return { sourceRef: ref, scopeBasis: "single_episode", action: "REMOVE_TRANSIENT", usefulness: null,
         reason: "episode" };
@@ -235,6 +237,55 @@ describe("maintenance contradiction settlement", () => {
     }
     expect(await settled(userId, transientTarget)).toEqual({ disposition: "REMOVED", usefulness: null, reasonCode: "episode" });
     expect(await state(undisclosedTarget)).toMatchObject({ state: "ACTIVE", currentVersionId: undisclosedTarget.versionId });
+  });
+  it("lets a newer automatic memory outrank only once maintenance confirmed it lasting", async () => {
+    const userId = await owner();
+    const prior = await prisma.memoryJob.create({ data: { userId, kind: "SYNTHESIZE_MEMORIES", pipelineVersion: MEMORY_MAINTENANCE_PIPELINE_VERSION,
+      idempotencyFingerprint: randomUUID(), state: "SUCCEEDED", completedAt: new Date(), memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0 } });
+    /** A settled current-policy decision that covers `fact` until its re-review, so it is not in the batch. */
+    const decided = (fact: Fact, evidenceThrough: Date, data: Readonly<{ disposition: "KEEP" | "REJECTED"; usefulness: "DURABLE" | null }>) =>
+      prisma.memoryMaintenanceReview.create({ data: { userId, factVersionId: fact.versionId, memoryJobId: prior.id,
+        policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION, sourceSnapshotHash: memorySha256({ decided: fact.versionId }), evidenceThrough,
+        reviewedAt: new Date(), ...data } });
+    const older = async (text: string) => automaticFact(userId, text, [await said(userId, text, daysAgo(15))]);
+    const newer = async (text: string, at = daysAgo(5)) => {
+      const turn = await said(userId, text, at);
+      return { fact: await automaticFact(userId, text, [turn]), at: turn.at };
+    };
+    const lisbon = await older("I live in Lisbon.");
+    const porto = await newer("I moved to Porto and live there now.");
+    await decided(porto.fact, porto.at, { disposition: "KEEP", usefulness: "DURABLE" });
+    const desk = await older("I work at a standing desk.");
+    const sitting = await newer("I only work sitting down.");
+    await decided(sitting.fact, sitting.at, { disposition: "REJECTED", usefulness: null });
+    const tea = await older("I drink only green tea.");
+    // Still within the quiet period: never reviewed, so never confirmed lasting.
+    const coffee = await newer("I switched to black coffee.", new Date(Date.now() - 5 * 60_000));
+    const cat = await older("I have no pets.");
+    const dog = await newer("I adopted a dog.");
+    const vim = await older("I edit code in Vim.");
+    const vscode = await newer("I moved from Vim to VS Code for all editing.");
+    const work = await planned(userId);
+    expect(work.plan.sources.map(({ factId }) => factId).sort()).toEqual([lisbon, desk, tea, cat, dog.fact, vim, vscode.fact]
+      .map(({ factId }) => factId).sort());
+    const decisions = new Map<string, Decided>([[lisbon.factId, { contradictedBy: porto.fact }], [desk.factId, { contradictedBy: sitting.fact }],
+      [tea.factId, { contradictedBy: coffee.fact }], [cat.factId, { contradictedBy: dog.fact }], [dog.fact.factId, "KEEP_UNRESOLVED"],
+      // Both directions named: the newer memory's own lasting basis confirms it.
+      [vim.factId, { contradictedBy: vscode.fact }], [vscode.fact.factId, { contradictedBy: vim }]]);
+    await expect(work.settle((factId) => decisions.get(factId) ?? "KEEP")).resolves.toMatchObject({ reviewed: 7, removed: 2, blocked: 0 });
+    // Confirmed lasting by a settled keep, or by this review's own basis: the older memory goes.
+    for (const source of [lisbon, vim]) expect(await settled(userId, source)).toEqual(removed);
+    // Disputed, unreviewed or kept with unresolved scope: no order, both stay.
+    for (const source of [desk, tea, cat]) {
+      expect(await settled(userId, source)).toEqual(conflict);
+      expect(await state(source)).toMatchObject({ state: "ACTIVE", currentVersionId: source.versionId });
+    }
+    // The superseding memory stays without a conflict once the older one is gone.
+    expect(await settled(userId, vscode.fact)).toEqual(kept);
+    expect(await settled(userId, dog.fact)).toEqual({ disposition: "KEEP", usefulness: null, reasonCode: null });
+    for (const fact of [porto.fact, sitting.fact, coffee.fact, dog.fact, vscode.fact]) {
+      expect(await state(fact)).toMatchObject({ state: "ACTIVE", currentVersionId: fact.versionId });
+    }
   });
 });
 

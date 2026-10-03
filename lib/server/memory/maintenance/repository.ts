@@ -113,7 +113,10 @@ type Outcome = Readonly<{ source: MemoryMaintenanceSnapshotSource } & (
 
 /** Verified contradictions of unchanged sources, settled by the precedence
  * rule against the memories they name as those are now, inside the
- * settlement transaction: never by the model's judgment of which one stays. */
+ * settlement transaction: never by the model's judgment of which one stays.
+ * A named memory reviewed in this batch counts as lasting only by this
+ * review's own lasting basis for it; any other by its latest settled
+ * decision. */
 async function settleContradictions(tx: MemoryTransaction, userId: string, decisions: readonly MemoryMaintenanceDecision[],
   byRef: ReadonlyMap<string, MemoryMaintenanceSnapshotSource>, verdicts: ReadonlyMap<string, boolean>
 ): Promise<ReadonlyMap<string, MemoryMaintenanceContradictionOutcome>> {
@@ -131,12 +134,21 @@ async function settleContradictions(tx: MemoryTransaction, userId: string, decis
     const source = approved(decision);
     return source && !decision.contradictedBy ? [source.factId] : [];
   }));
+  // This review's lasting judgment of each fact it reviewed: a keep, or a
+  // contradiction of its own, under a DURABLE or ONGOING basis.
+  const reviewed = new Map(decisions.flatMap((decision) => {
+    const source = byRef.get(decision.sourceRef)?.current;
+    const usefulness = decision.action === "KEEP" ? decision.usefulness
+      : decision.contradictedBy ? memoryMaintenanceKeepUsefulness(decision.scopeBasis) : null;
+    return source ? [[source.factId, usefulness === "DURABLE" || usefulness === "ONGOING"] as const] : [];
+  }));
   return settleMemoryMaintenanceContradictions(verified.map(({ decision, source, named }) => {
     const target = states.targets.get(named.versionId);
     return { sourceRef: decision.sourceRef, sourceFactId: source.factId, targetFactId: named.factId,
       precedence: target && target.factId === named.factId && target.factId !== source.factId
         ? memoryMaintenanceContradictionPrecedence({ source: states.testimony.get(source.versionId) ?? [],
-          target: { protected: target.protected, testimony: states.testimony.get(target.versionId) ?? [] } })
+          target: { protected: target.protected, lasting: reviewed.get(target.factId) ?? target.lasting,
+            testimony: states.testimony.get(target.versionId) ?? [] } })
         : null };
   }), removedFactIds);
 }
