@@ -103,7 +103,13 @@ function headersForDraft(input: McpDraftValidationInput):
       continue;
     }
     try {
-      headers.set(slot.target.name, mcpHeaderValue(slot.target.name, value));
+      // Only a personal connection's own personal slot holds a value the user
+      // entered; an administrator's check exercises the exact value entered.
+      headers.set(slot.target.name, mcpHeaderValue(slot.target.name, value, {
+        source: input.personal && slot.policy.kind === "personal"
+          ? "personal"
+          : slot.policy.kind === "literal" ? "literal" : "shared"
+      }));
       names.add(normalizedName);
     } catch {
       issues.push({ code: "mcp_static_header_invalid", path });

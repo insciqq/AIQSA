@@ -89,16 +89,25 @@ export function isMcpAuthorizationHeader(headerName: string): boolean {
   return headerName.trim().toLowerCase() === "authorization";
 }
 
+/** Who supplied a header slot value: the user (`personal`) or the administrator (shared/literal). */
+export type McpHeaderValueSource = "literal" | "missing" | "personal" | "shared";
+
 /**
- * The HTTP value a header slot sends. A bare value in the `Authorization`
- * header becomes a Bearer token; a value that already names a scheme, and any
- * custom header such as `X-API-Key`, is sent as entered. Surrounding
- * whitespace is never part of an HTTP header value. Stored values are never
- * rewritten: this applies only where a value becomes a header.
+ * The HTTP value a header slot sends. A bare value the user entered for the
+ * `Authorization` header becomes a Bearer token; a value that already names a
+ * scheme, any custom header such as `X-API-Key`, and every administrator
+ * value (shared, literal or entered in an administrator draft check) is sent
+ * as entered, because some servers take a raw key in `Authorization`.
+ * Surrounding whitespace is never part of an HTTP header value. Stored values
+ * are never rewritten: this applies only where a value becomes a header.
  */
-export function mcpHeaderValue(headerName: string, value: McpSlotValue): string {
+export function mcpHeaderValue(
+  headerName: string,
+  value: McpSlotValue,
+  options: Readonly<{ source: McpHeaderValueSource }>
+): string {
   const trimmed = (typeof value === "string" ? value : String(value)).trim();
-  if (!trimmed || !isMcpAuthorizationHeader(headerName)) return trimmed;
+  if (!trimmed || options.source !== "personal" || !isMcpAuthorizationHeader(headerName)) return trimmed;
   return AUTHORIZATION_SCHEME.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
 }
 
