@@ -2,10 +2,16 @@ import { Prisma, type MemoryJobKind, type MemoryJobState } from "@prisma/client"
 import { rememberMemoryEnqueue } from "./enqueueObservability";
 import { isMemoryCoordinatorJobKind } from "../coordinator/registry";
 import {
+  MEMORY_EXPLICIT_RELATION_EQUAL_TEXT_SCAN,
   MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
+  memoryEquivalenceTextKey,
   memoryExplicitRelationJobFingerprint
 } from "../learning/relations/explicitPolicy";
 import { memoryPersistenceFailure } from "./errors";
+import {
+  memoryAutomaticEquivalenceUnprotectedPredicate,
+  memoryEquivalenceComparableVersionPredicate
+} from "./explicitEquivalence";
 import {
   type LockedMemorySettings,
   type MemoryTransaction
@@ -37,8 +43,10 @@ export type MemoryJobEnqueueResult = Readonly<{
 }>;
 
 /** Called inside the explicit write transaction, after its receipt/evidence.
- * This existence check avoids scheduling the first isolated fact. Full source
- * and candidate authority remains the background handler's responsibility. */
+ * This existence check avoids scheduling the first isolated fact: another
+ * explicit save or an unprotected automatic fact must share the scope. Full
+ * source and candidate authority remains the background handler's
+ * responsibility. */
 export async function enqueueMemoryExplicitRelation(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,
@@ -51,24 +59,21 @@ export async function enqueueMemoryExplicitRelation(
     JOIN "MemoryFact" AS fact ON fact."userId" = version."userId" AND fact."id" = version."factId"
     JOIN "MemoryScope" AS scope ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
     WHERE version."userId" = ${settings.userId} AND version."id" = ${targetFactVersionId}
-      AND fact."state" = 'ACTIVE'::"MemoryFactState" AND fact."currentVersionId" = version."id"
-      AND scope."state" = 'ACTIVE'::"MemoryScopeState" AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
       AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-      AND version."state" = 'ACTIVE'::"MemoryFactVersionState" AND version."systemTo" IS NULL
-      AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
-      AND version."contentPurgedAt" IS NULL AND version."displayText" IS NOT NULL
-      AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
+      AND ${memoryEquivalenceComparableVersionPredicate()}
       AND EXISTS (
         SELECT 1 FROM "MemoryFact" AS other
         JOIN "MemoryFactVersion" AS candidate
           ON candidate."userId" = other."userId" AND candidate."id" = other."currentVersionId"
         WHERE other."userId" = fact."userId" AND other."scopeId" = fact."scopeId" AND other."id" <> fact."id"
           AND other."state" = 'ACTIVE'::"MemoryFactState"
-          AND candidate."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
           AND candidate."state" = 'ACTIVE'::"MemoryFactVersionState" AND candidate."systemTo" IS NULL
           AND candidate."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
           AND candidate."contentPurgedAt" IS NULL AND candidate."displayText" IS NOT NULL
           AND (candidate."expiresAt" IS NULL OR candidate."expiresAt" > CURRENT_TIMESTAMP)
+          AND (candidate."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+            OR (candidate."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+              AND ${memoryAutomaticEquivalenceUnprotectedPredicate(Prisma.sql`other`)}))
       )
   `);
   if (eligible.length === 0) return;
@@ -77,6 +82,54 @@ export async function enqueueMemoryExplicitRelation(
     kind: "RESOLVE_FACT_RELATIONS", pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
     targetFactVersionId
   });
+}
+
+type EquivalenceTextRow = Readonly<{ normalizedSearchText: string }>;
+
+/** Called inside the transaction that made an automatic version current. Only
+ * an equal normalized text (ignoring punctuation and symbols) of a current
+ * explicit save in the same scope schedules the one comparison of this
+ * version; that candidate match never authorizes a merge by itself. */
+export async function enqueueMemoryAutomaticExplicitEquivalence(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  targetFactVersionId: string
+): Promise<boolean> {
+  if (!settings.useMemoryFacts) return false;
+  const [source] = await tx.$queryRaw<Array<EquivalenceTextRow & Readonly<{ scopeId: string }>>>(Prisma.sql`
+    SELECT version."normalizedSearchText", fact."scopeId"
+    FROM "MemoryFactVersion" AS version
+    JOIN "MemoryFact" AS fact ON fact."userId" = version."userId" AND fact."id" = version."factId"
+    JOIN "MemoryScope" AS scope ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+    WHERE version."userId" = ${settings.userId} AND version."id" = ${targetFactVersionId}
+      AND version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+      AND version."normalizedSearchText" IS NOT NULL
+      AND ${memoryEquivalenceComparableVersionPredicate()}
+      AND ${memoryAutomaticEquivalenceUnprotectedPredicate()}
+  `);
+  const key = source ? memoryEquivalenceTextKey(source.normalizedSearchText) : "";
+  if (!source || key.length === 0) return false;
+  const explicit = await tx.$queryRaw<EquivalenceTextRow[]>(Prisma.sql`
+    SELECT version."normalizedSearchText"
+    FROM "MemoryFact" AS fact
+    JOIN "MemoryFactVersion" AS version
+      ON version."userId" = fact."userId" AND version."id" = fact."currentVersionId"
+    JOIN "MemoryScope" AS scope ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+    WHERE fact."userId" = ${settings.userId} AND fact."scopeId" = ${source.scopeId}
+      AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+      AND version."normalizedSearchText" IS NOT NULL
+      AND ${memoryEquivalenceComparableVersionPredicate()}
+    ORDER BY fact."updatedAt" DESC, fact."id"
+    LIMIT ${MEMORY_EXPLICIT_RELATION_EQUAL_TEXT_SCAN}
+  `);
+  if (!explicit.some(({ normalizedSearchText }) =>
+    memoryEquivalenceTextKey(normalizedSearchText) === key)) return false;
+  const job = await enqueueMemoryJob(tx, settings, {
+    idempotencyFingerprint: memoryExplicitRelationJobFingerprint(targetFactVersionId),
+    kind: "RESOLVE_FACT_RELATIONS", pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
+    targetFactVersionId
+  });
+  return job.created;
 }
 
 function validToken(value: string, maxLength: number): boolean {

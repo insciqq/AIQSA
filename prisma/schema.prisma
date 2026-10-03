@@ -5431,6 +5431,7 @@ model UserMemorySettings {
   lastSynthesisAt                  DateTime?
   maintenanceCursor                String?
   maintenanceScannedAt             DateTime?
+  explicitEquivalenceSweepVersion  String?                        @db.VarChar(64)
   decayEnabled                     Boolean                        @default(true)
   decayPolicyVersion               String?                        @default("memory-decay-v1") @db.VarChar(64)
   createdAt                        DateTime                       @default(now())
