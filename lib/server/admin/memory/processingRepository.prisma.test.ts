@@ -197,9 +197,11 @@ describe("administrator Memory processing aggregates", () => {
       resolution.available = true;
       await m.fail(new Date(m.now.getTime() - 60_000));
       expect(await m.maintenance()).toEqual([expect.objectContaining({ reason: "PROCESSING_FAILED", count: 1 })]);
-      // The reconcile pass settles the failed attempt; its budget admits a new job.
+      // The reconcile pass settles the failed attempt and its budget admits a
+      // new job once the owner's scan cursor wraps around on a later pass.
       await prisma.memoryMaintenanceReview.updateMany({ where: { userId: m.userId, memoryJobId: m.job.id,
         disposition: "PENDING" }, data: { disposition: "UNKNOWN", reviewedAt: m.now } });
+      await prisma.userMemorySettings.update({ where: { userId: m.userId }, data: { maintenanceCursor: null } });
       expect(await scheduleOwnerMemoryMaintenance(prisma, m.userId, m.now)).toBe(1);
       expect(await m.maintenance()).toEqual([expect.objectContaining({ reason: "PROCESSING_FAILED", count: 1 })]);
       await settleMaintenanceJob(m.userId, () => "KEEP", m.now);
