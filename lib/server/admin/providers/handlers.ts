@@ -149,7 +149,9 @@ function serviceError(error: AdminProviderServiceError): Response {
     "provider_draft_stale",
     "provider_checks_running",
     "provider_model_class_immutable",
-    "provider_revoke_confirmation_required"
+    "provider_revoke_confirmation_required",
+    "provider_routing_role_incompatible",
+    "provider_routing_role_unverified"
   ]);
   const status = notFound.has(error.code)
     ? 404
@@ -163,9 +165,11 @@ function serviceError(error: AdminProviderServiceError): Response {
           error.code === "provider_credential_test_failed"
           ? 422
           : 400;
-  return errorJson(error.code, status, error.resourceIds.length
-    ? { resourceIds: error.resourceIds }
-    : undefined);
+  const details = {
+    ...(error.resourceIds.length ? { resourceIds: error.resourceIds } : {}),
+    ...(error.roles.length ? { roles: error.roles } : {})
+  };
+  return errorJson(error.code, status, Object.keys(details).length ? details : undefined);
 }
 
 async function safely(operation: () => Promise<Response>, stage: LifecycleStage = "write"): Promise<Response> {
@@ -214,7 +218,8 @@ async function modelSaveResponse(input: {
         expectedDraftVersion: saved.draftVersion,
         signal: input.signal, onProgress: input.onProgress,
         onActivated: () => { receipt = { ...receipt!, publication: "active", checks: "unknown" }; } });
-      receipt = { ...receipt, publication: "active", checks: outcome.check };
+      receipt = { ...receipt, publication: "active", checks: outcome.check,
+        ...(outcome.affectedRoles?.length ? { affectedRoles: outcome.affectedRoles } : {}) };
     }
     return Response.json({ receipt }, { status: input.status ?? 200 });
   });
