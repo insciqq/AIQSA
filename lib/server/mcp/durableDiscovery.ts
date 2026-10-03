@@ -21,8 +21,8 @@ import type {
 export class McpAutoDiscoveryUnavailableError extends Error {
   readonly code: string;
 
-  constructor(readonly internalReason: string) {
-    const failure = mcpAutoDiscoveryFailure(internalReason);
+  constructor(readonly internalReason: string, serverName?: string | null) {
+    const failure = mcpAutoDiscoveryFailure(internalReason, { serverName });
     super(failure.message);
     this.code = failure.code;
     this.name = "McpAutoDiscoveryUnavailableError";
@@ -157,7 +157,9 @@ export async function executeDurableMcpDiscovery(
     });
   } catch (error) {
     if (input.signal?.aborted) throw error;
-    throw new McpAutoDiscoveryUnavailableError(error instanceof McpDiscoveryError ? error.code : "mcp_materialization_failed");
+    throw error instanceof McpDiscoveryError
+      ? new McpAutoDiscoveryUnavailableError(error.code, error.serverName)
+      : new McpAutoDiscoveryUnavailableError("mcp_materialization_failed");
   }
   const { selected, alreadyActive, plans, search } = discovered;
   const addedSnapshot = plans[0]?.snapshot ?? emptySnapshot();

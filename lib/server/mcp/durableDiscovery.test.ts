@@ -10,6 +10,7 @@ import { searchMcpCatalog } from "./toolSearch";
 import type {
   McpCapabilityCatalog,
   McpDiscoveryState,
+  McpRunPlanResult,
   McpRunPlanSnapshot
 } from "./runPlan";
 
@@ -289,6 +290,36 @@ describe("durable MCP discovery", () => {
     expect(materialize).toHaveBeenCalledOnce();
     expect(state.appendEpoch).not.toHaveBeenCalled();
     expect(state.discovery().epochs).toEqual([]);
+  });
+
+  it("names a runtime that rejected the user's own credential instead of the generic failure", async () => {
+    const run = async (issues: Extract<McpRunPlanResult, { ok: false }>["issues"]) => {
+      const state = harness();
+      const failure = await executeDurableMcpDiscovery({ ...base(state), call: call("credential-rejected"),
+        materialize: async () => ({ code: "mcp_not_ready" as const, issues, ok: false as const }),
+        modelRunToolCallId: "persisted-credential-rejected" }).catch((error: unknown) => error);
+      expect(state.appendEpoch).not.toHaveBeenCalled();
+      return failure as McpAutoDiscoveryUnavailableError;
+    };
+
+    const personal = await run([{ errorCode: "mcp_authorization_required", name: "Kaiten", personalCredentialRejected: true,
+      readiness: "unavailable" }]);
+    expect(personal).toMatchObject({
+      code: "mcp_auto_discovery_personal_credential_rejected",
+      internalReason: "mcp_materialization_personal_credential_rejected",
+      message: "The MCP server “Kaiten” rejected your credential. Update your personal value or reconnect it in Settings → MCP servers, then try again."
+    });
+    await expect(run([{ errorCode: "oauth_reauthorization_required", name: "Mail", readiness: "reauthorization_required" }]))
+      .resolves.toMatchObject({ code: "mcp_auto_discovery_personal_credential_rejected", message: expect.stringContaining("“Mail”") });
+    await expect(run([
+      { errorCode: "mcp_authorization_required", name: "One", personalCredentialRejected: true, readiness: "unavailable" },
+      { errorCode: null, name: "Two", readiness: "needs_authorization" }
+    ])).resolves.toMatchObject({ message: expect.stringMatching(/^An MCP server rejected your credential/u) });
+    // An administrator's shared credential is not the user's to fix.
+    await expect(run([{ errorCode: "mcp_authorization_required", name: "Shared", readiness: "unavailable" }]))
+      .resolves.toMatchObject({ code: "mcp_auto_discovery_materialization_failed" });
+    await expect(run([{ errorCode: "mcp_connect_failed", name: "Kaiten", readiness: "unavailable" }]))
+      .resolves.toMatchObject({ code: "mcp_auto_discovery_materialization_failed" });
   });
 
   it("redacts unexpected materialization errors and does not checkpoint them", async () => {

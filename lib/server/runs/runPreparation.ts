@@ -19,6 +19,7 @@ import {
   type KnowledgePlan
 } from "../../contracts/knowledge";
 import { decodeMcpRunSelection, MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
+import { mcpPersonalCredentialRejectedMessage } from "../../contracts/runs";
 import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_PINNED, SKILL_MAX_AVAILABLE, type SkillBudgetFacts, type SkillValidationError } from "../../contracts/skills";
 import { resolveAssistantChatBaseline, resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
 import { renderAssistantInstructions, renderInstructionPreset } from "../../domain/instructionTemplates";
@@ -84,10 +85,11 @@ import {
   KnowledgeRunAdmissionError,
   type KnowledgeRunAdmissionPlan
 } from "../knowledge/runAdmission";
-import type {
-  McpCapabilityCatalog,
-  McpRunPlanBinding,
-  McpRunPlanResult
+import {
+  mcpPersonalCredentialRejections,
+  type McpCapabilityCatalog,
+  type McpRunPlanBinding,
+  type McpRunPlanResult
 } from "../mcp/runPlan";
 import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
@@ -1892,6 +1894,10 @@ async function prepareRunWith(
         409,
         `Load all can offer at most ${MCP_RUN_PLAN_LIMITS.maxTools} MCP tools to one message. Use MCP Auto or switch some tools off.`
       );
+    }
+    const rejected = mcpPlan.code === "mcp_not_ready" ? mcpPersonalCredentialRejections(mcpPlan.issues) : [];
+    if (rejected.length) {
+      return failure(mcpPlan.code, 409, mcpPersonalCredentialRejectedMessage(rejected.length === 1 ? rejected[0] : null));
     }
     const affected = mcpPlan.issues.map((issue) => issue.name).join(", ");
     return failure(

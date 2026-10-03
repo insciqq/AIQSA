@@ -59,8 +59,43 @@ const RETIRED_MCP_AUTO_DISCOVERY_MESSAGES: ReadonlySet<string> = new Set([
   "Automatic tool discovery needs an available, verified System Model. Ask an administrator to check Defaults & roles, or use Load all."
 ]);
 
+/** Internal discovery reason of a runtime that rejected the user's own credential. */
+export const MCP_MATERIALIZATION_PERSONAL_CREDENTIAL_REJECTED =
+  "mcp_materialization_personal_credential_rejected" as const;
+export const MCP_AUTO_DISCOVERY_CREDENTIAL_REJECTED_CODE =
+  "mcp_auto_discovery_personal_credential_rejected" as const;
+
+const MCP_SERVER_NAME_IN_MESSAGE_LIMIT = 80;
+const CREDENTIAL_REJECTED_ADVICE =
+  "rejected your credential. Update your personal value or reconnect it in Settings → MCP servers, then try again.";
+const CREDENTIAL_REJECTED_MESSAGE =
+  /^(?:An MCP server|The MCP server “[^“”\n]{1,80}”) rejected your credential\. Update your personal value or reconnect it in Settings → MCP servers, then try again\.$/u;
+
+/**
+ * The fixed advice for a runtime that rejected the user's own personal value
+ * or OAuth token. Only a server display name the user's own catalog already
+ * shows is named; the message never carries upstream text or values.
+ */
+export function mcpPersonalCredentialRejectedMessage(serverName?: string | null): string {
+  const name = (serverName ?? "").replace(/[\p{Cc}“”]+/gu, " ").replace(/\s+/gu, " ").trim();
+  if (!name) return `An MCP server ${CREDENTIAL_REJECTED_ADVICE}`;
+  const bounded = name.length > MCP_SERVER_NAME_IN_MESSAGE_LIMIT
+    ? `${name.slice(0, MCP_SERVER_NAME_IN_MESSAGE_LIMIT - 1).trimEnd()}…`
+    : name;
+  return `The MCP server “${bounded}” ${CREDENTIAL_REJECTED_ADVICE}`;
+}
+
 /** Only fixed, content-free causes may reach stored failures and the browser. */
-export function mcpAutoDiscoveryFailure(reason: string): Readonly<{ code: string; message: string }> {
+export function mcpAutoDiscoveryFailure(
+  reason: string,
+  details: Readonly<{ serverName?: string | null }> = {}
+): Readonly<{ code: string; message: string }> {
+  if (reason === MCP_MATERIALIZATION_PERSONAL_CREDENTIAL_REJECTED) {
+    return {
+      code: MCP_AUTO_DISCOVERY_CREDENTIAL_REJECTED_CODE,
+      message: mcpPersonalCredentialRejectedMessage(details.serverName)
+    };
+  }
   return reason === "mcp_materialization_failed" || reason === "mcp_materialization_mcp_not_ready" ||
     reason === "mcp_materialization_mcp_plan_too_large" || reason === "mcp_materialization_mismatch"
     ? mcpAutoDiscoveryFailures.mcp_materialization_failed
@@ -68,13 +103,17 @@ export function mcpAutoDiscoveryFailure(reason: string): Readonly<{ code: string
 }
 
 export function isMcpAutoDiscoveryFailureCode(code: string | null | undefined): boolean {
-  return code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE || typeof code === "string" && (
-    RETIRED_MCP_AUTO_DISCOVERY_CODES.has(code) ||
-    Object.values(mcpAutoDiscoveryFailures).some((failure) => failure.code === code));
+  return code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE || code === MCP_AUTO_DISCOVERY_CREDENTIAL_REJECTED_CODE ||
+    typeof code === "string" && (
+      RETIRED_MCP_AUTO_DISCOVERY_CODES.has(code) ||
+      Object.values(mcpAutoDiscoveryFailures).some((failure) => failure.code === code));
 }
 
 export function mcpAutoDiscoveryFailureForMessage(message: string | null | undefined) {
   if (!message) return null;
+  if (CREDENTIAL_REJECTED_MESSAGE.test(message)) {
+    return { code: MCP_AUTO_DISCOVERY_CREDENTIAL_REJECTED_CODE, message };
+  }
   return message === MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE || RETIRED_MCP_AUTO_DISCOVERY_MESSAGES.has(message)
     ? genericMcpAutoDiscoveryFailure
     : Object.values(mcpAutoDiscoveryFailures).find((failure) => failure.message === message) ?? null;

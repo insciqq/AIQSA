@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type McpActivationStage as StoredMcpActivationStage, type PrismaClient } from "@prisma/client";
 import {
   boundMcpToolDescription,
+  isMcpAuthorizationHeader,
   isMcpInventoryDifferenceReason,
   isMcpToolName,
   MCP_INVENTORY_EXCLUSION_LIMIT,
@@ -912,6 +913,7 @@ function serializeUserServer(input: {
     }
     const plan = resolved.plan.find((item) => item.slotKey === slot.slotKey)!;
     const field: UserMcpConfigurationField = {
+      ...(isMcpAuthorizationHeader(slot.target.name) ? { authorizationHeader: true as const } : {}),
       configured: plan.source !== "missing",
       label: slot.label,
       sensitive: slot.sensitive,
