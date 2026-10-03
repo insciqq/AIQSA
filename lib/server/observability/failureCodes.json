@@ -441,6 +441,7 @@
   "memory_chat_digest_output_limit",
   "memory_chat_digest_safety_rejected",
   "memory_chat_digest_unavailable",
+  "memory_classifier_output_invalid",
   "memory_command_database_failed",
   "memory_command_failed",
   "memory_command_invalid",

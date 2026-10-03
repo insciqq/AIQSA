@@ -9,7 +9,10 @@ import {
 import { memoryExecutionNow } from "../execution/authority";
 import { memoryExecutionSha256 } from "../execution/canonical";
 import { createPrismaMemoryExecutionLifecycle } from "../execution/lifecycle";
-import { unavailableMemoryReportedUsage } from "../execution/structuredClassifier";
+import {
+  MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS,
+  unavailableMemoryReportedUsage
+} from "../execution/structuredClassifier";
 import type { MemoryTransaction } from "../persistence/transaction";
 
 export class MemoryHistoryResultUnavailable extends Error {
@@ -86,7 +89,7 @@ export async function clearMemoryHistoryExecutionResults(
 
 export async function executeRecoverableMemoryHistoryOutput<Value>(input: Omit<
   Parameters<typeof executeGovernedMemoryStructuredOutput<Value>>[0],
-  "owner" | "role" | "persistResult"
+  "owner" | "role" | "persistResult" | "ordinal" | "validationRetry"
 > & Readonly<{
   jobId: string;
   recoveryOnly?: boolean;
@@ -145,11 +148,35 @@ export async function executeRecoverableMemoryHistoryOutput<Value>(input: Omit<
     return { acceptedOutputHash: binding.acceptedOutputHash, bindingId: binding.id, value };
   }
   if (input.recoveryOnly || prior.length > 0) throw new MemoryHistoryResultUnavailable();
+  // Fresh dispatch only. Every call, including a validation retry, binds the
+  // next free ordinal of this job and role, so a retry never collides with a
+  // later stage's call.
+  const nextOrdinal = async () => {
+    const latest = await input.client.memoryExecutionBinding.aggregate({
+      _max: { ordinal: true },
+      where: { logicalRole: role, memoryJobId: input.jobId, ownerType: "JOB", userId: input.userId }
+    });
+    return (latest._max.ordinal ?? -1) + 1;
+  };
+  const ordinal = await nextOrdinal();
   input.onDispatch?.();
   return executeGovernedMemoryStructuredOutput({
     ...input,
+    ordinal,
     owner: { memoryJobId: input.jobId, type: "JOB" },
     role,
+    validationRetry: {
+      maxAttempts: MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS,
+      allocateOrdinal: async () => {
+        // A retry is a new dispatch: the claimed job must still be current.
+        if (!await memoryHistoryJobIsCurrent(input.client, input.authority, input.userId, input.jobId)) {
+          throw new MemoryCoordinatorError("memory_history_job_invalid", false);
+        }
+        const retryOrdinal = await nextOrdinal();
+        input.onDispatch?.();
+        return retryOrdinal;
+      }
+    },
     persistResult: async (tx, result) => {
       // Settlement owns accounting even if a source fence wins during I/O.
       // Such a result must never recreate private staging after its purge.
@@ -185,4 +212,19 @@ export async function executeRecoverableMemoryHistoryOutput<Value>(input: Omit<
       }
     }
   });
+}
+
+/** The claimed job is still current; checked again before a retry dispatch. */
+async function memoryHistoryJobIsCurrent(
+  client: PrismaClient,
+  authority: MemoryExecutionAuthorityDependencies,
+  userId: string,
+  jobId: string
+): Promise<boolean> {
+  const current = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    WITH ${currentMemoryJobsSql(memoryExecutionNow(authority))}
+    SELECT id FROM current_jobs WHERE id = ${jobId} AND "userId" = ${userId}
+      AND state = 'CLAIMED'
+  `);
+  return current.length === 1;
 }

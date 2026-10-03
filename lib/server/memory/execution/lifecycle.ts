@@ -22,6 +22,7 @@ import {
   storedMemoryExecutionOwner,
   type MemoryExecutionOwner
 } from "./owner";
+import { isMemoryOutputDecodeReason, type MemoryOutputDecodeReason } from "./outputViolation";
 import { isMemoryExecutionRole, type MemoryExecutionRole } from "./roles";
 import { parseMemoryExecutionSnapshot } from "./snapshot";
 
@@ -45,6 +46,9 @@ export type MemoryReportedUsage = Readonly<{
 
 export type MemoryExecutionSettlementInput = Readonly<{
   acceptedOutputHash: string | null;
+  /** Closed content-free reason of a FAILED answer that was received but
+   * rejected; absent for every other settlement. */
+  decodeReason?: MemoryOutputDecodeReason | null;
   errorCode: string | null;
   providerResponseId: string | null;
   state: "CANCELLED" | "FAILED" | "OUTCOME_UNKNOWN" | "SUCCEEDED";
@@ -131,7 +135,9 @@ function validateSettlement(input: MemoryExecutionSettlementInput): void {
     (input.acceptedOutputHash !== null && !sha256.test(input.acceptedOutputHash)) ||
     (input.state === "SUCCEEDED") !== (input.acceptedOutputHash !== null) ||
     (input.errorCode !== null && !safeCode.test(input.errorCode)) ||
-    (input.providerResponseId !== null && !safeProviderId.test(input.providerResponseId))
+    (input.providerResponseId !== null && !safeProviderId.test(input.providerResponseId)) ||
+    ((input.decodeReason ?? null) !== null &&
+      (input.state !== "FAILED" || !isMemoryOutputDecodeReason(input.decodeReason)))
   ) {
     return memoryExecutionFailure("memory_execution_output_invalid");
   }
@@ -262,6 +268,7 @@ function sameSettlement(
   return binding.state === input.state &&
     binding.acceptedOutputHash === input.acceptedOutputHash &&
     binding.errorCode === input.errorCode &&
+    binding.decodeReason === (input.decodeReason ?? null) &&
     binding.providerResponseId === input.providerResponseId &&
     sameUsage(usageFromBinding(binding), input.usage);
 }
@@ -510,6 +517,7 @@ export function createPrismaMemoryExecutionLifecycle(
         data: {
           acceptedOutputHash: input.acceptedOutputHash,
           completedAt,
+          decodeReason: input.decodeReason ?? null,
           errorCode: input.errorCode,
           providerResponseId: input.providerResponseId,
           recoverableUntil,
