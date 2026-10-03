@@ -155,6 +155,15 @@ function revisionConfiguration(value: Prisma.JsonValue): McpDraftConfiguration |
   return validated.ok ? validated.value : null;
 }
 
+/**
+ * Who supplied a slot's effective value. Only a user's personal value (or
+ * personal override) gains a Bearer scheme; administrator values are sent as
+ * entered.
+ */
+function slotValueSource(plan: readonly EffectiveMcpSlotPlanItem[], slotKey: string): EffectiveMcpSlotPlanItem["source"] {
+  return plan.find((item) => item.slotKey === slotKey)?.source ?? "missing";
+}
+
 /** The stored value as entered; the secret a runtime redacts, whatever header form it is sent in. */
 function storedSlotText(value: McpSlotValue): string {
   return (typeof value === "string" ? value : String(value)).trim();
@@ -362,7 +371,8 @@ function remoteRuntimeFields(base: EffectiveRuntimeBase): RemoteRuntimeFields {
   const headers: Record<string, string> = {};
   for (const slot of configuration.slots) {
     if (slot.target.kind === "header" && Object.hasOwn(base.effectiveEnvelope.values, slot.slotKey)) {
-      headers[slot.target.name] = mcpHeaderValue(slot.target.name, base.effectiveEnvelope.values[slot.slotKey]!);
+      headers[slot.target.name] = mcpHeaderValue(slot.target.name, base.effectiveEnvelope.values[slot.slotKey]!,
+        { source: slotValueSource(base.effectiveEnvelope.plan, slot.slotKey) });
     }
   }
   return {
@@ -561,7 +571,8 @@ export function createPrismaMcpRuntimeRepository(input: {
         const headers: Record<string, string> = {};
         for (const slot of configuration.slots) {
           if (slot.target.kind === "header") {
-            headers[slot.target.name] = mcpHeaderValue(slot.target.name, snapshot.values[slot.slotKey]!);
+            headers[slot.target.name] = mcpHeaderValue(slot.target.name, snapshot.values[slot.slotKey]!,
+              { source: slotValueSource(snapshot.plan, slot.slotKey) });
           }
         }
         reportSubsystemHealthy("mcp", "recovery", generation.id);

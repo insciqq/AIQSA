@@ -109,7 +109,7 @@ const readinessValues = new Set<McpReadiness>([
  * so a bare `Authorization` token becomes a Bearer token.
  */
 export function personalMcpAuthorizationValue(headerName: string, value: string): string {
-  return mcpHeaderValue(headerName, value);
+  return mcpHeaderValue(headerName, value, { source: "personal" });
 }
 
 export function personalMcpOAuthConnectAction(connectionId: string): string {
