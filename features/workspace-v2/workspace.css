@@ -84,6 +84,27 @@
 .v2-chat-context-trigger svg { width: 1.25rem; height: 1.25rem; transform: rotate(-90deg); }
 .v2-chat-context-track { stroke: var(--v2-color-border2); }
 
+/* A suggested continuation marks the gauge, and "⋯" on phones; the panel
+   opens only on click. `::after` belongs to the tooltip. */
+.v2-chat-context-trigger[data-suggested],
+.v2-live-more > .v2-icon-button[data-attention] {
+  position: relative;
+}
+
+.v2-chat-context-trigger[data-suggested]::before,
+.v2-live-more > .v2-icon-button[data-attention]::before {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--v2-color-accent);
+  box-shadow: 0 0 0 2px var(--v2-color-surface);
+  content: "";
+  pointer-events: none;
+}
+
 .v2-chat-context-popover {
   position: absolute;
   z-index: 95;

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ComposerContextStats } from "@/components/app-shell/composerContextStats";
-import { ChatContextIndicatorV2, useChatContextPanelV2 } from "./ChatContextIndicatorV2";
+import { CONTINUATION_SUGGESTED_DESCRIPTION, ChatContextIndicatorV2, useChatContextPanelV2 } from "./ChatContextIndicatorV2";
 
 describe("header context indicator", () => {
   const stats = { approximateInputTokens: 4400, safeInputBudgetTokens: 10000, totalContextTokens: 12000 };
@@ -137,7 +137,7 @@ describe("header context indicator", () => {
         provider: "fake", safetyMarginTokens: 200, version: 1 }
     }} continuation={{ busy: false, error: null, suggested,
       onContinue: vi.fn(), onDismiss: vi.fn(), onCancel: vi.fn() }} />);
-    if (!suggested) fireEvent.click(screen.getByTestId("header-context-indicator"));
+    fireEvent.click(screen.getByTestId("header-context-indicator"));
     expect(screen.getByText(/A new chat starts with a summary/)).toBeVisible();
     expect(screen.getByText(/A new chat starts with a summary/)).not.toHaveClass("v2-chat-context-touch-note");
     expect(screen.getAllByText(/A new chat starts with a summary/)).toHaveLength(1);
@@ -161,6 +161,7 @@ describe("header context indicator", () => {
         droppedMessages: 4, loadedTools: 3, maxOutputTokens: 1024, modelId: "model", phase: "after_answer",
         provider: "fake", safetyMarginTokens: 1000, version: 1 }
     }} continuation={{ busy: false, error: null, suggested: true, onContinue, onDismiss: vi.fn(), onCancel: vi.fn() }} />);
+    fireEvent.click(screen.getByTestId("header-context-indicator"));
     expect(screen.getByRole("dialog")).toHaveTextContent("4 earlier messages are still in this chat, but were omitted from the model request");
     expect(screen.getByText(/A new chat starts with a summary of this one/)).toBeVisible();
     expect(screen.getByRole("button", { name: "Stay here" })).toBeVisible();
@@ -276,16 +277,28 @@ describe("header context indicator", () => {
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
-  it("opens the phone sheet once for a suggested continuation", () => {
+  it.each([false, true])("marks a suggested continuation without opening the panel (sheet: %s)", sheet => {
     const continuation = { busy: false, error: null, progress: null, suggested: true, uploading: false,
       onCancel: vi.fn(), onContinue: vi.fn(), onDismiss: vi.fn() };
-    const view = render(<ChatContextIndicatorV2 continuation={continuation} open={false} sheet stats={stats} onOpenChange={vi.fn()} />);
-    const sheet = screen.getByRole("dialog", { name: "Chat context" });
-    expect(sheet).toHaveAttribute("aria-modal", "true");
-    fireEvent.click(within(sheet).getByRole("button", { name: "Stay here" }));
-    expect(continuation.onDismiss).toHaveBeenCalledOnce();
-    view.rerender(<ChatContextIndicatorV2 continuation={{ ...continuation, suggested: false }} open={false} sheet stats={stats} onOpenChange={vi.fn()} />);
+    const onOpenChange = vi.fn();
+    const view = render(<ChatContextIndicatorV2 continuation={continuation} open={false} sheet={sheet} stats={stats} onOpenChange={onOpenChange} />);
     expect(screen.queryByRole("dialog", { name: "Chat context" })).toBeNull();
+    const trigger = screen.getByTestId("header-context-indicator");
+    expect(trigger).toHaveAttribute("data-suggested", "true");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveAccessibleDescription(CONTINUATION_SUGGESTED_DESCRIPTION);
+    fireEvent.click(trigger);
+    expect(onOpenChange).toHaveBeenCalledExactlyOnceWith(true);
+    view.rerender(<ChatContextIndicatorV2 continuation={continuation} open sheet={sheet} stats={stats} onOpenChange={onOpenChange} />);
+    const panel = screen.getByRole("dialog", { name: "Chat context" });
+    if (sheet) expect(panel).toHaveAttribute("aria-modal", "true");
+    fireEvent.click(within(panel).getByRole("button", { name: "Stay here" }));
+    expect(continuation.onDismiss).toHaveBeenCalledOnce();
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+    view.rerender(<ChatContextIndicatorV2 continuation={{ ...continuation, suggested: false }} open={false} sheet={sheet} stats={stats} onOpenChange={onOpenChange} />);
+    expect(screen.queryByRole("dialog", { name: "Chat context" })).toBeNull();
+    expect(screen.getByTestId("header-context-indicator")).not.toHaveAttribute("data-suggested");
+    expect(screen.getByTestId("header-context-indicator")).not.toHaveAttribute("aria-describedby");
   });
 });
 
