@@ -192,8 +192,6 @@ export type McpDraftTestSummary = McpValidationEvidence & {
 
 export type McpActivationStage =
   | "queued"
-  | "resolving"
-  | "preparing_runtime"
   | "connecting"
   | "discovering_tools"
   | "publishing"

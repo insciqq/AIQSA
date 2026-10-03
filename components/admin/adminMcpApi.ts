@@ -69,8 +69,6 @@ function isActivation(value: unknown): boolean {
     typeof value.id === "string" &&
     [
       "queued",
-      "resolving",
-      "preparing_runtime",
       "connecting",
       "discovering_tools",
       "publishing",
