@@ -436,13 +436,28 @@ function boundedContextMessages<T extends Readonly<{
   return messages;
 }
 
+/** An assistant reply that ended in error or was cancelled carries neither the
+ * scope nor the remember intent of a later user message. The context walk
+ * passes over it without reading its content, so it is never shown to the
+ * extractor, never a dependency and never provenance. */
+export function memoryFactPassedOverReplyIds(
+  rows: readonly Readonly<{ id: string; role: string; status: string }>[]
+): ReadonlySet<string> {
+  return new Set(rows.flatMap(({ id, role, status }) =>
+    role === "assistant" && (status === "error" || status === "cancelled")
+      ? [id]
+      : []));
+}
+
 /** Selects a contiguous suffix of at most two complete safe turn groups plus
  * the final direct-user target. Older context is never allowed to jump over
- * an excluded or tainted path message. A target longer than one input is
- * read in pages of at most that size, so it never excludes itself. */
+ * an excluded or tainted path message, except a passed-over failed or
+ * cancelled reply. A target longer than one input is read in pages of at most
+ * that size, so it never excludes itself. */
 export function boundedMemoryFactContextMessageIds(
   snapshot: MemorySafeSourceSnapshot,
-  targetMessageId: string
+  targetMessageId: string,
+  passedOverMessageIds: ReadonlySet<string> = new Set()
 ): readonly string[] {
   const target = snapshot.factEvidenceProjection.messages.find((message) =>
     message.id === targetMessageId && message.role === "user");
@@ -468,6 +483,10 @@ export function boundedMemoryFactContextMessageIds(
     groupIndex >= 0 && selectedGroups.length < MEMORY_FACT_MAX_PRIOR_TURN_GROUPS;
     groupIndex -= 1
   ) {
+    while (cursor > 0 &&
+      passedOverMessageIds.has(snapshot.activePathMessageIds[cursor - 1]!)) {
+      cursor -= 1;
+    }
     const group = snapshot.recallChunkProjection.turnGroups[groupIndex]!;
     const ids = group.messages.map(({ id }) => id);
     const indexes = ids.map((id) => pathIndexes.get(id) ?? -1);
@@ -757,14 +776,17 @@ async function loadBoundContext(
   });
   const selectedIds = boundedMemoryFactContextMessageIds(
     candidateSnapshot,
-    source.message.id
+    source.message.id,
+    memoryFactPassedOverReplyIds(rows)
   );
   const selected = new Set(selectedIds);
+  // A passed-over reply is left out of the input, so each selected message
+  // links to the previous selected one; contiguous messages keep their edge.
   const messages = candidates
     .filter(({ id }) => selected.has(id))
-    .map((message, ordinal) => ({
+    .map((message, ordinal, kept) => ({
       ...message,
-      parentMessageId: ordinal === 0 ? null : message.parentMessageId
+      parentMessageId: ordinal === 0 ? null : kept[ordinal - 1]!.id
     }));
   const targetNode = candidateSnapshot.provenanceGraph.find(({ messageId }) =>
     messageId === source.message.id);
