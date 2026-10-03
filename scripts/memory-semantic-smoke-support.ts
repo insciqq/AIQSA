@@ -15,6 +15,8 @@ import { MEMORY_HISTORY_CHUNKING_VERSION } from "../lib/server/memory/history/ch
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../lib/server/memory/history/sourceProjection";
 import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../lib/server/memory/learning/extraction/contract";
 import { normalizeMemorySearchText } from "../lib/server/memory/persistence/lexical";
+import { MEMORY_SEARCH_TOOL_NAME } from "../lib/server/memory/search/contract";
+import { decodeMemorySearchSourceEvidence } from "../lib/server/memory/sources/searchEvidence";
 import { loadProviderAdmissionPlan } from "../lib/server/providerRuntime/admission";
 
 export const MEMORY_SEMANTIC_SMOKE_PREFLIGHT_CODES = [
@@ -414,37 +416,24 @@ async function currentAutomaticFactVersionIds(
   return facts.flatMap(({ currentVersionId }) => currentVersionId ? [currentVersionId] : []);
 }
 
-async function indexedHistoryChunkIds(
+type HistorySourceIdentity = Readonly<{ chatId: string; messageId: string; userId: string }>;
+
+/** Current safe chunks of one exact user source message on its chat's current
+ * branch and source revision, independent of any search projection. */
+async function currentHistoryChunkIds(
   client: PrismaClient,
-  input: Readonly<{ chatId: string; messageId: string; userId: string }>
+  input: HistorySourceIdentity
 ): Promise<string[]> {
-  const [chat, settings] = await Promise.all([
-    client.chat.findFirst({
-      select: { memoryBranchGeneration: true, memorySourceRevision: true },
-      where: {
-        id: input.chatId,
-        memoryMode: "NORMAL",
-        projectId: null,
-        userId: input.userId
-      }
-    }),
-    client.userMemorySettings.findUnique({
-      select: { activeIndexGenerationId: true, embeddingProviderModelId: true },
-      where: { userId: input.userId }
-    })
-  ]);
-  if (!chat || !settings?.activeIndexGenerationId || !settings.embeddingProviderModelId) return [];
-  const generation = await client.memoryIndexGeneration.findFirst({
-    select: { id: true },
+  const chat = await client.chat.findFirst({
+    select: { memoryBranchGeneration: true, memorySourceRevision: true },
     where: {
-      embeddingProviderModelId: settings.embeddingProviderModelId,
-      id: settings.activeIndexGenerationId,
-      indexMode: "HYBRID",
-      state: "ACTIVE",
+      id: input.chatId,
+      memoryMode: "NORMAL",
+      projectId: null,
       userId: input.userId
     }
   });
-  if (!generation) return [];
+  if (!chat) return [];
   const sourceRows = await client.memoryRecallChunkMessage.findMany({
     distinct: ["chunkId"],
     select: { chunkId: true },
@@ -472,7 +461,30 @@ async function indexedHistoryChunkIds(
       userId: input.userId
     }
   });
-  const currentChunkIds = chunks.map(({ id }) => id);
+  return chunks.map(({ id }) => id);
+}
+
+async function indexedHistoryChunkIds(
+  client: PrismaClient,
+  input: HistorySourceIdentity
+): Promise<string[]> {
+  const settings = await client.userMemorySettings.findUnique({
+    select: { activeIndexGenerationId: true, embeddingProviderModelId: true },
+    where: { userId: input.userId }
+  });
+  if (!settings?.activeIndexGenerationId || !settings.embeddingProviderModelId) return [];
+  const generation = await client.memoryIndexGeneration.findFirst({
+    select: { id: true },
+    where: {
+      embeddingProviderModelId: settings.embeddingProviderModelId,
+      id: settings.activeIndexGenerationId,
+      indexMode: "HYBRID",
+      state: "ACTIVE",
+      userId: input.userId
+    }
+  });
+  if (!generation) return [];
+  const currentChunkIds = await currentHistoryChunkIds(client, input);
   if (currentChunkIds.length === 0) return [];
   const entries = await client.memorySearchEntry.findMany({
     distinct: ["recallChunkId"],
@@ -488,13 +500,148 @@ async function indexedHistoryChunkIds(
   return entries.flatMap(({ recallChunkId }) => recallChunkId ? [recallChunkId] : []);
 }
 
+/**
+ * Aggregate receipts of the answer model's read-only `memory_search` calls in
+ * one recall run. Standing-v1 ordinary turns admit only bounded standing facts;
+ * past chats reach an answer solely through these delivered tool receipts.
+ */
+export type MemorySemanticSmokeHistorySearchEvidence = Readonly<{
+  /** Persisted `memory_search` tool calls of the recall run. */
+  calls: number;
+  /** Delivered results whose exact chunk or round belongs to the irrelevant source. */
+  irrelevantResults: number;
+  /** Highest post-rerank score of an irrelevant-source result, if any. */
+  irrelevantTopScore: number | null;
+  /** Successful query embeddings bound to a receipt's exact tool call. */
+  queryEmbedExecutions: number;
+  /** `MemoryHistoryRun` receipts of the recall run. */
+  receipts: number;
+  /** Delivered results whose exact chunk or round belongs to the relevant source. */
+  relevantResults: number;
+  /** Relevant-source results ordered by complete reranker decisions. */
+  relevantSemanticallySorted: number;
+  /** Highest post-rerank score of a relevant-source result, if any. */
+  relevantTopScore: number | null;
+  /** Successful reranker executions bound to a receipt's exact tool call. */
+  rerankExecutions: number;
+  /** Calls or receipts that failed, were cancelled, degraded, limited or never delivered. */
+  unhealthy: number;
+}>;
+
+export const MEMORY_SEMANTIC_SMOKE_HISTORY_SEARCH_CODES = [
+  "memory_smoke_history_search_not_called",
+  "memory_smoke_history_search_degraded",
+  "memory_smoke_history_search_embedding_missing",
+  "memory_smoke_history_recall_failed",
+  "memory_smoke_irrelevant_rerank_failed"
+] as const;
+
+export type MemorySemanticSmokeHistorySearchCode =
+  (typeof MEMORY_SEMANTIC_SMOKE_HISTORY_SEARCH_CODES)[number];
+
+/**
+ * A recall answer proves vector history recall only when the model actually
+ * searched, every search was healthy and delivered, the query was embedded, the
+ * relevant source was delivered, and complete reranker decisions ordered it.
+ * The irrelevant same-marker source must be dropped by a calibrated floor or
+ * scored strictly below the relevant source; an uncalibrated fallback reranker
+ * has no floor, so absence alone cannot be required.
+ */
+export function assessMemorySemanticSmokeHistorySearch(
+  evidence: MemorySemanticSmokeHistorySearchEvidence
+): Readonly<{ code: MemorySemanticSmokeHistorySearchCode; ok: false }> | Readonly<{ ok: true }> {
+  if (evidence.calls < 1 || evidence.receipts < 1) {
+    return { code: "memory_smoke_history_search_not_called", ok: false };
+  }
+  if (evidence.unhealthy > 0) {
+    return { code: "memory_smoke_history_search_degraded", ok: false };
+  }
+  if (evidence.queryEmbedExecutions < 1) {
+    return { code: "memory_smoke_history_search_embedding_missing", ok: false };
+  }
+  if (evidence.relevantResults < 1) {
+    return { code: "memory_smoke_history_recall_failed", ok: false };
+  }
+  const irrelevantRankedBelow = evidence.irrelevantResults === 0 || (
+    evidence.relevantTopScore !== null && evidence.irrelevantTopScore !== null &&
+    evidence.relevantTopScore > evidence.irrelevantTopScore
+  );
+  if (evidence.rerankExecutions < 1 || evidence.relevantSemanticallySorted < 1 ||
+    !irrelevantRankedBelow) {
+    return { code: "memory_smoke_irrelevant_rerank_failed", ok: false };
+  }
+  return { ok: true };
+}
+
+/**
+ * Aggregate outcome of the plain-language secret save command. Safety Lite may
+ * not recognize every span; the Memory control model may then commit only a
+ * safe remainder. The invariant is that the secret itself is never persisted.
+ */
+export type MemorySemanticSmokeSecretCommandEvidence = Readonly<{
+  /** Mutation authorizations plus operation receipts of the secret run. */
+  mutationRows: number;
+  operation: string;
+  /** Fact versions persisted by the command's exact operation receipts. */
+  persistedVersions: number;
+  status: string;
+  /** Persisted versions whose text or structured projections contain the token. */
+  tokenBearingVersions: number;
+  /** Persisted versions not cleanly classified, or classified as a secret. */
+  unsafeVersions: number;
+}>;
+
+export function assessMemorySemanticSmokeSecretCommand(
+  evidence: MemorySemanticSmokeSecretCommandEvidence
+):
+  | Readonly<{ code: "memory_smoke_secret_persisted" | "memory_smoke_secret_rejection_failed"; ok: false }>
+  | Readonly<{ ok: true; outcome: "rejected" | "safe_remainder" }> {
+  if (evidence.operation !== "SAVE") {
+    return { code: "memory_smoke_secret_rejection_failed", ok: false };
+  }
+  if (evidence.status === "REJECTED") {
+    return evidence.mutationRows === 0 && evidence.persistedVersions === 0
+      ? { ok: true, outcome: "rejected" }
+      : { code: "memory_smoke_secret_persisted", ok: false };
+  }
+  if (evidence.status !== "COMMITTED") {
+    return { code: "memory_smoke_secret_rejection_failed", ok: false };
+  }
+  if (evidence.tokenBearingVersions > 0 || evidence.unsafeVersions > 0) {
+    return { code: "memory_smoke_secret_persisted", ok: false };
+  }
+  // A committed receipt without its exact persisted version cannot prove
+  // what was stored.
+  return evidence.persistedVersions > 0
+    ? { ok: true, outcome: "safe_remainder" }
+    : { code: "memory_smoke_secret_rejection_failed", ok: false };
+}
+
+function finiteScore(featureSnapshot: unknown): number | null {
+  if (typeof featureSnapshot !== "object" || featureSnapshot === null ||
+    Array.isArray(featureSnapshot)) return null;
+  const score = (featureSnapshot as Record<string, unknown>).finalScore;
+  return typeof score === "number" && Number.isFinite(score) ? score : null;
+}
+
+function maxScore(scores: readonly (number | null)[]): number | null {
+  const finite = scores.filter((score): score is number => score !== null);
+  return finite.length > 0 ? Math.max(...finite) : null;
+}
+
 /** Internal-only verifier. It consumes exact database identities but returns
  * counts only, so neither provider output nor smoke reports expose row ids. */
 export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
   async function successfulExecutionBindingCount(input: Readonly<{
-    logicalRole: "MEMORY_CONTROL" | "MEMORY_FACT_EXTRACT" | "MEMORY_RERANK";
+    logicalRole: "MEMORY_CONTROL" | "MEMORY_FACT_EXTRACT" | "MEMORY_QUERY_EMBED" |
+      "MEMORY_RERANK";
     memoryJobIds?: readonly string[];
     retrievalAttemptIds?: readonly string[];
+    toolCall?: Readonly<{
+      bindingIds: readonly string[];
+      modelRunId: string;
+      modelRunToolCallIds: readonly string[];
+    }>;
     userId: string;
   }>): Promise<number> {
     const bindings = await client.memoryExecutionBinding.findMany({
@@ -506,6 +653,14 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
           : {}),
         ...(input.retrievalAttemptIds
           ? { retrievalAttemptId: { in: [...input.retrievalAttemptIds] } }
+          : {}),
+        ...(input.toolCall
+          ? {
+              id: { in: [...input.toolCall.bindingIds] },
+              modelRunId: input.toolCall.modelRunId,
+              modelRunToolCallId: { in: [...input.toolCall.modelRunToolCallIds] },
+              ownerType: "MODEL_RUN_TOOL_CALL" as const
+            }
           : {}),
         state: "SUCCEEDED",
         userId: input.userId
@@ -639,17 +794,20 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
       input: Readonly<{ chatId: string; userId: string }>
     ): Promise<Readonly<{
       active: number;
+      /** Extractions cancelled by the documented fence for a Memory command source. */
+      commandExcludedExtractions: number;
       successfulEmptyExtraction: boolean;
       total: number;
       unsuccessfulTerminal: number;
     }>> {
       const jobs = await client.memoryJob.findMany({
-        select: { id: true, kind: true, stage: true, state: true },
+        select: { errorCode: true, id: true, kind: true, stage: true, state: true },
         where: { chatId: input.chatId, userId: input.userId }
       });
       if (jobs.length === 0) {
         return {
           active: 0,
+          commandExcludedExtractions: 0,
           successfulEmptyExtraction: false,
           total: 0,
           unsuccessfulTerminal: 0
@@ -686,6 +844,9 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
       }
       return {
         active: jobs.filter(({ state }) => activeStates.has(state)).length,
+        commandExcludedExtractions: jobs.filter((job) =>
+          job.kind === "EXTRACT_FACTS" && job.state === "CANCELLED" &&
+          job.errorCode === "memory_fact_source_command_excluded").length,
         successfulEmptyExtraction: jobs.some((job) =>
           job.kind === "EXTRACT_FACTS" &&
           job.stage === "fact_observations_empty" &&
@@ -763,34 +924,214 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
       return authorizations + receipts;
     },
 
-    async recalledHistorySourceCount(
+    /**
+     * Natural-language Memory commands are classified by the durable command
+     * worker after acceptance, so their strict control execution belongs to the
+     * exact source message's `MEMORY_COMMAND` job, not to the chat run.
+     */
+    async successfulCommandControlCount(
+      input: Readonly<{ chatId: string; messageId: string; userId: string }>
+    ): Promise<number> {
+      const jobs = await client.memoryJob.findMany({
+        select: { id: true },
+        where: {
+          chatId: input.chatId,
+          kind: "MEMORY_COMMAND",
+          sourceMessageId: input.messageId,
+          userId: input.userId
+        }
+      });
+      if (jobs.length === 0) return 0;
+      return successfulExecutionBindingCount({
+        logicalRole: "MEMORY_CONTROL",
+        memoryJobIds: jobs.map(({ id }) => id),
+        userId: input.userId
+      });
+    },
+
+    /**
+     * Versions persisted by the source message's MEMORY_COMMAND job: its
+     * command authorization request id (`command-v1:<job>`) is carried by the
+     * exact operation receipt, whose target is the committed version. Receipts
+     * bound to the source run are included as well. Returns counts only.
+     */
+    async secretCommandVersionCounts(
       input: Readonly<{
         chatId: string;
         messageId: string;
-        recallModelRunId: string;
+        modelRunId: string;
+        token: string;
         userId: string;
       }>
-    ): Promise<number> {
-      const chunkIds = await indexedHistoryChunkIds(client, input);
-      if (chunkIds.length === 0) return 0;
-      const attempts = await client.memoryRetrievalAttempt.findMany({
+    ): Promise<Readonly<{
+      persistedVersions: number;
+      tokenBearingVersions: number;
+      unsafeVersions: number;
+    }>> {
+      const jobs = await client.memoryJob.findMany({
         select: { id: true },
         where: {
-          modelRunId: input.recallModelRunId,
-          outcome: "USED",
-          state: "CONSUMED",
+          chatId: input.chatId,
+          kind: "MEMORY_COMMAND",
+          sourceMessageId: input.messageId,
           userId: input.userId
         }
       });
-      if (attempts.length === 0) return 0;
-      return client.memoryRetrievalAttemptItem.count({
+      const receipts = await client.memoryOperationReceipt.findMany({
+        select: { targetVersionId: true },
         where: {
-          attemptId: { in: attempts.map(({ id }) => id) },
-          itemType: "RECALL_CHUNK",
-          recallChunkId: { in: chunkIds },
+          OR: [
+            { requestId: { in: jobs.map(({ id }) => `command-v1:${id}`) } },
+            { modelRunId: input.modelRunId }
+          ],
+          outcome: "APPLIED",
           userId: input.userId
         }
       });
+      const versionIds = [...new Set(receipts.flatMap(({ targetVersionId }) =>
+        targetVersionId ? [targetVersionId] : []))];
+      if (versionIds.length === 0) {
+        return { persistedVersions: 0, tokenBearingVersions: 0, unsafeVersions: 0 };
+      }
+      const versions = await client.memoryFactVersion.findMany({
+        select: {
+          displayText: true,
+          normalizedSearchText: true,
+          safetyClassificationState: true,
+          semanticFrame: true,
+          sensitivityClass: true,
+          structuredValue: true
+        },
+        where: { id: { in: versionIds }, userId: input.userId }
+      });
+      const needles = [...new Set([
+        input.token.toLocaleLowerCase("und"),
+        normalizeMemorySearchText(input.token) ?? ""
+      ].filter(Boolean))];
+      const bearsToken = (version: (typeof versions)[number]): boolean => {
+        const haystack = [
+          version.displayText ?? "",
+          version.normalizedSearchText ?? "",
+          JSON.stringify(version.structuredValue ?? null),
+          JSON.stringify(version.semanticFrame ?? null)
+        ].join("\u0000").toLocaleLowerCase("und");
+        return needles.some((needle) => haystack.includes(needle));
+      };
+      return {
+        persistedVersions: versions.length,
+        tokenBearingVersions: versions.filter(bearsToken).length,
+        unsafeVersions: versions.filter((version) =>
+          version.safetyClassificationState !== "CLASSIFIED" ||
+          version.sensitivityClass === "SECRET").length
+      };
+    },
+
+    async historySearchEvidence(
+      input: Readonly<{
+        irrelevant: Readonly<{ chatId: string; messageId: string }>;
+        recallModelRunId: string;
+        relevant: Readonly<{ chatId: string; messageId: string }>;
+        userId: string;
+      }>
+    ): Promise<MemorySemanticSmokeHistorySearchEvidence> {
+      const [calls, receipts, relevantChunkIds, irrelevantChunkIds] = await Promise.all([
+        client.modelRunToolCall.findMany({
+          select: { id: true, state: true },
+          where: {
+            modelRun: { userId: input.userId },
+            modelRunId: input.recallModelRunId,
+            toolName: MEMORY_SEARCH_TOOL_NAME
+          }
+        }),
+        client.memoryHistoryRun.findMany({
+          select: {
+            executionBindingIds: true,
+            indexingEvidence: true,
+            modelRunToolCallId: true,
+            outcome: true,
+            results: true,
+            retentionState: true,
+            state: true
+          },
+          where: { modelRunId: input.recallModelRunId, userId: input.userId }
+        }),
+        currentHistoryChunkIds(client, { ...input.relevant, userId: input.userId }),
+        currentHistoryChunkIds(client, { ...input.irrelevant, userId: input.userId })
+      ]);
+      const receiptCallIds = new Set(receipts.map(({ modelRunToolCallId }) => modelRunToolCallId));
+      const delivered = (value: unknown) => typeof value === "object" && value !== null &&
+        !Array.isArray(value) && (value as Record<string, unknown>).delivered === true;
+      const healthyReceipts = receipts.filter((receipt) =>
+        receipt.state === "COMPLETE" && receipt.retentionState === "RETAINED" &&
+        (receipt.outcome === "RESULTS" || receipt.outcome === "EMPTY") &&
+        delivered(receipt.indexingEvidence));
+      const unhealthy = calls.filter(({ id, state }) =>
+        state !== "complete" || !receiptCallIds.has(id)).length +
+        receipts.length - healthyReceipts.length;
+      const results = healthyReceipts.flatMap((receipt) =>
+        decodeMemorySearchSourceEvidence(receipt.results));
+      const roundIds = [...new Set(results.flatMap(({ itemType, recallRoundId }) =>
+        itemType === "RECALL_ROUND" && recallRoundId ? [recallRoundId] : []))];
+      const rounds = roundIds.length > 0
+        ? await client.memoryRecallRound.findMany({
+            select: { chatId: true, id: true, parentChunkId: true },
+            where: { id: { in: roundIds }, userId: input.userId }
+          })
+        : [];
+      const roundById = new Map(rounds.map((round) => [round.id, round]));
+      const belongsTo = (
+        result: (typeof results)[number],
+        source: Readonly<{ chatId: string }>,
+        chunkIds: readonly string[]
+      ): boolean => {
+        if (result.sourceChatId !== source.chatId) return false;
+        if (result.itemType === "RECALL_CHUNK") {
+          return result.recallChunkId !== null && chunkIds.includes(result.recallChunkId);
+        }
+        if (result.itemType !== "RECALL_ROUND" || !result.recallRoundId) return false;
+        const round = roundById.get(result.recallRoundId);
+        return round !== undefined && round.chatId === source.chatId &&
+          chunkIds.includes(round.parentChunkId);
+      };
+      const relevant = results.filter((result) =>
+        belongsTo(result, input.relevant, relevantChunkIds));
+      const irrelevant = results.filter((result) =>
+        belongsTo(result, input.irrelevant, irrelevantChunkIds));
+      const toolCall = {
+        bindingIds: [...new Set(healthyReceipts.flatMap(({ executionBindingIds }) =>
+          executionBindingIds))],
+        modelRunId: input.recallModelRunId,
+        modelRunToolCallIds: healthyReceipts.map(({ modelRunToolCallId }) => modelRunToolCallId)
+      };
+      const [queryEmbedExecutions, rerankExecutions] = toolCall.bindingIds.length > 0
+        ? await Promise.all([
+            successfulExecutionBindingCount({
+              logicalRole: "MEMORY_QUERY_EMBED",
+              toolCall,
+              userId: input.userId
+            }),
+            successfulExecutionBindingCount({
+              logicalRole: "MEMORY_RERANK",
+              toolCall,
+              userId: input.userId
+            })
+          ])
+        : [0, 0];
+      return {
+        calls: calls.length,
+        irrelevantResults: irrelevant.length,
+        irrelevantTopScore: maxScore(irrelevant.map(({ featureSnapshot }) =>
+          finiteScore(featureSnapshot))),
+        queryEmbedExecutions,
+        receipts: receipts.length,
+        relevantResults: relevant.length,
+        relevantSemanticallySorted: relevant.filter(({ selectionReason }) =>
+          selectionReason.includes("semantic_sort")).length,
+        relevantTopScore: maxScore(relevant.map(({ featureSnapshot }) =>
+          finiteScore(featureSnapshot))),
+        rerankExecutions,
+        unhealthy
+      };
     }
   });
 }
