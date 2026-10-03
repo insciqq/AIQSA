@@ -229,6 +229,13 @@ function externalLayerAnchor(
 }
 
 /** Where a toolbar-anchored layer opens; "over" covers the draft above its trigger. */
+/** A modal dialog outside the layer is open, or isolates the page around the layer. */
+function modalAboveLayer(layer: HTMLElement | null): boolean {
+  if (!layer?.isConnected || layer.closest("[inert]")) return true;
+  return [...document.querySelectorAll<HTMLElement>("[aria-modal='true']")]
+    .some(dialog => !dialog.contains(layer) && !layer.contains(dialog));
+}
+
 type ComposerLayerSide = "above" | "below" | "over";
 
 type ComposerLayerPlacement = Readonly<{
@@ -902,18 +909,20 @@ export function ComposerV2({
       }
       closeLayer();
     };
-    const dismissSearchKey = (event: KeyboardEvent) => {
-      // Clearing Search can disable the focused button and move focus to the body.
-      if (layer !== "search" || event.defaultPrevented || event.key !== "Escape" || isImeCompositionEvent(event)) return;
+    // Escape closes the layer wherever focus is (a control it disabled may have moved focus to the body), unless
+    // an open menu already took this Escape or a modal dialog is above the layer.
+    const dismissKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.key !== "Escape" || isImeCompositionEvent(event)) return;
+      if (modalAboveLayer(layerRef.current)) return;
       event.preventDefault();
       closeLayer();
     };
     document.addEventListener("pointerdown", dismiss);
-    document.addEventListener("keydown", dismissSearchKey);
+    document.addEventListener("keydown", dismissKey);
     return () => {
       cancelled = true;
       document.removeEventListener("pointerdown", dismiss);
-      document.removeEventListener("keydown", dismissSearchKey);
+      document.removeEventListener("keydown", dismissKey);
     };
   }, [layer]);
 
