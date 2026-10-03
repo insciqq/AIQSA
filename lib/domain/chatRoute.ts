@@ -134,7 +134,15 @@ export function chatReturnPath(value: string | null | undefined): string {
 }
 
 /** Control Center entry that remembers the chat it was opened from. */
-export function controlCenterHref(returnPath: string): string {
+export function controlCenterHref(
+  returnPath: string,
+  target?: Readonly<{ resource?: string; section: string }>
+): string {
   const path = chatReturnPath(returnPath);
-  return path === "/" ? "/admin" : `/admin?${new URLSearchParams({ return: path })}`;
+  const query = new URLSearchParams(target ? {
+    section: target.section, ...(target.resource ? { resource: target.resource } : {})
+  } : {});
+  if (path !== "/") query.set("return", path);
+  const search = query.toString();
+  return search ? `/admin?${search}` : "/admin";
 }

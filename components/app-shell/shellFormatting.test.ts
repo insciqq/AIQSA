@@ -14,6 +14,12 @@ describe("shell error formatting", () => {
     expect(formatted).not.toContain(code);
   });
 
+  it("explains a refused PDF admission in the same words as the blocked chip", async () => {
+    expect(await responseErrorMessage(
+      Response.json({ error: "pdf_processing_configuration_incomplete" }, { status: 409 }), "send_failed_409"
+    )).toBe("No PDF-reading model is configured for this installation. Remove the PDF, choose a model that can read PDFs, or ask an administrator (pdf_processing_configuration_incomplete)");
+  });
+
   it("keeps concrete Skill admission limits visible in the composer", async () => {
     expect(await responseErrorMessage(Response.json({ error: "skills_count_exceeded", actual: 33, limit: 32 }), "send_failed_400"))
       .toContain("33 Skills are pinned; the limit is 32");

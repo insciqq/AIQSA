@@ -310,4 +310,57 @@ describe("attachment capabilities", () => {
       document({ status: "partial", truncated: true })
     ], selected)).toBeNull();
   });
+
+  describe("server PDF route preview", () => {
+    const unavailable = { available: false, reasonCode: "pdf_processing_configuration_incomplete" } as const;
+    const pdf = { fileName: "paper.pdf", id: "pdf", kind: "pdf" as const, status: "ready" as const };
+    const noText = { ...pdf, id: "scan", processing: {
+      extractedCharacterCount: 0, pageCount: 3, pagesProcessed: 3, status: "no_text" as const
+    } };
+    const others = [
+      { fileName: "notes.txt", id: "document", kind: "document" as const, status: "ready" as const },
+      { fileName: "image.png", id: "image", kind: "image" as const, status: "ready" as const },
+      { fileName: "data.bin", id: "file", kind: "file" as const, status: "ready" as const }
+    ];
+    const routeWarning = (attachmentId: string) => ({
+      attachmentId,
+      blocking: true,
+      code: "pdf_processing_configuration_incomplete",
+      label: "Can't read PDF",
+      message: "No PDF-reading model is configured for this installation."
+    });
+
+    it.each([
+      ["a model without native PDF input", model("pdf_text_extraction", false), false],
+      ["a native-PDF model", model("native_pdf", false), false],
+      ["Workspace", model("pdf_text_extraction", false), true]
+    ])("blocks every PDF with an honest reason when admission has no route for %s", (_label, selected, workspace) => {
+      expect(attachmentWarningsForModel([pdf, noText, ...others], selected, workspace, unavailable))
+        .toEqual([routeWarning("pdf"), routeWarning("scan")]);
+      expect(firstBlockingAttachmentWarning([...others, pdf], selected, workspace, unavailable))
+        .toEqual(routeWarning("pdf"));
+      // The PDF stays attached and explained instead of being silently removed.
+      expect(partitionAttachmentsForModel([pdf], selected, workspace)).toEqual({ supported: [pdf], unsupported: [] });
+      expect(attachmentPolicyForModel(selected, workspace).pdfs).toBe(true);
+    });
+
+    it.each([
+      ["direct_pdf", model("native_pdf", false)],
+      ["system_pdf", model("pdf_text_extraction", false)],
+      ["system_vision", model("pdf_text_extraction", false)]
+    ] as const)("keeps a PDF ready when the %s route is available", (route, selected) => {
+      const available = { available: true, route } as const;
+      expect(attachmentWarningsForModel([pdf, ...others], selected, false, available)).toEqual([]);
+      expect(firstBlockingAttachmentWarning([pdf], selected, false, available)).toBeNull();
+      expect(attachmentWarningsForModel([pdf], selected, true, available)).toEqual([]);
+    });
+
+    it("keeps only the local checks while the route is unknown", () => {
+      const selected = model("pdf_text_extraction", false);
+      expect(attachmentWarningsForModel([pdf], selected, false, null)).toEqual([]);
+      expect(attachmentWarningsForModel([noText], selected, false, null))
+        .toEqual([expect.objectContaining({ blocking: true, label: "No text" })]);
+      expect(attachmentWarningsForModel([noText], selected, true, null)).toEqual([]);
+    });
+  });
 });

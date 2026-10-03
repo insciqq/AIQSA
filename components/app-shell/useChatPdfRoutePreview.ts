@@ -2,13 +2,21 @@
 
 import { useEffect, useState } from "react";
 import { shellFetch } from "./shellApi";
-import type { ChatPdfRoute } from "@/lib/contracts/chatPdfPreparation";
+import {
+  decodeChatPdfRouteAvailability,
+  type ChatPdfRouteAvailability
+} from "@/lib/contracts/chatPdfPreparation";
 
 type Target = Readonly<{ projectId: string | null; providerConnectionId: string; providerModelId: string }>;
 
-export function useChatPdfRoutePreview(target: Target | null): ChatPdfRoute | null {
+/**
+ * Asks the admission resolver whether a new chat PDF has a reading route for
+ * the selected answer model. Null means unknown (loading or a transient
+ * failure); only a definite refusal is reported as unavailable.
+ */
+export function useChatPdfRoutePreview(target: Target | null): ChatPdfRouteAvailability | null {
   const key = target ? JSON.stringify(target) : null;
-  const [resolved, setResolved] = useState<{ key: string; route: ChatPdfRoute } | null>(null);
+  const [resolved, setResolved] = useState<{ key: string; availability: ChatPdfRouteAvailability } | null>(null);
   useEffect(() => {
     if (!key) return;
     let active = true;
@@ -21,10 +29,9 @@ export function useChatPdfRoutePreview(target: Target | null): ChatPdfRoute | nu
         const response = await shellFetch("/api/uploads/pdf-route", { body: key,
           headers: { "content-type": "application/json" }, method: "POST",
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]) });
-        const body = response.ok ? await response.json() : null;
-        const route = body?.version === 1 && ["direct_pdf", "system_pdf", "system_vision", "selected_model_vision", "local_text"].includes(body.route)
-          ? body.route as ChatPdfRoute : null;
-        if (active) setResolved(route ? { key: key!, route } : null);
+        const body = response.ok || response.status === 422 ? await response.json() : null;
+        const availability = decodeChatPdfRouteAvailability(response.status, body);
+        if (active) setResolved(availability ? { key: key!, availability } : null);
       } catch { if (active) setResolved(null); }
       finally { if (pending === controller) pending = null; }
     }
@@ -36,5 +43,5 @@ export function useChatPdfRoutePreview(target: Target | null): ChatPdfRoute | nu
     return () => { active = false; pending?.abort(); clearInterval(timer);
       document.removeEventListener("visibilitychange", focus); window.removeEventListener("focus", focus); };
   }, [key]);
-  return resolved?.key === key ? resolved.route : null;
+  return resolved?.key === key ? resolved.availability : null;
 }
