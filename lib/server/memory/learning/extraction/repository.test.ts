@@ -8,7 +8,8 @@ import {
   boundedMemoryFactContextMessageIds,
   currentDirectUserMessageId,
   memoryAssistantContextRunIsEligible,
-  memoryAutomaticCandidateContainsSecret
+  memoryAutomaticCandidateContainsSecret,
+  memoryFactPassedOverReplyIds
 } from "./repository";
 
 const observedAt = new Date("2026-08-27T10:00:00.000Z");
@@ -61,6 +62,20 @@ function assistantMessage(
     role: "assistant",
     status: "complete",
     updatedAt: observedAt
+  };
+}
+
+/** A reply that ended in error or was cancelled, as the context loader sees it. */
+function failedReply(
+  id: string,
+  parentMessageId: string,
+  status: "cancelled" | "error" | "streaming" = "error"
+): MemoryHistorySourceMessageInput {
+  const reply = assistantMessage(id, parentMessageId, "Partial unsettled reply.");
+  return {
+    ...reply,
+    provenance: { ...reply.provenance, complete: false, influencedByMessageIds: [] },
+    status
   };
 }
 
@@ -169,6 +184,79 @@ describe("automatic-learning source admission", () => {
     expect(boundedMemoryFactContextMessageIds(
       sourceSnapshot(tainted),
       "target"
+    )).toEqual(["target"]);
+  });
+
+  it.each(["error", "cancelled"] as const)(
+    "passes over a %s reply to keep the earlier turns",
+    (status) => {
+      const messages = [
+        userMessage("u1", null, "Which laptop suits travel?"),
+        assistantMessage("a1", "u1", "Both laptops suit travel."),
+        userMessage("u2", "a1", "Compare their batteries."),
+        failedReply("failed", "u2", status),
+        userMessage("target", "failed", "I bought the lighter one.")
+      ];
+      const snapshot = sourceSnapshot(messages);
+      const passedOver = memoryFactPassedOverReplyIds(messages);
+      expect(passedOver).toEqual(new Set(["failed"]));
+      expect(boundedMemoryFactContextMessageIds(snapshot, "target", passedOver))
+        .toEqual(["u1", "a1", "u2", "target"]);
+      expect(boundedMemoryFactContextMessageIds(snapshot, "target")).toEqual(["target"]);
+
+      // An older failed reply is passed over too, within the same two-group bound.
+      const older = [
+        userMessage("u0", null, "Oldest question."),
+        assistantMessage("a0", "u0", "Oldest answer."),
+        userMessage("u1", "a0", "Which laptop suits travel?"),
+        failedReply("failed-older", "u1", status),
+        userMessage("u2", "failed-older", "Compare their batteries."),
+        assistantMessage("a2", "u2", "The lighter one lasts longer."),
+        userMessage("target", "a2", "I bought the lighter one.")
+      ];
+      expect(boundedMemoryFactContextMessageIds(
+        sourceSnapshot(older),
+        "target",
+        memoryFactPassedOverReplyIds(older)
+      )).toEqual(["u1", "u2", "a2", "target"]);
+    }
+  );
+
+  it("passes over only failed or cancelled assistant replies", () => {
+    expect(memoryFactPassedOverReplyIds([
+      { id: "cancelled", role: "assistant", status: "cancelled" },
+      { id: "streaming", role: "assistant", status: "streaming" },
+      { id: "queued", role: "assistant", status: "queued" },
+      { id: "complete", role: "assistant", status: "complete" },
+      { id: "user-error", role: "user", status: "error" },
+      { id: "tool-error", role: "tool", status: "error" }
+    ])).toEqual(new Set(["cancelled"]));
+  });
+
+  it("keeps every other boundary before or beyond a passed-over reply", () => {
+    const streaming = [
+      userMessage("u1", null, "older user"),
+      assistantMessage("a1", "u1", "older assistant"),
+      userMessage("u2", "a1", "nearest user"),
+      failedReply("unsettled", "u2", "streaming"),
+      userMessage("target", "unsettled", "current target")
+    ];
+    expect(boundedMemoryFactContextMessageIds(
+      sourceSnapshot(streaming),
+      "target",
+      memoryFactPassedOverReplyIds(streaming)
+    )).toEqual(["target"]);
+
+    const taintedBeyond = [
+      userMessage("u1", null, "older user"),
+      assistantMessage("a1", "u1", "tainted assistant", true),
+      failedReply("failed", "a1", "cancelled"),
+      userMessage("target", "failed", "current target")
+    ];
+    expect(boundedMemoryFactContextMessageIds(
+      sourceSnapshot(taintedBeyond),
+      "target",
+      memoryFactPassedOverReplyIds(taintedBeyond)
     )).toEqual(["target"]);
   });
 
