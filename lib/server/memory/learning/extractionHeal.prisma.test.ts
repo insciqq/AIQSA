@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { MemoryJob, MemoryUtilityAssignmentSource } from "@prisma/client";
+import type { MemoryJob, MemoryUtilityAssignmentSource, Message } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestProviderExecutionAuthority, deleteTestProviderExecutionAuthority,
   type TestProviderExecutionAuthority } from "@/tests/support/providerExecutionAuthority";
@@ -164,9 +164,9 @@ async function fixture(texts: readonly string[] = ["I moved to Lisbon last sprin
   const turns: Array<{ userMessageId: string; assistantId: string; runId: string; createdAt: Date }> = [];
   for (const [index, text] of texts.entries()) {
     const createdAt = new Date(Date.now() - (texts.length - index) * 60_000);
-    const user = await prisma.message.create({ data: { chatId: chat.id, role: "user", status: "complete",
+    const user: Message = await prisma.message.create({ data: { chatId: chat.id, role: "user", status: "complete",
       parentMessageId, content: textMessageContent(text), createdAt, updatedAt: createdAt } });
-    const assistant = await prisma.message.create({ data: { chatId: chat.id, role: "assistant", status: "complete",
+    const assistant: Message = await prisma.message.create({ data: { chatId: chat.id, role: "assistant", status: "complete",
       parentMessageId: user.id, content: textMessageContent("Noted."), createdAt, updatedAt: createdAt } });
     const run = await prisma.modelRun.create({ data: { assistantMessageId: assistant.id, chatId: chat.id,
       modelId: "extraction-heal-model", provider: "extraction-heal-provider", status: "complete", userId,
