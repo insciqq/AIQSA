@@ -13,6 +13,7 @@ import { MemoryCoordinatorRegistry } from "../coordinator/registry";
 import type { MemoryStructuredOutputProvider } from "../execution";
 import { createPrismaMemoryMaintenanceHandler } from "./handler";
 import { reconcileMemoryMaintenanceWork, scheduleOwnerMemoryMaintenance } from "./reconcile";
+import { createPrismaMemoryMaintenanceRepository, type MemoryMaintenanceRepository } from "./repository";
 
 let providerAuthority: TestProviderExecutionAuthority;
 let priorPolicy: { assignmentSource: MemoryUtilityAssignmentSource; providerModelId: string | null; reasoningEffort: string | null;
@@ -59,34 +60,51 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-/** One planned maintenance job of a fresh owner with a single automatic fact. */
-async function plannedJob() {
+/** One planned maintenance job of a fresh owner reviewing one automatic fact per statement. */
+async function plannedJob(statements: readonly string[] = ["The parcel arrives at noon today."]) {
   const userId = await createMaintenanceOwner("memory-maintenance-cause");
   owners.push(userId);
-  const source = await createMaintenanceMessage(userId, "The parcel arrives at noon today.");
-  const fact = await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]);
+  const facts: Awaited<ReturnType<typeof createAutomaticMaintenanceFact>>[] = [];
+  for (const statement of statements) {
+    const source = await createMaintenanceMessage(userId, statement);
+    facts.push(await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]));
+  }
   expect(await scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).toBe(1);
-  return { userId, fact, job: await prisma.memoryJob.findFirstOrThrow({ where: { userId, state: "QUEUED" } }) };
+  return { userId, facts, fact: facts[0]!, job: await prisma.memoryJob.findFirstOrThrow({ where: { userId, state: "QUEUED" } }) };
 }
-async function drain(run: MemoryStructuredOutputProvider["run"]): Promise<void> {
+async function drain(run: MemoryStructuredOutputProvider["run"], repository?: MemoryMaintenanceRepository): Promise<void> {
   const registry = new MemoryCoordinatorRegistry();
-  registry.registerJob(createPrismaMemoryMaintenanceHandler(prisma, { structuredProvider: { run } }));
+  registry.registerJob(createPrismaMemoryMaintenanceHandler(prisma, { structuredProvider: { run }, ...(repository ? { repository } : {}) }));
   const worker = new MemoryCoordinator({ registry, repository: createPrismaMemoryCoordinatorRepository(prisma),
     policy: { maxJobParallel: 1, maxJobParallelPerUser: 1, maxDeletionParallel: 1 } });
   try { await worker.reconcileNow(); } finally { await worker.stop(); }
 }
+/** The real repository, except that a source changes right after the job's `taken`th snapshot. */
+function changeAfterSnapshot(taken: number, change: () => Promise<unknown>): MemoryMaintenanceRepository {
+  const repository = createPrismaMemoryMaintenanceRepository(prisma);
+  let snapshots = 0;
+  return { ...repository, async snapshot(job) {
+    const snapshot = await repository.snapshot(job);
+    snapshots += 1;
+    if (snapshots === taken) await change();
+    return snapshot;
+  } };
+}
+const pin = (factId: string) => () => prisma.memoryFact.update({ where: { id: factId }, data: { pinned: true } });
 const usage = { inputTokens: 40, outputTokens: 3, totalTokens: 43, completeness: "complete" } as const;
+/** Proposes removing every disclosed source and approves every proposed removal. */
+const removeAll: MemoryStructuredOutputProvider["run"] = async (_snapshot, request) => {
+  const refs = (JSON.parse(request.userPrompt) as { sources: Array<{ ref: string }> }).sources.map(({ ref }) => ref);
+  return { providerResponseId: null, usage, output: request.name === "verify_memory_cleanup_v3"
+    ? { decisions: refs.map((ref) => ({ source_ref: ref, approve: true })) }
+    : { decisions: refs.map((ref) => ({ source_ref: ref, scope_basis: "short_term_matter", action: "REMOVE_TRANSIENT",
+      usefulness: null, reason: "short_term" })) } };
+};
 
 describe("maintenance outcomes through the coordinator and governed executor", () => {
   it("settles a review and its verification under their own receipt ordinals", async () => {
     const { userId, fact, job } = await plannedJob();
-    const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockImplementation(async (_snapshot, request) => {
-      const refs = (JSON.parse(request.userPrompt) as { sources: Array<{ ref: string }> }).sources.map(({ ref }) => ref);
-      return { providerResponseId: null, usage, output: request.name === "verify_memory_cleanup_v3"
-        ? { decisions: refs.map((ref) => ({ source_ref: ref, approve: true })) }
-        : { decisions: refs.map((ref) => ({ source_ref: ref, scope_basis: "short_term_matter", action: "REMOVE_TRANSIENT",
-          usefulness: null, reason: "short_term" })) } };
-    });
+    const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockImplementation(removeAll);
     await drain(run);
     expect(run).toHaveBeenCalledTimes(2);
     expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ state: "SUCCEEDED", errorCode: null });
@@ -115,5 +133,35 @@ describe("maintenance outcomes through the coordinator and governed executor", (
     await prisma.userMemorySettings.update({ where: { userId }, data: { maintenanceCursor: null } });
     expect(await scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).toBe(1);
     expect(await prisma.memoryJob.count({ where: { userId, state: "QUEUED" } })).toBe(1);
+  });
+  it("settles a review whose source changed before dispatch as STALE through the re-run gate, unbound and unpaid", async () => {
+    const { userId, fact, job } = await plannedJob();
+    const run = vi.fn<MemoryStructuredOutputProvider["run"]>();
+    // The first gate and the job's own snapshot still see the source; it changes before the review is bound.
+    await drain(run, changeAfterSnapshot(2, pin(fact.factId)));
+    expect(run).not.toHaveBeenCalled();
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } }))
+      .toMatchObject({ state: "STALE", errorCode: "memory_maintenance_source_stale" });
+    expect(await prisma.memoryExecutionBinding.count({ where: { userId } })).toBe(0);
+    // Nothing was bound or paid, so nothing is charged: its pending review is released.
+    await reconcileMemoryMaintenanceWork(prisma, new Date(), async () => false);
+    expect(await prisma.memoryMaintenanceReview.count({ where: { userId } })).toBe(0);
+  });
+  it("keeps a paid review terminal and uncharged when a disclosed removal changes just before verification", async () => {
+    const { userId, facts, job } = await plannedJob(["The parcel arrives at noon today.", "The courier calls at five today."]);
+    const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockImplementation(removeAll);
+    // Snapshots: the first gate, the reviewed plan, then the verifier's disclosure.
+    await drain(run, changeAfterSnapshot(3, pin(facts[0]!.factId)));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } }))
+      .toMatchObject({ state: "TERMINAL_FAILED", errorCode: "memory_maintenance_dispatch_stale" });
+    expect(await prisma.memoryExecutionBinding.findMany({ where: { userId }, select: { ordinal: true, state: true } }))
+      .toEqual([{ ordinal: 0, state: "SUCCEEDED" }]);
+    // The paid review is never replayed; the unchanged source gets a new job without spending budget.
+    await reconcileMemoryMaintenanceWork(prisma, new Date(), async () => false);
+    await prisma.userMemorySettings.update({ where: { userId }, data: { maintenanceCursor: null } });
+    expect(await scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).toBe(1);
+    expect(await prisma.memoryMaintenanceReview.findMany({ where: { userId, disposition: "PENDING" }, select: { factVersionId: true } }))
+      .toEqual([{ factVersionId: facts[1]!.currentVersionId }]);
   });
 });
