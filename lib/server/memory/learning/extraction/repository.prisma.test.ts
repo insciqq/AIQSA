@@ -3052,6 +3052,9 @@ describe("Prisma Memory vNext source-message ingestion", () => {
         await prisma.modelRun.create({
           data: {
             assistantMessageId: failed.id, chatId: chat.id, modelId: "memory-vnext-test-model",
+            normalizedRequest: { prompt: { baseline: {
+              source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client"
+            } } },
             provider: "memory-vnext-test-provider", status, userId, userMessageId: question.id
           }
         });
