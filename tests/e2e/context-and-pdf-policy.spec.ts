@@ -202,11 +202,20 @@ for (const viewport of [
     await expect(trigger).toHaveText("60%");
     await expect(trigger).toHaveAttribute("data-context-estimate", "snapshot");
     await expect(trigger.locator(".v2-chat-context-track")).not.toHaveAttribute("stroke-dasharray");
+    // The suggested continuation only marks the gauge (on a phone "⋯"); the
+    // panel never covers the answer by itself.
+    await expect(trigger).toHaveAttribute("data-suggested", "true");
+    if (phone) await expect(more).toHaveAttribute("data-attention", "true");
+    else await expect(more).not.toHaveAttribute("data-attention");
+    await expect(dialog).toBeHidden();
+    await page.screenshot({ path: testInfo.outputPath(`context-suggested-${viewport.width}.png`) });
     await openContext();
     await expect(dialog).toContainText("4 earlier messages are still in this chat");
     await expect(dialog.getByText("A new chat starts with a summary of this one and takes your draft, files and settings (and Workspace files, if on). This chat stays as it is.")).toBeVisible();
     expect(continuations).toBe(0);
     await dialog.getByRole("button", { name: "Stay here" }).click();
+    await expect(trigger).not.toHaveAttribute("data-suggested");
+    await expect(more).not.toHaveAttribute("data-attention");
     await openContext();
     await dialog.getByText("Advanced details").click();
     await expect(dialog).toContainText("Safe input budget");
