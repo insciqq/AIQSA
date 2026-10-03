@@ -35,6 +35,7 @@ describe("default Memory coordinator composition", () => {
     await reconcileDefaultMemoryWork({
       embeddingSetup: step("embedding"),
       cutover: step("cutover"),
+      historyFenceRepair: step("history-fence-repair"),
       historyBackfill: step("history"),
       historyAutoHeal: step("history-heal"),
       reclassification: step("reclassification"),
@@ -49,6 +50,8 @@ describe("default Memory coordinator composition", () => {
       "embedding:end",
       "cutover:start",
       "cutover:end",
+      "history-fence-repair:start",
+      "history-fence-repair:end",
       "history:start",
       "history:end",
       "history-heal:start",

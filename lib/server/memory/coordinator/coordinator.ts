@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import {
   logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground, runWithContext,
-  type LifecycleStage
+  type LifecycleOutcome, type LifecycleStage
 } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import { memoryAttempt, memoryFailureOutcome, memoryPersistence, memoryStage } from "./observability";
 import type { MemoryDeletionOperation, MemoryJobKind } from "@prisma/client";
 import {
   isMemoryCoordinatorErrorCode,
-  MemoryCoordinatorError
+  MemoryCoordinatorError,
+  MemoryJobFencedError
 } from "./errors";
 import {
   memoryRetryDelay,
@@ -25,7 +26,9 @@ import type {
   MemoryDeletionClaim,
   MemoryJobClaim,
   MemoryJobExecutionResult,
-  MemoryJobGateDecision
+  MemoryJobFenceDecision,
+  MemoryJobGateDecision,
+  MemoryJobHandler
 } from "./types";
 import { decodeMemoryOperationalCounters } from "../operational/counters";
 import { MEMORY_RECOVERY_BATCH_SIZE, MEMORY_RECOVERY_INTERVAL_MS } from "./recoveryPolicy";
@@ -53,6 +56,10 @@ function addMilliseconds(value: Date, milliseconds: number): Date {
 function validGateDecision(value: MemoryJobGateDecision): boolean {
   return value.status === "READY" ||
     isMemoryCoordinatorErrorCode(value.errorCode);
+}
+
+function fenceOutcome(decision: MemoryJobFenceDecision): LifecycleOutcome {
+  return decision.status === "CANCELLED" ? "cancelled" : "stale";
 }
 
 function validJobResult(value: MemoryJobExecutionResult): boolean {
@@ -439,6 +446,7 @@ export class MemoryCoordinator {
     });
     let currentStage = claim.stage;
     let releaseOwner: (() => void) | null = null;
+    let registeredHandler: MemoryJobHandler | null = null;
     try {
       releaseOwner = await this.#scheduler.acquireOwner(
         claim.userId,
@@ -451,6 +459,7 @@ export class MemoryCoordinator {
         // unsupported kind.
         throw new MemoryCoordinatorError("memory_job_handler_unavailable", false);
       }
+      registeredHandler = handler;
       const decision = await handler.preflight(claim);
       if (!validGateDecision(decision)) {
         throw new MemoryCoordinatorError("memory_job_gate_invalid", false);
@@ -536,20 +545,28 @@ export class MemoryCoordinator {
       const failure = error instanceof MemoryCoordinatorError
         ? error
         : new MemoryCoordinatorError("memory_job_failed", true);
-      const now = this.#clock();
       const maxAttempts = memoryCoordinatorJobMaxAttempts(
         claim.kind,
         this.#policy.maxJobAttempts
       );
       const retry = failure.retryable && claim.attemptCount < maxAttempts;
-      memoryAttempt(claim, { stage, outcome: memoryFailureOutcome(failure.code), code: failure.code,
-        prisma_code: databaseFailureCode(error), action: retry ? "retry" : "fail" });
+      const fence = retry ? null : await this.#failureFence(registeredHandler, claim, failure);
+      const now = this.#clock();
+      memoryAttempt(claim, { stage, code: failure.code, prisma_code: databaseFailureCode(error),
+        outcome: fence && failure instanceof MemoryJobFencedError
+          ? fenceOutcome(fence) : memoryFailureOutcome(failure.code),
+        action: retry ? "retry" : fence ? "none" : "fail" });
       if (retry) {
         const delay = memoryRetryDelay(this.#policy.jobRetryDelaysMs, claim.attemptCount);
         const nextAttemptAt = addMilliseconds(now, delay);
         await memoryPersistence(claim, "retry", () => this.#repository.retryJob({
           claim, errorCode: failure.code, nextAttemptAt, now
         }), { action: "retry", code: failure.code, delay_ms: delay, retry_at: nextAttemptAt.toISOString() }).catch(() => false);
+      } else if (fence) {
+        memoryAttempt(claim, { stage: "preflight", code: fence.errorCode, outcome: fenceOutcome(fence) });
+        await memoryPersistence(claim, "preflight", () => this.#repository.settleJobGate({
+          claim, decision: fence, now
+        }), { code: fence.errorCode }).catch(() => false);
       } else {
         await memoryPersistence(claim, "fail", () => this.#repository.terminalJob({
           claim, errorCode: failure.code, now
@@ -563,6 +580,33 @@ export class MemoryCoordinator {
       this.#activeControllers.delete(controller);
       this.#failedHeartbeats.delete(controller);
     }
+  }
+
+  /** Work often fails because the fence it raced already won. Before any
+   * terminal write the gate runs again, as the commit gate would have: its
+   * STALE/CANCELLED decision settles the job, so fenced work never becomes a
+   * failure that blocks its source. READY keeps a genuine failure terminal; a
+   * waiting gate never re-admits a failed attempt; a gate that cannot decide
+   * never masks a failure, except a proven fence that carries its decision. */
+  async #failureFence(
+    handler: MemoryJobHandler | null,
+    claim: MemoryJobClaim,
+    failure: MemoryCoordinatorError
+  ): Promise<MemoryJobFenceDecision | null> {
+    if (!handler || failure.code === "memory_job_lease_lost") return null;
+    const proven = failure instanceof MemoryJobFencedError ? failure.decision : null;
+    let decision: MemoryJobGateDecision | null;
+    try {
+      decision = await handler.preflight(claim);
+    } catch {
+      decision = null;
+    }
+    if (decision && decision.status === "READY") return null;
+    if (decision && (decision.status === "STALE" || decision.status === "CANCELLED") &&
+      isMemoryCoordinatorErrorCode(decision.errorCode)) {
+      return { errorCode: decision.errorCode, status: decision.status };
+    }
+    return proven;
   }
 
   async #processDeletion(claim: MemoryDeletionClaim): Promise<void> {
