@@ -40,6 +40,7 @@ import { RERANKER_ROUTE_POLICY_VERSION } from
 import {
   MemorySemanticSmokePreflightError,
   assessMemorySemanticSmokeHistorySearch,
+  assessMemorySemanticSmokeSecretCommand,
   createMemorySemanticSmokeScenarioLedger,
   createPrismaMemorySemanticSmokeVerifier,
   preflightPrismaMemorySemanticSmoke,
@@ -1397,6 +1398,7 @@ async function main(): Promise<void> {
     historySourceBound: boolean;
     memoryCommands: number;
     scenarioCount: number;
+    secretOutcome: "rejected" | "safe_remainder";
   }> | null = null;
   let primaryError: unknown = null;
 
@@ -1623,21 +1625,49 @@ async function main(): Promise<void> {
       answer
     );
     const secretCommand = await settledMemoryCommand(secret);
-    if (secretCommand.operation !== "SAVE" || secretCommand.status !== "REJECTED") {
-      fail("answer_recall", "memory_smoke_secret_rejection_failed");
-    }
     await assertCommandControlSucceeded(secret);
     memoryCommands += 1;
     await waitForNoAutomaticFact(secret, secretStartedAt);
-    const secretMutationRows = await verifier.mutationPersistenceCount({
-      modelRunId: secret.modelRunId,
-      userId: authenticatedUserId
+    const [secretMutationRows, secretVersions] = await Promise.all([
+      verifier.mutationPersistenceCount({
+        modelRunId: secret.modelRunId,
+        userId: authenticatedUserId
+      }),
+      verifier.secretCommandVersionCounts({
+        chatId: secret.chat.id,
+        messageId: secret.userMessage.id,
+        modelRunId: secret.modelRunId,
+        token: secretToken,
+        userId: authenticatedUserId
+      })
+    ]);
+    // Safety Lite need not recognize every span: the command may reject the
+    // save or commit only a safe remainder. The secret itself must never persist.
+    const secretAssessment = assessMemorySemanticSmokeSecretCommand({
+      mutationRows: secretMutationRows,
+      operation: secretCommand.operation,
+      status: secretCommand.status,
+      ...secretVersions
     });
+    if (!secretAssessment.ok) {
+      console.error(JSON.stringify({
+        diagnostic: "secret_command",
+        mutationRows: secretMutationRows,
+        operation: secretCommand.operation,
+        status: secretCommand.status,
+        ...secretVersions,
+        sanitizedAggregatesOnly: true
+      }));
+      fail(secretAssessment.code === "memory_smoke_secret_persisted"
+        ? "automatic_learning"
+        : "answer_recall", secretAssessment.code);
+    }
     const secretVisible = (await allConsumerMemories()).some((item) =>
-      item.statement.includes(secretToken));
-    if (secretMutationRows !== 0 || secretVisible) {
+      item.statement.toLocaleLowerCase("und").includes(secretToken));
+    if (secretVisible) {
       fail("automatic_learning", "memory_smoke_secret_persisted");
     }
+    const secretOutcome = secretAssessment.outcome;
     scenarios.complete("plain_language_secret_rejection");
     scenarios.complete("strict_structured_output");
 
@@ -1647,7 +1677,8 @@ async function main(): Promise<void> {
       historySearch,
       historySourceBound: true,
       memoryCommands,
-      scenarioCount: scenarios.assertComplete()
+      scenarioCount: scenarios.assertComplete(),
+      secretOutcome
     };
   } catch (error) {
     primaryError = error;
