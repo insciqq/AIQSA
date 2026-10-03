@@ -18,6 +18,16 @@ describe("managed Codex invocation", () => {
     expect(text).not.toContain('"find_tools"');
     expect(renderCodexManagedProfile({ ...profile, mcpMode: "off" })).not.toContain("[mcp_servers.aiqsa]");
   });
+  it("exposes the saved-call reader independently of observations and external MCP", () => {
+    const text = renderCodexManagedProfile({ ...profile, mcpMode: "off", toolCallReader: true });
+    expect(text).toContain("[mcp_servers.aiqsa]");
+    expect(text).toContain('enabled_tools = ["read_tool_call"]');
+    expect(renderCodexManagedProfile({ ...profile, mcpMode: "off", toolObservations: true, toolCallReader: true }))
+      .toContain('enabled_tools = ["read_tool_result","read_tool_call"]');
+    expect(renderCodexManagedProfile({ ...profile, mcpMode: "off", toolCallReader: false }))
+      .toBe(renderCodexManagedProfile({ ...profile, mcpMode: "off" }));
+    expect(() => renderCodexManagedProfile({ ...profile, toolCallReader: "yes" as unknown as boolean })).toThrow();
+  });
   it("renders the unchanged versioned profile when observations are Off", () => {
     for (const mcpMode of ["off", "auto", "all"] as const) {
       expect(renderCodexManagedProfile({ ...profile, mcpMode, toolObservations: false }))

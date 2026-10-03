@@ -104,7 +104,9 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
     await expect(actions).toBeFocused();
     await actions.click();
     await page.getByRole("menuitem", { name: "Forget" }).click();
-    await expect(excerpt.getByRole("status")).toContainText("forgotten");
+    // A forgotten source leaves the list instead of lingering as unavailable.
+    await expect(excerpts).toHaveCount(1);
+    await expect(first.getByRole("status")).toHaveCount(0);
     await expect(first.locator(".v2-past-chat-preview")).toHaveCount(0);
     await expect(first.getByRole("link", { name: "Earlier deployment discussion" })).toHaveCount(0);
     await memories.locator(":scope > summary").click();

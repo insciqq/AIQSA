@@ -23,6 +23,7 @@ import {
 } from "./vector";
 
 const now = new Date("2026-08-10T13:00:00.000Z");
+const laneAdmission = { admission: "LANE" } as const;
 const suffix = randomUUID();
 const connectionId = `memory-vector-connection-${suffix}`;
 const modelId = `memory-vector-model-${suffix}`;
@@ -313,7 +314,6 @@ function searchInput(
       factMode: "CURRENT",
       factTemporalAsOf: null,
       folderId: null,
-      includePatterns: false,
       occurredFrom: null,
       occurredTo: null,
       sourceAssistantId: null,
@@ -485,7 +485,7 @@ describe("Memory vector retrieval on PostgreSQL 18.6 and pgvector 0.8.6", () => 
 
   it("keeps ANN results inside the exact owner/generation/dimension and preserves Recall@5", async () => {
     const repository = createPrismaMemoryVectorRepository(prisma);
-    const result = await repository.search(searchInput(annFixture));
+    const result = await repository.search(searchInput(annFixture), laneAdmission);
     expect(result.status).toBe("READY");
     if (result.status !== "READY") throw new Error(result.reason);
     expect(result.lanes).toEqual([
@@ -509,7 +509,7 @@ describe("Memory vector retrieval on PostgreSQL 18.6 and pgvector 0.8.6", () => 
 
   it("uses bounded exact retrieval and degrades on stale vector authority", async () => {
     const repository = createPrismaMemoryVectorRepository(prisma);
-    const exact = await repository.search(searchInput(exactFixture));
+    const exact = await repository.search(searchInput(exactFixture), laneAdmission);
     expect(exact).toMatchObject({
       lanes: [{ eligibleCount: 32, exactFallbackUsed: false, strategy: "EXACT" }],
       status: "READY"
@@ -519,14 +519,14 @@ describe("Memory vector retrieval on PostgreSQL 18.6 and pgvector 0.8.6", () => 
         ...exactFixture.profile,
         vectorSpaceFingerprint: "3".repeat(64)
       }
-    }));
+    }), laneAdmission);
     expect(stale).toEqual({
       hits: [],
       lanes: [],
       reason: "memory_vector_generation_stale",
       status: "DEGRADED"
     });
-    await expect(repository.search(searchInput(stalePipelineFixture)))
+    await expect(repository.search(searchInput(stalePipelineFixture), laneAdmission))
       .resolves.toEqual({
         hits: [],
         lanes: [],
@@ -548,7 +548,7 @@ describe("Memory vector retrieval on PostgreSQL 18.6 and pgvector 0.8.6", () => 
     const result = await createPrismaMemoryVectorRepository(prisma).search({
       ...base,
       eligibility: { ...base.eligibility, chatId: requestChat.id }
-    });
+    }, laneAdmission);
 
     expect(result.status).toBe("READY");
     if (result.status !== "READY") throw new Error(result.reason);
@@ -628,18 +628,18 @@ describe("Memory vector retrieval on PostgreSQL 18.6 and pgvector 0.8.6", () => 
     expect(exactPlanJson).toMatch(/Sort|Seq Scan/u);
 
     const repository = createPrismaMemoryVectorRepository(prisma);
-    await repository.search(searchInput(annFixture));
-    await repository.search(searchInput(exactFixture));
+    await repository.search(searchInput(annFixture), laneAdmission);
+    await repository.search(searchInput(exactFixture), laneAdmission);
     const sampleCount = 20;
     const annLatenciesMs: number[] = [];
     const exactLatenciesMs: number[] = [];
     let qualifiedAnnResult: Awaited<ReturnType<typeof repository.search>> | null = null;
     for (let sample = 0; sample < sampleCount; sample += 1) {
       let startedAt = performance.now();
-      qualifiedAnnResult = await repository.search(searchInput(annFixture));
+      qualifiedAnnResult = await repository.search(searchInput(annFixture), laneAdmission);
       annLatenciesMs.push(performance.now() - startedAt);
       startedAt = performance.now();
-      await repository.search(searchInput(exactFixture));
+      await repository.search(searchInput(exactFixture), laneAdmission);
       exactLatenciesMs.push(performance.now() - startedAt);
     }
     if (!qualifiedAnnResult || qualifiedAnnResult.status !== "READY") {

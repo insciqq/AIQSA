@@ -4,6 +4,7 @@ import {
   decodeMemoryConsumerListResponse,
   decodeMemoryConsumerItemResponse,
   decodeMemoryConsumerSearchInput,
+  decodeMemoryConsumerSettingsPatch,
   decodeMemoryConsumerSettingsResponse
 } from "./memoryConsumer";
 
@@ -59,6 +60,41 @@ describe("Memory consumer contracts", () => {
     })).toEqual({ code: "memory_contract_invalid", ok: false });
   });
 
+  it("accepts settings with or without the retired Dream fields", () => {
+    const current = {
+      capabilities: {
+        automaticLearningAvailable: true,
+        decayAvailable: true,
+        managementAvailable: true,
+        naturalLanguageActionsAvailable: true,
+        permanentChatDeletion: true,
+        pastChatIndexingAvailable: true,
+        retrievalAvailable: true,
+        temporaryChats: true
+      },
+      resetState: "IDLE",
+      settings: {
+        decayEnabled: false,
+        learnAutomatically: true,
+        referenceChatHistory: true,
+        useMemoryFacts: true
+      },
+      status: "ON"
+    };
+    expect(decodeMemoryConsumerSettingsResponse(current)).toEqual({ ok: true, value: current });
+    const retained = {
+      ...current,
+      capabilities: { ...current.capabilities, synthesisAvailable: false },
+      settings: { ...current.settings, synthesisEnabled: false }
+    };
+    expect(decodeMemoryConsumerSettingsResponse(retained)).toEqual({ ok: true, value: retained });
+    expect(decodeMemoryConsumerSettingsPatch({ synthesisEnabled: true })).toEqual({
+      ok: true,
+      value: { synthesisEnabled: true }
+    });
+    expect(decodeMemoryConsumerSettingsPatch({})).toEqual({ code: "memory_contract_invalid", ok: false });
+  });
+
   it("rejects repository IDs, versions, scores, and hashes on managed items", () => {
     const item = {
       allowedActions: ["EDIT", "FORGET"],
@@ -97,9 +133,10 @@ describe("Memory consumer contracts", () => {
     }
   });
 
-  it("accepts bounded combined sources only when count and opaque fields agree", () => {
-    const source = {
-      category: "WORK",
+  it("rejects the retired combination block on an item", () => {
+    const item = {
+      allowedActions: ["EDIT", "FORGET"],
+      category: "OTHER",
       createdAt: "2026-08-21T05:00:00.000Z",
       memoryRef: "opaque-source-1",
       provenance: "LEARNED",
@@ -107,30 +144,10 @@ describe("Memory consumer contracts", () => {
       statement: "I use a checklist for weekly reviews.",
       updatedAt: "2026-08-21T05:00:00.000Z"
     };
-    const item = {
-      allowedActions: ["FORGET"],
-      category: "OTHER",
-      combined: {
-        sourceCount: 3,
-        sources: [1, 2, 3].map((index) => ({
-          ...source,
-          memoryRef: `opaque-source-${index}`
-        }))
-      },
-      createdAt: source.createdAt,
-      memoryRef: "opaque-combined",
-      provenance: "LEARNED",
-      sourceAvailable: true,
-      statement: "I use a checklist for weekly reviews.",
-      updatedAt: source.updatedAt
-    };
     expect(decodeMemoryConsumerItemResponse({ item }).ok).toBe(true);
-    expect(decodeMemoryConsumerItemResponse({
-      item: { ...item, combined: { ...item.combined, sourceCount: 4 } }
-    }).ok).toBe(false);
-    expect(decodeMemoryConsumerItemResponse({
-      item: { ...item, combined: { ...item.combined,
-        sources: [{ ...source, factId: "internal" }, ...item.combined.sources.slice(1)] } }
-    }).ok).toBe(false);
+    expect(decodeMemoryConsumerItemResponse({ item: { ...item, combined: {
+      sourceCount: 3,
+      sources: [1, 2, 3].map((index) => ({ ...item, memoryRef: `opaque-source-${index}` }))
+    } } })).toEqual({ code: "memory_contract_invalid", ok: false });
   });
 });

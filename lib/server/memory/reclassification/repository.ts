@@ -21,7 +21,7 @@ import {
   MEMORY_SAFETY_LITE_POLICY_VERSION,
   memorySafetyLiteReasonForRedaction
 } from "../safetyLite";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
 import { removeUnsupportedMemoryEntityLinks } from "../learning/entities/lifecycle";
 import { MEMORY_V1_CATEGORY_ALLOWLIST } from "../learning/extraction/contract";
@@ -80,7 +80,6 @@ export function memoryReclassificationCandidateAuthorityPredicate(
       AND ${memoryReusableFactAuthorityPredicate(userId, {
         allowLegacySafetyReprojection: true,
         classification: "PENDING",
-        includePatterns: true,
         lifecycle: "RECLASSIFICATION"
       })}
     )
@@ -90,7 +89,6 @@ export function memoryReclassificationCandidateAuthorityPredicate(
       AND ${memoryReusableFactAuthorityPredicate(userId, {
         allowLegacySafetyReprojection: true,
         classification: "UNCERTAIN",
-        includePatterns: true,
         lifecycle: "RECLASSIFICATION"
       })}
     )
@@ -100,7 +98,6 @@ export function memoryReclassificationCandidateAuthorityPredicate(
       AND ${memoryReusableFactAuthorityPredicate(userId, {
         allowLegacySafetyReprojection: true,
         classification: "SECRET_FENCED",
-        includePatterns: true,
         lifecycle: "RECLASSIFICATION"
       })}
     )
@@ -374,7 +371,6 @@ export function createPrismaMemoryReclassificationRepository(
         const authority = memoryReusableFactAuthorityPredicate(userId, {
           allowLegacySafetyReprojection: true,
           classification: candidate.safetyClassificationState,
-          includePatterns: true,
           lifecycle: "RECLASSIFICATION"
         });
         const [current] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
@@ -536,8 +532,7 @@ export function createPrismaMemoryReclassificationRepository(
           continue;
         }
 
-        const pattern = candidate.modality === "PATTERN";
-        const coreEligible = !pattern && canonicalSensitivity === "NORMAL" &&
+        const coreEligible = canonicalSensitivity === "NORMAL" &&
           candidate.sourceMode === "EXPLICIT" &&
           result.decision.responsePreference;
         const coreSalience = coreEligible
@@ -547,9 +542,7 @@ export function createPrismaMemoryReclassificationRepository(
           : "NONE";
         const classified = await tx.memoryFactVersion.updateMany({
           data: {
-            category: pattern
-              ? "patterns"
-              : result.decision.responsePreference
+            category: result.decision.responsePreference
               ? "preferences"
               : canonicalCategory,
             coreEligible,
@@ -559,9 +552,7 @@ export function createPrismaMemoryReclassificationRepository(
               normalizedSearchText: normalizeMemorySearchText(safeDisplayText),
               structuredValue: safeStructuredValue as Prisma.InputJsonValue
             } : {}),
-            modality: pattern
-              ? "PATTERN"
-              : result.decision.responsePreference
+            modality: result.decision.responsePreference
               ? "PREFERENCE"
               : candidate.modality === "PREFERENCE" ? "STATE" : candidate.modality,
             safetyClassifiedAt: result.classifiedAt ?? now,
@@ -598,17 +589,7 @@ export function createPrismaMemoryReclassificationRepository(
             })
           });
         }
-        if (pattern) {
-          await tx.memoryFact.updateMany({
-            data: { category: "patterns", updatedAt: now },
-            where: {
-              currentVersionId: candidate.id,
-              id: candidate.factId,
-              state: "ACTIVE",
-              userId
-            }
-          });
-        } else if (result.decision.responsePreference) {
+        if (result.decision.responsePreference) {
           await tx.memoryFact.updateMany({
             data: { category: "preferences", updatedAt: now },
             where: {

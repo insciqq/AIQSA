@@ -75,7 +75,6 @@
     "smoke:memory-semantic": "tsx scripts/smoke-memory-semantic-retrieval.ts",
     "smoke:memory-browser-paid": "node scripts/smoke-memory-browser-paid.cjs",
     "smoke:memory-mcp-codex": "prisma generate && tsx scripts/smoke-memory-mcp-codex.ts",
-    "smoke:memory-synthesis-provider": "tsx scripts/smoke-memory-synthesis-provider.ts",
     "smoke:openrouter": "tsx scripts/smoke-openrouter-perplexity.ts",
     "smoke:parsers": "tsx scripts/smoke-parser-sidecars.ts",
     "smoke:tool-result-recall-paid": "tsx scripts/smoke-tool-result-recall-paid.ts",

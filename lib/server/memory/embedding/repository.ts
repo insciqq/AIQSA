@@ -23,7 +23,7 @@ import {
   memoryHistoryChunkSourceAuthorityPredicate,
   memoryHistoryRoundSourceAuthorityPredicate
 } from "../persistence/pauseIntervals";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { wakeMemoryShadowRebuildInTransaction } from "../rebuild/wake";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
@@ -248,7 +248,6 @@ async function loadFactTarget(
       AND version."displayText" IS NOT NULL
       AND version."structuredValue" IS NOT NULL
       AND ${memoryReusableFactAuthorityPredicate(row.userId, {
-        includePatterns: true,
         lifecycle: "CURRENT_OR_HISTORICAL"
       })}
     LIMIT 1

@@ -24,6 +24,10 @@ import type {
   MemoryForgetMutationResult
 } from "./repository";
 import { memoryLifecycleIdempotencyFingerprint } from "./repository";
+import {
+  memoryForgetPeerCascadeCount,
+  rememberMemoryForgetPeerCascade
+} from "./sourcePreservation";
 
 export type MemoryLifecycleAuthorizationRepository = Readonly<{
   resolveForUse(
@@ -76,6 +80,16 @@ export class MemoryControlledForgetCommittedError extends Error {
   constructor() {
     super("memory_controlled_forget_committed");
     this.name = "MemoryControlledForgetCommittedError";
+  }
+}
+
+/** The Forget transaction committed, but its tombstone response could not be
+ * projected. Existing callers still see `memory_action_failed`; a caller that
+ * owns a committed-success response can distinguish it without a replay. */
+export class MemoryForgetCommittedResponseError extends MemoryLifecycleServiceError {
+  constructor() {
+    super("memory_action_failed");
+    this.name = "MemoryLifecycleServiceError";
   }
 }
 
@@ -150,10 +164,12 @@ function checkedDeletion(value: MemoryDeletionStatus): MemoryDeletionStatus {
 }
 
 function checkedForget(
-  response: MemoryForgetResponse
+  response: MemoryForgetResponse,
+  cascadedPeers: number
 ): MemoryForgetResponse {
   const decoded = decodeMemoryForgetResponse(response);
-  if (!decoded.ok) return failure("memory_action_failed");
+  if (!decoded.ok) throw new MemoryForgetCommittedResponseError();
+  rememberMemoryForgetPeerCascade(decoded.value, cascadedPeers);
   return decoded.value;
 }
 
@@ -276,7 +292,7 @@ export function createMemoryLifecycleService(input: Readonly<{
           expiresAt: forgotten.undoExpiresAt.toISOString(),
           versionId: forgotten.versionId
         }
-      });
+      }, memoryForgetPeerCascadeCount(forgotten));
     },
 
     async status(userId, deletionId) {

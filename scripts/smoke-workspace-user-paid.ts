@@ -155,7 +155,7 @@ async function main() {
       expectedVersion: system.systemModelPolicy.policy.version, providerModelId: null, reasoningEffort: null, rerankerProviderModelId: null
     } }));
     await json(await page.request.patch("/api/me/memory/settings", { data: {
-      useMemoryFacts: false, referenceChatHistory: false, learnAutomatically: false, synthesisEnabled: false, decayEnabled: false
+      useMemoryFacts: false, referenceChatHistory: false, learnAutomatically: false, decayEnabled: false
     } }));
     const workspace = await json(await page.request.get("/api/admin/workspace"));
     await json(await page.request.patch("/api/admin/workspace", { data: {

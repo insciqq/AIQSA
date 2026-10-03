@@ -83,6 +83,7 @@ import {
   recoveredRunErrorPayload
 } from "./prismaRepositoryToolLoop";
 import { createPrismaMcpDiscoveryOperations } from "./prismaRepositoryMcpDiscovery";
+import { createPrismaToolHistoryOperations } from "./prismaRepositoryToolHistory";
 import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
 import {
   decodeProjectDefaults,
@@ -196,6 +197,7 @@ export function createPrismaRunRepository(
     memorySourceHooks
   );
   const mcpDiscoveryOperations = createPrismaMcpDiscoveryOperations(prismaClient);
+  const toolHistoryOperations = createPrismaToolHistoryOperations(prismaClient);
   async function loadMemoryAdmissionDeadlineMs(request?: { memoryStandingVersion?: 1 }): Promise<number> {
     if (request?.memoryStandingVersion === 1) return MEMORY_STANDING_PREPARATION_TIMEOUT_MS;
     if (options.memoryAdmissionDeadlineMs !== undefined) {
@@ -465,6 +467,7 @@ export function createPrismaRunRepository(
     settlePreparingRunFailure: (input) =>
       settlePreparingRunFailureWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
     ...mcpDiscoveryOperations,
+    ...toolHistoryOperations,
     ...toolLoopOperations,
     sweepBootOrphanedRuns: async ({ createdBefore, liveRunIds }) => {
       const liveRunIdFilter = unique(liveRunIds);

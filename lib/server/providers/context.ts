@@ -41,11 +41,14 @@ export function conversationMessagesForRequest(request: ProviderRunRequest): Pro
   return messages;
 }
 
+/** `redactSkillContext` builds a preview: private Skill and Knowledge context
+ * becomes a placeholder, and tool-call history records are left out. */
 export function textConversationForRequest(
   request: ProviderRunRequest,
   options: Readonly<{ redactSkillContext?: boolean }> = {}
 ): TextConversationMessage[] {
   return conversationMessagesForRequest(request)
+    .filter((message) => !(options.redactSkillContext && message.historyClass === "tool_history"))
     .map((message) => ({
       content: options.redactSkillContext && (message.purpose === "skill_context" || message.purpose === "skill_catalog")
         ? SKILL_CONTEXT_PREVIEW_PLACEHOLDER

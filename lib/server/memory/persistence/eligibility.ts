@@ -378,3 +378,11 @@ export async function loadPersonalMemoryEvidenceSnapshots(
     return [snapshot];
   });
 }
+
+/** An automatic version whose source turn told Memory to remember it. Standing
+ * context protects it like an explicit save; the frame is stored flat in
+ * camelCase. `version` is the alias of the version row being tested. */
+export function memoryAutomaticExplicitRememberPredicate(version: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`(${version}."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+    AND ${version}."semanticFrame"->>'memoryDirective' = 'EXPLICIT_REMEMBER')`;
+}

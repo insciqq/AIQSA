@@ -3,6 +3,7 @@ import { MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE } from "../../../../contracts/
 import { memorySha256 } from "../../persistence/lexical";
 import {
   MEMORY_FACT_SOURCE_PROJECTION_VERSION,
+  MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE,
   memoryFactNextPage,
   memoryFactTargetView,
   type MemoryFactContextRef,
@@ -10,10 +11,18 @@ import {
   type MemoryFactJobPage
 } from "./contract";
 import { decodeMemoryFactExtraction } from "./decoder";
-import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
 import {
+  MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT,
+  MEMORY_FACT_EXTRACTION_TOOL_NAME
+} from "./prompt";
+import {
+  decodeMemorySemanticAdjudication,
   memoryCandidateRequiresSemanticAdjudication,
-  memorySemanticAuthorityAdmitsCandidate
+  memorySemanticAdjudicationInput,
+  memorySemanticAuthorityAdmitsCandidate,
+  MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
+  MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT,
+  MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
 } from "./adjudication";
 import { memoryPropositionCanonicalKey } from "../identity/normalization";
 
@@ -109,7 +118,6 @@ function observation(
     dependency_refs: [],
     entities: [],
     evidence: textRef(quote),
-    future_useful: true,
     usefulness: "DURABLE",
     identity: {
       dimension_key: null,
@@ -224,7 +232,7 @@ function decode(
   }], input(sourceText, contextRefs, redactionSpans, priorMessages, languageCode));
 }
 
-describe("Memory v6 usefulness-aware semantic-frame decoder", () => {
+describe("Memory v7 long-term semantic-frame decoder", () => {
   it("admits a durable command preference only through semantic review", () => {
     const quote = "Always explain architecture to me with a concrete example.";
     const proposed = observation(quote, {
@@ -283,13 +291,15 @@ describe("Memory v6 usefulness-aware semantic-frame decoder", () => {
       ["evidence shape", { evidence: textRef("I\u000bown") }, "REJECT_EVIDENCE_INVALID"],
       ["evidence target", { evidence: textRef("unrelated source") }, "REJECT_EVIDENCE_NOT_IN_TARGET"],
       ["frame", { semantic_frame: { ...frame, subject_scope: "THIRD_PARTY" } }, "REJECT_FRAME_INELIGIBLE"],
-      ["usefulness", { future_useful: false }, "REJECT_NOT_USEFUL"],
+      ["usefulness", { usefulness: "SHORT_TERM" }, "REJECT_NOT_USEFUL"],
       ["entity", { entities: [{ aliases: [], canonical_label: "Ari", context_entity_ref: null,
         entity_type: "PERSON", mention: textRef("Ari"), mention_kind: "NAMED",
         qualifier_supports: [], role: "OBJECT" }] }, "REJECT_ENTITY_UNSUPPORTED"],
       ["dependency", { dependency_refs: ["missing"] }, "REJECT_DEPENDENCY_UNSUPPORTED"],
       ["temporal", { temporal: { expiration_intent: "NONE", normalization: { kind: "NONE" },
         perspective: "CURRENT", raw_expression: textRef("tomorrow") } }, "REJECT_TEMPORAL_UNSUPPORTED"],
+      ["temporal perspective", { temporal: { expiration_intent: "NONE", normalization: { kind: "NONE" },
+        perspective: "EVENT", raw_expression: null } }, "REJECT_TEMPORAL_UNSUPPORTED"],
       ["temporary", { temporal: { expiration_intent: "EXPLICIT", normalization: { kind: "NONE" },
         perspective: "CURRENT", raw_expression: null } }, "REJECT_TEMPORARY"],
       ["product identity", { ...product, identity: { ...(product.identity as object),
@@ -1771,7 +1781,7 @@ describe("Memory v6 usefulness-aware semantic-frame decoder", () => {
     expect(plan.rejections).toEqual([]);
     expect(plan.candidates).toHaveLength(1);
     expect(plan.candidates[0]).toMatchObject({ expiresAt: null, statement: quote, modality: memoryType });
-    expect(decode(quote!, [{ ...proposed, future_useful: false }]).candidates).toEqual([]);
+    expect(decode(quote!, [{ ...proposed, usefulness: "EPISODIC" }]).candidates).toEqual([]);
     expect(decode(quote!, [{ ...proposed, temporal: {
       expiration_intent: "EXPLICIT", perspective, normalization: { kind: "NONE" }, raw_expression: null
     } }]).candidates).toEqual([]);
@@ -1843,48 +1853,246 @@ describe("Memory v6 usefulness-aware semantic-frame decoder", () => {
     ]);
   });
 
-  it("retains usefulness separately from confidence and rejects transient output", () => {
-    const quote = "A bounded but meaningful event.";
-    const durable = decode(quote, [observation(quote, { usefulness: "EPISODIC" })]);
-    expect(durable.rejections).toEqual([]);
-    expect(durable.candidates[0]?.usefulness).toBe("EPISODIC");
-
-    const transient = decode(quote, [observation(quote, { usefulness: "TRANSIENT" })]);
-    expect(transient.candidates).toEqual([]);
-    expect(transient.rejections).toEqual([{
-      candidateOrdinal: 0,
-      reasonCode: "REJECT_NOT_USEFUL"
-    }]);
+  it("keeps only DURABLE and ONGOING and never carries a rejected class as usefulness", () => {
+    const quote = "A long-term personal fact.";
+    for (const usefulness of ["DURABLE", "ONGOING"]) {
+      const plan = decode(quote, [observation(quote, { usefulness })]);
+      expect(plan.rejections).toEqual([]);
+      expect(plan.candidates[0]).toMatchObject({ usefulness });
+      expect(plan.candidates[0]).not.toHaveProperty("changeOnly");
+      expect(plan.candidates[0]).not.toHaveProperty("futureUseful");
+    }
+    for (const usefulness of ["EPISODIC", "SHORT_TERM", "COMMON", "TRANSIENT"]) {
+      const plan = decode(quote, [observation(quote, { usefulness })]);
+      expect(plan.candidates).toEqual([]);
+      expect(plan.rejections).toEqual([{ candidateOrdinal: 0, reasonCode: "REJECT_NOT_USEFUL" }]);
+    }
+    const { usefulness: _missing, ...withoutUsefulness } = observation(quote);
+    for (const malformed of [
+      withoutUsefulness,
+      observation(quote, { usefulness: "PERMANENT" }),
+      observation(quote, { future_useful: true })
+    ]) {
+      expect(decode(quote, [malformed]).rejections).toEqual([
+        { candidateOrdinal: 0, reasonCode: "REJECT_UNSUPPORTED" }
+      ]);
+    }
+    expect(() => decodeMemoryFactExtraction([{
+      arguments: { observations: [observation(quote)] },
+      id: "retired-call",
+      name: "submit_memory_fact_observations_v6"
+    }], input(quote))).toThrow();
   });
 
-  it("requires usefulness on v6 and accepts v5 only with explicit retained authority", () => {
-    const quote = "A legacy bounded event.";
-    const { usefulness: _legacyUsefulness, ...legacyObservation } = observation(quote);
-    const legacyCall = [{
-      arguments: { observations: [legacyObservation] },
-      id: "legacy-call",
-      name: "submit_memory_fact_observations_v5"
-    }];
-    expect(() => decodeMemoryFactExtraction(
-      legacyCall,
-      input(quote)
-    )).toThrow();
-    const retained = decodeMemoryFactExtraction(
-      legacyCall,
-      input(quote),
-      { retainedContract: true }
-    );
-    expect(retained.rejections).toEqual([]);
+  it("keeps only the long-term part of a mixed message", () => {
+    const quote = "Я врач, завтра дежурю.";
+    const plan = decode(quote, [
+      observation(quote, {
+        evidence: textRef("Я врач"), statement: "Пользователь работает врачом."
+      }),
+      observation(quote, {
+        candidate_ref: "C2", evidence: textRef("завтра дежурю"),
+        memory_type: "PLAN", statement: "Пользователь завтра дежурит.",
+        usefulness: "SHORT_TERM"
+      })
+    ]);
+    expect(plan.candidates.map(({ statement }) => statement))
+      .toEqual(["Пользователь работает врачом."]);
+    expect(plan.rejections).toEqual([{ candidateOrdinal: 1, reasonCode: "REJECT_NOT_USEFUL" }]);
+  });
 
-    const mixed = decodeMemoryFactExtraction([{
-      arguments: { observations: [observation(quote), legacyObservation] },
-      id: "mixed-call",
-      name: MEMORY_FACT_EXTRACTION_TOOL_NAME
-    }], input(quote));
-    expect(mixed.candidates).toHaveLength(1);
-    expect(mixed.rejections).toContainEqual({
-      candidateOrdinal: 1,
-      reasonCode: "REJECT_UNSUPPORTED"
+  it.each(["STATE_CHANGE", "CORRECTION", "RETRACTION"])(
+    "passes a rejected class with %s only as a change-only candidate",
+    (changeIntent) => {
+      const quote = "Я снова ем хлеб.";
+      const changed = (usefulness: string) => observation(quote, {
+        semantic_frame: {
+          ...frame,
+          change_intent: changeIntent,
+          polarity: changeIntent === "RETRACTION" ? "RETRACTION" : "AFFIRMED"
+        },
+        statement: "Пользователь снова ест хлеб.",
+        usefulness
+      });
+      for (const usefulness of ["EPISODIC", "SHORT_TERM", "COMMON", "TRANSIENT"]) {
+        const plan = decode(quote, [changed(usefulness)]);
+        expect(plan.rejections).toEqual([]);
+        expect(plan.candidates[0]?.changeOnly).toBe(usefulness);
+        expect(plan.candidates[0]).not.toHaveProperty("usefulness");
+      }
+      const lasting = decode(quote, [changed("DURABLE")]).candidates[0]!;
+      expect(lasting).toMatchObject({ usefulness: "DURABLE" });
+      expect(lasting).not.toHaveProperty("changeOnly");
+      // The marker and the class are model metadata, not candidate identity.
+      expect(decode(quote, [changed("COMMON")]).candidates[0]!.id).toBe(lasting.id);
+    }
+  );
+
+  it.each(["NONE", "REOPEN", "UNKNOWN"])(
+    "rejects a rejected class with change_intent %s",
+    (changeIntent) => {
+      const quote = "Я начал есть хлеб.";
+      const plan = decode(quote, [observation(quote, {
+        semantic_frame: { ...frame, change_intent: changeIntent },
+        usefulness: "COMMON"
+      })]);
+      expect(plan.candidates).toEqual([]);
+      expect(plan.rejections).toEqual([{ candidateOrdinal: 0, reasonCode: "REJECT_NOT_USEFUL" }]);
+    }
+  );
+
+  it("keeps a lasting state change without a change-only marker", () => {
+    const quote = "I moved to Berlin.";
+    const plan = decode(quote, [observation(quote, {
+      semantic_frame: { ...frame, change_intent: "STATE_CHANGE" },
+      statement: "The user moved to Berlin."
+    })]);
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates[0]).toMatchObject({ usefulness: "DURABLE" });
+    expect(plan.candidates[0]).not.toHaveProperty("changeOnly");
+  });
+
+  it("keeps an explicit remember directive regardless of duration without usefulness", () => {
+    const quote = "Запомни: я должен Ивану 38 рублей.";
+    const plan = decode(quote, [observation(quote, {
+      semantic_frame: { ...frame, memory_directive: "EXPLICIT_REMEMBER", speech_act: "COMMAND" },
+      statement: "Пользователь должен Ивану 38 рублей.",
+      usefulness: "SHORT_TERM"
+    })]);
+    expect(plan.rejections).toEqual([]);
+    expect(plan.candidates).toHaveLength(1);
+    expect(plan.candidates[0]).not.toHaveProperty("usefulness");
+    expect(plan.candidates[0]).not.toHaveProperty("changeOnly");
+  });
+
+  it("judges a product status by its closed state token", () => {
+    const quote = "MacBook Air M4 status.";
+    for (const state of ["considering", "planned", "ordered"]) {
+      for (const overrides of [{}, {
+        semantic_frame: { ...frame, change_intent: "STATE_CHANGE" }
+      }, {
+        semantic_frame: { ...frame, memory_directive: "EXPLICIT_REMEMBER", speech_act: "COMMAND" }
+      }]) {
+        const plan = decode(quote, [{ ...productObservation(quote, state), ...overrides }]);
+        expect(plan.candidates).toEqual([]);
+        expect(plan.rejections).toEqual([{ candidateOrdinal: 0, reasonCode: "REJECT_NOT_USEFUL" }]);
+      }
+    }
+    for (const state of ["returned", "sold", "cancelled", "no_longer_owned"]) {
+      const durable = decode(quote, [productObservation(quote, state)]);
+      expect(durable.rejections).toEqual([]);
+      expect(durable.candidates[0]).toMatchObject({
+        changeOnly: "TERMINAL_PRODUCT_STATUS", usefulness: "DURABLE"
+      });
+      const shortTerm = decode(quote, [{
+        ...productObservation(quote, state), usefulness: "SHORT_TERM"
+      }]);
+      expect(shortTerm.candidates[0]?.changeOnly).toBe("TERMINAL_PRODUCT_STATUS");
+      expect(shortTerm.candidates[0]).not.toHaveProperty("usefulness");
+    }
+    for (const state of ["owned", "borrowed", "work_device", "shared"]) {
+      const lasting = decode(quote, [productObservation(quote, state)]).candidates[0]!;
+      expect(lasting).toMatchObject({ usefulness: "DURABLE" });
+      expect(lasting).not.toHaveProperty("changeOnly");
+    }
+  });
+});
+
+describe("Memory extraction regressions recorded from the production Memory model", () => {
+  it("names a duplicated temporal perspective mismatch on a dated state change", () => {
+    const quote = "I switched from my iPhone to a Pixel last week.";
+    const prior: MemoryFactContextRef = {
+      aliases: [], displayName: null, entityId: null, entityType: null,
+      identitySubjectKey: null, kind: "FACT_VERSION", ref: "F1",
+      source: { contentHash: null, factVersionId: "version-1", messageId: null,
+        messageUpdatedAt: null, projectionVersion: null },
+      text: "bounded current state"
+    };
+    // Exact rejected observation; only its two perspective fields disagree.
+    const recorded = observation(quote, {
+      candidate_ref: "pixel_switch_state_change",
+      dependency_refs: ["F1"],
+      entities: [{ aliases: [], canonical_label: "Pixel", context_entity_ref: null,
+        entity_type: "PRODUCT", mention: textRef("Pixel"), mention_kind: "NAMED",
+        qualifier_supports: [], role: "OBJECT" }],
+      reason_code: "state_change_replacement_device",
+      semantic_frame: { ...frame, change_intent: "STATE_CHANGE" },
+      statement: "The user switched from their iPhone to a Pixel last week " +
+        "and now uses a Pixel instead of the iPhone.",
+      temporal: { expiration_intent: "NONE",
+        normalization: { amount: -1, kind: "CALENDAR_OFFSET", unit: "WEEK" },
+        perspective: "EVENT", raw_expression: textRef("last week") }
     });
+    const rejected = decode(quote, [recorded], [prior]);
+    expect(rejected.candidates).toEqual([]);
+    expect(rejected.rejections).toEqual([
+      { candidateOrdinal: 0, reasonCode: "REJECT_TEMPORAL_UNSUPPORTED" }
+    ]);
+
+    const current = decode(quote, [{ ...recorded,
+      temporal: { ...(recorded.temporal as object), perspective: "CURRENT" } }], [prior]);
+    expect(current.rejections).toEqual([]);
+    expect(current.candidates[0]?.semanticFrame).toMatchObject({
+      changeIntent: "STATE_CHANGE", temporalPerspective: "CURRENT"
+    });
+    expect(current.candidates[0]?.dependencies.map(({ ref }) => ref)).toEqual(["F1"]);
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(
+      "temporal.perspective and semantic_frame.temporal_perspective always carry the same value"
+    );
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(
+      "a completed action that asserts no resulting state keeps EVENT perspective"
+    );
+  });
+
+  it("defines relationship existence once for extraction and adjudication", () => {
+    const quote = "I have two cats named Miso and Tofu.";
+    const pet = (name: string) => ({
+      aliases: [], canonical_label: name, context_entity_ref: null, entity_type: "OTHER",
+      mention: textRef(name), mention_kind: "NAMED", qualifier_supports: [], role: "SUBJECT"
+    });
+    const plan = decode(quote, [observation(quote, {
+      candidate_ref: "cats", entities: [pet("Miso"), pet("Tofu")],
+      reason_code: "pet_ownership",
+      semantic_frame: { ...frame, subject_scope: "USER_RELATIONSHIP_CONTEXT" },
+      statement: "The user has two cats named Miso and Tofu."
+    })]);
+    expect(plan.rejections).toEqual([]);
+    const candidate = plan.candidates[0]!;
+    expect(memoryCandidateRequiresSemanticAdjudication(candidate)).toBe(true);
+    const input = memorySemanticAdjudicationInput(plan)!;
+    // Every recorded decision is ENTAILED/HIGH/NO_RELATION; only the scope varies.
+    const decision = (scope: string, reasonCode: string) =>
+      decodeMemorySemanticAdjudication([{
+        arguments: { decisions: [{
+          assertion_status: "ASSERTED", candidate_ref: "cats", confidence_band: "HIGH",
+          entailment: "ENTAILED", entity_ref: null, operation: "NO_RELATION",
+          reason_code: reasonCode, subject_identity: "UNRESOLVED", subject_scope: scope,
+          target_ref: null, temporal_perspective: "CURRENT"
+        }] },
+        id: "call-1",
+        name: MEMORY_SEMANTIC_ADJUDICATION_TOOL_NAME
+      }], input).decisions[0]!;
+
+    expect(memorySemanticAuthorityAdmitsCandidate(candidate,
+      decision("USER_RELATIONSHIP_CONTEXT", "NEW_USER_PET_RELATIONSHIP"))).toBe(true);
+    // The admission gate keeps requiring scope agreement.
+    for (const reasonCode of [
+      "current_user_own_pet_possession_no_target",
+      "new_current_user_fact_no_target",
+      "current_user_owns_named_pets"
+    ]) {
+      expect(memorySemanticAuthorityAdmitsCandidate(candidate,
+        decision("CURRENT_USER", reasonCode)), reasonCode).toBe(false);
+    }
+    // Both prompts carry the same definition of the relationship class.
+    const definition = "A relationship to a person or animal that the evidence mentions by " +
+      "name or description, including the existence of that relationship and that subject's " +
+      "identity or name";
+    expect(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE).toContain(definition);
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE);
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .toContain(MEMORY_PERSONAL_SUBJECT_SCOPE_GUIDANCE);
+    expect(MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION)
+      .toBe("memory-semantic-adjudication-prompt-v21");
   });
 });

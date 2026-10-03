@@ -37,30 +37,18 @@ describe("Explicit Memory repository pagination", () => {
     expect(queryRaw).toHaveBeenCalledTimes(2);
   });
 
-  it("collapses only unprotected combination sources in the broad list", async () => {
+  it("lists and searches without retired patterns and without hiding their sources", async () => {
     const queryRaw = vi.fn().mockResolvedValue([]);
     const repository = createPrismaExplicitMemoryRepository({ $queryRaw: queryRaw } as never);
 
     await repository.list("user-1", { pageSize: 20 });
-    const broadSql = queryRaw.mock.calls[0]?.[0].strings.join("?") as string;
-    expect(broadSql).toContain("combined_relation");
-    expect(broadSql).toContain("parent_relation");
-    expect(queryRaw.mock.calls[0]?.[0].values).toEqual(expect.arrayContaining([
-      "combined_overlapping_facts", "combined_refined_facts", "combined_episode_facts"
-    ]));
-    expect(broadSql).toContain('fact."pinned" = TRUE');
-    expect(broadSql).toContain('owner_event."actorType" = \'USER\'');
-
-    queryRaw.mockClear();
-    await repository.list("user-1", { category: "work", pageSize: 20 });
-    const filteredSql = queryRaw.mock.calls[0]?.[0].strings.join("?") as string;
-    expect(filteredSql).not.toContain("combined_relation");
-    expect(queryRaw.mock.calls[0]?.[0].values).toContain("work");
-
-    queryRaw.mockClear();
-    await repository.search("user-1", { category: "work", query: "checklist" });
-    const searchSql = queryRaw.mock.calls[0]?.[0].strings.join("?") as string;
-    expect(searchSql).not.toContain("combined_relation");
-    expect(queryRaw.mock.calls[0]?.[0].values).toContain("work");
+    await repository.search("user-1", { query: "checklist" });
+    for (const [query] of queryRaw.mock.calls) {
+      const sql = query.strings.join("?") as string;
+      expect(sql).toContain(`version."modality" <> 'PATTERN'::"MemoryFactModality"`);
+      expect(sql).not.toContain("SYNTHESIZED_FROM");
+      expect(sql).not.toContain("combined_relation");
+      expect(sql).not.toContain("synthesisEnabledAt");
+    }
   });
 });

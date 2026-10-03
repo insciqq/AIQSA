@@ -60,7 +60,6 @@ async function assertFence(
     memoryRevision: number;
     ownerStatus: string;
     referenceChatHistory: boolean;
-    synthesisEnabled: boolean;
     useMemoryFacts: boolean;
   }>>(Prisma.sql`
     SELECT
@@ -71,7 +70,6 @@ async function assertFence(
       settings."memoryRevision",
       owner."status"::text AS "ownerStatus",
       settings."referenceChatHistory",
-      settings."synthesisEnabled",
       settings."useMemoryFacts"
     FROM "UserMemorySettings" AS settings
     INNER JOIN "User" AS owner ON owner."id" = settings."userId"
@@ -85,7 +83,6 @@ async function assertFence(
     row.useMemoryFacts ||
     row.referenceChatHistory ||
     row.learnAutomatically ||
-    row.synthesisEnabled ||
     row.activeIndexGenerationId !== null ||
     row.embeddingProviderModelId !== null ||
     !Number.isSafeInteger(row.memoryRevision) || row.memoryRevision < 0
@@ -293,6 +290,8 @@ async function purgeReusableAndPrivateMemory(
       learnAutomatically: false,
       referenceChatHistory: false,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
+      // Retired Dream columns: written only as the fence values a
+      // previous-release worker still checks during Compose replacement.
       synthesisEnabled: false,
       synthesisEnabledAt: null,
       synthesisPolicyVersion: null,
@@ -324,10 +323,6 @@ export async function inspectAccountMemoryDeletionCanonicalResiduals(
           AND settings."decayPolicyVersion" IS NULL
           AND settings."referenceChatHistory" = FALSE
           AND settings."learnAutomatically" = FALSE
-          AND settings."synthesisEnabled" = FALSE
-          AND settings."synthesisEnabledAt" IS NULL
-          AND settings."synthesisPolicyVersion" IS NULL
-          AND settings."lastSynthesisAt" IS NULL
           AND settings."activeIndexGenerationId" IS NULL
           AND settings."embeddingProviderModelId" IS NULL
           AND settings."acceptedUtilityEgressFingerprint" IS NULL

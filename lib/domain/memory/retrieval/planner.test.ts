@@ -203,35 +203,10 @@ describe("language-agnostic Memory retrieval planning", () => {
     })).toThrow("memory_retrieval_plan_invalid");
   });
 
-  it("admits synthesis patterns only through an explicit targeted-current decision", () => {
-    expect(planMemoryRetrieval({ currentUserText: "current workflow", now }))
-      .toMatchObject({ includePatterns: false, mode: "TARGETED_CURRENT" });
-    expect(planMemoryRetrieval({
-      currentUserText: "current workflow",
-      includePatterns: true,
-      now
-    })).toMatchObject({ includePatterns: true, mode: "TARGETED_CURRENT" });
-    expect(() => planMemoryRetrieval({
-      currentUserText: "profile",
-      filters: { sourceKinds: ["FACT"] },
-      includePatterns: true,
-      mode: "CURRENT_PROFILE",
-      now,
-      profileRequested: true
-    })).toThrow("memory_retrieval_plan_invalid");
-    expect(() => planMemoryRetrieval({
-      currentUserText: "past fact",
-      filters: { sourceKinds: ["FACT"] },
-      includePatterns: true,
-      mode: "HISTORICAL_MEMORY",
-      now,
-      temporalIntent: "HISTORICAL"
-    })).toThrow("memory_retrieval_plan_invalid");
-    expect(() => planMemoryRetrieval({
-      currentUserText: "current workflow",
-      includePatterns: "true" as never,
-      now
-    })).toThrow("memory_retrieval_plan_invalid");
+  it("carries no synthesized-pattern admission in any plan", () => {
+    const plan = planMemoryRetrieval({ currentUserText: "current workflow", now });
+    expect(plan.mode).toBe("TARGETED_CURRENT");
+    expect(plan).not.toHaveProperty("includePatterns");
   });
 
   it("retains only exact entity occurrences and owner-validated opaque refs", () => {

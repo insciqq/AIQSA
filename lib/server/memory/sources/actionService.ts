@@ -56,7 +56,7 @@ import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "../history/rounds";
-import { loadMemoryReusableFactVersionIds } from "../synthesis/eligibility";
+import { loadMemoryReusableFactVersionIds } from "../persistence/reusableFactAuthority";
 import { loadDeliveredMemorySearchEvidence } from "./searchEvidence";
 
 type SourceActionClient = Pick<
@@ -507,8 +507,7 @@ export function createMemorySourceActionService(input: Readonly<{
       const eligibleVersionIds = await loadMemoryReusableFactVersionIds(
         input.client,
         userId,
-        [version.id],
-        { includePatterns: true }
+        [version.id]
       );
       if (fact.state !== "ACTIVE" || fact.currentVersionId !== version.id ||
         version.state !== "ACTIVE" || version.contentPurgedAt !== null ||

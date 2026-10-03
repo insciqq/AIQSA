@@ -36,12 +36,6 @@ import {
 } from "../learning/relations/policy";
 import { MEMORY_TEMPORAL_RESOLVER_VERSION } from
   "../learning/temporal/resolver";
-import {
-  MEMORY_SYNTHESIS_PIPELINE_VERSION,
-  MEMORY_SYNTHESIS_POLICY_VERSION,
-  MEMORY_SYNTHESIS_PROMPT_VERSION,
-  MEMORY_SYNTHESIS_SCHEMA_VERSION
-} from "../synthesis/policy";
 
 type ScenarioId = `E0${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8}`;
 type EvidenceKind =
@@ -228,42 +222,6 @@ const corpus: readonly CorrectiveScenario[] = Object.freeze([
   {
     evidence: [
       {
-        anchor: "[E06] synthesizes, retrieves, invalidates, and replaces a source-bound pattern",
-        kind: "database",
-        path: "synthesis/repository.prisma.test.ts"
-      },
-      {
-        anchor: "[E06] builds a bounded ref-only prompt with untrusted source labels",
-        kind: "runtime",
-        path: "synthesis/contract.test.ts"
-      },
-      {
-        anchor: "[E06] performs one governed synthesis call, stages, reauthorizes, and applies",
-        kind: "provider_budget",
-        path: "synthesis/handler.test.ts"
-      },
-      {
-        anchor: "replacementRace",
-        kind: "concurrency",
-        path: "synthesis/repository.prisma.test.ts"
-      },
-      {
-        anchor: "proves the production HNSW plan, bounded exact plan, and pinned database profile",
-        kind: "query_plan",
-        path: "retrieval/vector.prisma.test.ts"
-      },
-      {
-        anchor: "compatibleAutomaticFactVersions: 2",
-        kind: "operational",
-        path: "synthesis/repository.prisma.test.ts"
-      }
-    ],
-    id: "E06",
-    providerCallBudget: { initialSynthesis: 1, stagedRecoveryAdditional: 0 }
-  },
-  {
-    evidence: [
-      {
         anchor: "[E07] retrieves one canonical current pointer or deduplicated genuine history",
         kind: "database",
         path: "retrieval/localRepository.prisma.test.ts"
@@ -350,6 +308,11 @@ const legacyDispositions = Object.freeze([
   {
     disposition: "AUTHORITY_FENCED_RETRACTABLE",
     subsystem: "unsupported_aliases_and_dependencies"
+  },
+  {
+    // E06: Dream synthesis is removed; its derivatives are forgotten.
+    disposition: "REMOVED_AND_FORGOTTEN",
+    subsystem: "dream_synthesis_patterns_and_combinations"
   }
 ]);
 
@@ -360,7 +323,7 @@ function source(path: string): string {
 describe("Memory corrective E01-E08 corpus inventory", () => {
   it("binds every scenario to executable runtime, database, budget and count evidence", () => {
     expect(corpus.map(({ id }) => id)).toEqual([
-      "E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08"
+      "E01", "E02", "E03", "E04", "E05", "E07", "E08"
     ]);
     for (const scenario of corpus) {
       const kinds = new Set(scenario.evidence.map(({ kind }) => kind));
@@ -416,18 +379,12 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         MEMORY_FACT_RELATION_SCHEMA_VERSION
       ],
       retrieval: MEMORY_RETRIEVAL_PIPELINE_VERSION,
-      synthesis: [
-        MEMORY_SYNTHESIS_PIPELINE_VERSION,
-        MEMORY_SYNTHESIS_POLICY_VERSION,
-        MEMORY_SYNTHESIS_PROMPT_VERSION,
-        MEMORY_SYNTHESIS_SCHEMA_VERSION
-      ],
       temporal: MEMORY_TEMPORAL_RESOLVER_VERSION
     }).toEqual({
       adjudication: [
         "memory-semantic-adjudication-v1",
         "memory-semantic-adjudication-policy-v18",
-        "memory-semantic-adjudication-prompt-v20",
+        "memory-semantic-adjudication-prompt-v21",
         "memory-semantic-adjudication-schema-v3"
       ],
       digest: [
@@ -439,9 +396,9 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
       entity: ["memory-entity-resolution-v3", "slot-v3"],
       extraction: [
         "memory-fact-extraction-vnext-v8",
-        "memory-fact-extraction-policy-v37",
-        "memory-fact-extraction-prompt-v49",
-        "memory-fact-extraction-schema-v6"
+        "memory-fact-extraction-policy-v38",
+        "memory-fact-extraction-prompt-v52",
+        "memory-fact-extraction-schema-v7"
       ],
       history: "memory-history-incremental-v10",
       relation: [
@@ -451,12 +408,6 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-relation-schema-v1"
       ],
       retrieval: "memory-personal-retrieval-v70",
-      synthesis: [
-        "memory-synthesis-v2",
-        "memory-synthesis-policy-v6",
-        "memory-synthesis-prompt-v9",
-        "memory-synthesis-schema-v4"
-      ],
       temporal: "memory-temporal-resolution-v3"
     });
   });

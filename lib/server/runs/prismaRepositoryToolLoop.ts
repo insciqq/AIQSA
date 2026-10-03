@@ -85,6 +85,7 @@ import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import { isRunOutputArtifactEvent } from "./runOutputEvents";
 import type { RunRepository } from "./runRepositoryContract";
 import { toolRunBudgetsForRequest } from "./toolBudgets";
+import { decodeToolHistorySnapshot } from "./toolHistoryContract";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { settleTerminalMemorySource } from "./prismaRepositoryPreparation";
 import {
@@ -604,6 +605,8 @@ const normalizedRequestKeys = new Set([
   "reasoningEffort",
   "searchPlan",
   "sessionStatusTool",
+  "toolCallReader",
+  "toolHistory",
   "toolObservationVersion",
   "skills",
   "toolBudgets",
@@ -985,6 +988,8 @@ function decodeProviderDispatchRecoveryRequest(
     value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true && !value.workspace || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
+    (value.toolCallReader !== undefined && value.toolCallReader !== true) ||
+    (value.toolHistory !== undefined && !decodeToolHistorySnapshot(value.toolHistory)) ||
     (value.toolObservationVersion !== undefined && value.toolObservationVersion !== 0 && value.toolObservationVersion !== 1) ||
     !isRecord(value.params) || !finiteJson(value.params) ||
     value.reasoningEffort !== undefined && value.reasoningEffort !== null &&

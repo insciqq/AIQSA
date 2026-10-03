@@ -4,54 +4,55 @@ import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { advanceMemoryMutation, lockMemorySettings, type MemoryTransaction } from "../persistence/transaction";
 import { memoryPurgeTargetType } from "../purge/contract";
 import { decodeMemoryMaintenanceOutput, decodeMemoryMaintenanceVerification, type MemoryMaintenanceOutput } from "./contract";
-import { MEMORY_MAINTENANCE_POLICY_VERSION, type MemoryMaintenancePlan, type MemoryMaintenanceSource } from "./policy";
-import { memoryMaintenanceOutputHash, type MemoryMaintenanceResult, type MemoryMaintenanceReviewResult,
-  type MemoryMaintenanceVerificationResult } from "./provider";
+import { MEMORY_MAINTENANCE_POLICY_VERSION, memoryMaintenancePlanHash, type MemoryMaintenanceBlockedReason,
+  type MemoryMaintenancePlan, type MemoryMaintenanceSource, type MemoryMaintenanceSourceIdentity } from "./policy";
+import { memoryMaintenanceInputHash, memoryMaintenanceOutputHash, type MemoryMaintenanceResult,
+  type MemoryMaintenanceReviewResult, type MemoryMaintenanceVerificationResult } from "./provider";
 import { loadMemoryMaintenanceSources } from "./source";
 
-async function snapshot(client: Pick<PrismaClient, "memoryMaintenanceReview" | "$queryRaw">, job: MemoryJobDescriptor): Promise<MemoryMaintenancePlan | null> {
+export type MemoryMaintenanceSnapshotSource = MemoryMaintenanceSourceIdentity & Readonly<{
+  reviewId: string;
+  /** Current content while it still matches the reviewed hash. */
+  current: MemoryMaintenanceSource | null;
+  /** Why a changed source can no longer be decided. */
+  blockedReason: MemoryMaintenanceBlockedReason | null;
+}>;
+/** The job's reviewed sources with a per-source match. `plan` is present
+ * only while every source still matches, so a provider may receive it. */
+export type MemoryMaintenanceSnapshot = Readonly<{
+  sourceSnapshotHash: string;
+  sources: readonly MemoryMaintenanceSnapshotSource[];
+  plan: MemoryMaintenancePlan | null;
+}>;
+
+/** Reads only. Refs follow the planner's database order of version ids. */
+async function snapshot(client: Pick<PrismaClient, "memoryMaintenanceReview" | "$queryRaw">,
+  job: MemoryJobDescriptor): Promise<MemoryMaintenanceSnapshot | null> {
   const reviews = await client.memoryMaintenanceReview.findMany({ where: { userId: job.userId, memoryJobId: job.id,
     policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION, disposition: "PENDING" },
-  select: { factVersionId: true, sourceSnapshotHash: true } });
+  orderBy: { factVersionId: "asc" }, select: { id: true, factVersionId: true, sourceSnapshotHash: true } });
   if (reviews.length === 0) return null;
-  const plan = await loadMemoryMaintenanceSources(client, job.userId, { now: new Date(), versionIds: reviews.map(({ factVersionId }) => factVersionId) });
-  if (!plan || plan.sources.length !== reviews.length || plan.sources.some((source) =>
-    !reviews.some((review) => review.factVersionId === source.versionId && review.sourceSnapshotHash === source.sourceSnapshotHash))) return null;
-  return plan;
-}
-
-async function overlapsIndependentFact(tx: MemoryTransaction, userId: string, source: MemoryMaintenanceSource): Promise<boolean> {
-  const dependents = await tx.$queryRaw<Array<{ exists: boolean }>>(Prisma.sql`
-    SELECT EXISTS (
-      SELECT 1 FROM "MemoryFactVersionSourceDependency" dep
-      JOIN "MemoryFactVersion" target ON target."userId" = dep."userId" AND target.id = dep."targetFactVersionId"
-      WHERE dep."userId" = ${userId} AND dep."sourceFactVersionId" = ${source.versionId} AND target."contentPurgedAt" IS NULL
-      UNION ALL
-      SELECT 1 FROM "MemoryFactVersionRelation" relation
-      JOIN "MemoryFactVersion" target ON target."userId" = relation."userId" AND target.id = relation."sourceVersionId"
-      WHERE relation."userId" = ${userId} AND relation."targetVersionId" = ${source.versionId}
-        AND relation.kind = 'SYNTHESIZED_FROM'::"MemoryFactVersionRelationKind" AND target.state = 'ACTIVE'::"MemoryFactVersionState"
-    ) AS exists
-  `);
-  if (dependents[0]?.exists) return true;
-  const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT peer."id" FROM "MemoryEvidence" peer
-    JOIN "MemoryFactVersion" peer_version ON peer_version."userId" = peer."userId" AND peer_version.id = peer."factVersionId"
-    JOIN "MemoryFact" peer_fact ON peer_fact."userId" = peer_version."userId" AND peer_fact.id = peer_version."factId"
-    WHERE peer."userId" = ${userId} AND peer_version."factId" <> ${source.factId}
-      AND peer_version."contentPurgedAt" IS NULL AND peer_fact.state <> 'FORGOTTEN'::"MemoryFactState"
-      AND (${Prisma.join(source.evidence.map((evidence) => Prisma.sql`(
-        peer."messageId" = ${evidence.messageId} AND peer."sourceMessageContentHash" = ${evidence.sourceTextHash}
-        AND peer."sourceStartOffset" < ${evidence.endOffset} AND peer."sourceEndOffset" > ${evidence.startOffset}
-      )`), " OR ")}) LIMIT 1
-  `);
-  return rows.length > 0;
+  const current = await loadMemoryMaintenanceSources(client, job.userId,
+    { now: new Date(), versionIds: reviews.map(({ factVersionId }) => factVersionId) });
+  const sources = reviews.map((review, index): MemoryMaintenanceSnapshotSource => {
+    const ref = `S${index + 1}`;
+    const source = current.sources.get(review.factVersionId);
+    const blocker = current.blockers.get(review.factVersionId)?.reasonCode;
+    const matches = source?.sourceSnapshotHash === review.sourceSnapshotHash;
+    return { ref, versionId: review.factVersionId, sourceSnapshotHash: review.sourceSnapshotHash, reviewId: review.id,
+      current: matches && source ? { ...source, ref } : null,
+      blockedReason: matches ? null : blocker === "pending_relation" || blocker === "evidence_without_offsets" ? blocker : "source_changed" };
+  });
+  const sourceSnapshotHash = memoryMaintenancePlanHash(sources);
+  const complete = sources.flatMap(({ current: content }) => content ? [content] : []);
+  return { sourceSnapshotHash, sources,
+    plan: complete.length === sources.length ? Object.freeze({ sources: complete, sourceSnapshotHash }) : null };
 }
 
 async function removeAutomaticFact(tx: MemoryTransaction, job: MemoryJobClaim,
   source: MemoryMaintenanceSource, reviewId: string, now: Date): Promise<void> {
-  // Current and historical exact supports are fenced before any plaintext is
-  // removed. Never suppress an entire message or its other independent facts.
+  // Exact supports of every version are fenced before any plaintext is
+  // removed. Never suppress an entire message or another fact's evidence.
   const evidence = await tx.memoryEvidence.findMany({ where: { userId: job.userId, stance: "SUPPORTS",
     sourceType: "MESSAGE", factVersionId: { in: (await tx.memoryFactVersion.findMany({
       where: { userId: job.userId, factId: source.factId }, select: { id: true } })).map(({ id }) => id) } },
@@ -94,6 +95,11 @@ async function removeAutomaticFact(tx: MemoryTransaction, job: MemoryJobClaim,
     targetType: memoryPurgeTargetType("MEMORY_FACT") });
 }
 
+type Outcome = Readonly<{ source: MemoryMaintenanceSnapshotSource } & (
+  | { disposition: "KEEP"; usefulness: "DURABLE" | "ONGOING" | null }
+  | { disposition: "REMOVED" | "REJECTED" }
+  | { disposition: "BLOCKED"; reasonCode: MemoryMaintenanceBlockedReason })>;
+
 export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
   async function staged<T>(job: MemoryJobDescriptor, ordinal: number, inputHash: string,
     decode: (value: unknown) => T): Promise<MemoryMaintenanceResult<T> | null> {
@@ -116,53 +122,73 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
       return (await client.memoryExecutionBinding.count({ where: { userId: job.userId, memoryJobId: job.id,
         logicalRole: "MEMORY_SYNTHESIZE", ordinal } })) > 0;
     },
-    stagedReview(job: MemoryJobDescriptor, plan: MemoryMaintenancePlan, inputHash: string) {
+    stagedReview(job: MemoryJobDescriptor, reviewed: MemoryMaintenanceSnapshot, inputHash: string) {
       return staged(job, 0, inputHash, (value) => {
         const saved = value as MemoryMaintenanceOutput;
         return decodeMemoryMaintenanceOutput({ decisions: saved?.decisions?.map((decision) => ({
           source_ref: decision.sourceRef, scope_basis: decision.scopeBasis, action: decision.action, usefulness: decision.usefulness, reason: decision.reason
-        })) }, plan);
+        })) }, reviewed);
       });
     },
-    stagedVerification(job: MemoryJobDescriptor, review: MemoryMaintenanceOutput, inputHash: string) {
-      return staged(job, 1, inputHash, (value) => {
-        const saved = value as { decisions?: Array<{ sourceRef: string; approve: boolean }> };
-        return decodeMemoryMaintenanceVerification({ decisions: saved?.decisions?.map((decision) => ({
+    /** The verified removals are those the settled verifier output names; its
+     * input hash proves it was produced for exactly that disclosed subset. */
+    async stagedVerification(job: MemoryJobDescriptor, reviewed: Readonly<{ sourceSnapshotHash: string }>, review: MemoryMaintenanceOutput) {
+      const stored = await client.memoryMaintenanceExecution.findFirst({ where: { userId: job.userId,
+        memoryJobId: job.id, ordinal: 1, appliedAt: null }, select: { acceptedOutput: true } });
+      const saved = stored?.acceptedOutput as { decisions?: unknown } | null | undefined;
+      if (!saved || !Array.isArray(saved.decisions)) return null;
+      const refs = new Set(saved.decisions.map((decision) => (decision as { sourceRef?: unknown } | null)?.sourceRef));
+      const proposal: MemoryMaintenanceOutput = { decisions: review.decisions.filter(({ action, sourceRef }) =>
+        action === "REMOVE_TRANSIENT" && refs.has(sourceRef)) };
+      if (proposal.decisions.length === 0) return null;
+      return staged(job, 1, memoryMaintenanceInputHash(reviewed, proposal), (value) => {
+        const output = value as { decisions?: Array<{ sourceRef: string; approve: boolean }> };
+        return decodeMemoryMaintenanceVerification({ decisions: output?.decisions?.map((decision) => ({
           source_ref: decision.sourceRef, approve: decision.approve
-        })) }, review);
+        })) }, proposal);
       });
     },
-    async apply(tx: MemoryTransaction, job: MemoryJobClaim, expectedPlan: MemoryMaintenancePlan,
+    /** Lease and settings fence the batch. Each source is checked before the
+     * first write; a changed one is BLOCKED alone under its reviewed hash.
+     * An unexpected database error still rolls the whole batch back. */
+    async apply(tx: MemoryTransaction, job: MemoryJobClaim, expected: Readonly<{ sourceSnapshotHash: string }>,
       review: MemoryMaintenanceReviewResult, verification: MemoryMaintenanceVerificationResult | null, now: Date) {
       const settings = await lockMemorySettings(tx, job.userId, true);
       const lease = await tx.memoryJob.findFirst({ where: { id: job.id, userId: job.userId, state: "CLAIMED",
         leaseToken: job.claimToken, leaseExpiresAt: { gt: now } }, select: { id: true } });
+      if (!lease || !settings.useMemoryFacts || !settings.learnAutomatically ||
+        settings.memoryGeneration !== job.memoryGenerationSnapshot) throw new Error("memory_maintenance_source_stale");
       const current = await snapshot(tx, job);
-      if (!lease || !settings.useMemoryFacts || !settings.learnAutomatically || !settings.synthesisEnabled ||
-        settings.memoryGeneration !== job.memoryGenerationSnapshot ||
-        !current || current.sourceSnapshotHash !== expectedPlan.sourceSnapshotHash) throw new Error("memory_maintenance_source_stale");
-      const sourceByRef = new Map(current.sources.map((source) => [source.ref, source]));
+      if (!current || current.sourceSnapshotHash !== expected.sourceSnapshotHash) throw new Error("memory_maintenance_source_stale");
+      const byRef = new Map(current.sources.map((source) => [source.ref, source]));
+      if (review.output.decisions.length !== current.sources.length ||
+        review.output.decisions.some(({ sourceRef }) => !byRef.has(sourceRef))) throw new Error("memory_maintenance_output_invalid");
       const approvals = new Set(verification?.output.decisions.filter(({ approve }) => approve).map(({ sourceRef }) => sourceRef) ?? []);
+      const outcomes = review.output.decisions.map((decision): Outcome => {
+        const source = byRef.get(decision.sourceRef)!;
+        if (!source.current) return { source, disposition: "BLOCKED", reasonCode: source.blockedReason ?? "source_changed" };
+        if (decision.action === "KEEP") return { source, disposition: "KEEP", usefulness: decision.usefulness };
+        return { source, disposition: approvals.has(decision.sourceRef) ? "REMOVED" : "REJECTED" };
+      });
       let removed = 0;
-      for (const decision of review.output.decisions) {
-        const source = sourceByRef.get(decision.sourceRef);
-        if (!source) throw new Error("memory_maintenance_output_invalid");
-        const receipt = await tx.memoryMaintenanceReview.findFirst({ where: { userId: job.userId, memoryJobId: job.id,
-          factVersionId: source.versionId, sourceSnapshotHash: source.sourceSnapshotHash, disposition: "PENDING" }, select: { id: true } });
-        if (!receipt) throw new Error("memory_maintenance_source_stale");
-        const remove = decision.action === "REMOVE_TRANSIENT" && approvals.has(decision.sourceRef) &&
-          await tx.memoryFactVersion.count({ where: { userId: job.userId, factId: source.factId } }) === 1 &&
-          !await overlapsIndependentFact(tx, job.userId, source);
-        if (remove) { await removeAutomaticFact(tx, job, source, receipt.id, now); removed += 1; }
-        await tx.memoryMaintenanceReview.update({ where: { id: receipt.id }, data: {
-          disposition: remove ? "REMOVED" : decision.action === "KEEP" ? "KEEP" : "REJECTED",
-          usefulness: decision.action === "KEEP" ? decision.usefulness : null, reviewedAt: now
+      for (const outcome of outcomes) {
+        if (outcome.disposition === "REMOVED") {
+          await removeAutomaticFact(tx, job, outcome.source.current!, outcome.source.reviewId, now);
+          removed += 1;
+        }
+        const updated = await tx.memoryMaintenanceReview.updateMany({ where: { id: outcome.source.reviewId,
+          userId: job.userId, disposition: "PENDING" }, data: {
+          disposition: outcome.disposition, reviewedAt: now,
+          usefulness: outcome.disposition === "KEEP" ? outcome.usefulness : null,
+          reasonCode: outcome.disposition === "BLOCKED" ? outcome.reasonCode : null
         } });
+        if (updated.count !== 1) throw new Error("memory_maintenance_source_stale");
       }
       await advanceMemoryMutation(tx, settings, "AUTOMATIC_VERSION_TRANSITION");
       await tx.memoryMaintenanceExecution.updateMany({ where: { userId: job.userId, memoryJobId: job.id, appliedAt: null },
         data: { acceptedOutput: Prisma.DbNull, appliedAt: now } });
-      return { reviewed: review.output.decisions.length, removed };
+      return { reviewed: outcomes.length, removed,
+        blocked: outcomes.filter(({ disposition }) => disposition === "BLOCKED").length };
     }
   });
 }

@@ -20,6 +20,7 @@ import {
   allReusableWorkContributor
 } from "./allReusable";
 import { pruneUnreferencedMemoryEntities } from "../learning/entities/lifecycle";
+import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../../contracts/runs";
 
 function countFrom(rows: readonly Readonly<{ count: number }>[]): number {
   const count = rows[0]?.count;
@@ -381,7 +382,7 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
           SET
             "errorPayload" = jsonb_build_object(
               'code', 'memory_all_reusable_deleted',
-              'message', 'Memory preparation stopped because reusable Memory was deleted.'
+              'message', ${RUN_PREPARATION_FAILURE_MESSAGE}::text
             ),
             "normalizedRequest" = COALESCE(
               run."normalizedRequest",
@@ -398,7 +399,7 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
         )
         UPDATE "Message" AS message
         SET
-          "errorMessage" = 'Memory preparation stopped because reusable Memory was deleted.',
+          "errorMessage" = ${RUN_PREPARATION_FAILURE_MESSAGE},
           "status" = 'error'::"MessageStatus",
           "updatedAt" = CURRENT_TIMESTAMP
         FROM selected
@@ -487,7 +488,7 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
         SET
           "errorPayload" = jsonb_build_object(
             'code', 'memory_item_forgotten',
-            'message', 'Memory preparation stopped because a selected Memory item was forgotten.'
+            'message', ${RUN_PREPARATION_FAILURE_MESSAGE}::text
           ),
           "normalizedRequest" = COALESCE(
             run."normalizedRequest",
@@ -505,8 +506,7 @@ const unacceptedAttemptsContributor: MemoryDeletionContributor = Object.freeze({
       )
       UPDATE "Message" AS message
       SET
-        "errorMessage" =
-          'Memory preparation stopped because a selected Memory item was forgotten.',
+        "errorMessage" = ${RUN_PREPARATION_FAILURE_MESSAGE},
         "status" = 'error'::"MessageStatus",
         "updatedAt" = CURRENT_TIMESTAMP
       FROM settled_attempts AS attempt
@@ -728,19 +728,33 @@ function eventTargetCondition(target: MemoryPurgeTarget): Prisma.Sql {
   `;
 }
 
+// The payload plus the complete temporal tuple. The vNext temporal guard
+// admits a change to any temporal column only when a forgotten/retracted
+// content purge clears all of them together, so purge and audit share it.
+const versionResidueCondition = Prisma.sql`
+  num_nonnulls(
+    version."displayText",
+    version."normalizedSearchText",
+    version."structuredValue",
+    version."occurredAt",
+    version."expectedAt",
+    version."expiresAt",
+    version."validFrom",
+    version."validTo",
+    version."rawTemporalExpression",
+    version."sourceTimezone",
+    version."temporalResolverVersion",
+    version."temporalResolutionEvidence"
+  ) > 0
+`;
+
 const versionContentContributor: MemoryDeletionContributor = Object.freeze({
   async audit(tx, target) {
     const rows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
       SELECT COUNT(*)::integer AS "count"
       FROM "MemoryFactVersion" AS version
       WHERE ${memoryPurgeVersionCondition(target)}
-        AND num_nonnulls(
-          version."displayText",
-          version."normalizedSearchText",
-          version."structuredValue",
-          version."rawTemporalExpression",
-          version."temporalResolutionEvidence"
-        ) > 0
+        AND ${versionResidueCondition}
     `);
     const versionCount = countFrom(rows);
     if (target.kind !== "AUTOMATIC_SET" && target.kind !== "ALL_REUSABLE") {
@@ -776,17 +790,18 @@ const versionContentContributor: MemoryDeletionContributor = Object.freeze({
         "displayText" = NULL,
         "normalizedSearchText" = NULL,
         "structuredValue" = NULL,
+        "occurredAt" = NULL,
+        "expectedAt" = NULL,
+        "expiresAt" = NULL,
+        "validFrom" = NULL,
+        "validTo" = NULL,
         "rawTemporalExpression" = NULL,
+        "sourceTimezone" = NULL,
+        "temporalResolverVersion" = NULL,
         "temporalResolutionEvidence" = NULL,
         "contentPurgedAt" = COALESCE(version."contentPurgedAt", CURRENT_TIMESTAMP)
       WHERE ${memoryPurgeVersionCondition(target)}
-        AND num_nonnulls(
-          version."displayText",
-          version."normalizedSearchText",
-          version."structuredValue",
-          version."rawTemporalExpression",
-          version."temporalResolutionEvidence"
-        ) > 0
+        AND ${versionResidueCondition}
     `);
   },
   version: "v1"

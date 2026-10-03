@@ -89,8 +89,6 @@ export type MemoryRetrievalPlan = Readonly<{
   /** Exact query occurrences; resolved refs remain non-authoritative owner-scoped hints. */
   entityMentions: readonly MemoryRetrievalEntityMention[];
   filters: MemoryRetrievalFilters;
-  /** Admits lower-authority depth-one patterns under server-owned targeted-read policy. */
-  includePatterns: boolean;
   lexicalQuery: string | null;
   mode: MemoryRetrievalMode;
   normalizedExactQuery: string;
@@ -139,7 +137,6 @@ export type MemoryRetrievalPlannerInput = Readonly<{
   currentUserText: string;
   entityMentions?: readonly MemoryRetrievalEntityMention[];
   filters?: Partial<MemoryRetrievalFilters>;
-  includePatterns?: boolean;
   mode?: MemoryRetrievalMode;
   now: Date;
   profileRequested?: boolean;
@@ -156,20 +153,11 @@ export type MemoryRetrievalSourceAuthority =
   | "DIRECT_AUTOMATIC"
   | "EXPLICIT"
   | "PAST_CHAT"
-  | "SYNTHESIS"
   | "TOOL_OBSERVATION";
 
 export type MemoryCandidateMetadata = Readonly<{
   canonicalKey: string | null;
   category: string | null;
-  /** A source-backed Dream combination, never independent current-state authority. */
-  combinedMemory?: boolean;
-  combinedMemoryReason?: "combined_overlapping_facts" | "combined_refined_facts" |
-    "combined_episode_facts" | null;
-  combinedClaims?: readonly Readonly<{
-    sourceVersionIds: readonly string[];
-    statement: string;
-  }>[] | null;
   confidence: number;
   conflict: boolean;
   coreEligible: boolean;
@@ -211,7 +199,6 @@ export type MemoryCandidateMetadata = Readonly<{
   sourceMode: MemorySourceMode | null;
   sourceAuthority: MemoryRetrievalSourceAuthority;
   subjectKey: string | null;
-  synthesisDepth: number;
   systemFrom: Date | null;
   temperatureClass: MemoryRetrievalTemperatureClass | null;
   temperatureScore: number;
@@ -296,14 +283,12 @@ export type MemoryPackedEvidenceType =
   | "current_fact"
   | "derived_session_synopsis"
   | "historical_fact"
-  | "pattern"
   | "raw_chunk"
   | "raw_round"
   | "supporting_observation"
   | "tool_observation";
 
 export type MemoryPackedSourceAuthority =
-  | "derived_pattern"
   | "learned_from_user"
   | "past_chat"
   | "supporting_observation"
@@ -345,18 +330,6 @@ export type MemoryExpandedCandidate = Readonly<{
    * checks. These identifiers are never rendered into reader context.
    */
   sourceMessageIds?: readonly string[];
-  patternSupportingEvidence?: readonly Readonly<{
-    /** Absent only on retained projections predating lower-certainty combinations. */
-    confidence?: number;
-    itemId: string;
-    observedAt: Date;
-    safeText: string;
-    sourceAuthority: "DIRECT_AUTOMATIC" | "EXPLICIT";
-    sourceChatId: string | null;
-    sourceRootHash: string;
-  }>[];
-  /** Number of canonical source versions, before bounded projection. */
-  patternSourceCount?: number;
   retrievalHint?: string | null;
   safeText: string;
   sourceChatId: string | null;
@@ -384,25 +357,11 @@ export type MemoryPackedItem = Readonly<{
   lastConfirmedAt: string | null;
   modality: MemoryModality | null;
   observedAt: string | null;
-  patternSupportingEvidence?: readonly Readonly<{
-    documentTime: string;
-    itemId: string;
-    rawSafeText: string;
-    sourceAuthority: "learned_from_user" | "supporting_observation" | "user_saved";
-    sourceRootHash: string;
-    sourceSessionHandle: string;
-  }>[];
-  combinedClaims?: readonly Readonly<{
-    sourceVersionIds: readonly string[];
-    statement: string;
-  }>[];
-  combinedMemoryReason?: "combined_overlapping_facts" | "combined_refined_facts" |
-    "combined_episode_facts";
   projectionKind: MemorySafeProjectionKind;
   rawSafeText: string;
   retrievalHint?: string | null;
   retrievalReason: "exact" | "fused" | "profile" | "semantic_sort";
-  section: "CORE" | "FACT" | "HISTORICAL_FACT" | "HISTORY" | "PATTERN" | "STANDING";
+  section: "CORE" | "FACT" | "HISTORICAL_FACT" | "HISTORY" | "STANDING";
   sourceAuthority: MemoryPackedSourceAuthority;
   sourceChatId: string | null;
   sourceSessionHandle: string | null;

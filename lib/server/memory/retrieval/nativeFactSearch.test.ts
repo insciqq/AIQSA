@@ -75,7 +75,6 @@ function metadata(factId: string): MemoryCandidateMetadata {
     sourceFolderId: null,
     sourceMode: "EXPLICIT",
     subjectKey: null,
-    synthesisDepth: 0,
     systemFrom: now,
     temperatureClass: null,
     temperatureScore: 0,
@@ -230,7 +229,7 @@ describe("native facts-only Memory search", () => {
     });
   });
 
-  it.each(["unsafe_text", "duplicate_identity", "wrong_source", "unexpected_pattern_support"] as const)(
+  it.each(["unsafe_text", "duplicate_identity", "wrong_source"] as const)(
     "quarantines an invalid final projection without losing other facts: %s",
     async (fault) => {
       const candidates = [
@@ -246,11 +245,7 @@ describe("native facts-only Memory search", () => {
           if (expansionCall === 1 || candidate.metadata.factId !== "fact-invalid") return [value];
           if (fault === "unsafe_text") return [{ ...value, safeText: "invalid\u0000projection" }];
           if (fault === "duplicate_identity") return [value, value];
-          if (fault === "wrong_source") return [{ ...value, sourceChatId: "unrelated-chat" }];
-          return [{ ...value, patternSupportingEvidence: [{
-            itemId: "support-version", observedAt: now, safeText: "A separate direct observation.",
-            sourceAuthority: "DIRECT_AUTOMATIC" as const, sourceChatId: "support-chat", sourceRootHash: "a".repeat(64)
-          }] }];
+          return [{ ...value, sourceChatId: "unrelated-chat" }];
         });
       });
       const get = vi.fn(async (_userId: string, factId: string) => detail(factId, `version-${factId.slice(5)}`));
@@ -369,7 +364,6 @@ describe("native facts-only Memory search", () => {
     expect(retrievalInput?.plan).toMatchObject({
       aggregationRequested: false,
       applyResponsePreferences: false,
-      includePatterns: false,
       mode: "TARGETED_CURRENT",
       profileRequested: false,
       recencyRequested: false,

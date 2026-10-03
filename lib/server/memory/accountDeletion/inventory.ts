@@ -63,7 +63,6 @@ export async function loadAccountMemoryOwnedCounts(
         OR settings."acceptedUtilityEgressFingerprint" IS NOT NULL
         OR settings."acceptedUtilityPolicyVersion" IS NOT NULL
         OR settings."acceptedUtilityEgressAt" IS NOT NULL
-        OR settings."lastSynthesisAt" IS NOT NULL
       GROUP BY settings."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "MemoryScope" row INNER JOIN requested USING ("userId") GROUP BY row."userId"
       UNION ALL SELECT row."userId", COUNT(*)::bigint FROM "ChatMemoryCheckpoint" row INNER JOIN requested USING ("userId") GROUP BY row."userId"

@@ -12,6 +12,12 @@ export function isToolSynthesisFailure(code: string | null | undefined, message?
     message === "Provider returned a tool call from a no-tool synthesis request.";
 }
 
+/** Neutral user-facing text of a run that failed before or instead of an
+ * answer for a reason users must not see (Memory, retired contracts); the
+ * stable error code keeps the reason. */
+export const RUN_PREPARATION_FAILURE_MESSAGE =
+  "The answer could not be prepared. Try again." as const;
+
 export const MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE =
   "mcp_auto_discovery_unavailable" as const;
 export const MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE =

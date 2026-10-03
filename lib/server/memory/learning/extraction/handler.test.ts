@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { logEvent } from "../../../observability";
 import { memorySha256 } from "../../persistence/lexical";
 import { MemoryCoordinatorError } from "../../coordinator/errors";
 import type { MemoryJobClaim } from "../../coordinator/types";
@@ -26,6 +27,15 @@ import {
 import { decodeMemoryFactExtraction } from "./decoder";
 import { MEMORY_FACT_EXTRACTION_TOOL_NAME } from "./prompt";
 import { MemoryFactProviderCallError } from "./runtime";
+
+vi.mock("../../../observability", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../observability")>(),
+  logEvent: vi.fn()
+}));
+
+beforeEach(() => {
+  vi.mocked(logEvent).mockClear();
+});
 
 const source: MemoryFactSourceIdentity = {
   activeLeafMessageId: "assistant-1",
@@ -115,7 +125,6 @@ function providerOutput(
           dependency_refs: [],
           entities: [],
           evidence: { occurrence_index: 0, text: quote },
-          future_useful: true,
           usefulness: "DURABLE",
           identity: {
             dimension_key: "topic:tea",
@@ -440,7 +449,7 @@ describe("Memory fact extraction handler", () => {
         .mockResolvedValueOnce({ id: "adjudication-binding" });
       const errorCode = failure === "transient"
         ? "memory_fact_provider_transient"
-        : "memory_semantic_adjudication_output_invalid";
+        : "memory_semantic_adjudication_output_invalid_call_count";
       const adjudicator = {
         run: vi.fn(async () => {
           if (failure === "transient") throw providerFailure("REPLAY_SAFE_TRANSIENT");
@@ -486,6 +495,145 @@ describe("Memory fact extraction handler", () => {
       expect(continueCoverage).not.toHaveBeenCalled();
       expect(fixture.apply).not.toHaveBeenCalled();
       expect(fixture.base.repository.discardStale).not.toHaveBeenCalled();
+      expect(logEvent).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["transient", "dispatch", "memory_fact_provider_transient"],
+    ["invalid output", "validate", "memory_semantic_adjudication_output_invalid_call_count"],
+    ["invalid decision", "validate", "memory_semantic_adjudication_output_invalid_operation_target"]
+  ] as const)(
+    "applies without adjudication when %s exhausts the final job attempt",
+    async (failure, stage, errorCode) => {
+      const fixture = dependencies();
+      fixture.bind
+        .mockResolvedValueOnce({ id: "extraction-binding" })
+        .mockResolvedValueOnce({ id: "adjudication-binding" });
+      const adjudicator = {
+        run: vi.fn(async () => {
+          if (failure === "transient") throw providerFailure("REPLAY_SAFE_TRANSIENT");
+          const output = adjudicationOutput(["C1"]);
+          if (failure === "invalid output") return { ...output, toolCalls: [] };
+          const [call] = output.toolCalls;
+          return { ...output, toolCalls: [{ ...call!, arguments: { decisions: [{
+            ...call!.arguments.decisions[0]!, operation: "REINFORCE"
+          }] } }] };
+        })
+      };
+      const completeAdjudication = vi.fn(async () => undefined);
+      const continueCoverage = vi.fn(async () => undefined);
+      const handler = createMemoryFactExtractionHandler({
+        ...fixture.base,
+        adjudicator,
+        repository: {
+          ...fixture.base.repository,
+          auxiliary: vi.fn(async () => null),
+          completeAdjudication,
+          continueCoverage,
+          reserveAdjudication: vi.fn(async () => "ACQUIRED" as const)
+        }
+      });
+
+      const job = { ...claim(), attemptCount: 2 };
+      const result = await handler.execute(job, context());
+      expect(result).toMatchObject({ stage: "fact_observations_committed" });
+      // The ordinary apply owns continuation; the handler adds no second one.
+      expect(result.apply).toBeUndefined();
+      expect(adjudicator.run).toHaveBeenCalledOnce();
+      expect(fixture.settle).toHaveBeenCalledOnce();
+      expect(fixture.settle).toHaveBeenCalledWith(source.userId, "adjudication-binding",
+        expect.objectContaining({ errorCode, state: "FAILED" }));
+      expect(completeAdjudication).not.toHaveBeenCalled();
+      expect(continueCoverage).not.toHaveBeenCalled();
+      expect(fixture.apply).toHaveBeenCalledOnce();
+      expect(fixture.apply).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), expect.anything(), expect.anything(),
+        "extraction-binding", expect.any(Date), null, "extraction-binding"
+      );
+      expect(logEvent).toHaveBeenCalledOnce();
+      expect(logEvent).toHaveBeenCalledWith("service_operation", {
+        action: "degrade", code: errorCode, job_id: job.id, outcome: "degraded",
+        stage, subsystem: "memory"
+      });
+    }
+  );
+
+  it.each([
+    ["memory_semantic_adjudication_output_invalid_enum", 2],
+    ["memory_fact_provider_transient", 2],
+    // A re-claim after an expired lease cannot buy a third call.
+    ["memory_semantic_adjudication_output_invalid", 3]
+  ] as const)(
+    "spends at most two provider calls on one adjudication input (%s, attempt %i)",
+    async (priorCode, attemptCount) => {
+      const fixture = dependencies();
+      const plan = decodeMemoryFactExtraction(providerOutput().toolCalls, fixture.input);
+      const semanticInput = memorySemanticAdjudicationInput(plan)!;
+      const failed = (ordinal: number, errorCode: string) => ({
+        acceptedOutputHash: null, errorCode, id: `failed-adjudication-${ordinal}`,
+        inputHash: semanticInput.inputHash, ordinal,
+        ...storedVersions(MEMORY_SEMANTIC_ADJUDICATION_VERSIONS),
+        secretFreeExecutionSnapshot: {}, state: "FAILED" as const
+      });
+      const accepted = {
+        acceptedOutputHash: plan.outputHash, errorCode: null, id: "accepted-extraction",
+        inputHash: fixture.input.inputHash, ordinal: 0,
+        ...storedVersions(MEMORY_FACT_EXTRACTION_VERSIONS),
+        secretFreeExecutionSnapshot: {}, state: "SUCCEEDED" as const
+      };
+      const adjudicator = {
+        run: vi.fn(async () => ({ ...adjudicationOutput(semanticInput.candidateRefs), toolCalls: [] }))
+      };
+      const handler = (bindings: readonly unknown[]) => createMemoryFactExtractionHandler({
+        ...fixture.base,
+        adjudicator,
+        repository: {
+          ...fixture.base.repository,
+          auxiliary: vi.fn(async () => null),
+          bindings: vi.fn(async () => bindings),
+          completeAdjudication: vi.fn(async () => undefined),
+          reserveAdjudication: vi.fn(async () => "ACQUIRED" as const),
+          staged: vi.fn(async () => plan)
+        }
+      } as unknown as MemoryFactExtractionHandlerDependencies);
+
+      // A second failed call of the same input degrades even before the
+      // job's final attempt.
+      fixture.bind.mockResolvedValue({ id: "second-adjudication" });
+      await expect(handler([accepted, failed(1, priorCode)])
+        .execute({ ...claim(), attemptCount: 1 }, context()))
+        .resolves.toMatchObject({ stage: "fact_observations_committed" });
+      expect(adjudicator.run).toHaveBeenCalledOnce();
+      expect(fixture.settle).toHaveBeenCalledWith(source.userId, "second-adjudication",
+        expect.objectContaining({
+          errorCode: "memory_semantic_adjudication_output_invalid_call_count", state: "FAILED"
+        }));
+      expect(logEvent).toHaveBeenCalledOnce();
+      expect(logEvent).toHaveBeenLastCalledWith("service_operation", expect.objectContaining({
+        code: "memory_semantic_adjudication_output_invalid_call_count", stage: "validate"
+      }));
+
+      // Two settled failures leave no budget: no bind, no call, one event.
+      adjudicator.run.mockClear();
+      fixture.bind.mockClear();
+      fixture.apply.mockClear();
+      vi.mocked(logEvent).mockClear();
+      const job = { ...claim(), attemptCount };
+      await expect(handler([accepted, failed(2, "memory_semantic_adjudication_output_invalid_enum"),
+        failed(1, priorCode)]).execute(job, context()))
+        .resolves.toMatchObject({ stage: "fact_observations_committed" });
+      expect(fixture.bind).not.toHaveBeenCalled();
+      expect(adjudicator.run).not.toHaveBeenCalled();
+      expect(fixture.apply).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), expect.anything(), plan,
+        "accepted-extraction", expect.any(Date), null, "accepted-extraction"
+      );
+      expect(logEvent).toHaveBeenCalledOnce();
+      expect(logEvent).toHaveBeenCalledWith("service_operation", {
+        action: "degrade", code: "memory_semantic_adjudication_output_invalid_enum",
+        job_id: job.id, outcome: "degraded", stage: "validate", subsystem: "memory"
+      });
     }
   );
 
@@ -495,6 +643,9 @@ describe("Memory fact extraction handler", () => {
     ["FAILED", "memory_fact_provider_unavailable", true, false],
     ["FAILED", "memory_semantic_adjudication_output_invalid", true, true],
     ["FAILED", "memory_semantic_adjudication_output_invalid", false, false],
+    ["FAILED", "memory_semantic_adjudication_output_invalid_reason_code", true, true],
+    ["FAILED", "memory_semantic_adjudication_output_invalid_candidate_set", false, false],
+    ["FAILED", "memory_semantic_adjudication_result_invalid", true, false],
     ["OUTCOME_UNKNOWN", "memory_fact_provider_outcome_unknown", true, false],
     ["RUNNING", null, true, false],
     ["SUCCEEDED", null, true, false],
@@ -722,6 +873,65 @@ describe("Memory fact extraction handler", () => {
     expect(fixture.run).not.toHaveBeenCalled();
     expect(fixture.bind).not.toHaveBeenCalled();
     expect(fixture.apply).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["retained v51", {
+      policyVersion: "memory-fact-extraction-policy-v38",
+      promptVersion: "memory-fact-extraction-prompt-v51",
+      schemaVersion: "memory-fact-extraction-schema-v7"
+    }, true],
+    ["retired v50", {
+      policyVersion: "memory-fact-extraction-policy-v38",
+      promptVersion: "memory-fact-extraction-prompt-v50",
+      schemaVersion: "memory-fact-extraction-schema-v7"
+    }, false]
+  ] as const)("recovers a %s staged output only by its recorded semantics", async (_label, versions, retained) => {
+    const fixture = dependencies();
+    const { inputHash: _inputHash, ...sourceInput } = fixture.input;
+    const recordedHash = memoryFactExtractionInputHash(sourceInput, versions);
+    const recordedInput = { ...fixture.input, inputHash: recordedHash };
+    const current = decodeMemoryFactExtraction(providerOutput().toolCalls, fixture.input);
+    // The recorded plan keeps its own classes; recovery never re-decodes it.
+    const candidates = current.candidates.map((candidate) => ({
+      ...candidate, usefulness: "ONGOING" as const
+    }));
+    const plan: MemoryFactExtractionPlan = {
+      ...current, candidates, input: recordedInput,
+      outputHash: memoryFactExtractionOutputHash(
+        recordedInput, candidates, current.candidateOrdinals, current.rejections
+      )
+    };
+    const discardStale = vi.fn(async () => 0);
+    const handler = createMemoryFactExtractionHandler({
+      ...fixture.base,
+      repository: {
+        ...fixture.base.repository,
+        bindings: vi.fn(async () => [{
+          acceptedOutputHash: plan.outputHash, errorCode: null, id: "recorded-binding",
+          inputHash: recordedHash, ordinal: 0,
+          ...storedVersions({ pipelineVersion: MEMORY_FACT_EXTRACTION_PIPELINE_VERSION, ...versions }),
+          secretFreeExecutionSnapshot: {}, state: "SUCCEEDED" as const
+        }]),
+        discardStale,
+        staged: vi.fn(async () => plan)
+      }
+    });
+    if (retained) {
+      await expect(handler.execute(claim(), context())).resolves.toMatchObject({
+        acceptedResultHash: plan.outputHash,
+        stage: "fact_observations_committed"
+      });
+      expect(discardStale).not.toHaveBeenCalled();
+      expect(fixture.apply.mock.calls[0]?.[3]).toBe(plan);
+    } else {
+      await expect(handler.execute(claim(), context()))
+        .rejects.toMatchObject({ code: "memory_fact_binding_stale" });
+      expect(discardStale).toHaveBeenCalledWith(expect.anything(), "source_stale");
+      expect(fixture.apply).not.toHaveBeenCalled();
+    }
+    expect(fixture.run).not.toHaveBeenCalled();
+    expect(fixture.bind).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("retires fresh legacy decoding but preserves accepted recovery (%s)", async (accepted) => {

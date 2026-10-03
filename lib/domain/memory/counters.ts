@@ -40,7 +40,6 @@ export const MEMORY_COUNTER_MUTATIONS = [
   "ASSISTANT_ACCESS_CHANGE",
   "SCOPE_TARGET_DELETE",
   "FACT_SAFETY_RECLASSIFICATION",
-  "SYNTHESIS_PATTERN_CHANGE",
   "MEMORY_VISIBLE_SETTING_CHANGE",
   "MEMORY_MASTER_PAUSE",
   "MEMORY_UI_LOCALE_CHANGE",
@@ -134,13 +133,6 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       memoryRevision: true,
       sourceRevision: false
     }),
-    SYNTHESIS_PATTERN_CHANGE: Object.freeze({
-      branchGeneration: false,
-      check: "VERSION_CURRENT_POINTER",
-      memoryGeneration: false,
-      memoryRevision: true,
-      sourceRevision: false
-    }),
     FOLDER_MOVE: Object.freeze({
       branchGeneration: false,
       check: "SOURCE_TARGET_ACCESS",
@@ -161,8 +153,8 @@ export const MEMORY_COUNTER_EFFECTS: Readonly<Record<MemoryCounterMutation, Memo
       // A search-index pointer swap is not a destructive Memory-content
       // generation. The active generation id plus memoryRevision fence every
       // reader, while source jobs are drained before cutover. Advancing the
-      // destructive generation here would invalidate otherwise current
-      // synthesized patterns whose immutable source proofs bind to it.
+      // destructive generation here would needlessly invalidate otherwise
+      // current generation-bound work.
       memoryGeneration: false,
       memoryRevision: true,
       sourceRevision: false

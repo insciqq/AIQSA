@@ -4,7 +4,7 @@ import {
   redactMemorySecrets
 } from "../explicit/safety";
 import type { MemoryReusableFactSourceSnapshot } from
-  "../synthesis/authoritySnapshots";
+  "./reusableFactSourceSnapshots";
 import { memorySha256, normalizeMemorySearchText } from "./lexical";
 
 export type MemoryFactSearchIdentityInput = Readonly<{

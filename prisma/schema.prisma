@@ -6052,17 +6052,19 @@ model MemorySynthesisExecution {
 }
 
 /// Content-free, versioned maintenance checkpoint. Independent new evidence
-/// may authorize another review; an unchanged source set never does.
+/// may authorize another review; an unchanged source set never does. A
+/// job-free BLOCKED/UNREVIEWABLE row records a fixed reason code only.
 model MemoryMaintenanceReview {
   id                 String    @id @default(uuid())
   userId             String
   factVersionId      String
-  memoryJobId        String
+  memoryJobId        String?
   policyVersion      String    @db.VarChar(64)
   sourceSnapshotHash String    @db.Char(64)
   evidenceThrough    DateTime
   disposition        String    @default("PENDING") @db.VarChar(16)
   usefulness         String?   @db.VarChar(16)
+  reasonCode         String?   @db.VarChar(32)
   createdAt          DateTime  @default(now())
   reviewedAt         DateTime?
 
@@ -6103,7 +6105,7 @@ model MemoryMaintenanceSuppression {
   createdAt                DateTime @default(now())
 
   @@unique([userId, id])
-  @@unique([userId, sourceMessageId, sourceMessageContentHash, sourceStartOffset, sourceEndOffset], map: "MemoryMaintenanceSuppression_span_key")
+  @@unique([userId, memoryReviewId, sourceMessageId, sourceMessageContentHash, sourceStartOffset, sourceEndOffset], map: "MemoryMaintenanceSuppression_span_key")
   @@index([userId, sourceMessageId])
 }
 

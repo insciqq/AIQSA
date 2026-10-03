@@ -37,6 +37,8 @@ export type EmergencyFailure = Readonly<{
   code?: "unexpected" | "runtime_peer_bridge_multiple_servers" | "runtime_peer_bridge_listener_missing" | "runtime_peer_bridge_not_installed";
 }>;
 type OperationOutcome = "started" | "completed" | "failed" | "cancelled";
+/** Only preparation reports a run that continued without optional Memory. */
+type PreparationOutcome = OperationOutcome | "degraded";
 type Reason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
 type ProviderIdentity = Readonly<{ providerFamily?: string; adapterKind?: string; connectionId?: string; providerModelId?: string }>;
 type ProviderFields = ProviderIdentity & Readonly<{
@@ -60,7 +62,7 @@ export type EventFields = {
   "readiness.changed": Readonly<{ state: "ready" | "not_ready"; code?: string; issue_count?: number }>;
   "logging.dropped_records": Readonly<{ count: number }>;
   run_accepted: Readonly<{ run_id: string; kind: "send" | "regenerate" | "project"; preparation: "ready" | "memory" | "pdf" }>;
-  run_preparation: Readonly<{ run_id: string; stage: "preparing"; outcome: OperationOutcome; duration_ms?: number; code?: string }>;
+  run_preparation: Readonly<{ run_id: string; stage: "preparing"; outcome: PreparationOutcome; duration_ms?: number; code?: string }>;
   run_execution: Readonly<{ run_id: string; stage: "dispatch" | "execution" | "completion"; outcome: OperationOutcome; duration_ms?: number; code?: string; provider_code?: string; reason?: Reason; abort_source?: "stop" | "workspace_deadline" | "provider_deadline" | "unknown"; timeout_ms?: number; prisma_code?: string }>;
   run_persistence: Readonly<{ run_id: string; stage: "complete" | "fail" | "cancel" | "preparation"; outcome: "confirmed" | "not_applied" | "unconfirmed"; prisma_code?: string }>;
   run_stop_requested: Record<string, never>;

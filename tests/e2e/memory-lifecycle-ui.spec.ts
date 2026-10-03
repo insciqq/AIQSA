@@ -88,10 +88,12 @@ test("opens an authorized Personal Memory source at its exact message", async ({
   await expect(page.locator('[data-message-id="linked-user"]')).toBeVisible();
   await expect(page).toHaveURL(/\/c\/linked-personal-chat\?message=linked-user$/u);
 
+  // An unavailable Memory source simply opens the app without any notice.
   await page.goto("/?memorySource=unavailable&keep=yes");
-  await expect(page.getByTestId("shell-notice"))
-    .toContainText("This Memory source is unavailable.");
   await expect(page).toHaveURL(/\?keep=yes$/u);
+  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
+  await expect(page.getByTestId("shell-notice")).toHaveCount(0);
+  await expect(page.getByText(/Memory source is unavailable/u)).toHaveCount(0);
 });
 
 test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinct", async ({ page }) => {

@@ -16,8 +16,10 @@ import {
   assertCleanupQualificationContinuation,
   evaluateCleanupQualification,
   freshCleanupQualificationOwner,
+  MEMORY_CLEANUP_LIFECYCLE_CORPUS,
   MEMORY_CLEANUP_QUALIFICATION_ACK,
   MEMORY_CLEANUP_SYNTHETIC_CORPUS,
+  memoryCleanupLifecycleSpan,
   readCleanupQualificationFile,
   reserveCleanupQualificationFile,
   summarizeCleanupQualificationReviews,
@@ -162,7 +164,11 @@ describe("Memory cleanup qualification authority", () => {
       .toThrow("memory_cleanup_protected_memory_changed");
     const unprotected = { ...fixture, assertions: [{ ...fixture.assertions[0], protected: false }] };
     const transient = [{ ...before[0]!, protected: false }];
-    expect(evaluateCleanupQualification(unprotected, transient, [])).toMatchObject({ checked: 1, passed: 0, retired: 1 });
+    expect(evaluateCleanupQualification(unprotected, transient, []))
+      .toMatchObject({ checked: 1, passed: 0, retired: 1, erroneousRemovals: 1, remainingRetire: 0 });
+    const retire = { ...fixture, assertions: [{ ...fixture.assertions[0], protected: false, expected: "RETIRE" as const }] };
+    expect(evaluateCleanupQualification(retire, transient, transient))
+      .toMatchObject({ checked: 1, passed: 0, retained: 1, erroneousRemovals: 0, remainingRetire: 1 });
     expect(cleanupQualificationHash(new Date("2026-01-01T00:00:00Z")))
       .not.toBe(cleanupQualificationHash(new Date("2026-01-02T00:00:00Z")));
   });
@@ -239,8 +245,8 @@ describe("Memory cleanup qualification authority", () => {
   });
 
   it("retains supported historical removal proof but requires re-review of old KEEP", () => {
-    const previous = "memory-maintenance-policy-v1";
-    const current = "memory-maintenance-policy-v2";
+    const previous = "memory-maintenance-policy-v2";
+    const current = "memory-maintenance-policy-v3";
     const summary = summarizeCleanupQualificationReviews({ currentPolicy: current,
       supportedPolicies: [previous, current], succeededJobIds: ["old-job", "new-job"],
       activeFactIds: ["old-keep", "new-keep", "failed-removal", "unsupported-removal", "active-old-removal"],
@@ -256,9 +262,64 @@ describe("Memory cleanup qualification authority", () => {
     expect([...summary.removed]).toEqual(["removed", "active-old-removal"]);
     expect([...summary.reviewed]).toEqual(["removed", "new-keep"]);
     expect(summary.jobs).toEqual(["old-job", "new-job"]);
+    expect(summary.outcomes).toEqual({ kept: 1, rejected: 0, removed: 0, blocked: 0, unreviewable: 0 });
     const original = [{ factId: "removed", currentVersionId: "v-removed", active: true, protected: false, snapshotHash: "1" }];
     expect(() => assertCleanupQualificationContinuation(original,
       [{ ...original[0]!, currentVersionId: null, active: false }], summary.removed)).not.toThrow();
+  });
+
+  it("settles current-policy blocked and unreviewable sources by fixed reason, never as reviewed or removed", () => {
+    const current = "memory-maintenance-policy-v3";
+    const summary = summarizeCleanupQualificationReviews({ currentPolicy: current,
+      supportedPolicies: ["memory-maintenance-policy-v2", current], succeededJobIds: ["paid-job"],
+      activeFactIds: ["pending", "inexact", "long", "changed", "unpaid", "kept", "old-blocked"],
+      versions: ["pending", "inexact", "long", "changed", "unpaid", "kept", "old-blocked", "gone"].map((id) => ({ id: `v-${id}`, factId: id })),
+      reviews: [
+        { factVersionId: "v-pending", memoryJobId: null, policyVersion: current, disposition: "BLOCKED", reasonCode: "pending_relation" },
+        { factVersionId: "v-inexact", memoryJobId: null, policyVersion: current, disposition: "BLOCKED", reasonCode: "evidence_without_offsets" },
+        { factVersionId: "v-long", memoryJobId: null, policyVersion: current, disposition: "UNREVIEWABLE", reasonCode: "statement_too_long" },
+        { factVersionId: "v-changed", memoryJobId: "paid-job", policyVersion: current, disposition: "BLOCKED", reasonCode: "source_changed" },
+        { factVersionId: "v-unpaid", memoryJobId: "unpaid-job", policyVersion: current, disposition: "BLOCKED", reasonCode: "source_changed" },
+        { factVersionId: "v-kept", memoryJobId: "paid-job", policyVersion: current, disposition: "KEEP" },
+        { factVersionId: "v-gone", memoryJobId: "paid-job", policyVersion: current, disposition: "REMOVED" },
+        { factVersionId: "v-old-blocked", memoryJobId: null, policyVersion: "memory-maintenance-policy-v2", disposition: "BLOCKED", reasonCode: "pending_relation" }
+      ] });
+    expect([...summary.settled].sort()).toEqual(["changed", "inexact", "long", "pending"]);
+    expect([...summary.reviewed].sort()).toEqual(["gone", "kept"]);
+    expect([...summary.removed]).toEqual(["gone"]);
+    expect(summary.outcomes).toEqual({ kept: 1, rejected: 0, removed: 1, blocked: 3, unreviewable: 1 });
+    expect(summary.reasons).toEqual({ pending_relation: 1, evidence_without_offsets: 1, source_changed: 1,
+      unreviewable_context: 0, statement_too_long: 1, evidence_not_current: 0 });
+  });
+
+  it("seeds the long-term cleanup corpus of the acceptance criteria in both languages", () => {
+    const facts = MEMORY_CLEANUP_LIFECYCLE_CORPUS.flatMap((scenario) => scenario.facts.map((fact) => ({ scenario, fact })));
+    expect(new Set(facts.map(({ fact }) => fact.id)).size).toBe(facts.length);
+    expect(facts.every(({ fact }) => !MEMORY_CLEANUP_SYNTHETIC_CORPUS.some(({ id }) => id === fact.id))).toBe(true);
+    for (const language of ["ru", "en"] as const) {
+      const scenarios = MEMORY_CLEANUP_LIFECYCLE_CORPUS.filter((scenario) => scenario.language === language);
+      const own = facts.filter(({ scenario }) => scenario.language === language).map(({ fact }) => fact);
+      const labels = own.map(({ versions }) => versions.at(-1)!.usefulness ?? null);
+      expect(labels).toEqual(expect.arrayContaining(["EPISODIC", null, "DURABLE", "ONGOING"]));
+      expect(own.some(({ priorKeep }) => priorKeep)).toBe(true);
+      expect(own.some(({ dated }) => dated)).toBe(true);
+      expect(own.some(({ versions }) => versions.length === 2)).toBe(true);
+      expect(own.some(({ versions, expected }) => versions.some(({ remembered }) => remembered) && expected === "RETAIN")).toBe(true);
+      expect(own.some(({ versions }) => /bread|хлеб/u.test(versions[0]!.statement))).toBe(true);
+      const shared = scenarios.filter(({ facts: items, messages }) => messages.length === 1 && items.length === 2);
+      expect(shared).toHaveLength(2);
+      const spans = shared.map((scenario) => scenario.facts.map((fact) => memoryCleanupLifecycleSpan(scenario, fact.versions[0]!)));
+      // Two episodes whose exact spans overlap, and an episode beside a lasting fact.
+      expect(spans.filter(([left, right]) => left!.start < right!.end && right!.start < left!.end)).toHaveLength(1);
+      expect(shared.filter(({ facts: items }) => items.some(({ expected }) => expected === "RETAIN"))).toHaveLength(1);
+    }
+    for (const { scenario, fact } of facts) {
+      for (const version of fact.versions) {
+        const span = memoryCleanupLifecycleSpan(scenario, version);
+        expect(span.end - span.start).toBeGreaterThan(0);
+        expect(span.end - span.start).toBeLessThanOrEqual(2_000);
+      }
+    }
   });
 
   it("adds independent contextual task-scope negatives and genuine recurring positives", () => {
@@ -294,14 +355,22 @@ describe("Memory cleanup qualification authority", () => {
     const messages: Row[] = [];
     const runs: Row[] = [];
     const evidence: Row[] = [];
+    const versions: Row[] = [];
+    const priorReviews: Row[] = [];
     const leaves = new Map<string, string>();
     let ordinal = 0;
     const inserted = async ({ data }: { data: Record<string, unknown> }) => ({ id: `fixture-${++ordinal}`, ...data });
     const tx = {
       user: { create: inserted }, userGroup: { upsert: vi.fn() }, userSettings: { upsert: vi.fn() },
-      userMemorySettings: { update: vi.fn(), findUniqueOrThrow: async () => ({ memoryGeneration: 0 }) },
+      userMemorySettings: { update: vi.fn(), findUniqueOrThrow: async () => ({ memoryGeneration: 0, memoryRevision: 0 }) },
       memoryScope: { create: inserted }, memoryFact: { create: inserted }, memoryEvent: { create: inserted },
-      memoryFactVersion: { create: inserted },
+      memoryFactVersion: { create: async (input: { data: Record<string, unknown> }) => {
+        const row = await inserted(input); versions.push(row); return row;
+      } },
+      memoryJob: { create: inserted },
+      memoryMaintenanceReview: { create: async (input: { data: Record<string, unknown> }) => {
+        const row = await inserted(input); priorReviews.push(row); return row;
+      } },
       chat: { create: inserted, update: async ({ where, data }: { where: { id: string }; data: { activeLeafMessageId: string } }) => {
         leaves.set(where.id, data.activeLeafMessageId);
       } },
@@ -322,7 +391,14 @@ describe("Memory cleanup qualification authority", () => {
       $transaction: async (run: (value: typeof tx) => Promise<void>) => run(tx)
     } as unknown as PrismaClient;
     const result = await materializeMemoryCleanupSyntheticFixture(client, runId);
-    expect(result.assertions).toHaveLength(21);
+    const lifecycle = MEMORY_CLEANUP_LIFECYCLE_CORPUS.flatMap(({ facts }) => facts);
+    expect(result.assertions).toHaveLength(21 + lifecycle.length);
+    expect(result.assertions.filter(({ dated }) => dated)).toHaveLength(2);
+    expect(priorReviews).toEqual(lifecycle.filter(({ priorKeep }) => priorKeep).map(() => expect.objectContaining({
+      policyVersion: "memory-maintenance-policy-v2", disposition: "KEEP", usefulness: "EPISODIC" })));
+    expect(versions.filter(({ state }) => state === "SUPERSEDED")).toHaveLength(2);
+    expect(versions.filter(({ semanticFrame }) => semanticFrame !== undefined)).toHaveLength(2);
+    expect(versions.filter(({ occurredAt }) => occurredAt !== undefined)).toHaveLength(2);
     const assistants = messages.filter((message) => message.role === "assistant");
     expect(assistants).toHaveLength(8);
     for (const assistant of assistants) {

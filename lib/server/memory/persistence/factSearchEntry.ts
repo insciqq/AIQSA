@@ -1,8 +1,8 @@
 import { Prisma, type MemoryEmbeddingState } from "@prisma/client";
 import { enqueueMemoryEmbeddingBatchItem } from "../embedding/enqueue";
-import { memoryReusableFactAuthorityPredicate } from "../synthesis/eligibility";
+import { memoryReusableFactAuthorityPredicate } from "./reusableFactAuthority";
 import { loadMemoryReusableFactSourceSnapshots } from
-  "../synthesis/authoritySnapshots";
+  "./reusableFactSourceSnapshots";
 import { buildMemoryFactSearchIdentity } from "./factSearchIdentity";
 import {
   requireActiveMemoryIndex,
@@ -61,7 +61,6 @@ export async function ensureClassifiedSearchEntry(
       AND version."id" = ${factVersionId}
       AND (version."expiresAt" IS NULL OR version."expiresAt" > ${now})
       AND ${memoryReusableFactAuthorityPredicate(settings.userId, {
-        includePatterns: true,
         lifecycle: "CURRENT_OR_HISTORICAL"
       })}
   `);

@@ -1,6 +1,8 @@
 import { decodeToolObservationDescriptor } from "../toolObservations/contract";
 import type { ToolExecutionResult } from "../tools/types";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
+import { readToolCallReceipt, readToolCallReceiptHash } from "../tools/readToolCall";
+import { READ_TOOL_CALL_NAME } from "./toolHistoryContract";
 import { contextDigest } from "./contextCompactionContract";
 import { snapshotToolExecutionResult } from "./toolExecutionPersistence";
 import {
@@ -98,6 +100,11 @@ export function toolCallOutcomeFingerprint(row: ToolCallRepeatRow): string | nul
   if (row.toolName === WORKSPACE_EXEC_POLL) return null;
   const result = row.result;
   if (row.state !== "complete" || !isRecord(result) || result.status !== "complete") return null;
+  // A call read keeps only a receipt: its output hash identifies what it returned.
+  if (row.toolName === READ_TOOL_CALL_NAME) {
+    const hash = readToolCallReceiptHash(result);
+    return hash ? `read:${hash}` : null;
+  }
   if (result.observation !== undefined) {
     const observation = decodeToolObservationDescriptor(result.observation);
     return observation ? `observation:${observation.checksum}` : null;
@@ -215,6 +222,10 @@ export function settledRepeatOutcome(entry: ToolLoopSettledCall<ToolExecutionRes
   state: "complete" | "error";
 }> {
   if (entry.result.status !== "complete") return { result: null, state: "error" };
-  const snapshot = snapshotToolExecutionResult(entry.result.value, toolLoopPersistenceLimits.resultBytes);
-  return snapshot ? { result: snapshot, state: entry.result.value.status } : { result: null, state: "error" };
+  const settled = entry.call.name === READ_TOOL_CALL_NAME
+    ? readToolCallReceipt({ arguments: isRecord(entry.call.arguments) ? entry.call.arguments : {}, id: entry.call.id,
+      name: entry.call.name }, entry.result.value)
+    : entry.result.value;
+  const snapshot = snapshotToolExecutionResult(settled, toolLoopPersistenceLimits.resultBytes);
+  return snapshot ? { result: snapshot, state: settled.status } : { result: null, state: "error" };
 }
