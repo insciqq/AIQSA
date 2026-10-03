@@ -337,6 +337,27 @@ describe("maintenance call attempts", () => {
       await deleteTestProviderExecutionAuthority(prisma, authority);
     }
   });
+  it("treats an attempt fenced before dispatch as consumed with or without usage, unlike another unaccounted cancellation", async () => {
+    const userId = await owner();
+    const authority = await createTestProviderExecutionAuthority(prisma, "maintenance-fenced");
+    try {
+      await fact(userId, "The parcel arrives at noon today.");
+      const { claim, repository, review } = await planned(userId);
+      const bindings = maintenanceBindings(userId, claim.id, authority);
+      const fenced = await bindings.insert(prisma, { ordinal: 0, state: "CANCELLED", inputHash: review.inputHash,
+        errorCode: "memory_classifier_dispatch_fenced" });
+      expect(await repository.callState(claim, "review")).toEqual({ status: "CONSUMED", errorCode: "memory_classifier_dispatch_fenced" });
+      await bindings.usage(fenced.id);
+      expect(await repository.callState(claim, "review")).toEqual({ status: "CONSUMED", errorCode: "memory_classifier_dispatch_fenced" });
+      await bindings.insert(prisma, { ordinal: 1, state: "CANCELLED", inputHash: review.inputHash, errorCode: "memory_classifier_cancelled" });
+      expect(await repository.callState(claim, "verify")).toEqual({ status: "UNKNOWN", ambiguous: true });
+    } finally {
+      await prisma.usageEvent.deleteMany({ where: { userId } });
+      await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
+      await cleanup(userId);
+      await deleteTestProviderExecutionAuthority(prisma, authority);
+    }
+  });
   it("revalidates disclosed sources before any binding or paid call, and stales the changed plan", async () => {
     const userId = await owner();
     try {

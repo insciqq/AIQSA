@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { isMemoryCoordinatorErrorCode } from "../coordinator/errors";
 import type { MemoryJobClaim, MemoryJobDescriptor } from "../coordinator/types";
+import { MEMORY_STRUCTURED_OUTPUT_DISPATCH_FENCED_CODE } from "../execution/structuredClassifier";
 import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { advanceMemoryMutation, lockMemorySettings, type MemoryTransaction } from "../persistence/transaction";
 import { memoryPurgeTargetType } from "../purge/contract";
@@ -103,8 +104,9 @@ type Outcome = Readonly<{ source: MemoryMaintenanceSnapshotSource } & (
   | { disposition: "BLOCKED"; reasonCode: MemoryMaintenanceBlockedReason })>;
 
 /** What the earlier attempts of one call left. Attempts that all settled
- * FAILED or CANCELLED with their usage are a known, consumed outcome with the
- * last one's cause; anything else is neither reused nor replayed. */
+ * FAILED or CANCELLED with their usage, or were fenced before dispatch, are a
+ * known, consumed outcome with the last one's cause; anything else is neither
+ * reused nor replayed. */
 export type MemoryMaintenanceCallState =
   | Readonly<{ status: "UNUSED" }>
   | Readonly<{ status: "SUCCEEDED" }>
@@ -145,8 +147,9 @@ export function createPrismaMemoryMaintenanceRepository(client: PrismaClient) {
       const usage = new Set((await client.usageEvent.findMany({ where: { userId: job.userId,
         memoryExecutionBindingId: { in: attempts.map(({ id }) => id) } }, select: { memoryExecutionBindingId: true } }))
         .map(({ memoryExecutionBindingId }) => memoryExecutionBindingId));
-      const settled = (attempt: (typeof attempts)[number]) =>
-        (attempt.state === "FAILED" || attempt.state === "CANCELLED") && usage.has(attempt.id);
+      // A call fenced before dispatch sent nothing, so it needs no accounting.
+      const settled = (attempt: (typeof attempts)[number]) => (attempt.state === "FAILED" || attempt.state === "CANCELLED") &&
+        (usage.has(attempt.id) || (attempt.state === "CANCELLED" && attempt.errorCode === MEMORY_STRUCTURED_OUTPUT_DISPATCH_FENCED_CODE));
       const last = attempts.at(-1)!;
       if (attempts.every(settled) && last.errorCode !== null && isMemoryCoordinatorErrorCode(last.errorCode)) {
         return { status: "CONSUMED", errorCode: last.errorCode };

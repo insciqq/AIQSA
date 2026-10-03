@@ -10,10 +10,13 @@ import { structuredOutputVerificationEvidence } from "../../providers/structured
 import { MemoryCoordinator } from "../coordinator/coordinator";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
 import { MemoryCoordinatorRegistry } from "../coordinator/registry";
+import type { MemoryJobDescriptor } from "../coordinator/types";
 import type { MemoryStructuredOutputProvider } from "../execution";
 import { createPrismaMemoryMaintenanceHandler } from "./handler";
+import { createPrismaMemoryMaintenanceProvider, type MemoryMaintenanceProvider } from "./provider";
 import { reconcileMemoryMaintenanceWork, scheduleOwnerMemoryMaintenance } from "./reconcile";
 import { createPrismaMemoryMaintenanceRepository, type MemoryMaintenanceRepository } from "./repository";
+import { loadMemoryMaintenanceSources } from "./source";
 
 let providerAuthority: TestProviderExecutionAuthority;
 let priorPolicy: { assignmentSource: MemoryUtilityAssignmentSource; providerModelId: string | null; reasoningEffort: string | null;
@@ -72,9 +75,11 @@ async function plannedJob(statements: readonly string[] = ["The parcel arrives a
   expect(await scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).toBe(1);
   return { userId, facts, fact: facts[0]!, job: await prisma.memoryJob.findFirstOrThrow({ where: { userId, state: "QUEUED" } }) };
 }
-async function drain(run: MemoryStructuredOutputProvider["run"], repository?: MemoryMaintenanceRepository): Promise<void> {
+async function drain(run: MemoryStructuredOutputProvider["run"], options: Readonly<{
+  repository?: MemoryMaintenanceRepository; provider?: MemoryMaintenanceProvider;
+}> = {}): Promise<void> {
   const registry = new MemoryCoordinatorRegistry();
-  registry.registerJob(createPrismaMemoryMaintenanceHandler(prisma, { structuredProvider: { run }, ...(repository ? { repository } : {}) }));
+  registry.registerJob(createPrismaMemoryMaintenanceHandler(prisma, { structuredProvider: { run }, ...options }));
   const worker = new MemoryCoordinator({ registry, repository: createPrismaMemoryCoordinatorRepository(prisma),
     policy: { maxJobParallel: 1, maxJobParallelPerUser: 1, maxDeletionParallel: 1 } });
   try { await worker.reconcileNow(); } finally { await worker.stop(); }
@@ -92,14 +97,36 @@ function changeAfterSnapshot(taken: number, change: () => Promise<unknown>): Mem
 }
 const pin = (factId: string) => () => prisma.memoryFact.update({ where: { id: factId }, data: { pinned: true } });
 const usage = { inputTokens: 40, outputTokens: 3, totalTokens: 43, completeness: "complete" } as const;
+const refsOf = (request: Parameters<MemoryStructuredOutputProvider["run"]>[1]) =>
+  (JSON.parse(request.userPrompt) as { sources: Array<{ ref: string }> }).sources.map(({ ref }) => ref);
+const isVerification = (request: Parameters<MemoryStructuredOutputProvider["run"]>[1]) => request.name === "verify_memory_cleanup_v3";
+/** A well-formed object that breaks either contract: no decision for any source. */
+const invalid = { providerResponseId: null, usage, output: { decisions: [] } };
 /** Proposes removing every disclosed source and approves every proposed removal. */
-const removeAll: MemoryStructuredOutputProvider["run"] = async (_snapshot, request) => {
-  const refs = (JSON.parse(request.userPrompt) as { sources: Array<{ ref: string }> }).sources.map(({ ref }) => ref);
-  return { providerResponseId: null, usage, output: request.name === "verify_memory_cleanup_v3"
-    ? { decisions: refs.map((ref) => ({ source_ref: ref, approve: true })) }
-    : { decisions: refs.map((ref) => ({ source_ref: ref, scope_basis: "short_term_matter", action: "REMOVE_TRANSIENT",
-      usefulness: null, reason: "short_term" })) } };
-};
+const removeAll: MemoryStructuredOutputProvider["run"] = async (_snapshot, request) => ({ providerResponseId: null, usage,
+  output: isVerification(request)
+    ? { decisions: refsOf(request).map((ref) => ({ source_ref: ref, approve: true })) }
+    : { decisions: refsOf(request).map((ref) => ({ source_ref: ref, scope_basis: "short_term_matter", action: "REMOVE_TRANSIENT",
+      usefulness: null, reason: "short_term" })) } });
+/** Returns an invalid answer for the listed calls (1-based per call kind) and `removeAll` otherwise. */
+function invalidAt(reviews: readonly number[], verifications: readonly number[] = []): MemoryStructuredOutputProvider["run"] {
+  const calls = { review: 0, verify: 0 };
+  return async (snapshot, request, signal) => {
+    const kind = isVerification(request) ? "verify" : "review";
+    calls[kind] += 1;
+    return (kind === "verify" ? verifications : reviews).includes(calls[kind]) ? invalid : removeAll(snapshot, request, signal);
+  };
+}
+function attempts(userId: string) {
+  return prisma.memoryExecutionBinding.findMany({ where: { userId }, orderBy: { ordinal: "asc" },
+    select: { ordinal: true, state: true, errorCode: true, decodeReason: true } });
+}
+function receipts(userId: string) {
+  return prisma.memoryMaintenanceExecution.findMany({ where: { userId }, orderBy: { ordinal: "asc" }, select: { ordinal: true } });
+}
+const failedAnswer = (ordinal: number, decodeReason: string) =>
+  ({ ordinal, state: "FAILED", errorCode: "memory_classifier_output_invalid", decodeReason });
+const succeeded = (ordinal: number) => ({ ordinal, state: "SUCCEEDED", errorCode: null, decodeReason: null });
 
 describe("maintenance outcomes through the coordinator and governed executor", () => {
   it("settles a review and its verification under their own receipt ordinals", async () => {
@@ -108,37 +135,91 @@ describe("maintenance outcomes through the coordinator and governed executor", (
     await drain(run);
     expect(run).toHaveBeenCalledTimes(2);
     expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ state: "SUCCEEDED", errorCode: null });
-    expect(await prisma.memoryExecutionBinding.findMany({ where: { userId }, orderBy: { ordinal: "asc" },
-      select: { ordinal: true, state: true } })).toEqual([{ ordinal: 0, state: "SUCCEEDED" }, { ordinal: 1, state: "SUCCEEDED" }]);
+    expect(await attempts(userId)).toEqual([succeeded(0), succeeded(1)]);
     expect(await prisma.memoryMaintenanceExecution.findMany({ where: { userId }, orderBy: { ordinal: "asc" },
       select: { ordinal: true, acceptedOutput: true } })).toEqual([{ ordinal: 0, acceptedOutput: null }, { ordinal: 1, acceptedOutput: null }]);
     expect(await prisma.memoryFact.findUniqueOrThrow({ where: { id: fact.factId } })).toMatchObject({ state: "FORGOTTEN" });
   });
-  it("ends a review whose answer failed validation with that accounted cause, never memory_job_failed, and re-admits a new job", async () => {
-    const { userId, job } = await plannedJob();
-    // A well-formed object that breaks the review contract: no decision for the source.
-    const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockResolvedValue({ output: { decisions: [] },
-      providerResponseId: null, usage });
+  it("retries an invalid review and verification answer at the next ordinal of their own call, keeping each receipt and usage", async () => {
+    const { userId, fact, job } = await plannedJob();
+    const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockImplementation(invalidAt([1], [1]));
     await drain(run);
-    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(4);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ state: "SUCCEEDED", errorCode: null });
+    expect(await attempts(userId)).toEqual([failedAnswer(0, "maintenance_contract_count"), failedAnswer(1, "verification_contract_count"),
+      succeeded(2), succeeded(3)]);
+    expect(await receipts(userId)).toEqual([{ ordinal: 2 }, { ordinal: 3 }]);
+    expect(await prisma.usageEvent.count({ where: { userId } })).toBe(4);
+    expect(await prisma.memoryFact.findUniqueOrThrow({ where: { id: fact.factId } })).toMatchObject({ state: "FORGOTTEN" });
+  });
+  it("ends three invalid review answers with that accounted cause, never memory_job_failed, and re-admits a new job", async () => {
+    const { userId, job } = await plannedJob();
+    const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockResolvedValue(invalid);
+    await drain(run);
+    expect(run).toHaveBeenCalledTimes(3);
     expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } }))
       .toMatchObject({ state: "TERMINAL_FAILED", errorCode: "memory_classifier_output_invalid" });
-    const bindings = await prisma.memoryExecutionBinding.findMany({ where: { userId } });
-    expect(bindings).toEqual([expect.objectContaining({ logicalRole: "MEMORY_SYNTHESIZE", ordinal: 0, state: "FAILED",
-      errorCode: "memory_classifier_output_invalid", outputTokens: 3 })]);
-    expect(await prisma.usageEvent.count({ where: { userId, memoryExecutionBindingId: bindings[0]!.id } })).toBe(1);
-    expect(await prisma.memoryMaintenanceExecution.count({ where: { userId } })).toBe(0);
+    expect(await attempts(userId)).toEqual([0, 2, 4].map((ordinal) => failedAnswer(ordinal, "maintenance_contract_count")));
+    expect(await prisma.usageEvent.findMany({ where: { userId }, select: { outputTokens: true } }))
+      .toEqual([{ outputTokens: 3 }, { outputTokens: 3 }, { outputTokens: 3 }]);
+    expect(await receipts(userId)).toEqual([]);
     // The next drain settles its review and re-admits the version within the invalid-answer budget.
     await reconcileMemoryMaintenanceWork(prisma, new Date(), async () => false);
     await prisma.userMemorySettings.update({ where: { userId }, data: { maintenanceCursor: null } });
     expect(await scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).toBe(1);
     expect(await prisma.memoryJob.count({ where: { userId, state: "QUEUED" } })).toBe(1);
   });
+  it("stops the verifier's retries once the job holds four invalid answers for the role", async () => {
+    const { userId, job } = await plannedJob();
+    const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockImplementation(invalidAt([1, 2], [1, 2]));
+    await drain(run);
+    expect(run).toHaveBeenCalledTimes(5);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } }))
+      .toMatchObject({ state: "TERMINAL_FAILED", errorCode: "memory_classifier_output_invalid" });
+    expect(await attempts(userId)).toEqual([failedAnswer(0, "maintenance_contract_count"), failedAnswer(1, "verification_contract_count"),
+      failedAnswer(2, "maintenance_contract_count"), failedAnswer(3, "verification_contract_count"), succeeded(4)]);
+  });
+  it("binds no retry once a source changed after an invalid answer, and settles the job STALE through the re-run gate", async () => {
+    const { userId, fact, job } = await plannedJob();
+    const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockImplementation(async () => {
+      await pin(fact.factId)();
+      return invalid;
+    });
+    await drain(run);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } }))
+      .toMatchObject({ state: "STALE", errorCode: "memory_maintenance_source_stale" });
+    expect(await attempts(userId)).toEqual([failedAnswer(0, "maintenance_contract_count")]);
+  });
+  it("cancels a bound call whose source changed just before dispatch, unpaid, and never replays it", async () => {
+    const { userId, fact, job } = await plannedJob();
+    const run = vi.fn<MemoryStructuredOutputProvider["run"]>();
+    let loads = 0;
+    // The unbound check still sees the source; it changes before the bound call's own check.
+    const provider = createPrismaMemoryMaintenanceProvider(prisma, { provider: { run }, sources: async (...args) => {
+      loads += 1;
+      if (loads === 2) await pin(fact.factId)();
+      return loadMemoryMaintenanceSources(...args);
+    } });
+    await drain(run, { provider });
+    expect(run).not.toHaveBeenCalled();
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } }))
+      .toMatchObject({ state: "STALE", errorCode: "memory_maintenance_source_stale" });
+    const [fenced] = await prisma.memoryExecutionBinding.findMany({ where: { userId } });
+    expect(fenced).toMatchObject({ ordinal: 0, state: "CANCELLED", errorCode: "memory_classifier_dispatch_fenced",
+      decodeReason: null, usageCompleteness: "UNAVAILABLE", totalTokens: null });
+    expect(await prisma.usageEvent.findMany({ where: { userId }, select: { memoryExecutionBindingId: true, usageCompleteness: true } }))
+      .toEqual([{ memoryExecutionBindingId: fenced!.id, usageCompleteness: "UNAVAILABLE" }]);
+    // A re-claim sees a consumed call, not an unknown outcome, and never binds it again.
+    const claim = { ...job, claimToken: "", recoveredLease: true } as MemoryJobDescriptor;
+    await expect(createPrismaMemoryMaintenanceRepository(prisma).callState(claim, "review"))
+      .resolves.toEqual({ status: "CONSUMED", errorCode: "memory_classifier_dispatch_fenced" });
+  });
   it("settles a review whose source changed before dispatch as STALE through the re-run gate, unbound and unpaid", async () => {
     const { userId, fact, job } = await plannedJob();
     const run = vi.fn<MemoryStructuredOutputProvider["run"]>();
     // The first gate and the job's own snapshot still see the source; it changes before the review is bound.
-    await drain(run, changeAfterSnapshot(2, pin(fact.factId)));
+    await drain(run, { repository: changeAfterSnapshot(2, pin(fact.factId)) });
     expect(run).not.toHaveBeenCalled();
     expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } }))
       .toMatchObject({ state: "STALE", errorCode: "memory_maintenance_source_stale" });
@@ -151,12 +232,11 @@ describe("maintenance outcomes through the coordinator and governed executor", (
     const { userId, facts, job } = await plannedJob(["The parcel arrives at noon today.", "The courier calls at five today."]);
     const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockImplementation(removeAll);
     // Snapshots: the first gate, the reviewed plan, then the verifier's disclosure.
-    await drain(run, changeAfterSnapshot(3, pin(facts[0]!.factId)));
+    await drain(run, { repository: changeAfterSnapshot(3, pin(facts[0]!.factId)) });
     expect(run).toHaveBeenCalledTimes(1);
     expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } }))
       .toMatchObject({ state: "TERMINAL_FAILED", errorCode: "memory_maintenance_dispatch_stale" });
-    expect(await prisma.memoryExecutionBinding.findMany({ where: { userId }, select: { ordinal: true, state: true } }))
-      .toEqual([{ ordinal: 0, state: "SUCCEEDED" }]);
+    expect(await attempts(userId)).toEqual([succeeded(0)]);
     // The paid review is never replayed; the unchanged source gets a new job without spending budget.
     await reconcileMemoryMaintenanceWork(prisma, new Date(), async () => false);
     await prisma.userMemorySettings.update({ where: { userId }, data: { maintenanceCursor: null } });

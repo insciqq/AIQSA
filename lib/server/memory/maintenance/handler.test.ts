@@ -54,6 +54,8 @@ function setup(options: { staged?: boolean; verified?: boolean; calls?: Partial<
 const enabled = (generation = 0) => ({ userMemorySettings: { findUnique: vi.fn(async () => ({
   useMemoryFacts: true, learnAutomatically: true, memoryGeneration: generation, memoryRevision: 0 })) } });
 const failure = (code: string) => expect.objectContaining({ name: "MemoryCoordinatorError", code, retryable: false });
+const dispatchStale = expect.objectContaining({ name: "MemoryJobFencedError", code: "memory_maintenance_dispatch_stale",
+  retryable: false, decision: { errorCode: "memory_maintenance_dispatch_stale", status: "STALE" } });
 
 describe("maintenance gate", () => {
   it("follows Memory and automatic learning without reading the retired Dream setting", async () => {
@@ -106,6 +108,15 @@ describe("maintenance recovery", () => {
       expect(provider.verify).not.toHaveBeenCalled();
     }
   });
+  it("ends a re-claimed call fenced before dispatch as staleness before dispatch, never a replay or unknown outcome", async () => {
+    for (const staged of [false, true]) {
+      const { handler, provider } = setup({ staged, calls: { review: consumed("memory_classifier_dispatch_fenced"),
+        verify: consumed("memory_classifier_dispatch_fenced") } });
+      await expect(handler.execute({ ...claim, recoveredLease: true }, context)).rejects.toThrow(dispatchStale);
+      expect(provider.review).not.toHaveBeenCalled();
+      expect(provider.verify).not.toHaveBeenCalled();
+    }
+  });
   it("can finish the never-admitted verification after safely recovering the settled review", async () => {
     const { handler, provider } = setup({ staged: true, calls: { review: { status: "SUCCEEDED" } } });
     await handler.execute({ ...claim, recoveredLease: true }, context);
@@ -139,6 +150,14 @@ describe("maintenance failure causes", () => {
       await expect(handler.execute(claim, context)).rejects.toThrow(failure(code));
       expect(provider.verify).toHaveBeenCalledTimes(call === "verify" ? 1 : 0);
     }
+  });
+  it("ends a call whose last attempt was fenced before dispatch as staleness before dispatch", async () => {
+    const { handler, provider, calls } = setup();
+    provider.review.mockImplementation(async () => {
+      calls.review = consumed("memory_classifier_dispatch_fenced");
+      throw new Error("synthetic_fenced_dispatch");
+    });
+    await expect(handler.execute(claim, context)).rejects.toThrow(dispatchStale);
   });
   it("keeps a dispatch without a settled outcome unknown", async () => {
     const { handler, provider, calls } = setup();
