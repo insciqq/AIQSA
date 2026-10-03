@@ -153,7 +153,20 @@ export async function relearnMaintenanceFact(userId: string, factId: string, ver
   return id;
 }
 
-export type MaintenanceFixtureDecision = "KEEP" | "REMOVE" | "REJECT";
+/** A durable keep, the other keep labels, a verified removal or one the verifier rejects. */
+export type MaintenanceFixtureDecision = "KEEP" | "KEEP_ONGOING" | "KEEP_UNRESOLVED" | "KEEP_CONTRADICTION" | "REMOVE" | "REJECT";
+type MaintenanceFixtureKeep = Exclude<MaintenanceFixtureDecision, "REMOVE" | "REJECT">;
+/** Decoded keeps: the model's own labels, or a contradiction the decoder kept. */
+const FIXTURE_KEEPS: Readonly<Record<MaintenanceFixtureKeep, Omit<MemoryMaintenanceDecision, "sourceRef">>> = {
+  KEEP: { scopeBasis: "general_personal", action: "KEEP", usefulness: "DURABLE", reason: "useful_personal_context" },
+  KEEP_ONGOING: { scopeBasis: "ongoing_personal", action: "KEEP", usefulness: "ONGOING", reason: "useful_personal_context" },
+  KEEP_UNRESOLVED: { scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null, reason: "useful_personal_context" },
+  KEEP_CONTRADICTION: { scopeBasis: "unresolved_scope", action: "KEEP", usefulness: null, reason: "useful_personal_context",
+    conservative: true }
+};
+function fixtureKeep(decision: MaintenanceFixtureDecision): decision is MaintenanceFixtureKeep {
+  return decision !== "REMOVE" && decision !== "REJECT";
+}
 
 /** Claims the owner's queued maintenance job and settles it with synthetic
  * governed decisions through the production repository apply. */
@@ -169,12 +182,14 @@ export async function settleMaintenanceJob(userId: string,
   const snapshot = await repository.snapshot(claim);
   if (!snapshot?.plan) throw new Error("maintenance_fixture_plan_missing");
   const inputHash = memoryMaintenanceInputHash(snapshot);
-  const output = { decisions: snapshot.plan.sources.map(({ ref, factId }): MemoryMaintenanceDecision => decide(factId) === "KEEP"
-    ? { sourceRef: ref, action: "KEEP", scopeBasis: "general_personal", usefulness: "DURABLE", reason: "useful_personal_context" }
-    : { sourceRef: ref, action: "REMOVE_TRANSIENT", scopeBasis: "single_episode", usefulness: null, reason: "episode" }) };
+  const output = { decisions: snapshot.plan.sources.map(({ ref, factId }): MemoryMaintenanceDecision => {
+    const decision = decide(factId);
+    return fixtureKeep(decision) ? { sourceRef: ref, ...FIXTURE_KEEPS[decision] }
+      : { sourceRef: ref, action: "REMOVE_TRANSIENT", scopeBasis: "single_episode", usefulness: null, reason: "episode" };
+  }) };
   const review = { inputHash, output, acceptedOutputHash: memoryMaintenanceOutputHash(inputHash, output),
     executionId: "synthetic-review", providerId: "synthetic", modelId: "synthetic", policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION };
-  const verification = { ...review, output: { decisions: snapshot.plan.sources.filter(({ factId }) => decide(factId) !== "KEEP")
+  const verification = { ...review, output: { decisions: snapshot.plan.sources.filter(({ factId }) => !fixtureKeep(decide(factId)))
     .map(({ ref, factId }) => ({ sourceRef: ref, approve: decide(factId) === "REMOVE" })) } };
   const outcome = await withLockedMemoryTransaction(prisma, userId, (tx) =>
     repository.apply(tx, claim, snapshot, review, verification, now));

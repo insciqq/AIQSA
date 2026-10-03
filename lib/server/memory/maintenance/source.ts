@@ -5,10 +5,10 @@ import { redactMemorySecrets } from "../explicit/safety";
 import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
 import { loadMemoryMaintenanceContext } from "./context";
 import { MEMORY_MAINTENANCE_BATCH_SIZE, MEMORY_MAINTENANCE_BLOCKED_RECHECK_MS, MEMORY_MAINTENANCE_FAILURE_CODES,
-  MEMORY_MAINTENANCE_MAX_FAILED_ATTEMPTS, MEMORY_MAINTENANCE_MAX_INVALID_OUTPUT_ATTEMPTS, MEMORY_MAINTENANCE_POLICY_VERSION,
-  MEMORY_MAINTENANCE_QUIET_MS, MEMORY_MAINTENANCE_TRANSIENT_RETRY_MS, memoryMaintenancePlan, memoryMaintenanceReasonDisposition,
-  type MemoryMaintenanceEvidence, type MemoryMaintenancePlan, type MemoryMaintenanceReasonCode,
-  type MemoryMaintenanceSource, type MemoryUsefulness } from "./policy";
+  MEMORY_MAINTENANCE_FALLBACK_RETRIES, MEMORY_MAINTENANCE_MAX_FAILED_ATTEMPTS, MEMORY_MAINTENANCE_MAX_INVALID_OUTPUT_ATTEMPTS,
+  MEMORY_MAINTENANCE_POLICY_VERSION, MEMORY_MAINTENANCE_QUIET_MS, MEMORY_MAINTENANCE_REREVIEW_MS, MEMORY_MAINTENANCE_TRANSIENT_RETRY_MS,
+  memoryMaintenancePlan, memoryMaintenanceReasonDisposition, type MemoryMaintenanceEvidence, type MemoryMaintenancePlan,
+  type MemoryMaintenanceReasonCode, type MemoryMaintenanceSource, type MemoryUsefulness } from "./policy";
 
 type QueryClient = Pick<PrismaClient, "$queryRaw">;
 
@@ -51,25 +51,49 @@ export function memoryMaintenanceSourcePredicate(userId: string | Prisma.Sql): P
   `;
 }
 
-/** The single v3 coverage rule of the planner scan and the owner query.
+/** Rows `alias` of the version's reviews under the current policy and its current evidence. */
+function currentReview(alias: string, latest: Prisma.Sql): Prisma.Sql {
+  const review = Prisma.raw(alias);
+  return Prisma.sql`${review}."userId" = version."userId" AND ${review}."factVersionId" = version."id"
+    AND ${review}."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION} AND ${review}."evidenceThrough" >= ${latest}`;
+}
+
+/** The single coverage rule of the planner scan and the owner query.
  * Callers expose `version`, `fact` and `latest`, the newest SUPPORTS evidence
- * time of the version. A settled decision or a job in flight covers it; a
- * planner blocker covers for a week while the lineage is unchanged. Failed
- * attempts of its current evidence (a blocker found in apply only for a week)
- * admit new jobs by the outcome of their job: two ordinary failures or three
- * invalid answers cover it; a transient provider failure only delays the next
- * job, doubling; a source changed before dispatch and a failure recorded
- * before causes were stable (memory_job_failed) cost nothing. */
+ * time of the version. A job in flight or a removal covers it. A settled keep,
+ * or a removal the verifier rejected, covers it only until its re-review
+ * (MEMORY_MAINTENANCE_REREVIEW_MS), so every automatic fact is reviewed again;
+ * a planner blocker covers for a week while the lineage is unchanged. Failed
+ * attempts of the current cycle (after the latest settled decision, within the
+ * ongoing cadence; a blocker found in apply only for a week) admit new jobs by
+ * the outcome of their job: two ordinary failures or three invalid answers
+ * cover it; a transient provider failure only delays the next job, doubling; a
+ * source changed before dispatch and a failure recorded before causes were
+ * stable (memory_job_failed) cost nothing. */
 export function memoryMaintenanceUncoveredPredicate(latest: Prisma.Sql, now: Date): Prisma.Sql {
   const recheckAfter = new Date(now.getTime() - MEMORY_MAINTENANCE_BLOCKED_RECHECK_MS);
+  const { durable, ongoing, fallback } = MEMORY_MAINTENANCE_REREVIEW_MS;
+  const cycleAfter = new Date(now.getTime() - ongoing);
   const { dispatchStale, invalidOutput, legacy, transient } = MEMORY_MAINTENANCE_FAILURE_CODES;
   const outcome = Prisma.sql`COALESCE(attempt."errorCode", '')`;
+  // The run of keeps that resolved contradictory labels, up to `covered`, that
+  // no other settled decision interrupts: it decides the short cadence.
+  const fallbackRun = Prisma.sql`(SELECT COUNT(*) FROM "MemoryMaintenanceReview" AS run
+    WHERE ${currentReview("run", latest)} AND run."disposition" = 'KEEP' AND run."reasonCode" = 'unresolved_scope'
+      AND run."reviewedAt" <= covered."reviewedAt"
+      AND NOT EXISTS (SELECT 1 FROM "MemoryMaintenanceReview" AS other
+        WHERE ${currentReview("other", latest)} AND other."disposition" IN ('KEEP', 'REJECTED')
+          AND other."reasonCode" IS DISTINCT FROM 'unresolved_scope'
+          AND other."reviewedAt" > run."reviewedAt" AND other."reviewedAt" < covered."reviewedAt"))`;
   return Prisma.sql`
     NOT EXISTS (SELECT 1 FROM "MemoryMaintenanceReview" AS covered
-      WHERE covered."userId" = version."userId" AND covered."factVersionId" = version."id"
-        AND covered."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION}
-        AND covered."evidenceThrough" >= ${latest}
-        AND (covered."disposition" IN ('PENDING', 'KEEP', 'REMOVED', 'REJECTED')
+      WHERE ${currentReview("covered", latest)}
+        AND (covered."disposition" IN ('PENDING', 'REMOVED')
+          OR (covered."disposition" IN ('KEEP', 'REJECTED') AND covered."reviewedAt" + (CASE
+            WHEN covered."disposition" = 'KEEP' AND covered."usefulness" = 'DURABLE' THEN ${durable}::double precision
+            WHEN covered."disposition" = 'KEEP' AND covered."reasonCode" = 'unresolved_scope'
+              AND ${fallbackRun} <= ${MEMORY_MAINTENANCE_FALLBACK_RETRIES} THEN ${fallback}::double precision
+            ELSE ${ongoing}::double precision END) * INTERVAL '1 millisecond' > ${now})
           OR (covered."disposition" IN ('BLOCKED', 'UNREVIEWABLE') AND covered."memoryJobId" IS NULL
             AND covered."reviewedAt" >= ${recheckAfter}
             AND NOT EXISTS (SELECT 1 FROM "MemoryFactVersion" AS changed
@@ -85,31 +109,32 @@ export function memoryMaintenanceUncoveredPredicate(latest: Prisma.Sql, now: Dat
         <= ${now}, TRUE)
       FROM "MemoryMaintenanceReview" AS failed
       LEFT JOIN "MemoryJob" AS attempt ON attempt."userId" = failed."userId" AND attempt."id" = failed."memoryJobId"
-      WHERE failed."userId" = version."userId" AND failed."factVersionId" = version."id"
-        AND failed."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION}
-        AND failed."evidenceThrough" >= ${latest}
+      WHERE ${currentReview("failed", latest)} AND failed."reviewedAt" > ${cycleAfter}
         AND (failed."disposition" IN ('STALE', 'UNKNOWN')
           OR (failed."disposition" = 'BLOCKED' AND failed."memoryJobId" IS NOT NULL
-            AND failed."reviewedAt" >= ${recheckAfter})))
+            AND failed."reviewedAt" >= ${recheckAfter}))
+        AND NOT EXISTS (SELECT 1 FROM "MemoryMaintenanceReview" AS decided
+          WHERE ${currentReview("decided", latest)} AND decided."disposition" IN ('KEEP', 'REJECTED')
+            AND decided."reviewedAt" >= failed."reviewedAt"))
   `;
 }
 
-/** Earlier non-final v3 rows of the version. Both counts only grow while its
- * evidence is unchanged, so a recheck or retry always gets a new source hash;
- * the attempt count includes failures that spend no budget. */
+/** Earlier rows of the version under the current policy and evidence. Every
+ * count only grows while its evidence is unchanged, so a recheck, a retry or a
+ * re-review always gets a new source hash; the attempt count includes failures
+ * that spend no budget. */
 function priorOrdinals(latest: Prisma.Sql): Prisma.Sql {
   return Prisma.sql`
     (SELECT COUNT(*)::integer FROM "MemoryMaintenanceReview" AS prior
-      WHERE prior."userId" = version."userId" AND prior."factVersionId" = version."id"
-        AND prior."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION}
-        AND prior."evidenceThrough" >= ${latest}
+      WHERE ${currentReview("prior", latest)}
         AND prior."disposition" IN ('BLOCKED', 'UNREVIEWABLE')) AS "recheckOrdinal",
     (SELECT COUNT(*)::integer FROM "MemoryMaintenanceReview" AS prior
-      WHERE prior."userId" = version."userId" AND prior."factVersionId" = version."id"
-        AND prior."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION}
-        AND prior."evidenceThrough" >= ${latest}
+      WHERE ${currentReview("prior", latest)}
         AND (prior."disposition" IN ('STALE', 'UNKNOWN')
-          OR (prior."disposition" = 'BLOCKED' AND prior."memoryJobId" IS NOT NULL))) AS "attemptOrdinal"
+          OR (prior."disposition" = 'BLOCKED' AND prior."memoryJobId" IS NOT NULL))) AS "attemptOrdinal",
+    (SELECT COUNT(*)::integer FROM "MemoryMaintenanceReview" AS prior
+      WHERE ${currentReview("prior", latest)}
+        AND prior."disposition" IN ('KEEP', 'REJECTED')) AS "rereviewOrdinal"
   `;
 }
 
@@ -125,7 +150,7 @@ function boundedQuote(text: string): string {
 type SourceRow = Readonly<{
   factId: string; versionId: string; statement: string; category: string; modality: string;
   confidence: number; usefulness: MemoryUsefulness | null; observedAt: Date; evidenceThrough: Date;
-  supportCount: number; recheckOrdinal: number; attemptOrdinal: number;
+  supportCount: number; recheckOrdinal: number; attemptOrdinal: number; rereviewOrdinal: number;
 }>;
 
 async function scanSources(
@@ -203,7 +228,7 @@ async function scanSources(
   let characters = 0;
   for (const row of rows) {
     const lineage = lineageRows.filter(({ factId }) => factId === row.factId).map(({ id, state }) => ({ id, state }));
-    const ordinals = { recheckOrdinal: row.recheckOrdinal, attemptOrdinal: row.attemptOrdinal };
+    const ordinals = { recheckOrdinal: row.recheckOrdinal, attemptOrdinal: row.attemptOrdinal, rereviewOrdinal: row.rereviewOrdinal };
     const block = (reasonCode: MemoryMaintenanceReasonCode, identity: unknown) => {
       blockers.push({ factId: row.factId, versionId: row.versionId, evidenceThrough: row.evidenceThrough,
         disposition: memoryMaintenanceReasonDisposition(reasonCode), reasonCode,

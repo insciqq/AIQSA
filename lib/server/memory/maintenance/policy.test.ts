@@ -12,29 +12,29 @@ const source: MemoryMaintenanceSource = {
 };
 
 describe("versioned maintenance provenance", () => {
-  it("retains accepted v1 and v2 removal authority without accepting arbitrary historical labels", () => {
+  it("retains accepted v1-v3 removal authority without accepting arbitrary historical labels", () => {
     expect(MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS).toEqual([
-      "memory-maintenance-policy-v1", "memory-maintenance-policy-v2", "memory-maintenance-policy-v3"
+      "memory-maintenance-policy-v1", "memory-maintenance-policy-v2", "memory-maintenance-policy-v3", "memory-maintenance-policy-v4"
     ]);
-    expect(MEMORY_MAINTENANCE_POLICY_VERSION).toBe("memory-maintenance-policy-v3");
+    expect(MEMORY_MAINTENANCE_POLICY_VERSION).toBe("memory-maintenance-policy-v4");
     for (const supported of MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS) {
       expect(isSupportedMemoryMaintenancePolicy(supported)).toBe(true);
     }
-    for (const unsupported of [null, "memory-maintenance-policy-v0", "memory-maintenance-policy-v4", ["memory-maintenance-policy-v1"]]) {
+    for (const unsupported of [null, "memory-maintenance-policy-v0", "memory-maintenance-policy-v5", ["memory-maintenance-policy-v1"]]) {
       expect(isSupportedMemoryMaintenancePolicy(unsupported)).toBe(false);
     }
   });
-  it("re-keys staged receipts for the marked conservative keep without reopening review coverage", () => {
-    // Coverage and plan identity follow the policy version; the request is unchanged, so only the schema moved.
-    expect(MEMORY_MAINTENANCE_VERSIONS).toMatchObject({ policyVersion: "memory-maintenance-policy-v3",
+  it("reviews every automatic fact once more under v4 with the unchanged request and decoder", () => {
+    // Coverage and plan identity follow the policy version; the request and decoder are unchanged.
+    expect(MEMORY_MAINTENANCE_VERSIONS).toMatchObject({ policyVersion: "memory-maintenance-policy-v4",
       promptVersion: "memory-maintenance-prompt-v3", schemaVersion: "memory-maintenance-schema-v5" });
     expect(memoryMaintenancePlan([]).sourceSnapshotHash)
-      .toBe(memorySha256({ policyVersion: "memory-maintenance-policy-v3", sources: [] }));
+      .toBe(memorySha256({ policyVersion: "memory-maintenance-policy-v4", sources: [] }));
   });
-  it("uses a new plan identity for v3 that is derivable from reviewed refs, versions and hashes alone", () => {
+  it("uses a new plan identity for v4 that is derivable from reviewed refs, versions and hashes alone", () => {
     const plan = memoryMaintenancePlan([]);
-    const v2 = memorySha256({ policyVersion: "memory-maintenance-policy-v2", sources: [] });
-    expect(plan.sourceSnapshotHash).not.toBe(v2);
+    const v3 = memorySha256({ policyVersion: "memory-maintenance-policy-v3", sources: [] });
+    expect(plan.sourceSnapshotHash).not.toBe(v3);
     expect(memoryMaintenancePlan([]).sourceSnapshotHash).toBe(plan.sourceSnapshotHash);
     expect(memoryMaintenancePlanHash([{ ref: source.ref, versionId: source.versionId, sourceSnapshotHash: source.sourceSnapshotHash }]))
       .toBe(memoryMaintenancePlan([source]).sourceSnapshotHash);
