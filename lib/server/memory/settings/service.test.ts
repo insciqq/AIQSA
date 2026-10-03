@@ -158,7 +158,6 @@ describe("Memory settings service", () => {
       pastChatIndexingAvailable: true,
       permanentChatDeletion: false,
       retrievalAvailable: true,
-      synthesisAvailable: true,
       temporaryChats: true
     });
   });
@@ -248,7 +247,6 @@ describe("Memory settings service", () => {
         referenceChatHistory: true,
         sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
         settingsRevision: 4,
-        synthesisEnabled: false,
         updatedAt: NOW.toISOString(),
         useMemoryFacts: true
       }
@@ -341,50 +339,6 @@ describe("Memory settings service", () => {
 
     expect(patch).toHaveBeenCalledOnce();
     expect(kick).not.toHaveBeenCalled();
-  });
-
-  it("answers a stale tab's retired Dream toggle with current settings and no write", async () => {
-    const kick = vi.fn();
-    const repo = repository();
-    const service = createMemorySettingsService({
-      kick,
-      repository: repo,
-      resolveCurrentUtilityPolicy: async () => policy()
-    });
-
-    for (const synthesisEnabled of [true, false]) {
-      await expect(service.patch("user-1", {
-        expectedMemoryRevision: 3,
-        expectedSettingsRevision: 4,
-        synthesisEnabled
-      })).resolves.toMatchObject({
-        capabilities: { synthesisAvailable: true },
-        settings: { memoryRevision: 3, settingsRevision: 4, synthesisEnabled: false }
-      });
-    }
-    expect(repo.patch).not.toHaveBeenCalled();
-    expect(repo.get).toHaveBeenCalledTimes(2);
-    expect(kick).not.toHaveBeenCalled();
-  });
-
-  it("ignores the retired Dream toggle inside another settings change", async () => {
-    const repo = repository();
-    const service = createMemorySettingsService({
-      repository: repo,
-      resolveCurrentUtilityPolicy: async () => policy()
-    });
-
-    await service.patch("user-1", {
-      decayEnabled: true,
-      expectedMemoryRevision: 3,
-      expectedSettingsRevision: 4,
-      synthesisEnabled: true
-    });
-    expect(repo.patch).toHaveBeenCalledWith("user-1", {
-      decayEnabled: true,
-      expectedMemoryRevision: 3,
-      expectedSettingsRevision: 4
-    });
   });
 
   it("maps only stable persistence failures", async () => {

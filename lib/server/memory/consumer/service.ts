@@ -333,10 +333,6 @@ function consumerStatus(
       !response.capabilities.automaticLearningAvailable ||
     response.settings.referenceChatHistory &&
       !response.capabilities.pastChatIndexingAvailable ||
-    // `synthesisAvailable` now reports background maintenance, which follows
-    // automatic learning.
-    response.settings.learnAutomatically &&
-      !response.capabilities.synthesisAvailable ||
     response.settings.decayEnabled && !response.capabilities.decayAvailable
   ) return "UNAVAILABLE";
   return "ON";
@@ -355,7 +351,6 @@ function projectSettings(
       permanentChatDeletion: response.capabilities.permanentChatDeletion,
       pastChatIndexingAvailable: response.capabilities.pastChatIndexingAvailable,
       retrievalAvailable: response.capabilities.retrievalAvailable,
-      synthesisAvailable: response.capabilities.synthesisAvailable,
       temporaryChats: response.capabilities.temporaryChats
     },
     resetState: resetState(reset),
@@ -363,7 +358,6 @@ function projectSettings(
       decayEnabled: response.settings.decayEnabled,
       learnAutomatically: response.settings.learnAutomatically,
       referenceChatHistory: response.settings.referenceChatHistory,
-      synthesisEnabled: response.settings.synthesisEnabled,
       useMemoryFacts: response.settings.useMemoryFacts
     },
     status: consumerStatus(response)

@@ -54,7 +54,6 @@ describe("Memory settings store", () => {
       decayEnabled: true,
       learnAutomatically: true,
       referenceChatHistory: true,
-      synthesisEnabled: false,
       useMemoryFacts: true
     });
     expect(bodies).toEqual([
@@ -83,11 +82,13 @@ describe("Memory settings store", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("loads settings with or without the retired Dream fields and never sends them", async () => {
-    const retained = memoryConsumerSettingsFixture({ status: "ON" });
-    const { synthesisAvailable: _available, ...capabilities } = retained.capabilities;
-    const { synthesisEnabled: _enabled, ...settings } = retained.settings;
-    const current = { ...retained, capabilities, settings };
+  it("loads a previous-release server's retired Dream fields and never sends them", async () => {
+    const current = memoryConsumerSettingsFixture({ status: "ON" });
+    const retained = {
+      ...current,
+      capabilities: { ...current.capabilities, synthesisAvailable: true },
+      settings: { ...current.settings, synthesisEnabled: false }
+    };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(json(retained))
       .mockResolvedValueOnce(json(current))

@@ -1084,12 +1084,6 @@ async function applyAllReusableDeletionFence(
       learnAutomatically: false,
       referenceChatHistory: false,
       settingsRevision,
-      // Retired Dream columns: written only as the fence values a
-      // previous-release worker still checks during Compose replacement.
-      synthesisEnabled: false,
-      synthesisEnabledAt: null,
-      synthesisPolicyVersion: null,
-      lastSynthesisAt: null,
       useMemoryFacts: false
     },
     where: {

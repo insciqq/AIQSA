@@ -674,6 +674,7 @@ describe("installation bootstrap", () => {
     expect(fixture.spies.userGroupUpsert).toHaveBeenCalledOnce();
     expect(fixture.spies.userMemorySettingsUpsert).toHaveBeenCalledWith({
       create: { userId: USER_ID },
+      select: { userId: true },
       update: {},
       where: { userId: USER_ID }
     });
