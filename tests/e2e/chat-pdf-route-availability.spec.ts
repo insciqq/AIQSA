@@ -69,6 +69,21 @@ for (const viewport of [
     expect(previewTargets[0]).toMatchObject({ projectId: null, providerConnectionId: "openai", providerModelId: "gpt-5.5" });
     await expectNoHorizontalOverflow(page);
     await expectWithinViewport(page, chip);
+    // The whole blocked card shows at once: the tray must not clip it, so its
+    // reason, recovery hint and remove control need no tray scrolling.
+    const list = page.getByRole("list", { name: "Attached files" });
+    await expect.poll(() => list.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeLessThanOrEqual(1);
+    for (const target of [
+      chip.getByText("No PDF-reading model is configured for this installation."),
+      chip.getByRole("link", { name: "Set up PDF processing" }),
+      chip.getByRole("button", { name: `Remove ${pdf.attachment.fileName}` })
+    ]) {
+      await expectWithinViewport(page, target);
+      const [box, clip] = await Promise.all([target.boundingBox(),
+        list.evaluate((element) => { const rect = element.getBoundingClientRect(); return { bottom: rect.bottom, top: rect.top }; })]);
+      expect(box!.y).toBeGreaterThanOrEqual(clip.top - 1);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(clip.bottom + 1);
+    }
     await page.screenshot({ path: testInfo.outputPath(`pdf-route-blocked-${viewport.width}x${viewport.height}.png`) });
 
     // An administrator assigns a page-image reader; the next refresh (window
