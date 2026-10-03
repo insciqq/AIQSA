@@ -130,18 +130,22 @@ async function selectContents(locator: Locator) {
     selection.removeAllRanges();
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
+    // Outlast the 250 ms settle delay of a selection made without a mouse drag.
+    await new Promise<void>(resolve => setTimeout(resolve, 300));
   });
 }
 
 /** Selects the contents again without scrolling or moving focus, as a selection made while a layer is open. */
 async function reselect(locator: Locator) {
-  await locator.evaluate(element => {
+  await locator.evaluate(async element => {
     const range = document.createRange();
     range.selectNodeContents(element);
     const selection = window.getSelection()!;
     selection.removeAllRanges();
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
+    // Outlast the 250 ms settle delay of a selection made without a mouse drag.
+    await new Promise<void>(resolve => setTimeout(resolve, 300));
   });
 }
 
@@ -252,6 +256,8 @@ async function selectOver(page: Page, target: Box, toolbarHeight: number): Promi
     selection.removeAllRanges();
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
+    // Outlast the 250 ms settle delay of a selection made without a mouse drag.
+    await new Promise<void>(resolve => setTimeout(resolve, 300));
     const rect = range.getBoundingClientRect();
     return { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top };
   }, { answer: answerId, height: toolbarHeight, box: target });

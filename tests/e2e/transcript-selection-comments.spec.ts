@@ -82,6 +82,8 @@ async function selectContents(locator: Locator) {
     selection.removeAllRanges();
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
+    // Outlast the 250 ms settle delay of a selection made without a mouse drag.
+    await new Promise<void>(resolve => setTimeout(resolve, 300));
   });
 }
 
