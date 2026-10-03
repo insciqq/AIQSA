@@ -32,6 +32,15 @@ function reviews(userId: string) {
   return prisma.memoryMaintenanceReview.findMany({ where: { userId, policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
 }
+/** Ends the owner's queued job with `errorCode` and settles its reviews as the next drain does. */
+async function failQueued(userId: string, errorCode: string | null, completedAt = new Date()): Promise<void> {
+  const job = await prisma.memoryJob.findFirstOrThrow({ where: { userId, state: "QUEUED" } });
+  await prisma.memoryJob.update({ where: { id: job.id }, data: { state: "TERMINAL_FAILED", errorCode, completedAt } });
+  await reconcileMemoryMaintenanceWork(prisma, completedAt, async () => false);
+}
+function minutes(from: Date, count: number): Date {
+  return new Date(from.getTime() + count * 60_000);
+}
 
 describe("maintenance policy v3 cleanup pass", () => {
   it("removes a two-version fact with different spans in one apply without affecting the batch", async () => {
@@ -180,7 +189,7 @@ describe("maintenance policy v3 cleanup pass", () => {
     expect(tail.text.endsWith("Which club suits my schedule?")).toBe(true);
   });
 
-  it("allows one more review job after a failed attempt and covers the version after the second", async () => {
+  it("allows one more review job after an ordinary failed attempt and covers the version after the second", async () => {
     const userId = await owner();
     const source = await createMaintenanceMessage(userId, "The plumber comes on Friday.");
     const fact = await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]);
@@ -209,6 +218,63 @@ describe("maintenance policy v3 cleanup pass", () => {
     expect(await plan(userId)).toBe(0);
     expect(await prisma.memoryJob.count({ where: { userId } })).toBe(2);
     expect((await reviews(userId)).map(({ disposition }) => disposition)).toEqual(["UNKNOWN", "UNKNOWN"]);
+  });
+
+  it("re-admits a version whose reviews failed before causes were stable on the next drain, under a new key", async () => {
+    const userId = await owner();
+    const source = await createMaintenanceMessage(userId, "The courier comes on Monday.");
+    const fact = await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await plan(userId)).toBe(1);
+      await failQueued(userId, "memory_job_failed");
+    }
+    await prisma.userMemorySettings.update({ where: { userId }, data: { maintenanceCursor: null, maintenanceScannedAt: null } });
+    const offered: string[] = [];
+    await expect(reconcileMemoryMaintenanceWork(prisma, new Date(), async (candidate) => {
+      offered.push(candidate);
+      return candidate === userId;
+    })).resolves.toEqual({ scheduled: 1 });
+    expect(offered).toContain(userId);
+    const rows = await reviews(userId);
+    expect(rows.map(({ disposition }) => disposition)).toEqual(["UNKNOWN", "UNKNOWN", "PENDING"]);
+    expect(rows.every(({ factVersionId }) => factVersionId === fact.currentVersionId)).toBe(true);
+    expect(new Set(rows.map(({ sourceSnapshotHash }) => sourceSnapshotHash)).size).toBe(3);
+    expect(new Set((await prisma.memoryJob.findMany({ where: { userId }, select: { idempotencyFingerprint: true } }))
+      .map(({ idempotencyFingerprint }) => idempotencyFingerprint)).size).toBe(3);
+  });
+
+  it("bounds invalid answers separately from ordinary failures", async () => {
+    const userId = await owner();
+    const source = await createMaintenanceMessage(userId, "The plumber comes on Thursday.");
+    await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]);
+    expect(await plan(userId)).toBe(1);
+    await failQueued(userId, "memory_maintenance_outcome_unknown");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect(await plan(userId)).toBe(1);
+      await failQueued(userId, "memory_classifier_output_invalid");
+    }
+    expect(await plan(userId)).toBe(0);
+    expect(await prisma.memoryJob.count({ where: { userId } })).toBe(4);
+  });
+
+  it("lets transient provider failures delay rather than exhaust new jobs and charges nothing for a source changed before dispatch", async () => {
+    const userId = await owner();
+    const source = await createMaintenanceMessage(userId, "The electrician comes on Wednesday.");
+    await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]);
+    let now = new Date();
+    expect(await plan(userId, now)).toBe(1);
+    // Each transient failure doubles the wait from the first delay.
+    for (const delay of [30, 60, 120]) {
+      await failQueued(userId, "memory_classifier_provider_unavailable", now);
+      expect(await plan(userId, minutes(now, delay - 1))).toBe(0);
+      now = minutes(now, delay + 1);
+      expect(await plan(userId, now)).toBe(1);
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await failQueued(userId, "memory_maintenance_dispatch_stale", now);
+      expect(await plan(userId, now)).toBe(1);
+    }
+    expect(await prisma.memoryJob.count({ where: { userId } })).toBe(6);
   });
 
   it("never reviews explicit, pinned, owner-touched or remembered-on-request lineages, even when labelled episodic", async () => {

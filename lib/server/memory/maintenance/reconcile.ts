@@ -52,8 +52,9 @@ export async function scheduleOwnerMemoryMaintenance(client: PrismaClient, userI
 export async function reconcileMemoryMaintenanceWork(client: PrismaClient, now: Date,
   authorityAvailable: (userId: string) => Promise<boolean>): Promise<Readonly<{ scheduled: number }>> {
   // Settle content-free checkpoints for terminal jobs without retrying their
-  // possibly dispatched calls. A failed attempt admits one more review by a new
-  // job; new independent evidence or a future policy admits another pass.
+  // possibly dispatched calls. A failed attempt admits new jobs only within the
+  // budgets of memoryMaintenanceUncoveredPredicate, each under a new source
+  // hash; new independent evidence or a future policy admits another pass.
   await client.$executeRaw(Prisma.sql`
     DELETE FROM "MemoryMaintenanceReview" review USING "MemoryJob" job
     WHERE job."userId" = review."userId" AND job.id = review."memoryJobId" AND review.disposition = 'PENDING'
