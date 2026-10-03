@@ -6,6 +6,11 @@ import type {
 } from "@/components/app-shell/attachmentContracts";
 import type { ComposerAttachmentPolicy } from "@/components/app-shell/attachmentSelection";
 import {
+  CHAT_PDF_ROUTE_UNAVAILABLE_LABEL,
+  CHAT_PDF_ROUTE_UNAVAILABLE_MESSAGE,
+  type ChatPdfRouteAvailability
+} from "@/lib/contracts/chatPdfPreparation";
+import {
   decodePdfProcessing,
   documentProcessingFromMetadata,
   type DocumentProcessingWire
@@ -36,15 +41,32 @@ export function documentProcessingForAttachment(
     : null;
 }
 
+/**
+ * `pdfRoute` is the server's admission-route preview for the selected answer
+ * model. A definite refusal blocks every PDF, also with Workspace: admission
+ * resolves a PDF reading route for Workspace runs as well. Unknown (null)
+ * keeps the local checks only; server admission stays the authority.
+ */
 export function attachmentWarningsForModel(
   attachments: readonly ComposerAttachment[],
   model: CatalogModel | undefined,
-  workspaceEnabled = false
+  workspaceEnabled = false,
+  pdfRoute: ChatPdfRouteAvailability | null = null
 ): ComposerAttachmentWarning[] {
-  if (workspaceEnabled) return [];
   const warnings: ComposerAttachmentWarning[] = [];
 
   for (const attachment of attachments) {
+    if (attachment.kind === "pdf" && pdfRoute?.available === false) {
+      warnings.push({
+        attachmentId: attachment.id,
+        blocking: true,
+        code: pdfRoute.reasonCode,
+        label: CHAT_PDF_ROUTE_UNAVAILABLE_LABEL,
+        message: CHAT_PDF_ROUTE_UNAVAILABLE_MESSAGE
+      });
+      continue;
+    }
+    if (workspaceEnabled) continue;
     const document = documentProcessingForAttachment(attachment);
     if (document?.status === "partial") {
       warnings.push({
@@ -103,9 +125,10 @@ export function attachmentWarningsForModel(
 export function firstBlockingAttachmentWarning(
   attachments: readonly ComposerAttachment[],
   model: CatalogModel | undefined,
-  workspaceEnabled = false
+  workspaceEnabled = false,
+  pdfRoute: ChatPdfRouteAvailability | null = null
 ): ComposerAttachmentWarning | null {
-  return attachmentWarningsForModel(attachments, model, workspaceEnabled)
+  return attachmentWarningsForModel(attachments, model, workspaceEnabled, pdfRoute)
     .find((warning) => warning.blocking) ?? null;
 }
 
@@ -143,8 +166,10 @@ export function attachmentPolicyForModel(
   return {
     documents: Boolean(model),
     images: Boolean(model?.capabilities.imageInput || model?.capabilities.imageTool?.editing),
-    // Every answer model can consume AIQSA's locally extracted PDF text.
-    // documentInputMode only selects local extraction versus verified direct input.
+    // PDFs stay attachable so a missing reading route is explained on the
+    // chip instead of hiding the file type. Whether this model can read a PDF
+    // (native input, the PDF reader or page images) comes only from the
+    // server's route preview; see attachmentWarningsForModel.
     pdfs: Boolean(model)
   };
 }

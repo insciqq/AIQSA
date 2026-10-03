@@ -54,6 +54,9 @@ function itemStatus(item: ComposerAttachmentItemV2): string {
       : null;
     return progress === null ? "Uploading…" : `Uploading… ${progress}%`;
   }
+  if (item.warning?.code && (item.status === "ready" || item.status === "processing")) {
+    return item.warning.label;
+  }
   if (item.status === "processing") return "Processing…";
   if (item.status === "ready") return item.warning?.label ?? "Ready";
   if (item.status === "failed") return "Processing failed";
@@ -148,9 +151,10 @@ export function AttachmentTrayV2({
             className="v2-attachment-chip"
             data-attachment-status={item.status}
             data-warning={item.warning ? "true" : undefined}
+            data-warning-blocking={item.warning?.blocking ? "true" : undefined}
             key={item.id}
           >
-            {item.status === "uploading" || item.status === "processing" ? (
+            {(item.status === "uploading" || item.status === "processing") && !item.warning?.code ? (
               <span className="v2-attachment-spinner" aria-hidden="true" />
             ) : (
               <UiV2Icon name="attach" />
@@ -160,6 +164,13 @@ export function AttachmentTrayV2({
               <span>{itemStatus(item)}</span>
               {item.detail && item.status !== "rejected" ? <small>{item.detail}</small> : null}
               {item.warning ? <small>{item.warning.message}</small> : null}
+              {typeof item.warning?.hint === "string" ? <small>{item.warning.hint}</small> : item.warning?.hint ? (
+                <small>
+                  <a className="v2-attachment-hint-link v2-focusable" href={item.warning.hint.href}>
+                    {item.warning.hint.label}
+                  </a>
+                </small>
+              ) : null}
               {item.notices?.map((notice) => <small key={notice}>{notice}</small>)}
             </span>
             <span className="v2-attachment-actions">
