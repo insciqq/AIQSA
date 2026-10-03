@@ -222,7 +222,9 @@ describe("explicit memory equivalence authority", () => {
     expect(request.systemPrompt).toContain(
       "Paraphrases and translations can be equivalent regardless of language or script. Shared words"
     );
-    const current = { ...input, pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION };
+    const current: MemoryExplicitRelationSnapshot = {
+      ...input, pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION
+    };
     expect(memoryExplicitRelationSnapshotHash(current)).not.toBe(memoryExplicitRelationSnapshotHash(input));
     expect(memoryExplicitRelationInputHash(current)).not.toBe(memoryExplicitRelationInputHash(input));
   });
