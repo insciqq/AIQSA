@@ -194,7 +194,7 @@ describe("aiqsa.sh lint", () => {
 describe("configure", () => {
   it("generates separate private secrets without printing them and otherwise copies the template", () => {
     const fixture = new Fixture();
-    const result = fixture.run(["configure", "--yes"]);
+    const result = fixture.run(["configure", "--yes", "--workspace", "off"]);
     expect(result.status).toBe(0);
     const body = readFileSync(fixture.file(".env"), "utf8");
     const parsed = values(body);
@@ -209,7 +209,7 @@ describe("configure", () => {
     expect(statSync(fixture.file(".env")).mode & 0o777).toBe(0o600);
     expect(parsed.AIQSA_INITIAL_ADMIN_EMAIL).toBe("");
     expect(body.replace(new RegExp(`^(${generatedKeys.join("|")})=.*$`, "gmu"), "$1=")).toBe(template);
-    expect(result.stderr).toContain("nested virtualization");
+    expect(result.stderr).toContain("an unsupported configuration, only for disposable test installations");
     expect(readdirSync(fixture.project).filter((name) => name.startsWith(".env.tmp."))).toEqual([]);
   });
 
@@ -232,6 +232,7 @@ describe("configure", () => {
   ])("does not publish a partial configuration if entropy generation %s", (_name, body) => {
     const fixture = new Fixture();
     fixture.tool("openssl", body);
+    fixture.kvmDevice(0o660);
     const result = fixture.run(["configure", "--yes"]);
     expect(result.status).toBe(1);
     expect(readdirSync(fixture.project)).not.toContain(".env");
@@ -241,10 +242,11 @@ describe("configure", () => {
   it("fills operator values from flags and validates them", () => {
     const fixture = new Fixture();
     for (const args of [["--base-url", "https://chat.example.com/path"], ["--base-url", "ftp://chat.example.com"],
-      ["--admin-email", "not-an-email"], ["--workspace", "maybe"]]) {
+      ["--admin-email", "not-an-email"], ["--workspace", "maybe"], ["--workspace", "auto"]]) {
       expect(fixture.run(["configure", "--yes", ...args]).status, args.join(" ")).toBe(2);
       expect(existsSync(fixture.file(".env"))).toBe(false);
     }
+    fixture.kvmDevice(0o660);
     const result = fixture.run(["configure", "--yes", "--base-url=https://chat.example.com", "--admin-email", "admin@example.com"]);
     expect(result.status).toBe(0);
     const parsed = values(readFileSync(fixture.file(".env"), "utf8"));
@@ -252,7 +254,7 @@ describe("configure", () => {
     expect(parsed.AIQSA_INITIAL_ADMIN_EMAIL).toBe("admin@example.com");
   });
 
-  it("enables Workspace automatically when KVM is usable and keeps the runner token private", () => {
+  it("enables Workspace by default when KVM is usable and keeps the runner token private", () => {
     const fixture = new Fixture();
     fixture.kvmDevice(0o660);
     const result = fixture.run(["configure", "--yes"]);
@@ -268,10 +270,10 @@ describe("configure", () => {
   });
 
   it.each([
-    ["auto with a group-inaccessible device", ["--workspace", "auto"], 0o600, 0],
-    ["off with a usable device", ["--workspace", "off"], 0o660, 0],
-    ["on without a device", ["--workspace", "on"], null, 4],
-    ["on with a group-inaccessible device", ["--workspace", "on"], 0o600, 4]
+    ["off (test-only) with a usable device", ["--workspace", "off"], 0o660, 0],
+    ["by default without a device", [], null, 4],
+    ["by default with a group-inaccessible device", [], 0o600, 4],
+    ["on without a device", ["--workspace", "on"], null, 4]
   ])("Workspace %s", (_name, args, mode, status) => {
     const fixture = new Fixture();
     if (mode !== null) fixture.kvmDevice(mode);
@@ -281,6 +283,9 @@ describe("configure", () => {
       expect(readFileSync(fixture.file(".env"), "utf8")).toContain("# COMPOSE_PROFILES=workspace\n");
     } else {
       expect(existsSync(fixture.file(".env"))).toBe(false);
+      expect(result.stderr).toContain("AIQSA needs KVM for Workspace");
+      expect(result.stderr).toContain("are not supported");
+      expect(result.stderr).toContain("nested virtualization");
     }
   });
 });
@@ -293,7 +298,8 @@ describe("doctor", () => {
     expect(result.status).toBe(0);
     for (const line of ["PASS docker: Engine 27.3.1", "PASS compose: Compose 2.29.7", "PASS vm.max_map_count: 262144",
       "PASS memory: 15.6 GiB", "PASS cpus: 2", "PASS disk:", "PASS time:", "PASS port: 127.0.0.1:3000 is free",
-      "INFO kvm: Workspace unavailable", "PASS required-keys", "PASS compose-config", "PASS app: healthy",
+      "INFO kvm: Workspace unavailable", "WARN workspace: disabled: unsupported configuration", "PASS required-keys",
+      "PASS compose-config", "PASS app: healthy",
       "PASS migrate-bootstrap: completed", "PASS readiness", "PASS storage: storage marker valid", "0 failed"]) {
       expect(result.stdout).toContain(line);
     }
@@ -339,14 +345,17 @@ describe("doctor", () => {
     }, expected: [/PASS port: 127\.0\.0\.1:3000 is served by this project's app container/u] },
     { name: "listener on another address", status: 0, setup: (f) => writeFileSync(path.join(f.state, "ss.out"), "LISTEN 0 4096 10.0.0.5:3000 0.0.0.0:*\n"),
       expected: [/PASS port: 127\.0\.0\.1:3000 is free/u] },
-    { name: "virtual machine without nested virtualization", status: 0, setup: (f) => {
+    { name: "virtual machine without nested virtualization", status: 4, setup: (f) => {
+      rmSync(f.kvm, { force: true });
       f.env.FAKE_VIRT = "kvm";
       writeFileSync(path.join(f.proc, "cpuinfo"), "processor\t: 0\nflags\t\t: fpu hypervisor\n");
-    }, expected: [/INFO kvm: Workspace unavailable: .* virtual machine \(kvm\) without nested virtualization/u, /WARN cpus: 1/u] }
+    }, expected: [/FAIL kvm: AIQSA needs KVM for Workspace, but .* virtual machine \(kvm\) without nested virtualization/u,
+      /installations without a usable .* are not supported/u, /WARN cpus: 1/u] }
   ];
 
   it.each(hostCases)("host check: $name", ({ setup, expected, status }) => {
     const fixture = new Fixture();
+    fixture.kvmDevice(0o660);
     setup(fixture);
     const result = fixture.run(["doctor", "--host-only"]);
     for (const pattern of expected) expect(result.stdout).toMatch(pattern);
@@ -356,6 +365,7 @@ describe("doctor", () => {
   it("skips the time check silently when timedatectl is unavailable", () => {
     const fixture = new Fixture();
     fixture.removeTool("timedatectl");
+    fixture.kvmDevice(0o660);
     const result = fixture.run(["doctor", "--host-only"]);
     expect(result.status).toBe(0);
     expect(result.stdout).not.toContain("time:");
@@ -549,10 +559,13 @@ describe("up and install", () => {
     expect(fixture.dockerLog).not.toContain(" up -d");
   });
 
-  it("installs from scratch, then preserves .env on a second install", () => {
+  it("installs from scratch with Workspace, then preserves .env on a second install", () => {
     const fixture = new Fixture();
-    const first = fixture.run(["install", "--yes", "--base-url", "http://localhost:3000", "--admin-email", "admin@example.com", "--workspace", "off"]);
+    fixture.kvmDevice(0o660);
+    fixture.rules.push({ match: " ps -a --format", stdout: `${readyRows}workspace-runner|running|healthy|0|c8\n` });
+    const first = fixture.run(["install", "--yes", "--base-url", "http://localhost:3000", "--admin-email", "admin@example.com"]);
     expect(first.status).toBe(0);
+    expect(first.stdout).toContain(`Workspace enabled (KVM group ${statSync(fixture.kvm).gid}).`);
     const body = readFileSync(fixture.file(".env"), "utf8");
     expect(statSync(fixture.file(".env")).mode & 0o777).toBe(0o600);
     expect(first.stdout).toContain("AIQSA is ready at http://localhost:3000.");
@@ -593,14 +606,16 @@ describe("up and install", () => {
 
   it.each([
     ["without an administrator email", ["install", "--yes"], 2],
-    ["with --workspace on and no KVM", ["install", "--yes", "--admin-email", "admin@example.com", "--workspace", "on"], 4]
+    ["without KVM", ["install", "--yes", "--admin-email", "admin@example.com"], 4],
+    ["without KVM even with --skip-preflight", ["install", "--yes", "--admin-email", "admin@example.com", "--skip-preflight"], 4],
+    ["with the configure-only --workspace off", ["install", "--yes", "--admin-email", "admin@example.com", "--workspace", "off"], 2]
   ])("refuses to install %s before any change", (_name, args, status) => {
     const fixture = new Fixture();
     const result = fixture.run(args);
     expect(result.status).toBe(status);
     expect(existsSync(fixture.file(".env"))).toBe(false);
     expect(fixture.dockerLog).not.toMatch(/ (up|config) /u);
-    if (args.includes("on")) expect(result.stdout).toContain("rerun with --workspace auto (or off)");
+    if (status === 4) expect(result.output).toContain("are not supported");
   });
 });
 

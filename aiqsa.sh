@@ -245,8 +245,10 @@ profile_enabled() {
   return 1
 }
 
+# Workspace is part of every supported installation; only an existing .env
+# (or configure --workspace off for disposable tests) can leave it out.
 workspace_expected() {
-  if [[ -f $ENV_FILE ]]; then profile_enabled workspace; else [[ $WORKSPACE_MODE == on ]]; fi
+  if [[ -f $ENV_FILE ]]; then profile_enabled workspace; else [[ ${WORKSPACE_MODE:-on} != off ]]; fi
 }
 
 valid_base_url() {
@@ -365,9 +367,9 @@ workspace_lines() {
     "AIQSA_KVM_GID=${KVM_GID:-<group of $KVM_DEVICE: stat -c %g $KVM_DEVICE>}"
 }
 
-workspace_off_explanation() {
-  note "Workspace left off: $KVM_REASON." \
-    "Workspace runs commands in KVM virtual machines and needs a usable $KVM_DEVICE. On cloud and other virtual machines this requires nested virtualization; enable it for the VM or use a bare-metal host. Everything else works without Workspace, and ./aiqsa.sh doctor shows the KVM checks."
+kvm_required_help() {
+  printf '%s\n' "Workspace runs commands in KVM virtual machines and most of AIQSA depends on it, so installations without a usable $KVM_DEVICE are not supported." \
+    "On cloud and other virtual machines enable nested virtualization for the VM, or use a bare-metal host; ./aiqsa.sh doctor shows the KVM checks."
 }
 
 # ---------------------------------------------------------------- doctor: host
@@ -583,10 +585,10 @@ doctor_kvm() {
         "Workspace needs KVM; on virtual machines enable nested virtualization or use a bare-metal host."
     elif [[ -f $ENV_FILE ]]; then
       check FAIL kvm "Workspace is enabled but $KVM_REASON (virtualization: $KVM_VIRT)" \
-        "Enable nested virtualization or use a bare-metal host, or disable Workspace by commenting out COMPOSE_PROFILES=workspace in .env."
+        "Enable nested virtualization or use a bare-metal host."
     else
-      check FAIL kvm "--workspace on needs KVM, but $KVM_REASON (virtualization: $KVM_VIRT)" \
-        "Enable nested virtualization or use a bare-metal host, or rerun with --workspace auto (or off) to install without Workspace."
+      check FAIL kvm "AIQSA needs KVM for Workspace, but $KVM_REASON (virtualization: $KVM_VIRT)" \
+        "$(kvm_required_help)"
     fi
     return 0
   fi
@@ -667,7 +669,9 @@ doctor_workspace_block() {
   if (( ${#present[@]} == 4 )); then
     check PASS workspace "enabled"
   elif (( ${#present[@]} == 0 )); then
-    check INFO workspace "disabled"
+    (( KVM_OK )) || kvm_probe
+    check WARN workspace "disabled: unsupported configuration; Workspace and the features that depend on it are unavailable" \
+      "On a host with usable KVM, set all four values together:" "$(workspace_lines | sed 's/^/  /')"
   else
     (( KVM_OK )) || kvm_probe
     check FAIL workspace "incomplete Workspace block; missing: ${absent[*]}" \
@@ -921,17 +925,11 @@ configure_create() {
   if [[ -z $ADMIN_EMAIL ]] && can_prompt; then
     prompt_value ADMIN_EMAIL "Administrator email" "" valid_email
   fi
-  case ${WORKSPACE_MODE:-auto} in
-    off) ;;
-    on)
-      kvm_probe
-      (( KVM_OK )) || die "$EXIT_PREFLIGHT" "Workspace cannot be enabled: $KVM_REASON." \
-        "Enable nested virtualization for this VM or use a bare-metal host, or rerun with --workspace off."
-      enable_workspace=1 ;;
-    auto)
-      kvm_probe
-      enable_workspace=$KVM_OK ;;
-  esac
+  if [[ ${WORKSPACE_MODE:-on} == on ]]; then
+    kvm_probe
+    (( KVM_OK )) || die "$EXIT_PREFLIGHT" "AIQSA needs KVM for Workspace, but $KVM_REASON; no .env was written." "$(kvm_required_help)"
+    enable_workspace=1
+  fi
   local seen_profiles=0 seen_url=0 seen_token=0 seen_gid=0
   old_umask=$(umask)
   umask 077
@@ -976,10 +974,8 @@ configure_create() {
   say "$(display_path "$ENV_FILE") created with private permissions and unique secrets."
   if (( enable_workspace )); then
     say "Workspace enabled (KVM group $KVM_GID)."
-  elif [[ ${WORKSPACE_MODE:-auto} == off ]]; then
-    say "Workspace left off (--workspace off)."
   else
-    workspace_off_explanation
+    note "Workspace left off (--workspace off): an unsupported configuration, only for disposable test installations."
   fi
 }
 
@@ -1463,7 +1459,7 @@ cmd_help() {
 Usage: ./aiqsa.sh <command> [options]
 
 Commands:
-  install    Check the host, create .env when missing, start the stack, verify it.
+  install    Check the host (KVM required), create .env when missing, start the stack, verify it.
   configure  Create .env from .env.example with unique secrets (never overwrites).
   doctor     Read-only checks of the host, .env and the running stack.
   up         Preflight, then start or update containers and wait until ready.
@@ -1478,9 +1474,9 @@ Options:
   --quiet, --verbose     Less output, or also print the commands being run.
   --base-url <url>       configure/install: URL users will open (http(s) origin).
   --admin-email <email>  configure/install: initial administrator email.
-  --workspace auto|on|off
-                         configure/install: enable the KVM Workspace when /dev/kvm
-                         is usable (auto, default), require it (on) or skip it (off).
+  --workspace on|off     configure: Workspace needs a usable /dev/kvm and is on by default
+                         (install always requires it); off writes an unsupported
+                         configuration for disposable test installations only.
   --no-start             install: stop after creating .env.
   --host-only, --stack-only
                          doctor: limit the checks to one section.
@@ -1558,7 +1554,7 @@ parse_args() {
 validate_args() {
   local allowed option
   case $COMMAND in
-    install) allowed=" --base-url --admin-email --workspace --no-start --skip-preflight " ;;
+    install) allowed=" --base-url --admin-email --no-start --skip-preflight " ;;
     configure) allowed=" --base-url --admin-email --workspace " ;;
     doctor) allowed=" --host-only --stack-only " ;;
     up) allowed=" --skip-preflight " ;;
@@ -1579,7 +1575,7 @@ validate_args() {
     usage_error "--base-url must be an http(s) URL without path, query or fragment, for example https://chat.example.com"
   fi
   if [[ -n $ADMIN_EMAIL ]] && ! valid_email "$ADMIN_EMAIL"; then usage_error "--admin-email is not an email address."; fi
-  case $WORKSPACE_MODE in '' | auto | on | off) ;; *) usage_error "--workspace must be auto, on or off." ;; esac
+  case $WORKSPACE_MODE in '' | on | off) ;; *) usage_error "--workspace must be on or off." ;; esac
   if [[ -n $TARGET_TAG && ! $TARGET_TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then usage_error "--to must be a release tag like v1.2.3."; fi
 }
 
