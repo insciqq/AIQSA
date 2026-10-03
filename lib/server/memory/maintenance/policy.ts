@@ -49,11 +49,14 @@ export const MEMORY_MAINTENANCE_SCHEDULE_TRANSACTION_BOUNDS = Object.freeze({
   maxWaitMs: 5_000,
   timeoutMs: 20_000
 });
+/** Each version keys the calls' input hashes and so their staged receipts;
+ * review coverage follows the policy version alone. A decoder change that
+ * leaves the request unchanged bumps only the schema version. */
 export const MEMORY_MAINTENANCE_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_MAINTENANCE_PIPELINE_VERSION,
   policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION,
   promptVersion: "memory-maintenance-prompt-v3",
-  schemaVersion: "memory-maintenance-schema-v3",
+  schemaVersion: "memory-maintenance-schema-v4",
   retrievalConfigFingerprint: "memory-maintenance-exact-sources-v2"
 });
 export type MemoryUsefulness = "DURABLE" | "ONGOING" | "EPISODIC";

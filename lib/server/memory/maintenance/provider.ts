@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { logEvent } from "../../observability";
 import { MemoryJobFencedError } from "../coordinator/errors";
 import { executeGovernedMemoryStructuredOutput, MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS,
   MemoryStructuredOutputDispatchFenced, type MemoryExecutionAuthorityDependencies,
@@ -7,8 +8,8 @@ import { memoryExecutionSha256 } from "../execution/canonical";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { createAcceptedMemoryStructuredOutputProvider } from "../execution/structuredClassifier";
 import { buildMemoryMaintenanceRequest, buildMemoryMaintenanceVerificationRequest,
-  decodeMemoryMaintenanceOutput, decodeMemoryMaintenanceVerification,
-  type MemoryMaintenanceOutput, type MemoryMaintenanceVerification } from "./contract";
+  decodeMemoryMaintenanceReview, decodeMemoryMaintenanceVerification, type MemoryMaintenanceOutput,
+  type MemoryMaintenanceReviewDecoding, type MemoryMaintenanceVerification } from "./contract";
 import { MEMORY_MAINTENANCE_CALL_ATTEMPTS, MEMORY_MAINTENANCE_FAILURE_CODES, MEMORY_MAINTENANCE_VERSIONS, memoryMaintenanceOrdinal,
   type MemoryMaintenanceCall, type MemoryMaintenancePlan, type MemoryMaintenanceSource } from "./policy";
 import { loadMemoryMaintenanceSources } from "./source";
@@ -35,6 +36,19 @@ export function memoryMaintenanceOutputHash(inputHash: string, output: unknown):
 export function memoryMaintenanceDispatchStale(): MemoryJobFencedError {
   const code = MEMORY_MAINTENANCE_FAILURE_CODES.dispatchStale;
   return new MemoryJobFencedError(code, { errorCode: code, status: "STALE" });
+}
+type MemoryMaintenanceReviewRepairs = Pick<MemoryMaintenanceReviewDecoding, "normalized" | "conservative">;
+/** Content-free counts of the accepted review's repaired decisions; both codes
+ * are registered in observability/failureCodes.json. */
+function logMemoryMaintenanceReviewRepairs(jobId: string, repairs: MemoryMaintenanceReviewRepairs): void {
+  if (repairs.normalized > 0) {
+    logEvent("service_operation", { subsystem: "memory", stage: "validate", outcome: "completed",
+      code: "memory_maintenance_labels_normalized", count: repairs.normalized, job_id: jobId });
+  }
+  if (repairs.conservative > 0) {
+    logEvent("service_operation", { subsystem: "memory", stage: "validate", outcome: "degraded",
+      code: "memory_maintenance_contradictions_kept", count: repairs.conservative, job_id: jobId });
+  }
 }
 export function createPrismaMemoryMaintenanceProvider(client: PrismaClient, options: Readonly<{
   authority?: MemoryExecutionAuthorityDependencies; provider?: MemoryStructuredOutputProvider;
@@ -84,9 +98,17 @@ export function createPrismaMemoryMaintenanceProvider(client: PrismaClient, opti
     }
   }
   return Object.freeze({
-    review(plan: MemoryMaintenancePlan, signal: AbortSignal, owner: Owner) {
-      return run(owner, "review", plan.sources, signal, memoryMaintenanceInputHash(plan), buildMemoryMaintenanceRequest(plan),
-        (value) => decodeMemoryMaintenanceOutput(value, plan));
+    /** Counts the repairs of the accepted answer only, once it settled. */
+    async review(plan: MemoryMaintenancePlan, signal: AbortSignal, owner: Owner) {
+      let repairs: MemoryMaintenanceReviewRepairs = { normalized: 0, conservative: 0 };
+      const result = await run(owner, "review", plan.sources, signal, memoryMaintenanceInputHash(plan), buildMemoryMaintenanceRequest(plan),
+        (value) => {
+          const decoded = decodeMemoryMaintenanceReview(value, plan);
+          repairs = decoded;
+          return decoded.output;
+        });
+      logMemoryMaintenanceReviewRepairs(owner.jobId, repairs);
+      return result;
     },
     /** `disclosed` holds the still-matching removal sources of `proposal`. */
     verify(reviewed: Readonly<{ sourceSnapshotHash: string }>, disclosed: readonly MemoryMaintenanceSource[],

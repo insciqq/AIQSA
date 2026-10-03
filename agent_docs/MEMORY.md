@@ -43,7 +43,7 @@ Safety Lite is local and independent from semantic classification. It redacts re
 
 Expiration requires grounded source language and validated calendar interpretation. Unresolved explicit TTL rejects the candidate. Reads enforce expiration synchronously; cleanup is not authorization. Expiration or supersession never resurrects older versions. Current reads label elapsed or long-unconfirmed structured plans and past events without inferring expiry or completion. Historical reads and untyped explicit facts remain unchanged.
 
-Background maintenance follows Memory and automatic learning, without a toggle. Versioned reviews apply the long-term criterion to current versions' exact sources. Explicit, owner-edited, pinned and remember-requested lineages are protected. Verified removal forgets whole automatic lineages; age, confidence or use alone never suffice. Fences prevent resurrection; chats remain. Changed sources fail alone. Failed reviews never replay; bounded new jobs retry them, and transient provider failures delay rather than exhaust those retries.
+Background maintenance follows Memory and automatic learning, without a toggle. Versioned reviews apply the long-term criterion to current versions' exact sources. Explicit, owner-edited, pinned and remember-requested lineages are protected. Verified removal forgets whole automatic lineages; age, confidence or use alone never suffice. Contradictory review labels resolve to keep, never to removal. Fences prevent resurrection; chats remain. Changed sources fail alone. Failed reviews never replay; bounded new jobs retry them, and transient provider failures delay rather than exhaust those retries.
 
 ## Retrieval And Presentation
 

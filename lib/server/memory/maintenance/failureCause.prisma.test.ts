@@ -228,6 +228,53 @@ describe("maintenance outcomes through the coordinator and governed executor", (
     await reconcileMemoryMaintenanceWork(prisma, new Date(), async () => false);
     expect(await prisma.memoryMaintenanceReview.count({ where: { userId } })).toBe(0);
   });
+  it("keeps a contradictory decision, applies the rest of the batch and verifies only consistent removals", async () => {
+    const statements = ["The parcel arrives at noon today.", "The courier calls at five today.",
+      "I have kept a vegetarian diet for ten years.", "Yesterday I tried a new falafel place."];
+    // A clean removal, a removal whose reason slipped, a keep whose label slipped and a removal claiming lasting value.
+    const answered = new Map<string, Record<string, unknown>>([
+      [statements[0]!, { scope_basis: "short_term_matter", action: "REMOVE_TRANSIENT", usefulness: null, reason: "short_term" }],
+      [statements[1]!, { scope_basis: "short_term_matter", action: "REMOVE_TRANSIENT", usefulness: null, reason: "episode" }],
+      [statements[2]!, { scope_basis: "general_personal", action: "KEEP", usefulness: "ONGOING", reason: "useful_personal_context" }],
+      [statements[3]!, { scope_basis: "single_episode", action: "REMOVE_TRANSIENT", usefulness: "DURABLE", reason: "episode" }]
+    ]);
+    const { userId, facts, job } = await plannedJob(statements);
+    const disclosed: string[][] = [];
+    const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockImplementation(async (_snapshot, request) => {
+      const sources = (JSON.parse(request.userPrompt) as { sources: Array<{ ref: string; statement: string }> }).sources;
+      if (!isVerification(request)) return { providerResponseId: null, usage, output: { decisions: sources.map(({ ref, statement }) =>
+        ({ source_ref: ref, ...answered.get(statement) })) } };
+      disclosed.push(sources.map(({ statement }) => statement).sort());
+      return { providerResponseId: null, usage, output: { decisions: sources.map(({ ref }) => ({ source_ref: ref, approve: true })) } };
+    });
+    await drain(run);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({ state: "SUCCEEDED", errorCode: null });
+    expect(await attempts(userId)).toEqual([succeeded(0), succeeded(1)]);
+    expect(disclosed).toEqual([[statements[0], statements[1]].sort()]);
+    const outcome = async (index: number) => {
+      const fact = facts[index]!;
+      return { review: await prisma.memoryMaintenanceReview.findFirstOrThrow({ where: { userId, factVersionId: fact.currentVersionId },
+        select: { disposition: true, usefulness: true } }),
+      fact: await prisma.memoryFact.findUniqueOrThrow({ where: { id: fact.factId }, select: { state: true, currentVersionId: true } }) };
+    };
+    const removed = { disposition: "REMOVED", usefulness: null };
+    expect(await outcome(0)).toEqual({ review: removed, fact: { state: "FORGOTTEN", currentVersionId: null } });
+    expect(await outcome(1)).toEqual({ review: removed, fact: { state: "FORGOTTEN", currentVersionId: null } });
+    expect(await outcome(2)).toEqual({ review: { disposition: "KEEP", usefulness: "DURABLE" },
+      fact: { state: "ACTIVE", currentVersionId: facts[2]!.currentVersionId } });
+    // The contradiction is kept without a label, so nothing is removed or promoted.
+    expect(await outcome(3)).toEqual({ review: { disposition: "KEEP", usefulness: null },
+      fact: { state: "ACTIVE", currentVersionId: facts[3]!.currentVersionId } });
+    const forgotten = [facts[0]!.factId, facts[1]!.factId].sort();
+    expect((await prisma.memoryEvent.findMany({ where: { userId, operation: "FORGET" }, select: { factId: true } }))
+      .map(({ factId }) => factId).sort()).toEqual(forgotten);
+    expect((await prisma.memoryDeletionOutbox.findMany({ where: { userId, operation: "FORGET_PURGE" }, select: { targetId: true } }))
+      .map(({ targetId }) => targetId).sort()).toEqual(forgotten);
+    const keptSource = await prisma.memoryEvidence.findFirstOrThrow({ where: { userId, factVersionId: facts[3]!.currentVersionId } });
+    expect(await prisma.memoryMaintenanceSuppression.count({ where: { userId } })).toBe(2);
+    expect(await prisma.memoryMaintenanceSuppression.count({ where: { userId, sourceMessageId: keptSource.messageId! } })).toBe(0);
+  });
   it("keeps a paid review terminal and uncharged when a disclosed removal changes just before verification", async () => {
     const { userId, facts, job } = await plannedJob(["The parcel arrives at noon today.", "The courier calls at five today."]);
     const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockImplementation(removeAll);
