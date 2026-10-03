@@ -159,6 +159,12 @@ async function page(
           take: 1,
           where: { status: { in: ACTIVE_RUN_STATUSES } }
         },
+        // The task this chat belongs to; only its unread marker crosses the boundary.
+        scheduledTasks: {
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          select: { id: true, unseenResultAt: true },
+          take: 1
+        },
         title: true,
         updatedAt: true
       },
@@ -189,6 +195,9 @@ async function page(
         assistant: row.assistantId ? identities.get(row.assistantId) ?? null : null,
         folderId: row.folderId,
         id: row.id,
+        scheduledTask: row.scheduledTasks[0]
+          ? { taskId: row.scheduledTasks[0].id, unseen: row.scheduledTasks[0].unseenResultAt !== null }
+          : null,
         title: row.title,
         updatedAt: row.updatedAt.toISOString()
       })),

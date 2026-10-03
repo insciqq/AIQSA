@@ -198,6 +198,19 @@ describe("Navigation v2", () => {
     expect(plain.querySelector(".v2-chat-title")).toHaveTextContent("Plain chat");
   });
 
+  it("describes an unopened scheduled result without renaming the row", () => {
+    sidebar({ chats: [
+      { ...chats[0], scheduledTask: { taskId: "task-1", unseen: true } },
+      { ...chats[1], scheduledTask: { taskId: "task-2", unseen: false } }
+    ] });
+    const unread = screen.getByRole("treeitem", { name: chats[0].title });
+    const read = screen.getByRole("treeitem", { name: chats[1].title });
+    expect(unread).toHaveAccessibleDescription("New scheduled result");
+    expect(unread.querySelector(".v2-chat-unread")).toHaveAttribute("aria-hidden", "true");
+    expect(read).not.toHaveAttribute("aria-describedby");
+    expect(read.querySelector(".v2-chat-unread")).toBeNull();
+  });
+
   it("uses one roving Tab stop and opens the focused row menu with Shift+F10", async () => {
     sidebar();
     const tree = screen.getByRole("tree", { name: "Personal chats" });

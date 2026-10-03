@@ -178,6 +178,7 @@ export type ThreadMessage = {
   provider?: string;
   role: "assistant" | "user";
   runId?: string | null;
+  scheduledTask?: ChatMessageScheduledTaskWire | null;
   status: "cancelled" | "complete" | "error" | "streaming";
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
@@ -401,10 +402,21 @@ export type ChatMessageWire = {
   parentMessageId: string | null;
   provider: string | null;
   role: string;
+  /** Present on current responses; absent (stale caches, fixtures) means none. */
+  scheduledTask?: ChatMessageScheduledTaskWire | null;
   status: string;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
 };
+
+/**
+ * A user turn posted by a scheduled task occurrence: the task and its current
+ * title. Deleting the task removes its occurrences, so the marker disappears.
+ */
+export type ChatMessageScheduledTaskWire = Readonly<{
+  taskId: string;
+  title: string;
+}>;
 
 export type ProjectMessageAuthorWire = Readonly<{
   displayName: string;
@@ -625,9 +637,20 @@ export type ChatNavigationSummaryWire = {
   assistant: AssistantIdentity | null;
   folderId: string | null;
   id: string;
+  /**
+   * The scheduled task that posts into this chat, with its unread marker.
+   * Present on current responses; absent (local upserts, fixtures) means none.
+   */
+  scheduledTask?: ChatNavigationScheduledTaskWire | null;
   title: string;
   updatedAt: string;
 };
+
+export type ChatNavigationScheduledTaskWire = Readonly<{
+  taskId: string;
+  /** A finished run's result has not been opened yet. */
+  unseen: boolean;
+}>;
 
 export type ChatNavigationFolderWire = {
   id: string;
@@ -1176,6 +1199,16 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     workspaceActivity = decodeThreadWorkspaceActivity(value.workspaceActivity);
     if (!workspaceActivity) return null;
   }
+  let scheduledTask: ChatMessageScheduledTaskWire | null | undefined;
+  if (value.scheduledTask === undefined || value.scheduledTask === null) {
+    scheduledTask = value.scheduledTask;
+  } else {
+    const taskId = isRecord(value.scheduledTask) && hasExactKeys(value.scheduledTask, ["taskId", "title"])
+      ? requiredString(value.scheduledTask.taskId) : null;
+    const title = isRecord(value.scheduledTask) ? requiredString(value.scheduledTask.title) : null;
+    if (!taskId || taskId.length > 128 || !title || codePointLength(title) > CHAT_TITLE_MAX_LENGTH) return null;
+    scheduledTask = { taskId, title };
+  }
   let author: ProjectMessageAuthorWire | null | undefined;
   if (value.author === undefined || value.author === null) {
     author = value.author;
@@ -1226,6 +1259,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     parentMessageId,
     provider,
     role,
+    ...(scheduledTask !== undefined ? { scheduledTask } : {}),
     status,
     ...(toolActivity !== undefined ? { toolActivity } : {}),
     ...(workspaceActivity !== undefined ? { workspaceActivity } : {})
@@ -1354,15 +1388,31 @@ function decodeFolderWire(value: unknown): FolderWire | null {
   };
 }
 
+const CHAT_NAVIGATION_SUMMARY_KEYS = ["activeRun", "assistant", "folderId", "id", "title", "updatedAt"] as const;
+
+function decodeChatNavigationScheduledTask(value: unknown): ChatNavigationScheduledTaskWire | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value) || !hasExactKeys(value, ["taskId", "unseen"])) return undefined;
+  const taskId = requiredString(value.taskId);
+  return taskId && taskId.length <= 128 && typeof value.unseen === "boolean"
+    ? { taskId, unseen: value.unseen }
+    : undefined;
+}
+
 function decodeChatNavigationSummaryWire(
   value: unknown
 ): ChatNavigationSummaryWire | null {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["activeRun", "assistant", "folderId", "id", "title", "updatedAt"])
+    (!hasExactKeys(value, CHAT_NAVIGATION_SUMMARY_KEYS) &&
+      !hasExactKeys(value, [...CHAT_NAVIGATION_SUMMARY_KEYS, "scheduledTask"]))
   ) {
     return null;
   }
+  const scheduledTask = "scheduledTask" in value
+    ? decodeChatNavigationScheduledTask(value.scheduledTask)
+    : null;
+  if (scheduledTask === undefined) return null;
   const assistant = value.assistant === null ? null : decodeAssistantIdentity(value.assistant);
   const folderId = nullableId(value.folderId);
   const id = requiredString(value.id);
@@ -1383,6 +1433,7 @@ function decodeChatNavigationSummaryWire(
     assistant,
     folderId,
     id,
+    ...(scheduledTask ? { scheduledTask } : {}),
     title,
     updatedAt
   };
