@@ -70,6 +70,7 @@ import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { ChatDefaultsPanelV2 } from "@/features/library-v2/ChatDefaultsPanelV2";
 import { InstructionsSettingsPanel } from "@/features/settings-v2/InstructionsSettingsPanel";
 import { WorkspaceSecretsPanel } from "@/features/settings-v2/WorkspaceSecretsPanel";
+import { ScheduledTasksPanel } from "@/features/scheduled-tasks/ScheduledTasksPanel";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
 import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
 import { observeMcpSettings, useMcpSettingsStore } from "@/components/app-shell/mcpSettingsStore";
@@ -275,6 +276,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     { id: "defaults", label: "Chat defaults", content: <ChatDefaultsPanelV2 composer={composer} onNavigate={navigateToSection} /> },
     { id: "instructions", label: "Instructions", content: <InstructionsSettingsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onSubviewChange={setInstructionsSubview} onRequestExit={requestInstructionsClose} /> },
     { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={session.accountId} onBusyChange={setFormBusy} /> },
+    { id: "scheduled", label: "Scheduled", content: <ScheduledTasksPanel key={session.accountId} accountId={session.accountId} catalog={composer.catalog} onBusyChange={setFormBusy} onOpenChat={openArtifactChat} /> },
     { id: "mcp", label: "MCP servers", attention: mcpAttention, content: <McpSettingsSection key={session.accountId} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")} /> },
     {
       content: (

@@ -1,7 +1,7 @@
 import type { AttachmentPreviewKind } from "@/lib/contracts/uploads";
 import type { ReactNode } from "react";
 
-export type LibraryTabIdV2 = "assistants" | "instructions" | "skills" | "knowledge" | "memory" | "files" | "artifacts" | "mcp" | "secrets" | "defaults";
+export type LibraryTabIdV2 = "assistants" | "instructions" | "skills" | "knowledge" | "memory" | "files" | "artifacts" | "mcp" | "secrets" | "scheduled" | "defaults";
 
 export type StudioNavigationV2 = Readonly<{
   tab: LibraryTabIdV2;
