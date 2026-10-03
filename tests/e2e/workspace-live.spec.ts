@@ -1,23 +1,40 @@
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { PrismaClient } from "@prisma/client";
-import { expect, test, type Download, type Page } from "@playwright/test";
-import { parseChatRoutePath } from "../../lib/domain/chatRoute";
-import { providerTemplateIds } from "../../lib/domain/providerTemplates";
+import { expect, test, type Page } from "@playwright/test";
 import { createWorkspaceRuntime } from "../../lib/server/workspace/defaultRuntime";
 import { runWorkspaceMaintenance } from "../../lib/server/workspace/cleanup";
 import { removeWorkspaceForDeletion } from "../../lib/server/workspace/removal";
 import { getWorkspaceConfig } from "../../lib/server/workspace/config";
 import { LOCAL_MCP_MEMBER } from "../../prisma/local-seed-fixtures";
-import { selectModel } from "./shell/composer";
 import { signInWithLocalToken } from "./support/localAuth";
+import {
+  activeChatId,
+  bytesFromDownload,
+  lastActivity,
+  lastAnswer,
+  loginWithPassword,
+  openLastActivity,
+  openWorkspaceDetails,
+  selectFakeModel,
+  startNewChat,
+  turnWorkspaceOn
+} from "./support/workspace";
+import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
 
 const prisma = new PrismaClient();
 const liveEnabled = process.env.AIQSA_WORKSPACE_LIVE_E2E === "DISPOSABLE";
+let restoreFakeContext: (() => Promise<void>) | null = null;
 
 test.skip(!liveEnabled, "requires an explicitly disposable KVM Microsandbox topology");
 test.describe.configure({ mode: "serial" });
 test.setTimeout(900_000);
+
+// The multi-round live tool loop does not fit Fake QSA's 8k seed window; like
+// the other Workspace specs, use the 64k fake context so it never compacts.
+test.beforeAll(async () => {
+  restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
+});
 
 function sha256(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
@@ -57,36 +74,27 @@ function tarContents(gzip: Uint8Array): Readonly<{
   return { entries, files, linkTargets, types };
 }
 
-async function downloadBytes(download: Download): Promise<Buffer> {
-  const stream = await download.createReadStream();
-  if (!stream) throw new Error("workspace_live_download_stream_unavailable");
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks);
+function workspaceDetails(page: Page) {
+  return page.getByRole("button", { name: /^Workspace details\./u });
 }
 
-async function login(page: Page): Promise<void> {
-  // Sign-in lands on `/`, which always opens a new chat.
-  await page.goto("/login");
-  await page.getByLabel("Email").fill(LOCAL_MCP_MEMBER.email);
-  await page.getByLabel("Password", { exact: true }).fill(LOCAL_MCP_MEMBER.password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
+/** The Workspace layer's administrator note about guest internet access. */
+async function expectWorkspaceInternet(page: Page, state: "On" | "Off"): Promise<void> {
+  const layer = await openWorkspaceDetails(page);
+  await expect(layer).toContainText(`Internet: ${state}. Managed by the administrator.`);
+  await page.keyboard.press("Escape");
+  await expect(layer).toBeHidden();
 }
 
-async function selectFakeModel(page: Page): Promise<void> {
-  await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
-  await expect(page.getByTestId("header-model-trigger")).toContainText("Fake QSA");
-}
-
-async function enableWorkspace(page: Page): Promise<void> {
-  const toggle = page.getByRole("button", { name: /^Turn on Workspace/u });
-  await expect(toggle).toBeEnabled({ timeout: 30_000 });
-  await toggle.click();
-  await expect(page.getByRole("button", { name: /^Turn off Workspace/u })).toHaveAttribute(
-    "aria-pressed",
-    "true"
-  );
+/** A long Workspace turn can fill most of the fake context window, so the
+ * product may suggest a continuation by opening the Chat context panel. Stay here. */
+async function stayInChat(page: Page): Promise<void> {
+  await expect(page.getByTestId("header-context-indicator"))
+    .toHaveAttribute("data-context-estimate", "snapshot", { timeout: 30_000 });
+  const context = page.getByRole("dialog", { name: "Chat context", exact: true });
+  if (!await context.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false)) return;
+  await context.getByRole("button", { name: "Stay here", exact: true }).click();
+  await expect(context).toHaveCount(0);
 }
 
 async function sendAndExpect(
@@ -115,21 +123,11 @@ async function sendAndExpect(
       select: { operationOwner: true }, where: { chatId }
     })).operationOwner, { timeout: 45_000 }).toBeNull();
   }
-  await expect(page.locator('article[data-role="assistant"]').last()).toContainText(answer, {
-    timeout
-  });
+  await expect(lastAnswer(page)).toContainText(answer, { timeout });
   await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, {
     timeout: 30_000
   });
-}
-
-async function activeChatId(page: Page): Promise<string> {
-  let chatId: string | null = null;
-  await expect.poll(async () => {
-    chatId = parseChatRoutePath(await page.evaluate(() => window.location.pathname))?.chatId ?? null;
-    return chatId;
-  }, { timeout: 30_000 }).not.toBeNull();
-  return chatId!;
+  await stayInChat(page);
 }
 
 async function openChatActions(page: Page) {
@@ -145,9 +143,7 @@ async function resetWorkspace(page: Page): Promise<void> {
   const confirmation = page.getByRole("dialog", { name: "Reset workspace" });
   await confirmation.getByRole("button", { name: "Confirm reset workspace" }).click();
   await expect(confirmation).toHaveCount(0, { timeout: 120_000 });
-  await expect(page.locator(".v2-composer-workspace-state")).toHaveText(
-    "Workspace has not started"
-  );
+  await expect(workspaceDetails(page)).toHaveAccessibleName(/Workspace has not started$/u);
 }
 
 async function setAdminPolicy(
@@ -212,14 +208,12 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     await signInWithLocalToken(adminPage);
     await setAdminPolicy(adminPage, { enabled: true, internetEnabled: true });
 
-    await login(page);
-    await page.getByRole("complementary", { name: "Chat navigation" })
-      .getByRole("button", { name: "New chat", exact: true })
-      .click();
+    await loginWithPassword(page, LOCAL_MCP_MEMBER);
+    await startNewChat(page);
     await expect(page.getByTestId("conversation-empty")).toBeVisible();
     await selectFakeModel(page);
-    await enableWorkspace(page);
-    await expect(page.getByLabel("Internet in Workspace is enabled")).toBeVisible();
+    await turnWorkspaceOn(page);
+    await expectWorkspaceInternet(page, "On");
 
     const arbitraryBytes = Buffer.from(Array.from({ length: 8_192 }, (_, index) => index % 251));
     await page.getByLabel("Attach files").setInputFiles({
@@ -230,7 +224,9 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     const attachment = page.getByRole("region", { name: "Attachments" })
       .getByRole("listitem")
       .filter({ hasText: "live-opaque.aiqsa-live" });
-    await expect(attachment).toContainText("Ready", { timeout: 30_000 });
+    // A Workspace-only original reads "Available in Workspace" once it is ready.
+    await expect(attachment).toHaveAttribute("data-attachment-status", "ready", { timeout: 30_000 });
+    await expect(attachment).toContainText("Available in Workspace");
 
     await sendAndExpect(
       page,
@@ -239,9 +235,8 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     );
     const onlineChatId = await activeChatId(page);
     createdChatIds.push(onlineChatId);
-    await expect(page.locator(".v2-composer-workspace-state")).toHaveText("Workspace stopped", { timeout: 30_000 });
-    const activity = page.getByTestId("tool-activity-disclosure").last();
-    await activity.locator(":scope > summary").click();
+    await expect(workspaceDetails(page)).toHaveAccessibleName(/Workspace stopped$/u, { timeout: 30_000 });
+    const activity = await openLastActivity(page);
     await expect(activity).toContainText("Worked in Workspace");
     await expect(activity).toContainText("Ran set -eu && test -s /workspace/inbox/index.json");
     await expect(activity).toContainText("Exported 1 file", { timeout: 30_000 });
@@ -254,9 +249,9 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
 
     // Incremental staging on a real guest: unchanged originals keep their mtimes across turns.
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:live_staging_probe]", "Inbox mtimes:");
-    const firstMtimes = await page.locator('article[data-role="assistant"]').last().textContent();
+    const firstMtimes = await lastAnswer(page).textContent();
     await sendAndExpect(page, "[AIQSA_WORKSPACE_E2E:live_staging_probe]", "Inbox mtimes:");
-    const secondMtimes = await page.locator('article[data-role="assistant"]').last().textContent();
+    const secondMtimes = await lastAnswer(page).textContent();
     // Compare only the guest's answer line: the activity timeline above it
     // legitimately differs between turns (durations).
     const mtimesLine = (text: string | null) =>
@@ -271,15 +266,15 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     await stopComposer.press("Enter");
     const stopButton = page.getByRole("button", { name: "Stop answer" });
     await expect(stopButton).toBeEnabled({ timeout: 30_000 });
-    const liveActivity = page.getByTestId("tool-activity-disclosure").last();
+    const liveActivity = lastActivity(page);
     await expect(liveActivity).toContainText("Running sleep 300", { timeout: 120_000 });
     await expect(liveActivity).toContainText("Running sleep 12; echo late");
     await stopButton.click();
     await expect(stopButton).toHaveCount(0, { timeout: 60_000 });
-    await expect(page.locator('article[data-role="assistant"]').last()).toContainText("Stopped");
+    await expect(lastAnswer(page)).toContainText("Stopped");
     // The stopped turn's own timeline shows the terminated command.
     await expect(liveActivity).toContainText("Stopped sleep 300", { timeout: 30_000 });
-    await expect(page.locator(".v2-composer-workspace-state")).not.toContainText("Running a command", { timeout: 30_000 });
+    await expect(workspaceDetails(page)).not.toHaveAccessibleName(/Running a command/u, { timeout: 30_000 });
     await page.waitForTimeout(13_000);
     const stoppedSession = await prisma.workspaceSession.findUniqueOrThrow({
       select: { id: true, state: true },
@@ -330,7 +325,7 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     expect(archiveHttpResponse.status()).toBe(200);
     const downloaded = await archiveDownload;
     expect(downloaded.suggestedFilename()).toBe("workspace.tar.gz");
-    const archiveBytes = await downloadBytes(downloaded);
+    const archiveBytes = await bytesFromDownload(downloaded);
     await expect.poll(async () => prisma.attachment.findFirst({
       select: { byteSize: true, checksum: true },
       where: { chatId: onlineChatId, origin: "WORKSPACE_EXPORT" }
@@ -371,13 +366,11 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
     await setAdminPolicy(adminPage, { enabled: true, internetEnabled: false });
     await page.reload();
     await expect(page.getByTestId("app-shell")).toBeVisible();
-    await page.getByRole("complementary", { name: "Chat navigation" })
-      .getByRole("button", { name: "New chat", exact: true })
-      .click();
+    await startNewChat(page);
     await expect(page.getByTestId("conversation-empty")).toBeVisible();
     await selectFakeModel(page);
-    await enableWorkspace(page);
-    await expect(page.getByLabel("Internet in Workspace is disabled")).toBeVisible();
+    await turnWorkspaceOn(page);
+    await expectWorkspaceInternet(page, "Off");
     await sendAndExpect(
       page,
       "[AIQSA_WORKSPACE_E2E:network_off_probe]",
@@ -410,5 +403,9 @@ test("real KVM Workspace preserves its disk across terminal stop, exports, reset
 });
 
 test.afterAll(async () => {
-  await prisma.$disconnect();
+  try {
+    await restoreFakeContext?.();
+  } finally {
+    await prisma.$disconnect();
+  }
 });
