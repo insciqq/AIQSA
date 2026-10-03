@@ -370,8 +370,8 @@ describe("owner Forget beside a maintenance-removed source", () => {
   });
 });
 
-describe("standing admission under maintenance policy v3", () => {
-  it("ignores non-final dispositions and takes a v3 decision's label, falling back to the version label", async () => {
+describe("standing admission under the current maintenance policy", () => {
+  it("ignores non-final dispositions and takes a current decision's label, falling back to the version label", async () => {
     const owner = await reader();
     const fact = await automatic(owner.userId, "I am training for a marathon next spring.", null);
     const evidenceThrough = (await prisma.memoryEvidence.findFirstOrThrow({ where: { factVersionId: fact.currentVersionId } })).createdAt;

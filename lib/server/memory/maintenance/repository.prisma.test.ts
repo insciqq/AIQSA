@@ -141,7 +141,7 @@ function maintenanceBindings(userId: string, memoryJobId: string, authority: Tes
 afterAll(async () => { await prisma.$disconnect(); });
 
 describe("maintenance transactional lifecycle", () => {
-  it("reviews remaining v2-kept facts once under v3 without changing or reusing the old receipt", async () => {
+  it("reviews remaining earlier-policy keeps once under the current policy without changing or reusing the old receipt", async () => {
     const userId = await owner();
     try {
       const target = await fact(userId, "Please make this invitation square.");
