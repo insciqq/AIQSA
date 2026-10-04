@@ -16,7 +16,7 @@ import {
   isFetchUrlPlan,
   type FetchUrlPersistedCall
 } from "./fetchUrl";
-import { userAuthoredFetchUrlDigests } from "./fetchUrlPlan";
+import { taskInstructionFetchUrlDigests, userAuthoredFetchUrlDigests } from "./fetchUrlPlan";
 import { invalidProviderToolArguments, type ToolExecutionResult } from "./types";
 
 const USER_URL = "https://news.example/today";
@@ -52,8 +52,10 @@ describe("fetch_url tool contract", () => {
     expect(fetchUrlToolsForRequest({ fetchUrl: { version: 1, userUrlDigests: [] } })).toEqual([fetchUrlTool]);
     expect(fetchUrlToolsForRequest({})).toEqual([]);
     expect(isFetchUrlPlan({ version: 1, userUrlDigests: ["a".repeat(64)], taskUrlDigests: [] })).toBe(true);
+    expect(isFetchUrlPlan({ version: 1, userUrlDigests: [], instructionUrlDigests: ["b".repeat(64)] })).toBe(true);
     for (const invalid of [{ version: 2, userUrlDigests: [] }, { version: 1, userUrlDigests: ["https://x.example/"] },
-      { version: 1, userUrlDigests: [], extra: true }, { version: 1, userUrlDigests: Array(201).fill("a".repeat(64)) }]) {
+      { version: 1, userUrlDigests: [], extra: true }, { version: 1, userUrlDigests: Array(201).fill("a".repeat(64)) },
+      { version: 1, userUrlDigests: [], instructionUrlDigests: ["https://x.example/"] }]) {
       expect(isFetchUrlPlan(invalid)).toBe(false);
     }
     expect(readOnlyRunTool({ tools: [fetchUrlTool] })(FETCH_URL_TOOL_NAME)).toBe(true);
@@ -71,6 +73,18 @@ describe("fetch_url tool contract", () => {
       { content: text("now https://current.example/"), id: "current", role: "user" }
     ], new Set(["m3"]));
     expect(digests).toEqual(["https://current.example/", "https://followup.example/", "https://old.example/"].map(fetchUrlDigest));
+  });
+
+  it("names the links only scheduled task instructions hold, which authorize nothing", () => {
+    const text = (value: string) => ({ blocks: [{ text: value, type: "text" }] });
+    const messages = [
+      { content: text("Task: read https://task.example/ and https://both.example/"), id: "prompt", role: "user" },
+      { content: text("Also https://both.example/ please"), id: "mine", role: "user" }
+    ];
+    const prompts = new Set(["prompt"]);
+    const userUrlDigests = userAuthoredFetchUrlDigests(messages, prompts);
+    expect(userUrlDigests).toEqual([fetchUrlDigest("https://both.example/")]);
+    expect(taskInstructionFetchUrlDigests(messages, prompts, userUrlDigests)).toEqual([fetchUrlDigest("https://task.example/")]);
   });
 });
 
@@ -97,15 +111,30 @@ describe("fetch_url provenance", () => {
     expect(s.fetchPage).toHaveBeenCalledTimes(1);
   });
 
-  it("names the task owner when a scheduled run refuses, and reads the task's frozen snapshot", async () => {
+  it("tells a scheduled run's owner to save the task's instructions, and reads the task's frozen snapshot", async () => {
     const taskUrl = "https://daily.example/report";
     const s = session({ plan: { taskUrlDigests: [fetchUrlDigest(taskUrl)], userUrlDigests: [], version: 1 }, scheduled: true });
     const refused = await s.execute(call(USER_URL), { persistedToolCallId: "c1", signal });
-    expect(String(json(refused).message)).toContain("task's instructions");
+    expect(String(json(refused).message)).toContain("open the task and save its instructions");
     // The activity row points the owner at the task instead of the chat.
     expect(fetchUrlActivityFacts(FETCH_URL_TOOL_NAME, { url: USER_URL }, refused)).toMatchObject({
-      fetchOutcome: "fetch_url_not_in_conversation", fetchScheduled: true });
+      fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: "scheduled_run" });
     expect((await s.execute(call(taskUrl), { persistedToolCallId: "c2", signal })).status).toBe("complete");
+  });
+
+  it("tells another run that a link only a task's instructions hold is read by that task's scheduled runs", async () => {
+    const taskUrl = "https://daily.example/report";
+    const s = session({ plan: { instructionUrlDigests: [fetchUrlDigest(taskUrl)], userUrlDigests: [], version: 1 } });
+    const fromInstructions = await s.execute(call(taskUrl), { persistedToolCallId: "c1", signal });
+    expect(json(fromInstructions).error).toBe("fetch_url_not_in_conversation");
+    expect(String(json(fromInstructions).message)).toContain("only that task's scheduled runs read");
+    expect(String(json(fromInstructions).message)).toContain("ask the user to send the link in the chat");
+    expect(fetchUrlActivityFacts(FETCH_URL_TOOL_NAME, { url: taskUrl }, fromInstructions))
+      .toMatchObject({ fetchRefusalScope: "task_instructions" });
+    // The instructions authorize nothing, and any other refused link keeps the chat's guidance.
+    expect(s.fetchPage).not.toHaveBeenCalled();
+    const elsewhere = await s.execute(call("https://elsewhere.example/"), { persistedToolCallId: "c2", signal });
+    expect(fetchUrlActivityFacts(FETCH_URL_TOOL_NAME, undefined, elsewhere)).not.toHaveProperty("fetchRefusalScope");
   });
 
   it("authorizes delivered follow-ups and same-run Search results, never another source", async () => {
@@ -255,7 +284,7 @@ describe("fetch_url per-run cap and cache", () => {
   });
 
   it("settles an interrupted call without sending it again", () => {
-    const result = fetchUrlInterruptedResult(call(USER_URL), true);
+    const result = fetchUrlInterruptedResult(call(USER_URL));
     expect(result.status).toBe("error");
     expect(json(result).error).toBe("fetch_url_interrupted");
     expect(result.rawPreview).toEqual({ fetchUrl: { version: 1, outcome: "fetch_url_interrupted", dispatched: true, url: USER_URL } });

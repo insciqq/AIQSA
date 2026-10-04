@@ -37,3 +37,14 @@ export function scheduledPromptUrlDigests(prompt: string, authorship: ScheduledP
   }
   return digests as unknown as ScheduledPromptUrlDigests;
 }
+
+/**
+ * Whether the prompt holds links its stored snapshot does not allow: exactly
+ * what an owner save of the same text would add, so saving always clears it.
+ * Tasks saved before page reading have an empty snapshot; a tool-written
+ * prompt may hold links the creating run's user text did not authorize.
+ */
+export function scheduledPromptLinksPending(prompt: string, storedDigests: readonly string[]): boolean {
+  const stored = new Set(storedDigests);
+  return scheduledPromptUrlDigests(prompt, { kind: "owner" }).some((digest) => !stored.has(digest));
+}

@@ -1,4 +1,4 @@
-import type { FetchUrlActivityOutcome } from "../../contracts/fetchUrlActivity";
+import type { FetchUrlActivityOutcome, FetchUrlRefusalScope } from "../../contracts/fetchUrlActivity";
 import { isDocumentParserError } from "../parsing/errors";
 import { declaredPageContentKind, type ExtractedPage, type PageContentKind } from "../webFetch/pageKinds";
 import { extractFetchedPage, type FetchedPageInput } from "../webFetch/pageText";
@@ -34,15 +34,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 type FailureCode = Exclude<FetchUrlActivityOutcome, "read">;
 
+/** What the model is told for a link its run may not read, by where the user can allow it. */
+function notInConversationMessage(scope: FetchUrlRefusalScope | undefined): string {
+  switch (scope) {
+    case "scheduled_run":
+      return "This scheduled run reads only the links its owner allowed by saving the task's instructions, and this one is " +
+        "not allowed, so it was not read. Do not try variations of it. Tell the owner that to allow it, they open the task " +
+        "and save its instructions, adding the link to them if it is not there.";
+    case "task_instructions":
+      return "This link appears only in a scheduled task's instructions, which only that task's scheduled runs read; this " +
+        "answer cannot, so it was not read. Do not try variations of it. If the page is needed now, ask the user to send " +
+        "the link in the chat.";
+    default:
+      return "fetch_url reads only links the user wrote in this chat or that web search returned in this answer; this one is " +
+        "neither, so it was not read. Do not try variations of it. If the page is needed, ask the user to send the link.";
+  }
+}
+
 /** What the model is told for each refusal or failure. */
-function failureMessage(code: FailureCode, scheduled: boolean, httpStatus?: number): string {
+function failureMessage(code: FailureCode, scope: FetchUrlRefusalScope | undefined, httpStatus?: number): string {
   switch (code) {
-    case "fetch_url_not_in_conversation":
-      return scheduled
-        ? "This link is not in the task instructions its owner wrote, so this scheduled run cannot read it. Do not try " +
-          "variations of it; tell the owner to add the link to the task's instructions if it should be read."
-        : "fetch_url reads only links the user wrote in this chat or that web search returned in this answer; this one is " +
-          "neither, so it was not read. Do not try variations of it. If the page is needed, ask the user to send the link.";
+    case "fetch_url_not_in_conversation": return notInConversationMessage(scope);
     case "fetch_url_invalid": return "This is not a valid http(s) web address.";
     case "fetch_url_credentials": return "Links that contain a user name or password are never read.";
     case "fetch_port_not_allowed": return "Only the standard web ports 80 and 443 are read.";
@@ -81,21 +93,22 @@ type Outcome =
   | Readonly<{ kind: "read"; value: ReadValue }>
   | Readonly<{ code: FailureCode; dispatched: boolean; httpStatus?: number; kind: "failed" }>;
 
-function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outcome, { kind: "failed" }>, scheduled: boolean,
-  url: string | null): ToolExecutionResult {
+function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outcome, { kind: "failed" }>, url: string | null,
+  refusalScope?: FetchUrlRefusalScope): ToolExecutionResult {
+  const scope = outcome.code === "fetch_url_not_in_conversation" ? refusalScope : undefined;
   return {
     callId: call.id,
     content: [{ type: "json", value: {
       error: outcome.code,
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
-      message: failureMessage(outcome.code, scheduled, outcome.httpStatus)
+      message: failureMessage(outcome.code, scope, outcome.httpStatus)
     } }],
     name: call.name,
     rawPreview: { fetchUrl: {
       version: 1, outcome: outcome.code, dispatched: outcome.dispatched,
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
-      // A scheduled run's owner recovers by editing the task, not by sending the link.
-      ...(scheduled && outcome.code === "fetch_url_not_in_conversation" ? { scheduled: true } : {}),
+      // Where the owner allows the link, when not by sending it in the chat.
+      ...(scope ? { refusalScope: scope } : {}),
       ...(url ? { url } : {})
     } },
     status: "error"
@@ -123,9 +136,8 @@ function read(call: Pick<ModelToolCall, "id" | "name">, value: ReadValue, cached
 }
 
 /** A recovered call that may have been sent before the process stopped: settled, never sent again. */
-export function fetchUrlInterruptedResult(call: Pick<ModelToolCall, "arguments" | "id" | "name">, scheduled = false): ToolExecutionResult {
-  return failed(call, { code: "fetch_url_interrupted", dispatched: true, kind: "failed" }, scheduled,
-    normalizeFetchUrl(call.arguments.url));
+export function fetchUrlInterruptedResult(call: Pick<ModelToolCall, "arguments" | "id" | "name">): ToolExecutionResult {
+  return failed(call, { code: "fetch_url_interrupted", dispatched: true, kind: "failed" }, normalizeFetchUrl(call.arguments.url));
 }
 
 function persistedReadValue(result: unknown, url: string): ReadValue | null {
@@ -159,7 +171,7 @@ export type FetchUrlPersistedCall = Readonly<{ id: string; state: string; result
 
 export type FetchUrlSessionDeps = Readonly<{
   plan: FetchUrlPlan;
-  /** The run answers a scheduled occurrence: refusals name the task owner. */
+  /** The run answers a scheduled occurrence: a refused link is allowed by its owner saving the task's instructions. */
   scheduled: boolean;
   /** Delivered follow-ups of this run: user-authored text received mid-run. */
   followupTexts?: () => readonly string[];
@@ -187,6 +199,11 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
   const extractPageText = deps.extractPage ?? ((input: FetchedPageInput) => extractFetchedPage(input));
   const now = deps.now ?? (() => new Date());
   const frozen = new Set([...deps.plan.userUrlDigests, ...(deps.plan.taskUrlDigests ?? [])]);
+  /** Links only scheduled task instructions on the branch hold: they authorize nothing. */
+  const instructionLinks = new Set(deps.plan.instructionUrlDigests ?? []);
+  /** Where the owner allows a refused link, when not by sending it in the chat. */
+  const refusalScope = (url: string): FetchUrlRefusalScope | undefined =>
+    deps.scheduled ? "scheduled_run" : instructionLinks.has(fetchUrlDigest(url)) ? "task_instructions" : undefined;
   /** Persisted call ids whose page request may have left: settled sends and unsettled calls. */
   const sent = new Set<string>();
   /** Calls this session settled without a request; a concurrent seed may still see them running. */
@@ -251,7 +268,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
         return result;
       };
       const refuse = (code: FailureCode, url: string | null) => unsent(failed(call, { code, dispatched: false, kind: "failed" },
-        deps.scheduled, url));
+        url, url && code === "fetch_url_not_in_conversation" ? refusalScope(url) : undefined));
       if (hasInvalidProviderToolArguments(call.arguments) || Object.keys(call.arguments).some((key) => key !== "url")) {
         return refuse("fetch_url_invalid", null);
       }
@@ -267,7 +284,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       if (pending) {
         const outcome = await pending;
         return unsent(outcome.kind === "read" ? read(call, outcome.value, true)
-          : failed(call, { ...outcome, dispatched: false }, deps.scheduled, url));
+          : failed(call, { ...outcome, dispatched: false }, url));
       }
       const others = [...sent].filter((entry) => entry !== id).length;
       if (others >= FETCH_URL_LIMITS.callsPerRun) return refuse("fetch_url_limit_reached", url);
@@ -280,7 +297,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           cache.set(url, outcome.value);
           return read(call, outcome.value, false);
         }
-        const result = failed(call, outcome, deps.scheduled, url);
+        const result = failed(call, outcome, url);
         return outcome.dispatched ? result : unsent(result);
       } finally {
         inFlight.delete(url);

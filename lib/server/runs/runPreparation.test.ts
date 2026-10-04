@@ -5944,8 +5944,10 @@ describe("page reader admission", () => {
   const asking = (text: string) => ({ ...toolBody, content: textMessageContent(text) });
   const reader = (prepared: PreparedRun) => prepared.providerRequest.tools?.find((tool) => tool.name === "fetch_url");
   type Marks = NonNullable<RunPreparationDeps["repository"]["loadScheduledPromptMessageIds"]>;
-  function tooling(input: Readonly<{ marks?: Marks; toolCalling?: boolean }> = {}): RunPreparationDeps {
-    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: input.toolCalling ?? true }, sendContext: branch });
+  function tooling(input: Readonly<{ marks?: Marks; regenerateContext?: readonly ProviderConversationMessage[];
+    toolCalling?: boolean; }> = {}): RunPreparationDeps {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: input.toolCalling ?? true }, sendContext: branch,
+      ...(input.regenerateContext ? { regenerateContext: input.regenerateContext } : {}) });
     return { ...harness.deps, repository: { ...harness.deps.repository,
       ...(input.marks ? { loadScheduledPromptMessageIds: input.marks } : {}) } };
   }
@@ -5955,17 +5957,27 @@ describe("page reader admission", () => {
     const prepared = preparedFrom(await prepareRun(tooling({ marks }), sendInput(asking("Summarize https://news.example/today"))));
     expect(prepared.normalizedRequest.fetchUrl).toEqual({ version: 1, userUrlDigests: [
       fetchUrlDigest("https://news.example/today"), fetchUrlDigest("https://earlier.example/a")
-    ] });
+    // The scheduled prompt's link authorizes nothing; it only names the refusal.
+    ], instructionUrlDigests: [fetchUrlDigest("https://prompt.example/c")] });
     expect(reader(prepared)).toMatchObject({ capability: "web_fetch", strict: true });
     expect(marks).toHaveBeenCalledWith({ chatId: "chat-1", messageIds: ["task-prompt", "earlier-user"], userId: "user-1" });
   });
 
   it("authorizes only the current message when scheduled-prompt marks are unknown", async () => {
     const without = preparedFrom(await prepareRun(tooling(), sendInput(asking("Read https://news.example/today"))));
-    expect(without.normalizedRequest.fetchUrl?.userUrlDigests).toEqual([fetchUrlDigest("https://news.example/today")]);
+    expect(without.normalizedRequest.fetchUrl).toEqual({ version: 1, userUrlDigests: [fetchUrlDigest("https://news.example/today")] });
     const failing = preparedFrom(await prepareRun(tooling({ marks: vi.fn<Marks>(async () => { throw new Error("database down"); }) }),
       sendInput(asking("Read https://news.example/today"))));
-    expect(failing.normalizedRequest.fetchUrl?.userUrlDigests).toEqual([fetchUrlDigest("https://news.example/today")]);
+    // Messages refused for unknown marks are not called a task's instructions either.
+    expect(failing.normalizedRequest.fetchUrl).toEqual({ version: 1, userUrlDigests: [fetchUrlDigest("https://news.example/today")] });
+  });
+
+  it("names a regenerated scheduled prompt's links as task instructions, never authority", async () => {
+    const prompt = say("stored-user-message", "user", "Every day read https://daily.example/report");
+    const regenerate = regenerateInput(toolBody, { userMessage: { content: prompt.content, id: prompt.id, scheduledTaskPrompt: true } });
+    const prepared = preparedFrom(await prepareRun(tooling({ regenerateContext: [...branch, prompt] }), regenerate));
+    expect(prepared.normalizedRequest.fetchUrl).toEqual({ version: 1, userUrlDigests: [],
+      instructionUrlDigests: [fetchUrlDigest("https://daily.example/report")] });
   });
 
   it("gives a scheduled run only its task snapshot, never the prompt text", async () => {
