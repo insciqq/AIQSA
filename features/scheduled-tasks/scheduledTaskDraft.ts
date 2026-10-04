@@ -1,4 +1,5 @@
 import type { Catalog, CatalogModel } from "@/lib/contracts/catalog";
+import type { WorkspaceUnavailableReason } from "@/lib/contracts/workspace";
 import {
   SCHEDULED_TASK_EVERY_HOURS,
   SCHEDULED_TASK_ONCE_MIN_LEAD_MS,
@@ -7,6 +8,8 @@ import {
   SCHEDULED_TASK_WEEKDAYS,
   isScheduledTaskLocalDate,
   isScheduledTaskTime,
+  scheduledTaskErrorMessage,
+  scheduledTaskToolDefaults,
   type ScheduledTask,
   type ScheduledTaskChatMode,
   type ScheduledTaskDraft,
@@ -41,6 +44,33 @@ export const SCHEDULED_TASK_REPEAT_OPTIONS: readonly Readonly<{ label: string; v
 export const SCHEDULED_TASK_EVERY_HOURS_OPTIONS: readonly Readonly<{ label: string; value: ScheduledTaskEveryHours }>[] =
   SCHEDULED_TASK_EVERY_HOURS.map((value) => ({ label: value === 1 ? "Every hour" : `Every ${value} hours`, value }));
 
+export const SCHEDULED_TASK_KIND_OPTIONS: readonly Readonly<{ label: string; value: ScheduledTaskKind }>[] = [
+  { label: "Regular", value: "standard" },
+  { label: "Monitoring", value: "monitoring" }
+];
+
+/**
+ * Whether the installation offers Workspace, as the shell's `/api/workspace`
+ * read reports it; `unknown` while it loads or after it failed. Only a
+ * Workspace the administrator turned off refuses a save: a runtime that is
+ * down for now does not, its runs retry.
+ */
+export type ScheduledTaskWorkspaceAvailability = "available" | "installation_disabled" | "runtime_unavailable" | "unknown";
+
+/**
+ * The installation's part of the composer's Workspace state: its own
+ * reason, not the composer model's (the task has its own model).
+ */
+export function scheduledTaskWorkspaceAvailability(workspace: Readonly<{
+  available: boolean;
+  loading: boolean;
+  unavailableReason?: WorkspaceUnavailableReason;
+}>): ScheduledTaskWorkspaceAvailability {
+  if (workspace.loading) return "unknown";
+  if (workspace.available || workspace.unavailableReason === "model_tools_required") return "available";
+  return workspace.unavailableReason ?? "unknown";
+}
+
 /** An hourly schedule runs all day, or from a start time until an optional end time. */
 export type ScheduledTaskHourlyWindow = "all_day" | "hours";
 
@@ -64,17 +94,16 @@ export type ScheduledTaskEditorDraft = Readonly<{
   provider: string;
   searchEnabled: boolean;
   emailNotify: boolean;
-  /** Carried through until the editor offers the switches; a new task keeps both off. */
+  /** MCP tools and Skills; a new task starts from the composer defaults. */
   toolsEnabled: boolean;
   workspaceEnabled: boolean;
-  /** The owner's choice for other schedules; hourly ones always continue in one chat. */
+  /** The owner's choice for other schedules; hourly and monitoring tasks always continue in one chat. */
   chatMode: ScheduledTaskChatMode;
-  /** Carried unchanged until the editor offers a Type choice. */
   kind: ScheduledTaskKind;
 }>;
 
 export type ScheduledTaskFieldErrors = Partial<Record<
-  "title" | "prompt" | "schedule" | "timeZone" | "model" | "search" | "chatMode" | "form",
+  "title" | "prompt" | "kind" | "schedule" | "timeZone" | "model" | "search" | "tools" | "workspace" | "chatMode" | "form",
   string
 >>;
 
@@ -108,15 +137,32 @@ function defaultModel(catalog: Catalog | null): Readonly<{ modelId: string; prov
   return model ? { modelId: model.modelId, provider: model.provider } : { modelId: "", provider: "" };
 }
 
+/**
+ * The tool switches a new task starts with: the owner's composer defaults,
+ * both off for a model without tool calling and Workspace off while the
+ * administrator has it turned off.
+ */
+export function scheduledTaskStartingTools(
+  catalog: Catalog | null,
+  model: Readonly<{ modelId: string; provider: string }>,
+  workspace: ScheduledTaskWorkspaceAvailability = "unknown"
+): Pick<ScheduledTaskEditorDraft, "toolsEnabled" | "workspaceEnabled"> {
+  if (!catalog || !modelCanUseTools(catalogModel(catalog, model))) return { toolsEnabled: false, workspaceEnabled: false };
+  const defaults = scheduledTaskToolDefaults(catalog.defaults);
+  return { toolsEnabled: defaults.toolsEnabled, workspaceEnabled: defaults.workspaceEnabled && workspace !== "installation_disabled" };
+}
+
 /** A new task: daily at 09:00 in the viewer's zone with the catalog's default model, a new chat per run. */
 export function blankScheduledTaskDraft(
   catalog: Catalog | null,
   timeZone: string,
   now: Date = new Date(),
-  preset: Partial<ScheduledTaskEditorDraft> = {}
+  preset: Partial<ScheduledTaskEditorDraft> = {},
+  workspace: ScheduledTaskWorkspaceAvailability = "unknown"
 ): ScheduledTaskEditorDraft {
   const today = scheduledTaskLocalDate(now, validScheduledTaskTimeZone(timeZone) ?? "UTC");
   const isoIndex = (new Date(Date.UTC(today.year, today.month - 1, today.day)).getUTCDay() + 6) % 7;
+  const model = defaultModel(catalog);
   return {
     title: "",
     prompt: "",
@@ -130,11 +176,10 @@ export function blankScheduledTaskDraft(
     dayOfMonth: today.day,
     date: tomorrow(timeZone, now),
     timeZone,
-    ...defaultModel(catalog),
+    ...model,
     searchEnabled: false,
     emailNotify: false,
-    toolsEnabled: false,
-    workspaceEnabled: false,
+    ...scheduledTaskStartingTools(catalog, model, workspace),
     chatMode: "new",
     kind: "standard",
     ...preset
@@ -210,9 +255,18 @@ export function scheduledTaskDraftSchedule(draft: ScheduledTaskEditorDraft): Sch
   }
 }
 
-/** The chat mode a save sends: hourly schedules always continue in one chat. */
-export function scheduledTaskDraftChatMode(draft: Pick<ScheduledTaskEditorDraft, "chatMode" | "repeat">): ScheduledTaskChatMode {
-  return draft.repeat === "hourly" ? "same" : draft.chatMode;
+/** Why the chat choice is fixed to the task's own chat, or null when the owner chooses. */
+export function scheduledTaskForcedChatReason(draft: Pick<ScheduledTaskEditorDraft, "kind" | "repeat">): string | null {
+  if (draft.kind === "monitoring") return "Monitoring compares each check with the last result, so it always continues in one chat.";
+  return draft.repeat === "hourly" ? "Hourly tasks always continue in one chat." : null;
+}
+
+/**
+ * The chat mode a save sends: hourly schedules and monitoring tasks always
+ * continue in one chat; the draft keeps the owner's own choice for later.
+ */
+export function scheduledTaskDraftChatMode(draft: Pick<ScheduledTaskEditorDraft, "chatMode" | "kind" | "repeat">): ScheduledTaskChatMode {
+  return scheduledTaskForcedChatReason(draft) ? "same" : draft.chatMode;
 }
 
 function codePoints(value: string): number {
@@ -227,6 +281,32 @@ export function modelHasSearch(catalog: Catalog | null, model: CatalogModel | un
 
 export function catalogModel(catalog: Catalog | null, draft: Pick<ScheduledTaskEditorDraft, "modelId" | "provider">): CatalogModel | undefined {
   return catalog?.models.find((model) => model.modelId === draft.modelId && model.provider === draft.provider);
+}
+
+export function modelCanUseTools(model: CatalogModel | undefined): boolean {
+  return model?.capabilities.toolCalling === true;
+}
+
+/**
+ * Why the task's model or installation keeps a capability from this task, as
+ * the server would refuse it; null when it is available or the model is not
+ * known (the model field then carries the error).
+ */
+export type ScheduledTaskCapabilityBlockers = Readonly<{ monitoring: string | null; tools: string | null; workspace: string | null }>;
+
+export function scheduledTaskCapabilityBlockers(
+  catalog: Catalog | null,
+  draft: Pick<ScheduledTaskEditorDraft, "modelId" | "provider">,
+  workspace: ScheduledTaskWorkspaceAvailability
+): ScheduledTaskCapabilityBlockers {
+  const model = catalogModel(catalog, draft);
+  const noTools = Boolean(model) && !modelCanUseTools(model);
+  return {
+    monitoring: noTools ? scheduledTaskErrorMessage("scheduled_task_model_cannot_report") : null,
+    tools: noTools ? "Not available with this model." : null,
+    workspace: noTools ? "Not available with this model."
+      : workspace === "installation_disabled" ? "Workspace is turned off by the administrator." : null
+  };
 }
 
 function scheduleError(draft: ScheduledTaskEditorDraft, zone: string | null, original: ScheduledTask | null, now: Date): string | null {
@@ -248,7 +328,8 @@ export function validateScheduledTaskDraft(
   draft: ScheduledTaskEditorDraft,
   catalog: Catalog | null,
   original: ScheduledTask | null,
-  now: Date = new Date()
+  now: Date = new Date(),
+  workspace: ScheduledTaskWorkspaceAvailability = "unknown"
 ): ScheduledTaskFieldErrors {
   const errors: ScheduledTaskFieldErrors = {};
   const title = draft.title.trim();
@@ -269,6 +350,10 @@ export function validateScheduledTaskDraft(
   else if (draft.searchEnabled && !modelHasSearch(catalog, model)) {
     errors.search = "Web search is not available with this model. Turn it off or choose another model.";
   }
+  const blockers = scheduledTaskCapabilityBlockers(catalog, draft, workspace);
+  if (draft.kind === "monitoring" && blockers.monitoring) errors.kind = blockers.monitoring;
+  if (draft.toolsEnabled && blockers.tools) errors.tools = scheduledTaskErrorMessage("scheduled_task_tools_unavailable");
+  if (draft.workspaceEnabled && blockers.workspace) errors.workspace = scheduledTaskErrorMessage("scheduled_task_workspace_unavailable");
   return errors;
 }
 
@@ -299,7 +384,8 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
 
 /**
  * Only the changed fields, so an unchanged schedule keeps an active task's due
- * run. A switch to an hourly schedule carries `chatMode: "same"` with it.
+ * run. A switch to an hourly schedule or to monitoring carries
+ * `chatMode: "same"` with it.
  */
 export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, original: ScheduledTask): ScheduledTaskUpdateRequest | null {
   const next = scheduledTaskCreateRequest(draft);

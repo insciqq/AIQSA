@@ -2,7 +2,9 @@
 
 import { libraryTabGroups } from "@/features/library-v2/LibraryV2";
 import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
+import { ScheduledChecksRowV2 } from "@/features/scheduled-tasks/ScheduledChecksRowV2";
 import { ScheduledMessageChipV2 } from "@/features/scheduled-tasks/ScheduledMessageChipV2";
+import { groupScheduledChecks } from "@/features/scheduled-tasks/scheduledCheckGroups";
 import { ScheduledTaskChatHintV2 } from "@/features/scheduled-tasks/ScheduledTaskChatHintV2";
 import { BrowserNotificationsBannerV2, BrowserNotificationsSettingsRowV2 } from "@/features/browser-notifications/BrowserNotificationsV2";
 import { openAssistantDetail } from "@/components/app-shell/assistantGalleryActions";
@@ -565,6 +567,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     } else settings.openLibrary();
   }, [settings]);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
+  /** Groups of monitoring checks with no update the reader opened, by group id. */
+  const [openScheduledChecks, setOpenScheduledChecks] = useState<ReadonlySet<string>>(() => new Set());
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [connectionsBusyMessage, setConnectionsBusyMessage] = useState<string | null>(null);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
@@ -1228,12 +1232,25 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const readingAnchorMessageId = liveTail?.role === "assistant"
     ? liveTail.parentMessageId
     : null;
-  const conversationMessages: ConversationMessageV2[] = thread.visibleMessages.map((message) => ({
+  const conversationMessage = (message: ThreadMessage): ConversationMessageV2 => ({
     content: messageText(message),
     id: message.id,
     role: message.role,
     streaming: message.status === "streaming"
-  }));
+  });
+  // Consecutive monitoring checks with no update fold into one quiet row; opening it shows them unchanged below.
+  const scheduledCheckGroups = new Map<string, number>();
+  const conversationMessages: ConversationMessageV2[] = groupScheduledChecks(thread.visibleMessages).flatMap((item) => {
+    if (item.kind === "message") return [conversationMessage(item.message)];
+    scheduledCheckGroups.set(item.id, item.checks);
+    const row: ConversationMessageV2 = { content: "", id: item.id, role: "assistant" };
+    return openScheduledChecks.has(item.id) ? [row, ...item.messages.map(conversationMessage)] : [row];
+  });
+  const toggleScheduledChecks = (id: string) => setOpenScheduledChecks((current) => {
+    const next = new Set(current);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  });
   const presentAnswer = (source: ThreadMessage) => presentAnswerV2(source, thread);
   const announcedPresentation = announcedPresentationV2(liveTail, thread);
 
@@ -1264,6 +1281,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   };
 
   const renderMessage = (message: ConversationMessageV2): ReactNode => {
+    const checks = scheduledCheckGroups.get(message.id);
+    if (checks !== undefined) {
+      return (
+        <ScheduledChecksRowV2
+          checks={checks}
+          expanded={openScheduledChecks.has(message.id)}
+          onToggle={() => toggleScheduledChecks(message.id)}
+        />
+      );
+    }
     const source = messageById.get(message.id);
     if (!source) return null;
     const actions = actionsFor(source);

@@ -1,7 +1,14 @@
 import {
+  SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD,
+  SCHEDULED_TASK_RUN_DEADLINE_MINUTES,
   SCHEDULED_TASK_WEEKDAYS,
+  isScheduledTaskCheckOutcome,
+  isScheduledTaskRunIncomplete,
   scheduledTaskErrorMessage,
+  scheduledTaskReasonMessage,
+  scheduledTaskSourceMessage,
   type ScheduledTask,
+  type ScheduledTaskCheckOutcome,
   type ScheduledTaskRun,
   type ScheduledTaskSchedule,
   type ScheduledTaskWeekday
@@ -89,6 +96,21 @@ export function scheduledTaskPauseCopy(reasonCode: string): PauseCopy {
       return { reason: "its schedule can no longer be calculated", hint: "Edit the schedule." };
     case "repeated_failures":
       return { reason: "the last three runs failed", hint: "Resume to try again." };
+    case "tools_unavailable":
+      return { reason: "its tools can no longer be used with this model", hint: "Edit to turn tools off or choose another model." };
+    case "workspace_unavailable":
+      return { reason: "Workspace can no longer be used for it", hint: "Edit to turn Workspace off or choose a model with tool support." };
+    case "workspace_secret_limit":
+      return { reason: "your saved Workspace secrets exceed the limit", hint: "Remove some in Settings or turn Workspace off, then resume." };
+    case "source_unavailable":
+      return {
+        reason: `${SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD} runs in a row could not reach a source it uses`,
+        hint: "Reconnect the source, then resume."
+      };
+    case "model_cannot_report":
+      return { reason: "monitoring needs a model that can use tools", hint: "Edit to choose another model." };
+    case "verdict_missing":
+      return { reason: "three checks in a row did not report whether anything changed", hint: "Resume to try again." };
     case "once_in_past":
     case "missed":
       return { reason: "its time has passed", hint: "Edit to choose a new time." };
@@ -114,6 +136,12 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "run_unavailable": return "the run was removed before it finished";
     case "model_run_cancelled": return "it was stopped in the chat";
     case "repeated_failures": return "the task was paused after repeated failures";
+    case "tools_unavailable": return "the task's tools could not be used with this model";
+    case "workspace_unavailable": return "Workspace could not be used for this task";
+    case "workspace_secret_limit": return "the saved Workspace secrets exceed the limit";
+    case "source_unavailable": return "a source the task uses was unavailable";
+    case "model_cannot_report": return "the model cannot report monitoring results";
+    case "run_deadline": return `it was stopped after running for ${SCHEDULED_TASK_RUN_DEADLINE_MINUTES} minutes`;
     case "provider_error":
     case "run_failed": return "the model did not return an answer";
     default: return state === "failed" ? "the answer did not complete" : "the run was not started";
@@ -125,10 +153,15 @@ export type ScheduledTaskStatusLine = Readonly<{
   tone: "neutral" | "live" | "attention";
 }>;
 
-/** The one status sentence a row shows: next run, running, paused (with reason) or completed. */
+/**
+ * The one status sentence a row shows: next run, running, paused (with
+ * reason) or completed, and why when a monitoring check reached its goal.
+ */
 export function scheduledTaskStatusLine(task: ScheduledTask, now: Date = new Date()): ScheduledTaskStatusLine {
   if (task.running) return { text: "Running now", tone: "live" };
-  if (task.status === "completed") return { text: "Completed", tone: "neutral" };
+  if (task.status === "completed") {
+    return { text: task.completionReason === "goal_reached" ? "Goal reached — completed" : "Completed", tone: "neutral" };
+  }
   if (task.status === "paused") {
     if (!task.pauseReason) return { text: "Paused", tone: "neutral" };
     const copy = scheduledTaskPauseCopy(task.pauseReason);
@@ -139,9 +172,24 @@ export function scheduledTaskStatusLine(task: ScheduledTask, now: Date = new Dat
     : { text: "No upcoming run", tone: "neutral" };
 }
 
+/** Short labels of monitoring check outcomes, for the list's last-run line. */
+const CHECK_OUTCOME_LABELS: Readonly<Record<ScheduledTaskCheckOutcome, string>> = {
+  baseline: "First check",
+  update: "Update",
+  no_update: "No update",
+  goal_reached: "Goal reached",
+  unreported: "Answered without a report",
+  could_not_check: "Could not check"
+};
+
+/** A sentence of the shared reason copy as a row clause, without its closing period. */
+function clause(sentence: string): string {
+  return sentence.endsWith(".") ? sentence.slice(0, -1) : sentence;
+}
+
 function outcomeText(state: ScheduledTaskRun["state"], reasonCode: string | null): string {
   switch (state) {
-    case "completed": return "Answered";
+    case "completed": return isScheduledTaskCheckOutcome(reasonCode) ? CHECK_OUTCOME_LABELS[reasonCode] : "Answered";
     case "failed": return `Failed: ${scheduledTaskRunReasonText("failed", reasonCode)}`;
     case "skipped": return `Skipped: ${scheduledTaskRunReasonText("skipped", reasonCode)}`;
     case "running": return "Running";
@@ -162,36 +210,79 @@ export type ScheduledTaskResultNotice = Readonly<{
   text: string;
 }>;
 
+/** Automatic pauses that a completed run causes: a streak missing a source, or checks without a report. */
+const COMPLETED_RUN_PAUSES: ReadonlySet<string> = new Set(["source_unavailable", "verdict_missing"]);
+
+function pausedAutomatically(task: ScheduledTask): boolean {
+  return task.status === "paused" && task.pauseReason !== null;
+}
+
 /**
- * Whether the task's newest settled run is news for its owner: an answer, or
- * a failure that paused the task. Routine skips and other failures stay in the
- * run history, matching the server's per-run unread rule.
+ * Whether the task's newest settled run reads as news by its own outcome,
+ * after the server's rule (`ScheduledTaskRun.unseen`): an answer, except a
+ * monitoring check with no update, and a check that could not reach a source
+ * unless it paused the task; a failure only when it paused the task. Routine
+ * skips and other failures stay in the run history. The list carries no
+ * per-run unread flag, so this only decides while the task's unread
+ * aggregate was already on before the run settled; a source alert that
+ * starts a streak is then not recognized.
  */
 export function isScheduledTaskNews(task: ScheduledTask): boolean {
   const run = task.lastRun;
-  return run?.state === "completed" || (run?.state === "failed" && task.status === "paused" && task.pauseReason !== null);
+  if (run?.state === "completed") {
+    return run.reasonCode !== "no_update" && (run.reasonCode !== "could_not_check" || pausedAutomatically(task));
+  }
+  return run?.state === "failed" && pausedAutomatically(task);
 }
 
-/** The notice for a newly settled run, saying what happened; null when it is not news. */
+/**
+ * The notice for a newly settled run that the list found news, saying what
+ * happened; null for a run that cannot be news (a check with no update, a
+ * skip, a failure that did not pause the task).
+ */
 export function scheduledTaskResultNotice(task: ScheduledTask): ScheduledTaskResultNotice | null {
-  if (!isScheduledTaskNews(task)) return null;
-  return task.lastRun?.state === "completed"
-    ? { kind: "success", open: task.chatId ? "chat" : "scheduled", text: `“${task.title}” has a new result` }
-    : { kind: "error", open: "scheduled", text: `“${task.title}” could not run` };
+  const run = task.lastRun;
+  if (!run) return null;
+  const open = task.chatId ? "chat" : "scheduled";
+  if (run.state === "completed") {
+    if (pausedAutomatically(task) && COMPLETED_RUN_PAUSES.has(task.pauseReason ?? "")) {
+      return { kind: "error", open: "scheduled", text: `“${task.title}” was paused` };
+    }
+    if (run.reasonCode === "could_not_check") return { kind: "error", open: "scheduled", text: `“${task.title}” could not check a source` };
+    if (run.reasonCode === "goal_reached") return { kind: "success", open, text: `“${task.title}” reached its goal` };
+    if (run.reasonCode === "no_update") return null;
+    return { kind: "success", open, text: `“${task.title}” has a new result` };
+  }
+  return run.state === "failed" && pausedAutomatically(task)
+    ? { kind: "error", open: "scheduled", text: `“${task.title}” could not run` }
+    : null;
 }
 
 export type ScheduledTaskRunRow = Readonly<{
   outcome: string;
+  /** One line per source the run could not reach. */
+  sources: readonly string[];
   time: string;
-  tone: "neutral" | "attention" | "live";
+  /** `quiet`: a monitoring check with no update, history only. */
+  tone: "neutral" | "attention" | "live" | "quiet";
   trigger: string;
 }>;
 
+function runTone(run: ScheduledTaskRun): ScheduledTaskRunRow["tone"] {
+  if (run.state === "pending" || run.state === "running") return "live";
+  if (run.state === "failed" || run.reasonCode === "could_not_check" || isScheduledTaskRunIncomplete(run)) return "attention";
+  return run.state === "completed" && run.reasonCode === "no_update" ? "quiet" : "neutral";
+}
+
+/** One history row: a check's outcome in its full copy, and the sources an incomplete run could not reach. */
 export function scheduledTaskRunRow(run: ScheduledTaskRun, timeZone: string, now: Date = new Date()): ScheduledTaskRunRow {
+  const check = run.state === "completed" && isScheduledTaskCheckOutcome(run.reasonCode)
+    ? scheduledTaskReasonMessage(run.reasonCode) : null;
   return {
-    outcome: outcomeText(run.state, run.reasonCode),
+    outcome: check ? clause(check) : outcomeText(run.state, run.reasonCode),
+    sources: run.unavailableSources.map(scheduledTaskSourceMessage),
     time: formatScheduledInstant(run.startedAt ?? run.scheduledFor, timeZone, now),
-    tone: run.state === "failed" ? "attention" : run.state === "pending" || run.state === "running" ? "live" : "neutral",
+    tone: runTone(run),
     trigger: run.trigger === "manual" ? "Run now" : "Scheduled"
   };
 }
