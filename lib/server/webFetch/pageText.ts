@@ -7,7 +7,8 @@ import { pageContentKind, PAGE_TEXT_MAX_CHARACTERS, type ExtractedPage } from ".
  * makes the HTML parsers quadratic, and one boundary for every kind leaves no
  * in-process parsing of page bytes. The application only refuses unreadable
  * kinds from the header and the first 4 KB. One deadline covers the wait for
- * the shared parser slot and the parse itself.
+ * the page parser slot (other page reads only, never document parsing) and
+ * the parse itself.
  */
 export const PAGE_PROCESSING_DEADLINE_MS = 30_000;
 /** Fits the parser protocol's header; real Content-Type values are far shorter. */
