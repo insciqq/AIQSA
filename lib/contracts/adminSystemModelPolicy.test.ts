@@ -88,8 +88,11 @@ describe("administrator system model policy contract", () => {
       policy: { ...response.systemModelPolicy.policy, ...policy } } });
     expect(decode({ imageModel: usable, imageModels: [usable, broken] })?.systemModelPolicy.policy)
       .toMatchObject({ imageModel: usable, imageModels: [usable, broken] });
+    // A previous release may clear the default without withdrawing: image
+    // generation is off, and the leftovers stay listed for the administrator.
+    expect(decode({ imageModel: null, imageModels: [usable] })?.systemModelPolicy.policy)
+      .toMatchObject({ imageModel: null, imageModels: [usable] });
     for (const policy of [
-      { imageModel: null, imageModels: [usable] },
       { imageModel: broken, imageModels: [usable] },
       { imageModel: usable, imageModels: [usable, usable] },
       { imageModel: usable, imageModels: [usable, { ...broken, available: true }] },

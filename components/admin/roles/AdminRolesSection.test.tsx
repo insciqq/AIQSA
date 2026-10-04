@@ -1072,4 +1072,45 @@ describe("Image generation role", () => {
     ]);
     expect(within(row).getByText("Add and test an image model in Providers to make it available here.")).toBeVisible();
   });
+
+  it("lists models a previous release left published without a default as off, offering only a default or Clear role", async () => {
+    // A previous release cleared the default without withdrawing its publications.
+    const publishedB = { ...imageB, parameters: {}, available: true, unavailableReason: null };
+    const catalog = imageCatalog([publishedA, publishedB]);
+    catalog.policy.imageModel = null;
+    const calls = server(catalog);
+    const { requestConfirmation } = renderSection();
+    const row = await screen.findByTestId("admin-role-image");
+    expect(within(row).getByTestId("admin-role-image-status")).toHaveTextContent("Not assigned");
+    expect(within(row).getAllByTestId("admin-image-published-model")).toHaveLength(2);
+    expect(row).toHaveTextContent("Image generation is off for everyone until you choose a default image model. Clear the role to withdraw these models.");
+    // No per-model save could keep publications without a default or choose one implicitly.
+    expect(within(row).queryByRole("button", { name: /^Withdraw / })).toBeNull();
+    expect(within(row).queryByText(/^Image settings · /)).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Publish another image model" })).toBeNull();
+    fireEvent.click(within(row).getByRole("button", { name: "Image generation actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clear role" }));
+    const confirmation = requestConfirmation.mock.calls.at(-1)![0];
+    expect(confirmation.body).toContain("All 2 published image models are withdrawn");
+    await act(async () => confirmation.onConfirm());
+    await waitFor(() => expect(within(row).queryAllByTestId("admin-image-published-model")).toHaveLength(0));
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+      { expectedVersion: 1, imageProviderModelId: null, imageModels: [] }
+    ]);
+  });
+
+  it("turns image generation back on by choosing a default among the leftover publications", async () => {
+    const publishedB = { ...imageB, parameters: {}, available: true, unavailableReason: null };
+    const catalog = imageCatalog([publishedA, publishedB]);
+    catalog.policy.imageModel = null;
+    const calls = server(catalog);
+    renderSection();
+    const row = await screen.findByTestId("admin-role-image");
+    fireEvent.click(within(row).getByRole("button", { name: "Default image model" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Default image model" })).getByRole("option", { name: /Image B/ }));
+    await waitFor(() => expect(within(row).getByTestId("admin-role-image-status")).toHaveTextContent("Default ready"));
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([{ expectedVersion: 1, imageProviderModelId: "image-b",
+      imageModels: [{ providerModelId: "image-a", parameters: { quality: "low" } }, { providerModelId: "image-b", parameters: {} }] }]);
+    expect(within(row).getByRole("button", { name: "Withdraw Image A" })).toBeVisible();
+  });
 });

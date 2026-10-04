@@ -64,6 +64,12 @@ export function decodeUserImageModelSettings(value: unknown): UserImageModelSett
   };
 }
 
+/** Whether the effective image model can edit images now, as the server resolved it. */
+export function effectiveImageEditing(settings: UserImageModelSettings): boolean {
+  const effective = settings.effective ? settings.models.find((model) => model.id === settings.effective?.id) : undefined;
+  return effective?.unavailableReason === null && effective.editing;
+}
+
 /** The only accepted save body: a published model, or null to follow the organization default. */
 export function decodeUserImageModelChoice(value: unknown): { providerModelId: string | null } | null {
   if (!record(value) || Object.keys(value).length !== 1 ||

@@ -1,6 +1,6 @@
 import { checkpointOutputsTool, WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
 import { analyzeImageTools, visionAnalysisGuidance } from "../tools/analyzeImage";
-import { IMAGE_EDITING_GUIDANCE, imageGenerationTool, imageReferenceInstructions } from "../tools/imageGeneration";
+import { IMAGE_EDITING_GUIDANCE, imageGenerationTool, imageGenerationUnavailableGuidance, imageReferenceInstructions } from "../tools/imageGeneration";
 import { artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
@@ -247,7 +247,7 @@ export type RunPreparationDeps = Readonly<{
   memorySearchAdmission?: Readonly<{ admit(userId: string, assistantId?: string | null): Promise<MemorySearchSnapshot | null> }>;
   artifacts?: import("../artifacts/service").ArtifactService;
   vision?: Pick<import("../vision/service").VisionAnalysisService, "resolve">;
-  images?: Pick<import("../images/service").ImageGenerationService, "resolve">;
+  images?: Pick<import("../images/service").ImageGenerationService, "resolveFor">;
   allowFakeProvider?: boolean;
   assistants?: AssistantRunResolver;
   instructions?: Pick<import("../instructions/store").InstructionPresetStore, "resolveForRun">;
@@ -1919,9 +1919,20 @@ async function prepareRunWith(
   });
   if (mcpCompatibility) return failure(mcpCompatibility.code, mcpCompatibility.status);
 
-  const imagePlan = body?.tools !== "none" && modelCapabilities.toolCalling === true &&
+  // Personal runs (with or without any Assistant, Workspace, Agent) use the
+  // initiating user's effective image model; Project runs, with or without a
+  // bound Assistant, only the administrator default. The scope is the
+  // server-authorized chat scope, never a request field. An unusable model is
+  // never substituted: the run gets no image tool and the answer model is
+  // told why. An installation without image generation stays silent.
+  const imageResolution = body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }))
-    ? await deps.images?.resolve() ?? null : null;
+    ? await deps.images?.resolveFor(project ? { kind: "project" } : { kind: "personal", userId: input.userId }) ?? null : null;
+  const imagePlan = imageResolution?.ok ? imageResolution.plan : null;
+  const imageUnavailableGuidance = imageResolution && !imageResolution.ok && imageResolution.reason !== "not_configured"
+    ? imageGenerationUnavailableGuidance({ reason: imageResolution.reason, scope: project ? "project" : "personal",
+      source: imageResolution.source })
+    : null;
   const artifactToolAvailable = !project && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" && Boolean(deps.artifacts) &&
     modelCapabilities.toolCalling === true && (agentEnabled || toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true);
   const artifactResourcePolicy = artifactToolAvailable ? getArtifactResourcePolicy() : undefined;
@@ -2095,6 +2106,9 @@ async function prepareRunWith(
   if (workspaceTurnContract) prompt = { ...prompt, system: [prompt.system, workspaceTurnContract].filter(Boolean).join("\n\n") };
   if (imagePlan || imageReferences.length > 0) {
     prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n") };
+  }
+  if (imageUnavailableGuidance) {
+    prompt = { ...prompt, system: [prompt.system, imageUnavailableGuidance].filter(Boolean).join("\n\n") };
   }
   if (imagePlan || artifactToolAvailable || chatVision) {
     const imageGuidance = imageReferenceInstructions(imageReferences, modelCapabilities.vision === true, Boolean(chatVision));
