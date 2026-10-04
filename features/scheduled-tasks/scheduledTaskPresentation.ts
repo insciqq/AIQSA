@@ -218,24 +218,6 @@ function pausedAutomatically(task: ScheduledTask): boolean {
 }
 
 /**
- * Whether the task's newest settled run reads as news by its own outcome,
- * after the server's rule (`ScheduledTaskRun.unseen`): an answer, except a
- * monitoring check with no update, and a check that could not reach a source
- * unless it paused the task; a failure only when it paused the task. Routine
- * skips and other failures stay in the run history. The list carries no
- * per-run unread flag, so this only decides while the task's unread
- * aggregate was already on before the run settled; a source alert that
- * starts a streak is then not recognized.
- */
-export function isScheduledTaskNews(task: ScheduledTask): boolean {
-  const run = task.lastRun;
-  if (run?.state === "completed") {
-    return run.reasonCode !== "no_update" && (run.reasonCode !== "could_not_check" || pausedAutomatically(task));
-  }
-  return run?.state === "failed" && pausedAutomatically(task);
-}
-
-/**
  * The notice for a newly settled run that the list found news, saying what
  * happened; null for a run that cannot be news (a check with no update, a
  * skip, a failure that did not pause the task).

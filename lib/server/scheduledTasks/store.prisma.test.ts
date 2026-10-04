@@ -181,7 +181,7 @@ describe("persisted scheduled tasks", () => {
     ] });
     const projected = await store.get(userId, task.id);
     expect(projected).toMatchObject({
-      lastRun: { finishedAt: at(31).toISOString(), reasonCode: null, scheduledFor: at(30).toISOString(), state: "completed" },
+      lastRun: { finishedAt: at(31).toISOString(), reasonCode: null, scheduledFor: at(30).toISOString(), state: "completed", unseen: true },
       running: true, unseenResult: true
     });
     const detail = await store.detail(userId, task.id);
@@ -198,7 +198,7 @@ describe("persisted scheduled tasks", () => {
     expect(await store.markSeen(other, task.id, [completed!.id])).toBe(false);
     expect(await store.get(userId, task.id)).toMatchObject({ unseenResult: true });
     expect(await store.markSeen(userId, task.id, [completed!.id])).toBe(true);
-    expect(await store.get(userId, task.id)).toMatchObject({ unseenResult: false });
+    expect(await store.get(userId, task.id)).toMatchObject({ lastRun: { unseen: false }, unseenResult: false });
 
     expect(await store.get(other, task.id)).toBeNull();
     expect(await store.detail(other, task.id)).toBeNull();

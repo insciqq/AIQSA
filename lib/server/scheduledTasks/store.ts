@@ -176,21 +176,32 @@ export function toScheduledTask(row: ScheduledTaskRow, activity: ScheduledTaskAc
   };
 }
 
+/**
+ * A run's result is news to its owner while it is settled and not yet seen;
+ * the runner leaves `unseenAt` empty for a settlement that is not news.
+ */
+function scheduledTaskRunUnseen(row: Readonly<{ unseenAt: Date | null; finishedAt: Date | null }>): boolean {
+  return row.unseenAt !== null && row.finishedAt !== null;
+}
+
 function toScheduledTaskRun(row: RunRow): ScheduledTaskRun {
   return {
     id: row.id, scheduledFor: row.scheduledFor.toISOString(), trigger: row.trigger === "manual" ? "manual" : "schedule",
     state: RUN_STATE_WIRE[row.state], reasonCode: row.reasonCode, startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null, chatId: usableChatId(row.chatId, row.chat),
-    unseen: row.unseenAt !== null && row.finishedAt !== null,
+    unseen: scheduledTaskRunUnseen(row),
     unavailableSources: unavailableSourcesWire(row.unavailableSources)
   };
 }
 
-type SettledRow = { taskId: string; scheduledFor: Date; state: "COMPLETED" | "FAILED" | "SKIPPED"; reasonCode: string | null; finishedAt: Date };
+type SettledRow = {
+  taskId: string; scheduledFor: Date; state: "COMPLETED" | "FAILED" | "SKIPPED"; reasonCode: string | null; finishedAt: Date;
+  unseenAt: Date | null;
+};
 
 /**
- * Per task of the owner: the newest settled occurrence, whether one is
- * pending or running, and whether any result is unread.
+ * Per task of the owner: the newest settled occurrence with its own unread
+ * flag, whether one is pending or running, and whether any result is unread.
  */
 export async function loadScheduledTaskActivity(
   client: ScheduledTaskClient,
@@ -200,10 +211,11 @@ export async function loadScheduledTaskActivity(
   const activity = new Map<string, ScheduledTaskActivity>(taskIds.map((taskId) => [taskId, { lastRun: null, running: false, unseen: false }]));
   if (taskIds.length === 0) return activity;
   const settled = await client.$queryRaw<SettledRow[]>`
-    SELECT task_row."id" AS "taskId", latest."scheduledFor", latest."state"::text AS "state", latest."reasonCode", latest."finishedAt"
+    SELECT task_row."id" AS "taskId", latest."scheduledFor", latest."state"::text AS "state", latest."reasonCode", latest."finishedAt",
+      latest."unseenAt"
     FROM unnest(${[...taskIds]}::text[]) AS task_row("id")
     CROSS JOIN LATERAL (
-      SELECT occurrence."scheduledFor", occurrence."state", occurrence."reasonCode", occurrence."finishedAt"
+      SELECT occurrence."scheduledFor", occurrence."state", occurrence."reasonCode", occurrence."finishedAt", occurrence."unseenAt"
       FROM "ScheduledTaskOccurrence" AS occurrence
       WHERE occurrence."taskId" = task_row."id" AND occurrence."userId" = ${userId}
         AND occurrence."state" IN ('COMPLETED', 'FAILED', 'SKIPPED')
@@ -224,7 +236,10 @@ export async function loadScheduledTaskActivity(
     const state: ScheduledTaskSettledRunState = RUN_STATE_WIRE[row.state];
     activity.set(row.taskId, {
       ...activity.get(row.taskId)!,
-      lastRun: { scheduledFor: row.scheduledFor.toISOString(), state, reasonCode: row.reasonCode, finishedAt: row.finishedAt.toISOString() }
+      lastRun: {
+        scheduledFor: row.scheduledFor.toISOString(), state, reasonCode: row.reasonCode, finishedAt: row.finishedAt.toISOString(),
+        unseen: scheduledTaskRunUnseen(row)
+      }
     });
   }
   for (const row of open) activity.set(row.taskId, { ...activity.get(row.taskId)!, running: true });

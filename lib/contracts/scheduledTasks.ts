@@ -101,6 +101,8 @@ export type ScheduledTaskLastRun = {
   state: ScheduledTaskSettledRunState;
   reasonCode: string | null;
   finishedAt: string;
+  /** This run's result is not seen yet, by the rule of `ScheduledTaskRun.unseen`. */
+  unseen: boolean;
 };
 
 export type ScheduledTask = {
@@ -430,9 +432,9 @@ const RUN_STATES: readonly unknown[] = ["pending", "running", "completed", "fail
 const SETTLED_RUN_STATES: readonly unknown[] = ["completed", "failed", "skipped"] satisfies ScheduledTaskSettledRunState[];
 
 function lastRun(value: unknown): value is ScheduledTaskLastRun {
-  return record(value) && keys(value, ["scheduledFor", "state", "reasonCode", "finishedAt"]) &&
+  return record(value) && keys(value, ["scheduledFor", "state", "reasonCode", "finishedAt", "unseen"]) &&
     instant(value.scheduledFor) && SETTLED_RUN_STATES.includes(value.state) &&
-    nullable(value.reasonCode, code) && instant(value.finishedAt);
+    nullable(value.reasonCode, code) && instant(value.finishedAt) && typeof value.unseen === "boolean";
 }
 
 export function decodeScheduledTask(value: unknown): ScheduledTask | null {
@@ -458,7 +460,9 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     workspaceEnabled: value.workspaceEnabled, chatMode: value.chatMode as ScheduledTaskChatMode,
     kind: value.kind as ScheduledTaskKind, status: value.status as ScheduledTaskStatus, pauseReason: value.pauseReason,
     completionReason: value.completionReason, nextRunAt: value.nextRunAt,
-    lastRun: run && { scheduledFor: run.scheduledFor, state: run.state, reasonCode: run.reasonCode, finishedAt: run.finishedAt },
+    lastRun: run && {
+      scheduledFor: run.scheduledFor, state: run.state, reasonCode: run.reasonCode, finishedAt: run.finishedAt, unseen: run.unseen
+    },
     running: value.running, chatId: value.chatId, unseenResult: value.unseenResult, revision: value.revision,
     createdAt: value.createdAt, updatedAt: value.updatedAt
   };

@@ -32,7 +32,8 @@ const task: ScheduledTask = {
   modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true, workspaceEnabled: false,
   chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
   nextRunAt: "2026-10-05T06:00:00.000Z",
-  lastRun: { scheduledFor: "2026-10-02T06:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T06:01:10.000Z" },
+  lastRun: { scheduledFor: "2026-10-02T06:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T06:01:10.000Z",
+    unseen: true },
   running: false, chatId: "chat-1", unseenResult: true, revision: 3,
   createdAt: "2026-09-30T10:00:00.000Z", updatedAt: "2026-10-02T06:01:10.000Z"
 };
@@ -59,7 +60,8 @@ describe("scheduled task wire contract", () => {
     expect(decodeScheduledTask(reached)).toEqual(reached);
     for (const candidate of [
       { ...task, extra: true }, { ...task, status: "paused" }, { ...task, title: " Morning brief" },
-      { ...task, lastRun: { ...task.lastRun, state: "running" } }, { ...task, pauseReason: "Not a code" },
+      { ...task, lastRun: { ...task.lastRun, state: "running" } }, { ...task, lastRun: { ...task.lastRun, unseen: undefined } },
+      { ...task, pauseReason: "Not a code" },
       { ...task, revision: 0 }, { ...task, schedule: { kind: "daily", time: "25:00" } }, { ...task, timeZone: "+03:00" },
       { ...task, chatMode: "other" }, { ...task, chatMode: undefined }, { ...task, schedule: hourly, chatMode: "new" },
       { ...task, toolsEnabled: "auto" }, { ...task, workspaceEnabled: undefined },
