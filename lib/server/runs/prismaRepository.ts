@@ -85,6 +85,7 @@ import {
 } from "./prismaRepositoryToolLoop";
 import { createPrismaMcpDiscoveryOperations } from "./prismaRepositoryMcpDiscovery";
 import { createPrismaToolHistoryOperations } from "./prismaRepositoryToolHistory";
+import { recordScheduledMonitoringVerdict } from "../scheduledTasks/monitoringVerdict";
 import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
 import {
   decodeProjectDefaults,
@@ -461,6 +462,8 @@ export function createPrismaRunRepository(
     hasPendingWorkspacePreparation: async (runId) => Boolean(await prismaClient.workspaceFollowup.findFirst({
       select: { modelRunId: true }, where: { modelRunId: runId, state: { in: ["waiting", "preparing"] } }
     }).catch(retainRunPrismaCode)),
+    recordMonitoringVerdict: (input) =>
+      recordScheduledMonitoringVerdict(prismaClient, input).catch(retainRunPrismaCode),
     recoverPreparingRun: (input) =>
       recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
     retryPreparingRunAttempt: (input) =>

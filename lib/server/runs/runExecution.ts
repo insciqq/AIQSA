@@ -163,6 +163,13 @@ import {
 } from "../tools/types";
 import { measureSessionContext, observationBatchShare, observationWholeResultTokens } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
+import {
+  executeMonitoringVerdict,
+  isMonitoringVerdictCall,
+  MONITORING_VERDICT_TOOL_NAME,
+  monitoringVerdictReservedInstruction,
+  monitoringVerdictTool
+} from "../tools/monitoringVerdict";
 import { executeReadToolCall, readToolCallReceipt, readToolCallTool, type ToolCallReader } from "../tools/readToolCall";
 import { insertToolHistory, refreshToolHistory, requestHasToolHistory, type ToolHistoryProjection } from "./toolHistory";
 import { READ_TOOL_CALL_NAME, toolCallRefEntry, type ToolCallRefEntry, type ToolHistoryCache } from "./toolHistoryContract";
@@ -288,6 +295,7 @@ export type RunExecutionRepository = Pick<
   | "projectToolHistory"
   | "readToolCall"
   | "toolCallsAvailable"
+  | "recordMonitoringVerdict"
   | "recordRunUsageEvents"
   | "resetToolLoopAssistantDraft"
   | "settleToolLoopCall"
@@ -2143,6 +2151,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...(normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
           ...(normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
           ...(normalizedRequest.toolCallReader ? [readToolCallTool] : []),
+          ...(normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
           ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
@@ -2155,6 +2164,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const isObservationRead = (name: string) => normalizedRequest.toolObservationVersion === 1 && name === READ_TOOL_RESULT_NAME;
         const isSessionCall = (name: string) => normalizedRequest.sessionStatusTool === true && name === SESSION_STATUS_TOOL_NAME;
         const isCallRead = (name: string) => normalizedRequest.toolCallReader === true && name === READ_TOOL_CALL_NAME;
+        // Only a run admitted for a monitoring occurrence holds the verdict; its
+        // write is fenced again by the run's link to that running occurrence.
+        const isMonitoringCall = (name: string) => isMonitoringVerdictCall(normalizedRequest, name);
+        const recordVerdict = input.repository.recordMonitoringVerdict?.bind(input.repository);
         const callReadOptions = { resultReader: normalizedRequest.toolObservationVersion === 1 } as const;
         /** A call read settles its content-free receipt; the model receives the read. */
         const settleCallRead = async (persistedId: string, call: ModelToolCall, read: ToolExecutionResult) => {
@@ -2237,6 +2250,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           // Every checkpoint of a v1 non-Agent run carries the rebuild record.
           allowContextRebuild: !normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1,
           deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
+          // A monitoring check's verdict is reserved outside the business tool budgets.
+          ...(normalizedRequest.monitoringVerdictTool ? { reservedCall: {
+            called: false, instruction: monitoringVerdictReservedInstruction(), name: MONITORING_VERDICT_TOOL_NAME
+          } } : {}),
           toolObservation(call) {
             const persisted = persistedCalls.get(call.id);
             if (!persisted) return undefined;
@@ -2436,6 +2453,15 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                   callReadOptions);
                 await settleCallRead(persisted.id, call, read);
                 return { status: "complete", value: read };
+              }
+              if (claim.kind === "ambiguous" && isMonitoringCall(call.name)) {
+                // A report has no external effect and the last one wins: it is recorded again.
+                const result = await executeMonitoringVerdict(call, { runId, userId: input.userId }, recordVerdict);
+                const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+                const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id,
+                  result: snapshot, runId, state: result.status, userId: input.userId });
+                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Monitoring report could not be settled.");
+                return { status: "complete", value: result };
               }
               if (claim.kind === "ambiguous" && isCheckpointCall(call.name)) {
                 const restored = await (await defaultWorkspaceCheckpoints()).restore(call, { persistedToolCallId: persisted.id, request, runId, userId: input.userId }, context.signal);
@@ -2649,7 +2675,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     preflightResult = toolExecutionErrorResult(call, error, "Knowledge");
                   }
                 }
-                const externalCall = !isMemoryCall(call.name) && !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
+                const externalCall = !isMemoryCall(call.name) && !preflightResult && !(isVisionCall(call.name) && !normalizedRequest.visionAnalysis?.available) && !isMcpDiscoveryCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isArtifactCall(call.name) && !isSkillCall(call.name) && !isViewImageCall(call.name) && !isCheckpointCall(call.name);
                 if (externalCall) {
                   if (!input.memoryEgress && process.env.NODE_ENV === "production") {
                     throw new Error("memory_egress_receipt_unavailable");
@@ -2791,6 +2817,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                     observationReadBudget(observationBatches.allowance(persisted.roundIndex, observationWholeResultTokens(request))));
                 } else if (isSessionCall(call.name)) {
                   result = executeSessionStatus(call, sessionRequest, toolBridge);
+                } else if (isMonitoringCall(call.name)) {
+                  result = await executeMonitoringVerdict(call, executionContext, recordVerdict);
                 } else if (isMcpDiscoveryCall(call.name)) {
                   // Each call searches separately; the queue orders epochs.
                   result = await serializeMcpDiscovery(async () => {
@@ -3082,7 +3110,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isMemoryCall(call.name) && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isSkillCall(call.name)) {
+                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isSkillCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 const callArguments = toolLoopJson(
@@ -3157,7 +3185,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             for (const call of calls) {
               const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
               const registeredTool = tools.find((tool) => tool.name === call.name);
-              const builtInServer = isVisionCall(call.name) ? "System Vision" : isViewImageCall(call.name) || isCheckpointCall(call.name) ? "Workspace" : isArtifactCall(call.name) ? "Artifacts" : isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : call.name === "find_tools"
+              const builtInServer = isVisionCall(call.name) ? "System Vision" : isViewImageCall(call.name) || isCheckpointCall(call.name) ? "Workspace" : isArtifactCall(call.name) ? "Artifacts" : isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : isMonitoringCall(call.name) ? "Monitoring" : call.name === "find_tools"
                 ? "Auto tools"
                 : isKnowledgeCall(call.name)
                   ? "Knowledge"
@@ -3349,7 +3377,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || normalizedRequest.monitoringVerdictTool === true || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;

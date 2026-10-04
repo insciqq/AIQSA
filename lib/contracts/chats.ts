@@ -70,6 +70,7 @@ import {
   type ThreadWorkspaceActivity
 } from "./workspace";
 import { decodeContextCompactionStatus, type ContextCompactionStatus } from "./contextCompaction";
+import { isScheduledTaskCheckOutcome, type ScheduledTaskCheckOutcome } from "./scheduledTasks";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -404,6 +405,13 @@ export type ChatMessageWire = {
   role: string;
   /** Present on current responses; absent (stale caches, fixtures) means none. */
   scheduledTask?: ChatMessageScheduledTaskWire | null;
+  /**
+   * The settled outcome of the monitoring check this message belongs to: its
+   * scheduled user turn or that turn's answer. Kept on the check's run, so it
+   * outlives the occurrence history and the task. Absent for other messages
+   * and while the check runs; the transcript collapses `no_update` turns.
+   */
+  scheduledOutcome?: ScheduledTaskCheckOutcome;
   status: string;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
@@ -1216,6 +1224,9 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
       codePointLength(title) > CHAT_TITLE_MAX_LENGTH || typeof marker.unseen !== "boolean") return null;
     scheduledTask = { taskId, taskRunId, title, unseen: marker.unseen };
   }
+  const scheduledOutcome: ScheduledTaskCheckOutcome | undefined = isScheduledTaskCheckOutcome(value.scheduledOutcome)
+    ? value.scheduledOutcome : undefined;
+  if (value.scheduledOutcome !== undefined && scheduledOutcome === undefined) return null;
   let author: ProjectMessageAuthorWire | null | undefined;
   if (value.author === undefined || value.author === null) {
     author = value.author;
@@ -1267,6 +1278,7 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     provider,
     role,
     ...(scheduledTask !== undefined ? { scheduledTask } : {}),
+    ...(scheduledOutcome !== undefined ? { scheduledOutcome } : {}),
     status,
     ...(toolActivity !== undefined ? { toolActivity } : {}),
     ...(workspaceActivity !== undefined ? { workspaceActivity } : {})

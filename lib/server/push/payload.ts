@@ -32,7 +32,7 @@ export function browserPushMessage(event: BrowserPushEvent): BrowserPushMessage 
   }
   const paused = event.state === "FAILED" && event.trigger === "schedule" && event.taskPauseReason !== null;
   const [outcome, reason] = event.state === "COMPLETED"
-    ? ["Scheduled task finished", null]
+    ? ["Scheduled task finished", scheduledTaskReasonMessage(event.reasonCode)]
     : paused
       ? ["Scheduled task paused", scheduledTaskReasonMessage(event.taskPauseReason)]
       : event.state === "SKIPPED"

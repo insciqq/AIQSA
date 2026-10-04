@@ -190,13 +190,16 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       return settlePending(execution, { reasonCode: "paused", state: "SKIPPED" });
     }
     if (!execution.ownerActive) return settlePending(execution, pausingOutcome("account_inactive"));
-    // Current catalog and entitlement, the exact saved model and no substitute.
+    // Current catalog and entitlement, the exact saved model and no substitute;
+    // a monitoring check also needs the model to call its reporting tool.
     const catalog = await deps.loadCatalog(occurrence.userId);
     const resolution = resolveScheduledTaskModel(catalog, task);
     const model = catalog?.models.find((entry) => entry.modelId === task.modelId && entry.provider === task.provider);
     if (!resolution.ok || !catalog || !model) {
       return settlePending(execution, pausingOutcome(
-        !resolution.ok && resolution.code === "scheduled_task_search_unavailable" ? "search_unavailable" : "model_unavailable"));
+        !resolution.ok && resolution.code === "scheduled_task_search_unavailable" ? "search_unavailable"
+          : !resolution.ok && resolution.code === "scheduled_task_model_cannot_report" ? "model_cannot_report"
+            : "model_unavailable"));
     }
     const searchPlan = scheduledTaskSearchPlan({ catalog, model, searchEnabled: task.searchEnabled });
     if (!searchPlan) return settlePending(execution, pausingOutcome("search_unavailable"));
@@ -207,10 +210,11 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
         timeZone: task.timeZone, toolCalling: model.capabilities.toolCalling
       }),
       chatId: target.chatId,
-      // The revision read above fences preparation against a pause or edit made meanwhile.
+      // The revision read above fences preparation against a pause or edit made
+      // meanwhile, so the task kind it carries is the one the link accepts.
       occurrence: {
         occurrenceId: occurrence.id, previousResult, taskGeneration: task.generation, taskId: occurrence.taskId,
-        taskRevision: task.revision
+        taskRevision: task.revision, ...(task.kind === "monitoring" ? { monitoring: true as const } : {})
       },
       userId: occurrence.userId
     });

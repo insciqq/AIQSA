@@ -2,6 +2,7 @@ import {
   Prisma,
   type PrismaClient,
   type ScheduledTaskChatMode as ChatModeColumn,
+  type ScheduledTaskKind as TaskKindColumn,
   type ScheduledTaskOccurrenceState,
   type ScheduledTaskScheduleKind as ScheduleKindColumn,
   type ScheduledTaskStatus as StatusColumn
@@ -17,6 +18,7 @@ import {
   type ScheduledTaskDraft,
   type ScheduledTaskErrorCode,
   type ScheduledTaskEveryHours,
+  type ScheduledTaskKind,
   type ScheduledTaskLastRun,
   type ScheduledTaskListResponse,
   type ScheduledTaskRun,
@@ -70,9 +72,10 @@ export interface ScheduledTaskStore {
   create(userId: string, draft: ScheduledTaskDraft, nextRunAt: Date): Promise<ScheduledTask>;
   /**
    * Writes every editable field and the status under `expectedRevision`, clears
-   * the pause reason and failure count and increments the revision; a changed
-   * prompt or schedule kind also starts a new generation without a baseline.
-   * Activation counts against the active limits.
+   * the pause reason and the failure and missing report counts, clears the
+   * completion reason unless the task stays completed, and increments the
+   * revision; a changed prompt, schedule kind or task kind also starts a new
+   * generation without a baseline. Activation counts against the active limits.
    */
   update(userId: string, taskId: string, write: ScheduledTaskUpdateWrite): Promise<ScheduledTask>;
   /** The chats and any accepted run stay; occurrences go with the task. */
@@ -93,6 +96,8 @@ const STATUS_WIRE = { ACTIVE: "active", PAUSED: "paused", COMPLETED: "completed"
 const STATUS_COLUMN = { active: "ACTIVE", paused: "PAUSED", completed: "COMPLETED" } as const satisfies Record<ScheduledTaskStatus, StatusColumn>;
 const CHAT_MODE_WIRE = { NEW: "new", SAME: "same" } as const satisfies Record<ChatModeColumn, ScheduledTaskChatMode>;
 const CHAT_MODE_COLUMN = { new: "NEW", same: "SAME" } as const satisfies Record<ScheduledTaskChatMode, ChatModeColumn>;
+const TASK_KIND_WIRE = { STANDARD: "standard", MONITORING: "monitoring" } as const satisfies Record<TaskKindColumn, ScheduledTaskKind>;
+const TASK_KIND_COLUMN = { standard: "STANDARD", monitoring: "MONITORING" } as const satisfies Record<ScheduledTaskKind, TaskKindColumn>;
 const RUN_STATE_WIRE = {
   PENDING: "pending", RUNNING: "running", COMPLETED: "completed", FAILED: "failed", SKIPPED: "skipped"
 } as const satisfies Record<ScheduledTaskOccurrenceState, ScheduledTaskRunState>;
@@ -103,8 +108,8 @@ const KIND_COLUMN = {
 export const scheduledTaskRowSelect = {
   id: true, title: true, prompt: true, scheduleKind: true, timeOfDayMinutes: true, daysOfWeekMask: true, dayOfMonth: true,
   onceLocalDate: true, everyHours: true, untilMinutes: true, timeZone: true, modelId: true, provider: true,
-  searchEnabled: true, emailNotify: true, chatMode: true, status: true, pauseReason: true, nextRunAt: true, chatId: true,
-  revision: true, createdAt: true, updatedAt: true,
+  searchEnabled: true, emailNotify: true, chatMode: true, kind: true, status: true, pauseReason: true, completionReason: true,
+  nextRunAt: true, chatId: true, revision: true, createdAt: true, updatedAt: true,
   chat: { select: { permanentDeletionAt: true } }
 } satisfies Prisma.ScheduledTaskSelect;
 export type ScheduledTaskRow = Prisma.ScheduledTaskGetPayload<{ select: typeof scheduledTaskRowSelect }>;
@@ -147,6 +152,10 @@ export function scheduledTaskChatModeFromColumn(column: ChatModeColumn): Schedul
   return CHAT_MODE_WIRE[column];
 }
 
+export function scheduledTaskKindFromColumn(column: TaskKindColumn): ScheduledTaskKind {
+  return TASK_KIND_WIRE[column];
+}
+
 /** A chat that permanent deletion has fenced is no longer offered. */
 function usableChatId(chatId: string | null, chat: { permanentDeletionAt: Date | null } | null): string | null {
   return chatId !== null && chat?.permanentDeletionAt === null ? chatId : null;
@@ -156,7 +165,8 @@ export function toScheduledTask(row: ScheduledTaskRow, activity: ScheduledTaskAc
   return {
     id: row.id, title: row.title, prompt: row.prompt, schedule: scheduledTaskScheduleFromColumns(row), timeZone: row.timeZone,
     modelId: row.modelId, provider: row.provider, searchEnabled: row.searchEnabled, emailNotify: row.emailNotify,
-    chatMode: CHAT_MODE_WIRE[row.chatMode], status: STATUS_WIRE[row.status], pauseReason: row.pauseReason,
+    chatMode: CHAT_MODE_WIRE[row.chatMode], kind: TASK_KIND_WIRE[row.kind], status: STATUS_WIRE[row.status],
+    pauseReason: row.pauseReason, completionReason: row.completionReason,
     nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRun: activity.lastRun, running: activity.running,
     chatId: usableChatId(row.chatId, row.chat), unseenResult: activity.unseen, revision: row.revision,
     createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString()
@@ -230,7 +240,7 @@ function draftColumns(draft: ScheduledTaskDraft) {
   return {
     title: draft.title, prompt: draft.prompt, ...scheduledTaskScheduleColumns(draft.schedule), timeZone: draft.timeZone,
     modelId: draft.modelId, provider: draft.provider, searchEnabled: draft.searchEnabled, emailNotify: draft.emailNotify,
-    chatMode: CHAT_MODE_COLUMN[draft.chatMode]
+    chatMode: CHAT_MODE_COLUMN[draft.chatMode], kind: TASK_KIND_COLUMN[draft.kind]
   };
 }
 
@@ -328,7 +338,7 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledT
       return prisma.$transaction(async (tx) => {
         await lockOwner(tx, userId);
         const current = await tx.scheduledTask.findUnique({
-          select: { prompt: true, revision: true, scheduleKind: true, status: true },
+          select: { kind: true, prompt: true, revision: true, scheduleKind: true, status: true },
           where: { userId_id: { id: taskId, userId } }
         });
         if (!current) throw new ScheduledTaskError("scheduled_task_not_found");
@@ -343,12 +353,17 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledT
           throw new ScheduledTaskError("scheduled_task_hourly_limit");
         }
         // A new question starts a new generation: earlier results are no baseline for it.
-        const newGeneration = current.prompt !== write.draft.prompt || current.scheduleKind !== kind;
+        // So does a changed type: a first monitoring check is always shown.
+        const newGeneration = current.prompt !== write.draft.prompt || current.scheduleKind !== kind ||
+          current.kind !== TASK_KIND_COLUMN[write.draft.kind];
         // The revision guard also fences a runner status transition committed after the read.
         const updated = await tx.scheduledTask.updateMany({
           data: {
-            ...draftColumns(write.draft), consecutiveFailures: 0, pauseReason: null, revision: { increment: 1 },
-            status: STATUS_COLUMN[write.status], ...(write.nextRunAt === undefined ? {} : { nextRunAt: write.nextRunAt }),
+            ...draftColumns(write.draft), consecutiveFailures: 0, consecutiveMissingVerdicts: 0, pauseReason: null,
+            revision: { increment: 1 }, status: STATUS_COLUMN[write.status],
+            // A task that stays completed keeps why; resuming clears it.
+            ...(write.status === "completed" ? {} : { completionReason: null }),
+            ...(write.nextRunAt === undefined ? {} : { nextRunAt: write.nextRunAt }),
             ...(newGeneration ? {
               baselineAssistantMessageId: null, baselineGeneration: null, baselineRunId: null, baselineUserMessageId: null,
               generation: { increment: 1 }
