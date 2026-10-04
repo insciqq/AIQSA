@@ -687,6 +687,8 @@ describe("answer process label", () => {
     expect(describeToolCallV2(call(), "cancelled")).toBe("Reading news.example/today stopped");
     expect(describeToolCallV2(call("fetch_url_not_in_conversation"), "failed"))
       .toBe("Didn't read news.example/today: the link wasn't shared in this chat");
+    expect(describeToolCallV2({ ...call("fetch_url_not_in_conversation"), fetchScheduled: true }, "failed"))
+      .toBe("Didn't read news.example/today: edit the task's instructions to allow this link");
     for (const blocked of ["fetch_blocked_address", "fetch_port_not_allowed", "fetch_url_credentials"]) {
       expect(describeToolCallV2(call(blocked), "failed")).toBe("Blocked news.example/today: this address is not allowed");
     }

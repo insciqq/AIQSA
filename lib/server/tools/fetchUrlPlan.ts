@@ -110,6 +110,8 @@ export type PersistedFetchUrlFacts = Readonly<{
   dispatched: boolean;
   httpStatus?: number;
   outcome: FetchUrlActivityOutcome;
+  /** A scheduled run refused a link its task's snapshot lacks. */
+  scheduled?: true;
   url?: string;
 }>;
 
@@ -122,6 +124,7 @@ export function persistedFetchUrlFacts(result: unknown): PersistedFetchUrlFacts 
   return {
     dispatched: preview.dispatched,
     outcome: preview.outcome,
+    ...(preview.scheduled === true && preview.outcome === "fetch_url_not_in_conversation" ? { scheduled: true as const } : {}),
     ...(typeof preview.url === "string" && normalizeFetchUrl(preview.url) === preview.url ? { url: preview.url } : {}),
     ...(isFetchUrlHttpStatus(preview.httpStatus) ? { httpStatus: preview.httpStatus } : {})
   };
@@ -129,7 +132,7 @@ export function persistedFetchUrlFacts(result: unknown): PersistedFetchUrlFacts 
 
 /** Browser-safe activity facts of one call: its "host/path" target and, once settled, its outcome. */
 export function fetchUrlActivityFacts(toolName: string, argumentsValue: unknown, result?: unknown): {
-  fetchHttpStatus?: number; fetchOutcome?: FetchUrlActivityOutcome; fetchTarget?: string;
+  fetchHttpStatus?: number; fetchOutcome?: FetchUrlActivityOutcome; fetchScheduled?: true; fetchTarget?: string;
 } {
   if (toolName !== FETCH_URL_TOOL_NAME) return {};
   const facts = result === undefined || result === null ? null : persistedFetchUrlFacts(result);
@@ -139,6 +142,7 @@ export function fetchUrlActivityFacts(toolName: string, argumentsValue: unknown,
   return {
     ...(target ? { fetchTarget: target } : {}),
     ...(facts ? { fetchOutcome: facts.outcome } : {}),
+    ...(facts?.scheduled ? { fetchScheduled: true as const } : {}),
     ...(facts?.outcome === "fetch_http_status" && facts.httpStatus !== undefined ? { fetchHttpStatus: facts.httpStatus } : {})
   };
 }

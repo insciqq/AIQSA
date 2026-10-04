@@ -258,6 +258,7 @@ type ToolActivityIdentity = Readonly<{
   fetchTarget?: unknown;
   fetchOutcome?: unknown;
   fetchHttpStatus?: unknown;
+  fetchScheduled?: unknown;
 }>;
 
 /** A page read's row: "Reading <host/path>", then its outcome in plain words. */
@@ -267,7 +268,9 @@ function describeFetchCallV2(call: ToolActivityIdentity, phase: "cancelled" | "f
   if (phase === "cancelled") return `Reading ${target} stopped`;
   if (phase === "settled" && (call.fetchOutcome === undefined || call.fetchOutcome === "read")) return `Read ${target}`;
   switch (call.fetchOutcome) {
-    case "fetch_url_not_in_conversation": return `Didn't read ${target}: the link wasn't shared in this chat`;
+    case "fetch_url_not_in_conversation": return call.fetchScheduled === true
+      ? `Didn't read ${target}: edit the task's instructions to allow this link`
+      : `Didn't read ${target}: the link wasn't shared in this chat`;
     case "fetch_blocked_address":
     case "fetch_port_not_allowed":
     case "fetch_url_credentials":

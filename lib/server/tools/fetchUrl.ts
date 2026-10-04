@@ -90,6 +90,8 @@ function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outco
     rawPreview: { fetchUrl: {
       version: 1, outcome: outcome.code, dispatched: outcome.dispatched,
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
+      // A scheduled run's owner recovers by editing the task, not by sending the link.
+      ...(scheduled && outcome.code === "fetch_url_not_in_conversation" ? { scheduled: true } : {}),
       ...(url ? { url } : {})
     } },
     status: "error"
