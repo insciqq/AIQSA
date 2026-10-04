@@ -109,6 +109,8 @@ export function useScheduledTaskUpdates({
   /** Run ids already sent (or being sent) as seen; a failed request releases them. */
   const seenRequests = useRef(new Set<string>());
   const runningChats = useRef(new Set<string>());
+  /** The open chat a new result already reread during this commit, so its run's end does not reread it again. */
+  const resultRefresh = useRef<string | null>(null);
   const announce = useEventCallback(onNewResult);
   const refreshChat = useEventCallback(refreshOpenChat);
 
@@ -155,6 +157,7 @@ export function useScheduledTaskUpdates({
     if (reload && useWorkspaceStore.getState().navigationReady) void loadChatNavigation();
     // The cached transcript predates this answer: reread it, and the result counts as seen once it renders.
     if (enabled && chatVisible && activeChatId && newResults.tasks.some((task) => task.chatId === activeChatId)) {
+      resultRefresh.current = activeChatId;
       void refreshChat(activeChatId).catch(() => false);
     }
     const newest = [...newResults.tasks].sort((left, right) =>
@@ -163,12 +166,16 @@ export function useScheduledTaskUpdates({
   }, [activeChatId, announce, chatVisible, enabled, newResults, refreshChat]);
 
   useEffect(() => {
-    // A scheduled run that starts in the open chat: show its answer as it streams.
+    // A scheduled run that starts in the open chat: show its answer as it streams. One
+    // that ends there settles its transcript, also when it is not news: a monitoring
+    // check with no update collapses only once the reread carries its outcome.
     const running = new Set(tasks.flatMap((task) => task.running && task.chatId ? [task.chatId] : []));
-    if (enabled && chatVisible && activeChatId && running.has(activeChatId) && !runningChats.current.has(activeChatId)) {
-      void refreshChat(activeChatId).catch(() => false);
-    }
+    const started = activeChatId !== null && running.has(activeChatId) && !runningChats.current.has(activeChatId);
+    const ended = activeChatId !== null && !running.has(activeChatId) && runningChats.current.has(activeChatId) &&
+      resultRefresh.current !== activeChatId;
+    if (enabled && chatVisible && activeChatId && (started || ended)) void refreshChat(activeChatId).catch(() => false);
     runningChats.current = running;
+    resultRefresh.current = null;
   }, [activeChatId, chatVisible, enabled, refreshChat, tasks]);
 
   useEffect(() => {
