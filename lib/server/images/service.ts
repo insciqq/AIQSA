@@ -41,6 +41,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
   const resolver = createImageModelRoleResolver(prisma);
   const service = {
     resolve: resolver.resolve,
+    resolveFor: resolver.resolveFor,
     async withConversationPixels(request: ProviderRunRequest, userId: string, signal?: AbortSignal): Promise<ProviderRunRequest> {
       const references = request.imageReferences;
       if (!request.modelCapabilities.vision || !references?.length) return request;

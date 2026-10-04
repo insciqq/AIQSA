@@ -23,7 +23,7 @@ const response = {
       chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null,
       chatPdfReasoningEffort: null,
       imageModel: null,
-      imageParameters: {},
+      imageModels: [],
       reasoningEffort: null,
       rerankerModel: null,
       systemModel: null,
@@ -76,6 +76,28 @@ describe("administrator system model policy contract", () => {
 
   it("decodes the catalog-safe policy projection", () => {
     expect(decodeAdminSystemModelPolicyResponse(response)).toEqual(response);
+  });
+
+  it("keeps published image models, their saved parameters and unusable markers, with the default among them", () => {
+    const usable = { connectionDisplayName: "OpenAI", connectionId: "openai", displayName: "GPT Image 2", id: "image-1",
+      upstreamModelId: "gpt-image-2", image: { profile: "openai" }, defaultParameters: { quality: "medium" },
+      parameters: { quality: "low", output_compression: 50 }, generation: true, editing: true, available: true, unavailableReason: null };
+    const broken = { ...usable, id: "image-2", displayName: "Broken", upstreamModelId: null, image: null, defaultParameters: {},
+      parameters: { quality: "unsupported-value" }, generation: false, editing: false, available: false, unavailableReason: "credential_unavailable" };
+    const decode = (policy: object) => decodeAdminSystemModelPolicyResponse({ systemModelPolicy: { ...response.systemModelPolicy,
+      policy: { ...response.systemModelPolicy.policy, ...policy } } });
+    expect(decode({ imageModel: usable, imageModels: [usable, broken] })?.systemModelPolicy.policy)
+      .toMatchObject({ imageModel: usable, imageModels: [usable, broken] });
+    for (const policy of [
+      { imageModel: null, imageModels: [usable] },
+      { imageModel: broken, imageModels: [usable] },
+      { imageModel: usable, imageModels: [usable, usable] },
+      { imageModel: usable, imageModels: [usable, { ...broken, available: true }] },
+      { imageModel: usable, imageModels: [usable, { ...broken, unavailableReason: "guessed" }] },
+      { imageModel: usable, imageModels: [usable, { ...broken, parameters: { model: "other" } }] },
+      { imageModel: usable, imageModels: [usable, { ...broken, upstreamModelId: "gpt-image-2" }] },
+      { imageModel: { ...usable, defaultParameters: { quality: "best" } }, imageModels: [{ ...usable, defaultParameters: { quality: "best" } }] }
+    ]) expect(decode(policy)).toBeNull();
   });
 
   it.each([

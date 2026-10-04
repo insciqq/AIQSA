@@ -71,7 +71,10 @@ export function createAdminProviderBootstrap(input: {
       if (system || pdf || reranker || image) {
         value.signal.throwIfAborted();
         await input.roles.update({ expectedVersion: roles.policy.version, userId: value.userId,
-          ...(image ? { imageProviderModelId: image.id, imageParameters: {} } : {}),
+          // A first default is published with the model's own defaults.
+          ...(image ? { imageProviderModelId: image.id, imageModels: [...(roles.policy.imageModels ?? [])
+            .filter((model) => model.id !== image.id).map((model) => ({ providerModelId: model.id, parameters: model.parameters })),
+          { providerModelId: image.id, parameters: {} }] } : {}),
           ...(system ? { providerModelId: system.id, reasoningEffort: null } : {}),
           ...(pdf ? { chatPdfProviderModelId: pdf.id, chatPdfReasoningEffort: null } : {}),
           ...(reranker ? { rerankerProviderModelId: reranker.id } : {}) });

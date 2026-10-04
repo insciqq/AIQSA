@@ -40,6 +40,7 @@ import { MEMORY_SEARCH_TIMEOUT_MIGRATION, memorySearchTimeoutFixtureSql, memoryS
 import { MEMORY_SEARCH_RECEIPT_MIGRATION, memorySearchReceiptFixtureSql, memorySearchReceiptProofSql, memorySearchReceiptRepeatProofSql } from "./memory-search-receipt-adoption";
 import { SKILL_IMPORT_SOURCE_MIGRATION, skillImportSourceFixtureSql, skillImportSourceProofSql } from "./skill-import-source-adoption";
 import { PERPLEXITY_LEGACY_REASONING_MIGRATION, perplexityLegacyReasoningFixtureSql, perplexityLegacyReasoningProofSql, perplexityLegacyReasoningRepeatProofSql } from "./perplexity-legacy-reasoning-adoption";
+import { PUBLISHED_IMAGE_MODELS_MIGRATION, publishedImageModelsFixtureSql, publishedImageModelsProofSql } from "./published-image-models-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7509,6 +7510,8 @@ function main(
       IF EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE "chatTitleProviderModelId" IS NOT NULL
         OR "chatTitleReasoningEffort" IS NOT NULL OR "chatTitleConfiguredAt" IS NOT NULL)
         THEN RAISE EXCEPTION 'fresh_title_role_not_unassigned'; END IF;
+      IF EXISTS (SELECT 1 FROM "PublishedImageModel") OR EXISTS (SELECT 1 FROM "SystemModelPolicy" WHERE "imageProviderModelId" IS NOT NULL)
+        THEN RAISE EXCEPTION 'fresh_image_models_not_unpublished'; END IF;
     END $$;`);
   }
   const catalogDigests = databases.length > 1
@@ -7653,6 +7656,10 @@ function main(
     removeLocalMcpSourcesFixtureSql, removeLocalMcpSourcesProofSql, removeLocalMcpSourcesRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_LOCAL_MCP_ACTIVATION_STAGES_MIGRATION,
     retireLocalMcpActivationStagesFixtureSql, retireLocalMcpActivationStagesProofSql, retireLocalMcpActivationStagesRepeatProofSql);
+  for (const assigned of [false, true]) {
+    runForwardAdoptionProof(shadowDatabase, migrations, PUBLISHED_IMAGE_MODELS_MIGRATION,
+      publishedImageModelsFixtureSql(assigned), publishedImageModelsProofSql(assigned), publishedImageModelsProofSql(assigned));
+  }
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

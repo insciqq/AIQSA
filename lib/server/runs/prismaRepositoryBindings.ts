@@ -1,8 +1,11 @@
 import { createVisionAnalysisPlanResolver, type AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
-import { loadInstallationImageProviderRole } from "../providerRuntime/admission";
-import type { AcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
+import {
+  createImageModelRoleResolver,
+  sameAcceptedImageGenerationPlan,
+  type AcceptedImageGenerationPlan
+} from "../providerRuntime/imageModelRole";
 import { randomInt, randomUUID } from "node:crypto";
 import {
   Prisma,
@@ -1268,6 +1271,8 @@ export async function insertAcceptedProviderRunBindings(
   input: {
     nativeBackgroundRequested: boolean;
     imagePlan?: AcceptedImageGenerationPlan;
+    /** The server-authorized chat scope that chose the image model. */
+    imageScope: "personal" | "project";
     visionAnalysis?: AcceptedVisionAnalysisPlan;
     plan: ProviderAdmissionPlan | undefined;
     runId: string;
@@ -1287,10 +1292,13 @@ export async function insertAcceptedProviderRunBindings(
   }
   if (input.imagePlan) {
     const accepted = input.imagePlan;
-    const policy = await tx.systemModelPolicy.findUnique({ where: { id: "installation" }, select: { version: true, imageProviderModelId: true } });
-    const currentImage = await loadInstallationImageProviderRole(tx, { providerModelId: accepted.authority.providerModelId });
-    if (!policy || policy.version !== accepted.policyVersion || policy.imageProviderModelId !== accepted.authority.providerModelId ||
-      Object.entries(accepted.authority).some(([key, value]) => currentImage.authority[key as keyof typeof currentImage.authority] !== value)) {
+    // Personal runs: the model is still published and the initiating user's
+    // current effective choice. Project runs: the current administrator
+    // default, never a personal preference. Both fence the policy version,
+    // parameters and exact authority revision.
+    const current = await createImageModelRoleResolver(tx).resolveFor(input.imageScope === "project"
+      ? { kind: "project" } : { kind: "personal", userId: input.userId });
+    if (!current.ok || !sameAcceptedImageGenerationPlan(current.plan, accepted)) {
       throw new ProviderAdmissionConflictError();
     }
     await tx.providerRunBinding.create({ data: {

@@ -3,7 +3,7 @@ import { adminKnowledgeProfileFixture, adminKnowledgeSettingsFixture } from "@/t
 import type { AdminGroup } from "@/lib/contracts/admin";
 import type { AdminKnowledgeSettings } from "@/lib/contracts/adminKnowledge";
 import type { AdminModelPolicyCatalog } from "@/lib/contracts/adminModelPolicy";
-import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
+import type { AdminPublishedImageModel, AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdminConfirmationRequest } from "../useAdminConfirmationController";
 import type { AdminFeedbackNoticeAction } from "../useAdminFeedback";
@@ -146,8 +146,15 @@ function server(initialRoles = rolesCatalog(), initialKnowledge = knowledgeSetti
           return Response.json({ error: "system_model_policy_stale" }, { status: 409 });
         }
         const pick = (id: unknown) => [...roles.titleCandidates, ...roles.candidates, ...roles.documentCandidates, ...roles.verificationCandidates].find((item) => item.id === id) ?? null;
+        const imageModels = Array.isArray(body.imageModels)
+          ? (body.imageModels as Array<{ providerModelId: string; parameters: Record<string, string | number> }>).map(({ providerModelId, parameters }) => ({
+            ...(roles.policy.imageModels?.find((item) => item.id === providerModelId) ??
+              { ...roles.imageCandidates!.find((item) => item.id === providerModelId)!, available: true, unavailableReason: null }),
+            parameters }))
+          : null;
         roles = { ...roles, policy: {
           ...roles.policy, version: roles.policy.version + 1,
+          ...(imageModels ? { imageModels, imageModel: imageModels.find((model) => model.id === body.imageProviderModelId) ?? null } : {}),
           ...(Object.hasOwn(body, "chatPdfProcessingMode") ? { chatPdfProcessingMode: body.chatPdfProcessingMode as "prefer_chat_model" | "use_pdf_reader" | "read_page_images" } : {}),
           ...(Object.hasOwn(body, "chatPdfFallbackMethod") ? { chatPdfFallbackMethod: body.chatPdfFallbackMethod as "pdf_reader" | "page_images" } : {}),
           ...(Object.hasOwn(body, "chatPdfNativeProviderModelId") ? {
@@ -973,4 +980,95 @@ it("saves, changes reasoning, clears and undoes Chat titles independently", asyn
     { expectedVersion: 3, chatTitleProviderModelId: null, chatTitleReasoningEffort: null },
     { expectedVersion: 4, chatTitleProviderModelId: "title-model", chatTitleReasoningEffort: "low" }
   ]);
+});
+
+describe("Image generation role", () => {
+  const imageBase = { connectionDisplayName: "OpenAI", connectionId: "openai", upstreamModelId: "gpt-image-2",
+    image: { profile: "openai" as const }, defaultParameters: {}, generation: true, editing: true };
+  const imageA = { ...imageBase, displayName: "Image A", id: "image-a" };
+  const imageB = { ...imageBase, displayName: "Image B", id: "image-b", editing: false };
+  const imageC = { ...imageBase, displayName: "Image C", id: "image-c" };
+  const publishedA = { ...imageA, parameters: { quality: "low" }, available: true, unavailableReason: null };
+
+  function imageCatalog(published: AdminPublishedImageModel[] = [publishedA]) {
+    const catalog = rolesCatalog();
+    catalog.imageCandidates = [imageA, imageB, imageC];
+    catalog.policy.imageModels = published;
+    catalog.policy.imageModel = published[0] ?? null;
+    return catalog;
+  }
+
+  it("publishes a verified candidate and edits each published model's parameters through the complete set", async () => {
+    const calls = server(imageCatalog());
+    renderSection();
+    const row = await screen.findByTestId("admin-role-image");
+    expect(within(row).getByTestId("admin-role-image-status")).toHaveTextContent("Default ready");
+    fireEvent.click(within(row).getByRole("button", { name: "Publish another image model" }));
+    const publishDialog = screen.getByRole("dialog", { name: "Publish another image model" });
+    expect(within(publishDialog).queryByRole("option", { name: /Image A/ })).toBeNull();
+    fireEvent.click(within(publishDialog).getByRole("option", { name: /Image B/ }));
+    await waitFor(() => expect(within(row).getAllByTestId("admin-image-published-model")).toHaveLength(2));
+    const imageBEntry = within(row).getAllByTestId("admin-image-published-model")[1]!;
+    expect(imageBEntry).toHaveTextContent("Generation verified · Editing unavailable");
+    fireEvent.click(within(imageBEntry).getByText("Image settings · Image B"));
+    fireEvent.change(within(imageBEntry).getByRole("combobox", { name: "Image quality" }), { target: { value: "high" } });
+    fireEvent.click(within(imageBEntry).getByRole("button", { name: "Apply image settings" }));
+    await waitFor(() => expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toHaveLength(2));
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+      { expectedVersion: 1, imageProviderModelId: "image-a", imageModels: [
+        { providerModelId: "image-a", parameters: { quality: "low" } }, { providerModelId: "image-b", parameters: {} }] },
+      { expectedVersion: 2, imageProviderModelId: "image-a", imageModels: [
+        { providerModelId: "image-a", parameters: { quality: "low" } }, { providerModelId: "image-b", parameters: { quality: "high" } }] }
+    ]);
+  });
+
+  it("chooses a default among usable published models or verified candidates, never an unusable one", async () => {
+    const brokenB = { ...imageB, parameters: {}, available: false, unavailableReason: "verification_required" as const };
+    const calls = server(imageCatalog([publishedA, brokenB]));
+    renderSection();
+    const row = await screen.findByTestId("admin-role-image");
+    expect(within(row).getAllByTestId("admin-image-published-model")[1]).toHaveTextContent(
+      "Unavailable · run a successful image check in Providers");
+    fireEvent.click(within(row).getByRole("button", { name: "Default image model" }));
+    const dialog = screen.getByRole("dialog", { name: "Default image model" });
+    expect(within(dialog).queryByRole("option", { name: /Image B/ })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("option", { name: /Image C/ }));
+    await waitFor(() => expect(within(row).getByRole("button", { name: "Default image model" })).toHaveTextContent("Image C"));
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([{ expectedVersion: 1, imageProviderModelId: "image-c",
+      imageModels: [{ providerModelId: "image-a", parameters: { quality: "low" } }, { providerModelId: "image-b", parameters: {} },
+        { providerModelId: "image-c", parameters: {} }] }]);
+  });
+
+  it("withdraws a model only after confirmation and never offers withdrawing the default", async () => {
+    const publishedB = { ...imageB, parameters: {}, available: true, unavailableReason: null };
+    const calls = server(imageCatalog([publishedA, publishedB]));
+    const { requestConfirmation } = renderSection();
+    const row = await screen.findByTestId("admin-role-image");
+    expect(within(row).queryByRole("button", { name: "Withdraw Image A" })).toBeNull();
+    fireEvent.click(within(row).getByRole("button", { name: "Withdraw Image B" }));
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([]);
+    const confirmation = requestConfirmation.mock.calls.at(-1)![0];
+    expect(confirmation.body).toContain("return to the organization default, Image A");
+    await act(async () => confirmation.onConfirm());
+    await waitFor(() => expect(within(row).getAllByTestId("admin-image-published-model")).toHaveLength(1));
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+      { expectedVersion: 1, imageProviderModelId: "image-a", imageModels: [{ providerModelId: "image-a", parameters: { quality: "low" } }] }
+    ]);
+  });
+
+  it("clears the role after confirmation by withdrawing every published model", async () => {
+    const calls = server(imageCatalog());
+    const { requestConfirmation } = renderSection();
+    const row = await screen.findByTestId("admin-role-image");
+    fireEvent.click(within(row).getByRole("button", { name: "Image generation actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clear role" }));
+    const confirmation = requestConfirmation.mock.calls.at(-1)![0];
+    expect(confirmation).toMatchObject({ tone: "destructive", confirmLabel: "Clear role" });
+    await act(async () => confirmation.onConfirm());
+    await waitFor(() => expect(within(row).getByTestId("admin-role-image-status")).toHaveTextContent("Not assigned"));
+    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
+      { expectedVersion: 1, imageProviderModelId: null, imageModels: [] }
+    ]);
+    expect(within(row).getByText("Add and test an image model in Providers to make it available here.")).toBeVisible();
+  });
 });
