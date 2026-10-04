@@ -1323,6 +1323,8 @@ model UserSettings {
   defaultSkillsMode       SkillsMode     @default(auto)
   defaultWorkspaceEnabled Boolean        @default(true)
   defaultAssistantId      String?
+  /// Null follows the administrator default; only withdrawal resets a choice.
+  imageProviderModelId    String?
   answerSoundEnabled      Boolean        @default(true)
   answerSoundId           String         @default("rise") @db.VarChar(16)
   browserNotificationsEnabled Boolean    @default(true)
@@ -1334,9 +1336,11 @@ model UserSettings {
   user                    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   defaultProviderModel    ProviderModel? @relation("UserDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
   defaultAssistant        AssistantDefinition? @relation("UserDefaultAssistant", fields: [defaultAssistantId], references: [id], onDelete: SetNull)
+  imagePublication        PublishedImageModel? @relation("UserImageModel", fields: [imageProviderModelId], references: [providerModelId], onDelete: Restrict)
 
   @@index([defaultAssistantId])
   @@index([defaultProviderModelId])
+  @@index([imageProviderModelId])
   @@index([userId, activeInstructionPresetId])
 }
 
@@ -1392,9 +1396,13 @@ model ModelPolicy {
 }
 
 model SystemModelPolicy {
+  /// The administrator default image model; it is always published.
   imageProviderModelId    String?
+  /// Retired: published models own their parameters. Previous-release readers
+  /// may still read it during replacement; current code never reads or writes it.
   imageParamsJson         Json           @default("{}")
   imageProviderModel      ProviderModel? @relation("ImageGenerationProviderModel", fields: [imageProviderModelId], references: [id], onDelete: Restrict)
+  imagePublication        PublishedImageModel? @relation("DefaultImageModel", fields: [imageProviderModelId], references: [providerModelId], onDelete: Restrict, map: "SystemModelPolicy_imagePublication_fkey")
   id                      String         @id
   chatTitleProviderModelId String?
   chatTitleReasoningEffort String?        @db.VarChar(32)
@@ -1445,6 +1453,19 @@ model SystemModelPolicy {
   @@index([chatPdfProviderModelId])
   @@index([chatPdfNativeProviderModelId])
   @@index([updatedByUserId])
+}
+
+/// Image models the administrator published for every user. Withdrawal and
+/// role clearing reset the affected user choices first; nothing cascades.
+model PublishedImageModel {
+  providerModelId String              @id
+  /// Administrator parameters over the model defaults, validated when saved.
+  paramsJson      Json                @default("{}")
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  providerModel   ProviderModel       @relation("PublishedImageModel", fields: [providerModelId], references: [id], onDelete: Restrict)
+  defaultFor      SystemModelPolicy[] @relation("DefaultImageModel")
+  userChoices     UserSettings[]      @relation("UserImageModel")
 }
 
 enum MemoryUtilityAssignmentSource {
@@ -2826,6 +2847,7 @@ model ProviderModel {
   systemUtilityRoles          SystemModelPolicy[]             @relation("SystemUtilityProviderModel")
   memoryUtilityRoles          MemoryUtilityModelPolicy[]       @relation("MemoryUtilityProviderModel")
   imageGenerationRoles       SystemModelPolicy[]             @relation("ImageGenerationProviderModel")
+  imagePublication            PublishedImageModel?            @relation("PublishedImageModel")
   memoryRerankerRoles         SystemModelPolicy[]             @relation("MemoryRerankerProviderModel")
   semanticDecisionRoles       SystemModelPolicy[]             @relation("SemanticDecisionProviderModel")
   userDefaults                UserSettings[]                  @relation("UserDefaultProviderModel")

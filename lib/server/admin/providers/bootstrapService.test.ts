@@ -83,6 +83,23 @@ describe("provider automatic setup", () => {
       });
     }
   );
+  it.each([false, true])("publishes a verified image candidate as the first default only without one (%s)", async (assigned) => {
+    const value = fixture();
+    const candidate = { ...value.roles.candidates[0]!, upstreamModelId: "gpt-image-2", image: { profile: "openai" as const },
+      defaultParameters: {}, generation: true, editing: true };
+    value.roles.imageCandidates = [candidate];
+    if (assigned) {
+      const published = { ...candidate, parameters: { quality: "low" }, available: true, unavailableReason: null };
+      value.roles.policy.imageModel = published;
+      value.roles.policy.imageModels = [published];
+    }
+    const result = await value.run();
+    if (assigned) expect(value.rolesUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ imageModels: expect.anything() }));
+    else expect(value.rolesUpdate).toHaveBeenCalledWith(expect.objectContaining({ imageProviderModelId: candidate.id,
+      imageModels: [{ providerModelId: candidate.id, parameters: {} }] }));
+    expect(result.defaults.includes(`Image generation: ${candidate.displayName}`)).toBe(!assigned);
+  });
+
   it.each(["none", "low"])("adopts a qualified title model with economical %s reasoning", async (effort) => {
     const value = fixture();
     value.roles.titleCandidates = [{ ...value.roles.candidates[0]!, reasoningEfforts: effort === "none" ? ["none", "low", "high"] : ["low", "high"] }];

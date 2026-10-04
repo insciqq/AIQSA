@@ -13,7 +13,7 @@ import { defaultWorkspaceCheckpoints } from "../workspace/checkpoints";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from "../tools/checkpointOutputs";
 import { executionFailure } from "./executionFailure";
 import { RunSettlementError, runSettlementFailure } from "./settlementFailure";
-import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTool } from "../tools/analyzeImage";
+import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTools } from "../tools/analyzeImage";
 import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
 import { VIEW_WORKSPACE_IMAGE, viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import { agentFailureMessage } from "../agents/failures";
@@ -2548,7 +2548,7 @@ async function recoverCheckpointedToolLoop(
       ...(clientToolsEnabled && run.normalizedRequest.memorySearch ? [memorySearchTool(run.normalizedRequest.memorySearch)] : []),
       ...skillToolsForRequest(run.normalizedRequest),
       ...(run.normalizedRequest.workspaceCheckpoints ? [checkpointOutputsToolForRequest(run.normalizedRequest)] : []),
-      ...(run.normalizedRequest.visionAnalysis ? [analyzeImageTool(run.normalizedRequest.visionAnalysis)] : []),
+      ...analyzeImageTools(run.normalizedRequest),
       ...(run.normalizedRequest.workspaceImageView ? [viewWorkspaceImageTool] : []),
       ...(clientToolsEnabled && run.normalizedRequest.imagePlan ? [imageGenerationTool(run.normalizedRequest.imagePlan)] : []),
       ...(clientToolsEnabled && run.normalizedRequest.artifactTool ? [artifactTool(run.normalizedRequest.artifactToolDescription), ...(run.normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),

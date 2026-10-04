@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import sharp from "sharp";
 import { isSafeWorkspaceRelativePath } from "@/lib/domain/workspace";
 import { readStreamWithAbort } from "../http/byteStream";
-import { StaticRasterError, validateStaticRaster } from "../uploads/staticRaster";
+import { StaticRasterError, validateStaticRaster, type StaticRasterMetadata } from "../uploads/staticRaster";
 
 export const WORKSPACE_IMAGE_LIMITS = Object.freeze({
   maxImages: 8, maxBytes: 24 * 1024 * 1024, maxTotalBytes: 64 * 1024 * 1024,
@@ -81,6 +81,25 @@ function transformation(value: WorkspaceImageTransform | undefined, width: numbe
   return Object.freeze(result);
 }
 
+/** Applies a validated crop/resize to decoded static PNG/JPEG bytes within the
+ * shared bounds; a transformed image is PNG. Conversation images share it. */
+export async function transformStaticImage(bytes: Buffer, metadata: StaticRasterMetadata,
+  value: WorkspaceImageTransform | undefined, signal: AbortSignal): Promise<Readonly<{
+  output: Buffer; dimensions: StaticRasterMetadata; transform: WorkspaceImageTransform | null;
+}>> {
+  const transform = transformation(value, metadata.width, metadata.height);
+  if (!transform) return { output: bytes, dimensions: metadata, transform };
+  let output: Buffer;
+  try {
+    let pipeline = sharp(bytes, { limitInputPixels: WORKSPACE_IMAGE_LIMITS.maxPixels, failOn: "warning" }).timeout({ seconds: 8 });
+    if (transform.crop) pipeline = pipeline.extract(transform.crop);
+    if (transform.resize) pipeline = pipeline.resize({ ...transform.resize, fit: "inside", withoutEnlargement: true });
+    output = await pipeline.png().toBuffer();
+  } catch { throw invalid(); }
+  return { output, transform,
+    dimensions: await validateStaticRaster(output, { ...WORKSPACE_IMAGE_LIMITS, mimeTypes: ["image/png"] }, { signal }) };
+}
+
 async function readSource(source: WorkspaceImageSource, signal: AbortSignal): Promise<Buffer> {
   await readStreamWithAbort(() => source.assertAccess(), signal);
   signal.throwIfAborted();
@@ -128,18 +147,7 @@ export async function prepareWorkspaceImages(inputs: readonly Readonly<{
       const source = input.source;
       const bytes = await readSource(source, boundedSignal);
       const metadata = await validateStaticRaster(bytes, { ...WORKSPACE_IMAGE_LIMITS, mimeTypes: ["image/png", "image/jpeg"] }, { signal: boundedSignal });
-      const transform = transformation(input.transform, metadata.width, metadata.height);
-      let output = bytes;
-      let dimensions = metadata;
-      if (transform) {
-        try {
-          let pipeline = sharp(bytes, { limitInputPixels: WORKSPACE_IMAGE_LIMITS.maxPixels, failOn: "warning" }).timeout({ seconds: 8 });
-          if (transform.crop) pipeline = pipeline.extract(transform.crop);
-          if (transform.resize) pipeline = pipeline.resize({ ...transform.resize, fit: "inside", withoutEnlargement: true });
-          output = await pipeline.png().toBuffer();
-        } catch { throw invalid(); }
-        dimensions = await validateStaticRaster(output, { ...WORKSPACE_IMAGE_LIMITS, mimeTypes: ["image/png"] }, { signal: boundedSignal });
-      }
+      const { output, dimensions, transform } = await transformStaticImage(bytes, metadata, input.transform, boundedSignal);
       outputBytes += output.byteLength;
       if (outputBytes > WORKSPACE_IMAGE_LIMITS.maxTotalBytes) throw limit();
       await readStreamWithAbort(() => source.assertAccess(), boundedSignal);

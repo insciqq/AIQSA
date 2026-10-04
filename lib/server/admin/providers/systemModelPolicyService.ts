@@ -3,15 +3,18 @@ import { loadInstallationDecisionProviderRole } from "../../providerRuntime/admi
 import { createDecisionModelRoleResolver } from "../../providerRuntime/decisionModelRole";
 import { decodeDecisionFeatureOverrides, DECISION_FEATURES, type DecisionFeatureOverrides } from "../../../contracts/semanticDecisions";
 import { decisionFeatureEnabled, DEFAULT_DECISION_FEATURES, JEV_MODEL_ID, JEV_SERVED_MODEL_ID } from "../../../domain/decisionModels";
-import { normalizeImageGenerationParameters, type ImageGenerationParameters } from "../../../contracts/imageGeneration";
+import { IMAGE_PARAMETER_NAMES, normalizeImageGenerationParameters, type ImageGenerationParameters } from "../../../contracts/imageGeneration";
 import { hasVerifiedImageCapability } from "../../providers/imageGenerationEvidence";
 import { hasVerifiedDedicatedProtocol } from "../../providers/systemRoleEvidence";
+import { createImageModelRoleResolver, type ImageModelPublicationResolution } from "../../providerRuntime/imageModelRole";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type {
-  AdminSystemModelIneligibilityReason,
-  AdminSystemModelIneligibleCandidate,
-  AdminSystemModelPolicyCatalog,
-  SystemModelVerificationRole
+import {
+  ADMIN_IMAGE_MODEL_LIST_LIMIT,
+  type AdminPublishedImageModel,
+  type AdminSystemModelIneligibilityReason,
+  type AdminSystemModelIneligibleCandidate,
+  type AdminSystemModelPolicyCatalog,
+  type SystemModelVerificationRole
 } from "../../../contracts/adminSystemModelPolicy";
 import {
   loadInstallationAnswerProviderRole,
@@ -69,6 +72,7 @@ type SystemModelRow = AdminAnswerModelRow & {
 export type AdminSystemModelPolicyServiceErrorCode =
   | "system_model_policy_reasoning_unavailable"
   | "system_model_policy_stale"
+  | "system_model_policy_image_models_invalid"
   | "system_model_policy_image_parameters_invalid"
   | "system_model_policy_structured_output_unsupported"
   | "system_model_policy_target_unavailable"
@@ -250,6 +254,32 @@ function serializeImageModel(row: SystemModelRow) {
   } catch { return null; }
 }
 
+/** Saved administrator parameters as stored, so a projection never loses them;
+ * whether they still validate is the resolver's `parameters_invalid`. */
+function savedImageParameters(value: unknown): ImageGenerationParameters {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([name, entry]) =>
+    (IMAGE_PARAMETER_NAMES as readonly string[]).includes(name) && (Number.isSafeInteger(entry) ||
+      typeof entry === "string" && entry.trim().length > 0 && entry.length <= 80 && !/[\u0000-\u001f\u007f]/u.test(entry))));
+}
+
+function sameImageParameters(saved: unknown, next: ImageGenerationParameters): boolean {
+  const canonical = (value: object) => JSON.stringify(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)));
+  return typeof saved === "object" && saved !== null && !Array.isArray(saved) && canonical(saved) === canonical(next);
+}
+
+function serializePublishedImageModel(
+  row: SystemModelRow, paramsJson: unknown, resolution: ImageModelPublicationResolution
+): AdminPublishedImageModel {
+  const configuration = serializeImageModel(row);
+  const capabilities = resolution.ok ? resolution.plan.snapshot.model.capabilities : null;
+  return { ...serializeAdminAnswerModel(row), upstreamModelId: configuration?.upstreamModelId ?? null,
+    image: configuration?.image ?? null, defaultParameters: configuration?.defaultParameters ?? {},
+    parameters: savedImageParameters(paramsJson),
+    generation: capabilities?.imageGeneration === true, editing: capabilities?.imageEditing === true,
+    available: resolution.ok, unavailableReason: resolution.ok ? null : resolution.reason };
+}
+
 function rerankerModelAvailable(row: AdminAnswerModelRow): boolean {
   if (!row.enabled || row.activeVersion < 1 || row.activatedAt === null ||
     row.activeConfig === null || !row.connection.enabled ||
@@ -282,6 +312,7 @@ export function createAdminSystemModelPolicyService(
     loadRole?: RoleLoader;
     loadRerankerRole?: RerankerRoleLoader;
     loadDecisionRole?: typeof loadInstallationDecisionProviderRole;
+    loadImageRole?: typeof loadInstallationImageProviderRole;
     refreshActive?: ActiveRefresh;
     resolveRerankerRole?: ReturnType<typeof createRerankerModelRoleResolver>["resolve"];
     resolveChatTitleRole?: ReturnType<typeof createChatTitleModelRoleResolver>["resolve"];
@@ -305,6 +336,8 @@ export function createAdminSystemModelPolicyService(
     loadInstallationRerankerProviderRole;
   const loadDecisionRole = dependencies.loadDecisionRole ?? loadInstallationDecisionProviderRole;
   const resolveDecisionRole = createDecisionModelRoleResolver(prisma, { loadRole: loadDecisionRole }).resolve;
+  const loadImageRole = dependencies.loadImageRole ?? loadInstallationImageProviderRole;
+  const imageResolver = createImageModelRoleResolver(prisma, loadImageRole);
   const resolveRerankerRole = dependencies.resolveRerankerRole ??
     createRerankerModelRoleResolver(prisma, {
       loadRole: loadRerankerRole
@@ -481,20 +514,19 @@ export function createAdminSystemModelPolicyService(
       }
       const decisionResolution = await resolveDecisionRole();
       const selectedDecision = decisionRows.find((row) => row.id === policy.decisionProviderModelId);
+      // A published model stays listed after its class or configuration
+      // changed, so it can always be withdrawn.
       const imageRows = await prisma.providerModel.findMany({
-        where: { modelClass: "image" }, orderBy: [{ displayName: "asc" }, { id: "asc" }],
-        include: { activeCredentialChecks: true, connection: { include: { defaultCredential: { include: { activeVersion: true } } } } }
+        where: { OR: [{ modelClass: "image" }, { imagePublication: { isNot: null } }] }, orderBy: [{ displayName: "asc" }, { id: "asc" }],
+        include: { activeCredentialChecks: true, connection: { include: { defaultCredential: { include: { activeVersion: true } } } },
+          imagePublication: { select: { providerModelId: true, paramsJson: true } } }
       });
-      const imageModels = imageRows.map((row) => serializeImageModel(row as SystemModelRow)).filter((row) => row !== null);
-      const selectedImage = imageModels.find((row) => row.id === policy.imageProviderModelId) ?? null;
-      let imageParameters: ImageGenerationParameters = {};
-      let imageAvailable = Boolean(selectedImage && (selectedImage.generation || selectedImage.editing));
-      if (selectedImage) {
-        try {
-          imageParameters = normalizeImageGenerationParameters(policy.imageParamsJson ?? {}, selectedImage.image, selectedImage.upstreamModelId);
-          normalizeImageGenerationParameters({ ...selectedImage.defaultParameters, ...imageParameters }, selectedImage.image, selectedImage.upstreamModelId);
-        }
-        catch { imageAvailable = false; }
+      const imageCandidates = imageRows.map((row) => serializeImageModel(row as SystemModelRow)).filter((row) => row !== null);
+      const publishedImageModels: AdminPublishedImageModel[] = [];
+      for (const row of imageRows) {
+        if (!row.imagePublication) continue;
+        publishedImageModels.push(serializePublishedImageModel(row as SystemModelRow, row.imagePublication.paramsJson,
+          await imageResolver.resolvePublished(row.imagePublication, policy.version)));
       }
       const models = rows as SystemModelRow[];
       const typedRerankerRows = rerankerRows as AdminAnswerModelRow[];
@@ -586,15 +618,15 @@ export function createAdminSystemModelPolicyService(
         ineligible,
         rerankerCandidates,
         decisionCandidates,
-        imageCandidates: imageModels.filter((model) => model.generation || model.editing),
+        imageCandidates: imageCandidates.filter((model) => model.generation || model.editing),
         policy: {
           decisionModel: selectedDecision ? { ...serializeAdminAnswerModel(selectedDecision),
             available: decisionResolution.ok && decisionResolution.providerModelId === selectedDecision.id &&
               decisionResolution.policyVersion === policy.version } : null,
           decisionFeatures: Object.fromEntries(DECISION_FEATURES.map((feature) =>
             [feature, decisionFeatureEnabled(policy.decisionFeaturesJson ?? {}, feature)])),
-          imageModel: selectedImage ? { ...selectedImage, available: imageAvailable } : null,
-          imageParameters,
+          imageModel: publishedImageModels.find((model) => model.id === policy.imageProviderModelId) ?? null,
+          imageModels: publishedImageModels,
           chatTitleReasoningEffort: policy.chatTitleReasoningEffort ?? null,
           chatTitleModel: policy.chatTitleProviderModel ? {
             ...serializeSystemModel(policy.chatTitleProviderModel as SystemModelRow),
@@ -795,8 +827,12 @@ export function createAdminSystemModelPolicyService(
     },
 
     async update(input: Readonly<{
+      /** The administrator default, present with `imageModels`; null only with no published model. */
       imageProviderModelId?: string | null;
-      imageParameters?: ImageGenerationParameters;
+      /** The complete published set after this save. A model left out is
+       * withdrawn and its users return to the default; unchanged entries keep
+       * their saved parameters. */
+      imageModels?: ReadonlyArray<Readonly<{ providerModelId: string; parameters: ImageGenerationParameters }>>;
       chatTitleProviderModelId?: string | null;
       chatTitleReasoningEffort?: string | null;
       /** Internal setup only; never accepted by the HTTP policy handler. */
@@ -830,9 +866,15 @@ export function createAdminSystemModelPolicyService(
       const hasDecisionUpdate = input.decisionProviderModelId !== undefined || input.decisionFeatures !== undefined;
       const decisionFeatures = input.decisionFeatures === undefined ? undefined : decodeDecisionFeatureOverrides(input.decisionFeatures);
       if (decisionFeatures === null) throw new Error("system_model_policy_update_invalid");
-      const hasImageUpdate = input.imageProviderModelId !== undefined;
-      if (hasImageUpdate !== (input.imageParameters !== undefined) || input.imageProviderModelId === null && Object.keys(input.imageParameters ?? {}).length) {
-        throw new AdminSystemModelPolicyServiceError("system_model_policy_image_parameters_invalid");
+      const hasImageUpdate = input.imageProviderModelId !== undefined || input.imageModels !== undefined;
+      const imageModels = input.imageModels ?? [];
+      if (hasImageUpdate && (input.imageProviderModelId === undefined || input.imageModels === undefined ||
+        imageModels.length > ADMIN_IMAGE_MODEL_LIST_LIMIT ||
+        new Set(imageModels.map((entry) => entry.providerModelId)).size !== imageModels.length ||
+        (input.imageProviderModelId === null ? imageModels.length > 0
+          : !imageModels.some((entry) => entry.providerModelId === input.imageProviderModelId)))) {
+        // The default is always published; only clearing the role leaves none.
+        throw new AdminSystemModelPolicyServiceError("system_model_policy_image_models_invalid");
       }
       const hasTitleUpdate = input.chatTitleProviderModelId !== undefined;
       if (hasTitleUpdate !== (input.chatTitleReasoningEffort !== undefined)) {
@@ -1002,7 +1044,6 @@ export function createAdminSystemModelPolicyService(
             }
           }
 
-          let imageParameters = input.imageParameters;
           if (input.decisionProviderModelId) {
             try {
               const role = await loadDecisionRole(tx, { providerModelId: input.decisionProviderModelId });
@@ -1019,16 +1060,43 @@ export function createAdminSystemModelPolicyService(
           }
           const currentDecisionFeatures = decisionFeatures === undefined ? undefined :
             (await tx.systemModelPolicy.findUnique({ select: { decisionFeaturesJson: true }, where: { id: "installation" } }))?.decisionFeaturesJson;
-          if (input.imageProviderModelId) {
-            try {
-              const role = await loadInstallationImageProviderRole(tx, { providerModelId: input.imageProviderModelId });
-              imageParameters = normalizeImageGenerationParameters(input.imageParameters, role.configuration.image!, role.configuration.upstreamModelId);
-              normalizeImageGenerationParameters({ ...role.configuration.defaultParams, ...imageParameters },
-                role.configuration.image!, role.configuration.upstreamModelId);
-            } catch (error) {
-              if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
-              throw new AdminSystemModelPolicyServiceError("system_model_policy_image_parameters_invalid");
+          let withdrawnImageModelIds: string[] = [];
+          if (hasImageUpdate) {
+            const [published, current] = await Promise.all([
+              tx.publishedImageModel.findMany({ select: { providerModelId: true, paramsJson: true } }),
+              tx.systemModelPolicy.findUnique({ select: { imageProviderModelId: true }, where: { id: "installation" } })
+            ]);
+            const saved = new Map(published.map((row) => [row.providerModelId, row.paramsJson]));
+            for (const entry of imageModels) {
+              const stored = saved.get(entry.providerModelId);
+              const newDefault = entry.providerModelId === input.imageProviderModelId &&
+                entry.providerModelId !== current?.imageProviderModelId;
+              // An unchanged entry keeps its saved parameters, even when its
+              // provider is unavailable now; it is never substituted.
+              if (stored !== undefined && !newDefault && sameImageParameters(stored, entry.parameters)) continue;
+              let parameters: ImageGenerationParameters;
+              try {
+                const role = await loadImageRole(tx, { providerModelId: entry.providerModelId });
+                parameters = normalizeImageGenerationParameters(entry.parameters, role.configuration.image!, role.configuration.upstreamModelId);
+                normalizeImageGenerationParameters({ ...role.configuration.defaultParams, ...parameters },
+                  role.configuration.image!, role.configuration.upstreamModelId);
+              } catch (error) {
+                if (error instanceof ProviderAdmissionError) throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+                if (error instanceof Error && error.message === "image_parameters_invalid") {
+                  throw new AdminSystemModelPolicyServiceError("system_model_policy_image_parameters_invalid");
+                }
+                throw error;
+              }
+              if (stored === undefined) {
+                await tx.publishedImageModel.create({ data: { providerModelId: entry.providerModelId,
+                  paramsJson: parameters as Prisma.InputJsonObject } });
+              } else if (!sameImageParameters(stored, parameters)) {
+                await tx.publishedImageModel.update({ where: { providerModelId: entry.providerModelId },
+                  data: { paramsJson: parameters as Prisma.InputJsonObject } });
+              }
             }
+            const kept = new Set(imageModels.map((entry) => entry.providerModelId));
+            withdrawnImageModelIds = published.map((row) => row.providerModelId).filter((id) => !kept.has(id));
           }
           await tx.systemModelPolicy.update({
             data: {
@@ -1036,7 +1104,7 @@ export function createAdminSystemModelPolicyService(
               ...(decisionFeatures === undefined ? {} : { decisionFeaturesJson: {
                 ...(decodeDecisionFeatureOverrides(currentDecisionFeatures ?? {}) ?? {}), ...decisionFeatures
               } }),
-              ...(hasImageUpdate ? { imageProviderModelId: input.imageProviderModelId, imageParamsJson: imageParameters as Prisma.InputJsonObject } : {}),
+              ...(hasImageUpdate ? { imageProviderModelId: input.imageProviderModelId } : {}),
               ...(hasTitleUpdate ? {
                 chatTitleProviderModelId: input.chatTitleProviderModelId,
                 chatTitleReasoningEffort: input.chatTitleReasoningEffort,
@@ -1080,6 +1148,21 @@ export function createAdminSystemModelPolicyService(
             },
             where: { id: "installation" }
           });
+          if (withdrawnImageModelIds.length) {
+            // Withdrawal is the explicit lifecycle change that returns users to
+            // the default, in this transaction; accepted runs keep their binding.
+            try {
+              await tx.userSettings.updateMany({ where: { imageProviderModelId: { in: withdrawnImageModelIds } },
+                data: { imageProviderModelId: null } });
+              await tx.publishedImageModel.deleteMany({ where: { providerModelId: { in: withdrawnImageModelIds } } });
+            } catch (error) {
+              // A choice saved concurrently still references the model: retry.
+              if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003") {
+                throw new AdminSystemModelPolicyServiceError("system_model_policy_stale");
+              }
+              throw error;
+            }
+          }
         }, {
           isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
           maxWait: 10_000,

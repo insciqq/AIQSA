@@ -12,6 +12,7 @@ import { createAdminProviderDraftTester } from "./tester";
 import { providerSetupModels } from "./setupModels";
 import { initialModelConfiguration, pendingInitialCapabilityEvidence } from "./initialCapabilitySetup";
 import { createImageModelRoleResolver } from "../../providerRuntime/imageModelRole";
+import { createAdminSystemModelPolicyService } from "./systemModelPolicyService";
 
 const KEY = Buffer.alloc(32, 23);
 afterAll(() => prisma.$disconnect());
@@ -65,10 +66,14 @@ describe("persisted provider setup recovery", () => {
       await db.providerModelCredentialCheck.create({ data: { connectionId, credentialId, credentialVersionId,
         providerModelId: modelId, connectionVersion: 1, modelVersion: 1, status: "available", checkedAt: new Date(),
         evidence: pendingInitialCapabilityEvidence(configuration) as Prisma.InputJsonValue } });
+      // A published default stays published while its checks are incomplete;
+      // it is reported unusable, never replaced.
+      await db.publishedImageModel.create({ data: { providerModelId: modelId, paramsJson: {} } });
       await db.systemModelPolicy.upsert({ where: { id: "installation" },
-        create: { id: "installation", imageProviderModelId: modelId, imageParamsJson: {} },
-        update: { imageProviderModelId: modelId, imageParamsJson: {} } });
-      expect(await createImageModelRoleResolver(db).resolve()).toBeNull();
+        create: { id: "installation", imageProviderModelId: modelId },
+        update: { imageProviderModelId: modelId } });
+      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "project" }))
+        .toEqual({ ok: false, reason: "verification_required", providerModelId: modelId, source: "organization" });
       const png = await sharp({ create: { width: 32, height: 32, channels: 3, background: "blue" } }).png().toBuffer();
       const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ error: {
         code: "invalid_parameter", param: "resolution", message: "private upstream detail" } }, { status: 400 }))
@@ -87,10 +92,17 @@ describe("persisted provider setup recovery", () => {
       expect(partial).toMatchObject({ credentialId, credentialVersionId, evidence: { capabilitySetup: {
         checks: { imageGeneration: "incomplete", imageEditing: "verified" }, attempts: { imageGeneration: {
           reason: "invalid_input", httpStatus: 400, imageFailure: { category: "invalid_parameter", parameter: "resolution" } } } } } });
-      expect((await createImageModelRoleResolver(db).resolve())?.snapshot.model.capabilities).toMatchObject({ imageGeneration: false, imageEditing: true });
+      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "project" })).toMatchObject({ ok: true,
+        plan: { snapshot: { model: { capabilities: { imageGeneration: false, imageEditing: true } } } } });
       expect((await check()).failed).toEqual([]);
       expect(fetchFn).toHaveBeenCalledTimes(3);
-      expect((await createImageModelRoleResolver(db).resolve())?.snapshot.model.capabilities).toMatchObject({ imageGeneration: true, imageEditing: true });
+      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "project" })).toMatchObject({ ok: true,
+        plan: { snapshot: { model: { capabilities: { imageGeneration: true, imageEditing: true } } } } });
+      // The administrator list marks the same published model usable again.
+      const roles = await createAdminSystemModelPolicyService(db).list();
+      expect(roles.policy.imageModels).toEqual([expect.objectContaining({ id: modelId, available: true, unavailableReason: null,
+        generation: true, editing: true })]);
+      expect(roles.policy.imageModel?.id).toBe(modelId);
       const currentModel = await db.providerModel.findUniqueOrThrow({ where: { id: modelId } });
       const current = await db.providerModelCredentialCheck.findFirstOrThrow({ where: { providerModelId: modelId, modelVersion: currentModel.activeVersion } });
       expect(current.evidence).toMatchObject({ imageEditing: (partial.evidence as Record<string, unknown>).imageEditing,
