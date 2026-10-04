@@ -846,6 +846,7 @@ model User {
   authInvitesCreated                  AuthInvite[]                       @relation("AuthInviteCreator")
   authSessions                        AuthSession[]
   authSessionsRevoked                 AuthSession[]                      @relation("AuthSessionRevoker")
+  browserPushSubscriptions            BrowserPushSubscription[]
   assistantDefinitions                AssistantDefinition[]              @relation("AssistantDefinitionOwner")
   assistantListingRequests            AssistantListingRequest[]          @relation("AssistantListingRequester")
   assistantListingReviews             AssistantListingRequest[]          @relation("AssistantListingReviewer")
@@ -1164,7 +1165,9 @@ model AuthSession {
   updatedAt          DateTime  @updatedAt
   revokedBy          User?     @relation("AuthSessionRevoker", fields: [revokedByUserId], references: [id], onDelete: Restrict)
   user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  browserPushSubscriptions BrowserPushSubscription[]
 
+  @@unique([userId, id])
   @@index([expiresAt])
   @@index([revokedAt])
   @@index([userId, expiresAt])
@@ -1320,6 +1323,7 @@ model UserSettings {
   defaultAssistantId      String?
   answerSoundEnabled      Boolean        @default(true)
   answerSoundId           String         @default("rise") @db.VarChar(16)
+  browserNotificationsEnabled Boolean    @default(true)
   sendWithEnter           Boolean        @default(true)
   showCitations           Boolean        @default(true)
   showReasoningBlocks     Boolean        @default(false)
@@ -3500,6 +3504,7 @@ model ModelRun {
   workspaceProducedAttachments Attachment[]                        @relation("WorkspaceProducedAttachment")
   workspaceCaptureReferences   WorkspaceCaptureReference[]
   scheduledTaskOccurrences     ScheduledTaskOccurrence[]
+  browserPushDelivery          BrowserPushDelivery?
 
   @@unique([userId, id])
   @@unique([chatId, id], map: "ModelRun_chatId_id_key")
@@ -7223,6 +7228,7 @@ model ScheduledTaskOccurrence {
   chat           Chat?                        @relation(fields: [userId, chatId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
   userMessage    Message?                     @relation(fields: [userMessageId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   run            ModelRun?                    @relation(fields: [userId, runId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
+  browserPushDelivery BrowserPushDelivery?
 
   @@unique([taskId, trigger, scheduledFor])
   @@index([taskId, scheduledFor])
@@ -7230,4 +7236,45 @@ model ScheduledTaskOccurrence {
   @@index([chatId])
   @@index([runId])
   @@index([userMessageId])
+}
+
+/// The installation's VAPID key pair for browser push, created on first use.
+/// The private key is an `AIQSA_ENCRYPTION_KEY` envelope.
+model BrowserPushVapidKey {
+  id                 String   @id
+  publicKey          String   @db.VarChar(128)
+  privateKeyEnvelope String
+  createdAt          DateTime @default(now())
+}
+
+/// One browser push subscription of one signed-in device. It is bound to the
+/// session that registered it and leaves with that session's revocation.
+model BrowserPushSubscription {
+  id            String      @id @default(uuid())
+  userId        String
+  sessionId     String
+  endpoint      String      @unique @db.VarChar(2048)
+  p256dh        String      @db.VarChar(128)
+  auth          String      @db.VarChar(64)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  lastSuccessAt DateTime?
+  lastFailureAt DateTime?
+  failureCount  Int         @default(0)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session       AuthSession @relation(fields: [userId, sessionId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([userId, updatedAt])
+  @@index([sessionId])
+}
+
+/// At most one browser push per run or scheduled occurrence: the claim row is
+/// written before any delivery.
+model BrowserPushDelivery {
+  id           String                   @id
+  runId        String?                  @unique
+  occurrenceId String?                  @unique
+  claimedAt    DateTime                 @default(now())
+  run          ModelRun?                @relation(fields: [runId], references: [id], onDelete: Cascade)
+  occurrence   ScheduledTaskOccurrence? @relation(fields: [occurrenceId], references: [id], onDelete: Cascade)
 }

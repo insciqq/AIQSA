@@ -3,6 +3,7 @@
 import { libraryTabGroups } from "@/features/library-v2/LibraryV2";
 import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 import { ScheduledMessageChipV2 } from "@/features/scheduled-tasks/ScheduledMessageChipV2";
+import { BrowserNotificationsBannerV2, BrowserNotificationsSettingsRowV2 } from "@/features/browser-notifications/BrowserNotificationsV2";
 import { openAssistantDetail } from "@/components/app-shell/assistantGalleryActions";
 
 import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
@@ -1172,6 +1173,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       <ShellNotice notice={session.notice} onDismiss={session.dismissNotice} />
     </div>
   ) : null;
+  const browserNotificationsBanner = composer.browserNotifications ? (
+    <BrowserNotificationsBannerV2 notifications={composer.browserNotifications} />
+  ) : null;
   // A blank chat with an Assistant opens with its quiet intro; the intro stays
   // while the user types so the composer below it never moves.
   const assistantOrientation = chatAssistant?.state === "bound" ? (
@@ -1684,6 +1688,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               composerSlot={(
                 <div className="v2-project-page-composer-stack" ref={setComposerDockRef}>
                   {shellNotice}
+                  {browserNotificationsBanner}
                   {composerOperationError}
                   {composerSurface}
                 </div>
@@ -1828,6 +1833,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               composerSlot={conversationMessages.length === 0 ? (
                 <div className="v2-live-empty-composer-stack" ref={setComposerDockRef}>
                   {shellNotice}
+                  {browserNotificationsBanner}
                   {composerOperationError}
                   {composerSurface}
                   {blankComposerRow}
@@ -1905,6 +1911,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             {conversationMessages.length > 0 ? (
               <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={setComposerDockRef}>
                 {shellNotice}
+                {browserNotificationsBanner}
                 {composerOperationError}
                 {composerSurface}
               </div>
@@ -2005,6 +2012,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           generalSlot={(
             <>
               <AnswerSoundSettingsRowV2 composer={composer} />
+              {composer.browserNotifications ? (
+                <BrowserNotificationsSettingsRowV2 notifications={composer.browserNotifications} />
+              ) : null}
               <SettingsRowV2
                 description="Show numbered source citations inside answers."
                 title="Citations"

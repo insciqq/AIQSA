@@ -35,6 +35,7 @@ function harness() {
   const chats = new Map<string, { activeLeafMessageId: string | null; usable: boolean; userId: string }>();
   const inactiveUsers = new Set<string>();
   const emails: SmtpProductMessage[] = [];
+  const pushes: string[] = [];
   const renamed: Array<{ chatId: string; title: string }> = [];
   const sent: Array<{ body: Record<string, unknown>; chatId: string }> = [];
   const catalog: ScheduledTaskRunCatalog = {
@@ -188,6 +189,7 @@ function harness() {
     renameChat: async ({ chatId, title }) => { renamed.push({ chatId, title }); },
     send,
     sendEmail: async (message) => { emails.push(message); },
+    sendPush: (occurrenceId) => { pushes.push(occurrenceId); },
     store
   });
 
@@ -215,7 +217,7 @@ function harness() {
     await runner.idle();
   }
   return {
-    addOccurrence, addTask, chats, emails, inactiveUsers, kick, occurrences, renamed, runs, sent, store, tasks, tick,
+    addOccurrence, addTask, chats, emails, inactiveUsers, kick, occurrences, pushes, renamed, runs, sent, store, tasks, tick,
     advance(ms: number) { clock = new Date(clock.getTime() + ms); },
     setCatalog(load: typeof catalogFor) { catalogFor = load; },
     setReply(next: typeof reply) { reply = next; },
@@ -519,9 +521,24 @@ describe("scheduled task runner", () => {
     // The owner's own pause is not news: no unread marker and no email.
     expect(paused.unseenResultAt).toBeNull();
     expect(h.emails).toHaveLength(0);
+    expect(h.pushes).not.toContain(leftover.id);
     expect(h.forTask(inactive)).toMatchObject([{ reasonCode: "account_inactive", state: "FAILED" }]);
     expect(inactive).toMatchObject({ pauseReason: "account_inactive", status: "PAUSED" });
     expect(h.sent).toHaveLength(0);
+  });
+
+  it("queues one browser push per notifying settlement, with or without result email", async () => {
+    const h = harness();
+    const task = h.addTask({ emailNotify: false, nextRunAt: new Date("2026-10-02T06:00:00.000Z") });
+    h.advance(2 * 60 * MINUTE);
+    await h.tick();
+    const [missed, completed] = h.forTask(task);
+    expect(missed).toMatchObject({ reasonCode: "missed", state: "SKIPPED" });
+    expect(completed).toMatchObject({ state: "COMPLETED" });
+    expect(h.pushes).toEqual([missed!.id, completed!.id]);
+    expect(h.emails).toHaveLength(0);
+    await h.tick();
+    expect(h.pushes).toHaveLength(2);
   });
 
   it("tolerates a task deleted while its occurrence is pending", async () => {

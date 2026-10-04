@@ -35,6 +35,8 @@ export type SettingsHandlerData = CatalogSelectionData & {
 };
 
 export type UserSettingsUpdate = Partial<AnswerSoundPreferences & {
+  /** Off also removes every browser push subscription of the account. */
+  browserNotificationsEnabled: boolean;
   /** Null clears the default; an id must be available to the user. */
   defaultAssistantId: string | null;
   defaultControlValues: Record<string, unknown>;
@@ -194,6 +196,7 @@ function buildSettingsUpdate(
   const supportedKeys = new Set([
     "answerSoundEnabled",
     "answerSoundId",
+    "browserNotificationsEnabled",
     "defaultAssistantId",
     "defaultControlValues",
     "defaultKnowledgePlan",
@@ -281,6 +284,10 @@ function buildSettingsUpdate(
     if (typeof body.answerSoundEnabled !== "boolean") return { error: "answer_sound_enabled_boolean_required" };
     update.answerSoundEnabled = body.answerSoundEnabled;
   }
+  if ("browserNotificationsEnabled" in body) {
+    if (typeof body.browserNotificationsEnabled !== "boolean") return { error: "browser_notifications_enabled_boolean_required" };
+    update.browserNotificationsEnabled = body.browserNotificationsEnabled;
+  }
   if ("defaultWorkspaceEnabled" in body) {
     if (typeof body.defaultWorkspaceEnabled !== "boolean") return { error: "default_workspace_enabled_boolean_required" };
     update.defaultWorkspaceEnabled = body.defaultWorkspaceEnabled;
@@ -337,6 +344,7 @@ function serializeSettings(
   return {
     answerSoundEnabled: settings.answerSoundEnabled ?? DEFAULT_ANSWER_SOUND.answerSoundEnabled,
     answerSoundId: settings.answerSoundId ?? DEFAULT_ANSWER_SOUND.answerSoundId,
+    browserNotificationsEnabled: settings.browserNotificationsEnabled ?? true,
     defaultAssistantId: defaultAssistant.assistantId,
     defaultAssistantUnavailable: defaultAssistant.assistantUnavailable,
     defaultControlValues: resolveCurrentUserControlValues({ ...data, settings }, selection),

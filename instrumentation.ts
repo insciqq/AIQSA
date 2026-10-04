@@ -38,6 +38,13 @@ export async function register(): Promise<void> {
       reportSubsystemFailure({ subsystem: "scheduled_tasks", stage: "startup", code: "scheduled_task_runner_startup_failed", action: "degrade" });
     }
     try {
+      const { startDefaultBrowserPush } = await import("./lib/server/push/defaultBrowserPush");
+      startDefaultBrowserPush();
+    } catch {
+      // Browser push is best effort; runs and scheduled tasks settle without it.
+      reportSubsystemFailure({ subsystem: "push", stage: "startup", code: "push_unavailable", action: "degrade" });
+    }
+    try {
       const { getDefaultAttachmentProcessingCoordinator } = await import(
         "./lib/server/uploads/defaultProcessing"
       );

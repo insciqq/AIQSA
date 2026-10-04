@@ -25,6 +25,7 @@ import { decodeKnowledgePlan } from "../../contracts/knowledge";
 import { supportsAgentAdapter } from "../providers/agentResponses";
 
 export type CatalogSettingsRecord = Partial<AnswerSoundPreferences> & {
+  browserNotificationsEnabled?: boolean;
   /** Saved personal default Assistant, before any availability check. */
   defaultAssistantId?: string | null;
   /** Whether the saved default Assistant is available to the user now; absent means not checked. */
@@ -243,6 +244,7 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
     defaults: {
       answerSoundEnabled: input.settings.answerSoundEnabled ?? DEFAULT_ANSWER_SOUND.answerSoundEnabled,
       answerSoundId: input.settings.answerSoundId ?? DEFAULT_ANSWER_SOUND.answerSoundId,
+      browserNotificationsEnabled: input.settings.browserNotificationsEnabled ?? true,
       controlValues: resolveCurrentUserControlValues(input, selection),
       modelId: defaultModel?.modelId ?? "",
       hasPersonalModelDefault,
