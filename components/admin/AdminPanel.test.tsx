@@ -1439,7 +1439,7 @@ describe("AdminPanel", () => {
     expect(screen.queryByTestId("admin-user-page")).not.toBeInTheDocument();
 
     const page = await openUserPage("Admin User");
-    expect(within(page).getByText(/Self-disable and self-delete are not exposed/)).toBeInTheDocument();
+    expect(within(page).getByText(/Self-disable, self-delete and changing your own administrator role are not exposed/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Disable" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete stale" })).not.toBeInTheDocument();
   });
