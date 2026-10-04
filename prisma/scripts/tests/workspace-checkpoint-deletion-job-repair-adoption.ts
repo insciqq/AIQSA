@@ -20,7 +20,8 @@ UNION ALL SELECT 'capture', to_jsonb(s) FROM "WorkspaceSelectedCapture" s WHERE 
 UNION ALL SELECT 'captured-file', to_jsonb(f) FROM "WorkspaceCapturedFile" f WHERE f."captureId" IN ('${CHECKPOINT_CAPTURE}', '${CAPTURE_ONLY}')
 UNION ALL SELECT 'reference', to_jsonb(r) FROM "WorkspaceCaptureReference" r WHERE r."consumerRunId" = '${RUN}'
 UNION ALL SELECT 'tool-call', to_jsonb(t) FROM "ModelRunToolCall" t WHERE t."modelRunId" = '${RUN}'
-UNION ALL SELECT 'run', to_jsonb(r) - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration'] FROM "ModelRun" r WHERE r."id" = '${RUN}'`;
+UNION ALL SELECT 'run', to_jsonb(r) - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome']
+  FROM "ModelRun" r WHERE r."id" = '${RUN}'`;
 
 /** One published two-file checkpoint (K1 unclaimed, K2 claimed job), one
  * capture-only key (K3) and one ordinary upload (K4), each with a job. */
