@@ -173,12 +173,12 @@ async function expectCompletePrintPage(page: Page) {
   const printPage = page.getByTestId("chat-print-page");
   await expect(printPage).toHaveAttribute("data-print-state", "ready", { timeout: 30_000 });
   await expect(printPage).toHaveAttribute("data-print-settle", "settled");
-  await expect(page.getByRole("heading", { level: 1, name: TITLE })).toBeVisible();
+  await expect(page.getByRole("heading", { exact: true, level: 1, name: TITLE })).toBeVisible();
   const turns = page.getByTestId("chat-print-thread").getByRole("article");
   await expect(turns).toHaveCount(MESSAGE_COUNT);
   await expect(turns.first()).toContainText(FIRST_TEXT);
   await expect(turns.last()).toContainText("Итоговый ответ с формулой");
-  const image = turns.nth(MESSAGE_COUNT - 2).getByRole("img", { name: "Схема склада" });
+  const image = turns.nth(MESSAGE_COUNT - 2).getByRole("img", { exact: true, name: "Схема склада" });
   await expect(image).toBeVisible();
   expect(await image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(480);
   const answer = turns.last();
@@ -224,9 +224,9 @@ test("the chat menu opens a print page of the whole branch that prints once and 
   await signInWithLocalToken(page, `/c/${fixture.chatId}`);
 
   await page.getByTestId("header-more-trigger").click();
-  await page.getByRole("menuitem", { name: "Export" }).click();
+  await page.getByRole("menuitem", { exact: true, name: "Export" }).click();
   const popupPromise = context.waitForEvent("page");
-  await page.getByRole("menuitem", { name: "PDF" }).click();
+  await page.getByRole("menuitem", { exact: true, name: "PDF" }).click();
   const popup = await popupPromise;
   await popup.setViewportSize({ width: 1440, height: 900 });
   expect(new URL(popup.url()).pathname).toBe(`/print/c/${fixture.chatId}`);
@@ -236,14 +236,14 @@ test("the chat menu opens a print page of the whole branch that prints once and 
   await expect.poll(() => popup.evaluate(() => (window as unknown as { __printCalls: number }).__printCalls)).toBe(1);
   await popup.waitForTimeout(500);
   expect(await popup.evaluate(() => (window as unknown as { __printCalls: number }).__printCalls)).toBe(1);
-  await expect(popup.getByRole("button", { name: "Print / Save as PDF" })).toBeVisible();
+  await expect(popup.getByRole("button", { exact: true, name: "Print / Save as PDF" })).toBeVisible();
   await expectNoHorizontalOverflow(popup);
   await popup.screenshot({ path: testInfo.outputPath("chat-print-desktop-screen.png") });
 
   // On paper: no toolbar, buttons or code/diagram chrome; code wraps.
   await popup.emulateMedia({ media: "print" });
-  await expect(popup.getByRole("button", { name: "Print / Save as PDF" })).toBeHidden();
-  await expect(popup.getByRole("button", { name: "Copy code" })).toBeHidden();
+  await expect(popup.getByRole("button", { exact: true, name: "Print / Save as PDF" })).toBeHidden();
+  await expect(popup.getByRole("button", { exact: true, name: "Copy code" })).toBeHidden();
   expect(await popup.locator(".shiki").first().evaluate((element) => getComputedStyle(element).whiteSpace)).toBe("pre-wrap");
   await popup.getByTestId("mermaid-block").scrollIntoViewIfNeeded();
   await popup.screenshot({ path: testInfo.outputPath("chat-print-desktop-print-media.png") });
