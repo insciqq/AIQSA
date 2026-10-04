@@ -452,6 +452,30 @@ async function assertConstraintCatalog(): Promise<void> {
   if (memoryOperationOutcomes.map(({ label }) => label).join(",") !== "APPLIED,REJECTED") {
     throw new Error("MemoryOperationOutcome contains an unsupported compatibility value.");
   }
+  // Sidebar message search: an expression index needs an immutable function,
+  // and a concurrently built index must have finished valid.
+  const messageSearchIndexes = await prisma.$queryRaw<Array<{
+    parallelSafety: string;
+    valid: boolean;
+    volatility: string;
+  }>>`
+    SELECT procedure.proparallel::text AS "parallelSafety",
+      index_catalog.indisvalid AS valid,
+      procedure.provolatile::text AS volatility
+    FROM pg_index AS index_catalog
+    INNER JOIN pg_class AS index_relation ON index_relation.oid = index_catalog.indexrelid
+    INNER JOIN pg_namespace AS namespace ON namespace.oid = index_relation.relnamespace
+    INNER JOIN pg_proc AS procedure ON procedure.proname = 'aiqsa_message_search_text'
+      AND procedure.pronamespace = namespace.oid
+    WHERE namespace.nspname = current_schema()
+      AND index_relation.relname = 'Message_searchText_trgm_idx'
+      AND pg_get_indexdef(index_catalog.indexrelid) LIKE '%USING gin (aiqsa_message_search_text(content) gin_trgm_ops)%'
+  `;
+  if (JSON.stringify(messageSearchIndexes) !== JSON.stringify([
+    { parallelSafety: "s", valid: true, volatility: "i" }
+  ])) {
+    throw new Error("Expected a valid trigram index over the immutable message search text.");
+  }
 }
 
 async function assertMemoryActiveGenerationGuard(): Promise<void> {
