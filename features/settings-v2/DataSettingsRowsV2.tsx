@@ -3,6 +3,7 @@
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import { ACCOUNT_EXPORT_ALL_CHATS_HREF } from "@/components/app-shell/accountApi";
 import { errorMessage } from "@/components/app-shell/shellFormatting";
+import { ChatImportRowV2 } from "@/features/chat-import/ChatImportRowV2";
 import type { DeleteAllPersonalChatsResponse } from "@/lib/contracts/account";
 import { useState } from "react";
 import { SettingsGroupLabelV2, SettingsRowV2 } from "./SettingsV2";
@@ -28,16 +29,19 @@ export function deleteAllSummary(result: DeleteAllPersonalChatsResponse): string
 }
 
 /**
- * Data tab rows that need the server (PRD §4.9): Export all chats and the
- * Danger zone. The destructive action runs only after a confirmation that
- * names its consequence.
+ * Data tab rows that need the server (PRD §4.9): Export all chats, Import
+ * chats and the Danger zone. The destructive action runs only after a
+ * confirmation that names its consequence.
  */
 export function DataSettingsRowsV2({
   onDeleteAll,
-  onDeleted
+  onDeleted,
+  onImported
 }: Readonly<{
   onDeleteAll(): Promise<DeleteAllPersonalChatsResponse>;
   onDeleted?(result: DeleteAllPersonalChatsResponse): void;
+  /** Runs when an import created chats, so the chat list shows them. */
+  onImported?(): void;
 }>) {
   const [state, setState] = useState<DeleteAllState>({ kind: "idle" });
 
@@ -69,6 +73,7 @@ export function DataSettingsRowsV2({
           <span>Export…</span>
         </a>
       </SettingsRowV2>
+      <ChatImportRowV2 {...(onImported ? { onImported } : {})} />
       <SettingsGroupLabelV2 tone="danger">Danger zone</SettingsGroupLabelV2>
       <SettingsRowV2
         description={state.kind === "done"

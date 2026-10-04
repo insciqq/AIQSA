@@ -618,6 +618,8 @@ export type UiV2MenuAction = Readonly<{
   selected?: boolean;
   /** Starts a new visual group. */
   separatorBefore?: boolean;
+  /** A second line under the label, e.g. why a disabled item is unavailable. */
+  sub?: string;
   /** Inline disclosure list (folder picker); scrolls locally when long. */
   submenu?: readonly UiV2MenuSubmenuItem[];
   tone?: UiV2MenuItemTone;
@@ -646,6 +648,7 @@ export function UiV2MenuActions({
             disabled={action.disabled}
             icon={action.icon}
             selected={action.selected}
+            sub={action.sub}
             tone={action.tone}
             {...(action.submenu ? { "aria-expanded": openSubmenu === action.label } : {})}
             onClick={() => {
