@@ -117,9 +117,15 @@ describe("Prisma chat navigation repository", () => {
         kind: "ok",
         page: { chats: [{ id: first.id }] }
       });
-      // A phrase only inside a message finds its chat in the separate message
-      // page, never among the title results.
+      // A phrase only inside a message finds its chat through the message
+      // search, never among the title results.
       await expect(repository.searchPage({
+        cursor: null,
+        limit: 10,
+        query: "private needle",
+        userId: ownerId
+      })).resolves.toEqual({ kind: "ok", page: { chats: [], folders: expect.any(Array), nextCursor: null } });
+      await expect(repository.searchMessagesPage({
         cursor: null,
         limit: 10,
         query: "private needle",
@@ -127,19 +133,16 @@ describe("Prisma chat navigation repository", () => {
       })).resolves.toMatchObject({
         kind: "ok",
         page: {
-          chats: [],
-          messageMatches: {
-            matches: [{ chatId: contentOnly.id, snippet: "private needle inside a message" }],
-            nextCursor: null
-          }
+          matches: [{ chatId: contentOnly.id, snippet: "private needle inside a message" }],
+          nextCursor: null
         }
       });
-      await expect(repository.searchPage({
+      await expect(repository.searchMessagesPage({
         cursor: null,
         limit: 10,
         query: "private needle",
         userId: foreignId
-      })).resolves.toMatchObject({ kind: "ok", page: { chats: [], messageMatches: { matches: [] } } });
+      })).resolves.toEqual({ kind: "ok", page: { matches: [], nextCursor: null } });
       await expect(repository.searchPage({
         cursor: null,
         limit: 10,

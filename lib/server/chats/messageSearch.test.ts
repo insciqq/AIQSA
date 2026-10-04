@@ -4,7 +4,6 @@ import {
   MESSAGE_SEARCH_STATEMENT_TIMEOUT_MS,
   findMessageMatches,
   messageMatchSnippet,
-  messageSearchEligible,
   messageSearchPattern,
   type MessageSearchClient
 } from "./messageSearch";
@@ -26,11 +25,7 @@ function client(rows: unknown[] | Error) {
 }
 
 describe("message content search", () => {
-  it("matches text from three characters and escapes LIKE wildcards literally", () => {
-    expect(messageSearchEligible("ab")).toBe(false);
-    expect(messageSearchEligible("abc")).toBe(true);
-    // Characters, not UTF-16 units: two astral characters stay too short.
-    expect(messageSearchEligible("😀😀")).toBe(false);
+  it("escapes LIKE wildcards and the escape character literally", () => {
     expect(messageSearchPattern("100%_done\\now")).toBe("%100\\%\\_done\\\\now%");
     expect(messageSearchPattern("бюджет")).toBe("%бюджет%");
   });

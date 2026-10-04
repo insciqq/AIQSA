@@ -1,7 +1,6 @@
 import { Prisma } from "@prisma/client";
 import {
   CHAT_MESSAGE_MATCH_SNIPPET_CONTEXT,
-  CHAT_MESSAGE_SEARCH_MIN_QUERY_LENGTH,
   type ChatMessageMatchWire
 } from "../../contracts/chats";
 import type { prisma } from "../prisma";
@@ -34,10 +33,6 @@ type MessageMatchRow = {
   textLength: number;
   title: string;
 };
-
-export function messageSearchEligible(query: string): boolean {
-  return Array.from(query).length >= CHAT_MESSAGE_SEARCH_MIN_QUERY_LENGTH;
-}
 
 /** An ILIKE pattern that matches the query literally anywhere in the text. */
 export function messageSearchPattern(query: string): string {

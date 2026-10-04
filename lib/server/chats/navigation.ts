@@ -5,18 +5,19 @@ import {
   CHAT_NAVIGATION_DEFAULT_PAGE_SIZE,
   CHAT_NAVIGATION_MAX_PAGE_SIZE,
   CHAT_NAVIGATION_QUERY_MAX_LENGTH,
+  chatMessageSearchApplies,
+  normalizeChatNavigationQuery,
   type ChatMessageMatchPageWire,
   type ChatMessageMatchWire,
   type ChatNavigationErrorResponse,
   type ChatNavigationFolderWire,
   type ChatNavigationPageWire,
-  type ChatNavigationSearchPageWire,
   type ChatNavigationSummaryWire
 } from "../../contracts/chats";
 import { availableAssistantIdentities } from "../assistants/bindingAccess";
 import type { AuthenticatedSession, RequestAuthResolver } from "../auth/requestAuth";
 import { prisma } from "../prisma";
-import { findMessageMatches, messageSearchEligible } from "./messageSearch";
+import { findMessageMatches } from "./messageSearch";
 
 const PRIVATE_CACHE_CONTROL = "private, no-store, max-age=0";
 const ACTIVE_RUN_STATUSES: ModelRunStatus[] = [
@@ -57,31 +58,20 @@ export type ChatMessageMatchPageResult =
   | Readonly<{ kind: "message_search_timeout" }>
   | Readonly<{ kind: "ok"; page: ChatMessageMatchPageRecord }>;
 
-export type ChatNavigationSearchResult =
-  | Readonly<{ kind: "cursor_invalid" }>
-  | Readonly<{ kind: "message_search_timeout" }>
-  | Readonly<{
-      kind: "ok";
-      page: ChatNavigationPageRecord & Readonly<{ messageMatches: ChatMessageMatchPageRecord | null }>;
-    }>;
-
 export type ChatNavigationRepository = Readonly<{
   listPage(input: {
     cursor: string | null;
     limit: number;
     userId: string;
   }): Promise<ChatNavigationPageResult>;
-  /**
-   * Title and folder matches; the first page also carries the first page of
-   * message matches when the query is long enough for text matching.
-   */
+  /** Title and folder matches only; message text never delays them. */
   searchPage(input: {
     cursor: string | null;
     limit: number;
     query: string;
     userId: string;
-  }): Promise<ChatNavigationSearchResult>;
-  /** Further pages of message matches, continued by their own cursor. */
+  }): Promise<ChatNavigationPageResult>;
+  /** Chats whose message text matches, paged by their own cursor. */
   searchMessagesPage(input: {
     cursor: string | null;
     limit: number;
@@ -106,10 +96,6 @@ function scheduledTaskMarker(row: Readonly<{
 }>): Readonly<{ taskId: string; unseen: boolean }> | null {
   const taskId = row.scheduledTasks[0]?.id ?? row.scheduledTaskOccurrences[0]?.taskId;
   return taskId ? { taskId, unseen: Boolean(row.scheduledTaskOccurrences[0]?.unseenAt) } : null;
-}
-
-function normalizedQuery(value: string): string {
-  return value.normalize("NFKC").trim().toLowerCase();
 }
 
 function encodeCursor(cursor: NavigationCursor): string {
@@ -167,7 +153,7 @@ async function page(
     userId: string;
   }
 ): Promise<ChatNavigationPageResult> {
-  const queryIdentity = input.query === null ? null : normalizedQuery(input.query);
+  const queryIdentity = input.query === null ? null : normalizeChatNavigationQuery(input.query);
   const cursor = input.cursor ? decodeCursor(input.cursor, queryIdentity, input.userId) : null;
   if (input.cursor && !cursor) return { kind: "cursor_invalid" };
 
@@ -281,9 +267,11 @@ async function messageMatchesPage(
     userId: string;
   }
 ): Promise<ChatMessageMatchPageResult> {
-  const query = normalizedQuery(input.query);
+  const query = normalizeChatNavigationQuery(input.query);
   const cursor = input.cursor ? decodeCursor(input.cursor, query, input.userId, "messages") : null;
   if (input.cursor && !cursor) return { kind: "cursor_invalid" };
+  // Too short to yield a trigram, the index could not narrow the scan.
+  if (!chatMessageSearchApplies(query)) return { kind: "ok", page: { matches: [], nextCursor: null } };
   const rows = await findMessageMatches(prismaClient, {
     after: cursor ? { id: cursor.id, updatedAt: cursor.updatedAt } : null,
     limit: input.limit + 1,
@@ -316,29 +304,13 @@ export function createPrismaChatNavigationRepository(
 ): ChatNavigationRepository {
   return {
     listPage: (input) => page(prismaClient, { ...input, query: null }),
-    searchPage: async (input) => {
-      // Text matching runs for the first page only; title continuation pages
-      // never repeat it.
-      const [titles, messages] = await Promise.all([
-        page(prismaClient, input),
-        input.cursor === null && messageSearchEligible(normalizedQuery(input.query))
-          ? messageMatchesPage(prismaClient, { ...input, cursor: null })
-          : Promise.resolve(null)
-      ]);
-      if (titles.kind !== "ok") return titles;
-      if (messages && messages.kind !== "ok") return messages;
-      return { kind: "ok", page: { ...titles.page, messageMatches: messages?.page ?? null } };
-    },
+    searchPage: (input) => page(prismaClient, input),
     searchMessagesPage: (input) => messageMatchesPage(prismaClient, input)
   };
 }
 
 function json(
-  body:
-    | ChatMessageMatchPageWire
-    | ChatNavigationErrorResponse
-    | ChatNavigationPageWire
-    | ChatNavigationSearchPageWire,
+  body: ChatMessageMatchPageWire | ChatNavigationErrorResponse | ChatNavigationPageWire,
   status = 200
 ) {
   const response = Response.json(body, { status });
@@ -409,7 +381,7 @@ function searchControls(
 ): { cursor: string | null; limit: number; query: string } | null {
   const values = queryValues(request, ["cursor", "limit", "q"]);
   const limit = values ? pageLimit(values.limit) : null;
-  const query = normalizedQuery(values?.q ?? "");
+  const query = normalizeChatNavigationQuery(values?.q ?? "");
   return values && limit !== null && values.cursor !== "" && query &&
     query.length <= CHAT_NAVIGATION_QUERY_MAX_LENGTH
     ? { cursor: values.cursor ?? null, limit, query }
@@ -439,27 +411,20 @@ export function createSearchChatNavigationHandler(deps: ChatNavigationHandlerDep
     if (!("session" in auth)) return auth.response;
     const controls = searchControls(request);
     if (!controls) return json({ error: "chat_navigation_query_invalid" }, 400);
-    const result = await deps.repository.searchPage({ ...controls, userId: auth.session.userId });
-    return result.kind === "ok"
-      ? json({
-          chats: [...result.page.chats],
-          folders: [...result.page.folders],
-          messageMatches: result.page.messageMatches
-            ? messageMatchPageWire(result.page.messageMatches)
-            : null,
-          nextCursor: result.page.nextCursor
-        })
-      : failure(result.kind);
+    return respond(await deps.repository.searchPage({ ...controls, userId: auth.session.userId }));
   };
 }
 
-/** Later pages of message matches; the query must be long enough for text matching. */
+/**
+ * Message matches, first and later pages, requested beside the title search;
+ * the query must be long enough for text matching.
+ */
 export function createSearchChatMessagesHandler(deps: ChatNavigationHandlerDeps) {
   return async function GET(request: Request): Promise<Response> {
     const auth = await authenticated(request, deps);
     if (!("session" in auth)) return auth.response;
     const controls = searchControls(request);
-    if (!controls || !messageSearchEligible(controls.query)) {
+    if (!controls || !chatMessageSearchApplies(controls.query)) {
       return json({ error: "chat_navigation_query_invalid" }, 400);
     }
     const result = await deps.repository.searchMessagesPage({ ...controls, userId: auth.session.userId });

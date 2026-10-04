@@ -35,27 +35,25 @@ afterEach(() => {
 });
 
 describe("chat navigation API", () => {
-  it("requests the bounded compact, search and message match endpoints", async () => {
+  it("requests the bounded compact, title search and message match endpoints", async () => {
     const fetch = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(Response.json(page))
-      .mockResolvedValueOnce(Response.json({ ...page, messageMatches: matches }))
+      .mockResolvedValueOnce(Response.json(page))
+      .mockResolvedValueOnce(Response.json(matches))
       .mockResolvedValueOnce(Response.json(matches));
 
     await expect(listChatNavigation({ cursor: "cursor-1", limit: 12 })).resolves.toEqual(page);
-    await expect(searchChatNavigation({ query: "Research" }))
-      .resolves.toEqual({ ...page, messageMatches: matches });
+    await expect(searchChatNavigation({ query: "Research" })).resolves.toEqual(page);
+    await expect(searchChatMessageMatches({ query: "Research" })).resolves.toEqual(matches);
     await expect(searchChatMessageMatches({ cursor: "message_cursor", query: "Research" }))
       .resolves.toEqual(matches);
 
-    expect(fetch.mock.calls[0]?.[0]).toBe(
-      "/api/chats/compact?cursor=cursor-1&limit=12"
-    );
-    expect(fetch.mock.calls[1]?.[0]).toBe(
-      "/api/chats/search?limit=30&q=Research"
-    );
-    expect(fetch.mock.calls[2]?.[0]).toBe(
+    expect(fetch.mock.calls.map((call) => call[0])).toEqual([
+      "/api/chats/compact?cursor=cursor-1&limit=12",
+      "/api/chats/search?limit=30&q=Research",
+      "/api/chats/search/messages?limit=30&q=Research",
       "/api/chats/search/messages?cursor=message_cursor&limit=30&q=Research"
-    );
+    ]);
   });
 
   it("fails closed for malformed success payloads and preserves stable server codes", async () => {
@@ -65,8 +63,8 @@ describe("chat navigation API", () => {
         { error: "chat_navigation_cursor_invalid" },
         { status: 400 }
       ))
-      // A title page without its message page is not a search response.
-      .mockResolvedValueOnce(Response.json(page))
+      // The title response never carries message matches.
+      .mockResolvedValueOnce(Response.json({ ...page, messageMatches: matches }))
       .mockResolvedValueOnce(Response.json(
         { error: "chat_navigation_search_timeout" },
         { status: 503 }
@@ -86,7 +84,7 @@ describe("chat navigation API", () => {
       message: "chat_navigation_response_invalid",
       status: 502
     });
-    await expect(searchChatMessageMatches({ cursor: "message_cursor", query: "the" })).rejects.toMatchObject({
+    await expect(searchChatMessageMatches({ query: "the" })).rejects.toMatchObject({
       message: "chat_navigation_search_timeout",
       status: 503
     });

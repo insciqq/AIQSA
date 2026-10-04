@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Response, type Route } from "@playwright/test";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
@@ -101,16 +101,23 @@ async function navigation(page: Page): Promise<Locator> {
   return sidebar;
 }
 
-/** Types a query and waits for its first search page to arrive. */
+/**
+ * Types a query (three characters or more) and waits for both of its first
+ * pages: the title results and, requested beside them, the message matches.
+ */
 async function search(page: Page, query: string): Promise<Locator> {
   const sidebar = await navigation(page);
-  const response = page.waitForResponse((candidate) => {
+  const firstPage = (path: string) => page.waitForResponse((candidate: Response) => {
     const url = new URL(candidate.url());
-    return url.pathname === "/api/chats/search" && url.searchParams.get("q") === query;
+    return url.pathname === path && url.searchParams.get("q") === query && !url.searchParams.has("cursor");
   });
+  const titles = firstPage("/api/chats/search");
+  const messages = firstPage("/api/chats/search/messages");
   await sidebar.getByRole("searchbox", { name: "Filter chats" }).fill(query);
-  expect((await response).ok()).toBe(true);
+  expect((await titles).ok()).toBe(true);
+  expect((await messages).ok()).toBe(true);
   await expect(sidebar.getByText("Searching chats…")).toHaveCount(0);
+  await expect(sidebar.getByText("Searching messages…")).toHaveCount(0);
   return sidebar;
 }
 
@@ -184,6 +191,37 @@ test("a word inside an old message finds its chat and opens it at that message",
     // Opening the result was one history entry; the second jump stayed in it.
     await page.goBack();
     await expect.poll(() => new URL(page.url()).pathname).toBe("/");
+  } finally {
+    await deleteOwnedChatPermanently(page.request, seeded.chatId);
+  }
+});
+
+test("a message search that times out never holds back the title results", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  await signInWithLocalToken(page);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const seeded = await seedChat(page);
+  const timedOut = (route: Route) => route.fulfill({ json: { error: "chat_navigation_search_timeout" }, status: 503 });
+  try {
+    await page.route("**/api/chats/search/messages?*", timedOut);
+    await page.goto("/");
+    await expect(page.getByTestId("app-shell")).toBeVisible();
+    const sidebar = await navigation(page);
+    await sidebar.getByRole("searchbox", { name: "Filter chats" }).fill(seeded.title);
+
+    await expect(sidebar.getByRole("group", { name: "Results" }).getByRole("treeitem", { name: seeded.title }))
+      .toBeVisible({ timeout: 15_000 });
+    const inMessages = sidebar.getByRole("group", { name: "In messages" });
+    const timeoutCopy = inMessages.getByText("Search in messages took too long. Try a more specific phrase.");
+    await expect(timeoutCopy).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    await page.screenshot({ path: testInfo.outputPath("message-search-timeout-desktop.png") });
+
+    // Retry asks the message search again; the title holds no message text.
+    await page.unroute("**/api/chats/search/messages?*", timedOut);
+    await inMessages.getByRole("button", { name: "Retry" }).click();
+    await expect(inMessages.getByText("No messages match.")).toBeVisible({ timeout: 15_000 });
+    await expect(timeoutCopy).toHaveCount(0);
   } finally {
     await deleteOwnedChatPermanently(page.request, seeded.chatId);
   }

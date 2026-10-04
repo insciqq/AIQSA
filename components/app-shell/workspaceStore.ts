@@ -4,7 +4,6 @@ import type {
   ChatMessageMatchWire,
   ChatNavigationFolderWire,
   ChatNavigationPageWire,
-  ChatNavigationSearchPageWire,
   ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
 import { create } from "zustand";
@@ -26,11 +25,16 @@ export type WorkspaceSnapshot = {
   navigationError: string | null;
   navigationFolders: ChatNavigationFolderWire[];
   navigationLoading: boolean;
-  /** Chats whose message text matches the search query: a list of its own, beside the title results. */
+  /**
+   * Chats whose message text matches the search query: a list of its own,
+   * loaded beside the title results with its own loading and failure.
+   */
   navigationMessageMatches: ChatMessageMatchWire[];
   navigationMessageMatchesError: string | null;
   navigationMessageMatchesLoading: boolean;
   navigationMessageMatchesNextCursor: string | null;
+  /** The first message page of the current query has arrived. */
+  navigationMessageMatchesReady: boolean;
   navigationNextCursor: string | null;
   navigationReady: boolean;
   navigationSearchChats: ChatNavigationSummaryWire[];
@@ -54,9 +58,9 @@ export type WorkspaceStore = WorkspaceSnapshot & {
   setCreatingChat(value: boolean): void;
   setFolders(update: StateUpdate<FolderSummary[]>): void;
   applyNavigationPage(page: ChatNavigationPageWire, append: boolean): void;
-  /** A first page replaces both result lists; a title continuation page leaves message matches alone. */
-  applyNavigationSearchPage(page: ChatNavigationSearchPageWire, append: boolean): void;
-  appendNavigationMessageMatches(page: ChatMessageMatchPageWire): void;
+  applyNavigationSearchPage(page: ChatNavigationPageWire, append: boolean): void;
+  /** A first page replaces the message matches; a later page continues them. */
+  applyNavigationMessageMatchPage(page: ChatMessageMatchPageWire, append: boolean): void;
   setNavigationError(value: string | null): void;
   setNavigationLoading(value: boolean): void;
   setNavigationMessageMatchesError(value: string | null): void;
@@ -97,6 +101,7 @@ export const initialWorkspaceSnapshot: WorkspaceSnapshot = {
   navigationMessageMatchesError: null,
   navigationMessageMatchesLoading: false,
   navigationMessageMatchesNextCursor: null,
+  navigationMessageMatchesReady: false,
   navigationNextCursor: null,
   navigationReady: false,
   navigationSearchChats: [],
@@ -204,27 +209,22 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
       ),
       navigationSearchError: null,
       navigationSearchLoading: false,
-      navigationSearchNextCursor: page.nextCursor,
-      ...(append ? {} : {
-        navigationMessageMatches: page.messageMatches ? [...page.messageMatches.matches] : [],
-        navigationMessageMatchesError: null,
-        navigationMessageMatchesLoading: false,
-        navigationMessageMatchesNextCursor: page.messageMatches?.nextCursor ?? null
-      })
+      navigationSearchNextCursor: page.nextCursor
     }));
   },
-  appendNavigationMessageMatches(page) {
+  applyNavigationMessageMatchPage(page, append) {
     set((state) => {
       // Server order continues the list; a chat already shown keeps its place.
-      const shown = new Set(state.navigationMessageMatches.map((match) => match.chatId));
+      const shown = new Set(append ? state.navigationMessageMatches.map((match) => match.chatId) : []);
       return {
         navigationMessageMatches: [
-          ...state.navigationMessageMatches,
+          ...(append ? state.navigationMessageMatches : []),
           ...page.matches.filter((match) => !shown.has(match.chatId))
         ],
         navigationMessageMatchesError: null,
         navigationMessageMatchesLoading: false,
-        navigationMessageMatchesNextCursor: page.nextCursor
+        navigationMessageMatchesNextCursor: page.nextCursor,
+        navigationMessageMatchesReady: true
       };
     });
   },
@@ -254,6 +254,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
       navigationMessageMatchesError: null,
       navigationMessageMatchesLoading: false,
       navigationMessageMatchesNextCursor: null,
+      navigationMessageMatchesReady: false,
       navigationSearchChats: [],
       navigationSearchError: null,
       navigationSearchLoading: false,

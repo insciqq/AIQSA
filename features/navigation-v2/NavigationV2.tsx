@@ -36,6 +36,7 @@ import {
   CHAT_NAVIGATION_QUERY_MAX_LENGTH,
   CHAT_TITLE_MAX_LENGTH,
   PERSONAL_FOLDER_NAME_MAX_LENGTH,
+  chatMessageSearchApplies,
   type ChatMessageMatchWire,
   type ChatNavigationFolderWire,
   type ChatNavigationSummaryWire
@@ -90,12 +91,15 @@ export type NavigationSidebarProps = Readonly<{
   loading: boolean;
   /**
    * Chats found by the text of their messages, listed after the title results
-   * while a search is shown; the bottom of the list continues these once present.
+   * while a query of at least three characters is shown. They load on their
+   * own; absent means the surface offers no message search.
    */
   messageMatches?: readonly ChatMessageMatchWire[];
   messageMatchesError?: string | null;
   messageMatchesHasMore?: boolean;
   messageMatchesLoading?: boolean;
+  /** The first message page of the current query has arrived. */
+  messageMatchesReady?: boolean;
   now?: Date;
   onArchive?(chat: ChatNavigationSummaryWire): void;
   onCancelChatRename?(): void;
@@ -131,6 +135,8 @@ export type NavigationSidebarProps = Readonly<{
   onLoadMoreMessageMatches?(): void;
   /** Opens a message match's chat scrolled to that message. */
   onOpenMessageMatch?(match: ChatMessageMatchWire): void;
+  /** Requests the first message page again after it failed. */
+  onRetryMessageMatches?(): void;
   /** Rail/drawer Projects: opens the dedicated Projects section. */
   onProjects?(): void;
   /**
@@ -702,29 +708,38 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<HTMLButtonElement>(null);
   const anchorRef = useRef<NavigationScrollAnchor | null>(null);
+  // A query long enough for message matching shows the "In messages" section
+  // in every state; it then owns the end of the list, and more title results
+  // load at the end of their own section.
+  const messageSearch = Boolean(props.searchQuery) && props.messageMatches !== undefined &&
+    chatMessageSearchApplies(props.searchQuery);
   const messageMatches = useMemo(
-    () => props.searchQuery ? props.messageMatches ?? [] : [],
-    [props.messageMatches, props.searchQuery]
+    () => messageSearch ? props.messageMatches ?? [] : [],
+    [messageSearch, props.messageMatches]
   );
-  const messageSection = messageMatches.length > 0;
+  const messagesSettledEmpty = !messageSearch || (
+    Boolean(props.messageMatchesReady) && messageMatches.length === 0 &&
+    !props.messageMatchesLoading && !props.messageMatchesError
+  );
   const chatKey = useMemo(() => [
     ...props.chats.map((chat) => chat.id),
     ...messageMatches.map((match) => `match:${match.messageId}`)
   ].join("\0"), [messageMatches, props.chats]);
   const titlePageLoading = props.searchQuery ? props.searchLoading : props.loading;
   const titlePageError = props.searchQuery ? props.searchError : props.error;
-  // The end of the list continues what sits at the bottom: the message
-  // matches once shown, otherwise the chats; more title results then load
-  // from the end of their own section.
-  const pageLoading = messageSection ? Boolean(props.messageMatchesLoading) : titlePageLoading;
-  const pageError = messageSection ? props.messageMatchesError ?? null : titlePageError;
-  const hasMore = messageSection ? Boolean(props.messageMatchesHasMore) : props.hasMore;
+  const pageLoading = messageSearch ? Boolean(props.messageMatchesLoading) : titlePageLoading;
+  // A failed first message page reports in its section; the end of the list
+  // only retries a later page.
+  const pageError = messageSearch
+    ? (messageMatches.length > 0 ? props.messageMatchesError ?? null : null)
+    : titlePageError;
+  const hasMore = messageSearch ? Boolean(props.messageMatchesHasMore) : props.hasMore;
   const { onLoadMore: onLoadMoreChats, onLoadMoreMessageMatches } = props;
   const onLoadMore = useMemo(
-    () => messageSection ? onLoadMoreMessageMatches ?? (() => undefined) : onLoadMoreChats,
-    [messageSection, onLoadMoreChats, onLoadMoreMessageMatches]
+    () => messageSearch ? onLoadMoreMessageMatches ?? (() => undefined) : onLoadMoreChats,
+    [messageSearch, onLoadMoreChats, onLoadMoreMessageMatches]
   );
-  const titleResultsHasMore = messageSection && props.hasMore;
+  const titleResultsHasMore = messageSearch && props.hasMore;
   const loadMoreBlocked = !hasMore || pageLoading || Boolean(pageError);
 
   useLayoutEffect(() => {
@@ -967,23 +982,32 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               Retry
             </button>
           </div>
-        ) : props.searchQuery && props.searchLoading && props.chats.length === 0 && !messageSection ? (
+        ) : props.searchQuery && !messageSearch && props.searchLoading && props.chats.length === 0 ? (
           <div className="v2-navigation-status">Searching chats…</div>
-        ) : props.searchQuery && props.searchError && props.chats.length === 0 && !messageSection ? (
+        ) : props.searchQuery && !messageSearch && props.searchError && props.chats.length === 0 ? (
           <div className="v2-navigation-status">
-            <span>
-              {props.searchError === "chat_navigation_search_timeout"
-                ? "Search took too long. Try a more specific phrase."
-                : "Search is unavailable"}
-            </span>
+            <span>Search is unavailable</span>
             <button className="v2-navigation-retry v2-focusable" type="button" onClick={props.onRetry}>
               Retry
             </button>
           </div>
-        ) : props.searchQuery && props.chats.length === 0 && !messageSection ? (
+        ) : props.searchQuery && props.chats.length === 0 && !props.searchLoading && !props.searchError &&
+          messagesSettledEmpty ? (
           <div className="v2-navigation-status">Nothing found</div>
         ) : props.searchQuery ? (
           <>
+          {props.chats.length === 0 ? (
+            props.searchLoading ? (
+              <div className="v2-navigation-section-status">Searching chats…</div>
+            ) : props.searchError ? (
+              <div className="v2-navigation-section-status">
+                <span>Search is unavailable.</span>
+                <button className="v2-navigation-retry v2-focusable" type="button" onClick={props.onRetry}>
+                  Retry
+                </button>
+              </div>
+            ) : null
+          ) : null}
           {props.chats.length > 0 ? (
           <div className="v2-navigation-group" role="group" aria-labelledby="v2-navigation-results">
             <div className="v2-navigation-group-label" id="v2-navigation-results">Results</div>
@@ -1036,10 +1060,10 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
             ) : null}
           </div>
           ) : null}
-          {messageSection ? (
+          {messageSearch ? (
             <div className="v2-navigation-group" role="group" aria-labelledby="v2-navigation-message-matches">
               <div className="v2-navigation-group-label" id="v2-navigation-message-matches">In messages</div>
-              {messageMatches.map((match) => (
+              {messageMatches.length > 0 ? messageMatches.map((match) => (
                 <MessageMatchRow
                   disabled={props.navigationBusy}
                   key={match.chatId}
@@ -1048,7 +1072,26 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                   query={props.searchQuery}
                   onOpen={openMessageMatch}
                 />
-              ))}
+              )) : props.messageMatchesError ? (
+                <div className="v2-navigation-section-status">
+                  <span>
+                    {props.messageMatchesError === "chat_navigation_search_timeout"
+                      ? "Search in messages took too long. Try a more specific phrase."
+                      : "Could not search messages."}
+                  </span>
+                  <button
+                    className="v2-navigation-retry v2-focusable"
+                    type="button"
+                    onClick={props.onRetryMessageMatches}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : props.messageMatchesReady && !props.messageMatchesLoading ? (
+                <div className="v2-navigation-section-status">No messages match.</div>
+              ) : (
+                <div className="v2-navigation-section-status">Searching messages…</div>
+              )}
             </div>
           ) : null}
           </>
@@ -1265,8 +1308,8 @@ function useChatNavigationLiveness(input: Readonly<{
 export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarProps,
   | "activeChatId" | "chats" | "error" | "folders" | "hasMore" | "loading"
   | "messageMatches" | "messageMatchesError" | "messageMatchesHasMore" | "messageMatchesLoading"
-  | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry" | "onSearch" | "ready" | "searchError"
-  | "searchLoading" | "searchQuery"
+  | "messageMatchesReady" | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry"
+  | "onRetryMessageMatches" | "onSearch" | "ready" | "searchError" | "searchLoading" | "searchQuery"
 >) {
   const activeChatId = useWorkspaceStore((state) => state.activeChatId);
   const attempted = useWorkspaceStore((state) => state.navigationAttempted);
@@ -1278,6 +1321,7 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
   const messageMatchesError = useWorkspaceStore((state) => state.navigationMessageMatchesError);
   const messageMatchesLoading = useWorkspaceStore((state) => state.navigationMessageMatchesLoading);
   const messageMatchesNextCursor = useWorkspaceStore((state) => state.navigationMessageMatchesNextCursor);
+  const messageMatchesReady = useWorkspaceStore((state) => state.navigationMessageMatchesReady);
   const nextCursor = useWorkspaceStore((state) => state.navigationNextCursor);
   const ready = useWorkspaceStore((state) => state.navigationReady);
   const searchChats = useWorkspaceStore((state) => state.navigationSearchChats);
@@ -1324,11 +1368,15 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
       messageMatchesError={messageMatchesError}
       messageMatchesHasMore={Boolean(messageMatchesNextCursor)}
       messageMatchesLoading={messageMatchesLoading}
+      messageMatchesReady={messageMatchesReady}
       onLoadMore={() => {
         if (searchQuery) void loadChatNavigationSearch({ append: true, query: searchQuery });
         else void loadChatNavigation({ append: true });
       }}
       onLoadMoreMessageMatches={() => {
+        if (searchQuery) void loadChatMessageMatches({ append: true, query: searchQuery });
+      }}
+      onRetryMessageMatches={() => {
         if (searchQuery) void loadChatMessageMatches({ query: searchQuery });
       }}
       onRetry={() => {
@@ -1340,11 +1388,12 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
           clearChatNavigationSearch();
           return;
         }
-        // The shell starts the request after a short pause; until it answers
-        // the list reads as searching, never as an empty result.
+        // The shell starts the requests after a short pause; until they answer
+        // the lists read as searching, never as empty results.
         const workspace = useWorkspaceStore.getState();
         workspace.setNavigationSearchQuery(value);
         workspace.setNavigationSearchLoading(true);
+        workspace.setNavigationMessageMatchesLoading(chatMessageSearchApplies(value));
       }}
       ready={ready}
       searchError={searchError}
@@ -1357,8 +1406,8 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
 type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
   | "activeChatId" | "chats" | "drawerDestinations" | "error" | "folders" | "hasMore" | "loading"
   | "messageMatches" | "messageMatchesError" | "messageMatchesHasMore" | "messageMatchesLoading"
-  | "now" | "onClose" | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry" | "onSearch" | "ready"
-  | "searchError" | "searchLoading" | "searchQuery"
+  | "messageMatchesReady" | "now" | "onClose" | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry"
+  | "onRetryMessageMatches" | "onSearch" | "ready" | "searchError" | "searchLoading" | "searchQuery"
 > & {
   /** Marks an open chat so the mobile "+" island yields to the title pill. */
   chatActive?: boolean;
@@ -1523,7 +1572,10 @@ export function ReadingRoomShellV2({
     if (!searchQuery) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
+      // Titles and message matches load side by side: a slow message query
+      // never holds the title results back.
       void loadChatNavigationSearch({ query: searchQuery, signal: controller.signal });
+      void loadChatMessageMatches({ query: searchQuery, signal: controller.signal });
     }, 220);
     return () => {
       window.clearTimeout(timer);

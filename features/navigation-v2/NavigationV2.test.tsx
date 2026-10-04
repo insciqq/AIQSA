@@ -673,23 +673,59 @@ describe("Navigation v2", () => {
 
     expect(useWorkspaceStore.getState().navigationSearchQuery).toBe("budget");
     expect(screen.getByText("Searching chats…")).toBeVisible();
+    expect(within(screen.getByRole("group", { name: "In messages" })).getByText("Searching messages…")).toBeVisible();
     expect(screen.queryByText("Nothing found")).toBeNull();
+
+    // Below three characters only the titles are searched.
+    fireEvent.change(screen.getByRole("searchbox", { name: "Filter chats" }), { target: { value: "bu" } });
+    act(() => vi.advanceTimersByTime(300));
+    expect(screen.getByText("Searching chats…")).toBeVisible();
+    expect(screen.queryByRole("group", { name: "In messages" })).toBeNull();
   });
 
-  it("keeps a search with only message matches out of the empty state and names a timeout", () => {
-    const { view } = sidebar({ chats: [], messageMatches: [messageMatch], searchQuery: "budget" });
-    expect(screen.queryByRole("group", { name: "Results" })).toBeNull();
-    expect(screen.getByRole("group", { name: "In messages" })).toBeVisible();
+  it("gives the message section its own searching, empty and failure states beside the titles", () => {
+    const onRetry = vi.fn();
+    const onRetryMessageMatches = vi.fn();
+    const props = (overrides: Partial<Parameters<typeof NavigationSidebar>[0]>) => sidebarProps({
+      chats: [chats[1]!], messageMatches: [], onRetry, onRetryMessageMatches, searchQuery: "budget", ...overrides
+    });
+    const inMessages = () => within(screen.getByRole("group", { name: "In messages" }));
+    const { view } = sidebar(props({ messageMatchesLoading: true }));
+    // Title results never wait for the message query.
+    expect(screen.getByRole("treeitem", { name: "Selected brief" })).toBeVisible();
+    expect(inMessages().getByText("Searching messages…")).toBeVisible();
+
+    view.rerender(<NavigationSidebar {...props({ messageMatchesReady: true })} />);
+    expect(inMessages().getByText("No messages match.")).toBeVisible();
     expect(screen.queryByText("Nothing found")).toBeNull();
 
-    view.rerender(<NavigationSidebar {...sidebarProps({ chats: [], searchLoading: true, searchQuery: "budget" })} />);
-    expect(screen.getByText("Searching chats…")).toBeVisible();
+    view.rerender(<NavigationSidebar {...props({ messageMatchesError: "chat_navigation_search_timeout" })} />);
+    expect(inMessages().getByText("Search in messages took too long. Try a more specific phrase.")).toBeVisible();
+    expect(screen.getByRole("treeitem", { name: "Selected brief" })).toBeVisible();
+    fireEvent.click(inMessages().getByRole("button", { name: "Retry" }));
+    expect(onRetryMessageMatches).toHaveBeenCalledOnce();
+    expect(onRetry).not.toHaveBeenCalled();
 
-    view.rerender(<NavigationSidebar {...sidebarProps({
-      chats: [], searchError: "chat_navigation_search_timeout", searchQuery: "the"
+    view.rerender(<NavigationSidebar {...props({ messageMatchesError: "chat_navigation_failed" })} />);
+    expect(inMessages().getByText("Could not search messages.")).toBeVisible();
+
+    // Messages first: the title search still runs or failed on its own.
+    view.rerender(<NavigationSidebar {...props({ chats: [], messageMatches: [messageMatch], searchLoading: true })} />);
+    expect(screen.getByText("Searching chats…")).toBeVisible();
+    expect(inMessages().getByRole("treeitem", { name: "Planning" })).toBeVisible();
+    view.rerender(<NavigationSidebar {...props({
+      chats: [], messageMatches: [messageMatch], searchError: "chat_navigation_failed"
     })} />);
-    expect(screen.getByText("Search took too long. Try a more specific phrase.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+    expect(screen.getByText("Search is unavailable.")).toBeVisible();
+    expect(inMessages().getByRole("treeitem", { name: "Planning" })).toBeVisible();
+
+    // Only both lists settled empty read as nothing found.
+    view.rerender(<NavigationSidebar {...props({ chats: [], messageMatchesReady: true })} />);
+    expect(screen.getByText("Nothing found")).toBeVisible();
+    expect(screen.queryByRole("group", { name: "In messages" })).toBeNull();
+    view.rerender(<NavigationSidebar {...props({ chats: [], messageMatchesLoading: true })} />);
+    expect(screen.queryByText("Nothing found")).toBeNull();
+    expect(inMessages().getByText("Searching messages…")).toBeVisible();
   });
 
   it("continues message matches at the end of the list and title results in their section", () => {
@@ -742,12 +778,7 @@ describe("Navigation v2", () => {
     const store = useWorkspaceStore.getState();
     store.applyNavigationPage({ chats, folders: [], nextCursor: null }, false);
     store.setNavigationSearchQuery("budget");
-    useWorkspaceStore.getState().applyNavigationSearchPage({
-      chats: [],
-      folders: [],
-      messageMatches: { matches: [messageMatch], nextCursor: null },
-      nextCursor: null
-    }, false);
+    useWorkspaceStore.getState().applyNavigationMessageMatchPage({ matches: [messageMatch], nextCursor: null }, false);
     const onOpenMessageMatch = vi.fn();
     render(
       <ReadingRoomShellV2 onNewChat={vi.fn()} onOpenMessageMatch={onOpenMessageMatch} onSelectChat={vi.fn()}>

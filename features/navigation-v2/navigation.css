@@ -409,6 +409,25 @@
   color: var(--v2-color-text3);
 }
 
+/* A search section's own state line (searching, nothing matched, or why
+   it failed) beside the results of the other section. */
+.v2-navigation-section-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  padding: 0.25rem 0.5rem;
+  color: var(--v2-color-text2);
+  font-size: 0.78125rem;
+  line-height: 1.4;
+}
+
+.v2-navigation-section-status .v2-navigation-retry {
+  justify-self: auto;
+  min-height: 1.75rem;
+  padding: 0.125rem 0.5rem;
+}
+
 /* More title results load at the end of their own section while the
    message matches own the end of the list. */
 .v2-navigation-more-results {
@@ -1038,7 +1057,8 @@
   .v2-navigation-more-results,
   .v2-navigation-destination,
   .v2-navigation-load-more,
-  .v2-navigation-retry {
+  .v2-navigation-retry,
+  .v2-navigation-section-status .v2-navigation-retry {
     min-height: 2.75rem;
   }
 

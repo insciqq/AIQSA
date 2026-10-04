@@ -142,7 +142,6 @@ describe("workspace store", () => {
     useWorkspaceStore.getState().applyNavigationSearchPage({
       chats: [newer],
       folders: [],
-      messageMatches: null,
       nextCursor: null
     }, false);
     useWorkspaceStore.getState().removeNavigationChat(newer.id);
@@ -161,28 +160,31 @@ describe("workspace store", () => {
     });
     const store = () => useWorkspaceStore.getState();
     store().setNavigationSearchQuery("budget");
-    store().applyNavigationSearchPage({
-      chats: [],
-      folders: [],
-      messageMatches: { matches: [match("a"), match("b")], nextCursor: "message_cursor" },
-      nextCursor: "title_cursor"
-    }, false);
+    expect(store().navigationMessageMatchesReady).toBe(false);
+    store().setNavigationMessageMatchesLoading(true);
+    store().applyNavigationMessageMatchPage({ matches: [match("a"), match("b")], nextCursor: "message_cursor" }, false);
     expect(store()).toMatchObject({
       navigationMessageMatches: [match("a"), match("b")],
+      navigationMessageMatchesLoading: false,
       navigationMessageMatchesNextCursor: "message_cursor",
-      navigationSearchNextCursor: "title_cursor"
+      navigationMessageMatchesReady: true
     });
 
-    // A title continuation page leaves the message list alone.
-    store().applyNavigationSearchPage({ chats: [], folders: [], messageMatches: null, nextCursor: null }, true);
+    // Title pages never touch the message list.
+    store().applyNavigationSearchPage({ chats: [], folders: [], nextCursor: "title_cursor" }, false);
+    store().applyNavigationSearchPage({ chats: [], folders: [], nextCursor: null }, true);
     expect(store().navigationMessageMatches).toEqual([match("a"), match("b")]);
     expect(store().navigationMessageMatchesNextCursor).toBe("message_cursor");
 
     // Message pages continue in server order; a chat already listed keeps its place.
     store().setNavigationMessageMatchesLoading(true);
-    store().appendNavigationMessageMatches({ matches: [match("b"), match("c")], nextCursor: null });
+    store().applyNavigationMessageMatchPage({ matches: [match("b"), match("c")], nextCursor: null }, true);
     expect(store().navigationMessageMatches.map((item) => item.chatId)).toEqual(["a", "b", "c"]);
     expect(store()).toMatchObject({ navigationMessageMatchesLoading: false, navigationMessageMatchesNextCursor: null });
+    // A first page replaces the list.
+    store().applyNavigationMessageMatchPage({ matches: [match("c")], nextCursor: null }, false);
+    expect(store().navigationMessageMatches.map((item) => item.chatId)).toEqual(["c"]);
+    store().applyNavigationMessageMatchPage({ matches: [match("a"), match("b"), match("c")], nextCursor: null }, false);
 
     // A rename follows into the match; a removed chat leaves the list.
     const unchanged = store().navigationMessageMatches;
@@ -202,7 +204,8 @@ describe("workspace store", () => {
       navigationMessageMatches: [],
       navigationMessageMatchesError: null,
       navigationMessageMatchesLoading: false,
-      navigationMessageMatchesNextCursor: null
+      navigationMessageMatchesNextCursor: null,
+      navigationMessageMatchesReady: false
     });
   });
 });

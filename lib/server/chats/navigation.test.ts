@@ -33,7 +33,7 @@ function repository() {
     }));
   const searchPage = vi.fn<ChatNavigationRepository["searchPage"]>(async () => ({
       kind: "ok",
-      page: { chats: [], folders: [], messageMatches: null, nextCursor: null }
+      page: { chats: [], folders: [], nextCursor: null }
     }));
   const searchMessagesPage = vi.fn<ChatNavigationRepository["searchMessagesPage"]>(async () => ({
       kind: "ok",
@@ -148,6 +148,9 @@ describe("chat navigation handlers", () => {
       query: "work",
       userId: config.bootstrapUserId
     });
+    // Title search never waits for message text matching.
+    expect(repo.searchMessagesPage).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toEqual({ chats: [], folders: [], nextCursor: null });
   });
 
   it.each([
@@ -173,56 +176,54 @@ describe("chat navigation handlers", () => {
     expect(repo.searchPage).not.toHaveBeenCalled();
   });
 
-  it("returns message matches as a separate page beside the title results", async () => {
+  it("serves the first page of message matches on their own route", async () => {
     const repo = repository();
-    repo.searchPage.mockResolvedValueOnce({
+    repo.searchMessagesPage.mockResolvedValueOnce({
       kind: "ok",
-      page: {
-        chats: [],
-        folders: [],
-        messageMatches: { matches: [messageMatch], nextCursor: "message_cursor" },
-        nextCursor: null
-      }
+      page: { matches: [messageMatch], nextCursor: "message_cursor" }
     });
-    const GET = createSearchChatNavigationHandler({
+    const GET = createSearchChatMessagesHandler({
       repository: repo,
       resolveAuth: auth.resolveAuth
     });
     const response = await GET(new Request(
-      "http://app.local/api/chats/search?q=Budget",
+      "http://app.local/api/chats/search/messages?q=Budget",
       { headers: { cookie: auth.cookie } }
     ));
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(repo.searchMessagesPage).toHaveBeenCalledWith({
+      cursor: null,
+      limit: 30,
+      query: "budget",
+      userId: config.bootstrapUserId
+    });
+    expect(repo.searchPage).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toEqual({
-      chats: [],
-      folders: [],
-      messageMatches: { matches: [messageMatch], nextCursor: "message_cursor" },
-      nextCursor: null
+      matches: [messageMatch],
+      nextCursor: "message_cursor"
     });
   });
 
-  it("fails a search whose message matching timed out with a stable code", async () => {
+  it("fails only the message route when message matching times out", async () => {
     const repo = repository();
-    repo.searchPage.mockResolvedValueOnce({ kind: "message_search_timeout" });
     repo.searchMessagesPage.mockResolvedValueOnce({ kind: "message_search_timeout" });
     const deps = { repository: repo, resolveAuth: auth.resolveAuth };
-    const responses = await Promise.all([
+    const [titles, messages] = await Promise.all([
       createSearchChatNavigationHandler(deps)(new Request(
         "http://app.local/api/chats/search?q=the",
         { headers: { cookie: auth.cookie } }
       )),
       createSearchChatMessagesHandler(deps)(new Request(
-        "http://app.local/api/chats/search/messages?q=the&cursor=next_page",
+        "http://app.local/api/chats/search/messages?q=the",
         { headers: { cookie: auth.cookie } }
       ))
     ]);
 
-    expect(responses.map((response) => response.status)).toEqual([503, 503]);
-    for (const response of responses) {
-      await expect(response.json()).resolves.toEqual({ error: "chat_navigation_search_timeout" });
-    }
+    expect(titles!.status).toBe(200);
+    expect(messages!.status).toBe(503);
+    await expect(messages!.json()).resolves.toEqual({ error: "chat_navigation_search_timeout" });
   });
 
   it("continues message matches through their own owner-fenced route", async () => {

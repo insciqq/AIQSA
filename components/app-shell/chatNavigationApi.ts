@@ -3,10 +3,8 @@ import {
   CHAT_NAVIGATION_DEFAULT_PAGE_SIZE,
   decodeChatMessageMatchPage,
   decodeChatNavigationPage,
-  decodeChatNavigationSearchPage,
   type ChatMessageMatchPageWire,
-  type ChatNavigationPageWire,
-  type ChatNavigationSearchPageWire
+  type ChatNavigationPageWire
 } from "@/lib/contracts/chats";
 
 export class ChatNavigationApiError extends Error {
@@ -66,19 +64,19 @@ export function listChatNavigation(input: {
   return page("/api/chats/compact", input, decodeChatNavigationPage);
 }
 
-/** Title and folder results; the first page also carries the first page of message matches. */
+/** Title and folder results only; message matches arrive separately. */
 export function searchChatNavigation(input: {
   cursor?: string | null;
   limit?: number;
   query: string;
   signal?: AbortSignal;
-}): Promise<ChatNavigationSearchPageWire> {
-  return page("/api/chats/search", input, decodeChatNavigationSearchPage);
+}): Promise<ChatNavigationPageWire> {
+  return page("/api/chats/search", input, decodeChatNavigationPage);
 }
 
-/** A later page of message matches, continued by the message cursor. */
+/** Chats whose message text matches: the first page, or the next one by its cursor. */
 export function searchChatMessageMatches(input: {
-  cursor: string;
+  cursor?: string | null;
   limit?: number;
   query: string;
   signal?: AbortSignal;
