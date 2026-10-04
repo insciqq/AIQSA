@@ -128,6 +128,106 @@ describe("ScheduledTaskCardsV2", () => {
   });
 });
 
+describe("cards of tasks an answer managed", () => {
+  it("says what the answer changed, paused or resumed, with the task's state and actions", () => {
+    const { rerender } = render(<ScheduledTaskCardsV2 cards={[{ ...card, action: "changed" }]} onEdit={vi.fn()} />);
+    const item = screen.getByTestId("scheduled-task-card");
+    expect(within(item).getByRole("status")).toHaveTextContent("Scheduled task changed");
+    expect(item).toHaveAttribute("data-action", "changed");
+    expect(item).toHaveTextContent("Next run Mon 5 Oct, 09:00");
+    expect(within(item).getByRole("button", { name: "Edit scheduled task Check mail" })).toBeVisible();
+    expect(within(item).getByRole("button", { name: "Delete scheduled task Check mail" })).toBeVisible();
+    rerender(<ScheduledTaskCardsV2 cards={[{ ...card, action: "paused", nextRunAt: null, status: "paused" }]} onEdit={vi.fn()} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task paused");
+    expect(screen.getByTestId("scheduled-task-card")).toHaveTextContent("Paused");
+    rerender(<ScheduledTaskCardsV2 cards={[{ ...card, action: "resumed" }]} onEdit={vi.fn()} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task resumed");
+    rerender(<ScheduledTaskCardsV2 cards={[{ ...card, action: "paused", deleted: true }]} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted");
+    expect(screen.queryAllByRole("button")).toEqual([]);
+  });
+
+  it("asks a proposed deletion at once without taking focus, and Keep leaves the task", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-keep", action: "delete_proposed" }]}
+      onEdit={vi.fn()} />);
+    const item = screen.getByTestId("scheduled-task-card");
+    expect(within(item).getByRole("status")).toHaveTextContent("Deletion proposed");
+    expect(item).toHaveTextContent("Next run Mon 5 Oct, 09:00");
+    const confirm = within(item).getByRole("group", { name: "Delete Check mail" });
+    expect(confirm).toHaveTextContent("Delete “Check mail”? Its chats and answers stay in your history.");
+    expect(within(confirm).getByRole("button", { name: "Keep task" })).not.toHaveFocus();
+    expect(document.body).toHaveFocus();
+    // The question replaces the card's own actions until it is answered.
+    expect(within(item).queryByRole("button", { name: "Edit scheduled task Check mail" })).toBeNull();
+
+    fireEvent.click(within(confirm).getByRole("button", { name: "Keep task" }));
+    await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent("Scheduled task kept"));
+    expect(within(item).getByRole("status")).toHaveFocus();
+    expect(within(item).queryByRole("group")).toBeNull();
+    expect(within(item).getByRole("button", { name: "Edit scheduled task Check mail" })).toBeVisible();
+    expect(within(item).getByRole("button", { name: "Delete scheduled task Check mail" })).toBeVisible();
+    expect(fetchMock).not.toHaveBeenCalled();
+    // A later change of the same answer to the task replaces the declined proposal.
+    rerender(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-keep", action: "changed" }]} onEdit={vi.fn()} />);
+    expect(within(screen.getByTestId("scheduled-task-card")).getByRole("status")).toHaveTextContent("Scheduled task changed");
+  });
+
+  it("deletes a proposed task only on the owner's click, and shows a task already gone as deleted", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    useScheduledTasksStore.setState({ tasks: [{ ...listed, id: "task-proposed" }] });
+    render(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-proposed", action: "delete_proposed" }]} />);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete task" })); });
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/me/scheduled-tasks/task-proposed",
+      expect.objectContaining({ method: "DELETE" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted"));
+    expect(screen.queryAllByRole("button")).toEqual([]);
+    expect(useScheduledTasksStore.getState().tasks).toEqual([]);
+    cleanup();
+
+    render(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-gone-before", action: "delete_proposed", deleted: true }]} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted");
+    expect(screen.queryByRole("group")).toBeNull();
+    expect(screen.queryAllByRole("button")).toEqual([]);
+  });
+
+  it("keeps a declined proposal when the settling answer mounts it again, and asks a new proposal again", async () => {
+    const proposal: ScheduledTaskCard = { ...card, taskId: "task-remount-keep", action: "delete_proposed" };
+    const { rerender, unmount } = render(<AnswerOutputsV2 artifact={summary([proposal])} live onEditScheduledTask={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Keep task" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Scheduled task kept"));
+    rerender(<AnswerOutputsV2 artifact={summary([proposal])} onEditScheduledTask={vi.fn()} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task kept");
+    expect(screen.queryByRole("group")).toBeNull();
+    unmount();
+    // A later answer proposing it again asks again.
+    render(<AnswerOutputsV2 artifact={summary([proposal])} live onEditScheduledTask={vi.fn()} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Deletion proposed");
+    expect(screen.getByRole("group", { name: "Delete Check mail" })).toBeVisible();
+  });
+
+  it("asks the ready list to read a task the answer changed, once per state", async () => {
+    activateScheduledTasksAccount("account-1");
+    const fetchMock = vi.fn(async () => Response.json({ tasks: [{ ...listed, status: "paused", nextRunAt: null }],
+      emailAvailable: false, limits: { maxActive: 10, maxTotal: 50, maxActiveHourly: 3 } }));
+    vi.stubGlobal("fetch", fetchMock);
+    useScheduledTasksStore.setState({ loadState: "ready", tasks: [listed] });
+    const paused: ScheduledTaskCard = { ...card, action: "paused", nextRunAt: null, status: "paused" };
+    const first = render(<ScheduledTaskCardsV2 cards={[paused]} />);
+    await waitFor(() => expect(useScheduledTasksStore.getState().tasks[0]?.status).toBe("paused"));
+    expect(fetchMock).toHaveBeenCalledOnce();
+    first.unmount();
+    // The list now holds the task as the card shows it, and the same state is never read twice.
+    render(<ScheduledTaskCardsV2 cards={[paused]} />);
+    useScheduledTasksStore.setState({ tasks: [listed] });
+    render(<ScheduledTaskCardsV2 cards={[paused]} />);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
 describe("a created task and the account's task list", () => {
   it("asks the ready list to read a task it does not know yet, once", async () => {
     activateScheduledTasksAccount("account-1");

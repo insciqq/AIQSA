@@ -89,6 +89,7 @@ import { recordScheduledMonitoringVerdict } from "../scheduledTasks/monitoringVe
 import { createPrismaScheduledTaskCatalogLoader } from "../scheduledTasks/catalog";
 import { createPrismaWorkspacePolicyRepository } from "../workspace/policyRepository";
 import { createScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskCall";
+import { loadScheduledTaskManagementAdmission, manageScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskManagement";
 import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
 import {
   decodeProjectDefaults,
@@ -203,7 +204,7 @@ export function createPrismaRunRepository(
   );
   const mcpDiscoveryOperations = createPrismaMcpDiscoveryOperations(prismaClient);
   const toolHistoryOperations = createPrismaToolHistoryOperations(prismaClient);
-  // A chat's scheduled task is created under the owner API's own rules.
+  // A chat's scheduled tasks are created and changed under the owner API's own rules.
   const scheduledTaskCreationDeps = {
     loadCatalog: createPrismaScheduledTaskCatalogLoader(prismaClient),
     workspacePolicy: createPrismaWorkspacePolicyRepository(prismaClient)
@@ -473,6 +474,9 @@ export function createPrismaRunRepository(
     recordMonitoringVerdict: (input) =>
       recordScheduledMonitoringVerdict(prismaClient, input).catch(retainRunPrismaCode),
     createScheduledTaskForCall: (input) => createScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
+      .catch(retainRunPrismaCode),
+    loadScheduledTaskManagement: (input) => loadScheduledTaskManagementAdmission(prismaClient, input).catch(retainRunPrismaCode),
+    manageScheduledTaskForCall: (input) => manageScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
       .catch(retainRunPrismaCode),
     recoverPreparingRun: (input) =>
       recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),

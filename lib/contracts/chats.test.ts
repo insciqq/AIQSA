@@ -244,6 +244,19 @@ describe("chat wire contracts", () => {
     }
   });
 
+  it("keeps the cards of one created and five managed tasks with their actions, once per task", () => {
+    const card = (taskId: string, action?: string) => ({ taskId, title: "Report reminder", kind: "standard",
+      schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow", timeZoneFallback: false, toolsEnabled: false,
+      workspaceEnabled: false, status: "active", nextRunAt: "2026-10-05T06:00:00.000Z", ...(action ? { action } : {}) });
+    const cards = [card("created"), card("task-1", "changed"), card("task-2", "paused"), card("task-3", "resumed"),
+      card("task-4", "delete_proposed"), card("task-5", "changed")];
+    const decode = (scheduledTasks: unknown[]) => decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...message,
+      artifactSummary: { citations: [], reasoningText: [], sources: [], scheduledTasks } }], usageStats }) })
+      ?.messages[0]?.artifactSummary?.scheduledTasks;
+    expect(decode([...cards, card("task-1", "paused"), card("task-6", "paused")])).toEqual(cards);
+    expect(decode([card("task-1", "archived"), card("task-2", "paused")])).toEqual([card("task-2", "paused")]);
+  });
+
   it("keeps a monitoring check's settled outcome on both messages of its turn, with or without the task marker", () => {
     const decode = (entry: Record<string, unknown>) => decodeChatDetailResponse({ chat: detailChat({ messages: [entry], usageStats }) });
     expect(decode({ ...message, role: "user", scheduledOutcome: "no_update" })?.messages[0]?.scheduledOutcome).toBe("no_update");

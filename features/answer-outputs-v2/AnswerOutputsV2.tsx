@@ -535,10 +535,10 @@ export function AnswerOutputsV2({
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
   canSaveFiles?: boolean;
-  /** While running, show only already-settled draft downloads and created scheduled tasks. */
+  /** While running, show only already-settled draft downloads and created or managed scheduled tasks. */
   live?: boolean;
   onEditArtifact?(artifact: ThreadGeneratedArtifact): void | Promise<void>;
-  /** Opens a scheduled task the answer created in its editor. */
+  /** Opens a scheduled task the answer created or managed in its editor. */
   onEditScheduledTask?(taskId: string): void | Promise<void>;
   onOpenArtifact?(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
   onUseImageInArtifact?(attachmentId: string): void | Promise<void>;
@@ -547,11 +547,11 @@ export function AnswerOutputsV2({
 }>) {
   const scheduledTasks = artifact?.scheduledTasks ?? [];
   if (live) {
-    // A created task already exists: its card does not wait for the answer.
+    // A created or changed task already is so: its card does not wait for the answer.
     const drafts = artifact?.generatedFiles?.filter(file => file.checkpoint) ?? [];
     return drafts.length || scheduledTasks.length ? <div className="v2-answer-outputs" data-testid="answer-outputs">
       {drafts.length ? <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} /> : null}
-      <ScheduledTaskCardsV2 cards={scheduledTasks} onEdit={onEditScheduledTask} />
+      <ScheduledTaskCardsV2 cards={scheduledTasks} live onEdit={onEditScheduledTask} />
     </div> : null;
   }
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
