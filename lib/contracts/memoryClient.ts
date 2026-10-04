@@ -68,17 +68,22 @@ function decode<T>(schema: z.ZodType<T>, value: unknown): MemoryClientDecodeResu
     : { code: "memory_contract_invalid", ok: false };
 }
 
+/** Why a chat's Memory mode cannot change: an imported chat (or a copy of one) stays Excluded. */
+export const MEMORY_CHAT_MODE_LOCK_REASONS = ["IMPORTED"] as const;
+
 const memoryConsumerChatModeResponseSchema = z.strictObject({
   allowedActions: z.array(z.enum(MEMORY_CONSUMER_CHAT_MODE_ACTIONS)).max(1),
   archived: z.boolean(),
+  lockedReason: z.enum(MEMORY_CHAT_MODE_LOCK_REASONS).optional(),
   mode: z.enum(MEMORY_CHAT_MODES),
   temporaryRetentionDeadline: isoTimestampSchema.nullable()
 }).superRefine((value, context) => {
   const action = value.allowedActions[0];
-  const valid =
-    (value.mode === "NORMAL" && action === "EXCLUDE") ||
-    (value.mode === "EXCLUDED" && action === "RESUME") ||
-    (value.mode === "TEMPORARY" && action === undefined);
+  const valid = value.lockedReason !== undefined
+    ? value.mode === "EXCLUDED" && action === undefined
+    : (value.mode === "NORMAL" && action === "EXCLUDE") ||
+      (value.mode === "EXCLUDED" && action === "RESUME") ||
+      (value.mode === "TEMPORARY" && action === undefined);
   if (!valid || ((value.mode === "TEMPORARY") !==
     (value.temporaryRetentionDeadline !== null))) {
     context.addIssue({ code: "custom", message: "invalid chat Memory state" });

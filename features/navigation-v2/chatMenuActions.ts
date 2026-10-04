@@ -32,6 +32,11 @@ export type ChatMenuActionsInputV2 = Readonly<{
   deleteDisabled?: boolean;
   favorite?: boolean;
   folders: readonly Readonly<{ id: string; name: string; parentId: string | null }>[];
+  /**
+   * Why this chat's Memory mode is fixed (an imported chat): the Memory item
+   * stays visible, disabled, with this reason under it.
+   */
+  memoryLockedReason?: string | null;
   /** Whether Memory reads this chat; null hides the Memory item. */
   memoryUsed?: boolean | null;
   moveDisabled?: boolean;
@@ -71,6 +76,7 @@ export function chatMenuActionsV2({
   deleteDisabled = false,
   favorite = false,
   folders,
+  memoryLockedReason = null,
   memoryUsed = null,
   moveDisabled = false,
   moveRootLabel = "No folder",
@@ -112,7 +118,14 @@ export function chatMenuActionsV2({
         }] as const
       : []),
     ...(onFavorite ? [{ icon: "star", label: "Favorite", onSelect: onFavorite, selected: favorite }] as const : []),
-    ...(surface === "header" && onMemoryMode && memoryUsed !== null
+    ...(surface === "header" && onMemoryMode && memoryLockedReason
+      ? [{
+          disabled: true,
+          icon: "memory",
+          label: resolveMemoryCopy("resume.action"),
+          sub: memoryLockedReason
+        }] as const
+      : surface === "header" && onMemoryMode && memoryUsed !== null
       ? [{
           icon: "memory",
           label: resolveMemoryCopy(memoryUsed ? "exclude.action" : "resume.action"),

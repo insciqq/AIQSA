@@ -338,4 +338,40 @@ describe("chat lifecycle handlers", () => {
     });
     expectPrivate(response);
   });
+
+  it("locks an imported chat Excluded: no Resume action and a stable refusal", async () => {
+    const getChatMemoryState = vi.fn<ChatLifecycleRepository["getChatMemoryState"]>(async () => ({
+      archived: false,
+      chatId: "chat-imported",
+      importSource: "CHATGPT",
+      mode: "EXCLUDED",
+      sourceRevision: 1,
+      temporaryRetentionDeadline: null,
+      temporaryRetentionPolicyVersion: null,
+      updatedAt
+    }));
+    const read = await createGetChatMemoryModeHandler({
+      repository: repository({ getChatMemoryState }),
+      resolveAuth: auth.resolveAuth
+    })(request("/api/me/chats/chat-imported/memory-mode"), { params: { chatId: "chat-imported" } });
+    expect(read.status).toBe(200);
+    await expect(read.json()).resolves.toEqual({
+      allowedActions: [],
+      archived: false,
+      lockedReason: "IMPORTED",
+      mode: "EXCLUDED",
+      temporaryRetentionDeadline: null
+    });
+
+    const refused = await createPatchChatMemoryModeHandler({
+      repository: repository({ getChatMemoryState, setMemoryMode: async () => ({ kind: "imported" }) }),
+      resolveAuth: auth.resolveAuth
+    })(request("/api/me/chats/chat-imported/memory-mode", {
+      body: JSON.stringify({ mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION }),
+      method: "PATCH"
+    }), { params: { chatId: "chat-imported" } });
+    expect(refused.status).toBe(409);
+    await expect(refused.json()).resolves.toEqual({ error: "memory_imported_chat_forbidden" });
+    expectPrivate(refused);
+  });
 });
