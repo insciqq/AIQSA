@@ -244,16 +244,16 @@ test("a model without vision answers from a System Vision analysis of an uploade
     await page.reload();
     await expect(page.getByText("Answer based on VISION_ANALYSIS_MARKER.")).toBeVisible({ timeout: 30_000 });
 
-    // Knowledge answers never receive images: the refusal is shown, the draft kept.
+    // A Knowledge answer with no route to describe an image refuses it: the refusal is shown, the draft kept.
     await attach(page, { name: "knowledge-photo.png", mimeType: "image/png", buffer: syntheticPng() });
     await expect(page.getByRole("region", { name: "Attachments" })).toContainText("Ready");
     await page.route(`**/api/chats/${chatId}/messages`, (route) => route.request().method() === "POST"
       ? route.fulfill({ status: 400, json: { error: "knowledge_image_not_supported",
-        message: "Knowledge answers can't use images with this model. Remove the image, choose a model that supports images, or ask without Knowledge." } })
+        message: "This model can't read images and no Vision Model is available to describe them for the Knowledge answer." } })
       : route.fallback(), { times: 1 });
     await send(page, "Answer from the Knowledge base about this photo");
     // The refused send keeps the text and the image with the reason and recovery.
-    await expect(page.locator(".v2-live-composer-error")).toContainText("Knowledge answers can't use images with this model");
+    await expect(page.locator(".v2-live-composer-error")).toContainText("no Vision Model is available to describe them");
     await expect(page.locator(".v2-live-composer-error")).toContainText("Remove the image");
     await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("Answer from the Knowledge base about this photo");
     await expect(page.getByRole("region", { name: "Attachments" })).toContainText("knowledge-photo.png");

@@ -536,6 +536,25 @@ describe("provider dispatch recovery request loading", () => {
     await expect(loadStored({ ...chatVision, ...patch })).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
   });
 
+  it("recovers a frozen Knowledge image description only with workflow 11 and the run's own images", async () => {
+    const systemVision = { ...normalizedRequest, attachmentIds: ["image-one"], knowledgeAnswerWorkflowVersion: 11 as const,
+      knowledgeImageObservation: { version: 1 as const, route: "system_vision" as const, imageIds: ["image-one"], vision: visionPlan } };
+    expect(await loadStored(systemVision)).toEqual(systemVision);
+    const answerModel = { ...systemVision, modelCapabilities: { ...normalizedRequest.modelCapabilities, vision: true },
+      knowledgeImageObservation: { version: 1 as const, route: "answer_model" as const, imageIds: ["image-one"] } };
+    expect(await loadStored(answerModel)).toEqual(answerModel);
+    for (const invalid of [
+      { ...systemVision, knowledgeAnswerWorkflowVersion: 10 },
+      { ...systemVision, attachmentIds: [] },
+      { ...systemVision, modelCapabilities: { ...normalizedRequest.modelCapabilities, vision: true } },
+      { ...answerModel, modelCapabilities: normalizedRequest.modelCapabilities },
+      { ...systemVision, knowledgeImageObservation: { ...systemVision.knowledgeImageObservation,
+        vision: { version: 1, available: false, code: "vision_model_absent" } } },
+      { ...systemVision, knowledgeImageObservation: { ...systemVision.knowledgeImageObservation, imageIds: [] } },
+      { ...answerModel, knowledgeImageObservation: { ...answerModel.knowledgeImageObservation, vision: visionPlan } }
+    ]) await expect(loadStored(invalid)).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
   it("keeps Workspace Vision decoding unchanged, including an unavailable plan", async () => {
     for (const visionAnalysis of [visionPlan, { version: 1 as const, available: false as const, code: "vision_model_absent" as const }]) {
       const accepted: NormalizedRunRequest = { ...normalizedRequest, toolMode: "auto", workspace, visionAnalysis,

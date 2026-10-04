@@ -22,6 +22,7 @@ import { buildKnowledgeEvidenceAnswerPublicationV2, decodeKnowledgeEvidenceAnswe
   knowledgeEvidenceAnswerDraftPromptV2, knowledgeEvidenceAnswerReviewPromptV2, validateKnowledgeEvidenceAnswerReviewV2,
   type KnowledgeEvidenceAnswerReviewV2, type KnowledgeEvidenceReviewRepairHintV1 } from "./evidenceAnswerReviewV2";
 import type { KnowledgeGroundingEffectiveExecutionPolicyV1 } from "./groundingExecutionPolicy";
+import type { KnowledgeImageObservationBlock } from "./imageObservation";
 import { EMPTY_KNOWLEDGE_COVERAGE_LIMITATIONS_V1 } from "./searchFailure";
 import { observedFailure, observedFailureCode } from "../providers/providerObservability";
 
@@ -117,6 +118,9 @@ export type KnowledgeEvidenceAnswerExecutionV1Input = Readonly<{
   execute: OperationInput["execute"];
   executionPolicy: KnowledgeGroundingEffectiveExecutionPolicyV1;
   forbiddenIdentityFragments?: readonly string[];
+  /** The frozen description of the current message's images (workflow 11 only):
+   * a labelled user-side block in every compose and review, never evidence. */
+  imageObservation?: KnowledgeImageObservationBlock;
   lifecycle: OperationInput["lifecycle"];
   modelRunId: string;
   request: string;
@@ -136,6 +140,8 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
   if (!manifest || !input.request.trim() || manifest.items.length === 0) failed("input_invalid");
   const reviewV2 = input.workflowVersion === 11;
   if (input.repairFeedbackVersion !== undefined && (input.repairFeedbackVersion !== 1 || !reviewV2)) failed("repair_policy_invalid");
+  if (input.imageObservation !== undefined && !reviewV2) failed("image_observation_contract_invalid");
+  const image = input.imageObservation ? { imageObservation: input.imageObservation } : {};
   const context = {
     availableHandles: manifest.items.map(item => item.handle),
     availableSourceAliases: [...new Set(manifest.items.map(item => item.sourceAlias))],
@@ -174,7 +180,7 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
     if (reviewV2) {
       if (revision && revision.review.version !== 2) failed("revision_contract_invalid");
       return knowledgeEvidenceAnswerDraftPromptV2({ request: input.request, evidenceManifest: manifest!.message, repairReason,
-        revision: revision && revision.review.version === 2 ? { draft: revision.draft, review: revision.review } : undefined });
+        revision: revision && revision.review.version === 2 ? { draft: revision.draft, review: revision.review } : undefined, ...image });
     }
     if (revision && revision.review.version !== 1) failed("revision_contract_invalid");
     return knowledgeEvidenceAnswerDraftPromptV1({ request: input.request, evidenceManifest: manifest!.message, repairReason,
@@ -206,7 +212,7 @@ async function executeCycle(input: KnowledgeEvidenceAnswerExecutionV1Input & Rea
   for (let attempt = 0; attempt < 2; attempt++) {
     const result = await operation({ operation: reviewV2 ? "knowledge_evidence_review_v2" : "knowledge_evidence_review_v1", draftPayloadHash: knowledgeAnswerHash(draft),
       ...(reviewV2 ? knowledgeEvidenceAnswerReviewPromptV2 : knowledgeEvidenceAnswerReviewPromptV1)({ request: input.request, evidenceManifest: manifest.message,
-        draft, availableSourceAliases: context.availableSourceAliases, repairReason, repairHint, repairFeedbackVersion: input.repairFeedbackVersion }),
+        draft, availableSourceAliases: context.availableSourceAliases, repairReason, repairHint, repairFeedbackVersion: input.repairFeedbackVersion, ...image }),
       accept(output) {
         const validation = (reviewV2 ? validateKnowledgeEvidenceAnswerReviewV2 : validateKnowledgeEvidenceAnswerReviewV1)(output,
           { ...context, draft: draft!, repairFeedbackVersion: input.repairFeedbackVersion });

@@ -435,6 +435,36 @@ describe("evidence answer execution and recovery", () => {
     expect(fixture.execute).toHaveBeenCalledTimes(2);
   });
 
+  it("freezes the attached-image observation in every compose and review and replays it without provider I/O", async () => {
+    const imageObservation = { text: "The attached photo shows a crate labelled Alpha on a scale.", truncated: false };
+    const acceptedReview = { version: 2, analysisComplete: true,
+      blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"], reason: "" }],
+      requirements: [{ requirement: request, status: "missing_evidence", blockIds: ["B1"], correctionEvidenceHandles: [], gap: "The mass of Beta." }],
+      followUps: [] };
+    const fixture = execution([compose(), acceptedReview]);
+    const result = await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...fixture.input, imageObservation,
+      workflowVersion: 11, refineEvidence: async () => null });
+    const calls = fixture.execute.mock.calls as unknown as [import("../providers/structuredOutput").ProviderStructuredOutputRequest][];
+    expect(calls).toHaveLength(2);
+    for (const [operation] of calls) {
+      const payload = JSON.parse(operation.userPrompt);
+      expect(payload.attachedImageObservation).toEqual(imageObservation);
+      expect(payload.request).toBe(request);
+      expect(operation.systemPrompt).toContain("attachedImageObservation");
+    }
+    // Publication replays the settled operations from the frozen block alone.
+    const dispatches = fixture.store.stored();
+    expect(await replayKnowledgeEvidenceAnswerV1({ dispatches, forbiddenIdentityFragments: [], modelRunId: "fixture-run" })).toEqual(result);
+    expect(fixture.execute).toHaveBeenCalledTimes(2);
+    // A recovered run without the same observation cannot reuse the accepted operations.
+    await expect(executeKnowledgeEvidenceAnswerWithRefinementV1({ ...fixture.input, workflowVersion: 11,
+      refineEvidence: async () => null })).rejects.toThrow("knowledge_answer_operation_snapshot_conflict");
+    expect(fixture.execute).toHaveBeenCalledTimes(2);
+    // Historical workflows never carry an image block.
+    await expect(executeKnowledgeEvidenceAnswerV1({ ...execution([compose()]).input, imageObservation }))
+      .rejects.toThrow("image_observation_contract_invalid");
+  });
+
   it("publishes reviewed partial evidence in two operations and replays without provider I/O", async () => {
     const fixture = execution([compose(), review()]);
     const result = await executeKnowledgeEvidenceAnswerV1(fixture.input);

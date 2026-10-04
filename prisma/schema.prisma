@@ -3036,6 +3036,7 @@ model ProviderModelCredentialCheck {
 
 model ProviderRunBinding {
   visionAnalyses            VisionAnalysisAttempt[]
+  knowledgeImageObservations KnowledgeImageObservation[]
   agentAttempts             AgentProviderAttempt[]
   id                        String                     @id @default(uuid())
   modelRunId                String
@@ -3470,6 +3471,7 @@ model ModelRun {
   chatTitleGeneration          ChatTitleGeneration?
   chatPdfPreparation           ChatPdfRunPreparation?
   chatPdfAttachments           ChatPdfAttachmentPreparation[]
+  knowledgeImageObservation    KnowledgeImageObservation?
   id                           String                              @id @default(uuid())
   chatId                       String
   userId                       String
@@ -5004,6 +5006,9 @@ model UsageEvent {
   visionAnalysis                  Boolean                        @default(false)
   visionAnalysisAttemptId          String?                        @unique
   visionAnalysisAttempt            VisionAnalysisAttempt?         @relation(fields: [visionAnalysisAttemptId], references: [toolCallId], onDelete: SetNull, onUpdate: Restrict)
+  /// The usage receipt of a Knowledge run's image observation, flagged `visionAnalysis`.
+  knowledgeImageObservationRunId   String?                        @unique
+  knowledgeImageObservation        KnowledgeImageObservation?     @relation(fields: [knowledgeImageObservationRunId], references: [modelRunId], onDelete: SetNull, onUpdate: Restrict)
   optionalDecision                Boolean                        @default(false)
   optionalDecisionAttemptId       String?                        @unique
   optionalDecisionAttempt         OptionalDecisionAttempt?       @relation(fields: [optionalDecisionAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
@@ -5081,6 +5086,25 @@ model VisionAnalysisAttempt {
 
   @@unique([modelRunId, toolCallId])
   @@index([modelRunId, createdAt])
+}
+
+/// The one frozen description of a Knowledge run's current-message images,
+/// made before the grounded answer by the answer model (`answer`) or the System
+/// Vision Model (`vision_analysis`). The row exists before dispatch, so a
+/// dispatched description is never sent again. Results are private run content.
+model KnowledgeImageObservation {
+  modelRunId         String             @id
+  providerBindingKey String
+  requestHash        String             @db.Char(64)
+  images             Json
+  state              String             @default("dispatched") @db.VarChar(16)
+  result             Json?
+  failureCode        String?            @db.VarChar(64)
+  createdAt          DateTime           @default(now())
+  settledAt          DateTime?
+  modelRun           ModelRun           @relation(fields: [modelRunId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  providerBinding    ProviderRunBinding @relation(fields: [modelRunId, providerBindingKey], references: [modelRunId, bindingKey], onDelete: NoAction, onUpdate: Restrict, map: "KnowledgeImageObservation_binding_fkey")
+  usageEvent         UsageEvent?
 }
 
 // Content-free dispatch fences for optional interactive decisions. Results
