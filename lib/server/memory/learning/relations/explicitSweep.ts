@@ -23,7 +23,19 @@ import {
  * registered in observability/failureCodes.json. */
 export const MEMORY_EXPLICIT_EQUIVALENCE_SWEEP_VERSION = "explicit-equivalence-sweep-v1";
 export const MEMORY_EXPLICIT_EQUIVALENCE_SWEEP_OWNERS = 8;
-export const MEMORY_EXPLICIT_EQUIVALENCE_SWEEP_JOBS_PER_OWNER = 32;
+
+export type MemoryExplicitEquivalenceSweepLimits = Readonly<{
+  /** Automatic versions read per query. */
+  automaticBatch: number;
+  /** Explicit saves whose text keys are held at once. */
+  explicitWindow: number;
+  /** Checks scheduled per owner and pass; a larger owner continues next pass. */
+  jobs: number;
+}>;
+
+export const MEMORY_EXPLICIT_EQUIVALENCE_SWEEP_LIMITS: MemoryExplicitEquivalenceSweepLimits = Object.freeze({
+  automaticBatch: 256, explicitWindow: 512, jobs: 32
+});
 /** What a previous-release worker records when it cancels a v2 job it cannot
  * route during Compose replacement. This release never records it for v2. */
 const PREVIOUS_RELEASE_CANCELLATION = "memory_fact_relation_job_invalid";
@@ -35,6 +47,26 @@ type SweepRow = Readonly<{
   scopeId: string;
   sourceMode: "AUTOMATIC" | "EXPLICIT";
   versionId: string;
+}>;
+
+/** A current comparable version in fact-id keyset order. Automatic rows are
+ * already unprotected and unchecked. */
+export type MemoryExplicitEquivalenceSweepRow = Readonly<{
+  factId: string;
+  normalizedSearchText: string;
+  scopeId: string;
+  versionId: string;
+}>;
+
+export type MemoryExplicitEquivalenceSweepReader = Readonly<{
+  automatic(afterFactId: string | null, limit: number): Promise<readonly MemoryExplicitEquivalenceSweepRow[]>;
+  explicit(afterFactId: string | null, limit: number): Promise<readonly MemoryExplicitEquivalenceSweepRow[]>;
+}>;
+
+export type MemoryExplicitEquivalenceSweepDiscovery = Readonly<{
+  /** No pair exists beyond `pairs`. */
+  complete: boolean;
+  pairs: readonly Readonly<{ automaticVersionId: string; explicitVersionId: string }>[];
 }>;
 
 /** Automatic versions of one owner that share a normalized text with a current
@@ -58,7 +90,90 @@ export function selectMemoryExplicitEquivalenceSweepTargets(
   }));
 }
 
-async function sweepOwner(tx: MemoryTransaction, settings: LockedMemorySettings): Promise<number> {
+/** Finds at most `jobs` sweep pairs with every query and in-memory set
+ * bounded. Explicit saves are read in keyset windows and the whole automatic
+ * side is streamed against each window's text keys, so an equal-text pair is
+ * found wherever its two facts fall in the keyset order. The text key is
+ * computed here, not in SQL, so the database cannot join on it. */
+export async function discoverMemoryExplicitEquivalenceSweepPairs(
+  reader: MemoryExplicitEquivalenceSweepReader,
+  limits: MemoryExplicitEquivalenceSweepLimits = MEMORY_EXPLICIT_EQUIVALENCE_SWEEP_LIMITS
+): Promise<MemoryExplicitEquivalenceSweepDiscovery> {
+  // One pair beyond the job bound proves the owner is not complete.
+  const pairs = new Map<string, string>();
+  const full = () => pairs.size > limits.jobs;
+  let explicitAfter: string | null = null;
+  while (!full()) {
+    const explicit = await reader.explicit(explicitAfter, limits.explicitWindow);
+    const window = new Map<string, Map<string, string>>();
+    for (const row of explicit) {
+      const key = memoryEquivalenceTextKey(row.normalizedSearchText);
+      if (key.length === 0) continue;
+      const keys = window.get(row.scopeId) ?? new Map<string, string>();
+      if (!keys.has(key)) keys.set(key, row.versionId);
+      window.set(row.scopeId, keys);
+    }
+    let automaticAfter: string | null = null;
+    while (window.size > 0 && !full()) {
+      const automatic = await reader.automatic(automaticAfter, limits.automaticBatch);
+      for (const row of automatic) {
+        if (full()) break;
+        if (pairs.has(row.versionId)) continue;
+        const key = memoryEquivalenceTextKey(row.normalizedSearchText);
+        const explicitVersionId = key.length === 0 ? undefined : window.get(row.scopeId)?.get(key);
+        if (explicitVersionId) pairs.set(row.versionId, explicitVersionId);
+      }
+      if (automatic.length < limits.automaticBatch) break;
+      automaticAfter = automatic[automatic.length - 1]!.factId;
+    }
+    if (explicit.length < limits.explicitWindow) break;
+    explicitAfter = explicit[explicit.length - 1]!.factId;
+  }
+  return Object.freeze({
+    complete: !full(),
+    pairs: Object.freeze([...pairs].slice(0, limits.jobs).map(([automaticVersionId, explicitVersionId]) =>
+      Object.freeze({ automaticVersionId, explicitVersionId })))
+  });
+}
+
+/** Current comparable versions of one owner in fact-id keyset order over the
+ * `MemoryFact (userId, id)` unique index; one current version per fact. */
+function prismaSweepReader(client: PrismaClient, userId: string): MemoryExplicitEquivalenceSweepReader {
+  const read = (explicit: boolean, afterFactId: string | null, limit: number) =>
+    client.$queryRaw<MemoryExplicitEquivalenceSweepRow[]>(Prisma.sql`
+      SELECT fact."id" AS "factId", fact."scopeId", version."id" AS "versionId", version."normalizedSearchText"
+      FROM "MemoryFact" AS fact
+      JOIN "MemoryFactVersion" AS version
+        ON version."userId" = fact."userId" AND version."id" = fact."currentVersionId"
+          AND version."factId" = fact."id"
+      JOIN "MemoryScope" AS scope ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
+      WHERE fact."userId" = ${userId}
+        ${afterFactId === null ? Prisma.empty : Prisma.sql`AND fact."id" > ${afterFactId}`}
+        AND version."normalizedSearchText" IS NOT NULL
+        AND ${memoryEquivalenceComparableVersionPredicate()}
+        AND ${explicit ? Prisma.sql`version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"` : Prisma.sql`(
+          version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+          AND ${memoryAutomaticEquivalenceUnprotectedPredicate()}
+          AND NOT EXISTS (
+            SELECT 1 FROM "MemoryJob" AS job
+            WHERE job."userId" = version."userId" AND job."targetFactVersionId" = version."id"
+              AND job."kind" = 'RESOLVE_FACT_RELATIONS'::"MemoryJobKind"
+              AND job."pipelineVersion" = ${MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION}
+          ))`}
+      ORDER BY fact."id"
+      LIMIT ${limit}
+    `);
+  return Object.freeze({
+    automatic: (afterFactId, limit) => read(false, afterFactId, limit),
+    explicit: (afterFactId, limit) => read(true, afterFactId, limit)
+  });
+}
+
+async function sweepOwner(
+  tx: MemoryTransaction,
+  settings: LockedMemorySettings,
+  discovered: MemoryExplicitEquivalenceSweepDiscovery
+): Promise<number> {
   if (!settings.useMemoryFacts || !settings.learnAutomatically) return 0;
   // A comparison an older worker cancelled before dispatch is resumed once;
   // it never bought a provider call, and preflight rechecks its source.
@@ -74,7 +189,11 @@ async function sweepOwner(tx: MemoryTransaction, settings: LockedMemorySettings)
       userId: settings.userId
     }
   });
-  const rows = await tx.$queryRaw<SweepRow[]>(Prisma.sql`
+  // Discovery read without the lock: recheck each pair here, bounded by the
+  // per-pass job limit, before scheduling anything.
+  const ids = [...new Set(discovered.pairs.flatMap(({ automaticVersionId, explicitVersionId }) =>
+    [automaticVersionId, explicitVersionId]))];
+  const rows = ids.length === 0 ? [] : await tx.$queryRaw<SweepRow[]>(Prisma.sql`
     SELECT version."id" AS "versionId", version."sourceMode"::text AS "sourceMode",
       version."normalizedSearchText", fact."scopeId",
       (version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
@@ -88,14 +207,14 @@ async function sweepOwner(tx: MemoryTransaction, settings: LockedMemorySettings)
     FROM "MemoryFactVersion" AS version
     JOIN "MemoryFact" AS fact ON fact."userId" = version."userId" AND fact."id" = version."factId"
     JOIN "MemoryScope" AS scope ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
-    WHERE version."userId" = ${settings.userId}
+    WHERE version."userId" = ${settings.userId} AND version."id" IN (${Prisma.join(ids)})
       AND version."normalizedSearchText" IS NOT NULL
       AND ${memoryEquivalenceComparableVersionPredicate()}
-    ORDER BY version."createdAt", version."id"
   `);
-  const targets = selectMemoryExplicitEquivalenceSweepTargets(rows);
+  const confirmed = new Set(selectMemoryExplicitEquivalenceSweepTargets(rows));
   let created = 0;
-  for (const targetFactVersionId of targets.slice(0, MEMORY_EXPLICIT_EQUIVALENCE_SWEEP_JOBS_PER_OWNER)) {
+  for (const { automaticVersionId: targetFactVersionId } of discovered.pairs) {
+    if (!confirmed.has(targetFactVersionId)) continue;
     const job = await enqueueMemoryJob(tx, settings, {
       idempotencyFingerprint: memoryExplicitRelationJobFingerprint(targetFactVersionId),
       kind: "RESOLVE_FACT_RELATIONS", pipelineVersion: MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
@@ -103,8 +222,9 @@ async function sweepOwner(tx: MemoryTransaction, settings: LockedMemorySettings)
     });
     if (job.created) created += 1;
   }
-  // A larger owner continues next pass; enqueued targets are already checked.
-  if (targets.length <= MEMORY_EXPLICIT_EQUIVALENCE_SWEEP_JOBS_PER_OWNER) {
+  // A larger owner, or a pair that changed after discovery, continues on the
+  // next reconciliation pass; enqueued targets are already checked.
+  if (discovered.complete && confirmed.size === discovered.pairs.length) {
     await tx.$executeRaw(Prisma.sql`
       UPDATE "UserMemorySettings"
       SET "explicitEquivalenceSweepVersion" = ${MEMORY_EXPLICIT_EQUIVALENCE_SWEEP_VERSION}
@@ -114,13 +234,23 @@ async function sweepOwner(tx: MemoryTransaction, settings: LockedMemorySettings)
   return created + revived.count;
 }
 
-/** One owner's sweep under its Memory lock; returns the checks it scheduled
- * or resumed. Repeating it schedules nothing already checked. */
+/** One owner's sweep; returns the checks it scheduled or resumed. Discovery
+ * reads in bounded batches without the Memory lock, which then covers only
+ * rechecking and scheduling at most `limits.jobs` pairs. Repeating it
+ * schedules nothing already checked. */
 export async function sweepMemoryExplicitEquivalenceOwner(
   client: PrismaClient,
-  userId: string
+  userId: string,
+  limits: MemoryExplicitEquivalenceSweepLimits = MEMORY_EXPLICIT_EQUIVALENCE_SWEEP_LIMITS
 ): Promise<number> {
-  return withLockedMemoryTransaction(client, userId, sweepOwner);
+  const settings = await client.userMemorySettings.findUnique({
+    select: { learnAutomatically: true, useMemoryFacts: true }, where: { userId }
+  });
+  // Settings enabled after this read only defer the sweep to the next pass.
+  const discovered: MemoryExplicitEquivalenceSweepDiscovery = settings?.useMemoryFacts && settings.learnAutomatically
+    ? await discoverMemoryExplicitEquivalenceSweepPairs(prismaSweepReader(client, userId), limits)
+    : Object.freeze({ complete: false, pairs: Object.freeze([]) });
+  return withLockedMemoryTransaction(client, userId, (tx, locked) => sweepOwner(tx, locked, discovered));
 }
 
 /** Bounded, idempotent discovery of equivalent pairs written before the save
