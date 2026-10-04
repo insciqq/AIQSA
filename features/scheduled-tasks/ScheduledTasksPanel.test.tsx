@@ -185,11 +185,13 @@ describe("ScheduledTasksPanel", () => {
     list.mockResolvedValueOnce(listed([task])).mockResolvedValue(listed([{ ...task, unseenResult: false }]));
     detail.mockResolvedValueOnce({ task, recentRuns: [
       { id: "run-3", scheduledFor: "2026-10-03T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
-        startedAt: "2026-10-03T08:00:01.000Z", finishedAt: "2026-10-03T08:01:00.000Z", chatId: "chat-3", unseen: true },
+        startedAt: "2026-10-03T08:00:01.000Z", finishedAt: "2026-10-03T08:01:00.000Z", chatId: "chat-3", unseen: true,
+        unavailableSources: [] },
       { id: "run-2", scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "previous_running",
-        startedAt: null, finishedAt: "2026-10-02T08:00:01.000Z", chatId: null, unseen: false },
+        startedAt: null, finishedAt: "2026-10-02T08:00:01.000Z", chatId: null, unseen: false, unavailableSources: [] },
       { id: "run-1", scheduledFor: "2026-10-01T08:00:00.000Z", trigger: "manual", state: "completed", reasonCode: null,
-        startedAt: "2026-10-01T08:00:01.000Z", finishedAt: "2026-10-01T08:01:00.000Z", chatId: "chat-1", unseen: true }
+        startedAt: "2026-10-01T08:00:01.000Z", finishedAt: "2026-10-01T08:01:00.000Z", chatId: "chat-1", unseen: true,
+        unavailableSources: [] }
     ] });
     const seen = vi.mocked(markScheduledTaskSeen).mockReset().mockResolvedValue();
     const { onOpenChat } = renderPanel();

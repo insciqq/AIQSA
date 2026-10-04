@@ -81,7 +81,7 @@ describe("scheduled task presentation", () => {
   it("explains overlap skips in the run history", () => {
     const row = (reasonCode: string) => scheduledTaskRunRow({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z",
       trigger: "schedule", state: "skipped", reasonCode, startedAt: null, finishedAt: "2026-10-05T08:00:01.000Z",
-      chatId: null, unseen: false }, "Europe/London", now).outcome;
+      chatId: null, unseen: false, unavailableSources: [] }, "Europe/London", now).outcome;
     expect(row("previous_running")).toBe("Skipped: the previous run was still in progress");
     expect(row("superseded")).toBe("Skipped: a newer scheduled time arrived before it could start");
   });
