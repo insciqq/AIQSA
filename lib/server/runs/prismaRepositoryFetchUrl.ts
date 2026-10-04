@@ -12,7 +12,6 @@ import type { RunRepository } from "./runRepositoryContract";
 const SEARCH_RUN_LIMIT = 200;
 const SEARCH_EVENT_LIMIT = 500;
 const SOURCE_URL_LIMIT = 2_000;
-const FETCH_CALL_LIMIT = 64;
 const PROMPT_MESSAGE_LIMIT = 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,10 +58,12 @@ export function createPrismaFetchUrlOperations(prisma: PrismaClient): FetchUrlOp
     },
 
     async loadRunFetchUrlCalls({ runId, userId }) {
+      // Every call of the run, which its accepted tool-call budget bounds. A
+      // smaller bound would hide later sent calls: recovery would then read a
+      // settled page again and rebuild the request cap too low.
       return prisma.modelRunToolCall.findMany({
         orderBy: [{ roundIndex: "asc" }, { ordinal: "asc" }],
         select: { id: true, result: true, state: true },
-        take: FETCH_CALL_LIMIT,
         where: { modelRun: { userId }, modelRunId: runId, toolName: FETCH_URL_TOOL_NAME }
       });
     },
