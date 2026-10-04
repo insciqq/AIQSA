@@ -43,6 +43,7 @@ import { SKILL_IMPORT_SOURCE_MIGRATION, skillImportSourceFixtureSql, skillImport
 import { PERPLEXITY_LEGACY_REASONING_MIGRATION, perplexityLegacyReasoningFixtureSql, perplexityLegacyReasoningProofSql, perplexityLegacyReasoningRepeatProofSql } from "./perplexity-legacy-reasoning-adoption";
 import { PUBLISHED_IMAGE_MODELS_MIGRATION, publishedImageModelsFixtureSql, publishedImageModelsProofSql } from "./published-image-models-adoption";
 import { DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION, dropRetiredMemorySynthesisColumnsFixtureSql, dropRetiredMemorySynthesisColumnsProofSql } from "./drop-retired-memory-synthesis-columns-adoption";
+import { DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION, dropRetiredMcpActivationStorageFixtureSql, dropRetiredMcpActivationStorageProofSql } from "./drop-retired-mcp-activation-storage-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7679,10 +7680,13 @@ function main(
     modelPricesFixtureSql, modelPricesProofSql + modelPricesGuardProofSql, modelPricesProofSql + modelPricesGuardProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION,
     workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql);
+  // Both proofs read the activation token and stages the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, REMOVE_LOCAL_MCP_SOURCES_MIGRATION,
-    removeLocalMcpSourcesFixtureSql, removeLocalMcpSourcesProofSql, removeLocalMcpSourcesRepeatProofSql);
+    removeLocalMcpSourcesFixtureSql, removeLocalMcpSourcesProofSql, removeLocalMcpSourcesRepeatProofSql,
+    DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_LOCAL_MCP_ACTIVATION_STAGES_MIGRATION,
-    retireLocalMcpActivationStagesFixtureSql, retireLocalMcpActivationStagesProofSql, retireLocalMcpActivationStagesRepeatProofSql);
+    retireLocalMcpActivationStagesFixtureSql, retireLocalMcpActivationStagesProofSql, retireLocalMcpActivationStagesRepeatProofSql,
+    DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, SCHEDULED_TASK_PROMPT_MARKER_MIGRATION,
     scheduledTaskPromptMarkerFixtureSql, scheduledTaskPromptMarkerProofSql);
   for (const assigned of [false, true]) {
@@ -7692,6 +7696,9 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION,
     dropRetiredMemorySynthesisColumnsFixtureSql, dropRetiredMemorySynthesisColumnsProofSql,
     dropRetiredMemorySynthesisColumnsProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION,
+    dropRetiredMcpActivationStorageFixtureSql, dropRetiredMcpActivationStorageProofSql,
+    dropRetiredMcpActivationStorageProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
