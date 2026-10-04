@@ -30,3 +30,6 @@ ALTER TABLE "UsageEvent" ADD COLUMN "knowledgeImageObservationRunId" TEXT;
 CREATE UNIQUE INDEX "UsageEvent_knowledgeImageObservationRunId_key" ON "UsageEvent"("knowledgeImageObservationRunId");
 ALTER TABLE "UsageEvent" ADD CONSTRAINT "UsageEvent_knowledgeImageObservationRunId_fkey"
   FOREIGN KEY ("knowledgeImageObservationRunId") REFERENCES "KnowledgeImageObservation"("modelRunId") ON DELETE SET NULL ON UPDATE RESTRICT;
+-- The receipt is image analysis accounting, never the run's answer usage that is re-recorded.
+ALTER TABLE "UsageEvent" ADD CONSTRAINT "UsageEvent_knowledge_image_observation_link_check"
+  CHECK ("knowledgeImageObservationRunId" IS NULL OR "visionAnalysis");

@@ -42,6 +42,7 @@ import { MEMORY_SEARCH_RECEIPT_MIGRATION, memorySearchReceiptFixtureSql, memoryS
 import { SKILL_IMPORT_SOURCE_MIGRATION, skillImportSourceFixtureSql, skillImportSourceProofSql } from "./skill-import-source-adoption";
 import { PERPLEXITY_LEGACY_REASONING_MIGRATION, perplexityLegacyReasoningFixtureSql, perplexityLegacyReasoningProofSql, perplexityLegacyReasoningRepeatProofSql } from "./perplexity-legacy-reasoning-adoption";
 import { PUBLISHED_IMAGE_MODELS_MIGRATION, publishedImageModelsFixtureSql, publishedImageModelsProofSql } from "./published-image-models-adoption";
+import { KNOWLEDGE_IMAGE_OBSERVATION_MIGRATION, knowledgeImageObservationFixtureSql, knowledgeImageObservationProofSql } from "./knowledge-image-observation-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7663,6 +7664,8 @@ function main(
     runForwardAdoptionProof(shadowDatabase, migrations, PUBLISHED_IMAGE_MODELS_MIGRATION,
       publishedImageModelsFixtureSql(assigned), publishedImageModelsProofSql(assigned), publishedImageModelsProofSql(assigned));
   }
+  runForwardAdoptionProof(shadowDatabase, migrations, KNOWLEDGE_IMAGE_OBSERVATION_MIGRATION,
+    knowledgeImageObservationFixtureSql, knowledgeImageObservationProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
