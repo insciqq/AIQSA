@@ -123,6 +123,7 @@ import { supportsAgentResponses } from "../providers/agentResponses";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
+import { KNOWLEDGE_IMAGE_OBSERVATION_LIMITS, type KnowledgeImageObservationPlan } from "../knowledge/imageObservation";
 import {
   knowledgeAdmissionMayFitFullContext,
   knowledgeAnsweringRequestSnapshot,
@@ -175,7 +176,9 @@ const pdfTextUnavailableMessage =
 const zeroEmittedPdfTextUnavailableMessage =
   "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file.";
 const KNOWLEDGE_IMAGE_REFUSAL =
-  "Knowledge answers can't use images with this model. Remove the image, choose a model that supports images, or ask without Knowledge.";
+  "This model can't read images and no Vision Model is available to describe them for the Knowledge answer. Remove the image, choose a model that supports images, ask an administrator to assign the Vision Model, or ask without Knowledge.";
+const KNOWLEDGE_IMAGE_LIMIT_REFUSAL =
+  `A Knowledge answer can use at most ${KNOWLEDGE_IMAGE_OBSERVATION_LIMITS.maxImages} images from one message. Remove some images and try again.`;
 
 /** The parameter dialect params are materialized and validated in for a model. */
 export function parameterDialect(adapterKind: CatalogAdapterKind, providerFamily: string): string {
@@ -2054,11 +2057,24 @@ async function prepareRunWith(
     return failure("attachment_not_found", 400);
   }
 
-  // Knowledge answers are grounded on the question text and evidence only: an
-  // image a model without vision cannot read is refused, never silently ignored.
-  if (knowledgeRequested && !workspaceEnabled && modelCapabilities.vision !== true &&
-    attachments.some((attachment) => attachment.kind === "image")) {
-    return failure("knowledge_image_not_supported", 400, KNOWLEDGE_IMAGE_REFUSAL);
+  // A Knowledge answer reads the current message's images only as one frozen
+  // description made before it: by the answer model when it reads images,
+  // otherwise by the System Vision Model. Without either route an image is
+  // refused outside Workspace, never silently ignored.
+  const knowledgeImageIds = knowledgeRequested
+    ? attachments.filter((attachment) => attachment.kind === "image").map((attachment) => attachment.id) : [];
+  if (knowledgeImageIds.length > KNOWLEDGE_IMAGE_OBSERVATION_LIMITS.maxImages) {
+    return failure("knowledge_image_limit_exceeded", 400, KNOWLEDGE_IMAGE_LIMIT_REFUSAL);
+  }
+  let knowledgeImageObservation: KnowledgeImageObservationPlan | undefined;
+  if (knowledgeImageIds.length > 0) {
+    const knowledgeVision = modelCapabilities.vision === true ? undefined : await deps.vision?.resolve();
+    knowledgeImageObservation = modelCapabilities.vision === true
+      ? { version: 1, route: "answer_model", imageIds: knowledgeImageIds }
+      : knowledgeVision?.available ? { version: 1, route: "system_vision", imageIds: knowledgeImageIds, vision: knowledgeVision } : undefined;
+    if (!knowledgeImageObservation && !workspaceEnabled) {
+      return failure("knowledge_image_not_supported", 400, KNOWLEDGE_IMAGE_REFUSAL);
+    }
   }
   // The conversation path already ends with the current message; appending it
   // again would list each of its images twice.
@@ -2083,7 +2099,7 @@ async function prepareRunWith(
     pdfRoute ? { ...modelCapabilities, pdf: true } : modelCapabilities,
     workspaceEnabled,
     imagePlan?.snapshot.model.capabilities.imageEditing === true,
-    Boolean(chatVisionPlan)
+    Boolean(chatVisionPlan) || knowledgeImageObservation?.route === "system_vision"
   );
   if (attachmentAccess) {
     return failure(attachmentAccess.code, attachmentAccess.status);
@@ -2171,8 +2187,9 @@ async function prepareRunWith(
 
   const workspaceCheckpoints = Boolean(workspaceAdmissionPlan && body?.tools !== "none");
   if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n") };
+  // One run binds one System Vision plan: a Knowledge image description already resolved it.
   const workspaceVision = workspaceAdmissionPlan && body?.tools !== "none" && modelCapabilities.toolCalling === true
-    ? await deps.vision?.resolve() : undefined;
+    ? (knowledgeImageObservation?.route === "system_vision" ? knowledgeImageObservation.vision : await deps.vision?.resolve()) : undefined;
   // New Workspace runs use only the independently admitted Vision role. Direct
   // image flags remain decodable for already accepted execution and recovery.
   if (workspaceVision) prompt = { ...prompt, system: [prompt.system, visionAnalysisGuidance(workspaceVision, false, {
@@ -2343,6 +2360,7 @@ async function prepareRunWith(
     ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const,
       workspaceCheckpointToolDescription: checkpointOutputsTool.description } : {}),
     ...(visionAnalysis ? { visionAnalysis } : {}),
+    ...(knowledgeImageObservation ? { knowledgeImageObservation } : {}),
     ...(agent ? { agent } : {}),
     ...(artifactToolAvailable ? { artifactTool: true as const, artifactToolDescription, artifactResourcePolicy } : {}),
     ...(artifactReferences?.length ? { artifactReferences } : {}),

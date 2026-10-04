@@ -8,6 +8,7 @@ import { createKnowledgeEvidenceAnswerSnapshotV1 } from "../knowledge/evidenceAn
 import { createKnowledgeEvidenceAnswerSnapshotV2 } from "../knowledge/evidenceAnswerSnapshotV2";
 import { knowledgeEvidenceAnswerDraftPromptV1 } from "../knowledge/evidenceAnswerV1";
 import { knowledgeEvidenceAnswerDraftPromptV2 } from "../knowledge/evidenceAnswerReviewV2";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { resolveKnowledgeGroundingExecutionPolicyV1 } from "../knowledge/groundingExecutionPolicy";
 import { knowledgeAnswerHash } from "../knowledge/answerGroundingV5";
 import { createHash } from "node:crypto";
@@ -3483,6 +3484,109 @@ describe("run recovery", () => {
         runId
       }]);
     }
+  });
+
+  describe("recovered Knowledge image description", () => {
+    const observation = { text: "The attached poster's headline is set in a script typeface.", truncated: false };
+    const plan = { version: 1 as const, route: "answer_model" as const, imageIds: ["image-1"] };
+    type Observe = NonNullable<RunRecoveryDeps["vision"]>["observeKnowledgeImages"];
+    function fullContextImageRequest(): NormalizedRunRequest {
+      const base = normalizedKnowledgeRequest();
+      return { ...base, attachmentIds: ["image-1"], knowledgeAnswerWorkflowVersion: 11, knowledgeImageObservation: plan,
+        knowledgeAnswering: { answerPolicy: DEFAULT_KNOWLEDGE_ANSWER_POLICY, approximateDocumentTokens: 100, evidenceCount: 1,
+          exactDocumentTokens: 100, route: "full_context_v1", version: 1 },
+        modelCapabilities: { ...base.modelCapabilities, contextWindow: 10_000, toolCalling: false, vision: true }, toolMode: "none" };
+    }
+    function fullContextHarness(observeKnowledgeImages: Observe, requests: ProviderRunRequest[]) {
+      const draft = packKnowledgeEvidenceDispatchManifest({ allowExpandedContextOmission: false,
+        candidates: [{ ambiguity: "none", evidenceId: "full-context-evidence-1:result:1", exactExcerpt: "Headlines use Helvetica Bold.",
+          fileName: "guide.txt", handle: "K1", locator: "page=1; heading=Type; source-passage=1", operationOrdinal: 0, resultOrdinal: 1,
+          sourceAlias: "S1", sourceLabel: "Style guide", sourceTruncated: false, sourceVersionNumber: 1, state: "available" }],
+        coverageStatement: "The full admitted corpus is included with no passage omitted.", footer: "</private_knowledge_evidence>",
+        header: '<private_knowledge_evidence version="10" coverage="full_admitted_corpus">', maximumBytes: 28_000, maximumTokens: 7_000,
+        profileId: "openai:gpt-test", promptFragmentVersion: 16, runtimeVersion: 2 });
+      const dispatch = knowledgeProviderDispatchRecorder("dispatch", draft);
+      vi.mocked(dispatch.lifecycle.inspect).mockResolvedValue(null);
+      const harness = createHarness({ controls: [control({ providerResponseId: null })],
+        knowledgeFullContextDispatchRecovery: { draft, evidenceBindings: [{ dispatchEvidenceId: "full-context-evidence-1:result:1", evidenceItemId: "evidence-item-1" }] },
+        knowledgeProviderDispatch: dispatch.lifecycle, providerDispatchRecoveryRequest: fullContextImageRequest(),
+        groundKnowledgeEvidenceAnswer: async () => recoveredKnowledgeV5Finalization(),
+        providers: { openai: { buildRequestPreview: () => ({}), async *stream(request) {
+          requests.push(request);
+          return { ...providerResult, finalText: JSON.stringify(requests.length === 1
+            ? { version: 1, blocks: [{ kind: "paragraph", text: "The attached poster's script headline differs from the guide.", evidenceHandles: ["K1"] }] }
+            : { version: 2, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"], reason: "" }], analysisComplete: true,
+              requirements: [{ requirement: "Compare the headline with the guide.", status: "answered", blockIds: ["B1"], correctionEvidenceHandles: [], gap: "" }],
+              followUps: [] }) };
+        } } } });
+      return { dispatch, harness, deps: { ...harness.deps, vision: { observeKnowledgeImages } as unknown as RunRecoveryDeps["vision"] } };
+    }
+
+    it("reuses the run's settled description before the first recovered compose", async () => {
+      const requests: ProviderRunRequest[] = [];
+      const observeKnowledgeImages = vi.fn<Observe>(async () => ({ kind: "observed", observation }));
+      const { deps, harness } = fullContextHarness(observeKnowledgeImages, requests);
+      await refreshProviderRunIfNeeded(deps, runId, userId);
+      expect(harness.state.failed).toEqual([]);
+      expect(observeKnowledgeImages).toHaveBeenCalledOnce();
+      expect(observeKnowledgeImages.mock.calls[0]![0]).toMatchObject({ plan, runId, userId, chatId: "chat-1",
+        question: textFromContentBlocks(fullContextImageRequest().content) });
+      expect(requests).toHaveLength(2);
+      for (const request of requests) expect(JSON.parse(textFromContentBlocks(request.content)).attachedImageObservation).toEqual(observation);
+    });
+
+    it.each([
+      [{ kind: "unknown" } as const, "knowledge_image_observation_outcome_unknown"],
+      [{ kind: "failed", code: "vision_model_unavailable" } as const, "knowledge_image_observation_failed"]
+    ])("fails visibly instead of answering without the image or describing it again (%o)", async (outcome, code) => {
+      const requests: ProviderRunRequest[] = [];
+      const observeKnowledgeImages = vi.fn<Observe>(async () => outcome);
+      const { deps, dispatch, harness } = fullContextHarness(observeKnowledgeImages, requests);
+      await refreshProviderRunIfNeeded(deps, runId, userId);
+      expect(observeKnowledgeImages).toHaveBeenCalledOnce();
+      expect(requests).toEqual([]);
+      expect(dispatch.lifecycle.prepare).not.toHaveBeenCalled();
+      expect(harness.state.completed).toBeNull();
+      expect(harness.state.failed).toEqual([{ assistantMessageId: "assistant-1", runId,
+        error: { code, message: expect.stringContaining("attached image") } }]);
+    });
+
+    it("recovers the review with the description the settled compose froze, without describing again", async () => {
+      const fixture = focusedKnowledgeProviderRecoveryFixture();
+      const dispatch = knowledgeProviderDispatchRecorder("dispatch");
+      const acceptedRequest = createKnowledgeEvidenceAnswerSnapshotV2({ evidenceReceiptHash: dispatch.draft.manifestHash,
+        executionPolicy: resolveKnowledgeGroundingExecutionPolicyV1({ inheritedReasoningEffort: "medium",
+          modelCapabilities: { ...fixture.normalizedRequest.modelCapabilities, reasoning: true } }),
+        operation: "knowledge_evidence_compose_v2", workflowVersion: 11, transport: "provider_neutral_json",
+        ...knowledgeEvidenceAnswerDraftPromptV2({ request: "remember this", evidenceManifest: dispatch.draft.message, imageObservation: observation }) });
+      const acceptedResult = { version: 1, blocks: [{ id: "B1", kind: "paragraph", text: "Recovered supported fact.", evidenceHandles: ["K1"] }] };
+      const settledAt = new Date("2026-07-12T09:02:00.000Z");
+      const stored: StoredKnowledgeEvidenceDispatch = { ...dispatch.dispatch, attempt: { ...dispatch.dispatch.attempt, acceptedRequest, acceptedResult,
+        actualUsage: { completeness: "complete" as const, inputTokens: 5, outputTokens: 3, totalTokens: 8, cachedInputTokens: 0,
+          cacheWriteInputTokens: 0, reasoningTokens: 0, estimatedCostMicros: null },
+        contractVersion: acceptedRequest.contractVersion, dispatchedAt: new Date("2026-07-12T09:01:00.000Z"), evidenceReceiptHash: dispatch.draft.manifestHash,
+        leaseExpiresAt: null, leaseToken: null, providerResponseId: "settled-compose-response", purpose: acceptedRequest.operation,
+        requestHash: knowledgeAnswerHash(acceptedRequest), resultHash: knowledgeAnswerHash(acceptedResult), resultAcceptedAt: settledAt, settledAt, state: "settled" } };
+      vi.mocked(dispatch.lifecycle.inspect).mockImplementation(async ({ ordinal }) => ordinal === 1 ? stored : null);
+      const requests: ProviderRunRequest[] = [];
+      const harness = createHarness({ controls: [control({ providerResponseId: null })],
+        groundKnowledgeEvidenceAnswer: async () => recoveredKnowledgeV5Finalization(),
+        knowledgeProviderDispatch: dispatch.lifecycle, providerDispatchRecoveryRequest: fixture.normalizedRequest,
+        providers: { openai: { buildRequestPreview: () => ({}), async *stream(request) {
+          requests.push(request);
+          return { ...providerResult, providerResponseId: "review-response", finalText: JSON.stringify({
+            version: 2, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"], reason: "" }], analysisComplete: true,
+            requirements: [{ requirement: "Explain the recovered fact.", status: "answered", blockIds: ["B1"], correctionEvidenceHandles: [], gap: "" }],
+            followUps: [] }) };
+        } } } });
+      const observeKnowledgeImages = vi.fn<Observe>();
+      await refreshProviderRunIfNeeded({ ...harness.deps, vision: { observeKnowledgeImages } as unknown as RunRecoveryDeps["vision"] }, runId, userId);
+      expect(harness.state.failed).toEqual([]);
+      expect(observeKnowledgeImages).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
+      expect(dispatch.lifecycle.prepare).toHaveBeenCalledWith(expect.objectContaining({ ordinal: 2, purpose: "knowledge_evidence_review_v2" }));
+      expect(JSON.parse(textFromContentBlocks(requests[0]!.content)).attachedImageObservation).toEqual(observation);
+    });
   });
 
   it("rebuilds full-context evidence before starting Draft V5 without retrieval", async () => {

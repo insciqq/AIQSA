@@ -119,7 +119,13 @@ export function humanizeErrorCode(code: string): string {
     knowledge_retrieval_failed:
       "The selected documents could not be retrieved. Try again",
     knowledge_image_not_supported:
-      "Knowledge answers can't use images with this model. Remove the image, choose a model that supports images, or ask without Knowledge",
+      "This model can't read images and no Vision Model is available to describe them for the Knowledge answer. Remove the image, choose a model that supports images, ask an administrator to assign the Vision Model, or ask without Knowledge",
+    knowledge_image_limit_exceeded:
+      "A Knowledge answer can use at most 8 images from one message. Remove some images and try again",
+    knowledge_image_observation_failed:
+      "The attached image could not be described for the Knowledge answer. Try again, or remove the image",
+    knowledge_image_observation_outcome_unknown:
+      "The attached image may already have been described, so the description was not repeated. Regenerate to try again",
     image_attachment_not_supported:
       "This model can't use images here. Remove the image, choose a model that supports images, or ask an administrator to assign the Vision Model",
     no_retrieval_candidates:

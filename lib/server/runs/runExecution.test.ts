@@ -14,6 +14,7 @@ import { mcpAutoDiscoveryFailure, RUN_PREPARATION_FAILURE_MESSAGE, TOOL_SYNTHESI
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
+import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringVerdictTool } from "../tools/monitoringVerdict";
@@ -4602,6 +4603,121 @@ describe("run execution", () => {
       event: "run_execution", outcome: "failed", code: "knowledge_answer_failed", provider_code: "provider_http_invalid_request"
     }));
     expect(JSON.stringify([response, repository.failedRuns, observation.records()])).not.toContain("PRIVATE_PROVIDER_CANARY");
+  });
+
+  describe("attached-image observation before the grounded answer", () => {
+    const observation = { text: "The attached poster's headline is set in a script typeface.", truncated: false };
+    const visionPlan: NonNullable<NormalizedRunRequest["visionAnalysis"]> & { available: true } = { version: 1, available: true, policyVersion: 1,
+      reasoningEffort: null, verifiedVisionInput: true,
+      authority: { connectionId: "vision", connectionVersion: 1, providerModelId: "vision", modelVersion: 1, credentialId: "key", credentialVersionId: "key-v1" },
+      snapshot: { version: 1, connectionId: "vision", connectionDisplayName: "Vision", providerModelId: "vision", modelDisplayName: "Vision",
+        credentialId: "key", credentialVersionId: "key-v1", providerFamily: "openai_compatible",
+        connection: { apiRoot: "https://vision.example.test/v1", allowPrivateNetwork: false, authenticationMode: "bearer", responseTimeoutMs: 60000 },
+        model: { adapterKind: "openai_responses_compatible", modelClass: "answer", upstreamModelId: "visual-model", answerSelectable: true,
+          defaultParams: {}, capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, streaming: true, vision: true } } } };
+    const plan = { version: 1 as const, route: "system_vision" as const, imageIds: ["image-1"], vision: visionPlan };
+    type Observe = NonNullable<RunExecutionInput["vision"]>["observeKnowledgeImages"];
+    const searchThenGround = (requests: ProviderRunRequest[]) => createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{
+        name: KNOWLEDGE_SEARCH_TOOL_NAME, id: "knowledge-call-1", arguments: { query: "headline typeface", sourceAliases: [] } }] });
+      if (requests.length === 2) return providerResult({ finalText: "AIQSA_KNOWLEDGE_RETRIEVAL_COMPLETE" });
+      return providerResult({ finalText: JSON.stringify(requests.length === 3
+        ? { version: 1, blocks: [{ kind: "paragraph", text: "The attached poster's script headline differs from the guide.", evidenceHandles: ["K1"] }] }
+        : { version: 2, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"], reason: "" }], analysisComplete: true,
+          requirements: [{ requirement: "Compare the headline with the guide.", status: "answered", blockIds: ["B1"], correctionEvidenceHandles: [], gap: "" }],
+          followUps: [] }) });
+    });
+    function searchRoute() {
+      const base = preparedData({ knowledgeBaseIds: ["base-1"], modelId: "openai-answer-model", provider: "openai" });
+      const knowledge = { knowledgeAnswerWorkflowVersion: 11 as const, knowledgeImageObservation: plan, attachmentIds: ["image-1"] };
+      return { ...base, normalizedRequest: { ...base.normalizedRequest, ...knowledge }, providerRequest: { ...base.providerRequest, ...knowledge } };
+    }
+
+    it("describes the images once after retrieval and labels the description in every compose and review", async () => {
+      const repository = createRepository({ groundingResult: structuralGroundingResult("Reviewed answer [K1].") });
+      const { executor } = toolLoopKnowledgeExecutor();
+      const dispatch = createKnowledgeProviderDispatchRecorder();
+      const requests: ProviderRunRequest[] = [];
+      const observedAfter: number[] = [];
+      const observeKnowledgeImages = vi.fn<Observe>(async () => {
+        observedAfter.push(requests.length);
+        return { kind: "observed", observation };
+      });
+      const prepared = searchRoute();
+      await createRunExecutionResponse({ ...executionInput({ adapter: searchThenGround(requests), prepared, repository: repository.repository,
+        knowledgeExecutor: executor, knowledgeProviderDispatch: dispatch.lifecycle }),
+      vision: { observeKnowledgeImages } as unknown as NonNullable<RunExecutionInput["vision"]> }).text();
+      expect(repository.failedRuns).toEqual([]);
+      expect(repository.completeRuns).toHaveLength(1);
+      expect(observeKnowledgeImages).toHaveBeenCalledOnce();
+      expect(observedAfter).toEqual([2]);
+      expect(observeKnowledgeImages.mock.calls[0]![0]).toMatchObject({ plan, runId: "run-1", userId: "user-1",
+        chatId: prepared.normalizedRequest.chatId, question: textFromContentBlocks(prepared.normalizedRequest.content) });
+      expect(requests).toHaveLength(4);
+      // The search round sees no description; compose and review see it as a labelled user-side block.
+      expect(JSON.stringify(requests.slice(0, 2))).not.toContain(observation.text);
+      for (const request of requests.slice(2)) {
+        const payload = JSON.parse(textFromContentBlocks(request.content));
+        expect(payload.attachedImageObservation).toEqual(observation);
+        expect(payload.evidenceManifest).not.toContain(observation.text);
+        expect(request.prompt.system).toContain("attachedImageObservation");
+        expect(request.attachments).toEqual([]);
+      }
+      for (const [input] of dispatch.prepare.mock.calls) {
+        expect(JSON.parse((input.acceptedRequest as { userPrompt: string }).userPrompt).attachedImageObservation).toEqual(observation);
+      }
+    });
+
+    it.each([
+      [{ kind: "unknown" } as const, "knowledge_image_observation_outcome_unknown", "not repeated"],
+      [{ kind: "failed", code: "chat_image_unavailable" } as const, "knowledge_image_observation_failed", "could not be described"]
+    ])("never answers without the image: %o fails the run visibly before any grounded operation", async (outcome, code, message) => {
+      const repository = createRepository();
+      const { executor } = toolLoopKnowledgeExecutor();
+      const dispatch = createKnowledgeProviderDispatchRecorder();
+      const requests: ProviderRunRequest[] = [];
+      const observeKnowledgeImages = vi.fn<Observe>(async () => outcome);
+      await createRunExecutionResponse({ ...executionInput({ adapter: searchThenGround(requests), prepared: searchRoute(),
+        repository: repository.repository, knowledgeExecutor: executor, knowledgeProviderDispatch: dispatch.lifecycle }),
+      vision: { observeKnowledgeImages } as unknown as NonNullable<RunExecutionInput["vision"]> }).text();
+      expect(observeKnowledgeImages).toHaveBeenCalledOnce();
+      expect(requests).toHaveLength(2);
+      expect(dispatch.prepare).not.toHaveBeenCalled();
+      expect(repository.completeRuns).toEqual([]);
+      expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({
+        code, message: expect.stringContaining(message) }) })]);
+    });
+
+    it("has the full-context answer read the description of a vision-capable model's image", async () => {
+      const repository = createRepository({ groundingResult: structuralGroundingResult("Reviewed answer [K1].") });
+      const dispatch = createKnowledgeProviderDispatchRecorder();
+      const base = fullContextKnowledgePreparedData();
+      const answerPlan = { version: 1 as const, route: "answer_model" as const, imageIds: ["image-1"] };
+      const vision = { ...base.normalizedRequest.modelCapabilities, vision: true };
+      const knowledge = { knowledgeAnswerWorkflowVersion: 11 as const, knowledgeImageObservation: answerPlan, attachmentIds: ["image-1"], modelCapabilities: vision };
+      const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, ...knowledge }, providerRequest: { ...base.providerRequest, ...knowledge } };
+      const requests: ProviderRunRequest[] = [];
+      const adapter = createAdapter(async function* (request) {
+        requests.push(request);
+        return providerResult({ finalText: JSON.stringify(requests.length === 1
+          ? { version: 1, blocks: [{ kind: "paragraph", text: "The attached chart reports total cholesterol of 5.3 mmol/L.", evidenceHandles: ["K1"] }] }
+          : { version: 2, blocks: [{ blockId: "B1", verdict: "supported", evidenceHandles: ["K1"], reason: "" }], analysisComplete: true,
+            requirements: [{ requirement: "Read the cholesterol value.", status: "answered", blockIds: ["B1"], correctionEvidenceHandles: [], gap: "" }],
+            followUps: [] }) });
+      });
+      const observeKnowledgeImages = vi.fn<Observe>(async () => ({ kind: "observed", observation }));
+      await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository,
+        knowledgeProviderDispatch: dispatch.lifecycle }), vision: { observeKnowledgeImages } as unknown as NonNullable<RunExecutionInput["vision"]> }).text();
+      expect(repository.failedRuns).toEqual([]);
+      expect(observeKnowledgeImages).toHaveBeenCalledOnce();
+      expect(observeKnowledgeImages.mock.calls[0]![0].plan).toEqual(answerPlan);
+      expect(requests).toHaveLength(2);
+      for (const request of requests) {
+        expect(JSON.parse(textFromContentBlocks(request.content)).attachedImageObservation).toEqual(observation);
+        expect(request.tools).toBeUndefined();
+      }
+    });
   });
 
   it.each([9, 10, 11] as const)("uses reviewed gaps to retrieve new evidence before revising an ordinary answer (%s)", async workflowVersion => {

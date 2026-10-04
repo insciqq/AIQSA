@@ -196,6 +196,9 @@ export type NormalizedRunRequest = {
   knowledgeReviewRepairFeedbackVersion?: 1;
   /** Admitted utility allowance for workflow 11; omission retains historical requests. */
   knowledgeGenerationBudget?: import("./modelOutputAllowance").ModelGenerationBudget;
+  /** Workflow 11 only: the frozen route describing the current message's images
+   * once before the grounded answer. Absent without images (and on older runs). */
+  knowledgeImageObservation?: import("../knowledge/imageObservation").KnowledgeImageObservationPlan;
   /** Accepted model output allowance used by internal compaction utilities. */
   generationBudget?: import("./modelOutputAllowance").ModelGenerationBudget;
   /** Frozen retrieval instructions, independent of answer-stage versions.
