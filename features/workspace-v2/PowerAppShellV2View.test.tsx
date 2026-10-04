@@ -937,6 +937,17 @@ describe("Chat location crumb v2", () => {
     })).toBe("Ingest pipeline");
   });
 
+  it("starts at the Project folders while the header chip names the Project", () => {
+    const project = { id: "project-1", name: "Ingest pipeline" };
+    const projectFolders = [{ id: "project-root", name: "Specs", parentId: null }];
+    expect(chatLocationCrumbV2({
+      chat: { folderId: "project-root", projectId: "project-1" }, personalFolders: [], project, projectNamed: true, projectFolders
+    })).toBe("Specs");
+    expect(chatLocationCrumbV2({
+      chat: { folderId: null, projectId: "project-1" }, personalFolders: [], project, projectNamed: true, projectFolders
+    })).toBeNull();
+  });
+
   it("keeps personal paths separate and fails closed for a mismatched Project", () => {
     const personalFolders = [
       { id: "personal-root", name: "Research", parentId: null },
