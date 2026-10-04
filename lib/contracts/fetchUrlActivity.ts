@@ -18,6 +18,7 @@ export const FETCH_URL_ACTIVITY_OUTCOMES = [
   "fetch_http_status",
   "fetch_network_error",
   "fetch_no_readable_text",
+  "fetch_reader_unavailable",
   "fetch_url_limit_reached",
   "fetch_url_interrupted"
 ] as const;

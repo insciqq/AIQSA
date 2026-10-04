@@ -8,6 +8,7 @@ import type { StructuredDocumentFormat } from "../../domain/uploadFormats";
 import { applicationRootPath } from "../runtimeModulePath";
 import { withPdfWorkerAdmission } from "../uploads/pdfWorkerAdmission";
 import type { TextDocumentExtractionResult } from "../uploads/textDocuments";
+import { PAGE_TITLE_MAX_CHARACTERS, type ExtractedPage } from "../webFetch/pageKinds";
 import { DocumentParserError } from "./errors";
 import { SPREADSHEET_DEFAULT_MAX_CHARACTERS } from "./spreadsheetLimits";
 import type { DocumentParserEngine, ParsedDocument } from "./types";
@@ -19,6 +20,10 @@ const ISOLATED_PARSER_MEMORY_BUDGET_BYTES = 1_024 * 1_024 * 1_024;
 const CHILD_ENTRY = "lib/server/parsing/isolatedParserChild.ts";
 const OUTPUT_BASE_BYTES = 64 * 1_024 * 1_024;
 const OUTPUT_BYTES_PER_CHARACTER = 16;
+/** A page read waits on an answer: its parse is bounded far below a document's. */
+const PAGE_PARSER_TIMEOUT_MS = 20_000;
+const PAGE_OUTPUT_BASE_BYTES = 64 * 1_024;
+const PAGE_CONTENT_KINDS: ReadonlySet<unknown> = new Set(["html", "json", "markdown", "text"]);
 const EXIT_WAIT_MS = 5_000;
 const MAX_TIMER_MS = 2_147_483_647;
 const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin";
@@ -348,4 +353,56 @@ export async function extractHtmlTextInIsolation(
     value.text.length > maxChars || typeof value.truncated !== "boolean"
   ) throw new DocumentParserError("parser_invalid_output", "inline");
   return { kind: "html", text: value.text, truncated: value.truncated };
+}
+
+function extractedPage(value: unknown, maxCharacters: number): ExtractedPage | null {
+  const page = isRecord(value) && "page" in value ? value.page : undefined;
+  if (page === null) return null;
+  if (
+    !isRecord(page) || !PAGE_CONTENT_KINDS.has(page.kind) ||
+    typeof page.text !== "string" || page.text.length > maxCharacters ||
+    (page.title !== null && (typeof page.title !== "string" || page.title.length > PAGE_TITLE_MAX_CHARACTERS)) ||
+    typeof page.truncated !== "boolean"
+  ) throw new DocumentParserError("parser_invalid_output", "inline");
+  return {
+    kind: page.kind as ExtractedPage["kind"],
+    text: page.text,
+    title: page.title as string | null,
+    truncated: page.truncated
+  };
+}
+
+/**
+ * Extracts one fetched web page's bounded text in the same disposable,
+ * resource-limited process: a hostile page can exhaust only that process's
+ * CPU, memory and deadline, never the application's event loop. Null when the
+ * body is not a readable kind.
+ */
+export async function extractWebPageInIsolation(
+  input: Readonly<{
+    body: Uint8Array;
+    /** The Content-Type header value, charset included; null when the response had none. */
+    contentType: string | null;
+    finalUrl: string;
+    maxCharacters: number;
+    signal?: AbortSignal;
+  }>,
+  options: IsolatedParserOptions = {}
+): Promise<ExtractedPage | null> {
+  const maxCharacters = Math.max(1, Math.floor(input.maxCharacters));
+  const value = await isolatedParse({
+    bytes: Buffer.from(input.body.buffer, input.body.byteOffset, input.body.byteLength),
+    engine: "inline",
+    maxOutputBytes: PAGE_OUTPUT_BASE_BYTES +
+      OUTPUT_BYTES_PER_CHARACTER * (maxCharacters + PAGE_TITLE_MAX_CHARACTERS),
+    request: {
+      byteLength: input.body.byteLength,
+      contentType: input.contentType ?? "",
+      finalUrl: input.finalUrl,
+      maxCharacters,
+      op: "page"
+    },
+    ...(input.signal ? { signal: input.signal } : {})
+  }, { timeoutMs: PAGE_PARSER_TIMEOUT_MS, ...options });
+  return extractedPage(value, maxCharacters);
 }

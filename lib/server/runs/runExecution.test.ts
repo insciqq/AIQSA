@@ -19,6 +19,8 @@ import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { createScheduledTaskTool } from "../tools/scheduledTaskCreation";
 import { fetchUrlTool } from "../tools/fetchUrlPlan";
+import { extractPage as extractPageText } from "../webFetch/extract";
+import type { FetchedPageInput } from "../webFetch/pageText";
 import { fetchUrlDigest } from "../webFetch/urls";
 import { scheduledPromptUrlDigests } from "../scheduledTasks/promptUrls";
 import { loadSkillTool, readSkillFileTool } from "../tools/skill";
@@ -8348,6 +8350,8 @@ describe("page reader execution", () => {
     };
   }
   const read = (url: string, id = "read-call") => ({ arguments: { url }, id, name: "fetch_url" });
+  // The same extraction as the parser process, run here.
+  const extractPage = async (input: FetchedPageInput) => extractPageText(input);
   const fetchPage = () => vi.fn(async () => ({ body: new TextEncoder().encode("<html><head><title>Today</title></head>" +
     "<body><p>Fresh news for the reader.</p></body></html>"), contentType: "text/html", finalUrl: userUrl, status: 200 }));
 
@@ -8362,7 +8366,7 @@ describe("page reader execution", () => {
         : providerResult({ finalText: "Summary of the page." });
     });
     const events = parseSse(await createRunExecutionResponse({ ...executionInput({ adapter, prepared: readerPrepared(),
-      repository: repository.repository }), fetchPage: pages }).text());
+      repository: repository.repository }), fetchPage: pages, extractPage }).text());
     expect(repository.failedRuns).toEqual([]);
     expect(repository.completeRuns).toHaveLength(1);
     expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "fetch_url"]);
@@ -8392,7 +8396,7 @@ describe("page reader execution", () => {
         : providerResult({ finalText: "The page could not be read." });
     });
     await createRunExecutionResponse({ ...executionInput({ adapter, prepared: readerPrepared(),
-      repository: repository.repository }), fetchPage: pages }).text();
+      repository: repository.repository }), fetchPage: pages, extractPage }).text();
     expect(pages).not.toHaveBeenCalled();
     expect(repository.failedRuns).toEqual([]);
     expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ state: "error", toolName: "fetch_url" })]);
@@ -8406,7 +8410,7 @@ describe("page reader execution", () => {
       return providerResult({ finalText: "", toolCalls: [read(userUrl)] });
     });
     await createRunExecutionResponse({ ...executionInput({ adapter, prepared: readerPrepared(false),
-      repository: repository.repository }), fetchPage: pages }).text();
+      repository: repository.repository }), fetchPage: pages, extractPage }).text();
     expect(pages).not.toHaveBeenCalled();
     expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "unsupported_tool_call" }) })]);
   });
@@ -8441,7 +8445,7 @@ describe("page reader execution", () => {
       return providerResult({ finalText: "Done." });
     });
     await createRunExecutionResponse({ ...executionInput({ adapter: injectedAdapter, prepared: creating,
-      repository: repository.repository }), fetchPage: injected }).text();
+      repository: repository.repository }), fetchPage: injected, extractPage }).text();
     expect(stored).toEqual([[fetchUrlDigest(userUrl)]]);
 
     // The scheduled run freezes that snapshot: the planted link is refused, the user's link is read.
@@ -8457,7 +8461,7 @@ describe("page reader execution", () => {
         : providerResult({ finalText: "Summary." });
     });
     await createRunExecutionResponse({ ...executionInput({ adapter: scheduledAdapter, prepared: scheduled,
-      repository: scheduledRepository.repository }), fetchPage: pages }).text();
+      repository: scheduledRepository.repository }), fetchPage: pages, extractPage }).text();
     expect(pages).toHaveBeenCalledExactlyOnceWith(userUrl, expect.anything());
     const delivered = JSON.stringify(requests[1]?.providerToolMessages);
     expect(delivered).toContain("fetch_url_not_in_conversation");
@@ -8474,7 +8478,7 @@ describe("page reader execution", () => {
         : providerResult({ finalText: "", toolCalls: [read(attacker)] });
     });
     await createRunExecutionResponse({ ...executionInput({ adapter: ownerAdapter, prepared: owned,
-      repository: createRepository().repository }), fetchPage: ownerPages }).text();
+      repository: createRepository().repository }), fetchPage: ownerPages, extractPage }).text();
     expect(ownerPages).toHaveBeenCalledExactlyOnceWith(attacker, expect.anything());
   });
 });

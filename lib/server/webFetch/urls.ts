@@ -12,7 +12,9 @@ export const FETCH_URL_MAX_LENGTH = 2_048;
 const URLS_PER_TEXT = 200;
 const HTTP_URL_PATTERN = /\bhttps?:\/\/[^\s<>"'`]+/giu;
 const TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", "'", "\"", "»", "”", "’", "。", "，", "、", "…"]);
-const CLOSERS: Readonly<Record<string, string>> = { ")": "(", "]": "[", "}": "{" };
+const CLOSER_OF: ReadonlyMap<string, string> = new Map([["(", ")"], ["[", "]"], ["{", "}"]]);
+/** The longest raw text normalization accepts; trailing punctuation included. */
+const CANDIDATE_MAX_LENGTH = FETCH_URL_MAX_LENGTH * 3;
 
 /**
  * The comparison and request form of a page URL, or null: a WHATWG-parsed
@@ -24,7 +26,7 @@ const CLOSERS: Readonly<Record<string, string>> = { ")": "(", "]": "[", "}": "{"
 export function normalizeFetchUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
-  if (!trimmed || trimmed.length > FETCH_URL_MAX_LENGTH * 3 || /[\u0000-\u001f\u007f]/u.test(trimmed)) return null;
+  if (!trimmed || trimmed.length > CANDIDATE_MAX_LENGTH || /[\u0000-\u001f\u007f]/u.test(trimmed)) return null;
   let url: URL;
   try {
     url = new URL(trimmed);
@@ -46,29 +48,32 @@ export function isFetchUrlDigest(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
 }
 
-function count(value: string, character: string): number {
-  let total = 0;
-  for (const entry of value) if (entry === character) total += 1;
-  return total;
-}
-
-/** Drops prose punctuation and unbalanced closing brackets after a URL. */
+/**
+ * Drops prose punctuation and unbalanced closing brackets after a URL. The
+ * bracket balance is counted once and kept as characters leave, so the work
+ * stays linear in the candidate.
+ */
 function trimTrailing(candidate: string): string {
-  let url = candidate;
-  while (url.length > 0) {
-    const last = url.at(-1)!;
-    if (TRAILING_PUNCTUATION.has(last)) {
-      url = url.slice(0, -1);
-      continue;
-    }
-    const opener = CLOSERS[last];
-    if (opener && count(url, last) > count(url, opener)) {
-      url = url.slice(0, -1);
-      continue;
-    }
-    break;
+  const unbalanced = new Map([[")", 0], ["]", 0], ["}", 0]]);
+  for (const character of candidate) {
+    const closer = CLOSER_OF.get(character);
+    if (unbalanced.has(character)) unbalanced.set(character, unbalanced.get(character)! + 1);
+    else if (closer) unbalanced.set(closer, unbalanced.get(closer)! - 1);
   }
-  return url;
+  let end = candidate.length;
+  while (end > 0) {
+    const last = candidate[end - 1]!;
+    const excess = unbalanced.get(last) ?? 0;
+    if (TRAILING_PUNCTUATION.has(last)) {
+      end -= 1;
+    } else if (excess > 0) {
+      unbalanced.set(last, excess - 1);
+      end -= 1;
+    } else {
+      break;
+    }
+  }
+  return candidate.slice(0, end);
 }
 
 /**
@@ -79,6 +84,8 @@ function trimTrailing(candidate: string): string {
 export function extractFetchUrls(text: string): string[] {
   const found = new Set<string>();
   for (const match of text.matchAll(HTTP_URL_PATTERN)) {
+    // Longer candidates cannot normalize to an allowed URL; skip them before any work.
+    if (match[0].length > CANDIDATE_MAX_LENGTH) continue;
     const normalized = normalizeFetchUrl(trimTrailing(match[0]));
     if (normalized) found.add(normalized);
     if (found.size >= URLS_PER_TEXT) break;

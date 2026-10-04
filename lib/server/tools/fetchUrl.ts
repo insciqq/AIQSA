@@ -1,5 +1,7 @@
 import type { FetchUrlActivityOutcome } from "../../contracts/fetchUrlActivity";
-import { declaredPageContentKind, extractPage, type PageContentKind } from "../webFetch/extract";
+import { isDocumentParserError } from "../parsing/errors";
+import { declaredPageContentKind, type ExtractedPage, type PageContentKind } from "../webFetch/pageKinds";
+import { extractFetchedPage, type FetchedPageInput } from "../webFetch/pageText";
 import { fetchWebPage, WebFetchError, webFetchUrlRefusal, type WebFetchOptions, type WebFetchResponse } from "../webFetch/transport";
 import { fetchUrlDigest, fetchUrlDigestsOf, normalizeFetchUrl } from "../webFetch/urls";
 import { FETCH_URL_LIMITS, persistedFetchUrlFacts, type FetchUrlPlan } from "./fetchUrlPlan";
@@ -48,14 +50,16 @@ function failureMessage(code: FailureCode, scheduled: boolean, httpStatus?: numb
       return "The address belongs to a private, local or reserved network and is never read.";
     case "fetch_redirect_invalid": return "The page redirected to an address that is not a valid http(s) web address.";
     case "fetch_redirect_limit": return "The page redirected more than 5 times and was not read.";
-    case "fetch_timeout": return "The page did not load within 15 seconds.";
-    case "fetch_too_large": return "The page is larger than 5 MB and was not read.";
+    case "fetch_timeout": return "The page did not load, or could not be processed, in time; it was not read.";
+    case "fetch_too_large": return "The page is too large to read (over 5 MB, or too complex to process).";
     case "fetch_unsupported_content_type":
       return "This link is not a web page or text (for example a PDF, an image or an archive). Ask the user to upload the file instead.";
     case "fetch_http_status": return `The site answered with HTTP status ${httpStatus ?? "error"}; the page was not read.`;
     case "fetch_network_error": return "The site could not be reached.";
     case "fetch_no_readable_text":
       return "The page has no readable text; it may need JavaScript, which page reading does not run.";
+    case "fetch_reader_unavailable":
+      return "Page reading is unavailable on this server right now, so the page was not read. Do not retry it in this answer.";
     case "fetch_url_limit_reached":
       return `This answer already read ${FETCH_URL_LIMITS.callsPerRun} pages; answer with what was read so far.`;
     case "fetch_url_interrupted":
@@ -137,6 +141,19 @@ function persistedReadValue(result: unknown, url: string): ReadValue | null {
     title: value.title as string | null, truncated: value.truncated, url };
 }
 
+/** A page that arrived but did not become text: the deadline, the parser's bounds, or the parser itself. */
+function extractionFailureCode(error: unknown): FailureCode {
+  if (error instanceof DOMException && error.name === "TimeoutError") return "fetch_timeout";
+  if (!isDocumentParserError(error)) return "fetch_reader_unavailable";
+  switch (error.code) {
+    case "parser_timeout": return "fetch_timeout";
+    case "parser_output_too_large": return "fetch_too_large";
+    // The parser refused this page's content; other pages still read.
+    case "parser_rejected": return "fetch_no_readable_text";
+    default: return "fetch_reader_unavailable";
+  }
+}
+
 /** One persisted call of this run's page reader. */
 export type FetchUrlPersistedCall = Readonly<{ id: string; state: string; result: unknown }>;
 
@@ -151,6 +168,8 @@ export type FetchUrlSessionDeps = Readonly<{
   /** The run's persisted page-reader calls, so a recovered run keeps its cap and cache. */
   loadCalls?: () => Promise<readonly FetchUrlPersistedCall[]>;
   fetchPage?: (url: string, options: WebFetchOptions) => Promise<WebFetchResponse>;
+  /** Fetched body to page text; production parses it in the disposable parser process. */
+  extractPage?: (input: FetchedPageInput) => Promise<ExtractedPage | null>;
   now?: () => Date;
 }>;
 
@@ -165,10 +184,13 @@ export type FetchUrlSession = Readonly<{
  */
 export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSession {
   const fetchPage = deps.fetchPage ?? fetchWebPage;
+  const extractPageText = deps.extractPage ?? ((input: FetchedPageInput) => extractFetchedPage(input));
   const now = deps.now ?? (() => new Date());
   const frozen = new Set([...deps.plan.userUrlDigests, ...(deps.plan.taskUrlDigests ?? [])]);
   /** Persisted call ids whose page request may have left: settled sends and unsettled calls. */
   const sent = new Set<string>();
+  /** Calls this session settled without a request; a concurrent seed may still see them running. */
+  const notSent = new Set<string>();
   const cache = new Map<string, ReadValue>();
   const inFlight = new Map<string, Promise<Outcome>>();
   let seeded: Promise<void> | null = null;
@@ -176,7 +198,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
   async function seed(): Promise<void> {
     for (const call of await deps.loadCalls?.() ?? []) {
       const facts = persistedFetchUrlFacts(call.result);
-      if (call.state === "running" || facts?.dispatched) sent.add(call.id);
+      if (!notSent.has(call.id) && (call.state === "running" || facts?.dispatched)) sent.add(call.id);
       if (facts?.outcome === "read" && facts.url && !cache.has(facts.url)) {
         const value = persistedReadValue(call.result, facts.url);
         if (value) cache.set(facts.url, value);
@@ -204,11 +226,12 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       }
       throw error;
     }
-    let page: ReturnType<typeof extractPage>;
+    let page: ExtractedPage | null;
     try {
-      page = extractPage({ body: response.body, contentType: response.contentType, finalUrl: response.finalUrl });
-    } catch {
-      page = { kind: "text", text: "", title: null, truncated: false };
+      page = await extractPageText({ body: response.body, contentType: response.contentType, finalUrl: response.finalUrl, signal });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return { code: extractionFailureCode(error), dispatched: true, kind: "failed" };
     }
     if (!page) return { code: "fetch_unsupported_content_type", dispatched: true, kind: "failed" };
     if (!page.text.trim()) return { code: "fetch_no_readable_text", dispatched: true, kind: "failed" };
@@ -220,8 +243,15 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
 
   return {
     async execute(call, input) {
-      const refuse = (code: FailureCode, url: string | null) => failed(call, { code, dispatched: false, kind: "failed" },
-        deps.scheduled, url);
+      const id = input.persistedToolCallId;
+      /** Settles this call as one that sent no request, freeing any cap slot a seed gave it. */
+      const unsent = (result: ToolExecutionResult) => {
+        notSent.add(id);
+        sent.delete(id);
+        return result;
+      };
+      const refuse = (code: FailureCode, url: string | null) => unsent(failed(call, { code, dispatched: false, kind: "failed" },
+        deps.scheduled, url));
       if (hasInvalidProviderToolArguments(call.arguments) || Object.keys(call.arguments).some((key) => key !== "url")) {
         return refuse("fetch_url_invalid", null);
       }
@@ -232,16 +262,16 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       if (policy) return refuse(policy, url);
       await (seeded ??= seed());
       const cached = cache.get(url);
-      if (cached) return read(call, cached, true);
+      if (cached) return unsent(read(call, cached, true));
       const pending = inFlight.get(url);
       if (pending) {
         const outcome = await pending;
-        return outcome.kind === "read" ? read(call, outcome.value, true)
-          : failed(call, { ...outcome, dispatched: false }, deps.scheduled, url);
+        return unsent(outcome.kind === "read" ? read(call, outcome.value, true)
+          : failed(call, { ...outcome, dispatched: false }, deps.scheduled, url));
       }
-      const others = [...sent].filter((id) => id !== input.persistedToolCallId).length;
+      const others = [...sent].filter((entry) => entry !== id).length;
       if (others >= FETCH_URL_LIMITS.callsPerRun) return refuse("fetch_url_limit_reached", url);
-      sent.add(input.persistedToolCallId);
+      sent.add(id);
       const work = fetchAndExtract(url, input.signal);
       inFlight.set(url, work);
       try {
@@ -250,8 +280,8 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           cache.set(url, outcome.value);
           return read(call, outcome.value, false);
         }
-        if (!outcome.dispatched) sent.delete(input.persistedToolCallId);
-        return failed(call, outcome, deps.scheduled, url);
+        const result = failed(call, outcome, deps.scheduled, url);
+        return outcome.dispatched ? result : unsent(result);
       } finally {
         inFlight.delete(url);
       }
