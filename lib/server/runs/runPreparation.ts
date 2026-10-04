@@ -100,6 +100,7 @@ import {
   FETCH_URL_LIMITS,
   fetchUrlAuthoringMessages,
   fetchUrlToolsForRequest,
+  taskInstructionFetchUrlDigests,
   userAuthoredFetchUrlDigests,
   type FetchUrlPlan
 } from "../tools/fetchUrlPlan";
@@ -2321,21 +2322,25 @@ async function prepareRunWith(
   } else if (fetchUrlOffered) {
     const storedIds = fetchUrlAuthoringMessages(conversationMessages).map((message) => message.id)
       .filter((id) => id !== currentSendMessageId);
-    let promptIds: ReadonlySet<string>;
+    let promptIds: ReadonlySet<string> | null = null;
     try {
       // Without the marks, only the current message (never a stored prompt) authorizes links.
       promptIds = deps.repository.loadScheduledPromptMessageIds
         ? await deps.repository.loadScheduledPromptMessageIds({ chatId: chat.id, messageIds: storedIds, userId: input.userId })
-        : new Set(storedIds);
+        : null;
     } catch (error) {
       logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
         code: "fetch_url_authority_unavailable", prisma_code: databaseFailureCode(error) });
-      promptIds = new Set(storedIds);
     }
+    // Known prompts only: messages refused for lack of marks are not called instructions.
+    const instructionIds = new Set(promptIds ?? []);
     if (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt) {
-      promptIds = new Set([...promptIds, input.source.source.userMessage.id]);
+      instructionIds.add(input.source.source.userMessage.id);
     }
-    fetchUrlPlan = { version: 1, userUrlDigests: userAuthoredFetchUrlDigests(conversationMessages, promptIds) };
+    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds]);
+    const userUrlDigests = userAuthoredFetchUrlDigests(conversationMessages, excludedIds);
+    const instructionUrlDigests = taskInstructionFetchUrlDigests(conversationMessages, instructionIds, userUrlDigests);
+    fetchUrlPlan = { version: 1, userUrlDigests, ...(instructionUrlDigests.length > 0 ? { instructionUrlDigests } : {}) };
   }
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),

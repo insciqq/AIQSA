@@ -258,8 +258,17 @@ type ToolActivityIdentity = Readonly<{
   fetchTarget?: unknown;
   fetchOutcome?: unknown;
   fetchHttpStatus?: unknown;
-  fetchScheduled?: unknown;
+  fetchRefusalScope?: unknown;
 }>;
+
+/** Why a page link was refused, worded by how the owner allows it. */
+function notInConversationCopy(target: string, scope: unknown): string {
+  switch (scope) {
+    case "scheduled_run": return `Didn't read ${target}: open the task and save its instructions to allow this link`;
+    case "task_instructions": return `Didn't read ${target}: links in a task's instructions are read only by its scheduled runs`;
+    default: return `Didn't read ${target}: the link wasn't shared in this chat`;
+  }
+}
 
 /** A page read's row: "Reading <host/path>", then its outcome in plain words. */
 function describeFetchCallV2(call: ToolActivityIdentity, phase: "cancelled" | "failed" | "running" | "settled"): string {
@@ -268,9 +277,7 @@ function describeFetchCallV2(call: ToolActivityIdentity, phase: "cancelled" | "f
   if (phase === "cancelled") return `Reading ${target} stopped`;
   if (phase === "settled" && (call.fetchOutcome === undefined || call.fetchOutcome === "read")) return `Read ${target}`;
   switch (call.fetchOutcome) {
-    case "fetch_url_not_in_conversation": return call.fetchScheduled === true
-      ? `Didn't read ${target}: edit the task's instructions to allow this link`
-      : `Didn't read ${target}: the link wasn't shared in this chat`;
+    case "fetch_url_not_in_conversation": return notInConversationCopy(target, call.fetchRefusalScope);
     case "fetch_blocked_address":
     case "fetch_port_not_allowed":
     case "fetch_url_credentials":

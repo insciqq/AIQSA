@@ -2,7 +2,9 @@ import {
   decodeFetchUrlTarget,
   isFetchUrlActivityOutcome,
   isFetchUrlHttpStatus,
-  type FetchUrlActivityOutcome
+  isFetchUrlRefusalScope,
+  type FetchUrlActivityOutcome,
+  type FetchUrlRefusalScope
 } from "../../contracts/fetchUrlActivity";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { fetchUrlDigestsOf, fetchUrlDisplayTarget, isFetchUrlDigest, normalizeFetchUrl } from "../webFetch/urls";
@@ -30,7 +32,15 @@ export type FetchUrlPlan = Readonly<{
   userUrlDigests: readonly string[];
   /** A scheduled run only: its task's prompt snapshot, frozen at admission. */
   taskUrlDigests?: readonly string[];
+  /**
+   * Another run only: digests of links that only scheduled task instructions
+   * on its branch hold. They authorize nothing; a refusal of one says that
+   * only the task's scheduled runs read it.
+   */
+  instructionUrlDigests?: readonly string[];
 }>;
+
+const PLAN_KEYS: ReadonlySet<string> = new Set(["version", "userUrlDigests", "taskUrlDigests", "instructionUrlDigests"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -44,7 +54,8 @@ function digestList(value: unknown): value is readonly string[] {
 export function isFetchUrlPlan(value: unknown): value is FetchUrlPlan {
   return isRecord(value) && value.version === 1 && digestList(value.userUrlDigests) &&
     (value.taskUrlDigests === undefined || digestList(value.taskUrlDigests)) &&
-    Object.keys(value).every((key) => key === "version" || key === "userUrlDigests" || key === "taskUrlDigests");
+    (value.instructionUrlDigests === undefined || digestList(value.instructionUrlDigests)) &&
+    Object.keys(value).every((key) => PLAN_KEYS.has(key));
 }
 
 /** The tool as a run offers it. Every request carries this text, so it stays short. */
@@ -95,6 +106,23 @@ export function userAuthoredFetchUrlDigests(messages: readonly BranchMessage[], 
   return fetchUrlDigestsOf(texts, FETCH_URL_LIMITS.authorizedUrls);
 }
 
+/**
+ * Digests of the links that only scheduled task instructions on the branch
+ * hold (`FetchUrlPlan.instructionUrlDigests`): user text does not also
+ * authorize them. They name the refusal, never authorize.
+ */
+export function taskInstructionFetchUrlDigests(
+  messages: readonly BranchMessage[],
+  scheduledPromptIds: ReadonlySet<string>,
+  userUrlDigests: readonly string[]
+): string[] {
+  const authorized = new Set(userUrlDigests);
+  const texts = fetchUrlAuthoringMessages(messages).filter((message) => scheduledPromptIds.has(message.id))
+    .map((message) => textFromContentBlocks(message.content));
+  return fetchUrlDigestsOf(texts, FETCH_URL_LIMITS.authorizedUrls + authorized.size)
+    .filter((digest) => !authorized.has(digest)).slice(0, FETCH_URL_LIMITS.authorizedUrls);
+}
+
 /** The tool a run admitted with the marker, or none. Execution and recovery list the same tool. */
 export function fetchUrlToolsForRequest(request: Readonly<{ fetchUrl?: unknown }>): RunTool[] {
   return isFetchUrlPlan(request.fetchUrl) ? [fetchUrlTool] : [];
@@ -110,8 +138,8 @@ export type PersistedFetchUrlFacts = Readonly<{
   dispatched: boolean;
   httpStatus?: number;
   outcome: FetchUrlActivityOutcome;
-  /** A scheduled run refused a link its task's snapshot lacks. */
-  scheduled?: true;
+  /** A `fetch_url_not_in_conversation` refusal whose recovery is not sending the link in the chat. */
+  refusalScope?: FetchUrlRefusalScope;
   url?: string;
 }>;
 
@@ -124,7 +152,8 @@ export function persistedFetchUrlFacts(result: unknown): PersistedFetchUrlFacts 
   return {
     dispatched: preview.dispatched,
     outcome: preview.outcome,
-    ...(preview.scheduled === true && preview.outcome === "fetch_url_not_in_conversation" ? { scheduled: true as const } : {}),
+    ...(preview.outcome === "fetch_url_not_in_conversation" && isFetchUrlRefusalScope(preview.refusalScope)
+      ? { refusalScope: preview.refusalScope } : {}),
     ...(typeof preview.url === "string" && normalizeFetchUrl(preview.url) === preview.url ? { url: preview.url } : {}),
     ...(isFetchUrlHttpStatus(preview.httpStatus) ? { httpStatus: preview.httpStatus } : {})
   };
@@ -132,7 +161,7 @@ export function persistedFetchUrlFacts(result: unknown): PersistedFetchUrlFacts 
 
 /** Browser-safe activity facts of one call: its "host/path" target and, once settled, its outcome. */
 export function fetchUrlActivityFacts(toolName: string, argumentsValue: unknown, result?: unknown): {
-  fetchHttpStatus?: number; fetchOutcome?: FetchUrlActivityOutcome; fetchScheduled?: true; fetchTarget?: string;
+  fetchHttpStatus?: number; fetchOutcome?: FetchUrlActivityOutcome; fetchRefusalScope?: FetchUrlRefusalScope; fetchTarget?: string;
 } {
   if (toolName !== FETCH_URL_TOOL_NAME) return {};
   const facts = result === undefined || result === null ? null : persistedFetchUrlFacts(result);
@@ -142,7 +171,7 @@ export function fetchUrlActivityFacts(toolName: string, argumentsValue: unknown,
   return {
     ...(target ? { fetchTarget: target } : {}),
     ...(facts ? { fetchOutcome: facts.outcome } : {}),
-    ...(facts?.scheduled ? { fetchScheduled: true as const } : {}),
+    ...(facts?.refusalScope ? { fetchRefusalScope: facts.refusalScope } : {}),
     ...(facts?.outcome === "fetch_http_status" && facts.httpStatus !== undefined ? { fetchHttpStatus: facts.httpStatus } : {})
   };
 }
