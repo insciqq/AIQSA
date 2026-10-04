@@ -65,6 +65,9 @@ for (const viewport of [
     await expect(chip.getByRole("link", { name: "Set up PDF processing" }))
       .toHaveAttribute("href", "/admin?section=roles&resource=chat_pdf");
     await expect(send).toBeDisabled();
+    // The blocked card never pushes the composer toolbar below the fold,
+    // also in the blank chat of a phone on its side.
+    await expectWithinViewport(page, send);
     await expect(composer).toHaveValue("Summarize the attached PDF.");
     expect(previewTargets[0]).toMatchObject({ projectId: null, providerConnectionId: "openai", providerModelId: "gpt-5.5" });
     await expectNoHorizontalOverflow(page);

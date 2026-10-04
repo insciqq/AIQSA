@@ -1596,6 +1596,25 @@
   }
 }
 
+/*
+ * A phone on its side: once files sit in the blank chat's composer, the
+ * greeting gives up its room so the composer toolbar (Send, the file's
+ * remove control) stays above the fold. The tray itself keeps one row.
+ */
+@media (max-height: 32rem) {
+  .v2-live-workspace .v2-conversation-orientation:has(.v2-attachment-tray) >
+    :is(.v2-conversation-orientation-copy, .v2-live-assistant-intro) {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) and (max-height: 32rem) {
+  /* The composer keeps its place at the bottom of the phone's blank chat. */
+  .v2-live-workspace .v2-conversation-orientation:has(.v2-attachment-tray) > .v2-conversation-empty-composer {
+    grid-row: 2;
+  }
+}
+
 @media (min-width: 42.01rem) and (max-height: 32rem) {
   .v2-live-workspace .v2-conversation-orientation {
     align-content: start;
