@@ -24,6 +24,14 @@ const PRODUCTION_CSP = runtimeSecurityHeaders({
   NODE_ENV: "production"
 })["Content-Security-Policy"]!;
 
+// Chromium's Local Network Access checks treat a document fulfilled by
+// Playwright as coming from an unknown address space and then refuse its
+// WebSocket to 127.0.0.1, so the dev server's HMR socket fails and the page
+// never hydrates. Rewriting the header through CDP `Fetch.continueResponse`
+// keeps the address space but Chromium ignores a CSP added there. This
+// harness-only flag restores the dev socket; no product request depends on it.
+test.use({ launchOptions: { args: ["--disable-features=LocalNetworkAccessChecks"] } });
+
 // A message only Mermaid's entry module contains; it identifies the lazy chunk.
 const MERMAID_SIGNATURE = "Maximum text size in diagram exceeded";
 
@@ -62,7 +70,13 @@ type Observation = {
   violations(): Promise<Array<{ blockedURI: string; directive: string; sourceFile: string }>>;
 };
 
-async function observe(page: Page, documentPath: string): Promise<Observation> {
+/**
+ * Records policy violations, external requests and Mermaid chunk downloads.
+ * With `productionPolicy`, the page document is re-served with the production
+ * policy in report-only mode; otherwise the dev server's own report-only
+ * policy applies and the page loads exactly as in other fixture specs.
+ */
+async function observe(page: Page, documentPath: string, { productionPolicy = false } = {}): Promise<Observation> {
   const externalRequests: string[] = [];
   const scriptChecks: Array<Promise<string | null>> = [];
   await page.addInitScript(() => {
@@ -72,13 +86,16 @@ async function observe(page: Page, documentPath: string): Promise<Observation> {
       store.push({ blockedURI: event.blockedURI, directive: event.effectiveDirective, sourceFile: event.sourceFile });
     });
   });
-  await page.route((url) => url.pathname === documentPath, async (route) => {
-    if (route.request().resourceType() !== "document") return route.fallback();
-    const response = await route.fetch({ maxRedirects: 0 });
-    const headers: Record<string, string> = { ...response.headers(), "content-security-policy-report-only": PRODUCTION_CSP };
-    delete headers["content-security-policy"];
-    await route.fulfill({ headers, response });
-  });
+  if (productionPolicy) {
+    await page.route(`**${documentPath}`, async (route) => {
+      if (route.request().resourceType() !== "document") return route.fallback();
+      const response = await route.fetch({ maxRedirects: 0 });
+      const headers: Record<string, string> = { ...response.headers(), "content-security-policy-report-only": PRODUCTION_CSP };
+      // The fulfilled body is already decoded and re-framed by Playwright.
+      for (const name of ["content-security-policy", "content-encoding", "content-length", "transfer-encoding"]) delete headers[name];
+      await route.fulfill({ headers, response });
+    });
+  }
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (!["http:", "https:"].includes(url.protocol)) return;
@@ -163,10 +180,10 @@ async function prepareChat(page: Page, answer: string | null) {
 }
 
 for (const viewport of [
-  { name: "desktop", width: 1440, height: 900, theme: "light", touch: false },
-  { name: "tablet-portrait", width: 820, height: 1180, theme: "dark", touch: true },
-  { name: "phone-portrait", width: 390, height: 844, theme: "light", touch: true },
-  { name: "phone-landscape", width: 844, height: 390, theme: "dark", touch: true }
+  { name: "desktop", width: 1440, height: 900, theme: "light", touch: false, productionPolicy: true },
+  { name: "tablet-portrait", width: 820, height: 1180, theme: "dark", touch: true, productionPolicy: false },
+  { name: "phone-portrait", width: 390, height: 844, theme: "light", touch: true, productionPolicy: false },
+  { name: "phone-landscape", width: 844, height: 390, theme: "dark", touch: true, productionPolicy: false }
 ] as const) {
   test.describe(`chat at ${viewport.name}`, () => {
     test.use({ viewport: { width: viewport.width, height: viewport.height }, hasTouch: viewport.touch });
@@ -177,7 +194,7 @@ for (const viewport of [
       await prepareChat(page, diagramAnswer);
       await page.route("**/api/chats/*/messages", (route) => route.request().method() === "POST"
         ? route.fulfill({ status: 409, json: { error: "unexpected_fixture_run" } }) : route.fallback());
-      const observation = await observe(page, `/c/${chatId}`);
+      const observation = await observe(page, `/c/${chatId}`, { productionPolicy: viewport.productionPolicy });
       await signInWithLocalToken(page, `/c/${chatId}`);
       await expectDiagrams(page);
       expect(await observation.mermaidChunks()).not.toEqual([]);
@@ -229,7 +246,8 @@ test("a streamed fence stays text until it closes, then renders without a reload
   await stream.install(page, chatId);
   const observation = await observe(page, `/c/${chatId}`);
   await signInWithLocalToken(page, `/c/${chatId}`);
-  const composer = page.getByRole("textbox", { name: "Message" });
+  const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  await expect(composer).toBeVisible();
   await composer.fill("Draw the flow.");
   await composer.press("Enter");
   await stream.waitForRequestCount(page, 1);
@@ -261,8 +279,8 @@ test.describe("public share", () => {
   });
 
   for (const variant of [
-    { theme: "light", width: 1440, height: 900 },
-    { theme: "dark", width: 390, height: 844 }
+    { theme: "light", width: 1440, height: 900, productionPolicy: true },
+    { theme: "dark", width: 390, height: 844, productionPolicy: false }
   ] as const) {
     test(`renders the same diagrams in a ${variant.theme} public share at ${variant.width}px`, async ({ baseURL, page }, testInfo) => {
       test.setTimeout(90_000);
@@ -289,7 +307,7 @@ test.describe("public share", () => {
       try {
         await page.setViewportSize({ width: variant.width, height: variant.height });
         await page.context().addCookies([{ name: "aiqsa.theme", url: baseURL!, value: variant.theme }]);
-        const observation = await observe(page, `/s/${token}`);
+        const observation = await observe(page, `/s/${token}`, { productionPolicy: variant.productionPolicy });
         const response = await page.goto(`/s/${token}`);
         expect(response?.status()).toBe(200);
         await expectDiagrams(page);
