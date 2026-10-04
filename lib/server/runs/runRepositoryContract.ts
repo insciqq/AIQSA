@@ -320,6 +320,13 @@ export type ScheduledOccurrenceAdmission = Readonly<{
    * with `model_cannot_report`. The task revision fence keeps it current.
    */
   monitoring?: true;
+  /**
+   * The task has Memory on: the run reads the owner's Memory like an
+   * ordinary personal turn (standing context and, with a tool-calling
+   * model, Memory search) in whatever Memory mode its chat has, and never
+   * adds to it. The task revision fence keeps it current.
+   */
+  memory?: true;
 }>;
 
 /**
@@ -549,7 +556,9 @@ export type PreparingRunAdmissionResult = Readonly<{
   memoryRevision: number;
   runId: string;
   /** The run answers a scheduled task's prompt, as its user message read in the
-   * admitting transaction says: it was made dispatchable without Personal Memory. */
+   * admitting transaction says: it never changes Personal Memory. Without the
+   * standing read its admission froze it was made dispatchable without Memory;
+   * with it, its Memory attempt reads in whatever mode the chat has. */
   scheduledPrompt?: true;
   settingsSnapshot: MemoryPreparingSettingsSnapshot;
   userMessageId: string;
@@ -808,6 +817,12 @@ export type RunRepository = {
       id: string;
       /** The stored message is a scheduled task's prompt (`Message.scheduledTaskPrompt`). */
       scheduledTaskPrompt: boolean;
+      /**
+       * The prompt's task, found through the scheduled run that posted it in
+       * this chat, still exists and has Memory on. Never on a branch copy,
+       * which has no such run.
+       */
+      scheduledTaskMemory?: true;
     };
   } | null>;
   loadConversationContext(chatId: string, userId: string): Promise<ProviderConversationMessage[]>;

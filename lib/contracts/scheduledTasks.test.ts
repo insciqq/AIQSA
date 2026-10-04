@@ -30,7 +30,7 @@ const task: ScheduledTask = {
   id: "task-1", title: "Morning brief", prompt: "Summarize overnight news.",
   schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
   modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true, workspaceEnabled: false,
-  chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
+  memoryEnabled: true, chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
   nextRunAt: "2026-10-05T06:00:00.000Z",
   lastRun: { scheduledFor: "2026-10-02T06:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T06:01:10.000Z",
     unseen: true },
@@ -56,6 +56,7 @@ describe("scheduled task wire contract", () => {
     expect(decodeScheduledTask({ ...task, status: "paused", nextRunAt: null, pauseReason: "model_unavailable" }))
       .toMatchObject({ status: "paused", pauseReason: "model_unavailable" });
     expect(decodeScheduledTask({ ...task, schedule: hourly, chatMode: "same" })).toMatchObject({ schedule: hourly, chatMode: "same" });
+    expect(decodeScheduledTask({ ...task, memoryEnabled: false })).toMatchObject({ memoryEnabled: false });
     const reached = { ...task, chatMode: "same", completionReason: "goal_reached", kind: "monitoring", nextRunAt: null, status: "completed" };
     expect(decodeScheduledTask(reached)).toEqual(reached);
     for (const candidate of [
@@ -65,6 +66,7 @@ describe("scheduled task wire contract", () => {
       { ...task, revision: 0 }, { ...task, schedule: { kind: "daily", time: "25:00" } }, { ...task, timeZone: "+03:00" },
       { ...task, chatMode: "other" }, { ...task, chatMode: undefined }, { ...task, schedule: hourly, chatMode: "new" },
       { ...task, toolsEnabled: "auto" }, { ...task, workspaceEnabled: undefined },
+      { ...task, memoryEnabled: undefined }, { ...task, memoryEnabled: "on" },
       { ...task, kind: "watch" }, { ...task, kind: undefined }, { ...task, kind: "monitoring" },
       { ...task, completionReason: "goal_reached" }, { ...reached, completionReason: "Goal reached" }
     ]) {

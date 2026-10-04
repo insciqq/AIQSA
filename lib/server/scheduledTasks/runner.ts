@@ -238,7 +238,8 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       occurrence: {
         occurrenceId: occurrence.id, previousResult, relevantMcpServerIds: execution.relevantMcpServerIds,
         taskGeneration: task.generation, taskId: occurrence.taskId, taskRevision: task.revision,
-        ...(task.kind === "monitoring" ? { monitoring: true as const } : {})
+        ...(task.kind === "monitoring" ? { monitoring: true as const } : {}),
+        ...(task.memoryEnabled ? { memory: true as const } : {})
       },
       userId: occurrence.userId
     });

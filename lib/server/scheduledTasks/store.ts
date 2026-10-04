@@ -110,9 +110,9 @@ const KIND_COLUMN = {
 export const scheduledTaskRowSelect = {
   id: true, title: true, prompt: true, scheduleKind: true, timeOfDayMinutes: true, daysOfWeekMask: true, dayOfMonth: true,
   onceLocalDate: true, everyHours: true, untilMinutes: true, timeZone: true, modelId: true, provider: true,
-  searchEnabled: true, emailNotify: true, toolsEnabled: true, workspaceEnabled: true, chatMode: true, kind: true, status: true,
-  pauseReason: true, completionReason: true, nextRunAt: true, chatId: true, revision: true, createdAt: true, updatedAt: true,
-  chat: { select: { permanentDeletionAt: true } }
+  searchEnabled: true, emailNotify: true, toolsEnabled: true, workspaceEnabled: true, memoryEnabled: true, chatMode: true,
+  kind: true, status: true, pauseReason: true, completionReason: true, nextRunAt: true, chatId: true, revision: true,
+  createdAt: true, updatedAt: true, chat: { select: { permanentDeletionAt: true } }
 } satisfies Prisma.ScheduledTaskSelect;
 export type ScheduledTaskRow = Prisma.ScheduledTaskGetPayload<{ select: typeof scheduledTaskRowSelect }>;
 
@@ -167,7 +167,7 @@ export function toScheduledTask(row: ScheduledTaskRow, activity: ScheduledTaskAc
   return {
     id: row.id, title: row.title, prompt: row.prompt, schedule: scheduledTaskScheduleFromColumns(row), timeZone: row.timeZone,
     modelId: row.modelId, provider: row.provider, searchEnabled: row.searchEnabled, emailNotify: row.emailNotify,
-    toolsEnabled: row.toolsEnabled, workspaceEnabled: row.workspaceEnabled,
+    toolsEnabled: row.toolsEnabled, workspaceEnabled: row.workspaceEnabled, memoryEnabled: row.memoryEnabled,
     chatMode: CHAT_MODE_WIRE[row.chatMode], kind: TASK_KIND_WIRE[row.kind], status: STATUS_WIRE[row.status],
     pauseReason: row.pauseReason, completionReason: row.completionReason,
     nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRun: activity.lastRun, running: activity.running,
@@ -259,8 +259,8 @@ function draftColumns(draft: ScheduledTaskDraft) {
   return {
     title: draft.title, prompt: draft.prompt, ...scheduledTaskScheduleColumns(draft.schedule), timeZone: draft.timeZone,
     modelId: draft.modelId, provider: draft.provider, searchEnabled: draft.searchEnabled, emailNotify: draft.emailNotify,
-    toolsEnabled: draft.toolsEnabled, workspaceEnabled: draft.workspaceEnabled, chatMode: CHAT_MODE_COLUMN[draft.chatMode],
-    kind: TASK_KIND_COLUMN[draft.kind]
+    toolsEnabled: draft.toolsEnabled, workspaceEnabled: draft.workspaceEnabled, memoryEnabled: draft.memoryEnabled,
+    chatMode: CHAT_MODE_COLUMN[draft.chatMode], kind: TASK_KIND_COLUMN[draft.kind]
   };
 }
 
