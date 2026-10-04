@@ -218,6 +218,9 @@ function refusalText(code: ScheduledTaskCallRefusal | "scheduled_task_arguments_
   switch (code) {
     case "scheduled_task_arguments_invalid": return `The arguments are invalid: ${detail ?? "check them."}`;
     case "scheduled_task_answer_limit": return "This answer already created a scheduled task; one answer creates at most one.";
+    case "scheduled_task_already_created":
+      return "An earlier answer to this message already created this scheduled task and the user still has it in " +
+        "Studio > Scheduled; refer to it instead of creating another.";
     case "scheduled_task_call_unavailable": return "A scheduled task cannot be created from this answer.";
     case "scheduled_task_invalid":
       return `Check title (1-${SCHEDULED_TASK_TITLE_MAX_LENGTH} characters), prompt (instruction text, at most ` +
