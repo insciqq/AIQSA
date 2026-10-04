@@ -603,8 +603,9 @@ async function recoveredKnowledgeImageObservation(deps: RunRecoveryDeps, input: 
   userId: string;
 }>): Promise<KnowledgeImageObservationBlock | undefined> {
   if (input.request.knowledgeImageObservation === undefined) return undefined;
-  const plan = decodeKnowledgeImageObservationPlan(input.request.knowledgeImageObservation);
-  if (!plan || input.request.knowledgeAnswerWorkflowVersion !== 11) {
+  // Validated, then used as accepted: its System Vision snapshot is the bound one byte for byte.
+  const plan = input.request.knowledgeImageObservation;
+  if (!decodeKnowledgeImageObservationPlan(plan) || input.request.knowledgeAnswerWorkflowVersion !== 11) {
     throw new ToolLoopRecoveryError("knowledge_answer_contract_failed", "The accepted image description route is invalid.");
   }
   const failures = KNOWLEDGE_IMAGE_OBSERVATION_FAILURES;
