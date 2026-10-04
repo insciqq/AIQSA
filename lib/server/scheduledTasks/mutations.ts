@@ -19,7 +19,7 @@ export type ScheduledTaskUpdatePlan = {
   status: ScheduledTaskStatus;
   /** Undefined keeps the stored due time. */
   nextRunAt: Date | null | undefined;
-  /** The model identity must be readmitted against the current catalog. */
+  /** The model identity (and its tool calling for monitoring) must be readmitted against the current catalog. */
   checkModel: boolean;
 };
 
@@ -40,13 +40,14 @@ export function firstScheduledTaskRunAt(
 
 /**
  * Owner edit rules. Explicit status wins; otherwise the status is kept, except
- * that a schedule change reactivates a completed once task. Pausing clears the
+ * that a schedule change reactivates a completed task. Pausing clears the
  * due time. Arming (resume, reactivation or a changed active schedule) takes
  * the next occurrence from now; an unchanged active schedule keeps its due time
  * so that an edit never skips a run that is already due. A changed once
  * schedule must lie ahead in any status. The model is readmitted whenever the
- * result is active or its identity or Search changed. An hourly result must
- * continue in one chat; the chat mode is never changed silently.
+ * result is active or its identity, Search or type changed. An hourly or
+ * monitoring result must continue in one chat; the chat mode is never changed
+ * silently.
  */
 export function planScheduledTaskUpdate(
   current: ScheduledTask,
@@ -62,12 +63,13 @@ export function planScheduledTaskUpdate(
     provider: patch.provider ?? current.provider,
     searchEnabled: patch.searchEnabled ?? current.searchEnabled,
     emailNotify: patch.emailNotify ?? current.emailNotify,
-    chatMode: patch.chatMode ?? current.chatMode
+    chatMode: patch.chatMode ?? current.chatMode,
+    kind: patch.kind ?? current.kind
   };
-  if (!scheduledTaskChatModeAllowed(draft.schedule, draft.chatMode)) return { ok: false, code: "scheduled_task_chat_mode_invalid" };
+  if (!scheduledTaskChatModeAllowed(draft, draft.chatMode)) return { ok: false, code: "scheduled_task_chat_mode_invalid" };
   const scheduleChanged = draft.timeZone !== current.timeZone || !sameScheduledTaskSchedule(draft.schedule, current.schedule);
   const modelChanged = draft.modelId !== current.modelId || draft.provider !== current.provider ||
-    draft.searchEnabled !== current.searchEnabled;
+    draft.searchEnabled !== current.searchEnabled || draft.kind !== current.kind;
   const status = patch.status ?? (current.status === "completed" && scheduleChanged ? "active" : current.status);
   // A claimed once task has no due time left to keep; a recurring one always needs one.
   const keepsDueTime = current.status === "active" && !scheduleChanged &&

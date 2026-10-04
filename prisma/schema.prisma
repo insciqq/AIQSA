@@ -3474,6 +3474,9 @@ model ModelRun {
   scheduledTaskId              String?
   scheduledOccurrenceId        String?
   scheduledTaskGeneration      Int?
+  /// A settled monitoring check's outcome (`ScheduledTaskCheckOutcome`): what the
+  /// transcript collapses (`no_update`) after the occurrence history is pruned.
+  scheduledOutcome             String?                             @db.VarChar(64)
   createdAt                    DateTime                            @default(now())
   updatedAt                    DateTime                            @updatedAt
   assistantMessage             Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
@@ -7153,6 +7156,11 @@ enum ScheduledTaskChatMode {
   SAME
 }
 
+enum ScheduledTaskKind {
+  STANDARD
+  MONITORING
+}
+
 enum ScheduledTaskStatus {
   ACTIVE
   PAUSED
@@ -7171,8 +7179,8 @@ enum ScheduledTaskOccurrenceState {
 /// wall-clock values in `timeZone`; lib/domain/scheduledTaskSchedule.ts computes
 /// `nextRunAt`, which is null unless ACTIVE. Model identity is revalidated at save
 /// and run, never a foreign key. `revision` changes on every owner mutation and on
-/// runner status transitions (auto-pause, once completion), not on bookkeeping
-/// (`nextRunAt`, `consecutiveFailures`, `chatId`, the baseline).
+/// runner status transitions (auto-pause, once completion, a monitoring goal),
+/// not on bookkeeping (`nextRunAt`, the counters, `chatId`, the baseline).
 model ScheduledTask {
   id                         String                    @id @default(uuid())
   userId                     String
@@ -7196,18 +7204,26 @@ model ScheduledTask {
   provider                   String                    @db.VarChar(256)
   searchEnabled              Boolean                   @default(false)
   emailNotify                Boolean                   @default(false)
-  /// NEW starts a chat for every run; SAME continues the task's chat (always for HOURLY).
+  /// NEW starts a chat for every run; SAME continues the task's chat (always for HOURLY and MONITORING).
   chatMode                   ScheduledTaskChatMode     @default(NEW)
+  /// MONITORING runs are checks that report through a built-in tool whether
+  /// anything changed; checks without news stay hidden and silent.
+  kind                       ScheduledTaskKind         @default(STANDARD)
   status                     ScheduledTaskStatus       @default(ACTIVE)
   /// Stable code of an automatic pause; null for owner pauses and other states.
   pauseReason                String?                   @db.VarChar(64)
+  /// Stable code of a runner completion (`goal_reached`); null for a once
+  /// task's single run and in other states.
+  completionReason           String?                   @db.VarChar(64)
   nextRunAt                  DateTime?
   /// The newest chat a run used; deleting the chat clears only this column.
   chatId                     String?
   consecutiveFailures        Int                       @default(0)
+  /// Scheduled monitoring checks in a row whose model reported no outcome.
+  consecutiveMissingVerdicts Int                       @default(0)
   revision                   Int                       @default(1)
-  /// Bumped with the revision when the prompt or the schedule kind changes;
-  /// frozen on accepted occurrences and runs.
+  /// Bumped with the revision when the prompt, the schedule kind or the task
+  /// kind changes; frozen on accepted occurrences and runs.
   generation                 Int                       @default(1)
   /// The newest shown completed result of the current generation: what the
   /// next same-chat run sees besides the prompt. Plain identifiers, rechecked
@@ -7250,6 +7266,12 @@ model ScheduledTaskOccurrence {
   notifiedAt     DateTime?
   /// The task generation frozen when a run accepted this occurrence.
   taskGeneration Int?
+  /// The task revision a run accepted this occurrence under; a goal completes
+  /// the task only while it is unchanged.
+  taskRevision   Int?
+  /// A monitoring check's model-reported outcome (`update`, `no_update` or
+  /// `goal_reached`); the last report of the run wins, null when it never reported.
+  verdict        String?                      @db.VarChar(16)
   /// A settled result the owner has not seen yet: a finished answer or a failure that paused the task.
   unseenAt       DateTime?
   createdAt      DateTime                     @default(now())

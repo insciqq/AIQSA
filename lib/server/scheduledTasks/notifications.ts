@@ -16,14 +16,14 @@ export type ScheduledTaskNotification = Readonly<{
 
 /**
  * Content-free result email: the task title, the outcome with fixed reason
- * copy and a link to the task's chat. Never answer text, the prompt or any
- * identifier other than the chat link.
+ * copy (a monitoring check's outcome included) and a link to the task's chat.
+ * Never answer text, the prompt or any identifier other than the chat link.
  */
 export function scheduledTaskResultEmail(input: ScheduledTaskNotification & Readonly<{ appBaseUrl: string }>): SmtpProductMessage {
   const title = input.title.replace(/[\u0000-\u001f\u007f]+/gu, " ").trim();
   const paused = input.state === "FAILED" && input.trigger === "schedule" && input.taskPauseReason !== null;
   const [subject, outcome, reason] = input.state === "COMPLETED"
-    ? ["Scheduled task finished", "finished", null]
+    ? ["Scheduled task finished", "finished", scheduledTaskReasonMessage(input.reasonCode)]
     : paused
       ? ["Scheduled task paused", "was paused", scheduledTaskReasonMessage(input.taskPauseReason)]
       : input.state === "SKIPPED"

@@ -4,12 +4,12 @@ import { ScheduledOccurrenceConflictError, type ScheduledOccurrenceAdmission } f
 /**
  * Called by run creation inside its transaction: the PENDING occurrence
  * without a run becomes RUNNING with the new run, chat, user message and the
- * task generation, and the task points at the run's chat (bookkeeping, no
- * revision change). The task must still be at the revision and generation the
- * runner read before preparation, so a pause or edit made meanwhile fences
- * this admission. A missing, already linked or fenced occurrence throws,
- * rolling the whole admission back, so an occurrence without a run proves
- * that no run was created for it.
+ * task generation and revision, and the task points at the run's chat
+ * (bookkeeping, no revision change). The task must still be at the revision
+ * and generation the runner read before preparation, so a pause or edit made
+ * meanwhile fences this admission. A missing, already linked or fenced
+ * occurrence throws, rolling the whole admission back, so an occurrence
+ * without a run proves that no run was created for it.
  */
 export async function linkScheduledTaskOccurrence(
   tx: Prisma.TransactionClient,
@@ -33,7 +33,8 @@ export async function linkScheduledTaskOccurrence(
     UPDATE "ScheduledTaskOccurrence"
     SET "state" = 'RUNNING'::"ScheduledTaskOccurrenceState", "runId" = ${input.runId}, "chatId" = ${input.chatId},
       "userMessageId" = ${input.userMessageId}, "startedAt" = COALESCE("startedAt", ${input.now}),
-      "leaseExpiresAt" = NULL, "reasonCode" = NULL, "taskGeneration" = ${input.taskGeneration}
+      "leaseExpiresAt" = NULL, "reasonCode" = NULL, "taskGeneration" = ${input.taskGeneration},
+      "taskRevision" = ${input.taskRevision}
     WHERE "id" = ${input.occurrenceId} AND "taskId" = ${input.taskId} AND "userId" = ${input.userId}
       AND "state" = 'PENDING'::"ScheduledTaskOccurrenceState" AND "runId" IS NULL
   `);

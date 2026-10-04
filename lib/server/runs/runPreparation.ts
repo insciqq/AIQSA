@@ -91,6 +91,7 @@ import type {
 } from "../mcp/runPlan";
 import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
+import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { readToolCallTool } from "../tools/readToolCall";
 import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { insertToolHistory, type ToolHistoryProjection } from "./toolHistory";
@@ -1808,6 +1809,15 @@ async function prepareRunWith(
         );
   const skillToolsSupported = !agentEnabled && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  // A monitoring check reports its outcome through one built-in tool, frozen
+  // only from the server-only occurrence of a monitoring task. A check that
+  // could not call it is refused before anything is accepted.
+  const monitoringCheck = scheduledOccurrence?.monitoring === true && !agentEnabled && body?.tools !== "none" &&
+    modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  if (scheduledOccurrence?.monitoring === true && !monitoringCheck) {
+    return failure("model_cannot_report", 409, "This model cannot report the outcome of a monitoring check.");
+  }
   const skillCatalogSupported = skillToolsSupported || agentEnabled;
   if (skillsMode === "auto" && skillCatalogSupported && !assistantRun && !project && deps.skills?.listEnabledForRun) {
     availableSkillRuns = (await deps.skills.listEnabledForRun(input.userId)).filter((skill) => !effectiveSkillIds.includes(skill.skillId));
@@ -2114,6 +2124,12 @@ async function prepareRunWith(
   const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpToolIndexGuidance(mcpCatalog) : null;
   if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
   if (artifactIntent) prompt = { ...prompt, system: `${prompt.system}\n\nThe user explicitly asked for an artifact: call create_artifact for this message.` };
+  // The check's server-owned instruction, frozen with the accepted prompt: it
+  // compares with the previous shown result only while the context holds it.
+  if (monitoringCheck) {
+    prompt = { ...prompt, system: [prompt.system, monitoringCheckInstruction({ previousResult: (sendContext?.length ?? 0) > 0 })]
+      .filter(Boolean).join("\n\n") };
+  }
   let artifactReferences: NormalizedRunRequest["artifactReferences"];
   let artifactFocus: NormalizedRunRequest["artifactFocus"];
   let artifactCompactSystem: string | undefined;
@@ -2245,6 +2261,7 @@ async function prepareRunWith(
       modelId: executionModelId, provider: executionProvider
     }) === true ? { sessionStatusTool: true as const } : {}),
     ...(toolCallReader ? { toolCallReader: true as const } : {}),
+    ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
     toolHistory,
     attachmentIds,
     chatId: chat.id,
@@ -2332,6 +2349,7 @@ async function prepareRunWith(
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
     ...(baseNormalizedRequest.toolCallReader ? [readToolCallTool] : []),
+    ...(baseNormalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
