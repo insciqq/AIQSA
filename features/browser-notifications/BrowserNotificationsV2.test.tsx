@@ -157,17 +157,16 @@ describe("browser notifications", () => {
   });
 
   it("rebinds a shown device after a while and retries a binding that failed", async () => {
-    const { environment, requests } = fakeBrowser("granted");
+    const { environment: base, requests } = fakeBrowser("granted");
     let failNext = true;
-    const baseFetch = environment.fetch;
-    environment.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const environment: BrowserPushEnvironment = { ...base, fetch: vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "POST" && failNext) {
         failNext = false;
         requests.push({ body: undefined, method: "POST" });
         return new Response(null, { status: 503 });
       }
-      return baseFetch(url, init);
-    }) as typeof fetch;
+      return base.fetch(url, init);
+    }) as typeof fetch };
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     try {
       render(<Harness environment={environment} />);
@@ -190,17 +189,16 @@ describe("browser notifications", () => {
   it("registers again shortly when the server still holds the setting off right after enabling", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      const { environment, requests } = fakeBrowser("granted");
+      const { environment: base, requests } = fakeBrowser("granted");
       let refusals = 1;
-      const baseFetch = environment.fetch;
-      environment.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const environment: BrowserPushEnvironment = { ...base, fetch: vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
         if (init?.method === "POST" && refusals > 0) {
           refusals -= 1;
           requests.push({ body: undefined, method: "POST" });
           return Response.json({ error: "browser_notifications_disabled" }, { status: 409 });
         }
-        return baseFetch(url, init);
-      }) as typeof fetch;
+        return base.fetch(url, init);
+      }) as typeof fetch };
       render(<Harness environment={environment} />);
       await waitFor(() => expect(requests.filter((entry) => entry.method === "POST")).toHaveLength(1));
       await act(async () => { await vi.advanceTimersByTimeAsync(BROWSER_PUSH_RETRY_MS + 10); });
