@@ -12,6 +12,7 @@ import {
 import type { WorkspaceRuntime } from "./runtime";
 import { fenceDeterministicWorkspaceRuntime } from "./fencedRuntime";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
+import { scheduledTaskScheduleColumns } from "../scheduledTasks/store";
 
 const config = getWorkspaceConfig({
   AIQSA_TEST_MODE: "1",
@@ -654,5 +655,93 @@ describe("Prisma Workspace maintenance backstop", () => {
       staleSessionsSettled: 0,
       staleSessionsStopped: 0
     });
+  });
+});
+
+describe("Prisma Workspace residency and retention of scheduled tasks", () => {
+  beforeAll(cleanupWorkspaceMaintenanceFixtures);
+  afterAll(cleanupWorkspaceMaintenanceFixtures);
+
+  it("keeps a same-chat task's disk past expiry, stops every VM after an unattended run settles and lifts the pin on pause", async () => {
+    const now = new Date();
+    const stopSession = vi.fn<WorkspaceRuntime["stopSession"]>(async () => undefined);
+    const removeSession = vi.fn<WorkspaceRuntime["removeSession"]>(async () => undefined);
+    const runtime: WorkspaceRuntime = fenceDeterministicWorkspaceRuntime({
+      callBoundTool: unused, cancelToolCall: unused, collectOutputs: unused, createProjectArchive: unused, ensureSession: unused,
+      health: unused, listStagedAttachments: unused, loadBoundTools: unused, removeSession, stageAttachments: unused,
+      syncPersonalSecrets: unused, prepareSkillRun: unused, installSkillBundle: unused, completeSkillRunPreparation: unused,
+      collectBrowserSessions: unused, stopSession, terminateExecutions: unused
+    });
+    const recent = new Date(now.getTime() - 60_000);
+    /** An owner's chat whose Workspace VM is up; its newest run is `scheduled` or the owner's own, settled. */
+    async function residentChat(input: Readonly<{ expired: boolean; scheduled: boolean; task?: "active" | "paused" }>) {
+      const userId = `${TEST_USER_PREFIX}${randomUUID()}`;
+      await prisma.user.create({ data: { displayName: "Workspace residency test", id: userId } });
+      const chat = await prisma.chat.create({ data: { title: "Synthetic task chat", userId, workspaceEnabled: true } });
+      const task = input.task ? await prisma.scheduledTask.create({ data: {
+        ...scheduledTaskScheduleColumns({ kind: "weekly", time: "09:00", days: ["mon"] }), chatId: chat.id, chatMode: "SAME",
+        modelId: "fake-qsa", nextRunAt: input.task === "active" ? new Date(now.getTime() + 6 * 86_400_000) : null,
+        prompt: "Synthetic weekly prompt", provider: "fake", status: input.task === "active" ? "ACTIVE" : "PAUSED",
+        timeZone: "Europe/Moscow", title: "Synthetic weekly task", userId, workspaceEnabled: true
+      } }) : null;
+      const session = await prisma.workspaceSession.create({ data: {
+        chatId: chat.id, expiresAt: input.expired ? new Date(now.getTime() - 60_000) : new Date(now.getTime() + 3_600_000),
+        imageRef: config.imageRef, internetEnabled: true, lastActiveAt: recent, policyRevision: 1,
+        runtimeSandboxId: `runtime-${randomUUID()}`, sandboxName: `aiqsa-ws-${randomUUID()}`, state: "READY"
+      } });
+      const question = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Synthetic question"),
+        modelId: "fake-qsa", provider: "fake", role: "user", status: "complete" } });
+      const answer = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Synthetic answer"),
+        modelId: "fake-qsa", parentMessageId: question.id, provider: "fake", role: "assistant", status: "complete" } });
+      const run = await prisma.modelRun.create({ data: {
+        assistantMessageId: answer.id, chatId: chat.id, modelId: "fake-qsa", normalizedRequest: {}, provider: "fake", status: "complete",
+        userId, userMessageId: question.id,
+        ...(input.scheduled ? { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1, scheduledTaskId: task?.id ?? randomUUID() } : {})
+      } });
+      await prisma.workspaceRunBinding.create({ data: {
+        imageRef: config.imageRef, internetEnabled: true, mcpVersion: "fixture", modelRunId: run.id, outputDirectory: `/workspace/output/${run.id}`,
+        policyRevision: 1, runtimeVersion: "fixture", toolCatalogHash: "a".repeat(64), toolDefinitions: [], workspaceSessionId: session.id
+      } });
+      return { chat, run, session, task, userId };
+    }
+
+    // A burst of two owners whose unattended runs just settled, one with an expired disk its weekly task pins.
+    const pinned = await residentChat({ expired: true, scheduled: true, task: "active" });
+    const other = await residentChat({ expired: false, scheduled: true, task: "active" });
+    // The same weekly task, paused: its disk returns to the normal retention, which has passed.
+    const paused = await residentChat({ expired: true, scheduled: true, task: "paused" });
+    // The owner's own conversation keeps its VM until the idle timer.
+    const interactive = await residentChat({ expired: false, scheduled: false });
+    const sessions = [pinned, other, paused, interactive].map(({ session }) => session.id);
+    try {
+      await runWorkspaceMaintenance({ config, now, prisma, runtime });
+      const state = async () => Object.fromEntries((await prisma.workspaceSession.findMany({
+        select: { id: true, runtimeSandboxId: true, state: true }, where: { id: { in: sessions } }
+      })).map((row) => [row.id, row]));
+      const after = await state();
+      // No VM of a settled unattended run stays resident; their disks stay.
+      expect(after[pinned.session.id]).toMatchObject({ runtimeSandboxId: pinned.session.runtimeSandboxId, state: "STOPPED" });
+      expect(after[other.session.id]).toMatchObject({ runtimeSandboxId: other.session.runtimeSandboxId, state: "STOPPED" });
+      expect(stopSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: pinned.session.id }));
+      expect(stopSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: other.session.id }));
+      expect(await prisma.workspaceCleanupJob.count({ where: { workspaceSessionId: pinned.session.id } })).toBe(0);
+      // The paused task's disk is cleaned up; the interactive VM keeps running.
+      expect(removeSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: paused.session.id }));
+      expect(after[interactive.session.id]).toMatchObject({ state: "READY" });
+      const resident = Object.values(after).filter((row) => row.runtimeSandboxId !== null && ["READY", "RUNNING"].includes(row.state));
+      expect(resident.map((row) => row.id)).toEqual([interactive.session.id]);
+
+      // Once the task stops pinning (switched off), the expired disk follows the normal retention.
+      await prisma.scheduledTask.update({ data: { workspaceEnabled: false }, where: { id: pinned.task!.id } });
+      await runWorkspaceMaintenance({ config, now, prisma, runtime });
+      expect(removeSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: pinned.session.id }));
+    } finally {
+      const all = [pinned, other, paused, interactive];
+      await prisma.scheduledTask.deleteMany({ where: { userId: { in: all.map(({ userId }) => userId) } } });
+      await prisma.workspaceRunBinding.deleteMany({ where: { workspaceSessionId: { in: sessions } } });
+      await prisma.modelRun.deleteMany({ where: { id: { in: all.map(({ run }) => run.id) } } });
+      await prisma.workspaceCleanupJob.deleteMany({ where: { workspaceSessionId: { in: sessions } } });
+      await prisma.workspaceSession.deleteMany({ where: { id: { in: sessions } } });
+    }
   });
 });

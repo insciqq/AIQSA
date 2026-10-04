@@ -4,7 +4,7 @@ import type { OccurrencePushEvent } from "./store";
 
 const occurrence: OccurrencePushEvent = {
   chatId: "chat-1", kind: "occurrence", reasonCode: null, state: "COMPLETED", taskPauseReason: null,
-  title: "Morning brief", trigger: "schedule", userId: "owner-1"
+  title: "Morning brief", trigger: "schedule", unavailableSources: [], userId: "owner-1"
 };
 
 describe("browser push message", () => {
@@ -28,6 +28,16 @@ describe("browser push message", () => {
     expect(browserPushMessage({ ...occurrence, reasonCode: "admission_failed", state: "FAILED", trigger: "manual" }).body)
       .toBe("Scheduled task did not complete\nThe run could not start.");
     expect(JSON.stringify(browserPushMessage(occurrence))).not.toContain("owner-1");
+  });
+
+  it("names a few unavailable sources of an incomplete run and counts the rest", () => {
+    const source = (name: string) => ({ name, reason: "mcp_reauthorization_required" as const });
+    expect(browserPushMessage({ ...occurrence, unavailableSources: [source("Mail")] }).body)
+      .toBe("Scheduled task finished\nMail needs sign-in.");
+    expect(browserPushMessage({ ...occurrence, unavailableSources: ["A", "B", "C", "D", "E"].map(source) }).body)
+      .toBe("Scheduled task finished\nA needs sign-in.\nB needs sign-in.\nC needs sign-in.\n2 more sources are unavailable.");
+    expect(browserPushMessage({ ...occurrence, taskPauseReason: "source_unavailable", unavailableSources: [source("Mail")] }).body)
+      .toMatch(/^Scheduled task paused\nPaused after 3 runs in a row[^\n]*\nMail needs sign-in\.$/u);
   });
 
   it("cleans and bounds titles and falls back when empty", () => {

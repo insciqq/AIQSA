@@ -4,7 +4,7 @@ import { scheduledTaskResultEmail, type ScheduledTaskNotification } from "./noti
 
 const base: ScheduledTaskNotification = {
   chatId: "chat-1", email: "owner@example.test", reasonCode: null, state: "COMPLETED", taskPauseReason: null,
-  title: "Утренняя сводка", trigger: "schedule"
+  title: "Утренняя сводка", trigger: "schedule", unavailableSources: []
 };
 
 describe("scheduled task result email", () => {
@@ -31,5 +31,24 @@ describe("scheduled task result email", () => {
     expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "run_orphaned", state: "FAILED", taskPauseReason: "model_unavailable",
       trigger: "manual" })).toMatchObject({ subject: "Scheduled task did not complete" });
     expect(scheduledTaskResultEmail({ ...base, appBaseUrl, title: "Line\u0000one\u007f" }).text).toContain("\"Line one\"");
+    expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "run_deadline", state: "FAILED" }))
+      .toMatchObject({ subject: "Scheduled task did not complete", text: expect.stringContaining("Stopped after running for 30 minutes.") });
+  });
+
+  it("names the sources an incomplete run could not reach and the pause they caused", () => {
+    const appBaseUrl = "https://aiqsa.example.test";
+    const unavailableSources = [{ name: "Почта", reason: "mcp_reauthorization_required" }, { name: "Tracker", reason: "mcp_server_unavailable" }] as const;
+    expect(scheduledTaskResultEmail({ ...base, appBaseUrl, unavailableSources: [...unavailableSources] })).toEqual({
+      kind: "scheduled_task_result",
+      subject: "Scheduled task finished",
+      text: "Your AIQSA scheduled task \"Утренняя сводка\" finished.\nПочта needs sign-in.\nTracker is unavailable.\n\n" +
+        "Open the task's chat:\nhttps://aiqsa.example.test/c/chat-1",
+      to: "owner@example.test"
+    });
+    // The third incomplete run in a row paused the task: its notification says so.
+    const paused = scheduledTaskResultEmail({ ...base, appBaseUrl, taskPauseReason: "source_unavailable", unavailableSources: [unavailableSources[0]] });
+    expect(paused.subject).toBe("Scheduled task paused");
+    expect(paused.text).toContain("could not reach a source the task uses");
+    expect(paused.text).toContain("Почта needs sign-in.");
   });
 });

@@ -7,14 +7,15 @@ import { ScheduledTaskError, type ScheduledTaskUpdateWrite } from "./store";
 const NOW = new Date("2026-10-04T08:00:00.000Z"); // 11:00 in Moscow
 const catalog: ScheduledTaskCatalog = {
   models: [
-    { modelId: "model-search", provider: "connection-a", searchStrategyIds: ["off", "web"] },
-    { modelId: "model-plain", provider: "connection-a", searchStrategyIds: ["off"] }
+    { capabilities: { toolCalling: true }, modelId: "model-search", provider: "connection-a", searchStrategyIds: ["off", "web"] },
+    { capabilities: { toolCalling: false }, modelId: "model-plain", provider: "connection-a", searchStrategyIds: ["off"] }
   ],
   searchStrategies: [{ kind: "none", strategyId: "off" }, { kind: "web_search", strategyId: "web" }]
 };
 const draft = {
   title: "Morning brief", prompt: "fixture-private-prompt", schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow",
-  modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false, chatMode: "new"
+  modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false, toolsEnabled: true,
+  workspaceEnabled: false, chatMode: "new"
 } as const;
 const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } satisfies ScheduledTaskSchedule;
 
@@ -42,8 +43,9 @@ function fixture(current: ScheduledTask | null = task()) {
   const loadCatalog = vi.fn().mockResolvedValue(catalog);
   const resolveAuth = vi.fn().mockResolvedValue({ userId: "owner", user: { id: "owner", status: "active" } });
   const kick = vi.fn();
-  const handlers = createScheduledTaskHandlers({ kick, loadCatalog, now: () => NOW, resolveAuth, store });
-  return { handlers, kick, loadCatalog, resolveAuth, store };
+  const workspacePolicy = { read: vi.fn().mockResolvedValue({ enabled: true }) };
+  const handlers = createScheduledTaskHandlers({ kick, loadCatalog, now: () => NOW, resolveAuth, store, workspacePolicy });
+  return { handlers, kick, loadCatalog, resolveAuth, store, workspacePolicy };
 }
 
 const json = (method: string, body: unknown, path = "") =>
@@ -87,6 +89,12 @@ describe("scheduled tasks owner API", () => {
       [{ ...draft, modelId: "model-plain" }, "scheduled_task_search_unavailable"],
       [{ ...draft, chatMode: "fresh" }, "scheduled_task_invalid"],
       [{ ...draft, chatMode: undefined }, "scheduled_task_invalid"],
+      [{ ...draft, toolsEnabled: "auto" }, "scheduled_task_invalid"],
+      [{ ...draft, workspaceEnabled: undefined }, "scheduled_task_invalid"],
+      // The composer's rule: tools and Workspace need a model that calls tools.
+      [{ ...draft, modelId: "model-plain", searchEnabled: false }, "scheduled_task_tools_unavailable"],
+      [{ ...draft, modelId: "model-plain", searchEnabled: false, toolsEnabled: false, workspaceEnabled: true },
+        "scheduled_task_workspace_unavailable"],
       [{ ...draft, schedule: { ...hourly, everyHours: 5 }, chatMode: "same" }, "scheduled_task_schedule_invalid"],
       // Hourly tasks always continue in one chat.
       [{ ...draft, schedule: hourly }, "scheduled_task_chat_mode_invalid"]
@@ -99,7 +107,8 @@ describe("scheduled tasks owner API", () => {
     expect(await malformed.json()).toEqual({ error: "scheduled_task_invalid" });
     expect(f.store.create).not.toHaveBeenCalled();
     const accepted = await f.handlers.create(json("POST", {
-      ...draft, modelId: "model-plain", searchEnabled: false, schedule: { kind: "once", date: "2026-10-04", time: "11:02" }
+      ...draft, modelId: "model-plain", searchEnabled: false, toolsEnabled: false,
+      schedule: { kind: "once", date: "2026-10-04", time: "11:02" }
     }));
     expect(accepted.status).toBe(201);
     // 4 October 2026 is a Sunday: the first hourly run is Monday 09:00 in Moscow.
@@ -256,6 +265,31 @@ describe("scheduled tasks owner API", () => {
 
     f.resolveAuth.mockResolvedValueOnce({ userId: "owner", user: { id: "owner", status: "disabled" } });
     expect((await run()).status).toBe(403);
+  });
+
+  it("checks tools and Workspace against the model and the installation when they are turned on", async () => {
+    const f = fixture(task({ toolsEnabled: false }));
+    // Workspace needs the administrator's Workspace switch, read only when Workspace is on.
+    await f.handlers.create(json("POST", draft));
+    expect(f.workspacePolicy.read).not.toHaveBeenCalled();
+    f.workspacePolicy.read.mockResolvedValueOnce({ enabled: false });
+    const disabled = await f.handlers.create(json("POST", { ...draft, workspaceEnabled: true }));
+    expect([disabled.status, await disabled.json()]).toEqual([400, { error: "scheduled_task_workspace_unavailable" }]);
+    expect((await f.handlers.create(json("POST", { ...draft, workspaceEnabled: true }))).status).toBe(201);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, workspaceEnabled: true }, expect.any(Date));
+
+    // Turning tools on for a model without tool calling is refused, even for a paused task.
+    const plain = fixture(task({ modelId: "model-plain", nextRunAt: null, searchEnabled: false, status: "paused", toolsEnabled: false }));
+    const refused = await plain.handlers.update(patch({ expectedRevision: 2, toolsEnabled: true }), "task-1");
+    expect(await refused.json()).toEqual({ error: "scheduled_task_tools_unavailable" });
+    // Turning them off needs no check, and a paused task keeps them as they are.
+    const tools = fixture(task({ nextRunAt: null, status: "paused" }));
+    await tools.handlers.update(patch({ expectedRevision: 2, toolsEnabled: false }), "task-1");
+    expect(lastWrite(tools)).toMatchObject({ draft: { toolsEnabled: false, workspaceEnabled: false }, status: "paused" });
+    expect(tools.loadCatalog).not.toHaveBeenCalled();
+    await tools.handlers.update(patch({ expectedRevision: 2, workspaceEnabled: true }), "task-1");
+    expect(lastWrite(tools)).toMatchObject({ draft: { toolsEnabled: true, workspaceEnabled: true } });
+    expect(tools.workspacePolicy.read).toHaveBeenCalledTimes(1);
   });
 
   it("wakes the runner after create and update", async () => {

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
+import { scheduledTaskReasonMessage, type ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import {
   SCHEDULED_TASK_MAX_EXECUTING,
   SCHEDULED_TASK_MAX_EXECUTING_PER_USER,
+  SCHEDULED_TASK_RUN_DEADLINE_CODE,
+  SCHEDULED_TASK_RUN_DEADLINE_MS,
   classifySendRefusal,
   expiredPendingOutcome,
   linkedRunOutcome,
@@ -75,41 +77,81 @@ describe("claim planning", () => {
 });
 
 describe("settlement bookkeeping", () => {
-  const active = { consecutiveFailures: 0, revision: 4, status: "ACTIVE" } as const;
+  const active = { consecutiveFailures: 0, consecutiveIncompleteRuns: 0, revision: 4, status: "ACTIVE" } as const;
   const failed = { reasonCode: "run_orphaned", state: "FAILED" } as const;
+  const completed = { reasonCode: null, state: "COMPLETED" } as const;
+  const quiet = { consecutiveIncompleteRuns: 0, sourceAlert: false } as const;
 
   it("resets on success and pauses scheduled runs at the third consecutive failure", () => {
-    expect(planTaskSettlement({ outcome: { reasonCode: null, state: "COMPLETED" }, task: { ...active, consecutiveFailures: 2 }, trigger: "schedule" }))
-      .toEqual({ consecutiveFailures: 0, pauseReason: null });
+    expect(planTaskSettlement({ outcome: completed, task: { ...active, consecutiveFailures: 2 }, trigger: "schedule" }))
+      .toEqual({ ...quiet, consecutiveFailures: 0, pauseReason: null });
     expect(planTaskSettlement({ outcome: failed, task: { ...active, consecutiveFailures: 1 }, trigger: "schedule" }))
-      .toEqual({ consecutiveFailures: 2, pauseReason: null });
+      .toEqual({ ...quiet, consecutiveFailures: 2, pauseReason: null });
     expect(planTaskSettlement({ outcome: failed, task: { ...active, consecutiveFailures: 2 }, trigger: "schedule" }))
-      .toEqual({ consecutiveFailures: 3, pauseReason: "repeated_failures" });
+      .toEqual({ ...quiet, consecutiveFailures: 3, pauseReason: "repeated_failures" });
     expect(planTaskSettlement({ outcome: failed, task: { ...active, consecutiveFailures: 2, status: "PAUSED" }, trigger: "schedule" }))
-      .toEqual({ consecutiveFailures: 3, pauseReason: null });
+      .toEqual({ ...quiet, consecutiveFailures: 3, pauseReason: null });
+  });
+
+  it("counts a run stopped at its deadline as a failure toward the pause", () => {
+    const deadline = linkedRunOutcome({ errorPayload: { code: SCHEDULED_TASK_RUN_DEADLINE_CODE, message: "x" }, status: "cancelled" })!;
+    expect(deadline).toEqual({ reasonCode: "run_deadline", state: "FAILED" });
+    expect(planTaskSettlement({ outcome: deadline, task: { ...active, consecutiveFailures: 2 }, trigger: "schedule" }))
+      .toEqual({ ...quiet, consecutiveFailures: 3, pauseReason: "repeated_failures" });
+    expect(SCHEDULED_TASK_RUN_DEADLINE_MS).toBe(30 * 60 * 1000);
   });
 
   it("pauses on a permanent refusal only under the revision it was decided on", () => {
     const refused = { pauseReason: "model_unavailable", reasonCode: "model_unavailable", state: "FAILED" } as const;
     expect(planTaskSettlement({ observedRevision: 4, outcome: refused, task: active, trigger: "schedule" }))
-      .toEqual({ consecutiveFailures: 1, pauseReason: "model_unavailable" });
+      .toEqual({ ...quiet, consecutiveFailures: 1, pauseReason: "model_unavailable" });
     expect(planTaskSettlement({ observedRevision: 3, outcome: refused, task: active, trigger: "schedule" }))
-      .toEqual({ consecutiveFailures: 1, pauseReason: null });
+      .toEqual({ ...quiet, consecutiveFailures: 1, pauseReason: null });
   });
 
   it("never counts or pauses for manual runs and skips", () => {
     const refused = { pauseReason: "model_unavailable", reasonCode: "model_unavailable", state: "FAILED" } as const;
     expect(planTaskSettlement({ outcome: refused, task: { ...active, consecutiveFailures: 2 }, trigger: "manual" }))
-      .toEqual({ consecutiveFailures: 2, pauseReason: null });
-    expect(planTaskSettlement({ outcome: { reasonCode: null, state: "COMPLETED" }, task: { ...active, consecutiveFailures: 2 }, trigger: "manual" }))
-      .toEqual({ consecutiveFailures: 0, pauseReason: null });
+      .toEqual({ ...quiet, consecutiveFailures: 2, pauseReason: null });
+    expect(planTaskSettlement({ outcome: completed, task: { ...active, consecutiveFailures: 2 }, trigger: "manual" }))
+      .toEqual({ ...quiet, consecutiveFailures: 0, pauseReason: null });
     expect(planTaskSettlement({ outcome: { reasonCode: "chat_busy", state: "SKIPPED" }, task: { ...active, consecutiveFailures: 2 }, trigger: "schedule" }))
-      .toEqual({ consecutiveFailures: 2, pauseReason: null });
+      .toEqual({ ...quiet, consecutiveFailures: 2, pauseReason: null });
   });
 
-  it("notifies the owner only of shown results and failures that paused the task", () => {
+  it("alerts once per streak of incomplete runs and pauses at the third, separately from failures", () => {
+    const incomplete = (task: Parameters<typeof planTaskSettlement>[0]["task"], trigger: "schedule" | "manual" = "schedule") =>
+      planTaskSettlement({ outcome: completed, sourcesIncomplete: true, task, trigger });
+    // The first incomplete run still completes (resetting failures) and is the streak's one alert.
+    expect(incomplete({ ...active, consecutiveFailures: 2 }))
+      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 1, pauseReason: null, sourceAlert: true });
+    expect(incomplete({ ...active, consecutiveIncompleteRuns: 1 }))
+      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
+    expect(incomplete({ ...active, consecutiveIncompleteRuns: 2 }))
+      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 3, pauseReason: "source_unavailable", sourceAlert: false });
+    // An owner pause meanwhile wins; the streak still counts.
+    expect(incomplete({ ...active, consecutiveIncompleteRuns: 2, status: "PAUSED" }))
+      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 3, pauseReason: null, sourceAlert: false });
+    // A complete run ends the streak; failures and skips leave it alone.
+    expect(planTaskSettlement({ outcome: completed, sourcesIncomplete: false, task: { ...active, consecutiveIncompleteRuns: 2 }, trigger: "schedule" }))
+      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 0, pauseReason: null, sourceAlert: false });
+    expect(planTaskSettlement({ outcome: failed, task: { ...active, consecutiveIncompleteRuns: 2 }, trigger: "schedule" }))
+      .toEqual({ consecutiveFailures: 1, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
+    expect(planTaskSettlement({ outcome: { reasonCode: "previous_running", state: "SKIPPED" }, task: { ...active, consecutiveIncompleteRuns: 2 },
+      trigger: "schedule" })).toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
+    // A manual run neither extends the streak nor alerts, but a complete one proves the source again.
+    expect(incomplete({ ...active, consecutiveIncompleteRuns: 2 }, "manual"))
+      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
+    expect(planTaskSettlement({ outcome: completed, task: { ...active, consecutiveIncompleteRuns: 2 }, trigger: "manual" }))
+      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 0, pauseReason: null, sourceAlert: false });
+  });
+
+  it("notifies the owner of shown results, pauses and the health alert, never routine skips", () => {
     expect(settlementNotifiesOwner({ state: "COMPLETED", taskPaused: false })).toBe(true);
     expect(settlementNotifiesOwner({ state: "FAILED", taskPaused: true })).toBe(true);
+    // The incomplete run that pauses its task, and the alert that starts a streak.
+    expect(settlementNotifiesOwner({ state: "COMPLETED", taskPaused: true })).toBe(true);
+    expect(settlementNotifiesOwner({ sourceAlert: true, state: "COMPLETED", taskPaused: false })).toBe(true);
     // Routine skips and failures that did not pause stay in the history.
     expect(settlementNotifiesOwner({ state: "FAILED", taskPaused: false })).toBe(false);
     expect(settlementNotifiesOwner({ state: "SKIPPED", taskPaused: false })).toBe(false);
@@ -200,5 +242,35 @@ describe("send refusals", () => {
     expect(classifySendRefusal(503, undefined)).toEqual({ kind: "retry", reasonCode: null });
     expect(classifySendRefusal(503, "provider_not_available")).toMatchObject({ outcome: { pauseReason: "provider_unavailable" } });
     expect(classifySendRefusal(400, "Not a code")).toEqual({ kind: "fail", outcome: { reasonCode: "admission_failed", state: "FAILED" } });
+  });
+
+  it("retries every transient tool and Workspace refusal within the window", () => {
+    // A busy Workspace is a busy chat: the window ends in a quiet chat_busy skip.
+    expect(classifySendRefusal(409, "workspace_busy")).toEqual({ kind: "retry", reasonCode: "chat_busy" });
+    for (const [status, code] of [
+      [409, "workspace_followup_predecessor_failed"], [409, "workspace_followup_unavailable"],
+      [503, "workspace_runtime_unavailable"], [409, "mcp_not_ready"],
+      // Saved Workspace secrets that could not be read or locked.
+      [503, "workspace_secret_unavailable"]
+    ] as const) {
+      expect(classifySendRefusal(status, code)).toEqual({ kind: "retry", reasonCode: null });
+    }
+  });
+
+  it("fails and pauses every permanent tool and Workspace refusal with a reason the owner can act on", () => {
+    for (const [status, code, pauseReason] of [
+      [409, "workspace_disabled", "workspace_unavailable"],
+      [503, "workspace_runtime_incompatible", "workspace_unavailable"],
+      [409, "workspace_runtime_incompatible", "workspace_unavailable"],
+      [400, "workspace_model_tools_required", "workspace_unavailable"],
+      [400, "mcp_tool_calling_not_supported", "tools_unavailable"],
+      [409, "mcp_plan_too_large", "tools_unavailable"],
+      [400, "skills_count_exceeded", "tools_unavailable"],
+      [409, "workspace_secret_limit", "workspace_secret_limit"]
+    ] as const) {
+      expect(classifySendRefusal(status, code)).toEqual({ kind: "fail", outcome: { pauseReason, reasonCode: pauseReason, state: "FAILED" } });
+      // Each pause has its own human copy, never the generic fallback.
+      expect(scheduledTaskReasonMessage(pauseReason)).not.toBe(scheduledTaskReasonMessage("some_future_code"));
+    }
   });
 });
