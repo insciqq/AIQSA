@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { enqueueMemoryJob } from "../persistence/jobs";
 import {
@@ -6,6 +7,7 @@ import {
   type MemoryTransaction
 } from "../persistence/transaction";
 import type { MemoryRetainedSourceMutationEvent } from "../sourceState";
+import { memoryScheduledPromptSql } from "../scheduledPrompt";
 import { MEMORY_HISTORY_SOURCE_TARGET_TYPE } from "../history/purge";
 import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
@@ -48,29 +50,25 @@ async function settledDirectUserMessageId(
   event: MemoryRetainedSourceMutationEvent
 ): Promise<string | null> {
   if (!event.settlement?.assistantMessageId) return null;
-  // A scheduled task's turn never teaches Memory, whatever the chat's mode.
-  const run = await tx.modelRun.findFirst({
-    select: { userMessageId: true },
-    where: {
-      assistantMessageId: event.settlement.assistantMessageId,
-      chatId: event.snapshot.id,
-      id: event.settlement.runId,
-      scheduledTaskId: null,
-      status: "complete",
-      userId: event.snapshot.userId
-    }
-  });
-  if (!run) return null;
-  const message = await tx.message.findFirst({
-    select: { id: true },
-    where: {
-      chatId: event.snapshot.id,
-      id: run.userMessageId,
-      role: "user",
-      status: "complete"
-    }
-  });
-  return message?.id ?? null;
+  // A scheduled task's prompt never teaches Memory, whatever the chat's mode.
+  // The test follows the message, so a regeneration of its answer, whose run
+  // has no scheduled origin, cannot admit the prompt either.
+  const [source] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT message."id"
+    FROM "ModelRun" AS run
+    INNER JOIN "Message" AS message
+      ON message."chatId" = run."chatId"
+     AND message."id" = run."userMessageId"
+    WHERE run."id" = ${event.settlement.runId}
+      AND run."chatId" = ${event.snapshot.id}
+      AND run."userId" = ${event.snapshot.userId}
+      AND run."assistantMessageId" = ${event.settlement.assistantMessageId}
+      AND run."status" = 'complete'::"ModelRunStatus"
+      AND message."role" = 'user'
+      AND message."status" = 'complete'::"MessageStatus"
+      AND NOT ${memoryScheduledPromptSql(event.snapshot.id, Prisma.sql`message."id"`)}
+  `);
+  return source?.id ?? null;
 }
 
 async function reopenSourcePurge(

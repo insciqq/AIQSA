@@ -10430,6 +10430,79 @@ describe("monitoring verdict recovery", () => {
     expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("recorded");
     expect(harness.state.completed).not.toBeNull();
   });
+
+  const settledReport = (roundIndex: number, ordinal = 0): PersistedToolLoopCall => {
+    const providerCallId = `provider-report-${roundIndex}`;
+    return { ...persistedRecoveryCall("complete"), arguments: { status: "update" }, id: `stored-report-${roundIndex}`,
+      mcpBinding: null, ordinal, providerCallId, roundIndex, toolName: "report_monitoring_result",
+      result: snapshotToolExecutionResult({ callId: providerCallId, content: [{ type: "json", value: { recorded: true, status: "update" } }],
+        name: "report_monitoring_result", status: "complete" }, 64_000) };
+  };
+
+  it("counts a persisted repeated report, so the recovered loop answers without tools", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const base = checkpointedRun({ calls: [settledReport(1), settledReport(2)], phase: "tools_pending", providerToolMessages: [],
+      roundIndex: 2 });
+    const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+    installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, monitoringVerdictTool: true, toolMode: "auto",
+      searchPlan: { mode: "all_selected", options: [] }, toolBudgets: { maxToolCalls: 5, maxToolRounds: 1 } } });
+    const recordMonitoringVerdict = vi.fn(async () => true);
+    harness.repository.recordMonitoringVerdict = recordMonitoringVerdict;
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(recordMonitoringVerdict).not.toHaveBeenCalled();
+    // As live: the first report is reserved, the repeat used the only tool round.
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.toolChoice).toBe("none");
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("the tool-round budget is exhausted");
+    expect(harness.state.completed).not.toBeNull();
+  });
+
+  it("refuses a refreshed batch whose repeated report no longer fits the call budget", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({ events: [], providerResponseId: "repeat-response",
+      status: "completed", terminal: true, result: { finalProviderResponsePreview: {}, finalText: "",
+        toolCalls: [{ arguments: { value: "more" }, id: "more-business", name: recoveryToolName },
+          { arguments: { status: "update" }, id: "more-report", name: "report_monitoring_result" }],
+        usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 } } }));
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), refresh,
+      async *stream(request) { requests.push(request); return providerResult; } };
+    const runtimeCall = vi.fn();
+    const harness = createHarness({ controls: [control({ providerResponseId: "repeat-response" })], providers: { openai: adapter },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+    const business: PersistedToolLoopCall = { ...persistedRecoveryCall("complete"), usageAccountedAt: "2026-07-12T09:02:00.000Z",
+      result: snapshotToolExecutionResult({ callId: "provider-call-1", content: [{ type: "text", text: "settled business result" }],
+        name: recoveryToolName, status: "complete" }, toolLoopPersistenceLimits.resultBytes) };
+    const terminalUsage = { completeness: "terminal" as const, roundIndex: 1, usage: { completeness: "complete" as const,
+      cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 } };
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ answerRoundUsage: [terminalUsage], calls: [business, settledReport(1, 1)], phase: "provider_running",
+        providerResponseId: "repeat-response", roundIndex: 2 }),
+      normalizedRequest: { ...normalizedToolRequest(), monitoringVerdictTool: true, toolBudgets: { maxToolCalls: 2, maxToolRounds: 5 } }
+    });
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+    const recordMonitoringVerdict = vi.fn(async () => true);
+    harness.repository.recordMonitoringVerdict = recordMonitoringVerdict;
+    const persistBatch = vi.spyOn(harness.repository, "persistToolLoopCallBatch");
+    const begin = vi.spyOn(harness.repository, "beginToolLoopProviderRound");
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(refresh).toHaveBeenCalledOnce();
+    // The round-1 report was the reserved one: the batch's two calls exceed the one call left.
+    expect(persistBatch).not.toHaveBeenCalled();
+    expect(runtimeCall).not.toHaveBeenCalled();
+    expect(recordMonitoringVerdict).not.toHaveBeenCalled();
+    expect(installed.calls()).toHaveLength(2);
+    expect(begin).toHaveBeenCalledWith(expect.objectContaining({ finalSynthesisOfRound: 2, roundIndex: 3,
+      providerContinuation: expect.objectContaining({ finalSynthesis: "budget_exhausted" }) }));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.toolChoice).toBe("none");
+    expect(harness.state.completed).not.toBeNull();
+  });
 });
 
 describe("scheduled task creation recovery", () => {
