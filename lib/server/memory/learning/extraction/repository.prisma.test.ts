@@ -1748,6 +1748,72 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
+  it("never extracts a scheduled task's prompt through a Regenerate or a queued job, nor uses it as context", async () => {
+    const userId = await createOwner("scheduled-regenerate");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Scheduled task chat", userId } });
+      const scheduled = await createTurn({
+        assistantText: "Here is today's brief.", chatId: chat.id, createdAt: new Date("2026-10-05T06:00:00.000Z"),
+        parentMessageId: null, userId, userText: "I live in Lisbon. Summarize the news."
+      });
+      // Settled before its origin is set, the turn leaves the job that an
+      // earlier regeneration or a re-extraction pass would have queued.
+      await settleChat(userId, chat.id, scheduled);
+      const queued = await claimFactJob(userId, scheduled.userMessage.id);
+      await prisma.modelRun.update({
+        data: { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1, scheduledTaskId: randomUUID() },
+        where: { id: scheduled.run.id }
+      });
+      const stale = { errorCode: "memory_fact_source_stale", status: "STALE" };
+      await expect(repository().preflight(queued)).resolves.toEqual(stale);
+      await expect(repository().prepare(queued)).resolves.toEqual({ decision: stale });
+
+      // A Regenerate of the scheduled answer runs without a scheduled origin.
+      const regeneratedAt = new Date("2026-10-05T06:10:00.000Z");
+      const regenerated = await prisma.message.create({
+        data: {
+          chatId: chat.id, content: textMessageContent("Here is a fresh brief."), createdAt: regeneratedAt,
+          modelId: "memory-vnext-test-model", parentMessageId: scheduled.userMessage.id,
+          provider: "memory-vnext-test-provider", role: "assistant", status: "complete", updatedAt: regeneratedAt
+        }
+      });
+      const regeneratedRun = await prisma.modelRun.create({
+        data: {
+          assistantMessageId: regenerated.id, chatId: chat.id, modelId: "memory-vnext-test-model",
+          normalizedRequest: { prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } } },
+          provider: "memory-vnext-test-provider", status: "complete", userId, userMessageId: scheduled.userMessage.id
+        }
+      });
+      const mutate = (input: Omit<Parameters<typeof applyMemorySourceMutations>[1], "chat" | "hooks">) =>
+        prisma.$transaction(async (tx) => {
+          const locked = await lockMemorySourceChat(tx, { chatId: chat.id, lock: "UPDATE", userId });
+          if (!locked) throw new Error("memory_vnext_test_chat_missing");
+          await applyMemorySourceMutations(tx, { ...input, chat: locked, hooks: defaultMemorySourceMutationHooks });
+        });
+      await mutate({ mutations: ["BRANCH_PATH_CHANGE"], patch: { activeLeafMessageId: regenerated.id } });
+      await mutate({
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: { assistantMessageId: regenerated.id, runId: regeneratedRun.id, status: "complete" }
+      });
+      // The regeneration admitted no job beside the refused one.
+      await expect(prisma.memoryJob.count({
+        where: { id: { not: queued.id }, kind: "EXTRACT_FACTS", sourceMessageId: scheduled.userMessage.id, userId }
+      })).resolves.toBe(0);
+
+      // The owner's next turn is learned from, without the scheduled turn as context.
+      const own = await createTurn({
+        assistantText: "Noted.", chatId: chat.id, createdAt: new Date("2026-10-05T07:00:00.000Z"),
+        parentMessageId: regenerated.id, userId, userText: "I prefer quiet rooms."
+      });
+      await settleChat(userId, chat.id, own);
+      const input = await prepare(await claimFactJob(userId, own.userMessage.id));
+      expect(input.messages.map(({ id }) => id)).toEqual([own.userMessage.id]);
+      expect(JSON.stringify(input)).not.toContain("Lisbon");
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("finds an old proposition beyond fifty recent facts and preserves frozen owner refs", async () => {
     const userId = await createOwner("context-relevance");
     const foreign = await createOwner("context-relevance-foreign");
