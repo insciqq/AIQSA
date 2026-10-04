@@ -28,6 +28,7 @@ import {
   scheduledTaskWeekdaysFromMask
 } from "../../domain/scheduledTaskSchedule";
 import { SMTP_CONTROL_ID } from "../email/repository";
+import { SCHEDULED_TASK_OCCURRENCE_RETENTION } from "./runnerPolicy";
 
 export class ScheduledTaskError extends Error {
   constructor(readonly code: ScheduledTaskErrorCode) {
@@ -70,6 +71,11 @@ export interface ScheduledTaskStore {
   /** The chat and any accepted run stay; occurrences go with the task. */
   delete(userId: string, taskId: string): Promise<boolean>;
   markSeen(userId: string, taskId: string): Promise<boolean>;
+  /**
+   * Queues a manual occurrence for `now` in any status; throws
+   * `scheduled_task_running` while one is pending or running.
+   */
+  requestRun(userId: string, taskId: string, now: Date): Promise<ScheduledTask>;
 }
 
 const STATUS_WIRE = { ACTIVE: "active", PAUSED: "paused", COMPLETED: "completed" } as const satisfies Record<StatusColumn, ScheduledTaskStatus>;
@@ -199,6 +205,19 @@ async function lockOwner(tx: Prisma.TransactionClient, userId: string): Promise<
   if (owners.length !== 1) throw new ScheduledTaskError("scheduled_tasks_unavailable");
 }
 
+/** Keeps the newest occurrences of a task; open ones are never removed. */
+export async function pruneScheduledTaskOccurrences(tx: Prisma.TransactionClient, taskId: string): Promise<void> {
+  await tx.$executeRaw`
+    DELETE FROM "ScheduledTaskOccurrence"
+    WHERE "id" IN (
+      SELECT "id" FROM "ScheduledTaskOccurrence" WHERE "taskId" = ${taskId}
+      ORDER BY "scheduledFor" DESC, "createdAt" DESC, "id" DESC
+      OFFSET ${SCHEDULED_TASK_OCCURRENCE_RETENTION}
+    ) AND "state" IN ('COMPLETED'::"ScheduledTaskOccurrenceState", 'FAILED'::"ScheduledTaskOccurrenceState",
+      'SKIPPED'::"ScheduledTaskOccurrenceState")
+  `;
+}
+
 function visibleTask(userId: string, taskId: string) {
   return { id: taskId, user: { status: "active" as const }, userId };
 }
@@ -283,6 +302,25 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledT
     },
     async markSeen(userId, taskId) {
       return (await prisma.scheduledTask.updateMany({ data: { unseenResultAt: null }, where: { id: taskId, userId } })).count === 1;
+    },
+    async requestRun(userId, taskId, now) {
+      return prisma.$transaction(async (tx) => {
+        // The task row serializes this check with concurrent requests and the runner's claim.
+        const tasks = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT task."id" FROM "ScheduledTask" AS task
+          JOIN "User" AS account ON account."id" = task."userId" AND account."status" = 'active'::"UserStatus"
+          WHERE task."id" = ${taskId} AND task."userId" = ${userId}
+          FOR NO KEY UPDATE OF task
+        `;
+        if (tasks.length !== 1) throw new ScheduledTaskError("scheduled_task_not_found");
+        if (await tx.scheduledTaskOccurrence.count({ where: { state: { in: ["PENDING", "RUNNING"] }, taskId, userId } }) > 0) {
+          throw new ScheduledTaskError("scheduled_task_running");
+        }
+        await tx.scheduledTaskOccurrence.create({ data: { scheduledFor: now, taskId, trigger: "manual", userId } });
+        await pruneScheduledTaskOccurrences(tx, taskId);
+        const row = await tx.scheduledTask.findUniqueOrThrow({ select: scheduledTaskRowSelect, where: { userId_id: { id: taskId, userId } } });
+        return project(tx, userId, row);
+      });
     }
   };
 }

@@ -145,6 +145,7 @@ import {
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
+  ScheduledOccurrenceConflictError,
   SkillRunConflictError,
   WorkspaceRunConflictError,
   type PreparingRunAdmissionInput,
@@ -154,6 +155,7 @@ import {
   type PreparingRunRecoveryResult,
   type ProjectRunAdmission
 } from "./runRepositoryContract";
+import { linkScheduledTaskOccurrence } from "../scheduledTasks/occurrenceLink";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { UNREGISTERED_WORKSPACE_COMMAND_FILTER, WORKSPACE_EXECUTION_OPEN_STATES } from "../workspace/executionRegistry";
 import { workspaceRunOperationOwner } from "../workspace/sessionOperation";
@@ -1674,6 +1676,11 @@ export async function admitPreparingRunWithClient(
           userMessageId
         }
       });
+      const scheduledOccurrence = input.admissionKind === "NORMAL_SEND" ? input.scheduledOccurrence : undefined;
+      if (scheduledOccurrence) {
+        await linkScheduledTaskOccurrence(tx, { ...scheduledOccurrence, chatId: input.chatId, now: admissionNow,
+          runId: run.id, userId: input.userId, userMessageId });
+      }
       await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {
         assistantMessageId,
@@ -1706,7 +1713,8 @@ export async function admitPreparingRunWithClient(
         userId: input.userId
       });
       await insertRunPdfAdmissions(tx, input, run.id);
-      if (input.defaults) {
+      // An unattended scheduled send is not a composer choice of the owner.
+      if (input.defaults && !scheduledOccurrence) {
         await persistAcceptedRunDefaults(tx, input.userId, input.defaults);
       }
       if (input.deferredPdf || workspaceFollowup) {
@@ -4025,6 +4033,10 @@ export async function createDormantPreparingRun(
   materializedRequest?: PreparingRunMaterializedRequest;
 }>> {
   if (admission.project) {
+    // Scheduled tasks post only into personal chats.
+    if (admission.admissionKind === "NORMAL_SEND" && admission.scheduledOccurrence) {
+      throw new ScheduledOccurrenceConflictError();
+    }
     const created = await admitProjectRunWithClient(prismaClient, admission);
     logEvent("run_accepted", { run_id: created.runId, kind: "project", preparation: created.deferredPdf ? "pdf" : "ready" });
     return created;

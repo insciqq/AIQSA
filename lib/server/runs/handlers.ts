@@ -58,10 +58,11 @@ import {
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
+  ScheduledOccurrenceConflictError,
   SkillRunConflictError,
   WorkspaceRunConflictError
 } from "./runRepositoryContract";
-import type { RunRepository } from "./runRepositoryContract";
+import type { RunRepository, ScheduledOccurrenceAdmission } from "./runRepositoryContract";
 import { serializeRunOutcome } from "./runOutcome";
 import { MemoryPreparingRunConflictError } from "./preparingRun";
 import { logEvent, runWithContext, type EventFields } from "../observability";
@@ -119,6 +120,8 @@ export type RunHandlerDeps = {
   resolveAuth: RequestAuthResolver;
   agentPolicy?: RunPreparationDeps["agentPolicy"];
   runPolicy?: RunPreparationDeps["runPolicy"];
+  /** Server-only: the scheduled task occurrence a send of this handler admits. */
+  scheduledOccurrence?: ScheduledOccurrenceAdmission;
   searchProviders?: Record<string, ProviderSearchAdapter>;
   skills?: RunPreparationDeps["skills"];
   skillCatalogRelevance?: RunPreparationDeps["skillCatalogRelevance"];
@@ -357,6 +360,11 @@ function isMemoryPreparingRunConflictError(
 function isWorkspaceRunConflictError(error: unknown): error is WorkspaceRunConflictError {
   return error instanceof WorkspaceRunConflictError ||
     (error instanceof Error && error.name === "WorkspaceRunConflictError");
+}
+
+function isScheduledOccurrenceConflictError(error: unknown): error is ScheduledOccurrenceConflictError {
+  return error instanceof ScheduledOccurrenceConflictError ||
+    (error instanceof Error && error.name === "ScheduledOccurrenceConflictError");
 }
 
 async function acceptedRuntimeBinding(
@@ -694,6 +702,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         provider: preparedData.normalizedRequest.provider,
         providerRequestPreview: preparedData.providerRequestPreview,
         ...(projectChat ? { projectChat } : {}),
+        ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {}),
         signal: request.signal,
         userId: auth.userId
       });
@@ -701,6 +710,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       const duplicate = await deps.workspaceFollowup?.findAdmission(admissionKey, auth.userId) ??
         await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
       if (duplicate) { deps.chatPdf?.kick(); deps.workspaceFollowup?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
+      if (isScheduledOccurrenceConflictError(error)) {
+        return Response.json({ error: "scheduled_task_occurrence_unavailable" }, { status: 409 });
+      }
       if (error instanceof WorkspaceFollowupError) return Response.json({ error: error.code }, { status: 409 });
       if (error instanceof InstructionPresetError) return Response.json({ error: error.code }, { status: 409 });
       if ((error instanceof ChatPdfPreparationError || isChatPdfPolicyUnavailableError(error))) return Response.json({ error: error.code }, { status: 409 });
