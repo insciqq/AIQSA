@@ -188,6 +188,11 @@ describe("Knowledge image observation persistence", () => {
     await expect(f.db.$executeRawUnsafe(`UPDATE "KnowledgeImageObservation" SET "state" = 'replayed' WHERE "modelRunId" = $1`, f.context.runId))
       .rejects.toThrow();
     await f.db.$executeRawUnsafe("ROLLBACK TO SAVEPOINT knowledge_image_state");
+    // The receipt never becomes run answer usage, which run settlement re-records.
+    await f.db.$executeRawUnsafe("SAVEPOINT knowledge_image_receipt");
+    await expect(f.db.$executeRawUnsafe(`UPDATE "UsageEvent" SET "visionAnalysis" = false WHERE "knowledgeImageObservationRunId" = $1`,
+      f.context.runId)).rejects.toThrow();
+    await f.db.$executeRawUnsafe("ROLLBACK TO SAVEPOINT knowledge_image_receipt");
     const receipt = await f.db.usageEvent.findUniqueOrThrow({ where: { knowledgeImageObservationRunId: f.context.runId } });
     // Run deletion cascades through the run and its bindings in either order; accounting stays, detached.
     await f.db.modelRun.delete({ where: { id: f.context.runId } });
