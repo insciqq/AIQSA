@@ -57,6 +57,8 @@ export type AdminGroup = {
   userCount: number;
 };
 
+export type AdminUserRole = "admin" | "user";
+
 export type AdminUserRecord = {
   deletion?: AdminDeletionInfo;
   directGrants: AdminAccessGrantRecord[];
@@ -67,7 +69,7 @@ export type AdminUserRecord = {
   hasVerifiedIdentity: boolean;
   id: string;
   lastSessionAt: string | null;
-  role: "admin" | "user";
+  role: AdminUserRole;
   status: "active" | "denied" | "disabled" | "pending";
 };
 
@@ -265,6 +267,11 @@ export type AdminActionRequest =
       userId: string;
     }
   | {
+      action: "set_user_role";
+      role: AdminUserRole;
+      userId: string;
+    }
+  | {
       action: "set_user_credential";
       connectionId: string;
       credentialId: string | null;
@@ -292,7 +299,8 @@ export const adminActionNames = [
   "set_group_grants",
   "set_user_credential",
   "set_user_grants",
-  "set_user_groups"
+  "set_user_groups",
+  "set_user_role"
 ] as const satisfies readonly AdminActionRequest["action"][];
 
 export type AdminActionName = (typeof adminActionNames)[number];
@@ -324,6 +332,7 @@ type AdminActionDomainErrorCode =
   | "project_owner_required"
   | "self_disable_forbidden"
   | "self_delete_forbidden"
+  | "self_role_change_forbidden"
   | "user_active"
   | "user_access_stale"
   | "user_credential_invalid"
@@ -331,9 +340,11 @@ type AdminActionDomainErrorCode =
   | "user_grant_required"
   | "user_groups_required"
   | "user_has_owned_data"
+  | "user_not_active"
   | "user_not_found"
   | "user_not_verified"
-  | "user_required";
+  | "user_required"
+  | "user_role_required";
 
 export type AdminActionServerErrorCode =
   | AdminActionDomainErrorCode

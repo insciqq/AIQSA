@@ -111,6 +111,8 @@ const acceptedRequest = `{"searchPlan":{"mode":"all_selected","options":[{"confi
   `{"modelDefaultParams":{"reasoning":${LEGACY}}},"optionId":"perplexity-reasoning-search",` +
   `"protocol":"openrouter_perplexity_chat"}]}}`;
 
+// Runs are compared in their predecessor shape: later migrations add nullable
+// run columns (the scheduled-task origin and check outcome) that this migration never touches.
 const relatedStateSql = `SELECT jsonb_build_object(
   'connections', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM "ProviderConnection" row_value),
   'credentials', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM "ProviderCredential" row_value),
@@ -120,7 +122,9 @@ const relatedStateSql = `SELECT jsonb_build_object(
   'searchOptions', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM "SearchOption" row_value),
   'searchStrategies', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM "SearchStrategy" row_value),
   'searchRevisions', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM "SearchIntegrationRevision" row_value),
-  'runs', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM "ModelRun" row_value),
+  'runs', (SELECT jsonb_agg(to_jsonb(row_value)
+    - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome']
+    ORDER BY row_value.id) FROM "ModelRun" row_value),
   'bindings', (SELECT jsonb_agg(to_jsonb(row_value) ORDER BY row_value.id) FROM "ProviderRunBinding" row_value)
 )`;
 

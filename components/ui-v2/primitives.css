@@ -724,6 +724,50 @@ html[data-motion="off"] [data-tooltip]::after {
   overflow-wrap: anywhere;
 }
 
+.v2-notice-text-short {
+  display: none;
+}
+
+/* On a short screen an offer keeps to one line, so the conversation above it stays readable. */
+@media (max-height: 32rem) {
+  .v2-notice[data-compact] {
+    align-items: center;
+    padding-block: 0.25rem;
+  }
+
+  .v2-notice[data-compact] .v2-notice-icon {
+    margin-top: 0;
+  }
+
+  .v2-notice[data-compact] .v2-notice-body {
+    flex-wrap: nowrap;
+    padding-top: 0;
+  }
+
+  .v2-notice[data-compact] .v2-notice-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .v2-notice[data-compact] .v2-notice-text-short {
+    display: block;
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .v2-notice[data-compact] .v2-notice-actions {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+  }
+}
+
 .v2-notice-link {
   min-width: 0;
   color: var(--v2-color-accent);

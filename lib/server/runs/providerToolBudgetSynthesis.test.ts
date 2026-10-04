@@ -218,3 +218,104 @@ describe("bounded final synthesis", () => {
     expect(stream).toHaveBeenCalledOnce();
   });
 });
+
+describe("reserved verdict outside the tool budgets", () => {
+  const reserved = { called: false, instruction: "Reserved: report the outcome now.", name: "report" };
+  const reservedTools: RunTool[] = ["search", "report"].map((name) => ({
+    capability: name === "report" ? "session" : "mcp", description: name, inputSchema: { type: "object" }, name
+  }));
+  function scripted(rounds: readonly (readonly string[])[]) {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(roundRequest) {
+      requests.push(roundRequest);
+      const names = rounds[requests.length - 1] ?? [];
+      return result(names.length ? "" : "Final answer", names.length
+        ? names.map((name, index) => ({ arguments: {}, id: `call-${requests.length}-${index}`, name })) : undefined);
+    } };
+    return { adapter, requests };
+  }
+  const executeTool = vi.fn(async (call: { id: string; name: string }) => ({ status: "complete" as const,
+    value: { callId: call.id, content: [{ text: "ok", type: "text" as const }], name: call.name, status: "complete" as const } }));
+  const lastText = (request: ProviderRunRequest | undefined) => JSON.stringify(request?.providerToolMessages?.at(-1) ?? null);
+
+  it("offers the outstanding reserved call alone once a budget is used up, then synthesizes", async () => {
+    executeTool.mockClear();
+    const { adapter, requests } = scripted([["search"], ["report"], []]);
+    const persisted: unknown[] = [];
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 5, maxToolRounds: 1 }, executeTool, initialRequest: request(),
+      parallelToolCalls: false, reservedCall: reserved, tools: reservedTools,
+      persistToolBatch: ({ continuation }) => { persisted.push(continuation); } });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 1, toolRounds: 1 });
+    expect(requests.map((entry) => entry.toolChoice)).toEqual(["auto", "auto", "none"]);
+    // Every declaration stays; the ephemeral instruction ends only the reserved round's request.
+    expect(requests[1]?.tools?.map((tool) => tool.name)).toEqual(["search", "report"]);
+    expect(lastText(requests[1])).toContain("Reserved: report the outcome now.");
+    expect(JSON.stringify(requests[2]?.providerToolMessages)).not.toContain("Reserved: report");
+    expect(JSON.stringify(persisted)).not.toContain("Reserved: report");
+    expect(executeTool.mock.calls.map(([call]) => call.name)).toEqual(["search", "report"]);
+  });
+
+  it("never lets the reserved call push a batch over the budget or count as progress", async () => {
+    executeTool.mockClear();
+    const { adapter, requests } = scripted([["search", "report"], []]);
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 4 }, executeTool, initialRequest: request(),
+      parallelToolCalls: false, reservedCall: reserved, tools: reservedTools });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 1, toolRounds: 1 });
+    expect(executeTool).toHaveBeenCalledTimes(2);
+    // The budget is used up and the report was made: plain synthesis follows.
+    expect(requests.map((entry) => entry.toolChoice)).toEqual(["auto", "none"]);
+  });
+
+  it("ends within the budgets when the model reports every round", async () => {
+    executeTool.mockClear();
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(roundRequest) {
+      requests.push(roundRequest);
+      // The model reports whenever tools are offered (and stops after twenty
+      // requests, so a regression fails instead of hanging).
+      return roundRequest.toolChoice === "none" || requests.length > 20
+        ? result("Final answer")
+        : result("", [{ arguments: { status: "update" }, id: `call-${requests.length}`, name: "report" }]);
+    } };
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 5, maxToolRounds: 2 }, executeTool, initialRequest: request(),
+      parallelToolCalls: false, reservedCall: reserved, tools: reservedTools });
+    // The first report is reserved; the next two use both tool rounds; then the run answers without tools.
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 2, toolRounds: 2 });
+    expect(executeTool).toHaveBeenCalledTimes(3);
+    expect(requests.map((entry) => entry.toolChoice)).toEqual(["auto", "auto", "auto", "none"]);
+  });
+
+  it("counts a report repeated by a resumed run that already reported", async () => {
+    executeTool.mockClear();
+    const { adapter, requests } = scripted([["report"], []]);
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 5, maxToolRounds: 1 }, executeTool, initialRequest: request(),
+      parallelToolCalls: false, reservedCall: { ...reserved, called: true }, tools: reservedTools });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 1, toolRounds: 1 });
+    expect(requests.map((entry) => entry.toolChoice)).toEqual(["auto", "none"]);
+  });
+
+  it("synthesizes at once when the reserved call was already made or a batch was refused", async () => {
+    executeTool.mockClear();
+    const made = scripted([["search"], []]);
+    await runProviderToolLoop({ adapter: made.adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 5, maxToolRounds: 1 }, executeTool, initialRequest: request(),
+      parallelToolCalls: false, reservedCall: { ...reserved, called: true }, tools: reservedTools });
+    expect(made.requests.map((entry) => entry.toolChoice)).toEqual(["auto", "none"]);
+
+    // Over the remaining call budget the batch (its report included) is refused into synthesis.
+    const refused = scripted([["search", "search", "report"], []]);
+    const transitions: number[] = [];
+    executeTool.mockClear();
+    await runProviderToolLoop({ adapter: refused.adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 1, maxToolRounds: 4 }, executeTool, initialRequest: request(),
+      onFinalSynthesisTransition: ({ round }) => { transitions.push(round); },
+      parallelToolCalls: false, reservedCall: reserved, tools: reservedTools });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(transitions).toEqual([1]);
+    expect(refused.requests.map((entry) => entry.toolChoice)).toEqual(["auto", "none"]);
+  });
+});

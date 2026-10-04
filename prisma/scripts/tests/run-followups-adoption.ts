@@ -12,7 +12,8 @@ export const runFollowupsProofSql = `
 DO $$ BEGIN
  IF NOT EXISTS (SELECT 1 FROM "ModelRun" run, "FollowupPredecessorFixture" old
    WHERE run.id='followup-existing' AND to_jsonb(run) - ARRAY['followupMode','followupRevision','followupBudgetTokens',
-     'followupClosedAt','followupKnowledgeRevision','followupKnowledgeOffset'] = old.snapshot
+     'followupClosedAt','followupKnowledgeRevision','followupKnowledgeOffset',
+     'scheduledTaskId','scheduledOccurrenceId','scheduledTaskGeneration','scheduledOutcome'] = old.snapshot
      AND run."followupMode" IS NULL AND run."followupRevision"=0) THEN
    RAISE EXCEPTION 'followup_predecessor_changed'; END IF;
 END $$;

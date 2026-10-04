@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
+import { registerRunTerminalListener } from "../push/runTerminalSignal";
 import { createPrismaRunRepository } from "./prismaRepository";
 
 function repositoryCancellationHarness(mode: "cancel" | "fail") {
@@ -152,5 +153,35 @@ describe("Prisma run terminal cancellation integration", () => {
 
     expectBudgetCancellationWrites(harness.tx, harness.runId);
     expect(harness.transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports committed failures to browser push after commit, never user cancellations", async () => {
+    const signalled: string[] = [];
+    registerRunTerminalListener((runId) => signalled.push(runId));
+    try {
+      const cancelled = repositoryCancellationHarness("cancel");
+      await cancelled.repository.cancelRun({
+        payload: { code: "run_cancelled", message: "Run cancelled" }, runId: cancelled.runId, userId: cancelled.userId
+      });
+      expect(signalled).toEqual([]);
+
+      const failed = repositoryCancellationHarness("fail");
+      failed.transaction.mockImplementationOnce(async (consume) => {
+        const result = await consume(failed.tx);
+        // Nothing is reported before the transaction has committed.
+        expect(signalled).toEqual([]);
+        return result;
+      });
+      await failed.repository.failRun(failed.runId, failed.assistantMessageId, { code: "run_failed", message: "Run failed" });
+      expect(signalled).toEqual([failed.runId]);
+
+      const lost = repositoryCancellationHarness("fail");
+      lost.tx.modelRun.updateMany.mockResolvedValueOnce({ count: 0 });
+      await expect(lost.repository.failRun(lost.runId, lost.assistantMessageId, { code: "run_failed", message: "Run failed" }))
+        .resolves.toBe(false);
+      expect(signalled).toEqual([failed.runId]);
+    } finally {
+      registerRunTerminalListener(null);
+    }
   });
 });

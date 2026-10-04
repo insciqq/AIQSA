@@ -230,6 +230,8 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
     provider: message.provider ?? undefined,
     role: message.role === "assistant" ? "assistant" : "user",
     runId: message.modelRunId ?? null,
+    ...(message.scheduledTask ? { scheduledTask: message.scheduledTask } : {}),
+    ...(message.scheduledOutcome ? { scheduledOutcome: message.scheduledOutcome } : {}),
     status: normalizeThreadStatus(message.status),
     ...(message.pdfPreparation ? { pdfPreparation: message.pdfPreparation } : {}),
     ...(message.workspacePreparation ? { workspacePreparation: true as const } : {}),

@@ -10,8 +10,10 @@ import { loadMcpToolAccess } from "./toolAccess";
 import { personalMcpCatalogTools, personalMcpLiveTools } from "./personalCatalog";
 import {
   buildMcpCapabilityCatalog,
+  mcpCatalogOmissions,
   mcpInventoryExclusions,
   type McpCapabilityCatalog,
+  type McpCatalogOmission,
   type McpRunPlanRecord
 } from "./runPlan";
 
@@ -252,7 +254,13 @@ function personalAuthorizationLoss(
     : { errorCode: "oauth_required", readiness: "needs_authorization" };
 }
 
+/** Every record of the runner's own personal server says so, whatever its state. */
 function serializeRunPlanPreference(preference: RunPlanPreferenceRecord): McpRunPlanRecord {
+  const record = serializeRunPlanPreferenceState(preference);
+  return preference.server.ownerUserId === preference.userId ? { ...record, personal: true } : record;
+}
+
+function serializeRunPlanPreferenceState(preference: RunPlanPreferenceRecord): McpRunPlanRecord {
   const groupIds = new Set(preference.user.groups.map((membership) => membership.groupId));
   const canUse = preference.server.ownerUserId != null
     ? preference.server.ownerUserId === preference.userId
@@ -506,6 +514,15 @@ export async function loadMcpCapabilityCatalog(
   return buildMcpCapabilityCatalog(await loadMcpRunPlanRecords(userId, client));
 }
 
+/** The Auto catalog and the personal servers it had to leave out, from one read. */
+export async function loadMcpCapabilityCatalogWithOmissions(
+  userId: string,
+  client: PrismaClient = prisma
+): Promise<Readonly<{ catalog: McpCapabilityCatalog; omitted: McpCatalogOmission[] }>> {
+  const records = await loadMcpRunPlanRecords(userId, client);
+  return { catalog: buildMcpCapabilityCatalog(records), omitted: mcpCatalogOmissions(records) };
+}
+
 /**
  * Exact-subset loader for Assistant allowlists. It intentionally includes the
  * runner's disabled preference rows so a requested-but-disabled server surfaces
@@ -556,4 +573,8 @@ export function createPrismaMcpProjectRunPlanLoader(client: PrismaClient = prism
 
 export function createPrismaMcpCapabilityCatalogLoader(client: PrismaClient = prisma) {
   return (userId: string) => loadMcpCapabilityCatalog(userId, client);
+}
+
+export function createPrismaMcpCapabilityCatalogWithOmissionsLoader(client: PrismaClient = prisma) {
+  return (userId: string) => loadMcpCapabilityCatalogWithOmissions(userId, client);
 }

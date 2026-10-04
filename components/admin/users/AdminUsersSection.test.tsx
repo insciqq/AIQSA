@@ -358,6 +358,8 @@ describe("AdminUsersSection", () => {
     await waitFor(() => expect(posts).toEqual([{ action: "set_user_groups", expectedGroupIds: ["group-ops"], groupIds: ["group-ops", "group-research"], userId: "ada" }]));
     await waitFor(() => expect(within(page).getByRole("button", { name: "Save" })).toBeDisabled());
 
+    fireEvent.click(within(page).getByRole("button", { name: "Make administrator" }));
+    expect(confirmations.at(-1)).toMatchObject({ body: { action: "set_user_role", role: "admin", userId: "ada" }, testId: "admin-confirm-grant-admin-role" });
     fireEvent.click(within(page).getByRole("button", { name: "Revoke sessions" }));
     expect(confirmations.at(-1)).toMatchObject({ body: { action: "revoke_user_sessions", userId: "ada" }, testId: "admin-confirm-revoke-user-sessions" });
     fireEvent.click(within(page).getByRole("button", { name: "Disable" }));
@@ -366,6 +368,30 @@ describe("AdminUsersSection", () => {
     expect(page).toHaveTextContent("Disable this user before deletion can be considered.");
 
     fireEvent.click(screen.getByRole("link", { name: "Users" }));
+  });
+
+  it("offers the admin role only for other active users and follows the refreshed role", async () => {
+    const { confirmations } = renderSection({ resource: "ada" });
+    const page = await screen.findByTestId("admin-user-page");
+    expect(page).toHaveTextContent("ada@example.com · verified email");
+
+    act(() => {
+      const dashboard = dashboardFixture();
+      updateDashboard?.({ ...dashboard, users: dashboard.users.map((candidate) => candidate.id === "ada" ? { ...candidate, role: "admin" } : candidate) });
+    });
+    expect(page).toHaveTextContent("ada@example.com · admin · verified email");
+    expect(within(page).queryByRole("button", { name: "Make administrator" })).not.toBeInTheDocument();
+    fireEvent.click(within(page).getByRole("button", { name: "Remove administrator rights" }));
+    expect(confirmations.at(-1)).toMatchObject({ body: { action: "set_user_role", role: "user", userId: "ada" }, testId: "admin-confirm-revoke-admin-role" });
+    document.body.innerHTML = "";
+
+    for (const resource of ["pending-1", "disabled-1"]) {
+      renderSection({ resource });
+      const inactivePage = await screen.findByTestId("admin-user-page");
+      expect(within(inactivePage).queryByRole("button", { name: "Make administrator" })).not.toBeInTheDocument();
+      expect(within(inactivePage).queryByRole("button", { name: "Remove administrator rights" })).not.toBeInTheDocument();
+      document.body.innerHTML = "";
+    }
   });
 
   it("retains a dirty membership draft and its original baseline after a background membership change", async () => {
@@ -408,8 +434,9 @@ describe("AdminUsersSection", () => {
   it("keeps self-protection, approval from the page and stale deletion with its confirmation", async () => {
     const self = renderSection({ resource: "admin-1" });
     const selfPage = await screen.findByTestId("admin-user-page");
-    expect(selfPage).toHaveTextContent("Self-disable and self-delete are not exposed here.");
+    expect(selfPage).toHaveTextContent("Self-disable, self-delete and changing your own administrator role are not exposed here.");
     expect(within(selfPage).queryByRole("button", { name: "Disable" })).not.toBeInTheDocument();
+    expect(within(selfPage).queryByRole("button", { name: "Remove administrator rights" })).not.toBeInTheDocument();
     expect(within(selfPage).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
     expect(selfPage).toHaveTextContent("Everything: every provider, model and Search source, through Full access.");
     expect(self.confirmations).toHaveLength(0);

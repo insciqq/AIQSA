@@ -41,6 +41,7 @@ import {
   type MemorySuppressionKeyring
 } from "../../suppressionKeyring";
 import { loadMemorySourceSnapshot } from "../../sourceState";
+import { memoryScheduledPromptSql } from "../../scheduledPrompt";
 import {
   MEMORY_FACT_MAX_ACCEPTED_CANDIDATES,
   MEMORY_FACT_MAX_CONTEXT_CHARACTERS,
@@ -159,7 +160,7 @@ export function memoryAutomaticCandidateContainsSecret(
     memoryValueContainsRecognizedSecret(candidate.temporalResolutionEvidence);
 }
 
-type MemoryFactSourceMessage = Readonly<{
+export type MemoryFactSourceMessage = Readonly<{
   chatId: string;
   content: Prisma.JsonValue;
   createdAt: Date;
@@ -209,15 +210,20 @@ async function loadBoundSource(
     !snapshot || snapshot.memoryMode !== "NORMAL" ||
     !snapshot.messages.some(({ id }) => id === job.sourceMessageId)
   ) return null;
-  const message = await tx.message.findFirst({
-    select: sourceMessageSelect,
-    where: {
-      chatId: job.chatId,
-      id: job.sourceMessageId,
-      role: "user",
-      status: "complete"
-    }
-  });
+  // A scheduled task's prompt is never a direct-user source, so no queued,
+  // recovered or re-extracted job can learn from it at any gate.
+  const [message] = await tx.$queryRaw<MemoryFactSourceMessage[]>(Prisma.sql`
+    SELECT
+      message."chatId", message."content", message."createdAt", message."id",
+      message."parentMessageId", message."role",
+      message."status"::text AS "status", message."updatedAt"
+    FROM "Message" AS message
+    WHERE message."chatId" = ${job.chatId}
+      AND message."id" = ${job.sourceMessageId}
+      AND message."role" = 'user'
+      AND message."status" = 'complete'::"MessageStatus"
+      AND NOT ${memoryScheduledPromptSql(job.chatId, Prisma.sql`message."id"`)}
+  `);
   if (!message) return null;
   return {
     activePathMessageIds: snapshot.messages.map(({ id }) => id),
@@ -520,7 +526,9 @@ export function memoryAssistantContextRunIsEligible(
     parentMessageId !== null && run.userMessageId === parentMessageId;
 }
 
-function contextSourceMessages(
+/** Provenance of the bounded context path. `scheduledPromptIds` are scheduled
+ * tasks' prompts among the rows (see `memoryScheduledPromptSql`). */
+export function memoryFactContextSourceMessages(
   rows: readonly MemoryFactSourceMessage[],
   orderedIds: readonly string[],
   runs: readonly Readonly<{
@@ -530,7 +538,8 @@ function contextSourceMessages(
     status: string;
     userMessageId: string;
   }>[],
-  ownedAssistantIds: ReadonlySet<string>
+  ownedAssistantIds: ReadonlySet<string>,
+  scheduledPromptIds: ReadonlySet<string>
 ): readonly MemoryHistorySourceMessageInput[] {
   const byId = new Map(rows.map((row) => [row.id, row] as const));
   const runsByAssistantMessage = new Map<string, typeof runs>();
@@ -546,7 +555,10 @@ function contextSourceMessages(
     const row = byId.get(id);
     if (!row) continue;
     const parentMessageId = ordinal === 0 ? null : row.parentMessageId;
-    if (row.role === "user") {
+    // A scheduled task's prompt is posted by the server and may have been
+    // written by the model: like a system turn it never speaks for the user.
+    // Its answers inherit the taint, so bounded context stops before them.
+    if (row.role === "user" && !scheduledPromptIds.has(row.id)) {
       messages.push({
         ...row,
         parentMessageId,
@@ -686,7 +698,7 @@ async function loadBoundContext(
     Math.max(0, targetIndex - MEMORY_FACT_CONTEXT_LOOKBACK_MESSAGES),
     targetIndex + 1
   );
-  const [activeRun, rows] = await Promise.all([
+  const [activeRun, rows, scheduledPrompts] = await Promise.all([
     tx.modelRun.findFirst({
     // The first completed run bound to the admitted leaf owns the temporal
     // snapshot. A later recovery/replay row must not rewrite extraction input.
@@ -710,7 +722,15 @@ async function loadBoundContext(
     tx.message.findMany({
       select: sourceMessageSelect,
       where: { chatId: source.chat.id, id: { in: candidateIds } }
-    }) as Promise<MemoryFactSourceMessage[]>
+    }) as Promise<MemoryFactSourceMessage[]>,
+    tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT message."id"
+      FROM "Message" AS message
+      WHERE message."chatId" = ${source.chat.id}
+        AND message."id" IN (${Prisma.join(candidateIds)})
+        AND message."role" = 'user'
+        AND ${memoryScheduledPromptSql(source.chat.id, Prisma.sql`message."id"`)}
+    `)
   ]);
   const assistantMessageIds = rows
     .filter(({ role }) => role === "assistant")
@@ -743,11 +763,12 @@ async function loadBoundContext(
           ownerUserId: source.chat.userId
         }
       });
-  const candidates = contextSourceMessages(
+  const candidates = memoryFactContextSourceMessages(
     rows,
     candidateIds,
     runs,
-    new Set(ownedAssistants.map(({ id }) => id))
+    new Set(ownedAssistants.map(({ id }) => id)),
+    new Set(scheduledPrompts.map(({ id }) => id))
   );
   if (candidates.length !== candidateIds.length) {
     return {

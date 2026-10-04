@@ -10,7 +10,7 @@ export type AuthEmail = {
   to: string;
 };
 
-export type AuthEmailKind = Exclude<SmtpProductMessageKind, "configuration_test">;
+export type AuthEmailKind = Exclude<SmtpProductMessageKind, "configuration_test" | "scheduled_task_result">;
 
 /**
  * AuthMailer is the small injection boundary used by auth handlers.

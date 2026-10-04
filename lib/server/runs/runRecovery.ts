@@ -194,6 +194,7 @@ import {
   missingRequiredToolCall,
   requiredToolCorrectionContinuation,
   REQUIRED_TOOL_CALL_FAILURE,
+  reservedCallRound,
   runProviderToolLoop,
   toolSynthesisDecision,
   withProviderNote,
@@ -204,6 +205,19 @@ import { readOnlyRunTool } from "./toolReadOnly";
 import { repeatBlockedRounds, roundMadeNoProgress, settledRepeatOutcome, ToolCallRepeatHistory } from "./toolCallRepeatGuard";
 import { applyProviderRequestContextBudget, measureSessionContext, observationBatchShare, observationWholeResultTokens } from "./runContextBudget";
 import { executeSessionStatus, SESSION_STATUS_TOOL_NAME, sessionStatusTool } from "../tools/sessionStatus";
+import {
+  executeMonitoringVerdict,
+  isMonitoringVerdictCall,
+  MONITORING_VERDICT_TOOL_NAME,
+  monitoringVerdictReservedInstruction,
+  monitoringVerdictTool,
+  type MonitoringVerdictRecorder
+} from "../tools/monitoringVerdict";
+import {
+  executeCreateScheduledTask,
+  isScheduledTaskCreateCall,
+  scheduledTaskToolsForRequest
+} from "../tools/scheduledTaskCreation";
 import type { ProviderToolBridge } from "../tools/types";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { memorySearchTool, MEMORY_SEARCH_TOOL_NAME } from "../memory/search/contract";
@@ -341,6 +355,8 @@ export type RunRecoveryRepository = Pick<
   | "loadEntitlements"
   | "projectToolHistory"
   | "readToolCall"
+  | "recordMonitoringVerdict"
+  | "createScheduledTaskForCall"
   | "toolCallsAvailable"
 >>;
 
@@ -965,6 +981,52 @@ function isRecoveredObservationRead(context: RecoveryToolContext, name: string):
   return context.run.normalizedRequest.toolObservationVersion === 1 && name === READ_TOOL_RESULT_NAME;
 }
 
+/** The monitoring verdict as the run accepted it; a repeated report records the same value. */
+function isRecoveredMonitoringCall(context: RecoveryToolContext, name: string): boolean {
+  return isMonitoringVerdictCall(context.run.normalizedRequest, name);
+}
+
+/** The run's scheduled task creation as admitted; its creation settles the call atomically. */
+function isRecoveredScheduledTaskCall(context: RecoveryToolContext, name: string): boolean {
+  return isScheduledTaskCreateCall(context.run.normalizedRequest, name);
+}
+
+function recoveredVerdictRecorder(deps: RunRecoveryDeps): MonitoringVerdictRecorder | undefined {
+  const record = deps.repository.recordMonitoringVerdict;
+  return record ? (input) => record(input) : undefined;
+}
+
+/**
+ * The run's reserved monitoring verdict as the live loop tracks it: whether a
+ * call of it was persisted before `beforeRound` (any round when omitted).
+ */
+function recoveredReservedCall(
+  run: Readonly<{ calls: readonly Readonly<{ roundIndex: number; toolName: string }>[];
+    normalizedRequest: Readonly<{ monitoringVerdictTool?: unknown }> }>,
+  beforeRound?: number
+): Readonly<{ called: boolean }> | undefined {
+  return run.normalizedRequest.monitoringVerdictTool === true
+    ? { called: run.calls.some((call) => (beforeRound === undefined || call.roundIndex < beforeRound) &&
+        call.toolName === MONITORING_VERDICT_TOOL_NAME) }
+    : undefined;
+}
+
+/**
+ * Calls that count against the tool budgets, as the live loop counts them:
+ * every persisted call except the run's first monitoring verdict, in round and
+ * batch order. A repeated verdict counts like any other call.
+ */
+function budgetedRecoveredCalls<T extends Readonly<{ ordinal: number; roundIndex: number; toolName: string }>>(
+  run: Readonly<{ normalizedRequest: Readonly<{ monitoringVerdictTool?: unknown }> }>,
+  calls: Iterable<T>
+): T[] {
+  const loopCalls = [...calls].filter((call) => call.roundIndex > 0);
+  const exempt = loopCalls.reduce<T | undefined>((first, call) =>
+    isMonitoringVerdictCall(run.normalizedRequest, call.toolName) && (!first || call.roundIndex < first.roundIndex ||
+      call.roundIndex === first.roundIndex && call.ordinal < first.ordinal) ? call : first, undefined);
+  return loopCalls.filter((call) => call !== exempt);
+}
+
 /** The call reader as the run accepted it, independent of the observation policy. */
 function isRecoveredCallRead(context: RecoveryToolContext, name: string): boolean {
   return context.run.normalizedRequest.toolCallReader === true && name === READ_TOOL_CALL_NAME;
@@ -1525,6 +1587,18 @@ async function executePersistedToolCallInContext(
     }
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: blocked }, round: persisted.roundIndex };
   }
+  if (isRecoveredScheduledTaskCall(context, call.name) && (claim.kind === "claimed" || claim.kind === "ambiguous")) {
+    // Created and settled in one transaction: an interrupted call finds that
+    // settlement or nothing created, so it never creates a second task.
+    const result = await executeCreateScheduledTask(call, { persistedToolCallId: persisted.id,
+      request: context.run.normalizedRequest, runId: context.run.id, userId: context.run.userId },
+    context.deps.repository.createScheduledTaskForCall?.bind(context.deps.repository));
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,
+      result: snapshot, runId: context.run.id, state: result.status, userId: context.run.userId });
+    if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "A recovered scheduled task creation could not be settled.");
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
+  }
   const memoryActivity = async (state: "running" | "complete" | "error" | "cancelled", result?: ToolExecutionResult) => {
     const event = memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex, state, result });
     const projected = projectRunOutputArtifactEvent(event);
@@ -1543,6 +1617,16 @@ async function executePersistedToolCallInContext(
       result: snapshot, runId: context.run.id, state: result.status, userId: context.run.userId });
     if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", RUN_PREPARATION_FAILURE_MESSAGE);
     await memoryActivity(result.status, result);
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
+  }
+  if (claim.kind === "ambiguous" && isRecoveredMonitoringCall(context, call.name)) {
+    // A report has no external effect and the last one wins: it is recorded again.
+    const result = await executeMonitoringVerdict(call, { runId: context.run.id, userId: context.run.userId },
+      recoveredVerdictRecorder(context.deps));
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,
+      result: snapshot, runId: context.run.id, state: result.status, userId: context.run.userId });
+    if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "A recovered monitoring report could not be settled.");
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
   }
   if (claim.kind === "ambiguous" && isRecoveredCallRead(context, call.name)) {
@@ -1804,7 +1888,7 @@ async function executePersistedToolCallInContext(
     const isImageCall = Boolean(context.run.normalizedRequest.imagePlan) && call.name === IMAGE_GENERATION_TOOL_NAME;
     const isSessionCall = context.run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME;
     const isMemoryCall = Boolean(context.run.normalizedRequest.memorySearch) && call.name === MEMORY_SEARCH_TOOL_NAME;
-    const externalCall = !isMemoryCall && !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredObservationRead(context, call.name) && !isRecoveredCallRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
+    const externalCall = !isMemoryCall && !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredMonitoringCall(context, call.name) && !isRecoveredScheduledTaskCall(context, call.name) && !isRecoveredObservationRead(context, call.name) && !isRecoveredCallRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
@@ -1949,6 +2033,8 @@ async function executePersistedToolCallInContext(
         recoveredReadBudget(context, persisted.roundIndex));
     } else if (isSessionCall) {
       result = executeSessionStatus(call, context.sessionRequest ?? context.providerRequest, context.sessionToolBridge);
+    } else if (isRecoveredMonitoringCall(context, call.name)) {
+      result = await executeMonitoringVerdict(call, executionContext, recoveredVerdictRecorder(context.deps));
     } else if (isRecoveredMcpDiscoveryCall(context, call.name)) {
       result = await executeRecoveredMcpDiscovery(call, persisted, context, signal);
     } else if (context.searchExecutor && isRecoveredSearchCall(context, call.name)) {
@@ -2143,6 +2229,8 @@ async function executePersistedToolBatch(
     !isSkillToolName(call.toolName) &&
     !isRecoveredObservationRead(context, call.toolName) &&
     !isRecoveredCallRead(context, call.toolName) &&
+    !isRecoveredMonitoringCall(context, call.toolName) &&
+    !isRecoveredScheduledTaskCall(context, call.toolName) &&
     !(context.run.normalizedRequest.toolObservationVersion === 1 &&
       (isRecoveredWorkspaceCall(context, call.toolName) || isRecoveredSearchCall(context, call.toolName) ||
         resolveMcpRunTool(context.activeMcpSnapshot, call.toolName))) &&
@@ -2465,6 +2553,8 @@ async function recoverCheckpointedToolLoop(
       ...(clientToolsEnabled && run.normalizedRequest.imagePlan ? [imageGenerationTool(run.normalizedRequest.imagePlan)] : []),
       ...(clientToolsEnabled && run.normalizedRequest.artifactTool ? [artifactTool(run.normalizedRequest.artifactToolDescription), ...(run.normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
       ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
+      ...(run.normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
+      ...scheduledTaskToolsForRequest(run.normalizedRequest),
       ...(run.normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
       ...(run.normalizedRequest.toolCallReader ? [readToolCallTool] : []),
       ...(recoveredKnowledgeEnabled
@@ -3054,7 +3144,9 @@ async function recoverCheckpointedToolLoop(
             !isRecoveredSkillCall(context, call.name) &&
             !isRecoveredObservationRead(context, call.name) &&
             !isRecoveredCallRead(context, call.name) &&
-            !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME)) {
+            !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME) &&
+            !isMonitoringVerdictCall(run.normalizedRequest, call.name) &&
+            !isScheduledTaskCreateCall(run.normalizedRequest, call.name)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`
@@ -3145,18 +3237,20 @@ async function recoverCheckpointedToolLoop(
         })
       ];
       providerRunningTranscript = providerToolMessages;
-      const completedToolRounds = new Set(run.calls.filter(call => call.roundIndex > 0 && call.roundIndex < round)
+      const completedToolRounds = new Set(budgetedRecoveredCalls(run, run.calls).filter(call => call.roundIndex < round)
         .map(call => call.roundIndex)).size;
-      const priorToolCalls = run.calls.filter((call) => call.roundIndex > 0).length;
+      const priorToolCalls = budgetedRecoveredCalls(run, run.calls).length;
       // The live rule: a checkpointed synthesis marker, a previous round of
-      // only blocked repeats, or an exactly reached budget.
-      const synthesis = toolSynthesisDecision({
+      // only blocked repeats, or an exactly reached budget, which first offers
+      // an outstanding reserved verdict.
+      const decision = toolSynthesisDecision({
         budgets: toolBudgets,
         continuation: savedContinuation,
         initialToolChoice: providerRequest.toolChoice,
         noProgress: roundMadeNoProgress(priorCalls),
         progress: { toolCalls: priorToolCalls, toolRounds: completedToolRounds }
       });
+      const synthesis = reservedCallRound(decision, recoveredReservedCall(run, round)) ? null : decision;
       const toolChoice = synthesis || providerRequest.toolChoice === "none"
         ? "none"
         : completedToolRounds === 0 && providerRequest.toolChoice === "required" &&
@@ -3330,7 +3424,13 @@ async function recoverCheckpointedToolLoop(
         name: workspaceTools.length > 0 ? normalizeWorkspaceProviderToolName(call.name, advertisedToolNames) : call.name
       }));
       refreshed.result = { ...refreshed.result, toolCalls: refreshedCalls };
-      const required = !run.calls.some(call => call.roundIndex > 0) &&
+      // Progress as the live loop counts it: only the run's first verdict is
+      // exempt, so this batch's first one is exempt only if none was persisted.
+      const budgetedPersisted = budgetedRecoveredCalls(run, run.calls);
+      const refreshedExempt = recoveredReservedCall(run, round)?.called === false &&
+        refreshedCalls.some((call) => isMonitoringVerdictCall(run.normalizedRequest, call.name));
+      const budgetedRefreshed = refreshedCalls.length - (refreshedExempt ? 1 : 0);
+      const required = budgetedPersisted.length === 0 &&
         missingRequiredToolCall(providerRequest, refreshedCalls);
       if (required) {
         if (refreshedCalls.length > 0 || continuation.requiredToolCorrection || roundRequest.toolChoice === "none") {
@@ -3377,10 +3477,12 @@ async function recoverCheckpointedToolLoop(
           );
         }
         return;
-      } else if (run.calls.filter((call) => call.roundIndex > 0).length + refreshedCalls.length > toolBudgets.maxToolCalls) {
-        // The live rule: a batch over the remaining call budget is neither
-        // persisted nor dispatched; synthesis is re-planned from the round's
-        // own transcript before its preparation.
+      } else if (budgetedPersisted.length + budgetedRefreshed > toolBudgets.maxToolCalls || budgetedRefreshed > 0 &&
+        new Set(budgetedPersisted.map((call) => call.roundIndex)).size >= toolBudgets.maxToolRounds) {
+        // The live rule: a batch over the remaining call or round budget
+        // (reachable only by a round that offered the reserved verdict) is
+        // neither persisted nor dispatched; synthesis is re-planned from the
+        // round's own transcript before its preparation.
         for (const event of refreshed.events) await appendEvent(event);
         continuation = { ...continuation, finalSynthesis: "budget_exhausted",
           providerToolMessages: [...providerRunningTranscript] };
@@ -3624,12 +3726,16 @@ async function recoverCheckpointedToolLoop(
         progress: {
           // A claimed synthesis round is dispatched as that same round.
           providerRounds: refusedBatchRound ?? run.checkpoint.roundIndex,
-          toolCalls: [...persistedCalls.values()].filter(call => call.roundIndex > 0).length,
-          toolRounds: new Set([...persistedCalls.values()].filter(call => call.roundIndex > 0)
-            .map(call => call.roundIndex)).size
+          toolCalls: budgetedRecoveredCalls(run, persistedCalls.values()).length,
+          toolRounds: new Set(budgetedRecoveredCalls(run, persistedCalls.values()).map(call => call.roundIndex)).size
         },
         seenCallIds: [...persistedCalls.keys()]
       },
+      // The live reservation, derived from the persisted calls.
+      ...(run.normalizedRequest.monitoringVerdictTool ? { reservedCall: {
+        called: [...persistedCalls.values()].some((call) => call.toolName === MONITORING_VERDICT_TOOL_NAME),
+        instruction: monitoringVerdictReservedInstruction(), name: MONITORING_VERDICT_TOOL_NAME
+      } } : {}),
       signal,
       tools
     });

@@ -45,6 +45,7 @@ import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import type { FrozenSkillManifest } from "../skills/runManifest";
 import { createSkillToolService, type SkillToolRepository } from "../skills/toolService";
 import { isSkillToolName } from "../tools/skill";
+import { scheduledTaskCreatedResult } from "../tools/scheduledTaskCreation";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   FocusedKnowledgeRecoveryScope,
@@ -10402,4 +10403,154 @@ describe("recovered tool-free synthesis and repeated calls", () => {
       `Tool use is now disabled for this run: repeated identical calls returned no new data. Some planned tool calls were not executed. ${instructionTail}` });
     expect(harness.state.completed).toMatchObject({ finalText: "Checked part answered; the rest was not verified." });
   });
+});
+
+describe("monitoring verdict recovery", () => {
+  it.each(["running", "complete"] as const)("re-records an interrupted report and never repeats a settled one (%s)", async (state) => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const reportCall = { arguments: { status: "no_update" }, id: "provider-call-1", name: "report_monitoring_result" };
+    const settled = snapshotToolExecutionResult({ callId: reportCall.id, content: [{ type: "json", value: { recorded: true, status: "no_update" } }],
+      name: reportCall.name, status: "complete" }, 64_000);
+    const report: PersistedToolLoopCall = { ...persistedRecoveryCall(state), arguments: reportCall.arguments, mcpBinding: null,
+      toolName: reportCall.name, ...(state === "complete" ? { result: settled } : {}) };
+    const base = checkpointedRun({ calls: [report], phase: state === "running" ? "tools_running" : "tools_pending", providerToolMessages: [] });
+    const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+    installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, monitoringVerdictTool: true, toolMode: "auto",
+      searchPlan: { mode: "all_selected", options: [] } } });
+    const recordMonitoringVerdict = vi.fn(async () => true);
+    harness.repository.recordMonitoringVerdict = recordMonitoringVerdict;
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    // An interrupted report is recorded again with the same value (the last report wins); a settled one replays.
+    expect(recordMonitoringVerdict.mock.calls).toEqual(state === "running" ? [[{ runId, userId, verdict: "no_update" }]] : []);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.tools?.map((tool) => tool.name)).toContain("report_monitoring_result");
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("recorded");
+    expect(harness.state.completed).not.toBeNull();
+  });
+
+  const settledReport = (roundIndex: number, ordinal = 0): PersistedToolLoopCall => {
+    const providerCallId = `provider-report-${roundIndex}`;
+    return { ...persistedRecoveryCall("complete"), arguments: { status: "update" }, id: `stored-report-${roundIndex}`,
+      mcpBinding: null, ordinal, providerCallId, roundIndex, toolName: "report_monitoring_result",
+      result: snapshotToolExecutionResult({ callId: providerCallId, content: [{ type: "json", value: { recorded: true, status: "update" } }],
+        name: "report_monitoring_result", status: "complete" }, 64_000) };
+  };
+
+  it("counts a persisted repeated report, so the recovered loop answers without tools", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const base = checkpointedRun({ calls: [settledReport(1), settledReport(2)], phase: "tools_pending", providerToolMessages: [],
+      roundIndex: 2 });
+    const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+    installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, monitoringVerdictTool: true, toolMode: "auto",
+      searchPlan: { mode: "all_selected", options: [] }, toolBudgets: { maxToolCalls: 5, maxToolRounds: 1 } } });
+    const recordMonitoringVerdict = vi.fn(async () => true);
+    harness.repository.recordMonitoringVerdict = recordMonitoringVerdict;
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(recordMonitoringVerdict).not.toHaveBeenCalled();
+    // As live: the first report is reserved, the repeat used the only tool round.
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.toolChoice).toBe("none");
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("the tool-round budget is exhausted");
+    expect(harness.state.completed).not.toBeNull();
+  });
+
+  it("refuses a refreshed batch whose repeated report no longer fits the call budget", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const refresh = vi.fn(async (): Promise<ProviderRunRefreshResult> => ({ events: [], providerResponseId: "repeat-response",
+      status: "completed", terminal: true, result: { finalProviderResponsePreview: {}, finalText: "",
+        toolCalls: [{ arguments: { value: "more" }, id: "more-business", name: recoveryToolName },
+          { arguments: { status: "update" }, id: "more-report", name: "report_monitoring_result" }],
+        usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 } } }));
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), refresh,
+      async *stream(request) { requests.push(request); return providerResult; } };
+    const runtimeCall = vi.fn();
+    const harness = createHarness({ controls: [control({ providerResponseId: "repeat-response" })], providers: { openai: adapter },
+      mcpRuntime: { callTool: runtimeCall, ensureAcceptedGeneration: async () => true } });
+    const business: PersistedToolLoopCall = { ...persistedRecoveryCall("complete"), usageAccountedAt: "2026-07-12T09:02:00.000Z",
+      result: snapshotToolExecutionResult({ callId: "provider-call-1", content: [{ type: "text", text: "settled business result" }],
+        name: recoveryToolName, status: "complete" }, toolLoopPersistenceLimits.resultBytes) };
+    const terminalUsage = { completeness: "terminal" as const, roundIndex: 1, usage: { completeness: "complete" as const,
+      cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens: 1, outputTokens: 1, reasoningTokens: 0, totalTokens: 2 } };
+    const installed = installCheckpointState(harness, {
+      ...checkpointedRun({ answerRoundUsage: [terminalUsage], calls: [business, settledReport(1, 1)], phase: "provider_running",
+        providerResponseId: "repeat-response", roundIndex: 2 }),
+      normalizedRequest: { ...normalizedToolRequest(), monitoringVerdictTool: true, toolBudgets: { maxToolCalls: 2, maxToolRounds: 5 } }
+    });
+    harness.repository.getRunControlForUser = async () => control(harness.state.run);
+    const recordMonitoringVerdict = vi.fn(async () => true);
+    harness.repository.recordMonitoringVerdict = recordMonitoringVerdict;
+    const persistBatch = vi.spyOn(harness.repository, "persistToolLoopCallBatch");
+    const begin = vi.spyOn(harness.repository, "beginToolLoopProviderRound");
+
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(refresh).toHaveBeenCalledOnce();
+    // The round-1 report was the reserved one: the batch's two calls exceed the one call left.
+    expect(persistBatch).not.toHaveBeenCalled();
+    expect(runtimeCall).not.toHaveBeenCalled();
+    expect(recordMonitoringVerdict).not.toHaveBeenCalled();
+    expect(installed.calls()).toHaveLength(2);
+    expect(begin).toHaveBeenCalledWith(expect.objectContaining({ finalSynthesisOfRound: 2, roundIndex: 3,
+      providerContinuation: expect.objectContaining({ finalSynthesis: "budget_exhausted" }) }));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.toolChoice).toBe("none");
+    expect(harness.state.completed).not.toBeNull();
+  });
+});
+
+describe("scheduled task creation recovery", () => {
+  const settings = { modelId: "deployment-1", provider: "connection-1", searchEnabled: false, toolsEnabled: true,
+    workspaceEnabled: false };
+  const args = { title: "Check mail", prompt: "Remind me to check my mail.", kind: "standard", chatMode: null, schedule: {
+    kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"], date: null, dayOfMonth: null, everyHours: null,
+    until: null } };
+  const task = {
+    id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.",
+    schedule: { kind: "weekly" as const, time: "09:00", days: ["mon" as const, "tue" as const, "wed" as const, "thu" as const, "fri" as const] },
+    timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
+    toolsEnabled: true, workspaceEnabled: false, chatMode: "new" as const, kind: "standard" as const, status: "active" as const,
+    pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null,
+    unseenResult: false, revision: 1, createdAt: "2026-10-04T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
+  };
+
+  it.each(["running", "complete"] as const)(
+    "creates an interrupted call only through its atomic creation and replays a settled one (%s)",
+    async (state) => {
+      const requests: ProviderRunRequest[] = [];
+      const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+      const harness = createHarness({ providers: { openai: adapter } });
+      const createCall = { arguments: args, id: "provider-call-1", name: "create_scheduled_task" };
+      const settled = snapshotToolExecutionResult(scheduledTaskCreatedResult(createCall, task, false), 64_000);
+      const call: PersistedToolLoopCall = { ...persistedRecoveryCall(state), arguments: args, mcpBinding: null,
+        toolName: "create_scheduled_task", ...(state === "complete" ? { result: settled } : {}) };
+      const base = checkpointedRun({ calls: [call], phase: state === "running" ? "tools_running" : "tools_pending",
+        providerToolMessages: [] });
+      const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+      installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, scheduledTaskTool: settings, toolMode: "auto",
+        prompt: { ...normalized.prompt, baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } },
+        searchPlan: { mode: "all_selected", options: [] } } });
+      const createScheduledTaskForCall = vi.fn<NonNullable<RunRecoveryRepository["createScheduledTaskForCall"]>>(
+        async (input) => ({ kind: "created", result: input.result(task), task }));
+      harness.repository.createScheduledTaskForCall = createScheduledTaskForCall;
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([]);
+      // A running call may have created nothing yet: the creation that settles it runs it, once. A settled one replays.
+      expect(createScheduledTaskForCall.mock.calls).toEqual(state === "running"
+        ? [[expect.objectContaining({ callId: "stored-call-1", runId, userId })]] : []);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.tools?.map((tool) => tool.name)).toContain("create_scheduled_task");
+      expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("created");
+      // The card is published again from the settled result; the durable append keeps it once per task.
+      expect(harness.state.events.map((entry) => entry.event)).toContainEqual(expect.objectContaining({ type: "artifact",
+        data: expect.objectContaining({ artifactType: "scheduled_task" }) }));
+      expect(harness.state.completed).not.toBeNull();
+    }
+  );
 });

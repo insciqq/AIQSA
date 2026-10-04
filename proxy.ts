@@ -30,6 +30,8 @@ const publicPrefixes = [
   "/icon-512.png",
   "/apple-touch-icon.png",
   "/manifest.webmanifest",
+  // The push service worker: browsers refetch it to update, signed in or not.
+  "/sw.js",
   "/login",
   "/s",
   "/a",

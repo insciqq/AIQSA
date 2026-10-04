@@ -10,6 +10,7 @@ import {
 } from "../../../domain/memory/retrieval";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { prisma } from "../../prisma";
+import { createPrismaMessageBranchRepository } from "../../messages/prismaRepository";
 import { readAdminMemoryProcessing } from "../../admin/memory/processingRepository";
 import { defaultMemoryConsumerService } from "../consumer/defaultConsumer";
 import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
@@ -114,6 +115,8 @@ async function createTurn(
     chatId: string;
     createdAt: Date;
     parentMessageId: string | null;
+    /** A scheduled task's turn: run creation marks the prompt and gives the run its scheduled origin. */
+    scheduled?: true;
     userId: string;
     userText: string;
   }>
@@ -125,6 +128,7 @@ async function createTurn(
       createdAt: input.createdAt,
       parentMessageId: input.parentMessageId,
       role: "user",
+      ...(input.scheduled ? { scheduledTaskPrompt: true } : {}),
       status: "complete",
       updatedAt: input.createdAt
     }
@@ -158,6 +162,10 @@ async function createTurn(
         }
       },
       provider: "history-test-provider",
+      // Plain values that outlive the task.
+      ...(input.scheduled
+        ? { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1, scheduledTaskId: randomUUID() }
+        : {}),
       status: "complete",
       userId: input.userId,
       userMessageId: userMessage.id
@@ -3976,6 +3984,205 @@ describe("Memory lexical history index persistence", () => {
         newTurn.assistantMessage.id,
         newTurn.userMessage.id
       ].sort());
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("indexes only the owner's turns of a scheduled task's chat switched to Memory, never a regenerated scheduled turn", async () => {
+    const userId = await createOwner("memory-history-scheduled");
+    try {
+      const startedAt = Date.now();
+      // The owner switched the task's chat to Memory: an ordinary NORMAL chat.
+      const chat = await prisma.chat.create({ data: { title: "Scheduled task chat", userId } });
+      const settle = async (assistantMessageId: string, runId: string, mutation: "BRANCH_PATH_CHANGE" | "NORMAL_APPEND") => {
+        await mutateSource(userId, chat.id, { mutations: [mutation], patch: { activeLeafMessageId: assistantMessageId } });
+        await mutateSource(userId, chat.id, {
+          mutations: ["TERMINAL_SETTLEMENT"],
+          terminalSettlement: { assistantMessageId, runId, status: "complete" }
+        });
+        await processHistoryJob(userId);
+      };
+      const activeChunks = () => prisma.memoryRecallChunk.findMany({ where: { chatId: chat.id, state: "ACTIVE", userId } });
+      const scheduled = await createTurn({
+        assistantText: "Scheduled brief: Lisbon headlines.",
+        chatId: chat.id,
+        createdAt: new Date(startedAt + 60_000),
+        parentMessageId: null,
+        scheduled: true,
+        userId,
+        userText: "I live in Lisbon. Summarize the news."
+      });
+      await settle(scheduled.assistantMessage.id, scheduled.run.id, "NORMAL_APPEND");
+      await expect(activeChunks()).resolves.toEqual([]);
+      // The source is current, not stuck behind the excluded turn.
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({ activeLeafMessageId: scheduled.assistantMessage.id, status: "READY" });
+
+      const own = await createTurn({
+        assistantText: "Noted, quiet rooms.",
+        chatId: chat.id,
+        createdAt: new Date(startedAt + 120_000),
+        parentMessageId: scheduled.assistantMessage.id,
+        userId,
+        userText: "I prefer quiet rooms."
+      });
+      await settle(own.assistantMessage.id, own.run.id, "NORMAL_APPEND");
+      const chunks = await activeChunks();
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]!.safeProjectedText).toContain("quiet rooms");
+      expect(chunks[0]!.safeProjectedText).not.toContain("Lisbon");
+      const ownMessageIds = [own.assistantMessage.id, own.userMessage.id].sort();
+      await expect(prisma.memoryRecallChunkMessage.findMany({ where: { chunkId: chunks[0]!.id, userId } })
+        .then((joins) => joins.map(({ messageId }) => messageId).sort())).resolves.toEqual(ownMessageIds);
+      const rounds = await prisma.memoryRecallRound.findMany({
+        select: { id: true }, where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      expect(rounds.length).toBeGreaterThan(0);
+      await expect(prisma.memoryRecallRoundMessage.findMany({
+        where: { roundId: { in: rounds.map(({ id }) => id) }, userId }
+      }).then((joins) => [...new Set(joins.map(({ messageId }) => messageId))].sort())).resolves.toEqual(ownMessageIds);
+
+      // A Regenerate of the scheduled answer runs without a scheduled origin;
+      // the prompt it answers still keeps the whole turn out.
+      const regeneratedAt = new Date(startedAt + 180_000);
+      const regenerated = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Regenerated brief: Lisbon headlines."),
+          createdAt: regeneratedAt,
+          modelId: "history-test-model",
+          parentMessageId: scheduled.userMessage.id,
+          provider: "history-test-provider",
+          role: "assistant",
+          status: "complete",
+          updatedAt: regeneratedAt
+        }
+      });
+      const regeneratedRun = await prisma.modelRun.create({
+        data: {
+          assistantMessageId: regenerated.id,
+          chatId: chat.id,
+          modelId: "history-test-model",
+          normalizedRequest: {
+            prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } }
+          },
+          provider: "history-test-provider",
+          status: "complete",
+          userId,
+          userMessageId: scheduled.userMessage.id
+        }
+      });
+      await settle(regenerated.id, regeneratedRun.id, "BRANCH_PATH_CHANGE");
+      await expect(activeChunks()).resolves.toEqual([]);
+      await expect(prisma.memoryRecallRound.count({ where: { chatId: chat.id, state: "ACTIVE", userId } }))
+        .resolves.toBe(0);
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({ activeLeafMessageId: regenerated.id, status: "READY" });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("keeps a scheduled task's prompt out of its Memory branches' history at any depth, also after a Regenerate there", async () => {
+    const userId = await createOwner("memory-history-scheduled-branch");
+    try {
+      // In the past: a branch copy keeps its source's creation time and is updated now.
+      const startedAt = Date.now() - 600_000;
+      const branches = createPrismaMessageBranchRepository(prisma);
+      const settle = async (chatId: string, assistantMessageId: string, runId: string,
+        mutation: "BRANCH_PATH_CHANGE" | "NORMAL_APPEND") => {
+        await mutateSource(userId, chatId, { mutations: [mutation], patch: { activeLeafMessageId: assistantMessageId } });
+        await mutateSource(userId, chatId, {
+          mutations: ["TERMINAL_SETTLEMENT"],
+          terminalSettlement: { assistantMessageId, runId, status: "complete" }
+        });
+        await processHistoryJob(userId);
+      };
+      /** The chat's active history: the messages its chunks and rounds join, and the chunks' text. */
+      const indexed = async (chatId: string) => {
+        const chunks = await prisma.memoryRecallChunk.findMany({ where: { chatId, state: "ACTIVE", userId } });
+        const rounds = await prisma.memoryRecallRound.findMany({ select: { id: true }, where: { chatId, state: "ACTIVE", userId } });
+        const joined = [
+          ...await prisma.memoryRecallChunkMessage.findMany({ where: { chunkId: { in: chunks.map(({ id }) => id) }, userId } }),
+          ...await prisma.memoryRecallRoundMessage.findMany({ where: { roundId: { in: rounds.map(({ id }) => id) }, userId } })
+        ];
+        return {
+          messageIds: [...new Set(joined.map(({ messageId }) => messageId))].sort(),
+          text: chunks.map((chunk) => chunk.safeProjectedText).join("\n")
+        };
+      };
+      /** A Regenerate: a new answer to the same prompt from an ordinary run without a scheduled origin. */
+      const regenerate = async (chatId: string, userMessageId: string, at: Date) => {
+        const assistantMessage = await prisma.message.create({
+          data: {
+            chatId, content: textMessageContent("Regenerated brief: Lisbon headlines."), createdAt: at,
+            modelId: "history-test-model", parentMessageId: userMessageId, provider: "history-test-provider",
+            role: "assistant", status: "complete", updatedAt: at
+          }
+        });
+        const run = await prisma.modelRun.create({
+          data: {
+            assistantMessageId: assistantMessage.id, chatId, modelId: "history-test-model",
+            normalizedRequest: {
+              prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } }
+            },
+            provider: "history-test-provider", status: "complete", userId, userMessageId
+          }
+        });
+        return { assistantMessage, run };
+      };
+      /** A branch from `sourceMessageId`, with its copied path in order. */
+      const branch = async (sourceMessageId: string) => {
+        const created = await branches.createChatBranchFromMessage({ sourceMessageId, userId });
+        if (!created) throw new Error("memory_history_test_branch_missing");
+        const copies = await prisma.message.findMany({ orderBy: { createdAt: "asc" }, where: { chatId: created.id } });
+        return { chatId: created.id, copies };
+      };
+      const ownTurn = (chatId: string, parentMessageId: string, at: number) => createTurn({
+        assistantText: "Noted, quiet rooms.", chatId, createdAt: new Date(startedAt + at), parentMessageId, userId,
+        userText: "I prefer quiet rooms."
+      });
+
+      // The owner switched the task's chat to Memory; a branch keeps its mode.
+      const chat = await prisma.chat.create({ data: { title: "Scheduled task chat", userId } });
+      const scheduled = await createTurn({
+        assistantText: "Scheduled brief: Lisbon headlines.", chatId: chat.id, createdAt: new Date(startedAt + 60_000),
+        parentMessageId: null, scheduled: true, userId, userText: "I live in Lisbon. Summarize the news."
+      });
+      await settle(chat.id, scheduled.assistantMessage.id, scheduled.run.id, "NORMAL_APPEND");
+
+      // The copies carry no runs; the copied prompt keeps its mark.
+      const first = await branch(scheduled.assistantMessage.id);
+      expect(first.copies.map(({ role, scheduledTaskPrompt }) => [role, scheduledTaskPrompt]))
+        .toEqual([["user", true], ["assistant", false]]);
+      await expect(prisma.chat.findUniqueOrThrow({ where: { id: first.chatId } })).resolves.toMatchObject({ memoryMode: "NORMAL" });
+      const firstOwn = await ownTurn(first.chatId, first.copies[1]!.id, 120_000);
+      await settle(first.chatId, firstOwn.assistantMessage.id, firstOwn.run.id, "NORMAL_APPEND");
+      const firstIndexed = await indexed(first.chatId);
+      expect(firstIndexed.messageIds).toEqual([firstOwn.assistantMessage.id, firstOwn.userMessage.id].sort());
+      expect(firstIndexed.text).toContain("quiet rooms");
+      expect(firstIndexed.text).not.toContain("Lisbon");
+
+      // A Regenerate inside the branch answers the copied prompt: the turn stays out.
+      const regenerated = await regenerate(first.chatId, first.copies[0]!.id, new Date(startedAt + 180_000));
+      await settle(first.chatId, regenerated.assistantMessage.id, regenerated.run.id, "BRANCH_PATH_CHANGE");
+      await expect(indexed(first.chatId)).resolves.toEqual({ messageIds: [], text: "" });
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: first.chatId, userId } }
+      })).resolves.toMatchObject({ activeLeafMessageId: regenerated.assistantMessage.id, status: "READY" });
+
+      // A branch of the branch, from the regenerated answer: the copy of a copy keeps the mark.
+      const second = await branch(regenerated.assistantMessage.id);
+      expect(second.copies.map(({ role, scheduledTaskPrompt }) => [role, scheduledTaskPrompt]))
+        .toEqual([["user", true], ["assistant", false]]);
+      const secondOwn = await ownTurn(second.chatId, second.copies[1]!.id, 240_000);
+      await settle(second.chatId, secondOwn.assistantMessage.id, secondOwn.run.id, "NORMAL_APPEND");
+      const secondIndexed = await indexed(second.chatId);
+      expect(secondIndexed.messageIds).toEqual([secondOwn.assistantMessage.id, secondOwn.userMessage.id].sort());
+      expect(secondIndexed.text).not.toContain("Lisbon");
     } finally {
       await cleanupOwner(userId);
     }

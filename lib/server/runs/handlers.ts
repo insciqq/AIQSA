@@ -9,6 +9,7 @@ import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
 import { chatPdfRunSnapshot } from "../uploads/chatPdfRunContinuation";
 import { acceptedRunSnapshot } from "./acceptedRunSnapshot";
 import { WorkspaceFollowupError } from "./workspaceFollowupPersistence";
+import { WorkspaceSecretError } from "../workspace/secrets/validation";
 import type { PreparingRunAdmissionResponse } from "../../contracts/runs";
 import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
 import { getAuthConfig, type AuthConfig } from "../auth/config";
@@ -58,10 +59,11 @@ import {
   KnowledgeRunPlanConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
+  ScheduledOccurrenceConflictError,
   SkillRunConflictError,
   WorkspaceRunConflictError
 } from "./runRepositoryContract";
-import type { RunRepository } from "./runRepositoryContract";
+import type { RunRepository, ScheduledOccurrenceAdmission } from "./runRepositoryContract";
 import { serializeRunOutcome } from "./runOutcome";
 import { MemoryPreparingRunConflictError } from "./preparingRun";
 import { logEvent, runWithContext, type EventFields } from "../observability";
@@ -119,6 +121,8 @@ export type RunHandlerDeps = {
   resolveAuth: RequestAuthResolver;
   agentPolicy?: RunPreparationDeps["agentPolicy"];
   runPolicy?: RunPreparationDeps["runPolicy"];
+  /** Server-only: the scheduled task occurrence a send of this handler admits. */
+  scheduledOccurrence?: ScheduledOccurrenceAdmission;
   searchProviders?: Record<string, ProviderSearchAdapter>;
   skills?: RunPreparationDeps["skills"];
   skillCatalogRelevance?: RunPreparationDeps["skillCatalogRelevance"];
@@ -359,6 +363,21 @@ function isWorkspaceRunConflictError(error: unknown): error is WorkspaceRunConfl
     (error instanceof Error && error.name === "WorkspaceRunConflictError");
 }
 
+function isScheduledOccurrenceConflictError(error: unknown): error is ScheduledOccurrenceConflictError {
+  return error instanceof ScheduledOccurrenceConflictError ||
+    (error instanceof Error && error.name === "ScheduledOccurrenceConflictError");
+}
+
+/**
+ * The stable code of a Workspace secret failure during admission: the saved
+ * secrets exceed a limit, or they could not be read or locked. Null for any
+ * other error.
+ */
+function workspaceSecretAdmissionCode(error: unknown): "workspace_secret_limit" | "workspace_secret_unavailable" | null {
+  if (!(error instanceof WorkspaceSecretError || (error instanceof Error && error.name === "WorkspaceSecretError"))) return null;
+  return (error as WorkspaceSecretError).code === "workspace_secret_limit" ? "workspace_secret_limit" : "workspace_secret_unavailable";
+}
+
 async function acceptedRuntimeBinding(
   deps: RunHandlerDeps,
   runId: string,
@@ -597,8 +616,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     const activeRun = await deps.repository.findRecentActiveRunForChat({
       chatId: chat.id, since: new Date(Date.now() - activeRunGateWindowMs), userId: auth.userId
     });
-    const predecessorRunId = deps.workspaceFollowup && activeRun?.answerComplete && !activeRun.workspaceWaitPending &&
-      activeRun.assistantMessageId === chat.activeLeafMessageId ? activeRun.id : null;
+    // A scheduled send never waits behind a retiring Workspace run: the chat counts as busy.
+    const predecessorRunId = deps.workspaceFollowup && !deps.scheduledOccurrence && activeRun?.answerComplete &&
+      !activeRun.workspaceWaitPending && activeRun.assistantMessageId === chat.activeLeafMessageId ? activeRun.id : null;
     if (activeRun && !predecessorRunId) {
       return Response.json({ error: "active_run_in_progress", run: {
         id: activeRun.id, status: activeRun.status === "preparing"
@@ -639,7 +659,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         },
         ...(projectChat ? { draftProjectChat: true } : {}),
         ...(personalChat ? { draftPersonalChat: true } : {}),
-        kind: "send"
+        kind: "send",
+        ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {})
       },
       userId: auth.userId
     });
@@ -694,6 +715,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         provider: preparedData.normalizedRequest.provider,
         providerRequestPreview: preparedData.providerRequestPreview,
         ...(projectChat ? { projectChat } : {}),
+        ...(deps.scheduledOccurrence ? {
+          scheduledOccurrence: deps.scheduledOccurrence,
+          ...(preparedData.scheduledUnavailableSources ? { scheduledUnavailableSources: preparedData.scheduledUnavailableSources } : {})
+        } : {}),
         signal: request.signal,
         userId: auth.userId
       });
@@ -701,6 +726,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       const duplicate = await deps.workspaceFollowup?.findAdmission(admissionKey, auth.userId) ??
         await deps.chatPdf?.findAdmission(admissionKey, auth.userId);
       if (duplicate) { deps.chatPdf?.kick(); deps.workspaceFollowup?.kick(); return Response.json(duplicate, { status: 202, headers: { "Cache-Control": "no-store" } }); }
+      if (isScheduledOccurrenceConflictError(error)) {
+        return Response.json({ error: "scheduled_task_occurrence_unavailable" }, { status: 409 });
+      }
       if (error instanceof WorkspaceFollowupError) return Response.json({ error: error.code }, { status: 409 });
       if (error instanceof InstructionPresetError) return Response.json({ error: error.code }, { status: 409 });
       if ((error instanceof ChatPdfPreparationError || isChatPdfPolicyUnavailableError(error))) return Response.json({ error: error.code }, { status: 409 });
@@ -750,6 +778,13 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
 
       if (isWorkspaceRunConflictError(error)) {
         return Response.json({ error: error.code }, { status: 409 });
+      }
+
+      // Saved secrets are frozen at admission: a limit stays until the owner
+      // removes secrets, while unreadable storage may recover.
+      const secretCode = workspaceSecretAdmissionCode(error);
+      if (secretCode) {
+        return Response.json({ error: secretCode }, { status: secretCode === "workspace_secret_limit" ? 409 : 503 });
       }
 
       throw error;
@@ -977,6 +1012,11 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         return Response.json({ error: error.code }, { status: 409 });
       }
 
+      const secretCode = workspaceSecretAdmissionCode(error);
+      if (secretCode) {
+        return Response.json({ error: secretCode }, { status: secretCode === "workspace_secret_limit" ? 409 : 503 });
+      }
+
       throw error;
     }
     if (created.deferredPdf) return admittedPdfResponse(deps, created, auth.userId);
@@ -1134,39 +1174,7 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
     logStopAdmission({ run_id: run.id, outcome: "accepted" });
     return runWithContext({ run_id: run.id }, async () => {
       logRunPersistence(run.id, "cancel", "confirmed");
-      const aborted = activeRunControllerRegistry.abort(run.id);
-      const settled = aborted ? activeRunControllerRegistry.settled(run.id) : null;
-      if (settled) {
-        // Stop means the run's terminal handling (tool cancellation, Workspace
-        // quiescence and session settlement) is done before the client re-reads
-        // the chat; the wait is bounded so a wedged executor cannot hang Stop.
-        await Promise.race([
-          settled,
-          new Promise<void>((resolve) => setTimeout(resolve, 20_000).unref?.())
-        ]);
-      } else if (deps.workspaceCoordinator) {
-        // PDF preparation may own a controller without an answer settlement
-        // promise. Release its Workspace reservation here as well as orphaned work.
-        await deps.workspaceCoordinator.settle({
-          outcome: "cancelled",
-          runId: run.id,
-          userId: auth.userId
-        }).catch(() => undefined);
-      }
-
-      if (run.providerResponseId) {
-        try {
-          const adapter = deps.providerRuntime
-            ? (await deps.providerRuntime.resolve(run.id, "answer")).adapter
-            : deps.providers[run.provider];
-          if (adapter?.cancel) {
-            await adapter.cancel(run.providerResponseId);
-          }
-        } catch {
-          // Durable local cancellation already won; provider cancellation is best effort.
-        }
-      }
-
+      await settleCancelledRun(deps, run, auth.userId);
       return privateModelRunJson({
         run: {
           id: run.id,
@@ -1175,4 +1183,71 @@ export function createCancelModelRunHandler(deps: RunHandlerDeps) {
       } satisfies CancelModelRunSuccessResponse);
     });
   });
+}
+
+type RunStopDeps = Pick<RunHandlerDeps, "providerRuntime" | "providers" | "repository" | "workspaceCoordinator">;
+type CancelledRun = Extract<Awaited<ReturnType<RunRepository["cancelRun"]>>, { kind: "cancelled" }>["run"];
+
+/**
+ * The rest of Stop once the durable cancellation won: the run executing in
+ * this process is aborted and its terminal handling awaited, or a Workspace
+ * reservation no executor owns is released; then the provider is asked to
+ * cancel its response.
+ */
+async function settleCancelledRun(deps: RunStopDeps, run: CancelledRun, userId: string): Promise<void> {
+  const aborted = activeRunControllerRegistry.abort(run.id);
+  const settled = aborted ? activeRunControllerRegistry.settled(run.id) : null;
+  if (settled) {
+    // Stop means the run's terminal handling (tool cancellation, Workspace
+    // quiescence and session settlement) is done before the client re-reads
+    // the chat; the wait is bounded so a wedged executor cannot hang Stop.
+    await Promise.race([
+      settled,
+      new Promise<void>((resolve) => setTimeout(resolve, 20_000).unref?.())
+    ]);
+  } else if (deps.workspaceCoordinator) {
+    // PDF preparation may own a controller without an answer settlement
+    // promise. Release its Workspace reservation here as well as orphaned work.
+    await deps.workspaceCoordinator.settle({
+      outcome: "cancelled",
+      runId: run.id,
+      userId
+    }).catch(() => undefined);
+  }
+
+  if (run.providerResponseId) {
+    try {
+      const adapter = deps.providerRuntime
+        ? (await deps.providerRuntime.resolve(run.id, "answer")).adapter
+        : deps.providers[run.provider];
+      if (adapter?.cancel) {
+        await adapter.cancel(run.providerResponseId);
+      }
+    } catch {
+      // Durable local cancellation already won; provider cancellation is best effort.
+    }
+  }
+}
+
+/**
+ * Stops a run through the Stop path with a server-chosen terminal cause that
+ * the run keeps (a scheduled run's deadline records `run_deadline`, not
+ * `model_run_cancelled`). Only an active run is stopped; a settled or
+ * missing one is left as it is.
+ */
+export async function stopModelRun(
+  deps: RunStopDeps,
+  input: Readonly<{ payload: Readonly<{ code: string; message: string }>; runId: string; userId: string }>
+): Promise<"stopped" | "not_cancelable" | "not_found"> {
+  const cancellation = await deps.repository.cancelRun({
+    payload: { code: input.payload.code, message: input.payload.message }, runId: input.runId, userId: input.userId
+  });
+  if (cancellation.kind === "not_found") return "not_found";
+  if (cancellation.kind === "current") return "not_cancelable";
+  const run = cancellation.run;
+  await runWithContext({ run_id: run.id }, async () => {
+    logRunPersistence(run.id, "cancel", "confirmed");
+    await settleCancelledRun(deps, run, input.userId);
+  });
+  return "stopped";
 }

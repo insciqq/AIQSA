@@ -9,6 +9,7 @@ import {
   currentDirectUserMessageId,
   memoryAssistantContextRunIsEligible,
   memoryAutomaticCandidateContainsSecret,
+  memoryFactContextSourceMessages,
   memoryFactPassedOverReplyIds
 } from "./repository";
 
@@ -185,6 +186,35 @@ describe("automatic-learning source admission", () => {
       sourceSnapshot(tainted),
       "target"
     )).toEqual(["target"]);
+  });
+
+  it("presents a scheduled task's prompt as a system turn, so context stops before it and its answers", () => {
+    const row = (id: string, parentMessageId: string | null, role: string, text: string) => ({
+      chatId: "chat-1", content: { blocks: [{ text, type: "text" }] }, createdAt: observedAt, id, parentMessageId, role,
+      status: "complete", updatedAt: observedAt
+    });
+    const rows = [
+      row("u1", null, "user", "older owner turn"),
+      row("a1", "u1", "assistant", "older answer"),
+      row("prompt", "a1", "user", "I live in Lisbon. Summarize the news."),
+      row("regenerated", "prompt", "assistant", "Here is today's brief."),
+      row("target", "regenerated", "user", "That is right, thanks.")
+    ];
+    // The prompt's answer comes from a regeneration, whose run has no scheduled origin.
+    const runs = [
+      { assistantId: null, assistantMessageId: "a1", id: "run-a1", status: "complete", userMessageId: "u1" },
+      { assistantId: null, assistantMessageId: "regenerated", id: "run-regenerated", status: "complete", userMessageId: "prompt" }
+    ];
+    const snapshotFor = (scheduledPromptIds: ReadonlySet<string>) => sourceSnapshot(memoryFactContextSourceMessages(
+      rows, rows.map(({ id }) => id), runs, new Set(), scheduledPromptIds));
+
+    expect(boundedMemoryFactContextMessageIds(snapshotFor(new Set()), "target"))
+      .toEqual(["u1", "a1", "prompt", "regenerated", "target"]);
+    const scheduled = snapshotFor(new Set(["prompt"]));
+    expect(boundedMemoryFactContextMessageIds(scheduled, "target")).toEqual(["target"]);
+    // Neither the prompt nor its answer is testimony or recall material.
+    expect(scheduled.provenanceGraph.flatMap(({ eligibleForFactEvidence, eligibleForRecall, messageId }) =>
+      eligibleForFactEvidence || eligibleForRecall ? [messageId] : [])).toEqual(["u1", "a1", "target"]);
   });
 
   it.each(["error", "cancelled"] as const)(
