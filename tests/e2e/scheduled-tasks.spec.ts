@@ -21,7 +21,7 @@ function task(overrides: Partial<ScheduledTask>): ScheduledTask {
   return {
     id: "task", title: "Task", prompt: "Synthetic scheduled instructions.",
     schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/London",
-    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false,
+    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, chatMode: "same",
     status: "active", pauseReason: null, nextRunAt: "2026-10-05T08:00:00.000Z", lastRun: null, running: false,
     chatId: null, unseenResult: false, revision: 1,
     createdAt: "2026-09-20T08:00:00.000Z", updatedAt: "2026-09-20T08:00:00.000Z",
@@ -52,12 +52,12 @@ const listFixture: ScheduledTask[] = [
 ];
 
 const recentRuns: ScheduledTaskRun[] = [
-  { scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
-    startedAt: "2026-10-02T08:00:03.000Z", finishedAt: "2026-10-02T08:01:10.000Z", chatId },
-  { scheduledFor: "2026-10-01T13:12:00.000Z", trigger: "manual", state: "failed", reasonCode: "chat_busy",
-    startedAt: "2026-10-01T13:12:00.000Z", finishedAt: "2026-10-01T13:42:00.000Z", chatId },
-  { scheduledFor: "2026-10-01T08:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "missed",
-    startedAt: null, finishedAt: "2026-10-01T20:00:00.000Z", chatId }
+  { id: "brief-run-3", scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
+    startedAt: "2026-10-02T08:00:03.000Z", finishedAt: "2026-10-02T08:01:10.000Z", chatId, unseen: true },
+  { id: "brief-run-2", scheduledFor: "2026-10-01T13:12:00.000Z", trigger: "manual", state: "failed", reasonCode: "chat_busy",
+    startedAt: "2026-10-01T13:12:00.000Z", finishedAt: "2026-10-01T13:42:00.000Z", chatId, unseen: false },
+  { id: "brief-run-1", scheduledFor: "2026-10-01T08:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "missed",
+    startedAt: null, finishedAt: "2026-10-01T20:00:00.000Z", chatId, unseen: false }
 ];
 
 type Write = Readonly<{ method: string; path: string; body: unknown }>;
@@ -70,7 +70,8 @@ async function installScheduledApi(page: Page, initial: readonly ScheduledTask[]
     const path = new URL(request.url()).pathname.replace(/^\/api\/me\/scheduled-tasks/u, "");
     if (method !== "GET") state.writes.push({ method, path, body: request.postData() ? request.postDataJSON() : null });
     if (!path && method === "GET") {
-      return route.fulfill({ json: { tasks: state.tasks, limits: { maxActive: 10, maxTotal: 50 }, emailAvailable: true } });
+      return route.fulfill({ json: { tasks: state.tasks, limits: { maxActive: 10, maxActiveHourly: 3, maxTotal: 50 },
+        emailAvailable: true } });
     }
     if (!path && method === "POST") {
       const created = task({ ...request.postDataJSON() as Partial<ScheduledTask>, id: "created", nextRunAt: "2026-10-05T16:00:00.000Z" });
@@ -122,7 +123,7 @@ function chatFixture(): ChatDetailWire {
     workspace: { available: false, enabled: false, internetEnabled: false, sessionState: null },
     messages: [
       message("brief-question", "user", "Give me a short brief of the most important news from the last 24 hours.", null,
-        { scheduledTask: { taskId: "brief", title: "Weekday news brief" } }),
+        { scheduledTask: { taskId: "brief", taskRunId: "brief-run-3", title: "Weekday news brief", unseen: true } }),
       message("brief-answer", "assistant", "Here is your brief for Friday:\n\n- Synthetic headline one.\n- Synthetic headline two.", "brief-question")
     ]
   };

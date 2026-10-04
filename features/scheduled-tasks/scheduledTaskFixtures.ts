@@ -13,6 +13,7 @@ export function scheduledTaskFixture(overrides: Partial<ScheduledTask> = {}): Sc
     provider: "provider-a",
     searchEnabled: false,
     emailNotify: false,
+    chatMode: "same",
     status: "active",
     pauseReason: null,
     nextRunAt: "2026-10-06T08:00:00.000Z",
