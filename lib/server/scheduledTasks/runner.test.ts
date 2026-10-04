@@ -1034,6 +1034,8 @@ describe("scheduled monitoring checks", () => {
     expect(checks.every((occurrence) => occurrence.unseenAt !== null)).toBe(true);
     expect(task).toMatchObject({ consecutiveMissingVerdicts: 3, nextRunAt: null, pauseReason: "verdict_missing", revision: 2,
       status: "PAUSED" });
+    // The pausing check's notification says it paused the task.
+    expect(h.pushes).toEqual(h.forTask(task).filter((occurrence) => occurrence.unseenAt !== null).map((occurrence) => occurrence.id));
     // A reported outcome resets the count.
     const reported = h.addTask({ consecutiveMissingVerdicts: 2, kind: "monitoring", userId: "owner-2" });
     h.setReply(() => ({ runStatus: "complete", verdict: "no_update" }));
@@ -1119,6 +1121,42 @@ describe("scheduled monitoring checks and source health", () => {
     expect(h.settled.slice(1).map((settlement) => settlement.sourceAlert)).toEqual([true, false, false]);
     expect(task).toMatchObject({ completionReason: null, consecutiveIncompleteRuns: 3, nextRunAt: null,
       pauseReason: "source_unavailable", status: "PAUSED" });
+  });
+
+  it("notifies of a check that could not check only as the streak's alert and its pause, the same way everywhere", async () => {
+    const h = harness();
+    const task = h.addTask({ emailNotify: true, kind: "monitoring", toolsEnabled: true });
+    h.setReply(() => ({ runStatus: "complete", verdict: "no_update" }));
+    await h.tick();
+    h.setReply(() => ({ runStatus: "complete", unavailableSources: [relied], verdict: "no_update" }));
+    for (let day = 0; day < 3; day += 1) {
+      h.advance(DAY);
+      await h.tick();
+    }
+    const [baseline, alert, quiet, pausing] = h.forTask(task);
+    // Unread, email and push follow one predicate: the baseline, the first could-not-check and the pausing one.
+    const notified = [baseline!, alert!, pausing!].map((row) => row.id);
+    expect(h.forTask(task).filter((row) => row.unseenAt !== null).map((row) => row.id)).toEqual(notified);
+    expect(h.pushes).toEqual(notified);
+    expect(quiet!.unseenAt).toBeNull();
+    expect(h.emails.map((email) => email.subject)).toEqual(["Scheduled task finished", "Scheduled task finished", "Scheduled task paused"]);
+    expect(h.emails[1]!.text).toContain("Could not check: a source was unavailable.\nTracker is unavailable.");
+    expect(h.emails[2]!.text).toContain("could not reach a source the task uses");
+    expect(h.emails[2]!.text).toContain("Tracker is unavailable.");
+  });
+
+  it("says in its email and push that the third check in a row without a report paused the task", async () => {
+    const h = harness();
+    const task = h.addTask({ consecutiveMissingVerdicts: 2, emailNotify: true, kind: "monitoring" });
+    h.setReply(() => ({ runStatus: "complete" }));
+    await h.tick();
+    const [check] = h.forTask(task);
+    expect(check).toMatchObject({ reasonCode: "unreported", state: "COMPLETED" });
+    expect(task).toMatchObject({ pauseReason: "verdict_missing", status: "PAUSED" });
+    expect(h.pushes).toEqual([check!.id]);
+    expect(h.emails).toHaveLength(1);
+    expect(h.emails[0]).toMatchObject({ subject: "Scheduled task paused" });
+    expect(h.emails[0]!.text).toContain("was paused.\nPaused after three checks in a row did not report whether anything changed.");
   });
 
   it("judges a check's sources, not its report: a missing report neither counts nor resets", async () => {

@@ -236,8 +236,8 @@ describe("monitoring check settlement", () => {
           .toEqual({ completesTask: false, outcome: "could_not_check", verdictMissing: null });
       }
     }
-    // Shown and notified, but no basis for the next comparison.
-    expect(effects("could_not_check")).toEqual({ baseline: false, notifies: true });
+    // Shown, but no basis for the next comparison and news only as the source alert or a pause.
+    expect(effects("could_not_check")).toEqual({ baseline: false, notifies: false });
   });
 
   it("settles a check without a relied-on source like a standard incomplete run, never as a baseline or a goal", () => {
@@ -271,8 +271,35 @@ describe("monitoring check settlement", () => {
     expect(settle("goal_reached", { firstCheck: true, ownerUnchanged: false }).outcome).toBe("update");
   });
 
-  it("treats every outcome but no update as news", () => {
-    for (const outcome of SCHEDULED_TASK_CHECK_OUTCOMES) expect(effects(outcome).notifies).toBe(outcome !== "no_update");
+  it("treats every outcome as news but no update, and a check that could not check only as an alert or pause", () => {
+    for (const outcome of SCHEDULED_TASK_CHECK_OUTCOMES) {
+      expect(effects(outcome).notifies).toBe(outcome !== "no_update" && outcome !== "could_not_check");
+    }
+  });
+
+  it("follows one notification matrix for the unread result, the email and the push", () => {
+    const news = (state: "COMPLETED" | "FAILED" | "SKIPPED", reasonCode: string | null,
+      flags: Readonly<{ sourceAlert?: boolean; taskPaused?: boolean }> = {}) =>
+      settlementNotifiesOwner({ reasonCode, sourceAlert: flags.sourceAlert ?? false, state, taskPaused: flags.taskPaused ?? false });
+    const matrix: Array<[string, boolean, boolean]> = [
+      // [settlement, news, expected]
+      ["standard result", news("COMPLETED", null), true],
+      ["standard result that started a streak", news("COMPLETED", null, { sourceAlert: true }), true],
+      ["baseline", news("COMPLETED", "baseline"), true],
+      ["update", news("COMPLETED", "update"), true],
+      ["goal reached", news("COMPLETED", "goal_reached"), true],
+      ["unreported", news("COMPLETED", "unreported"), true],
+      ["unreported that paused (verdict_missing)", news("COMPLETED", "unreported", { taskPaused: true }), true],
+      ["no update", news("COMPLETED", "no_update"), false],
+      ["no update, whatever else", news("COMPLETED", "no_update", { sourceAlert: true, taskPaused: true }), false],
+      ["could not check, first of a streak", news("COMPLETED", "could_not_check", { sourceAlert: true }), true],
+      ["could not check, later in a streak", news("COMPLETED", "could_not_check"), false],
+      ["could not check that paused (source_unavailable)", news("COMPLETED", "could_not_check", { taskPaused: true }), true],
+      ["failure that paused", news("FAILED", "model_unavailable", { taskPaused: true }), true],
+      ["failure", news("FAILED", "run_failed"), false],
+      ["skip", news("SKIPPED", "previous_running"), false]
+    ];
+    expect(matrix.filter(([, actual, expected]) => actual !== expected).map(([name]) => name)).toEqual([]);
   });
 });
 

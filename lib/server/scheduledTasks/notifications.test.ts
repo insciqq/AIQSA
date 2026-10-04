@@ -54,4 +54,20 @@ describe("scheduled task result email", () => {
     expect(paused.text).toContain("could not reach a source the task uses");
     expect(paused.text).toContain("Почта needs sign-in.");
   });
+
+  it("says when a monitoring check paused its task, and only for the check that did", () => {
+    const appBaseUrl = "https://aiqsa.example.test";
+    const missing = scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "unreported", taskPauseReason: "verdict_missing" });
+    expect(missing.subject).toBe("Scheduled task paused");
+    expect(missing.text).toContain("was paused.\nPaused after three checks in a row did not report whether anything changed.");
+    // A manual check, or a check that reported, did not cause the pause.
+    for (const other of [{ trigger: "manual" as const }, { reasonCode: "update" }]) {
+      expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "unreported", taskPauseReason: "verdict_missing", ...other }))
+        .toMatchObject({ subject: "Scheduled task finished" });
+    }
+    // The source alert of a check that could not check names its outcome and the missing source.
+    expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "could_not_check",
+      unavailableSources: [{ name: "Tracker", reason: "mcp_server_unavailable" }] }).text)
+      .toContain("finished.\nCould not check: a source was unavailable.\nTracker is unavailable.\n");
+  });
 });

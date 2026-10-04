@@ -28,23 +28,33 @@ const HEADLINES = {
   "was skipped": "Scheduled task skipped"
 } as const;
 
+type OutcomeInput = Pick<ScheduledTaskNotification, "reasonCode" | "state" | "taskPauseReason" | "trigger" | "unavailableSources">;
+
+/**
+ * A completed scheduled run that paused its task: one that missed sources so
+ * often (`source_unavailable`), or a monitoring check that ended a streak
+ * without a report (`verdict_missing`). The settled run's own record shows it
+ * caused that pause.
+ */
+function completedRunPausedTask(input: OutcomeInput): boolean {
+  if (input.state !== "COMPLETED" || input.trigger !== "schedule") return false;
+  return (input.taskPauseReason === "source_unavailable" && input.unavailableSources.length > 0) ||
+    (input.taskPauseReason === "verdict_missing" && input.reasonCode === "unreported");
+}
+
 /**
  * The outcome, its headline and the fixed reason line of a settled
  * occurrence, as the result email and the browser push state them. A
- * completed run that missed sources so often that it paused its task reads
- * as paused; any other completed run names its monitoring check outcome, if
- * it has one.
+ * completed run that paused its task reads as paused; any other completed
+ * run names its monitoring check outcome, if it has one.
  */
-export function scheduledTaskOutcomeCopy(input: Pick<ScheduledTaskNotification,
-  "reasonCode" | "state" | "taskPauseReason" | "trigger" | "unavailableSources">): Readonly<{
+export function scheduledTaskOutcomeCopy(input: OutcomeInput): Readonly<{
   headline: (typeof HEADLINES)[keyof typeof HEADLINES];
   outcome: keyof typeof HEADLINES;
   reason: string | null;
 }> {
   const copy = (outcome: keyof typeof HEADLINES, reason: string | null) => ({ headline: HEADLINES[outcome], outcome, reason });
-  const pausedBySources = input.state === "COMPLETED" && input.trigger === "schedule" &&
-    input.taskPauseReason === "source_unavailable" && input.unavailableSources.length > 0;
-  if (pausedBySources) return copy("was paused", scheduledTaskReasonMessage(input.taskPauseReason));
+  if (completedRunPausedTask(input)) return copy("was paused", scheduledTaskReasonMessage(input.taskPauseReason));
   if (input.state === "COMPLETED") return copy("finished", scheduledTaskReasonMessage(input.reasonCode));
   if (input.state === "FAILED" && input.trigger === "schedule" && input.taskPauseReason !== null) {
     return copy("was paused", scheduledTaskReasonMessage(input.taskPauseReason));
