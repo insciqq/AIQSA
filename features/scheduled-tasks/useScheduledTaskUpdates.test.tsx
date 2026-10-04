@@ -4,8 +4,15 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import type { ScheduledTask, ScheduledTaskListResponse } from "@/lib/contracts/scheduledTasks";
 import { listScheduledTasks, markScheduledTaskSeen } from "./scheduledTasksApi";
 import { scheduledTaskFixture } from "./scheduledTaskFixtures";
-import { activateScheduledTasksAccount, useScheduledTasksStore } from "./scheduledTasksStore";
-import { SCHEDULED_TASK_POLL_MS, SCHEDULED_TASK_RUNNING_POLL_MS, useScheduledTaskUpdates } from "./useScheduledTaskUpdates";
+import { activateScheduledTasksAccount } from "./scheduledTasksStore";
+import {
+  SCHEDULED_TASK_POLL_MS,
+  SCHEDULED_TASK_RUNNING_POLL_MS,
+  renderedUnseenScheduledRuns,
+  scheduledTaskContinuingIn,
+  useScheduledTaskUpdates,
+  type ScheduledTaskRenderedRun
+} from "./useScheduledTaskUpdates";
 
 vi.mock("./scheduledTasksApi", async (importOriginal) => ({
   ...await importOriginal<typeof import("./scheduledTasksApi")>(),
@@ -14,8 +21,12 @@ vi.mock("./scheduledTasksApi", async (importOriginal) => ({
 }));
 vi.mock("@/components/app-shell/chatNavigationActions", () => ({ loadChatNavigation: vi.fn(async () => true) }));
 
+type UpdatesProps = Parameters<typeof useScheduledTaskUpdates>[0];
+
 const list = vi.mocked(listScheduledTasks);
 const seen = vi.mocked(markScheduledTaskSeen);
+const answered = (finishedAt: string) =>
+  ({ scheduledFor: finishedAt, state: "completed", reasonCode: null, finishedAt }) as const;
 let account = 0;
 let visibility: DocumentVisibilityState = "visible";
 
@@ -32,18 +43,28 @@ function navigationRow(id: string, updatedAt = "2026-10-03T08:00:00.000Z") {
   return { activeRun: false, assistant: null, folderId: null, id, title: "Brief", updatedAt };
 }
 
-async function flush() {
-  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+function navigationMarker(chatId: string) {
+  return useWorkspaceStore.getState().navigationChats.find((chat) => chat.id === chatId)?.scheduledTask;
 }
 
-function renderUpdates(props: Partial<Parameters<typeof useScheduledTaskUpdates>[0]> = {}) {
+async function flush() {
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+}
+
+function renderUpdates(props: Partial<UpdatesProps> = {}) {
   account += 1;
   const onNewResult = vi.fn();
   const refreshOpenChat = vi.fn(async () => true);
-  const view = renderHook((current: Parameters<typeof useScheduledTaskUpdates>[0]) => useScheduledTaskUpdates(current), {
-    initialProps: { accountId: `account-${account}`, activeChatId: null, chatVisible: true, onNewResult, refreshOpenChat, ...props }
-  });
-  return { ...view, onNewResult, refreshOpenChat: props.refreshOpenChat ?? refreshOpenChat };
+  const initialProps: UpdatesProps = {
+    accountId: `account-${account}`, activeChatId: null, chatVisible: true, onNewResult, refreshOpenChat, renderedUnseenRuns: [], ...props
+  };
+  const view = renderHook((current: UpdatesProps) => useScheduledTaskUpdates(current), { initialProps });
+  return {
+    ...view,
+    onNewResult,
+    refreshOpenChat: initialProps.refreshOpenChat,
+    update: (next: Partial<UpdatesProps>) => view.rerender({ ...initialProps, ...next })
+  };
 }
 
 beforeEach(() => {
@@ -58,6 +79,23 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("scheduled chat projections", () => {
+  it("collects only the unread scheduled turns a transcript renders", () => {
+    const marker = (taskRunId: string, unseen: boolean) => ({ scheduledTask: { taskId: "task-1", taskRunId, title: "Brief", unseen } });
+    expect(renderedUnseenScheduledRuns([marker("run-1", true), {}, { scheduledTask: null }, marker("run-2", false), marker("run-3", true)]))
+      .toEqual([{ taskId: "task-1", taskRunId: "run-1" }, { taskId: "task-1", taskRunId: "run-3" }]);
+  });
+
+  it("finds the task that continues in a chat only for its newest same-mode chat", () => {
+    const same = scheduledTaskFixture({ id: "same", chatMode: "same", chatId: "chat-1" });
+    const fresh = scheduledTaskFixture({ id: "new", chatMode: "new", chatId: "chat-2" });
+    expect(scheduledTaskContinuingIn([fresh, same], "chat-1")).toBe(same);
+    expect(scheduledTaskContinuingIn([fresh, same], "chat-2")).toBeNull();
+    expect(scheduledTaskContinuingIn([fresh, same], "chat-old")).toBeNull();
+    expect(scheduledTaskContinuingIn([same], null)).toBeNull();
+  });
 });
 
 describe("useScheduledTaskUpdates", () => {
@@ -94,10 +132,7 @@ describe("useScheduledTaskUpdates", () => {
 
   it("marks the chat row unread and announces a newly finished result once", async () => {
     const before = scheduledTaskFixture({ chatId: "chat-1", running: true });
-    const after = scheduledTaskFixture({
-      chatId: "chat-1", unseenResult: true,
-      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-04T08:01:00.000Z" }
-    });
+    const after = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true, lastRun: answered("2026-10-04T08:01:00.000Z") });
     useWorkspaceStore.setState({ navigationChats: [navigationRow("chat-1")] });
     list.mockResolvedValueOnce(listed([before])).mockResolvedValue(listed([after]));
     const { onNewResult } = renderUpdates();
@@ -113,67 +148,115 @@ describe("useScheduledTaskUpdates", () => {
     expect(onNewResult).toHaveBeenCalledTimes(1);
   });
 
-  it("announces failures but neither marks nor announces a skip caused by the owner's pause", async () => {
+  it("announces a failure that paused the task, never a routine skip or failure behind an older unread answer", async () => {
     const before = scheduledTaskFixture({ chatId: "chat-1", running: true });
-    const pausedSkip = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
-      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "skipped", reasonCode: "paused", finishedAt: "2026-10-04T08:01:00.000Z" } });
+    // An earlier answer is still unread, so the aggregate stays true across these runs.
+    const skipped = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
+      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "skipped", reasonCode: "previous_running", finishedAt: "2026-10-04T08:00:01.000Z" } });
     const failed = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
-      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state: "failed", reasonCode: "run_failed", finishedAt: "2026-10-05T08:01:00.000Z" } });
+      lastRun: { scheduledFor: "2026-10-04T09:00:00.000Z", state: "failed", reasonCode: "run_failed", finishedAt: "2026-10-04T09:01:00.000Z" } });
+    const paused = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true, status: "paused", nextRunAt: null,
+      pauseReason: "repeated_failures",
+      lastRun: { scheduledFor: "2026-10-04T10:00:00.000Z", state: "failed", reasonCode: "run_failed", finishedAt: "2026-10-04T10:01:00.000Z" } });
     useWorkspaceStore.setState({ navigationChats: [navigationRow("chat-1")] });
-    list.mockResolvedValueOnce(listed([before])).mockResolvedValueOnce(listed([pausedSkip])).mockResolvedValue(listed([failed]));
+    list.mockResolvedValueOnce(listed([before])).mockResolvedValueOnce(listed([skipped])).mockResolvedValueOnce(listed([failed]))
+      .mockResolvedValue(listed([paused]));
     const { onNewResult } = renderUpdates();
     await flush();
     await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_RUNNING_POLL_MS); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_POLL_MS); });
     expect(onNewResult).not.toHaveBeenCalled();
-    expect(useWorkspaceStore.getState().navigationChats[0]?.scheduledTask).toBeUndefined();
+    expect(navigationMarker("chat-1")).toBeUndefined();
     await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_POLL_MS); });
     expect(onNewResult).toHaveBeenCalledTimes(1);
-    expect(onNewResult).toHaveBeenCalledWith(failed);
-    expect(useWorkspaceStore.getState().navigationChats[0]?.scheduledTask).toEqual({ taskId: failed.id, unseen: true });
+    expect(onNewResult).toHaveBeenCalledWith(paused);
+    expect(navigationMarker("chat-1")).toEqual({ taskId: paused.id, unseen: true });
   });
 
-  it("marks a result seen when its chat is open in the conversation, not while Studio covers it", async () => {
-    const task = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
-      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-04T08:01:00.000Z" } });
+  it("keeps each chat's own unread marker when a task's results land in several chats", async () => {
+    const first = scheduledTaskFixture({ chatMode: "new", chatId: "chat-1", unseenResult: true, lastRun: answered("2026-10-04T08:01:00.000Z") });
+    const second = { ...first, chatId: "chat-2", lastRun: answered("2026-10-05T08:01:00.000Z") };
+    useWorkspaceStore.setState({ navigationChats: [navigationRow("chat-1"), navigationRow("chat-2")] });
+    list.mockResolvedValueOnce(listed([{ ...first, unseenResult: false, lastRun: null }])).mockResolvedValueOnce(listed([first]))
+      .mockResolvedValue(listed([second]));
+    const { onNewResult, update } = renderUpdates();
+    await flush();
+    await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_POLL_MS); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_POLL_MS); });
+    expect(onNewResult).toHaveBeenCalledTimes(2);
+    expect(navigationMarker("chat-1")).toEqual({ taskId: first.id, unseen: true });
+    expect(navigationMarker("chat-2")).toEqual({ taskId: first.id, unseen: true });
+    // Opening the newest chat clears only the result it renders.
+    update({ activeChatId: "chat-2", renderedUnseenRuns: [{ taskId: first.id, taskRunId: "run-2" }] });
+    await flush();
+    expect(seen).toHaveBeenCalledWith(first.id, ["run-2"]);
+    expect(navigationMarker("chat-2")).toEqual({ taskId: first.id, unseen: false });
+    expect(navigationMarker("chat-1")).toEqual({ taskId: first.id, unseen: true });
+  });
+
+  it("marks seen only the results the open transcript renders, per task, while the conversation is shown", async () => {
+    const task = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true, lastRun: answered("2026-10-04T08:01:00.000Z") });
     useWorkspaceStore.setState({ navigationChats: [{ ...navigationRow("chat-1"), scheduledTask: { taskId: task.id, unseen: true } }] });
     list.mockResolvedValue(listed([task]));
-    const { rerender, onNewResult, refreshOpenChat } = renderUpdates({ activeChatId: "chat-1", chatVisible: false });
+    const rendered: ScheduledTaskRenderedRun[] = [
+      { taskId: task.id, taskRunId: "run-1" }, { taskId: task.id, taskRunId: "run-2" }, { taskId: "task-2", taskRunId: "run-9" }
+    ];
+    const { update } = renderUpdates({ activeChatId: "chat-1", chatVisible: false, renderedUnseenRuns: rendered });
     await flush();
     expect(seen).not.toHaveBeenCalled();
-    rerender({ accountId: `account-${account}`, activeChatId: "chat-1", chatVisible: true, onNewResult, refreshOpenChat });
+    // The navigation marker alone never marks anything seen.
+    update({ activeChatId: "chat-1", chatVisible: true, renderedUnseenRuns: [] });
     await flush();
-    expect(seen).toHaveBeenCalledWith(task.id);
-    expect(useScheduledTasksStore.getState().tasks[0]?.unseenResult).toBe(false);
-    expect(useWorkspaceStore.getState().navigationChats[0]?.scheduledTask).toEqual({ taskId: task.id, unseen: false });
+    expect(seen).not.toHaveBeenCalled();
+    update({ activeChatId: "chat-1", chatVisible: true, renderedUnseenRuns: rendered });
+    await flush();
+    expect(seen.mock.calls).toEqual([[task.id, ["run-1", "run-2"]], ["task-2", ["run-9"]]]);
+    expect(navigationMarker("chat-1")).toMatchObject({ unseen: false });
+    // The task's aggregate is reread, since other runs may still be unread.
+    expect(list.mock.calls.length).toBeGreaterThan(1);
+    update({ activeChatId: "chat-1", chatVisible: true, renderedUnseenRuns: [...rendered] });
+    await flush();
+    expect(seen).toHaveBeenCalledTimes(2);
   });
 
-  it("rereads the open task chat when its run starts and marks the result seen only after the transcript reloads", async () => {
+  it("keeps a result unread when marking it failed and tries again on the next render", async () => {
+    list.mockResolvedValue(listed([scheduledTaskFixture({ chatId: "chat-1", unseenResult: true })]));
+    useWorkspaceStore.setState({ navigationChats: [{ ...navigationRow("chat-1"), scheduledTask: { taskId: "task-1", unseen: true } }] });
+    seen.mockRejectedValueOnce(new Error("offline"));
+    const rendered = [{ taskId: "task-1", taskRunId: "run-1" }];
+    const { update } = renderUpdates({ activeChatId: "chat-1", renderedUnseenRuns: rendered });
+    await flush();
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(navigationMarker("chat-1")).toEqual({ taskId: "task-1", unseen: true });
+    update({ activeChatId: "chat-1", renderedUnseenRuns: [...rendered] });
+    await flush();
+    expect(seen).toHaveBeenCalledTimes(2);
+    expect(navigationMarker("chat-1")).toEqual({ taskId: "task-1", unseen: false });
+  });
+
+  it("rereads the open task chat when its run starts and ends; the result is seen once the reread transcript renders it", async () => {
     const idle = scheduledTaskFixture({ chatId: "chat-1" });
     const running = scheduledTaskFixture({ chatId: "chat-1", running: true });
-    const finished = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
-      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-04T08:01:00.000Z" } });
+    const finished = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true, lastRun: answered("2026-10-04T08:01:00.000Z") });
     useWorkspaceStore.setState({ navigationChats: [{ ...navigationRow("chat-1"), scheduledTask: { taskId: idle.id, unseen: false } }] });
-    let release: (loaded: boolean) => void = () => undefined;
-    const refreshOpenChat = vi.fn(async () => true);
     list.mockResolvedValueOnce(listed([idle])).mockResolvedValueOnce(listed([running])).mockResolvedValue(listed([finished]));
-    renderUpdates({ activeChatId: "chat-1", refreshOpenChat });
+    const { refreshOpenChat, update } = renderUpdates({ activeChatId: "chat-1" });
     await flush();
     expect(refreshOpenChat).not.toHaveBeenCalled();
     await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_POLL_MS); });
     expect(refreshOpenChat).toHaveBeenCalledTimes(1);
-    refreshOpenChat.mockImplementationOnce(() => new Promise<boolean>((resolve) => { release = resolve; }));
     await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_RUNNING_POLL_MS); });
     expect(refreshOpenChat).toHaveBeenCalledTimes(2);
-    // The cached transcript has not shown the answer yet.
+    // The cached transcript has not rendered the answer yet.
     expect(seen).not.toHaveBeenCalled();
-    await act(async () => { release(true); await Promise.resolve(); await Promise.resolve(); });
-    expect(seen).toHaveBeenCalledWith(finished.id);
+    update({ activeChatId: "chat-1", renderedUnseenRuns: [{ taskId: finished.id, taskRunId: "run-1" }] });
+    await flush();
+    expect(seen).toHaveBeenCalledWith(finished.id, ["run-1"]);
   });
 
   it("keeps the result unread when the open chat could not be reread", async () => {
     const running = scheduledTaskFixture({ chatId: "chat-1", running: true });
-    const finished = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
-      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-04T08:01:00.000Z" } });
+    const finished = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true, lastRun: answered("2026-10-04T08:01:00.000Z") });
     useWorkspaceStore.setState({ navigationChats: [navigationRow("chat-1")] });
     list.mockResolvedValueOnce(listed([running])).mockResolvedValue(listed([finished]));
     renderUpdates({ activeChatId: "chat-1", refreshOpenChat: vi.fn(async () => false) });
@@ -181,6 +264,6 @@ describe("useScheduledTaskUpdates", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_RUNNING_POLL_MS); });
     await flush();
     expect(seen).not.toHaveBeenCalled();
-    expect(useWorkspaceStore.getState().navigationChats[0]?.scheduledTask).toEqual({ taskId: finished.id, unseen: true });
+    expect(navigationMarker("chat-1")).toEqual({ taskId: finished.id, unseen: true });
   });
 });
