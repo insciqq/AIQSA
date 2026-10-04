@@ -23,9 +23,11 @@ import { chatMenuActionsV2, flattenFolderTree, type FlattenedFolder } from "./ch
 import { RailV2, type RailSectionV2 } from "./RailV2";
 import {
   clearChatNavigationSearch,
+  loadChatMessageMatches,
   loadChatNavigation,
   loadChatNavigationSearch
 } from "@/components/app-shell/chatNavigationActions";
+import { highlightSegments } from "./messageMatchHighlight";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { chatTitleForDisplay } from "@/components/app-shell/shellFormatting";
@@ -34,10 +36,12 @@ import {
   CHAT_NAVIGATION_QUERY_MAX_LENGTH,
   CHAT_TITLE_MAX_LENGTH,
   PERSONAL_FOLDER_NAME_MAX_LENGTH,
+  type ChatMessageMatchWire,
   type ChatNavigationFolderWire,
   type ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
 import {
+  Fragment,
   useEffect,
   useId,
   useLayoutEffect,
@@ -84,6 +88,14 @@ export type NavigationSidebarProps = Readonly<{
   folders: readonly ChatNavigationFolderWire[];
   hasMore: boolean;
   loading: boolean;
+  /**
+   * Chats found by the text of their messages, listed after the title results
+   * while a search is shown; the bottom of the list continues these once present.
+   */
+  messageMatches?: readonly ChatMessageMatchWire[];
+  messageMatchesError?: string | null;
+  messageMatchesHasMore?: boolean;
+  messageMatchesLoading?: boolean;
   now?: Date;
   onArchive?(chat: ChatNavigationSummaryWire): void;
   onCancelChatRename?(): void;
@@ -116,6 +128,9 @@ export type NavigationSidebarProps = Readonly<{
   onLibrary?(): void;
   navigationBusy?: boolean;
   onLoadMore(): void;
+  onLoadMoreMessageMatches?(): void;
+  /** Opens a message match's chat scrolled to that message. */
+  onOpenMessageMatch?(match: ChatMessageMatchWire): void;
   /** Rail/drawer Projects: opens the dedicated Projects section. */
   onProjects?(): void;
   /**
@@ -363,6 +378,74 @@ function ChatRow({
   );
 }
 
+const matchDayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const matchDayWithYearFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
+
+function matchDate(value: string, now = new Date()): string {
+  const date = new Date(value);
+  return date.getFullYear() === now.getFullYear()
+    ? matchDayFormat.format(date)
+    : matchDayWithYearFormat.format(date);
+}
+
+/**
+ * One chat found by its message text: the chat title and the date of its
+ * newest matching message, then the server's plain snippet with the query
+ * marked here (text nodes only). It joins the tree's keyboard roving.
+ */
+function MessageMatchRow({
+  disabled,
+  match,
+  now,
+  onOpen,
+  query
+}: {
+  disabled?: boolean;
+  match: ChatMessageMatchWire;
+  now?: Date;
+  onOpen(match: ChatMessageMatchWire): void;
+  query: string;
+}) {
+  const displayTitle = chatTitleForDisplay(match.title);
+  const descriptionId = useId();
+  const dateId = useId();
+  return (
+    <div className="v2-message-match-wrap" data-navigation-match-id={match.messageId} data-v2-tree-row="true">
+      <button
+        aria-describedby={`${descriptionId} ${dateId}`}
+        aria-label={displayTitle}
+        aria-level={1}
+        aria-selected={false}
+        className="v2-message-match v2-focusable"
+        data-v2-tree-item="true"
+        disabled={disabled}
+        role="treeitem"
+        tabIndex={-1}
+        type="button"
+        onClick={() => onOpen(match)}
+      >
+        <span className="v2-message-match-head">
+          <span className="v2-chat-title">{displayTitle}</span>
+          <time className="v2-message-match-date" dateTime={match.createdAt} id={dateId}>
+            {matchDate(match.createdAt, now)}
+          </time>
+        </span>
+        <span className="v2-message-match-snippet" id={descriptionId}>
+          {highlightSegments(match.snippet, query).map((segment, index) => segment.match
+            ? <mark key={index}>{segment.text}</mark>
+            : <Fragment key={index}>{segment.text}</Fragment>)}
+          {match.matchCount > 1 ? (
+            <>
+              {" · "}
+              <span className="v2-message-match-count">{match.matchCount} matches</span>
+            </>
+          ) : null}
+        </span>
+      </button>
+    </div>
+  );
+}
+
 function FolderGroup({
   activeChatId,
   chats,
@@ -549,18 +632,27 @@ function FolderGroup({
 
 type NavigationScrollAnchor = Readonly<{ id: string; top: number }>;
 
+const NAVIGATION_ANCHOR_ROW_SELECTOR = "[data-navigation-chat-id], [data-navigation-match-id]";
+
+/** Chat rows and message match rows of the same chat stay distinct anchors. */
+function navigationRowAnchorId(row: HTMLElement): string | null {
+  if (row.dataset.navigationChatId) return `chat:${row.dataset.navigationChatId}`;
+  return row.dataset.navigationMatchId ? `match:${row.dataset.navigationMatchId}` : null;
+}
+
 /**
- * The first chat row inside the list's viewport. An earlier page may insert
- * rows above the current position (older chats that live in folders render
- * inside their folder group near the top), so the list re-anchors this row
- * after the append instead of letting the viewport jump.
+ * The first chat or match row inside the list's viewport. An earlier page
+ * may insert rows above the current position (older chats that live in
+ * folders render inside their folder group near the top, more title results
+ * above the message matches), so the list re-anchors this row after the
+ * append instead of letting the viewport jump.
  */
 function firstVisibleChatAnchor(container: HTMLElement): NavigationScrollAnchor | null {
   const containerBounds = container.getBoundingClientRect();
-  for (const row of container.querySelectorAll<HTMLElement>("[data-navigation-chat-id]")) {
+  for (const row of container.querySelectorAll<HTMLElement>(NAVIGATION_ANCHOR_ROW_SELECTOR)) {
     const bounds = row.getBoundingClientRect();
     if (bounds.bottom > containerBounds.top && bounds.top < containerBounds.bottom) {
-      const id = row.dataset.navigationChatId;
+      const id = navigationRowAnchorId(row);
       if (id) return { id, top: bounds.top };
     }
   }
@@ -568,8 +660,8 @@ function firstVisibleChatAnchor(container: HTMLElement): NavigationScrollAnchor 
 }
 
 function findAnchoredChatRow(container: HTMLElement, id: string): HTMLElement | null {
-  for (const row of container.querySelectorAll<HTMLElement>("[data-navigation-chat-id]")) {
-    if (row.dataset.navigationChatId === id) return row;
+  for (const row of container.querySelectorAll<HTMLElement>(NAVIGATION_ANCHOR_ROW_SELECTOR)) {
+    if (navigationRowAnchorId(row) === id) return row;
   }
   return null;
 }
@@ -610,10 +702,29 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadMoreRef = useRef<HTMLButtonElement>(null);
   const anchorRef = useRef<NavigationScrollAnchor | null>(null);
-  const chatKey = useMemo(() => props.chats.map((chat) => chat.id).join("\0"), [props.chats]);
-  const pageLoading = props.searchQuery ? props.searchLoading : props.loading;
-  const pageError = props.searchQuery ? props.searchError : props.error;
-  const { hasMore, onLoadMore } = props;
+  const messageMatches = useMemo(
+    () => props.searchQuery ? props.messageMatches ?? [] : [],
+    [props.messageMatches, props.searchQuery]
+  );
+  const messageSection = messageMatches.length > 0;
+  const chatKey = useMemo(() => [
+    ...props.chats.map((chat) => chat.id),
+    ...messageMatches.map((match) => `match:${match.messageId}`)
+  ].join("\0"), [messageMatches, props.chats]);
+  const titlePageLoading = props.searchQuery ? props.searchLoading : props.loading;
+  const titlePageError = props.searchQuery ? props.searchError : props.error;
+  // The end of the list continues what sits at the bottom: the message
+  // matches once shown, otherwise the chats; more title results then load
+  // from the end of their own section.
+  const pageLoading = messageSection ? Boolean(props.messageMatchesLoading) : titlePageLoading;
+  const pageError = messageSection ? props.messageMatchesError ?? null : titlePageError;
+  const hasMore = messageSection ? Boolean(props.messageMatchesHasMore) : props.hasMore;
+  const { onLoadMore: onLoadMoreChats, onLoadMoreMessageMatches } = props;
+  const onLoadMore = useMemo(
+    () => messageSection ? onLoadMoreMessageMatches ?? (() => undefined) : onLoadMoreChats,
+    [messageSection, onLoadMoreChats, onLoadMoreMessageMatches]
+  );
+  const titleResultsHasMore = messageSection && props.hasMore;
   const loadMoreBlocked = !hasMore || pageLoading || Boolean(pageError);
 
   useLayoutEffect(() => {
@@ -665,6 +776,16 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   const selectChat = (chat: ChatNavigationSummaryWire) => {
     if (props.searchQuery) props.onSearch("");
     props.onSelectChat(chat);
+  };
+  const openMessageMatch = (match: ChatMessageMatchWire) => {
+    if (props.searchQuery) props.onSearch("");
+    props.onOpenMessageMatch?.(match);
+  };
+  const loadMoreTitleResults = () => {
+    if (titlePageLoading) return;
+    const container = scrollRef.current;
+    anchorRef.current = container ? firstVisibleChatAnchor(container) : null;
+    props.onLoadMore();
   };
   const rowProps: NavigationSidebarProps = { ...props, onSelectChat: selectChat };
   const unfiled = props.chats.filter((chat) => chat.folderId === null);
@@ -846,18 +967,24 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               Retry
             </button>
           </div>
-        ) : props.searchQuery && props.searchLoading && props.chats.length === 0 ? (
+        ) : props.searchQuery && props.searchLoading && props.chats.length === 0 && !messageSection ? (
           <div className="v2-navigation-status">Searching chats…</div>
-        ) : props.searchQuery && props.searchError && props.chats.length === 0 ? (
+        ) : props.searchQuery && props.searchError && props.chats.length === 0 && !messageSection ? (
           <div className="v2-navigation-status">
-            <span>Search is unavailable</span>
+            <span>
+              {props.searchError === "chat_navigation_search_timeout"
+                ? "Search took too long. Try a more specific phrase."
+                : "Search is unavailable"}
+            </span>
             <button className="v2-navigation-retry v2-focusable" type="button" onClick={props.onRetry}>
               Retry
             </button>
           </div>
-        ) : props.searchQuery && props.chats.length === 0 ? (
+        ) : props.searchQuery && props.chats.length === 0 && !messageSection ? (
           <div className="v2-navigation-status">Nothing found</div>
         ) : props.searchQuery ? (
+          <>
+          {props.chats.length > 0 ? (
           <div className="v2-navigation-group" role="group" aria-labelledby="v2-navigation-results">
             <div className="v2-navigation-group-label" id="v2-navigation-results">Results</div>
             {props.chats.map((chat) => (
@@ -887,7 +1014,44 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
                 onSelect={selectChat}
               />
             ))}
+            {titleResultsHasMore ? (
+              <div className="v2-chat-row-wrap" data-v2-tree-row="true">
+                <button
+                  aria-busy={titlePageLoading || undefined}
+                  aria-level={1}
+                  aria-selected={false}
+                  className="v2-navigation-more-results v2-focusable"
+                  data-v2-tree-item="true"
+                  disabled={titlePageLoading}
+                  role="treeitem"
+                  tabIndex={-1}
+                  type="button"
+                  onClick={loadMoreTitleResults}
+                >
+                  {titlePageLoading
+                    ? "Loading…"
+                    : titlePageError ? "Could not load more chats · Retry" : "Show more chats"}
+                </button>
+              </div>
+            ) : null}
           </div>
+          ) : null}
+          {messageSection ? (
+            <div className="v2-navigation-group" role="group" aria-labelledby="v2-navigation-message-matches">
+              <div className="v2-navigation-group-label" id="v2-navigation-message-matches">In messages</div>
+              {messageMatches.map((match) => (
+                <MessageMatchRow
+                  disabled={props.navigationBusy}
+                  key={match.chatId}
+                  match={match}
+                  now={props.now}
+                  query={props.searchQuery}
+                  onOpen={openMessageMatch}
+                />
+              ))}
+            </div>
+          ) : null}
+          </>
         ) : (
           <>
             {props.chats.length === 0 ? (
@@ -984,7 +1148,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           </>
         )}
         </UiV2RovingTree>
-        {props.hasMore ? (
+        {hasMore ? (
           <div className="v2-navigation-load-more-row" data-error={pageError ? "" : undefined}>
             {pageError && props.ready ? <span>Could not load earlier chats.</span> : null}
             <button
@@ -1100,7 +1264,8 @@ function useChatNavigationLiveness(input: Readonly<{
 
 export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarProps,
   | "activeChatId" | "chats" | "error" | "folders" | "hasMore" | "loading"
-  | "onLoadMore" | "onRetry" | "onSearch" | "ready" | "searchError"
+  | "messageMatches" | "messageMatchesError" | "messageMatchesHasMore" | "messageMatchesLoading"
+  | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry" | "onSearch" | "ready" | "searchError"
   | "searchLoading" | "searchQuery"
 >) {
   const activeChatId = useWorkspaceStore((state) => state.activeChatId);
@@ -1109,6 +1274,10 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
   const error = useWorkspaceStore((state) => state.navigationError);
   const folders = useWorkspaceStore((state) => state.navigationFolders);
   const loading = useWorkspaceStore((state) => state.navigationLoading);
+  const messageMatches = useWorkspaceStore((state) => state.navigationMessageMatches);
+  const messageMatchesError = useWorkspaceStore((state) => state.navigationMessageMatchesError);
+  const messageMatchesLoading = useWorkspaceStore((state) => state.navigationMessageMatchesLoading);
+  const messageMatchesNextCursor = useWorkspaceStore((state) => state.navigationMessageMatchesNextCursor);
   const nextCursor = useWorkspaceStore((state) => state.navigationNextCursor);
   const ready = useWorkspaceStore((state) => state.navigationReady);
   const searchChats = useWorkspaceStore((state) => state.navigationSearchChats);
@@ -1151,9 +1320,16 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
       folders={folders}
       hasMore={Boolean(searchQuery ? searchNextCursor : nextCursor)}
       loading={loading}
+      messageMatches={messageMatches}
+      messageMatchesError={messageMatchesError}
+      messageMatchesHasMore={Boolean(messageMatchesNextCursor)}
+      messageMatchesLoading={messageMatchesLoading}
       onLoadMore={() => {
         if (searchQuery) void loadChatNavigationSearch({ append: true, query: searchQuery });
         else void loadChatNavigation({ append: true });
+      }}
+      onLoadMoreMessageMatches={() => {
+        if (searchQuery) void loadChatMessageMatches({ query: searchQuery });
       }}
       onRetry={() => {
         if (searchQuery) void loadChatNavigationSearch({ query: searchQuery });
@@ -1173,7 +1349,8 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
 
 type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
   | "activeChatId" | "chats" | "drawerDestinations" | "error" | "folders" | "hasMore" | "loading"
-  | "now" | "onClose" | "onLoadMore" | "onRetry" | "onSearch" | "ready"
+  | "messageMatches" | "messageMatchesError" | "messageMatchesHasMore" | "messageMatchesLoading"
+  | "now" | "onClose" | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry" | "onSearch" | "ready"
   | "searchError" | "searchLoading" | "searchQuery"
 > & {
   /** Marks an open chat so the mobile "+" island yields to the title pill. */
@@ -1566,6 +1743,13 @@ export function ReadingRoomShellV2({
         setMobileOpen(false);
         if (composition === "compact") setCompactExpanded(false);
       })}
+      onOpenMessageMatch={navigationOwnerProps.onOpenMessageMatch ? (match) => requestNavigation(() => {
+        setProjectsView(false);
+        onProjectsSectionChange?.(false);
+        navigationOwnerProps.onOpenMessageMatch?.(match);
+        setMobileOpen(false);
+        if (composition === "compact") setCompactExpanded(false);
+      }) : undefined}
       view={projectsView ? "projects" : "chats"}
     />
   );
