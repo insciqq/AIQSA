@@ -1,12 +1,13 @@
 "use client";
 
-import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { safeExternalHref } from "@/lib/domain/links";
-import { Check, Copy } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { CodeCopyButton } from "./CodeCopyButton";
 import { highlightCodeBlock, resolveCodeLanguage } from "./codeHighlighting";
 import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "./markdownParser";
 import { renderMathExpression } from "./mathRendering";
+import { MermaidBlock } from "./MermaidBlock";
+import { isMermaidLanguage } from "./mermaidRendering";
 
 // Deep structures retain their semantics without consuming the whole phone viewport.
 const MAX_INDENT_DEPTH = 8;
@@ -286,10 +287,16 @@ function renderBlock(block: MarkdownBlock, key: string, context: RenderContext, 
     }
     case "code":
       // While streaming, an unclosed fence stays partial text with no highlighting.
-      return context.streaming && !block.closed ? (
-        <p className={PARAGRAPH_CLASS} key={key}>
-          {block.code ? `${block.opening}\n${block.code.replace(/\n$/u, "")}` : block.opening}
-        </p>
+      if (context.streaming && !block.closed) {
+        return (
+          <p className={PARAGRAPH_CLASS} key={key}>
+            {block.code ? `${block.opening}\n${block.code.replace(/\n$/u, "")}` : block.opening}
+          </p>
+        );
+      }
+      // Only a closed fence becomes a diagram; its source can no longer change.
+      return block.closed && isMermaidLanguage(block.language) ? (
+        <MermaidBlock code={block.code} key={key} language={block.language} />
       ) : (
         <CodeBlock code={block.code} key={key} language={block.language} streaming={context.streaming} />
       );
@@ -310,9 +317,7 @@ type MarkdownMessageProps = {
 };
 
 function CodeBlock({ code, language, streaming }: { code: string; language: string; streaming: boolean }) {
-  const [copied, setCopied] = useState(false);
   const [highlighted, setHighlighted] = useState<{ html: string; key: string } | null>(null);
-  const copiedResetRef = useRef<number | null>(null);
   const displayLanguage = resolveCodeLanguage(language);
   const highlightKey = displayLanguage ? `${displayLanguage}\0${code}` : null;
   const highlightedHtml = !streaming && highlighted?.key === highlightKey ? highlighted.html : null;
@@ -337,28 +342,6 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
     };
   }, [code, displayLanguage, highlightKey, language, streaming]);
 
-  useEffect(
-    () => () => {
-      if (copiedResetRef.current !== null) {
-        window.clearTimeout(copiedResetRef.current);
-      }
-    },
-    []
-  );
-
-  async function copyCode() {
-    try {
-      await writeClipboardText(code);
-      setCopied(true);
-      if (copiedResetRef.current !== null) {
-        window.clearTimeout(copiedResetRef.current);
-      }
-      copiedResetRef.current = window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  }
-
   return (
     <div className="group/code min-w-0 max-w-full overflow-hidden rounded-panel border border-trace-subtle bg-answer-paper" data-markdown-code-language={language}>
       <div className="flex min-h-control items-center justify-between gap-3 border-b border-trace-subtle px-3" data-markdown-chrome="">
@@ -367,19 +350,7 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
         ) : (
           <span aria-hidden="true" />
         )}
-        <button
-          className="inline-flex h-touch items-center gap-1.5 rounded-control px-2 text-metadata text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch sm:h-control-sm"
-          type="button"
-          aria-label="Copy code"
-          onClick={() => void copyCode()}
-        >
-          {copied ? (
-            <Check className="size-3 text-positive" aria-hidden="true" />
-          ) : (
-            <Copy className="size-3" aria-hidden="true" />
-          )}
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <CodeCopyButton label="Copy code" text={code} />
       </div>
       {highlightedHtml ? (
         <div
@@ -401,9 +372,6 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
           <code>{code}</code>
         </pre>
       )}
-      <span className="sr-only" role="status">
-        {copied ? "Copied" : ""}
-      </span>
     </div>
   );
 }
