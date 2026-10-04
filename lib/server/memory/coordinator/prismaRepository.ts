@@ -23,7 +23,7 @@ import { enqueueMemoryJob } from "../persistence/jobs";
 import { memorySha256 } from "../persistence/lexical";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION, memoryHistoryIndexJobFingerprint } from "../history/contract";
 import { MemoryPersistenceError } from "../persistence/errors";
-import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION } from "../learning/relations/explicitPolicy";
+import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSIONS } from "../learning/relations/explicitPolicy";
 import {
   decodeMemoryOperationalCounters,
   type MemoryOperationalCounters
@@ -401,12 +401,12 @@ function jobEligibility(
     )
     AND (
       job."kind" <> 'RESOLVE_FACT_RELATIONS'::"MemoryJobKind"
-      OR job."pipelineVersion" <> ${MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION}
+      OR job."pipelineVersion" NOT IN (${Prisma.join([...MEMORY_EXPLICIT_RELATION_PIPELINE_VERSIONS])})
       OR NOT EXISTS (
         SELECT 1 FROM "MemoryJob" AS comparing
         WHERE comparing."userId" = job."userId" AND comparing."id" <> job."id"
           AND comparing."kind" = 'RESOLVE_FACT_RELATIONS'::"MemoryJobKind"
-          AND comparing."pipelineVersion" = ${MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION}
+          AND comparing."pipelineVersion" IN (${Prisma.join([...MEMORY_EXPLICIT_RELATION_PIPELINE_VERSIONS])})
           AND comparing."state" = 'CLAIMED'::"MemoryJobState"
           AND comparing."leaseExpiresAt" > ${now}
       )

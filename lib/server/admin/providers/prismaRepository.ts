@@ -1152,7 +1152,7 @@ export function createPrismaAdminProviderRepository(
     },
 
     async loadModelActivationCandidate(input) {
-      const [connection, model] = await Promise.all([
+      const [connection, model, systemPolicy, memoryPolicy] = await Promise.all([
         prisma.providerConnection.findUnique({
           include: {
             defaultCredential: {
@@ -1164,11 +1164,22 @@ export function createPrismaAdminProviderRepository(
           where: { id: input.connectionId }
         }),
         prisma.providerModel.findFirst({
-          select: { activeVersion: true, displayName: true, draftConfig: true, draftVersion: true, id: true },
+          select: { activeConfig: true, activeVersion: true, displayName: true, draftConfig: true, draftVersion: true, id: true },
           where: { connectionId: input.connectionId, id: input.modelId }
-        })
+        }),
+        prisma.systemModelPolicy.findUnique({
+          select: { providerModelId: true, chatTitleProviderModelId: true, visionProviderModelId: true,
+            chatPdfProviderModelId: true, chatPdfNativeProviderModelId: true },
+          where: { id: "installation" }
+        }),
+        prisma.memoryUtilityModelPolicy.findUnique({ select: { providerModelId: true }, where: { id: "installation" } })
       ]);
       if (!connection || connection.family === "fake" || !model) return null;
+      const assignedRoles = ([
+        ["memory", memoryPolicy?.providerModelId], ["system_model", systemPolicy?.providerModelId],
+        ["chat_titles", systemPolicy?.chatTitleProviderModelId], ["vision", systemPolicy?.visionProviderModelId],
+        ["chat_pdf", systemPolicy?.chatPdfProviderModelId], ["chat_pdf_native", systemPolicy?.chatPdfNativeProviderModelId]
+      ] as const).flatMap(([role, providerModelId]) => providerModelId === model.id ? [role] : []);
       const credential = connection.defaultCredential;
       return {
         connection: {
@@ -1191,7 +1202,9 @@ export function createPrismaAdminProviderRepository(
         },
         model: {
           configuration: model.draftConfig,
+          activeConfiguration: model.activeConfig,
           activeVersion: model.activeVersion,
+          assignedRoles,
           displayName: model.displayName,
           draftVersion: model.draftVersion,
           id: model.id

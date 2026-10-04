@@ -12,6 +12,7 @@ import { buildMemoryMaintenanceRequest, buildMemoryMaintenanceVerificationReques
   type MemoryMaintenanceReviewDecoding, type MemoryMaintenanceVerification } from "./contract";
 import { MEMORY_MAINTENANCE_CALL_ATTEMPTS, MEMORY_MAINTENANCE_FAILURE_CODES, MEMORY_MAINTENANCE_VERSIONS, memoryMaintenanceOrdinal,
   type MemoryMaintenanceCall, type MemoryMaintenancePlan, type MemoryMaintenanceSource } from "./policy";
+import { loadMemoryMaintenanceRelatedMemories, loadMemoryMaintenanceRelatedStatements } from "./related";
 import { loadMemoryMaintenanceSources } from "./source";
 
 export type MemoryMaintenanceResult<T> = Readonly<{
@@ -52,20 +53,31 @@ function logMemoryMaintenanceReviewRepairs(jobId: string, repairs: MemoryMainten
 }
 export function createPrismaMemoryMaintenanceProvider(client: PrismaClient, options: Readonly<{
   authority?: MemoryExecutionAuthorityDependencies; provider?: MemoryStructuredOutputProvider;
-  sources?: typeof loadMemoryMaintenanceSources;
+  sources?: typeof loadMemoryMaintenanceSources; related?: typeof loadMemoryMaintenanceRelatedMemories;
+  relatedStatements?: typeof loadMemoryMaintenanceRelatedStatements;
 }> = {}) {
   const authority = options.authority ?? defaultMemoryExecutionAuthority;
   const provider = options.provider ?? createAcceptedMemoryStructuredOutputProvider(client);
   const loadSources = options.sources ?? loadMemoryMaintenanceSources;
+  const loadRelated = options.related ?? loadMemoryMaintenanceRelatedMemories;
+  const loadRelatedStatements = options.relatedStatements ?? loadMemoryMaintenanceRelatedStatements;
   async function current(userId: string, disclosed: readonly MemoryMaintenanceSource[]): Promise<boolean> {
     const loaded = await loadSources(client, userId, { versionIds: disclosed.map(({ versionId }) => versionId), now: new Date() });
-    return disclosed.every((source) => loaded.sources.get(source.versionId)?.sourceSnapshotHash === source.sourceSnapshotHash);
+    if (!disclosed.every((source) => loaded.sources.get(source.versionId)?.sourceSnapshotHash === source.sourceSnapshotHash)) return false;
+    const related = disclosed.flatMap((source) => source.related ?? []);
+    if (related.length === 0) return true;
+    const statements = await loadRelatedStatements(client, userId, related.map(({ versionId }) => versionId));
+    return related.every((memory) => {
+      const shown = statements.get(memory.versionId);
+      return shown?.factId === memory.factId && shown.statement === memory.statement;
+    });
   }
-  /** Every disclosed source is revalidated before a call binds (the first
-   * call and each validation retry), so a changed one costs no binding or paid
-   * call, and again inside the bound call just before dispatch, where a fence
-   * settles that binding CANCELLED without usage. Each attempt has its own
-   * ordinal of the call's parity. */
+  /** Every disclosed source, and every related memory shown with it, is
+   * revalidated before a call binds (the first call and each validation
+   * retry), so a changed one costs no binding or paid call, and again inside
+   * the bound call just before dispatch, where a fence settles that binding
+   * CANCELLED without usage. Each attempt has its own ordinal of the call's
+   * parity. */
   async function run<T>(owner: Owner, call: MemoryMaintenanceCall, disclosed: readonly MemoryMaintenanceSource[], signal: AbortSignal,
     inputHash: string, request: ReturnType<typeof buildMemoryMaintenanceRequest>, decode: (value: unknown) => T): Promise<MemoryMaintenanceResult<T>> {
     const revalidate = async () => { if (!await current(owner.userId, disclosed)) throw memoryMaintenanceDispatchStale(); };
@@ -98,12 +110,20 @@ export function createPrismaMemoryMaintenanceProvider(client: PrismaClient, opti
     }
   }
   return Object.freeze({
-    /** Counts the repairs of the accepted answer only, once it settled. */
+    /** The review shows each source with its related memories, which stay
+     * outside the reviewed plan's identity: a contradiction carries the exact
+     * identity of the one it names. Counts the repairs of the accepted answer
+     * only, once it settled. */
     async review(plan: MemoryMaintenancePlan, signal: AbortSignal, owner: Owner) {
+      const related = await loadRelated(client, owner.userId, plan.sources, { jobId: owner.jobId, signal });
+      const shown: MemoryMaintenancePlan = { ...plan, sources: plan.sources.map((source) => {
+        const memories = related.get(source.ref);
+        return memories ? { ...source, related: memories } : source;
+      }) };
       let repairs: MemoryMaintenanceReviewRepairs = { normalized: 0, conservative: 0 };
-      const result = await run(owner, "review", plan.sources, signal, memoryMaintenanceInputHash(plan), buildMemoryMaintenanceRequest(plan),
+      const result = await run(owner, "review", shown.sources, signal, memoryMaintenanceInputHash(plan), buildMemoryMaintenanceRequest(shown),
         (value) => {
-          const decoded = decodeMemoryMaintenanceReview(value, plan);
+          const decoded = decodeMemoryMaintenanceReview(value, shown);
           repairs = decoded;
           return decoded.output;
         });

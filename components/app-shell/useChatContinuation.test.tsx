@@ -16,14 +16,23 @@ const child = {
     content: { blocks: [{ type: "text", text: "Conversation summary" }] }, modelId: null, modelRunId: null,
     provider: null, errorMessage: null, artifactSummary: null, citationMessageId: null }]
 };
-function Harness({ chatId = "source", leaf = "answer", eligible = true, recommended = true, uploading = false, modelSelection }: {
+type IndicatorStats = Parameters<typeof ChatContextIndicatorV2>[0]["stats"];
+const defaultStats: IndicatorStats = { approximateInputTokens: 700, safeInputBudgetTokens: 1000, totalContextTokens: 1500 };
+function Harness({ chatId = "source", leaf = "answer", eligible = true, recommended = true, uploading = false, modelSelection, stats = defaultStats }: {
   chatId?: string; leaf?: string; eligible?: boolean; recommended?: boolean; uploading?: boolean;
-  modelSelection?: ChatContinuationModelSelection;
+  modelSelection?: ChatContinuationModelSelection; stats?: IndicatorStats;
 }) {
   const control = useChatContinuation({ accountId: "owner", chatId, leafMessageId: leaf, eligible, recommended, uploading, modelSelection, onOpen });
-  return <ChatContextIndicatorV2 continuation={eligible ? control : null} stats={{
-    approximateInputTokens: 700, safeInputBudgetTokens: 1000, totalContextTokens: 1500
-  }} />;
+  return <ChatContextIndicatorV2 continuation={eligible ? control : null} stats={stats} />;
+}
+
+/** A suggestion only marks the gauge; the person opens the panel. */
+async function openSuggested() {
+  const indicator = screen.getByTestId("header-context-indicator");
+  await waitFor(() => expect(indicator).toHaveAttribute("data-suggested", "true"));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.click(indicator);
+  return screen.getByRole("button", { name: "Summarize and open new chat" });
 }
 
 beforeEach(() => {
@@ -38,17 +47,42 @@ it("waits for a completed answer and remembers dismissal across later messages a
   const view = render(<Harness eligible={false} />);
   expect(screen.queryByRole("dialog")).toBeNull();
   view.rerender(<Harness />);
-  await screen.findByRole("button", { name: "Stay here" });
+  await openSuggested();
   fireEvent.click(screen.getByRole("button", { name: "Stay here" }));
   expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByTestId("header-context-indicator")).not.toHaveAttribute("data-suggested");
   view.rerender(<Harness leaf="later-answer" />);
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByTestId("header-context-indicator")).not.toHaveAttribute("data-suggested");
   view.unmount();
   render(<Harness leaf="later-answer" />);
   await act(async () => {});
+  expect(screen.getByTestId("header-context-indicator")).not.toHaveAttribute("data-suggested");
   expect(screen.queryByRole("dialog")).toBeNull();
   fireEvent.click(screen.getByTestId("header-context-indicator"));
   expect(screen.getByRole("dialog")).toBeVisible();
+});
+
+it("keeps a later suggestion after the panel was opened and closed while none was shown", async () => {
+  const view = render(<Harness recommended={false} />);
+  await act(async () => {});
+  const indicator = screen.getByTestId("header-context-indicator");
+  for (const closeWith of ["Escape", "click"] as const) {
+    fireEvent.click(indicator);
+    expect(screen.getByRole("dialog", { name: "Chat context" })).toBeVisible();
+    if (closeWith === "Escape") fireEvent.keyDown(document, { key: "Escape" });
+    else fireEvent.click(indicator);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  }
+  // A live answer then measures omitted history near the limit.
+  view.rerender(<Harness leaf="later-answer" stats={{ approximateInputTokens: 700, safeInputBudgetTokens: 1000,
+    totalContextTokens: 1500, session: { approximateInputTokens: 700, contextWindow: 1500, droppedMessages: 4,
+      loadedTools: 0, maxOutputTokens: 300, modelId: "model", phase: "after_answer", provider: "fake",
+      safetyMarginTokens: 200, version: 1 } }} />);
+  expect(indicator).toHaveAttribute("data-context-tone", "warning");
+  expect(indicator).toHaveAttribute("data-context-estimate", "snapshot");
+  await waitFor(() => expect(indicator).toHaveAttribute("data-suggested", "true"));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(localStorage.length).toBe(0);
 });
 
 it("opens the saved summary after one action and ignores a second click", async () => {
@@ -58,7 +92,7 @@ it("opens the saved summary after one action and ignores a second click", async 
     .mockResolvedValueOnce(Response.json({ allowedActions: ["EXCLUDE"], archived: false, mode: "NORMAL", temporaryRetentionDeadline: null }));
   vi.stubGlobal("fetch", fetch);
   render(<Harness />);
-  const button = await screen.findByRole("button", { name: "Summarize and open new chat" });
+  const button = await openSuggested();
   fireEvent.click(button);
   fireEvent.click(button);
   expect(fetch).toHaveBeenCalledOnce();
@@ -71,7 +105,7 @@ it("stays on failure and uses a fresh request only after a definite failure", as
   const fetch = vi.fn().mockImplementation(async () => Response.json({ error: "chat_summary_failed" }, { status: 502 }));
   vi.stubGlobal("fetch", fetch);
   render(<Harness />);
-  fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
+  fireEvent.click(await openSuggested());
   await screen.findByRole("alert");
   expect(onOpen).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Summarize and open new chat" }));
@@ -85,7 +119,7 @@ it("reuses the same request and model selection after ambiguous network failure"
   vi.stubGlobal("fetch", fetch);
   const selection = { provider: "provider", modelId: "chosen" };
   const view = render(<Harness modelSelection={selection} />);
-  fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
+  fireEvent.click(await openSuggested());
   await screen.findByRole("alert");
   view.rerender(<Harness modelSelection={{ provider: "other", modelId: "changed" }} />);
   fireEvent.click(screen.getByRole("button", { name: "Summarize and open new chat" }));
@@ -98,7 +132,7 @@ it("waits for uploads and keeps cancellation usable if an upload starts during s
   const fetch = vi.fn().mockImplementation(() => new Promise(() => {}));
   vi.stubGlobal("fetch", fetch);
   const view = render(<Harness uploading />);
-  const button = await screen.findByRole("button", { name: "Summarize and open new chat" });
+  const button = await openSuggested();
   expect(button).toBeDisabled();
   expect(screen.getByRole("status")).toHaveTextContent("Wait for uploads to finish.");
   fireEvent.click(button);
@@ -117,7 +151,7 @@ it("keeps the source input owner when the saved summary detail cannot be opened"
     .mockResolvedValueOnce(Response.json({ error: "chat_not_found" }, { status: 404 }));
   vi.stubGlobal("fetch", fetch);
   render(<Harness />);
-  fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
+  fireEvent.click(await openSuggested());
   expect(await screen.findByRole("alert")).toHaveTextContent("new chat could not be opened");
   expect(onOpen).not.toHaveBeenCalled();
 });
@@ -127,7 +161,7 @@ it.each(["navigation", "branch", "cancel"])("never opens a late response after %
   const fetch = vi.fn().mockImplementation(() => new Promise<Response>((resolve) => { finish = resolve; }));
   vi.stubGlobal("fetch", fetch);
   const view = render(<Harness />);
-  fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
+  fireEvent.click(await openSuggested());
   if (action === "cancel") fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   else view.rerender(<Harness chatId={action === "navigation" ? "other" : "source"} leaf="changed" />);
   expect(fetch.mock.calls[0]![1].signal.aborted).toBe(action !== "cancel");
@@ -140,6 +174,7 @@ it("keeps a quiet indicator below the warning threshold", async () => {
   render(<Harness recommended={false} />);
   await act(async () => {});
   expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByTestId("header-context-indicator")).not.toHaveAttribute("data-suggested");
 });
 
 it("shows background progress and sends cancellation only after the claim is acknowledged", async () => {
@@ -149,7 +184,7 @@ it("shows background progress and sends cancellation only after the claim is ack
     .mockResolvedValueOnce(Response.json({ error: "chat_summary_cancelled" }, { status: 409 }));
   vi.stubGlobal("fetch", fetch);
   const view = render(<Harness />);
-  fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
+  fireEvent.click(await openSuggested());
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(fetch).toHaveBeenCalledOnce();
   await act(async () => { acknowledge(Response.json({ status: "running", progress: { completedParts: 9, stage: "combining" } })); });
@@ -166,7 +201,7 @@ it("does not open a completed chat when cancellation arrives while its details l
     .mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; }));
   vi.stubGlobal("fetch", fetch);
   render(<Harness />);
-  fireEvent.click(await screen.findByRole("button", { name: "Summarize and open new chat" }));
+  fireEvent.click(await openSuggested());
   await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   await act(async () => { finish(Response.json({ chat: child })); });

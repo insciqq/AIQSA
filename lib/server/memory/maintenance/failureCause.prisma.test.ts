@@ -99,7 +99,7 @@ const pin = (factId: string) => () => prisma.memoryFact.update({ where: { id: fa
 const usage = { inputTokens: 40, outputTokens: 3, totalTokens: 43, completeness: "complete" } as const;
 const refsOf = (request: Parameters<MemoryStructuredOutputProvider["run"]>[1]) =>
   (JSON.parse(request.userPrompt) as { sources: Array<{ ref: string }> }).sources.map(({ ref }) => ref);
-const isVerification = (request: Parameters<MemoryStructuredOutputProvider["run"]>[1]) => request.name === "verify_memory_cleanup_v3";
+const isVerification = (request: Parameters<MemoryStructuredOutputProvider["run"]>[1]) => request.name.startsWith("verify_memory_cleanup_");
 /** A well-formed object that breaks either contract: no decision for any source. */
 const invalid = { providerResponseId: null, usage, output: { decisions: [] } };
 /** Proposes removing every disclosed source and approves every proposed removal. */
@@ -107,7 +107,7 @@ const removeAll: MemoryStructuredOutputProvider["run"] = async (_snapshot, reque
   output: isVerification(request)
     ? { decisions: refsOf(request).map((ref) => ({ source_ref: ref, approve: true })) }
     : { decisions: refsOf(request).map((ref) => ({ source_ref: ref, scope_basis: "short_term_matter", action: "REMOVE_TRANSIENT",
-      usefulness: null, reason: "short_term" })) } });
+      usefulness: null, reason: "short_term", contradicted_by: null })) } });
 /** Returns an invalid answer for the listed calls (1-based per call kind) and `removeAll` otherwise. */
 function invalidAt(reviews: readonly number[], verifications: readonly number[] = []): MemoryStructuredOutputProvider["run"] {
   const calls = { review: 0, verify: 0 };
@@ -243,7 +243,7 @@ describe("maintenance outcomes through the coordinator and governed executor", (
     const run = vi.fn<MemoryStructuredOutputProvider["run"]>().mockImplementation(async (_snapshot, request) => {
       const sources = (JSON.parse(request.userPrompt) as { sources: Array<{ ref: string; statement: string }> }).sources;
       if (!isVerification(request)) return { providerResponseId: null, usage, output: { decisions: sources.map(({ ref, statement }) =>
-        ({ source_ref: ref, ...answered.get(statement) })) } };
+        ({ source_ref: ref, contradicted_by: null, ...answered.get(statement) })) } };
       disclosed.push(sources.map(({ statement }) => statement).sort());
       return { providerResponseId: null, usage, output: { decisions: sources.map(({ ref }) => ({ source_ref: ref, approve: true })) } };
     });
@@ -255,16 +255,17 @@ describe("maintenance outcomes through the coordinator and governed executor", (
     const outcome = async (index: number) => {
       const fact = facts[index]!;
       return { review: await prisma.memoryMaintenanceReview.findFirstOrThrow({ where: { userId, factVersionId: fact.currentVersionId },
-        select: { disposition: true, usefulness: true } }),
+        select: { disposition: true, usefulness: true, reasonCode: true } }),
       fact: await prisma.memoryFact.findUniqueOrThrow({ where: { id: fact.factId }, select: { state: true, currentVersionId: true } }) };
     };
-    const removed = { disposition: "REMOVED", usefulness: null };
+    // Each removal keeps the closed reason its basis determines, the slipped one included.
+    const removed = { disposition: "REMOVED", usefulness: null, reasonCode: "short_term" };
     expect(await outcome(0)).toEqual({ review: removed, fact: { state: "FORGOTTEN", currentVersionId: null } });
     expect(await outcome(1)).toEqual({ review: removed, fact: { state: "FORGOTTEN", currentVersionId: null } });
-    expect(await outcome(2)).toEqual({ review: { disposition: "KEEP", usefulness: "DURABLE" },
+    expect(await outcome(2)).toEqual({ review: { disposition: "KEEP", usefulness: "DURABLE", reasonCode: null },
       fact: { state: "ACTIVE", currentVersionId: facts[2]!.currentVersionId } });
-    // The contradiction is kept without a label, so nothing is removed or promoted.
-    expect(await outcome(3)).toEqual({ review: { disposition: "KEEP", usefulness: null },
+    // The contradiction is kept without a label, so nothing is removed or promoted; its keep says so.
+    expect(await outcome(3)).toEqual({ review: { disposition: "KEEP", usefulness: null, reasonCode: "unresolved_scope" },
       fact: { state: "ACTIVE", currentVersionId: facts[3]!.currentVersionId } });
     const forgotten = [facts[0]!.factId, facts[1]!.factId].sort();
     expect((await prisma.memoryEvent.findMany({ where: { userId, operation: "FORGET" }, select: { factId: true } }))

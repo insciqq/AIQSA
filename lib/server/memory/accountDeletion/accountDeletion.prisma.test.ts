@@ -1361,22 +1361,13 @@ describe("Prisma account Memory deletion", () => {
         targetId: userId,
         targetType: ACCOUNT_MEMORY_DELETION_TARGET_TYPE
       });
-      // Retired Dream columns keep their fence values for one release: a
-      // previous-release worker still checks them during Compose replacement.
-      const retiredDreamFence = {
-        lastSynthesisAt: null,
-        synthesisEnabled: false,
-        synthesisEnabledAt: null,
-        synthesisPolicyVersion: null
-      };
       await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
         .resolves.toMatchObject({
           activeIndexGenerationId: null,
           embeddingProviderModelId: null,
           learnAutomatically: false,
           referenceChatHistory: false,
-          useMemoryFacts: false,
-          ...retiredDreamFence
+          useMemoryFacts: false
         });
 
       admissionEnabled = false;
@@ -1387,7 +1378,12 @@ describe("Prisma account Memory deletion", () => {
       });
       await prisma.$transaction((tx) => direct.apply!(tx, directClaim));
       await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
-        .resolves.toMatchObject(retiredDreamFence);
+        .resolves.toMatchObject({
+          decayEnabled: false,
+          decayPolicyVersion: null,
+          learnAutomatically: false,
+          useMemoryFacts: false
+        });
       await coordinator.reconcileNow();
       const succeeded = await prisma.memoryDeletionOutbox.findUniqueOrThrow({
         where: { id: admitted.id }

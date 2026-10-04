@@ -1,4 +1,10 @@
-import { CHAT_PDF_LONG_DOCUMENT_NOTICE, CHAT_PDF_LOCAL_TEXT_NOTICE, isLongChatPdf, type ChatPdfRoute } from "@/lib/contracts/chatPdfPreparation";
+import {
+  CHAT_PDF_LONG_DOCUMENT_NOTICE,
+  CHAT_PDF_LOCAL_TEXT_NOTICE,
+  CHAT_PDF_ROUTE_UNAVAILABLE_CODE,
+  isLongChatPdf,
+  type ChatPdfRouteAvailability
+} from "@/lib/contracts/chatPdfPreparation";
 import {
   attachmentRetryAvailable,
   clientAttachmentFailureMessage
@@ -8,7 +14,7 @@ import type {
   ComposerAttachment,
   ComposerAttachmentWarning
 } from "@/components/app-shell/attachmentContracts";
-import { attachmentBlocksSend } from "@/components/app-shell/attachmentCapabilities";
+import { attachmentBlocksSend, pdfOriginalReadable } from "@/components/app-shell/attachmentCapabilities";
 import type { CatalogModel } from "@/components/app-shell/types";
 
 export type ComposerAttachmentItemV2 = Readonly<{
@@ -27,10 +33,16 @@ export type ComposerAttachmentItemV2 = Readonly<{
   status: "failed" | "processing" | "ready" | "rejected" | "uploading";
   warning?: Readonly<{
     blocking: boolean;
+    code?: typeof CHAT_PDF_ROUTE_UNAVAILABLE_CODE;
+    /** Administrator recovery hint: a settings link for admins, plain text otherwise. */
+    hint?: Readonly<{ href: string; label: string }> | string;
     label: string;
     message: string;
   }> | null;
 }>;
+
+export const CHAT_PDF_ROUTE_ADMIN_LINK_LABEL = "Set up PDF processing";
+export const CHAT_PDF_ROUTE_MEMBER_HINT = "Ask an administrator to set one up.";
 
 export function uploadProgressBytes(sentBytes: number, byteSize: number): string {
   const divisor = byteSize >= 1024 * 1024 ? 1024 * 1024 : byteSize >= 1024 ? 1024 : 1;
@@ -70,23 +82,30 @@ export function attachmentItemsForV2(
   warnings: readonly ComposerAttachmentWarning[] = [],
   model?: CatalogModel,
   workspaceEnabled = false,
-  pdfRoute: ChatPdfRoute | null = null
+  pdfRoute: ChatPdfRouteAvailability | null = null,
+  /** The PDF processing settings link, given only to administrators. */
+  pdfSettingsHref: string | null = null
 ): ComposerAttachmentItemV2[] {
   const warningById = new Map(warnings.map((warning) => [warning.attachmentId, warning]));
   return attachments.map((attachment) => {
     const status = attachment.status ?? "ready";
     const warning = warningById.get(attachment.id);
-    const blocksSend = attachmentBlocksSend(attachment, model, workspaceEnabled);
-    const directPdf = attachment.kind === "pdf" &&
-      model?.capabilities.documentInputMode === "native_pdf";
+    const blocksSend = attachmentBlocksSend(attachment, model, workspaceEnabled, pdfRoute);
+    const directPdf = pdfOriginalReadable(attachment, model, pdfRoute);
+    // A system reader is another destination than the selected answer model.
+    const systemReader = pdfRoute?.available === true && pdfRoute.route !== "direct_pdf";
     const detail = workspaceEnabled && status === "failed" && !blocksSend
       ? "Parser processing failed. Workspace can use the stored original file."
       : workspaceEnabled && status === "processing" && !blocksSend
         ? "Workspace can use the stored original while parsing continues."
         : status === "failed" && directPdf && !blocksSend
-      ? "Local text extraction failed. The original PDF will be sent directly to the selected provider."
+      ? systemReader
+        ? "Local text extraction failed. The assigned PDF reader will read the original PDF."
+        : "Local text extraction failed. The original PDF will be sent directly to the selected provider."
       : status === "processing" && directPdf && !blocksSend
-        ? "The original PDF can be sent directly while local text extraction continues."
+        ? systemReader
+          ? "The assigned PDF reader can read the original PDF while local text extraction continues."
+          : "The original PDF can be sent directly while local text extraction continues."
         : status === "failed"
           ? failureDetail(attachment)
           : null;
@@ -94,7 +113,7 @@ export function attachmentItemsForV2(
       ...(attachment.byteSize === undefined ? {} : { byteSize: attachment.byteSize }),
       ...(attachment.kind === "pdf" ? { notices: [
         ...(isLongChatPdf(attachment.pageCount ?? attachment.processing?.pageCount) ? [CHAT_PDF_LONG_DOCUMENT_NOTICE] : []),
-        ...(pdfRoute === "local_text" ? [CHAT_PDF_LOCAL_TEXT_NOTICE] : [])
+        ...(pdfRoute?.available && pdfRoute.route === "local_text" ? [CHAT_PDF_LOCAL_TEXT_NOTICE] : [])
       ] } : {}),
       blocksSend,
       ...(detail ? { detail } : {}),
@@ -107,7 +126,13 @@ export function attachmentItemsForV2(
       ...(warning ? {
         warning: {
           blocking: warning.blocking,
-          label: warning.label === "No text" ? "No text" : "Text limited",
+          ...(warning.code === CHAT_PDF_ROUTE_UNAVAILABLE_CODE ? {
+            code: warning.code,
+            hint: pdfSettingsHref
+              ? { href: pdfSettingsHref, label: CHAT_PDF_ROUTE_ADMIN_LINK_LABEL }
+              : CHAT_PDF_ROUTE_MEMBER_HINT
+          } : {}),
+          label: warning.label,
           message: warning.message
         }
       } : {})
@@ -124,6 +149,10 @@ function firstBlockingItemReason(items: readonly ComposerAttachmentItemV2[]): st
   if (!item) return null;
   if (item.status === "uploading") {
     return `Wait for “${item.fileName}” to finish uploading.`;
+  }
+  if (item.warning?.code === CHAT_PDF_ROUTE_UNAVAILABLE_CODE && (item.status === "ready" || item.status === "processing")) {
+    // Waiting cannot help when admission has no route for this PDF.
+    return `${item.warning.message} Remove “${item.fileName}” or choose a model that can read PDFs.`;
   }
   if (item.status === "processing") {
     if (item.upload) return `Wait for “${item.fileName}” to be verified.`;

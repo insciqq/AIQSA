@@ -8,6 +8,7 @@ import {
   firstBlockingAttachmentWarning
 } from "@/components/app-shell/attachmentCapabilities";
 import { attachmentRetryAvailable } from "@/components/app-shell/attachmentLifecycle";
+import { latestChatPdfRouteAvailability } from "@/components/app-shell/useChatPdfRoutePreview";
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import {
   chatIdFromComposerSessionKey,
@@ -861,11 +862,32 @@ export function useMessageRunActions({
         text: `Sent without web search: ${optionName} is not available for ${modelForSend.displayName}.`
       });
     }
+    // The composer's server-owned PDF route preview for exactly this model and
+    // Project; unknown (null) keeps the local readiness checks.
+    const pdfRoute = sourceSession.attachments.some((attachment) => attachment.kind === "pdf")
+      ? latestChatPdfRouteAvailability({
+          projectId: activeChat?.projectId ?? projectIdFromComposerSessionKey(sourceSessionKey) ?? null,
+          providerConnectionId: modelForSend.provider,
+          providerModelId: modelForSend.modelId
+        })
+      : null;
+    const blockingAttachmentWarning = firstBlockingAttachmentWarning(
+      sourceSession.attachments,
+      modelForSend,
+      runControlSnapshot.workspaceEnabled,
+      pdfRoute
+    );
+    if (blockingAttachmentWarning?.code) {
+      // Waiting for processing cannot help a PDF that admission has no route for.
+      setNotice({ kind: "error", text: blockingAttachmentWarning.message });
+      return;
+    }
     const blockingAttachment = sourceSession.attachments.find(
       (attachment) => attachmentBlocksSend(
         attachment,
         modelForSend,
-        runControlSnapshot.workspaceEnabled
+        runControlSnapshot.workspaceEnabled,
+        pdfRoute
       )
     );
     if (blockingAttachment) {
@@ -881,11 +903,6 @@ export function useMessageRunActions({
       });
       return;
     }
-    const blockingAttachmentWarning = firstBlockingAttachmentWarning(
-      sourceSession.attachments,
-      modelForSend,
-      runControlSnapshot.workspaceEnabled
-    );
     if (blockingAttachmentWarning) {
       setNotice({
         kind: "error",
@@ -931,7 +948,8 @@ export function useMessageRunActions({
       attachmentBlocksSend: (attachment) => attachmentBlocksSend(
         attachment,
         modelForSend,
-        runControlSnapshot.workspaceEnabled
+        runControlSnapshot.workspaceEnabled,
+        pdfRoute
       )
     });
     if (!sendToken) {

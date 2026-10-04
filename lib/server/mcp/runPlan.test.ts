@@ -7,6 +7,7 @@ import {
   isMcpRunPlanRecordStartable,
   MCP_CATALOG_INSTRUCTIONS_BUDGET_CHARS,
   mcpInventoryExclusions,
+  mcpPersonalCredentialRejections,
   namespacedMcpToolName,
   prepareMcpRunPlan,
   projectMcpRunPlanStartability
@@ -289,6 +290,29 @@ describe("MCP run plans", () => {
       issues: [{ errorCode: "mcp_connect_failed", name: "Example", readiness: "unavailable" }],
       ok: false
     });
+  });
+
+  it("marks only an authorization failure of the user's own credential as a personal rejection", async () => {
+    const issuesFor = async (overrides: Partial<McpRunPlanRecord>) => {
+      const result = await prepareMcpRunPlan({ isGenerationLive: () => true, now: () => now,
+        load: async () => [record({ readiness: "unavailable", ...overrides })] });
+      if (result.ok) throw new Error("expected an unavailable plan");
+      return result.issues;
+    };
+
+    const personal = await issuesFor({ errorCode: "mcp_authorization_required" });
+    expect(personal).toEqual([{ errorCode: "mcp_authorization_required", name: "Example",
+      personalCredentialRejected: true, readiness: "unavailable" }]);
+    expect(mcpPersonalCredentialRejections(personal)).toEqual(["Example"]);
+    const oauth = await issuesFor({ credentialSources: ["oauth"], errorCode: "oauth_reauthorization_required" });
+    expect(mcpPersonalCredentialRejections(oauth)).toEqual(["Example"]);
+    expect(mcpPersonalCredentialRejections(await issuesFor({ credentialSources: [], errorCode: "oauth_required",
+      readiness: "needs_authorization" }))).toEqual(["Example"]);
+
+    const shared = await issuesFor({ credentialSources: ["shared"], errorCode: "mcp_authorization_required" });
+    expect(shared[0]).not.toHaveProperty("personalCredentialRejected");
+    expect(mcpPersonalCredentialRejections(shared)).toEqual([]);
+    expect(mcpPersonalCredentialRejections(await issuesFor({ errorCode: "mcp_connect_failed" }))).toEqual([]);
   });
 
   it("treats stale or malformed inventory as unavailable", async () => {

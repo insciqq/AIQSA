@@ -346,6 +346,8 @@ export function useChatRoutePath(): string {
 }
 
 /** Control Center link that returns to the chat it was opened from. */
-export function useControlCenterHref(): string {
-  return controlCenterHref(useChatRoutePath());
+export function useControlCenterHref(
+  target?: Readonly<{ resource?: string; section: string }>
+): string {
+  return controlCenterHref(useChatRoutePath(), target);
 }

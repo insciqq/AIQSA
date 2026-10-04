@@ -151,5 +151,9 @@ describe("chat route contract", () => {
       .toBe(`/p/${projectId}/c/${chatId}`);
     expect(controlCenterHref("/")).toBe("/admin");
     expect(controlCenterHref("https://evil.example/")).toBe("/admin");
+    expect(controlCenterHref("/", { resource: "chat_pdf", section: "roles" }))
+      .toBe("/admin?section=roles&resource=chat_pdf");
+    expect(controlCenterHref(`/c/${chatId}`, { section: "roles" }))
+      .toBe(`/admin?section=roles&return=%2Fc%2F${chatId}`);
   });
 });

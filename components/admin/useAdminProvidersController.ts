@@ -263,8 +263,12 @@ export function useAdminProvidersController(
       (saved !== "configuration" || receipt.publication === "active" && ["checked", "skipped"].includes(receipt.checks)))) {
       return { ...finishSuccess(catalog, null, { quiet: true, scope: connectionId }), persistence };
     }
+    // A live model whose check failed keeps its assigned roles paused; name them.
+    const pausedRoles = receipt?.checks === "failed" ? receipt.affectedRoles ?? [] : [];
     const clientError = !result.ok ? result.error : !receipt
       ? { blockers: [], code: "provider_admin_response_invalid", resourceIds: [] }
+      : pausedRoles.length ? { blockers: [], code: "provider_model_check_failed_roles", resourceIds: [],
+        roles: pausedRoles.map((role) => ({ role, missingParameters: [] })) }
       : !latest.ok ? latest.error : { blockers: [], code: "provider_refresh_failed", resourceIds: [] };
     const failed = finishFailure(clientError, { quiet: true, scope: connectionId });
     if (receipt) notifyMutationCommitted(optionsRef.current.onMutationCommitted);

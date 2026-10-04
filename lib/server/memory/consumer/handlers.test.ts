@@ -93,18 +93,16 @@ describe("Memory consumer settings with the retired Dream toggle", () => {
     return { deps: { resolveAuth: vi.fn(async () => ({ userId: "user-1" })), service } as never, repository };
   }
 
-  it("keeps both retired fields for stale tabs and answers a toggle-only PATCH without a write", async () => {
+  it("omits the retired Dream fields and rejects a Dream toggle PATCH without a write", async () => {
     const { deps, repository } = compose();
     const read = await createGetMemoryConsumerSettingsHandler(deps)(
       new Request("http://test/api/me/memory/settings")
     );
     expect(read.status).toBe(200);
     const current = await read.json();
-    expect(current).toMatchObject({
-      capabilities: { synthesisAvailable: true },
-      settings: { synthesisEnabled: false },
-      status: "ON"
-    });
+    expect(current.status).toBe("ON");
+    expect(current.capabilities).not.toHaveProperty("synthesisAvailable");
+    expect(current.settings).not.toHaveProperty("synthesisEnabled");
 
     const patched = await createPatchMemoryConsumerSettingsHandler(deps)(
       new Request("http://test/api/me/memory/settings", {
@@ -113,8 +111,8 @@ describe("Memory consumer settings with the retired Dream toggle", () => {
         method: "PATCH"
       })
     );
-    expect(patched.status).toBe(200);
-    await expect(patched.json()).resolves.toEqual(current);
+    expect(patched.status).toBe(400);
+    await expect(patched.json()).resolves.toEqual({ error: "memory_contract_invalid" });
     expect(repository.patch).not.toHaveBeenCalled();
   });
 });

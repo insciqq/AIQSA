@@ -25,7 +25,7 @@ describe("Memory job enqueue boundary", () => {
   const explicitRelation = {
     idempotencyFingerprint: "explicit-version-fingerprint",
     kind: "RESOLVE_FACT_RELATIONS",
-    pipelineVersion: "memory-explicit-relation-v1",
+    pipelineVersion: "memory-explicit-relation-v2",
     targetFactVersionId: "explicit-version-1"
   } satisfies MemoryJobEnqueueInput;
   const directSource = {
@@ -51,7 +51,7 @@ describe("Memory job enqueue boundary", () => {
     const persisted = memoryJob.create.mock.calls[0]![0].data;
     expect(persisted).toMatchObject({
       userId: "user-1", kind: "RESOLVE_FACT_RELATIONS",
-      pipelineVersion: "memory-explicit-relation-v1",
+      pipelineVersion: "memory-explicit-relation-v2",
       targetFactVersionId: "explicit-version-1"
     });
     for (const field of ["chatId", "sourceMessageId", "activeLeafMessageId",
@@ -64,6 +64,7 @@ describe("Memory job enqueue boundary", () => {
     ["explicit comparison with a chat", { ...explicitRelation, source: directSource }],
     ["explicit comparison without a version", { ...explicitRelation, targetFactVersionId: undefined }],
     ["direct comparison without a source", { ...explicitRelation, pipelineVersion: "memory-fact-relation-v2" }],
+    ["retired explicit-only protocol", { ...explicitRelation, pipelineVersion: "memory-explicit-relation-v1" }],
     ["unrecognized relation protocol", { ...explicitRelation, pipelineVersion: "unrecognized", source: directSource }]
   ] satisfies Array<[string, MemoryJobEnqueueInput]>)("rejects %s before persistence", async (_name, input) => {
     const memoryJob = { create: vi.fn(), findUnique: vi.fn() };

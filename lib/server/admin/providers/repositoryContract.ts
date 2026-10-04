@@ -1,4 +1,5 @@
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
+import type { AdminProviderAssignedRole } from "../../../contracts/adminProviderRoleRouting";
 import type { AdminModelPriceChange, AdminModelPricing } from "../../../contracts/adminProviderModelPrices";
 import type {
   AdminProviderCheckStatus,
@@ -174,6 +175,10 @@ export type ProviderModelActivationCandidate = Readonly<{
   };
   model: {
     activeVersion?: number;
+    /** The live configuration, null before the first activation. */
+    activeConfiguration?: unknown;
+    /** Installation roles pinned to this deployment; absent means none. */
+    assignedRoles?: readonly AdminProviderAssignedRole[];
     configuration: unknown;
     displayName: string;
     draftVersion: number;

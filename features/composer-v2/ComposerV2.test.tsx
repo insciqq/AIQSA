@@ -668,6 +668,34 @@ describe("Composer v2", () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
+  it("closes any layer with Escape wherever focus is, unless a menu took it or a modal dialog is above", async () => {
+    render(<ComposerV2 {...props({
+      workspace: { available: true, busy: false, enabled: true, internetEnabled: false, loading: false,
+        onToggle: vi.fn(), sessionState: "ready" }
+    })} />);
+    const opener = screen.getByRole("button", { name: /Workspace details/ });
+    fireEvent.click(opener);
+    (document.activeElement as HTMLElement | null)?.blur();
+    // An open menu handles its own Escape first.
+    const menuEscape = (event: KeyboardEvent) => { if (event.key === "Escape") event.preventDefault(); };
+    document.body.addEventListener("keydown", menuEscape, { once: true });
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.getByRole("menu", { name: "Workspace" })).toBeVisible();
+    // A modal dialog above the layer owns Escape.
+    const modal = document.createElement("section");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    document.body.append(modal);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.getByRole("menu", { name: "Workspace" })).toBeVisible();
+    modal.remove();
+    fireEvent.keyDown(document.body, { key: "Escape", isComposing: true });
+    expect(screen.getByRole("menu", { name: "Workspace" })).toBeVisible();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "Workspace" })).toBeNull();
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
   it("keeps every MCP mode visible, including Off with no enabled servers", () => {
     const onSelectMcp = vi.fn();
     const { rerender } = render(<ComposerV2 {...props({

@@ -1,7 +1,11 @@
 import { Prisma } from "@prisma/client";
 import {
+  MEMORY_AUTOMATIC_EXPLICIT_EQUIVALENCE_REASON,
+  MEMORY_EXPLICIT_EQUIVALENCE_REASON,
   MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION,
-  MEMORY_EXPLICIT_RELATION_POLICY_VERSION
+  MEMORY_EXPLICIT_RELATION_POLICY_VERSION,
+  MEMORY_EXPLICIT_RELATION_V1_PIPELINE_VERSION,
+  MEMORY_EXPLICIT_RELATION_V1_POLICY_VERSION
 } from "../learning/relations/explicitPolicy";
 
 export type MemoryFactVersionTarget = Readonly<{ factId: string; factVersionId: string }>;
@@ -9,10 +13,67 @@ export type MemoryEquivalentTargetResolver = (
   userId: string, target: MemoryFactVersionTarget, now: Date
 ) => Promise<MemoryFactVersionTarget | null>;
 
+/** An automatic fact the owner never touched: unpinned, not moved, an
+ * all-automatic lineage and no owner action event. An owner pin, edit or other
+ * action keeps the fact out of every automatic equivalence merge. Callers
+ * expose the fact row as `fact`. */
+export function memoryAutomaticEquivalenceUnprotectedPredicate(
+  fact: Prisma.Sql = Prisma.sql`fact`
+): Prisma.Sql {
+  return Prisma.sql`(
+    ${fact}."pinned" = FALSE AND ${fact}."movedToFactId" IS NULL
+    AND NOT EXISTS (SELECT 1 FROM "MemoryFactVersion" AS protected_lineage
+      WHERE protected_lineage."userId" = ${fact}."userId" AND protected_lineage."factId" = ${fact}."id"
+        AND protected_lineage."sourceMode" <> 'AUTOMATIC'::"MemoryFactSourceMode")
+    AND NOT EXISTS (SELECT 1 FROM "MemoryEvent" AS protected_owner_event
+      WHERE protected_owner_event."userId" = ${fact}."userId" AND protected_owner_event."factId" = ${fact}."id"
+        AND protected_owner_event."actorType" = 'USER'::"MemoryActorType")
+  )`;
+}
+
+/** A current global fact version that may enter an equivalence comparison.
+ * Exact source authority is rechecked by the comparison itself. Callers
+ * expose `version`, `fact` and `scope`. */
+export function memoryEquivalenceComparableVersionPredicate(): Prisma.Sql {
+  return Prisma.sql`(
+    fact."state" = 'ACTIVE'::"MemoryFactState" AND fact."currentVersionId" = version."id"
+    AND scope."state" = 'ACTIVE'::"MemoryScopeState" AND scope."scopeType" = 'GLOBAL_USER'::"MemoryScopeType"
+    AND version."state" = 'ACTIVE'::"MemoryFactVersionState" AND version."systemTo" IS NULL
+    AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
+    AND version."contentPurgedAt" IS NULL AND version."displayText" IS NOT NULL
+    AND (version."expiresAt" IS NULL OR version."expiresAt" > CURRENT_TIMESTAMP)
+  )`;
+}
+
+/** An accepted explicit-save merge edge of either protocol. Callers expose the
+ * merged version as `source` and its relation as `relation`. */
+function explicitEdgePredicate(source: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`(
+    ${source}."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+    AND relation."reasonCode" = ${MEMORY_EXPLICIT_EQUIVALENCE_REASON}
+    AND ((relation."pipelineVersion" = ${MEMORY_EXPLICIT_RELATION_V1_PIPELINE_VERSION}
+        AND ${source}."relationResolutionVersion" = ${MEMORY_EXPLICIT_RELATION_V1_POLICY_VERSION})
+      OR (relation."pipelineVersion" = ${MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION}
+        AND ${source}."relationResolutionVersion" = ${MEMORY_EXPLICIT_RELATION_POLICY_VERSION}))
+    AND ${source}."relationResolvedAt" IS NOT NULL AND ${source}."relationSnapshotHash" IS NOT NULL
+  )`;
+}
+
+/** An automatic version merged into an explicit save. Its own resolution
+ * fields may predate the merge; the immutable relation is the authority. */
+function automaticEdgePredicate(source: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`(
+    ${source}."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+    AND relation."pipelineVersion" = ${MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION}
+    AND relation."reasonCode" = ${MEMORY_AUTOMATIC_EXPLICIT_EQUIVALENCE_REASON}
+  )`;
+}
+
 /** Deletion includes historical equivalent versions, including aliases whose
- * current fact was later explicitly restored. Callers still fence/purge only
- * the selected lifecycle state; a later active version is not old content.
- * UNION bounds traversal to distinct owned facts even if a chain is broken. */
+ * current fact was later explicitly restored, and merged automatic versions
+ * whose source was later deleted. Callers still fence/purge only the selected
+ * lifecycle state; a later active version is not old content. UNION bounds
+ * traversal to distinct owned facts even if a chain is broken. */
 export function memoryExplicitEquivalentFactIdsSql(userId: string, factIds: readonly string[]): Prisma.Sql {
   if (factIds.length === 0) return Prisma.sql`SELECT NULL::text WHERE FALSE`;
   return Prisma.sql`
@@ -27,16 +88,14 @@ export function memoryExplicitEquivalentFactIdsSql(userId: string, factIds: read
       INNER JOIN "MemoryFactVersionRelation" AS relation
         ON relation."userId" = target_version."userId" AND relation."targetVersionId" = target_version."id"
         AND relation."kind" = 'MERGED_INTO'::"MemoryFactVersionRelationKind"
-        AND relation."pipelineVersion" = ${MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION}
-        AND relation."reasonCode" = 'explicit_semantic_equivalence'
       INNER JOIN "MemoryFactVersion" AS source_version
         ON source_version."userId" = relation."userId" AND source_version."id" = relation."sourceVersionId"
         AND source_version."mergedIntoVersionId" = target_version."id"
-      WHERE source_version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
-        AND source_version."state" IN ('MERGED'::"MemoryFactVersionState", 'FORGOTTEN'::"MemoryFactVersionState")
-        AND source_version."relationResolutionVersion" = ${MEMORY_EXPLICIT_RELATION_POLICY_VERSION}
-        AND source_version."relationResolvedAt" IS NOT NULL
-        AND source_version."relationSnapshotHash" IS NOT NULL
+      WHERE (${explicitEdgePredicate(Prisma.sql`source_version`)}
+          AND source_version."state" IN ('MERGED'::"MemoryFactVersionState", 'FORGOTTEN'::"MemoryFactVersionState"))
+        OR (${automaticEdgePredicate(Prisma.sql`source_version`)}
+          AND source_version."state" IN ('MERGED'::"MemoryFactVersionState", 'FORGOTTEN'::"MemoryFactVersionState",
+            'RETRACTED'::"MemoryFactVersionState"))
     )
     SELECT "id" FROM equivalence_lineage
   `;
@@ -77,8 +136,6 @@ export async function resolveMemoryExplicitEquivalentTarget(
         ON relation."userId" = version."userId" AND relation."sourceVersionId" = version."id"
         AND relation."targetVersionId" = version."mergedIntoVersionId"
         AND relation."kind" = 'MERGED_INTO'::"MemoryFactVersionRelationKind"
-        AND relation."pipelineVersion" = ${MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION}
-        AND relation."reasonCode" = 'explicit_semantic_equivalence'
       INNER JOIN "MemoryFactVersion" AS next_version
         ON next_version."userId" = version."userId" AND next_version."id" = relation."targetVersionId"
         AND next_version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
@@ -88,11 +145,9 @@ export async function resolveMemoryExplicitEquivalentTarget(
       WHERE cardinality(prior.path) < 64 AND NOT next_version."id" = ANY(prior.path)
         AND fact."state" = 'RETRACTED'::"MemoryFactState" AND fact."currentVersionId" IS NULL
         AND version."state" = 'MERGED'::"MemoryFactVersionState"
-        AND version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+        AND (${explicitEdgePredicate(Prisma.sql`version`)} OR ${automaticEdgePredicate(Prisma.sql`version`)})
         AND version."safetyClassificationState" = 'CLASSIFIED'::"MemorySafetyClassificationState"
         AND version."contentPurgedAt" IS NULL AND version."displayText" IS NOT NULL
-        AND version."relationResolutionVersion" = ${MEMORY_EXPLICIT_RELATION_POLICY_VERSION}
-        AND version."relationResolvedAt" IS NOT NULL AND version."relationSnapshotHash" IS NOT NULL
         AND version."systemTo" IS NOT NULL
         AND (version."expiresAt" IS NULL OR version."expiresAt" > ${now})
     )

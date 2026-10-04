@@ -1,8 +1,9 @@
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
+import { MCP_MATERIALIZATION_PERSONAL_CREDENTIAL_REJECTED } from "../../contracts/runs";
 import { mcpCatalogToolsByNames } from "./discovery";
 import { logEvent } from "../observability";
 import { searchMcpCatalog, type McpToolSearchResult } from "./toolSearch";
-import type { McpCapabilityCatalog, McpRunPlanResult } from "./runPlan";
+import { mcpPersonalCredentialRejections, type McpCapabilityCatalog, type McpRunPlanResult } from "./runPlan";
 import type { McpToolAccessFilter } from "./toolAccess";
 import { filterMcpCatalog } from "./toolAccessProjection";
 
@@ -13,9 +14,13 @@ type Materialize = (userId: string, tools: readonly Readonly<{
 }>[], signal?: AbortSignal) => Promise<McpRunPlanResult>;
 
 export class McpDiscoveryError extends Error {
-  constructor(readonly code: string, options?: ErrorOptions) {
+  /** The one server named by a personal-credential rejection; its catalog already shows it. */
+  readonly serverName: string | null;
+
+  constructor(readonly code: string, options?: ErrorOptions & { serverName?: string | null }) {
     super(code, options);
     this.name = "McpDiscoveryError";
+    this.serverName = options?.serverName ?? null;
   }
 }
 
@@ -36,7 +41,14 @@ export async function materializeMcpSelection(input: Readonly<{
     if (input.signal?.aborted) throw error;
     throw new McpDiscoveryError("mcp_materialization_failed", { cause: error });
   }
-  if (!result.ok) throw new McpDiscoveryError(`mcp_materialization_${result.code}`);
+  if (!result.ok) {
+    const rejected = result.code === "mcp_not_ready" ? mcpPersonalCredentialRejections(result.issues) : [];
+    if (rejected.length) {
+      throw new McpDiscoveryError(MCP_MATERIALIZATION_PERSONAL_CREDENTIAL_REJECTED,
+        { serverName: rejected.length === 1 ? rejected[0]! : null });
+    }
+    throw new McpDiscoveryError(`mcp_materialization_${result.code}`);
+  }
   const actual = result.snapshot.tools;
   if (actual.length !== input.selected.length || new Set(actual.map((tool) => tool.namespacedName)).size !== actual.length ||
     !input.selected.every((selected) => actual.some((tool) => tool.namespacedName === selected.namespacedName &&

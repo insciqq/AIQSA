@@ -739,6 +739,27 @@ describe("McpSettingsSection", () => {
     expect(within(sheet).getByRole("region", { name: "Personal values" })).toBeVisible();
   });
 
+  it("explains the Bearer rule on a personal value sent in the Authorization header and saves it as entered", async () => {
+    const mem0 = userServer("mem0", "Mem0");
+    const catalog = patchableCatalog([{
+      ...mem0,
+      fields: [{ ...mem0.fields[0]!, authorizationHeader: true }, secondKey]
+    }]);
+    vi.stubGlobal("fetch", catalog.fetchMock);
+    render(<McpSettingsSection />);
+    const sheet = await openServer("Mem0");
+    const token = within(sheet).getByLabelText("API key");
+    expect(token).toHaveAccessibleDescription(
+      "A bare token is sent as “Bearer <token>”. A value that already names a scheme is sent as entered."
+    );
+    expect(within(sheet).getByLabelText("Workspace ID")).not.toHaveAttribute("aria-describedby");
+    expect(within(sheet).getAllByText(/A bare token is sent as/u)).toHaveLength(1);
+
+    fireEvent.change(token, { target: { value: "synthetic-bare-token" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save personal values" }));
+    await waitFor(() => expect(catalog.patches[0]).toEqual({ id: "mem0", body: { values: { api_key: "synthetic-bare-token" } } }));
+  });
+
   it("enables a server once Complete setup saves its last missing value", async () => {
     const catalog = patchableCatalog([userServer("mem0", "Mem0")]);
     vi.stubGlobal("fetch", catalog.fetchMock);
