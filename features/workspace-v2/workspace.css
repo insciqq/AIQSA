@@ -105,6 +105,17 @@
   pointer-events: none;
 }
 
+/* On the gauge the dot takes its own room after the percentage, level with
+   the label's top on both the 32px and the 44px touch trigger. */
+.v2-chat-context-trigger[data-suggested] {
+  padding-right: 0.875rem;
+}
+
+.v2-chat-context-trigger[data-suggested]::before {
+  top: calc(50% - 0.75rem);
+  right: 0.125rem;
+}
+
 .v2-chat-context-popover {
   position: absolute;
   z-index: 95;
