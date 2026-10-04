@@ -497,7 +497,11 @@ test("a generation-only or broken choice is never substituted; withdrawal return
 
 for (const viewport of [
   { width: 1440, height: 900, theme: "light" },
-  { width: 390, height: 844, theme: "dark" }
+  { width: 1440, height: 900, theme: "dark" },
+  { width: 820, height: 1180, theme: "light" },
+  { width: 1180, height: 820, theme: "dark" },
+  { width: 390, height: 844, theme: "dark" },
+  { width: 844, height: 390, theme: "light" }
 ] as const) {
   test(`the Image generation role and the Studio image model row fit at ${viewport.width}x${viewport.height} (${viewport.theme})`, async ({ page, context, baseURL }, testInfo) => {
     test.setTimeout(120_000);
