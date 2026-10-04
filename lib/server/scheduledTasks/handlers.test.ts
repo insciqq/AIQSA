@@ -35,12 +35,14 @@ function fixture(current: ScheduledTask | null = task()) {
     update: vi.fn(async (_userId: string, _taskId: string, write: ScheduledTaskUpdateWrite) =>
       task({ ...write.draft, status: write.status, revision: write.expectedRevision + 1 })),
     delete: vi.fn().mockResolvedValue(true),
-    markSeen: vi.fn().mockResolvedValue(true)
+    markSeen: vi.fn().mockResolvedValue(true),
+    requestRun: vi.fn(async () => task({ ...current, running: true }))
   };
   const loadCatalog = vi.fn().mockResolvedValue(catalog);
   const resolveAuth = vi.fn().mockResolvedValue({ userId: "owner", user: { id: "owner", status: "active" } });
-  const handlers = createScheduledTaskHandlers({ loadCatalog, now: () => NOW, resolveAuth, store });
-  return { handlers, loadCatalog, resolveAuth, store };
+  const kick = vi.fn();
+  const handlers = createScheduledTaskHandlers({ kick, loadCatalog, now: () => NOW, resolveAuth, store });
+  return { handlers, kick, loadCatalog, resolveAuth, store };
 }
 
 const json = (method: string, body: unknown, path = "") =>
@@ -195,5 +197,37 @@ describe("scheduled tasks owner API", () => {
     expect(f.store.markSeen).toHaveBeenCalledWith("owner", "task-1");
     f.store.markSeen.mockResolvedValueOnce(false);
     expect((await f.handlers.markSeen(new Request("http://localhost/x", { method: "POST" }), "task-2")).status).toBe(404);
+  });
+
+  it("queues a manual run now for the owner, refuses while one is open and wakes the runner", async () => {
+    const f = fixture(task({ nextRunAt: null, status: "paused" }));
+    const run = (id = "task-1") => f.handlers.runNow(new Request(`http://localhost/api/me/scheduled-tasks/${id}/run`, { method: "POST" }), id);
+    const queued = await run();
+    expect(queued.status).toBe(200);
+    expect(queued.headers.get("cache-control")).toBe("private, no-store");
+    expect((await queued.json()).task).toMatchObject({ running: true, status: "paused" });
+    expect(f.store.requestRun).toHaveBeenCalledWith("owner", "task-1", NOW);
+    expect(f.kick).toHaveBeenCalledTimes(1);
+
+    f.store.requestRun.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_running"));
+    const busy = await run();
+    expect([busy.status, await busy.json()]).toEqual([409, { error: "scheduled_task_running" }]);
+    f.store.requestRun.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_not_found"));
+    expect((await run("task-2")).status).toBe(404);
+    expect((await run("../x")).status).toBe(404);
+    expect(f.kick).toHaveBeenCalledTimes(1);
+
+    f.resolveAuth.mockResolvedValueOnce({ userId: "owner", user: { id: "owner", status: "disabled" } });
+    expect((await run()).status).toBe(403);
+  });
+
+  it("wakes the runner after create and update", async () => {
+    const f = fixture();
+    await f.handlers.create(json("POST", draft));
+    await f.handlers.update(patch({ expectedRevision: 2, title: "New" }), "task-1");
+    expect(f.kick).toHaveBeenCalledTimes(2);
+    f.store.create.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_limit"));
+    await f.handlers.create(json("POST", draft));
+    expect(f.kick).toHaveBeenCalledTimes(2);
   });
 });

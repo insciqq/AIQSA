@@ -15,6 +15,8 @@ Personal presets supplement personal/temporary chats, never Assistants/Projects.
 
 Acceptance transfers execution server-side; disconnect never cancels preparation/commands. Stop/deadlines/authority remain. Recovery uses live owners without replay; PDF gates eligible Memory and final admission refreezes authority/evidence. Preparation forbids provider/tool I/O. Failed Memory preparation answers without Memory, preserving authority and settled actions. Temporary/Project bypass Memory; inbound Memory MCP stays independent.
 
+Scheduled tasks are their owner's standing authority for one saved prompt. Every occurrence re-admits through the ordinary send handler as that owner under current catalog, entitlement, active-run and context rules, with the saved model and Search choice and no substitute; lost authority fails the occurrence and pauses the task with a visible reason. Each instant runs at most once: run creation links its occurrence in the same transaction, late or busy instants end skipped after bounded windows, and runs execute in the app process so Stop reaches them.
+
 Follow-up orders user input within accepted bindings/budgets without repeating preparation. Acceptance races publication; delivery proves receipt, not obedience. Preserve partial text, settle dispatched tools, skip obsolete decisions, fence old generations. Recovery closes admission; executor loss ends clarified tasks. Regeneration re-admits them.
 
 Continuation summarizes active-branch text through the admitted System Model, excluding tools/attachments/Workspace inspection. Enabled Workspace may copy project files unread into a private single-use seed. Preserve ownership/retention/source/conversation; never repeat interrupted provider work.

@@ -86,7 +86,11 @@ export type ScheduledTaskLimits = { maxActive: number; maxTotal: number };
 export type ScheduledTaskListResponse = { tasks: ScheduledTask[]; limits: ScheduledTaskLimits; emailAvailable: boolean };
 /** `GET /api/me/scheduled-tasks/[taskId]`; `recentRuns` holds the newest occurrences first. */
 export type ScheduledTaskDetailResponse = { task: ScheduledTask; recentRuns: ScheduledTaskRun[] };
-/** Response of create (201) and update (200). */
+/**
+ * Response of create (201), update (200) and `POST /api/me/scheduled-tasks/[taskId]/run`
+ * (200), which queues a manual run now in any status without changing the
+ * schedule or status and refuses with `scheduled_task_running` while a run is open.
+ */
 export type ScheduledTaskResponse = { task: ScheduledTask };
 
 /** Every editable field; also the `POST /api/me/scheduled-tasks` body, which creates an active task. */
@@ -124,6 +128,7 @@ export const SCHEDULED_TASK_ERROR_CODES = [
   "scheduled_task_limit",
   "scheduled_task_stale",
   "scheduled_task_not_found",
+  "scheduled_task_running",
   "scheduled_tasks_unavailable"
 ] as const;
 export type ScheduledTaskErrorCode = (typeof SCHEDULED_TASK_ERROR_CODES)[number];
@@ -301,6 +306,7 @@ export function scheduledTaskErrorMessage(errorCode: unknown): string {
       return `You can have up to ${SCHEDULED_TASK_MAX_ACTIVE} active and ${SCHEDULED_TASK_MAX_TOTAL} saved scheduled tasks.`;
     case "scheduled_task_stale": return "This task was changed elsewhere. Reload it and try again; your unsaved changes are kept.";
     case "scheduled_task_not_found": return "This task is no longer available.";
+    case "scheduled_task_running": return "This task is already running. Wait for the current run to finish.";
     default: return "Scheduled tasks are unavailable right now. Try again.";
   }
 }
@@ -311,9 +317,16 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case null: return null;
     case "model_unavailable": return "The model is no longer available. Choose another model and resume.";
     case "search_unavailable": return "Web search is no longer available with this model. Turn it off or choose another model and resume.";
+    case "provider_unavailable": return "The model's provider is unavailable right now. Check the model and resume.";
+    case "account_inactive": return "Paused while the account was not active. Resume to continue.";
+    case "schedule_invalid": return "The schedule can no longer be calculated. Edit the schedule and resume.";
     case "repeated_failures": return "Paused after three failed runs in a row.";
     case "missed": return "Skipped: the scheduled time passed while runs were unavailable.";
     case "chat_busy": return "Skipped: the task's chat was busy.";
+    case "paused": return "Skipped: the task was paused.";
+    case "admission_failed": return "The run could not start.";
+    case "run_unavailable": return "The task's chat was deleted before the run finished.";
+    case "model_run_cancelled": return "Stopped in the chat.";
     default: return "The run did not complete.";
   }
 }
