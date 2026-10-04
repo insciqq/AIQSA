@@ -274,13 +274,17 @@ export type ScheduledTaskRefusal =
   | Readonly<{ kind: "retry"; reasonCode: "chat_busy" | null }>
   | Readonly<{ kind: "fail"; outcome: ScheduledTaskOutcome }>;
 
-/** The chat or its Workspace is in use: retried, and once the window ends skipped as `chat_busy`. */
-const BUSY_CODES = new Set(["active_run_in_progress", "active_leaf_changed", "workspace_busy"]);
-/** Races and outages that may clear within the window; still failing at its end, the run fails once. */
+/** The chat is in use: retried, and once the window ends skipped as `chat_busy`. */
+const BUSY_CODES = new Set(["active_run_in_progress", "active_leaf_changed"]);
+/**
+ * Races and outages that may clear within the window; still failing at its
+ * end, the run fails once and counts toward the repeated-failure pause, so a
+ * Workspace stuck busy never skips quietly forever.
+ */
 const TRANSIENT_CODES = new Set([
   "chat_not_found", "memory_owner_unavailable", "personal_draft_conflict", "provider_admission_changed",
   "scheduled_task_occurrence_unavailable",
-  "mcp_not_ready", "workspace_followup_predecessor_failed", "workspace_followup_unavailable",
+  "mcp_not_ready", "workspace_busy", "workspace_followup_predecessor_failed", "workspace_followup_unavailable",
   "workspace_runtime_unavailable", "workspace_secret_unavailable"
 ]);
 const PAUSE_CODES = new Map<string, ScheduledTaskPauseReason>([

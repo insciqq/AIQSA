@@ -245,10 +245,9 @@ describe("send refusals", () => {
   });
 
   it("retries every transient tool and Workspace refusal within the window", () => {
-    // A busy Workspace is a busy chat: the window ends in a quiet chat_busy skip.
-    expect(classifySendRefusal(409, "workspace_busy")).toEqual({ kind: "retry", reasonCode: "chat_busy" });
+    // Unlike a busy chat, a Workspace that stays busy ends the window as a counted failure, never a quiet skip.
     for (const [status, code] of [
-      [409, "workspace_followup_predecessor_failed"], [409, "workspace_followup_unavailable"],
+      [409, "workspace_busy"], [409, "workspace_followup_predecessor_failed"], [409, "workspace_followup_unavailable"],
       [503, "workspace_runtime_unavailable"], [409, "mcp_not_ready"],
       // Saved Workspace secrets that could not be read or locked.
       [503, "workspace_secret_unavailable"]
