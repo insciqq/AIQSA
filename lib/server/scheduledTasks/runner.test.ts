@@ -823,6 +823,16 @@ describe("scheduled task runner with the owner's tools", () => {
     await transient.tick();
     expect(transient.forTask(waiting)).toMatchObject([{ state: "COMPLETED" }]);
     expect(waiting).toMatchObject({ consecutiveFailures: 0, status: "ACTIVE" });
+
+    // A Workspace that stays busy through the window is a counted failure, never a quiet skip.
+    const stuck = harness();
+    const busy = stuck.addTask({ workspaceEnabled: true });
+    stuck.setReply(() => ({ error: "workspace_busy", status: 409 }));
+    await stuck.tick();
+    stuck.advance(31 * MINUTE);
+    await stuck.tick();
+    expect(stuck.forTask(busy)).toMatchObject([{ reasonCode: "admission_failed", state: "FAILED" }]);
+    expect(busy).toMatchObject({ consecutiveFailures: 1, status: "ACTIVE" });
   });
 });
 
