@@ -31,6 +31,7 @@ vi.mock("./runtimeRepository", () => ({ createPrismaMcpRuntimeRepository: () => 
 vi.mock("./clientSessionFactory", () => ({ createMcpClientSessionFactory: () => sessions }));
 vi.mock("./runPlanRepository", () => ({
   createPrismaMcpCapabilityCatalogLoader: () => vi.fn(),
+  createPrismaMcpCapabilityCatalogWithOmissionsLoader: () => vi.fn(),
   createPrismaMcpProjectRunPlanLoader: () => projectLoader,
   createPrismaMcpRunPlanLoader: () => personalLoader
 }));

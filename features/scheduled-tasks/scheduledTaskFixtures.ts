@@ -13,6 +13,8 @@ export function scheduledTaskFixture(overrides: Partial<ScheduledTask> = {}): Sc
     provider: "provider-a",
     searchEnabled: false,
     emailNotify: false,
+    toolsEnabled: false,
+    workspaceEnabled: false,
     chatMode: "same",
     status: "active",
     pauseReason: null,

@@ -152,9 +152,11 @@ describe("ScheduledTasksPanel", () => {
     list.mockResolvedValue(listed([task]));
     detail.mockResolvedValueOnce({ task, recentRuns: [
       { id: "run-2", scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
-        startedAt: "2026-10-02T08:00:05.000Z", finishedAt: "2026-10-02T08:01:00.000Z", chatId: "chat-1", unseen: false },
+        startedAt: "2026-10-02T08:00:05.000Z", finishedAt: "2026-10-02T08:01:00.000Z", chatId: "chat-1", unseen: false,
+        unavailableSources: [] },
       { id: "run-1", scheduledFor: "2026-10-01T12:00:00.000Z", trigger: "manual", state: "failed", reasonCode: "model_unavailable",
-        startedAt: "2026-10-01T12:00:00.000Z", finishedAt: "2026-10-01T12:00:02.000Z", chatId: "chat-1", unseen: false }
+        startedAt: "2026-10-01T12:00:00.000Z", finishedAt: "2026-10-01T12:00:02.000Z", chatId: "chat-1", unseen: false,
+        unavailableSources: [] }
     ] }).mockResolvedValueOnce({ task: { ...task, revision: 3, title: "Renamed elsewhere" }, recentRuns: [] });
     update.mockRejectedValueOnce(new ScheduledTaskApiError("scheduled_task_stale", 409))
       .mockResolvedValueOnce({ ...task, revision: 4, title: "My brief" });

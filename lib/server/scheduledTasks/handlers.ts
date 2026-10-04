@@ -15,6 +15,8 @@ export type ScheduledTaskHandlerDeps = Readonly<{
   now?: () => Date;
   resolveAuth: RequestAuthResolver;
   store: ScheduledTaskStore;
+  /** The installation Workspace switch; a task can turn Workspace on only while it is on. */
+  workspacePolicy: Readonly<{ read(): Promise<Readonly<{ enabled: boolean }>> }>;
 }>;
 
 const headers = { "cache-control": "private, no-store" };
@@ -26,6 +28,8 @@ const STATUS: Record<ScheduledTaskErrorCode, number> = {
   scheduled_task_chat_mode_invalid: 400,
   scheduled_task_model_unavailable: 400,
   scheduled_task_search_unavailable: 400,
+  scheduled_task_tools_unavailable: 400,
+  scheduled_task_workspace_unavailable: 400,
   scheduled_task_limit: 409,
   scheduled_task_hourly_limit: 409,
   scheduled_task_stale: 409,
@@ -64,9 +68,18 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
     }
   }
 
+  /**
+   * The composer's rules for the saved choices: the exact model with Search
+   * when asked, tool calling for tools and Workspace, and Workspace turned on
+   * for the installation. A Workspace runtime that is only down for now does
+   * not refuse a save; a run then retries.
+   */
   async function admitModel(userId: string, draft: ScheduledTaskDraft): Promise<void> {
     const admission = resolveScheduledTaskModel(await deps.loadCatalog(userId), draft);
     if (!admission.ok) throw new ScheduledTaskError(admission.code);
+    if (draft.workspaceEnabled && !(await deps.workspacePolicy.read()).enabled) {
+      throw new ScheduledTaskError("scheduled_task_workspace_unavailable");
+    }
   }
 
   return {

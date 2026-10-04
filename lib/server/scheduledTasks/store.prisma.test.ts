@@ -9,7 +9,8 @@ const users: string[] = [];
 const store = createPrismaScheduledTaskStore(prisma);
 const draft: ScheduledTaskDraft = {
   title: "Synthetic brief", prompt: "Synthetic scheduled prompt", schedule: { kind: "daily", time: "09:00" },
-  timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false, emailNotify: false, chatMode: "new"
+  timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false, emailNotify: false, toolsEnabled: false,
+  workspaceEnabled: false, chatMode: "new"
 };
 const hourlyDraft: ScheduledTaskDraft = {
   ...draft, chatMode: "same",
@@ -105,6 +106,25 @@ describe("persisted scheduled tasks", () => {
     await expect(store.update(userId, task.id, { draft, expectedRevision: 4, nextRunAt: due, status: "active" }))
       .rejects.toMatchObject({ code: "scheduled_task_stale" });
     expect(await store.get(userId, task.id)).toMatchObject({ pauseReason: "model_unavailable", revision: 5, status: "paused" });
+  });
+
+  it("keeps the tool and Workspace switches and clears the incomplete-run streak on every owner update", async () => {
+    const userId = await owner();
+    const task = await store.create(userId, { ...draft, toolsEnabled: true, workspaceEnabled: true }, due);
+    expect(task).toMatchObject({ toolsEnabled: true, workspaceEnabled: true });
+    await prisma.scheduledTask.update({ data: { consecutiveIncompleteRuns: 2 }, where: { id: task.id } });
+    const updated = await store.update(userId, task.id, { draft: { ...draft, toolsEnabled: true, workspaceEnabled: false },
+      expectedRevision: 1, nextRunAt: undefined, status: "active" });
+    expect(updated).toMatchObject({ revision: 2, toolsEnabled: true, workspaceEnabled: false });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({ consecutiveIncompleteRuns: 0 });
+    // Existing rows default to tools and Workspace off; a streak never goes negative and missing sources form a bounded list.
+    await expect(prisma.scheduledTask.update({ data: { consecutiveIncompleteRuns: -1 }, where: { id: task.id } }))
+      .rejects.toThrow("ScheduledTask_incomplete_runs_check");
+    const occurrence = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: due, taskId: task.id, trigger: "schedule", userId } });
+    for (const unavailableSources of [[], { name: "Mail" }]) {
+      await expect(prisma.scheduledTaskOccurrence.update({ data: { unavailableSources }, where: { id: occurrence.id } }))
+        .rejects.toThrow("ScheduledTaskOccurrence_unavailable_sources_check");
+    }
   });
 
   it("starts a new generation without a baseline only when the prompt or schedule kind changes", async () => {

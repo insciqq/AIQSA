@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { ScheduledTaskRunTrigger } from "../../contracts/scheduledTasks";
+import type { ScheduledTaskRunTrigger, ScheduledTaskUnavailableSource } from "../../contracts/scheduledTasks";
 import type { ScheduledTaskSettledState } from "../scheduledTasks/runnerPolicy";
+import { unavailableSourcesWire } from "../scheduledTasks/sourceHealth";
 import { notScheduledRunSql } from "./scheduledRunExclusion";
 import type { ValidatedPushSubscription } from "./subscriptionRequest";
 
@@ -26,6 +27,8 @@ export type OccurrencePushEvent = Readonly<{
   taskPauseReason: string | null;
   title: string;
   trigger: ScheduledTaskRunTrigger;
+  /** The relevant sources the run could not reach; empty when it was complete. */
+  unavailableSources: readonly ScheduledTaskUnavailableSource[];
   userId: string;
 }>;
 
@@ -164,12 +167,12 @@ export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushS
     async claimOccurrence(occurrenceId, now) {
       const [row] = await prisma.$queryRaw<Array<{
         chatId: string | null; reasonCode: string | null; state: ScheduledTaskSettledState;
-        taskPauseReason: string | null; title: string; trigger: string; userId: string;
+        taskPauseReason: string | null; title: string; trigger: string; unavailableSources: Prisma.JsonValue | null; userId: string;
       }>>(Prisma.sql`
         WITH event AS (
           SELECT occurrence."id", occurrence."userId", occurrence."state"::text AS "state", occurrence."reasonCode",
             occurrence."trigger", COALESCE(occurrence."chatId", task."chatId") AS "chatId", task."title",
-            task."pauseReason" AS "taskPauseReason"
+            task."pauseReason" AS "taskPauseReason", occurrence."unavailableSources"
           FROM "ScheduledTaskOccurrence" AS occurrence
           INNER JOIN "ScheduledTask" AS task ON task."id" = occurrence."taskId"
           WHERE occurrence."id" = ${occurrenceId}
@@ -183,10 +186,12 @@ export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushS
           RETURNING "occurrenceId"
         )
         SELECT event."userId", event."chatId", event."state", event."reasonCode", event."trigger", event."title",
-          event."taskPauseReason"
+          event."taskPauseReason", event."unavailableSources"
         FROM event INNER JOIN claimed ON claimed."occurrenceId" = event."id"
       `);
-      return row ? { ...row, kind: "occurrence", trigger: trigger(row.trigger) } : null;
+      return row ? {
+        ...row, kind: "occurrence", trigger: trigger(row.trigger), unavailableSources: unavailableSourcesWire(row.unavailableSources)
+      } : null;
     },
 
     async listTargets(userId, now) {

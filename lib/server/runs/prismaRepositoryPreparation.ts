@@ -303,7 +303,7 @@ async function reserveAcceptedWorkspaceSession(
   }
 }
 
-async function insertAcceptedWorkspaceRunBinding(
+export async function insertAcceptedWorkspaceRunBinding(
   tx: Prisma.TransactionClient,
   input: PreparingRunAdmissionInput,
   ids: Readonly<{
@@ -314,11 +314,15 @@ async function insertAcceptedWorkspaceRunBinding(
   deferSessionClaim = false
 ): Promise<void> {
   const plan = input.workspaceAdmissionPlan;
+  // An accepted run writes its Workspace choice back to the chat's switch,
+  // except a scheduled task's run: it never changes an existing chat's switch,
+  // and a chat it creates already starts with the task's setting.
+  const writesChatSwitch = !(input.admissionKind === "NORMAL_SEND" && input.scheduledOccurrence);
   if (!plan) {
     if (input.normalizedRequest.workspace || input.workspaceEnabled === true) {
       throw new WorkspaceRunConflictError("workspace_runtime_incompatible");
     }
-    if (input.workspaceEnabled !== undefined) {
+    if (input.workspaceEnabled !== undefined && writesChatSwitch) {
       await tx.chat.update({
         data: { workspaceEnabled: false },
         where: { id: input.chatId }
@@ -378,10 +382,12 @@ async function insertAcceptedWorkspaceRunBinding(
       modelRunId: ids.runId, configuration: json(agent), compatibilityHash: agent.compatibilityHash
     } });
   }
-  await tx.chat.update({
-    data: { workspaceEnabled: true },
-    where: { id: input.chatId }
-  });
+  if (writesChatSwitch) {
+    await tx.chat.update({
+      data: { workspaceEnabled: true },
+      where: { id: input.chatId }
+    });
+  }
 }
 
 async function insertRunPdfAdmissions(
@@ -1689,7 +1695,9 @@ export async function admitPreparingRunWithClient(
       if (scheduledOccurrence) {
         await linkScheduledTaskOccurrence(tx, { chatId: input.chatId, now: admissionNow,
           occurrenceId: scheduledOccurrence.occurrenceId, runId: run.id, taskGeneration: scheduledOccurrence.taskGeneration,
-          taskId: scheduledOccurrence.taskId, taskRevision: scheduledOccurrence.taskRevision, userId: input.userId, userMessageId });
+          taskId: scheduledOccurrence.taskId, taskRevision: scheduledOccurrence.taskRevision,
+          unavailableSources: input.admissionKind === "NORMAL_SEND" ? input.scheduledUnavailableSources ?? [] : [],
+          userId: input.userId, userMessageId });
       }
       await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {

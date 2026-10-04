@@ -119,7 +119,7 @@ describe("browser push sender", () => {
   it("delivers scheduled settlements through the occurrence claim", async () => {
     const occurrence: BrowserPushEvent = {
       chatId: null, kind: "occurrence", reasonCode: null, state: "COMPLETED", taskPauseReason: null, title: "Brief", trigger: "schedule",
-      userId: "owner-1"
+      unavailableSources: [], userId: "owner-1"
     };
     const phone = device("phone");
     const h = harness({ events: new Map([["occurrence-1", occurrence]]), targets: [phone.target] });

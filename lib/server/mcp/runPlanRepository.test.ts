@@ -5,6 +5,7 @@ import { namespacedMcpToolName, prepareMcpRunPlan } from "./runPlan";
 import { resolveMcpRunTool } from "./toolExecutor";
 import {
   loadMcpCapabilityCatalog,
+  loadMcpCapabilityCatalogWithOmissions,
   loadMcpRunPlanRecords,
   loadMcpRunPlanRecordsForServers,
   loadMcpRunPlanRecordsForProjectServers
@@ -295,6 +296,31 @@ describe("Prisma MCP run-plan loader", () => {
 
     const [loaded] = await loadMcpRunPlanRecords("user-1", clientWith([record]).client);
     expect(loaded?.catalogTools).toEqual([]);
+  });
+
+  it("names the owner's personal servers Auto had to leave out, never installation servers or switched-off tools", async () => {
+    const oauthServer = (id: string, name: string, state: string) => {
+      const record = preference({ desiredRuntimeGeneration: null, desiredRuntimeGenerationId: null });
+      Object.assign(record.server, { activeRevision: { ...record.server.activeRevision!, configuration: { auth: { mode: "oauth" } },
+        validationEvidence: { toolInventory: [] } }, displayName: name, grants: [], id, oauthConnections: [{
+        disconnectRequestedAt: null, id: `oauth-${id}`, state, userId: "user-1" }], ownerUserId: "user-1" });
+      return record;
+    };
+    // A lapsed sign-in leaves the personal server with no tools: Auto omits it, and says so.
+    const lapsed = oauthServer("personal-mail", "Synthetic Mail", "reauthorization_required");
+    // An installation server is never an owner's omission, whatever its state.
+    const shared = preference({ desiredRuntimeGeneration: null, desiredRuntimeGenerationId: "gone" });
+    // A personal server whose tools the owner switched off is the owner's choice, not a gap.
+    const switchedOff = preference();
+    Object.assign(switchedOff.server, { displayName: "Synthetic Notes", grants: [], id: "personal-notes", ownerUserId: "user-1" });
+    switchedOff.server.activeRevision!.validationEvidence = { toolInventory: [] };
+    switchedOff.userDisabledToolNames = ["echo"];
+    const records = await loadMcpRunPlanRecords("user-1", clientWith([lapsed, shared, switchedOff]).client);
+    expect(records.map((record) => [record.serverId, record.personal ?? false])).toEqual(
+      expect.arrayContaining([["personal-mail", true], ["personal-notes", true], [shared.server.id, false]]));
+    const loaded = await loadMcpCapabilityCatalogWithOmissions("user-1", clientWith([lapsed, shared, switchedOff]).client);
+    expect(loaded.omitted).toEqual([{ reason: "mcp_reauthorization_required", serverId: "personal-mail", serverName: "Synthetic Mail" }]);
+    expect(loaded.catalog).toEqual(await loadMcpCapabilityCatalog("user-1", clientWith([lapsed, shared, switchedOff]).client));
   });
 
   it("rejects a personal server owned by someone else despite an accidental direct grant", async () => {

@@ -22,8 +22,8 @@ function task(overrides: Partial<ScheduledTask>): ScheduledTask {
   return {
     id: "task", title: "Task", prompt: "Synthetic scheduled instructions.",
     schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/London",
-    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, chatMode: "same",
-    status: "active", pauseReason: null, nextRunAt: "2026-10-05T08:00:00.000Z", lastRun: null, running: false,
+    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: false,
+    workspaceEnabled: false, chatMode: "same", status: "active", pauseReason: null, nextRunAt: "2026-10-05T08:00:00.000Z", lastRun: null, running: false,
     chatId: null, unseenResult: false, revision: 1,
     createdAt: "2026-09-20T08:00:00.000Z", updatedAt: "2026-09-20T08:00:00.000Z",
     ...overrides
@@ -61,17 +61,17 @@ const listFixture: ScheduledTask[] = [
 const runsFixture: Readonly<Record<string, readonly ScheduledTaskRun[]>> = {
   brief: [
     { id: "brief-run-3", scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
-      startedAt: "2026-10-02T08:00:03.000Z", finishedAt: "2026-10-02T08:01:10.000Z", chatId, unseen: true },
+      startedAt: "2026-10-02T08:00:03.000Z", finishedAt: "2026-10-02T08:01:10.000Z", chatId, unseen: true, unavailableSources: [] },
     { id: "brief-run-2", scheduledFor: "2026-10-01T13:12:00.000Z", trigger: "manual", state: "failed", reasonCode: "chat_busy",
-      startedAt: "2026-10-01T13:12:00.000Z", finishedAt: "2026-10-01T13:42:00.000Z", chatId, unseen: false },
+      startedAt: "2026-10-01T13:12:00.000Z", finishedAt: "2026-10-01T13:42:00.000Z", chatId, unseen: false, unavailableSources: [] },
     { id: "brief-run-1", scheduledFor: "2026-10-01T08:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "missed",
-      startedAt: null, finishedAt: "2026-10-01T20:00:00.000Z", chatId: null, unseen: false }
+      startedAt: null, finishedAt: "2026-10-01T20:00:00.000Z", chatId: null, unseen: false, unavailableSources: [] }
   ],
   inbox: [
     { id: "inbox-run-2", scheduledFor: "2026-10-02T15:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "previous_running",
-      startedAt: null, finishedAt: "2026-10-02T15:00:01.000Z", chatId: null, unseen: false },
+      startedAt: null, finishedAt: "2026-10-02T15:00:01.000Z", chatId: null, unseen: false, unavailableSources: [] },
     { id: "inbox-run-1", scheduledFor: "2026-10-02T13:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
-      startedAt: "2026-10-02T13:00:02.000Z", finishedAt: "2026-10-02T15:10:00.000Z", chatId: "scheduled-inbox-chat", unseen: false }
+      startedAt: "2026-10-02T13:00:02.000Z", finishedAt: "2026-10-02T15:10:00.000Z", chatId: "scheduled-inbox-chat", unseen: false, unavailableSources: [] }
   ]
 };
 
@@ -264,7 +264,8 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   expect(api.writes).toEqual([{ method: "POST", path: "", body: {
     title: "Weekly planning", prompt: "List three priorities for the coming week.",
     schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, timeZone: "Europe/London",
-    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, chatMode: "new"
+    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: false,
+    workspaceEnabled: false, chatMode: "new"
   } }]);
   await expect(panel.getByRole("heading", { name: "Weekly planning" })).toBeFocused();
   await expect(panel.getByText("“Weekly planning” is scheduled.")).toBeVisible();

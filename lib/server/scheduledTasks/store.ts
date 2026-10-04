@@ -33,6 +33,7 @@ import {
 } from "../../domain/scheduledTaskSchedule";
 import { SMTP_CONTROL_ID } from "../email/repository";
 import { SCHEDULED_TASK_OCCURRENCE_RETENTION } from "./runnerPolicy";
+import { unavailableSourcesWire } from "./sourceHealth";
 
 export class ScheduledTaskError extends Error {
   constructor(readonly code: ScheduledTaskErrorCode) {
@@ -70,9 +71,10 @@ export interface ScheduledTaskStore {
   create(userId: string, draft: ScheduledTaskDraft, nextRunAt: Date): Promise<ScheduledTask>;
   /**
    * Writes every editable field and the status under `expectedRevision`, clears
-   * the pause reason and failure count and increments the revision; a changed
-   * prompt or schedule kind also starts a new generation without a baseline.
-   * Activation counts against the active limits.
+   * the pause reason, the failure count and the incomplete-run count and
+   * increments the revision; a changed prompt or schedule kind also starts a
+   * new generation without a baseline. Activation counts against the active
+   * limits.
    */
   update(userId: string, taskId: string, write: ScheduledTaskUpdateWrite): Promise<ScheduledTask>;
   /** The chats and any accepted run stay; occurrences go with the task. */
@@ -103,15 +105,15 @@ const KIND_COLUMN = {
 export const scheduledTaskRowSelect = {
   id: true, title: true, prompt: true, scheduleKind: true, timeOfDayMinutes: true, daysOfWeekMask: true, dayOfMonth: true,
   onceLocalDate: true, everyHours: true, untilMinutes: true, timeZone: true, modelId: true, provider: true,
-  searchEnabled: true, emailNotify: true, chatMode: true, status: true, pauseReason: true, nextRunAt: true, chatId: true,
-  revision: true, createdAt: true, updatedAt: true,
+  searchEnabled: true, emailNotify: true, toolsEnabled: true, workspaceEnabled: true, chatMode: true, status: true,
+  pauseReason: true, nextRunAt: true, chatId: true, revision: true, createdAt: true, updatedAt: true,
   chat: { select: { permanentDeletionAt: true } }
 } satisfies Prisma.ScheduledTaskSelect;
 export type ScheduledTaskRow = Prisma.ScheduledTaskGetPayload<{ select: typeof scheduledTaskRowSelect }>;
 
 const runSelect = {
   id: true, scheduledFor: true, trigger: true, state: true, reasonCode: true, startedAt: true, finishedAt: true, chatId: true,
-  unseenAt: true, chat: { select: { permanentDeletionAt: true } }
+  unseenAt: true, unavailableSources: true, chat: { select: { permanentDeletionAt: true } }
 } satisfies Prisma.ScheduledTaskOccurrenceSelect;
 type RunRow = Prisma.ScheduledTaskOccurrenceGetPayload<{ select: typeof runSelect }>;
 
@@ -156,6 +158,7 @@ export function toScheduledTask(row: ScheduledTaskRow, activity: ScheduledTaskAc
   return {
     id: row.id, title: row.title, prompt: row.prompt, schedule: scheduledTaskScheduleFromColumns(row), timeZone: row.timeZone,
     modelId: row.modelId, provider: row.provider, searchEnabled: row.searchEnabled, emailNotify: row.emailNotify,
+    toolsEnabled: row.toolsEnabled, workspaceEnabled: row.workspaceEnabled,
     chatMode: CHAT_MODE_WIRE[row.chatMode], status: STATUS_WIRE[row.status], pauseReason: row.pauseReason,
     nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRun: activity.lastRun, running: activity.running,
     chatId: usableChatId(row.chatId, row.chat), unseenResult: activity.unseen, revision: row.revision,
@@ -168,7 +171,8 @@ function toScheduledTaskRun(row: RunRow): ScheduledTaskRun {
     id: row.id, scheduledFor: row.scheduledFor.toISOString(), trigger: row.trigger === "manual" ? "manual" : "schedule",
     state: RUN_STATE_WIRE[row.state], reasonCode: row.reasonCode, startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null, chatId: usableChatId(row.chatId, row.chat),
-    unseen: row.unseenAt !== null && row.finishedAt !== null
+    unseen: row.unseenAt !== null && row.finishedAt !== null,
+    unavailableSources: unavailableSourcesWire(row.unavailableSources)
   };
 }
 
@@ -230,7 +234,7 @@ function draftColumns(draft: ScheduledTaskDraft) {
   return {
     title: draft.title, prompt: draft.prompt, ...scheduledTaskScheduleColumns(draft.schedule), timeZone: draft.timeZone,
     modelId: draft.modelId, provider: draft.provider, searchEnabled: draft.searchEnabled, emailNotify: draft.emailNotify,
-    chatMode: CHAT_MODE_COLUMN[draft.chatMode]
+    toolsEnabled: draft.toolsEnabled, workspaceEnabled: draft.workspaceEnabled, chatMode: CHAT_MODE_COLUMN[draft.chatMode]
   };
 }
 
@@ -347,7 +351,8 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledT
         // The revision guard also fences a runner status transition committed after the read.
         const updated = await tx.scheduledTask.updateMany({
           data: {
-            ...draftColumns(write.draft), consecutiveFailures: 0, pauseReason: null, revision: { increment: 1 },
+            ...draftColumns(write.draft), consecutiveFailures: 0, consecutiveIncompleteRuns: 0, pauseReason: null,
+            revision: { increment: 1 },
             status: STATUS_COLUMN[write.status], ...(write.nextRunAt === undefined ? {} : { nextRunAt: write.nextRunAt }),
             ...(newGeneration ? {
               baselineAssistantMessageId: null, baselineGeneration: null, baselineRunId: null, baselineUserMessageId: null,
