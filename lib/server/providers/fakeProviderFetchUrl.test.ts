@@ -30,4 +30,14 @@ describe("fake provider page-reader scenario", () => {
     const plain = await run({ ...request("Summarize [AIQSA_FETCH_URL_E2E:unlisted]"), tools: [] });
     expect(plain.toolCalls ?? []).toEqual([]);
   });
+
+  it("never answers a context summary request with the scenario, even when the history holds its marker", async () => {
+    // A summary request carries no tools; the fake provider answers in plain text,
+    // which is no summary object, so fake specs must fit their window (see workspaceFixture).
+    const { tools: _tools, ...withoutTools } = request("<context-source>\nRead http://127.0.0.1/e2e-page " +
+      "[AIQSA_FETCH_URL_E2E:first_link]\n</context-source>");
+    const summary = await run({ ...withoutTools, toolMode: "none" } as ProviderRunRequest);
+    expect(summary.toolCalls ?? []).toEqual([]);
+    expect(summary.finalText).toMatch(/^Fake answer: /u);
+  });
 });
