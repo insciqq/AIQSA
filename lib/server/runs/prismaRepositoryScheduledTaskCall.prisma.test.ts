@@ -39,8 +39,8 @@ async function answer(input: Readonly<{ calls?: number; scheduledTaskId?: string
   await prisma.message.create({ data: { chatId, content: textMessageContent(""), id: answerId, parentMessageId: questionId,
     role: "assistant", status: "streaming" } });
   await prisma.chat.update({ data: { activeLeafMessageId: answerId }, where: { id: chatId } });
-  await prisma.modelRun.create({ data: { assistantMessageId: answerId, chatId, id: runId, modelId: "fake-qsa", provider: "fake",
-    status: "streaming", userId, userMessageId: questionId,
+  await prisma.modelRun.create({ data: { assistantMessageId: answerId, chatId, id: runId, modelId: "fake-qsa", normalizedRequest: {},
+    provider: "fake", status: "streaming", userId, userMessageId: questionId,
     ...(input.scheduledTaskId ? { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1,
       scheduledTaskId: input.scheduledTaskId } : {}) } });
   const callIds: string[] = [];
