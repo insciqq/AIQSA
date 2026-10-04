@@ -286,6 +286,17 @@ export class SkillRunConflictError extends Error {
   }
 }
 
+/** The scheduled task occurrence a send admits; a server dependency, never a request field. */
+export type ScheduledOccurrenceAdmission = Readonly<{ occurrenceId: string; taskId: string }>;
+
+/** The occurrence is gone or already has its run; the admission rolled back. */
+export class ScheduledOccurrenceConflictError extends Error {
+  constructor() {
+    super("scheduled_task_occurrence_unavailable");
+    this.name = "ScheduledOccurrenceConflictError";
+  }
+}
+
 /** Exact accepted Assistant provenance persisted with the run. */
 export type AcceptedAssistantRun = {
   assistantId: string;
@@ -402,6 +413,10 @@ export type CreateRunInput = {
   /** First Project send only: the chat row is committed with messages/run in
    * the same transaction, so a rejected admission cannot leave an empty chat. */
   projectChat?: Readonly<{ folderId: string | null }>;
+  /** A scheduled task's personal send: the run links this occurrence in its
+   * creating transaction or is not created, and the owner's saved composer
+   * controls stay unchanged. */
+  scheduledOccurrence?: ScheduledOccurrenceAdmission;
   signal?: AbortSignal;
   userId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
