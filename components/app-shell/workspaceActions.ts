@@ -242,6 +242,8 @@ export function useWorkspaceActions({
   function summaryFromDetail(detail: ChatDetail): WorkspaceChatSummary {
     return {
       ...(detail.hasContinuationSource ? { hasContinuationSource: true } : {}),
+      ...(detail.importSource ? { importSource: detail.importSource } : {}),
+      ...(detail.importSourceModel ? { importSourceModel: detail.importSourceModel } : {}),
       activeLeafMessageId: detail.activeLeafMessageId,
       createdAt: detail.createdAt,
       defaultKnowledgePlan: detail.defaultKnowledgePlan ?? null,

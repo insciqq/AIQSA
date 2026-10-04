@@ -337,6 +337,8 @@ const lightweightMessageSelect = {
 const chatSummarySelect = {
   ...chatTitleMetadataSelect,
   continuationSource: { select: { id: true } },
+  importSource: true,
+  importSourceModel: true,
   receivedWorkspaceSeeds: { select: { status: true, failureCode: true }, take: 1 },
   _count: {
     select: {
@@ -900,6 +902,7 @@ function serializeChatDetail(input: {
     id: chat.id,
     contextStats: input.contextStats,
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
+    ...importProjection(chat),
     messageCount: chat._count.messages,
     messages: input.messages.messages.map((message) =>
       serializeHydratedMessage(
@@ -953,6 +956,13 @@ function storedSearchPlan(value: unknown) {
   return decoded.ok ? decoded.plan : null;
 }
 
+/** An imported chat (or a copy of one) names its source; others carry nothing. */
+function importProjection(chat: Pick<ChatSummaryRow, "importSource" | "importSourceModel">) {
+  return chat.importSource
+    ? { importSource: chat.importSource, ...(chat.importSourceModel ? { importSourceModel: chat.importSourceModel } : {}) }
+    : {};
+}
+
 function serializeChatSummary(
   chat: ChatSummaryRow,
   availability: WorkspaceAvailabilityService,
@@ -960,6 +970,7 @@ function serializeChatSummary(
 ): ChatSummaryRecord {
   return {
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
+    ...importProjection(chat),
     activeLeafMessageId: chat.activeLeafMessageId,
     assistantId: chat.assistantId,
     createdAt: chat.createdAt,
@@ -2032,6 +2043,7 @@ export function createPrismaChatRepository(
         select: {
           archived: true,
           id: true,
+          importSource: true,
           memoryMode: true,
           memorySourceRevision: true,
           temporaryRetentionDeadline: true,
@@ -2051,6 +2063,7 @@ export function createPrismaChatRepository(
       return {
         archived: chat.archived,
         chatId: chat.id,
+        ...(chat.importSource ? { importSource: chat.importSource } : {}),
         mode: chat.memoryMode,
         sourceRevision: chat.memorySourceRevision,
         temporaryRetentionDeadline: chat.memoryMode === "TEMPORARY"
@@ -2410,11 +2423,12 @@ export function createPrismaChatRepository(
         (mode === "EXCLUDED" && resumeDisclosureCopyVersion !== undefined)
       ) return { kind: "contract_invalid" as const };
       return prismaClient.$transaction(async (tx) => {
-        const chats = await tx.$queryRaw<LockedMemorySourceChat[]>`
+        const chats = await tx.$queryRaw<Array<LockedMemorySourceChat & { importSource: string | null }>>`
           SELECT
             "id", "userId", "activeLeafMessageId", "archived", "folderId",
             "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
-            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
+            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline",
+            "importSource"::text AS "importSource"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
@@ -2425,6 +2439,9 @@ export function createPrismaChatRepository(
         const chat = chats[0];
         if (!chat) return { kind: "not_found" as const };
         if (chat.memoryMode === "TEMPORARY") return { kind: "temporary" as const };
+        // An imported chat, or a copy of one, stays Excluded (a database check
+        // backs this for every other writer).
+        if (chat.importSource !== null && mode === "NORMAL") return { kind: "imported" as const };
         if (
           (hasChatFence && chat.memorySourceRevision !== expectedChatRevision) ||
           chat.memoryMode === mode

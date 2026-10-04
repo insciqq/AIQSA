@@ -57,6 +57,8 @@ export type ChatLifecycleStateRecord = Readonly<{
 export type ChatMemoryStateRecord = Readonly<{
   archived: boolean;
   chatId: string;
+  /** Set on an imported chat or a copy of one: its Excluded mode is fixed. */
+  importSource?: string;
   mode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   sourceRevision: number;
   temporaryRetentionDeadline: Date | string | null;
@@ -89,6 +91,7 @@ export type ChatMemoryModeMutationResult =
   | Readonly<{
       kind:
         | "contract_invalid"
+        | "imported"
         | "memory_stale"
         | "not_found"
         | "resume_blocked"
@@ -202,13 +205,18 @@ function serializeLifecycleState(chat: ChatLifecycleStateRecord): ChatLifecycleR
 }
 
 function serializeMemoryState(chat: ChatMemoryStateRecord): MemoryConsumerChatModeResponse {
+  // An imported chat is created Excluded and a database check keeps it so.
+  const locked = chat.importSource !== undefined && chat.mode === "EXCLUDED";
   return {
-    allowedActions: chat.mode === "NORMAL"
-      ? ["EXCLUDE"]
-      : chat.mode === "EXCLUDED"
-        ? ["RESUME"]
-        : [],
+    allowedActions: locked
+      ? []
+      : chat.mode === "NORMAL"
+        ? ["EXCLUDE"]
+        : chat.mode === "EXCLUDED"
+          ? ["RESUME"]
+          : [],
     archived: chat.archived,
+    ...(locked ? { lockedReason: "IMPORTED" as const } : {}),
     mode: chat.mode,
     temporaryRetentionDeadline: chat.temporaryRetentionDeadline === null
       ? null
@@ -405,6 +413,8 @@ export function createPatchChatMemoryModeHandler(deps: ChatLifecycleHandlerDeps)
         return json({ error: "memory_contract_invalid" }, 400);
       case "temporary":
         return json({ error: "memory_temporary_chat_forbidden" }, 409);
+      case "imported":
+        return json({ error: "memory_imported_chat_forbidden" }, 409);
       case "memory_stale":
         return json({ error: "memory_changed" }, 409);
       case "source_stale":

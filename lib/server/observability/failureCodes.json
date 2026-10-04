@@ -65,6 +65,7 @@
   "catalog_cost_backfill_failed",
   "catalog_cost_backfill_row_skipped",
   "chat_busy",
+  "chat_import_failed",
   "chat_summary_no_progress",
   "chat_summary_outcome_unknown",
   "chat_title_unavailable",

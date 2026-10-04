@@ -599,6 +599,21 @@
   white-space: nowrap;
 }
 
+/* An imported chat names its source after the title, quiet like the crumb.
+   It gives up width before the title does. */
+.v2-live-import-source {
+  flex: 0 4 auto;
+  min-width: 3rem;
+  max-width: 12rem;
+  margin-left: 0.25rem;
+  overflow: hidden;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Clicking the title starts inline rename; the pencil reveals that on
    hover/focus (always on coarse pointers) so the title reads as an editable
    field, not as static selectable text. At rest on fine pointers the pencil
