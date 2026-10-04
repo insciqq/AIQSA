@@ -15,6 +15,7 @@ import { abortableMemoryRead } from "../retrieval/deadline";
 import { createPrismaMemoryExecutionLifecycle } from "../execution/lifecycle";
 import { decodeMemorySearchSourceEvidence } from "../sources/searchEvidence";
 import { scheduleDirectMemoryFactAccessTouch } from "../retrieval/decayTouch";
+import { memoryReadableChatMode, memoryRunAnswersScheduledPrompt } from "../scheduledPrompt";
 import { requireMemorySearchActiveBranch } from "./authority";
 import { estimateApproxTokens } from "../../../domain/contextBudget";
 import { memorySearchItemMatchesProof } from "./evidence";
@@ -46,6 +47,7 @@ async function authority(tx: MemoryTransaction, settings: LockedMemorySettings, 
   await requireMemorySearchActiveBranch(tx, input.userId, input.runId);
   const run = await tx.modelRun.findFirst({ where: { id: input.runId, userId: input.userId },
     select: { status: true, chatId: true, assistantId: true, normalizedRequest: true,
+      userMessage: { select: { scheduledTaskPrompt: true } },
       chat: { select: { userId: true, projectId: true, memoryMode: true, permanentDeletionAt: true, folderId: true, memoryBranchGeneration: true } } } });
   const call = await tx.modelRunToolCall.findFirst({ where: { id: input.toolCallId, modelRunId: input.runId },
     select: { state: true, toolName: true } });
@@ -54,7 +56,8 @@ async function authority(tx: MemoryTransaction, settings: LockedMemorySettings, 
     memorySha256(frozen) !== memorySha256(input.accepted) ||
     (object(run.normalizedRequest) && (run.normalizedRequest.agent != null || run.normalizedRequest.toolMode !== "auto")) || !settings.useMemoryFacts ||
     settings.memoryGeneration !== frozen.memoryGeneration || !live.has(run.status) ||
-    run.chat.userId !== input.userId || run.chat.projectId !== null || run.chat.memoryMode !== "NORMAL" ||
+    run.chat.userId !== input.userId || run.chat.projectId !== null ||
+    !memoryReadableChatMode(run.chat.memoryMode, run.userMessage.scheduledTaskPrompt) ||
     run.chat.permanentDeletionAt !== null || (input.requireRunning && call.state !== "running")) {
     throw new Error("memory_search_authority_changed");
   }
@@ -89,12 +92,14 @@ export function createPrismaMemorySearchService(client: PrismaClient = prisma,
           client.userMemorySettings.findUnique({ where: { userId: scope.userId },
             select: { useMemoryFacts: true, memoryGeneration: true, referenceChatHistory: true } }),
           client.modelRun.findFirst({ where: { id: scope.runId, userId: scope.userId },
-            select: { status: true, chat: { select: { memoryMode: true, projectId: true, permanentDeletionAt: true, memoryBranchGeneration: true } } } })
+            select: { status: true, userMessage: { select: { scheduledTaskPrompt: true } },
+              chat: { select: { memoryMode: true, projectId: true, permanentDeletionAt: true, memoryBranchGeneration: true } } } })
         ]).then(([settings, run]) => {
           if (!settings?.useMemoryFacts || settings.memoryGeneration !== accepted.memoryGeneration ||
             (accepted.referenceChatHistory && !settings.referenceChatHistory) || !run || !live.has(run.status) ||
             (admittedBranchGeneration !== null && run.chat.memoryBranchGeneration !== admittedBranchGeneration) ||
-            run.chat.memoryMode !== "NORMAL" || run.chat.projectId !== null || run.chat.permanentDeletionAt !== null) {
+            !memoryReadableChatMode(run.chat.memoryMode, run.userMessage.scheduledTaskPrompt) ||
+            run.chat.projectId !== null || run.chat.permanentDeletionAt !== null) {
             revoked.abort(new Error("memory_search_authority_changed"));
           }
         }).catch(() => revoked.abort(new Error("memory_search_authority_unavailable")))
@@ -135,7 +140,8 @@ export function createPrismaMemorySearchService(client: PrismaClient = prisma,
         signal.throwIfAborted();
         stage = "retrieval";
         const retrieved = await abortableMemoryRead(retrieve({ ...scope, assistantId: admitted.run.assistantId,
-          chatId: admitted.run.chatId, query: safe.safeText, comparison: args.comparison, signal }), signal);
+          chatId: admitted.run.chatId, query: safe.safeText, comparison: args.comparison,
+          scheduledPrompt: admitted.run.userMessage.scheduledTaskPrompt, signal }), signal);
         signal.throwIfAborted();
         stage = "evidence";
         return await withLockedMemoryTransaction(client, scope.userId, async (tx, settings) => {
@@ -258,6 +264,7 @@ export function createPrismaMemorySearchService(client: PrismaClient = prisma,
       const receipts = await client.memoryHistoryRun.findMany({ where: { userId: input.userId, modelRunId: input.runId,
         modelRunToolCallId: { in: [...input.toolCallIds] }, state: "COMPLETE", retentionState: "RETAINED" },
         select: { id: true, results: true } });
+      let readOnly: Promise<boolean> | undefined;
       for (const receipt of receipts) {
         const marked = await client.memoryHistoryRun.updateMany({ where: { id: receipt.id, state: "COMPLETE",
           retentionState: "RETAINED", indexingEvidence: { path: ["delivered"], equals: false } },
@@ -265,6 +272,9 @@ export function createPrismaMemorySearchService(client: PrismaClient = prisma,
         if (!marked.count) continue;
         // Delivery wins once. An optional temperature touch cannot fail or duplicate the answer.
         try {
+          // A scheduled task's turn reads without touching what it found.
+          readOnly ??= memoryRunAnswersScheduledPrompt(client, input);
+          if (await readOnly) continue;
           const ids = decodeMemorySearchSourceEvidence(receipt.results).flatMap(item => item.factVersionId ? [item.factVersionId] : []);
           const facts = ids.length ? await client.memoryFactVersion.findMany({ where: { userId: input.userId, id: { in: ids } },
             select: { id: true, factId: true } }) : [];
