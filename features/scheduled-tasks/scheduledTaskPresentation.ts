@@ -81,6 +81,12 @@ export function scheduledTaskPauseCopy(reasonCode: string): PauseCopy {
       return { reason: "the model is no longer available", hint: "Edit to choose another model." };
     case "search_unavailable":
       return { reason: "web search is no longer available with this model", hint: "Edit to turn it off or choose another model." };
+    case "provider_unavailable":
+      return { reason: "the model's provider is unavailable", hint: "Check the model, then resume." };
+    case "account_inactive":
+      return { reason: "the account was not active", hint: "Resume to continue." };
+    case "schedule_invalid":
+      return { reason: "its schedule can no longer be calculated", hint: "Edit the schedule." };
     case "repeated_failures":
       return { reason: "the last three runs failed", hint: "Resume to try again." };
     case "once_in_past":
@@ -98,6 +104,13 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "chat_busy": return "the task's chat was busy with another answer";
     case "model_unavailable": return "the model was unavailable";
     case "search_unavailable": return "web search was unavailable with this model";
+    case "provider_unavailable": return "the model's provider was unavailable";
+    case "account_inactive": return "the account was not active";
+    case "schedule_invalid": return "the schedule could not be calculated";
+    case "paused": return "the task was paused";
+    case "admission_failed": return "the run could not start";
+    case "run_unavailable": return "the run was removed before it finished";
+    case "model_run_cancelled": return "it was stopped in the chat";
     case "repeated_failures": return "the task was paused after repeated failures";
     case "provider_error":
     case "run_failed": return "the model did not return an answer";

@@ -56,6 +56,19 @@ describe("scheduled task presentation", () => {
     expect(run("failed", "chat_busy")).toBe("Last run Mon 5 Oct, 09:00 · Failed: the task's chat was busy with another answer");
     expect(run("skipped", "missed")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: the scheduled time passed while runs were unavailable");
     expect(run("failed", "provider_http_529")).toBe("Last run Mon 5 Oct, 09:00 · Failed: the answer did not complete");
+    // Every reason the runner records reads as words.
+    expect(run("failed", "model_run_cancelled")).toBe("Last run Mon 5 Oct, 09:00 · Failed: it was stopped in the chat");
+    expect(run("failed", "admission_failed")).toBe("Last run Mon 5 Oct, 09:00 · Failed: the run could not start");
+    expect(run("skipped", "paused")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: the task was paused");
+  });
+
+  it("gives every runner pause reason a recovery hint", () => {
+    const paused = (pauseReason: string) =>
+      scheduledTaskStatusLine(scheduledTaskFixture({ status: "paused", nextRunAt: null, pauseReason }), now).text;
+    expect(paused("provider_unavailable")).toBe("Paused: the model's provider is unavailable. Check the model, then resume.");
+    expect(paused("account_inactive")).toBe("Paused: the account was not active. Resume to continue.");
+    expect(paused("schedule_invalid")).toBe("Paused: its schedule can no longer be calculated. Edit the schedule.");
+    expect(paused("repeated_failures")).toBe("Paused: the last three runs failed. Resume to try again.");
   });
 
   it("maps the run conflict and unknown failures to copy", () => {
