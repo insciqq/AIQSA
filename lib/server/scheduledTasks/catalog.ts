@@ -7,7 +7,9 @@ import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
 
 /** The parts of the user's current personal-chat catalog that admit a task's model. */
 export type ScheduledTaskCatalog = Readonly<{
-  models: readonly Pick<CatalogWireModel, "modelId" | "provider" | "searchStrategyIds">[];
+  models: readonly (Pick<CatalogWireModel, "modelId" | "provider" | "searchStrategyIds"> & Readonly<{
+    capabilities: Pick<CatalogWireModel["capabilities"], "toolCalling">;
+  }>)[];
   searchStrategies: readonly Readonly<{ kind: string; strategyId: string }>[];
 }>;
 export type ScheduledTaskCatalogLoader = (userId: string) => Promise<ScheduledTaskCatalog | null>;
@@ -24,7 +26,11 @@ export type ScheduledTaskRunCatalogLoader = (userId: string) => Promise<Schedule
 
 export type ScheduledTaskModelResolution =
   | { ok: true; searchOptionIds: string[] }
-  | { ok: false; code: "scheduled_task_model_unavailable" | "scheduled_task_search_unavailable" };
+  | {
+    ok: false;
+    code: "scheduled_task_model_unavailable" | "scheduled_task_search_unavailable" | "scheduled_task_tools_unavailable" |
+      "scheduled_task_workspace_unavailable";
+  };
 
 /** The same entitled selection `/api/me/catalog` publishes; null when the account has no catalog. */
 export function createPrismaScheduledTaskCatalogLoader(prisma: PrismaClient): ScheduledTaskCatalogLoader {
@@ -50,17 +56,19 @@ export function createPrismaScheduledTaskRunCatalogLoader(prisma: PrismaClient):
 /**
  * Admits a task's exact model identity at save and before every run, without
  * substitution. `searchOptionIds` lists the model's usable concrete Search
- * options in catalog order; requested Search needs at least one.
+ * options in catalog order; requested Search needs at least one. Tools and
+ * Workspace need a model with tool calling, as in the composer.
  */
 export function resolveScheduledTaskModel(
   catalog: ScheduledTaskCatalog | null,
-  task: Pick<ScheduledTaskDraft, "modelId" | "provider" | "searchEnabled">
+  task: Pick<ScheduledTaskDraft, "modelId" | "provider" | "searchEnabled" | "toolsEnabled" | "workspaceEnabled">
 ): ScheduledTaskModelResolution {
   const model = catalog?.models.find((entry) => entry.modelId === task.modelId && entry.provider === task.provider);
   if (!catalog || !model) return { ok: false, code: "scheduled_task_model_unavailable" };
   const concrete = new Set(catalog.searchStrategies.filter((option) => option.kind !== "none").map((option) => option.strategyId));
   const searchOptionIds = model.searchStrategyIds.filter((optionId) => concrete.has(optionId));
-  return task.searchEnabled && searchOptionIds.length === 0
-    ? { ok: false, code: "scheduled_task_search_unavailable" }
-    : { ok: true, searchOptionIds };
+  if (task.searchEnabled && searchOptionIds.length === 0) return { ok: false, code: "scheduled_task_search_unavailable" };
+  if (task.toolsEnabled && !model.capabilities.toolCalling) return { ok: false, code: "scheduled_task_tools_unavailable" };
+  if (task.workspaceEnabled && !model.capabilities.toolCalling) return { ok: false, code: "scheduled_task_workspace_unavailable" };
+  return { ok: true, searchOptionIds };
 }

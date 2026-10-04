@@ -1,8 +1,10 @@
 import type { BrowserPushMessage } from "../../contracts/browserPush";
-import { scheduledTaskReasonMessage } from "../../contracts/scheduledTasks";
+import { scheduledTaskOutcomeCopy, scheduledTaskSourceLines } from "../scheduledTasks/notifications";
 import type { BrowserPushEvent } from "./store";
 
 const TITLE_MAX_CHARS = 120;
+/** Unavailable sources a push names; the rest are counted. */
+const PUSH_SOURCE_LINES = 3;
 
 function cleanTitle(value: string, fallback: string): string {
   const title = value.replace(/[\u0000-\u001f\u007f]+/gu, " ").replace(/\s+/gu, " ").trim();
@@ -17,7 +19,8 @@ function chatPath(chatId: string): string {
 
 /**
  * The content-free notification of one event: the chat or task title, the
- * outcome with fixed copy and a same-origin path. Never answer text, prompts
+ * outcome with fixed copy (for a scheduled run also the sources it could not
+ * reach, by display name) and a same-origin path. Never answer text, prompts
  * or any identifier other than the chat id in the path.
  */
 export function browserPushMessage(event: BrowserPushEvent): BrowserPushMessage {
@@ -30,16 +33,11 @@ export function browserPushMessage(event: BrowserPushEvent): BrowserPushMessage 
       v: 1
     };
   }
-  const paused = event.state === "FAILED" && event.trigger === "schedule" && event.taskPauseReason !== null;
-  const [outcome, reason] = event.state === "COMPLETED"
-    ? ["Scheduled task finished", null]
-    : paused
-      ? ["Scheduled task paused", scheduledTaskReasonMessage(event.taskPauseReason)]
-      : event.state === "SKIPPED"
-        ? ["Scheduled task skipped", scheduledTaskReasonMessage(event.reasonCode)]
-        : ["Scheduled task did not complete", scheduledTaskReasonMessage(event.reasonCode)];
+  const { headline, reason } = scheduledTaskOutcomeCopy(event);
   return {
-    body: reason ? `${outcome}\n${reason}` : outcome,
+    // A few names keep the encrypted message within the push size bound.
+    body: [headline, ...(reason ? [reason] : []), ...scheduledTaskSourceLines(event.unavailableSources, PUSH_SOURCE_LINES)]
+      .join("\n"),
     tag: event.chatId ? `aiqsa-chat-${event.chatId}` : "aiqsa-scheduled",
     title: cleanTitle(event.title, "Scheduled task"),
     url: event.chatId ? chatPath(event.chatId) : "/scheduled",

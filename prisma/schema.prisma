@@ -7172,7 +7172,7 @@ enum ScheduledTaskOccurrenceState {
 /// `nextRunAt`, which is null unless ACTIVE. Model identity is revalidated at save
 /// and run, never a foreign key. `revision` changes on every owner mutation and on
 /// runner status transitions (auto-pause, once completion), not on bookkeeping
-/// (`nextRunAt`, `consecutiveFailures`, `chatId`, the baseline).
+/// (`nextRunAt`, the failure and incomplete-run counts, `chatId`, the baseline).
 model ScheduledTask {
   id                         String                    @id @default(uuid())
   userId                     String
@@ -7196,6 +7196,10 @@ model ScheduledTask {
   provider                   String                    @db.VarChar(256)
   searchEnabled              Boolean                   @default(false)
   emailNotify                Boolean                   @default(false)
+  /// The owner's MCP tools and Skills, both in Auto mode; needs a tool-calling model.
+  toolsEnabled               Boolean                   @default(false)
+  /// The task chat's Workspace; needs a tool-calling model. A run never changes an existing chat's switch.
+  workspaceEnabled           Boolean                   @default(false)
   /// NEW starts a chat for every run; SAME continues the task's chat (always for HOURLY).
   chatMode                   ScheduledTaskChatMode     @default(NEW)
   status                     ScheduledTaskStatus       @default(ACTIVE)
@@ -7205,6 +7209,8 @@ model ScheduledTask {
   /// The newest chat a run used; deleting the chat clears only this column.
   chatId                     String?
   consecutiveFailures        Int                       @default(0)
+  /// Scheduled runs in a row that completed without a relevant source; reset by a complete run or an owner edit.
+  consecutiveIncompleteRuns  Int                       @default(0)
   revision                   Int                       @default(1)
   /// Bumped with the revision when the prompt or the schedule kind changes;
   /// frozen on accepted occurrences and runs.
@@ -7252,6 +7258,10 @@ model ScheduledTaskOccurrence {
   taskGeneration Int?
   /// A settled result the owner has not seen yet: a finished answer or a failure that paused the task.
   unseenAt       DateTime?
+  /// Frozen when a run accepted this occurrence: the relevant personal sources its Auto
+  /// plan could not offer, `[{ serverId, name, reason, relied }]`; null when none was
+  /// missing. Such a run is incomplete. Display names only, never tool content.
+  unavailableSources Json?
   createdAt      DateTime                     @default(now())
   task           ScheduledTask                @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
   /// The migration uses column-scoped SET NULL for chat and run references.
