@@ -19,7 +19,9 @@ ON CONFLICT (id) DO UPDATE SET "imageProviderModelId" = EXCLUDED."imageProviderM
 `;
 }
 
-/** Runs in a rolled-back transaction, so it also proves a repeated deploy. */
+/** Runs in a rolled-back transaction, so it also proves a repeated deploy.
+ * Inserting a reference to a missing row raises foreign_key_violation; deleting
+ * a row an ON DELETE RESTRICT key still references raises restrict_violation. */
 export function publishedImageModelsProofSql(assigned: boolean): string {
   return `
 BEGIN;
@@ -48,18 +50,18 @@ DO $$ BEGIN
   BEGIN
     DELETE FROM "PublishedImageModel" WHERE "providerModelId" = 'image-adoption-candidate';
     RAISE EXCEPTION 'chosen_model_withdrawn_without_resetting_the_choice';
-  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  EXCEPTION WHEN restrict_violation THEN NULL;
   END;
   UPDATE "UserSettings" SET "imageProviderModelId" = NULL WHERE "userId" = 'image-adoption-user';
   BEGIN
     DELETE FROM "ProviderModel" WHERE id = 'image-adoption-candidate';
     RAISE EXCEPTION 'published_provider_model_deleted';
-  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  EXCEPTION WHEN restrict_violation THEN NULL;
   END;
   ${assigned ? `BEGIN
     DELETE FROM "PublishedImageModel" WHERE "providerModelId" = 'image-adoption-model';
     RAISE EXCEPTION 'default_withdrawn_while_default';
-  EXCEPTION WHEN foreign_key_violation THEN NULL;
+  EXCEPTION WHEN restrict_violation THEN NULL;
   END;` : ""}
   DELETE FROM "PublishedImageModel" WHERE "providerModelId" = 'image-adoption-candidate';
 END $$;
