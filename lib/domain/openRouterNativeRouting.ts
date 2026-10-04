@@ -1,3 +1,5 @@
+import type { AdminProviderAssignedRole, AdminProviderRoleRoutingConflict } from "../contracts/adminProviderRoleRouting";
+
 // Publisher namespaces identify the model's author; provider slugs identify the
 // serving company. They are deliberately distinct (for example qwen/alibaba).
 // Slugs are checked against OpenRouter's providers catalog. A mapping alone
@@ -91,4 +93,35 @@ export function openRouterSelectedProvidersMissingParameters(input: {
     for (const parameter of closest) missing.add(parameter);
   }
   return [...missing];
+}
+
+/**
+ * OpenRouter request kinds each installation role sends with
+ * `require_parameters`: structured output and strict Memory actions are
+ * separate requests, so each set needs one selected endpoint listing all of it.
+ * Image and PDF input are not catalog parameters; their capability checks
+ * remain the only proof for the Vision and PDF roles.
+ */
+export const OPENROUTER_ROLE_PARAMETER_SETS: Readonly<Record<AdminProviderAssignedRole, readonly (readonly string[])[]>> = {
+  memory: [["response_format", "structured_outputs"], ["tools"]],
+  system_model: [["response_format", "structured_outputs"], ["tools"]],
+  chat_titles: [["response_format", "structured_outputs"]],
+  vision: [],
+  chat_pdf: [],
+  chat_pdf_native: []
+};
+
+/** The roles these selected providers cannot serve; Test & Save refuses them
+ * (`provider_routing_role_incompatible`) and the editor never recommends them. */
+export function openRouterRoleRoutingConflicts(input: {
+  roles: readonly AdminProviderAssignedRole[];
+  providers: readonly string[];
+  endpoints: readonly NativeProviderEndpoint[];
+}): AdminProviderRoleRoutingConflict[] {
+  return input.roles.flatMap((role) => {
+    const missingParameters = openRouterSelectedProvidersMissingParameters({
+      providers: input.providers, endpoints: input.endpoints, parameterSets: OPENROUTER_ROLE_PARAMETER_SETS[role]
+    });
+    return missingParameters.length ? [{ role, missingParameters }] : [];
+  });
 }

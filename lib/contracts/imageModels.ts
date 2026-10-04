@@ -70,6 +70,11 @@ export function effectiveImageEditing(settings: UserImageModelSettings): boolean
   return effective?.unavailableReason === null && effective.editing;
 }
 
+/** Whether choosing a published image model would give personal chats image editing now. */
+export function imageEditingChoiceAvailable(settings: UserImageModelSettings): boolean {
+  return settings.models.some((model) => model.editing && model.unavailableReason === null);
+}
+
 /** The only accepted save body: a published model, or null to follow the organization default. */
 export function decodeUserImageModelChoice(value: unknown): { providerModelId: string | null } | null {
   if (!record(value) || Object.keys(value).length !== 1 ||

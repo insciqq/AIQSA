@@ -1,6 +1,8 @@
 "use client";
 
-import { resolveOpenRouterNativeProvider } from "@/lib/domain/openRouterNativeRouting";
+import { openRouterRoleRoutingConflicts, resolveOpenRouterNativeProvider } from "@/lib/domain/openRouterNativeRouting";
+import { roleRoutingConflictSummary } from "@/components/admin/adminProvidersApi";
+import type { AdminProviderAssignedRole } from "@/lib/contracts/adminProviderRoleRouting";
 
 import { ImageModelFields } from "./ImageModelFields";
 import { NativeRoutingAdoptionNote } from "./NativeRoutingAdoptionNote";
@@ -78,6 +80,8 @@ export type AdminProviderModelSheetProps = Readonly<{
   controller: Pick<AdminProvidersController, "actions" | "state">;
   discovery: AdminOpenRouterDiscoverySession;
   diagnosticCredentialId?: string | null;
+  /** Installation roles pinned to this model; routing they cannot use is never recommended. */
+  assignedRoles?: readonly AdminProviderAssignedRole[];
   /** Null adds a chat model. */
   model: AdminProviderModel | null;
   onClose(): void;
@@ -109,6 +113,7 @@ function SettingRow({
 }
 
 function RoutingField({
+  assignedRoles,
   connection,
   credentialId,
   disabled,
@@ -117,6 +122,7 @@ function RoutingField({
   form,
   setForm
 }: Readonly<{
+  assignedRoles: readonly AdminProviderAssignedRole[];
   connection: AdminProviderConnection;
   credentialId: string | null;
   disabled: boolean;
@@ -139,6 +145,13 @@ function RoutingField({
     requiredParameters: form.capabilities.toolCalling ? ["tools"] : [] });
   const nativeSelected = !customizing && selectedMode && native.available && form.providerTags.length === 1 && form.providerTags[0] === native.provider;
   const choice = nativeSelected ? "native" : selectedMode ? "only_selected" : "automatic";
+  // Test & Save refuses a provider restriction an assigned role cannot use
+  // (`provider_routing_role_incompatible`), so such a native route is neither
+  // recommended nor offered; a saved one stays shown as it is.
+  const roleConflicts = native.available
+    ? openRouterRoleRoutingConflicts({ roles: assignedRoles, providers: [native.provider], endpoints: endpoints.items })
+    : [];
+  const nativeUsable = native.available && roleConflicts.length === 0;
 
   useEffect(() => {
     if (requested && identity) void discovery.endpoints.load(identity);
@@ -162,12 +175,12 @@ function RoutingField({
       <input
         checked={choice === mode}
         className="sr-only"
-        disabled={disabled || mode === "native" && !native.available}
+        disabled={disabled || mode === "native" && !nativeUsable && choice !== "native"}
         name="routing-mode"
         onChange={() => { setRequested(true); setCustomizing(mode === "only_selected"); setForm({
           ...form,
           openRouterRoutingMode: mode === "native" ? "only_selected" : mode,
-          providerTags: mode === "native" && native.available ? [native.provider] : []
+          providerTags: mode === "native" && nativeUsable ? [native.provider] : []
         }); }}
         type="radio"
         value={mode}
@@ -181,13 +194,17 @@ function RoutingField({
     <fieldset className="min-w-0" onFocus={() => setRequested(true)}>
       <legend className={fieldLabel}>Routing</legend>
       <div className="grid gap-2 grid-cols-[minmax(0,1fr)] sm:grid-cols-3">
-        {optionCard("native", "Native · recommended", native.available ? native.provider : "Needs a matching provider")}
+        {optionCard("native", nativeUsable || !native.available ? "Native · recommended" : "Native",
+          nativeUsable ? native.provider : native.available ? `${native.provider} · not for its roles` : "Needs a matching provider")}
         {optionCard("automatic", "Automatic", "OpenRouter picks a healthy route")}
         {optionCard("only_selected", "Custom providers", "In order, no fallback outside the list")}
       </div>
       <p className="mt-2 text-xs leading-5 text-ink-muted">Native uses the model’s publisher only. Automatic can improve availability, but may change who handles requests and their latency.</p>
       {!requested && identity ? <UiV2Button tone="ghost" type="button" disabled={disabled} onClick={() => setRequested(true)}>Find native provider</UiV2Button> : null}
       {requested && !selectedMode && endpoints.status === "loading" ? <p className="mt-2 text-xs text-ink-muted" role="status">Loading providers…</p> : null}
+      {roleConflicts.length ? <p className="mt-2 text-xs text-ink-muted" role="status">
+        {roleRoutingConflictSummary(roleConflicts)}, which the native provider does not support. Keep Automatic or choose custom providers that support it.
+      </p> : null}
       {requested && !native.available && endpoints.status !== "loading" ? <p className="mt-2 text-xs text-ink-muted" role="status">
         {endpoints.status === "error" ? "Could not verify a native provider. Retry discovery or choose custom providers." : "No compatible native provider is confirmed. Keep Automatic or choose custom providers."}
         {identity && endpoints.status === "error" ? <UiV2Button tone="ghost" type="button" onClick={() => void discovery.endpoints.retry(identity)}>Retry discovery</UiV2Button> : null}
@@ -293,6 +310,7 @@ function RoutingField({
 }
 
 function SheetBody({
+  assignedRoles = [],
   connection,
   controller,
   discovery,
@@ -725,6 +743,7 @@ function SheetBody({
             <div className="min-w-0">
               {savedRoute ? <p className="mb-2 break-words text-xs text-ink-muted [overflow-wrap:anywhere]">Saved route: {savedRoute}.</p> : null}
               <RoutingField
+                assignedRoles={assignedRoles}
                 connection={connection}
                 credentialId={discoveryCredential?.id ?? null}
                 disabled={busy || !form.upstreamModelId}

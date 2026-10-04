@@ -136,6 +136,37 @@ describe("AttachmentTrayV2", () => {
     expect(list).toHaveAttribute("data-scrollable", "true");
   });
 
+  it("keeps one complete row on a short screen so the composer toolbar stays in view", async () => {
+    const matchMedia = vi.fn((query: string) => ({ matches: query === "(max-height: 32rem)", media: query }));
+    vi.stubGlobal("matchMedia", matchMedia);
+    try {
+      render(<AttachmentTrayV2 items={items} />);
+      const list = screen.getByRole("list", { name: "Attached files" });
+      const chips = Array.from(list.children) as HTMLElement[];
+      const rect = (top: number, height: number): DOMRect => ({
+        bottom: top + height, height, left: 0, right: 300, top, width: 300, x: 0, y: top, toJSON: () => ({})
+      });
+      Object.defineProperties(list, {
+        clientHeight: { configurable: true, value: 92 },
+        scrollHeight: { configurable: true, value: 400 },
+        scrollTop: { configurable: true, value: 0, writable: true }
+      });
+      list.getBoundingClientRect = () => rect(0, 92);
+      // A tall blocked card leads the first row; the rest wrap below it.
+      chips.forEach((chip, index) => {
+        chip.getBoundingClientRect = () => index === 0 ? rect(0, 92) : rect(100 + index * 60, 40);
+      });
+
+      fireEvent.resize(window);
+
+      await waitFor(() => expect(list).toHaveStyle({ "--v2-attachment-list-max-height": "92px" }));
+      expect(list).toHaveAttribute("data-scrollable", "true");
+      expect(matchMedia).toHaveBeenCalledWith("(max-height: 32rem)");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not mark a three-row list as scrollable when its content fits", async () => {
     render(<AttachmentTrayV2 items={items.slice(0, 3)} />);
     const list = screen.getByRole("list", { name: "Attached files" });

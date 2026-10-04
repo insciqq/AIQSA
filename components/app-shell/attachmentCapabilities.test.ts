@@ -465,6 +465,12 @@ describe("attachment capabilities", () => {
         "To use images, choose a model that supports images, turn on Workspace or ask an administrator to assign the Vision Model.");
       expect(unsupportedAttachmentMessage(["photo.png"], withRoutes(false, false), true)).toBe(
         "Removed an attachment unsupported by Text model: photo.png. Text model can't read images. To use images, choose a model that supports images.");
+      // The user's image model is suggested only where its editing route exists.
+      expect(imageRouteUnavailableMessage(toolModel, true, true)).toBe("Text model can't read images, and no Vision Model is available to analyze them. " +
+        "To use images, choose a model that supports images, pick an image model that can edit in Studio → Chat defaults → Image model, " +
+        "turn on Workspace or ask an administrator to assign the Vision Model.");
+      expect(imageRouteUnavailableMessage(withRoutes(false, false), false, true))
+        .toBe("Text model can't read images. To use images, choose a model that supports images.");
       // Other refusals and images a route accepts keep the plain message.
       expect(unsupportedAttachmentMessage(["data.bin"], toolModel)).toBe("Text model does not support this attachment: data.bin");
       expect(unsupportedAttachmentMessage(["photo.webp"], withRoutes(false, true, { systemVision: true, imageEditing: false })))

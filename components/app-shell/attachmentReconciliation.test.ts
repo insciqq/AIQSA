@@ -1,15 +1,16 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   resetComposerControlStoreForTest,
   resetComposerSessionStoreForTest
 } from "@/tests/support/appShellStores";
-import { reconcileCurrentComposerAttachments } from "./attachmentReconciliation";
+import { reconcileCurrentComposerAttachments, reportRejectedAttachments } from "./attachmentReconciliation";
 import { useComposerControlStore } from "./composerControlStore";
 import {
   composerSessionKey,
   selectComposerSession,
   useComposerSessionStore
 } from "./composerSessionStore";
+import { resetImageModelStoreForTest } from "./imageModelStore";
 import type { CatalogModel } from "./types";
 
 const textOnlyModel: CatalogModel = {
@@ -42,6 +43,8 @@ describe("attachment reconciliation", () => {
   afterEach(() => {
     resetComposerControlStoreForTest();
     resetComposerSessionStoreForTest();
+    resetImageModelStoreForTest();
+    vi.unstubAllGlobals();
   });
 
   it("never writes rendered session A attachments into newly active session B", () => {
@@ -172,5 +175,68 @@ describe("attachment reconciliation", () => {
     })).toBe(true);
     expect(selectComposerSession(useComposerSessionStore.getState(), sessionA).operationError)
       .toBeNull();
+  });
+
+  describe("refused files", () => {
+    const toolModel: CatalogModel = {
+      ...textOnlyModel,
+      capabilities: { ...textOnlyModel.capabilities, toolCalling: true, imageRoutes: { systemVision: false, imageEditing: false } }
+    };
+    const imageModel = (id: string, editing: boolean, unavailableReason: string | null = null) =>
+      ({ id, displayName: id, providerName: "Images", generation: true, editing, unavailableReason });
+    const settings = (models: unknown[]) => ({ imageModel: { models, organizationDefaultId: "creates",
+      selectedId: null, effective: { id: "creates", source: "organization" } } });
+    const plain = "Text model does not support this attachment: scan.png. Text model can't read images, " +
+      "and no Vision Model is available to analyze them. To use images, choose a model that supports images or ask an administrator to assign the Vision Model.";
+    const errorOf = (key: ReturnType<typeof composerSessionKey>) =>
+      selectComposerSession(useComposerSessionStore.getState(), key).operationError;
+
+    it("points a personal chat to Chat defaults once a published image model can edit", async () => {
+      const session = composerSessionKey("chat-a");
+      useComposerSessionStore.getState().activateSession(session);
+      const fetchMock = vi.fn(async () => Response.json(settings([imageModel("creates", false), imageModel("edits", true)])));
+      vi.stubGlobal("fetch", fetchMock);
+      const pending = reportRejectedAttachments(["scan.png"], toolModel, { personalChat: true, workspaceAvailable: false });
+      expect(errorOf(session)).toBe(plain);
+      await pending;
+      expect(errorOf(session)).toBe("Text model does not support this attachment: scan.png. Text model can't read images, " +
+        "and no Vision Model is available to analyze them. To use images, choose a model that supports images, " +
+        "pick an image model that can edit in Studio → Chat defaults → Image model or ask an administrator to assign the Vision Model.");
+      // Known settings answer at once without another read.
+      useComposerSessionStore.getState().updateSession(session, { operationError: null });
+      await reportRejectedAttachments(["scan.png"], toolModel, { personalChat: true, workspaceAvailable: false });
+      expect(errorOf(session)).toContain("Studio → Chat defaults → Image model");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("never suggests a choice that cannot help", async () => {
+      const session = composerSessionKey("chat-a");
+      useComposerSessionStore.getState().activateSession(session);
+      // No usable editing model: the plain recovery stays.
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json(settings([
+        imageModel("creates", false), imageModel("edits", true, "credential_unavailable")]))));
+      await reportRejectedAttachments(["scan.png"], toolModel, { personalChat: true, workspaceAvailable: false });
+      expect(errorOf(session)).toBe(plain);
+      // A Project chat follows the organization default; a model without tools has no editing route.
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      resetImageModelStoreForTest();
+      await reportRejectedAttachments(["scan.png"], toolModel, { personalChat: false, workspaceAvailable: false });
+      expect(errorOf(session)).toBe(plain);
+      await reportRejectedAttachments(["scan.png"], textOnlyModel, { personalChat: true, workspaceAvailable: false });
+      expect(errorOf(session)).toBe("Text model does not support this attachment: scan.png. Text model can't read images. " +
+        "To use images, choose a model that supports images.");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("leaves a newer message alone when the image models arrive late", async () => {
+      const session = composerSessionKey("chat-a");
+      useComposerSessionStore.getState().activateSession(session);
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json(settings([imageModel("edits", true)]))));
+      const pending = reportRejectedAttachments(["scan.png"], toolModel, { personalChat: true, workspaceAvailable: false });
+      useComposerSessionStore.getState().updateSession(session, { operationError: "Upload failed." });
+      await pending;
+      expect(errorOf(session)).toBe("Upload failed.");
+    });
   });
 });
