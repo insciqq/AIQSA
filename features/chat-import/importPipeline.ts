@@ -13,7 +13,8 @@ import {
 } from "./converters/converterTypes";
 import type { ImportFile } from "./importFile";
 
-export type ImportLocalFailure = Readonly<{ title: string; reason: ImportLocalFailureReason; message?: string }>;
+/** A chat, or with `file` a whole file, that never reached the server. */
+export type ImportLocalFailure = Readonly<{ title: string; reason: ImportLocalFailureReason; message?: string; file?: true }>;
 export type ImportSentChat = Readonly<{ title: string; messages: number }>;
 
 /**
@@ -146,12 +147,12 @@ export async function* importBatches(
     const taken = new Set<ImportFile>(detection.claimed);
     for (const refusal of detection.refused ?? []) {
       taken.add(refusal.file);
-      fail({ reason: refusal.reason, title: refusal.file.name, ...(refusal.message ? { message: refusal.message } : {}) });
+      fail({ file: true, reason: refusal.reason, title: refusal.file.name, ...(refusal.message ? { message: refusal.message } : {}) });
     }
     if (detection.claimed.length) plan.push({ converter, files: detection.claimed });
     unclaimed = unclaimed.filter((file) => !taken.has(file));
   }
-  for (const file of unclaimed) fail({ reason: "unsupported_file", title: file.name });
+  for (const file of unclaimed) fail({ file: true, reason: "unsupported_file", title: file.name });
 
   for (const { converter, files: claimed } of plan) {
     for await (const event of converter.convert(claimed)) {
@@ -161,7 +162,12 @@ export async function* importBatches(
         skipped[event.kind] = (skipped[event.kind] ?? 0) + event.count;
         if (IMPORT_SKIPPED_CHAT_KINDS.has(event.kind)) pendingOutcomes += event.count;
       } else if (event.type === "failed") {
-        fail({ reason: event.reason, title: event.title, ...(event.message ? { message: event.message } : {}) });
+        fail({
+          reason: event.reason,
+          title: event.title,
+          ...(event.message ? { message: event.message } : {}),
+          ...(event.file ? { file: true as const } : {})
+        });
       } else {
         const prepared = prepareItem(event.chat, now());
         if (!prepared.ok) {
