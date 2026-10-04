@@ -89,6 +89,40 @@
   max-width: 100%;
 }
 
+/* A message opened from the sidebar search: one marker wash that fades,
+   in place of motion a steady ring until the highlight ends. */
+.v2-conversation-turn[data-search-reveal] > .v2-conversation-turn-content {
+  animation: v2-search-reveal 2.4s ease-out 1;
+}
+
+.v2-conversation-turn[data-role="assistant"][data-search-reveal] > .v2-conversation-turn-content {
+  border-radius: var(--v2-radius-s);
+}
+
+@keyframes v2-search-reveal {
+  0%,
+  30% {
+    background-color: var(--v2-color-comment-mark);
+    box-shadow: 0 0 0 0.375rem var(--v2-color-comment-mark);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0.375rem transparent;
+  }
+}
+
+html[data-motion="off"] .v2-conversation-turn[data-search-reveal] > .v2-conversation-turn-content {
+  animation: none;
+  box-shadow: 0 0 0 0.375rem var(--v2-color-comment-mark);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2-conversation-turn[data-search-reveal] > .v2-conversation-turn-content {
+    animation: none;
+    box-shadow: 0 0 0 0.375rem var(--v2-color-comment-mark);
+  }
+}
+
 /* User bubble per S3 §5/§3.3: 15/1.55, 16px radius with a 6px bottom-right
    tail, max 78% of the measure (mobile 88%). */
 .v2-conversation-turn[data-role="user"] .v2-conversation-turn-content {
