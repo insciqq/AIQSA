@@ -28,8 +28,12 @@ CREATE TABLE "KnowledgeImageObservation" (
 
 ALTER TABLE "UsageEvent" ADD COLUMN "knowledgeImageObservationRunId" TEXT;
 CREATE UNIQUE INDEX "UsageEvent_knowledgeImageObservationRunId_key" ON "UsageEvent"("knowledgeImageObservationRunId");
+-- Deferred: run deletion detaches the receipt through two actions (the run and the
+-- observation both SET NULL on it); an earlier write to the receipt in the same
+-- transaction would otherwise recheck the link between them.
 ALTER TABLE "UsageEvent" ADD CONSTRAINT "UsageEvent_knowledgeImageObservationRunId_fkey"
-  FOREIGN KEY ("knowledgeImageObservationRunId") REFERENCES "KnowledgeImageObservation"("modelRunId") ON DELETE SET NULL ON UPDATE RESTRICT;
+  FOREIGN KEY ("knowledgeImageObservationRunId") REFERENCES "KnowledgeImageObservation"("modelRunId") ON DELETE SET NULL ON UPDATE RESTRICT
+  DEFERRABLE INITIALLY DEFERRED;
 -- The receipt is image analysis accounting, never the run's answer usage that is re-recorded.
 ALTER TABLE "UsageEvent" ADD CONSTRAINT "UsageEvent_knowledge_image_observation_link_check"
   CHECK ("knowledgeImageObservationRunId" IS NULL OR "visionAnalysis");
