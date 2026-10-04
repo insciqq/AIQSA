@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { CatalogModel } from "@/components/app-shell/types";
 import type { AttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
+import { attachmentWarningsForModel } from "@/components/app-shell/attachmentCapabilities";
 import { AttachmentTrayV2 } from "./AttachmentTrayV2";
 import { SentAttachmentsV2 } from "./SentAttachmentsV2";
 import {
@@ -224,6 +225,67 @@ describe("AttachmentTrayV2", () => {
     expect(mapped[1]).toMatchObject({ blocksSend: true });
     expect(attachmentSendBlockReasonV2([mapped[0]!], null, false)).toBeNull();
     expect(attachmentSendBlockReasonV2([mapped[1]!], null, false)).toContain("scan.pdf");
+  });
+
+  describe("PDF without a reading route", () => {
+    const model = { capabilities: { documentInputMode: "pdf_text_extraction" } } as CatalogModel;
+    const unavailable = { available: false, reasonCode: "pdf_processing_configuration_incomplete" } as const;
+    const project = (status: "processing" | "ready", href: string | null) => {
+      const attachments: ComposerAttachment[] = [{ fileName: "report.pdf", id: "pdf", kind: "pdf", status }];
+      return attachmentItemsForV2(attachments, attachmentWarningsForModel(attachments, model, false, unavailable),
+        model, false, unavailable, href);
+    };
+
+    it.each(["processing", "ready"] as const)("shows the blocked reason on a %s chip and blocks Send", (status) => {
+      const mapped = project(status, null);
+      render(<AttachmentTrayV2 items={mapped} onRemove={vi.fn()} />);
+      const chip = screen.getByRole("listitem");
+      expect(chip).toHaveAttribute("data-warning-blocking", "true");
+      expect(chip).toHaveTextContent("Can't read PDF");
+      expect(chip).toHaveTextContent("No PDF-reading model is configured for this installation.");
+      expect(chip).toHaveTextContent("Ask an administrator to set one up.");
+      expect(chip).not.toHaveTextContent("Processing…");
+      expect(screen.queryByRole("link")).toBeNull();
+      expect(screen.getByRole("button", { name: "Remove report.pdf" })).toBeEnabled();
+      expect(attachmentSendBlockReasonV2(mapped, null, false)).toBe(
+        "No PDF-reading model is configured for this installation. Remove “report.pdf” or choose a model that can read PDFs."
+      );
+    });
+
+    it("links administrators to the PDF processing settings", () => {
+      render(<AttachmentTrayV2 items={project("ready", "/admin?section=roles&resource=chat_pdf")} />);
+      expect(screen.getByRole("link", { name: "Set up PDF processing" }))
+        .toHaveAttribute("href", "/admin?section=roles&resource=chat_pdf");
+      expect(screen.queryByText("Ask an administrator to set one up.")).toBeNull();
+    });
+
+    it("names the assigned reader instead of the answer provider for a system route", () => {
+      const available = { available: true, route: "system_pdf" } as const;
+      const attachments: ComposerAttachment[] = [
+        { fileName: "parsing.pdf", id: "parsing", kind: "pdf", status: "processing" },
+        { fileName: "failed.pdf", id: "failed", kind: "pdf", processingErrorCode: "pdf_extraction_failed", status: "failed" }
+      ];
+      const mapped = attachmentItemsForV2(attachments, attachmentWarningsForModel(attachments, model, false, available),
+        model, false, available, null);
+      expect(mapped.map(({ blocksSend, detail }) => ({ blocksSend, detail }))).toEqual([
+        { blocksSend: false, detail: "The assigned PDF reader can read the original PDF while local text extraction continues." },
+        { blocksSend: false, detail: "Local text extraction failed. The assigned PDF reader will read the original PDF." }
+      ]);
+      expect(attachmentSendBlockReasonV2(mapped, null, false)).toBeNull();
+      const unknown = attachmentItemsForV2(attachments, [], model, false, null, null);
+      expect(unknown.every((item) => item.blocksSend)).toBe(true);
+    });
+
+    it("keeps the PDF Ready once a route is available", () => {
+      const available = { available: true, route: "system_vision" } as const;
+      const attachments: ComposerAttachment[] = [{ fileName: "report.pdf", id: "pdf", kind: "pdf", status: "ready" }];
+      const mapped = attachmentItemsForV2(attachments, attachmentWarningsForModel(attachments, model, false, available),
+        model, false, available, "/admin?section=roles&resource=chat_pdf");
+      render(<AttachmentTrayV2 items={mapped} />);
+      expect(screen.getByText("Ready")).toBeVisible();
+      expect(screen.queryByRole("link")).toBeNull();
+      expect(attachmentSendBlockReasonV2(mapped, null, false)).toBeNull();
+    });
   });
 });
 

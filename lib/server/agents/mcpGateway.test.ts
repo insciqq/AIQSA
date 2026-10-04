@@ -21,7 +21,7 @@ import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
 import * as workspaceCheckpoints from "../workspace/checkpoints";
 
 // Text-result contract from the pinned consumer's CallToolResult conversion:
-// https://github.com/openai/codex/blob/rust-v0.159.3/codex-rs/protocol/src/models.rs#L2646
+// https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/protocol/src/models.rs#L2302
 // Non-null structured content takes precedence over all ordinary text items.
 // Pin this harness so an SDK upgrade requires reviewing the actual consumer.
 function codexModelOutput(result: {
@@ -29,7 +29,7 @@ function codexModelOutput(result: {
   structuredContent?: unknown;
   isError?: boolean;
 }) {
-  expect(CODEX_VERSION).toBe("0.159.3");
+  expect(CODEX_VERSION).toBe("0.160.0");
   return {
     body: result.structuredContent != null ? JSON.stringify(result.structuredContent)
       : result.content.map(({ text }) => text ?? "").join("\n"),

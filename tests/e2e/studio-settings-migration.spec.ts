@@ -181,7 +181,7 @@ for (const theme of ["dark", "light"] as const) {
         await expect(disclosure).toContainText("Memory is on");
         await disclosure.click();
       }
-      await expect(card.getByRole("switch")).toHaveCount(5);
+      await expect(card.getByRole("switch")).toHaveCount(4);
       await expect(library.getByText(/Temporary chats never read or write Memory/)).toHaveCount(1);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`memory-${theme}-${size.width}x${size.height}.png`) });

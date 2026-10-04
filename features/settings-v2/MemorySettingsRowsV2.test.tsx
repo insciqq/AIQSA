@@ -49,8 +49,7 @@ describe("MemorySettingsRowsV2", () => {
         decayAvailable: false,
         naturalLanguageActionsAvailable: false,
         pastChatIndexingAvailable: false,
-        retrievalAvailable: false,
-        synthesisAvailable: false
+        retrievalAvailable: false
       }
     });
     useMemorySettingsStore.setState({ data, loadState: "ready" });

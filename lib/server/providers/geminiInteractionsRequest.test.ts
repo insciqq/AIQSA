@@ -534,3 +534,52 @@ describe("Gemini Interactions request builder", () => {
     }))).toThrow("gemini_interactions_continuation_invalid");
   });
 });
+
+describe("Gemini Interactions thinking level admission", () => {
+  const withEffort = (
+    modelId: string,
+    effort: string,
+    capabilities: Partial<ProviderRunRequest["modelCapabilities"]> = {}
+  ) => request({
+    modelCapabilities: { ...request().modelCapabilities, ...capabilities },
+    modelId,
+    params: { maxOutputTokens: 128, reasoning: { effort }, stream: true }
+  });
+
+  it("refuses a level the model's catalog controls exclude before dispatch and in the preview", () => {
+    expect(() => buildGeminiInteractionsRequest(withEffort("gemini-3.8-flash", "minimal")))
+      .toThrow("gemini_interactions_reasoning_effort_unsupported");
+    expect(() => buildGeminiInteractionsRequestPreview(withEffort("gemini-3.8-flash", "minimal")))
+      .toThrow("gemini_interactions_reasoning_effort_unsupported");
+    // Stale saved capabilities never widen the reviewed catalog template.
+    expect(() => buildGeminiInteractionsRequest(withEffort("gemini-3.8-flash", "minimal", {
+      reasoningEfforts: ["minimal", "low", "medium", "high"]
+    }))).toThrow("gemini_interactions_reasoning_effort_unsupported");
+  });
+
+  it.each([
+    ["gemini-3.8-flash", "low"],
+    ["gemini-3.8-flash", "high"],
+    ["gemini-3.6-flash", "minimal"],
+    ["gemini-3.1-pro-preview", "low"]
+  ])("sends the supported %s level %s unchanged", (modelId, effort) => {
+    expect(buildGeminiInteractionsRequest(withEffort(modelId, effort)).generation_config.thinking_level)
+      .toBe(effort);
+  });
+
+  it("uses saved capability levels for a model without a catalog template", () => {
+    expect(buildGeminiInteractionsRequest(withEffort("gemini-private-test", "minimal", {
+      reasoningEfforts: ["minimal", "low"]
+    })).generation_config.thinking_level).toBe("minimal");
+    expect(() => buildGeminiInteractionsRequest(withEffort("gemini-private-test", "high", {
+      reasoningEfforts: ["minimal", "low"]
+    }))).toThrow("gemini_interactions_reasoning_effort_unsupported");
+  });
+
+  it("omits the thinking level for a non-level effort or a nonreasoning model", () => {
+    expect(buildGeminiInteractionsRequest(withEffort("gemini-3.8-flash", "none")).generation_config)
+      .not.toHaveProperty("thinking_level");
+    expect(buildGeminiInteractionsRequest(withEffort("gemini-3.8-flash", "minimal", { reasoning: false }))
+      .generation_config).not.toHaveProperty("thinking_level");
+  });
+});

@@ -172,6 +172,23 @@ describe("admin provider browser API", () => {
     })).toContain("utility model role: 1");
   });
 
+  it("names the installation roles a refused routing change or failed check affects", () => {
+    expect(adminProviderErrorMessage({ blockers: [], code: "provider_routing_role_incompatible", resourceIds: [],
+      roles: [{ role: "memory", missingParameters: ["response_format", "structured_outputs"] },
+        { role: "system_model", missingParameters: ["tools"] }] }))
+      .toBe("Memory and System model use this model and need structured output and tool calling, which the selected providers do not support. " +
+        "Choose Automatic or providers that support it, or assign Memory and System model to another model first.");
+    expect(adminProviderErrorMessage({ blockers: [], code: "provider_routing_role_unverified", resourceIds: [],
+      roles: [{ role: "chat_titles", missingParameters: [] }] }))
+      .toBe("Chat titles uses this model, and OpenRouter could not confirm that the selected providers support it. Check the default key and try again, or choose Automatic.");
+    expect(adminProviderErrorMessage({ blockers: [], code: "provider_model_check_failed_roles", resourceIds: [],
+      roles: [{ role: "vision", missingParameters: [] }] }))
+      .toBe("Its check failed, so Vision Model is paused until a check passes. Restore the previous settings or run the check again.");
+    // A malformed role list from the server falls back to the generic code text.
+    expect(adminProviderErrorMessage({ blockers: [], code: "provider_routing_role_incompatible", resourceIds: [] }))
+      .toContain("A system role uses this model");
+  });
+
   it("sends credentials only in same-origin JSON mutation bodies", async () => {
     const fetcher = vi.fn(async () => Response.json({ connections: [safeConnection] }));
     await expect(createAdminProviderCredential(

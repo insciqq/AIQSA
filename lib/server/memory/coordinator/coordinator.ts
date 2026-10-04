@@ -80,7 +80,12 @@ export class MemoryCoordinator {
   readonly #repository: MemoryCoordinatorRepository;
   readonly #reconcileWork: (() => Promise<void>) | null;
   readonly #scheduler: MemoryScheduler;
+  #busyDiscoveryPhase: object | null = null;
+  #discoveryPending: Promise<void> | null = null;
+  #discoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  readonly #idleJobSlots = new Set<() => void>();
   #pending: Promise<void> | null = null;
+  #runningJobs = 0;
   #rerun = false;
   #running = false;
   #stopped = false;
@@ -127,12 +132,14 @@ export class MemoryCoordinator {
 
   async stop(): Promise<void> {
     if (this.#timer) clearTimeout(this.#timer);
+    this.#stopBusyDiscovery();
     if (this.#workerHeartbeatTimer) clearInterval(this.#workerHeartbeatTimer);
     this.#timer = null;
     this.#workerHeartbeatTimer = null;
     this.#rerun = false;
     this.#running = false;
     this.#stopped = true;
+    this.#wakeIdleJobSlots();
     for (const controller of this.#activeControllers) {
       controller.abort(new Error("memory_coordinator_stopped"));
     }
@@ -207,24 +214,70 @@ export class MemoryCoordinator {
         claimObserved = true;
         if (!success) claimFailed = true;
       };
-      await Promise.all([
-        ...Array.from({ length: this.#policy.maxJobParallel }, () => this.#jobWorker(observeClaim)),
-        ...Array.from(
-          { length: this.#policy.maxDeletionParallel },
-          () => this.#deletionWorker(observeClaim)
-        )
-      ]);
+      const jobLane = Promise.all(
+        Array.from({ length: this.#policy.maxJobParallel }, () => this.#jobWorker(observeClaim))
+      );
+      const deletionLane = Promise.all(Array.from(
+        { length: this.#policy.maxDeletionParallel },
+        () => this.#deletionWorker(observeClaim)
+      ));
+      // One long job must not starve optional discovery for the rest of the
+      // pass. Its own cadence starts only after this pass reconciled jobs and
+      // drained privacy-critical deletions, so their precedence is unchanged.
+      const phase = {};
+      this.#busyDiscoveryPhase = phase;
+      void deletionLane.then(() => this.#armBusyDiscovery(phase), () => undefined);
+      try {
+        await Promise.all([jobLane, deletionLane]);
+      } finally {
+        this.#stopBusyDiscovery();
+      }
       if (claimObserved && !claimFailed && !this.#stopped) reportSubsystemHealthy("memory", "claim");
       await this.#reconcileJobs();
+      // The pass still ends with discovery that starts after its claims and
+      // reconciliation; it waits for a busy-phase pass instead of overlapping.
+      while (this.#discoveryPending) await this.#discoveryPending;
+      await this.#discover();
+    } while (this.#rerun && !this.#stopped);
+  }
+
+  /** Single-flight per process: callers start a pass only when none is pending. */
+  #discover(): Promise<void> {
+    const reconcileWork = this.#reconcileWork;
+    if (!reconcileWork) return Promise.resolve();
+    if (this.#discoveryPending) return this.#discoveryPending;
+    const pass = runInBackground(async () => {
       try {
-        await this.#reconcileWork?.();
-        if (this.#reconcileWork) reportSubsystemHealthy("memory", "discover");
+        await reconcileWork();
+        reportSubsystemHealthy("memory", "discover");
       } catch (error) {
         reportFailure("discover", error);
-        // The timer retries optional durable work discovery after existing
-        // jobs and privacy-critical deletions have had their pass.
+        // A later cadence tick or pass retries optional durable work
+        // discovery; queue contents remain authoritative.
       }
-    } while (this.#rerun && !this.#stopped);
+    }).finally(() => {
+      if (this.#discoveryPending === pass) this.#discoveryPending = null;
+    });
+    this.#discoveryPending = pass;
+    return pass;
+  }
+
+  /** Re-arms only after a pass settles, so a slow pass cannot cause catch-up. */
+  #armBusyDiscovery(phase: object): void {
+    if (!this.#reconcileWork || !this.#running || this.#stopped ||
+      this.#busyDiscoveryPhase !== phase || this.#discoveryTimer) return;
+    this.#discoveryTimer = setTimeout(() => {
+      this.#discoveryTimer = null;
+      if (this.#stopped || this.#busyDiscoveryPhase !== phase) return;
+      void this.#discover().finally(() => this.#armBusyDiscovery(phase));
+    }, this.#policy.intervalMs);
+    this.#discoveryTimer.unref?.();
+  }
+
+  #stopBusyDiscovery(): void {
+    if (this.#discoveryTimer) clearTimeout(this.#discoveryTimer);
+    this.#discoveryTimer = null;
+    this.#busyDiscoveryPhase = null;
   }
 
   async #reconcileJobs(): Promise<void> {
@@ -340,14 +393,46 @@ export class MemoryCoordinator {
         reportFailure("claim", error);
         return;
       }
-      if (!claim) return;
+      if (!claim) {
+        // A sibling's long job keeps this pass open. Rather than leave work
+        // enqueued meanwhile waiting for it, the idle slot claims again once
+        // per interval (or when a job settles); with no running sibling it
+        // ends the pass as before.
+        if (this.#runningJobs === 0) return;
+        await this.#waitForIdleJobSlotTick();
+        if (this.#runningJobs === 0) return;
+        continue;
+      }
       claims += 1;
       const claimedJob = claim;
-      await runInBackground(() => runWithContext(
-        { job_id: claimedJob.id },
-        () => this.#processJob(claimedJob)
-      ));
+      this.#runningJobs += 1;
+      try {
+        await runInBackground(() => runWithContext(
+          { job_id: claimedJob.id },
+          () => this.#processJob(claimedJob)
+        ));
+      } finally {
+        this.#runningJobs -= 1;
+        this.#wakeIdleJobSlots();
+      }
     }
+  }
+
+  #waitForIdleJobSlotTick(): Promise<void> {
+    return new Promise((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        this.#idleJobSlots.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, this.#policy.intervalMs);
+      timer.unref?.();
+      this.#idleJobSlots.add(wake);
+    });
+  }
+
+  #wakeIdleJobSlots(): void {
+    for (const wake of [...this.#idleJobSlots]) wake();
   }
 
   async #deletionWorker(observeClaim: (success: boolean) => void): Promise<void> {

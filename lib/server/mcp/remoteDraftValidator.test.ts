@@ -339,6 +339,38 @@ describe("remote MCP draft validator", () => {
     expect(harness.options[0]?.headers).toEqual({});
   });
 
+  it("checks a personal connection's bare Authorization value as Bearer and an administrator's verbatim", async () => {
+    const personalSlots: McpDraftConfiguration["slots"] = [{
+      label: "Token", policy: { kind: "personal", required: true }, sensitive: true, slotKey: "authorization",
+      target: { kind: "header", name: "Authorization" }, valueType: "secret"
+    }, remoteDraft().slots[1]!];
+    const sent = async (input: { authorization: string; personal?: true; workspace?: string }) => {
+      const harness = sessionHarness();
+      const outcome = await createRemoteMcpDraftValidator({ fetch: safeFetch, sessionFactory: harness.sessionFactory })
+        .validate({
+          draft: input.personal ? remoteDraft({ slots: personalSlots }) : remoteDraft(),
+          ...(input.personal ? { personal: true as const } : {}),
+          values: { authorization: input.authorization, retries: 3, workspace: input.workspace ?? "workspace-a" }
+        });
+      expect(outcome.kind).toBe("ok");
+      return harness.options[0]?.headers;
+    };
+
+    await expect(sent({ authorization: " synthetic-draft-token \n", personal: true, workspace: " Token raw " })).resolves.toEqual({
+      authorization: "Bearer synthetic-draft-token",
+      "x-workspace": "Token raw"
+    });
+    for (const scheme of ["Bearer synthetic-draft-token", "bearer synthetic-draft-token", "Token synthetic", "Basic c3ludGhldGlj"]) {
+      await expect(sent({ authorization: scheme, personal: true })).resolves.toMatchObject({ authorization: scheme });
+    }
+    // The administrator's check exercises the exact value entered, trimmed, as the runtime sends it.
+    await expect(sent({ authorization: " synthetic-raw-key " })).resolves.toEqual({
+      authorization: "synthetic-raw-key",
+      "x-retries": "3",
+      "x-workspace": "workspace-a"
+    });
+  });
+
   it("rejects exact known secrets anywhere in the complete tool inventory", async () => {
     const leakingHarness = sessionHarness({
       tools: [

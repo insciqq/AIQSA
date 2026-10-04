@@ -1,11 +1,16 @@
 import type {
   McpDraftConfiguration,
   McpJsonObject,
-  McpSlotValue,
   McpToolInventoryEntry,
   McpValidationIssue
 } from "@/lib/contracts/mcp";
-import { boundMcpToolDescription, MCP_SERVER_TOOL_LIMIT, mcpValidationIssue, safeMcpEndpoint } from "@/lib/contracts/mcp";
+import {
+  boundMcpToolDescription,
+  MCP_SERVER_TOOL_LIMIT,
+  mcpHeaderValue,
+  mcpValidationIssue,
+  safeMcpEndpoint
+} from "@/lib/contracts/mcp";
 import {
   MCP_INVENTORY_SESSION_LIMITS,
   McpClientSession,
@@ -70,10 +75,6 @@ function invalid(code: string, path: string): McpDraftValidationOutcome {
   return { issues: [{ code, path }], kind: "invalid" };
 }
 
-function headerValue(value: McpSlotValue): string {
-  return typeof value === "string" ? value : String(value);
-}
-
 function headersForDraft(input: McpDraftValidationInput):
   | { headers: Record<string, string>; issues: [] }
   | { headers: null; issues: McpValidationIssue[] } {
@@ -102,7 +103,13 @@ function headersForDraft(input: McpDraftValidationInput):
       continue;
     }
     try {
-      headers.set(slot.target.name, headerValue(value));
+      // Only a personal connection's own personal slot holds a value the user
+      // entered; an administrator's check exercises the exact value entered.
+      headers.set(slot.target.name, mcpHeaderValue(slot.target.name, value, {
+        source: input.personal && slot.policy.kind === "personal"
+          ? "personal"
+          : slot.policy.kind === "literal" ? "literal" : "shared"
+      }));
       names.add(normalizedName);
     } catch {
       issues.push({ code: "mcp_static_header_invalid", path });
@@ -117,7 +124,8 @@ function headersForDraft(input: McpDraftValidationInput):
 function sensitiveStrings(input: McpDraftValidationInput, includeEndpoint = true): string[] {
   const values = input.draft.slots.flatMap((slot) => {
     const value = input.values[slot.slotKey];
-    return slot.sensitive && typeof value === "string" && value.length > 0 ? [value] : [];
+    // The trimmed text also covers the Bearer form a bare Authorization value is sent in.
+    return slot.sensitive && typeof value === "string" && value.trim().length > 0 ? [value.trim()] : [];
   });
   const endpoint = new URL(input.draft.source.url);
   if (includeEndpoint) values.push(endpoint.toString());

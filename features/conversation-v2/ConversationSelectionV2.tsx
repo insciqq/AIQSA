@@ -39,8 +39,16 @@ type CommentTarget = CapturedSelection & Readonly<{ anchor?: PendingCommentAncho
 /** A click on these keeps its own action even inside a mark. */
 const INTERACTIVE = "a, button, input, textarea, select, summary, label, [role='button'], [contenteditable='true']";
 
+/** A keyboard or touch-handle selection shows the toolbar once it stays unchanged this long. */
+export const SELECTION_SETTLE_MS = 250;
+
 function elementAt(node: Node) {
   return node instanceof Element ? node : node.parentElement;
+}
+
+function sameRange(a: Range, b: Range) {
+  return a.startContainer === b.startContainer && a.startOffset === b.startOffset &&
+    a.endContainer === b.endContainer && a.endOffset === b.endOffset;
 }
 
 export function captureConversationSelection(container: HTMLElement, selection: Selection | null, scopeKey: string): CapturedSelection | null {
@@ -85,6 +93,8 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
   // Read by the selection listener, updated before any later event can run.
   const suppressedRef = useRef(suppressed);
   useLayoutEffect(() => { suppressedRef.current = suppressed; }, [suppressed]);
+  const capturedRef = useRef(captured);
+  useLayoutEffect(() => { capturedRef.current = captured; }, [captured]);
   const current = captured?.scopeKey === quote.scopeKey && captured.root.isConnected && !quote.disabled && !suppressed ? captured : null;
   const editedComment = commenting?.editId ? quote.comments?.find(comment => comment.id === commenting.editId) ?? null : null;
   // An edited comment that was sent or deleted elsewhere closes its form.
@@ -150,26 +160,70 @@ function ConversationSelectionScopeV2({ quote, scrollRef }: Readonly<{
     return () => { media.removeEventListener("change", update); narrow.removeEventListener("change", update); };
   }, []);
 
+  // The toolbar appears once the selection is finished: after the mouse or pen is released, or after a keyboard or
+  // touch-handle selection stays unchanged for SELECTION_SETTLE_MS. A collapsed selection hides it at once.
   useEffect(() => {
-    const changed = () => {
-      if (suppressedRef.current) return;
+    let dragging = false;
+    let settle: number | null = null;
+    const cancelSettle = () => {
+      if (settle !== null) window.clearTimeout(settle);
+      settle = null;
+    };
+    const hide = () => { cancelSettle(); setCaptured(null); };
+    const capture = () => {
       const container = scrollRef.current;
-      const next = !quote.disabled && container ? captureConversationSelection(container, window.getSelection(), quote.scopeKey) : null;
+      return !quote.disabled && container ? captureConversationSelection(container, window.getSelection(), quote.scopeKey) : null;
+    };
+    const show = () => {
+      cancelSettle();
+      if (suppressedRef.current) return;
+      const next = capture();
       setCaptured(next);
       if (next) setNotice(null);
     };
-    const dismiss = () => setCaptured(null);
+    const changed = () => {
+      if (suppressedRef.current) return;
+      const next = capture();
+      if (!next) { hide(); return; }
+      // A late event for the selection already on screen keeps the toolbar where it is.
+      const visible = capturedRef.current;
+      if (settle === null && visible && sameRange(visible.range, next.range)) return;
+      hide();
+      if (!dragging) settle = window.setTimeout(show, SELECTION_SETTLE_MS);
+    };
+    const pressed = (event: PointerEvent) => {
+      if (event.pointerType === "touch" || event.button !== 0) return;
+      if (event.target instanceof Node && surfaceRef.current?.contains(event.target)) return;
+      dragging = true;
+      if (event.target instanceof Node && scrollRef.current?.contains(event.target)) hide();
+    };
+    const released = (event: PointerEvent) => {
+      if (!dragging || event.pointerType === "touch") return;
+      dragging = false;
+      show();
+    };
+    // A release outside the window may never arrive; the next move without buttons ends the drag.
+    const moved = (event: PointerEvent) => { if (dragging && event.pointerType !== "touch" && event.buttons === 0) released(event); };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { dismiss(); setNotice(null); }
+      if (event.key === "Escape") { hide(); setNotice(null); }
     };
     document.addEventListener("selectionchange", changed);
+    document.addEventListener("pointerdown", pressed, true);
+    document.addEventListener("pointerup", released, true);
+    document.addEventListener("pointercancel", released, true);
+    document.addEventListener("pointermove", moved, true);
     document.addEventListener("keydown", escape);
     // Scrolling includes the transcript, a table, code, or a surrounding panel.
-    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("scroll", hide, true);
     return () => {
+      cancelSettle();
       document.removeEventListener("selectionchange", changed);
+      document.removeEventListener("pointerdown", pressed, true);
+      document.removeEventListener("pointerup", released, true);
+      document.removeEventListener("pointercancel", released, true);
+      document.removeEventListener("pointermove", moved, true);
       document.removeEventListener("keydown", escape);
-      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("scroll", hide, true);
     };
   }, [quote.disabled, quote.scopeKey, scrollRef]);
 

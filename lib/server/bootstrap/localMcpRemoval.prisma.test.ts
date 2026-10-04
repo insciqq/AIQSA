@@ -243,7 +243,7 @@ describe("local MCP removal bootstrap gate", () => {
       activeRevision: 0, draft: localDraft("npm"), revisions: [otherRemoteDraft], tested: true
     });
     await prisma.mcpActivationJob.create({ data: {
-      draftHash: "e".repeat(64), serverId: resetDraft.id, sharedConfigVersion: 0, stage: "resolving", workloadToken: "f".repeat(32)
+      draftHash: "e".repeat(64), serverId: resetDraft.id, sharedConfigVersion: 0, stage: "publishing"
     } });
 
     // One accepted run bound to an untouched, a local and a local-history generation.

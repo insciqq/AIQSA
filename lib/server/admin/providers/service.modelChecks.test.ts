@@ -362,6 +362,13 @@ describe("model Test & Save (B2)", () => {
     const [catalog] = await providers.listConnections();
     expect(catalog?.checkRun).toMatchObject({ failed: ["model-sol"], state: "completed" });
     expect(JSON.stringify(catalog?.checkRun)).not.toContain("503");
+
+    const assigned = service(repository({ async loadModelActivationCandidate() {
+      const candidate = activationCandidate();
+      return { ...candidate, model: { ...candidate.model, assignedRoles: ["memory", "chat_titles"] } };
+    } }), { async test() { throw new Error("upstream 503"); } });
+    await expect(assigned.activateModel({ connectionId: "conn-openai", modelId: "model-sol" }))
+      .resolves.toEqual({ check: "failed", affectedRoles: ["memory", "chat_titles"] });
   });
 
   it("rejects a stale or missing model before any provider call", async () => {

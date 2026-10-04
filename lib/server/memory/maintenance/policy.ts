@@ -2,9 +2,11 @@ import type { MemoryExecutionVersions } from "../execution";
 import { memorySha256 } from "../persistence/lexical";
 
 export const MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS = Object.freeze([
-  "memory-maintenance-policy-v1", "memory-maintenance-policy-v2", "memory-maintenance-policy-v3"
+  "memory-maintenance-policy-v1", "memory-maintenance-policy-v2", "memory-maintenance-policy-v3", "memory-maintenance-policy-v4"
 ] as const);
-export const MEMORY_MAINTENANCE_POLICY_VERSION = "memory-maintenance-policy-v3";
+/** v4 reviews every automatic fact once more and then again on its re-review
+ * cadence; earlier rows stay as history and never cover a v4 review. */
+export const MEMORY_MAINTENANCE_POLICY_VERSION = "memory-maintenance-policy-v4";
 export function isSupportedMemoryMaintenancePolicy(value: unknown): value is typeof MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS[number] {
   return MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS.some((version) => version === value);
 }
@@ -12,10 +14,19 @@ export const MEMORY_MAINTENANCE_PIPELINE_VERSION = "memory-maintenance-v1";
 export const MEMORY_MAINTENANCE_BATCH_SIZE = 16;
 export const MEMORY_MAINTENANCE_MAX_OWNERS = 8;
 export const MEMORY_MAINTENANCE_QUIET_MS = 30 * 60 * 1_000;
+const DAY_MS = 24 * 60 * 60 * 1_000;
 /** A blocker can clear without any lineage change; it is checked again weekly. */
-export const MEMORY_MAINTENANCE_BLOCKED_RECHECK_MS = 7 * 24 * 60 * 60 * 1_000;
-/** Failed reviews of a version's current evidence that cover it until new
- * evidence or policy; ordinary failures and invalid answers count separately. */
+export const MEMORY_MAINTENANCE_BLOCKED_RECHECK_MS = 7 * DAY_MS;
+/** A settled decision that keeps a fact covers it only until its re-review:
+ * a DURABLE keep the longest; any other keep, and a removal the verifier
+ * rejected, the ongoing cadence; a keep that resolved contradictory labels
+ * (reason unresolved_scope) a day, at most FALLBACK_RETRIES times in a row,
+ * and the ongoing cadence after that. */
+export const MEMORY_MAINTENANCE_REREVIEW_MS = Object.freeze({ durable: 120 * DAY_MS, ongoing: 30 * DAY_MS, fallback: DAY_MS });
+export const MEMORY_MAINTENANCE_FALLBACK_RETRIES = 3;
+/** Failed reviews of one review cycle of a version's current evidence (after
+ * its latest settled decision, within the ongoing cadence) that cover it;
+ * ordinary failures and invalid answers count separately. */
 export const MEMORY_MAINTENANCE_MAX_FAILED_ATTEMPTS = 2;
 export const MEMORY_MAINTENANCE_MAX_INVALID_OUTPUT_ATTEMPTS = 3;
 /** A transient provider failure spends no budget; the version waits instead,
@@ -55,9 +66,9 @@ export const MEMORY_MAINTENANCE_SCHEDULE_TRANSACTION_BOUNDS = Object.freeze({
 export const MEMORY_MAINTENANCE_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_MAINTENANCE_PIPELINE_VERSION,
   policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION,
-  promptVersion: "memory-maintenance-prompt-v3",
-  schemaVersion: "memory-maintenance-schema-v4",
-  retrievalConfigFingerprint: "memory-maintenance-exact-sources-v2"
+  promptVersion: "memory-maintenance-prompt-v5",
+  schemaVersion: "memory-maintenance-schema-v7",
+  retrievalConfigFingerprint: "memory-maintenance-exact-sources-related-v3"
 });
 export type MemoryUsefulness = "DURABLE" | "ONGOING" | "EPISODIC";
 /** Fixed, content-free reasons of a non-final outcome. Only the planner (or
@@ -86,6 +97,16 @@ export type MemoryMaintenanceEvidence = Readonly<{
   observedAt: Date;
   createdAt: Date;
 }>;
+/** Another current memory of the owner, most similar to a reviewed source and
+ * shown only to judge whether it contradicts or supersedes that source. It is
+ * never reviewed or removed here. `ref` is the source ref, `M` and its rank. */
+export type MemoryMaintenanceRelatedMemory = Readonly<{
+  ref: string;
+  factId: string;
+  versionId: string;
+  statement: string;
+  observedAt: Date | null;
+}>;
 export type MemoryMaintenanceSource = Readonly<{
   ref: string;
   factId: string;
@@ -99,6 +120,9 @@ export type MemoryMaintenanceSource = Readonly<{
   evidence: readonly MemoryMaintenanceEvidence[];
   context?: readonly Readonly<{ kind: "SOURCE_MESSAGE" | "REFERENCE_MESSAGE" | "FACT_DEPENDENCY";
     role: string; text: string; identityHash: string; observedAt?: string }>[];
+  /** Outside the source hash: attached for a call and revalidated before
+   * every disclosure. */
+  related?: readonly MemoryMaintenanceRelatedMemory[];
   evidenceThrough: Date;
   sourceSnapshotHash: string;
 }>;
