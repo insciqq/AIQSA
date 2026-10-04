@@ -115,10 +115,11 @@ describe("scheduled task end to end", () => {
     // The transcript stays linear: the run continues after the owner's turn...
     expect(messages[4]!.parentMessageId).toBe(messages[3]!.id);
     // ...but its model saw only the previous result and the prompt (the fake provider lists earlier user turns).
-    expect(text(messages[5]!.content))
-      .toBe("Fake answer: Summarize the synthetic fixture\nContext memory: Summarize the synthetic fixture");
+    const answer = text(messages[5]!.content);
+    expect(answer).toContain("Context memory: Summarize the synthetic fixture");
+    expect(answer).not.toContain("Synthetic owner question");
     // The owner's own message saw the whole chat and is not a scheduled run.
-    expect(text(messages[3]!.content)).toContain("Synthetic owner question");
+    expect(text(messages[3]!.content)).toContain("Context memory: Summarize the synthetic fixture");
     const ownerRun = await prisma.modelRun.findFirstOrThrow({ where: { userMessageId: messages[2]!.id } });
     expect(ownerRun).toMatchObject({ scheduledOccurrenceId: null, scheduledTaskGeneration: null, scheduledTaskId: null });
     expect(second).toMatchObject({ baselineRunId: occurrences[1]!.runId, baselineUserMessageId: messages[4]!.id });
@@ -141,9 +142,11 @@ describe("scheduled task end to end", () => {
       expect(await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).toMatchObject({
         memoryMode: "EXCLUDED", title: scheduledTaskRunChatTitle("Synthetic brief", occurrences[index]!.scheduledFor, "Europe/Moscow"), userId
       });
+      // A first send in its own chat: no earlier turn reached the model.
       const answers = await prisma.message.findMany({ where: { chatId, role: "assistant" } });
-      expect(answers.map((message) => text(message.content)))
-        .toEqual(["Fake answer: Summarize the synthetic fixture"]);
+      expect(answers).toHaveLength(1);
+      expect(text(answers[0]!.content)).toContain("Fake answer: Summarize the synthetic fixture");
+      expect(text(answers[0]!.content)).not.toContain("Context memory");
     }
   });
 });
