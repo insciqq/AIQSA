@@ -118,6 +118,10 @@ export function humanizeErrorCode(code: string): string {
       "The Knowledge answer cited evidence that was not supplied. Try again or choose another model",
     knowledge_retrieval_failed:
       "The selected documents could not be retrieved. Try again",
+    knowledge_image_not_supported:
+      "Knowledge answers can't use images with this model. Remove the image, choose a model that supports images, or ask without Knowledge",
+    image_attachment_not_supported:
+      "This model can't use images here. Remove the image, choose a model that supports images, or ask an administrator to assign the Vision Model",
     no_retrieval_candidates:
       "No matching passages were found in the ready documents. Rephrase the question or change the selection",
     provider_not_available: "Provider is not available",

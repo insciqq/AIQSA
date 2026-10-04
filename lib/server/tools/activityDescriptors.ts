@@ -97,6 +97,10 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
   descriptors.set("load_skill", { origin: "skill", serverName: "Skills", toolName: "load_skill" });
   descriptors.set("read_skill_file", { origin: "skill", serverName: "Skills", toolName: "read_skill_file" });
   if (normalizedRequest.imagePlan) descriptors.set("generate_image", { origin: "image", serverName: "Images", toolName: "generate_image" });
+  // The chat form of System Vision; Workspace analysis keeps its existing activity.
+  if (normalizedRequest.visionAnalysis && normalizedRequest.workspace === undefined) {
+    descriptors.set("analyze_image", { origin: "vision", serverName: "System Vision", toolName: "analyze_image" });
+  }
   descriptors.set("search_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   descriptors.set("retrieve_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   for (const name of [

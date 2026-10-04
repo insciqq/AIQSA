@@ -6,7 +6,7 @@ import { lockRunSettlementScope } from "../runs/prismaRepositoryShared";
 import { prisma } from "../prisma";
 import { createVisionAnalysisStore } from "./store";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
-import type { ToolExecutionResult } from "../tools/types";
+import type { ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { loadChatUsageTotals } from "../chats/usageTotals";
 import { persistCompletedAnswerUsage } from "../runs/prismaRepositoryAnswer";
@@ -18,7 +18,9 @@ import type { NormalizedRunRequest } from "../providers/types";
 import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
 import type { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
 import { createVisionAnalysisService } from "./service";
+import { createConversationImageSource } from "./conversationImages";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
+import { createMemoryStorageAdapter } from "../../../tests/support/storage";
 
 afterAll(() => prisma.$disconnect());
 const json = (value: unknown) => value as Prisma.InputJsonValue;
@@ -271,6 +273,54 @@ describe("durable auxiliary Vision accounting", () => {
     await expect(f.store.dispatch(f.context, f.plan, inputs)).rejects.toThrow("vision_model_unavailable");
     expect(await f.db.usageEvent.count({ where: { modelRunId: f.context.runId } })).toBe(0);
   }));
+  it("analyzes a conversation GIF as PNG under the owner's attachment authority, keeping its identity, and restores without another charge", async () => fixture(async f => {
+    const storage = createMemoryStorageAdapter();
+    const gif = await sharp({ create: { width: 3, height: 2, channels: 3, background: "#ff0000" } }).gif().toBuffer();
+    const attachmentId = randomUUID();
+    await storage.putObject({ storageKey: `synthetic-chat-vision/${attachmentId}`, contentType: "image/gif", body: gif });
+    await f.db.attachment.create({ data: { id: attachmentId, userId: f.context.userId, chatId: f.context.chatId, kind: "image",
+      mimeType: "image/gif", fileName: "square.gif", storageKey: `synthetic-chat-vision/${attachmentId}`,
+      checksum: createHash("sha256").update(gif).digest("hex"), byteSize: gif.byteLength, status: "ready", metadata: {} } });
+    // A forged reference to another owner's image in the same run.
+    const other = await f.db.user.create({ data: { id: randomUUID(), displayName: "Synthetic other owner", status: "active" } });
+    const foreignId = randomUUID();
+    await storage.putObject({ storageKey: `synthetic-chat-vision/${foreignId}`, contentType: "image/gif", body: gif });
+    await f.db.attachment.create({ data: { id: foreignId, userId: other.id, kind: "image", mimeType: "image/gif", fileName: "foreign.gif",
+      storageKey: `synthetic-chat-vision/${foreignId}`, checksum: createHash("sha256").update(gif).digest("hex"), byteSize: gif.byteLength,
+      status: "ready", metadata: {} } });
+    const execute = vi.fn<ReturnType<typeof createAcceptedProviderRequestExecutor>>().mockResolvedValue({
+      finalText: "A red rectangle.", finalProviderResponsePreview: {}, usage: { inputTokens: 8, outputTokens: 3 } });
+    const service = createVisionAnalysisService(f.db, {} as unknown as ReturnType<typeof createWorkspaceSelectedCaptures>,
+      { execute, store: f.store, conversationImages: createConversationImageSource(f.db, storage) });
+    // No Workspace: the chat form addresses conversation images by image_id.
+    const context = (persistedToolCallId: string) => ({ runId: f.context.runId, userId: f.context.userId, persistedToolCallId,
+      request: { chatId: f.context.chatId, visionAnalysis: f.plan, imageReferences: [attachmentId, foreignId].map(id => ({
+        attachmentId: id, messageId: "synthetic-message", fileName: `${id}.gif`, origin: "upload" as const })) } } as unknown as ToolExecutionContext);
+    const call = { ...f.context.call, arguments: { images: [{ image_id: attachmentId }], question: "What shape and color?" } };
+    const result = await service.execute(call, context(f.context.toolCallId));
+    expect(result).toMatchObject({ status: "complete" });
+    expect(JSON.stringify(result)).toContain("A red rectangle.");
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]![1].attachments).toEqual([expect.objectContaining({ mimeType: "image/png" })]);
+    expect(await f.db.visionAnalysisAttempt.findMany({ where: { modelRunId: f.context.runId } })).toEqual([expect.objectContaining({
+      toolCallId: f.context.toolCallId, state: "settled", requestHash: hashCanonicalMcpValue(call.arguments),
+      images: [expect.objectContaining({ mimeType: "image/png", source: expect.objectContaining({ attachmentId, mimeType: "image/gif", width: 3, height: 2 }) })]
+    })]);
+    expect(await f.db.usageEvent.findMany({ where: { modelRunId: f.context.runId } }))
+      .toEqual([expect.objectContaining({ visionAnalysis: true, inputTokens: 8, outputTokens: 3 })]);
+    expect(await service.execute(call, context(f.context.toolCallId))).toEqual(result);
+    expect(execute).toHaveBeenCalledOnce();
+
+    const forged = await f.db.modelRunToolCall.create({ data: { id: randomUUID(), modelRunId: f.context.runId, providerCallId: randomUUID(),
+      toolName: "analyze_image", arguments: {}, roundIndex: 0, ordinal: 1, state: "running" } });
+    const refused = await service.execute({ id: forged.providerCallId, name: "analyze_image", arguments: { images: [{ image_id: foreignId }],
+      question: "What is this?" } }, context(forged.id));
+    expect(refused).toMatchObject({ status: "error", content: [{ value: { error: "chat_image_unavailable" } }] });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(await f.db.visionAnalysisAttempt.count({ where: { modelRunId: f.context.runId } })).toBe(1);
+    expect(await f.db.usageEvent.count({ where: { modelRunId: f.context.runId } })).toBe(1);
+  }));
+
   it("does not retarget a pinned role when the administrator changes policy", async () => fixture(async f => {
     await f.db.systemModelPolicy.upsert({ where: { id: "installation" }, create: { id: "installation", visionProviderModelId: null, visionReasoningEffort: null }, update: { visionProviderModelId: null, visionReasoningEffort: null, version: { increment: 1 } } });
     await f.store.dispatch(f.context, f.plan, inputs);
