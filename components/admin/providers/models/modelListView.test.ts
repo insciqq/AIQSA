@@ -153,6 +153,21 @@ describe("deriveModelUsage and successors", () => {
     expect(deriveModelUsage({ knowledge: null, modelPolicy: null, search: null, systemModelPolicy: null }).size).toBe(0);
   });
 
+  it("tags published image models as in use only while a default keeps image generation on", () => {
+    const state = sources();
+    const image = { ...state.systemModelPolicy!.policy.chatPdfModel!, id: "model-image", displayName: "Image One" };
+    state.systemModelPolicy!.policy.imageModels = [image] as never;
+    state.systemModelPolicy!.policy.imageModel = null;
+    expect(deriveModelUsage(state).get("model-image")).toEqual(["Image generation · off"]);
+    expect(turnOffConsequence({ model: { displayName: "Image One" }, successor: null, tags: ["Image generation · off"] })).toBeNull();
+    state.systemModelPolicy!.policy.imageModel = image as never;
+    const tags = deriveModelUsage(state).get("model-image")!;
+    expect(tags).toEqual(["Image generation"]);
+    const body = turnOffConsequence({ model: { displayName: "Image One" }, successor: null, tags })?.body;
+    expect(body).toContain("It is a published image model for image generation.");
+    expect(body).not.toContain("“Image generation”");
+  });
+
   it("writes the consequence dialog with the successor and the Nothing is deleted line", () => {
     const withSuccessor = turnOffConsequence({ model: { displayName: "Voyage Rerank 2.5" }, successor: "Cohere Rerank 4 Pro", tags: ["Reranker · primary"] });
     expect(withSuccessor?.title).toBe("Turn off Voyage Rerank 2.5?");
