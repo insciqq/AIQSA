@@ -48,9 +48,11 @@ export function scheduledTaskCatalogFixture(): Catalog {
       { capabilities, contextWindow: null, defaultParams: {}, displayName: "Model A", modelId: "model-a",
         parameterControls: {} as never, provider: "provider-a", searchStrategyIds: ["web"] },
       { capabilities, contextWindow: null, defaultParams: {}, displayName: "Model B", modelId: "model-b",
-        parameterControls: {} as never, provider: "provider-a", searchStrategyIds: [] }
+        parameterControls: {} as never, provider: "provider-a", searchStrategyIds: [] },
+      { capabilities: { ...capabilities, toolCalling: false }, contextWindow: null, defaultParams: {}, displayName: "Model C",
+        modelId: "model-c", parameterControls: {} as never, provider: "provider-a", searchStrategyIds: [] }
     ],
-    providers: [{ id: "provider-a", models: ["model-a", "model-b"], name: "Provider A" }],
+    providers: [{ id: "provider-a", models: ["model-a", "model-b", "model-c"], name: "Provider A" }],
     searchStrategies: [{ displayName: "Web", kind: "web_search", strategyId: "web" }]
   };
 }

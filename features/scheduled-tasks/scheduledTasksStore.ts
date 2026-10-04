@@ -59,16 +59,21 @@ export function activateScheduledTasksAccount(accountId: string | null): void {
 }
 
 /**
- * Tasks whose newest settled run is news that arrived since the previous read.
- * `unseenResult` aggregates every run, so an older unread answer never makes a
- * later routine skip or failure look new.
+ * Tasks with news that arrived since the previous read. The server decides
+ * which settlements are news (`ScheduledTaskRun.unseen`): its unread
+ * aggregate turning on is the signal, so a monitoring check with no update
+ * and a repeated check that could not reach a source never count. While an
+ * older result is still unread the aggregate cannot tell, and the newest
+ * run's own outcome decides (`isScheduledTaskNews`), so a later routine skip
+ * or failure never looks new.
  */
-function newlyFinished(previous: readonly ScheduledTask[], next: readonly ScheduledTask[]): ScheduledTask[] {
+export function newlyFinishedScheduledTasks(previous: readonly ScheduledTask[], next: readonly ScheduledTask[]): ScheduledTask[] {
   const before = new Map(previous.map((task) => [task.id, task]));
   return next.filter((task) => {
-    if (!task.unseenResult || !task.lastRun || !isScheduledTaskNews(task)) return false;
+    if (!task.unseenResult || !task.lastRun) return false;
     const old = before.get(task.id);
-    return !old || !old.unseenResult || old.lastRun?.finishedAt !== task.lastRun.finishedAt;
+    if (!old || !old.unseenResult) return true;
+    return old.lastRun?.finishedAt !== task.lastRun.finishedAt && isScheduledTaskNews(task);
   });
 }
 
@@ -85,7 +90,7 @@ export function refreshScheduledTasks(): Promise<boolean> {
     if (owner !== generation) return false;
     const current = useScheduledTasksStore.getState();
     const fresh = current.loadState === "ready" || current.tasks.length > 0
-      ? newlyFinished(current.tasks, response.tasks) : [];
+      ? newlyFinishedScheduledTasks(current.tasks, response.tasks) : [];
     useScheduledTasksStore.setState({
       emailAvailable: response.emailAvailable,
       error: null,
