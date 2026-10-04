@@ -320,6 +320,12 @@ export type ScheduledOccurrenceAdmission = Readonly<{
    * with `model_cannot_report`. The task revision fence keeps it current.
    */
   monitoring?: true;
+  /**
+   * The prompt's page-reading snapshot (`ScheduledTask.promptUrlDigests`),
+   * read with `taskRevision`: the only prompt links the run may read with
+   * `fetch_url`, frozen at admission. Absent: none.
+   */
+  promptUrlDigests?: readonly string[];
 }>;
 
 /**
@@ -922,8 +928,31 @@ export type RunRepository = {
     callId: string;
     result(task: import("../../contracts/scheduledTasks").ScheduledTask): import("../tools/types").ToolExecutionResult;
     runId: string;
+    /**
+     * The creating run's frozen user-authored link digests
+     * (`FetchUrlPlan.userUrlDigests`): the only links of the tool-written
+     * prompt its scheduled runs may read.
+     */
+    userUrlDigests: readonly string[];
     userId: string;
   }>): Promise<ScheduledTaskCallCreation>;
+  /**
+   * `fetch_url` provenance: the source and citation URLs the run's own Search
+   * persisted so far (its Search executions and its hosted Search output
+   * events), unnormalized, bounded. Another run's Search never counts.
+   */
+  loadRunSearchSourceUrls?(input: Readonly<{ runId: string; userId: string }>): Promise<readonly string[]>;
+  /** The run's persisted `fetch_url` calls, so a recovered run keeps its page cap and cache. */
+  loadRunFetchUrlCalls?(input: Readonly<{ runId: string; userId: string }>): Promise<readonly Readonly<{
+    id: string; result: unknown; state: string;
+  }>[]>;
+  /**
+   * Which of these messages of the chat are scheduled task prompts
+   * (`Message.scheduledTaskPrompt`): their text authorizes no `fetch_url` link.
+   */
+  loadScheduledPromptMessageIds?(input: Readonly<{
+    chatId: string; messageIds: readonly string[]; userId: string;
+  }>): Promise<ReadonlySet<string>>;
   /** The authorized record `read_tool_call` returns, or null when unavailable. */
   readToolCall?(
     actor: Readonly<{ runId: string; userId: string }>,

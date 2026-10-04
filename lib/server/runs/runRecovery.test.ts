@@ -46,6 +46,8 @@ import type { FrozenSkillManifest } from "../skills/runManifest";
 import { createSkillToolService, type SkillToolRepository } from "../skills/toolService";
 import { isSkillToolName } from "../tools/skill";
 import { scheduledTaskCreatedResult } from "../tools/scheduledTaskCreation";
+import { createFetchUrlSession } from "../tools/fetchUrl";
+import { fetchUrlDigest } from "../webFetch/urls";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   FocusedKnowledgeRecoveryScope,
@@ -10550,6 +10552,43 @@ describe("scheduled task creation recovery", () => {
       // The card is published again from the settled result; the durable append keeps it once per task.
       expect(harness.state.events.map((entry) => entry.event)).toContainEqual(expect.objectContaining({ type: "artifact",
         data: expect.objectContaining({ artifactType: "scheduled_task" }) }));
+      expect(harness.state.completed).not.toBeNull();
+    }
+  );
+});
+
+describe("page reader recovery", () => {
+  const url = "https://news.example/today";
+  const readCall = { arguments: { url }, id: "provider-call-1", name: "fetch_url" };
+  const page = () => vi.fn(async () => ({ body: new TextEncoder().encode("<p>Fresh news for the reader.</p>"),
+    contentType: "text/html", finalUrl: url, status: 200 }));
+
+  it.each(["running", "complete", "pending"] as const)(
+    "reuses a settled read, settles an interrupted one without sending it again, and sends a never-claimed one once (%s)",
+    async (state) => {
+      const requests: ProviderRunRequest[] = [];
+      const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+      const harness = createHarness({ providers: { openai: adapter } });
+      const plan = { version: 1 as const, userUrlDigests: [fetchUrlDigest(url)] };
+      // The settled result exactly as the live run stored it.
+      const settled = snapshotToolExecutionResult(await createFetchUrlSession({ fetchPage: page(), plan, scheduled: false })
+        .execute(readCall, { persistedToolCallId: "stored-call-1", signal: new AbortController().signal }), 64_000);
+      const call: PersistedToolLoopCall = { ...persistedRecoveryCall(state), arguments: { url }, mcpBinding: null,
+        toolName: "fetch_url", ...(state === "complete" ? { result: settled } : {}) };
+      const base = checkpointedRun({ calls: [call], phase: state === "pending" ? "tools_pending" : state === "running"
+        ? "tools_running" : "tools_pending", providerToolMessages: [] });
+      const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+      installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, fetchUrl: plan, toolMode: "auto",
+        searchPlan: { mode: "all_selected", options: [] } } });
+      const fetchPage = page();
+      await refreshProviderRunIfNeeded({ ...harness.deps, fetchPage }, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([]);
+      // Only a call that never left is sent, once; settled and interrupted calls never reach the network again.
+      expect(fetchPage).toHaveBeenCalledTimes(state === "pending" ? 1 : 0);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.tools?.map((tool) => tool.name)).toContain("fetch_url");
+      expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain(state === "running"
+        ? "fetch_url_interrupted" : "Fresh news for the reader.");
       expect(harness.state.completed).not.toBeNull();
     }
   );

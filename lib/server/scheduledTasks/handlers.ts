@@ -5,6 +5,7 @@ import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { admitScheduledTaskCreate, admitScheduledTaskModel, type ScheduledTaskDraftAdmissionDeps } from "./draftAdmission";
 import { planScheduledTaskUpdate } from "./mutations";
+import { scheduledPromptUrlDigests } from "./promptUrls";
 import { decodeScheduledTaskUpdateRequest } from "./requests";
 import { ScheduledTaskError, type ScheduledTaskStore } from "./store";
 
@@ -76,7 +77,9 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
       if (bodyError) return bodyError;
       const admitted = await admitScheduledTaskCreate(deps, userId, raw, now());
       if (!admitted.ok) return failure(admitted.code);
-      const task = await deps.store.create(userId, admitted.draft, admitted.nextRunAt);
+      // The owner wrote this prompt: every link in it may be read by its runs.
+      const task = await deps.store.create(userId, admitted.draft, admitted.nextRunAt,
+        scheduledPromptUrlDigests(admitted.draft.prompt, { kind: "owner" }));
       deps.kick?.();
       return Response.json({ task }, { status: 201, headers });
     }),
@@ -99,7 +102,11 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
       if (!plan.ok) return failure(plan.code);
       if (plan.checkModel) await admitScheduledTaskModel(deps, userId, plan.draft);
       const task = await deps.store.update(userId, taskId, {
-        draft: plan.draft, expectedRevision: decoded.value.expectedRevision, nextRunAt: plan.nextRunAt, status: plan.status
+        draft: plan.draft, expectedRevision: decoded.value.expectedRevision, nextRunAt: plan.nextRunAt, status: plan.status,
+        // An edit that sends the prompt makes the owner its author and replaces the snapshot;
+        // pausing, resuming or other fields never authorize links the owner did not write.
+        promptUrls: decoded.value.prompt !== undefined
+          ? scheduledPromptUrlDigests(plan.draft.prompt, { kind: "owner" }) : "keep"
       });
       deps.kick?.();
       return Response.json({ task }, { headers });
