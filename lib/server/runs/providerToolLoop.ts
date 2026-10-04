@@ -91,10 +91,11 @@ export function toolSynthesisInstruction(reason: ToolSynthesisReason): string {
 
 /**
  * A tool reserved outside the budgets (a monitoring check's verdict). Its
- * calls never count against them; while it has not been called, a round whose
- * budget was exactly used up first offers it alone (other calls of that round
- * are refused into synthesis), so exhausting the business tools cannot prevent
- * it. `called`: a call of it already exists (recovery derives it).
+ * first call never counts against them; any later call counts as an ordinary
+ * one, so repeating it cannot extend the run. While it has not been called, a
+ * round whose budget was exactly used up first offers it alone (other calls of
+ * that round are refused into synthesis), so exhausting the business tools
+ * cannot prevent it. `called`: a call of it already exists (recovery derives it).
  */
 export type ToolLoopReservedCall = Readonly<{
   called: boolean;
@@ -408,7 +409,10 @@ export async function runProviderToolLoop(
     toolObservation: input.toolObservation,
     afterToolBatch: input.afterToolBatch,
     budgets: input.budgets,
-    ...(reserved ? { isBudgetExempt: (call: ToolLoopCall) => call.name === reserved.name } : {}),
+    ...(reserved ? {
+      budgetExemptCallMade: reserved.called,
+      isBudgetExempt: (call: ToolLoopCall) => call.name === reserved.name
+    } : {}),
     executeTool: (call, context) => input.executeTool({
       arguments: isRecord(call.arguments) ? call.arguments : {},
       id: call.id,

@@ -153,11 +153,15 @@ export type ContinueToolLoopInput<Continuation, ToolValue, FinalValue> = Readonl
   }>): Promise<void> | void;
   budgets: ToolLoopBudgets;
   /**
-   * A call reserved outside the budgets (a monitoring check's verdict): it
-   * never counts as a call or makes its batch a tool round, and it never makes
-   * a batch exceed them. Resumed progress must count the same way.
+   * A call reserved outside the budgets (a monitoring check's verdict). Only
+   * the run's first matching call is exempt: it never counts as a call or
+   * makes its batch a tool round, and it never makes a batch exceed them.
+   * Every later match counts as an ordinary call, so repeating it cannot keep
+   * the loop going. Resumed progress must count the same way.
    */
   isBudgetExempt?(call: ToolLoopCall): boolean;
+  /** The run already made its exempt call (recovery derives it from its calls). */
+  budgetExemptCallMade?: boolean;
   executeTool(
     call: ToolLoopCall,
     context: Readonly<{
@@ -525,6 +529,7 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
     progress = input.resume.progress;
   }
   const seenCallIds = new Set<string>(input.resume?.seenCallIds ?? []);
+  let budgetExemptCallMade = input.budgetExemptCallMade === true;
 
   while (true) {
     if (input.signal?.aborted) {
@@ -648,7 +653,8 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
       return failed(progress, callError);
     }
 
-    const budgetedCalls = input.isBudgetExempt ? calls.filter((call) => !input.isBudgetExempt!(call)).length : calls.length;
+    const exemptCall = budgetExemptCallMade ? undefined : calls.find((call) => input.isBudgetExempt?.(call));
+    const budgetedCalls = calls.length - (exemptCall ? 1 : 0);
     const roundsExceeded = budgetedCalls > 0 && progress.toolRounds >= input.budgets.maxToolRounds;
     if (roundsExceeded || progress.toolCalls + budgetedCalls > input.budgets.maxToolCalls) {
       const synthesis = providerResult.synthesisContinuation;
@@ -695,6 +701,7 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
     }
 
     calls.forEach((call) => seenCallIds.add(call.id));
+    if (exemptCall) budgetExemptCallMade = true;
     const toolRound = progress.toolRounds + (budgetedCalls > 0 ? 1 : 0);
     progress = {
       ...progress,

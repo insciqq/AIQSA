@@ -7,7 +7,8 @@ import type { ModelToolCall, RunTool, ToolExecutionContext, ToolExecutionResult 
  * frozen from the server-only occurrence, never from a request field). It
  * writes only the outcome of its own run's check, performs no external I/O and
  * changes nothing another call reads, hence the server-owned `session` class.
- * It is reserved outside the business tool budgets.
+ * Its first call is reserved outside the business tool budgets; a repeated
+ * call counts against them like any other.
  */
 export const MONITORING_VERDICT_TOOL_NAME = "report_monitoring_result";
 

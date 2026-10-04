@@ -1011,12 +1011,20 @@ function recoveredReservedCall(
     : undefined;
 }
 
-/** Calls that count against the tool budgets: never the reserved monitoring verdict. */
-function budgetedRecoveredCalls<T extends Readonly<{ roundIndex: number; toolName: string }>>(
+/**
+ * Calls that count against the tool budgets, as the live loop counts them:
+ * every persisted call except the run's first monitoring verdict, in round and
+ * batch order. A repeated verdict counts like any other call.
+ */
+function budgetedRecoveredCalls<T extends Readonly<{ ordinal: number; roundIndex: number; toolName: string }>>(
   run: Readonly<{ normalizedRequest: Readonly<{ monitoringVerdictTool?: unknown }> }>,
   calls: Iterable<T>
 ): T[] {
-  return [...calls].filter((call) => call.roundIndex > 0 && !isMonitoringVerdictCall(run.normalizedRequest, call.toolName));
+  const loopCalls = [...calls].filter((call) => call.roundIndex > 0);
+  const exempt = loopCalls.reduce<T | undefined>((first, call) =>
+    isMonitoringVerdictCall(run.normalizedRequest, call.toolName) && (!first || call.roundIndex < first.roundIndex ||
+      call.roundIndex === first.roundIndex && call.ordinal < first.ordinal) ? call : first, undefined);
+  return loopCalls.filter((call) => call !== exempt);
 }
 
 /** The call reader as the run accepted it, independent of the observation policy. */
@@ -3416,9 +3424,12 @@ async function recoverCheckpointedToolLoop(
         name: workspaceTools.length > 0 ? normalizeWorkspaceProviderToolName(call.name, advertisedToolNames) : call.name
       }));
       refreshed.result = { ...refreshed.result, toolCalls: refreshedCalls };
-      // Progress as the live loop counts it: the reserved verdict never counts.
+      // Progress as the live loop counts it: only the run's first verdict is
+      // exempt, so this batch's first one is exempt only if none was persisted.
       const budgetedPersisted = budgetedRecoveredCalls(run, run.calls);
-      const budgetedRefreshed = refreshedCalls.filter((call) => !isMonitoringVerdictCall(run.normalizedRequest, call.name)).length;
+      const refreshedExempt = recoveredReservedCall(run, round)?.called === false &&
+        refreshedCalls.some((call) => isMonitoringVerdictCall(run.normalizedRequest, call.name));
+      const budgetedRefreshed = refreshedCalls.length - (refreshedExempt ? 1 : 0);
       const required = budgetedPersisted.length === 0 &&
         missingRequiredToolCall(providerRequest, refreshedCalls);
       if (required) {
