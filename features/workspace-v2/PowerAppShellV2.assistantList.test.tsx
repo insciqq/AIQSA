@@ -31,7 +31,7 @@ async function answer(input: RequestInfo | URL, init?: RequestInit): Promise<Res
     case "/api/me/catalog":
       return Response.json({ catalog: { ...matrixCatalog, defaults: { ...matrixCatalog.defaults, assistantId: null } } });
     case "/api/chats":
-      return Response.json({ chats: [], contentMatches: [], folders: [] });
+      return Response.json({ chats: [], folders: [] });
     case "/api/me/assistants":
       if ((init?.method ?? "GET") !== "GET") break;
       listLoads += 1;

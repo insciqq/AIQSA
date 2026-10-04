@@ -148,4 +148,64 @@ describe("workspace store", () => {
     expect(useWorkspaceStore.getState().navigationChats).toEqual([{ ...older, activeRun: true }]);
     expect(useWorkspaceStore.getState().navigationSearchChats).toEqual([]);
   });
+
+  it("keeps message matches as their own list beside the title results", () => {
+    const match = (chatId: string, title = `Title ${chatId}`) => ({
+      chatId,
+      createdAt: "2026-06-10T00:00:00.000Z",
+      matchCount: 1,
+      messageId: `message-${chatId}`,
+      snippet: "the budget line",
+      title
+    });
+    const store = () => useWorkspaceStore.getState();
+    store().setNavigationSearchQuery("budget");
+    expect(store().navigationMessageMatchesReady).toBe(false);
+    store().setNavigationMessageMatchesLoading(true);
+    store().applyNavigationMessageMatchPage({ matches: [match("a"), match("b")], nextCursor: "message_cursor" }, false);
+    expect(store()).toMatchObject({
+      navigationMessageMatches: [match("a"), match("b")],
+      navigationMessageMatchesLoading: false,
+      navigationMessageMatchesNextCursor: "message_cursor",
+      navigationMessageMatchesReady: true
+    });
+
+    // Title pages never touch the message list.
+    store().applyNavigationSearchPage({ chats: [], folders: [], nextCursor: "title_cursor" }, false);
+    store().applyNavigationSearchPage({ chats: [], folders: [], nextCursor: null }, true);
+    expect(store().navigationMessageMatches).toEqual([match("a"), match("b")]);
+    expect(store().navigationMessageMatchesNextCursor).toBe("message_cursor");
+
+    // Message pages continue in server order; a chat already listed keeps its place.
+    store().setNavigationMessageMatchesLoading(true);
+    store().applyNavigationMessageMatchPage({ matches: [match("b"), match("c")], nextCursor: null }, true);
+    expect(store().navigationMessageMatches.map((item) => item.chatId)).toEqual(["a", "b", "c"]);
+    expect(store()).toMatchObject({ navigationMessageMatchesLoading: false, navigationMessageMatchesNextCursor: null });
+    // A first page replaces the list.
+    store().applyNavigationMessageMatchPage({ matches: [match("c")], nextCursor: null }, false);
+    expect(store().navigationMessageMatches.map((item) => item.chatId)).toEqual(["c"]);
+    store().applyNavigationMessageMatchPage({ matches: [match("a"), match("b"), match("c")], nextCursor: null }, false);
+
+    // A rename follows into the match; a removed chat leaves the list.
+    const unchanged = store().navigationMessageMatches;
+    store().upsertNavigationChat({
+      activeRun: false, assistant: null, folderId: null, id: "z", title: "Elsewhere", updatedAt: "2026-06-11T00:00:00.000Z"
+    });
+    expect(store().navigationMessageMatches).toBe(unchanged);
+    store().upsertNavigationChat({
+      activeRun: false, assistant: null, folderId: null, id: "b", title: "Renamed", updatedAt: "2026-06-11T00:00:00.000Z"
+    });
+    expect(store().navigationMessageMatches.find((item) => item.chatId === "b")?.title).toBe("Renamed");
+    store().removeNavigationChat("a");
+    expect(store().navigationMessageMatches.map((item) => item.chatId)).toEqual(["b", "c"]);
+
+    store().setNavigationSearchQuery("other");
+    expect(store()).toMatchObject({
+      navigationMessageMatches: [],
+      navigationMessageMatchesError: null,
+      navigationMessageMatchesLoading: false,
+      navigationMessageMatchesNextCursor: null,
+      navigationMessageMatchesReady: false
+    });
+  });
 });

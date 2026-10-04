@@ -81,7 +81,7 @@ async function answer(input: RequestInfo | URL): Promise<Response> {
     case "/api/me/catalog":
       return Response.json(catalogResponse());
     case "/api/chats":
-      return Response.json({ chats: [], contentMatches: [], folders: [] });
+      return Response.json({ chats: [], folders: [] });
     case "/api/me/assistants":
       return Response.json(assistantList({
         assistants: [assistantSummary({ id: "assistant-1", pinned: true })]

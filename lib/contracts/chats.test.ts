@@ -17,8 +17,12 @@ import {
   decodeChatLifecycleRequest,
   decodeChatLifecycleResponse,
   decodeChatMemoryStateResponse,
+  CHAT_MESSAGE_MATCH_SNIPPET_MAX_LENGTH,
+  chatMessageSearchApplies,
+  decodeChatMessageMatchPage,
   decodeChatNavigationPage,
   decodeChatMessagesPageResponse,
+  normalizeChatNavigationQuery,
   decodeChatSourceResolutionResponse,
   decodeChatSummaryResponse,
   decodeChatUpdateData,
@@ -213,6 +217,50 @@ describe("chat wire contracts", () => {
     })).toBeNull();
   });
 
+  it("decodes a message match page on its own and keeps it out of title pages", () => {
+    const match = {
+      chatId: "chat-1",
+      createdAt: "2026-08-12T10:00:00.000Z",
+      matchCount: 3,
+      messageId: "message-7",
+      snippet: "…the quarterly budget moved to…",
+      title: "Planning"
+    };
+    const messageMatches = { matches: [match], nextCursor: "opaque_cursor" };
+
+    expect(decodeChatMessageMatchPage(messageMatches)).toEqual(messageMatches);
+    expect(decodeChatMessageMatchPage({ matches: [], nextCursor: null })).toEqual({ matches: [], nextCursor: null });
+    // The title search response carries no message matches.
+    expect(decodeChatNavigationPage({ chats: [], folders: [], messageMatches, nextCursor: null })).toBeNull();
+    for (const malformed of [
+      { ...match, matchCount: 0 },
+      { ...match, matchCount: 1.5 },
+      { ...match, createdAt: "yesterday" },
+      { ...match, messageId: "" },
+      { ...match, title: "" },
+      { ...match, snippet: null },
+      { ...match, snippet: "x".repeat(CHAT_MESSAGE_MATCH_SNIPPET_MAX_LENGTH + 1) },
+      { ...match, snippetHtml: "<mark>budget</mark>" },
+      { ...match, content: { blocks: [] } }
+    ]) {
+      expect(decodeChatMessageMatchPage({ matches: [malformed], nextCursor: null })).toBeNull();
+    }
+    expect(decodeChatMessageMatchPage({ matches: [match, { ...match, messageId: "message-8" }], nextCursor: null })).toBeNull();
+    expect(decodeChatMessageMatchPage({ ...messageMatches, nextCursor: "bad!" })).toBeNull();
+    expect(decodeChatMessageMatchPage({ ...messageMatches, chats: [] })).toBeNull();
+  });
+
+  it("applies message matching from three characters of the normalized query", () => {
+    expect(normalizeChatNavigationQuery("  ＢＵＤＧＥＴ  ")).toBe("budget");
+    expect(chatMessageSearchApplies("ab")).toBe(false);
+    expect(chatMessageSearchApplies(" ab ")).toBe(false);
+    expect(chatMessageSearchApplies("abc")).toBe(true);
+    // Characters, not UTF-16 units: two astral characters stay too short.
+    expect(chatMessageSearchApplies("😀😀")).toBe(false);
+    // Compatibility characters count as they are matched: ㍍ is メートル.
+    expect(chatMessageSearchApplies("㍍")).toBe(true);
+  });
+
   it("decodes a scheduled task chat's unread marker and rejects extra or malformed fields", () => {
     const chat = {
       activeRun: false, assistant: null, folderId: null, id: "chat-1", title: "Morning brief",
@@ -255,7 +303,6 @@ describe("chat wire contracts", () => {
   it("decodes workspace summaries without allowing additive thread fields into the result", () => {
     const workspace = decodeWorkspaceChatsResponse({
       chats: [{ ...summary, messages: [message], usageStats }],
-      contentMatches: [{ chatId: summary.id, snippet: null }],
       folders: []
     });
     const mutation = decodeChatSummaryResponse({
@@ -264,7 +311,6 @@ describe("chat wire contracts", () => {
 
     expect(workspace).toEqual({
       chats: [summary],
-      contentMatches: [{ chatId: summary.id, snippet: null }],
       folders: []
     });
     expect(mutation).toEqual(summary);
@@ -276,7 +322,7 @@ describe("chat wire contracts", () => {
     for (const assistantId of ["assistant-1", null]) {
       const bound = { ...summary, assistantId };
       expect(decodeChatSummaryResponse({ chat: bound })).toEqual(bound);
-      expect(decodeWorkspaceChatsResponse({ chats: [bound], contentMatches: [], folders: [] })?.chats)
+      expect(decodeWorkspaceChatsResponse({ chats: [bound], folders: [] })?.chats)
         .toEqual([bound]);
       const archived = { ...bound, archived: true, lastMessageAt: null, memoryMode: "NORMAL", sourceRevision: 1 };
       expect(decodeArchivedChatsResponse({ chats: [archived], nextCursor: null })?.chats).toEqual([archived]);
@@ -292,12 +338,10 @@ describe("chat wire contracts", () => {
     expect(
       decodeWorkspaceChatsResponse({
         chats: [summary, nullDefaultSummary],
-        contentMatches: [],
         folders: []
       })
     ).toEqual({
       chats: [summary, nullDefaultSummary],
-      contentMatches: [],
       folders: []
     });
     expect(decodeChatSummaryResponse({ chat: nullDefaultSummary })).toEqual(
@@ -352,21 +396,17 @@ describe("chat wire contracts", () => {
     };
     expect(decodeWorkspaceChatsResponse({
       chats: [{ ...summary, defaultKnowledgePlan: knowledgePlan }],
-      contentMatches: [],
       folders: [folder]
     })).toEqual({
       chats: [{ ...summary, defaultKnowledgePlan: canonicalKnowledgePlan }],
-      contentMatches: [],
       folders: [{ ...folder, defaultKnowledgePlan: canonicalKnowledgePlan }]
     });
     expect(decodeWorkspaceChatsResponse({
       chats: [{ ...summary, defaultKnowledgePlan: { baseIds: ["same", "same"] } }],
-      contentMatches: [],
       folders: []
     })).toBeNull();
     expect(decodeWorkspaceChatsResponse({
       chats: [summary],
-      contentMatches: [],
       folders: [{
         ...folder,
         defaultKnowledgePlan: {
@@ -389,7 +429,7 @@ describe("chat wire contracts", () => {
       expect(decodeChatSummaryResponse({ chat: malformed })).toBeNull();
     }
     expect(
-      decodeWorkspaceChatsResponse({ chats: [summary], folders: [] })
+      decodeWorkspaceChatsResponse({ chats: [summary] })
     ).toBeNull();
   });
 

@@ -140,11 +140,6 @@ export type ChatWorkspace = {
   folders: FolderRecord[];
 };
 
-export type ChatContentMatchRecord = {
-  chatId: string;
-  snippet?: string | null;
-};
-
 export type ChatRepository = {
   createChat(input: {
     folderId?: string | null;
@@ -164,7 +159,6 @@ export type ChatRepository = {
     userId: string;
   }): Promise<ChatMessagesPageResult>;
   listWorkspace(userId: string): Promise<ChatWorkspace | null>;
-  searchChatContent(input: { limit: number; query: string; userId: string }): Promise<ChatContentMatchRecord[]>;
   updateFolder(input: {
     defaultKnowledgePlan?: KnowledgePlan | null;
     folderId: string;
@@ -371,13 +365,6 @@ export function serializeMessagesPage(page: ChatMessagesPageRecord): ChatMessage
   };
 }
 
-function serializeChatContentMatch(match: ChatContentMatchRecord) {
-  return {
-    chatId: match.chatId,
-    snippet: match.snippet ?? null
-  };
-}
-
 function chatRouteErrorJson(data: ChatRouteErrorResponse, init?: ResponseInit): Response {
   return Response.json(data, init);
 }
@@ -434,22 +421,13 @@ export function createListChatsHandler(deps: ChatHandlerDeps) {
       return result.response;
     }
 
-    const query = new URL(request.url).searchParams.get("q")?.trim() ?? "";
     const workspace = await deps.repository.listWorkspace(result.session.userId);
     if (!workspace) {
       return chatRouteErrorJson({ error: "workspace_not_found" }, { status: 404 });
     }
-    const contentMatches = query
-      ? await deps.repository.searchChatContent({
-          limit: 50,
-          query,
-          userId: result.session.userId
-        })
-      : [];
 
     return workspaceJson({
       chats: workspace.chats.map(serializeChatSummary),
-      contentMatches: contentMatches.map(serializeChatContentMatch),
       folders: workspace.folders
     });
   };

@@ -73,7 +73,6 @@ describe("chat wire decoding", () => {
   it("projects workspace chat payloads into summary-only client state", () => {
     const workspace = decodeWorkspaceChatsResponse({
       chats: [summaryWire],
-      contentMatches: [],
       folders: []
     });
 
@@ -107,7 +106,6 @@ describe("chat wire decoding", () => {
           defaultProvider: null
         }
       ],
-      contentMatches: [],
       folders: []
     });
 
