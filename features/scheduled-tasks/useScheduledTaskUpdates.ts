@@ -44,7 +44,8 @@ export function useScheduledTaskUpdates({
   activeChatId,
   chatVisible,
   enabled = true,
-  onNewResult
+  onNewResult,
+  refreshOpenChat
 }: Readonly<{
   accountId: string | null;
   activeChatId: string | null;
@@ -52,6 +53,11 @@ export function useScheduledTaskUpdates({
   chatVisible: boolean;
   enabled?: boolean;
   onNewResult(task: ScheduledTask): void;
+  /**
+   * Rereads the open chat's transcript so a scheduled run that starts or ends
+   * in it becomes visible; resolves false when nothing was loaded.
+   */
+  refreshOpenChat(chatId: string): Promise<boolean>;
 }>): void {
   const hasTasks = useScheduledTasksStore((state) => state.tasks.length > 0);
   const running = useScheduledTasksStore((state) => state.tasks.some((task) => task.running));
@@ -62,7 +68,20 @@ export function useScheduledTaskUpdates({
     : null);
   const announced = useRef(newResults.sequence);
   const seenRequests = useRef(new Set<string>());
+  /** Results that landed in the open chat: seen only once its transcript shows them. */
+  const awaitingTranscript = useRef(new Set<string>());
+  const runningChats = useRef(new Set<string>());
+  const isOpenChat = useEventCallback((chatId: string) => chatVisible && activeChatId === chatId);
   const announce = useEventCallback(onNewResult);
+  const refreshChat = useEventCallback(refreshOpenChat);
+  const markSeen = useEventCallback((chatId: string, taskId: string) => {
+    if (seenRequests.current.has(taskId)) return;
+    seenRequests.current.add(taskId);
+    // Clear locally first; a failed request leaves the server marker for the next read.
+    markScheduledTaskSeenLocally(taskId);
+    setNavigationUnseen(chatId, taskId, false);
+    void markScheduledTaskSeen(taskId).catch(() => undefined).finally(() => seenRequests.current.delete(taskId));
+  });
 
   useEffect(() => {
     if (!enabled || !accountId) return;
@@ -104,20 +123,37 @@ export function useScheduledTaskUpdates({
       if (!setNavigationUnseen(task.chatId, task.id, true, task.lastRun?.finishedAt)) reload = true;
     }
     if (reload && useWorkspaceStore.getState().navigationReady) void loadChatNavigation();
+    const open = enabled && chatVisible && activeChatId
+      ? newResults.tasks.find((task) => task.chatId === activeChatId) ?? null
+      : null;
+    if (open && activeChatId) {
+      // The cached transcript predates this answer: reread it before the result counts as seen.
+      const chatId = activeChatId;
+      awaitingTranscript.current.add(open.id);
+      void refreshChat(chatId).catch(() => false).then((loaded) => {
+        awaitingTranscript.current.delete(open.id);
+        if (loaded && isOpenChat(chatId)) markSeen(chatId, open.id);
+      });
+    }
     const newest = [...newResults.tasks].sort((left, right) =>
       Date.parse(right.lastRun?.finishedAt ?? "") - Date.parse(left.lastRun?.finishedAt ?? ""))[0];
     if (enabled && newest) announce(newest);
-  }, [announce, enabled, newResults]);
+  }, [activeChatId, announce, chatVisible, enabled, isOpenChat, markSeen, newResults, refreshChat]);
+
+  useEffect(() => {
+    // A scheduled run that starts in the open chat: show its answer as it streams.
+    const running = new Set(tasks.flatMap((task) => task.running && task.chatId ? [task.chatId] : []));
+    if (enabled && chatVisible && activeChatId && running.has(activeChatId) && !runningChats.current.has(activeChatId)) {
+      void refreshChat(activeChatId).catch(() => false);
+    }
+    runningChats.current = running;
+  }, [activeChatId, chatVisible, enabled, refreshChat, tasks]);
 
   useEffect(() => {
     if (!enabled || !chatVisible || !activeChatId) return;
     const task = tasks.find((candidate) => candidate.chatId === activeChatId && candidate.unseenResult);
     const taskId = task?.id ?? (activeNavigationTask?.unseen ? activeNavigationTask.taskId : null);
-    if (!taskId || seenRequests.current.has(taskId)) return;
-    seenRequests.current.add(taskId);
-    // Clear locally first; a failed request leaves the server marker for the next read.
-    markScheduledTaskSeenLocally(taskId);
-    setNavigationUnseen(activeChatId, taskId, false);
-    void markScheduledTaskSeen(taskId).catch(() => undefined).finally(() => seenRequests.current.delete(taskId));
-  }, [activeChatId, activeNavigationTask, chatVisible, enabled, tasks]);
+    if (!taskId || awaitingTranscript.current.has(taskId)) return;
+    markSeen(activeChatId, taskId);
+  }, [activeChatId, activeNavigationTask, chatVisible, enabled, markSeen, tasks]);
 }
