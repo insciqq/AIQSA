@@ -3,7 +3,7 @@ import { createTestAuth } from "@/tests/support/auth";
 import type { ChatExportDocument } from "../../contracts/chatExport";
 import { CHAT_IMPORT_REQUEST_MAX_BYTES, type ChatImportItem } from "../../contracts/chatImport";
 import { getAuthConfig } from "../auth/config";
-import { chatImportSourceKey, createImportChatsHandler, type ImportChatsHandlerDeps } from "./importChats";
+import { chatImportSourceKey, createImportChatsHandler, importChatForUser, type ImportChatsHandlerDeps } from "./importChats";
 
 const config = getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "secret", AIQSA_BOOTSTRAP_AUTH_TOKEN: "token" });
 const auth = createTestAuth({ user: { id: config.bootstrapUserId } });
@@ -100,6 +100,25 @@ describe("chat import handler", () => {
     const response = await handler(importChat)(request({ chats: [{ document: big, source: "AIQSA" }] }));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ results: [{ messages: 2, status: "imported" }] });
+  });
+});
+
+describe("imported chat title", () => {
+  /** A transaction that records the chat row and stops there. */
+  function capturingClient() {
+    const created: Array<Record<string, unknown>> = [];
+    const stop = new Error("captured");
+    const tx = { chat: { create: async ({ data }: { data: Record<string, unknown> }) => { created.push(data); throw stop; } } };
+    const db = { $transaction: async (run: (client: typeof tx) => Promise<unknown>) => run(tx), chat: { findFirst: async () => null } };
+    return { created, db, stop };
+  }
+
+  it("stores a trimmed title and the default chat title for an empty or blank one", async () => {
+    for (const [title, stored] of [["", "New Chat"], ["   ", "New Chat"], [" ".repeat(300), "New Chat"], ["  Release plan ", "Release plan"]]) {
+      const { created, db, stop } = capturingClient();
+      await expect(importChatForUser(db as never, "user-1", { document: document({ title: title! }), source: "AIQSA" })).rejects.toBe(stop);
+      expect(created).toEqual([expect.objectContaining({ importSource: "AIQSA", memoryMode: "EXCLUDED", title: stored, userId: "user-1" })]);
+    }
   });
 });
 

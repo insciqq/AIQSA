@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { boundedChatTitle } from "../../contracts/chats";
+import { importedChatTitle } from "../../contracts/chats";
 import type { ChatExportDocumentChat } from "../../contracts/chatExport";
 import {
   CHAT_IMPORT_REQUEST_MAX_BYTES,
@@ -107,7 +107,8 @@ export async function importChatForUser(
           ...(item.sourceModel ? { importSourceModel: item.sourceModel } : {}),
           memoryMode: "EXCLUDED",
           pinned: chat.pinned,
-          title: boundedChatTitle(chat.title),
+          // Never empty: every chat list and search decoder refuses an empty title.
+          title: importedChatTitle(chat.title),
           updatedAt,
           userId
         },
