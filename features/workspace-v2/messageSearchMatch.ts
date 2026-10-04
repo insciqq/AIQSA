@@ -1,5 +1,3 @@
-"use client";
-
 import { branchLeafRevealingMessageV2 } from "@/features/branches-v2/branchModel";
 import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
 
