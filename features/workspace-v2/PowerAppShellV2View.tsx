@@ -1356,7 +1356,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             pending: thread.editingMessagePending,
             sendWithEnter: composer.sendWithEnter
           } : undefined}
-          expandForReadingAnchor={source.id === readingAnchorMessageId}
+          expandForReadingAnchor={source.id === readingAnchorMessageId || source.id === thread.revealedMessageId}
           role="user"
         />
       );
@@ -1688,6 +1688,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             return full ? workspace.pane.actions.saveFolder(full) : undefined;
           }}
           onSelectChat={selectNavigationChat}
+          onOpenMessageMatch={(match) => {
+            // A found message is always a personal chat's.
+            if (workspace.projects.selectedProjectId) workspace.projects.actions.leave();
+            workspace.pane.actions.openSearchMatch(match.chatId, match.messageId);
+          }}
           onShare={(chat) => {
             const full = currentWorkspaceChat(chat.id);
             if (full) void workspace.pane.actions.shareChat(full);

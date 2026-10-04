@@ -70,13 +70,21 @@ export function usePinnedScroll<T extends HTMLElement>({
   followKey,
   hasContent = true,
   onReadingAnchorApplied,
+  readingAnchorExplicit = false,
   readingAnchorKey = null,
   resetKey,
   thresholdPx = defaultPinnedThresholdPx
 }: {
   followKey: unknown;
   hasContent?: boolean;
-  onReadingAnchorApplied?(anchorKey: string): void;
+  /** Runs once the anchor's turn is in view, with that turn's element. */
+  onReadingAnchorApplied?(anchorKey: string, target: HTMLElement): void;
+  /**
+   * The anchor is the reader's own request (a message link or a search
+   * result): it scrolls even when the reader had moved away, unlike the
+   * live answer's anchor, which never takes scroll ownership back.
+   */
+  readingAnchorExplicit?: boolean;
   readingAnchorKey?: string | null;
   resetKey: unknown;
   thresholdPx?: number;
@@ -208,7 +216,7 @@ export function usePinnedScroll<T extends HTMLElement>({
       readingAnchorPendingRef.current = false;
       setPinnedState(false);
       setJumpToLatestState(false);
-      onReadingAnchorAppliedRef.current?.(anchorKey);
+      onReadingAnchorAppliedRef.current?.(anchorKey, anchor.target);
     });
   }, [scheduleFrame, setJumpToLatestState, setPinnedState, updateReadingSpacer]);
 
@@ -366,13 +374,14 @@ export function usePinnedScroll<T extends HTMLElement>({
 
     readingAnchorKeyRef.current = readingAnchorKey;
     if (
+      readingAnchorExplicit ||
       pinnedRef.current ||
       (previousAnchorKey !== null &&
         (readingAnchorPendingRef.current || readingAnchorActiveRef.current))
     ) {
       scheduleReadingAnchor(readingAnchorKey);
     }
-  }, [hasContent, readingAnchorKey, scheduleReadingAnchor]);
+  }, [hasContent, readingAnchorExplicit, readingAnchorKey, scheduleReadingAnchor]);
 
   const refreshLayout = useCallback(function refreshLayout() {
     const element = containerRef.current;
