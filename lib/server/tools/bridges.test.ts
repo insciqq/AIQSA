@@ -9,6 +9,7 @@ import {
   openRouterChatToolBridge
 } from "./bridges";
 import type { ProviderRunRequest } from "../providers/types";
+import { fetchUrlTool } from "./fetchUrlPlan";
 import type { RunTool, ToolExecutionResult } from "./types";
 
 const searchTool: RunTool = {
@@ -353,5 +354,30 @@ describe("provider tool bridges", () => {
       ],
       role: "user"
     });
+  });
+
+  it("serializes the page reader for every tool-calling provider and returns its JSON result as text", () => {
+    const urlSchema = { additionalProperties: false, properties: { url: expect.objectContaining({ type: "string" }) },
+      required: ["url"], type: "object" };
+    expect(openAIResponsesToolBridge.serializeTool(fetchUrlTool).tool).toMatchObject({ name: "fetch_url", parameters: urlSchema,
+      strict: true, type: "function" });
+    expect(openAICompatibleResponsesToolBridge.serializeTool(fetchUrlTool)).toMatchObject({ provider: "openai_compatible",
+      tool: { name: "fetch_url", parameters: urlSchema } });
+    expect(deepSeekResponsesToolBridge.serializeTool(fetchUrlTool).tool).not.toHaveProperty("strict");
+    expect(deepSeekResponsesToolBridge.serializeTool(fetchUrlTool).tool).toMatchObject({ name: "fetch_url", parameters: urlSchema });
+    for (const bridge of [openRouterChatToolBridge, openAICompatibleChatToolBridge]) {
+      expect(bridge.serializeTool(fetchUrlTool).tool).toMatchObject({ function: { name: "fetch_url", parameters: urlSchema },
+        type: "function" });
+    }
+    expect(anthropicMessagesToolBridge.serializeTool(fetchUrlTool).tool).toMatchObject({ name: "fetch_url",
+      input_schema: urlSchema });
+    expect(geminiInteractionsToolBridge.serializeTool(fetchUrlTool).tool).toMatchObject({ name: "fetch_url", parameters: urlSchema,
+      type: "function" });
+    const read: ToolExecutionResult = { callId: "call-9", content: [{ type: "json", value: { error: "fetch_url_not_in_conversation",
+      message: "Ask the user." } }], name: "fetch_url", status: "error" };
+    expect(openAIResponsesToolBridge.appendToolResult({}, read)).toMatchObject({ call_id: "call-9",
+      output: "{\"error\":\"fetch_url_not_in_conversation\",\"message\":\"Ask the user.\"}" });
+    expect(anthropicMessagesToolBridge.appendToolResult({}, read)).toMatchObject({ content: [expect.objectContaining({
+      is_error: true, tool_use_id: "call-9" })] });
   });
 });

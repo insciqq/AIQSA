@@ -85,6 +85,7 @@ import {
 } from "./prismaRepositoryToolLoop";
 import { createPrismaMcpDiscoveryOperations } from "./prismaRepositoryMcpDiscovery";
 import { createPrismaToolHistoryOperations } from "./prismaRepositoryToolHistory";
+import { createPrismaFetchUrlOperations } from "./prismaRepositoryFetchUrl";
 import { recordScheduledMonitoringVerdict } from "../scheduledTasks/monitoringVerdict";
 import { createPrismaScheduledTaskCatalogLoader } from "../scheduledTasks/catalog";
 import { createPrismaWorkspacePolicyRepository } from "../workspace/policyRepository";
@@ -203,6 +204,7 @@ export function createPrismaRunRepository(
   );
   const mcpDiscoveryOperations = createPrismaMcpDiscoveryOperations(prismaClient);
   const toolHistoryOperations = createPrismaToolHistoryOperations(prismaClient);
+  const fetchUrlOperations = createPrismaFetchUrlOperations(prismaClient);
   // A chat's scheduled task is created under the owner API's own rules.
   const scheduledTaskCreationDeps = {
     loadCatalog: createPrismaScheduledTaskCatalogLoader(prismaClient),
@@ -474,6 +476,10 @@ export function createPrismaRunRepository(
       recordScheduledMonitoringVerdict(prismaClient, input).catch(retainRunPrismaCode),
     createScheduledTaskForCall: (input) => createScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
       .catch(retainRunPrismaCode),
+    loadRunSearchSourceUrls: (input) => fetchUrlOperations.loadRunSearchSourceUrls(input).catch(retainRunPrismaCode),
+    loadRunFetchUrlCalls: (input) => fetchUrlOperations.loadRunFetchUrlCalls(input).catch(retainRunPrismaCode),
+    loadScheduledPromptMessageIds: (input) =>
+      fetchUrlOperations.loadScheduledPromptMessageIds(input).catch(retainRunPrismaCode),
     recoverPreparingRun: (input) =>
       recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
     retryPreparingRunAttempt: (input) =>
