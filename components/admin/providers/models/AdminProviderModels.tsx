@@ -12,6 +12,7 @@ import {
   groupProviderModels,
   liveConfiguration,
   modelRouteLabel,
+  modelAssignedRoles,
   modelSuccessor,
   modelTitle,
   providerKeyFirstHelp,
@@ -499,6 +500,7 @@ export function AdminProviderModels({
       </p>
 
       <AdminProviderModelSheet
+        assignedRoles={editing ? modelAssignedRoles(editing.id, usageSources) : []}
         connection={connection}
         controller={controller}
         discovery={discovery}

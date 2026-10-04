@@ -16,6 +16,7 @@ import {
   deriveModelUsage,
   groupProviderModels,
   initialDiagnosticCredentialId,
+  modelAssignedRoles,
   modelCheckSummaries,
   modelEditorCheck,
   modelRouteLabel,
@@ -151,6 +152,11 @@ describe("deriveModelUsage and successors", () => {
     expect(modelSuccessor("model-cohere", sources())).toBeNull();
     expect(modelSuccessor("model-luna", sources())).toBeNull();
     expect(deriveModelUsage({ knowledge: null, modelPolicy: null, search: null, systemModelPolicy: null }).size).toBe(0);
+  });
+
+  it("names the installation roles pinned to a model, as the server checks routing", () => {
+    expect(modelAssignedRoles("model-terra", sources())).toEqual(["system_model", "chat_pdf"]);
+    expect(modelAssignedRoles("model-luna", sources())).toEqual([]);
   });
 
   it("tags published image models as in use only while a default keeps image generation on", () => {

@@ -526,6 +526,27 @@ describe("AdminProviderModelSheet", () => {
     })]));
   });
 
+  it.each([
+    [[] as const, "Native · recommended", "anthropic", false],
+    [["system_model"] as const, "Native", "anthropic · not for its roles", true]
+  ])("recommends a native route only when the model's roles %j can use it", async (roles, title, detail, refused) => {
+    const connection = fixtureConnection({
+      credentials: [fixtureCredential({ id: "cred-primary", label: "Primary" })],
+      defaultCredentialId: "cred-primary", displayName: "OpenRouter", family: "openrouter", id: "conn-or"
+    });
+    render(<AdminProviderModelSheet assignedRoles={roles} connection={connection} controller={controller()} discovery={discovery()}
+      model={null} onClose={vi.fn()} onSaved={vi.fn()} open />);
+    const sheet = await screen.findByRole("dialog", { name: "Add model" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Model" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Claude Sonnet 5/ }));
+    const native = within(sheet).getByRole("radio", { name: `${title}${detail}` });
+    expect(native).toHaveProperty("disabled", refused);
+    const explanation = "System model uses this model and needs structured output, which the native provider does not support. " +
+      "Keep Automatic or choose custom providers that support it.";
+    if (refused) expect(sheet).toHaveTextContent(explanation);
+    else expect(sheet).not.toHaveTextContent("which the native provider does not support");
+  });
+
   it("adds an OpenRouter model from the catalog with an ordered route and one Test & Save", async () => {
     const connection = fixtureConnection({
       credentials: [fixtureCredential({ id: "cred-primary", label: "Primary" })],
