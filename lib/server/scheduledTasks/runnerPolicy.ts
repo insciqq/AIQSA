@@ -64,7 +64,8 @@ export function isMonitoringVerdict(value: unknown): value is MonitoringVerdict 
  * `reasonCode`, the run's transcript marker and the history copy; whether it
  * is news and whether it becomes the next check's previous result follow from
  * it (`settlementNotifiesOwner`, `settlementBaseline`): only `no_update` is
- * hidden, and neither `no_update` nor `could_not_check` is a comparison basis.
+ * hidden, `could_not_check` is news only as the source alert or a pause, and
+ * neither is a comparison basis.
  */
 export type MonitoringCheckSettlement = Readonly<{
   outcome: ScheduledTaskCheckOutcome;
@@ -241,13 +242,15 @@ export function planTaskSettlement(input: Readonly<{
 
 /**
  * Whether a settlement is news for the owner: an unread result, a result
- * email and a browser push. Only a shown result (every completed run except a
- * monitoring check with no update), a settlement that paused the task (a
- * failure, or the incomplete run that ends a streak) and the health alert
- * that starts a streak of incomplete runs are; later incomplete runs of the
- * same streak alert no more. Routine skips (missed, previous_running,
- * superseded, chat_busy, paused), other failures and checks with no update
- * stay in the run history only.
+ * email and a browser push all follow this one predicate. A shown result is
+ * news: every completed run except a monitoring check with no update, which
+ * never is, and one that could not check, which is news only as below. So
+ * are a settlement that paused the task (a failure, the incomplete run that
+ * ends a streak, the check that ends a streak without a report) and the
+ * health alert that starts a streak of incomplete runs; later incomplete runs
+ * of the same streak alert no more. Routine skips (missed, previous_running,
+ * superseded, chat_busy, paused) and other failures stay in the run history
+ * only.
  */
 export function settlementNotifiesOwner(outcome: Readonly<{
   reasonCode: string | null;
@@ -255,8 +258,9 @@ export function settlementNotifiesOwner(outcome: Readonly<{
   state: ScheduledTaskSettledState;
   taskPaused: boolean;
 }>): boolean {
-  return (outcome.state === "COMPLETED" && outcome.reasonCode !== "no_update") || outcome.taskPaused ||
-    outcome.sourceAlert === true;
+  const completed = outcome.state === "COMPLETED";
+  if (completed && outcome.reasonCode === "no_update") return false;
+  return (completed && outcome.reasonCode !== "could_not_check") || outcome.taskPaused || outcome.sourceAlert === true;
 }
 
 /** What the next same-chat run sees besides the prompt. */

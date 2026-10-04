@@ -42,6 +42,18 @@ describe("browser push message", () => {
       .toMatch(/^Scheduled task paused\nPaused after 3 runs in a row[^\n]*\nMail needs sign-in\.$/u);
   });
 
+  it("says when a monitoring check paused its task and names what a check could not reach", () => {
+    // The third scheduled check in a row without a report paused the task.
+    expect(browserPushMessage({ ...occurrence, reasonCode: "unreported", taskPauseReason: "verdict_missing" }).body)
+      .toBe("Scheduled task paused\nPaused after three checks in a row did not report whether anything changed. Resume to try again.");
+    // A manual check never reports the task's pause as its own outcome.
+    expect(browserPushMessage({ ...occurrence, reasonCode: "unreported", taskPauseReason: "verdict_missing", trigger: "manual" }).body)
+      .toBe("Scheduled task finished\nShown: the check did not report whether anything changed.");
+    expect(browserPushMessage({ ...occurrence, reasonCode: "could_not_check",
+      unavailableSources: [{ name: "Tracker", reason: "mcp_server_unavailable" }] }).body)
+      .toBe("Scheduled task finished\nCould not check: a source was unavailable.\nTracker is unavailable.");
+  });
+
   it("cleans and bounds titles and falls back when empty", () => {
     const long = browserPushMessage({ chatId: "c", kind: "run", status: "complete", title: `A\u0000b\n${"x".repeat(300)}`, userId: "u" });
     expect(long.title.startsWith("A b ")).toBe(true);
