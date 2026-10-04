@@ -147,7 +147,6 @@ export function buildMemoryActionIntentRequest(
       "Questions about identity, preferences, prior conversations, events, comparisons or an inventory of what is remembered are ordinary answer requests: choose NONE, never LIST or SEARCH. Do not plan the search, rewrite the query, choose source families, resolve entities or interpret chronology.",
       "A declaration with no explicit Memory action is NONE. Automatic learning is a separate later stage.",
       "responsePreference classifies only the statement or replacementStatement of explicit SAVE/UPDATE; otherwise false, and true requires category preferences.",
-      "patternExclusionRequested is true only for an explicit request to exclude inferred/derived/recurring Memory. This is an opt-out only; the user never needs to name this Memory tier to use it.",
       "RESET requests server confirmation only; it never means committed reset."
     ].join("\n"),
     userPrompt: JSON.stringify(payload)

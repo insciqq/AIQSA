@@ -224,10 +224,6 @@ enum McpRuntimeState {
 
 enum McpActivationStage {
   queued
-  // resolving and preparing_runtime are retired with local MCP sources: no
-  // release writes them and a later release drops them.
-  resolving
-  preparing_runtime
   connecting
   discovering_tools
   publishing
@@ -3681,8 +3677,6 @@ model McpActivationJob {
   errorCode           String?
   issues              Json?
   leaseId             String?
-  /// Retired with local MCP sources; kept unread until a later release drops it.
-  workloadToken       String?            @unique @ignore
   requestedAt         DateTime           @default(now())
   startedAt           DateTime?
   completedAt         DateTime?
@@ -5469,10 +5463,6 @@ model UserMemorySettings {
   acceptedUtilityEgressFingerprint String?                        @db.VarChar(128)
   acceptedUtilityPolicyVersion     String?                        @db.VarChar(64)
   acceptedUtilityEgressAt          DateTime?
-  synthesisEnabled                 Boolean                        @default(true)
-  synthesisEnabledAt               DateTime?                      @default(now())
-  synthesisPolicyVersion           String?                        @default("memory-synthesis-policy-v6") @db.VarChar(64)
-  lastSynthesisAt                  DateTime?
   maintenanceCursor                String?
   maintenanceScannedAt             DateTime?
   explicitEquivalenceSweepVersion  String?                        @db.VarChar(64)
@@ -5483,7 +5473,6 @@ model UserMemorySettings {
 
   @@index([activeIndexGenerationId])
   @@index([embeddingProviderModelId])
-  @@index([synthesisEnabled, lastSynthesisAt, userId])
 }
 
 model MemoryScope {

@@ -149,7 +149,6 @@ const readOnlyRetryIntent: MemoryActionIntent = Object.freeze({
   confidenceBand: "HIGH",
   entityMentions: [],
   memoryUseful: true,
-  patternExclusionRequested: false,
   pastChatsUseful: false,
   profileRequested: false,
   queryDecompositions: [],
