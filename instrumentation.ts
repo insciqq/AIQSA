@@ -27,6 +27,17 @@ export async function register(): Promise<void> {
       throw error;
     }
     try {
+      const { startDefaultScheduledTaskRunner } = await import(
+        "./lib/server/scheduledTasks/defaultRunner"
+      );
+      startDefaultScheduledTaskRunner();
+      reportSubsystemHealthy("scheduled_tasks", "startup");
+    } catch {
+      // Scheduled tasks are feature-local: due occurrences wait in PostgreSQL
+      // and the owner API keeps working while the runner is unavailable.
+      reportSubsystemFailure({ subsystem: "scheduled_tasks", stage: "startup", code: "scheduled_task_runner_startup_failed", action: "degrade" });
+    }
+    try {
       const { getDefaultAttachmentProcessingCoordinator } = await import(
         "./lib/server/uploads/defaultProcessing"
       );
