@@ -8,6 +8,8 @@ import type { KnowledgeSelection } from "./knowledge";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 
 export type UserSettingsWire = AnswerSoundPreferences & {
+  /** Browser push notifications for this account; each device still needs browser permission. */
+  browserNotificationsEnabled: boolean;
   /** Personal default Assistant while it is available; see `ChatDefaultAssistant`. */
   defaultAssistantId?: string | null;
   /** A saved default Assistant is no longer available and is not applied. */
@@ -70,6 +72,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   });
   if (
     !answerSound ||
+    (settings.browserNotificationsEnabled !== undefined && typeof settings.browserNotificationsEnabled !== "boolean") ||
     !chatDefaults ||
     !defaultAssistant ||
     (settings.defaultWorkspaceEnabled !== undefined && typeof settings.defaultWorkspaceEnabled !== "boolean") ||
@@ -94,6 +97,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
   return {
     settings: {
       ...answerSound,
+      browserNotificationsEnabled: settings.browserNotificationsEnabled ?? true,
       defaultAssistantId: defaultAssistant.assistantId,
       defaultAssistantUnavailable: defaultAssistant.assistantUnavailable,
       defaultControlValues: { ...settings.defaultControlValues },

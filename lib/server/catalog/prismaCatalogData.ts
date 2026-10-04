@@ -61,6 +61,7 @@ type UserSettingsRow = {
   defaultSearchPlan: unknown;
   answerSoundEnabled: boolean;
   answerSoundId: string;
+  browserNotificationsEnabled: boolean;
   sendWithEnter: boolean;
   showCitations: boolean;
   showReasoningBlocks: boolean;
@@ -617,6 +618,7 @@ const catalogSettingsSelect = {
   defaultSearchPlan: true,
   answerSoundEnabled: true,
   answerSoundId: true,
+  browserNotificationsEnabled: true,
   sendWithEnter: true,
   showCitations: true,
   showReasoningBlocks: true
@@ -793,6 +795,7 @@ export function createPrismaCatalogDataLoader({
         defaultSearchPlan: user.settings.defaultSearchPlan,
         answerSoundEnabled: user.settings.answerSoundEnabled,
         answerSoundId: isAnswerSoundId(user.settings.answerSoundId) ? user.settings.answerSoundId : "rise",
+        browserNotificationsEnabled: user.settings.browserNotificationsEnabled,
         sendWithEnter: user.settings.sendWithEnter,
         showCitations: user.settings.showCitations,
         showReasoningBlocks: user.settings.showReasoningBlocks
