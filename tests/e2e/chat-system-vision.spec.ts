@@ -308,6 +308,8 @@ test("a Project composer admits an image exactly when admission would", async ({
     fixture.chatIds.push(chatId);
     await page.goto(`/p/${projectId}/c/${chatId}`);
     await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeEnabled({ timeout: 30_000 });
+    // Attach only once the Project composer resolved its own model.
+    await expect(page.getByRole("button", { name: "Vision Browser Chat", exact: true }).first()).toBeVisible({ timeout: 30_000 });
     await attach(page, { name: "project-photo.png", mimeType: "image/png", buffer: syntheticPng() });
     await expect(page.getByRole("region", { name: "Attachments" })).toContainText("project-photo.png");
     await expect(page.locator(".v2-live-composer-error")).toHaveCount(0);
@@ -316,6 +318,8 @@ test("a Project composer admits an image exactly when admission would", async ({
     await fixture.roles({ vision: false, image: false });
     await page.reload();
     await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeEnabled({ timeout: 30_000 });
+    // Attach only once the Project composer resolved its own model.
+    await expect(page.getByRole("button", { name: "Vision Browser Chat", exact: true }).first()).toBeVisible({ timeout: 30_000 });
     await attach(page, { name: "refused-photo.png", mimeType: "image/png", buffer: syntheticPng() });
     const refusal = page.locator(".v2-live-composer-error");
     await expect(refusal).toContainText("can't read images, and no Vision Model is available to analyze them");

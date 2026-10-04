@@ -947,51 +947,6 @@ export function PowerAppShellV2({
     reconcileBlankDefaultAssistant();
   }
 
-  const attachmentLimitContextsRef = useRef(new Map<string, string>());
-
-  useEffect(() => {
-    if (!currentModel) {
-      return;
-    }
-
-    if (uploading) {
-      return;
-    }
-
-    const attachmentLimits = catalog?.attachmentLimits;
-    const contextFingerprint = [
-      currentModel.provider,
-      currentModel.modelId,
-      currentModel.capabilities.documentInputMode,
-      currentModel.capabilities.imageInput ? "images" : "no-images",
-      attachmentLimits?.maxCount ?? "default-count",
-      attachmentLimits?.maxMaterializedBytes ?? "default-source",
-      attachmentLimits?.maxEncodedBytes ?? "default-encoded"
-    ].join("\u0000");
-    const previousContext = attachmentLimitContextsRef.current.get(
-      activeComposerSessionKey
-    );
-    const clearResolvedLimitFeedback =
-      previousContext !== undefined && previousContext !== contextFingerprint;
-
-    reconcileCurrentComposerAttachments(activeComposerSessionKey, currentModel, {
-      clearResolvedLimitFeedback,
-      workspaceEnabled: activeChat?.workspace?.enabled ?? composerSession.workspaceEnabled
-    });
-    attachmentLimitContextsRef.current.set(
-      activeComposerSessionKey,
-      contextFingerprint
-    );
-  }, [
-    activeChat?.workspace?.enabled,
-    activeComposerSessionKey,
-    attachments,
-    catalog?.attachmentLimits,
-    composerSession.workspaceEnabled,
-    currentModel,
-    uploading
-  ]);
-
   const {
     containerRef: threadScrollRef,
     handleScroll: handleThreadScroll,
@@ -2220,6 +2175,54 @@ export function PowerAppShellV2({
       )
     : undefined;
   const effectiveCurrentModel = projectContext ? projectCurrentModel : currentModel;
+
+  const attachmentLimitContextsRef = useRef(new Map<string, string>());
+
+  // Reconcile against the model this message will use: a Project chat's own
+  // catalog model, never the personal selection behind it.
+  useEffect(() => {
+    if (!effectiveCurrentModel) {
+      return;
+    }
+
+    if (uploading) {
+      return;
+    }
+
+    const attachmentLimits = catalog?.attachmentLimits;
+    const contextFingerprint = [
+      effectiveCurrentModel.provider,
+      effectiveCurrentModel.modelId,
+      effectiveCurrentModel.capabilities.documentInputMode,
+      effectiveCurrentModel.capabilities.imageInput ? "images" : "no-images",
+      attachmentLimits?.maxCount ?? "default-count",
+      attachmentLimits?.maxMaterializedBytes ?? "default-source",
+      attachmentLimits?.maxEncodedBytes ?? "default-encoded"
+    ].join("\u0000");
+    const previousContext = attachmentLimitContextsRef.current.get(
+      activeComposerSessionKey
+    );
+    const clearResolvedLimitFeedback =
+      previousContext !== undefined && previousContext !== contextFingerprint;
+
+    reconcileCurrentComposerAttachments(activeComposerSessionKey, effectiveCurrentModel, {
+      clearResolvedLimitFeedback,
+      workspaceEnabled: activeChat?.workspace?.enabled ?? composerSession.workspaceEnabled
+    });
+    attachmentLimitContextsRef.current.set(
+      activeComposerSessionKey,
+      contextFingerprint
+    );
+  }, [
+    activeChat?.workspace?.enabled,
+    activeComposerSessionKey,
+    attachments,
+    catalog?.attachmentLimits,
+    composerSession.workspaceEnabled,
+    effectiveCurrentModel,
+    uploading
+  ]);
+
   const effectiveParameterControls = projectContext
     ? defaultParameterControls(projectCurrentModel)
     : currentParameterControls;
