@@ -63,11 +63,23 @@ export type OpenRouterRoutePreferences = {
   zdr: boolean;
 };
 
+/**
+ * Image routes a chat with a tool-calling answer model has beside the model's
+ * own image input, as run admission resolves them: the installation System
+ * Vision Model answering image questions for a model without vision, and
+ * verified editing by the run's image model.
+ */
+export type CatalogImageRoutes = {
+  systemVision: boolean;
+  imageEditing: boolean;
+};
+
 export type CatalogWireModelCapabilities = {
   background: boolean;
   documentInputMode: "native_pdf" | "none" | "pdf_text_extraction";
   imageInput: boolean;
-  imageTool?: { generation: boolean; editing: boolean };
+  /** Present on tool-calling models; absent means no image tools route. */
+  imageRoutes?: CatalogImageRoutes;
   nativeWebSearch: boolean;
   openRouterPerplexitySearch: boolean;
   reasoning: boolean;
@@ -289,7 +301,7 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
       documentInputMode !== "none" &&
       documentInputMode !== "pdf_text_extraction") ||
     typeof capabilities.imageInput !== "boolean" ||
-    (capabilities.imageTool !== undefined && (!isRecord(capabilities.imageTool) || typeof capabilities.imageTool.generation !== "boolean" || typeof capabilities.imageTool.editing !== "boolean")) ||
+    (capabilities.imageRoutes !== undefined && (!isRecord(capabilities.imageRoutes) || typeof capabilities.imageRoutes.systemVision !== "boolean" || typeof capabilities.imageRoutes.imageEditing !== "boolean")) ||
     typeof capabilities.nativeWebSearch !== "boolean" ||
     typeof capabilities.openRouterPerplexitySearch !== "boolean" ||
     typeof capabilities.reasoning !== "boolean" ||
@@ -314,7 +326,8 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
       background: capabilities.background,
       documentInputMode,
       imageInput: capabilities.imageInput,
-      ...(isRecord(capabilities.imageTool) ? { imageTool: { generation: capabilities.imageTool.generation as boolean, editing: capabilities.imageTool.editing as boolean } } : {}),
+      ...(isRecord(capabilities.imageRoutes) ? { imageRoutes: { systemVision: capabilities.imageRoutes.systemVision as boolean,
+        imageEditing: capabilities.imageRoutes.imageEditing as boolean } } : {}),
       nativeWebSearch: capabilities.nativeWebSearch,
       openRouterPerplexitySearch: capabilities.openRouterPerplexitySearch,
       reasoning: capabilities.reasoning,

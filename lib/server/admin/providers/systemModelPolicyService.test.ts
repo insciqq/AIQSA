@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { imageModelConfiguration } from "../../../domain/imageModels";
 import { ProviderAdmissionError, type ProviderAdmissionRole } from "../../providerRuntime/admission";
 import {
   AdminSystemModelPolicyServiceError,
@@ -1119,5 +1120,190 @@ describe("administrator system model policy service", () => {
     for (const entry of Object.values(catalog.ineligible).flat()) {
       expect(Object.keys(entry)).not.toContain("evidence");
     }
+  });
+});
+
+const imageConfiguration = imageModelConfiguration("gpt-image-2", { profile: "openai" });
+const imageProof = { adapterKind: imageConfiguration.adapterKind, upstreamModelId: "gpt-image-2", probeVersion: 1, verified: true };
+
+function imageRow(id: string, imagePublication: { providerModelId: string; paramsJson: unknown } | null) {
+  return {
+    id, displayName: `Image ${id}`, connectionId: "openai", enabled: true, activeVersion: 1, activatedAt: NOW,
+    activeConfig: imageConfiguration, imagePublication,
+    connection: { id: "openai", displayName: "OpenAI", family: "openai", enabled: true, activeVersion: 1, activatedAt: NOW, activeConfig: {},
+      defaultCredential: { id: "credential-1", enabled: true, activeVersion: { id: "credential-version-1", revokedAt: null } } },
+    activeCredentialChecks: [{ connectionVersion: 1, modelVersion: 1, credentialId: "credential-1", credentialVersionId: "credential-version-1",
+      status: "available", evidence: { method: "tiny_generation", selectedProviders: [], upstreamModelId: "gpt-image-2",
+        imageGeneration: imageProof, imageEditing: imageProof } }]
+  };
+}
+
+function imageRole(providerModelId: string) {
+  return { configuration: { ...imageConfiguration, defaultParams: { quality: "medium" } },
+    authority: { connectionId: "openai", connectionVersion: 1, providerModelId, modelVersion: 1, credentialId: "credential-1",
+      credentialVersionId: "credential-version-1" },
+    snapshot: { model: { ...imageConfiguration, capabilities: { ...imageConfiguration.capabilities, imageEditing: false } } } };
+}
+
+/** Records every image write in order inside the one policy transaction. */
+function imageTransaction(published: Array<{ providerModelId: string; paramsJson: unknown }>, currentDefault: string | null) {
+  const writes: unknown[][] = [];
+  const tx = {
+    $queryRaw: vi.fn().mockResolvedValue([{ version: 3, chatTitleConfiguredAt: null, chatTitleProviderModelId: null,
+      decisionConfiguredAt: null, decisionProviderModelId: null }]),
+    user: { findFirst: vi.fn().mockResolvedValue({ id: "admin" }) },
+    publishedImageModel: {
+      findMany: vi.fn().mockResolvedValue(published),
+      create: vi.fn(async (input: unknown) => { writes.push(["create", input]); }),
+      update: vi.fn(async (input: unknown) => { writes.push(["update", input]); }),
+      deleteMany: vi.fn(async (input: unknown) => { writes.push(["withdraw", input]); })
+    },
+    systemModelPolicy: {
+      findUnique: vi.fn().mockResolvedValue({ imageProviderModelId: currentDefault }),
+      update: vi.fn(async (input: unknown) => { writes.push(["policy", input]); })
+    },
+    userSettings: { updateMany: vi.fn(async (input: unknown) => { writes.push(["reset users", input]); }) }
+  };
+  const prisma = { $transaction: async (operation: (store: typeof tx) => Promise<void>) => operation(tx) } as unknown as PrismaClient;
+  return { prisma, tx, writes };
+}
+
+describe("published image models", () => {
+  it("publishes a verified candidate with validated parameters and keeps the administrator default", async () => {
+    const { prisma, writes } = imageTransaction([{ providerModelId: "image-default", paramsJson: { quality: "low" } }], "image-default");
+    const loadImageRole = vi.fn().mockImplementation(async (_db: unknown, input: { providerModelId: string }) => imageRole(input.providerModelId));
+    await createAdminSystemModelPolicyService(prisma, { loadImageRole }).update({ expectedVersion: 3, userId: "admin",
+      imageProviderModelId: "image-default", imageModels: [
+        { providerModelId: "image-default", parameters: { quality: "low" } },
+        { providerModelId: "image-new", parameters: { quality: "high", background: "opaque" } }
+      ] });
+    // The unchanged default keeps its saved parameters without another check.
+    expect(loadImageRole).toHaveBeenCalledExactlyOnceWith(expect.anything(), { providerModelId: "image-new" });
+    expect(writes).toEqual([
+      ["create", { data: { providerModelId: "image-new", paramsJson: { quality: "high", background: "opaque" } } }],
+      ["policy", { where: { id: "installation" }, data: { imageProviderModelId: "image-default", updatedByUserId: "admin", version: { increment: 1 } } }]
+    ]);
+  });
+
+  it.each([
+    [new ProviderAdmissionError("model_not_available"), {}, "system_model_policy_target_unavailable"],
+    [null, { quality: "best" }, "system_model_policy_image_parameters_invalid"],
+    [null, { moderation: "low" }, "system_model_policy_image_parameters_invalid"]
+  ] as const)("refuses an unverified model or unsupported parameters without writing (%#)", async (failure, parameters, code) => {
+    const { prisma, writes } = imageTransaction([{ providerModelId: "image-default", paramsJson: {} }], "image-default");
+    const loadImageRole = vi.fn().mockImplementation(async (_db: unknown, input: { providerModelId: string }) => {
+      if (failure) throw failure;
+      return imageRole(input.providerModelId);
+    });
+    await expect(createAdminSystemModelPolicyService(prisma, { loadImageRole }).update({ expectedVersion: 3, userId: "admin",
+      imageProviderModelId: "image-default", imageModels: [{ providerModelId: "image-default", parameters: {} },
+        { providerModelId: "image-new", parameters: parameters as never }] })).rejects.toMatchObject({ code });
+    expect(writes).toEqual([]);
+  });
+
+  it("withdraws a model after the policy save and returns its users to the default in the same transaction", async () => {
+    const { prisma, tx, writes } = imageTransaction([
+      { providerModelId: "image-default", paramsJson: {} }, { providerModelId: "image-other", paramsJson: { quality: "low" } }
+    ], "image-default");
+    const loadImageRole = vi.fn();
+    await createAdminSystemModelPolicyService(prisma, { loadImageRole }).update({ expectedVersion: 3, userId: "admin",
+      imageProviderModelId: "image-default", imageModels: [{ providerModelId: "image-default", parameters: {} }] });
+    expect(loadImageRole).not.toHaveBeenCalled();
+    expect(writes).toEqual([
+      ["policy", expect.objectContaining({ data: expect.objectContaining({ imageProviderModelId: "image-default" }) })],
+      ["reset users", { where: { imageProviderModelId: { in: ["image-other"] } }, data: { imageProviderModelId: null } }],
+      ["withdraw", { where: { providerModelId: { in: ["image-other"] } } }]
+    ]);
+    expect(tx.publishedImageModel.create).not.toHaveBeenCalled();
+  });
+
+  it("changes the default to a usable published model and only then withdraws the former default", async () => {
+    const { prisma, writes } = imageTransaction([
+      { providerModelId: "image-default", paramsJson: {} }, { providerModelId: "image-other", paramsJson: { quality: "low" } }
+    ], "image-default");
+    const loadImageRole = vi.fn().mockImplementation(async (_db: unknown, input: { providerModelId: string }) => imageRole(input.providerModelId));
+    await createAdminSystemModelPolicyService(prisma, { loadImageRole }).update({ expectedVersion: 3, userId: "admin",
+      imageProviderModelId: "image-other", imageModels: [{ providerModelId: "image-other", parameters: { quality: "low" } }] });
+    expect(loadImageRole).toHaveBeenCalledExactlyOnceWith(expect.anything(), { providerModelId: "image-other" });
+    expect(writes.map(([kind]) => kind)).toEqual(["policy", "reset users", "withdraw"]);
+    expect(writes[1]).toEqual(["reset users", { where: { imageProviderModelId: { in: ["image-default"] } }, data: { imageProviderModelId: null } }]);
+  });
+
+  it("clears the role by withdrawing every model and resetting every chosen user at once", async () => {
+    const { prisma, writes } = imageTransaction([
+      { providerModelId: "image-default", paramsJson: {} }, { providerModelId: "image-other", paramsJson: {} }
+    ], "image-default");
+    await createAdminSystemModelPolicyService(prisma, { loadImageRole: vi.fn() }).update({ expectedVersion: 3, userId: "admin",
+      imageProviderModelId: null, imageModels: [] });
+    expect(writes).toEqual([
+      ["policy", expect.objectContaining({ data: expect.objectContaining({ imageProviderModelId: null }) })],
+      ["reset users", { where: { imageProviderModelId: { in: ["image-default", "image-other"] } }, data: { imageProviderModelId: null } }],
+      ["withdraw", { where: { providerModelId: { in: ["image-default", "image-other"] } } }]
+    ]);
+  });
+
+  it.each([
+    { imageProviderModelId: "image-default", imageModels: [{ providerModelId: "image-other", parameters: {} }] },
+    { imageProviderModelId: null, imageModels: [{ providerModelId: "image-other", parameters: {} }] },
+    { imageProviderModelId: "image-default", imageModels: [] },
+    { imageProviderModelId: "image-default", imageModels: [{ providerModelId: "image-default", parameters: {} },
+      { providerModelId: "image-default", parameters: {} }] },
+    { imageProviderModelId: "image-default" },
+    { imageModels: [] }
+  ])("keeps the default published and refuses malformed sets before the transaction: %j", async (update) => {
+    const { prisma, writes, tx } = imageTransaction([{ providerModelId: "image-default", paramsJson: {} }], "image-default");
+    await expect(createAdminSystemModelPolicyService(prisma, { loadImageRole: vi.fn() }).update({ expectedVersion: 3, userId: "admin",
+      ...update } as Parameters<ReturnType<typeof createAdminSystemModelPolicyService>["update"]>[0]))
+      .rejects.toMatchObject({ code: "system_model_policy_image_models_invalid" });
+    expect(tx.$queryRaw).not.toHaveBeenCalled();
+    expect(writes).toEqual([]);
+  });
+
+  async function listPublishedImageModels(imageProviderModelId: string | null) {
+    const rows = [
+      imageRow("image-default", { providerModelId: "image-default", paramsJson: { quality: "low" } }),
+      imageRow("image-keyless", { providerModelId: "image-keyless", paramsJson: { quality: "high" } }),
+      imageRow("image-candidate", null)
+    ];
+    const prisma = {
+      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
+        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
+      }) },
+      providerModel: {
+        findMany: vi.fn().mockImplementation(async ({ where }: { where: { OR?: unknown } }) => where.OR ? rows : []),
+        findUnique: vi.fn()
+      },
+      systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ imageProviderModelId, updatedAt: NOW, updatedBy: null, version: 5 }) }
+    } as unknown as PrismaClient;
+    const absent = vi.fn().mockResolvedValue({ ok: false, code: "system_model_absent" });
+    const loadImageRole = vi.fn().mockImplementation(async (_db: unknown, input: { providerModelId: string }) => {
+      if (input.providerModelId === "image-keyless") throw new ProviderAdmissionError("credential_default_missing");
+      return imageRole(input.providerModelId);
+    });
+    const catalog = await createAdminSystemModelPolicyService(prisma, {
+      loadRole: vi.fn().mockRejectedValue(new ProviderAdmissionError("model_not_available")), loadImageRole,
+      resolveRole: absent, resolveChatPdfRole: absent, resolveRerankerRole: absent, resolveChatTitleRole: absent, resolveVisionRole: absent,
+      resolveMemoryRole: absent
+    }).list();
+    return { catalog, loadImageRole };
+  }
+
+  it("lists published models with saved parameters and marks an unusable one without substituting it", async () => {
+    const { catalog, loadImageRole } = await listPublishedImageModels("image-default");
+    expect(catalog.imageCandidates?.map(({ id }) => id)).toEqual(["image-default", "image-keyless", "image-candidate"]);
+    expect(catalog.policy.imageModels).toEqual([
+      expect.objectContaining({ id: "image-default", parameters: { quality: "low" }, generation: true, editing: false,
+        available: true, unavailableReason: null, upstreamModelId: "gpt-image-2", image: { profile: "openai" } }),
+      expect.objectContaining({ id: "image-keyless", parameters: { quality: "high" }, generation: false, editing: false,
+        available: false, unavailableReason: "credential_unavailable" })
+    ]);
+    expect(catalog.policy.imageModel).toMatchObject({ id: "image-default", available: true });
+    expect(loadImageRole.mock.calls.map(([, input]) => input)).toEqual([{ providerModelId: "image-default" }, { providerModelId: "image-keyless" }]);
+  });
+
+  it("keeps listing models a previous release left published without a default, so they can be withdrawn", async () => {
+    const { catalog } = await listPublishedImageModels(null);
+    expect(catalog.policy.imageModel).toBeNull();
+    expect(catalog.policy.imageModels?.map(({ id }) => id)).toEqual(["image-default", "image-keyless"]);
   });
 });

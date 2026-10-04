@@ -961,7 +961,7 @@ describe("provider admission", () => {
       userId: "user-1", requiresClientToolCoexistence: true, requiresClientSearchRoutes: true
     });
 
-    await insertAcceptedProviderRunBindings(tx, { plan, nativeBackgroundRequested: false, runId: "agent-run", userId: "user-1" });
+    await insertAcceptedProviderRunBindings(tx, { plan, imageScope: "personal", nativeBackgroundRequested: false, runId: "agent-run", userId: "user-1" });
 
     expect(createMany).toHaveBeenCalledExactlyOnceWith({ data: [
       expect.objectContaining({ role: "answer", providerModelId: officialOpenAiModel.id, modelRunId: "agent-run" }),

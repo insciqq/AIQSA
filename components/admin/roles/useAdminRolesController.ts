@@ -38,8 +38,9 @@ export type AdminRolePatch = Readonly<{
   memoryProviderModelId?: string | null;
   memoryReasoningEffort?: string | null;
   memoryRecommendationId?: string;
+  /** The image default, always sent with the complete published set. */
   imageProviderModelId?: string | null;
-  imageParameters?: ImageGenerationParameters;
+  imageModels?: ReadonlyArray<Readonly<{ providerModelId: string; parameters: ImageGenerationParameters }>>;
   chatTitleProviderModelId?: string | null;
   chatTitleReasoningEffort?: string | null;
   chatPdfNativeProviderModelId?: string | null;

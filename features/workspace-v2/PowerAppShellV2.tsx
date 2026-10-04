@@ -25,8 +25,10 @@ import { decodeAnswerSoundPreferences, DEFAULT_ANSWER_SOUND } from "@/lib/contra
 import { toolActivityOriginV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import {
   attachmentPolicyForModel,
+  catalogWithImageEditing,
   unsupportedAttachmentMessage
 } from "@/components/app-shell/attachmentCapabilities";
+import { effectiveImageEditing } from "@/lib/contracts/imageModels";
 import { partitionAttachmentSelection } from "@/components/app-shell/attachmentSelection";
 import {
   attachmentCountSelectionLimitMessage,
@@ -103,6 +105,7 @@ import {
 import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
 import { fetchKnowledgeSources } from "@/components/knowledge/knowledgeApi";
 import { useSkillLibraryStore } from "@/components/app-shell/skillLibraryStore";
+import { loadImageModels, selectImageModel, useImageModelStore } from "@/components/app-shell/imageModelStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import { deactivateMcpSettings } from "@/components/app-shell/mcpSettingsStore";
 import { deactivatePersonalMcp } from "@/components/app-shell/personalMcpStore";
@@ -731,6 +734,7 @@ export function PowerAppShellV2({
   const librarySnapshot = useAssistantLibraryStore();
   const knowledgeSnapshot = useKnowledgeLibraryStore();
   const skillSnapshot = useSkillLibraryStore();
+  const imageModelSnapshot = useImageModelStore();
   const appearance = useShellAppearanceController();
   const { change: changeTheme, id: themeId } = appearance.theme;
   const workspaceInteraction = useWorkspaceInteractionController();
@@ -953,51 +957,6 @@ export function PowerAppShellV2({
     // A Temporary chat never starts with the personal default Assistant.
     reconcileBlankDefaultAssistant();
   }
-
-  const attachmentLimitContextsRef = useRef(new Map<string, string>());
-
-  useEffect(() => {
-    if (!currentModel) {
-      return;
-    }
-
-    if (uploading) {
-      return;
-    }
-
-    const attachmentLimits = catalog?.attachmentLimits;
-    const contextFingerprint = [
-      currentModel.provider,
-      currentModel.modelId,
-      currentModel.capabilities.documentInputMode,
-      currentModel.capabilities.imageInput ? "images" : "no-images",
-      attachmentLimits?.maxCount ?? "default-count",
-      attachmentLimits?.maxMaterializedBytes ?? "default-source",
-      attachmentLimits?.maxEncodedBytes ?? "default-encoded"
-    ].join("\u0000");
-    const previousContext = attachmentLimitContextsRef.current.get(
-      activeComposerSessionKey
-    );
-    const clearResolvedLimitFeedback =
-      previousContext !== undefined && previousContext !== contextFingerprint;
-
-    reconcileCurrentComposerAttachments(activeComposerSessionKey, currentModel, {
-      clearResolvedLimitFeedback,
-      workspaceEnabled: activeChat?.workspace?.enabled ?? composerSession.workspaceEnabled
-    });
-    attachmentLimitContextsRef.current.set(
-      activeComposerSessionKey,
-      contextFingerprint
-    );
-  }, [
-    activeChat?.workspace?.enabled,
-    activeComposerSessionKey,
-    attachments,
-    catalog?.attachmentLimits,
-    composerSession.workspaceEnabled,
-    currentModel,
-    uploading
-  ]);
 
   const {
     containerRef: threadScrollRef,
@@ -1933,8 +1892,9 @@ export function PowerAppShellV2({
     },
     rejectAttachments(fileNames: readonly string[]) {
       const store = useComposerSessionStore.getState();
+      // The composer refused these with its own (personal or Project) model.
       store.updateSession(store.activeSessionKey, {
-        operationError: unsupportedAttachmentMessage(fileNames, currentModel)
+        operationError: unsupportedAttachmentMessage(fileNames, effectiveCurrentModel, false, workspaceAvailable)
       });
     },
     removeAttachment(attachmentId: string) {
@@ -2282,6 +2242,54 @@ export function PowerAppShellV2({
       )
     : undefined;
   const effectiveCurrentModel = projectContext ? projectCurrentModel : currentModel;
+
+  const attachmentLimitContextsRef = useRef(new Map<string, string>());
+
+  // Reconcile against the model this message will use: a Project chat's own
+  // catalog model, never the personal selection behind it.
+  useEffect(() => {
+    if (!effectiveCurrentModel) {
+      return;
+    }
+
+    if (uploading) {
+      return;
+    }
+
+    const attachmentLimits = catalog?.attachmentLimits;
+    const contextFingerprint = [
+      effectiveCurrentModel.provider,
+      effectiveCurrentModel.modelId,
+      effectiveCurrentModel.capabilities.documentInputMode,
+      effectiveCurrentModel.capabilities.imageInput ? "images" : "no-images",
+      attachmentLimits?.maxCount ?? "default-count",
+      attachmentLimits?.maxMaterializedBytes ?? "default-source",
+      attachmentLimits?.maxEncodedBytes ?? "default-encoded"
+    ].join("\u0000");
+    const previousContext = attachmentLimitContextsRef.current.get(
+      activeComposerSessionKey
+    );
+    const clearResolvedLimitFeedback =
+      previousContext !== undefined && previousContext !== contextFingerprint;
+
+    reconcileCurrentComposerAttachments(activeComposerSessionKey, effectiveCurrentModel, {
+      clearResolvedLimitFeedback,
+      workspaceEnabled: activeChat?.workspace?.enabled ?? composerSession.workspaceEnabled
+    });
+    attachmentLimitContextsRef.current.set(
+      activeComposerSessionKey,
+      contextFingerprint
+    );
+  }, [
+    activeChat?.workspace?.enabled,
+    activeComposerSessionKey,
+    attachments,
+    catalog?.attachmentLimits,
+    composerSession.workspaceEnabled,
+    effectiveCurrentModel,
+    uploading
+  ]);
+
   const effectiveParameterControls = projectContext
     ? defaultParameterControls(projectCurrentModel)
     : currentParameterControls;
@@ -2727,6 +2735,17 @@ export function PowerAppShellV2({
         loadAssistants: loadDefaultAssistantChoices,
         set: setDefaultAssistant,
         unavailable: catalog.defaults.assistantUnavailable ?? false
+      },
+      imageModel: {
+        ...imageModelSnapshot,
+        load: () => void loadImageModels(),
+        // The composer's editing route follows the saved effective model
+        // without a reload, so it refuses an image exactly when admission would.
+        select: (providerModelId) => void selectImageModel(providerModelId).then((saved) => {
+          const settings = useImageModelStore.getState().settings;
+          if (!saved || !settings || useWorkspaceStore.getState().catalogAccountId !== accountId) return;
+          setCatalog((current) => current && catalogWithImageEditing(current, effectiveImageEditing(settings)));
+        })
       },
       knowledgePlan: catalog.defaults.knowledgePlan ?? null,
       mcpMode: catalog.defaults.mcpMode ?? "auto",

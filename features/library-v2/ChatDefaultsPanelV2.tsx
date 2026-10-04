@@ -23,6 +23,7 @@ export function ChatDefaultsPanelV2({ composer, onNavigate }: Readonly<{
     <SettingsDefaultModelRowV2 composer={composer} />
     {defaults?.assistant ? <SettingsDefaultAssistantRowV2 assistant={defaults.assistant} /> : null}
     {defaults ? <ChatDefaultsRowsV2
+      imageModel={defaults.imageModel}
       knowledgeBases={composer.knowledge.bases}
       knowledgePlan={defaults.knowledgePlan} mcpMode={defaults.mcpMode} skillsMode={defaults.skillsMode}
       onSkillsMode={defaults.setSkillsMode} searchPlan={defaults.searchPlan}
