@@ -113,6 +113,25 @@ describe("useScheduledTaskUpdates", () => {
     expect(onNewResult).toHaveBeenCalledTimes(1);
   });
 
+  it("announces failures but neither marks nor announces a skip caused by the owner's pause", async () => {
+    const before = scheduledTaskFixture({ chatId: "chat-1", running: true });
+    const pausedSkip = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
+      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "skipped", reasonCode: "paused", finishedAt: "2026-10-04T08:01:00.000Z" } });
+    const failed = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
+      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state: "failed", reasonCode: "run_failed", finishedAt: "2026-10-05T08:01:00.000Z" } });
+    useWorkspaceStore.setState({ navigationChats: [navigationRow("chat-1")] });
+    list.mockResolvedValueOnce(listed([before])).mockResolvedValueOnce(listed([pausedSkip])).mockResolvedValue(listed([failed]));
+    const { onNewResult } = renderUpdates();
+    await flush();
+    await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_RUNNING_POLL_MS); });
+    expect(onNewResult).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().navigationChats[0]?.scheduledTask).toBeUndefined();
+    await act(async () => { await vi.advanceTimersByTimeAsync(SCHEDULED_TASK_POLL_MS); });
+    expect(onNewResult).toHaveBeenCalledTimes(1);
+    expect(onNewResult).toHaveBeenCalledWith(failed);
+    expect(useWorkspaceStore.getState().navigationChats[0]?.scheduledTask).toEqual({ taskId: failed.id, unseen: true });
+  });
+
   it("marks a result seen when its chat is open in the conversation, not while Studio covers it", async () => {
     const task = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
       lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-04T08:01:00.000Z" } });

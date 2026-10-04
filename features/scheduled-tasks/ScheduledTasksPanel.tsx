@@ -41,6 +41,7 @@ import {
   removeScheduledTask,
   useScheduledTasksStore
 } from "./scheduledTasksStore";
+import { markScheduledTaskResultSeen } from "./useScheduledTaskUpdates";
 
 type Editor = Readonly<{
   draft: ScheduledTaskEditorDraft;
@@ -171,6 +172,8 @@ export function ScheduledTasksPanel({
     getScheduledTask(task.id).then((detail) => {
       if (!active.current || editorEpoch.current !== epoch) return;
       applyScheduledTask(detail.task);
+      // A result that landed before this read is shown among the recent runs.
+      if (detail.task.unseenResult) void markScheduledTaskResultSeen(detail.task.id, detail.task.chatId);
       onTask?.(detail.task);
       setEditor((current) => current && current.original?.id === task.id
         ? { ...current, recentRuns: { state: "ready", runs: detail.recentRuns } } : current);
@@ -187,6 +190,8 @@ export function ScheduledTasksPanel({
     const draft = scheduledTaskDraftFromTask(task);
     setNotice(null); setDeleting(null);
     setEditor({ draft, errors: {}, initialDraft: draft, notice: null, original: task, recentRuns: { state: "loading" } });
+    // The sheet shows the task's runs, so its result counts as seen, even without a chat to open.
+    if (task.unseenResult) void markScheduledTaskResultSeen(task.id, task.chatId);
     loadRecentRuns(task, epoch);
   }
 

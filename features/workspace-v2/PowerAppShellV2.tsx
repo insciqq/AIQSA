@@ -6,6 +6,7 @@ import type { WorkspaceUploadConfigWire } from "@/lib/contracts/workspaceUploads
 import { createChatSearchPreferences } from "@/components/app-shell/chatSearchPreferences";
 
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
+import { scheduledTaskResultNotice } from "@/features/scheduled-tasks/scheduledTaskPresentation";
 import { useScheduledTaskUpdates } from "@/features/scheduled-tasks/useScheduledTaskUpdates";
 
 import { removePermanentlyDeletedChat } from "@/components/app-shell/permanentChatDeletionReconciliation";
@@ -2216,22 +2217,25 @@ export function PowerAppShellV2({
     activeChatId,
     chatVisible: !projectContext && !librarySnapshot.open && !knowledgeSnapshot.open && !memoryOpen && !settingsOpen,
     onNewResult: (task) => {
-      const chatId = task.chatId;
-      if (!chatId) return;
-      // The open chat rereads its transcript itself; elsewhere the notice opens the chat.
-      const open = chatId === useWorkspaceStore.getState().activeChatId;
+      const result = scheduledTaskResultNotice(task);
+      if (!result) return;
+      const chatId = result.open === "chat" ? task.chatId : null;
+      // The open chat rereads its transcript itself; elsewhere the notice opens the chat or the task's runs.
+      const open = chatId !== null && chatId === useWorkspaceStore.getState().activeChatId;
       setNotice({
         ...(open ? {} : {
           action: {
             label: "Open",
             onClick: () => {
               setNotice(null);
-              void activatePersonalChatDeepLink(chatId);
+              if (chatId) void activatePersonalChatDeepLink(chatId);
+              else studio.open("scheduled");
             }
           }
         }),
-        kind: "success",
-        text: `“${task.title}” has a new result`
+        ...(result.kind === "error" ? { autoDismiss: true } : {}),
+        kind: result.kind,
+        text: result.text
       });
     },
     async refreshOpenChat(chatId) {
