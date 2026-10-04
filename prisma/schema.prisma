@@ -7194,6 +7194,11 @@ model ScheduledTask {
   userId                     String
   title                      String                    @db.VarChar(120)
   prompt                     String
+  /// SHA-256 digests of the prompt's normalized http(s) links its runs may read
+  /// with `fetch_url`: every link of an owner-written prompt, only already
+  /// user-authorized ones of a tool-written prompt (`scheduledPromptUrlDigests`).
+  /// Replaced with every write of the prompt; at most 100.
+  promptUrlDigests           String[]                  @default([])
   scheduleKind               ScheduledTaskScheduleKind
   /// Local wall-clock minute of the day, 0..1439; HOURLY: the window start (0 for the whole day).
   timeOfDayMinutes           Int

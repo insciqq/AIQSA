@@ -13,6 +13,8 @@ export function liveToolCallStatus(
     skillId?: string;
     skillName?: string;
     skillPath?: string;
+    /** A page read's "host/path"; carried only with the `web_fetch` origin. */
+    fetchTarget?: string;
   }> = {}
 ): ModelRunSseEvent {
   return {
@@ -30,6 +32,7 @@ export function liveToolCallStatus(
           ...(activity.skillName ? { skillName: activity.skillName } : {}),
           ...(activity.skillPath ? { skillPath: activity.skillPath } : {})
         } : {}),
+        ...(activity.origin === "web_fetch" && activity.fetchTarget ? { fetchTarget: activity.fetchTarget } : {}),
         status: "requested"
       }
     },

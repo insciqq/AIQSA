@@ -280,6 +280,12 @@ export type NormalizedRunRequest = {
     workspaceEnabled: boolean;
   }>;
   searchPlan: NormalizedSearchPlan;
+  /** Server-owned admission marker of a tool-calling run that may read pages
+   * through `fetch_url`, with its frozen link authority: digests of links in
+   * user-authored text on the visible branch, or a scheduled run's task
+   * snapshot. Same-run Search URLs are read at each call. Never set from a
+   * request field. */
+  fetchUrl?: import("../tools/fetchUrlPlan").FetchUrlPlan;
   /** Server-owned admission marker; old runs retain their accepted tool set. */
   sessionStatusTool?: true;
   /** Server-owned admission marker for `read_tool_call`, independent of the

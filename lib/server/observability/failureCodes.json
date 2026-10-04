@@ -191,6 +191,7 @@
   "explicit-equivalence-sweep-v1",
   "extraction-heal-v1",
   "fence-repair-v1",
+  "fetch_url_authority_unavailable",
   "followup_accept_failed",
   "followup_context_unavailable",
   "followup_execution_closed",
