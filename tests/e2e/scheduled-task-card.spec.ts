@@ -226,7 +226,9 @@ test("Edit opens Studio › Scheduled on that task's editor", async ({ page }, i
   const sheet = page.getByTestId("scheduled-task-sheet");
   const dialog = sheet.getByRole("dialog", { name: "Edit scheduled task", exact: true });
   await expect(dialog).toBeVisible();
-  await expect(page.getByTestId("library-v2").getByRole("tab", { name: "Scheduled" })).toHaveAttribute("aria-selected", "true");
+  // The modal editor hides the page behind it from the accessibility tree.
+  await expect(page.getByTestId("library-v2").getByRole("tab", { includeHidden: true, name: "Scheduled" }))
+    .toHaveAttribute("aria-selected", "true");
   await expect(sheet.getByLabel("Name", { exact: true })).toHaveValue(cards.monitoring.title);
   await expect(dialog.getByRole("group", { name: "Type", exact: true }).getByRole("radio", { name: "Monitoring", exact: true }))
     .toBeChecked();
@@ -297,6 +299,8 @@ test.describe("touch controls", () => {
       await page.setViewportSize(size);
       await weekly.scrollIntoViewIfNeeded();
       for (const control of [editButton(weekly, title), deleteButton(weekly, title)]) {
+        // A resized thread re-anchors to its newest turn: bring each control back.
+        await control.scrollIntoViewIfNeeded();
         await expectTouchSafe(control);
         await expectWithinViewport(page, control);
       }

@@ -501,7 +501,9 @@ test("an unread scheduled chat shows a dot, clears only its rendered result and 
   const sheet = page.getByTestId("scheduled-task-sheet");
   await expect(sheet.getByRole("dialog", { name: "Edit scheduled task", exact: true })).toBeVisible();
   await expect(sheet.getByLabel("Name", { exact: true })).toHaveValue("Weekday news brief");
-  await expect(page.getByTestId("library-v2").getByRole("tab", { name: "Scheduled" })).toHaveAttribute("aria-selected", "true");
+  // The modal editor hides the page behind it from the accessibility tree.
+  await expect(page.getByTestId("library-v2").getByRole("tab", { includeHidden: true, name: "Scheduled" }))
+    .toHaveAttribute("aria-selected", "true");
 });
 
 test("monitoring tasks show their type, the editor offers Type and the tool switches, and the history names each check", async ({ page }, info) => {

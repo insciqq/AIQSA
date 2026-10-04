@@ -47,10 +47,12 @@ export function BrowserNotificationsBannerV2({ notifications }: Readonly<{ notif
   if (!notifications.bannerVisible) return null;
   return (
     <div className="v2-live-notice">
-      <div aria-label="Browser notifications" className="v2-notice" data-kind="info" data-testid="browser-notifications-banner" role="region">
+      <div aria-label="Browser notifications" className="v2-notice" data-compact="" data-kind="info"
+        data-testid="browser-notifications-banner" role="region">
         <UiV2Icon className="v2-notice-icon" name="bell" />
         <div className="v2-notice-body">
           <span className="v2-notice-text">Get notified when answers and scheduled tasks finish, even with AIQSA closed.</span>
+          <span aria-hidden="true" className="v2-notice-text-short">Get notified when answers finish.</span>
           <span className="v2-notice-actions">
             <UiV2Button
               className="v2-notice-action"
