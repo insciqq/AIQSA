@@ -5674,3 +5674,56 @@ describe("scheduled task sends", () => {
     expect(admit).not.toHaveBeenCalled();
   });
 });
+
+describe("monitoring check admission", () => {
+  const say = (id: string, role: "assistant" | "user", text: string): ProviderConversationMessage =>
+    ({ content: textMessageContent(text), id, role });
+  const path = [say("result-user", "user", "Task prompt"), say("result-answer", "assistant", "Task result")];
+  const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
+  const previous = { assistantMessageId: "result-answer", userMessageId: "result-user" };
+
+  function scheduled(input: Readonly<{ body?: Readonly<Record<string, unknown>>; monitoring?: boolean;
+    previousResult?: typeof previous | null; }> = {}): RunPreparationInput {
+    const send = sendInput(input.body ?? toolBody);
+    if (send.source.kind !== "send") throw new Error("invalid send fixture");
+    return { ...send, source: { ...send.source, scheduledOccurrence: { occurrenceId: "occurrence-1",
+      previousResult: input.previousResult ?? null, taskGeneration: 1, taskId: "task-1", taskRevision: 1,
+      ...(input.monitoring === false ? {} : { monitoring: true as const }) } } };
+  }
+  const harness = (toolCalling = true) => createHarness({ capabilities: { ...baseCapabilities, toolCalling }, sendContext: path });
+  const offered = (prepared: PreparedRun) => prepared.providerRequest.tools?.some((tool) => tool.name === "report_monitoring_result") ?? false;
+
+  it("freezes the verdict and its instruction only for an occurrence of a monitoring task", async () => {
+    const h = harness();
+    const check = preparedFrom(await prepareRun(h.deps, scheduled({ previousResult: previous })));
+    expect(check.normalizedRequest.monitoringVerdictTool).toBe(true);
+    expect(offered(check)).toBe(true);
+    expect(check.normalizedRequest.prompt.system).toContain("scheduled monitoring check");
+    expect(check.normalizedRequest.prompt.system).toContain("last result the user was shown");
+    // The instruction is server-owned: the user's turn keeps only the task prompt.
+    expect(JSON.stringify(check.normalizedRequest.content)).not.toContain("report_monitoring_result");
+
+    // A standard task's scheduled run and the owner's own message get neither.
+    for (const input of [scheduled({ monitoring: false, previousResult: previous }), sendInput(toolBody)]) {
+      const prepared = preparedFrom(await prepareRun(h.deps, input));
+      expect(prepared.normalizedRequest.monitoringVerdictTool).toBeUndefined();
+      expect(offered(prepared)).toBe(false);
+      expect(prepared.normalizedRequest.prompt.system ?? "").not.toContain("monitoring check");
+    }
+  });
+
+  it("tells a first check that no result was shown yet", async () => {
+    const first = preparedFrom(await prepareRun(harness().deps, scheduled()));
+    expect(first.normalizedRequest.prompt.system).toContain("No earlier result has been shown");
+    expect(first.normalizedRequest.prompt.system).not.toContain("last result the user was shown");
+  });
+
+  it("refuses a check whose model cannot call the reporting tool before anything is accepted", async () => {
+    await expect(prepareRun(harness(false).deps, scheduled())).resolves.toMatchObject({ code: "model_cannot_report", ok: false, status: 409 });
+    await expect(prepareRun(harness().deps, scheduled({ body: { ...toolBody, tools: "none" } })))
+      .resolves.toMatchObject({ code: "model_cannot_report", ok: false });
+    // A standard scheduled run of the same model is admitted without tools.
+    const plain = preparedFrom(await prepareRun(harness(false).deps, scheduled({ monitoring: false })));
+    expect(offered(plain)).toBe(false);
+  });
+});

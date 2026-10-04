@@ -22,7 +22,8 @@ function task(overrides: Partial<ScheduledTask>): ScheduledTask {
     id: "task", title: "Task", prompt: "Synthetic scheduled instructions.",
     schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/London",
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, chatMode: "same",
-    status: "active", pauseReason: null, nextRunAt: "2026-10-05T08:00:00.000Z", lastRun: null, running: false,
+    kind: "standard", status: "active", pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T08:00:00.000Z",
+    lastRun: null, running: false,
     chatId: null, unseenResult: false, revision: 1,
     createdAt: "2026-09-20T08:00:00.000Z", updatedAt: "2026-09-20T08:00:00.000Z",
     ...overrides

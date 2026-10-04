@@ -16,6 +16,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { sessionStatusTool } from "../tools/sessionStatus";
+import { monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { loadSkillTool, readSkillFileTool } from "../tools/skill";
 import { freezeSkillManifest } from "../skills/runManifest";
 import { artifactTool } from "../tools/artifact";
@@ -8112,5 +8113,104 @@ describe("cross-turn tool history", () => {
       repository: { ...repository.repository, projectToolHistory } })).text();
     expect(projectToolHistory).not.toHaveBeenCalled();
     expect(requests[0]!.context!.messages.some((message) => message.historyClass)).toBe(false);
+  });
+});
+
+describe("monitoring verdict execution", () => {
+  function monitoringPrepared(budgets?: NormalizedRunRequest["toolBudgets"], marker = true) {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai", ...(budgets ? { toolBudgets: budgets } : {}) });
+    const tools = [sessionStatusTool, ...(marker ? [monitoringVerdictTool] : [])];
+    return {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, sessionStatusTool: true as const,
+        ...(marker ? { monitoringVerdictTool: true as const } : {}) },
+      providerRequest: { ...base.providerRequest, sessionStatusTool: true as const,
+        ...(marker ? { monitoringVerdictTool: true as const } : {}), tools }
+    };
+  }
+  const report = (status: string, id = "report-call") => ({ arguments: { status }, id, name: "report_monitoring_result" });
+
+  it("offers the verdict only to a run frozen for a monitoring check and records it for that run", async () => {
+    const repository = createRepository();
+    const recordMonitoringVerdict = vi.fn(async () => true);
+    repository.repository.recordMonitoringVerdict = recordMonitoringVerdict;
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1 ? providerResult({ finalText: "", toolCalls: [report("no_update")] })
+        : providerResult({ finalText: "Nothing changed." });
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared: monitoringPrepared(),
+      repository: repository.repository })).text());
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "report_monitoring_result"]);
+    expect(recordMonitoringVerdict).toHaveBeenCalledExactlyOnceWith({ runId: "run-1", userId: "user-1", verdict: "no_update" });
+    expect(JSON.stringify(requests[1]?.providerToolMessages)).toContain('\\"recorded\\":true');
+    expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: expect.objectContaining({ artifactType: "tool_call",
+      payload: expect.objectContaining({ name: "report_monitoring_result", origin: "session", serverName: "Monitoring" }) }) }));
+  });
+
+  it("never dispatches the verdict for a run without the frozen marker", async () => {
+    const repository = createRepository();
+    const recordMonitoringVerdict = vi.fn(async () => true);
+    repository.repository.recordMonitoringVerdict = recordMonitoringVerdict;
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return providerResult({ finalText: "", toolCalls: [report("goal_reached")] });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, prepared: monitoringPrepared(undefined, false),
+      repository: repository.repository })).text();
+    expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["get_session_status"]);
+    expect(recordMonitoringVerdict).not.toHaveBeenCalled();
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "unsupported_tool_call" }) })]);
+  });
+
+  it("keeps the verdict callable after the business tool budget is used up, then synthesizes", async () => {
+    const repository = createRepository();
+    const recordMonitoringVerdict = vi.fn(async () => true);
+    repository.repository.recordMonitoringVerdict = recordMonitoringVerdict;
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: "status-call", name: "get_session_status" }] });
+      if (requests.length === 2) return providerResult({ finalText: "", toolCalls: [report("update")] });
+      return providerResult({ finalText: "Something changed." });
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter,
+      prepared: monitoringPrepared({ maxToolCalls: 1, maxToolRounds: 1 }), repository: repository.repository })).text());
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    // The exactly used budget first offers the reserved report, then answers without tools.
+    expect(requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "none"]);
+    expect(JSON.stringify(requests[1]?.providerToolMessages)).toContain("reserved for report_monitoring_result");
+    expect(JSON.stringify(requests[2]?.providerToolMessages)).not.toContain("reserved for report_monitoring_result");
+    expect(recordMonitoringVerdict).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ verdict: "update" }));
+    expect([...repository.toolCalls.values()].map((call) => call.toolName))
+      .toEqual(["get_session_status", "report_monitoring_result"]);
+    expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: {
+      artifactType: "tool_budget", payload: { kind: "calls", limit: 1 } } }));
+  });
+
+  it("refuses business calls in the reserved round into synthesis, leaving the check unreported", async () => {
+    const repository = createRepository();
+    const recordMonitoringVerdict = vi.fn(async () => true);
+    repository.repository.recordMonitoringVerdict = recordMonitoringVerdict;
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length <= 2) {
+        return providerResult({ finalText: "", toolCalls: [{ arguments: {}, id: `status-${requests.length}`, name: "get_session_status" }] });
+      }
+      return providerResult({ finalText: "Partial answer." });
+    });
+    await createRunExecutionResponse(executionInput({ adapter,
+      prepared: monitoringPrepared({ maxToolCalls: 1, maxToolRounds: 1 }), repository: repository.repository })).text();
+    expect(requests.map((request) => request.toolChoice)).toEqual(["auto", "auto", "none"]);
+    expect(recordMonitoringVerdict).not.toHaveBeenCalled();
+    expect([...repository.toolCalls.values()].map((call) => call.toolName)).toEqual(["get_session_status"]);
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
   });
 });

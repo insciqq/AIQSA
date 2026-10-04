@@ -31,5 +31,8 @@ describe("scheduled task result email", () => {
     expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "run_orphaned", state: "FAILED", taskPauseReason: "model_unavailable",
       trigger: "manual" })).toMatchObject({ subject: "Scheduled task did not complete" });
     expect(scheduledTaskResultEmail({ ...base, appBaseUrl, title: "Line\u0000one\u007f" }).text).toContain("\"Line one\"");
+    // A monitoring check names its outcome.
+    expect(scheduledTaskResultEmail({ ...base, appBaseUrl, reasonCode: "goal_reached" }))
+      .toMatchObject({ subject: "Scheduled task finished", text: expect.stringContaining("finished.\nGoal reached — task completed.\n") });
   });
 });

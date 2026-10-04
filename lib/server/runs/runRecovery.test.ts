@@ -10403,3 +10403,30 @@ describe("recovered tool-free synthesis and repeated calls", () => {
     expect(harness.state.completed).toMatchObject({ finalText: "Checked part answered; the rest was not verified." });
   });
 });
+
+describe("monitoring verdict recovery", () => {
+  it.each(["running", "complete"] as const)("re-records an interrupted report and never repeats a settled one (%s)", async (state) => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const reportCall = { arguments: { status: "no_update" }, id: "provider-call-1", name: "report_monitoring_result" };
+    const settled = snapshotToolExecutionResult({ callId: reportCall.id, content: [{ type: "json", value: { recorded: true, status: "no_update" } }],
+      name: reportCall.name, status: "complete" }, 64_000);
+    const report: PersistedToolLoopCall = { ...persistedRecoveryCall(state), arguments: reportCall.arguments, mcpBinding: null,
+      toolName: reportCall.name, ...(state === "complete" ? { result: settled } : {}) };
+    const base = checkpointedRun({ calls: [report], phase: state === "running" ? "tools_running" : "tools_pending", providerToolMessages: [] });
+    const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+    installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, monitoringVerdictTool: true, toolMode: "auto",
+      searchPlan: { mode: "all_selected", options: [] } } });
+    const recordMonitoringVerdict = vi.fn(async () => true);
+    harness.repository.recordMonitoringVerdict = recordMonitoringVerdict;
+    await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    // An interrupted report is recorded again with the same value (the last report wins); a settled one replays.
+    expect(recordMonitoringVerdict.mock.calls).toEqual(state === "running" ? [[{ runId, userId, verdict: "no_update" }]] : []);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.tools?.map((tool) => tool.name)).toContain("report_monitoring_result");
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("recorded");
+    expect(harness.state.completed).not.toBeNull();
+  });
+});
