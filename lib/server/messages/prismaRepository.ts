@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { runFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { projectMessageFollowups } from "../runs/runFollowups";
-import { Prisma, type MessageStatus, type ModelRunStatus } from "@prisma/client";
+import { Prisma, type ChatImportSource, type MessageStatus, type ModelRunStatus } from "@prisma/client";
 import { decodeKnowledgePlan, type KnowledgePlan } from "../../contracts/knowledge";
 import { prisma } from "../prisma";
 import {
@@ -45,6 +45,8 @@ function isProjectChat(chat: LockedOwnedChat): chat is LockedOwnedChat & { proje
 type LockedOwnedChat = LockedMemorySourceChat & {
   defaultKnowledgePlan: Prisma.JsonValue | null;
   defaultProviderModelId: string | null;
+  importSource: ChatImportSource | null;
+  importSourceModel: string | null;
   projectFolderId: string | null;
   projectId: string | null;
   title: string;
@@ -72,6 +74,8 @@ async function lockOwnedChatForMessage(
       chat."defaultProviderModelId",
       chat."folderId",
       chat."id",
+      chat."importSource",
+      chat."importSourceModel",
       chat."title",
       chat."userId",
       chat."projectFolderId",
@@ -465,6 +469,11 @@ export function createPrismaMessageBranchRepository(
                 folderId: lockedChat.folderId,
                 // An Excluded source stays excluded; Temporary never branches.
                 memoryMode: lockedChat.memoryMode,
+                // A copy of an imported chat keeps its import marker, never the key,
+                // so it can no more use Memory than its source.
+                ...(lockedChat.importSource
+                  ? { importSource: lockedChat.importSource, importSourceModel: lockedChat.importSourceModel }
+                  : {}),
                 pinned: false,
                 title: branchChatTitle(lockedChat.title),
                 userId

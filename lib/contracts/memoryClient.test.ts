@@ -2,11 +2,24 @@ import { describe, expect, it } from "vitest";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   decodeMemoryAnswerSource,
+  decodeMemoryConsumerChatModeResponse,
   decodeMemoryConsumerPermanentChatDeleteInput,
   decodeMemoryConsumerPermanentChatDeleteResponse
 } from "./memoryClient";
 
 describe("Memory client-only contracts", () => {
+  it("accepts a locked chat mode only as Excluded without a Resume action", () => {
+    const locked = { allowedActions: [], archived: false, lockedReason: "IMPORTED", mode: "EXCLUDED", temporaryRetentionDeadline: null };
+    expect(decodeMemoryConsumerChatModeResponse(locked)).toEqual({ ok: true, value: locked });
+    expect(decodeMemoryConsumerChatModeResponse({ ...locked, allowedActions: ["RESUME"] })).toMatchObject({ ok: false });
+    expect(decodeMemoryConsumerChatModeResponse({ ...locked, allowedActions: ["EXCLUDE"], mode: "NORMAL" }))
+      .toMatchObject({ ok: false });
+    expect(decodeMemoryConsumerChatModeResponse({ ...locked, lockedReason: "OTHER" })).toMatchObject({ ok: false });
+    const { lockedReason: _lockedReason, ...unlocked } = locked;
+    expect(decodeMemoryConsumerChatModeResponse(unlocked)).toMatchObject({ ok: false });
+    expect(decodeMemoryConsumerChatModeResponse({ ...unlocked, allowedActions: ["RESUME"] })).toMatchObject({ ok: true });
+  });
+
   it("keeps permanent chat deletion confirmation and status consumer-safe", () => {
     const confirmation = {
       alsoForgetOriginMemories: false,
