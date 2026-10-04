@@ -680,6 +680,7 @@ describe("Workspace header v2", () => {
       .map((item) => item.textContent)).toEqual([
       "Markdown",
       "JSON",
+      "PDF",
       "Copy entire thread"
     ]);
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Markdown" }));
@@ -690,6 +691,11 @@ describe("Workspace header v2", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Export" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "JSON" }));
     expect(props.onExport).toHaveBeenLastCalledWith("json");
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "PDF" }));
+    expect(props.onExport).toHaveBeenLastCalledWith("pdf");
 
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("menuitem", { name: "Export" }));

@@ -120,7 +120,7 @@ export type NavigationSidebarProps = Readonly<{
   onBranches?(chat: ChatNavigationSummaryWire): void;
   /** Row menu "Copy entire thread" for that chat. */
   onCopyThread?(chat: ChatNavigationSummaryWire): void;
-  onExport?(chat: ChatNavigationSummaryWire, format?: "json" | "markdown"): void;
+  onExport?(chat: ChatNavigationSummaryWire, format?: "json" | "markdown" | "pdf"): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
   onFolderProjectSettings?(folder: ChatNavigationFolderWire): void;
   /**
@@ -258,7 +258,7 @@ function ChatRow({
   onChangeRename?(value: string): void;
   onCopyThread?(chat: ChatNavigationSummaryWire): void;
   onDelete?(chat: ChatNavigationSummaryWire): void;
-  onExport?(chat: ChatNavigationSummaryWire, format?: "json" | "markdown"): void;
+  onExport?(chat: ChatNavigationSummaryWire, format?: "json" | "markdown" | "pdf"): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
   onMemoryMode?(chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL"): void;
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
