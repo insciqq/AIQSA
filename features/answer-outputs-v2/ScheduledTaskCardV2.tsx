@@ -20,6 +20,12 @@ import {
 
 /** Tasks whose card already asked the account's list to read them; once per task and page. */
 const listedTaskReads = new Set<string>();
+/**
+ * Tasks deleted from a card on this page: the card a settling answer mounts
+ * again, or the same task's card in another branch, keeps saying so until a
+ * transcript read marks the task deleted itself.
+ */
+const deletedTaskIds = new Set<string>();
 
 /**
  * Opens Studio › Scheduled on the task's editor. The account's task list is
@@ -55,7 +61,7 @@ function ScheduledTaskCardV2({ card, onEdit }: Readonly<{
   onEdit?(taskId: string): void | Promise<void>;
 }>) {
   const headingId = useId();
-  const [deletedHere, setDeletedHere] = useState(false);
+  const [deletedHere, setDeletedHere] = useState(() => deletedTaskIds.has(card.taskId));
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState<"delete" | "edit" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,7 +77,7 @@ function ScheduledTaskCardV2({ card, onEdit }: Readonly<{
   // A task this answer just created is news to the account's task list, whose
   // reads also start the watch for its results: the list owner reads it once.
   useEffect(() => {
-    if (card.deleted || listedTaskReads.has(card.taskId)) return;
+    if (card.deleted || deletedTaskIds.has(card.taskId) || listedTaskReads.has(card.taskId)) return;
     const { loadState, tasks } = useScheduledTasksStore.getState();
     if (loadState !== "ready" || tasks.some((task) => task.id === card.taskId)) return;
     listedTaskReads.add(card.taskId);
@@ -105,6 +111,7 @@ function ScheduledTaskCardV2({ card, onEdit }: Readonly<{
         return;
       }
     }
+    deletedTaskIds.add(card.taskId);
     removeScheduledTask(card.taskId);
     setDeletedHere(true);
     setConfirming(false);
