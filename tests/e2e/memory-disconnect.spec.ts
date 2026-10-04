@@ -43,9 +43,9 @@ test("accepted Memory survives closing its tab, reconnects once, and still honor
         : wire.includes("input_image") || wire.includes("input_file") ? "PEARS" : "Memory fixture answer.";
       const intent = { decision: controlCalls === 0 ? {
         action: "SAVE", answerRequested: true, category: "preferences", confidenceBand: "HIGH",
-        patternExclusionRequested: false, reasonCode: "save_request", responsePreference: false,
+        reasonCode: "save_request", responsePreference: false,
         sensitivity: "NORMAL", statement, thisChatOnly: false
-      } : { action: "NONE", patternExclusionRequested: false, reasonCode: "no_memory_request" } };
+      } : { action: "NONE", reasonCode: "no_memory_request" } };
       const tool = control ?? probe;
       const output = tool ? (probe?.name === "aiqsa_parallel_probe" ? ["Oslo", "Rome"] : ["Oslo"]).map((city, index) => ({
         type: "function_call", id: `function-${index}`, call_id: `call-${index}`, name: tool.name,

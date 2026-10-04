@@ -41,7 +41,7 @@ function controlIntent(action: "SAVE" | "UPDATE" | "FORGET"): MemoryActionIntent
   return {
     action, aggregationRequested: false, applyResponsePreferences: false,
     category: "preferences", categoryHint: null, confidenceBand: "HIGH",
-    entityMentions: [], memoryUseful: false, patternExclusionRequested: false,
+    entityMentions: [], memoryUseful: false,
     pastChatsUseful: false, profileRequested: false, queryDecompositions: [], queryText: null,
     reasonCode: action === "SAVE" ? "save_request" : action === "UPDATE" ? "update_request" : "forget_request",
     recencyRequested: false, referencedMemoryRef: null,

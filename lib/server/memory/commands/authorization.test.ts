@@ -11,7 +11,7 @@ vi.mock("./sourceAuthority", () => ({ requireMemoryCommandSource: source }));
 function fixture() {
   const decoded = decodeMemoryActionControlDecision({ decision: {
     action: "SAVE", statement: "I prefer green", answerRequested: false, category: "preferences",
-    confidenceBand: "HIGH", patternExclusionRequested: false, reasonCode: "save_request",
+    confidenceBand: "HIGH", reasonCode: "save_request",
     responsePreference: false, sensitivity: "NORMAL", thisChatOnly: false
   } }, "Remember that I prefer green");
   if (!decoded.ok) throw new Error("invalid fixture");

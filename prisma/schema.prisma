@@ -5469,10 +5469,6 @@ model UserMemorySettings {
   acceptedUtilityEgressFingerprint String?                        @db.VarChar(128)
   acceptedUtilityPolicyVersion     String?                        @db.VarChar(64)
   acceptedUtilityEgressAt          DateTime?
-  synthesisEnabled                 Boolean                        @default(true)
-  synthesisEnabledAt               DateTime?                      @default(now())
-  synthesisPolicyVersion           String?                        @default("memory-synthesis-policy-v6") @db.VarChar(64)
-  lastSynthesisAt                  DateTime?
   maintenanceCursor                String?
   maintenanceScannedAt             DateTime?
   explicitEquivalenceSweepVersion  String?                        @db.VarChar(64)
@@ -5483,7 +5479,6 @@ model UserMemorySettings {
 
   @@index([activeIndexGenerationId])
   @@index([embeddingProviderModelId])
-  @@index([synthesisEnabled, lastSynthesisAt, userId])
 }
 
 model MemoryScope {

@@ -297,7 +297,6 @@ async function createControlAuthorizedSave(
     confidenceBand: "HIGH",
     entityMentions: [] as MemoryActionIntent["entityMentions"],
     memoryUseful: false,
-    patternExclusionRequested: false,
     pastChatsUseful: false,
     profileRequested: false,
     queryDecompositions: [] as MemoryActionIntent["queryDecompositions"],
@@ -571,9 +570,6 @@ describe("Prisma Memory persistence", () => {
         decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
         memoryRevision: 0, settingsRevision: 0
       });
-      for (const retired of ["synthesisEnabled", "synthesisEnabledAt", "synthesisPolicyVersion", "lastSynthesisAt"]) {
-        expect(initial).not.toHaveProperty(retired);
-      }
       const disabled = await repository.patch(userId, {
         decayEnabled: false, expectedMemoryRevision: 0, expectedSettingsRevision: 0
       });
@@ -596,63 +592,6 @@ describe("Prisma Memory persistence", () => {
         decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION,
         memoryRevision: reenabled.memoryRevision, settingsRevision: reenabled.settingsRevision + 1
       });
-    } finally {
-      await cleanupUser(userId);
-    }
-  });
-
-  it("never writes the retired Dream columns, leaving rows within their shape check", async () => {
-    const userId = await createActiveUser("retired-dream-columns");
-    const service = createMemorySettingsService({
-      repository: createPrismaMemorySettingsRepository(prisma),
-      resolveCurrentUtilityPolicy: (ownerId, settings) =>
-        resolveCurrentMemoryUtilityPolicy(prisma, ownerId, settings)
-    });
-    const retiredColumns = () => prisma.userMemorySettings.findUniqueOrThrow({
-      select: {
-        lastSynthesisAt: true, memoryRevision: true, settingsRevision: true,
-        synthesisEnabled: true, synthesisEnabledAt: true, synthesisPolicyVersion: true
-      },
-      where: { userId }
-    });
-    try {
-      // Database defaults satisfy the second branch of the retired CHECK.
-      const created = await retiredColumns();
-      expect(created).toMatchObject({
-        lastSynthesisAt: null, memoryRevision: 0, settingsRevision: 0,
-        synthesisEnabled: true, synthesisPolicyVersion: "memory-synthesis-policy-v6"
-      });
-      expect(created.synthesisEnabledAt).toBeInstanceOf(Date);
-
-      const decayOff = await service.patch(userId, {
-        decayEnabled: false, expectedMemoryRevision: 0, expectedSettingsRevision: 0
-      });
-      expect(decayOff.settings).toMatchObject({ decayEnabled: false, settingsRevision: 1 });
-      expect(decayOff.settings).not.toHaveProperty("synthesisEnabled");
-      expect(decayOff.capabilities).not.toHaveProperty("synthesisAvailable");
-      await expect(retiredColumns()).resolves.toEqual({
-        ...created, memoryRevision: decayOff.settings.memoryRevision, settingsRevision: 1
-      });
-
-      // A row fenced by a previous release (reset/account deletion) stays in
-      // the first branch.
-      await prisma.userMemorySettings.update({ data: {
-        lastSynthesisAt: null, synthesisEnabled: false, synthesisEnabledAt: null, synthesisPolicyVersion: null
-      }, select: { userId: true }, where: { userId } });
-      const current = await service.get(userId);
-      await expect(service.patch(userId, {
-        expectedMemoryRevision: current.settings.memoryRevision,
-        expectedSettingsRevision: current.settings.settingsRevision,
-        learnAutomatically: false,
-        useMemoryFacts: false
-      })).resolves.toMatchObject({ settings: { learnAutomatically: false, useMemoryFacts: false } });
-      await expect(retiredColumns()).resolves.toMatchObject({
-        lastSynthesisAt: null, synthesisEnabled: false, synthesisEnabledAt: null, synthesisPolicyVersion: null
-      });
-      // The CHECK itself is unchanged until the columns are dropped.
-      await expect(prisma.userMemorySettings.update({
-        data: { synthesisEnabled: true }, select: { userId: true }, where: { userId }
-      })).rejects.toThrow(/UserMemorySettings_synthesis_shape_check/u);
     } finally {
       await cleanupUser(userId);
     }
@@ -1182,7 +1121,6 @@ describe("Prisma Memory persistence", () => {
         confidenceBand: "HIGH",
         entityMentions: [] as MemoryActionIntent["entityMentions"],
         memoryUseful: false,
-        patternExclusionRequested: false,
         pastChatsUseful: false,
         profileRequested: false,
         queryDecompositions: [] as MemoryActionIntent["queryDecompositions"],
@@ -1270,7 +1208,6 @@ describe("Prisma Memory persistence", () => {
         confidenceBand: "HIGH",
         entityMentions: [],
         memoryUseful: false,
-        patternExclusionRequested: false,
         pastChatsUseful: false,
         profileRequested: false,
         queryDecompositions: [],
@@ -1369,7 +1306,6 @@ describe("Prisma Memory persistence", () => {
         confidenceBand: "HIGH",
         entityMentions: [] as MemoryActionIntent["entityMentions"],
         memoryUseful: false,
-        patternExclusionRequested: false,
         pastChatsUseful: false,
         profileRequested: false,
         queryDecompositions: [],
