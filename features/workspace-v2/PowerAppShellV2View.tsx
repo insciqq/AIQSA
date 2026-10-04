@@ -121,6 +121,7 @@ import {
   previousVisibleAnswersV2
 } from "@/features/answer-outputs-v2/AnswerIdentityV2";
 import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
+import { openScheduledTaskEditorV2 } from "@/features/answer-outputs-v2/ScheduledTaskCardV2";
 import { MemoryCommandStatusV2, memoryCommandIsVisible } from "@/features/answer-outputs-v2/MemoryCommandStatusV2";
 import { useMemoryCommands } from "@/components/app-shell/useMemoryCommands";
 import {
@@ -1392,6 +1393,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 live={!settled}
                 canSaveFiles={!projectContext && !temporarySession}
                 onEditArtifact={projectContext || temporarySession ? undefined : generated => editArtifact(generated)}
+                onEditScheduledTask={projectContext || temporarySession || !settings.studio ? undefined
+                  : (taskId) => openScheduledTaskEditorV2(taskId, (after) => settings.studio?.open("scheduled", after))}
                 onOpenArtifact={projectContext || temporarySession ? undefined : (generated, source) => {
                   if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, artifactId: generated.artifactId, versionId: generated.versionId }, source);
                 }}
