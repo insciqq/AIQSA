@@ -341,12 +341,14 @@ export type ScheduledUnavailableSource = Readonly<{
 /**
  * Why a chat run's `create_scheduled_task` call created nothing: an owner
  * create rule's code, `scheduled_task_answer_limit` when this answer already
- * created its one task, or `scheduled_task_call_unavailable` when the call
- * cannot create at all (a scheduled, settled or missing run, or a call that is
- * not this run's claimed creation).
+ * created its one task, `scheduled_task_already_created` when another answer
+ * to the same message did and the owner still has that task, or
+ * `scheduled_task_call_unavailable` when the call cannot create at all (a
+ * scheduled, settled or missing run, another answer to a scheduled task's own
+ * turn, or a call that is not this run's claimed creation).
  */
 export type ScheduledTaskCallRefusal = import("../../contracts/scheduledTasks").ScheduledTaskErrorCode |
-  "scheduled_task_answer_limit" | "scheduled_task_call_unavailable";
+  "scheduled_task_already_created" | "scheduled_task_answer_limit" | "scheduled_task_call_unavailable";
 
 export type ScheduledTaskCallCreation =
   /** Created; the call settled with `result` in the creation's transaction. */

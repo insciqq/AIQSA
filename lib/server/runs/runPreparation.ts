@@ -93,7 +93,7 @@ import type {
 import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
-import { scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
+import { isScheduledTaskToolSettings, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
 import { readToolCallTool } from "../tools/readToolCall";
 import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { insertToolHistory, type ToolHistoryProjection } from "./toolHistory";
@@ -2269,8 +2269,9 @@ async function prepareRunWith(
   // The owner's own message in an ordinary personal chat may create one
   // scheduled task. Never a scheduled, temporary, Project, Assistant, Agent or
   // Knowledge run, nor one without tool calling. Frozen here: the settings the
-  // task takes from this run, never mutable chat state read later.
-  const scheduledTaskTool: NormalizedRunRequest["scheduledTaskTool"] = !scheduledOccurrence && !project && !assistantRun &&
+  // task takes from this run, never mutable chat state read later, and only in
+  // the shape recovery decodes.
+  const scheduledTaskSettings = !scheduledOccurrence && !project && !assistantRun &&
     !agentEnabled && !knowledgeRequested && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true
@@ -2282,6 +2283,7 @@ async function prepareRunWith(
         workspaceEnabled: workspaceAdmissionPlan !== undefined
       }
     : undefined;
+  const scheduledTaskTool = isScheduledTaskToolSettings(scheduledTaskSettings) ? scheduledTaskSettings : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),

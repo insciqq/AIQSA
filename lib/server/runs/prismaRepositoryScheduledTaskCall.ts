@@ -1,4 +1,5 @@
 import { Prisma, type ModelRunStatus, type PrismaClient } from "@prisma/client";
+import { decodeScheduledTaskCard } from "../../contracts/scheduledTasks";
 import { admitScheduledTaskCreate, type ScheduledTaskDraftAdmissionDeps } from "../scheduledTasks/draftAdmission";
 import { kickScheduledTaskRunner } from "../scheduledTasks/runnerKick";
 import { insertScheduledTask, ScheduledTaskError } from "../scheduledTasks/store";
@@ -11,18 +12,45 @@ import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "
 import { toolLoopPersistenceLimits } from "./toolLoopPersistence";
 
 type CreationInput = Parameters<NonNullable<RunRepository["createScheduledTaskForCall"]>>[0];
+type StoredResult = Parameters<typeof parsePersistedToolExecutionResult>[1];
 
 function refused(code: ScheduledTaskCallRefusal): ScheduledTaskCallCreation {
   return { code, kind: "refused" };
 }
 
 /**
+ * Whether another answer to the same message (a regeneration or retry)
+ * created a task the owner still has: the message's request is then served,
+ * while a task the owner deleted may be created again.
+ */
+async function earlierAnswerTaskKept(
+  tx: Prisma.TransactionClient,
+  input: CreationInput,
+  userMessageId: string
+): Promise<boolean> {
+  const calls = await tx.modelRunToolCall.findMany({
+    select: { providerCallId: true, result: true, toolName: true },
+    where: { modelRun: { userId: input.userId, userMessageId }, modelRunId: { not: input.runId }, state: "complete",
+      toolName: CREATE_SCHEDULED_TASK_TOOL_NAME }
+  });
+  const taskIds = calls.flatMap((call) =>
+    parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, call.result as StoredResult)?.artifacts ?? [])
+    .flatMap((event) => {
+      const card = event.type === "artifact" && event.data.artifactType === "scheduled_task"
+        ? decodeScheduledTaskCard(event.data.payload) : null;
+      return card ? [card.taskId] : [];
+    });
+  return taskIds.length > 0 && await tx.scheduledTask.count({ where: { id: { in: taskIds }, userId: input.userId } }) > 0;
+}
+
+/**
  * `RunRepository.createScheduledTaskForCall`. The owner API's rules run first
  * (reads only); then one transaction takes the owner lock (the order owner,
- * then run, of every settlement writer), fences the run and its call, creates
- * the task under the owner's limits, settles the call with its result and
- * appends the answer's card. A crash leaves either all of it or none of it, so
- * a recovered call is replayed from its settlement or created now, never twice.
+ * then run, of every settlement writer), fences the run and its call, keeps
+ * one task per answer and per message, creates the task under the owner's
+ * limits, settles the call with its result and appends the answer's card. A
+ * crash leaves either all of it or none of it, so a recovered call is replayed
+ * from its settlement or created now, never twice.
  */
 export async function createScheduledTaskForToolCall(
   prisma: PrismaClient,
@@ -39,8 +67,8 @@ export async function createScheduledTaskForToolCall(
       `);
       if (owners.length !== 1) return refused("scheduled_tasks_unavailable");
       const [run] = await tx.$queryRaw<Array<{ errorPayload: Prisma.JsonValue | null; scheduledTaskId: string | null;
-        status: ModelRunStatus }>>(Prisma.sql`
-        SELECT "status", "errorPayload", "scheduledTaskId" FROM "ModelRun"
+        status: ModelRunStatus; userMessageId: string }>>(Prisma.sql`
+        SELECT "status", "errorPayload", "scheduledTaskId", "userMessageId" FROM "ModelRun"
         WHERE "id" = ${input.runId} AND "userId" = ${input.userId}
         FOR UPDATE
       `);
@@ -53,14 +81,18 @@ export async function createScheduledTaskForToolCall(
       if (!call || call.toolName !== CREATE_SCHEDULED_TASK_TOOL_NAME) return refused("scheduled_task_call_unavailable");
       if (call.state === "complete" || call.state === "error") {
         return { kind: "settled", result: parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName },
-          call.result as Parameters<typeof parsePersistedToolExecutionResult>[1]) };
+          call.result as StoredResult) };
       }
       if (call.state !== "running") return refused("scheduled_task_call_unavailable");
+      // Nor does another answer to a scheduled task's own turn (its saved prompt).
+      if (await tx.modelRun.count({ where: { scheduledTaskId: { not: null }, userId: input.userId,
+        userMessageId: run.userMessageId } }) > 0) return refused("scheduled_task_call_unavailable");
       // Only a creation settles complete: another one means this answer has its task.
       const created = await tx.modelRunToolCall.count({ where: {
         id: { not: input.callId }, modelRunId: input.runId, state: "complete", toolName: CREATE_SCHEDULED_TASK_TOOL_NAME
       } });
       if (created > 0) return refused("scheduled_task_answer_limit");
+      if (await earlierAnswerTaskKept(tx, input, run.userMessageId)) return refused("scheduled_task_already_created");
       const task = await insertScheduledTask(tx, input.userId, admitted.draft, admitted.nextRunAt);
       const result = input.result(task);
       const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
