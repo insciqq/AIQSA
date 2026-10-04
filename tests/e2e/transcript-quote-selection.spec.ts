@@ -76,6 +76,8 @@ async function selectContents(locator: Locator) {
     selection.removeAllRanges();
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
+    // Outlast the 250 ms settle delay of a selection made without a mouse drag.
+    await new Promise<void>(resolve => setTimeout(resolve, 300));
   });
 }
 
@@ -219,9 +221,19 @@ test("mouse selection keeps turn actions closed and dismisses Quote on Escape, c
   });
   await page.mouse.move(bounds.x1, bounds.y1);
   await page.mouse.down();
-  await page.mouse.move(bounds.x2, bounds.y2, { steps: 12 });
+  await page.mouse.move((bounds.x1 + bounds.x2) / 2, bounds.y2, { steps: 6 });
+  // A paused drag outlasts the settle delay: still no toolbar while the button is down.
+  await page.waitForTimeout(400);
+  expect(await page.evaluate(() => window.getSelection()?.toString().length ?? 0)).toBeGreaterThan(0);
+  await expect(quoteButton(page)).toHaveCount(0);
+  await page.mouse.move(bounds.x2, bounds.y2, { steps: 6 });
+  await expect(quoteButton(page)).toHaveCount(0);
   await page.mouse.up();
   await expect(quoteButton(page)).toBeVisible();
+  // It appears once at the final position and stays there.
+  const placed = await quoteButton(page).boundingBox();
+  await page.waitForTimeout(400);
+  expect(await quoteButton(page).boundingBox()).toEqual(placed);
   await expect(turn).not.toHaveAttribute("data-controls-open", "true");
   expect(await page.evaluate(() => window.getSelection()?.toString())).toContain("Finished ans");
   await page.keyboard.press("Escape");
@@ -236,13 +248,42 @@ test("mouse selection keeps turn actions closed and dismisses Quote on Escape, c
   await expect(quoteButton(page)).toHaveCount(0);
 });
 
+test("a selection made without the mouse shows Quote only after it settles", async ({ page }) => {
+  await prepare(page);
+  const paragraph = markdown(page).locator("p").first();
+  await paragraph.scrollIntoViewIfNeeded();
+  // Measured in the page: a keyboard or touch-handle selection that keeps changing never shows the toolbar.
+  const seen = await paragraph.evaluate(async element => {
+    const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    const text = element.firstChild!;
+    const visible = () => document.querySelector(".v2-selection-quote-button") !== null;
+    const states: boolean[] = [];
+    for (const end of [3, 6, 9, 12]) {
+      const range = document.createRange();
+      range.setStart(text, 0);
+      range.setEnd(text, end);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      await frame(); await frame();
+      states.push(visible());
+      await new Promise<void>(resolve => setTimeout(resolve, 50));
+    }
+    await new Promise<void>(resolve => setTimeout(resolve, 400));
+    await frame();
+    states.push(visible());
+    return states;
+  });
+  expect(seen).toEqual([false, false, false, false, true]);
+  await expect(quoteButton(page)).toBeVisible();
+});
+
 test("reasoning, cross-message ranges, composer text and inline editing cannot be quoted", async ({ page }) => {
   await prepare(page);
   const disclosure = page.getByTestId("tool-activity-disclosure");
   await disclosure.locator(":scope > summary").click();
   await selectContents(page.getByTestId("answer-reasoning").locator("p"));
   await expect(quoteButton(page)).toHaveCount(0);
-  await page.evaluate(({ questionId, answerId }) => {
+  await page.evaluate(async ({ questionId, answerId }) => {
     const question = document.querySelector(`article[data-message-id="${questionId}"] .v2-conversation-markdown`)!;
     const answer = document.querySelector(`article[data-message-id="${answerId}"] .v2-conversation-markdown`)!;
     const range = document.createRange();
@@ -252,6 +293,8 @@ test("reasoning, cross-message ranges, composer text and inline editing cannot b
     selection.removeAllRanges();
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
+    // Outlast the 250 ms settle delay of a selection made without a mouse drag.
+    await new Promise<void>(resolve => setTimeout(resolve, 300));
   }, { questionId, answerId });
   await expect(quoteButton(page)).toHaveCount(0);
   await clearSelection(page);

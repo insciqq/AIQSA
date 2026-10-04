@@ -84,6 +84,26 @@ describe("native Gemini structured output", () => {
       .toThrow("structured_output_request_invalid");
   });
 
+  it("refuses a catalog-excluded gemini-3.8-flash level from any effort source", () => {
+    const flash38 = { ...model, capabilities: {
+      ...model.capabilities, defaultReasoningEffort: undefined, reasoningEfforts: undefined
+    }, upstreamModelId: "gemini-3.8-flash" };
+    // Request effort (Memory/System role), saved model default and stale saved capabilities.
+    expect(() => buildGeminiInteractionsStructuredOutputRequest(flash38, { ...request, reasoningEffort: "minimal" }))
+      .toThrow("structured_output_request_invalid");
+    expect(() => buildGeminiInteractionsStructuredOutputRequest({
+      ...flash38, defaultParams: { reasoning: { effort: "minimal" } }
+    }, request)).toThrow("structured_output_request_invalid");
+    expect(() => buildGeminiInteractionsStructuredOutputRequest({
+      ...flash38, capabilities: { ...flash38.capabilities, reasoningEfforts: ["minimal", "low"] }
+    }, { ...request, reasoningEffort: "minimal" })).toThrow("structured_output_request_invalid");
+    expect(buildGeminiInteractionsStructuredOutputRequest(flash38, { ...request, reasoningEffort: "low" }))
+      .toMatchObject({ generation_config: { thinking_level: "low" } });
+    expect(buildGeminiInteractionsStructuredOutputRequest({
+      ...flash38, defaultParams: { reasoning: { effort: "medium" } }
+    }, request)).toMatchObject({ generation_config: { thinking_level: "medium" } });
+  });
+
   it("omits a disabled reasoning control for a nonreasoning model", () => {
     const nonreasoning = { ...model, capabilities: {
       ...model.capabilities, reasoning: false, defaultReasoningEffort: undefined, reasoningEfforts: undefined

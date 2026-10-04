@@ -8,6 +8,7 @@ import {
   MCP_INVENTORY_EXCLUSION_LIMIT,
   MCP_RUN_PLAN_LIMITS,
   MCP_SERVER_TOOL_LIMIT,
+  mcpRuntimeErrorCode,
   type McpCredentialSource,
   type McpReadiness,
   type McpToolArgumentInventoryEntry,
@@ -131,6 +132,14 @@ export type McpRunPlanSnapshot = {
   version: 1;
 };
 
+export type McpRunPlanIssue = {
+  errorCode: string | null;
+  name: string;
+  /** The upstream rejected the user's own personal value or OAuth token, not an administrator's. */
+  personalCredentialRejected?: true;
+  readiness: McpReadiness;
+};
+
 export type McpRunPlanResult =
   | {
       bindings: McpRunPlanBinding[];
@@ -139,7 +148,7 @@ export type McpRunPlanResult =
     }
   | {
       code: "mcp_not_ready" | "mcp_plan_too_large";
-      issues: { errorCode: string | null; name: string; readiness: McpReadiness }[];
+      issues: McpRunPlanIssue[];
       /** The exceeded bound when a whole plan offers more than `MCP_RUN_PLAN_LIMITS.maxTools`. */
       limit?: "maxTools";
       ok: false;
@@ -356,12 +365,32 @@ export function mcpCatalogOmissions(records: readonly McpRunPlanRecord[]): McpCa
   }).sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId));
 }
 
-function issues(records: readonly McpRunPlanRecord[]) {
+/** A runtime that authenticates with the user's own credential failed authorization upstream. */
+function personalCredentialRejected(record: McpRunPlanRecord): { personalCredentialRejected?: true } {
+  return record.errorCode !== null && mcpRuntimeErrorCode(record.errorCode) === "mcp_authorization_required" &&
+    record.credentialSources.some((source) => source === "personal" || source === "oauth")
+    ? { personalCredentialRejected: true }
+    : {};
+}
+
+function issues(records: readonly McpRunPlanRecord[]): McpRunPlanIssue[] {
   return records.map((record) => ({
     errorCode: record.errorCode,
     name: record.serverName,
+    ...personalCredentialRejected(record),
     readiness: record.readiness
   }));
+}
+
+/**
+ * The servers whose upstream rejected the user's own credential, or whose
+ * personal OAuth connection needs (re)authorization. A shared credential the
+ * administrator owns is never reported as the user's.
+ */
+export function mcpPersonalCredentialRejections(issues: readonly McpRunPlanIssue[]): string[] {
+  return [...new Set(issues.filter((issue) => issue.personalCredentialRejected === true ||
+    issue.readiness === "needs_authorization" || issue.readiness === "reauthorization_required"
+  ).map((issue) => issue.name))];
 }
 
 export function buildMcpRunPlan(
@@ -403,6 +432,7 @@ export function buildMcpRunPlan(
         return {
           errorCode: record.errorCode,
           name: record.serverName,
+          ...personalCredentialRejected(record),
           readiness: record.readiness
         };
       }),

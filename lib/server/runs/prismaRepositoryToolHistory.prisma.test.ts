@@ -371,7 +371,7 @@ describe("Agent runs", () => {
   async function agentFixture() {
     const f = await fixture();
     const session = await prisma.workspaceSession.create({ data: { chatId: f.chat.id, sandboxName: `history-${randomUUID()}`,
-      imageRef: "aiqsa-workspace:0.1.30", internetEnabled: true, policyRevision: 1, runtimeSandboxId: "fixture-runtime",
+      imageRef: "aiqsa-workspace:0.1.31", internetEnabled: true, policyRevision: 1, runtimeSandboxId: "fixture-runtime",
       state: "RUNNING", expiresAt: new Date(Date.now() + 600_000) } });
     cleanups.push(async () => {
       await prisma.modelRun.deleteMany({ where: { chatId: f.chat.id } });

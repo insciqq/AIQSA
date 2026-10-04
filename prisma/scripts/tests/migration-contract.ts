@@ -21,6 +21,7 @@ import { MEMORY_HISTORY_LIVE_ORDINALS_MIGRATION, memoryHistoryLiveOrdinalsFixtur
 import { MCP_MODEL_OUTPUT_BUDGET_MIGRATION, mcpModelOutputBudgetFixtures } from "./mcp-model-output-budget";
 import { MCP_LEGACY_TOOL_RECHECK_MIGRATION, mcpLegacyToolRecheckFixtureSql, mcpLegacyToolRecheckProofSql, mcpLegacyToolRecheckRepeatProofSql } from "./mcp-legacy-tool-recheck";
 import { REMOVE_LOCAL_MCP_SOURCES_MIGRATION, removeLocalMcpSourcesFixtureSql, removeLocalMcpSourcesProofSql, removeLocalMcpSourcesRepeatProofSql } from "./remove-local-mcp-sources-adoption";
+import { RETIRE_LOCAL_MCP_ACTIVATION_STAGES_MIGRATION, retireLocalMcpActivationStagesFixtureSql, retireLocalMcpActivationStagesProofSql, retireLocalMcpActivationStagesRepeatProofSql } from "./retire-local-mcp-activation-stages-adoption";
 import { SCHEDULED_TASK_PROMPT_MARKER_MIGRATION, scheduledTaskPromptMarkerFixtureSql, scheduledTaskPromptMarkerProofSql } from "./scheduled-task-prompt-marker-adoption";
 import { UTILITY_RUNTIME_BUDGET_MIGRATION, utilityRuntimeBudgetFixtures } from "./utility-runtime-budgets";
 import { SEMANTIC_DECISIONS_MIGRATION, semanticDecisionsFixtureSql, semanticDecisionsProofSql } from "./semantic-decisions-adoption";
@@ -7651,6 +7652,8 @@ function main(
     workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, REMOVE_LOCAL_MCP_SOURCES_MIGRATION,
     removeLocalMcpSourcesFixtureSql, removeLocalMcpSourcesProofSql, removeLocalMcpSourcesRepeatProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_LOCAL_MCP_ACTIVATION_STAGES_MIGRATION,
+    retireLocalMcpActivationStagesFixtureSql, retireLocalMcpActivationStagesProofSql, retireLocalMcpActivationStagesRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, SCHEDULED_TASK_PROMPT_MARKER_MIGRATION,
     scheduledTaskPromptMarkerFixtureSql, scheduledTaskPromptMarkerProofSql);
   if (mode === "smoke") {

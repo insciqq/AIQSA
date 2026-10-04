@@ -64,3 +64,31 @@ export function resolveOpenRouterNativeProvider(input: {
   }
   return { available: false, reason: found ? "native_incompatible" : "native_unavailable", ...(mismatch ? { mismatch } : {}) };
 }
+
+/** True when the endpoint serves an OpenRouter `provider.only` entry: the exact
+ * tag, or any variant of a bare provider slug (`deepseek` serves `deepseek/fp8`). */
+export function openRouterEndpointServesProvider(endpointTag: string, provider: string): boolean {
+  const tag = endpointTag.toLowerCase();
+  const wanted = provider.toLowerCase();
+  return tag === wanted || !wanted.includes("/") && tag.split("/")[0] === wanted;
+}
+
+/** Each parameter set is one request kind sent with `require_parameters`, so
+ * at least one selected endpoint must list every parameter of that set.
+ * Returns the parameters the closest selected endpoint lacks for unmet sets. */
+export function openRouterSelectedProvidersMissingParameters(input: {
+  providers: readonly string[];
+  endpoints: readonly NativeProviderEndpoint[];
+  parameterSets: readonly (readonly string[])[];
+}): string[] {
+  const served = input.endpoints.filter(({ tag }) =>
+    input.providers.some((provider) => openRouterEndpointServesProvider(tag, provider)));
+  const missing = new Set<string>();
+  for (const parameters of input.parameterSets) {
+    const gaps = served.map((endpoint) => parameters.filter((parameter) => !endpoint.supportedParameters.includes(parameter)));
+    if (gaps.some((gap) => gap.length === 0)) continue;
+    const closest = gaps.reduce<readonly string[]>((best, gap) => gap.length < best.length ? gap : best, parameters);
+    for (const parameter of closest) missing.add(parameter);
+  }
+  return [...missing];
+}

@@ -3201,6 +3201,120 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
+  it.each(["error", "cancelled"] as const)(
+    "keeps earlier turns past a %s reply without showing or binding it",
+    async (status) => {
+      const userId = await createOwner(`passed-over-${status}`);
+      try {
+        const chat = await prisma.chat.create({ data: { title: "Failed reply context", userId } });
+        const first = await createTurn({
+          assistantText: "Both laptops suit travel.", chatId: chat.id,
+          createdAt: new Date("2026-08-25T09:00:00.000Z"), parentMessageId: null,
+          userId, userText: "Which laptop suits travel?"
+        });
+        await settleChat(userId, chat.id, first);
+        const askedAt = new Date("2026-08-25T09:30:00.000Z");
+        const question = await prisma.message.create({
+          data: {
+            chatId: chat.id, content: textMessageContent("Compare their batteries."),
+            createdAt: askedAt, parentMessageId: first.assistantMessage.id,
+            role: "user", status: "complete", updatedAt: askedAt
+          }
+        });
+        const failedAt = new Date(askedAt.getTime() + 1_000);
+        const failedText = "Partial unsettled battery comparison.";
+        const failed = await prisma.message.create({
+          data: {
+            chatId: chat.id, content: textMessageContent(failedText), createdAt: failedAt,
+            modelId: "memory-vnext-test-model", parentMessageId: question.id,
+            provider: "memory-vnext-test-provider", role: "assistant", status, updatedAt: failedAt
+          }
+        });
+        await prisma.modelRun.create({
+          data: {
+            assistantMessageId: failed.id, chatId: chat.id, modelId: "memory-vnext-test-model",
+            normalizedRequest: { prompt: { baseline: {
+              source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client"
+            } } },
+            provider: "memory-vnext-test-provider", status, userId, userMessageId: question.id
+          }
+        });
+        const quote = "I bought a MacBook Air.";
+        const target = await createTurn({
+          assistantText: "Noted.", chatId: chat.id,
+          createdAt: new Date("2026-08-25T10:00:00.000Z"), parentMessageId: failed.id,
+          userId, userText: quote
+        });
+        await settleChat(userId, chat.id, target);
+
+        const claim = await claimFactJob(userId, target.userMessage.id);
+        const input = await prepare(claim);
+        expect(input.messages.map(({ evidenceEligible, id, role }) => ({ evidenceEligible, id, role })))
+          .toEqual([
+            { evidenceEligible: false, id: first.userMessage.id, role: "user" },
+            { evidenceEligible: false, id: first.assistantMessage.id, role: "assistant" },
+            { evidenceEligible: false, id: question.id, role: "user" },
+            { evidenceEligible: true, id: target.userMessage.id, role: "user" }
+          ]);
+        expect(JSON.stringify(input)).not.toContain(failedText);
+        expect(JSON.stringify(input)).not.toContain(failed.id);
+
+        const plan = extractionPlan(input, quote);
+        const bindingId = await createSucceededBinding(userId, claim, input.inputHash, plan.outputHash);
+        await expect(applyPlan(userId, claim, plan, bindingId)).resolves.toBe("APPLIED");
+        await expect(prisma.memoryFactVersionSourceDependency.count({
+          where: { sourceMessageId: failed.id, userId }
+        })).resolves.toBe(0);
+      } finally {
+        await cleanupOwner(userId);
+      }
+    }
+  );
+
+  it("stops the context walk at a reply that never settled", async () => {
+    const userId = await createOwner("unsettled-reply");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Unsettled reply context", userId } });
+      const first = await createTurn({
+        assistantText: "Both laptops suit travel.", chatId: chat.id,
+        createdAt: new Date("2026-08-25T09:00:00.000Z"), parentMessageId: null,
+        userId, userText: "Which laptop suits travel?"
+      });
+      await settleChat(userId, chat.id, first);
+      const askedAt = new Date("2026-08-25T09:30:00.000Z");
+      const question = await prisma.message.create({
+        data: {
+          chatId: chat.id, content: textMessageContent("Compare their batteries."),
+          createdAt: askedAt, parentMessageId: first.assistantMessage.id,
+          role: "user", status: "complete", updatedAt: askedAt
+        }
+      });
+      const unsettledAt = new Date(askedAt.getTime() + 1_000);
+      const unsettledText = "Streaming battery comparison.";
+      const unsettled = await prisma.message.create({
+        data: {
+          chatId: chat.id, content: textMessageContent(unsettledText), createdAt: unsettledAt,
+          modelId: "memory-vnext-test-model", parentMessageId: question.id,
+          provider: "memory-vnext-test-provider", role: "assistant", status: "streaming", updatedAt: unsettledAt
+        }
+      });
+      const target = await createTurn({
+        assistantText: "Noted.", chatId: chat.id,
+        createdAt: new Date("2026-08-25T10:00:00.000Z"), parentMessageId: unsettled.id,
+        userId, userText: "I bought a MacBook Air."
+      });
+      await settleChat(userId, chat.id, target);
+
+      const input = await prepare(await claimFactJob(userId, target.userMessage.id));
+      expect(input.messages.map(({ evidenceEligible, id }) => ({ evidenceEligible, id })))
+        .toEqual([{ evidenceEligible: true, id: target.userMessage.id }]);
+      expect(JSON.stringify(input)).not.toContain(unsettledText);
+      expect(JSON.stringify(input)).not.toContain(question.id);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("binds a dated relationship fact to the third-party entity and raw time", async () => {
     const userId = await createOwner("relationship-temporal");
     try {

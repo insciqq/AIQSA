@@ -3,7 +3,9 @@ import {
   decodeCancelModelRunResponse,
   decodeRunOutcomeResponse,
   isMcpAutoDiscoveryFailureCode,
+  MCP_AUTO_DISCOVERY_CREDENTIAL_REJECTED_CODE,
   MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE,
+  MCP_MATERIALIZATION_PERSONAL_CREDENTIAL_REJECTED,
   MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE,
   mcpAutoDiscoveryFailure,
   mcpAutoDiscoveryFailureForMessage
@@ -21,6 +23,28 @@ describe("safe MCP Auto discovery failures", () => {
     expect(JSON.stringify(mcpAutoDiscoveryFailure("PRIVATE_PROVIDER_CODE"))).not.toContain("PRIVATE");
     expect(mcpAutoDiscoveryFailureForMessage(`${materialization.message} PRIVATE_BODY`)).toBeNull();
     expect(mcpAutoDiscoveryFailureForMessage(null)).toBeNull();
+  });
+
+  it("points a rejected personal credential to its personal value without upstream content", () => {
+    const named = mcpAutoDiscoveryFailure(MCP_MATERIALIZATION_PERSONAL_CREDENTIAL_REJECTED, { serverName: "Kaiten" });
+    expect(named).toEqual({
+      code: MCP_AUTO_DISCOVERY_CREDENTIAL_REJECTED_CODE,
+      message: "The MCP server “Kaiten” rejected your credential. Update your personal value or reconnect it in Settings → MCP servers, then try again."
+    });
+    expect(isMcpAutoDiscoveryFailureCode(named.code)).toBe(true);
+    expect(mcpAutoDiscoveryFailureForMessage(named.message)).toEqual(named);
+
+    const unnamed = mcpAutoDiscoveryFailure(MCP_MATERIALIZATION_PERSONAL_CREDENTIAL_REJECTED);
+    expect(unnamed.message).toMatch(/^An MCP server rejected your credential\. Update your personal value/u);
+    expect(mcpAutoDiscoveryFailureForMessage(unnamed.message)).toEqual(unnamed);
+
+    // Control characters and quotes cannot reshape the message; long names are bounded.
+    const hostile = mcpAutoDiscoveryFailure(MCP_MATERIALIZATION_PERSONAL_CREDENTIAL_REJECTED,
+      { serverName: `  Evil”\nName  ${"x".repeat(200)}` });
+    expect(hostile.message).not.toContain("\n");
+    expect(hostile.message).toMatch(/^The MCP server “Evil Name x+…” rejected/u);
+    expect(mcpAutoDiscoveryFailureForMessage(hostile.message)).toEqual(hostile);
+    expect(mcpAutoDiscoveryFailureForMessage(`${named.message} PRIVATE_BODY`)).toBeNull();
   });
 
   it("renders stored codes and copy of the retired System Model selector as the generic failure", () => {

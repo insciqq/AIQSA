@@ -2,6 +2,7 @@ export const REMOVE_LOCAL_MCP_SOURCES_MIGRATION = "20261003090000_remove_local_m
 
 // The migration only relaxes the column. Leftover local rows are removed by the
 // acknowledged installation bootstrap gate, which this proof never runs.
+// Jobs stay out of the stages a later migration retires, so the snapshot holds.
 const storedStateSql = `SELECT jsonb_build_object(
   'servers', (SELECT jsonb_agg(to_jsonb(server) ORDER BY id) FROM "McpServer" AS server),
   'revisions', (SELECT jsonb_agg(to_jsonb(revision) ORDER BY id) FROM "McpRevision" AS revision),
@@ -27,7 +28,7 @@ WHERE id IN ('mcp-local-removal-remote', 'mcp-local-removal-local');
 INSERT INTO "McpActivationJob" (id, "serverId", "draftHash", "sharedConfigVersion", stage, "workloadToken", "updatedAt")
 VALUES
   ('mcp-local-removal-job-remote', 'mcp-local-removal-remote', 'synthetic-draft-hash', 0, 'connecting', 'synthetic-token-remote', now()),
-  ('mcp-local-removal-job-local', 'mcp-local-removal-local', 'synthetic-draft-hash', 0, 'preparing_runtime', 'synthetic-token-local', now());
+  ('mcp-local-removal-job-local', 'mcp-local-removal-local', 'synthetic-draft-hash', 0, 'connecting', 'synthetic-token-local', now());
 CREATE TABLE "McpLocalRemovalAdoptionFixture" (phase text PRIMARY KEY, snapshot jsonb NOT NULL);
 INSERT INTO "McpLocalRemovalAdoptionFixture" VALUES ('before', (${storedStateSql}));
 `;

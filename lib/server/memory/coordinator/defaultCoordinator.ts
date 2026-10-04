@@ -28,6 +28,7 @@ import { createPrismaMemoryReclassificationHandler } from "../reclassification/h
 import { reconcileMemoryFactReclassificationJobs } from "../reclassification/reconcile";
 import { createPrismaMemoryRelationHandler } from "../learning/relations/handler";
 import { reconcileMemoryFactRelationJobs } from "../learning/relations/reconcile";
+import { reconcileMemoryExplicitEquivalenceSweep } from "../learning/relations/explicitSweep";
 import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
 import { ensureDefaultMemoryDeletionComposition } from "../deletionComposition";
 import { defaultMemoryWorkerHeartbeat } from "./workerHeartbeat";
@@ -88,7 +89,12 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
     historyAutoHeal: () => autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: new Date() }),
     extractionHeal: () => healFailedMemoryFactExtractions(prisma, { now: new Date() }),
     reclassification: () => reconcileMemoryFactReclassificationJobs(prisma),
-    relations: () => reconcileMemoryFactRelationJobs(prisma),
+    relations: async () => {
+      await reconcileMemoryFactRelationJobs(prisma);
+      // Bounded once per owner: equivalent automatic/explicit pairs written
+      // before their save and learning triggers existed.
+      await reconcileMemoryExplicitEquivalenceSweep(prisma);
+    },
     maintenance: () => reconcileMemoryMaintenanceWork(prisma, new Date(), async (userId) => {
       await probeMemoryStructuredOutputAuthority({ authority: defaultMemoryExecutionAuthority, client: prisma,
         role: "MEMORY_SYNTHESIZE", userId, versions: MEMORY_MAINTENANCE_VERSIONS });

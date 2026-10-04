@@ -193,6 +193,19 @@ async function expectProjectChatIslandGaps(page: Page): Promise<void> {
   expect(left, "menu → model gap").toBeGreaterThanOrEqual(7.5);
   expect(right, "header row → Chat actions gap").toBeGreaterThanOrEqual(7.5);
   expect(Math.abs(left - right), `Project chat header row gaps ${left} / ${right}`).toBeLessThanOrEqual(1);
+  // The chip collapses to the Project mark, keeps its name as the accessible
+  // name, and leaves the model name its room.
+  const chip = header.getByTestId("project-context-trigger");
+  await expect(chip).toHaveAccessibleName(/^Touch geometry Project /u);
+  const chipBox = await expectTarget(chip, "collapsed Project chip");
+  expect(chipBox.width, "collapsed Project chip width").toBeLessThanOrEqual(48);
+  expect(await header.locator(".v2-live-model-name").evaluate((name) => name.scrollWidth <= name.clientWidth),
+    "model name is not ellipsized").toBe(true);
+  await chip.click();
+  const details = page.getByRole("dialog", { name: /^Touch geometry Project .* project context$/u });
+  await expect(details).toBeInViewport({ ratio: 1 });
+  await page.keyboard.press("Escape");
+  await expect(details).toHaveCount(0);
 }
 
 /**

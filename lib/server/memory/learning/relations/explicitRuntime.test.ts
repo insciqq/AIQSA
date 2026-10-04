@@ -36,12 +36,13 @@ function snapshot(): MemoryExplicitRelationSnapshot {
   const source = {
     createdAt: now.toISOString(), evidenceHash: "a".repeat(64), expectedAt: null,
     expiresAt: null, factId: "source-fact", modality: "STATE", observedAt: now.toISOString(),
-    occurredAt: null, pinned: false, scopeId: "scope", statement: "私は陶芸を教えています。",
+    occurredAt: null, pinned: false, scopeId: "scope", sourceMode: "EXPLICIT" as const,
+    statement: "私は陶芸を教えています。",
     systemFrom: now.toISOString(), validFrom: null, validTo: null, versionId: "source-version"
   };
   return {
     candidates: [{ ...source, factId: "other-fact", statement: "Doy clases de cerámica.", versionId: "other-version" }],
-    memoryGeneration: 1, source, userId: "owner"
+    memoryGeneration: 1, pipelineVersion: "memory-explicit-relation-v1", source, userId: "owner"
   };
 }
 
@@ -297,6 +298,7 @@ describe("explicit relation job recovery and dispatch", () => {
     const { handler, probeAuthority, repository } = handlerFixture();
     probeAuthority.mockRejectedValue(new MemoryExecutionError("memory_execution_capability_unavailable"));
     await expect(handler.preflight(job)).resolves.toMatchObject({ status: "WAITING_FOR_CONFIGURATION" });
+    expect(probeAuthority).toHaveBeenCalledWith(job);
     repository.preflight.mockClear();
     await expect(handler.preflight({ ...job, sourceMessageId: "fabricated-message" }))
       .resolves.toMatchObject({ status: "CANCELLED" });

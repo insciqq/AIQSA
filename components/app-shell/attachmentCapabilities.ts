@@ -6,6 +6,11 @@ import type {
 } from "@/components/app-shell/attachmentContracts";
 import type { ComposerAttachmentPolicy } from "@/components/app-shell/attachmentSelection";
 import {
+  CHAT_PDF_ROUTE_UNAVAILABLE_LABEL,
+  CHAT_PDF_ROUTE_UNAVAILABLE_MESSAGE,
+  type ChatPdfRouteAvailability
+} from "@/lib/contracts/chatPdfPreparation";
+import {
   decodePdfProcessing,
   documentProcessingFromMetadata,
   type DocumentProcessingWire
@@ -36,15 +41,32 @@ export function documentProcessingForAttachment(
     : null;
 }
 
+/**
+ * `pdfRoute` is the server's admission-route preview for the selected answer
+ * model. A definite refusal blocks every PDF, also with Workspace: admission
+ * resolves a PDF reading route for Workspace runs as well. Unknown (null)
+ * keeps the local checks only; server admission stays the authority.
+ */
 export function attachmentWarningsForModel(
   attachments: readonly ComposerAttachment[],
   model: CatalogModel | undefined,
-  workspaceEnabled = false
+  workspaceEnabled = false,
+  pdfRoute: ChatPdfRouteAvailability | null = null
 ): ComposerAttachmentWarning[] {
-  if (workspaceEnabled) return [];
   const warnings: ComposerAttachmentWarning[] = [];
 
   for (const attachment of attachments) {
+    if (attachment.kind === "pdf" && pdfRoute?.available === false) {
+      warnings.push({
+        attachmentId: attachment.id,
+        blocking: true,
+        code: pdfRoute.reasonCode,
+        label: CHAT_PDF_ROUTE_UNAVAILABLE_LABEL,
+        message: CHAT_PDF_ROUTE_UNAVAILABLE_MESSAGE
+      });
+      continue;
+    }
+    if (workspaceEnabled) continue;
     const document = documentProcessingForAttachment(attachment);
     if (document?.status === "partial") {
       warnings.push({
@@ -62,16 +84,16 @@ export function attachmentWarningsForModel(
     if (!processing || processing.status === "complete") {
       continue;
     }
+    const original = pdfOriginalReadingCopy(attachment, model, pdfRoute);
 
     if (processing.status === "partial") {
       if (processing.extractedCharacterCount === 0) {
-        const nativePdf = model?.capabilities.documentInputMode === "native_pdf";
         warnings.push({
           attachmentId: attachment.id,
-          blocking: !nativePdf,
+          blocking: !original,
           label: "Text limited",
-          message: nativePdf
-            ? "PDF text exceeded the configured limit before any complete text could be retained. This model can use the original PDF."
+          message: original
+            ? `PDF text exceeded the configured limit before any complete text could be retained. ${original}`
             : "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file."
         });
         continue;
@@ -81,18 +103,18 @@ export function attachmentWarningsForModel(
         attachmentId: attachment.id,
         blocking: false,
         label: "Text limited",
-        message: `PDF text was limited after page ${processing.pagesProcessed} of ${processing.pageCount}. The available text will be used.`
+        message: `PDF text was limited after page ${processing.pagesProcessed} of ${processing.pageCount}. ${
+          pdfRoute?.available && original ? original : "The available text will be used."}`
       });
       continue;
     }
 
-    const nativePdf = model?.capabilities.documentInputMode === "native_pdf";
     warnings.push({
       attachmentId: attachment.id,
-      blocking: !nativePdf,
+      blocking: !original,
       label: "No text",
-      message: nativePdf
-        ? "No extractable text was found. This model can use the original PDF."
+      message: original
+        ? `No extractable text was found. ${original}`
         : "No extractable text was found. Choose a model with native PDF support or remove this file."
     });
   }
@@ -103,16 +125,50 @@ export function attachmentWarningsForModel(
 export function firstBlockingAttachmentWarning(
   attachments: readonly ComposerAttachment[],
   model: CatalogModel | undefined,
-  workspaceEnabled = false
+  workspaceEnabled = false,
+  pdfRoute: ChatPdfRouteAvailability | null = null
 ): ComposerAttachmentWarning | null {
-  return attachmentWarningsForModel(attachments, model, workspaceEnabled)
+  return attachmentWarningsForModel(attachments, model, workspaceEnabled, pdfRoute)
     .find((warning) => warning.blocking) ?? null;
+}
+
+/** Routes whose admission reads the settled original instead of local text. */
+const originalPdfRoutes = new Set(["direct_pdf", "system_pdf", "system_vision", "selected_model_vision"]);
+
+/**
+ * Whether admission will read this PDF's settled original, so local text
+ * extraction cannot block it (server `validateAttachmentReadiness` and
+ * `validatePdfTextAvailability` skip extraction once a route is admitted).
+ * A known route decides; while the preview is unknown only a native-PDF
+ * model counts, as before the preview existed.
+ */
+export function pdfOriginalReadable(
+  attachment: ComposerAttachment,
+  model: CatalogModel | undefined,
+  pdfRoute: ChatPdfRouteAvailability | null = null
+): boolean {
+  if (attachment.kind !== "pdf") return false;
+  if (pdfRoute) return pdfRoute.available && originalPdfRoutes.has(pdfRoute.route);
+  return model?.capabilities.documentInputMode === "native_pdf";
+}
+
+/** Who reads the original PDF, or null when local text is required. */
+export function pdfOriginalReadingCopy(
+  attachment: ComposerAttachment,
+  model: CatalogModel | undefined,
+  pdfRoute: ChatPdfRouteAvailability | null = null
+): string | null {
+  if (!pdfOriginalReadable(attachment, model, pdfRoute)) return null;
+  return pdfRoute?.available && pdfRoute.route !== "direct_pdf"
+    ? "The assigned PDF reader will read the original PDF."
+    : "This model can use the original PDF.";
 }
 
 export function attachmentBlocksSend(
   attachment: ComposerAttachment,
   model: CatalogModel | undefined,
-  workspaceEnabled = false
+  workspaceEnabled = false,
+  pdfRoute: ChatPdfRouteAvailability | null = null
 ): boolean {
   const status = attachment.status ?? "ready";
   if (workspaceEnabled) {
@@ -122,10 +178,7 @@ export function attachmentBlocksSend(
       attachment.processingErrorCode ?? ""
     );
   }
-  const directPdf = attachment.kind === "pdf" &&
-    model?.capabilities.documentInputMode === "native_pdf";
-
-  if (!directPdf) return status !== "ready";
+  if (!pdfOriginalReadable(attachment, model, pdfRoute)) return status !== "ready";
   if (
     attachment.processingErrorCode &&
     directPdfStorageFailureCodes.has(attachment.processingErrorCode)
@@ -143,8 +196,10 @@ export function attachmentPolicyForModel(
   return {
     documents: Boolean(model),
     images: Boolean(model?.capabilities.imageInput || model?.capabilities.imageTool?.editing),
-    // Every answer model can consume AIQSA's locally extracted PDF text.
-    // documentInputMode only selects local extraction versus verified direct input.
+    // PDFs stay attachable so a missing reading route is explained on the
+    // chip instead of hiding the file type. Whether this model can read a PDF
+    // (native input, the PDF reader or page images) comes only from the
+    // server's route preview; see attachmentWarningsForModel.
     pdfs: Boolean(model)
   };
 }
