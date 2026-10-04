@@ -4,6 +4,7 @@ import {
   decodeChatImportItem,
   normalizeChatImportSourceModel
 } from "@/lib/contracts/chatImport";
+import { importedChatTitle } from "@/lib/contracts/chats";
 import {
   IMPORT_SKIPPED_CHAT_KINDS,
   type ChatImportConverter,
@@ -64,20 +65,17 @@ export function utf8ByteLength(value: string): number {
   return bytes;
 }
 
-function displayTitle(title: string): string {
-  return title.trim() || "Untitled chat";
-}
-
 type PreparedItem =
   | Readonly<{ ok: true; json: string; bytes: number; sent: ImportSentChat }>
   | Readonly<{ ok: false; failure: ImportLocalFailure }>;
 
 /** The request item exactly as the server will validate it, refused here with the same code. */
 function prepareItem(chat: ConvertedChat, now: Date): PreparedItem {
-  const title = displayTitle(chat.document.chat.title);
+  // The title as the chat will be stored: converters may pass an empty one.
+  const title = importedChatTitle(chat.document.chat.title);
   const sourceModel = normalizeChatImportSourceModel(chat.sourceModel);
   const item = {
-    document: chat.document,
+    document: { ...chat.document, chat: { ...chat.document.chat, title } },
     source: chat.source,
     ...(chat.source !== "AIQSA" && chat.sourceKey !== undefined ? { sourceKey: chat.sourceKey } : {}),
     ...(sourceModel ? { sourceModel } : {})

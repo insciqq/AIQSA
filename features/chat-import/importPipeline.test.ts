@@ -117,6 +117,14 @@ describe("import pipeline", () => {
     expect(items[0]).not.toHaveProperty("sourceKey");
   });
 
+  it("sends and reports an untitled chat under the title it will be stored with", async () => {
+    const [batch] = await collect(importBatches([fakeFile("claude.zip")], {
+      converters: [converter("claude", [chat(""), chat("   "), chat("  Padded  ")])], now
+    }));
+    expect(bodyTitles(batch!)).toEqual(["New Chat", "New Chat", "Padded"]);
+    expect(batch!.sent.map((sent) => sent.title)).toEqual(["New Chat", "New Chat", "Padded"]);
+  });
+
   it("gives each file to the first converter that claims it and reports the rest", async () => {
     const first = converter("aiqsa", [chat("from first")]);
     const second = converter("claude", [chat("from second")]);

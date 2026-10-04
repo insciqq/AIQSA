@@ -1,4 +1,5 @@
 import type { ChatImportResponse } from "@/lib/contracts/chatImport";
+import { DEFAULT_CHAT_TITLE } from "@/lib/contracts/chats";
 import { IMPORT_SKIPPED_CHAT_KINDS, type ImportSkipKind } from "./converters/converterTypes";
 import type { ImportBatch } from "./importPipeline";
 import { importFailureMessage, type ImportFailureReason } from "./importReport";
@@ -133,7 +134,7 @@ export function runChatImport(
       } else if (result.status === "already_imported") {
         alreadyImported += 1;
       } else {
-        failed.push({ reason: importFailureMessage(result.code), title: batch.sent[index]?.title ?? "Untitled chat" });
+        failed.push({ reason: importFailureMessage(result.code), title: batch.sent[index]?.title ?? DEFAULT_CHAT_TITLE });
       }
     });
     update({ alreadyImported, importedChats, importedMessages, ...fail(failed, response.results.length) });
