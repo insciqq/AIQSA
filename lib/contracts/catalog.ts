@@ -124,6 +124,8 @@ export type CatalogDefaults = Partial<AnswerSoundPreferences> & {
   assistantId?: string | null;
   /** A saved default Assistant is no longer available and is not applied. */
   assistantUnavailable?: boolean;
+  /** Browser push notifications for this account; absent on older wires means on. */
+  browserNotificationsEnabled?: boolean;
   controlValues: Record<string, unknown>;
   hasPersonalModelDefault: boolean;
   /** Personal chat defaults applied when a new chat starts; absent on older wires. */
@@ -490,6 +492,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     !chatDefaults ||
     !defaultAssistant ||
     (defaults.workspaceEnabled !== undefined && typeof defaults.workspaceEnabled !== "boolean") ||
+    (defaults.browserNotificationsEnabled !== undefined && typeof defaults.browserNotificationsEnabled !== "boolean") ||
     models.some((model) => model === null) ||
     providers.some((provider) => provider === null) ||
     searchStrategies.some((strategy) => strategy === null) ||
@@ -523,6 +526,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       ...answerSound,
       assistantId: defaultAssistant.assistantId,
       assistantUnavailable: defaultAssistant.assistantUnavailable,
+      browserNotificationsEnabled: defaults.browserNotificationsEnabled ?? true,
       controlValues: defaults.controlValues,
       hasPersonalModelDefault: defaults.hasPersonalModelDefault,
       knowledgePlan: chatDefaults.knowledgePlan,

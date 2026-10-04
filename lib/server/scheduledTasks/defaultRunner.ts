@@ -3,6 +3,7 @@ import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { emailDispatcher } from "../email/defaultEmail";
 import { runInBackground } from "../observability";
 import { prisma } from "../prisma";
+import { getDefaultBrowserPush } from "../push/defaultBrowserPush";
 import { createDefaultSendMessageDeps } from "../runs/defaultSendMessageDeps";
 import { RunRecoveryScheduler } from "../runs/recoveryScheduler";
 import { createPrismaScheduledTaskOwnerLoader, createScheduledTaskSend } from "./admission";
@@ -30,6 +31,7 @@ export function getDefaultScheduledTaskRunner(): RunRecoveryScheduler {
         sendDeps: createDefaultSendMessageDeps()
       }),
       sendEmail: (message) => emailDispatcher.send(message),
+      sendPush: (occurrenceId) => getDefaultBrowserPush().sender.notifyOccurrence(occurrenceId),
       store: createPrismaScheduledTaskRunnerStore(prisma)
     });
     globalForRunner.__aiqsaScheduledTaskRunner = new RunRecoveryScheduler({
