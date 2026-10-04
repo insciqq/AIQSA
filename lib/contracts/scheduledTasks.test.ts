@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { CHAT_TITLE_MAX_LENGTH } from "./chats";
 import {
+  SCHEDULED_TASK_CARDS_LIMIT,
   SCHEDULED_TASK_CHECK_OUTCOMES,
   SCHEDULED_TASK_ERROR_CODES,
+  decodeScheduledTaskCard,
+  foldScheduledTaskCards,
+  scheduledTaskCard,
   SCHEDULED_TASK_PROMPT_MAX_LENGTH,
   SCHEDULED_TASK_SEEN_RUNS_LIMIT,
   SCHEDULED_TASK_TITLE_MAX_LENGTH,
@@ -146,5 +150,28 @@ describe("scheduled task wire contract", () => {
     expect(scheduledTaskReasonMessage("no_update")).toMatch(/^No update/u);
     expect(scheduledTaskReasonMessage("update")).toMatch(/^Update/u);
     expect(scheduledTaskReasonMessage("goal_reached")).toBe("Goal reached — task completed.");
+  });
+
+  it("projects a chat answer's card from the task alone and folds replays to one card per task", () => {
+    const card = scheduledTaskCard(task, false);
+    expect(card).toEqual({ taskId: "task-1", title: "Morning brief", kind: "standard", schedule: task.schedule,
+      timeZone: "Europe/Moscow", timeZoneFallback: false, toolsEnabled: true, workspaceEnabled: false, status: "active",
+      nextRunAt: "2026-10-05T06:00:00.000Z" });
+    // Never the task's prompt, model or history.
+    expect(JSON.stringify(card)).not.toMatch(/Summarize|model-1|connection-1|chat-1/u);
+    expect(decodeScheduledTaskCard(card)).toEqual(card);
+    expect(decodeScheduledTaskCard({ ...card, deleted: true })).toEqual({ ...card, deleted: true });
+    for (const candidate of [
+      { ...card, prompt: task.prompt }, { ...card, deleted: false }, { ...card, status: "paused" },
+      { ...card, title: " Morning brief" }, { ...card, timeZone: "+03:00" }, { ...card, kind: "other" },
+      { ...card, toolsEnabled: "yes" }, { ...card, schedule: { kind: "daily", time: "9:00" } }, { ...card, taskId: "" }
+    ]) {
+      expect(decodeScheduledTaskCard(candidate)).toBeNull();
+    }
+    const renamed = { ...card, title: "Renamed" };
+    const others = Array.from({ length: SCHEDULED_TASK_CARDS_LIMIT + 1 }, (_value, index) => ({ ...card, taskId: `task-${index + 2}` }));
+    const folded = foldScheduledTaskCards([card, { malformed: true }, renamed, ...others]);
+    expect(folded[0]).toEqual(renamed);
+    expect(folded).toHaveLength(SCHEDULED_TASK_CARDS_LIMIT);
   });
 });

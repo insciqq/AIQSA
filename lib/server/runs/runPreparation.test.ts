@@ -5792,3 +5792,83 @@ describe("monitoring check admission", () => {
     expect(offered(plain)).toBe(false);
   });
 });
+
+describe("scheduled task creation admission", () => {
+  const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
+  function tooling(input: Readonly<{ creator?: boolean; toolCalling?: boolean }> = {}): RunPreparationDeps {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: input.toolCalling ?? true } });
+    return { ...harness.deps, repository: { ...harness.deps.repository,
+      ...(input.creator === false ? {} : { createScheduledTaskForCall: vi.fn() }) } };
+  }
+  const creationTool = (prepared: PreparedRun) =>
+    prepared.providerRequest.tools?.find((tool) => tool.name === "create_scheduled_task");
+
+  it("offers the owner's personal message one creation with the settings frozen from its own admission", async () => {
+    const prepared = preparedFrom(await prepareRun(tooling(), sendInput(toolBody)));
+    expect(prepared.normalizedRequest.scheduledTaskTool).toEqual({
+      modelId: "openai-tool-model", provider: "openai", searchEnabled: false, toolsEnabled: true, workspaceEnabled: false
+    });
+    expect(creationTool(prepared)).toMatchObject({ capability: "session", strict: true });
+    // The tool states the run's own frozen zone for the schedule.
+    expect(creationTool(prepared)?.description).toContain("time zone Europe/Berlin");
+    // MCP Off is the run's tools state: the task then runs without tools.
+    const toolsOff = preparedFrom(await prepareRun(tooling(), sendInput({ ...toolBody, mcp: { mode: "off" } })));
+    expect(toolsOff.normalizedRequest.scheduledTaskTool).toMatchObject({ toolsEnabled: false });
+  });
+
+  it("freezes the admitted catalog model and its Search, not the execution identity", async () => {
+    const plan = providerNeutralOpenAISearchPlan("anthropic_messages");
+    const prepared = preparedFrom(await prepareRun({ ...tooling(), allowFakeProvider: false,
+      providerAdmission: { load: vi.fn(async () => plan) } }, sendInput(successBody({
+      modelId: plan.selection.providerModelId, params: {}, provider: plan.selection.providerConnectionId,
+      searchPlan: plan.requestedSearchPlan
+    }))));
+    expect(prepared.normalizedRequest).toMatchObject({
+      modelId: "claude-opus-5", provider: "anthropic",
+      scheduledTaskTool: { modelId: "deployment-anthropic", provider: "connection-anthropic", searchEnabled: true }
+    });
+  });
+
+  it("never offers it to scheduled, temporary, Project, Assistant or Knowledge runs or without usable tools", async () => {
+    const scheduled = sendInput(toolBody);
+    if (scheduled.source.kind !== "send") throw new Error("invalid send fixture");
+    const occurrence: RunPreparationInput = { ...scheduled, source: { ...scheduled.source, scheduledOccurrence: {
+      occurrenceId: "occurrence-1", previousResult: null, relevantMcpServerIds: null, taskGeneration: 1, taskId: "task-1",
+      taskRevision: 1
+    } } };
+    const project = projectAdmission({ modelIds: ["openai-tool-model"] });
+    const assistants: NonNullable<RunPreparationDeps["assistants"]> = {
+      async resolveForRun() {
+        return { ok: true as const, assistant: {
+          assistantId: "assistant-1", definitionVersion: 1, knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
+          identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+            paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
+          mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
+          rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
+            providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
+          searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
+        } };
+      }
+    };
+    const deps = tooling();
+    const cases: Array<readonly [string, RunPreparationDeps, RunPreparationInput]> = [
+      ["scheduled", deps, occurrence],
+      ["temporary", deps, sendInput(toolBody, { memoryMode: "TEMPORARY", messageCount: 2 })],
+      ["project", deps, sendInput(successBody({ modelId: "openai-tool-model", provider: "openai", tools: "auto" }), { project })],
+      ["assistant", { ...deps, assistants, repository: { ...deps.repository, loadAssistantRowContext: assistantRowContextLoader({
+        defaultModelId: "openai-tool-model", models: { "openai-tool-model": "openai" }
+      }) } }, sendInput({ assistantId: "assistant-1", content: textMessageContent("Remind me daily"), timeZone: "Europe/Berlin" })],
+      ["knowledge", { ...deps, knowledgeAdmission: { async load(input) { return admittedKnowledge(input, "9"); } } },
+        sendInput({ ...toolBody, knowledgePlan: knowledgeSelection(["knowledge-base-1"]) })],
+      ["tools none", deps, sendInput({ ...toolBody, tools: "none" })],
+      ["no tool calling", tooling({ toolCalling: false }), sendInput(toolBody)],
+      ["no creator", tooling({ creator: false }), sendInput(toolBody)]
+    ];
+    for (const [label, caseDeps, input] of cases) {
+      const result = await prepareRun(caseDeps, input);
+      if (!result.ok) throw new Error(`${label}: ${result.code}`);
+      expect(result.prepared.normalizedRequest.scheduledTaskTool, label).toBeUndefined();
+      expect(creationTool(result.prepared), label).toBeUndefined();
+    }
+  });
+});
