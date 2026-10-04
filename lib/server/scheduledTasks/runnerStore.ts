@@ -19,7 +19,7 @@ import {
   type ScheduledTaskSettledState,
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
-import { occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
+import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
 import {
   pruneScheduledTaskOccurrences,
   scheduledTaskChatModeFromColumn,
@@ -36,8 +36,9 @@ export type ScheduledTaskSettlement = Readonly<{
   sourceAlert: boolean;
   /**
    * Source health of the settled run: it completed without a relevant source
-   * its admission recorded as missing. Monitoring treats such a result as
-   * "could not check" (see `occurrenceSourcesIncomplete`).
+   * its admission recorded as missing. A monitoring check whose previous shown
+   * result relied on that source settled as "could not check" (see
+   * `occurrenceCheckSourcesMissing`).
    */
   sourcesIncomplete: boolean;
   state: ScheduledTaskSettledState;
@@ -154,13 +155,14 @@ async function lockForSettlement(tx: Prisma.TransactionClient, occurrenceId: str
 }
 
 /**
- * The monitoring settlement of a completed linked run (see `completedRunCheck`).
- * Source health of scheduled runs joins here once runs record it; until then
- * every check counts as healthy.
+ * The monitoring settlement of a completed linked run (see `completedRunCheck`),
+ * health first: a check whose admission missed a source its previous shown
+ * result relied on settles as `could_not_check`, from the same frozen source
+ * health that extends the task's incomplete streak in `applySettlement`.
  */
 function monitoringSettlementOf({ occurrence, task }: Locked): MonitoringCheckSettlement | null {
   return completedRunCheck({
-    healthIncomplete: false,
+    healthIncomplete: occurrenceCheckSourcesMissing(occurrence.unavailableSources),
     occurrence,
     task: { ...task, kind: scheduledTaskKindFromColumn(task.kind) }
   });

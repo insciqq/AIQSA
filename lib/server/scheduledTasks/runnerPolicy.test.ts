@@ -6,10 +6,12 @@ import {
   SCHEDULED_TASK_RUN_DEADLINE_CODE,
   SCHEDULED_TASK_RUN_DEADLINE_MS,
   classifySendRefusal,
+  completedRunCheck,
   expiredPendingOutcome,
   linkedRunOutcome,
   monitoringCheckSettlement,
   planClaimOverlap,
+  planOccurrenceSettlement,
   planScheduledTaskClaim,
   planTaskSettlement,
   settlementBaseline,
@@ -229,12 +231,39 @@ describe("monitoring check settlement", () => {
   it("never settles an incomplete check as a healthy no update or reached goal", () => {
     for (const verdict of verdicts) {
       for (const firstCheck of [false, true]) {
-        const settled = settle(verdict, { firstCheck, healthIncomplete: true });
-        expect(settled).toMatchObject({ completesTask: false, outcome: "could_not_check", verdictMissing: verdict === null });
+        // Judged by its sources, not its report: the report neither counts nor resets the missing-report count.
+        expect(settle(verdict, { firstCheck, healthIncomplete: true }))
+          .toEqual({ completesTask: false, outcome: "could_not_check", verdictMissing: null });
       }
     }
     // Shown and notified, but no basis for the next comparison.
     expect(effects("could_not_check")).toEqual({ baseline: false, notifies: true });
+  });
+
+  it("settles a check without a relied-on source like a standard incomplete run, never as a baseline or a goal", () => {
+    const task = {
+      baselineGeneration: 1, consecutiveFailures: 0, consecutiveIncompleteRuns: 0, consecutiveMissingVerdicts: 2, generation: 1,
+      kind: "monitoring", revision: 4, status: "ACTIVE"
+    } as const;
+    const occurrence = { runId: "run", taskGeneration: 1, taskRevision: 4, trigger: "schedule", userMessageId: "user" } as const;
+    const settleWith = (streak: number, verdict: MonitoringVerdict | null, kind: "monitoring" | "standard" = "monitoring") => {
+      const current = { ...task, consecutiveIncompleteRuns: streak, kind };
+      const check = completedRunCheck({ healthIncomplete: true, occurrence: { ...occurrence, verdict }, task: current });
+      return planOccurrenceSettlement({
+        assistantMessageId: "answer", check, occurrence,
+        outcome: { reasonCode: check?.outcome ?? null, state: "COMPLETED" }, sourcesIncomplete: true, task: current
+      });
+    };
+    const streakOf = (plan: ReturnType<typeof settleWith>) =>
+      ({ consecutiveIncompleteRuns: plan.consecutiveIncompleteRuns, pauseReason: plan.pauseReason, sourceAlert: plan.sourceAlert });
+    for (const streak of [0, 1, 2]) {
+      const check = settleWith(streak, "goal_reached");
+      // The same streak, alert and pause as a standard task's incomplete run.
+      expect(streakOf(check)).toEqual(streakOf(settleWith(streak, null, "standard")));
+      expect(check).toMatchObject({ baseline: null, consecutiveMissingVerdicts: 2, goalCompletes: false });
+    }
+    expect(streakOf(settleWith(0, "no_update"))).toEqual({ consecutiveIncompleteRuns: 1, pauseReason: null, sourceAlert: true });
+    expect(streakOf(settleWith(2, null))).toEqual({ consecutiveIncompleteRuns: 3, pauseReason: "source_unavailable", sourceAlert: false });
   });
 
   it("completes the task on a reached goal only while no owner transition happened since admission", () => {

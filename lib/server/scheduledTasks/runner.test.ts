@@ -25,7 +25,7 @@ import {
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
 import type { ScheduledTaskRunnerStore, ScheduledTaskSettlement } from "./runnerStore";
-import { occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
+import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
 
 type Task = {
   baseline: ScheduledTaskBaseline | null; chatId: string | null; chatMode: ScheduledTaskChatMode; completionReason: string | null;
@@ -208,7 +208,9 @@ function harness() {
       const outcome = linkedRunOutcome(row.runId ? runs.get(row.runId) ?? null : null);
       if (!outcome) return null;
       const task = tasks.get(row.taskId)!;
-      const check = outcome.state === "COMPLETED" ? completedRunCheck({ healthIncomplete: false, occurrence: row,
+      // Health first, from the source health its admission froze, as the store judges it.
+      const check = outcome.state === "COMPLETED" ? completedRunCheck({
+        healthIncomplete: occurrenceCheckSourcesMissing(row.unavailableSources), occurrence: row,
         task: { ...task, baselineGeneration: task.baseline?.generation ?? null } }) : null;
       return settle(row, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, undefined, check);
     },
@@ -1086,5 +1088,75 @@ describe("scheduled monitoring checks", () => {
     refused.setReply(() => ({ error: "model_cannot_report", status: 409 }));
     await refused.tick();
     expect(other).toMatchObject({ pauseReason: "model_cannot_report", status: "PAUSED" });
+  });
+});
+
+describe("scheduled monitoring checks and source health", () => {
+  const DAY = 24 * HOUR;
+  // Admission records `relied` once a previous shown result says which servers the task uses.
+  const relied = { name: "Tracker", reason: "mcp_server_unavailable", relied: true, serverId: "server-tracker" } as const;
+  const unjudged = { ...relied, relied: false } as const;
+
+  it("settles a check that missed a source its baseline relied on as could not check, never a baseline or a reached goal", async () => {
+    const h = harness();
+    const task = h.addTask({ kind: "monitoring", toolsEnabled: true });
+    h.setReply(() => ({ runStatus: "complete", verdict: "no_update" }));
+    await h.tick();
+    const shown = task.baseline;
+    expect(h.forTask(task)[0]).toMatchObject({ reasonCode: "baseline", state: "COMPLETED" });
+    // Even a reported goal cannot complete the task while its source is missing.
+    h.setReply(() => ({ runStatus: "complete", unavailableSources: [relied], verdict: "goal_reached" }));
+    for (let day = 0; day < 3; day += 1) {
+      h.advance(DAY);
+      await h.tick();
+    }
+    const checks = h.forTask(task).slice(1);
+    expect(checks.map((row) => row.reasonCode)).toEqual(["could_not_check", "could_not_check", "could_not_check"]);
+    expect(checks.map((row) => h.runs.get(row.runId!)?.scheduledOutcome))
+      .toEqual(["could_not_check", "could_not_check", "could_not_check"]);
+    expect(task.baseline).toEqual(shown);
+    // The incomplete streak runs exactly as for a standard task: one alert, then a pause at the third.
+    expect(h.settled.slice(1).map((settlement) => settlement.sourceAlert)).toEqual([true, false, false]);
+    expect(task).toMatchObject({ completionReason: null, consecutiveIncompleteRuns: 3, nextRunAt: null,
+      pauseReason: "source_unavailable", status: "PAUSED" });
+  });
+
+  it("judges a check's sources, not its report: a missing report neither counts nor resets", async () => {
+    const h = harness();
+    const task = h.addTask({ consecutiveMissingVerdicts: 2, kind: "monitoring", toolsEnabled: true });
+    h.setReply(() => ({ runStatus: "complete", verdict: "update" }));
+    await h.tick();
+    expect(task.consecutiveMissingVerdicts).toBe(0);
+    task.consecutiveMissingVerdicts = 2;
+    // Unreported while its source is gone: no third missing report, no verdict_missing pause.
+    h.setReply(() => ({ runStatus: "complete", unavailableSources: [relied] }));
+    h.advance(DAY);
+    await h.tick();
+    expect(h.forTask(task)[1]).toMatchObject({ reasonCode: "could_not_check", verdict: null });
+    expect(task).toMatchObject({ consecutiveIncompleteRuns: 1, consecutiveMissingVerdicts: 2, status: "ACTIVE" });
+    // A report made without the source does not prove the check either.
+    h.setReply(() => ({ runStatus: "complete", unavailableSources: [relied], verdict: "no_update" }));
+    h.advance(DAY);
+    await h.tick();
+    expect(task).toMatchObject({ consecutiveIncompleteRuns: 2, consecutiveMissingVerdicts: 2, status: "ACTIVE" });
+  });
+
+  it("lets a first check that missed only servers nothing relied on yet become the baseline, like a standard first result", async () => {
+    const h = harness();
+    const task = h.addTask({ kind: "monitoring", toolsEnabled: true });
+    h.setReply(() => ({ runStatus: "complete", unavailableSources: [unjudged], verdict: "no_update" }));
+    await h.tick();
+    const [first] = h.forTask(task);
+    expect(first).toMatchObject({ reasonCode: "baseline", state: "COMPLETED" });
+    expect(task.baseline).toMatchObject({ runId: first!.runId });
+    // Still incomplete in health: the one alert of its streak.
+    expect(task.consecutiveIncompleteRuns).toBe(1);
+    expect(h.settled.map((settlement) => settlement.sourceAlert)).toEqual([true]);
+    // Relevance is judged by that baseline from now on: an unrelated server no longer counts.
+    h.setReply(() => ({ runStatus: "complete", verdict: "no_update" }));
+    h.advance(DAY);
+    await h.tick();
+    expect(h.forTask(task)[1]).toMatchObject({ reasonCode: "no_update", state: "COMPLETED" });
+    expect(task).toMatchObject({ consecutiveIncompleteRuns: 0, status: "ACTIVE" });
   });
 });
