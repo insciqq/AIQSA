@@ -275,6 +275,8 @@ export type ThreadToolActivityCall = {
   fetchHttpStatus?: number;
   /** `web_fetch` only: the settled outcome (`read` or a refusal/failure code). */
   fetchOutcome?: FetchUrlActivityOutcome;
+  /** `web_fetch` only: a scheduled run refused a link its task does not allow; the owner edits the task. */
+  fetchScheduled?: true;
   /** `web_fetch` only: the page's "host/path", never its scheme, query or content. */
   fetchTarget?: string;
   memorySearchCall?: number;
@@ -1149,6 +1151,8 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
       ...(candidate.origin === "web_fetch" ? {
         ...(decodeFetchUrlTarget(candidate.fetchTarget) ? { fetchTarget: decodeFetchUrlTarget(candidate.fetchTarget)! } : {}),
         ...(isFetchUrlActivityOutcome(candidate.fetchOutcome) ? { fetchOutcome: candidate.fetchOutcome } : {}),
+        ...(candidate.fetchOutcome === "fetch_url_not_in_conversation" && candidate.fetchScheduled === true
+          ? { fetchScheduled: true as const } : {}),
         ...(candidate.fetchOutcome === "fetch_http_status" && isFetchUrlHttpStatus(candidate.fetchHttpStatus)
           ? { fetchHttpStatus: candidate.fetchHttpStatus } : {})
       } : {}),

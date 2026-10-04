@@ -169,6 +169,10 @@ describe("chat wire contracts", () => {
       .toEqual({ origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url" });
     expect(decode({ ...call, origin: "mcp" })).not.toHaveProperty("fetchTarget");
     expect(decode({ ...call, fetchOutcome: "read" })).not.toHaveProperty("fetchHttpStatus");
+    // The scheduled marker belongs only to a not-in-conversation refusal.
+    expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchScheduled: true }))
+      .toMatchObject({ fetchScheduled: true });
+    expect(decode({ ...call, fetchScheduled: true })).not.toHaveProperty("fetchScheduled");
   });
 
   it("preserves bounded MCP call references and refuses references on other origins", () => {

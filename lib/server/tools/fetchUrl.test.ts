@@ -96,6 +96,9 @@ describe("fetch_url provenance", () => {
     const s = session({ plan: { taskUrlDigests: [fetchUrlDigest(taskUrl)], userUrlDigests: [], version: 1 }, scheduled: true });
     const refused = await s.execute(call(USER_URL), { persistedToolCallId: "c1", signal });
     expect(String(json(refused).message)).toContain("task's instructions");
+    // The activity row points the owner at the task instead of the chat.
+    expect(fetchUrlActivityFacts(FETCH_URL_TOOL_NAME, { url: USER_URL }, refused)).toMatchObject({
+      fetchOutcome: "fetch_url_not_in_conversation", fetchScheduled: true });
     expect((await s.execute(call(taskUrl), { persistedToolCallId: "c2", signal })).status).toBe("complete");
   });
 
