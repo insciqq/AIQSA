@@ -1,8 +1,11 @@
 import type { ImportBatch } from "./importPipeline";
 
-/** Main thread to import worker: start with the picked files, then pull one step at a time. */
+/**
+ * Main thread to import worker: start with the picked files and the account
+ * the import belongs to, then pull one step at a time.
+ */
 export type ImportWorkerRequest =
-  | Readonly<{ type: "start"; files: readonly File[] }>
+  | Readonly<{ type: "start"; accountId: string; files: readonly File[] }>
   | Readonly<{ type: "next" }>;
 
 /** Import worker to main thread: exactly one response per request. */

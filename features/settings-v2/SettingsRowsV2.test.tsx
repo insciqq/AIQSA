@@ -128,7 +128,7 @@ describe("DataSettingsRowsV2", () => {
       skipped: 1
     });
     const onDeleted = vi.fn();
-    render(<DataSettingsRowsV2 onDeleteAll={onDeleteAll} onDeleted={onDeleted} />);
+    render(<DataSettingsRowsV2 accountId="account-1" onDeleteAll={onDeleteAll} onDeleted={onDeleted} />);
     expect(screen.getByRole("link", { name: "Export…" })).toHaveAttribute("href", "/api/me/chats/export");
     fireEvent.click(screen.getByRole("button", { name: "Delete…" }));
     const dialog = screen.getByRole("alertdialog", { name: "Delete all personal chats" });

@@ -37,7 +37,16 @@ export type ChatImportItem = Readonly<{
   document: ChatExportDocument;
 }>;
 
-export type ChatImportRequest = Readonly<{ chats: readonly ChatImportItem[] }>;
+/**
+ * One import batch. `accountId` is the account the import was started for
+ * (the signed-in user's id when it began): a batch whose session now belongs
+ * to another account is refused with `CHAT_IMPORT_ACCOUNT_CHANGED` before
+ * anything is decoded or stored.
+ */
+export type ChatImportRequest = Readonly<{ accountId: string; chats: readonly ChatImportItem[] }>;
+
+export const CHAT_IMPORT_ACCOUNT_CHANGED = "chat_import_account_changed";
+const CHAT_IMPORT_ACCOUNT_ID_MAX_LENGTH = 256;
 
 export type ChatImportFailureCode =
   | ChatExportDecodeErrorCode
@@ -173,9 +182,14 @@ export function decodeChatImportItem(value: unknown, now: Date): Decoded<ChatImp
 
 /** The request envelope: one to `CHAT_IMPORT_MAX_CHATS_PER_REQUEST` items, each decoded on its own. */
 export function decodeChatImportRequestItems(value: unknown): readonly unknown[] | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["chats"], []) || !Array.isArray(value.chats) ||
+  if (!isRecord(value) || !hasOnlyKeys(value, ["accountId", "chats"], []) || !Array.isArray(value.chats) ||
     value.chats.length === 0 || value.chats.length > CHAT_IMPORT_MAX_CHATS_PER_REQUEST) return null;
   return value.chats;
+}
+
+/** The account a batch was started for, read before anything else in the request. */
+export function chatImportRequestAccountId(value: unknown): string | null {
+  return isRecord(value) && boundedLabel(value.accountId, CHAT_IMPORT_ACCOUNT_ID_MAX_LENGTH) ? value.accountId : null;
 }
 
 function decodeResult(value: unknown): ChatImportResult | null {
