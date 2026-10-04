@@ -51,8 +51,9 @@ export type ScheduledTaskExecution = Readonly<{
   ownerActive: boolean;
   /**
    * The personal MCP servers the previous shown result of the current
-   * generation called or could not reach; null when there is no such result
-   * to judge by (a first run, or its run is gone), so every server counts.
+   * generation called, or relied on but already missed; null when there is no
+   * such result to judge by (a first run, or its run is gone), so every
+   * server counts. Read only while the task has tools on.
    */
   relevantMcpServerIds: readonly string[] | null;
   task: Readonly<{
