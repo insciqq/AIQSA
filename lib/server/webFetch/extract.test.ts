@@ -128,6 +128,38 @@ describe("HTML main content", () => {
   });
 });
 
+describe("hostile pages", () => {
+  const html = (body: string) => extractPage({ body: encoder.encode(`<html><body>${body}</body></html>`), contentType: "text/html",
+    finalUrl: "https://example.com/" });
+
+  it("reads deeply nested and unclosed markup within the render bound", () => {
+    expect(html(`${"<div>".repeat(20_000)}deep text${"</div>".repeat(20_000)}`)?.text).toContain("deep text");
+    expect(html(`${"<b><i>".repeat(5_000)}unclosed text`)?.text).toContain("unclosed text");
+  });
+
+  it("reads a document beyond the element bound as bounded plain text, skipping Readability", () => {
+    const page = html("<p>Paragraph text for a very long page.</p>".repeat(80_000))!;
+    expect(page.truncated).toBe(true);
+    expect(page.text.length).toBeLessThanOrEqual(24_000);
+    expect(page.text).toContain("Paragraph text for a very long page.");
+  });
+
+  it("reads megabytes of nested tags in one linear pass without building a DOM", () => {
+    const started = performance.now();
+    const page = html(`<title>Deep &amp; wide</title>${"<div><span>".repeat(200_000)}deep&nbsp;text &#x41;&#66;` +
+      `<script>var s = "<div>".repeat(9)</script>`)!;
+    expect(performance.now() - started).toBeLessThan(3_000);
+    expect(page.title).toBe("Deep & wide");
+    expect(page.text).toContain("deep text AB");
+    expect(page.text).not.toContain("repeat");
+  });
+
+  it("keeps markup, entities and control characters inert text", () => {
+    const page = html("<p>&lt;script&gt;alert(1)&lt;/script&gt; \u0000\u0007 <img src=x onerror=alert(1)> [x](javascript:alert(1))</p>")!;
+    expect(page.text).toBe("<script>alert(1)</script> [x](javascript:alert(1))");
+  });
+});
+
 describe("text truncation", () => {
   it("cuts at a boundary near the bound and never splits a surrogate pair", () => {
     expect(truncatePageText("short", 10)).toEqual({ text: "short", truncated: false });
