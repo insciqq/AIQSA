@@ -36,9 +36,11 @@ type FakeState = {
   /** The owner's current task ids. */
   existingTaskIds: string[];
   owner: boolean;
+  /** The answered user message's scheduled task prompt mark; null when the message is gone. */
+  prompt: { scheduledTaskPrompt: boolean } | null;
   run: { errorPayload: null; scheduledTaskId: string | null; status: string; userMessageId: string } | null;
   /** Other runs answering the same user message. */
-  siblingRuns: Array<{ id: string; scheduledTaskId: string | null }>;
+  siblingRuns: Array<{ id: string }>;
 };
 
 function harness(overrides: Partial<FakeState> = {}) {
@@ -47,6 +49,7 @@ function harness(overrides: Partial<FakeState> = {}) {
       toolName: CREATE_SCHEDULED_TASK_TOOL_NAME }],
     existingTaskIds: [],
     owner: true,
+    prompt: { scheduledTaskPrompt: false },
     run: { errorPayload: null, scheduledTaskId: null, status: "streaming", userMessageId: "message-1" },
     siblingRuns: [],
     ...overrides
@@ -80,9 +83,10 @@ function harness(overrides: Partial<FakeState> = {}) {
       })
     }
   };
+  const findPrompt = vi.fn(async ({ where }: { where: { id: string } }) =>
+    where.id === state.run?.userMessageId ? state.prompt : null);
   Object.assign(tx, {
-    modelRun: { count: vi.fn(async () => [...state.siblingRuns, { scheduledTaskId: state.run?.scheduledTaskId ?? null }]
-      .filter((run) => run.scheduledTaskId !== null).length) },
+    message: { findUnique: findPrompt },
     scheduledTask: { count: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
       where.id.in.filter((id) => state.existingTaskIds.includes(id)).length) }
   });
@@ -100,7 +104,7 @@ function harness(overrides: Partial<FakeState> = {}) {
       body, callId: "persisted-1", result: (task) => scheduledTaskCreatedResult(providerCall, task, false), runId: "run-1",
       userId: "user-1", ...input
     });
-  return { create, deps, kick, prisma, queries, state, tx };
+  return { create, deps, findPrompt, kick, prisma, queries, state, tx };
 }
 
 beforeEach(() => {
@@ -156,7 +160,7 @@ describe("scheduled task creation for a run's tool call", () => {
     const stored = snapshotToolExecutionResult(scheduledTaskCreatedResult({ id: "provider-call-0",
       name: CREATE_SCHEDULED_TASK_TOOL_NAME }, { ...created, id: "task-0" }, false), 64_000);
     const earlier = (existingTaskIds: string[]) => {
-      const h = harness({ existingTaskIds, siblingRuns: [{ id: "run-0", scheduledTaskId: null }] });
+      const h = harness({ existingTaskIds, siblingRuns: [{ id: "run-0" }] });
       h.state.calls.push({ id: "persisted-0", modelRunId: "run-0", providerCallId: "provider-call-0", result: stored,
         state: "complete", toolName: CREATE_SCHEDULED_TASK_TOOL_NAME });
       return h;
@@ -165,9 +169,19 @@ describe("scheduled task creation for a run's tool call", () => {
     expect(insertScheduledTask).not.toHaveBeenCalled();
     // The owner deleted the earlier task: answering again may create it anew.
     expect(await earlier([]).create()).toMatchObject({ kind: "created" });
-    // Another answer to a scheduled task's own turn never creates one.
-    const scheduledTurn = harness({ siblingRuns: [{ id: "run-0", scheduledTaskId: "task-0" }] });
+  });
+
+  it("never creates from another answer to a scheduled task's prompt, by the mark on its message", async () => {
+    // A regeneration in the task's chat or an answer in a branch copy: an
+    // ordinary run whose user message is marked as the task's prompt.
+    const scheduledTurn = harness({ prompt: { scheduledTaskPrompt: true }, siblingRuns: [{ id: "run-0" }] });
     expect(await scheduledTurn.create()).toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
+    expect(scheduledTurn.findPrompt).toHaveBeenCalledWith({ select: { scheduledTaskPrompt: true }, where: { id: "message-1" } });
+    // A message that cannot be read fails closed.
+    expect(await harness({ prompt: null }).create()).toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
+    expect(insertScheduledTask).not.toHaveBeenCalled();
+    // The call stays the loop's to settle.
+    expect(scheduledTurn.state.calls[0]?.state).toBe("running");
   });
 
   it("never creates from a scheduled, settled or missing run, or for a call that is not this run's running creation", async () => {

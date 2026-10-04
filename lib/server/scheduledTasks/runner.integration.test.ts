@@ -8,18 +8,19 @@ import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { prisma } from "../prisma";
 import { createDefaultSendMessageDeps } from "../runs/defaultSendMessageDeps";
 import { createSendMessageHandler, stopModelRun } from "../runs/handlers";
+import type { CreateRunInput } from "../runs/runRepositoryContract";
 import { createPrismaScheduledTaskOwnerLoader, createScheduledTaskSend, scheduledTaskOwnerAuth, scheduledTaskSendBody } from "./admission";
 import { createPrismaScheduledTaskRunCatalogLoader } from "./catalog";
+import { planScheduledTaskUpdate } from "./mutations";
 import { createScheduledTaskRunner } from "./runner";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
-import { scheduledTaskScheduleColumns } from "./store";
+import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns } from "./store";
 
 const users: string[] = [];
 const chats = createPrismaChatRepository();
 const sendDeps = () => ({ ...createDefaultSendMessageDeps(), allowFakeProvider: true });
 
-function runner() {
-  const deps = sendDeps();
+function runner(deps: ReturnType<typeof sendDeps> = sendDeps()) {
   return createScheduledTaskRunner({
     appBaseUrl: "http://localhost:3000",
     loadCatalog: createPrismaScheduledTaskRunCatalogLoader(prisma),
@@ -150,5 +151,47 @@ describe("scheduled task end to end", () => {
       expect(text(answers[0]!.content)).toContain("Fake answer: Summarize the synthetic fixture");
       expect(text(answers[0]!.content)).not.toContain("Context memory");
     }
+  });
+
+  it("never starts a run its owner paused while the admission was in flight", async () => {
+    const { task, userId } = await ownerWithTask("SAME");
+    const owners = createPrismaScheduledTaskStore(prisma);
+    const deps = sendDeps();
+    let pauses = 0;
+    // The runner read the task and the send was prepared: the owner's pause,
+    // through the owner API's own update, commits just before run creation.
+    const scheduler = runner({ ...deps, repository: { ...deps.repository, async createRun(input: CreateRunInput) {
+      if (pauses === 0) {
+        pauses += 1;
+        const current = await owners.get(userId, task.id);
+        if (!current) throw new Error("scheduled_e2e_task_missing");
+        const plan = planScheduledTaskUpdate(current, { expectedRevision: current.revision, status: "paused" }, new Date());
+        if (!plan.ok) throw new Error(plan.code);
+        await owners.update(userId, task.id, {
+          draft: plan.draft, expectedRevision: current.revision, nextRunAt: plan.nextRunAt, status: plan.status
+        });
+      }
+      return deps.repository.createRun(input);
+    } } });
+
+    await scheduler.tick();
+    await scheduler.idle();
+    expect(pauses).toBe(1);
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } }))
+      .toMatchObject({ nextRunAt: null, revision: 2, status: "PAUSED" });
+    // The admission fenced on the revision read before preparation and rolled
+    // back whole: no run or turn, and the occurrence still has no run.
+    expect(await prisma.modelRun.count({ where: { userId } })).toBe(0);
+    expect(await prisma.message.count({ where: { chat: { userId } } })).toBe(0);
+    const [occurrence] = await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: task.id } });
+    expect(occurrence).toMatchObject({ runId: null, state: "PENDING", trigger: "schedule" });
+
+    // The next tick reads the pause and skips the instant: the run never starts.
+    await scheduler.tick();
+    await scheduler.idle();
+    expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: occurrence!.id } }))
+      .toMatchObject({ reasonCode: "paused", runId: null, state: "SKIPPED" });
+    expect(await prisma.modelRun.count({ where: { userId } })).toBe(0);
+    expect(pauses).toBe(1);
   });
 });

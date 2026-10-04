@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
+import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 import { prisma } from "../prisma";
 import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns } from "../scheduledTasks/store";
 import { CREATE_SCHEDULED_TASK_TOOL_NAME, scheduledTaskCreatedResult } from "../tools/scheduledTaskCreation";
@@ -24,7 +25,11 @@ const body = {
   searchEnabled: false, emailNotify: false, toolsEnabled: false, workspaceEnabled: false, chatMode: "new", kind: "standard"
 };
 
-/** An owner, a personal chat with one turn and its open run holding `calls` running creation calls. */
+/**
+ * An owner, a personal chat with one turn and its open run holding `calls`
+ * running creation calls. With `scheduledTaskId` the turn is a scheduled
+ * task's: its prompt is marked and its run has the scheduled origin.
+ */
 async function answer(input: Readonly<{ calls?: number; scheduledTaskId?: string }> = {}) {
   const userId = `scheduled-call-test-${randomUUID()}`;
   users.push(userId);
@@ -35,7 +40,7 @@ async function answer(input: Readonly<{ calls?: number; scheduledTaskId?: string
   const runId = randomUUID();
   await prisma.chat.create({ data: { id: chatId, title: "Synthetic chat", userId } });
   await prisma.message.create({ data: { chatId, content: textMessageContent("Remind me"), id: questionId, role: "user",
-    status: "complete" } });
+    ...(input.scheduledTaskId ? { scheduledTaskPrompt: true } : {}), status: "complete" } });
   await prisma.message.create({ data: { chatId, content: textMessageContent(""), id: answerId, parentMessageId: questionId,
     role: "assistant", status: "streaming" } });
   await prisma.chat.update({ data: { activeLeafMessageId: answerId }, where: { id: chatId } });
@@ -62,6 +67,8 @@ afterEach(async () => {
   const ids = users.splice(0);
   await prisma.scheduledTask.deleteMany({ where: { userId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
+  // Branches run the Memory source lifecycle, which may leave purge obligations.
+  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: ids } } });
   await prisma.user.deleteMany({ where: { id: { in: ids } } });
 });
 afterAll(() => prisma.$disconnect());
@@ -111,6 +118,53 @@ describe("a chat answer's scheduled task creation", () => {
   it("never creates from a scheduled run", async () => {
     const turn = await answer({ scheduledTaskId: randomUUID() });
     expect(await turn.create(turn.callIds[0]!)).toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
+    expect(await prisma.scheduledTask.count({ where: { userId: turn.userId } })).toBe(0);
+  });
+
+  it("never creates from another answer to a scheduled task's prompt, in its chat or a branch copy at any depth", async () => {
+    // The task's turn settled: its prompt is marked and its run has the scheduled origin.
+    const turn = await answer({ scheduledTaskId: randomUUID() });
+    const prompt = await prisma.modelRun.findUniqueOrThrow({ select: { userMessageId: true }, where: { id: turn.runId } });
+    await prisma.modelRun.update({ data: { status: "complete" }, where: { id: turn.runId } });
+    await prisma.message.update({ data: { status: "complete" }, where: { id: turn.answerId } });
+    const branches = createPrismaMessageBranchRepository(prisma);
+    /** An ordinary run without scheduled origin answering `userMessageId`, holding one running creation call. */
+    const regenerate = async (chatId: string, userMessageId: string) => {
+      const answerId = randomUUID();
+      const runId = randomUUID();
+      await prisma.message.create({ data: { chatId, content: textMessageContent(""), id: answerId, parentMessageId: userMessageId,
+        role: "assistant", status: "streaming" } });
+      await prisma.modelRun.create({ data: { assistantMessageId: answerId, chatId, id: runId, modelId: "fake-qsa",
+        normalizedRequest: {}, provider: "fake", status: "streaming", userId: turn.userId, userMessageId } });
+      const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: runId, ordinal: 0,
+        providerCallId: "provider-call-0", roundIndex: 1, startedAt: new Date(), state: "running",
+        toolName: CREATE_SCHEDULED_TASK_TOOL_NAME } });
+      const outcome = await createScheduledTaskForToolCall(prisma, deps, { body, callId: call.id, runId, userId: turn.userId,
+        result: (task) => scheduledTaskCreatedResult({ id: "provider-call-0", name: CREATE_SCHEDULED_TASK_TOOL_NAME }, task, false) });
+      // The refused answer settles, so its chat can branch again.
+      await prisma.modelRun.update({ data: { status: "complete" }, where: { id: runId } });
+      await prisma.message.update({ data: { status: "complete" }, where: { id: answerId } });
+      return { answerId, outcome };
+    };
+    /** A branch from `sourceMessageId`, with its copy of the task's prompt. */
+    const branch = async (sourceMessageId: string) => {
+      const created = await branches.createChatBranchFromMessage({ sourceMessageId, userId: turn.userId });
+      if (!created) throw new Error("scheduled_call_test_branch_missing");
+      const copied = await prisma.message.findFirstOrThrow({ where: { chatId: created.id, role: "user" } });
+      expect(copied.scheduledTaskPrompt).toBe(true);
+      return { chatId: created.id, promptId: copied.id };
+    };
+    const refused = { code: "scheduled_task_call_unavailable", kind: "refused" };
+
+    // A Regenerate in the task's chat.
+    const regenerated = await regenerate(turn.chatId, prompt.userMessageId);
+    expect(regenerated.outcome).toEqual(refused);
+    // An answer in a branch copy, which carries no runs, and in a branch of that branch.
+    const first = await branch(regenerated.answerId);
+    const inBranch = await regenerate(first.chatId, first.promptId);
+    expect(inBranch.outcome).toEqual(refused);
+    const second = await branch(inBranch.answerId);
+    expect((await regenerate(second.chatId, second.promptId)).outcome).toEqual(refused);
     expect(await prisma.scheduledTask.count({ where: { userId: turn.userId } })).toBe(0);
   });
 

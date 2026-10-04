@@ -694,23 +694,23 @@ type TemporaryPreparingRunAdmissionInput = Readonly<{
   memoryRevision: number;
   normalizedRequest: PreparingRunAdmissionInput["normalizedRequest"];
   runId: string;
-  /** A scheduled task's run, whatever its chat's Memory mode. */
-  scheduled?: true;
+  /** An answer to a scheduled task's prompt (its scheduled run or a later one), whatever its chat's Memory mode. */
+  scheduledPrompt?: true;
   settingsSnapshot: MemoryPreparingSettingsSnapshot;
   userMessageId: string;
 }>;
 
 /**
- * Temporary Chat, Agent and scheduled task turns bypass Personal Memory
- * preparation entirely. The ordinary run is made dispatchable in the admission
- * transaction, while no Memory attempt/binding receives the content-bearing
- * base request.
+ * Temporary Chat, Agent and scheduled task turns (every answer to a task's
+ * prompt) bypass Personal Memory preparation entirely. The ordinary run is
+ * made dispatchable in the admission transaction, while no Memory
+ * attempt/binding receives the content-bearing base request.
  */
 export async function finalizeTemporaryPreparingRunAdmission(
   tx: Pick<Prisma.TransactionClient, "modelRun">,
   input: TemporaryPreparingRunAdmissionInput
 ): Promise<PreparingRunAdmissionResult | null> {
-  if (input.chatMemoryMode !== "TEMPORARY" && !input.normalizedRequest.agent && !input.scheduled) return null;
+  if (input.chatMemoryMode !== "TEMPORARY" && !input.normalizedRequest.agent && !input.scheduledPrompt) return null;
   await tx.modelRun.update({
     data: {
       normalizedRequest: json(input.normalizedRequest),
@@ -726,6 +726,7 @@ export async function finalizeTemporaryPreparingRunAdmission(
     memoryGeneration: input.memoryGeneration,
     memoryRevision: input.memoryRevision,
     runId: input.runId,
+    ...(input.scheduledPrompt ? { scheduledPrompt: true as const } : {}),
     settingsSnapshot: input.settingsSnapshot,
     userMessageId: input.userMessageId
   };
@@ -1376,6 +1377,9 @@ export async function admitPreparingRunWithClient(
       let admittedSourceSnapshot: MemorySourceSnapshot;
       let preSendActiveLeafMessageId: string | null;
       let userMessageId: string;
+      // The run answers a scheduled task's prompt: the prompt its scheduled run
+      // posts now, or a stored one marked so (in its chat or a branch copy).
+      let scheduledPrompt: boolean;
 
       if (input.admissionKind === "NORMAL_SEND") {
         if (lockedChat.activeLeafMessageId !== input.expectedActiveLeafId) {
@@ -1472,6 +1476,9 @@ export async function admitPreparingRunWithClient(
           };
         }
 
+        // The prompt a scheduled run posts keeps that fact on the message
+        // itself, committed with the run's scheduled origin.
+        scheduledPrompt = input.scheduledOccurrence !== undefined;
         const userMessage = await tx.message.create({
           data: {
             chatId: input.chatId,
@@ -1483,6 +1490,7 @@ export async function admitPreparingRunWithClient(
             parentMessageId: input.expectedActiveLeafId,
             provider: input.provider,
             role: "user",
+            ...(scheduledPrompt ? { scheduledTaskPrompt: true } : {}),
             status: "complete"
           }
         });
@@ -1592,12 +1600,14 @@ export async function admitPreparingRunWithClient(
         }
         if (userLeafWithoutAssistant) {
           const [sourceUser] = await tx.$queryRaw<Array<{
+            scheduledTaskPrompt: boolean;
             userContent: Prisma.JsonValue;
             userRole: string;
           }>>(Prisma.sql`
             SELECT
               user_message."content" AS "userContent",
-              user_message."role" AS "userRole"
+              user_message."role" AS "userRole",
+              user_message."scheduledTaskPrompt" AS "scheduledTaskPrompt"
             FROM "Message" AS user_message
             WHERE user_message."chatId" = ${input.chatId}
               AND user_message."id" = ${input.userMessageId}
@@ -1608,10 +1618,12 @@ export async function admitPreparingRunWithClient(
               memoryPreparingHash(input.normalizedRequest.content)) {
             throw new ActiveLeafConflictError();
           }
+          scheduledPrompt = sourceUser.scheduledTaskPrompt === true;
         } else {
           const [source] = await tx.$queryRaw<Array<{
             assistantParentId: string | null;
             assistantRole: string;
+            scheduledTaskPrompt: boolean;
             userContent: Prisma.JsonValue;
             userRole: string;
           }>>(Prisma.sql`
@@ -1619,7 +1631,8 @@ export async function admitPreparingRunWithClient(
               assistant."parentMessageId" AS "assistantParentId",
               assistant."role" AS "assistantRole",
               user_message."content" AS "userContent",
-              user_message."role" AS "userRole"
+              user_message."role" AS "userRole",
+              user_message."scheduledTaskPrompt" AS "scheduledTaskPrompt"
             FROM "Message" AS assistant
             INNER JOIN "Message" AS user_message
               ON user_message."chatId" = assistant."chatId"
@@ -1634,6 +1647,7 @@ export async function admitPreparingRunWithClient(
               memoryPreparingHash(input.normalizedRequest.content)) {
             throw new ActiveLeafConflictError();
           }
+          scheduledPrompt = source.scheduledTaskPrompt === true;
         }
         const assistantMessage = await tx.message.create({
           data: {
@@ -1660,10 +1674,12 @@ export async function admitPreparingRunWithClient(
         });
       }
 
-      // A scheduled task's run never uses Personal Memory, whatever its chat's mode.
+      // A scheduled task's run and every other answer to its prompt never use
+      // Personal Memory, whatever the chat's mode: no standing context, Memory
+      // search or synchronous `/memory` command from a possibly model-written prompt.
       const scheduledOccurrence = input.admissionKind === "NORMAL_SEND" ? input.scheduledOccurrence : undefined;
       const settings = lockedChat.memoryMode === "TEMPORARY" || input.normalizedRequest.agent ||
-          scheduledOccurrence || options.memoryUnavailableFallback
+          scheduledPrompt || options.memoryUnavailableFallback
         ? TEMPORARY_PREPARING_SETTINGS
         : await loadPreparingSettings(tx, input.userId, true);
 
@@ -1763,7 +1779,7 @@ export async function admitPreparingRunWithClient(
         memoryRevision: settings.memoryRevision,
         normalizedRequest: input.normalizedRequest,
         runId: run.id,
-        ...(scheduledOccurrence ? { scheduled: true as const } : {}),
+        ...(scheduledPrompt ? { scheduledPrompt: true as const } : {}),
         settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
         userMessageId
       });
@@ -4092,9 +4108,10 @@ export async function createDormantPreparingRun(
       preparation: fallback.deferredPdf ? "pdf" : "ready" });
     return fallback;
   }
-  // Temporary, Agent and scheduled task turns were made dispatchable without Personal Memory.
+  // Temporary, Agent and scheduled task turns (any answer to a task's prompt,
+  // as admission read it) were made dispatchable without Personal Memory.
   const withoutMemory = created.chatMemoryMode === "TEMPORARY" || Boolean(admission.normalizedRequest.agent) ||
-    (admission.admissionKind === "NORMAL_SEND" && admission.scheduledOccurrence !== undefined);
+    created.scheduledPrompt === true;
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
     preparation: created.deferredPdf ? "pdf" : withoutMemory ? "ready" : "memory" });

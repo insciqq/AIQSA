@@ -51,8 +51,9 @@ async function settledDirectUserMessageId(
 ): Promise<string | null> {
   if (!event.settlement?.assistantMessageId) return null;
   // A scheduled task's prompt never teaches Memory, whatever the chat's mode.
-  // The test follows the message, so a regeneration of its answer, whose run
-  // has no scheduled origin, cannot admit the prompt either.
+  // The mark is on the message, so neither a regeneration of its answer
+  // (a run without scheduled origin) nor an answer in a branch copy of it can
+  // admit the prompt either.
   const [source] = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT message."id"
     FROM "ModelRun" AS run

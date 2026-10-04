@@ -84,9 +84,11 @@ export async function createScheduledTaskForToolCall(
           call.result as StoredResult) };
       }
       if (call.state !== "running") return refused("scheduled_task_call_unavailable");
-      // Nor does another answer to a scheduled task's own turn (its saved prompt).
-      if (await tx.modelRun.count({ where: { scheduledTaskId: { not: null }, userId: input.userId,
-        userMessageId: run.userMessageId } }) > 0) return refused("scheduled_task_call_unavailable");
+      // Nor does any other answer to a scheduled task's prompt, which the model
+      // may have written: a regeneration in its chat or an answer in a branch
+      // copy. The mark is on the message; a missing message fails closed.
+      const prompt = await tx.message.findUnique({ select: { scheduledTaskPrompt: true }, where: { id: run.userMessageId } });
+      if (prompt?.scheduledTaskPrompt !== false) return refused("scheduled_task_call_unavailable");
       // Only a creation settles complete: another one means this answer has its task.
       const created = await tx.modelRunToolCall.count({ where: {
         id: { not: input.callId }, modelRunId: input.runId, state: "complete", toolName: CREATE_SCHEDULED_TASK_TOOL_NAME

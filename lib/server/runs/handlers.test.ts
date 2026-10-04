@@ -641,7 +641,8 @@ function createMemoryRepository(
               content: {
                 blocks: [{ text: "Original question", type: "text" }]
               },
-              id: "user-message-1"
+              id: "user-message-1",
+              scheduledTaskPrompt: false
             }
           }
         : null,
@@ -6088,7 +6089,8 @@ describe("model run route handlers", () => {
               },
               userMessage: {
                 content: { blocks: [{ text: "Original question", type: "text" }] },
-                id: "user-message-1"
+                id: "user-message-1",
+                scheduledTaskPrompt: false
               }
             }
           : null
