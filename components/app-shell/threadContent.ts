@@ -1,6 +1,7 @@
 import { decodeThreadWorkspaceCheckpointOutput, type ThreadGeneratedFile } from "@/lib/contracts/workspace";
 import { decodeThreadGeneratedImage } from "@/lib/contracts/imageGeneration";
 import { THREAD_SEARCH_SOURCE_MAX_ITEMS, decodeThreadGeneratedArtifact } from "@/lib/contracts/chats";
+import { foldScheduledTaskCards } from "@/lib/contracts/scheduledTasks";
 import { decodeGroundingDisplay } from "../../lib/domain/groundingDisplay";
 import { isRecord } from "@/components/app-shell/shellValues";
 import type {
@@ -99,6 +100,9 @@ export function summarizeThreadArtifacts(
     const decoded = decodeThreadGeneratedArtifact(artifactPayload(event));
     return decoded ? [decoded] : [];
   }));
+  // The same fold as a reload: one card per created task.
+  const scheduledTasks = foldScheduledTaskCards(events
+    .filter((event) => artifactTypeFromEvent(event) === "scheduled_task").map(artifactPayload));
   // The same projections and folds as a reload, so a finished live answer
   // shows the thinking, citations and sources its saved summary will show.
   const reasoning = foldReasoningEntries(events.map((event) =>
@@ -126,6 +130,7 @@ export function summarizeThreadArtifacts(
     generatedImages.length === 0 &&
     !skillCatalogOmittedCount &&
     generatedArtifacts.length === 0 &&
+    scheduledTasks.length === 0 &&
     citations.length === 0 &&
     sources.length === 0 &&
     reasoning.entries.length === 0 &&
@@ -146,6 +151,7 @@ export function summarizeThreadArtifacts(
     ...(generatedArtifacts.length ? { generatedArtifacts } : {}),
     reasoningText: reasoning.entries,
     ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
+    ...(scheduledTasks.length ? { scheduledTasks } : {}),
     sources,
     ...(sourceList.truncated ? { sourcesTruncated: true as const } : {})
   };

@@ -86,6 +86,36 @@ describe("useAdminUsersController", () => {
     expect(confirmations.every((config) => config.prompt.includes("pat@example.com") || config.body.action === "revoke_all_sessions")).toBe(true);
   });
 
+  it("confirms granting and removing administrator rights with the consequence named", () => {
+    const { confirmations, view } = harness();
+    act(() => {
+      view.result.current.actions.requestSetRole(target, "admin");
+      view.result.current.actions.requestSetRole(target, "user");
+    });
+    const [grant, revoke] = confirmations;
+
+    expect(grant).toMatchObject({
+      body: { action: "set_user_role", role: "admin", userId: "pat" },
+      confirmLabel: "Make administrator",
+      message: "Administrator rights granted.",
+      testId: "admin-confirm-grant-admin-role",
+      title: "Make administrator?",
+      tone: "warning"
+    });
+    expect(grant?.prompt).toContain("Make pat@example.com an administrator?");
+    expect(grant?.prompt).toContain("manage users, providers, models, MCP and installation settings");
+    expect(grant?.prompt).toContain("does not give access to other users' private chats, Assistants or Knowledge");
+    expect(revoke).toMatchObject({
+      body: { action: "set_user_role", role: "user", userId: "pat" },
+      confirmLabel: "Remove administrator rights",
+      message: "Administrator rights removed.",
+      testId: "admin-confirm-revoke-admin-role",
+      title: "Remove administrator rights?",
+      tone: "warning"
+    });
+    expect(revoke?.prompt).toContain("Remove administrator rights from pat@example.com?");
+  });
+
   it("offers session revocation separately when disable needs a Project ownership transfer", () => {
     const { confirmations, view } = harness();
     act(() => view.result.current.actions.requestDisable(target));

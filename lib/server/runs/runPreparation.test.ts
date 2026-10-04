@@ -872,7 +872,8 @@ function regenerateInput(
       },
       userMessage: {
         content: textMessageContent("Shared question"),
-        id: "stored-user-message"
+        id: "stored-user-message",
+        scheduledTaskPrompt: false
       },
       ...sourceOverrides
     }
@@ -961,6 +962,27 @@ describe("standing Memory and optional search admission", () => {
       sendInput(successBody({ content: textMessageContent("/memory list") }))));
     expect(admit).not.toHaveBeenCalled();
     expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
+  });
+  it("admits neither for a regeneration of a scheduled task's prompt, even in a chat the owner switched to Memory", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const admit = vi.fn(async () => snapshot);
+    const deps = { ...harness.deps, memorySearchAdmission: { admit } };
+    const regenerate = (text: string, scheduledTaskPrompt: boolean) => regenerateInput(successBody(), {
+      chat: { defaultModelId: "fake-qsa", defaultProvider: "fake", id: "chat-1", memoryMode: "NORMAL", projectMemory: null },
+      userMessage: { content: textMessageContent(text), id: "stored-user-message", scheduledTaskPrompt }
+    });
+    // The prompt may have been written by the model, an explicit Memory command included.
+    for (const text of ["Summarize the news.", "/memory forget everything"]) {
+      const prepared = preparedFrom(await prepareRun(deps, regenerate(text, true)));
+      expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
+      expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+      expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search") ?? false).toBe(false);
+    }
+    expect(admit).not.toHaveBeenCalled();
+    // The owner's own message regenerated in the same chat keeps both.
+    const own = preparedFrom(await prepareRun(deps, regenerate("Summarize the news.", false)));
+    expect(own.normalizedRequest.memoryStandingVersion).toBe(1);
+    expect(own.normalizedRequest.memorySearch).toEqual(snapshot);
   });
 });
 
@@ -1296,7 +1318,8 @@ describe("run preparation", () => {
 
     const regenerated = preparedFrom(await prepareRun(deps, regenerateInput(body, {
       assistantMessage: { modelId: "gpt-fixture", provider: "openai" },
-      userMessage: { content: imageBlock("current-image") as ProviderConversationMessage["content"], id: "stored-user-message" }
+      userMessage: { content: imageBlock("current-image") as ProviderConversationMessage["content"], id: "stored-user-message",
+        scheduledTaskPrompt: false }
     }))).normalizedRequest;
     expect(regenerated.imageReferences?.map(({ attachmentId, messageId }) => [attachmentId, messageId])).toEqual([
       ["earlier-image", "prior-user-message"], ["current-image", "stored-user-message"]
@@ -2606,7 +2629,8 @@ describe("run preparation", () => {
           },
           userMessage: {
             content: textMessageContent("Stored regeneration content"),
-            id: "stored-user-message"
+            id: "stored-user-message",
+            scheduledTaskPrompt: false
           }
         })
       )
@@ -2643,7 +2667,7 @@ describe("run preparation", () => {
     const harness = createHarness({ attachments: [attachment], regenerateContext: [priorMessage, edited] });
 
     const prepared = preparedFrom(await prepareRun(harness.deps, regenerateInput(
-      successBody({ text: "Ignored client replacement" }), { userMessage: edited }
+      successBody({ text: "Ignored client replacement" }), { userMessage: { ...edited, scheduledTaskPrompt: false } }
     )));
 
     expect(prepared.normalizedRequest.content).toEqual(edited.content);
@@ -5301,7 +5325,7 @@ describe("cross-turn compaction reuse", () => {
     const body = successBody({ content: textMessageContent(input.text ?? "Next question."), modelId: "openai-tool-model", provider: "openai",
       ...(input.knowledge ? { knowledgePlan: knowledgeSelection(["knowledge-base-1"]) } : {}) });
     const result = await prepareRun(deps, input.regenerate
-      ? regenerateInput(body, { userMessage: { content: input.regenerate.content, id: input.regenerate.id } })
+      ? regenerateInput(body, { userMessage: { content: input.regenerate.content, id: input.regenerate.id, scheduledTaskPrompt: false } })
       : sendInput(body, { activeLeafMessageId: input.history.length > 0 ? "prior-user-message" : null }));
     return { loadBranchContextCheckpoints, result, stream };
   }
@@ -5621,5 +5645,288 @@ describe("cross-turn tool history admission", () => {
     const prepared = preparedFrom(await prepareRun(plain.deps, sendInput()));
     expect(prepared.normalizedRequest.toolCallReader).toBeUndefined();
     expect(prepared.providerRequest.tools?.some((tool) => tool.name === "read_tool_call") ?? false).toBe(false);
+  });
+});
+
+describe("scheduled task sends", () => {
+  const say = (id: string, role: "assistant" | "user", text: string): ProviderConversationMessage =>
+    ({ content: textMessageContent(text), id, role });
+  // The task chat's active branch: the owner's own turns around the task's previous result.
+  const path = [say("owner-user", "user", "Owner question"), say("owner-answer", "assistant", "Owner answer"),
+    say("result-user", "user", "Task prompt"), say("result-answer", "assistant", "Task result"),
+    say("later-user", "user", "Owner follow-up"), say("prior-user-message", "assistant", "Owner follow-up answer")];
+  const history = { version: 1 as const, omittedCalls: 4, turns: [
+    { callRefs: [`tcr1_${"a".repeat(32)}`], digest: "a".repeat(64), turnMessageId: "owner-answer", userMessageId: "owner-user" },
+    { callRefs: [`tcr1_${"b".repeat(32)}`], digest: "b".repeat(64), turnMessageId: "result-answer", userMessageId: "result-user" }
+  ] };
+  const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
+
+  function scheduledInput(previousResult: Readonly<{ assistantMessageId: string; userMessageId: string }> | null,
+    chatOverrides: Partial<SendRunPreparationSource["chat"]> = {}, relevantMcpServerIds: readonly string[] | null = null,
+    body = toolBody): RunPreparationInput {
+    const input = sendInput(body, chatOverrides);
+    if (input.source.kind !== "send") throw new Error("invalid send fixture");
+    return { ...input, source: { ...input.source, scheduledOccurrence: {
+      occurrenceId: "occurrence-1", previousResult, relevantMcpServerIds, taskGeneration: 1, taskId: "task-1", taskRevision: 1
+    } } };
+  }
+
+  function scheduledDeps() {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true }, sendContext: path });
+    const loadToolHistory = vi.fn(async () => history);
+    const loadBranchContextCheckpoints = vi.fn(async () => ({ ancestorMessageIds: path.map((message) => message.id), checkpoints: [] }));
+    const contextForChat = vi.fn(async () => []);
+    const deps: RunPreparationDeps = { ...harness.deps, artifacts: { contextForChat } as never,
+      repository: { ...harness.deps.repository, loadBranchContextCheckpoints, loadToolHistory } };
+    return { contextForChat, deps, loadBranchContextCheckpoints, loadToolHistory };
+  }
+
+  it("selects the previous result alone and keeps branch notes, other turns' tool history and chat artifacts out", async () => {
+    const f = scheduledDeps();
+    const prepared = preparedFrom(await prepareRun(f.deps, scheduledInput({ assistantMessageId: "result-answer", userMessageId: "result-user" })));
+    expect(prepared.normalizedRequest.context!.messages.map((message) => message.id))
+      .toEqual(["result-user", "result-answer", "current-user-message"]);
+    // The tool history follows the selection: only the result's own turn, nothing counted from other turns.
+    expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [history.turns[1]] });
+    expect(prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", source: { leafMessageId: null } });
+    expect(f.loadBranchContextCheckpoints).not.toHaveBeenCalled();
+    expect(f.contextForChat).not.toHaveBeenCalled();
+
+    // The owner's own message in the same chat keeps all of them.
+    const ordinary = preparedFrom(await prepareRun(f.deps, sendInput(toolBody)));
+    expect(ordinary.normalizedRequest.context!.messages).toHaveLength(path.length + 1);
+    expect(ordinary.normalizedRequest.toolHistory).toEqual(history);
+    expect(f.loadBranchContextCheckpoints).toHaveBeenCalledOnce();
+    expect(f.contextForChat).toHaveBeenCalledOnce();
+  });
+
+  it("reads no tool history when the run's context holds no earlier result", async () => {
+    const f = scheduledDeps();
+    for (const previousResult of [null, { assistantMessageId: "gone-answer", userMessageId: "result-user" }]) {
+      const prepared = preparedFrom(await prepareRun(f.deps, scheduledInput(previousResult)));
+      expect(prepared.normalizedRequest.context!.messages.map((message) => message.id)).toEqual(["current-user-message"]);
+      expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [] });
+    }
+    expect(f.loadToolHistory).not.toHaveBeenCalled();
+  });
+
+  it("admits no standing Memory or Memory search, even in a chat the owner switched to Memory", async () => {
+    const f = scheduledDeps();
+    const admit = vi.fn(async () => null);
+    const prepared = preparedFrom(await prepareRun({ ...f.deps, memorySearchAdmission: { admit } },
+      scheduledInput(null, { memoryMode: "NORMAL" })));
+    expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
+    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  describe("source health of the Auto catalog", () => {
+    const servers: import("../mcp/runPlan").McpCapabilityCatalog["servers"] = [{ description: "Synthetic tickets", instructions: "",
+      namespace: "tracker", revisionId: "revision-tracker", serverId: "server-tracker", serverName: "Tracker",
+      tools: [{ description: "Read a ticket", namespacedName: "mcp_tracker_read_ticket_1", originalName: "read_ticket" }] }];
+    // The owner's personal servers the catalog had to leave out: one lost its sign-in, one is not ready.
+    const omitted = [
+      { reason: "mcp_reauthorization_required" as const, serverId: "server-mail", serverName: "Synthetic Mail" },
+      { reason: "mcp_server_unavailable" as const, serverId: "server-notes", serverName: "Synthetic Notes" }
+    ];
+    const autoBody = successBody({ mcp: { mode: "auto" }, modelId: "openai-tool-model", provider: "openai" });
+
+    function mcpDeps() {
+      const f = scheduledDeps();
+      const catalog = vi.fn(async () => ({ servers, version: 1 as const }));
+      const catalogWithOmissions = vi.fn(async () => ({ catalog: { servers, version: 1 as const }, omitted }));
+      const deps: RunPreparationDeps = { ...f.deps,
+        mcp: { catalog, catalogWithOmissions, filterTools: allowMcpTools, prepare: async () => readyMcpPlan() } };
+      return { catalog, catalogWithOmissions, deps };
+    }
+
+    it("tells the model which relevant source is missing and freezes it as the run's health", async () => {
+      const f = mcpDeps();
+      const prepared = preparedFrom(await prepareRun(f.deps, scheduledInput(null, {}, ["server-mail", "server-tracker"], autoBody)));
+      expect(f.catalogWithOmissions).toHaveBeenCalledOnce();
+      expect(f.catalog).not.toHaveBeenCalled();
+      // The plan is still the Auto catalog; only the relevant omitted server counts.
+      expect(prepared.normalizedRequest.mcpDiscovery?.catalog.servers.map((server) => server.serverId)).toEqual(["server-tracker"]);
+      expect(prepared.scheduledUnavailableSources).toEqual([
+        { name: "Synthetic Mail", reason: "mcp_reauthorization_required", relied: true, serverId: "server-mail" }
+      ]);
+      const system = prepared.normalizedRequest.prompt.system;
+      expect(system).toContain("This scheduled run cannot use some of the user's tool sources");
+      expect(system).toContain("\"Synthetic Mail\" (needs the user to sign in again)");
+      expect(system).not.toContain("Synthetic Notes");
+    });
+
+    it("counts every omitted server before a first result, and none an unrelated earlier result never used", async () => {
+      const f = mcpDeps();
+      const first = preparedFrom(await prepareRun(f.deps, scheduledInput(null, {}, null, autoBody)));
+      expect(first.scheduledUnavailableSources).toEqual([
+        { name: "Synthetic Mail", reason: "mcp_reauthorization_required", relied: false, serverId: "server-mail" },
+        { name: "Synthetic Notes", reason: "mcp_server_unavailable", relied: false, serverId: "server-notes" }
+      ]);
+      expect(first.normalizedRequest.prompt.system).toContain("\"Synthetic Notes\" (unavailable)");
+      const unrelated = preparedFrom(await prepareRun(f.deps, scheduledInput(null, {}, ["server-tracker"], autoBody)));
+      expect(unrelated.scheduledUnavailableSources).toBeUndefined();
+      expect(unrelated.normalizedRequest.prompt.system).not.toContain("tool sources");
+    });
+
+    it("leaves an ordinary message and a task with tools off without source health", async () => {
+      const f = mcpDeps();
+      const ordinary = preparedFrom(await prepareRun(f.deps, sendInput(autoBody)));
+      expect(f.catalog).toHaveBeenCalledOnce();
+      expect(f.catalogWithOmissions).not.toHaveBeenCalled();
+      expect(ordinary.scheduledUnavailableSources).toBeUndefined();
+      const off = preparedFrom(await prepareRun(f.deps, scheduledInput(null, {}, null,
+        successBody({ mcp: { mode: "off" }, modelId: "openai-tool-model", provider: "openai", skills: { mode: "off" } }))));
+      expect(f.catalogWithOmissions).not.toHaveBeenCalled();
+      expect(off.scheduledUnavailableSources).toBeUndefined();
+      expect(off.normalizedRequest.mcpDiscovery).toBeUndefined();
+    });
+  });
+});
+
+describe("monitoring check admission", () => {
+  const say = (id: string, role: "assistant" | "user", text: string): ProviderConversationMessage =>
+    ({ content: textMessageContent(text), id, role });
+  const path = [say("result-user", "user", "Task prompt"), say("result-answer", "assistant", "Task result")];
+  const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
+  const previous = { assistantMessageId: "result-answer", userMessageId: "result-user" };
+
+  function scheduled(input: Readonly<{ body?: Readonly<Record<string, unknown>>; monitoring?: boolean;
+    previousResult?: typeof previous | null; }> = {}): RunPreparationInput {
+    const send = sendInput(input.body ?? toolBody);
+    if (send.source.kind !== "send") throw new Error("invalid send fixture");
+    return { ...send, source: { ...send.source, scheduledOccurrence: { occurrenceId: "occurrence-1",
+      previousResult: input.previousResult ?? null, relevantMcpServerIds: null, taskGeneration: 1, taskId: "task-1", taskRevision: 1,
+      ...(input.monitoring === false ? {} : { monitoring: true as const }) } } };
+  }
+  const harness = (toolCalling = true) => createHarness({ capabilities: { ...baseCapabilities, toolCalling }, sendContext: path });
+  const offered = (prepared: PreparedRun) => prepared.providerRequest.tools?.some((tool) => tool.name === "report_monitoring_result") ?? false;
+
+  it("freezes the verdict and its instruction only for an occurrence of a monitoring task", async () => {
+    const h = harness();
+    const check = preparedFrom(await prepareRun(h.deps, scheduled({ previousResult: previous })));
+    expect(check.normalizedRequest.monitoringVerdictTool).toBe(true);
+    expect(offered(check)).toBe(true);
+    expect(check.normalizedRequest.prompt.system).toContain("scheduled monitoring check");
+    expect(check.normalizedRequest.prompt.system).toContain("last result the user was shown");
+    // The instruction is server-owned: the user's turn keeps only the task prompt.
+    expect(JSON.stringify(check.normalizedRequest.content)).not.toContain("report_monitoring_result");
+
+    // A standard task's scheduled run and the owner's own message get neither.
+    for (const input of [scheduled({ monitoring: false, previousResult: previous }), sendInput(toolBody)]) {
+      const prepared = preparedFrom(await prepareRun(h.deps, input));
+      expect(prepared.normalizedRequest.monitoringVerdictTool).toBeUndefined();
+      expect(offered(prepared)).toBe(false);
+      expect(prepared.normalizedRequest.prompt.system ?? "").not.toContain("monitoring check");
+    }
+  });
+
+  it("tells a first check that no result was shown yet", async () => {
+    const first = preparedFrom(await prepareRun(harness().deps, scheduled()));
+    expect(first.normalizedRequest.prompt.system).toContain("No earlier result has been shown");
+    expect(first.normalizedRequest.prompt.system).not.toContain("last result the user was shown");
+  });
+
+  it("refuses a check whose model cannot call the reporting tool before anything is accepted", async () => {
+    await expect(prepareRun(harness(false).deps, scheduled())).resolves.toMatchObject({ code: "model_cannot_report", ok: false, status: 409 });
+    await expect(prepareRun(harness().deps, scheduled({ body: { ...toolBody, tools: "none" } })))
+      .resolves.toMatchObject({ code: "model_cannot_report", ok: false });
+    // A standard scheduled run of the same model is admitted without tools.
+    const plain = preparedFrom(await prepareRun(harness(false).deps, scheduled({ monitoring: false })));
+    expect(offered(plain)).toBe(false);
+  });
+});
+
+describe("scheduled task creation admission", () => {
+  const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
+  function tooling(input: Readonly<{ creator?: boolean; toolCalling?: boolean }> = {}): RunPreparationDeps {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: input.toolCalling ?? true } });
+    return { ...harness.deps, repository: { ...harness.deps.repository,
+      ...(input.creator === false ? {} : { createScheduledTaskForCall: vi.fn() }) } };
+  }
+  const creationTool = (prepared: PreparedRun) =>
+    prepared.providerRequest.tools?.find((tool) => tool.name === "create_scheduled_task");
+
+  it("offers the owner's personal message one creation with the settings frozen from its own admission", async () => {
+    const prepared = preparedFrom(await prepareRun(tooling(), sendInput(toolBody)));
+    expect(prepared.normalizedRequest.scheduledTaskTool).toEqual({
+      modelId: "openai-tool-model", provider: "openai", searchEnabled: false, toolsEnabled: true, workspaceEnabled: false
+    });
+    expect(creationTool(prepared)).toMatchObject({ capability: "session", strict: true });
+    // The tool states the run's own frozen zone for the schedule.
+    expect(creationTool(prepared)?.description).toContain("time zone Europe/Berlin");
+    // MCP Off is the run's tools state: the task then runs without tools.
+    const toolsOff = preparedFrom(await prepareRun(tooling(), sendInput({ ...toolBody, mcp: { mode: "off" } })));
+    expect(toolsOff.normalizedRequest.scheduledTaskTool).toMatchObject({ toolsEnabled: false });
+  });
+
+  it("freezes the admitted catalog model and its Search, not the execution identity", async () => {
+    const plan = providerNeutralOpenAISearchPlan("anthropic_messages");
+    const prepared = preparedFrom(await prepareRun({ ...tooling(), allowFakeProvider: false,
+      providerAdmission: { load: vi.fn(async () => plan) } }, sendInput(successBody({
+      modelId: plan.selection.providerModelId, params: {}, provider: plan.selection.providerConnectionId,
+      searchPlan: plan.requestedSearchPlan
+    }))));
+    expect(prepared.normalizedRequest).toMatchObject({
+      modelId: "claude-opus-5", provider: "anthropic",
+      scheduledTaskTool: { modelId: "deployment-anthropic", provider: "connection-anthropic", searchEnabled: true }
+    });
+  });
+
+  it("never offers it to scheduled, temporary, Project, Assistant or Knowledge runs or without usable tools", async () => {
+    const scheduled = sendInput(toolBody);
+    if (scheduled.source.kind !== "send") throw new Error("invalid send fixture");
+    const occurrence: RunPreparationInput = { ...scheduled, source: { ...scheduled.source, scheduledOccurrence: {
+      occurrenceId: "occurrence-1", previousResult: null, relevantMcpServerIds: null, taskGeneration: 1, taskId: "task-1",
+      taskRevision: 1
+    } } };
+    const project = projectAdmission({ modelIds: ["openai-tool-model"] });
+    const assistants: NonNullable<RunPreparationDeps["assistants"]> = {
+      async resolveForRun() {
+        return { ok: true as const, assistant: {
+          assistantId: "assistant-1", definitionVersion: 1, knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
+          identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+            paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
+          mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
+          rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
+            providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
+          searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
+        } };
+      }
+    };
+    const deps = tooling();
+    const cases: Array<readonly [string, RunPreparationDeps, RunPreparationInput]> = [
+      ["scheduled", deps, occurrence],
+      ["temporary", deps, sendInput(toolBody, { memoryMode: "TEMPORARY", messageCount: 2 })],
+      ["project", deps, sendInput(successBody({ modelId: "openai-tool-model", provider: "openai", tools: "auto" }), { project })],
+      ["assistant", { ...deps, assistants, repository: { ...deps.repository, loadAssistantRowContext: assistantRowContextLoader({
+        defaultModelId: "openai-tool-model", models: { "openai-tool-model": "openai" }
+      }) } }, sendInput({ assistantId: "assistant-1", content: textMessageContent("Remind me daily"), timeZone: "Europe/Berlin" })],
+      ["knowledge", { ...deps, knowledgeAdmission: { async load(input) { return admittedKnowledge(input, "9"); } } },
+        sendInput({ ...toolBody, knowledgePlan: knowledgeSelection(["knowledge-base-1"]) })],
+      ["tools none", deps, sendInput({ ...toolBody, tools: "none" })],
+      ["no tool calling", tooling({ toolCalling: false }), sendInput(toolBody)],
+      ["no creator", tooling({ creator: false }), sendInput(toolBody)]
+    ];
+    for (const [label, caseDeps, input] of cases) {
+      const result = await prepareRun(caseDeps, input);
+      if (!result.ok) throw new Error(`${label}: ${result.code}`);
+      expect(result.prepared.normalizedRequest.scheduledTaskTool, label).toBeUndefined();
+      expect(creationTool(result.prepared), label).toBeUndefined();
+    }
+  });
+
+  it("never offers it to a regeneration of a scheduled task's prompt, in its chat or a branch copy", async () => {
+    const regenerate = (scheduledTaskPrompt: boolean) => regenerateInput(toolBody, {
+      userMessage: { content: textMessageContent("Remind me daily"), id: "stored-user-message", scheduledTaskPrompt }
+    });
+    // The owner's own message regenerated keeps its one creation.
+    const own = preparedFrom(await prepareRun(tooling(), regenerate(false)));
+    expect(own.normalizedRequest.scheduledTaskTool).toBeDefined();
+    expect(creationTool(own)).toBeDefined();
+    // The task's prompt, possibly model-written, never creates another task.
+    const answer = preparedFrom(await prepareRun(tooling(), regenerate(true)));
+    expect(answer.normalizedRequest.scheduledTaskTool).toBeUndefined();
+    expect(creationTool(answer)).toBeUndefined();
   });
 });

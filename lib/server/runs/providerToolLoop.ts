@@ -89,6 +89,35 @@ export function toolSynthesisInstruction(reason: ToolSynthesisReason): string {
   return `Tool use is now disabled for this run: ${cause}.${unexecuted} Answer now using only the results already obtained, and state explicitly which parts were not verified or not completed.`;
 }
 
+/**
+ * A tool reserved outside the budgets (a monitoring check's verdict). Its
+ * first call never counts against them; any later call counts as an ordinary
+ * one, so repeating it cannot extend the run. While it has not been called, a
+ * round whose budget was exactly used up first offers it alone (other calls of
+ * that round are refused into synthesis), so exhausting the business tools
+ * cannot prevent it. `called`: a call of it already exists (recovery derives it).
+ */
+export type ToolLoopReservedCall = Readonly<{
+  called: boolean;
+  /** The round's ephemeral instruction, never persisted. */
+  instruction: string;
+  name: string;
+}>;
+
+/**
+ * Whether this round offers only the outstanding reserved call instead of
+ * tool-free synthesis: the decision was an exactly used budget (a refused
+ * batch or a round without progress synthesizes at once). Shared by live
+ * execution and recovery.
+ */
+export function reservedCallRound(
+  decision: ToolSynthesisDecision | null,
+  reserved: Pick<ToolLoopReservedCall, "called"> | undefined
+): boolean {
+  return decision !== null && reserved !== undefined && !reserved.called &&
+    (decision.reason === "calls" || decision.reason === "rounds");
+}
+
 /** The instruction as the last provider tool message, in the bridge's form. */
 export function toolSynthesisMessage(bridge: Pick<ProviderToolBridge, "provider">, text: string): unknown {
   return bridge.provider === "gemini"
@@ -205,6 +234,8 @@ export type ProviderToolLoopInput = Readonly<{
     round: number;
     toolRound: number;
   }>): Promise<void> | void;
+  /** A tool reserved outside the budgets; see `ToolLoopReservedCall`. */
+  reservedCall?: ToolLoopReservedCall;
   afterToolBatch?(input: Readonly<{
     continuation: ProviderToolLoopContinuation;
     progress: ToolLoopProgress;
@@ -370,12 +401,18 @@ export async function runProviderToolLoop(
     providerToolMessages: []
   };
   let preparedRequest = input.initialRequest;
+  const reserved = input.reservedCall;
+  let reservedCalled = reserved?.called ?? false;
 
   return continueToolLoop({
     deferToolUntilBatchEnd: input.deferToolUntilBatchEnd,
     toolObservation: input.toolObservation,
     afterToolBatch: input.afterToolBatch,
     budgets: input.budgets,
+    ...(reserved ? {
+      budgetExemptCallMade: reserved.called,
+      isBudgetExempt: (call: ToolLoopCall) => call.name === reserved.name
+    } : {}),
     executeTool: (call, context) => input.executeTool({
       arguments: isRecord(call.arguments) ? call.arguments : {},
       id: call.id,
@@ -402,7 +439,7 @@ export async function runProviderToolLoop(
         input.projectToolResultForProvider,
         input.toolResultNoteForProvider
       );
-      const synthesis = toolSynthesisDecision({
+      const decision = toolSynthesisDecision({
         budgets: input.budgets,
         continuation,
         initialToolChoice: input.initialRequest.toolChoice,
@@ -410,6 +447,10 @@ export async function runProviderToolLoop(
           previousToolResults.every(entry => input.isRepeatBlockedCall!(entry.call)),
         progress
       });
+      // An exactly used budget first offers an outstanding reserved call
+      // alone; synthesis follows once it was made or refused.
+      const reservedRound = reservedCallRound(decision, reserved && { called: reservedCalled });
+      const synthesis = reservedRound ? null : decision;
       const budget = synthesis?.budget ?? null;
       const required = progress.toolRounds === 0 && input.initialRequest.toolChoice === "required";
       const toolChoice = synthesis || input.initialRequest.toolChoice === "none"
@@ -420,7 +461,8 @@ export async function runProviderToolLoop(
       // The instruction is budgeted with the request it ends, then removed
       // from everything the round persists.
       const synthesisMessage = synthesis
-        ? toolSynthesisMessage(input.bridge, toolSynthesisInstruction(synthesis.reason)) : null;
+        ? toolSynthesisMessage(input.bridge, toolSynthesisInstruction(synthesis.reason))
+        : reservedRound && reserved ? toolSynthesisMessage(input.bridge, reserved.instruction) : null;
       const requestedRound = withRoundForcedTool({
         ...preparedRequest,
         parallelToolCalls: input.parallelToolCalls,
@@ -621,6 +663,9 @@ export async function runProviderToolLoop(
           status: "error" as const
         };
       }
+      // Executed or refused with its batch, the reserved call is no longer
+      // outstanding: the round after an exhausted budget then synthesizes.
+      if (reserved && normalizedCalls.some((call) => call.name === reserved.name)) reservedCalled = true;
       return {
         calls: normalizedCalls,
         continuation: providerToolLoopContinuationAfterResult(

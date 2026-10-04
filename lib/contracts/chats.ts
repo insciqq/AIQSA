@@ -70,6 +70,13 @@ import {
   type ThreadWorkspaceActivity
 } from "./workspace";
 import { decodeContextCompactionStatus, type ContextCompactionStatus } from "./contextCompaction";
+import {
+  SCHEDULED_TASK_CARDS_LIMIT,
+  decodeScheduledTaskCard,
+  isScheduledTaskCheckOutcome,
+  type ScheduledTaskCard,
+  type ScheduledTaskCheckOutcome
+} from "./scheduledTasks";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -178,6 +185,9 @@ export type ThreadMessage = {
   provider?: string;
   role: "assistant" | "user";
   runId?: string | null;
+  scheduledTask?: ChatMessageScheduledTaskWire | null;
+  /** See `ChatMessageWire.scheduledOutcome`. */
+  scheduledOutcome?: ScheduledTaskCheckOutcome;
   status: "cancelled" | "complete" | "error" | "streaming";
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
@@ -208,6 +218,8 @@ export type ThreadArtifactSummary = {
   reasoningText: string[];
   /** Part of the thinking was too long to keep or show. */
   reasoningTruncated?: true;
+  /** Scheduled tasks the answer created; see `ScheduledTaskCard`. */
+  scheduledTasks?: ScheduledTaskCard[];
   sources: ThreadSearchSource[];
   /** Search results beyond THREAD_SEARCH_SOURCE_MAX_ITEMS were left out. */
   sourcesTruncated?: true;
@@ -401,10 +413,31 @@ export type ChatMessageWire = {
   parentMessageId: string | null;
   provider: string | null;
   role: string;
+  /** Present on current responses; absent (stale caches, fixtures) means none. */
+  scheduledTask?: ChatMessageScheduledTaskWire | null;
+  /**
+   * The settled outcome of the monitoring check this message belongs to: its
+   * scheduled user turn or that turn's answer. Kept on the check's run, so it
+   * outlives the occurrence history and the task. Absent for other messages
+   * and while the check runs; the transcript collapses `no_update` turns.
+   */
+  scheduledOutcome?: ScheduledTaskCheckOutcome;
   status: string;
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
 };
+
+/**
+ * A user turn posted by a scheduled task occurrence: the task and its current
+ * title, the run's id (`ScheduledTaskRun.id`) and whether its result is
+ * unread. Deleting the task removes its occurrences, so the marker disappears.
+ */
+export type ChatMessageScheduledTaskWire = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  title: string;
+  unseen: boolean;
+}>;
 
 export type ProjectMessageAuthorWire = Readonly<{
   displayName: string;
@@ -625,9 +658,21 @@ export type ChatNavigationSummaryWire = {
   assistant: AssistantIdentity | null;
   folderId: string | null;
   id: string;
+  /**
+   * The scheduled task that posts or posted into this chat, with this chat's
+   * unread marker. Present on current responses; absent (local upserts,
+   * fixtures) means none.
+   */
+  scheduledTask?: ChatNavigationScheduledTaskWire | null;
   title: string;
   updatedAt: string;
 };
+
+export type ChatNavigationScheduledTaskWire = Readonly<{
+  taskId: string;
+  /** A result in this chat (an answer or a failure that paused the task) has not been seen yet. */
+  unseen: boolean;
+}>;
 
 export type ChatNavigationFolderWire = {
   id: string;
@@ -1013,6 +1058,9 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   const workDurationMs = Number.isSafeInteger(value.workDurationMs) && (value.workDurationMs as number) >= 0
     ? value.workDurationMs as number
     : undefined;
+  const scheduledTasks = Array.isArray(value.scheduledTasks)
+    ? decodeOptionalItems(value.scheduledTasks, decodeScheduledTaskCard, SCHEDULED_TASK_CARDS_LIMIT, (card) => card.taskId).items
+    : undefined;
 
   return {
     citations: citations.items,
@@ -1030,6 +1078,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(memorySources !== undefined ? { memorySources } : {}),
     reasoningText: reasoning.reasoningText,
     ...(reasoning.truncated || value.reasoningTruncated === true ? { reasoningTruncated: true as const } : {}),
+    ...(scheduledTasks?.length ? { scheduledTasks } : {}),
     sources: sources.items,
     ...(sources.truncated || value.sourcesTruncated === true ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== undefined ? { workDurationMs } : {})
@@ -1176,6 +1225,22 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     workspaceActivity = decodeThreadWorkspaceActivity(value.workspaceActivity);
     if (!workspaceActivity) return null;
   }
+  let scheduledTask: ChatMessageScheduledTaskWire | null | undefined;
+  if (value.scheduledTask === undefined || value.scheduledTask === null) {
+    scheduledTask = value.scheduledTask;
+  } else {
+    const marker = isRecord(value.scheduledTask) && hasExactKeys(value.scheduledTask, ["taskId", "taskRunId", "title", "unseen"])
+      ? value.scheduledTask : null;
+    const taskId = marker ? requiredString(marker.taskId) : null;
+    const taskRunId = marker ? requiredString(marker.taskRunId) : null;
+    const title = marker ? requiredString(marker.title) : null;
+    if (!marker || !taskId || taskId.length > 128 || !taskRunId || taskRunId.length > 128 || !title ||
+      codePointLength(title) > CHAT_TITLE_MAX_LENGTH || typeof marker.unseen !== "boolean") return null;
+    scheduledTask = { taskId, taskRunId, title, unseen: marker.unseen };
+  }
+  const scheduledOutcome: ScheduledTaskCheckOutcome | undefined = isScheduledTaskCheckOutcome(value.scheduledOutcome)
+    ? value.scheduledOutcome : undefined;
+  if (value.scheduledOutcome !== undefined && scheduledOutcome === undefined) return null;
   let author: ProjectMessageAuthorWire | null | undefined;
   if (value.author === undefined || value.author === null) {
     author = value.author;
@@ -1226,6 +1291,8 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
     parentMessageId,
     provider,
     role,
+    ...(scheduledTask !== undefined ? { scheduledTask } : {}),
+    ...(scheduledOutcome !== undefined ? { scheduledOutcome } : {}),
     status,
     ...(toolActivity !== undefined ? { toolActivity } : {}),
     ...(workspaceActivity !== undefined ? { workspaceActivity } : {})
@@ -1354,15 +1421,31 @@ function decodeFolderWire(value: unknown): FolderWire | null {
   };
 }
 
+const CHAT_NAVIGATION_SUMMARY_KEYS = ["activeRun", "assistant", "folderId", "id", "title", "updatedAt"] as const;
+
+function decodeChatNavigationScheduledTask(value: unknown): ChatNavigationScheduledTaskWire | null | undefined {
+  if (value === null) return null;
+  if (!isRecord(value) || !hasExactKeys(value, ["taskId", "unseen"])) return undefined;
+  const taskId = requiredString(value.taskId);
+  return taskId && taskId.length <= 128 && typeof value.unseen === "boolean"
+    ? { taskId, unseen: value.unseen }
+    : undefined;
+}
+
 function decodeChatNavigationSummaryWire(
   value: unknown
 ): ChatNavigationSummaryWire | null {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["activeRun", "assistant", "folderId", "id", "title", "updatedAt"])
+    (!hasExactKeys(value, CHAT_NAVIGATION_SUMMARY_KEYS) &&
+      !hasExactKeys(value, [...CHAT_NAVIGATION_SUMMARY_KEYS, "scheduledTask"]))
   ) {
     return null;
   }
+  const scheduledTask = "scheduledTask" in value
+    ? decodeChatNavigationScheduledTask(value.scheduledTask)
+    : null;
+  if (scheduledTask === undefined) return null;
   const assistant = value.assistant === null ? null : decodeAssistantIdentity(value.assistant);
   const folderId = nullableId(value.folderId);
   const id = requiredString(value.id);
@@ -1383,6 +1466,7 @@ function decodeChatNavigationSummaryWire(
     assistant,
     folderId,
     id,
+    ...(scheduledTask ? { scheduledTask } : {}),
     title,
     updatedAt
   };

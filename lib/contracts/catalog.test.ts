@@ -89,6 +89,15 @@ describe("catalog wire contract", () => {
     }
   });
 
+  it("defaults browser notifications to on and rejects a non-boolean", () => {
+    const response = validResponse();
+    expect(decodeCatalogResponse(response)?.defaults.browserNotificationsEnabled).toBe(true);
+    const off = { ...response, catalog: { ...response.catalog, defaults: { ...response.catalog.defaults, browserNotificationsEnabled: false } } };
+    expect(decodeCatalogResponse(off)?.defaults.browserNotificationsEnabled).toBe(false);
+    expect(decodeCatalogResponse({ ...off, catalog: { ...off.catalog, defaults: { ...off.catalog.defaults, browserNotificationsEnabled: 1 } } }))
+      .toBeNull();
+  });
+
   it("normalizes absent sound preferences and strictly preserves an explicit mute", () => {
     const response = validResponse();
     expect(decodeCatalogResponse(response)?.defaults).toMatchObject({ answerSoundEnabled: true, answerSoundId: "rise" });

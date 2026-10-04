@@ -7,11 +7,14 @@ vi.mock("../lib/server/observability/http.cjs", () => ({ reportNextRequestError:
 const startup = vi.hoisted(() => ({
   announce: vi.fn(), failed: vi.fn(), healthy: vi.fn(), hooks: vi.fn(),
   recovery: vi.fn(), attachments: vi.fn(), uploads: vi.fn(), knowledge: vi.fn(),
-  activation: vi.fn(), mcp: vi.fn(), memory: vi.fn(), nativeRouting: vi.fn(), decisionModel: vi.fn(), costs: vi.fn()
+  activation: vi.fn(), mcp: vi.fn(), memory: vi.fn(), nativeRouting: vi.fn(), decisionModel: vi.fn(), costs: vi.fn(),
+  scheduledTasks: vi.fn(), push: vi.fn()
 }));
 vi.mock("../lib/server/observability", () => ({ announceProcess: startup.announce, reportSubsystemFailure: startup.failed, reportSubsystemHealthy: startup.healthy }));
 vi.mock("../lib/server/observability/process.cjs", () => ({ installProcessFailureHooks: startup.hooks }));
 vi.mock("../lib/server/runs/defaultRecoveryScheduler", () => ({ startDefaultRunRecoveryScheduler: startup.recovery }));
+vi.mock("../lib/server/scheduledTasks/defaultRunner", () => ({ startDefaultScheduledTaskRunner: startup.scheduledTasks }));
+vi.mock("../lib/server/push/defaultBrowserPush", () => ({ startDefaultBrowserPush: startup.push }));
 vi.mock("../lib/server/uploads/defaultProcessing", () => ({ getDefaultAttachmentProcessingCoordinator: startup.attachments }));
 vi.mock("../lib/server/uploads/defaultWorkspaceUploads", () => ({ getWorkspaceUploadService: startup.uploads }));
 vi.mock("../lib/server/knowledge/defaultIngestion", () => ({ getDefaultKnowledgeIngestionCoordinator: startup.knowledge }));
@@ -42,6 +45,8 @@ describe("optional subsystem startup", () => {
     startup.attachments.mockImplementationOnce(() => { throw new Error("private-attachment-canary"); });
     startup.knowledge.mockImplementationOnce(() => { throw new Error("private-knowledge-canary"); });
     startup.mcp.mockImplementationOnce(() => { throw new Error("private-mcp-canary"); });
+    startup.scheduledTasks.mockImplementationOnce(() => { throw new Error("private-scheduled-canary"); });
+    startup.push.mockImplementationOnce(() => { throw new Error("private-push-canary"); });
     await expect(register()).resolves.toBeUndefined();
     expect(startup.uploads).toHaveBeenCalledOnce();
     expect(startup.nativeRouting).toHaveBeenCalledOnce();
@@ -50,12 +55,14 @@ describe("optional subsystem startup", () => {
     expect(startup.hooks).toHaveBeenCalledOnce();
     expect(startup.announce).toHaveBeenCalledWith(expect.objectContaining({ attachments: "starting", memory: "unknown" }));
     expect(startup.failed.mock.calls.map(([fields]) => fields)).toEqual([
+      { subsystem: "scheduled_tasks", stage: "startup", code: "scheduled_task_runner_startup_failed", action: "degrade" },
+      { subsystem: "push", stage: "startup", code: "push_unavailable", action: "degrade" },
       { subsystem: "attachments", stage: "startup", code: "attachment_processing_startup_failed", action: "degrade" },
       { subsystem: "knowledge", stage: "startup", code: "knowledge_ingestion_startup_failed", action: "degrade" },
       { subsystem: "mcp", stage: "startup", code: "mcp_runtime_startup_failed", action: "degrade" }
     ]);
     await register();
-    for (const subsystem of ["attachments", "knowledge", "mcp"]) {
+    for (const subsystem of ["scheduled_tasks", "attachments", "knowledge", "mcp"]) {
       expect(startup.healthy).toHaveBeenCalledWith(subsystem, "startup");
     }
     expect(JSON.stringify(startup.failed.mock.calls)).not.toContain("canary");

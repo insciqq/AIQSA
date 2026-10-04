@@ -831,6 +831,7 @@ model User {
   artifactBlobs ArtifactBlob[]
   instructionPresets InstructionPreset[]
   chatContinuations ChatContinuation[]
+  scheduledTasks ScheduledTask[]
   id                                  String                             @id @default(uuid())
   email                               String?                            @unique
   displayName                         String
@@ -847,6 +848,7 @@ model User {
   authInvitesCreated                  AuthInvite[]                       @relation("AuthInviteCreator")
   authSessions                        AuthSession[]
   authSessionsRevoked                 AuthSession[]                      @relation("AuthSessionRevoker")
+  browserPushSubscriptions            BrowserPushSubscription[]
   assistantDefinitions                AssistantDefinition[]              @relation("AssistantDefinitionOwner")
   assistantListingRequests            AssistantListingRequest[]          @relation("AssistantListingRequester")
   assistantListingReviews             AssistantListingRequest[]          @relation("AssistantListingReviewer")
@@ -1165,7 +1167,9 @@ model AuthSession {
   updatedAt          DateTime  @updatedAt
   revokedBy          User?     @relation("AuthSessionRevoker", fields: [revokedByUserId], references: [id], onDelete: Restrict)
   user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  browserPushSubscriptions BrowserPushSubscription[]
 
+  @@unique([userId, id])
   @@index([expiresAt])
   @@index([revokedAt])
   @@index([userId, expiresAt])
@@ -1321,6 +1325,7 @@ model UserSettings {
   defaultAssistantId      String?
   answerSoundEnabled      Boolean        @default(true)
   answerSoundId           String         @default("rise") @db.VarChar(16)
+  browserNotificationsEnabled Boolean    @default(true)
   sendWithEnter           Boolean        @default(true)
   showCitations           Boolean        @default(true)
   showReasoningBlocks     Boolean        @default(false)
@@ -3185,6 +3190,8 @@ model Chat {
   sharedSnapshots                 SharedChatSnapshot[]
   user                            User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspaceSession                WorkspaceSession?
+  scheduledTasks                  ScheduledTask[]
+  scheduledTaskOccurrences        ScheduledTaskOccurrence[]
 
   @@unique([userId, id])
   @@index([activeLeafMessageId])
@@ -3293,6 +3300,10 @@ model Message {
   authorProjectRole      ProjectRole?
   branchSourceModelRunId String?
   branchFollowups        Json?
+  /// A user message a scheduled task posted (its prompt, possibly model-written). Set
+  /// with the scheduled run and kept by branch copies: every answer to it stays out
+  /// of Personal Memory and never creates a scheduled task.
+  scheduledTaskPrompt    Boolean           @default(false)
   createdAt              DateTime          @default(now())
   updatedAt              DateTime          @updatedAt
   assistantModelRuns     ModelRun[]        @relation("AssistantMessageRun")
@@ -3304,6 +3315,7 @@ model Message {
   parent                 Message?          @relation("MessageBranches", fields: [chatId, parentMessageId], references: [chatId, id], onDelete: Restrict, onUpdate: Restrict, map: "Message_chatId_parentMessageId_fkey")
   memoryToolEvents       MemoryToolEvent[]
   userModelRuns          ModelRun[]        @relation("UserMessageRun")
+  scheduledTaskOccurrences ScheduledTaskOccurrence[]
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@index([chatId, parentMessageId])
@@ -3463,6 +3475,14 @@ model ModelRun {
   /// Frozen completion accounting for recovery until the run settles.
   answerCompletionUsage        Json?
   workspaceWaitPending         Boolean                             @default(false)
+  /// A scheduled task's run: its task, occurrence and task generation at acceptance.
+  /// Plain values without relations, so they outlive the task and its history.
+  scheduledTaskId              String?
+  scheduledOccurrenceId        String?
+  scheduledTaskGeneration      Int?
+  /// A settled monitoring check's outcome (`ScheduledTaskCheckOutcome`): what the
+  /// transcript collapses (`no_update`) after the occurrence history is pruned.
+  scheduledOutcome             String?                             @db.VarChar(64)
   createdAt                    DateTime                            @default(now())
   updatedAt                    DateTime                            @updatedAt
   assistantMessage             Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
@@ -3497,6 +3517,8 @@ model ModelRun {
   workspaceExecutions          WorkspaceExecution[]
   workspaceProducedAttachments Attachment[]                        @relation("WorkspaceProducedAttachment")
   workspaceCaptureReferences   WorkspaceCaptureReference[]
+  scheduledTaskOccurrences     ScheduledTaskOccurrence[]
+  browserPushDelivery          BrowserPushDelivery?
 
   @@unique([userId, id])
   @@unique([chatId, id], map: "ModelRun_chatId_id_key")
@@ -7127,4 +7149,202 @@ model CatalogCostBackfill {
   runCursor String?
   usageFinished Boolean @default(false)
   completedAt DateTime?
+}
+
+enum ScheduledTaskScheduleKind {
+  ONCE
+  DAILY
+  WEEKLY
+  MONTHLY
+  HOURLY
+}
+
+enum ScheduledTaskChatMode {
+  NEW
+  SAME
+}
+
+enum ScheduledTaskKind {
+  STANDARD
+  MONITORING
+}
+
+enum ScheduledTaskStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum ScheduledTaskOccurrenceState {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+/// A personal prompt the scheduler posts into chats. Schedule columns are
+/// wall-clock values in `timeZone`; lib/domain/scheduledTaskSchedule.ts computes
+/// `nextRunAt`, which is null unless ACTIVE. Model identity is revalidated at save
+/// and run, never a foreign key. `revision` changes on every owner mutation and on
+/// runner status transitions (auto-pause, once completion, a monitoring goal),
+/// not on bookkeeping (`nextRunAt`, the counters, `chatId`, the baseline).
+model ScheduledTask {
+  id                         String                    @id @default(uuid())
+  userId                     String
+  title                      String                    @db.VarChar(120)
+  prompt                     String
+  scheduleKind               ScheduledTaskScheduleKind
+  /// Local wall-clock minute of the day, 0..1439; HOURLY: the window start (0 for the whole day).
+  timeOfDayMinutes           Int
+  /// ISO weekdays, Monday = bit 0 .. Sunday = bit 6; 0 unless WEEKLY or HOURLY.
+  daysOfWeekMask             Int                       @default(0)
+  /// 1..31 for MONTHLY, clamped to the month's last day; otherwise null.
+  dayOfMonth                 Int?
+  /// Local `YYYY-MM-DD` for ONCE; otherwise null.
+  onceLocalDate              String?                   @db.VarChar(10)
+  /// HOURLY only: the nominal interval, 1, 2, 3, 4, 6, 8 or 12 hours.
+  everyHours                 Int?
+  /// HOURLY only: the inclusive window end after `timeOfDayMinutes`; null runs through the end of the day.
+  untilMinutes               Int?
+  timeZone                   String                    @db.VarChar(64)
+  modelId                    String                    @db.VarChar(256)
+  provider                   String                    @db.VarChar(256)
+  searchEnabled              Boolean                   @default(false)
+  emailNotify                Boolean                   @default(false)
+  /// The owner's MCP tools and Skills, both in Auto mode; needs a tool-calling model.
+  toolsEnabled               Boolean                   @default(false)
+  /// The task chat's Workspace; needs a tool-calling model. A run never changes an existing chat's switch.
+  workspaceEnabled           Boolean                   @default(false)
+  /// NEW starts a chat for every run; SAME continues the task's chat (always for HOURLY and MONITORING).
+  chatMode                  ScheduledTaskChatMode     @default(NEW)
+  /// MONITORING runs are checks that report through a built-in tool whether
+  /// anything changed; checks without news stay hidden and silent.
+  kind                       ScheduledTaskKind         @default(STANDARD)
+  status                     ScheduledTaskStatus       @default(ACTIVE)
+  /// Stable code of an automatic pause; null for owner pauses and other states.
+  pauseReason                String?                   @db.VarChar(64)
+  /// Stable code of a runner completion (`goal_reached`); null for a once
+  /// task's single run and in other states.
+  completionReason           String?                   @db.VarChar(64)
+  nextRunAt                  DateTime?
+  /// The newest chat a run used; deleting the chat clears only this column.
+  chatId                     String?
+  consecutiveFailures        Int                       @default(0)
+  /// Scheduled runs in a row that completed without a relevant source; reset by a complete run or an owner edit.
+  consecutiveIncompleteRuns  Int                       @default(0)
+  /// Scheduled monitoring checks in a row whose model reported no outcome.
+  consecutiveMissingVerdicts Int                       @default(0)
+  revision                  Int                       @default(1)
+  /// Bumped with the revision when the prompt, the schedule kind or the task
+  /// kind changes; frozen on accepted occurrences and runs.
+  generation                 Int                       @default(1)
+  /// The newest shown completed result of the current generation: what the
+  /// next same-chat run sees besides the prompt. Plain identifiers, rechecked
+  /// against the run's chat path at every admission; all four or none.
+  baselineRunId              String?
+  baselineUserMessageId      String?
+  baselineAssistantMessageId String?
+  baselineGeneration         Int?
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
+  user                User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// The migration uses column-scoped SET NULL so chat deletion never clears userId.
+  chat                Chat?                     @relation(fields: [userId, chatId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
+  occurrences         ScheduledTaskOccurrence[]
+
+  @@unique([userId, id])
+  @@index([status, nextRunAt])
+  @@index([userId, createdAt])
+  @@index([chatId])
+}
+
+/// One scheduled instant or manual request of a task, filled by the runner.
+/// Content-free: identifiers, timestamps and stable codes only.
+model ScheduledTaskOccurrence {
+  id             String                       @id @default(uuid())
+  taskId         String
+  userId         String
+  /// `schedule` or `manual`.
+  trigger        String                       @db.VarChar(16)
+  scheduledFor   DateTime
+  state          ScheduledTaskOccurrenceState @default(PENDING)
+  reasonCode     String?                      @db.VarChar(64)
+  chatId         String?
+  userMessageId  String?
+  runId          String?
+  leaseExpiresAt DateTime?
+  startedAt      DateTime?
+  /// Set exactly when the state is COMPLETED, FAILED or SKIPPED.
+  finishedAt     DateTime?
+  notifiedAt     DateTime?
+  /// The task generation frozen when a run accepted this occurrence.
+  taskGeneration Int?
+  /// The task revision a run accepted this occurrence under; a goal completes
+  /// the task only while it is unchanged.
+  taskRevision   Int?
+  /// A monitoring check's model-reported outcome (`update`, `no_update` or
+  /// `goal_reached`); the last report of the run wins, null when it never reported.
+  verdict        String?                      @db.VarChar(16)
+  /// A settled result the owner has not seen yet: a finished answer or a failure that paused the task.
+  unseenAt       DateTime?
+  /// Frozen when a run accepted this occurrence: the relevant personal sources its Auto
+  /// plan could not offer, `[{ serverId, name, reason, relied }]`; null when none was
+  /// missing. Such a run is incomplete. Display names only, never tool content.
+  unavailableSources Json?
+  createdAt      DateTime                     @default(now())
+  task           ScheduledTask                @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  /// The migration uses column-scoped SET NULL for chat and run references.
+  chat           Chat?                        @relation(fields: [userId, chatId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
+  userMessage    Message?                     @relation(fields: [userMessageId], references: [id], onDelete: SetNull, onUpdate: Restrict)
+  run            ModelRun?                    @relation(fields: [userId, runId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
+  browserPushDelivery BrowserPushDelivery?
+
+  @@unique([taskId, trigger, scheduledFor])
+  @@index([taskId, scheduledFor])
+  @@index([state, leaseExpiresAt])
+  @@index([chatId])
+  @@index([runId])
+  @@index([userMessageId])
+}
+
+/// The installation's VAPID key pair for browser push, created on first use.
+/// The private key is an `AIQSA_ENCRYPTION_KEY` envelope.
+model BrowserPushVapidKey {
+  id                 String   @id
+  publicKey          String   @db.VarChar(128)
+  privateKeyEnvelope String
+  createdAt          DateTime @default(now())
+}
+
+/// One browser push subscription of one signed-in device. It is bound to the
+/// session that registered it and leaves with that session's revocation.
+model BrowserPushSubscription {
+  id            String      @id @default(uuid())
+  userId        String
+  sessionId     String
+  endpoint      String      @unique @db.VarChar(2048)
+  p256dh        String      @db.VarChar(128)
+  auth          String      @db.VarChar(64)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  lastSuccessAt DateTime?
+  lastFailureAt DateTime?
+  failureCount  Int         @default(0)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session       AuthSession @relation(fields: [userId, sessionId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([userId, updatedAt])
+  @@index([sessionId])
+}
+
+/// At most one browser push per run or scheduled occurrence: the claim row is
+/// written before any delivery.
+model BrowserPushDelivery {
+  id           String                   @id
+  runId        String?                  @unique
+  occurrenceId String?                  @unique
+  claimedAt    DateTime                 @default(now())
+  run          ModelRun?                @relation(fields: [runId], references: [id], onDelete: Cascade)
+  occurrence   ScheduledTaskOccurrence? @relation(fields: [occurrenceId], references: [id], onDelete: Cascade)
 }

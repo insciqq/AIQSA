@@ -197,6 +197,11 @@ export type ShellThreadView = {
    */
   refreshInterruptedRun(): Promise<boolean>;
   retryActiveChatDetail(): void;
+  /**
+   * The scheduled task whose later runs continue in the open chat (same-chat
+   * mode, its newest chat): replies here do not change it, its editor does.
+   */
+  scheduledTaskChat?: Readonly<{ onEdit?(): void; title: string }> | null;
   showJumpToLatest: boolean;
   submitMessageEdit(): Promise<void> | void;
   threadScrollRef: RefObject<HTMLDivElement | null>;
@@ -257,10 +262,28 @@ export type ShellComposerAssistant =
       state: "deleted" | "unavailable";
     };
 
+/** Browser push notifications of this account on this device. */
+export type BrowserNotificationsView = Readonly<{
+  /** The browser offers push only to the app added to the Home Screen (iPhone, iPad). */
+  appleMobile: boolean;
+  /** The one-click permission request is due: the setting is on and the browser has not been asked. */
+  bannerVisible: boolean;
+  dismissBanner(): void;
+  enabled: boolean;
+  permission: "default" | "denied" | "granted" | "unsupported";
+  /** The account setting has loaded. */
+  ready: boolean;
+  /** Asks the browser for permission; call only from a click. */
+  requestPermission(): void;
+  requesting: boolean;
+  toggle(): void;
+}>;
+
 export type ShellComposerView = {
   agent?: Readonly<{ enabled: boolean; unavailableReason?: string; setEnabled(value: boolean): void }>;
   attachments: ComposerAttachment[];
   backgroundMode: boolean;
+  browserNotifications?: BrowserNotificationsView;
   catalog: Catalog | null;
   catalogError: string | null;
   changeBackgroundMode(value: boolean): void;

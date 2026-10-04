@@ -46,6 +46,7 @@ import {
   boundedMemoryAdmissionDeadlineMs,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 } from "../memory/admissionDeadline";
+import { signalRunTerminal } from "../push/runTerminalSignal";
 import { serializeRunAssistantIdentity } from "./prismaRepositoryBindings";
 import {
   admitPreparingRunWithClient,
@@ -84,6 +85,10 @@ import {
 } from "./prismaRepositoryToolLoop";
 import { createPrismaMcpDiscoveryOperations } from "./prismaRepositoryMcpDiscovery";
 import { createPrismaToolHistoryOperations } from "./prismaRepositoryToolHistory";
+import { recordScheduledMonitoringVerdict } from "../scheduledTasks/monitoringVerdict";
+import { createPrismaScheduledTaskCatalogLoader } from "../scheduledTasks/catalog";
+import { createPrismaWorkspacePolicyRepository } from "../workspace/policyRepository";
+import { createScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskCall";
 import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
 import {
   decodeProjectDefaults,
@@ -198,6 +203,11 @@ export function createPrismaRunRepository(
   );
   const mcpDiscoveryOperations = createPrismaMcpDiscoveryOperations(prismaClient);
   const toolHistoryOperations = createPrismaToolHistoryOperations(prismaClient);
+  // A chat's scheduled task is created under the owner API's own rules.
+  const scheduledTaskCreationDeps = {
+    loadCatalog: createPrismaScheduledTaskCatalogLoader(prismaClient),
+    workspacePolicy: createPrismaWorkspacePolicyRepository(prismaClient)
+  };
   async function loadMemoryAdmissionDeadlineMs(request?: { memoryStandingVersion?: 1 }): Promise<number> {
     if (request?.memoryStandingVersion === 1) return MEMORY_STANDING_PREPARATION_TIMEOUT_MS;
     if (options.memoryAdmissionDeadlineMs !== undefined) {
@@ -460,6 +470,10 @@ export function createPrismaRunRepository(
     hasPendingWorkspacePreparation: async (runId) => Boolean(await prismaClient.workspaceFollowup.findFirst({
       select: { modelRunId: true }, where: { modelRunId: runId, state: { in: ["waiting", "preparing"] } }
     }).catch(retainRunPrismaCode)),
+    recordMonitoringVerdict: (input) =>
+      recordScheduledMonitoringVerdict(prismaClient, input).catch(retainRunPrismaCode),
+    createScheduledTaskForCall: (input) => createScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
+      .catch(retainRunPrismaCode),
     recoverPreparingRun: (input) =>
       recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
     retryPreparingRunAttempt: (input) =>
@@ -668,7 +682,7 @@ export function createPrismaRunRepository(
     completeRun: async (input) => {
       const usage = normalizeTokenUsage(input.usage);
 
-      return prismaClient.$transaction(async (tx) => {
+      const completed = await prismaClient.$transaction(async (tx) => {
         await lockRunSettlementScope(tx, input.runId);
         const [existingRun] = await tx.$queryRaw<
           Array<{
@@ -786,6 +800,9 @@ export function createPrismaRunRepository(
         if (!existingRun.answerCompletedAt) await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
         return true;
       }).catch(retainRunPrismaCode);
+      // After commit; the push sender claims the run at most once.
+      if (completed) signalRunTerminal(input.runId);
+      return completed;
     },
     continuePdfPreparedRun: async (input) => {
       const created = await continuePdfPreparedRunWithClient(prismaClient, input,
@@ -884,7 +901,7 @@ export function createPrismaRunRepository(
       }).catch(retainRunPrismaCode);
     },
     failRun: async (runId, assistantMessageId, error, options) => {
-      return prismaClient.$transaction(async (tx) => {
+      const failed = await prismaClient.$transaction(async (tx) => {
         await lockRunSettlementScope(tx, runId);
         const [lockedRun] = await tx.$queryRaw<Array<{
           status: ModelRunStatus;
@@ -958,6 +975,8 @@ export function createPrismaRunRepository(
         }
         return true;
       }).catch(retainRunPrismaCode);
+      if (failed) signalRunTerminal(runId);
+      return failed;
     },
     findOwnedChat: async (chatId, userId) => {
       const chat = await prismaClient.chat.findFirst({
@@ -1199,7 +1218,8 @@ export function createPrismaRunRepository(
             select: {
               content: true,
               id: true,
-              role: true
+              role: true,
+              scheduledTaskPrompt: true
             }
           }
         },
@@ -1260,7 +1280,8 @@ export function createPrismaRunRepository(
           chat,
           userMessage: {
             content: sourceMessage.content,
-            id: sourceMessage.id
+            id: sourceMessage.id,
+            scheduledTaskPrompt: sourceMessage.scheduledTaskPrompt
           }
         };
       }
@@ -1307,7 +1328,8 @@ export function createPrismaRunRepository(
         chat,
         userMessage: {
           content: sourceMessage.parent.content,
-          id: sourceMessage.parent.id
+          id: sourceMessage.parent.id,
+          scheduledTaskPrompt: sourceMessage.parent.scheduledTaskPrompt
         }
       };
     },

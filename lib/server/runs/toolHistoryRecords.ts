@@ -7,6 +7,7 @@ import { ANALYZE_IMAGE_TOOL_NAME } from "../tools/analyzeImage";
 import { ARTIFACT_TOOL_NAME, READ_ARTIFACT_TOOL_NAME } from "../tools/artifact";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME } from "../tools/checkpointOutputs";
 import { IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
+import { MONITORING_VERDICT_TOOL_NAME } from "../tools/monitoringVerdict";
 import { READ_TOOL_RESULT_NAME } from "../tools/readToolResult";
 import { SESSION_STATUS_TOOL_NAME } from "../tools/sessionStatus";
 import { hasInvalidProviderToolArguments, type ToolExecutionResult } from "../tools/types";
@@ -20,10 +21,11 @@ import { snapshotToolLoopJson, toolLoopPersistenceLimits } from "./toolLoopPersi
 
 export { READ_TOOL_CALL_NAME };
 
-/** Readers and status/discovery calls: counted, never listed. Every other
- * name is namespaced or owned, so no business tool can carry one of these. */
+/** Readers, status/discovery calls and monitoring reports: counted, never
+ * listed. Every other name is namespaced or owned, so no business tool can
+ * carry one of these. */
 const READER_NAMES: ReadonlySet<string> = new Set([READ_TOOL_RESULT_NAME, READ_TOOL_CALL_NAME, SESSION_STATUS_TOOL_NAME,
-  MCP_FIND_TOOLS_NAME]);
+  MCP_FIND_TOOLS_NAME, MONITORING_VERDICT_TOOL_NAME]);
 
 export function isToolHistoryReaderName(name: string): boolean {
   return READER_NAMES.has(name);

@@ -152,6 +152,32 @@ describe("settings handler", () => {
   });
 
   it.each([
+    [{ browserNotificationsEnabled: false }, 200],
+    [{ browserNotificationsEnabled: true }, 200],
+    [{ browserNotificationsEnabled: "off" }, 400],
+    [{ browserNotificationsEnabled: null }, 400]
+  ])("validates the browser notification toggle: %j", async (update, status) => {
+    const data = baseSettingsData();
+    const calls: UserSettingsUpdate[] = [];
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (_userId, patch) => {
+        calls.push(patch);
+        return updated({ ...data.settings, ...patch });
+      }
+    });
+    const response = await PATCH(new Request("http://app.local/api/me/settings", {
+      body: JSON.stringify(update), headers: { cookie: authCookie(), "content-type": "application/json" }, method: "PATCH"
+    }));
+    expect(response.status).toBe(status);
+    if (status === 200) {
+      expect(calls).toEqual([update]);
+      expect((await response.json()).settings.browserNotificationsEnabled).toBe(update.browserNotificationsEnabled);
+    } else expect(calls).toHaveLength(0);
+  });
+
+  it.each([
     [{ answerSoundEnabled: false, answerSoundId: "bell" }, 200],
     [{ answerSoundEnabled: true }, 200],
     [{ answerSoundId: "double-tap" }, 200],
@@ -308,6 +334,7 @@ describe("settings handler", () => {
     expect(Object.keys(responseBody.settings)).toEqual([
       "answerSoundEnabled",
       "answerSoundId",
+      "browserNotificationsEnabled",
       "defaultAssistantId",
       "defaultAssistantUnavailable",
       "defaultControlValues",

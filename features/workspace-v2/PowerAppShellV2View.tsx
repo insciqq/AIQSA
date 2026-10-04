@@ -2,6 +2,11 @@
 
 import { libraryTabGroups } from "@/features/library-v2/LibraryV2";
 import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
+import { ScheduledChecksRowV2 } from "@/features/scheduled-tasks/ScheduledChecksRowV2";
+import { ScheduledMessageChipV2 } from "@/features/scheduled-tasks/ScheduledMessageChipV2";
+import { groupScheduledChecks } from "@/features/scheduled-tasks/scheduledCheckGroups";
+import { ScheduledTaskChatHintV2 } from "@/features/scheduled-tasks/ScheduledTaskChatHintV2";
+import { BrowserNotificationsBannerV2, BrowserNotificationsSettingsRowV2 } from "@/features/browser-notifications/BrowserNotificationsV2";
 import { openAssistantDetail } from "@/components/app-shell/assistantGalleryActions";
 
 import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
@@ -118,6 +123,7 @@ import {
   previousVisibleAnswersV2
 } from "@/features/answer-outputs-v2/AnswerIdentityV2";
 import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
+import { openScheduledTaskEditorV2 } from "@/features/answer-outputs-v2/ScheduledTaskCardV2";
 import { MemoryCommandStatusV2, memoryCommandIsVisible } from "@/features/answer-outputs-v2/MemoryCommandStatusV2";
 import { useMemoryCommands } from "@/components/app-shell/useMemoryCommands";
 import {
@@ -566,6 +572,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     } else settings.openLibrary();
   }, [settings]);
   const [runSetupOpen, setRunSetupOpen] = useState(false);
+  /** Groups of monitoring checks with no update the reader opened, by group id. */
+  const [openScheduledChecks, setOpenScheduledChecks] = useState<ReadonlySet<string>>(() => new Set());
   const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
   const [connectionsBusyMessage, setConnectionsBusyMessage] = useState<string | null>(null);
   const [projectsSurfaceOpen, setProjectsSurfaceOpen] = useState(false);
@@ -1180,6 +1188,12 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       <ShellNotice notice={session.notice} onDismiss={session.dismissNotice} />
     </div>
   ) : null;
+  const browserNotificationsBanner = composer.browserNotifications ? (
+    <BrowserNotificationsBannerV2 notifications={composer.browserNotifications} />
+  ) : null;
+  const scheduledTaskHint = thread.scheduledTaskChat && !projectContext ? (
+    <ScheduledTaskChatHintV2 onEdit={thread.scheduledTaskChat.onEdit} title={thread.scheduledTaskChat.title} />
+  ) : null;
   // A blank chat with an Assistant opens with its quiet intro; the intro stays
   // while the user types so the composer below it never moves.
   const assistantOrientation = chatAssistant?.state === "bound" ? (
@@ -1228,12 +1242,25 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const readingAnchorMessageId = liveTail?.role === "assistant"
     ? liveTail.parentMessageId
     : null;
-  const conversationMessages: ConversationMessageV2[] = thread.visibleMessages.map((message) => ({
+  const conversationMessage = (message: ThreadMessage): ConversationMessageV2 => ({
     content: messageText(message),
     id: message.id,
     role: message.role,
     streaming: message.status === "streaming"
-  }));
+  });
+  // Consecutive monitoring checks with no update fold into one quiet row; opening it shows them unchanged below.
+  const scheduledCheckGroups = new Map<string, number>();
+  const conversationMessages: ConversationMessageV2[] = groupScheduledChecks(thread.visibleMessages).flatMap((item) => {
+    if (item.kind === "message") return [conversationMessage(item.message)];
+    scheduledCheckGroups.set(item.id, item.checks);
+    const row: ConversationMessageV2 = { content: "", id: item.id, role: "assistant" };
+    return openScheduledChecks.has(item.id) ? [row, ...item.messages.map(conversationMessage)] : [row];
+  });
+  const toggleScheduledChecks = (id: string) => setOpenScheduledChecks((current) => {
+    const next = new Set(current);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  });
   const presentAnswer = (source: ThreadMessage) => presentAnswerV2(source, thread);
   const announcedPresentation = announcedPresentationV2(liveTail, thread);
 
@@ -1264,6 +1291,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   };
 
   const renderMessage = (message: ConversationMessageV2): ReactNode => {
+    const checks = scheduledCheckGroups.get(message.id);
+    if (checks !== undefined) {
+      return (
+        <ScheduledChecksRowV2
+          checks={checks}
+          expanded={openScheduledChecks.has(message.id)}
+          onToggle={() => toggleScheduledChecks(message.id)}
+        />
+      );
+    }
     const source = messageById.get(message.id);
     if (!source) return null;
     const actions = actionsFor(source);
@@ -1301,6 +1338,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             : undefined}
           beforeContent={activeProject && source.author ? (
             <span className="v2-project-message-author">{source.author.displayName}</span>
+          ) : source.scheduledTask && !projectContext ? (
+            <ScheduledMessageChipV2
+              title={source.scheduledTask.title}
+              onOpen={settings.studio ? () => settings.studio?.open("scheduled") : undefined}
+            />
           ) : undefined}
           content={messageText(source)}
           quoteEligible={source.status === "complete"}
@@ -1387,6 +1429,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 live={!settled}
                 canSaveFiles={!projectContext && !temporarySession}
                 onEditArtifact={projectContext || temporarySession ? undefined : generated => editArtifact(generated)}
+                onEditScheduledTask={projectContext || temporarySession || !settings.studio ? undefined
+                  : (taskId) => openScheduledTaskEditorV2(taskId, (after) => settings.studio?.open("scheduled", after))}
                 onOpenArtifact={projectContext || temporarySession ? undefined : (generated, source) => {
                   if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, artifactId: generated.artifactId, versionId: generated.versionId }, source);
                 }}
@@ -1687,6 +1731,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               composerSlot={(
                 <div className="v2-project-page-composer-stack" ref={setComposerDockRef}>
                   {shellNotice}
+                  {browserNotificationsBanner}
                   {composerOperationError}
                   {composerSurface}
                 </div>
@@ -1831,6 +1876,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               composerSlot={conversationMessages.length === 0 ? (
                 <div className="v2-live-empty-composer-stack" ref={setComposerDockRef}>
                   {shellNotice}
+                  {browserNotificationsBanner}
+                  {scheduledTaskHint}
                   {composerOperationError}
                   {composerSurface}
                   {blankComposerRow}
@@ -1908,6 +1955,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             {conversationMessages.length > 0 ? (
               <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={setComposerDockRef}>
                 {shellNotice}
+                {browserNotificationsBanner}
+                {scheduledTaskHint}
                 {composerOperationError}
                 {composerSurface}
               </div>
@@ -2008,6 +2057,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           generalSlot={(
             <>
               <AnswerSoundSettingsRowV2 composer={composer} />
+              {composer.browserNotifications ? (
+                <BrowserNotificationsSettingsRowV2 notifications={composer.browserNotifications} />
+              ) : null}
               <SettingsRowV2
                 description="Show numbered source citations inside answers."
                 title="Citations"

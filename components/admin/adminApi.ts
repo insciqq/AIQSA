@@ -178,11 +178,12 @@ export function adminActionErrorMessage(code: AdminActionClientErrorCode | (stri
     invite_open: "Revoke this open invite before deleting it.",
     invite_required: "Choose an invite before continuing.",
     json_required: "The admin request format was not accepted. Refresh the console and try again.",
-    last_admin_forbidden: "The final active administrator cannot be disabled.",
+    last_admin_forbidden: "The final active administrator cannot be disabled or lose administrator rights.",
     network_error: "Could not reach the admin API.",
     project_owner_required: "Nothing was changed: this user is the only active Owner of one or more Projects. Ask them to make another member an Owner in each Project (restoring an archived Project first), then disable the user again. You can revoke their sessions now.",
     self_disable_forbidden: "Your current administrator account cannot disable itself.",
     self_delete_forbidden: "Your current admin account cannot delete itself.",
+    self_role_change_forbidden: "You cannot change your own administrator role. Another administrator can.",
     system_group_forbidden: "Full access is built in and cannot be renamed, archived, deleted, or edited with ordinary grants.",
     unauthorized: "Your admin session is no longer valid. Sign in again to continue.",
     user_active: "Disable this user before deleting it.",
@@ -192,9 +193,11 @@ export function adminActionErrorMessage(code: AdminActionClientErrorCode | (stri
     user_grant_required: "Choose a provider, model or Search source for this user.",
     user_groups_required: "Reload the current group memberships before saving changes.",
     user_has_owned_data: "Remove or transfer the remaining non-purgeable app data before deleting this account.",
+    user_not_active: "Only active users can be made administrators or lose administrator rights. Refresh to review the current users.",
     user_not_found: "This user no longer exists or is no longer eligible for this action. Refresh to review the current users.",
     user_not_verified: "Verify this user's email identity before approving the account.",
-    user_required: "Choose a user before continuing."
+    user_required: "Choose a user before continuing.",
+    user_role_required: "Choose whether this user should be an administrator, then try again."
   };
 
   return messages[code as AdminActionClientErrorCode] ?? "The admin action could not be completed. Review the current data and try again.";

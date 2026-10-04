@@ -286,6 +286,86 @@ export class SkillRunConflictError extends Error {
   }
 }
 
+/**
+ * The scheduled task occurrence a send admits; a server dependency, never a
+ * request field. The accepted run persists the task, occurrence and generation
+ * as its scheduled origin. Memory never applies to such a run.
+ */
+export type ScheduledOccurrenceAdmission = Readonly<{
+  occurrenceId: string;
+  taskId: string;
+  /** Frozen on the accepted occurrence and run. */
+  taskGeneration: number;
+  /**
+   * The task revision read before preparation: an owner edit or pause since
+   * then refuses the link, so the occurrence is admitted again under the
+   * current task.
+   */
+  taskRevision: number;
+  /**
+   * The only earlier turn the run's context keeps besides its prompt: the
+   * task's previous shown result (same-chat mode), used only while both
+   * messages lie on the path the run appends to. Null: the prompt alone.
+   */
+  previousResult: Readonly<{ assistantMessageId: string; userMessageId: string }> | null;
+  /**
+   * The personal MCP servers whose absence makes this run incomplete: those
+   * the task's previous shown result called, or relied on but already missed.
+   * Null: every server (the task has no previous shown result to judge by).
+   */
+  relevantMcpServerIds: readonly string[] | null;
+  /**
+   * The task is a monitoring task: the run is a check that must be able to
+   * report its outcome through the built-in verdict tool, or it is refused
+   * with `model_cannot_report`. The task revision fence keeps it current.
+   */
+  monitoring?: true;
+}>;
+
+/**
+ * A relevant personal MCP server a scheduled run's Auto catalog could not
+ * offer, frozen at admission on the run's occurrence as its source health.
+ */
+export type ScheduledUnavailableSource = Readonly<{
+  name: string;
+  reason: "mcp_reauthorization_required" | "mcp_server_unavailable";
+  /**
+   * The task's previous result relied on this server, so it stays relevant
+   * for the next run while it is missing. False when the run had no previous
+   * result to judge by and counted every server: such a guess is not carried.
+   */
+  relied: boolean;
+  serverId: string;
+}>;
+
+/**
+ * Why a chat run's `create_scheduled_task` call created nothing: an owner
+ * create rule's code, `scheduled_task_answer_limit` when this answer already
+ * created its one task, `scheduled_task_already_created` when another answer
+ * to the same message did and the owner still has that task, or
+ * `scheduled_task_call_unavailable` when the call cannot create at all (a
+ * scheduled, settled or missing run, another answer to a scheduled task's own
+ * turn, or a call that is not this run's claimed creation).
+ */
+export type ScheduledTaskCallRefusal = import("../../contracts/scheduledTasks").ScheduledTaskErrorCode |
+  "scheduled_task_already_created" | "scheduled_task_answer_limit" | "scheduled_task_call_unavailable";
+
+export type ScheduledTaskCallCreation =
+  /** Created; the call settled with `result` in the creation's transaction. */
+  | Readonly<{ kind: "created"; result: import("../tools/types").ToolExecutionResult;
+    task: import("../../contracts/scheduledTasks").ScheduledTask }>
+  /** The call had settled before (a recovered replay): its stored result, null when unreadable. Nothing was created. */
+  | Readonly<{ kind: "settled"; result: import("../tools/types").ToolExecutionResult | null }>
+  | Readonly<{ kind: "refused"; code: ScheduledTaskCallRefusal }>;
+
+/** The occurrence is gone, already has its run, or its task changed since preparation; the admission rolled back. */
+export class ScheduledOccurrenceConflictError extends Error {
+  constructor() {
+    super("scheduled_task_occurrence_unavailable");
+    this.name = "ScheduledOccurrenceConflictError";
+  }
+}
+
 /** Exact accepted Assistant provenance persisted with the run. */
 export type AcceptedAssistantRun = {
   assistantId: string;
@@ -402,6 +482,14 @@ export type CreateRunInput = {
   /** First Project send only: the chat row is committed with messages/run in
    * the same transaction, so a rejected admission cannot leave an empty chat. */
   projectChat?: Readonly<{ folderId: string | null }>;
+  /** A scheduled task's personal send: the run links this occurrence in its
+   * creating transaction or is not created, records its scheduled origin,
+   * marks its user message as the task's prompt, bypasses Personal Memory,
+   * and leaves the owner's saved composer controls and an existing chat's
+   * Workspace switch unchanged. */
+  scheduledOccurrence?: ScheduledOccurrenceAdmission;
+  /** With `scheduledOccurrence`: the relevant sources its plan lacked, frozen on the occurrence. */
+  scheduledUnavailableSources?: readonly ScheduledUnavailableSource[];
   signal?: AbortSignal;
   userId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
@@ -460,6 +548,9 @@ export type PreparingRunAdmissionResult = Readonly<{
   memoryCommandQueued?: boolean;
   memoryRevision: number;
   runId: string;
+  /** The run answers a scheduled task's prompt, as its user message read in the
+   * admitting transaction says: it was made dispatchable without Personal Memory. */
+  scheduledPrompt?: true;
   settingsSnapshot: MemoryPreparingSettingsSnapshot;
   userMessageId: string;
 }>;
@@ -715,6 +806,8 @@ export type RunRepository = {
     userMessage: {
       content: unknown;
       id: string;
+      /** The stored message is a scheduled task's prompt (`Message.scheduledTaskPrompt`). */
+      scheduledTaskPrompt: boolean;
     };
   } | null>;
   loadConversationContext(chatId: string, userId: string): Promise<ProviderConversationMessage[]>;
@@ -804,6 +897,33 @@ export type RunRepository = {
      * attempts when the reader's context cannot be read. */
     currentUserMessageId?: string | null;
   }): Promise<import("./toolHistory").ToolHistoryProjection>;
+  /**
+   * Records the outcome a monitoring check's run reported on the scheduled
+   * occurrence that admitted it, while that occurrence is running; repeatable,
+   * the last report wins. False when the run has no running occurrence.
+   */
+  recordMonitoringVerdict?(input: Readonly<{
+    runId: string;
+    userId: string;
+    verdict: import("../scheduledTasks/runnerPolicy").MonitoringVerdict;
+  }>): Promise<boolean>;
+  /**
+   * Creates the scheduled task a run's `create_scheduled_task` call asked
+   * for, as the owner's own create (`body` is validated exactly as
+   * `POST /api/me/scheduled-tasks` validates it), and settles the call with
+   * `result(task)` and appends that result's output events in the same
+   * transaction. A recovered call therefore finds it settled or finds nothing
+   * created; the call must be running, and the run active, unscheduled and
+   * without another created task.
+   */
+  createScheduledTaskForCall?(input: Readonly<{
+    body: unknown;
+    /** The persisted `ModelRunToolCall` id. */
+    callId: string;
+    result(task: import("../../contracts/scheduledTasks").ScheduledTask): import("../tools/types").ToolExecutionResult;
+    runId: string;
+    userId: string;
+  }>): Promise<ScheduledTaskCallCreation>;
   /** The authorized record `read_tool_call` returns, or null when unavailable. */
   readToolCall?(
     actor: Readonly<{ runId: string; userId: string }>,

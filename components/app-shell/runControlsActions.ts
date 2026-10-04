@@ -618,6 +618,12 @@ export function useRunControlsActions({
     void settingsMutationCoordinator.enqueue({ answerSoundEnabled: value }, { noticeScope: "settings" });
   }
 
+  function setBrowserNotificationsEnabled(value: boolean) {
+    if (isSettingsSessionCurrent?.() === false) return;
+    updateLocalCatalogDefaults({ browserNotificationsEnabled: value });
+    void settingsMutationCoordinator.enqueue({ browserNotificationsEnabled: value }, { noticeScope: "settings" });
+  }
+
   function setAnswerSoundId(value: AnswerSoundId) {
     if (isSettingsSessionCurrent?.() === false || !isAnswerSoundId(value)) return;
     updateLocalCatalogDefaults({ answerSoundId: value });
@@ -701,6 +707,7 @@ export function useRunControlsActions({
   return {
     setAnswerSoundEnabled,
     setAnswerSoundId,
+    setBrowserNotificationsEnabled,
     applyModelControlDefaults,
     buildControlDraft: currentControlDraft,
     buildParams,

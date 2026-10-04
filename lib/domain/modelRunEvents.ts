@@ -96,6 +96,7 @@ export type ModelRunSseEvent =
           | "context_compaction"
           | "context_truncated"
           | "reasoning"
+          | "scheduled_task"
           | "search"
           | "search_activity"
           | "memory_search_activity"

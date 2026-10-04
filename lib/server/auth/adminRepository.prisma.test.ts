@@ -592,6 +592,63 @@ describe("Prisma-backed admin repository", () => {
     });
   });
 
+  it("grants and revokes the admin role of other active users with live authority", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const [member, pending, disabled] = await Promise.all([
+        createPasswordUser({ displayName: "Role Member", domain, emailLocalPart: "role-member", status: "active" }),
+        createPasswordUser({ displayName: "Role Pending", domain, emailLocalPart: "role-pending", status: "pending" }),
+        createPasswordUser({ displayName: "Role Disabled", domain, emailLocalPart: "role-disabled", status: "disabled" })
+      ]);
+      const roleOf = async (userId: string) =>
+        (await prisma.user.findUniqueOrThrow({ select: { role: true }, where: { id: userId } })).role;
+
+      await expect(repository.setUserRole({ actingAdminUserId: adminId, role: "admin", userId: member.id })).resolves.toBe("granted");
+      await expect(repository.findAdminUser(member.id)).resolves.toEqual({ id: member.id, role: "admin", status: "active" });
+      await expect(repository.setUserRole({ actingAdminUserId: adminId, role: "admin", userId: member.id })).resolves.toBe("unchanged");
+
+      // The promoted admin can demote the admin who promoted them; self-changes stay refused.
+      await expect(repository.setUserRole({ actingAdminUserId: member.id, role: "user", userId: member.id })).resolves.toBe("self_role_change_forbidden");
+      await expect(repository.setUserRole({ actingAdminUserId: member.id, role: "user", userId: adminId })).resolves.toBe("revoked");
+      await expect(repository.findAdminUser(adminId)).resolves.toEqual({ id: adminId, role: "user", status: "active" });
+
+      // The demoted account is refused as an actor at once.
+      await expect(repository.setUserRole({ actingAdminUserId: adminId, role: "user", userId: member.id })).resolves.toBe("actor_forbidden");
+      await expect(roleOf(member.id)).resolves.toBe("admin");
+
+      await expect(repository.setUserRole({ actingAdminUserId: member.id, role: "admin", userId: pending.id })).resolves.toBe("user_not_active");
+      await expect(repository.setUserRole({ actingAdminUserId: member.id, role: "admin", userId: disabled.id })).resolves.toBe("user_not_active");
+      await expect(repository.setUserRole({ actingAdminUserId: member.id, role: "admin", userId: randomUUID() })).resolves.toBe("not_found");
+      await expect(roleOf(pending.id)).resolves.toBe("user");
+      await expect(roleOf(disabled.id)).resolves.toBe("user");
+    });
+  });
+
+  it("serializes reciprocal admin demotions so one of the two admins stays active", async () => {
+    await withAdminData(async ({ adminId, domain, repository }) => {
+      const peerAdmin = await prisma.user.create({
+        data: {
+          displayName: "Peer Role Admin",
+          email: `peer-role-admin@${domain}`,
+          role: "admin",
+          status: "active"
+        }
+      });
+      const wait = startBarrier(2);
+
+      const results = await Promise.all([
+        wait().then(() => repository.setUserRole({ actingAdminUserId: adminId, role: "user", userId: peerAdmin.id })),
+        wait().then(() => repository.setUserRole({ actingAdminUserId: peerAdmin.id, role: "user", userId: adminId }))
+      ]);
+      const admins = await prisma.user.findMany({
+        select: { id: true },
+        where: { id: { in: [adminId, peerAdmin.id] }, role: "admin", status: "active" }
+      });
+
+      expect(results.sort()).toEqual(["actor_forbidden", "revoked"]);
+      expect(admins).toHaveLength(1);
+    });
+  });
+
   it("rolls back disable and reject when session revocation fails", async () => {
     await withAdminData(async ({ adminId, domain }) => {
       const active = await createPasswordUser({

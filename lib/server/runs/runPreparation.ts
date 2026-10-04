@@ -88,11 +88,14 @@ import {
 import {
   mcpPersonalCredentialRejections,
   type McpCapabilityCatalog,
+  type McpCatalogOmission,
   type McpRunPlanBinding,
   type McpRunPlanResult
 } from "../mcp/runPlan";
 import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
+import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
+import { isScheduledTaskToolSettings, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
 import { readToolCallTool } from "../tools/readToolCall";
 import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { insertToolHistory, type ToolHistoryProjection } from "./toolHistory";
@@ -110,6 +113,7 @@ import { withSelectedSkillContext } from "../skills/userContext";
 import { freezeSkillManifest } from "../skills/runManifest";
 import { skillCatalogAuthorization } from "../skills/catalogRelevanceAuthority";
 import { SkillCatalogAuthorityChangedError, type SkillCatalogRelevanceService } from "../skills/catalogRelevanceService";
+import { scheduledUnavailableSources, scheduledUnavailableSourcesNotice } from "../scheduledTasks/sourceHealth";
 import { skillWorkspacePath } from "../../domain/skillBundlePaths";
 import { CODEX_MANAGED_PROFILE_VERSION } from "../agents/codexProfile";
 import { skillToolsForRequest } from "../tools/skill";
@@ -151,7 +155,9 @@ import type {
   AcceptedSkillRun,
   ProjectRunAdmission,
   RunModelConfiguration,
-  RunRepository
+  RunRepository,
+  ScheduledOccurrenceAdmission,
+  ScheduledUnavailableSource
 } from "./runRepositoryContract";
 import {
   DEFAULT_TOOL_RUN_BUDGETS,
@@ -187,6 +193,8 @@ type RunPreparationRepository = Pick<
   | "loadConversationContextForLeaf"
 > & Partial<Pick<
   RunRepository,
+  /** Present where a run can create a scheduled task: admission offers the tool only then. */
+  | "createScheduledTaskForCall"
   | "loadAssistantRowContext"
   | "loadBranchContextCheckpoints"
   | "loadKnowledgeFullContextPassages"
@@ -241,6 +249,35 @@ async function carriedContextSummary(input: Readonly<{
   return null;
 }
 
+/**
+ * The earlier turns a scheduled run's model sees: only the task's previous
+ * shown result (its user message and final answer) while both still lie, in
+ * order, on the path the run appends to; otherwise none, as for a first run.
+ * Turns the user wrote between runs, follow-ups and older results stay out,
+ * so the context is flat however long the task's chat grows.
+ */
+function scheduledRunContext(
+  path: readonly ProviderConversationMessage[],
+  previousResult: ScheduledOccurrenceAdmission["previousResult"]
+): ProviderConversationMessage[] {
+  if (!previousResult) return [];
+  const selected = path.filter((message) =>
+    message.id === previousResult.userMessageId || message.id === previousResult.assistantMessageId);
+  return selected.length === 2 && selected[0]!.id === previousResult.userMessageId && selected[0]!.role === "user" &&
+    selected[1]!.role === "assistant" ? selected : [];
+}
+
+/** A scheduled run's frozen tool history follows its context: only the previous result's turn. */
+function scheduledRunToolHistory(history: ToolHistorySnapshot, context: readonly ProviderConversationMessage[]): ToolHistorySnapshot {
+  const [user, answer] = context;
+  if (!user || !answer) return { version: TOOL_HISTORY_VERSION, turns: [] };
+  return {
+    version: history.version,
+    turns: history.turns.filter((turn) => turn.userMessageId === user.id || turn.turnMessageId === answer.id),
+    ...(history.unavailable ? { unavailable: true as const } : {})
+  };
+}
+
 export type RunPreparationDeps = Readonly<{
   memorySearchAdmission?: Readonly<{ admit(userId: string, assistantId?: string | null): Promise<MemorySearchSnapshot | null> }>;
   artifacts?: import("../artifacts/service").ArtifactService;
@@ -262,6 +299,11 @@ export type RunPreparationDeps = Readonly<{
   mcp?: Readonly<{
     filterTools: import("../mcp/toolAccess").McpToolAccessFilter;
     catalog?(userId: string): Promise<McpCapabilityCatalog>;
+    /** The Auto catalog and the personal servers it left out, from one read; scheduled runs use it. */
+    catalogWithOmissions?(userId: string): Promise<Readonly<{
+      catalog: McpCapabilityCatalog;
+      omitted: readonly McpCatalogOmission[];
+    }>>;
     materialize?(
       userId: string,
       tools: readonly Readonly<{
@@ -324,6 +366,8 @@ export type SendRunPreparationSource = Readonly<{
   draftProjectChat?: boolean;
   draftPersonalChat?: boolean;
   kind: "send";
+  /** Server-only: the scheduled task occurrence this send admits. */
+  scheduledOccurrence?: ScheduledOccurrenceAdmission;
 }>;
 
 export type RegenerateRunPreparationSource = Readonly<{
@@ -352,6 +396,8 @@ export type RegenerateRunPreparationSource = Readonly<{
     userMessage: Readonly<{
       content: unknown;
       id: string;
+      /** Server-only: the stored message is a scheduled task's prompt, in its chat or a branch copy. */
+      scheduledTaskPrompt: boolean;
     }>;
   }>;
 }>;
@@ -397,6 +443,8 @@ export type MaterializedPreparedRunData = {
   initialChatMode?: MemoryInitialChatMode;
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
+  /** A scheduled send: the relevant personal sources its Auto catalog could not offer. */
+  scheduledUnavailableSources?: ScheduledUnavailableSource[];
   skillBindings?: AcceptedSkillRun[];
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   normalizedRequest: NormalizedRunRequest;
@@ -637,6 +685,9 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
       : {}),
     ...(prepared.mcpBindings
       ? { mcpBindings: mutablePreparedData<McpRunPlanBinding[]>(prepared.mcpBindings) }
+      : {}),
+    ...(prepared.scheduledUnavailableSources
+      ? { scheduledUnavailableSources: mutablePreparedData<ScheduledUnavailableSource[]>(prepared.scheduledUnavailableSources) }
       : {}),
     ...(prepared.skillBindings
       ? { skillBindings: mutablePreparedData<AcceptedSkillRun[]>(prepared.skillBindings) }
@@ -1199,6 +1250,13 @@ async function prepareRunWith(
     : DEFAULT_TOOL_RUN_BUDGETS;
   const observationPolicy = normalizeToolObservationPolicy(toolBudgets.toolObservationPolicy);
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
+  // A scheduled task's send: a flat selected context and no Personal Memory, whatever the chat's mode.
+  const scheduledOccurrence = input.source.kind === "send" ? input.source.scheduledOccurrence : undefined;
+  // Any answer to a scheduled task's prompt, which the model may have written: the scheduled run
+  // itself or a regeneration, in its chat or a branch copy. It gets no Personal Memory and never
+  // the scheduled task creation tool.
+  const scheduledPromptAnswer = scheduledOccurrence !== undefined ||
+    (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt === true);
   if (body?.agentEnabled !== undefined && typeof body.agentEnabled !== "boolean") return failure("agent_selection_invalid", 400);
   const agentEnabled = body?.agentEnabled === true;
   const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
@@ -1604,10 +1662,17 @@ async function prepareRunWith(
     : ordinaryMcpSelection?.mode === "load_all" && deps.mcp
       ? await deps.mcp.prepare(input.userId)
       : null;
-  const mcpCatalog = ordinaryMcpSelection?.mode === "auto" &&
-    deps.mcp?.catalog
-    ? await deps.mcp.catalog(input.userId)
+  // A scheduled run reads the same catalog together with the personal servers
+  // it had to leave out: a relevant one makes the run incomplete, never silently.
+  const mcpCatalogRead = ordinaryMcpSelection?.mode === "auto"
+    ? scheduledOccurrence && deps.mcp?.catalogWithOmissions
+      ? await deps.mcp.catalogWithOmissions(input.userId)
+      : deps.mcp?.catalog ? { catalog: await deps.mcp.catalog(input.userId), omitted: [] } : null
     : null;
+  const mcpCatalog = mcpCatalogRead?.catalog ?? null;
+  const scheduledMissingSources = scheduledOccurrence && mcpCatalogRead
+    ? scheduledUnavailableSources(mcpCatalogRead.omitted, scheduledOccurrence.relevantMcpServerIds)
+    : [];
   if (project && projectMcpServerIds.length > 0 && !mcpPlan) {
     return failure(
       "project_mcp_not_configured",
@@ -1742,7 +1807,7 @@ async function prepareRunWith(
     responseReminder: normalizedPrompt.responseReminder ?? renderedInstructions?.responseReminder ?? "",
     memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
   };
-  const sendContext =
+  const branchContext =
     input.source.kind === "send"
       ? input.source.draftProjectChat || input.source.draftPersonalChat
         ? []
@@ -1752,9 +1817,13 @@ async function prepareRunWith(
             input.source.chat.activeLeafMessageId
           )
       : null;
-  if (input.source.kind === "send" && !sendContext) {
+  if (input.source.kind === "send" && !branchContext) {
     return failure("active_leaf_changed", 409);
   }
+  // The new turn still appends to the active leaf; only the model's view is selected.
+  const sendContext = branchContext && scheduledOccurrence
+    ? scheduledRunContext(branchContext, scheduledOccurrence.previousResult)
+    : branchContext;
   const conversationMessages: ProviderConversationMessage[] =
     input.source.kind === "send"
       ? [
@@ -1772,6 +1841,15 @@ async function prepareRunWith(
         );
   const skillToolsSupported = !agentEnabled && body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  // A monitoring check reports its outcome through one built-in tool, frozen
+  // only from the server-only occurrence of a monitoring task. A check that
+  // could not call it is refused before anything is accepted.
+  const monitoringCheck = scheduledOccurrence?.monitoring === true && !agentEnabled && body?.tools !== "none" &&
+    modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  if (scheduledOccurrence?.monitoring === true && !monitoringCheck) {
+    return failure("model_cannot_report", 409, "This model cannot report the outcome of a monitoring check.");
+  }
   const skillCatalogSupported = skillToolsSupported || agentEnabled;
   if (skillsMode === "auto" && skillCatalogSupported && !assistantRun && !project && deps.skills?.listEnabledForRun) {
     availableSkillRuns = (await deps.skills.listEnabledForRun(input.userId)).filter((skill) => !effectiveSkillIds.includes(skill.skillId));
@@ -2081,12 +2159,22 @@ async function prepareRunWith(
   // Auto discloses the frozen catalog's bounded tool index; the accepted prompt keeps it through recovery.
   const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpToolIndexGuidance(mcpCatalog) : null;
   if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
+  // The frozen prompt names a scheduled run's missing sources through recovery.
+  const missingSourcesNotice = scheduledUnavailableSourcesNotice(scheduledMissingSources);
+  if (missingSourcesNotice) prompt = { ...prompt, system: [prompt.system, missingSourcesNotice].filter(Boolean).join("\n\n") };
   if (artifactIntent) prompt = { ...prompt, system: `${prompt.system}\n\nThe user explicitly asked for an artifact: call create_artifact for this message.` };
+  // The check's server-owned instruction, frozen with the accepted prompt: it
+  // compares with the previous shown result only while the context holds it.
+  if (monitoringCheck) {
+    prompt = { ...prompt, system: [prompt.system, monitoringCheckInstruction({ previousResult: (sendContext?.length ?? 0) > 0 })]
+      .filter(Boolean).join("\n\n") };
+  }
   let artifactReferences: NormalizedRunRequest["artifactReferences"];
   let artifactFocus: NormalizedRunRequest["artifactFocus"];
   let artifactCompactSystem: string | undefined;
   const beforeArtifactSystem = prompt.system;
-  if (artifactToolAvailable && deps.artifacts) {
+  // A scheduled run's context is its selection alone: the chat's other artifacts stay out of it.
+  if (artifactToolAvailable && deps.artifacts && !scheduledOccurrence) {
     const artifactContext = await deps.artifacts.contextForChat({ chatId: chat.id, ownerUserId: input.userId,
       ...(artifactEdit ? { requiredArtifactId: artifactEdit.artifactId } : {}) }).catch(() => []);
     if (artifactEdit && !artifactContext.some((artifact) =>
@@ -2162,15 +2250,19 @@ async function prepareRunWith(
     : input.source.source.userMessage.id;
   // A failed or slow history read never refuses the message: the run then
   // freezes that the history could not be loaded (content-free log), and
-  // every request of it says so instead of implying no earlier calls.
-  const toolHistory: ToolHistorySnapshot = await (deps.repository.loadToolHistory?.({ chatId: chat.id,
-    leafMessageId: toolHistoryLeafMessageId, userId: input.userId }) ?? null)?.catch((error: unknown) => {
+  // every request of it says so instead of implying no earlier calls. A
+  // scheduled run reads it only for its previous result's turn.
+  const historyRead = !scheduledOccurrence || (sendContext?.length ?? 0) > 0
+    ? deps.repository.loadToolHistory?.({ chatId: chat.id, leafMessageId: toolHistoryLeafMessageId, userId: input.userId })
+    : undefined;
+  const branchToolHistory: ToolHistorySnapshot = await historyRead?.catch((error: unknown) => {
     logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
       code: "tool_history_unavailable", prisma_code: databaseFailureCode(error) });
     return { version: TOOL_HISTORY_VERSION, turns: [], unavailable: true as const };
   }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
+  const toolHistory = scheduledOccurrence ? scheduledRunToolHistory(branchToolHistory, sendContext ?? []) : branchToolHistory;
   const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
-  const memoryStandingEligible = !project && !agent && resolvedChatMode.mode === "NORMAL" &&
+  const memoryStandingEligible = !project && !agent && !scheduledPromptAnswer && resolvedChatMode.mode === "NORMAL" &&
     !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content));
   const memorySearchAdmission = memoryStandingEligible && body?.tools !== "none" &&
     modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
@@ -2187,6 +2279,24 @@ async function prepareRunWith(
         outcome: "degraded", action: "degrade", code: "memory_search_admission_skipped" });
     }
   }
+  // The owner's own message in an ordinary personal chat may create one
+  // scheduled task. Never an answer to a scheduled task's prompt, a temporary,
+  // Project, Assistant, Agent or Knowledge run, nor one without tool calling.
+  // Frozen here: the settings the task takes from this run, never mutable chat
+  // state read later, and only in the shape recovery decodes.
+  const scheduledTaskSettings = !scheduledPromptAnswer && !project && !assistantRun &&
+    !agentEnabled && !knowledgeRequested && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
+    typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true
+    ? {
+        modelId: selectedModelId,
+        provider: selectedProvider,
+        searchEnabled: admissionPlan.searches.length > 0,
+        toolsEnabled: ordinaryMcpSelection !== null && ordinaryMcpSelection.mode !== "off",
+        workspaceEnabled: workspaceAdmissionPlan !== undefined
+      }
+    : undefined;
+  const scheduledTaskTool = isScheduledTaskToolSettings(scheduledTaskSettings) ? scheduledTaskSettings : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
@@ -2208,6 +2318,8 @@ async function prepareRunWith(
       modelId: executionModelId, provider: executionProvider
     }) === true ? { sessionStatusTool: true as const } : {}),
     ...(toolCallReader ? { toolCallReader: true as const } : {}),
+    ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
+    ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
     toolHistory,
     attachmentIds,
     chatId: chat.id,
@@ -2215,9 +2327,11 @@ async function prepareRunWith(
     context: { messages: contextMessages, mode: "branch_path" },
     // Every non-Agent run compacts by notes before anything leaves its
     // context, whatever Knowledge, Memory search, Observation or tool support
-    // it has; Codex owns Agent context.
+    // it has; Codex owns Agent context. A scheduled run's selected context is
+    // no branch prefix: it carries no branch notes (no leaf to reuse them from).
     ...(!agent ? { contextCompactionPolicy: conversationContextPolicy({
-      leafMessageId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
+      leafMessageId: scheduledOccurrence ? null
+        : input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
       messages: contextMessages
     }) } : {}),
     ...(knowledgeRequested ? {
@@ -2293,6 +2407,8 @@ async function prepareRunWith(
     ...(baseNormalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
     ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
     ...(baseNormalizedRequest.toolCallReader ? [readToolCallTool] : []),
+    ...(baseNormalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
+    ...scheduledTaskToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
@@ -2513,6 +2629,7 @@ async function prepareRunWith(
       : {}),
     ...(knowledgeAdmissionPlan ? { knowledgeAdmissionPlan } : {}),
     ...(mcpPlan?.ok ? { mcpBindings: [...mcpPlan.bindings] } : {}),
+    ...(scheduledMissingSources.length > 0 ? { scheduledUnavailableSources: scheduledMissingSources } : {}),
     ...(skillRuns.length > 0
       ? {
           skillBindings: skillRuns.map((skill) => ({

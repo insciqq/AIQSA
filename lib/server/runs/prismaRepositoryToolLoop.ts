@@ -4,6 +4,7 @@ import { decodeAcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnaly
 import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { isSkillToolName, LOAD_SKILL_TOOL_NAME } from "../tools/skill";
+import { isScheduledTaskToolSettings } from "../tools/scheduledTaskCreation";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { validArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { isModelGenerationBudget } from "../providers/modelOutputAllowance";
@@ -140,6 +141,21 @@ export async function appendRunOutputEvents(
       if (previous) {
         const data = "data" in previous ? previous.data : previous.payload;
         if (canonicalJson(data as ToolLoopJsonValue) !== canonicalJson(event.data as unknown as ToolLoopJsonValue)) throw new Error("workspace_checkpoint_replay_invalid");
+        published.push(event);
+        continue;
+      }
+      updates.set(key, event);
+    }
+    // A created scheduled task's card is kept once: its creation appends it,
+    // and a live or recovered replay of the settled call publishes it again.
+    if (event.type === "artifact" && event.data.artifactType === "scheduled_task") {
+      const key = `scheduled_task:${event.data.payload.taskId}`;
+      if (updates.has(key) || await tx.modelRunEvent.findFirst({ select: { id: true }, where: {
+        modelRunId: runId, eventType: "artifact", AND: [
+          { payload: { path: ["artifactType"], equals: "scheduled_task" } },
+          { payload: { path: ["payload", "taskId"], equals: event.data.payload.taskId } }
+        ]
+      } })) {
         published.push(event);
         continue;
       }
@@ -597,12 +613,14 @@ const normalizedRequestKeys = new Set([
   "mcpDiscovery",
   "mcp",
   "modelId",
+  "monitoringVerdictTool",
   "params",
   "personalContext",
   "prompt",
   "instructionPreset",
   "provider",
   "reasoningEffort",
+  "scheduledTaskTool",
   "searchPlan",
   "sessionStatusTool",
   "toolCallReader",
@@ -988,6 +1006,8 @@ function decodeProviderDispatchRecoveryRequest(
     value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true && !value.workspace || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
+    (value.monitoringVerdictTool !== undefined && value.monitoringVerdictTool !== true) ||
+    (value.scheduledTaskTool !== undefined && !isScheduledTaskToolSettings(value.scheduledTaskTool)) ||
     (value.toolCallReader !== undefined && value.toolCallReader !== true) ||
     (value.toolHistory !== undefined && !decodeToolHistorySnapshot(value.toolHistory)) ||
     (value.toolObservationVersion !== undefined && value.toolObservationVersion !== 0 && value.toolObservationVersion !== 1) ||
@@ -1533,7 +1553,9 @@ export function createPrismaRunToolLoopOperations(
       // a summary source; Knowledge purge scrubs their notes). Settled runs
       // qualify; a failure that recovery may still resume qualifies only
       // through its committed receipt for exactly the checkpoint notes:
-      // committed notes are final even when the run later failed.
+      // committed notes are final even when the run later failed. A scheduled
+      // task's run summarizes only its selected context, never the branch
+      // prefix, so its notes are never carried.
       const rows = await prismaClient.$queryRaw<Array<{
         assistantMessageId: string | null;
         compaction: unknown;
@@ -1561,7 +1583,7 @@ export function createPrismaRunToolLoopOperations(
           FROM "answers" AS a
           INNER JOIN "ModelRun" AS r ON r."assistantMessageId" = a."id"
           WHERE r."chatId" = ${input.chatId} AND r."userId" = ${input.userId}
-            AND r."status" IN ('complete', 'cancelled', 'error')
+            AND r."status" IN ('complete', 'cancelled', 'error') AND r."scheduledTaskId" IS NULL
             AND r."toolLoopState" -> 'contextCompaction' -> 'summary' IS NOT NULL
             AND (NOT ${activeToolLoopRunSql("r")} OR COALESCE(
               r."toolLoopState" -> 'contextCompaction' -> 'summaryAttempts' @> jsonb_build_array(jsonb_build_object(

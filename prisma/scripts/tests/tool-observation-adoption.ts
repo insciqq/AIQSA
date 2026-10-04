@@ -24,7 +24,8 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "_ObservationUpgradeFixture" f
     JOIN "ModelRun" r ON r.id = 'observation-adoption-run'
     JOIN "ModelRunToolCall" c ON c.id = 'observation-adoption-call'
-    WHERE f.run = to_jsonb(r) AND f.call = to_jsonb(c))
+    WHERE f.run = to_jsonb(r) - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome']
+      AND f.call = to_jsonb(c))
     THEN RAISE EXCEPTION 'observation_upgrade_changed_accepted_inline_result'; END IF;
   IF EXISTS (SELECT 1 FROM "ToolObservation")
     THEN RAISE EXCEPTION 'observation_upgrade_invented_receipt'; END IF;

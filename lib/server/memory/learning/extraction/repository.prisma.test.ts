@@ -9,6 +9,7 @@ import {
 import { textMessageContent } from "../../../../domain/content";
 import { providerTemplateIds } from "../../../../domain/providerTemplates";
 import { prisma } from "../../../prisma";
+import { createPrismaMessageBranchRepository } from "../../../messages/prismaRepository";
 import type { MemoryJobClaim } from "../../coordinator/types";
 import { enqueueMemoryCommand } from "../../commands/repository";
 import { detachExpiredMemoryExecutionBindings } from "../../execution/lifecycle";
@@ -143,6 +144,8 @@ async function createTurn(input: Readonly<{
   chatId: string;
   createdAt: Date;
   parentMessageId: string | null;
+  /** A scheduled task's turn: run creation marks the prompt and gives the run its scheduled origin. */
+  scheduled?: true;
   userId: string;
   userText: string;
 }>) {
@@ -153,6 +156,7 @@ async function createTurn(input: Readonly<{
       createdAt: input.createdAt,
       parentMessageId: input.parentMessageId,
       role: "user",
+      ...(input.scheduled ? { scheduledTaskPrompt: true } : {}),
       status: "complete",
       updatedAt: input.createdAt
     }
@@ -186,6 +190,10 @@ async function createTurn(input: Readonly<{
         }
       },
       provider: "memory-vnext-test-provider",
+      // Plain values that outlive the task.
+      ...(input.scheduled
+        ? { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1, scheduledTaskId: randomUUID() }
+        : {}),
       status: "complete",
       userId: input.userId,
       userMessageId: userMessage.id
@@ -1711,6 +1719,179 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       await expect(prisma.memoryFactExtractionCandidateReceipt.findMany({
         select: { outcome: true, reasonCode: true }, where: { userId }
       })).resolves.toEqual([{ outcome: "APPLIED", reasonCode: null }]);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("enqueues no fact extraction from a scheduled task's turn, whatever the chat's mode", async () => {
+    const userId = await createOwner("scheduled-turn");
+    try {
+      // The owner switched the task's chat to Memory: an ordinary NORMAL chat.
+      const chat = await prisma.chat.create({ data: { title: "Scheduled task chat", userId } });
+      const scheduled = await createTurn({
+        assistantText: "Here is today's brief.", chatId: chat.id, createdAt: new Date("2026-10-05T06:00:00.000Z"),
+        parentMessageId: null, scheduled: true, userId, userText: "I live in Lisbon. Summarize the news."
+      });
+      await settleChat(userId, chat.id, scheduled);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "EXTRACT_FACTS", sourceMessageId: scheduled.userMessage.id, userId }
+      })).resolves.toBe(0);
+      // The owner's own next turn in the same chat is still learned from.
+      const own = await createTurn({
+        assistantText: "Noted.", chatId: chat.id, createdAt: new Date("2026-10-05T07:00:00.000Z"),
+        parentMessageId: scheduled.assistantMessage.id, userId, userText: "I prefer quiet rooms."
+      });
+      await settleChat(userId, chat.id, own);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "EXTRACT_FACTS", sourceMessageId: own.userMessage.id, userId }
+      })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("never extracts a scheduled task's prompt through a Regenerate or a queued job, nor uses it as context", async () => {
+    const userId = await createOwner("scheduled-regenerate");
+    try {
+      const chat = await prisma.chat.create({ data: { title: "Scheduled task chat", userId } });
+      const scheduled = await createTurn({
+        assistantText: "Here is today's brief.", chatId: chat.id, createdAt: new Date("2026-10-05T06:00:00.000Z"),
+        parentMessageId: null, userId, userText: "I live in Lisbon. Summarize the news."
+      });
+      // Settled before it is marked, the turn leaves the job that an earlier
+      // regeneration or a re-extraction pass would have queued. It is marked
+      // as the migration marks an existing prompt: beside its run's scheduled
+      // origin, without touching the message's update time.
+      await settleChat(userId, chat.id, scheduled);
+      const queued = await claimFactJob(userId, scheduled.userMessage.id);
+      await prisma.$executeRaw`UPDATE "Message" SET "scheduledTaskPrompt" = true WHERE "id" = ${scheduled.userMessage.id}`;
+      await prisma.modelRun.update({
+        data: { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1, scheduledTaskId: randomUUID() },
+        where: { id: scheduled.run.id }
+      });
+      const stale = { errorCode: "memory_fact_source_stale", status: "STALE" };
+      await expect(repository().preflight(queued)).resolves.toEqual(stale);
+      await expect(repository().prepare(queued)).resolves.toEqual({ decision: stale });
+
+      // A Regenerate of the scheduled answer runs without a scheduled origin.
+      const regeneratedAt = new Date("2026-10-05T06:10:00.000Z");
+      const regenerated = await prisma.message.create({
+        data: {
+          chatId: chat.id, content: textMessageContent("Here is a fresh brief."), createdAt: regeneratedAt,
+          modelId: "memory-vnext-test-model", parentMessageId: scheduled.userMessage.id,
+          provider: "memory-vnext-test-provider", role: "assistant", status: "complete", updatedAt: regeneratedAt
+        }
+      });
+      const regeneratedRun = await prisma.modelRun.create({
+        data: {
+          assistantMessageId: regenerated.id, chatId: chat.id, modelId: "memory-vnext-test-model",
+          normalizedRequest: { prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } } },
+          provider: "memory-vnext-test-provider", status: "complete", userId, userMessageId: scheduled.userMessage.id
+        }
+      });
+      const mutate = (input: Omit<Parameters<typeof applyMemorySourceMutations>[1], "chat" | "hooks">) =>
+        prisma.$transaction(async (tx) => {
+          const locked = await lockMemorySourceChat(tx, { chatId: chat.id, lock: "UPDATE", userId });
+          if (!locked) throw new Error("memory_vnext_test_chat_missing");
+          await applyMemorySourceMutations(tx, { ...input, chat: locked, hooks: defaultMemorySourceMutationHooks });
+        });
+      await mutate({ mutations: ["BRANCH_PATH_CHANGE"], patch: { activeLeafMessageId: regenerated.id } });
+      await mutate({
+        mutations: ["TERMINAL_SETTLEMENT"],
+        terminalSettlement: { assistantMessageId: regenerated.id, runId: regeneratedRun.id, status: "complete" }
+      });
+      // The regeneration admitted no job beside the refused one.
+      await expect(prisma.memoryJob.count({
+        where: { id: { not: queued.id }, kind: "EXTRACT_FACTS", sourceMessageId: scheduled.userMessage.id, userId }
+      })).resolves.toBe(0);
+
+      // The owner's next turn is learned from, without the scheduled turn as context.
+      const own = await createTurn({
+        assistantText: "Noted.", chatId: chat.id, createdAt: new Date("2026-10-05T07:00:00.000Z"),
+        parentMessageId: regenerated.id, userId, userText: "I prefer quiet rooms."
+      });
+      await settleChat(userId, chat.id, own);
+      const input = await prepare(await claimFactJob(userId, own.userMessage.id));
+      expect(input.messages.map(({ id }) => id)).toEqual([own.userMessage.id]);
+      expect(JSON.stringify(input)).not.toContain("Lisbon");
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  it("never learns from a scheduled task's prompt copied into a Memory branch, at any depth or after a Regenerate there", async () => {
+    const userId = await createOwner("scheduled-branch");
+    try {
+      const branches = createPrismaMessageBranchRepository(prisma);
+      const factJobs = (sourceMessageId: string) =>
+        prisma.memoryJob.count({ where: { kind: "EXTRACT_FACTS", sourceMessageId, userId } });
+      const mutate = (chatId: string, input: Omit<Parameters<typeof applyMemorySourceMutations>[1], "chat" | "hooks">) =>
+        prisma.$transaction(async (tx) => {
+          const locked = await lockMemorySourceChat(tx, { chatId, lock: "UPDATE", userId });
+          if (!locked) throw new Error("memory_vnext_test_chat_missing");
+          await applyMemorySourceMutations(tx, { ...input, chat: locked, hooks: defaultMemorySourceMutationHooks });
+        });
+      /** A settled Regenerate: a new answer to the same prompt from an ordinary run without a scheduled origin. */
+      const regenerate = async (chatId: string, userMessageId: string, at: Date) => {
+        const answer = await prisma.message.create({
+          data: {
+            chatId, content: textMessageContent("Here is a fresh brief."), createdAt: at, modelId: "memory-vnext-test-model",
+            parentMessageId: userMessageId, provider: "memory-vnext-test-provider", role: "assistant", status: "complete",
+            updatedAt: at
+          }
+        });
+        const run = await prisma.modelRun.create({
+          data: {
+            assistantMessageId: answer.id, chatId, modelId: "memory-vnext-test-model",
+            normalizedRequest: { prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } } },
+            provider: "memory-vnext-test-provider", status: "complete", userId, userMessageId
+          }
+        });
+        await mutate(chatId, { mutations: ["BRANCH_PATH_CHANGE"], patch: { activeLeafMessageId: answer.id } });
+        await mutate(chatId, {
+          mutations: ["TERMINAL_SETTLEMENT"],
+          terminalSettlement: { assistantMessageId: answer.id, runId: run.id, status: "complete" }
+        });
+        return answer;
+      };
+      /** A branch from `sourceMessageId`, with its copied path in order. */
+      const branch = async (sourceMessageId: string) => {
+        const created = await branches.createChatBranchFromMessage({ sourceMessageId, userId });
+        if (!created) throw new Error("memory_vnext_test_branch_missing");
+        const copies = await prisma.message.findMany({ orderBy: { createdAt: "asc" }, where: { chatId: created.id } });
+        expect(copies.map(({ role, scheduledTaskPrompt }) => [role, scheduledTaskPrompt]))
+          .toEqual([["user", true], ["assistant", false]]);
+        return { chatId: created.id, copies };
+      };
+
+      // The owner switched the task's chat to Memory; a branch keeps its mode.
+      const chat = await prisma.chat.create({ data: { title: "Scheduled task chat", userId } });
+      const scheduled = await createTurn({
+        assistantText: "Here is today's brief.", chatId: chat.id, createdAt: new Date("2026-10-03T06:00:00.000Z"),
+        parentMessageId: null, scheduled: true, userId, userText: "I live in Lisbon. Summarize the news."
+      });
+      await settleChat(userId, chat.id, scheduled);
+
+      // The copies carry no runs; a Regenerate in the branch answers the marked copy.
+      const first = await branch(scheduled.assistantMessage.id);
+      const regenerated = await regenerate(first.chatId, first.copies[0]!.id, new Date("2026-10-03T06:10:00.000Z"));
+      await expect(factJobs(first.copies[0]!.id)).resolves.toBe(0);
+
+      // The owner's own turn in the branch is learned from, without the copied prompt as context.
+      const own = await createTurn({
+        assistantText: "Noted.", chatId: first.chatId, createdAt: new Date("2026-10-03T07:00:00.000Z"),
+        parentMessageId: regenerated.id, userId, userText: "I prefer quiet rooms."
+      });
+      await settleChat(userId, first.chatId, own);
+      const input = await prepare(await claimFactJob(userId, own.userMessage.id));
+      expect(input.messages.map(({ id }) => id)).toEqual([own.userMessage.id]);
+      expect(JSON.stringify(input)).not.toContain("Lisbon");
+
+      // A branch of the branch, from the regenerated answer: its Regenerate admits no job either.
+      const second = await branch(regenerated.id);
+      await regenerate(second.chatId, second.copies[0]!.id, new Date("2026-10-03T08:00:00.000Z"));
+      await expect(factJobs(second.copies[0]!.id)).resolves.toBe(0);
     } finally {
       await cleanupOwner(userId);
     }

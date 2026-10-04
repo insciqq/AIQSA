@@ -152,6 +152,16 @@ export type ContinueToolLoopInput<Continuation, ToolValue, FinalValue> = Readonl
     round: number;
   }>): Promise<void> | void;
   budgets: ToolLoopBudgets;
+  /**
+   * A call reserved outside the budgets (a monitoring check's verdict). Only
+   * the run's first matching call is exempt: it never counts as a call or
+   * makes its batch a tool round, and it never makes a batch exceed them.
+   * Every later match counts as an ordinary call, so repeating it cannot keep
+   * the loop going. Resumed progress must count the same way.
+   */
+  isBudgetExempt?(call: ToolLoopCall): boolean;
+  /** The run already made its exempt call (recovery derives it from its calls). */
+  budgetExemptCallMade?: boolean;
   executeTool(
     call: ToolLoopCall,
     context: Readonly<{
@@ -519,6 +529,7 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
     progress = input.resume.progress;
   }
   const seenCallIds = new Set<string>(input.resume?.seenCallIds ?? []);
+  let budgetExemptCallMade = input.budgetExemptCallMade === true;
 
   while (true) {
     if (input.signal?.aborted) {
@@ -642,19 +653,18 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
       return failed(progress, callError);
     }
 
-    if (progress.toolRounds >= input.budgets.maxToolRounds) {
-      return failed(progress, {
-        code: "tool_round_limit_exceeded",
-        message: `Tool round limit of ${input.budgets.maxToolRounds} was exceeded.`,
-        round,
-        stage: "budget"
-      });
-    }
-
-    if (progress.toolCalls + calls.length > input.budgets.maxToolCalls) {
+    const exemptCall = budgetExemptCallMade ? undefined : calls.find((call) => input.isBudgetExempt?.(call));
+    const budgetedCalls = calls.length - (exemptCall ? 1 : 0);
+    const roundsExceeded = budgetedCalls > 0 && progress.toolRounds >= input.budgets.maxToolRounds;
+    if (roundsExceeded || progress.toolCalls + budgetedCalls > input.budgets.maxToolCalls) {
       const synthesis = providerResult.synthesisContinuation;
       if (synthesis === undefined) {
-        return failed(progress, {
+        return failed(progress, roundsExceeded ? {
+          code: "tool_round_limit_exceeded",
+          message: `Tool round limit of ${input.budgets.maxToolRounds} was exceeded.`,
+          round,
+          stage: "budget"
+        } : {
           code: "tool_call_limit_exceeded",
           message: `Tool call limit of ${input.budgets.maxToolCalls} was exceeded.`,
           round,
@@ -691,10 +701,11 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
     }
 
     calls.forEach((call) => seenCallIds.add(call.id));
-    const toolRound = progress.toolRounds + 1;
+    if (exemptCall) budgetExemptCallMade = true;
+    const toolRound = progress.toolRounds + (budgetedCalls > 0 ? 1 : 0);
     progress = {
       ...progress,
-      toolCalls: progress.toolCalls + calls.length,
+      toolCalls: progress.toolCalls + budgetedCalls,
       toolRounds: toolRound
     };
     try {
