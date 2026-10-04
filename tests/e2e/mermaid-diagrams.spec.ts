@@ -134,7 +134,7 @@ async function expectDiagrams(page: Page) {
   await expect(page.locator('[data-mermaid-state="rendered"]')).toHaveCount(4, { timeout: 20_000 });
   for (const index of [0, 1, 2, 4]) {
     const scroller = blocks.nth(index).getByTestId("mermaid-diagram-scroll");
-    await expect(scroller.locator("svg")).toBeVisible();
+    await expect(scroller.locator(":scope > svg")).toBeVisible();
     // The diagram stays inside its own box; only that box may scroll.
     const contained = await scroller.evaluate((element) => {
       const box = element.getBoundingClientRect();
@@ -148,7 +148,7 @@ async function expectDiagrams(page: Page) {
   const hostileBlock = blocks.nth(4);
   await expect(hostileBlock.getByTestId("mermaid-diagram-scroll")).toContainText("label");
   expect(await hostileBlock.locator("a, script, img, image, iframe, foreignObject").count()).toBe(0);
-  expect(await hostileBlock.evaluate((element) => [...element.querySelectorAll("svg *")]
+  expect(await hostileBlock.evaluate((element) => [...element.querySelectorAll("[data-testid=\"mermaid-diagram-scroll\"] > svg *")]
     .some((node) => [...node.attributes].some((attribute) => attribute.name.startsWith("on"))))).toBe(false);
   await expectNoHorizontalOverflow(page);
 }
@@ -206,7 +206,7 @@ for (const viewport of [
       await expect(first.getByRole("region", { name: "Scrollable code block" })).toContainText("Draft[Draft answer]");
       await expect(first.getByTestId("mermaid-diagram-scroll")).toHaveCount(0);
       await first.getByRole("button", { name: "Diagram", exact: true }).click();
-      await expect(first.getByTestId("mermaid-diagram-scroll").locator("svg")).toBeVisible();
+      await expect(first.getByTestId("mermaid-diagram-scroll").locator(":scope > svg")).toBeVisible();
       const download = page.waitForEvent("download");
       await first.getByRole("button", { name: "Download SVG" }).click();
       expect((await download).suggestedFilename()).toBe("diagram.svg");
@@ -260,12 +260,12 @@ test("a streamed fence stays text until it closes, then renders without a reload
   expect(await observation.mermaidChunks()).toEqual([]);
 
   await stream.emit(page, "token", { delta: "{Diagram valid?}\n```\n\nStill writing." });
-  await expect(answer.locator('[data-mermaid-state="rendered"] svg')).toBeVisible({ timeout: 20_000 });
+  await expect(answer.locator('[data-mermaid-state="rendered"] [data-testid="mermaid-diagram-scroll"] > svg')).toBeVisible({ timeout: 20_000 });
   const finalAnswer = "Here is the flow.\n\n```mermaid\nflowchart LR\n  Draft[Draft answer] --> Review{Diagram valid?}\n```\n\nStill writing.";
   await installMatrixCatalogFixture(page, { chats: [chatDetail(finalAnswer)], folders: [] });
   await stream.emit(page, "done", { runId, status: "complete" });
   await stream.close(page);
-  await expect(answer.locator('[data-mermaid-state="rendered"] svg')).toBeVisible();
+  await expect(answer.locator('[data-mermaid-state="rendered"] [data-testid="mermaid-diagram-scroll"] > svg')).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("mermaid-streamed.png") });
   await expectCleanPolicy(page, observation);
 });
