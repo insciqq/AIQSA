@@ -77,7 +77,7 @@ Workspace admission freezes ready runtime/image, official catalog, network, path
 
 Mid-run capture requires coherent bytes and current authority; unsupported coherence fails closed. Preserve the running executor and final-export quiescence. Shared image validation is model-independent; transformations retain source identity/geometry. Consumers own publication/provider delivery.
 
-Current image attachments reach vision-capable answer models natively; they never call System Vision in chat. Workspace guest files, and conversation images for tool-calling answer models without vision, reach models only through independently admitted System Vision, which receives only ordered selected images and a focused question; results stay untrusted. Knowledge answers never receive images: outside Workspace, a model without vision is refused a current image when Knowledge is in scope. Unavailability never substitutes routes. Accepted runs retain frozen modality/recovery evidence.
+Vision-capable models read images natively. Workspace files, and chat images for tool-calling non-vision models, reach models only through admitted System Vision: ordered selected images, a focused question, untrusted results. Knowledge answers get no images, so outside Workspace non-vision models are refused them.
 
 Exact image edits preserve pixels; generative edits synthesize requested changes. Source/reference/version provenance determines identity. Saving, visual inspection and application validation stay separate claims.
 
