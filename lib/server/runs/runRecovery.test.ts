@@ -45,6 +45,7 @@ import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import type { FrozenSkillManifest } from "../skills/runManifest";
 import { createSkillToolService, type SkillToolRepository } from "../skills/toolService";
 import { isSkillToolName } from "../tools/skill";
+import { scheduledTaskCreatedResult } from "../tools/scheduledTaskCreation";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   FocusedKnowledgeRecoveryScope,
@@ -10429,4 +10430,54 @@ describe("monitoring verdict recovery", () => {
     expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("recorded");
     expect(harness.state.completed).not.toBeNull();
   });
+});
+
+describe("scheduled task creation recovery", () => {
+  const settings = { modelId: "deployment-1", provider: "connection-1", searchEnabled: false, toolsEnabled: true,
+    workspaceEnabled: false };
+  const args = { title: "Check mail", prompt: "Remind me to check my mail.", kind: "standard", chatMode: null, schedule: {
+    kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"], date: null, dayOfMonth: null, everyHours: null,
+    until: null } };
+  const task = {
+    id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.",
+    schedule: { kind: "weekly" as const, time: "09:00", days: ["mon" as const, "tue" as const, "wed" as const, "thu" as const, "fri" as const] },
+    timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
+    toolsEnabled: true, workspaceEnabled: false, chatMode: "new" as const, kind: "standard" as const, status: "active" as const,
+    pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null,
+    unseenResult: false, revision: 1, createdAt: "2026-10-04T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
+  };
+
+  it.each(["running", "complete"] as const)(
+    "creates an interrupted call only through its atomic creation and replays a settled one (%s)",
+    async (state) => {
+      const requests: ProviderRunRequest[] = [];
+      const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+      const harness = createHarness({ providers: { openai: adapter } });
+      const createCall = { arguments: args, id: "provider-call-1", name: "create_scheduled_task" };
+      const settled = snapshotToolExecutionResult(scheduledTaskCreatedResult(createCall, task, false), 64_000);
+      const call: PersistedToolLoopCall = { ...persistedRecoveryCall(state), arguments: args, mcpBinding: null,
+        toolName: "create_scheduled_task", ...(state === "complete" ? { result: settled } : {}) };
+      const base = checkpointedRun({ calls: [call], phase: state === "running" ? "tools_running" : "tools_pending",
+        providerToolMessages: [] });
+      const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+      installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, scheduledTaskTool: settings, toolMode: "auto",
+        prompt: { ...normalized.prompt, baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } },
+        searchPlan: { mode: "all_selected", options: [] } } });
+      const createScheduledTaskForCall = vi.fn<NonNullable<RunRecoveryRepository["createScheduledTaskForCall"]>>(
+        async (input) => ({ kind: "created", result: input.result(task), task }));
+      harness.repository.createScheduledTaskForCall = createScheduledTaskForCall;
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([]);
+      // A running call may have created nothing yet: the creation that settles it runs it, once. A settled one replays.
+      expect(createScheduledTaskForCall.mock.calls).toEqual(state === "running"
+        ? [[expect.objectContaining({ callId: "stored-call-1", runId, userId })]] : []);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.tools?.map((tool) => tool.name)).toContain("create_scheduled_task");
+      expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("created");
+      // The card is published again from the settled result; the durable append keeps it once per task.
+      expect(harness.state.events.map((entry) => entry.event)).toContainEqual(expect.objectContaining({ type: "artifact",
+        data: expect.objectContaining({ artifactType: "scheduled_task" }) }));
+      expect(harness.state.completed).not.toBeNull();
+    }
+  );
 });
