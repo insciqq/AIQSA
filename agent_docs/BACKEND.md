@@ -37,4 +37,6 @@ Workspace upload admission is chat-scoped and requires installation/runtime capa
 
 Direct PDF execution may read a settled original before extraction completes, with bounded size/checksum validation. Local-extraction execution consumes ready text only. Original availability does not depend on extraction success.
 
+Chat exports (`aiqsa.chat` documents and the `aiqsa.chat-archive` manifest in [`chatExport.ts`](../lib/contracts/chatExport.ts)) are a user-held external contract. A published version never changes: a new shape bumps `version`, and import keeps accepting every published version. Documents use export-local message ids and readable text, never database ids, provider internals, usage or tool payloads; single-chat export authorizes exactly like opening the chat.
+
 Anonymous sharing uses a hashed high-entropy bearer token and one positive public schema for creation and reads of a sanitized immutable snapshot. Unknown fields, private attachments, Memory/Knowledge/tool evidence, recovery state, and private identifiers are dropped.
