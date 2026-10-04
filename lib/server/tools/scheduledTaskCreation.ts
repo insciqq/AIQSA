@@ -172,7 +172,7 @@ function defaultChatMode(input: ToolArguments): "new" | "same" {
 }
 
 /** "Mon 2026-10-05 09:00" in the task's zone: unambiguous for the model to restate. */
-function localInstant(value: string | null, timeZone: string): string | null {
+export function localInstant(value: string | null, timeZone: string): string | null {
   if (value === null) return null;
   const parts: Record<string, string> = {};
   for (const part of new Intl.DateTimeFormat("en-GB", {
