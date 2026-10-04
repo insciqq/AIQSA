@@ -4,6 +4,7 @@ import { createTestAuth } from "@/tests/support/auth";
 import {
   createListChatNavigationHandler,
   createPrismaChatNavigationRepository,
+  createSearchChatMessagesHandler,
   createSearchChatNavigationHandler,
   type ChatNavigationRepository
 } from "./navigation";
@@ -32,10 +33,23 @@ function repository() {
     }));
   const searchPage = vi.fn<ChatNavigationRepository["searchPage"]>(async () => ({
       kind: "ok",
-      page: { chats: [], folders: [], nextCursor: null }
+      page: { chats: [], folders: [], messageMatches: null, nextCursor: null }
     }));
-  return { listPage, searchPage } satisfies ChatNavigationRepository;
+  const searchMessagesPage = vi.fn<ChatNavigationRepository["searchMessagesPage"]>(async () => ({
+      kind: "ok",
+      page: { matches: [], nextCursor: null }
+    }));
+  return { listPage, searchMessagesPage, searchPage } satisfies ChatNavigationRepository;
 }
+
+const messageMatch = {
+  chatId: "chat-2",
+  createdAt: "2026-08-12T10:00:00.000Z",
+  matchCount: 2,
+  messageId: "message-9",
+  snippet: "…moved the quarterly budget to…",
+  title: "Planning"
+};
 
 describe("chat navigation handlers", () => {
   it("returns only the compact owner projection with private caching", async () => {
@@ -84,6 +98,11 @@ describe("chat navigation handlers", () => {
     expect(responses.map((response) => response.status)).toEqual([401, 401]);
     expect(repo.listPage).not.toHaveBeenCalled();
     expect(repo.searchPage).not.toHaveBeenCalled();
+    const messages = await createSearchChatMessagesHandler(deps)(
+      new Request("http://app.local/api/chats/search/messages?q=budget")
+    );
+    expect(messages.status).toBe(401);
+    expect(repo.searchMessagesPage).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -152,6 +171,122 @@ describe("chat navigation handlers", () => {
 
     expect(response.status).toBe(400);
     expect(repo.searchPage).not.toHaveBeenCalled();
+  });
+
+  it("returns message matches as a separate page beside the title results", async () => {
+    const repo = repository();
+    repo.searchPage.mockResolvedValueOnce({
+      kind: "ok",
+      page: {
+        chats: [],
+        folders: [],
+        messageMatches: { matches: [messageMatch], nextCursor: "message_cursor" },
+        nextCursor: null
+      }
+    });
+    const GET = createSearchChatNavigationHandler({
+      repository: repo,
+      resolveAuth: auth.resolveAuth
+    });
+    const response = await GET(new Request(
+      "http://app.local/api/chats/search?q=Budget",
+      { headers: { cookie: auth.cookie } }
+    ));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    await expect(response.json()).resolves.toEqual({
+      chats: [],
+      folders: [],
+      messageMatches: { matches: [messageMatch], nextCursor: "message_cursor" },
+      nextCursor: null
+    });
+  });
+
+  it("fails a search whose message matching timed out with a stable code", async () => {
+    const repo = repository();
+    repo.searchPage.mockResolvedValueOnce({ kind: "message_search_timeout" });
+    repo.searchMessagesPage.mockResolvedValueOnce({ kind: "message_search_timeout" });
+    const deps = { repository: repo, resolveAuth: auth.resolveAuth };
+    const responses = await Promise.all([
+      createSearchChatNavigationHandler(deps)(new Request(
+        "http://app.local/api/chats/search?q=the",
+        { headers: { cookie: auth.cookie } }
+      )),
+      createSearchChatMessagesHandler(deps)(new Request(
+        "http://app.local/api/chats/search/messages?q=the&cursor=next_page",
+        { headers: { cookie: auth.cookie } }
+      ))
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([503, 503]);
+    for (const response of responses) {
+      await expect(response.json()).resolves.toEqual({ error: "chat_navigation_search_timeout" });
+    }
+  });
+
+  it("continues message matches through their own owner-fenced route", async () => {
+    const repo = repository();
+    repo.searchMessagesPage.mockResolvedValueOnce({
+      kind: "ok",
+      page: { matches: [messageMatch], nextCursor: null }
+    });
+    const GET = createSearchChatMessagesHandler({
+      repository: repo,
+      resolveAuth: auth.resolveAuth
+    });
+    const response = await GET(new Request(
+      "http://app.local/api/chats/search/messages?q=%20Budget%20&cursor=message_cursor&limit=20",
+      { headers: { cookie: auth.cookie } }
+    ));
+
+    expect(response.status).toBe(200);
+    expect(repo.searchMessagesPage).toHaveBeenCalledWith({
+      cursor: "message_cursor",
+      limit: 20,
+      query: "budget",
+      userId: config.bootstrapUserId
+    });
+    await expect(response.json()).resolves.toEqual({ matches: [messageMatch], nextCursor: null });
+  });
+
+  it.each([
+    "?q=ab",
+    "?q=%20a%20",
+    "?q=budget&cursor=",
+    "?q=budget&limit=51",
+    `?q=${"x".repeat(121)}`,
+    "?q=budget&content=secret"
+  ])("rejects message continuation controls that cannot match text: %s", async (suffix) => {
+    const repo = repository();
+    const GET = createSearchChatMessagesHandler({
+      repository: repo,
+      resolveAuth: auth.resolveAuth
+    });
+    const response = await GET(new Request(
+      `http://app.local/api/chats/search/messages${suffix}`,
+      { headers: { cookie: auth.cookie } }
+    ));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "chat_navigation_query_invalid" });
+    expect(repo.searchMessagesPage).not.toHaveBeenCalled();
+  });
+
+  it("maps a rejected message cursor like a rejected title cursor", async () => {
+    const repo = repository();
+    repo.searchMessagesPage.mockResolvedValueOnce({ kind: "cursor_invalid" });
+    const GET = createSearchChatMessagesHandler({
+      repository: repo,
+      resolveAuth: auth.resolveAuth
+    });
+    const response = await GET(new Request(
+      "http://app.local/api/chats/search/messages?q=budget&cursor=title_cursor",
+      { headers: { cookie: auth.cookie } }
+    ));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "chat_navigation_cursor_invalid" });
   });
 
   it("maps a query-bound cursor rejection without retrying loosely", async () => {

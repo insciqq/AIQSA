@@ -5,14 +5,18 @@ import {
   CHAT_NAVIGATION_DEFAULT_PAGE_SIZE,
   CHAT_NAVIGATION_MAX_PAGE_SIZE,
   CHAT_NAVIGATION_QUERY_MAX_LENGTH,
+  type ChatMessageMatchPageWire,
+  type ChatMessageMatchWire,
   type ChatNavigationErrorResponse,
   type ChatNavigationFolderWire,
   type ChatNavigationPageWire,
+  type ChatNavigationSearchPageWire,
   type ChatNavigationSummaryWire
 } from "../../contracts/chats";
 import { availableAssistantIdentities } from "../assistants/bindingAccess";
 import type { AuthenticatedSession, RequestAuthResolver } from "../auth/requestAuth";
 import { prisma } from "../prisma";
+import { findMessageMatches, messageSearchEligible } from "./messageSearch";
 
 const PRIVATE_CACHE_CONTROL = "private, no-store, max-age=0";
 const ACTIVE_RUN_STATUSES: ModelRunStatus[] = [
@@ -24,10 +28,14 @@ const ACTIVE_RUN_STATUSES: ModelRunStatus[] = [
 
 type NavigationCursor = Readonly<{
   id: string;
+  /** Present only on message match cursors, so a title cursor never continues them. */
+  kind?: "messages";
   scope: string;
   updatedAt: string;
   v: 1;
 }>;
+
+type NavigationCursorKind = "chats" | "messages";
 
 export type ChatNavigationPageRecord = Readonly<{
   chats: readonly ChatNavigationSummaryWire[];
@@ -39,18 +47,47 @@ export type ChatNavigationPageResult =
   | Readonly<{ kind: "cursor_invalid" }>
   | Readonly<{ kind: "ok"; page: ChatNavigationPageRecord }>;
 
+export type ChatMessageMatchPageRecord = Readonly<{
+  matches: readonly ChatMessageMatchWire[];
+  nextCursor: string | null;
+}>;
+
+export type ChatMessageMatchPageResult =
+  | Readonly<{ kind: "cursor_invalid" }>
+  | Readonly<{ kind: "message_search_timeout" }>
+  | Readonly<{ kind: "ok"; page: ChatMessageMatchPageRecord }>;
+
+export type ChatNavigationSearchResult =
+  | Readonly<{ kind: "cursor_invalid" }>
+  | Readonly<{ kind: "message_search_timeout" }>
+  | Readonly<{
+      kind: "ok";
+      page: ChatNavigationPageRecord & Readonly<{ messageMatches: ChatMessageMatchPageRecord | null }>;
+    }>;
+
 export type ChatNavigationRepository = Readonly<{
   listPage(input: {
     cursor: string | null;
     limit: number;
     userId: string;
   }): Promise<ChatNavigationPageResult>;
+  /**
+   * Title and folder matches; the first page also carries the first page of
+   * message matches when the query is long enough for text matching.
+   */
   searchPage(input: {
     cursor: string | null;
     limit: number;
     query: string;
     userId: string;
-  }): Promise<ChatNavigationPageResult>;
+  }): Promise<ChatNavigationSearchResult>;
+  /** Further pages of message matches, continued by their own cursor. */
+  searchMessagesPage(input: {
+    cursor: string | null;
+    limit: number;
+    query: string;
+    userId: string;
+  }): Promise<ChatMessageMatchPageResult>;
 }>;
 
 export type ChatNavigationHandlerDeps = Readonly<{
@@ -86,7 +123,8 @@ function cursorScope(userId: string, query: string | null): string {
 function decodeCursor(
   value: string,
   query: string | null,
-  userId: string
+  userId: string,
+  kind: NavigationCursorKind = "chats"
 ): NavigationCursor | null {
   if (
     !value ||
@@ -102,7 +140,9 @@ function decodeCursor(
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
     const record = parsed as Record<string, unknown>;
     if (
-      Object.keys(record).sort().join("|") !== "id|scope|updatedAt|v" ||
+      Object.keys(record).sort().join("|") !==
+        (kind === "messages" ? "id|kind|scope|updatedAt|v" : "id|scope|updatedAt|v") ||
+      (kind === "messages" && record.kind !== "messages") ||
       record.v !== 1 ||
       typeof record.id !== "string" ||
       !record.id ||
@@ -232,16 +272,75 @@ async function page(
   };
 }
 
+async function messageMatchesPage(
+  prismaClient: typeof prisma,
+  input: {
+    cursor: string | null;
+    limit: number;
+    query: string;
+    userId: string;
+  }
+): Promise<ChatMessageMatchPageResult> {
+  const query = normalizedQuery(input.query);
+  const cursor = input.cursor ? decodeCursor(input.cursor, query, input.userId, "messages") : null;
+  if (input.cursor && !cursor) return { kind: "cursor_invalid" };
+  const rows = await findMessageMatches(prismaClient, {
+    after: cursor ? { id: cursor.id, updatedAt: cursor.updatedAt } : null,
+    limit: input.limit + 1,
+    query,
+    userId: input.userId
+  });
+  if (rows === "timeout") return { kind: "message_search_timeout" };
+  const hasMore = rows.length > input.limit;
+  const visible = hasMore ? rows.slice(0, input.limit) : rows;
+  const final = visible.at(-1);
+  return {
+    kind: "ok",
+    page: {
+      matches: visible.map(({ chatUpdatedAt: _chatUpdatedAt, ...match }) => match),
+      nextCursor: hasMore && final
+        ? encodeCursor({
+            id: final.chatId,
+            kind: "messages",
+            scope: cursorScope(input.userId, query),
+            updatedAt: final.chatUpdatedAt.toISOString(),
+            v: 1
+          })
+        : null
+    }
+  };
+}
+
 export function createPrismaChatNavigationRepository(
   prismaClient = prisma
 ): ChatNavigationRepository {
   return {
     listPage: (input) => page(prismaClient, { ...input, query: null }),
-    searchPage: (input) => page(prismaClient, input)
+    searchPage: async (input) => {
+      // Text matching runs for the first page only; title continuation pages
+      // never repeat it.
+      const [titles, messages] = await Promise.all([
+        page(prismaClient, input),
+        input.cursor === null && messageSearchEligible(normalizedQuery(input.query))
+          ? messageMatchesPage(prismaClient, { ...input, cursor: null })
+          : Promise.resolve(null)
+      ]);
+      if (titles.kind !== "ok") return titles;
+      if (messages && messages.kind !== "ok") return messages;
+      return { kind: "ok", page: { ...titles.page, messageMatches: messages?.page ?? null } };
+    },
+    searchMessagesPage: (input) => messageMatchesPage(prismaClient, input)
   };
 }
 
-function json(body: ChatNavigationPageWire | ChatNavigationErrorResponse, status = 200) {
+function json(
+  body:
+    | ChatMessageMatchPageWire
+    | ChatNavigationErrorResponse
+    | ChatNavigationPageWire
+    | ChatNavigationSearchPageWire,
+  status = 200
+) {
   const response = Response.json(body, { status });
   response.headers.set("cache-control", PRIVATE_CACHE_CONTROL);
   response.headers.set("vary", "Cookie");
@@ -282,16 +381,39 @@ async function authenticated(
     : { response: json({ error: "unauthorized" }, 401) };
 }
 
+function messageMatchPageWire(page: ChatMessageMatchPageRecord): ChatMessageMatchPageWire {
+  return { matches: [...page.matches], nextCursor: page.nextCursor };
+}
+
+function failure(kind: "cursor_invalid" | "message_search_timeout"): Response {
+  return kind === "cursor_invalid"
+    ? json({ error: "chat_navigation_cursor_invalid" }, 400)
+    : json({ error: "chat_navigation_search_timeout" }, 503);
+}
+
 async function respond(
   result: ChatNavigationPageResult
 ): Promise<Response> {
   return result.kind === "cursor_invalid"
-    ? json({ error: "chat_navigation_cursor_invalid" }, 400)
+    ? failure(result.kind)
     : json({
         chats: [...result.page.chats],
         folders: [...result.page.folders],
         nextCursor: result.page.nextCursor
       });
+}
+
+/** Query controls shared by both search routes; null when any is invalid. */
+function searchControls(
+  request: Request
+): { cursor: string | null; limit: number; query: string } | null {
+  const values = queryValues(request, ["cursor", "limit", "q"]);
+  const limit = values ? pageLimit(values.limit) : null;
+  const query = normalizedQuery(values?.q ?? "");
+  return values && limit !== null && values.cursor !== "" && query &&
+    query.length <= CHAT_NAVIGATION_QUERY_MAX_LENGTH
+    ? { cursor: values.cursor ?? null, limit, query }
+    : null;
 }
 
 export function createListChatNavigationHandler(deps: ChatNavigationHandlerDeps) {
@@ -315,23 +437,32 @@ export function createSearchChatNavigationHandler(deps: ChatNavigationHandlerDep
   return async function GET(request: Request): Promise<Response> {
     const auth = await authenticated(request, deps);
     if (!("session" in auth)) return auth.response;
-    const values = queryValues(request, ["cursor", "limit", "q"]);
-    const limit = values ? pageLimit(values.limit) : null;
-    const query = normalizedQuery(values?.q ?? "");
-    if (
-      !values ||
-      limit === null ||
-      values.cursor === "" ||
-      !query ||
-      query.length > CHAT_NAVIGATION_QUERY_MAX_LENGTH
-    ) {
+    const controls = searchControls(request);
+    if (!controls) return json({ error: "chat_navigation_query_invalid" }, 400);
+    const result = await deps.repository.searchPage({ ...controls, userId: auth.session.userId });
+    return result.kind === "ok"
+      ? json({
+          chats: [...result.page.chats],
+          folders: [...result.page.folders],
+          messageMatches: result.page.messageMatches
+            ? messageMatchPageWire(result.page.messageMatches)
+            : null,
+          nextCursor: result.page.nextCursor
+        })
+      : failure(result.kind);
+  };
+}
+
+/** Later pages of message matches; the query must be long enough for text matching. */
+export function createSearchChatMessagesHandler(deps: ChatNavigationHandlerDeps) {
+  return async function GET(request: Request): Promise<Response> {
+    const auth = await authenticated(request, deps);
+    if (!("session" in auth)) return auth.response;
+    const controls = searchControls(request);
+    if (!controls || !messageSearchEligible(controls.query)) {
       return json({ error: "chat_navigation_query_invalid" }, 400);
     }
-    return respond(await deps.repository.searchPage({
-      cursor: values.cursor ?? null,
-      limit,
-      query,
-      userId: auth.session.userId
-    }));
+    const result = await deps.repository.searchMessagesPage({ ...controls, userId: auth.session.userId });
+    return result.kind === "ok" ? json(messageMatchPageWire(result.page)) : failure(result.kind);
   };
 }

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
+import { createPrismaChatNavigationRepository } from "../chats/navigation";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { prisma } from "../prisma";
 import type { NormalizedRunRequest } from "../providers/types";
@@ -250,11 +251,16 @@ describe("Temporary chat retention", () => {
       })).resolves.toEqual(initialMemorySettings);
       const chats = createPrismaChatRepository(prisma);
       await expect(chats.listWorkspace(userId)).resolves.toMatchObject({ chats: [] });
-      await expect(chats.searchChatContent({
+      // Sidebar search, message text included, never reaches a Temporary chat.
+      await expect(createPrismaChatNavigationRepository(prisma).searchPage({
+        cursor: null,
         limit: 10,
         query: "temporary",
         userId
-      })).resolves.toEqual([]);
+      })).resolves.toMatchObject({
+        kind: "ok",
+        page: { chats: [], messageMatches: { matches: [], nextCursor: null } }
+      });
       await expect(chats.archiveChat({ chatId: chat.id, userId })).resolves.toBe(false);
       const shares = createPrismaShareRepository(prisma);
       await expect(shares.createChatShare({

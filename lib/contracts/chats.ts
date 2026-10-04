@@ -87,6 +87,12 @@ export const CHAT_NAVIGATION_CURSOR_MAX_LENGTH = 2_048;
 export const CHAT_NAVIGATION_DEFAULT_PAGE_SIZE = 30;
 export const CHAT_NAVIGATION_MAX_PAGE_SIZE = 50;
 export const CHAT_NAVIGATION_QUERY_MAX_LENGTH = 120;
+/** Message text matching starts at this many characters of the normalized query; title search has no minimum. */
+export const CHAT_MESSAGE_SEARCH_MIN_QUERY_LENGTH = 3;
+/** Characters of readable text a message snippet keeps on each side of the first match. */
+export const CHAT_MESSAGE_MATCH_SNIPPET_CONTEXT = 80;
+/** Decoder bound on a snippet: both contexts around a longest query, astral characters and ellipses included. */
+export const CHAT_MESSAGE_MATCH_SNIPPET_MAX_LENGTH = 600;
 /**
  * Reader portions of one answer's outputs. The server summary stays within
  * them and marks what it leaves out; the decoder applies the same bounds and
@@ -620,11 +626,6 @@ export type ChatRouteServerErrorCode =
 
 export type ChatRouteErrorResponse = ErrorResponse<ChatRouteServerErrorCode>;
 
-export type ChatContentMatchWire = {
-  chatId: string;
-  snippet: string | null;
-};
-
 export type FolderWire = {
   defaultKnowledgePlan?: KnowledgePlan | null;
   id: string;
@@ -643,7 +644,6 @@ export type UpdateFolderRequestWire = {
 
 export type WorkspaceChatsResponseWire = {
   chats: WorkspaceChatSummaryWire[];
-  contentMatches: ChatContentMatchWire[];
   folders: FolderWire[];
 };
 
@@ -686,16 +686,48 @@ export type ChatNavigationPageWire = {
   nextCursor: string | null;
 };
 
+/**
+ * A chat in the sidebar scope whose message text contains the query: its
+ * newest matching message on any branch, how many of its messages match, and
+ * plain readable text around the first match in that message. The browser
+ * highlights the query; the server sends no markup.
+ */
+export type ChatMessageMatchWire = {
+  chatId: string;
+  /** When the matching message was written. */
+  createdAt: string;
+  matchCount: number;
+  messageId: string;
+  snippet: string;
+  title: string;
+};
+
+/** Message matches ordered and paged like the title results: newest chat first. */
+export type ChatMessageMatchPageWire = {
+  matches: ChatMessageMatchWire[];
+  nextCursor: string | null;
+};
+
+export type ChatNavigationSearchPageWire = ChatNavigationPageWire & {
+  /**
+   * The first page of message matches, separate from the title results.
+   * Null on title continuation pages and for queries shorter than
+   * CHAT_MESSAGE_SEARCH_MIN_QUERY_LENGTH; later pages come from
+   * `/api/chats/search/messages`.
+   */
+  messageMatches: ChatMessageMatchPageWire | null;
+};
+
 export type DecodedWorkspaceChatsResponse = {
   chats: WorkspaceChatSummaryWire[];
-  contentMatches: ChatContentMatchWire[];
   folders: FolderWire[];
 };
 
 export type ChatNavigationErrorCode =
   | SessionErrorCode
   | "chat_navigation_cursor_invalid"
-  | "chat_navigation_query_invalid";
+  | "chat_navigation_query_invalid"
+  | "chat_navigation_search_timeout";
 
 export type ChatNavigationErrorResponse = ErrorResponse<ChatNavigationErrorCode>;
 
@@ -1484,28 +1516,28 @@ function decodeChatNavigationFolderWire(
   return id && name && parentId !== undefined ? { id, name, parentId } : null;
 }
 
-export function decodeChatNavigationPage(
-  value: unknown
+function decodeNavigationCursor(value: unknown): string | null | undefined {
+  const cursor = nullableId(value);
+  return cursor === undefined || (cursor !== null && (
+    cursor.length > CHAT_NAVIGATION_CURSOR_MAX_LENGTH ||
+    !/^[A-Za-z0-9_-]+$/u.test(cursor)
+  ))
+    ? undefined
+    : cursor;
+}
+
+function decodeChatNavigationPageFields(
+  value: Record<string, unknown>
 ): ChatNavigationPageWire | null {
   if (
-    !isRecord(value) ||
-    !hasExactKeys(value, ["chats", "folders", "nextCursor"]) ||
     !Array.isArray(value.chats) ||
     value.chats.length > CHAT_NAVIGATION_MAX_PAGE_SIZE ||
     !Array.isArray(value.folders)
   ) {
     return null;
   }
-  const nextCursor = nullableId(value.nextCursor);
-  if (
-    nextCursor === undefined ||
-    (nextCursor !== null && (
-      nextCursor.length > CHAT_NAVIGATION_CURSOR_MAX_LENGTH ||
-      !/^[A-Za-z0-9_-]+$/u.test(nextCursor)
-    ))
-  ) {
-    return null;
-  }
+  const nextCursor = decodeNavigationCursor(value.nextCursor);
+  if (nextCursor === undefined) return null;
   const chats = value.chats.map(decodeChatNavigationSummaryWire);
   const folders = value.folders.map(decodeChatNavigationFolderWire);
   if (
@@ -1529,21 +1561,73 @@ export function decodeChatNavigationPage(
   return { chats: decodedChats, folders: decodedFolders, nextCursor };
 }
 
-function decodeChatContentMatchWire(value: unknown): ChatContentMatchWire | null {
-  if (!isRecord(value)) {
+export function decodeChatNavigationPage(
+  value: unknown
+): ChatNavigationPageWire | null {
+  return isRecord(value) && hasExactKeys(value, ["chats", "folders", "nextCursor"])
+    ? decodeChatNavigationPageFields(value)
+    : null;
+}
+
+function decodeChatMessageMatchWire(value: unknown): ChatMessageMatchWire | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["chatId", "createdAt", "matchCount", "messageId", "snippet", "title"])
+  ) {
     return null;
   }
-
   const chatId = requiredString(value.chatId);
-  const snippet = nullableString(value.snippet);
-  if (!chatId || snippet === undefined) {
+  const createdAt = isoTimestamp(value.createdAt);
+  const matchCount = nonNegativeInteger(value.matchCount);
+  const messageId = requiredString(value.messageId);
+  const title = requiredString(value.title);
+  const snippet = typeof value.snippet === "string" &&
+    value.snippet.length <= CHAT_MESSAGE_MATCH_SNIPPET_MAX_LENGTH
+    ? value.snippet
+    : null;
+  return chatId && createdAt && messageId && title && snippet !== null &&
+    matchCount !== null && matchCount > 0 && Number.isSafeInteger(matchCount)
+    ? { chatId, createdAt, matchCount, messageId, snippet, title }
+    : null;
+}
+
+export function decodeChatMessageMatchPage(
+  value: unknown
+): ChatMessageMatchPageWire | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["matches", "nextCursor"]) ||
+    !Array.isArray(value.matches) ||
+    value.matches.length > CHAT_NAVIGATION_MAX_PAGE_SIZE
+  ) {
     return null;
   }
+  const nextCursor = decodeNavigationCursor(value.nextCursor);
+  const matches = value.matches.map(decodeChatMessageMatchWire);
+  const decoded = matches.filter((match): match is ChatMessageMatchWire => match !== null);
+  // One match per chat: a repeated chat means a malformed page, not two results.
+  return nextCursor !== undefined && decoded.length === matches.length &&
+    new Set(decoded.map((match) => match.chatId)).size === decoded.length
+    ? { matches: decoded, nextCursor }
+    : null;
+}
 
-  return {
-    chatId,
-    snippet
-  };
+export function decodeChatNavigationSearchPage(
+  value: unknown
+): ChatNavigationSearchPageWire | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["chats", "folders", "messageMatches", "nextCursor"])
+  ) {
+    return null;
+  }
+  const page = decodeChatNavigationPageFields(value);
+  const messageMatches = value.messageMatches === null
+    ? null
+    : decodeChatMessageMatchPage(value.messageMatches);
+  return page && (value.messageMatches === null || messageMatches)
+    ? { ...page, messageMatches }
+    : null;
 }
 
 export function decodeWorkspaceChatsResponse(
@@ -1552,7 +1636,6 @@ export function decodeWorkspaceChatsResponse(
   if (
     !isRecord(value) ||
     !Array.isArray(value.chats) ||
-    !Array.isArray(value.contentMatches) ||
     !Array.isArray(value.folders)
   ) {
     return null;
@@ -1560,20 +1643,15 @@ export function decodeWorkspaceChatsResponse(
 
   const chats = value.chats.map(decodeWorkspaceChatSummaryWire);
   const folders = value.folders.map(decodeFolderWire);
-  const contentMatches = value.contentMatches.map(decodeChatContentMatchWire);
   if (
     chats.some((chat) => !chat) ||
-    folders.some((folder) => !folder) ||
-    contentMatches.some((match) => !match)
+    folders.some((folder) => !folder)
   ) {
     return null;
   }
 
   return {
     chats: chats.filter((chat): chat is WorkspaceChatSummaryWire => Boolean(chat)),
-    contentMatches: contentMatches.filter(
-      (match): match is ChatContentMatchWire => Boolean(match)
-    ),
     folders: folders.filter((folder): folder is FolderWire => Boolean(folder))
   };
 }

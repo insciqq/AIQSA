@@ -1347,7 +1347,7 @@ describe("workspace actions", () => {
   it("reports an unlisted refresh target and drops a superseded refresh", async () => {
     const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/chats"
-      ? Response.json({ chats: [apiChatSummary(state.chatA)], contentMatches: [], folders: [] })
+      ? Response.json({ chats: [apiChatSummary(state.chatA)], folders: [] })
       : Response.json({ error: "not_found" }, { status: 404 })));
     const onTargetUnavailable = vi.fn();
     await state.actions.refreshWorkspace("missing-chat", { onTargetUnavailable });
@@ -1381,7 +1381,6 @@ describe("workspace actions", () => {
       if (path === "/api/chats") {
         return Response.json({
           chats: [{ ...apiChatSummary(state.chatA), projectId: null, workspace }],
-          contentMatches: [],
           folders: []
         });
       }
@@ -2855,7 +2854,6 @@ describe("workspace actions", () => {
               defaultProvider: null
             }
           ],
-          contentMatches: [],
           folders: []
         })
       )
@@ -2900,7 +2898,7 @@ describe("workspace actions", () => {
     expect(second).toBe(first);
     expect(fetchMock).toHaveBeenCalledOnce();
     resolveWorkspace?.(
-      new Response(JSON.stringify({ chats: [], contentMatches: [], folders: [] }), {
+      new Response(JSON.stringify({ chats: [], folders: [] }), {
         headers: { "content-type": "application/json" },
         status: 200
       })
@@ -2927,7 +2925,7 @@ describe("workspace actions", () => {
     const refresh = state.actions.refreshWorkspace();
     await state.actions.activateChat(state.chatB);
     useComposerSessionStore.getState().setDraft("Draft in B");
-    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], contentMatches: [], folders: [] }));
+    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], folders: [] }));
     await refresh;
 
     expect(useWorkspaceStore.getState().activeChatId).toBe(state.chatB.id);
@@ -2945,7 +2943,7 @@ describe("workspace actions", () => {
     const refresh = state.actions.refreshWorkspace();
     await state.actions.createChat();
     useComposerSessionStore.getState().setDraft("New unsent work");
-    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], contentMatches: [], folders: [] }));
+    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], folders: [] }));
     await refresh;
 
     expect(useWorkspaceStore.getState().activeChatId).toBe(created.id);
@@ -2962,7 +2960,7 @@ describe("workspace actions", () => {
     useWorkspaceStore.getState().updateChats((chats) => chats
       .filter((chat) => chat.id !== state.chatB.id)
       .map((chat) => chat.id === state.chatA.id ? { ...chat, title: "Saved new title" } : chat));
-    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], contentMatches: [], folders: [] }));
+    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], folders: [] }));
     await refresh;
 
     expect(state.chats()).toEqual([expect.objectContaining({ id: state.chatA.id, title: "Saved new title" })]);
@@ -2972,7 +2970,7 @@ describe("workspace actions", () => {
   it("still removes a chat absent from a fresh authoritative list", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     vi.stubGlobal("fetch", vi.fn(async (input) => String(input) === "/api/chats"
-      ? Response.json({ chats: [], contentMatches: [], folders: [] })
+      ? Response.json({ chats: [], folders: [] })
       : Response.json({ error: "not_found" }, { status: 404 })));
     await state.actions.refreshWorkspace();
 
@@ -3002,7 +3000,6 @@ describe("workspace actions", () => {
       if (path === "/api/chats") {
         return Response.json({
           chats: [apiChatSummary(state.chatB)],
-          contentMatches: [],
           folders: []
         });
       }
@@ -3065,7 +3062,6 @@ describe("workspace actions", () => {
       vi.fn().mockImplementation(async () =>
         Response.json({
           chats: [apiChatSummary(state.chatB)],
-          contentMatches: [],
           folders: []
         })
       )
@@ -3155,7 +3151,6 @@ describe("workspace actions", () => {
               ]
             }
           ],
-          contentMatches: [],
           folders: []
         })
       )
@@ -3291,7 +3286,7 @@ describe("chat scope across personal and Project workspaces", () => {
     const requests: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       requests.push(String(input));
-      return Response.json({ chats: [apiChatSummary(state.chatA)], contentMatches: [], folders: [] });
+      return Response.json({ chats: [apiChatSummary(state.chatA)], folders: [] });
     }));
 
     // A retry keeps the open saved Project chat and the controls its Project applied.
@@ -3320,7 +3315,7 @@ describe("chat scope across personal and Project workspaces", () => {
     const state = useMixedScopeForTest(null);
     useComposerSessionStore.getState().activateSession(projectComposerSessionKey("project-1"));
     vi.stubGlobal("fetch", vi.fn(async () =>
-      Response.json({ chats: [apiChatSummary(state.chatA)], contentMatches: [], folders: [] })));
+      Response.json({ chats: [apiChatSummary(state.chatA)], folders: [] })));
 
     await state.actions.refreshWorkspace(null);
     expect(useComposerSessionStore.getState().activeSessionKey).toBe(projectComposerSessionKey("project-1"));
@@ -3335,7 +3330,7 @@ describe("chat scope across personal and Project workspaces", () => {
     const send = useComposerSessionStore.getState().beginSend(key)!;
     useComposerSessionStore.getState().setDraft("Typed while waiting");
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/chats"
-      ? Response.json({ chats: [apiChatSummary(state.chatB)], contentMatches: [], folders: [] })
+      ? Response.json({ chats: [apiChatSummary(state.chatB)], folders: [] })
       : Response.json({ error: "chat_not_found" }, { status: 404 })));
 
     await state.actions.refreshWorkspace("chat-b");
