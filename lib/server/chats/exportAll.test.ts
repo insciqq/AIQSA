@@ -4,7 +4,7 @@ import { createTestAuth } from "@/tests/support/auth";
 import { decodeChatArchiveManifest } from "../../contracts/chatExport";
 import { createExportAllChatsHandler, personalChatExportEntries } from "./exportAll";
 import { createExportChatHandler, loadChatExportSource } from "./exportChat";
-import type { TarEntry } from "./tarArchive";
+import { tarEntryBlocks, type TarEntry } from "./tarArchive";
 
 const config = getAuthConfig({
   AIQSA_BOOTSTRAP_AUTH_TOKEN: "token",
@@ -148,6 +148,21 @@ describe("export all personal chats", () => {
       "notes-2026-09-01-2.md",
       "notes-2026-09-01-2.json"
     ]);
+  });
+
+  it("writes valid archive entries for long non-ASCII and astral-plane titles", async () => {
+    const updatedAt = new Date("2026-09-01T12:00:00.000Z");
+    const long = "Как настроить резервное копирование базы данных на сервере компании";
+    const db = fakeDb([
+      { activeLeafMessageId: null, archived: false, createdAt, id: "c1", pinned: false, title: `a${"𠜎".repeat(100)}`, updatedAt },
+      { activeLeafMessageId: null, archived: true, createdAt, id: "c2", pinned: false, title: long, updatedAt },
+      { activeLeafMessageId: null, archived: true, createdAt, id: "c3", pinned: false, title: long, updatedAt }
+    ], {});
+    const output = await entries(personalChatExportEntries(db as never, "user-1"));
+    // Every entry becomes a lossless ustar header; a split pair or an overlong name would throw here.
+    for (const entry of output) expect(() => tarEntryBlocks(entry)).not.toThrow();
+    expect(output[2]?.path).toBe(`a${"𠜎".repeat(17)}-2026-09-01.json`);
+    expect(output.at(-1)?.path).toMatch(/^archived\/как-настроить-.+-2026-09-01-2\.json$/u);
   });
 
   it("streams a private gzip attachment for the authenticated user only", async () => {
