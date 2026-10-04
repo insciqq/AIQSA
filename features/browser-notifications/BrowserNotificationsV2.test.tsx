@@ -3,7 +3,7 @@ import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BrowserPushEnvironment } from "./browserNotificationsClient";
 import { BrowserNotificationsBannerV2, BrowserNotificationsSettingsRowV2 } from "./BrowserNotificationsV2";
-import { BROWSER_PUSH_RESYNC_MS, useBrowserNotifications } from "./useBrowserNotifications";
+import { BROWSER_PUSH_RESYNC_MS, BROWSER_PUSH_RETRY_MS, useBrowserNotifications } from "./useBrowserNotifications";
 
 function bytes(value: string): Uint8Array {
   const base64 = value.replace(/-/gu, "+").replace(/_/gu, "/");
@@ -184,6 +184,29 @@ describe("browser notifications", () => {
       await waitFor(() => expect(requests.filter((entry) => entry.method === "POST")).toHaveLength(3));
     } finally {
       now.mockRestore();
+    }
+  });
+
+  it("registers again shortly when the server still holds the setting off right after enabling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { environment, requests } = fakeBrowser("granted");
+      let refusals = 1;
+      const baseFetch = environment.fetch;
+      environment.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST" && refusals > 0) {
+          refusals -= 1;
+          requests.push({ body: undefined, method: "POST" });
+          return Response.json({ error: "browser_notifications_disabled" }, { status: 409 });
+        }
+        return baseFetch(url, init);
+      }) as typeof fetch;
+      render(<Harness environment={environment} />);
+      await waitFor(() => expect(requests.filter((entry) => entry.method === "POST")).toHaveLength(1));
+      await act(async () => { await vi.advanceTimersByTimeAsync(BROWSER_PUSH_RETRY_MS + 10); });
+      await waitFor(() => expect(requests.filter((entry) => entry.method === "POST")).toHaveLength(2));
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

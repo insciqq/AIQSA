@@ -18,6 +18,9 @@ const BANNER_DISMISSED_KEY = "aiqsa.browserNotifications.bannerDismissed";
  * push off and on meanwhile, which drops every subscription of the account.
  */
 export const BROWSER_PUSH_RESYNC_MS = 10 * 60_000;
+/** A refusal right after enabling usually means the setting is still saving. */
+export const BROWSER_PUSH_RETRY_MS = 2_000;
+const BROWSER_PUSH_DISABLED_RETRIES = 3;
 
 let cachedEnvironment: BrowserPushEnvironment | null | undefined;
 function clientEnvironment(): BrowserPushEnvironment | null {
@@ -104,35 +107,43 @@ export function useBrowserNotifications(input: Readonly<{
     setEnabledRef.current = input.setEnabled;
   });
 
-  // Bind this device to the signed-in account whenever push is on and allowed;
-  // drop the browser subscription once the account turned it off.
+  // Drop the browser subscription once the account turned push off.
   useEffect(() => {
     if (!accountId || enabled === null || !environment) return;
     const key = `${accountId}:${enabled ? "on" : "off"}:${permission}`;
     if (synced.current === key) return;
     synced.current = key;
     if (!enabled) void removeBrowserPushSubscription(environment);
-    else if (permission === "granted") {
-      lastBound.current = Date.now();
-      void syncBrowserPushSubscription(environment).then((result) => {
-        if (result !== "subscribed") lastBound.current = 0;
-      });
-    }
   }, [accountId, enabled, environment, permission]);
 
-  // Showing the app again rebinds a stale device, and retries a failed binding.
+  // While push is on and allowed, bind this device to the signed-in account:
+  // at once, again when the app is shown after a while, and shortly after a
+  // refusal while the enabling setting may still be saving.
   useEffect(() => {
     if (!accountId || enabled !== true || permission !== "granted" || !environment) return;
-    const rebind = () => {
-      if (document.visibilityState !== "visible" || Date.now() - lastBound.current < BROWSER_PUSH_RESYNC_MS) return;
+    let disposed = false;
+    let retries = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const bind = (force: boolean) => {
+      if (disposed) return;
+      if (!force && (document.visibilityState !== "visible" || Date.now() - lastBound.current < BROWSER_PUSH_RESYNC_MS)) return;
       lastBound.current = Date.now();
       void syncBrowserPushSubscription(environment).then((result) => {
-        if (result !== "subscribed") lastBound.current = 0;
+        if (result === "subscribed" || disposed) return;
+        lastBound.current = 0;
+        if (result === "disabled" && retries < BROWSER_PUSH_DISABLED_RETRIES) {
+          retries += 1;
+          retryTimer = setTimeout(() => bind(true), BROWSER_PUSH_RETRY_MS * retries);
+        }
       });
     };
+    const rebind = () => bind(false);
+    bind(true);
     document.addEventListener("visibilitychange", rebind);
     window.addEventListener("focus", rebind);
     return () => {
+      disposed = true;
+      clearTimeout(retryTimer);
       document.removeEventListener("visibilitychange", rebind);
       window.removeEventListener("focus", rebind);
     };
