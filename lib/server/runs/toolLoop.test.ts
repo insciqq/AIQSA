@@ -500,6 +500,29 @@ describe("provider-neutral tool loop", () => {
     });
   });
 
+  it("keeps budget-exempt calls out of the budgets and refuses an exhausted round's business batch into synthesis", async () => {
+    const executeTool = vi.fn(async (_call: ToolLoopCall) => ({ status: "complete" as const, value: "ok" }));
+    const refused: number[] = [];
+    const outcome = await continueToolLoop({
+      budgets: { ...defaultBudgets, maxToolCalls: 1, maxToolRounds: 1 },
+      executeTool,
+      initialContinuation: 0,
+      isBudgetExempt: (candidate) => candidate.name === "tool_report",
+      refuseToolBatch: ({ round }) => { refused.push(round); },
+      async runProviderRound(input) {
+        // Round 1 uses the whole budget beside an exempt call; round 2 makes only exempt calls;
+        // round 3's business call meets the exhausted round budget and is refused.
+        if (input.round === 1) return { calls: [call("a"), call("report")], continuation: 1, status: "tool_calls" as const };
+        if (input.round === 2) return { calls: [{ ...call("report"), id: "report-2" }], continuation: 2, status: "tool_calls" as const };
+        if (input.round === 3) return { calls: [call("b")], continuation: 3, status: "tool_calls" as const, synthesisContinuation: 30 };
+        return { final: "answer", status: "complete" as const };
+      }
+    });
+    expect(outcome).toMatchObject({ final: "answer", providerRounds: 4, status: "complete", toolCalls: 1, toolRounds: 1 });
+    expect(executeTool.mock.calls.map(([entry]) => entry.id)).toEqual(["a", "report", "report-2"]);
+    expect(refused).toEqual([3]);
+  });
+
   it("rejects provider call-id reuse across rounds", async () => {
     const dispatched: ToolLoopCall[] = [];
     const executeTool = vi.fn(async (toolCall: ToolLoopCall) => {

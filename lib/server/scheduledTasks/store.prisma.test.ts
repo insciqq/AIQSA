@@ -9,7 +9,8 @@ const users: string[] = [];
 const store = createPrismaScheduledTaskStore(prisma);
 const draft: ScheduledTaskDraft = {
   title: "Synthetic brief", prompt: "Synthetic scheduled prompt", schedule: { kind: "daily", time: "09:00" },
-  timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false, emailNotify: false, chatMode: "new"
+  timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false, emailNotify: false, chatMode: "new",
+  kind: "standard"
 };
 const hourlyDraft: ScheduledTaskDraft = {
   ...draft, chatMode: "same",
@@ -128,6 +129,25 @@ describe("persisted scheduled tasks", () => {
     await prisma.scheduledTask.update({ data: { ...baseline, baselineGeneration: 2 }, where: { id: task.id } });
     await update({ prompt: "A different synthetic prompt", schedule: { kind: "weekly", time: "09:00", days: ["mon"] } });
     expect(await read()).toMatchObject({ baselineRunId: null, generation: 3, scheduleKind: "WEEKLY" });
+    // A changed type starts afresh too: a first monitoring check is always shown.
+    await prisma.scheduledTask.update({ data: { ...baseline, baselineGeneration: 3 }, where: { id: task.id } });
+    await update({ kind: "monitoring", prompt: "A different synthetic prompt", schedule: { kind: "weekly", time: "09:00", days: ["mon"] } });
+    expect(await read()).toMatchObject({ baselineRunId: null, generation: 4, kind: "MONITORING" });
+  });
+
+  it("keeps why a monitoring task completed until it is resumed, and resets its counters on every edit", async () => {
+    const userId = await owner();
+    const monitoring = { ...draft, chatMode: "same", kind: "monitoring" } as const;
+    const task = await store.create(userId, monitoring, due);
+    expect(task).toMatchObject({ completionReason: null, kind: "monitoring" });
+    await prisma.scheduledTask.update({ data: { completionReason: "goal_reached", consecutiveMissingVerdicts: 2, nextRunAt: null,
+      revision: 2, status: "COMPLETED" }, where: { id: task.id } });
+    const renamed = await store.update(userId, task.id, { draft: { ...monitoring, title: "Renamed" }, expectedRevision: 2,
+      nextRunAt: null, status: "completed" });
+    expect(renamed).toMatchObject({ completionReason: "goal_reached", status: "completed" });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({ consecutiveMissingVerdicts: 0 });
+    const resumed = await store.update(userId, task.id, { draft: monitoring, expectedRevision: 3, nextRunAt: due, status: "active" });
+    expect(resumed).toMatchObject({ completionReason: null, nextRunAt: due.toISOString(), status: "active" });
   });
 
   it("projects the newest settled run, open runs, unread results and owner-scoped history", async () => {
@@ -213,6 +233,15 @@ describe("persisted scheduled tasks", () => {
       .rejects.toThrow("ScheduledTask_schedule_check");
     await expect(prisma.scheduledTask.update({ data: { baselineRunId: "run-1" }, where: { id: task.id } }))
       .rejects.toThrow("ScheduledTask_baseline_check");
+    // Monitoring tasks continue in one chat; only a runner completion of a recurring task carries a reason.
+    await expect(prisma.scheduledTask.update({ data: { kind: "MONITORING" }, where: { id: task.id } }))
+      .rejects.toThrow("ScheduledTask_state_check");
+    await expect(prisma.scheduledTask.update({ data: { nextRunAt: null, status: "COMPLETED" }, where: { id: task.id } }))
+      .rejects.toThrow("ScheduledTask_state_check");
+    await expect(prisma.scheduledTask.update({ data: { completionReason: "goal_reached" }, where: { id: task.id } }))
+      .rejects.toThrow("ScheduledTask_state_check");
+    await prisma.scheduledTask.update({ data: { completionReason: "goal_reached", nextRunAt: null, status: "COMPLETED" },
+      where: { id: task.id } });
 
     await prisma.user.delete({ where: { id: userId } });
     expect(await prisma.scheduledTask.count({ where: { userId } })).toBe(0);

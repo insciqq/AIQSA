@@ -20,8 +20,8 @@ function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
   return {
     ...scheduledTaskScheduleColumns({ kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }),
     id: "task-1", title: "Morning brief", prompt: "Synthetic prompt", timeZone: "Europe/Moscow", modelId: "model-1",
-    provider: "connection-1", searchEnabled: false, emailNotify: true, chatMode: "NEW", status: "ACTIVE", pauseReason: null,
-    nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: "chat-1", revision: 4,
+    provider: "connection-1", searchEnabled: false, emailNotify: true, chatMode: "NEW", kind: "STANDARD", status: "ACTIVE",
+    pauseReason: null, completionReason: null, nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: "chat-1", revision: 4,
     createdAt: new Date("2026-10-01T00:00:00.000Z"), updatedAt: new Date("2026-10-02T06:01:00.000Z"),
     chat: { permanentDeletionAt: null }, ...overrides
   };
@@ -56,5 +56,10 @@ describe("scheduled task storage mapping", () => {
       { lastRun: null, running: false, unseen: false });
     expect(decodeScheduledTask(hourly)).toEqual(hourly);
     expect(hourly).toMatchObject({ chatMode: "same", schedule: schedules[4] });
+    // A monitoring task that reached its goal: completed with why, and decodable.
+    const reached = toScheduledTask(row({ chatMode: "SAME", completionReason: "goal_reached", kind: "MONITORING", nextRunAt: null,
+      status: "COMPLETED" }), { lastRun: null, running: false, unseen: true });
+    expect(decodeScheduledTask(reached)).toEqual(reached);
+    expect(reached).toMatchObject({ completionReason: "goal_reached", kind: "monitoring", status: "completed" });
   });
 });

@@ -28,6 +28,8 @@ describe("browser push message", () => {
     expect(browserPushMessage({ ...occurrence, reasonCode: "admission_failed", state: "FAILED", trigger: "manual" }).body)
       .toBe("Scheduled task did not complete\nThe run could not start.");
     expect(JSON.stringify(browserPushMessage(occurrence))).not.toContain("owner-1");
+    expect(browserPushMessage({ ...occurrence, reasonCode: "update" }).body)
+      .toBe("Scheduled task finished\nUpdate: something changed since the last shown result.");
   });
 
   it("cleans and bounds titles and falls back when empty", () => {
