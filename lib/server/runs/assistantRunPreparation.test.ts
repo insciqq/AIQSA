@@ -451,7 +451,8 @@ describe("ordinary Knowledge plan resolution", () => {
           },
           userMessage: {
             content: textMessageContent("Stored question"),
-            id: "user-message-1"
+            id: "user-message-1",
+            scheduledTaskPrompt: false
           }
         }
       },
@@ -966,7 +967,7 @@ describe("bound chat Assistant rows", () => {
         assistantMessage: { modelId: "fake-model", provider: "fake" },
         chat: { assistantId: "assistant-1", defaultModelId: "fake-model", defaultProvider: "fake", id: "chat-1",
           projectMemory: null, ...chat },
-        userMessage: { content: textMessageContent("Stored question"), id: "user-message-1" }
+        userMessage: { content: textMessageContent("Stored question"), id: "user-message-1", scheduledTaskPrompt: false }
       }
     };
   }

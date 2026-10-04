@@ -394,6 +394,8 @@ export type RegenerateRunPreparationSource = Readonly<{
     userMessage: Readonly<{
       content: unknown;
       id: string;
+      /** Server-only: the stored message is a scheduled task's prompt, in its chat or a branch copy. */
+      scheduledTaskPrompt: boolean;
     }>;
   }>;
 }>;
@@ -1248,6 +1250,11 @@ async function prepareRunWith(
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
   // A scheduled task's send: a flat selected context and no Personal Memory, whatever the chat's mode.
   const scheduledOccurrence = input.source.kind === "send" ? input.source.scheduledOccurrence : undefined;
+  // Any answer to a scheduled task's prompt, which the model may have written: the scheduled run
+  // itself or a regeneration, in its chat or a branch copy. It gets no Personal Memory and never
+  // the scheduled task creation tool.
+  const scheduledPromptAnswer = scheduledOccurrence !== undefined ||
+    (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt === true);
   if (body?.agentEnabled !== undefined && typeof body.agentEnabled !== "boolean") return failure("agent_selection_invalid", 400);
   const agentEnabled = body?.agentEnabled === true;
   const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
@@ -2249,7 +2256,7 @@ async function prepareRunWith(
   }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
   const toolHistory = scheduledOccurrence ? scheduledRunToolHistory(branchToolHistory, sendContext ?? []) : branchToolHistory;
   const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
-  const memoryStandingEligible = !project && !agent && !scheduledOccurrence && resolvedChatMode.mode === "NORMAL" &&
+  const memoryStandingEligible = !project && !agent && !scheduledPromptAnswer && resolvedChatMode.mode === "NORMAL" &&
     !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content));
   const memorySearchAdmission = memoryStandingEligible && body?.tools !== "none" &&
     modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
@@ -2267,11 +2274,11 @@ async function prepareRunWith(
     }
   }
   // The owner's own message in an ordinary personal chat may create one
-  // scheduled task. Never a scheduled, temporary, Project, Assistant, Agent or
-  // Knowledge run, nor one without tool calling. Frozen here: the settings the
-  // task takes from this run, never mutable chat state read later, and only in
-  // the shape recovery decodes.
-  const scheduledTaskSettings = !scheduledOccurrence && !project && !assistantRun &&
+  // scheduled task. Never an answer to a scheduled task's prompt, a temporary,
+  // Project, Assistant, Agent or Knowledge run, nor one without tool calling.
+  // Frozen here: the settings the task takes from this run, never mutable chat
+  // state read later, and only in the shape recovery decodes.
+  const scheduledTaskSettings = !scheduledPromptAnswer && !project && !assistantRun &&
     !agentEnabled && !knowledgeRequested && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true

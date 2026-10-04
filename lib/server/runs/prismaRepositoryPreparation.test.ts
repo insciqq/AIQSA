@@ -149,6 +149,31 @@ describe("Temporary run Memory preparation boundary", () => {
       expect(update).not.toHaveBeenCalled();
     }
   );
+
+  it.each(["NORMAL", "EXCLUDED"] as const)(
+    "moves any answer to a scheduled task's prompt in a %s chat to streaming and reports it, so no Memory attempt follows",
+    async (chatMemoryMode) => {
+      const update = vi.fn(async () => ({}));
+      await expect(finalizeTemporaryPreparingRunAdmission({
+        modelRun: { update }
+      } as never, { ...input(chatMemoryMode), scheduledPrompt: true as const })).resolves.toEqual({
+        assistantMessageId: "assistant-message-1",
+        attemptId: "",
+        chatMemoryMode,
+        folderId: null,
+        memoryGeneration: 0,
+        memoryRevision: 0,
+        runId: "run-1",
+        scheduledPrompt: true,
+        settingsSnapshot,
+        userMessageId: "user-message-1"
+      });
+      expect(update).toHaveBeenCalledWith({
+        data: { normalizedRequest: { privateMarker: "temporary-user-content" }, status: "streaming" },
+        where: { id: "run-1" }
+      });
+    }
+  );
 });
 
 describe("initial Memory admission deadline fallback", () => {

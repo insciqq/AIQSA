@@ -5,6 +5,7 @@ import type { ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { SMTP_CONTROL_ID } from "../email/repository";
+import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 import { prisma } from "../prisma";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
@@ -74,6 +75,8 @@ afterEach(async () => {
   const ids = users.splice(0);
   await prisma.scheduledTask.deleteMany({ where: { userId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
+  // Memory-mode chats run the Memory source lifecycle, which may leave purge obligations.
+  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: ids } } });
   await prisma.user.deleteMany({ where: { id: { in: ids } } });
 });
 afterAll(() => prisma.$disconnect());
@@ -182,6 +185,59 @@ describe("persisted scheduled task runner", () => {
     expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: run.runId } })).toMatchObject({ status: "streaming" });
     expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: run.runId } })).toBe(0);
     expect(await prisma.modelRunMemoryBinding.count({ where: { modelRunId: run.runId } })).toBe(0);
+  });
+
+  it("admits every later answer to a scheduled task's prompt without Personal Memory, in its chat and branch copies", async () => {
+    const userId = await owner();
+    const created = await task(userId, null);
+    const chat = await personalChat(userId, "NORMAL");
+    const occurrence = await prisma.scheduledTaskOccurrence.create({ data: {
+      scheduledFor: new Date(), startedAt: new Date(), taskId: created.id, trigger: "manual", userId
+    } });
+    // The prompt may have been written by the model, an explicit Memory command included.
+    const command = textMessageContent("/memory forget everything");
+    const base = await runInput(userId, chat.id, origin(occurrence.id, created));
+    const input: CreateRunInput = { ...base, content: command, normalizedRequest: { ...base.normalizedRequest, content: command } };
+    const run = await runs.createRun(input);
+    // Run creation marks the prompt it posts, beside the run's scheduled origin.
+    expect(await prisma.message.findUniqueOrThrow({ where: { id: run.userMessageId } }))
+      .toMatchObject({ role: "user", scheduledTaskPrompt: true });
+    const cancel = (runId: string) =>
+      runs.cancelRun({ payload: { code: "model_run_cancelled", message: "Model run cancelled" }, runId, userId });
+    await cancel(run.runId);
+    /** A Regenerate of the answer `assistantMessageId` to `userMessageId`, as the regenerate handler hands it to run creation. */
+    const regenerate = async (chatId: string, userMessageId: string, assistantMessageId: string) => {
+      const regenerated = await runs.createRegenerationRun({
+        chatId, modelId: input.modelId, normalizedRequest: { ...input.normalizedRequest, chatId },
+        preSendAssistantMessageId: assistantMessageId, provider: input.provider, providerAdmissionPlan: input.providerAdmissionPlan,
+        providerRequestPreview: input.providerRequestPreview, userId, userMessageId
+      });
+      // An ordinary run, dispatchable at once: no Memory attempt or binding, so no synchronous command either.
+      expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: regenerated.runId } }))
+        .toMatchObject({ scheduledTaskId: null, status: "streaming", userMessageId });
+      expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: regenerated.runId } })).toBe(0);
+      expect(await prisma.modelRunMemoryBinding.count({ where: { modelRunId: regenerated.runId } })).toBe(0);
+      await cancel(regenerated.runId);
+      return regenerated;
+    };
+    /** A branch from `sourceMessageId`: its copies carry no runs, the copied prompt keeps its mark. */
+    const branch = async (sourceMessageId: string) => {
+      const branched = await createPrismaMessageBranchRepository(prisma).createChatBranchFromMessage({ sourceMessageId, userId });
+      if (!branched?.activeLeafMessageId) throw new Error("scheduled_runner_test_branch_missing");
+      const prompt = await prisma.message.findFirstOrThrow({ where: { chatId: branched.id, role: "user" } });
+      expect(prompt.scheduledTaskPrompt).toBe(true);
+      expect(await prisma.modelRun.count({ where: { chatId: branched.id } })).toBe(0);
+      return { answerId: branched.activeLeafMessageId, chatId: branched.id, promptId: prompt.id };
+    };
+
+    // A Regenerate in the task's chat.
+    const inChat = await regenerate(chat.id, run.userMessageId, run.assistantMessageId);
+    // One in a branch copy, and one in a branch of that branch.
+    const first = await branch(inChat.assistantMessageId);
+    const inBranch = await regenerate(first.chatId, first.promptId, first.answerId);
+    const second = await branch(inBranch.assistantMessageId);
+    await regenerate(second.chatId, second.promptId, second.answerId);
+    expect(await prisma.memoryJob.count({ where: { kind: "MEMORY_COMMAND", userId } })).toBe(0);
   });
 
   it("settles linked occurrences from their runs, marks only news unread and keeps the newest result as the baseline", async () => {
