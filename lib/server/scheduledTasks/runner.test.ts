@@ -683,7 +683,7 @@ describe("scheduled task runner", () => {
     expect(h.sent).toHaveLength(0);
   });
 
-  it("queues one browser push per notifying settlement, with or without result email", async () => {
+  it("queues one browser push per notifying settlement, with or without result email, never for a quiet skip", async () => {
     const h = harness();
     const task = h.addTask({ emailNotify: false, nextRunAt: new Date("2026-10-02T06:00:00.000Z") });
     h.advance(2 * 60 * MINUTE);
@@ -691,10 +691,10 @@ describe("scheduled task runner", () => {
     const [missed, completed] = h.forTask(task);
     expect(missed).toMatchObject({ reasonCode: "missed", state: "SKIPPED" });
     expect(completed).toMatchObject({ state: "COMPLETED" });
-    expect(h.pushes).toEqual([missed!.id, completed!.id]);
+    expect(h.pushes).toEqual([completed!.id]);
     expect(h.emails).toHaveLength(0);
     await h.tick();
-    expect(h.pushes).toHaveLength(2);
+    expect(h.pushes).toHaveLength(1);
   });
 
   it("tolerates a task deleted while its occurrence is pending", async () => {
