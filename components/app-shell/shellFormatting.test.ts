@@ -20,6 +20,13 @@ describe("shell error formatting", () => {
     )).toBe("No PDF-reading model is configured for this installation. Remove the PDF, choose a model that can read PDFs, or ask an administrator (pdf_processing_configuration_incomplete)");
   });
 
+  it.each([
+    ["knowledge_image_not_supported", "Knowledge answers can't use images with this model. Remove the image, choose a model that supports images, or ask without Knowledge"],
+    ["image_attachment_not_supported", "This model can't use images here. Remove the image, choose a model that supports images, or ask an administrator to assign the Vision Model"]
+  ])("explains a refused image admission (%s) with its recovery", async (code, message) => {
+    expect(await responseErrorMessage(Response.json({ error: code }, { status: 400 }), "send_failed_400")).toBe(`${message} (${code})`);
+  });
+
   it("keeps concrete Skill admission limits visible in the composer", async () => {
     expect(await responseErrorMessage(Response.json({ error: "skills_count_exceeded", actual: 33, limit: 32 }), "send_failed_400"))
       .toContain("33 Skills are pinned; the limit is 32");

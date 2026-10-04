@@ -148,7 +148,7 @@ describe("chat wire contracts", () => {
       chat: detailChat({ messages: [{ ...message, toolActivity: { calls: [{ ...call, origin }] } }], usageStats })
     });
 
-    for (const origin of ["mcp", "web_search", "knowledge", "discovery", "workspace", "memory", "session", "tool"]) {
+    for (const origin of ["mcp", "web_search", "knowledge", "discovery", "workspace", "memory", "session", "tool", "vision"]) {
       expect(decode(origin)?.messages[0]?.toolActivity).toEqual({ calls: [{ ...call, origin }] });
     }
     expect(decode(undefined)?.messages[0]?.toolActivity).toEqual({ calls: [call] });

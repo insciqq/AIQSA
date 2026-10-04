@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { decodeCatalogResponse, type CatalogResponse } from "../../contracts/catalog";
 import { defaultProviderModels, defaultSearchStrategies } from "../../domain/catalog";
 import { getAuthConfig } from "../auth/config";
@@ -193,6 +193,35 @@ describe("catalog handler", () => {
       clientToolCompatible: false,
       executionModes: ["model_choice"]
     });
+  });
+
+  it.each([
+    { systemVision: true, imageEditing: false },
+    { systemVision: false, imageEditing: true },
+    { systemVision: false, imageEditing: false }
+  ])("projects image routes on tool-calling models from one admission rule: %j", async (facts) => {
+    const resolveImageRoutes = vi.fn(async () => facts);
+    const GET = createCatalogHandler({
+      loadCatalogData: async () => ({
+        entitlements: { fullAccess: true, modelKeys: new Set(), providerKeys: new Set(), searchStrategies: new Set() },
+        models: defaultProviderModels,
+        searchStrategies: [],
+        settings: { defaultControlValues: {}, defaultProviderModelId: null, defaultSearchPlan: null, showCitations: true, showReasoningBlocks: false }
+      }),
+      resolveAuth: auth.resolveAuth,
+      resolveImageRoutes
+    });
+    const catalog = decodeCatalogResponse(await (await GET(new Request("http://app.local/api/me/catalog", {
+      headers: { cookie: auth.cookie } }))).json());
+    expect(resolveImageRoutes).toHaveBeenCalledExactlyOnceWith(config.bootstrapUserId);
+    const models = catalog?.models ?? [];
+    expect(models.some((model) => model.capabilities.toolCalling && !model.capabilities.imageInput)).toBe(true);
+    for (const model of models) {
+      expect(model.capabilities.imageRoutes).toEqual(model.capabilities.toolCalling
+        // System Vision answers only for a model without its own image input.
+        ? { systemVision: facts.systemVision && !model.capabilities.imageInput, imageEditing: facts.imageEditing }
+        : undefined);
+    }
   });
 
   it("projects every supplied current and future catalog item for full access", () => {

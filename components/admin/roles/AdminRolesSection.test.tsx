@@ -297,6 +297,7 @@ describe("AdminRolesSection", () => {
     const calls = server(catalog);
     renderSection();
     const row = await screen.findByTestId("admin-role-vision");
+    expect(within(row).getByText(/answers image questions in chats for answer models without vision/)).toBeVisible();
     expect(within(row).getByText(/image analysis tool is not available/)).toBeVisible();
     expect(within(row).getByTestId("admin-role-vision-status")).toHaveTextContent("Model ready");
     fireEvent.click(within(row).getByRole("button", { name: "Vision Model actions" }));

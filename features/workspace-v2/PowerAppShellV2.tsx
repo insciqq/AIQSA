@@ -1918,8 +1918,9 @@ export function PowerAppShellV2({
     },
     rejectAttachments(fileNames: readonly string[]) {
       const store = useComposerSessionStore.getState();
+      // The composer refused these with its own (personal or Project) model.
       store.updateSession(store.activeSessionKey, {
-        operationError: unsupportedAttachmentMessage(fileNames, currentModel)
+        operationError: unsupportedAttachmentMessage(fileNames, effectiveCurrentModel, false, workspaceAvailable)
       });
     },
     removeAttachment(attachmentId: string) {

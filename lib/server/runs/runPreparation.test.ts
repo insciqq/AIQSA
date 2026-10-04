@@ -5623,3 +5623,147 @@ describe("cross-turn tool history admission", () => {
     expect(prepared.providerRequest.tools?.some((tool) => tool.name === "read_tool_call") ?? false).toBe(false);
   });
 });
+
+describe("chat System Vision admission", () => {
+  const textOnly: ProviderModelCapabilities = { ...baseCapabilities, toolCalling: true, vision: false };
+  const image = runAttachment({ id: "current-image", kind: "image", mimeType: "image/png", storageKey: "private/current-image" });
+  const imageContent = (attachmentId: string) => ({ blocks: [{ type: "text", text: "What is in this picture?" }, { type: "image", attachmentId }] });
+  const send = (overrides: Readonly<Record<string, unknown>> = {}, chat: Partial<SendRunPreparationSource["chat"]> = {}) =>
+    sendInput(successBody({ provider: "openai", modelId: "gpt-fixture", ...overrides }), chat);
+  function availablePlan(): AcceptedVisionAnalysisPlan {
+    const snapshot = compatibleAdmissionPlan("openai_responses_compatible").answer.snapshot;
+    return { version: 1, available: true, policyVersion: 1, verifiedVisionInput: true, reasoningEffort: null, snapshot,
+      authority: { connectionId: snapshot.connectionId, connectionVersion: 1, credentialId: snapshot.credentialId!,
+        credentialVersionId: snapshot.credentialVersionId!, providerModelId: snapshot.providerModelId, modelVersion: 1 } };
+  }
+  const tools = (prepared: PreparedRun) => prepared.providerRequest.tools?.map((tool) => tool.name) ?? [];
+
+  it("admits an available plan for a tool-calling model without vision and tells it to ask analyze_image", async () => {
+    const h = createHarness({ attachments: [image], capabilities: textOnly });
+    const resolve = vi.fn(async () => availablePlan());
+    const prepared = preparedFrom(await prepareRun({ ...h.deps, vision: { resolve } }, send({ content: imageContent(image.id) })));
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(prepared.normalizedRequest.visionAnalysis).toEqual(availablePlan());
+    expect(prepared.normalizedRequest.workspace).toBeUndefined();
+    expect(prepared.normalizedRequest.imageReferences).toEqual([
+      { attachmentId: image.id, messageId: "current-user-message", fileName: "current-image.png", origin: "upload" }]);
+    expect(prepared.providerRequest.tools?.find((tool) => tool.name === "analyze_image")).toMatchObject({ capability: "vision",
+      inputSchema: { properties: { images: { items: { required: ["image_id"] } } } } });
+    const system = prepared.normalizedRequest.prompt.system ?? "";
+    expect(system).toContain("call analyze_image with its exact image_id");
+    expect(system).toContain("Never claim to have seen the pixels yourself");
+    expect(system).toContain('"image_id":"current-image"');
+    expect(system).not.toContain("You may route these references to the image tool");
+    expect(system).not.toContain("There is no direct Workspace file viewer");
+    // The answer model receives no pixels: only the reference and the tool.
+    expect(h.storageReads).toEqual([]);
+    expect(prepared.providerRequest.attachments).toEqual([expect.objectContaining({ id: image.id, kind: "image" })]);
+    expect(prepared.providerRequest.attachments[0]).not.toHaveProperty("dataUrl");
+  });
+
+  it.each([
+    { version: 1, available: false, code: "vision_model_absent" },
+    { version: 1, available: false, code: "vision_model_unavailable" }
+  ] as const)("never substitutes another model when System Vision is $code", async (plan) => {
+    const h = createHarness({ attachments: [image], capabilities: textOnly });
+    const deps = { ...h.deps, vision: { resolve: async () => plan } };
+    await expect(prepareRun(deps, send({ content: imageContent(image.id) })))
+      .resolves.toMatchObject({ ok: false, code: "image_attachment_not_supported", status: 400 });
+    const text = preparedFrom(await prepareRun({ ...deps, images: { resolve: async () => syntheticImagePlan() } }, send()));
+    expect(text.normalizedRequest.visionAnalysis).toBeUndefined();
+    expect(tools(text)).not.toContain("analyze_image");
+  });
+
+  it("gives a vision-capable model current pixels natively without a Vision lookup or chat analyze_image", async () => {
+    const bytes = Buffer.from("synthetic visible image");
+    const visible = runAttachment({ id: "visible-image", kind: "image", mimeType: "image/png", byteSize: bytes.length,
+      storageKey: "private/visible-image", checksum: sha256(bytes) });
+    const h = createHarness({ attachments: [visible], capabilities: { ...baseCapabilities, toolCalling: true, vision: true },
+      storageObjects: { [visible.storageKey]: { body: bytes, contentType: "image/png" } } });
+    const resolve = vi.fn(async () => availablePlan());
+    const prepared = preparedFrom(await prepareRun({ ...h.deps, vision: { resolve },
+      images: { resolve: async () => syntheticImagePlan() } }, send({ content: imageContent(visible.id) })));
+    expect(resolve).not.toHaveBeenCalled();
+    expect(prepared.normalizedRequest.visionAnalysis).toBeUndefined();
+    expect(tools(prepared)).not.toContain("analyze_image");
+    expect(prepared.providerRequest.attachments[0]?.dataUrl).toBe(`data:image/png;base64,${bytes.toString("base64")}`);
+  });
+
+  it("keeps a text-only chat's tool set unless the run may generate an image to inspect", async () => {
+    const h = createHarness({ capabilities: textOnly });
+    const resolve = vi.fn(async () => availablePlan());
+    const deps = { ...h.deps, vision: { resolve } };
+    const plain = preparedFrom(await prepareRun(deps, send()));
+    expect(plain.normalizedRequest.visionAnalysis).toBeUndefined();
+    expect(tools(plain)).not.toContain("analyze_image");
+    // Nothing to analyze needs no Vision lookup either.
+    expect(resolve).not.toHaveBeenCalled();
+    const generating = preparedFrom(await prepareRun({ ...deps, images: { resolve: async () => syntheticImagePlan() } }, send()));
+    expect(generating.normalizedRequest.visionAnalysis).toEqual(availablePlan());
+    expect(tools(generating)).toEqual(expect.arrayContaining(["analyze_image", "generate_image"]));
+  });
+
+  it("references earlier conversation images, including generated ones, for analysis", async () => {
+    const earlier = runAttachment({ id: "earlier-image", kind: "image", mimeType: "image/webp", storageKey: "private/earlier-image" });
+    const generated = runAttachment({ id: "generated-image", kind: "image", mimeType: "image/png", storageKey: "private/generated-image" });
+    const h = createHarness({ attachments: [earlier, generated], capabilities: textOnly, sendContext: [
+      { id: "prior-user-message", role: "user", content: imageContent(earlier.id) as ProviderConversationMessage["content"] },
+      { id: "prior-answer", role: "assistant", content: imageContent(generated.id) as ProviderConversationMessage["content"] }] });
+    const prepared = preparedFrom(await prepareRun({ ...h.deps, vision: { resolve: async () => availablePlan() } },
+      send({ content: textMessageContent("Compare the two pictures") })));
+    expect(prepared.normalizedRequest.visionAnalysis).toEqual(availablePlan());
+    expect(prepared.normalizedRequest.imageReferences?.map(({ attachmentId, origin }) => [attachmentId, origin])).toEqual([
+      ["earlier-image", "upload"], ["generated-image", "generated"]]);
+  });
+
+  it("admits no chat System Vision with tools off", async () => {
+    const h = createHarness({ attachments: [image], capabilities: textOnly });
+    const resolve = vi.fn(async () => availablePlan());
+    await expect(prepareRun({ ...h.deps, vision: { resolve } }, send({ tools: "none", content: imageContent(image.id) })))
+      .resolves.toMatchObject({ ok: false, code: "image_attachment_not_supported" });
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("refuses a current image for a model without vision when Knowledge is in scope, before any Vision lookup", async () => {
+    const h = createHarness({ attachments: [image], capabilities: textOnly });
+    const resolve = vi.fn(async () => availablePlan());
+    const deps = { ...h.deps, vision: { resolve }, images: { resolve: async () => syntheticImagePlan() },
+      knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "e") } };
+    const knowledge = { knowledgePlan: knowledgeSelection(["knowledge-base-1"]) };
+    await expect(prepareRun(deps, send({ ...knowledge, content: imageContent(image.id) }))).resolves.toMatchObject({
+      ok: false, code: "knowledge_image_not_supported", status: 400, message: expect.stringContaining("Remove the image") });
+    expect(resolve).not.toHaveBeenCalled();
+    const text = preparedFrom(await prepareRun(deps, send(knowledge)));
+    expect(text.normalizedRequest.visionAnalysis).toBeUndefined();
+    expect(tools(text)).not.toContain("analyze_image");
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("keeps a vision-capable model's Knowledge image admission unchanged", async () => {
+    const bytes = Buffer.from("synthetic knowledge image");
+    const visible = runAttachment({ id: "knowledge-image", kind: "image", mimeType: "image/png", byteSize: bytes.length,
+      storageKey: "private/knowledge-image", checksum: sha256(bytes) });
+    const h = createHarness({ attachments: [visible], capabilities: { ...baseCapabilities, toolCalling: true, vision: true },
+      storageObjects: { [visible.storageKey]: { body: bytes, contentType: "image/png" } } });
+    const prepared = preparedFrom(await prepareRun({ ...h.deps, vision: { resolve: async () => availablePlan() },
+      knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "f") } },
+    send({ knowledgePlan: knowledgeSelection(["knowledge-base-1"]), content: imageContent(visible.id) })));
+    expect(prepared.normalizedRequest.visionAnalysis).toBeUndefined();
+    expect(prepared.providerRequest.attachments[0]?.dataUrl).toContain("base64,");
+  });
+
+  it("admits chat System Vision in a Project chat like a personal one", async () => {
+    const h = createHarness({ attachments: [image], capabilities: textOnly });
+    const project = projectAdmission({ modelIds: ["gpt-fixture"], defaults: { ...projectAdmission().defaults, providerModelId: "gpt-fixture" } });
+    const loads: Array<{ projectId?: string }> = [];
+    const repository = { ...h.deps.repository, loadAttachments: async (userId: string, ids: string[], projectId?: string) => {
+      loads.push({ projectId }); return h.deps.repository.loadAttachments(userId, ids, projectId);
+    } };
+    const prepared = preparedFrom(await prepareRun({ ...h.deps, repository, vision: { resolve: async () => availablePlan() } },
+      send({ content: imageContent(image.id) }, { project })));
+    expect(prepared.project?.projectId).toBe("project-1");
+    expect(prepared.normalizedRequest.visionAnalysis).toEqual(availablePlan());
+    expect(tools(prepared)).toContain("analyze_image");
+    expect(loads.every((load) => load.projectId === "project-1")).toBe(true);
+  });
+});

@@ -417,6 +417,20 @@ describe("catalog wire contract", () => {
     expect(decodeCatalogResponse(response)).toBeNull();
   });
 
+  it("strictly decodes the optional image-route projection", () => {
+    const withRoutes = (imageRoutes: unknown) => {
+      const response = validResponse() as unknown as { catalog: { models: { capabilities: Record<string, unknown> }[] } };
+      response.catalog.models[0]!.capabilities.imageRoutes = imageRoutes;
+      return decodeCatalogResponse(response);
+    };
+    expect(decodeCatalogResponse(validResponse())?.models[0]?.capabilities).not.toHaveProperty("imageRoutes");
+    expect(withRoutes({ systemVision: true, imageEditing: false, privateModelId: "vision" })?.models[0]?.capabilities.imageRoutes)
+      .toEqual({ systemVision: true, imageEditing: false });
+    for (const malformed of [null, true, {}, { systemVision: "true", imageEditing: false }, { systemVision: true }]) {
+      expect(withRoutes(malformed)).toBeNull();
+    }
+  });
+
   it("requires the model tool-calling capability", () => {
     const response = validResponse() as unknown as {
       catalog: { models: { capabilities: Record<string, unknown> }[] };

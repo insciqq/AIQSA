@@ -15,6 +15,7 @@ import {
   documentProcessingFromMetadata,
   type DocumentProcessingWire
 } from "@/lib/contracts/uploads";
+import { uploadAdmissionFormatFor } from "@/lib/domain/uploadFormats";
 
 const directPdfStorageFailureCodes = new Set([
   "attachment_checksum_mismatch",
@@ -186,6 +187,33 @@ export function attachmentBlocksSend(
   return status !== "ready" && status !== "processing" && status !== "failed";
 }
 
+/**
+ * Whether an image can be sent with this model outside Workspace, exactly as
+ * run admission accepts it: the model's own image input, the System Vision
+ * Model for a model without it, or editing by the run's image model. The
+ * routes are the server's catalog projection; absent means none.
+ */
+export function imageRouteAvailable(model: CatalogModel | undefined): boolean {
+  const routes = model?.capabilities.imageRoutes;
+  return Boolean(model?.capabilities.imageInput || routes?.systemVision || routes?.imageEditing);
+}
+
+/** Why no route takes an image with this model, and what the user can do. */
+export function imageRouteUnavailableMessage(
+  model: CatalogModel | undefined,
+  workspaceAvailable = false
+): string {
+  const label = model?.displayName ?? "The selected model";
+  const tools = model?.capabilities.toolCalling === true;
+  const steps = [
+    "choose a model that supports images",
+    ...(workspaceAvailable ? ["turn on Workspace"] : []),
+    ...(tools ? ["ask an administrator to assign the Vision Model"] : [])
+  ];
+  const recovery = steps.length > 1 ? `${steps.slice(0, -1).join(", ")} or ${steps.at(-1)}` : steps[0];
+  return `${label} can't read images${tools ? ", and no Vision Model is available to analyze them" : ""}. To use images, ${recovery}.`;
+}
+
 export function attachmentPolicyForModel(
   model: CatalogModel | undefined,
   workspaceFilesAvailable = false
@@ -195,7 +223,7 @@ export function attachmentPolicyForModel(
   }
   return {
     documents: Boolean(model),
-    images: Boolean(model?.capabilities.imageInput || model?.capabilities.imageTool?.editing),
+    images: imageRouteAvailable(model),
     // PDFs stay attachable so a missing reading route is explained on the
     // chip instead of hiding the file type. Whether this model can read a PDF
     // (native input, the PDF reader or page images) comes only from the
@@ -245,11 +273,16 @@ export function partitionAttachmentsForModel(
 export function unsupportedAttachmentMessage(
   fileNames: readonly string[],
   model: CatalogModel | undefined,
-  removed = false
+  removed = false,
+  workspaceAvailable = false
 ): string {
   const label = model?.displayName ?? "The selected model";
   const names = fileNames.join(", ");
-  return removed
+  const message = removed
     ? `Removed ${fileNames.length === 1 ? "an attachment" : `${fileNames.length} attachments`} unsupported by ${label}: ${names}`
     : `${label} does not support ${fileNames.length === 1 ? "this attachment" : "these attachments"}: ${names}`;
+  // A refused image names why no image route exists and how to get one.
+  const image = !imageRouteAvailable(model) &&
+    fileNames.some((fileName) => uploadAdmissionFormatFor(fileName, "", "attachment")?.kind === "image");
+  return image ? `${message}. ${imageRouteUnavailableMessage(model, workspaceAvailable)}` : message;
 }
