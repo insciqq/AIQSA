@@ -72,7 +72,6 @@ describe("chat route handlers", () => {
       deleteFolder: async () => false,
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async (input) => {
         stored.push(input.title ?? "");
         return summary(input.chatId, input.title ?? "Chat");
@@ -157,7 +156,6 @@ describe("chat route handlers", () => {
       deleteFolder: async () => false,
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async () => null,
       updateFolder: async () => null
     };
@@ -249,7 +247,6 @@ describe("chat route handlers", () => {
         ],
         folders: []
       }),
-      searchChatContent: async () => [],
       updateFolder: async () => null,
       updateChat: async () => null
     };
@@ -274,83 +271,9 @@ describe("chat route handlers", () => {
           messageCount: 1
         }
       ],
-      contentMatches: []
+      folders: []
     });
-    expect(body.chats[0]).not.toHaveProperty("messages");
-    expect(body.chats[0]).not.toHaveProperty("usageStats");
-  });
-
-  it("returns capped current-user content match ids for workspace search", async () => {
-    let searchInput: Parameters<ChatRepository["searchChatContent"]>[0] | null = null;
-    const repository: ChatRepository = {
-      ...historyRepositoryMethods,
-      archiveChat: async () => false,
-      createChat: async () => null,
-      createFolder: async () => null,
-      deleteFolder: async () => false,
-      getChat: async () => null,
-      listWorkspace: async () => ({
-        chats: [
-          {
-            activeLeafMessageId: null,
-            createdAt: "2026-06-07T09:00:00.000Z",
-            defaultModelId: "gpt-5.5",
-            defaultProvider: "openai",
-            folderId: null,
-            id: "chat-1",
-            messageCount: 2,
-            pinned: false,
-            title: "Old imported notes",
-            updatedAt: "2026-06-07T09:00:02.000Z"
-          }
-        ],
-        folders: []
-      }),
-      searchChatContent: async (input) => {
-        searchInput = input;
-
-        return [
-          {
-            chatId: "chat-1",
-            snippet: "buried phrase in a never loaded chat"
-          }
-        ];
-      },
-      updateFolder: async () => null,
-      updateChat: async () => null
-    };
-    const GET = createListChatsHandler({
-      repository,
-      resolveAuth: auth.resolveAuth
-    });
-    const response = await GET(
-      new Request("http://app.local/api/chats?q=%20buried%20phrase%20", {
-        headers: {
-          cookie: authCookie()
-        }
-      })
-    );
-
-    expect(response.status).toBe(200);
-    expect(searchInput).toEqual({
-      limit: 50,
-      query: "buried phrase",
-      userId: config.bootstrapUserId
-    });
-    const body = await response.json();
-    expect(body).toMatchObject({
-      chats: [
-        {
-          id: "chat-1"
-        }
-      ],
-      contentMatches: [
-        {
-          chatId: "chat-1",
-          snippet: "buried phrase in a never loaded chat"
-        }
-      ]
-    });
+    expect(body).not.toHaveProperty("contentMatches");
     expect(body.chats[0]).not.toHaveProperty("messages");
     expect(body.chats[0]).not.toHaveProperty("usageStats");
   });
@@ -406,7 +329,6 @@ describe("chat route handlers", () => {
         }
       }),
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateFolder: async () => null,
       updateChat: async () => null
     };
@@ -486,7 +408,6 @@ describe("chat route handlers", () => {
         };
       },
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async () => null,
       updateFolder: async () => null
     };
@@ -518,7 +439,6 @@ describe("chat route handlers", () => {
       getChat: async () => null,
       getMessagesPage: async ({ before }) => ({ kind: before === "stale" ? "stale" : "cursor_invalid" }),
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async () => null,
       updateFolder: async () => null
     };
@@ -560,7 +480,6 @@ describe("chat route handlers", () => {
       },
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async () => null,
       updateFolder: async () => null
     };
@@ -586,7 +505,6 @@ describe("chat route handlers", () => {
       deleteFolder: async () => false,
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async () => null,
       updateFolder: async (input) => {
         updateInput = input;
@@ -648,7 +566,6 @@ describe("chat route handlers", () => {
       },
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async () => null,
       updateFolder: async () => null
     };
@@ -690,7 +607,6 @@ describe("chat route handlers", () => {
       deleteFolder: async () => false,
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async (input) => {
         updateInput = input;
         return {
@@ -755,7 +671,6 @@ describe("chat route handlers", () => {
       deleteFolder: async () => false,
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async (input) => {
         chatDefault = input.defaultKnowledgePlan;
         return {
@@ -828,7 +743,6 @@ describe("chat route handlers", () => {
       deleteFolder: async () => false,
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async () => { called = true; return null; },
       updateFolder: async () => { called = true; return null; }
     };
@@ -861,7 +775,6 @@ describe("chat route handlers", () => {
       deleteFolder: async () => false,
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async () => {
         throw new ActiveRunConflictError();
       },
@@ -903,7 +816,6 @@ describe("chat route handlers", () => {
       deleteFolder: async () => false,
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async (input) => {
         calls.push(input);
         if (failure) throw failure;
@@ -991,7 +903,6 @@ describe("chat route handlers", () => {
       deleteFolder: async () => false,
       getChat: async () => null,
       listWorkspace: async () => null,
-      searchChatContent: async () => [],
       updateChat: async () => null,
       updateFolder: async () => null
     };

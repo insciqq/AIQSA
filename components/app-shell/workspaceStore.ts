@@ -1,5 +1,7 @@
 import type { Catalog, FolderSummary, WorkspaceChatSummary } from "@/components/app-shell/types";
 import type {
+  ChatMessageMatchPageWire,
+  ChatMessageMatchWire,
   ChatNavigationFolderWire,
   ChatNavigationPageWire,
   ChatNavigationSummaryWire
@@ -23,6 +25,16 @@ export type WorkspaceSnapshot = {
   navigationError: string | null;
   navigationFolders: ChatNavigationFolderWire[];
   navigationLoading: boolean;
+  /**
+   * Chats whose message text matches the search query: a list of its own,
+   * loaded beside the title results with its own loading and failure.
+   */
+  navigationMessageMatches: ChatMessageMatchWire[];
+  navigationMessageMatchesError: string | null;
+  navigationMessageMatchesLoading: boolean;
+  navigationMessageMatchesNextCursor: string | null;
+  /** The first message page of the current query has arrived. */
+  navigationMessageMatchesReady: boolean;
   navigationNextCursor: string | null;
   navigationReady: boolean;
   navigationSearchChats: ChatNavigationSummaryWire[];
@@ -47,8 +59,12 @@ export type WorkspaceStore = WorkspaceSnapshot & {
   setFolders(update: StateUpdate<FolderSummary[]>): void;
   applyNavigationPage(page: ChatNavigationPageWire, append: boolean): void;
   applyNavigationSearchPage(page: ChatNavigationPageWire, append: boolean): void;
+  /** A first page replaces the message matches; a later page continues them. */
+  applyNavigationMessageMatchPage(page: ChatMessageMatchPageWire, append: boolean): void;
   setNavigationError(value: string | null): void;
   setNavigationLoading(value: boolean): void;
+  setNavigationMessageMatchesError(value: string | null): void;
+  setNavigationMessageMatchesLoading(value: boolean): void;
   setNavigationSearchError(value: string | null): void;
   setNavigationSearchLoading(value: boolean): void;
   setNavigationSearchQuery(value: string): void;
@@ -81,6 +97,11 @@ export const initialWorkspaceSnapshot: WorkspaceSnapshot = {
   navigationError: null,
   navigationFolders: [],
   navigationLoading: false,
+  navigationMessageMatches: [],
+  navigationMessageMatchesError: null,
+  navigationMessageMatchesLoading: false,
+  navigationMessageMatchesNextCursor: null,
+  navigationMessageMatchesReady: false,
   navigationNextCursor: null,
   navigationReady: false,
   navigationSearchChats: [],
@@ -191,8 +212,30 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
       navigationSearchNextCursor: page.nextCursor
     }));
   },
+  applyNavigationMessageMatchPage(page, append) {
+    set((state) => {
+      // Server order continues the list; a chat already shown keeps its place.
+      const shown = new Set(append ? state.navigationMessageMatches.map((match) => match.chatId) : []);
+      return {
+        navigationMessageMatches: [
+          ...(append ? state.navigationMessageMatches : []),
+          ...page.matches.filter((match) => !shown.has(match.chatId))
+        ],
+        navigationMessageMatchesError: null,
+        navigationMessageMatchesLoading: false,
+        navigationMessageMatchesNextCursor: page.nextCursor,
+        navigationMessageMatchesReady: true
+      };
+    });
+  },
   setNavigationError(value) {
     set({ navigationError: value });
+  },
+  setNavigationMessageMatchesError(value) {
+    set({ navigationMessageMatchesError: value });
+  },
+  setNavigationMessageMatchesLoading(value) {
+    set({ navigationMessageMatchesLoading: value });
   },
   setNavigationLoading(value) {
     // A started request (like an applied page) marks the list attempted; the
@@ -207,6 +250,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   },
   setNavigationSearchQuery(value) {
     set({
+      navigationMessageMatches: [],
+      navigationMessageMatchesError: null,
+      navigationMessageMatchesLoading: false,
+      navigationMessageMatchesNextCursor: null,
+      navigationMessageMatchesReady: false,
       navigationSearchChats: [],
       navigationSearchError: null,
       navigationSearchLoading: false,
@@ -227,6 +275,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   upsertNavigationChat(chat) {
     set((state) => ({
       navigationChats: mergeNavigationChats(state.navigationChats, [chat], true),
+      // A renamed chat keeps its message match under the new title.
+      navigationMessageMatches: state.navigationMessageMatches.some((match) =>
+        match.chatId === chat.id && match.title !== chat.title)
+        ? state.navigationMessageMatches.map((match) =>
+            match.chatId === chat.id ? { ...match, title: chat.title } : match)
+        : state.navigationMessageMatches,
       navigationSearchChats: state.navigationSearchChats.some((item) => item.id === chat.id)
         ? mergeNavigationChats(state.navigationSearchChats, [chat], true)
         : state.navigationSearchChats
@@ -235,6 +289,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   removeNavigationChat(chatId) {
     set((state) => ({
       navigationChats: state.navigationChats.filter((chat) => chat.id !== chatId),
+      navigationMessageMatches: state.navigationMessageMatches.filter((match) => match.chatId !== chatId),
       navigationSearchChats: state.navigationSearchChats.filter((chat) => chat.id !== chatId)
     }));
   },

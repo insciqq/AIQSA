@@ -2174,37 +2174,6 @@ export function createPrismaChatRepository(
         return graph;
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
-    searchChatContent: async ({ limit, query, userId }) => {
-      const trimmed = query.trim();
-      if (!trimmed) {
-        return [];
-      }
-
-      const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : 50;
-      const boundedLimit = Math.min(Math.max(normalizedLimit, 1), 50);
-      const pattern = `%${trimmed}%`;
-      const rows = await prismaClient.$queryRaw<{ chatId: string; snippet: string | null }[]>`
-        SELECT
-          m."chatId" AS "chatId",
-          MIN(substring(m."content"::text FROM 1 FOR 180)) AS "snippet"
-        FROM "Message" m
-        INNER JOIN "Chat" c ON c."id" = m."chatId"
-        WHERE c."userId" = ${userId}
-          AND c."archived" = false
-          AND c."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
-          AND c."permanentDeletionAt" IS NULL
-          AND c."projectId" IS NULL
-          AND m."content"::text ILIKE ${pattern}
-        GROUP BY m."chatId", c."updatedAt"
-        ORDER BY c."updatedAt" DESC
-        LIMIT ${boundedLimit}
-      `;
-
-      return rows.map((row) => ({
-        chatId: row.chatId,
-        snippet: row.snippet
-      }));
-    },
     updateFolder: async ({ defaultKnowledgePlan, folderId, name, parentId, projectMemory, userId }) => {
       const trimmed = typeof name === "string" ? name.trim() : undefined;
       if (typeof name === "string" && !trimmed) {
