@@ -1,12 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { ChatExportDocument } from "@/lib/contracts/chatExport";
-import { decodeChatImportRequestItems } from "@/lib/contracts/chatImport";
+import { chatImportRequestAccountId, decodeChatImportRequestItems } from "@/lib/contracts/chatImport";
 import type { ChatImportConverter, ConvertedChat, ImportConverterEvent } from "./converters/converterTypes";
 import type { ImportFile } from "./importFile";
 import { importBatches, utf8ByteLength, type ImportBatch } from "./importPipeline";
 
 const now = () => new Date("2026-10-05T12:00:00.000Z");
+const accountId = "account-1";
 
 function fakeFile(name: string): ImportFile {
   return {
@@ -84,12 +85,14 @@ describe("import pipeline", () => {
       chat("huge", "H".repeat(9_000)),
       small("five")
     ];
-    const batches = await collect(importBatches([fakeFile("claude-export.zip")], {
+    const batches = await collect(importBatches([fakeFile("claude-export.zip")], { accountId,
       converters: [converter("claude", events)], maxBodyBytes: 3_500, maxChats: 3, now
     }));
     expect(batches.map(bodyTitles)).toEqual([["one", "two", "three"], ["four"], ["large"], ["five"]]);
     expect(batches.map((batch) => batch.done)).toEqual([false, false, false, true]);
+    // The limit covers the whole body, the account that started the import included.
     expect(batches.every((batch) => !batch.body || utf8ByteLength(batch.body) <= 3_500)).toBe(true);
+    expect(batches.every((batch) => !batch.body || chatImportRequestAccountId(JSON.parse(batch.body)) === accountId)).toBe(true);
     expect(batches.flatMap((batch) => batch.failed)).toEqual([{ reason: "too_large", title: "huge" }]);
     expect(batches.reduce((total, batch) => total + batch.totalDelta, 0)).toBe(7);
     expect(batches[2]!.sent).toEqual([{ messages: 2, title: "large" }]);
@@ -104,7 +107,7 @@ describe("import pipeline", () => {
       { count: 2, kind: "image", type: "skipped" },
       { reason: "missing_from_archive", title: "gone", type: "failed" }
     ];
-    const [batch] = await collect(importBatches([fakeFile("claude.zip")], { converters: [converter("claude", events)], now }));
+    const [batch] = await collect(importBatches([fakeFile("claude.zip")], { accountId, converters: [converter("claude", events)], now }));
     expect(batch!.failed).toEqual([
       { reason: "chat_export_active_leaf_missing", title: "broken" },
       { reason: "chat_import_item_invalid", title: "no key" },
@@ -118,7 +121,7 @@ describe("import pipeline", () => {
   });
 
   it("sends and reports an untitled chat under the title it will be stored with", async () => {
-    const [batch] = await collect(importBatches([fakeFile("claude.zip")], {
+    const [batch] = await collect(importBatches([fakeFile("claude.zip")], { accountId,
       converters: [converter("claude", [chat(""), chat("   "), chat("  Padded  ")])], now
     }));
     expect(bodyTitles(batch!)).toEqual(["New Chat", "New Chat", "Padded"]);
@@ -130,7 +133,7 @@ describe("import pipeline", () => {
     const second = converter("claude", [chat("from second")]);
     const batches = await collect(importBatches(
       [fakeFile("claude-conversations.json"), fakeFile("aiqsa.json"), fakeFile("claude-index.json"), fakeFile("photo.png")],
-      { converters: [first, second], now }
+      { accountId, converters: [first, second], now }
     ));
     expect(batches.flatMap((batch) => bodyTitles(batch) ?? [])).toEqual(["from first", "from second"]);
     expect(batches.flatMap((batch) => batch.failed)).toEqual([
@@ -141,7 +144,7 @@ describe("import pipeline", () => {
 
   it("flushes local outcomes so progress moves without sendable chats", async () => {
     const failures: ImportConverterEvent[] = ["a", "b", "c"].map((title) => ({ reason: "too_large", title, type: "failed" }));
-    const batches = await collect(importBatches([fakeFile("claude.zip")], {
+    const batches = await collect(importBatches([fakeFile("claude.zip")], { accountId,
       converters: [converter("claude", [...failures, { count: 1, kind: "empty_chat", type: "skipped" }])], flushOutcomes: 2, now
     }));
     expect(batches.map((batch) => [batch.body, batch.failed.length, batch.skipped, batch.done])).toEqual([

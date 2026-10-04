@@ -1,15 +1,22 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import type { ChatExportDocument } from "@/lib/contracts/chatExport";
-import { decodeChatImportRequestItems, type ChatImportResponse } from "@/lib/contracts/chatImport";
+import { chatImportRequestAccountId, decodeChatImportRequestItems, type ChatImportResponse } from "@/lib/contracts/chatImport";
 import { buildTarGz } from "./archive/archive.testFixtures";
-import { ChatImportRequestError, runChatImport, type ChatImportRunnerDeps, type ChatImportState } from "./chatImportRunner";
+import {
+  ACCOUNT_CHANGED_CHAT_IMPORT_STATE,
+  ChatImportRequestError,
+  runChatImport,
+  type ChatImportRunnerDeps,
+  type ChatImportState
+} from "./chatImportRunner";
 import { createChatImportConverters } from "./converters/registry";
 import { openImportFile } from "./importFile";
 import { importBatches, type ImportBatch } from "./importPipeline";
 import type { ImportWorkerPort, ImportWorkerRequest, ImportWorkerResponse } from "./importWorkerProtocol";
 
 const now = () => new Date("2026-10-05T12:00:00.000Z");
+const accountId = "account-1";
 
 function exportDocument(title: string): ChatExportDocument {
   return {
@@ -44,7 +51,7 @@ function inProcessWorker(): TestPort {
       void (async () => {
         if (message.type === "start") {
           const files = await Promise.all(message.files.map((file) => openImportFile(file)));
-          steps = importBatches(files, { converters: createChatImportConverters(), maxChats: 2, now });
+          steps = importBatches(files, { accountId: message.accountId, converters: createChatImportConverters(), maxChats: 2, now });
         }
         const next = await steps!.next();
         const data: ImportWorkerResponse = next.done ? { code: "import_failed", type: "error" } : { batch: next.value, type: "batch" };
@@ -105,6 +112,7 @@ describe("chat import runner", () => {
     const sendBatch = vi.fn<ChatImportRunnerDeps["sendBatch"]>(async (body, count): Promise<ChatImportResponse> => {
       const items = decodeChatImportRequestItems(JSON.parse(body)) as Array<{ document: ChatExportDocument }>;
       expect(items).toHaveLength(count);
+      expect(chatImportRequestAccountId(JSON.parse(body))).toBe(accountId);
       return {
         results: items.map((item) => item.document.chat.title === "Chat b"
           ? { status: "already_imported" as const }
@@ -112,7 +120,7 @@ describe("chat import runner", () => {
       };
     });
     const states: ChatImportState[] = [];
-    const run = runChatImport([new File([archive], "aiqsa-chats.tar.gz")], { createWorker: () => worker, sendBatch }, (state) => {
+    const run = runChatImport({ accountId, files: [new File([archive], "aiqsa-chats.tar.gz")] }, { createWorker: () => worker, sendBatch }, (state) => {
       states.push(state);
     });
     const final = await run.finished;
@@ -135,7 +143,7 @@ describe("chat import runner", () => {
   it("cancels while reading without sending anything", async () => {
     const worker = scriptedWorker([null]);
     const sendBatch = vi.fn<ChatImportRunnerDeps["sendBatch"]>();
-    const run = runChatImport([new File(["{}"], "a.json")], { createWorker: () => worker, sendBatch }, () => undefined);
+    const run = runChatImport({ accountId, files: [new File(["{}"], "a.json")] }, { createWorker: () => worker, sendBatch }, () => undefined);
     run.cancel();
     expect((await run.finished).phase).toBe("cancelled");
     expect(sendBatch).not.toHaveBeenCalled();
@@ -146,7 +154,7 @@ describe("chat import runner", () => {
     let release!: (response: ChatImportResponse) => void;
     const worker = scriptedWorker([batch({ body: "{\"chats\":[]}", sent: [{ messages: 3, title: "Kept" }], totalDelta: 2 })]);
     const phases: string[] = [];
-    const run = runChatImport([new File(["{}"], "a.json")], {
+    const run = runChatImport({ accountId, files: [new File(["{}"], "a.json")] }, {
       createWorker: () => worker,
       sendBatch: () => new Promise((resolve) => { release = resolve; })
     }, (state) => phases.push(state.phase));
@@ -161,7 +169,7 @@ describe("chat import runner", () => {
 
   it("stops on a server failure and marks the unconfirmed chats", async () => {
     const worker = scriptedWorker([batch({ body: "{\"chats\":[]}", sent: [{ messages: 2, title: "Lost?" }] })]);
-    const run = runChatImport([new File(["{}"], "a.json")], {
+    const run = runChatImport({ accountId, files: [new File(["{}"], "a.json")] }, {
       createWorker: () => worker,
       sendBatch: async () => { throw new ChatImportRequestError(503); }
     }, () => undefined);
@@ -173,14 +181,56 @@ describe("chat import runner", () => {
   });
 
   it("reports a worker that cannot read the files or crashes", async () => {
-    const unreadable = runChatImport([new File(["{}"], "a.json")], {
+    const unreadable = runChatImport({ accountId, files: [new File(["{}"], "a.json")] }, {
       createWorker: () => scriptedWorker([{ code: "import_files_unreadable", type: "error" }]),
       sendBatch: vi.fn()
     }, () => undefined);
     expect(await unreadable.finished).toMatchObject({ error: "The selected files could not be read. Pick them again.", phase: "failed" });
     const crashing = scriptedWorker([null]);
-    const crashed = runChatImport([new File(["{}"], "a.json")], { createWorker: () => crashing, sendBatch: vi.fn() }, () => undefined);
+    const crashed = runChatImport({ accountId, files: [new File(["{}"], "a.json")] }, { createWorker: () => crashing, sendBatch: vi.fn() }, () => undefined);
     crashing.onerror?.(new Event("error") as ErrorEvent);
     expect((await crashed.finished).phase).toBe("failed");
+  });
+
+  it("stops when the server says the account changed and keeps nothing of the report but the reason", async () => {
+    const worker = scriptedWorker([
+      batch({ body: "{}", failed: [{ reason: "too_large", title: "Private title" }], sent: [{ messages: 2, title: "Also private" }], totalDelta: 3 }),
+      batch({ done: true })
+    ]);
+    const sendBatch = vi.fn<ChatImportRunnerDeps["sendBatch"]>(async () => {
+      throw new ChatImportRequestError(409, "chat_import_account_changed");
+    });
+    const run = runChatImport({ accountId, files: [new File(["{}"], "a.json")] }, { createWorker: () => worker, sendBatch }, () => undefined);
+    const final = await run.finished;
+    expect(final).toEqual(ACCOUNT_CHANGED_CHAT_IMPORT_STATE);
+    expect(JSON.stringify(final)).not.toMatch(/Private title|Also private/u);
+    expect(sendBatch).toHaveBeenCalledTimes(1);
+    expect(worker.requests.map((request) => request.type)).toEqual(["start"]);
+    expect(worker.terminated).toBe(true);
+  });
+
+  it("stops at once on an account change while reading and while a request is in flight", async () => {
+    const reading = scriptedWorker([null]);
+    const whileReading = runChatImport({ accountId, files: [new File(["{}"], "a.json")] },
+      { createWorker: () => reading, sendBatch: vi.fn() }, () => undefined);
+    whileReading.stopForAccountChange();
+    expect(reading.terminated).toBe(true);
+    expect(await whileReading.finished).toEqual(ACCOUNT_CHANGED_CHAT_IMPORT_STATE);
+
+    const sending = scriptedWorker([batch({ body: "{}", sent: [{ messages: 2, title: "In flight" }] }), batch({ done: true })]);
+    let signal: AbortSignal | null = null;
+    const whileSending = runChatImport({ accountId, files: [new File(["{}"], "a.json")] }, {
+      createWorker: () => sending,
+      sendBatch: (_body, _count, requestSignal) => new Promise((_resolve, reject) => {
+        signal = requestSignal;
+        requestSignal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      })
+    }, () => undefined);
+    await vi.waitFor(() => expect(signal).not.toBeNull());
+    whileSending.stopForAccountChange();
+    expect(signal!.aborted).toBe(true);
+    expect(sending.terminated).toBe(true);
+    expect(await whileSending.finished).toEqual(ACCOUNT_CHANGED_CHAT_IMPORT_STATE);
+    expect(sending.requests.map((request) => request.type)).toEqual(["start"]);
   });
 });

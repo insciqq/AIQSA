@@ -3,7 +3,9 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { importedChatTitle } from "../../contracts/chats";
 import type { ChatExportDocumentChat } from "../../contracts/chatExport";
 import {
+  CHAT_IMPORT_ACCOUNT_CHANGED,
   CHAT_IMPORT_REQUEST_MAX_BYTES,
+  chatImportRequestAccountId,
   decodeChatImportItem,
   decodeChatImportRequestItems,
   type ChatImportItem,
@@ -196,6 +198,11 @@ export function createImportChatsHandler(deps: ImportChatsHandlerDeps) {
       if (request.signal.aborted) throw error;
       return json({ error: "chat_import_invalid" }, 400);
     }
+    // A batch belongs to the account that started the import: after a sign-in
+    // as someone else in another tab, its chats must not land in that account.
+    const accountId = chatImportRequestAccountId(body);
+    if (accountId === null) return json({ error: "chat_import_invalid" }, 400);
+    if (accountId !== auth.userId) return json({ error: CHAT_IMPORT_ACCOUNT_CHANGED }, 409);
     const items = decodeChatImportRequestItems(body);
     if (!items) return json({ error: "chat_import_invalid" }, 400);
     const now = deps.now?.() ?? new Date();

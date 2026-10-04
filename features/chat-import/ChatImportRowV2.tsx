@@ -26,7 +26,9 @@ function progressText(state: ChatImportState): string {
 }
 
 function heading(state: ChatImportState): string {
-  return state.phase === "cancelled" ? "Import cancelled" : state.phase === "failed" ? "Import stopped" : "Import finished";
+  return state.phase === "cancelled"
+    ? "Import cancelled"
+    : state.phase === "failed" || state.phase === "account_changed" ? "Import stopped" : "Import finished";
 }
 
 function ChatImportProgressV2({ state }: Readonly<{ state: ChatImportState }>) {
@@ -54,6 +56,18 @@ function ChatImportReportV2({ onDismiss, state }: Readonly<{
   onDismiss(): void;
   state: ChatImportState;
 }>) {
+  if (state.phase === "account_changed") {
+    // The import's details belonged to the account that is gone: only the reason remains.
+    return (
+      <section aria-label="Import report" className="v2-chat-import" data-testid="chat-import-report">
+        <h3>{heading(state)}</h3>
+        <p role="alert">{state.error}</p>
+        <div className="v2-chat-import-actions">
+          <UiV2Button onClick={onDismiss}>Done</UiV2Button>
+        </div>
+      </section>
+    );
+  }
   const skipped = skippedSummary(state.skipped);
   const shown = state.failed.slice(0, FAILED_SHOWN);
   const fileFailures = state.failed.filter((failure) => failure.file).length;
@@ -97,16 +111,20 @@ function ChatImportReportV2({ onDismiss, state }: Readonly<{
  * in a worker and sends only normalized chats; progress counts settled chats
  * and the report names every chat that was not imported, with its reason.
  */
-export function ChatImportRowV2({ onImported }: Readonly<{ onImported?(): void }>) {
+export function ChatImportRowV2({ accountId, onImported }: Readonly<{
+  /** The signed-in account: the import is started for it and stops if it changes. */
+  accountId: string;
+  onImported?(): void;
+}>) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const state = useChatImportState();
+  const state = useChatImportState(accountId);
   const running = chatImportRunning(state);
   const pick = () => inputRef.current?.click();
   const onFiles = (event: ChangeEvent<HTMLInputElement>) => {
     const files = [...(event.currentTarget.files ?? [])];
     // Picking the same file again must fire `change` again.
     event.currentTarget.value = "";
-    if (files.length) startChatImport(files, onImported ? { onImported } : {});
+    if (files.length) startChatImport(files, { accountId, ...(onImported ? { onImported } : {}) });
   };
   return (
     <>
