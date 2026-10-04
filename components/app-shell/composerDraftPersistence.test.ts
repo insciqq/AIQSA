@@ -485,8 +485,8 @@ describe("a Project chat opened by its address", () => {
     let respond: (() => void) | null = null;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) !== "/api/chats") return Response.json({ error: "unexpected" }, { status: 500 });
-      if (respond === null) return Response.json({ chats: [], contentMatches: [], folders: [] });
-      return new Promise<Response>(resolve => { respond = () => resolve(Response.json({ chats: [], contentMatches: [], folders: [] })); });
+      if (respond === null) return Response.json({ chats: [], folders: [] });
+      return new Promise<Response>(resolve => { respond = () => resolve(Response.json({ chats: [], folders: [] })); });
     }));
     const actions = useWorkspaceActions({
       activeChatIdRef: { current: null }, applyModelControlDefaults: vi.fn(), chatDetailRequestsRef: { current: new Map() },

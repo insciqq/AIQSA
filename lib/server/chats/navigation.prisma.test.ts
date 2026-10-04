@@ -9,7 +9,7 @@ describe("Prisma chat navigation repository", () => {
     await prisma.$disconnect();
   });
 
-  it("paginates owner summaries, exposes active runs, and searches title/folder only", async () => {
+  it("paginates owner summaries, exposes active runs, and keeps message matches out of title results", async () => {
     const ownerId = `navigation-owner-${randomUUID()}`;
     const foreignId = `navigation-foreign-${randomUUID()}`;
     await prisma.user.createMany({
@@ -75,7 +75,7 @@ describe("Prisma chat navigation repository", () => {
       await prisma.message.create({
         data: {
           chatId: contentOnly.id,
-          content: textMessageContent("private needle must not be searched"),
+          content: textMessageContent("private needle inside a message"),
           role: "user",
           status: "complete"
         }
@@ -117,12 +117,29 @@ describe("Prisma chat navigation repository", () => {
         kind: "ok",
         page: { chats: [{ id: first.id }] }
       });
+      // A phrase only inside a message finds its chat in the separate message
+      // page, never among the title results.
       await expect(repository.searchPage({
         cursor: null,
         limit: 10,
         query: "private needle",
         userId: ownerId
-      })).resolves.toMatchObject({ kind: "ok", page: { chats: [] } });
+      })).resolves.toMatchObject({
+        kind: "ok",
+        page: {
+          chats: [],
+          messageMatches: {
+            matches: [{ chatId: contentOnly.id, snippet: "private needle inside a message" }],
+            nextCursor: null
+          }
+        }
+      });
+      await expect(repository.searchPage({
+        cursor: null,
+        limit: 10,
+        query: "private needle",
+        userId: foreignId
+      })).resolves.toMatchObject({ kind: "ok", page: { chats: [], messageMatches: { matches: [] } } });
       await expect(repository.searchPage({
         cursor: null,
         limit: 10,
