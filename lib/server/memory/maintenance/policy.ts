@@ -66,8 +66,8 @@ export const MEMORY_MAINTENANCE_SCHEDULE_TRANSACTION_BOUNDS = Object.freeze({
 export const MEMORY_MAINTENANCE_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_MAINTENANCE_PIPELINE_VERSION,
   policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION,
-  promptVersion: "memory-maintenance-prompt-v4",
-  schemaVersion: "memory-maintenance-schema-v6",
+  promptVersion: "memory-maintenance-prompt-v5",
+  schemaVersion: "memory-maintenance-schema-v7",
   retrievalConfigFingerprint: "memory-maintenance-exact-sources-related-v3"
 });
 export type MemoryUsefulness = "DURABLE" | "ONGOING" | "EPISODIC";

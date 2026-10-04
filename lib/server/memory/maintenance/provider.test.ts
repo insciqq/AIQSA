@@ -86,7 +86,8 @@ describe("maintenance review repair counters", () => {
 
 describe("maintenance review with related memories", () => {
   const current = new Map([[relatedMemory.versionId, { ...relatedMemory }]]);
-  const contradiction = decision("S2", "general_personal", "REMOVE_TRANSIENT", null, "contradicted", "S2M1");
+  // A lasting keep flagged with its related memory: the flag never changes the v3 labels.
+  const contradiction = decision("S2", "general_personal", "KEEP", "DURABLE", "useful_personal_context", "S2M1");
   it("shows each source's related memories and binds a contradiction to the exact memory it names", async () => {
     answers({ decisions: [exactRemoval, contradiction, decision("S3", "unresolved_scope", "KEEP", null, "useful_personal_context")] });
     const review = await provider({ related: new Map([["S2", [relatedMemory]]]), statements: current }).review(plan, signal, owner);
