@@ -37,7 +37,7 @@ export type RunOutputArtifactEvent =
   | { type: "artifact"; data: { artifactType: "context_status"; payload: SessionContextStatus } }
   | { type: "artifact"; data: { artifactType: "context_compaction"; payload: ContextCompactionStatus } }
   | { type: "artifact"; data: { artifactType: "search_activity"; payload: ThreadSearchActivitySnapshot } }
-  /** A task the answer's `create_scheduled_task` call created, as created. */
+  /** A task the answer's scheduled task call created or managed, as that call left it. */
   | { type: "artifact"; data: { artifactType: "scheduled_task"; payload: ScheduledTaskCard } }
   | { type: "grounding_display"; data: GroundingDisplay }
   | {
@@ -207,7 +207,7 @@ export function projectRunOutputArtifactEvent(
 
   if (event.data.artifactType === "scheduled_task") {
     const payload = decodeScheduledTaskCard(event.data.payload);
-    // The created task only: a read marks deletion from the current task, never the event.
+    // The task as its call left it: a read marks deletion from the current task, never the event.
     return payload && !payload.deleted ? { type: "artifact", data: { artifactType: "scheduled_task", payload } } : null;
   }
 

@@ -282,6 +282,13 @@ export type NormalizedRunRequest = {
     workspaceEnabled: boolean;
     memoryEnabled?: boolean;
   }>;
+  /** Server-owned admission marker beside `scheduledTaskTool` when the owner
+   * had a saved task: the run may manage the owner's tasks through
+   * `manage_scheduled_task`. `chatTask` is the task whose own chat this is, as
+   * admission read it; the tool text names it as data. */
+  scheduledTaskManagementTool?: Readonly<{
+    chatTask: Readonly<{ taskId: string; title: string }> | null;
+  }>;
   searchPlan: NormalizedSearchPlan;
   /** Server-owned admission marker; old runs retain their accepted tool set. */
   sessionStatusTool?: true;

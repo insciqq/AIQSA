@@ -175,6 +175,11 @@ import {
   isScheduledTaskCreateCall,
   scheduledTaskToolsForRequest
 } from "../tools/scheduledTaskCreation";
+import {
+  executeManageScheduledTask,
+  isScheduledTaskManageCall,
+  scheduledTaskManagementToolsForRequest
+} from "../tools/scheduledTaskManagement";
 import { executeReadToolCall, readToolCallReceipt, readToolCallTool, type ToolCallReader } from "../tools/readToolCall";
 import { insertToolHistory, refreshToolHistory, requestHasToolHistory, type ToolHistoryProjection } from "./toolHistory";
 import { READ_TOOL_CALL_NAME, toolCallRefEntry, type ToolCallRefEntry, type ToolHistoryCache } from "./toolHistoryContract";
@@ -302,6 +307,7 @@ export type RunExecutionRepository = Pick<
   | "toolCallsAvailable"
   | "recordMonitoringVerdict"
   | "createScheduledTaskForCall"
+  | "manageScheduledTaskForCall"
   | "recordRunUsageEvents"
   | "resetToolLoopAssistantDraft"
   | "settleToolLoopCall"
@@ -2159,6 +2165,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...(normalizedRequest.toolCallReader ? [readToolCallTool] : []),
           ...(normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
           ...scheduledTaskToolsForRequest(normalizedRequest),
+          ...scheduledTaskManagementToolsForRequest(normalizedRequest),
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
           ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
@@ -2175,10 +2182,13 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         // write is fenced again by the run's link to that running occurrence.
         const isMonitoringCall = (name: string) => isMonitoringVerdictCall(normalizedRequest, name);
         const recordVerdict = input.repository.recordMonitoringVerdict?.bind(input.repository);
-        // Only a run admitted with the frozen marker creates a scheduled task;
-        // the creation fences the run's scheduled origin and its call again.
-        const isScheduledTaskCall = (name: string) => isScheduledTaskCreateCall(normalizedRequest, name);
+        // Only a run admitted with the frozen markers creates or manages
+        // scheduled tasks; the repository fences the run's scheduled origin
+        // and its call again.
+        const isScheduledTaskCall = (name: string) => isScheduledTaskCreateCall(normalizedRequest, name) ||
+          isScheduledTaskManageCall(normalizedRequest, name);
         const createScheduledTask = input.repository.createScheduledTaskForCall?.bind(input.repository);
+        const manageScheduledTask = input.repository.manageScheduledTaskForCall?.bind(input.repository);
         const callReadOptions = { resultReader: normalizedRequest.toolObservationVersion === 1 } as const;
         /** A call read settles its content-free receipt; the model receives the read. */
         const settleCallRead = async (persistedId: string, call: ModelToolCall, read: ToolExecutionResult) => {
@@ -2434,16 +2444,18 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 };
               }
               if (isScheduledTaskCall(call.name) && (claim.kind === "claimed" || claim.kind === "ambiguous")) {
-                // The creation settles its call with the task in one transaction:
-                // an interrupted (ambiguous) call finds that settlement or nothing
-                // created, so running it again never creates a second task. A
-                // refusal created nothing and settles here.
-                const result = await executeCreateScheduledTask(call, { persistedToolCallId: persisted.id,
-                  request: normalizedRequest, runId, userId: input.userId }, createScheduledTask);
+                // A creation or a change settles its call with the task in one
+                // transaction: an interrupted (ambiguous) call finds that
+                // settlement or nothing applied, so running it again never
+                // applies twice. A refusal applied nothing and settles here.
+                const owner = { persistedToolCallId: persisted.id, request: normalizedRequest, runId, userId: input.userId };
+                const result = isScheduledTaskManageCall(normalizedRequest, call.name)
+                  ? await executeManageScheduledTask(call, owner, manageScheduledTask)
+                  : await executeCreateScheduledTask(call, owner, createScheduledTask);
                 const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
                 const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id,
                   result: snapshot, runId, state: result.status, userId: input.userId });
-                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Scheduled task creation could not be settled.");
+                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Scheduled task call could not be settled.");
                 return { status: "complete", value: result };
               }
               if (isMemoryCall(call.name)) {

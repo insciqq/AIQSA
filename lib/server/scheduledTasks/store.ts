@@ -323,11 +323,62 @@ export async function insertScheduledTask(
   return toScheduledTask(row, { lastRun: null, running: false, unseen: false });
 }
 
-export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledTaskStore {
-  async function project(client: ScheduledTaskClient, userId: string, row: ScheduledTaskRow): Promise<ScheduledTask> {
-    const activity = await loadScheduledTaskActivity(client, userId, [row.id]);
-    return toScheduledTask(row, activity.get(row.id)!);
+async function project(client: ScheduledTaskClient, userId: string, row: ScheduledTaskRow): Promise<ScheduledTask> {
+  const activity = await loadScheduledTaskActivity(client, userId, [row.id]);
+  return toScheduledTask(row, activity.get(row.id)!);
+}
+
+/**
+ * `ScheduledTaskStore.update` inside the caller's transaction, under the owner
+ * lock it takes. The owner API and the chat tool both change tasks here.
+ */
+export async function updateScheduledTask(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  taskId: string,
+  write: ScheduledTaskUpdateWrite
+): Promise<ScheduledTask> {
+  await lockOwner(tx, userId);
+  const current = await tx.scheduledTask.findUnique({
+    select: { kind: true, prompt: true, revision: true, scheduleKind: true, status: true },
+    where: { userId_id: { id: taskId, userId } }
+  });
+  if (!current) throw new ScheduledTaskError("scheduled_task_not_found");
+  if (current.revision !== write.expectedRevision) throw new ScheduledTaskError("scheduled_task_stale");
+  const kind = KIND_COLUMN[write.draft.schedule.kind];
+  if (write.status === "active" && current.status !== "ACTIVE" &&
+    await tx.scheduledTask.count({ where: { status: "ACTIVE", userId } }) >= SCHEDULED_TASK_MAX_ACTIVE) {
+    throw new ScheduledTaskError("scheduled_task_limit");
   }
+  if (write.status === "active" && kind === "HOURLY" && (current.status !== "ACTIVE" || current.scheduleKind !== "HOURLY") &&
+    await activeHourlyTasks(tx, userId, taskId) >= SCHEDULED_TASK_MAX_ACTIVE_HOURLY) {
+    throw new ScheduledTaskError("scheduled_task_hourly_limit");
+  }
+  // A new question starts a new generation: earlier results are no baseline for it.
+  // So does a changed type: a first monitoring check is always shown.
+  const newGeneration = current.prompt !== write.draft.prompt || current.scheduleKind !== kind ||
+    current.kind !== TASK_KIND_COLUMN[write.draft.kind];
+  // The revision guard also fences a runner status transition committed after the read.
+  const updated = await tx.scheduledTask.updateMany({
+    data: {
+      ...draftColumns(write.draft), consecutiveFailures: 0, consecutiveIncompleteRuns: 0, consecutiveMissingVerdicts: 0,
+      pauseReason: null, revision: { increment: 1 }, status: STATUS_COLUMN[write.status],
+      // A task that stays completed keeps why; resuming clears it.
+      ...(write.status === "completed" ? {} : { completionReason: null }),
+      ...(write.nextRunAt === undefined ? {} : { nextRunAt: write.nextRunAt }),
+      ...(newGeneration ? {
+        baselineAssistantMessageId: null, baselineGeneration: null, baselineRunId: null, baselineUserMessageId: null,
+        generation: { increment: 1 }
+      } : {})
+    },
+    where: { id: taskId, revision: write.expectedRevision, userId }
+  });
+  if (updated.count !== 1) throw new ScheduledTaskError("scheduled_task_stale");
+  const row = await tx.scheduledTask.findUniqueOrThrow({ select: scheduledTaskRowSelect, where: { userId_id: { id: taskId, userId } } });
+  return project(tx, userId, row);
+}
+
+export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledTaskStore {
   return {
     async list(userId) {
       return prisma.$transaction(async (tx) => {
@@ -368,46 +419,7 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledT
       return prisma.$transaction((tx) => insertScheduledTask(tx, userId, draft, nextRunAt));
     },
     async update(userId, taskId, write) {
-      return prisma.$transaction(async (tx) => {
-        await lockOwner(tx, userId);
-        const current = await tx.scheduledTask.findUnique({
-          select: { kind: true, prompt: true, revision: true, scheduleKind: true, status: true },
-          where: { userId_id: { id: taskId, userId } }
-        });
-        if (!current) throw new ScheduledTaskError("scheduled_task_not_found");
-        if (current.revision !== write.expectedRevision) throw new ScheduledTaskError("scheduled_task_stale");
-        const kind = KIND_COLUMN[write.draft.schedule.kind];
-        if (write.status === "active" && current.status !== "ACTIVE" &&
-          await tx.scheduledTask.count({ where: { status: "ACTIVE", userId } }) >= SCHEDULED_TASK_MAX_ACTIVE) {
-          throw new ScheduledTaskError("scheduled_task_limit");
-        }
-        if (write.status === "active" && kind === "HOURLY" && (current.status !== "ACTIVE" || current.scheduleKind !== "HOURLY") &&
-          await activeHourlyTasks(tx, userId, taskId) >= SCHEDULED_TASK_MAX_ACTIVE_HOURLY) {
-          throw new ScheduledTaskError("scheduled_task_hourly_limit");
-        }
-        // A new question starts a new generation: earlier results are no baseline for it.
-        // So does a changed type: a first monitoring check is always shown.
-        const newGeneration = current.prompt !== write.draft.prompt || current.scheduleKind !== kind ||
-          current.kind !== TASK_KIND_COLUMN[write.draft.kind];
-        // The revision guard also fences a runner status transition committed after the read.
-        const updated = await tx.scheduledTask.updateMany({
-          data: {
-            ...draftColumns(write.draft), consecutiveFailures: 0, consecutiveIncompleteRuns: 0, consecutiveMissingVerdicts: 0,
-            pauseReason: null, revision: { increment: 1 }, status: STATUS_COLUMN[write.status],
-            // A task that stays completed keeps why; resuming clears it.
-            ...(write.status === "completed" ? {} : { completionReason: null }),
-            ...(write.nextRunAt === undefined ? {} : { nextRunAt: write.nextRunAt }),
-            ...(newGeneration ? {
-              baselineAssistantMessageId: null, baselineGeneration: null, baselineRunId: null, baselineUserMessageId: null,
-              generation: { increment: 1 }
-            } : {})
-          },
-          where: { id: taskId, revision: write.expectedRevision, userId }
-        });
-        if (updated.count !== 1) throw new ScheduledTaskError("scheduled_task_stale");
-        const row = await tx.scheduledTask.findUniqueOrThrow({ select: scheduledTaskRowSelect, where: { userId_id: { id: taskId, userId } } });
-        return project(tx, userId, row);
-      });
+      return prisma.$transaction((tx) => updateScheduledTask(tx, userId, taskId, write));
     },
     async delete(userId, taskId) {
       return (await prisma.scheduledTask.deleteMany({ where: { id: taskId, userId } })).count === 1;
