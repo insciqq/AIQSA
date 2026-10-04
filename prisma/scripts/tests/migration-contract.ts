@@ -42,6 +42,8 @@ import { MEMORY_SEARCH_RECEIPT_MIGRATION, memorySearchReceiptFixtureSql, memoryS
 import { SKILL_IMPORT_SOURCE_MIGRATION, skillImportSourceFixtureSql, skillImportSourceProofSql } from "./skill-import-source-adoption";
 import { PERPLEXITY_LEGACY_REASONING_MIGRATION, perplexityLegacyReasoningFixtureSql, perplexityLegacyReasoningProofSql, perplexityLegacyReasoningRepeatProofSql } from "./perplexity-legacy-reasoning-adoption";
 import { PUBLISHED_IMAGE_MODELS_MIGRATION, publishedImageModelsFixtureSql, publishedImageModelsProofSql } from "./published-image-models-adoption";
+import { DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION, dropRetiredMemorySynthesisColumnsFixtureSql, dropRetiredMemorySynthesisColumnsProofSql } from "./drop-retired-memory-synthesis-columns-adoption";
+import { DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION, dropRetiredMcpActivationStorageFixtureSql, dropRetiredMcpActivationStorageProofSql } from "./drop-retired-mcp-activation-storage-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -637,14 +639,13 @@ function runBootstrapProof(database: string): void {
   psqlScalar(database, `UPDATE "MemoryUtilityModelPolicy" SET "assignmentSource" = 'OPERATOR', version = 7 WHERE id = 'installation';`);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" s JOIN "User" u ON u.id = s."userId"
     WHERE u.email = 'baseline-admin@example.invalid' AND s."useMemoryFacts" AND s."referenceChatHistory"
-      AND s."learnAutomatically" AND s."synthesisEnabled" AND s."decayEnabled"
-      AND s."synthesisEnabledAt" IS NOT NULL AND s."synthesisPolicyVersion" = 'memory-synthesis-policy-v6'
-      AND s."decayPolicyVersion" = 'memory-decay-v1' AND s."lastSynthesisAt" IS NULL;`), "1", "initial administrator Memory defaults");
-  psqlScalar(database, `UPDATE "UserMemorySettings" SET "synthesisEnabled" = false, "decayEnabled" = false;`);
+      AND s."learnAutomatically" AND s."decayEnabled"
+      AND s."decayPolicyVersion" = 'memory-decay-v1';`), "1", "initial administrator Memory defaults");
+  psqlScalar(database, `UPDATE "UserMemorySettings" SET "learnAutomatically" = false, "decayEnabled" = false;`);
   const freshDigest = bootstrapFoundationDigest(database);
   const repeat = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(repeat, /"code":"installation_already_adopted"/u);
-  assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "synthesisEnabled" OR "decayEnabled";`), "0",
+  assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "learnAutomatically" OR "decayEnabled";`), "0",
     "bootstrap adoption must preserve later Memory opt-outs");
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "4096", "bootstrap must retain the operator's MCP output allowance");
   assert.equal(psqlScalar(database, `SELECT "toolObservationPolicy" FROM "ModelPolicy" WHERE id = 'installation';`), "off", "bootstrap must retain the operator's observation kill switch");
@@ -7449,36 +7450,60 @@ function runMemoryVNextRetrievalCutoverMigrationProof(
   }
 }
 
-function runForwardAdoptionProof(
-  database: string, committed: readonly string[], migration: string, fixture: string, proof: string, repeatProof?: string
-): void {
-  const index = committed.indexOf(migration);
-  assert.ok(index > 0, "forward adoption migration is missing");
-  dropDatabase(database);
-  createDatabase(database);
-  // Keep the predecessor migration tree in the disposable app container's /tmp.
-  const probe = app(database, ["node", "-e", `
+/** Keeps a prefix of the committed history in the disposable app container's /tmp. */
+function migrationPrefixTree(database: string, migrations: readonly string[]): string {
+  const root = app(database, ["node", "-e", `
     const fs = require('node:fs'), path = require('node:path');
     const root = fs.mkdtempSync('/tmp/aiqsa-forward-adoption-');
     fs.copyFileSync('prisma/schema.prisma', path.join(root, 'schema.prisma'));
     fs.mkdirSync(path.join(root, 'migrations'));
     fs.copyFileSync('prisma/migrations/migration_lock.toml', path.join(root, 'migrations/migration_lock.toml'));
-    for (const name of ${JSON.stringify(committed.slice(0, index))}) {
+    for (const name of ${JSON.stringify(migrations)}) {
       fs.cpSync(path.join('prisma/migrations', name), path.join(root, 'migrations', name), { recursive: true });
     }
     process.stdout.write(root);
   `]);
-  assert.match(probe, /^\/tmp\/aiqsa-forward-adoption-[a-zA-Z0-9]+$/u);
+  assert.match(root, /^\/tmp\/aiqsa-forward-adoption-[a-zA-Z0-9]+$/u);
+  return root;
+}
+
+/**
+ * Writes the fixture against the predecessors of `migration`, then proves the
+ * deployed history twice. A proof that reads storage a later migration drops
+ * passes `proofBefore`: it then proves its own release's schema, and the rest
+ * of the history must still deploy over its rows.
+ */
+function runForwardAdoptionProof(
+  database: string, committed: readonly string[], migration: string, fixture: string, proof: string,
+  repeatProof?: string, proofBefore?: string
+): void {
+  const index = committed.indexOf(migration);
+  assert.ok(index > 0, "forward adoption migration is missing");
+  const proofEnd = proofBefore === undefined ? committed.length : committed.indexOf(proofBefore);
+  assert.ok(proofEnd > index, "forward adoption proof bound must follow its migration");
+  dropDatabase(database);
+  createDatabase(database);
+  const trees: string[] = [];
+  const deployPrefix = (end: number): string[] => {
+    if (end === committed.length) return ["npx", "prisma", "migrate", "deploy"];
+    const root = migrationPrefixTree(database, committed.slice(0, end));
+    trees.push(root);
+    return ["npx", "prisma", "migrate", "deploy", "--schema", `${root}/schema.prisma`];
+  };
   try {
-    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", `${probe}/schema.prisma`]);
+    app(database, deployPrefix(index));
     psqlScalar(database, fixture);
-    app(database, ["npx", "prisma", "migrate", "deploy"]);
+    const deployProofSchema = deployPrefix(proofEnd);
+    app(database, deployProofSchema);
     psqlScalar(database, proof);
-    app(database, ["npx", "prisma", "migrate", "deploy"]);
+    app(database, deployProofSchema);
     if (repeatProof) psqlScalar(database, repeatProof);
+    if (proofEnd < committed.length) app(database, ["npx", "prisma", "migrate", "deploy"]);
     assertDeployedMigrations(database, committed);
   } finally {
-    app(database, ["node", "-e", "require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })", probe]);
+    for (const root of trees) {
+      app(database, ["node", "-e", "require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })", root]);
+    }
   }
 }
 
@@ -7629,8 +7654,10 @@ function main(
     chatTitleRoleAdoptionFixtureSql(), chatTitleRoleAdoptionProofSql(), chatTitleRoleClearProofSql());
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_SETUP_MIGRATION,
     chatTitleSetupFixtureSql, chatTitleSetupProofSql, chatTitleSetupProofSql);
+  // Its proof reads the retired synthesis settings the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_DEFAULTS_MIGRATION,
-    memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql);
+    memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql,
+    DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_USER_DEFAULT_MIGRATION,
     workspaceUserDefaultFixtureSql, workspaceUserDefaultProofSql, workspaceUserDefaultRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_CREDENTIAL_MIGRATION,
@@ -7653,16 +7680,25 @@ function main(
     modelPricesFixtureSql, modelPricesProofSql + modelPricesGuardProofSql, modelPricesProofSql + modelPricesGuardProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_CHECKPOINT_DELETION_JOB_REPAIR_MIGRATION,
     workspaceCheckpointDeletionJobRepairFixtureSql, workspaceCheckpointDeletionJobRepairProofSql, workspaceCheckpointDeletionJobRepairRepeatProofSql);
+  // Both proofs read the activation token and stages the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, REMOVE_LOCAL_MCP_SOURCES_MIGRATION,
-    removeLocalMcpSourcesFixtureSql, removeLocalMcpSourcesProofSql, removeLocalMcpSourcesRepeatProofSql);
+    removeLocalMcpSourcesFixtureSql, removeLocalMcpSourcesProofSql, removeLocalMcpSourcesRepeatProofSql,
+    DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_LOCAL_MCP_ACTIVATION_STAGES_MIGRATION,
-    retireLocalMcpActivationStagesFixtureSql, retireLocalMcpActivationStagesProofSql, retireLocalMcpActivationStagesRepeatProofSql);
+    retireLocalMcpActivationStagesFixtureSql, retireLocalMcpActivationStagesProofSql, retireLocalMcpActivationStagesRepeatProofSql,
+    DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, SCHEDULED_TASK_PROMPT_MARKER_MIGRATION,
     scheduledTaskPromptMarkerFixtureSql, scheduledTaskPromptMarkerProofSql);
   for (const assigned of [false, true]) {
     runForwardAdoptionProof(shadowDatabase, migrations, PUBLISHED_IMAGE_MODELS_MIGRATION,
       publishedImageModelsFixtureSql(assigned), publishedImageModelsProofSql(assigned), publishedImageModelsProofSql(assigned));
   }
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION,
+    dropRetiredMemorySynthesisColumnsFixtureSql, dropRetiredMemorySynthesisColumnsProofSql,
+    dropRetiredMemorySynthesisColumnsProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION,
+    dropRetiredMcpActivationStorageFixtureSql, dropRetiredMcpActivationStorageProofSql,
+    dropRetiredMcpActivationStorageProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

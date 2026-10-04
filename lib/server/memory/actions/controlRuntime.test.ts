@@ -31,7 +31,6 @@ const profileIntent: MemoryActionIntent = {
   confidenceBand: "HIGH",
   entityMentions: [],
   memoryUseful: true,
-  patternExclusionRequested: false,
   pastChatsUseful: false,
   profileRequested: true,
   queryDecompositions: [],
@@ -55,15 +54,13 @@ const profileIntent: MemoryActionIntent = {
 
 function providerDecision(intent: MemoryActionIntent): MemoryActionControlDecision {
   if (intent.action === "NONE") return { decision: {
-    action: "NONE", patternExclusionRequested: intent.patternExclusionRequested,
-    reasonCode: intent.reasonCode
+    action: "NONE", reasonCode: intent.reasonCode
   } };
   const common = {
     answerRequested: intent.memoryUseful || intent.pastChatsUseful ||
       intent.applyResponsePreferences || intent.profileRequested,
     category: intent.category,
     confidenceBand: intent.confidenceBand,
-    patternExclusionRequested: intent.patternExclusionRequested,
     reasonCode: intent.reasonCode,
     responsePreference: intent.responsePreference,
     sensitivity: intent.sensitivity,
@@ -81,14 +78,14 @@ function providerDecision(intent: MemoryActionIntent): MemoryActionControlDecisi
 
 describe("Memory control runtime contract", () => {
   it("binds the profile decision to the current control contract versions", () => {
-    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v33");
+    expect(MEMORY_CONTROL_PIPELINE_VERSION).toBe("memory-control-v34");
     expect(MEMORY_CONTROL_REASONING_POLICY).toBe("accepted-system-model-parameters");
     expect(MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR).toBe(2_048);
     expect(MEMORY_CONTROL_VERSIONS).toMatchObject({
-      pipelineVersion: "memory-control-v33",
+      pipelineVersion: "memory-control-v34",
       policyVersion: "memory-control-policy-v30",
-      promptVersion: "memory-control-prompt-v36",
-      schemaVersion: "memory-action-intent-v13"
+      promptVersion: "memory-control-prompt-v37",
+      schemaVersion: "memory-action-intent-v14"
     });
     expect(MEMORY_READ_ONLY_CONTROL_REUSE_VERSION).toBe(8);
   });
@@ -207,7 +204,7 @@ describe("Memory control runtime contract", () => {
       toolCalls: [{
         arguments: { decision: {
           action: "FORGET", answerRequested: false, confidenceBand: "HIGH",
-          patternExclusionRequested: false, reasonCode: "forget_request",
+          reasonCode: "forget_request",
           referencedMemoryRef: "opaque-memory-ref", targetQuery, thisChatOnly: false
         } },
         id: "call-1", name: MEMORY_ACTION_INTENT_NAME

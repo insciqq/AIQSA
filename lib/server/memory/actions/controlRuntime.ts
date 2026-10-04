@@ -38,7 +38,7 @@ import {
   type MemoryActionIntentContext
 } from "./intentService";
 
-export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v33";
+export const MEMORY_CONTROL_PIPELINE_VERSION = "memory-control-v34";
 export const MEMORY_CONTROL_REASONING_POLICY = "accepted-system-model-parameters" as const;
 export const MEMORY_CONTROL_REASONING_OUTPUT_TOKEN_FLOOR = 2_048 as const;
 /** The whole turn cannot fit the admitted model's context with its reserve. */
@@ -50,7 +50,7 @@ export const MEMORY_CONTROL_STATEMENT_TOO_LONG =
 export const MEMORY_CONTROL_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_CONTROL_PIPELINE_VERSION,
   policyVersion: "memory-control-policy-v30",
-  promptVersion: "memory-control-prompt-v36",
+  promptVersion: "memory-control-prompt-v37",
   retrievalConfigFingerprint: memoryExecutionSha256({
     actionIntentSchema: MEMORY_ACTION_INTENT_NAME,
     maxCalls: 1,
