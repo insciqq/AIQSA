@@ -11,6 +11,7 @@ function settings(overrides: Partial<UserSettingsWire> = {}): UserSettingsWire {
   return {
     answerSoundEnabled: true,
     answerSoundId: "rise",
+    browserNotificationsEnabled: true,
     defaultControlValues: {},
     defaultKnowledgePlan: null,
     defaultMcpMode: "auto",
@@ -137,6 +138,21 @@ describe("settings mutation coordinator", () => {
     vi.stubGlobal("fetch", fetchMock);
     await sendSettingsDefaultsPatch({ answerSoundId: "bell" });
     expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body))).toEqual({ answerSoundId: "bell" });
+  });
+
+  it("sends and reconciles only the browser notification toggle", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ settings: settings({ browserNotificationsEnabled: false }) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await sendSettingsDefaultsPatch({ browserNotificationsEnabled: false });
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body)))
+      .toEqual({ browserNotificationsEnabled: false });
+    const onReconcile = vi.fn();
+    const coordinator = createSettingsMutationCoordinator({
+      callbacks: { onFailure: vi.fn(), onReconcile, onRecovered: vi.fn() },
+      send: async () => settings({ browserNotificationsEnabled: false })
+    });
+    expect(await coordinator.enqueue({ browserNotificationsEnabled: false })).toBe(true);
+    expect(onReconcile).toHaveBeenCalledWith({ browserNotificationsEnabled: false }, new Set());
   });
 
   it.each([true, false])("replaces inherited reasoning when switching to organization default: %s", async (inherit) => {

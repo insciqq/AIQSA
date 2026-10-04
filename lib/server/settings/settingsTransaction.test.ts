@@ -5,6 +5,7 @@ import { applySettingsUpdateInTransaction, type SettingsTransactionClient } from
 const storedSettings = {
   answerSoundEnabled: true,
   answerSoundId: "rise",
+  browserNotificationsEnabled: true,
   defaultAssistantId: "assistant-1",
   defaultControlValues: {},
   defaultKnowledgePlan: null,
@@ -21,7 +22,9 @@ const storedSettings = {
 function transaction(assistantAvailable: boolean, ownerExists = true) {
   const statements: string[] = [];
   const update = vi.fn(async (_input: Prisma.UserSettingsUpdateArgs) => storedSettings);
+  const deleteSubscriptions = vi.fn(async (_input: Prisma.BrowserPushSubscriptionDeleteManyArgs) => ({ count: 2 }));
   const tx = {
+    browserPushSubscription: { deleteMany: deleteSubscriptions },
     $queryRaw: async (query: TemplateStringsArray | Prisma.Sql) => {
       const text = "sql" in query ? query.sql : query.join("?");
       statements.push(text.includes('FROM "User"') ? "owner" : text.includes(`"AssistantDefinition"`) ? "assistant" : "settings");
@@ -31,7 +34,7 @@ function transaction(assistantAvailable: boolean, ownerExists = true) {
     },
     userSettings: { update }
   } as unknown as SettingsTransactionClient;
-  return { statements, tx, update };
+  return { deleteSubscriptions, statements, tx, update };
 }
 
 describe("settings transaction", () => {
@@ -74,5 +77,19 @@ describe("settings transaction", () => {
       .resolves.toEqual({ kind: "not_found" });
     expect(missing.statements).toEqual(["owner"]);
     expect(missing.update).not.toHaveBeenCalled();
+  });
+
+  it("removes every browser push subscription of the account when notifications are turned off", async () => {
+    const off = transaction(true);
+    await applySettingsUpdateInTransaction(off.tx, "user-1", { browserNotificationsEnabled: false }, []);
+    expect(off.update.mock.calls[0]?.[0].data).toMatchObject({ browserNotificationsEnabled: false });
+    expect(off.deleteSubscriptions).toHaveBeenCalledWith({ where: { userId: "user-1" } });
+    expect(off.deleteSubscriptions.mock.invocationCallOrder[0]).toBeGreaterThan(off.update.mock.invocationCallOrder[0]!);
+
+    for (const update of [{ browserNotificationsEnabled: true }, { sendWithEnter: false }]) {
+      const kept = transaction(true);
+      await applySettingsUpdateInTransaction(kept.tx, "user-1", update, []);
+      expect(kept.deleteSubscriptions).not.toHaveBeenCalled();
+    }
   });
 });
