@@ -96,6 +96,7 @@ import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { isScheduledTaskToolSettings, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
+import { admitScheduledTaskManagement, scheduledTaskManagementToolsForRequest } from "../tools/scheduledTaskManagement";
 import { readToolCallTool } from "../tools/readToolCall";
 import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { insertToolHistory, type ToolHistoryProjection } from "./toolHistory";
@@ -195,6 +196,9 @@ type RunPreparationRepository = Pick<
   RunRepository,
   /** Present where a run can create a scheduled task: admission offers the tool only then. */
   | "createScheduledTaskForCall"
+  /** Present where a run can manage scheduled tasks: admission offers that tool only then. */
+  | "loadScheduledTaskManagement"
+  | "manageScheduledTaskForCall"
   | "loadAssistantRowContext"
   | "loadBranchContextCheckpoints"
   | "loadKnowledgeFullContextPassages"
@@ -2297,6 +2301,10 @@ async function prepareRunWith(
       }
     : undefined;
   const scheduledTaskTool = isScheduledTaskToolSettings(scheduledTaskSettings) ? scheduledTaskSettings : undefined;
+  // Where it may create one, it may also manage the owner's saved tasks, once
+  // there is one; in a task's own chat the tool names that task. Frozen here.
+  const scheduledTaskManagementTool = scheduledTaskTool && deps.repository.manageScheduledTaskForCall
+    ? await admitScheduledTaskManagement(deps.repository, { chatId: chat.id, userId: input.userId }) : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
@@ -2320,6 +2328,7 @@ async function prepareRunWith(
     ...(toolCallReader ? { toolCallReader: true as const } : {}),
     ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
     ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
+    ...(scheduledTaskManagementTool ? { scheduledTaskManagementTool } : {}),
     toolHistory,
     attachmentIds,
     chatId: chat.id,
@@ -2409,6 +2418,7 @@ async function prepareRunWith(
     ...(baseNormalizedRequest.toolCallReader ? [readToolCallTool] : []),
     ...(baseNormalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
     ...scheduledTaskToolsForRequest(baseNormalizedRequest),
+    ...scheduledTaskManagementToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),

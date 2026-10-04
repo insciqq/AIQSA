@@ -4,6 +4,7 @@ import {
   SCHEDULED_TASK_CARDS_LIMIT,
   SCHEDULED_TASK_CHECK_OUTCOMES,
   SCHEDULED_TASK_ERROR_CODES,
+  SCHEDULED_TASK_MANAGED_PER_ANSWER,
   decodeScheduledTaskCard,
   foldScheduledTaskCards,
   scheduledTaskCard,
@@ -175,5 +176,32 @@ describe("scheduled task wire contract", () => {
     const folded = foldScheduledTaskCards([card, { malformed: true }, renamed, ...others]);
     expect(folded[0]).toEqual(renamed);
     expect(folded).toHaveLength(SCHEDULED_TASK_CARDS_LIMIT);
+  });
+
+  it("carries what an answer last did to a task, with room for five managed tasks and one created", () => {
+    expect(SCHEDULED_TASK_MANAGED_PER_ANSWER).toBe(5);
+    expect(SCHEDULED_TASK_CARDS_LIMIT).toBe(6);
+    const paused = scheduledTaskCard({ ...task, status: "paused", nextRunAt: null }, false, "paused");
+    expect(paused).toMatchObject({ action: "paused", status: "paused" });
+    for (const action of ["changed", "paused", "resumed", "delete_proposed"] as const) {
+      expect(decodeScheduledTaskCard({ ...scheduledTaskCard(task, false), action })).toMatchObject({ action });
+    }
+    // A created task's card has no action; an unknown one is malformed.
+    expect(scheduledTaskCard(task, false)).not.toHaveProperty("action");
+    expect(decodeScheduledTaskCard({ ...scheduledTaskCard(task, false), action: "deleted" })).toBeNull();
+    expect(decodeScheduledTaskCard({ ...scheduledTaskCard(task, false), action: null })).toBeNull();
+    expect(decodeScheduledTaskCard({ ...scheduledTaskCard(task, false, "delete_proposed"), deleted: true }))
+      .toMatchObject({ action: "delete_proposed", deleted: true });
+
+    // One created and five managed tasks keep their cards; the latest action on a task wins in its first place.
+    const created = scheduledTaskCard({ ...task, id: "created" }, false);
+    const managed = Array.from({ length: 5 }, (_value, index) =>
+      scheduledTaskCard({ ...task, id: `managed-${index}`, status: "paused", nextRunAt: null }, false, "paused"));
+    const resumed = scheduledTaskCard({ ...task, id: "managed-0" }, false, "resumed");
+    const folded = foldScheduledTaskCards([created, ...managed, resumed]);
+    expect(folded.map((entry) => [entry.taskId, entry.action ?? "created"])).toEqual([
+      ["created", "created"], ["managed-0", "resumed"], ["managed-1", "paused"], ["managed-2", "paused"], ["managed-3", "paused"],
+      ["managed-4", "paused"]
+    ]);
   });
 });

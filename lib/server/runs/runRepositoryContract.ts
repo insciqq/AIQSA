@@ -358,6 +358,40 @@ export type ScheduledTaskCallCreation =
   | Readonly<{ kind: "settled"; result: import("../tools/types").ToolExecutionResult | null }>
   | Readonly<{ kind: "refused"; code: ScheduledTaskCallRefusal }>;
 
+/** What a `manage_scheduled_task` call does: reads, a change through the owner's edit rules, or a deletion proposal. */
+export type ScheduledTaskManagementAction = "list" | "get" | "update" | "pause" | "resume" | "propose_delete";
+
+/**
+ * What a settled management call found or did, for its result: the owner's
+ * tasks (`list`), one task (`get`, `propose_delete`) or the task as a change
+ * left it, `changed` false when the task already was as asked.
+ */
+export type ScheduledTaskManagementOutcome =
+  | Readonly<{ action: "list"; tasks: readonly import("../../contracts/scheduledTasks").ScheduledTask[] }>
+  | Readonly<{ action: "get" | "propose_delete"; task: import("../../contracts/scheduledTasks").ScheduledTask }>
+  | Readonly<{ action: "update" | "pause" | "resume"; changed: boolean;
+    task: import("../../contracts/scheduledTasks").ScheduledTask }>;
+
+/**
+ * Why a chat run's `manage_scheduled_task` call settled nothing: an owner edit
+ * rule's code (`scheduled_task_not_found` also for another owner's task),
+ * `scheduled_task_answer_limit` when this answer already changed or proposed
+ * deleting five other tasks, `scheduled_task_read_required` when a new prompt
+ * was sent for a task this answer has not read with `get`,
+ * `scheduled_task_arguments_invalid` when the arguments do not fit the task as
+ * it is, or `scheduled_task_call_unavailable` as for a creation.
+ */
+export type ScheduledTaskCallManagementRefusal = import("../../contracts/scheduledTasks").ScheduledTaskErrorCode |
+  "scheduled_task_answer_limit" | "scheduled_task_arguments_invalid" | "scheduled_task_call_unavailable" |
+  "scheduled_task_read_required";
+
+export type ScheduledTaskCallManagement =
+  /** Done; the call settled with `result` in the same transaction as any change and its card. */
+  | Readonly<{ kind: "managed"; result: import("../tools/types").ToolExecutionResult }>
+  /** The call had settled before (a recovered replay): its stored result, null when unreadable. Nothing was applied. */
+  | Readonly<{ kind: "settled"; result: import("../tools/types").ToolExecutionResult | null }>
+  | Readonly<{ kind: "refused"; code: ScheduledTaskCallManagementRefusal; detail?: string }>;
+
 /** The occurrence is gone, already has its run, or its task changed since preparation; the admission rolled back. */
 export class ScheduledOccurrenceConflictError extends Error {
   constructor() {
@@ -924,6 +958,36 @@ export type RunRepository = {
     runId: string;
     userId: string;
   }>): Promise<ScheduledTaskCallCreation>;
+  /**
+   * Whether the owner has a saved scheduled task a chat answer may manage
+   * (null: none), and the task whose own chat `chatId` is: the one that posts
+   * into it now, else the one whose newest run posted into it.
+   */
+  loadScheduledTaskManagement?(input: Readonly<{ chatId: string; userId: string }>): Promise<Readonly<{
+    chatTask: Readonly<{ taskId: string; title: string }> | null;
+  }> | null>;
+  /**
+   * Performs a run's `manage_scheduled_task` call as the owner and settles it
+   * with `result(outcome)` in the same transaction as any change and the
+   * output events of that result (the task's card), as a creation does. A
+   * change goes through the owner's edit rules against the task's current
+   * revision, read by the server: `change` maps the task as it is now to the
+   * owner API's update body (without `expectedRevision`), or to why the
+   * arguments do not fit it. A task already as asked settles unchanged,
+   * without a card. One answer changes or proposes deleting at most five
+   * distinct tasks.
+   */
+  manageScheduledTaskForCall?(input: Readonly<{
+    action: ScheduledTaskManagementAction;
+    /** The persisted `ModelRunToolCall` id. */
+    callId: string;
+    change?(current: import("../../contracts/scheduledTasks").ScheduledTask): Readonly<Record<string, unknown>> | string;
+    result(outcome: ScheduledTaskManagementOutcome): import("../tools/types").ToolExecutionResult;
+    runId: string;
+    /** Null only for `list`. */
+    taskId: string | null;
+    userId: string;
+  }>): Promise<ScheduledTaskCallManagement>;
   /** The authorized record `read_tool_call` returns, or null when unavailable. */
   readToolCall?(
     actor: Readonly<{ runId: string; userId: string }>,

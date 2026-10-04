@@ -100,6 +100,9 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
   if (normalizedRequest.scheduledTaskTool) {
     descriptors.set("create_scheduled_task", { origin: "session", serverName: "Scheduled tasks", toolName: "create_scheduled_task" });
   }
+  if (normalizedRequest.scheduledTaskManagementTool) {
+    descriptors.set("manage_scheduled_task", { origin: "session", serverName: "Scheduled tasks", toolName: "manage_scheduled_task" });
+  }
   descriptors.set("search_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   descriptors.set("retrieve_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   for (const name of [

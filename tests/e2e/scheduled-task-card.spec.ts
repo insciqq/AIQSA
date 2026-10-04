@@ -37,12 +37,27 @@ const cards = {
   paused: card({ taskId: "digest-card", title: "Evening reading digest", status: "paused", nextRunAt: null })
 } satisfies Record<string, ScheduledTaskCard>;
 
+/** Cards of tasks later answers managed: what each answer last did, over the task as it is now. */
+const managed = {
+  moved: card({ taskId: "moved-card", title: "Report reminder", action: "changed",
+    schedule: { kind: "weekly", time: "10:00", days: ["mon", "wed", "fri"] }, nextRunAt: "2026-10-05T09:00:00.000Z" }),
+  stopped: card({ taskId: "monitor-card", title: "Price monitor", kind: "monitoring", action: "paused", status: "paused",
+    nextRunAt: null, toolsEnabled: true }),
+  proposal: card({ taskId: "old-report-card", title: "Old weekly report", action: "delete_proposed",
+    schedule: { kind: "weekly", time: "08:00", days: ["mon"] }, nextRunAt: "2026-10-05T07:00:00.000Z" }),
+  proposalGone: card({ taskId: "gone-card", title: "Gone reminder", action: "delete_proposed", deleted: true })
+} satisfies Record<string, ScheduledTaskCard>;
+
 const turns: readonly Readonly<{ ask: string; answer: string; card: ScheduledTaskCard }>[] = [
   { card: cards.weekly, ask: "Every weekday at 9, send me a short morning brief.", answer: "Done: your weekday morning brief is scheduled." },
   { card: cards.monitoring, ask: "Watch the project every hour and tell me when a release ships.", answer: "I will check every hour and report only a new release." },
   { card: cards.otherZone, ask: "Every Friday at 5 pm New York time, summarise the team's week.", answer: "Scheduled for Fridays at 17:00 New York time." },
   { card: cards.deleted, ask: "Check the price every morning.", answer: "Scheduled the price check." },
-  { card: cards.paused, ask: "Every morning, pick one article for me to read.", answer: "Your reading digest is set up." }
+  { card: cards.paused, ask: "Every morning, pick one article for me to read.", answer: "Your reading digest is set up." },
+  { card: managed.moved, ask: "Move my report reminder to 10:00.", answer: "Moved your report reminder to 10:00." },
+  { card: managed.stopped, ask: "Stop the price monitor.", answer: "Paused the price monitor." },
+  { card: managed.proposal, ask: "Delete the old weekly report.", answer: "Confirm the deletion in the card below." },
+  { card: managed.proposalGone, ask: "Delete the gone reminder.", answer: "Confirm the deletion in the card below." }
 ];
 
 /** The owner's stored task behind a card. */
@@ -143,8 +158,8 @@ async function prepare(page: Page, theme: "dark" | "light" = "light") {
   // A missed fixture must fail before it can dispatch a provider request.
   await page.route("**/api/chats/*/messages", (route) => route.request().method() === "POST"
     ? route.fulfill({ status: 409, json: { error: "unexpected_fixture_run" } }) : route.fallback());
-  // The deleted card's task is gone from the owner's list; every other card's task exists.
-  const api = await installScheduledApi(page, Object.values(cards).filter((entry) => !entry.deleted).map(task));
+  // The deleted cards' tasks are gone from the owner's list; every other card's task exists.
+  const api = await installScheduledApi(page, turns.map((turn) => turn.card).filter((entry) => !entry.deleted).map(task));
   await signInWithLocalToken(page, `/c/${chatId}`);
   await expect(page.getByTestId("scheduled-task-card")).toHaveCount(turns.length, { timeout: 30_000 });
   return api;
@@ -284,6 +299,93 @@ test("Delete asks inline, deletes the task and the card then reads as deleted", 
     anchor: weekly,
     atEachSize: async () => {
       await expectWithinViewport(page, weekly.getByRole("status"));
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+});
+
+test("managed cards say what an answer changed, paused or proposed to delete, at every size in both themes", async ({ page }, info) => {
+  const api = await prepare(page);
+  const moved = cardOf(page, managed.moved.title);
+  await expect(moved.getByRole("status")).toHaveText("Scheduled task changed");
+  await expect(moved).toHaveAttribute("data-action", "changed");
+  await expect(moved).toContainText("Every Mon, Wed, Fri at 10:00");
+  await expect(moved).toContainText("Next run Mon 5 Oct, 10:00");
+  await expect(editButton(moved, managed.moved.title)).toBeVisible();
+  const stopped = cardOf(page, managed.stopped.title);
+  await expect(stopped.getByRole("status")).toHaveText("Scheduled task paused");
+  await expect(stopped).toHaveAttribute("data-state", "paused");
+  await expect(stopped).toContainText("Paused");
+  await expect(stopped).not.toContainText("Next run");
+  await captureState(page, info, "scheduled-card-managed", {
+    anchor: stopped,
+    atEachSize: async () => {
+      await expectWithinViewport(page, editButton(stopped, managed.stopped.title));
+      await expectWithinViewport(page, deleteButton(stopped, managed.stopped.title));
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+
+  // A proposal asks at once, without taking focus; its task stays until the owner answers.
+  const proposal = cardOf(page, managed.proposal.title);
+  const question = proposal.getByRole("group", { name: `Delete ${managed.proposal.title}`, exact: true });
+  await expect(proposal.getByRole("status")).toHaveText("Deletion proposed");
+  await expect(proposal).toContainText("Next run Mon 5 Oct, 08:00");
+  await expect(question).toContainText(`Delete “${managed.proposal.title}”? Its chats and answers stay in your history.`);
+  await expect(question.getByRole("button", { name: "Keep task", exact: true })).not.toBeFocused();
+  await expect(editButton(proposal, managed.proposal.title)).toHaveCount(0);
+  // A proposal whose task is already gone reads as deleted.
+  const gone = cardOf(page, managed.proposalGone.title);
+  await expect(gone.getByRole("status")).toHaveText("Scheduled task deleted");
+  await expect(gone.getByRole("button")).toHaveCount(0);
+  await captureState(page, info, "scheduled-card-delete-proposal", {
+    anchor: proposal,
+    atEachSize: async () => {
+      await expectWithinViewport(page, question.getByRole("button", { name: "Delete task", exact: true }));
+      await expectWithinViewport(page, question.getByRole("button", { name: "Keep task", exact: true }));
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+  expect(api.writes).toEqual([]);
+});
+
+test("a deletion proposal deletes only on the owner's click, and Keep leaves the task", async ({ page }, info) => {
+  const api = await prepare(page);
+  const title = managed.proposal.title;
+  let proposal = cardOf(page, title);
+  let question = proposal.getByRole("group", { name: `Delete ${title}`, exact: true });
+  await question.getByRole("button", { name: "Keep task", exact: true }).click();
+  await expect(proposal.getByRole("status")).toHaveText("Scheduled task kept");
+  await expect(proposal.getByRole("status")).toBeFocused();
+  await expect(question).toHaveCount(0);
+  await expect(editButton(proposal, title)).toBeVisible();
+  await expect(deleteButton(proposal, title)).toBeVisible();
+  expect(api.writes).toEqual([]);
+  expect(api.tasks.map((entry) => entry.id)).toContain(managed.proposal.taskId);
+  await captureState(page, info, "scheduled-card-proposal-kept", {
+    anchor: proposal,
+    atEachSize: async () => {
+      await expectWithinViewport(page, deleteButton(proposal, title));
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+
+  // Nothing records the decline: a reload asks again while the task exists, and Delete deletes it.
+  await page.reload();
+  await expect(page.getByTestId("scheduled-task-card")).toHaveCount(turns.length, { timeout: 30_000 });
+  proposal = cardOf(page, title);
+  question = proposal.getByRole("group", { name: `Delete ${title}`, exact: true });
+  await expect(proposal.getByRole("status")).toHaveText("Deletion proposed");
+  await question.getByRole("button", { name: "Delete task", exact: true }).click();
+  await expect(proposal.getByRole("status")).toHaveText("Scheduled task deleted");
+  await expect(proposal.getByRole("status")).toBeFocused();
+  await expect(proposal.getByRole("button")).toHaveCount(0);
+  expect(api.writes).toEqual([{ method: "DELETE", path: `/${managed.proposal.taskId}`, body: null }]);
+  expect(api.tasks.map((entry) => entry.id)).not.toContain(managed.proposal.taskId);
+  await captureState(page, info, "scheduled-card-proposal-deleted", {
+    anchor: proposal,
+    atEachSize: async () => {
+      await expectWithinViewport(page, proposal.getByRole("status"));
       await expectNoHorizontalOverflow(page);
     }
   });
