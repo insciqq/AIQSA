@@ -987,7 +987,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(selfRow).toContainText("you · admin");
     await selfRow.getByRole("link", { name: /^Open / }).click();
     const selfPage = page.getByTestId("admin-user-page");
-    await expect(selfPage.getByText(/Self-disable and self-delete are not exposed/)).toBeVisible();
+    await expect(selfPage.getByText(/Self-disable, self-delete and changing your own administrator role are not exposed/)).toBeVisible();
     await expect(selfPage.getByRole("button", { name: "Delete stale" })).toHaveCount(0);
     await expect(selfPage.getByRole("button", { exact: true, name: "Disable" })).toHaveCount(0);
     await usersCrumb(page).click();
