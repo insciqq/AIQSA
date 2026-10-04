@@ -184,7 +184,7 @@ describe("chat navigation handlers", () => {
     };
     const updatedAt = new Date("2026-09-28T00:00:00.000Z");
     const row = (id: string, assistantId: string | null) => ({
-      assistantId, folderId: null, id, modelRuns: [], scheduledTasks: [], title: id, updatedAt
+      assistantId, folderId: null, id, modelRuns: [], scheduledTaskOccurrences: [], scheduledTasks: [], title: id, updatedAt
     });
     const queryRaw = vi.fn(async () => [{ avatar, id: "assistant-live", name: "Live helper" }]);
     const client = {
@@ -219,17 +219,21 @@ describe("chat navigation handlers", () => {
     expect(queryRaw).not.toHaveBeenCalled();
   });
 
-  it("projects only a task chat's task id and unread marker", async () => {
+  it("projects only a task chat's task id and the unread marker of its own results", async () => {
     const updatedAt = new Date("2026-10-04T09:00:00.000Z");
+    const chat = (id: string, scheduledTasks: Array<{ id: string }>, occurrences: Array<{ taskId: string; unseenAt: Date | null }>) => ({
+      assistantId: null, folderId: null, id, modelRuns: [], scheduledTaskOccurrences: occurrences, scheduledTasks, title: id, updatedAt
+    });
     const client = {
       $queryRaw: vi.fn(async () => []),
       chat: {
         findMany: vi.fn(async () => [
-          { assistantId: null, folderId: null, id: "chat-unread", modelRuns: [], title: "Brief", updatedAt,
-            scheduledTasks: [{ id: "task-1", unseenResultAt: updatedAt }] },
-          { assistantId: null, folderId: null, id: "chat-read", modelRuns: [], title: "Summary", updatedAt,
-            scheduledTasks: [{ id: "task-2", unseenResultAt: null }] },
-          { assistantId: null, folderId: null, id: "chat-plain", modelRuns: [], title: "Plain", updatedAt, scheduledTasks: [] }
+          chat("chat-unread", [{ id: "task-1" }], [{ taskId: "task-1", unseenAt: updatedAt }]),
+          // The task's newest chat with no unread result of its own.
+          chat("chat-read", [{ id: "task-2" }], [{ taskId: "task-2", unseenAt: null }]),
+          // An earlier "new chat each run" chat keeps its own unread result.
+          chat("chat-earlier", [], [{ taskId: "task-2", unseenAt: updatedAt }]),
+          chat("chat-plain", [], [])
         ])
       },
       folder: { findMany: vi.fn(async () => []) }
@@ -237,13 +241,17 @@ describe("chat navigation handlers", () => {
     const result = await createPrismaChatNavigationRepository(client as never)
       .listPage({ cursor: null, limit: 30, userId: "user-1" });
     const chats = result.kind === "ok" ? result.page.chats : [];
-    expect(chats.map((chat) => [chat.id, chat.scheduledTask])).toEqual([
+    expect(chats.map((row) => [row.id, row.scheduledTask])).toEqual([
       ["chat-unread", { taskId: "task-1", unseen: true }],
       ["chat-read", { taskId: "task-2", unseen: false }],
+      ["chat-earlier", { taskId: "task-2", unseen: true }],
       ["chat-plain", null]
     ]);
     expect(client.chat.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      select: expect.objectContaining({ scheduledTasks: expect.objectContaining({ select: { id: true, unseenResultAt: true } }) })
+      select: expect.objectContaining({
+        scheduledTaskOccurrences: expect.objectContaining({ select: { taskId: true, unseenAt: true }, take: 1 }),
+        scheduledTasks: expect.objectContaining({ select: { id: true } })
+      })
     }));
   });
 });

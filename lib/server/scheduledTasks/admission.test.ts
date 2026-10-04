@@ -1,16 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
+import { textMessageContent } from "../../domain/content";
 import { getAuthConfig } from "../auth/config";
 import type { AuthenticatedUser } from "../auth/requestAuth";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
+import { textConversationForRequest } from "../providers/context";
 import { createFakeProviderAdapter } from "../providers/fakeProvider";
-import type { ProviderModelCapabilities } from "../providers/types";
+import type { ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
 import { createSendMessageHandler, type RunHandlerDeps } from "../runs/handlers";
 import {
   ScheduledOccurrenceConflictError,
   type CreateRunInput,
   type RunOwnedChatRecord,
-  type RunRepository
+  type RunRepository,
+  type ScheduledOccurrenceAdmission
 } from "../runs/runRepositoryContract";
+import type { ToolHistorySnapshot } from "../runs/toolHistoryContract";
 import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
 import {
   createScheduledTaskSend,
@@ -25,7 +29,9 @@ const config = getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "secret", AIQSA_BOOTST
 const owner: AuthenticatedUser = {
   displayName: "Synthetic owner", email: "owner@example.test", id: "00000000-0000-4000-8000-0000000000aa", role: "user", status: "active"
 };
-const occurrence = { occurrenceId: "occurrence-1", taskId: "task-1" };
+const occurrence: ScheduledOccurrenceAdmission = {
+  occurrenceId: "occurrence-1", previousResult: null, taskGeneration: 1, taskId: "task-1", taskRevision: 1
+};
 const newChatId = "30000000-0000-4000-8000-000000000003";
 
 function admissionPlan(input: Parameters<NonNullable<RunHandlerDeps["providerAdmission"]>["load"]>[0],
@@ -50,10 +56,18 @@ function admissionPlan(input: Parameters<NonNullable<RunHandlerDeps["providerAdm
 }
 
 /** The real send handler's dependencies around an in-memory repository and the fake provider. */
-function fixture(options: Readonly<{ chat?: RunOwnedChatRecord; toolCalling?: boolean }> = {}) {
+function fixture(options: Readonly<{
+  chat?: RunOwnedChatRecord;
+  /** The active branch of the chat, root first, as the repository loads it. */
+  path?: readonly ProviderConversationMessage[];
+  toolCalling?: boolean;
+  toolHistory?: ToolHistorySnapshot;
+}> = {}) {
   const state: {
     completedText: string | null; created: CreateRunInput | null; createRun?: (input: CreateRunInput) => void; failedCode: string | null;
-  } = { completedText: null, created: null, failedCode: null };
+    /** Every request the answer model received. */
+    requests: ProviderRunRequest[];
+  } = { completedText: null, created: null, failedCode: null, requests: [] };
   const capabilities: ProviderModelCapabilities = {
     nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, streaming: true,
     toolCalling: options.toolCalling ?? true, vision: false
@@ -80,7 +94,8 @@ function fixture(options: Readonly<{ chat?: RunOwnedChatRecord; toolCalling?: bo
     } : null,
     loadCheckpointedToolLoopRun: async () => null,
     loadConversationContextForExpectedLeaf: async (_chatId, _userId, leaf) =>
-      leaf === (options.chat?.activeLeafMessageId ?? null) ? [] : null,
+      leaf === (options.chat?.activeLeafMessageId ?? null) ? [...(options.path ?? [])] : null,
+    ...(options.toolHistory ? { loadToolHistory: async () => options.toolHistory! } : {}),
     loadEntitlements: async () => ({ modelKeys: new Set(["fake:fake-qsa"]), providerKeys: new Set(), searchStrategies: new Set() }),
     loadModelPricing: async () => null,
     loadPersonalFirstSend: async (input) => input.chatId === newChatId && input.userId === owner.id ? {
@@ -97,7 +112,11 @@ function fixture(options: Readonly<{ chat?: RunOwnedChatRecord; toolCalling?: bo
   // Everything else is absent, like the optional operations of a minimal repository;
   // a required operation the path needs would fail the run visibly.
   const repository = implemented as RunRepository;
-  const adapter = createFakeProviderAdapter();
+  const fake = createFakeProviderAdapter();
+  const adapter: ProviderAdapter = { ...fake, stream: (request, streamOptions) => {
+    state.requests.push(request);
+    return fake.stream(request, streamOptions);
+  } };
   const sendDeps: Omit<RunHandlerDeps, "resolveAuth" | "scheduledOccurrence"> = {
     allowFakeProvider: true,
     getConfig: () => config,
@@ -115,6 +134,38 @@ function body(target: ScheduledTaskSendTarget, toolCalling = true) {
     admissionId: "40000000-0000-4000-8000-000000000004", modelId: "fake-qsa", prompt: "  Summarize the synthetic fixture\n",
     provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] }, target, timeZone: "Europe/Moscow", toolCalling
   });
+}
+
+const taskChat: RunOwnedChatRecord = {
+  activeLeafMessageId: "assistant-message-0", defaultModelId: "fake-qsa", defaultProvider: "fake", id: "chat-task",
+  memoryMode: "EXCLUDED", messageCount: 2, projectMemory: null, title: "Synthetic brief"
+};
+const say = (id: string, role: "assistant" | "user", text: string): ProviderConversationMessage =>
+  ({ content: textMessageContent(text), id, role });
+/** Turns the owner wrote in the task's chat. */
+const ownerTurns = (prefix: string, count: number) => Array.from({ length: count }, (_value, index) => [
+  say(`${prefix}-user-${index}`, "user", `Owner question ${prefix} ${index}`),
+  say(`${prefix}-answer-${index}`, "assistant", `Owner answer ${prefix} ${index}`)
+]).flat();
+const previousResult = { assistantMessageId: "previous-answer", userMessageId: "previous-user" };
+
+/** What the answer model's request holds as conversation, oldest first. */
+function conversation(request: ProviderRunRequest): string[][] {
+  return textConversationForRequest(request).map((message) => [message.role, message.content]);
+}
+
+/** Sends the task prompt into the task's existing chat, whose active branch is `path`. */
+async function sendIntoChat(path: readonly ProviderConversationMessage[], origin: ScheduledOccurrenceAdmission,
+  chatOverrides: Partial<RunOwnedChatRecord> = {}) {
+  const chat: RunOwnedChatRecord = { ...taskChat, activeLeafMessageId: path.at(-1)?.id ?? null, ...chatOverrides };
+  const f = fixture({ chat, path });
+  const response = await f.send({
+    body: body({ activeLeafMessageId: chat.activeLeafMessageId, chatId: chat.id, kind: "existing" }),
+    chatId: chat.id, occurrence: origin, userId: owner.id
+  });
+  expect(response.status).toBe(200);
+  await response.text();
+  return { chat, f };
 }
 
 describe("scheduled task admission through the ordinary send handler", () => {
@@ -152,13 +203,74 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(f.state.failedCode).toBeNull();
     expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture");
     expect(f.loadOwner).toHaveBeenCalledWith({ taskId: "task-1", userId: owner.id });
+    // A new chat's run is a first send: its model sees the prompt alone.
+    expect(f.state.requests.map(conversation)).toEqual([[["user", "Summarize the synthetic fixture"]]]);
+  });
+
+  it("gives a same-chat run only the task's previous result and its prompt, however long the chat grows", async () => {
+    const path = [
+      ...ownerTurns("before", 40),
+      say("previous-user", "user", "Summarize the synthetic fixture"),
+      say("previous-answer", "assistant", "Previous synthetic summary"),
+      // The owner kept chatting after the result: none of it reaches the task's next run.
+      ...ownerTurns("after", 40)
+    ];
+    const { chat, f } = await sendIntoChat(path, { ...occurrence, previousResult });
+    expect(f.state.requests.map(conversation)).toEqual([[
+      ["user", "Summarize the synthetic fixture"], ["assistant", "Previous synthetic summary"], ["user", "Summarize the synthetic fixture"]
+    ]]);
+    expect(f.state.completedText).toBe("Fake answer: Summarize the synthetic fixture\nContext memory: Summarize the synthetic fixture");
+    // The selection is frozen with the run, so recovery rebuilds the same context; branch notes are never carried.
+    const frozen = f.state.created!.normalizedRequest;
+    expect(frozen.context!.messages.map((message) => message.id)).toEqual(["previous-user", "previous-answer", "current-user-message"]);
+    expect(frozen.contextCompactionPolicy).toMatchObject({ mode: "hybrid", source: { leafMessageId: null, messageCount: 3 } });
+    // The new turn still continues the chat's active leaf, so the transcript stays linear.
+    expect(f.state.created).toMatchObject({ expectedActiveLeafId: chat.activeLeafMessageId, scheduledOccurrence: { previousResult } });
+  });
+
+  it("starts from the prompt alone once the previous result has left the chat's active path", async () => {
+    // An edit or regeneration moved the active branch away from the result, or deleted it.
+    const edited = await sendIntoChat(ownerTurns("branch", 3), { ...occurrence, previousResult });
+    expect(edited.f.state.requests.map(conversation)).toEqual([[["user", "Summarize the synthetic fixture"]]]);
+    // Half a result (its answer regenerated away) is not shown either.
+    const regenerated = await sendIntoChat([say("previous-user", "user", "Summarize the synthetic fixture"),
+      say("regenerated-answer", "assistant", "Another answer")], { ...occurrence, previousResult });
+    expect(regenerated.f.state.requests.map(conversation)).toEqual([[["user", "Summarize the synthetic fixture"]]]);
+    // Without a previous result (the first run of a generation) only the prompt is sent, too.
+    const first = await sendIntoChat(ownerTurns("before", 5), occurrence);
+    expect(first.f.state.requests.map(conversation)).toEqual([[["user", "Summarize the synthetic fixture"]]]);
+  });
+
+  it("never applies Memory to a scheduled run, even after the owner turned Memory on in its chat", async () => {
+    const snapshot = { version: "memory-search-v1" as const, maxCalls: 3 as const, resultTokens: 6000 as const,
+      comparisonResultTokens: 12000 as const, timeoutSeconds: 30, memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
+    const chat: RunOwnedChatRecord = { ...taskChat, memoryMode: "NORMAL" };
+    const f = fixture({ chat });
+    const admit = vi.fn(async () => snapshot);
+    const sendDeps = { ...f.sendDeps, memorySearchAdmission: { admit } };
+    const scheduled = await createScheduledTaskSend({ loadOwner: f.loadOwner, sendDeps })({
+      body: body({ activeLeafMessageId: chat.activeLeafMessageId, chatId: chat.id, kind: "existing" }),
+      chatId: chat.id, occurrence, userId: owner.id
+    });
+    expect(scheduled.status).toBe(200);
+    await scheduled.text();
+    expect(admit).not.toHaveBeenCalled();
+    expect(f.state.created!.normalizedRequest.memoryStandingVersion).toBeUndefined();
+    expect(f.state.created!.normalizedRequest.memorySearch).toBeUndefined();
+    // The owner's own message in the same chat keeps standing Memory.
+    const ordinary = await createSendMessageHandler({ ...sendDeps,
+      resolveAuth: scheduledTaskOwnerAuth(f.loadOwner, { taskId: "task-1", userId: owner.id }) })(
+      new Request(`http://localhost/api/chats/${chat.id}/messages`, { body: JSON.stringify(
+        body({ activeLeafMessageId: chat.activeLeafMessageId, chatId: chat.id, kind: "existing" })), method: "POST" }),
+      { params: { chatId: chat.id } });
+    expect(ordinary.status).toBe(200);
+    await ordinary.text();
+    expect(f.state.created!.normalizedRequest.memoryStandingVersion).toBe(1);
+    expect(f.state.created).not.toHaveProperty("scheduledOccurrence");
   });
 
   it("appends a later run to the task's chat after its current leaf", async () => {
-    const chat: RunOwnedChatRecord = {
-      activeLeafMessageId: "assistant-message-0", defaultModelId: "fake-qsa", defaultProvider: "fake", id: "chat-task",
-      memoryMode: "EXCLUDED", messageCount: 2, projectMemory: null, title: "Synthetic brief"
-    };
+    const chat = taskChat;
     const f = fixture({ chat });
     const response = await f.send({
       body: body({ activeLeafMessageId: "assistant-message-0", chatId: "chat-task", kind: "existing" }),

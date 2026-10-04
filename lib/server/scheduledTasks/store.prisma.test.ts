@@ -9,7 +9,11 @@ const users: string[] = [];
 const store = createPrismaScheduledTaskStore(prisma);
 const draft: ScheduledTaskDraft = {
   title: "Synthetic brief", prompt: "Synthetic scheduled prompt", schedule: { kind: "daily", time: "09:00" },
-  timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false, emailNotify: false
+  timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false, emailNotify: false, chatMode: "new"
+};
+const hourlyDraft: ScheduledTaskDraft = {
+  ...draft, chatMode: "same",
+  schedule: { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] }
 };
 const due = new Date("2026-10-05T06:00:00.000Z");
 
@@ -25,9 +29,9 @@ function rows(userId: string, count: number, status: "ACTIVE" | "PAUSED") {
     prompt: draft.prompt, provider: draft.provider, searchEnabled: false, status, timeZone: draft.timeZone, title: `Seed ${index}`, userId
   }));
 }
-function limitFailures(results: PromiseSettledResult<unknown>[]): number {
+function limitFailures(results: PromiseSettledResult<unknown>[], code = "scheduled_task_limit"): number {
   return results.filter((result) => result.status === "rejected" && result.reason instanceof ScheduledTaskError &&
-    result.reason.code === "scheduled_task_limit").length;
+    result.reason.code === code).length;
 }
 
 afterEach(async () => {
@@ -52,6 +56,27 @@ describe("persisted scheduled tasks", () => {
     const total = await Promise.allSettled(["Last A", "Last B"].map((title) => store.create(saved, { ...draft, title }, due)));
     expect(limitFailures(total)).toBe(1);
     expect(await prisma.scheduledTask.count({ where: { userId: saved } })).toBe(50);
+  });
+
+  it("allows three active hourly tasks per owner, under concurrent creation and on resume or schedule change", async () => {
+    const userId = await owner();
+    for (let index = 0; index < 2; index += 1) await store.create(userId, { ...hourlyDraft, title: `Hourly ${index}` }, due);
+    const racing = await Promise.allSettled(["Hourly A", "Hourly B"].map((title) => store.create(userId, { ...hourlyDraft, title }, due)));
+    expect(limitFailures(racing, "scheduled_task_hourly_limit")).toBe(1);
+    expect(await prisma.scheduledTask.count({ where: { scheduleKind: "HOURLY", status: "ACTIVE", userId } })).toBe(3);
+    // Less frequent schedules still fit within the active limit.
+    const daily = await store.create(userId, draft, due);
+    await expect(store.update(userId, daily.id, { draft: hourlyDraft, expectedRevision: 1, nextRunAt: due, status: "active" }))
+      .rejects.toMatchObject({ code: "scheduled_task_hourly_limit" });
+    const [first] = await prisma.scheduledTask.findMany({ orderBy: { createdAt: "asc" }, where: { scheduleKind: "HOURLY", userId } });
+    const paused = await store.update(userId, first!.id, { draft: hourlyDraft, expectedRevision: 1, nextRunAt: null, status: "paused" });
+    expect(await store.update(userId, daily.id, { draft: hourlyDraft, expectedRevision: 1, nextRunAt: due, status: "active" }))
+      .toMatchObject({ chatMode: "same", schedule: hourlyDraft.schedule, status: "active" });
+    // Editing an hourly task that stays active never counts itself.
+    expect(await store.update(userId, daily.id, { draft: { ...hourlyDraft, title: "Renamed" }, expectedRevision: 2,
+      nextRunAt: undefined, status: "active" })).toMatchObject({ title: "Renamed" });
+    await expect(store.update(userId, paused.id, { draft: hourlyDraft, expectedRevision: paused.revision, nextRunAt: due, status: "active" }))
+      .rejects.toMatchObject({ code: "scheduled_task_hourly_limit" });
   });
 
   it("guards updates by revision, counts activation and keeps an unchanged due time", async () => {
@@ -82,30 +107,62 @@ describe("persisted scheduled tasks", () => {
     expect(await store.get(userId, task.id)).toMatchObject({ pauseReason: "model_unavailable", revision: 5, status: "paused" });
   });
 
-  it("projects the newest settled run, open runs and owner-scoped history", async () => {
+  it("starts a new generation without a baseline only when the prompt or schedule kind changes", async () => {
+    const userId = await owner();
+    const task = await store.create(userId, { ...draft, chatMode: "same" }, due);
+    const baseline = { baselineAssistantMessageId: "answer-1", baselineGeneration: 1, baselineRunId: "run-1", baselineUserMessageId: "user-1" };
+    const read = () => prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } });
+    await prisma.scheduledTask.update({ data: baseline, where: { id: task.id } });
+    let revision = 1;
+    const update = async (changes: Partial<ScheduledTaskDraft>) => {
+      await store.update(userId, task.id, { draft: { ...draft, chatMode: "same", ...changes }, expectedRevision: revision,
+        nextRunAt: undefined, status: "active" });
+      revision += 1;
+    };
+    // A new title, time, model or chat mode asks the same question.
+    await update({ schedule: { kind: "daily", time: "10:30" }, title: "Renamed" });
+    await update({ chatMode: "new" });
+    expect(await read()).toMatchObject({ ...baseline, chatMode: "NEW", generation: 1 });
+    await update({ prompt: "A different synthetic prompt" });
+    expect(await read()).toMatchObject({ baselineGeneration: null, baselineRunId: null, generation: 2 });
+    await prisma.scheduledTask.update({ data: { ...baseline, baselineGeneration: 2 }, where: { id: task.id } });
+    await update({ prompt: "A different synthetic prompt", schedule: { kind: "weekly", time: "09:00", days: ["mon"] } });
+    expect(await read()).toMatchObject({ baselineRunId: null, generation: 3, scheduleKind: "WEEKLY" });
+  });
+
+  it("projects the newest settled run, open runs, unread results and owner-scoped history", async () => {
     const userId = await owner(), other = await owner();
     const task = await store.create(userId, draft, due);
     const at = (hours: number) => new Date(Date.UTC(2026, 9, 1, hours));
     await prisma.scheduledTaskOccurrence.createMany({ data: [
       { finishedAt: at(20), reasonCode: "missed", scheduledFor: at(6), state: "SKIPPED", taskId: task.id, trigger: "schedule", userId },
-      { finishedAt: at(31), scheduledFor: at(30), startedAt: at(30), state: "COMPLETED", taskId: task.id, trigger: "schedule", userId },
+      { finishedAt: at(31), scheduledFor: at(30), startedAt: at(30), state: "COMPLETED", taskId: task.id, trigger: "schedule",
+        unseenAt: at(31), userId },
       { scheduledFor: at(40), startedAt: at(40), state: "RUNNING", taskId: task.id, trigger: "manual", userId }
     ] });
-    await prisma.scheduledTask.update({ data: { unseenResultAt: at(31) }, where: { id: task.id } });
     const projected = await store.get(userId, task.id);
     expect(projected).toMatchObject({
       lastRun: { finishedAt: at(31).toISOString(), reasonCode: null, scheduledFor: at(30).toISOString(), state: "completed" },
       running: true, unseenResult: true
     });
     const detail = await store.detail(userId, task.id);
-    expect(detail?.recentRuns.map((run) => [run.trigger, run.state])).toEqual([["manual", "running"], ["schedule", "completed"], ["schedule", "skipped"]]);
+    expect(detail?.recentRuns.map((run) => [run.trigger, run.state, run.unseen])).toEqual([
+      ["manual", "running", false], ["schedule", "completed", true], ["schedule", "skipped", false]
+    ]);
     expect((await store.list(userId)).tasks).toEqual([projected]);
-    expect(await store.markSeen(userId, task.id)).toBe(true);
+    expect((await store.list(userId)).limits).toEqual({ maxActive: 10, maxActiveHourly: 3, maxTotal: 50 });
+
+    // Only the named, settled results become seen.
+    const [running, completed, skipped] = detail!.recentRuns;
+    expect(await store.markSeen(userId, task.id, [running!.id, skipped!.id])).toBe(true);
+    expect(await store.get(userId, task.id)).toMatchObject({ unseenResult: true });
+    expect(await store.markSeen(other, task.id, [completed!.id])).toBe(false);
+    expect(await store.get(userId, task.id)).toMatchObject({ unseenResult: true });
+    expect(await store.markSeen(userId, task.id, [completed!.id])).toBe(true);
     expect(await store.get(userId, task.id)).toMatchObject({ unseenResult: false });
 
     expect(await store.get(other, task.id)).toBeNull();
     expect(await store.detail(other, task.id)).toBeNull();
-    expect(await store.markSeen(other, task.id)).toBe(false);
     expect(await store.delete(other, task.id)).toBe(false);
     await expect(store.update(other, task.id, { draft, expectedRevision: 1, nextRunAt: null, status: "paused" }))
       .rejects.toMatchObject({ code: "scheduled_task_not_found" });
@@ -135,6 +192,7 @@ describe("persisted scheduled tasks", () => {
   it("removes tasks and their history with the account and rejects inconsistent rows", async () => {
     const userId = await owner();
     const task = await store.create(userId, draft, due);
+    const hourly = await store.create(userId, hourlyDraft, due);
     await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: due, taskId: task.id, trigger: "schedule", userId } });
     await expect(prisma.scheduledTask.update({ data: { status: "PAUSED" }, where: { id: task.id } }))
       .rejects.toThrow("ScheduledTask_state_check");
@@ -142,6 +200,19 @@ describe("persisted scheduled tasks", () => {
       .rejects.toThrow("ScheduledTask_schedule_check");
     await expect(prisma.scheduledTaskOccurrence.updateMany({ data: { state: "COMPLETED" }, where: { taskId: task.id } }))
       .rejects.toThrow("ScheduledTaskOccurrence_finished_check");
+    // Only settled results are unread.
+    await expect(prisma.scheduledTaskOccurrence.updateMany({ data: { unseenAt: due }, where: { taskId: task.id } }))
+      .rejects.toThrow("ScheduledTaskOccurrence_finished_check");
+    // Hourly tasks continue in one chat, with an interval that divides the day and a window that ends after it starts.
+    await expect(prisma.scheduledTask.update({ data: { chatMode: "NEW" }, where: { id: hourly.id } }))
+      .rejects.toThrow("ScheduledTask_state_check");
+    for (const data of [{ everyHours: 5 }, { untilMinutes: 540 }, { untilMinutes: 1440 }, { daysOfWeekMask: 0 }]) {
+      await expect(prisma.scheduledTask.update({ data, where: { id: hourly.id } })).rejects.toThrow("ScheduledTask_schedule_check");
+    }
+    await expect(prisma.scheduledTask.update({ data: { everyHours: 2 }, where: { id: task.id } }))
+      .rejects.toThrow("ScheduledTask_schedule_check");
+    await expect(prisma.scheduledTask.update({ data: { baselineRunId: "run-1" }, where: { id: task.id } }))
+      .rejects.toThrow("ScheduledTask_baseline_check");
 
     await prisma.user.delete({ where: { id: userId } });
     expect(await prisma.scheduledTask.count({ where: { userId } })).toBe(0);

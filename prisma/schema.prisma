@@ -3469,6 +3469,11 @@ model ModelRun {
   /// Frozen completion accounting for recovery until the run settles.
   answerCompletionUsage        Json?
   workspaceWaitPending         Boolean                             @default(false)
+  /// A scheduled task's run: its task, occurrence and task generation at acceptance.
+  /// Plain values without relations, so they outlive the task and its history.
+  scheduledTaskId              String?
+  scheduledOccurrenceId        String?
+  scheduledTaskGeneration      Int?
   createdAt                    DateTime                            @default(now())
   updatedAt                    DateTime                            @updatedAt
   assistantMessage             Message?                            @relation("AssistantMessageRun", fields: [assistantMessageId], references: [id], onDelete: SetNull)
@@ -7140,6 +7145,12 @@ enum ScheduledTaskScheduleKind {
   DAILY
   WEEKLY
   MONTHLY
+  HOURLY
+}
+
+enum ScheduledTaskChatMode {
+  NEW
+  SAME
 }
 
 enum ScheduledTaskStatus {
@@ -7156,42 +7167,57 @@ enum ScheduledTaskOccurrenceState {
   SKIPPED
 }
 
-/// A personal prompt the scheduler posts into its own chat. Schedule columns are
+/// A personal prompt the scheduler posts into chats. Schedule columns are
 /// wall-clock values in `timeZone`; lib/domain/scheduledTaskSchedule.ts computes
 /// `nextRunAt`, which is null unless ACTIVE. Model identity is revalidated at save
 /// and run, never a foreign key. `revision` changes on every owner mutation and on
 /// runner status transitions (auto-pause, once completion), not on bookkeeping
-/// (`nextRunAt`, `consecutiveFailures`, `unseenResultAt`, `chatId`).
+/// (`nextRunAt`, `consecutiveFailures`, `chatId`, the baseline).
 model ScheduledTask {
-  id                  String                    @id @default(uuid())
-  userId              String
-  title               String                    @db.VarChar(120)
-  prompt              String
-  scheduleKind        ScheduledTaskScheduleKind
-  /// Local wall-clock minute of the day, 0..1439.
-  timeOfDayMinutes    Int
-  /// ISO weekdays, Monday = bit 0 .. Sunday = bit 6; 0 unless WEEKLY.
-  daysOfWeekMask      Int                       @default(0)
+  id                         String                    @id @default(uuid())
+  userId                     String
+  title                      String                    @db.VarChar(120)
+  prompt                     String
+  scheduleKind               ScheduledTaskScheduleKind
+  /// Local wall-clock minute of the day, 0..1439; HOURLY: the window start (0 for the whole day).
+  timeOfDayMinutes           Int
+  /// ISO weekdays, Monday = bit 0 .. Sunday = bit 6; 0 unless WEEKLY or HOURLY.
+  daysOfWeekMask             Int                       @default(0)
   /// 1..31 for MONTHLY, clamped to the month's last day; otherwise null.
-  dayOfMonth          Int?
+  dayOfMonth                 Int?
   /// Local `YYYY-MM-DD` for ONCE; otherwise null.
-  onceLocalDate       String?                   @db.VarChar(10)
-  timeZone            String                    @db.VarChar(64)
-  modelId             String                    @db.VarChar(256)
-  provider            String                    @db.VarChar(256)
-  searchEnabled       Boolean                   @default(false)
-  emailNotify         Boolean                   @default(false)
-  status              ScheduledTaskStatus       @default(ACTIVE)
+  onceLocalDate              String?                   @db.VarChar(10)
+  /// HOURLY only: the nominal interval, 1, 2, 3, 4, 6, 8 or 12 hours.
+  everyHours                 Int?
+  /// HOURLY only: the inclusive window end after `timeOfDayMinutes`; null runs through the end of the day.
+  untilMinutes               Int?
+  timeZone                   String                    @db.VarChar(64)
+  modelId                    String                    @db.VarChar(256)
+  provider                   String                    @db.VarChar(256)
+  searchEnabled              Boolean                   @default(false)
+  emailNotify                Boolean                   @default(false)
+  /// NEW starts a chat for every run; SAME continues the task's chat (always for HOURLY).
+  chatMode                   ScheduledTaskChatMode     @default(NEW)
+  status                     ScheduledTaskStatus       @default(ACTIVE)
   /// Stable code of an automatic pause; null for owner pauses and other states.
-  pauseReason         String?                   @db.VarChar(64)
-  nextRunAt           DateTime?
-  /// The task's personal chat; deleting the chat clears only this column.
-  chatId              String?
-  consecutiveFailures Int                       @default(0)
-  unseenResultAt      DateTime?
-  revision            Int                       @default(1)
-  createdAt           DateTime                  @default(now())
-  updatedAt           DateTime                  @updatedAt
+  pauseReason                String?                   @db.VarChar(64)
+  nextRunAt                  DateTime?
+  /// The newest chat a run used; deleting the chat clears only this column.
+  chatId                     String?
+  consecutiveFailures        Int                       @default(0)
+  revision                   Int                       @default(1)
+  /// Bumped with the revision when the prompt or the schedule kind changes;
+  /// frozen on accepted occurrences and runs.
+  generation                 Int                       @default(1)
+  /// The newest shown completed result of the current generation: what the
+  /// next same-chat run sees besides the prompt. Plain identifiers, rechecked
+  /// against the run's chat path at every admission; all four or none.
+  baselineRunId              String?
+  baselineUserMessageId      String?
+  baselineAssistantMessageId String?
+  baselineGeneration         Int?
+  createdAt                  DateTime                  @default(now())
+  updatedAt                  DateTime                  @updatedAt
   user                User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   /// The migration uses column-scoped SET NULL so chat deletion never clears userId.
   chat                Chat?                     @relation(fields: [userId, chatId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
@@ -7222,6 +7248,10 @@ model ScheduledTaskOccurrence {
   /// Set exactly when the state is COMPLETED, FAILED or SKIPPED.
   finishedAt     DateTime?
   notifiedAt     DateTime?
+  /// The task generation frozen when a run accepted this occurrence.
+  taskGeneration Int?
+  /// A settled result the owner has not seen yet: a finished answer or a failure that paused the task.
+  unseenAt       DateTime?
   createdAt      DateTime                     @default(now())
   task           ScheduledTask                @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
   /// The migration uses column-scoped SET NULL for chat and run references.

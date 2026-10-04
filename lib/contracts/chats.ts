@@ -411,11 +411,14 @@ export type ChatMessageWire = {
 
 /**
  * A user turn posted by a scheduled task occurrence: the task and its current
- * title. Deleting the task removes its occurrences, so the marker disappears.
+ * title, the run's id (`ScheduledTaskRun.id`) and whether its result is
+ * unread. Deleting the task removes its occurrences, so the marker disappears.
  */
 export type ChatMessageScheduledTaskWire = Readonly<{
   taskId: string;
+  taskRunId: string;
   title: string;
+  unseen: boolean;
 }>;
 
 export type ProjectMessageAuthorWire = Readonly<{
@@ -638,8 +641,9 @@ export type ChatNavigationSummaryWire = {
   folderId: string | null;
   id: string;
   /**
-   * The scheduled task that posts into this chat, with its unread marker.
-   * Present on current responses; absent (local upserts, fixtures) means none.
+   * The scheduled task that posts or posted into this chat, with this chat's
+   * unread marker. Present on current responses; absent (local upserts,
+   * fixtures) means none.
    */
   scheduledTask?: ChatNavigationScheduledTaskWire | null;
   title: string;
@@ -648,7 +652,7 @@ export type ChatNavigationSummaryWire = {
 
 export type ChatNavigationScheduledTaskWire = Readonly<{
   taskId: string;
-  /** A finished run's result has not been opened yet. */
+  /** A result in this chat (an answer or a failure that paused the task) has not been seen yet. */
   unseen: boolean;
 }>;
 
@@ -1203,11 +1207,14 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   if (value.scheduledTask === undefined || value.scheduledTask === null) {
     scheduledTask = value.scheduledTask;
   } else {
-    const taskId = isRecord(value.scheduledTask) && hasExactKeys(value.scheduledTask, ["taskId", "title"])
-      ? requiredString(value.scheduledTask.taskId) : null;
-    const title = isRecord(value.scheduledTask) ? requiredString(value.scheduledTask.title) : null;
-    if (!taskId || taskId.length > 128 || !title || codePointLength(title) > CHAT_TITLE_MAX_LENGTH) return null;
-    scheduledTask = { taskId, title };
+    const marker = isRecord(value.scheduledTask) && hasExactKeys(value.scheduledTask, ["taskId", "taskRunId", "title", "unseen"])
+      ? value.scheduledTask : null;
+    const taskId = marker ? requiredString(marker.taskId) : null;
+    const taskRunId = marker ? requiredString(marker.taskRunId) : null;
+    const title = marker ? requiredString(marker.title) : null;
+    if (!marker || !taskId || taskId.length > 128 || !taskRunId || taskRunId.length > 128 || !title ||
+      codePointLength(title) > CHAT_TITLE_MAX_LENGTH || typeof marker.unseen !== "boolean") return null;
+    scheduledTask = { taskId, taskRunId, title, unseen: marker.unseen };
   }
   let author: ProjectMessageAuthorWire | null | undefined;
   if (value.author === undefined || value.author === null) {

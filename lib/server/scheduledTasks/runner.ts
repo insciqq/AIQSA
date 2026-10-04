@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { scheduledTaskRunChatTitle } from "../../domain/scheduledTaskSchedule";
 import type { SmtpProductMessage } from "../email/definitions";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { observedFailureCode } from "../providers/providerObservability";
+import type { ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
 import { scheduledTaskSearchPlan, scheduledTaskSendBody, type ScheduledTaskSend, type ScheduledTaskSendTarget } from "./admission";
 import { resolveScheduledTaskModel, type ScheduledTaskRunCatalogLoader } from "./catalog";
 import { scheduledTaskResultEmail } from "./notifications";
@@ -73,6 +75,38 @@ async function drain(body: ReadableStream<Uint8Array> | null): Promise<void> {
   } finally {
     reader.releaseLock();
   }
+}
+
+/**
+ * Where an occurrence posts: in same-chat mode the task's usable chat, with
+ * the previous shown result of the current generation as the only earlier
+ * turn the model sees (admission keeps it only while it lies on that chat's
+ * path); otherwise a new chat, titled after the task (and the run's local date
+ * in new-chat mode), whose context is the prompt alone.
+ */
+function runTarget(execution: ScheduledTaskExecution, newChatId: () => string): Readonly<{
+  previousResult: ScheduledOccurrenceAdmission["previousResult"];
+  target: ScheduledTaskSendTarget;
+  title: string | null;
+}> {
+  const { chat, occurrence, task } = execution;
+  if (task.chatMode === "same" && chat) {
+    const baseline = task.baseline?.generation === task.generation ? task.baseline : null;
+    return {
+      previousResult: baseline && { assistantMessageId: baseline.assistantMessageId, userMessageId: baseline.userMessageId },
+      target: { activeLeafMessageId: chat.activeLeafMessageId, chatId: chat.id, kind: "existing" },
+      title: null
+    };
+  }
+  let title = task.title;
+  if (task.chatMode === "new") {
+    try {
+      title = scheduledTaskRunChatTitle(task.title, occurrence.scheduledFor, task.timeZone);
+    } catch {
+      // A zone that no longer resolves keeps the plain task title.
+    }
+  }
+  return { previousResult: null, target: { chatId: newChatId(), kind: "new" }, title };
 }
 
 /**
@@ -166,24 +200,26 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     }
     const searchPlan = scheduledTaskSearchPlan({ catalog, model, searchEnabled: task.searchEnabled });
     if (!searchPlan) return settlePending(execution, pausingOutcome("search_unavailable"));
-    const target: ScheduledTaskSendTarget = execution.chat
-      ? { activeLeafMessageId: execution.chat.activeLeafMessageId, chatId: execution.chat.id, kind: "existing" }
-      : { chatId: newId(), kind: "new" };
+    const { previousResult, target, title } = runTarget(execution, newId);
     const response = await deps.send({
       body: scheduledTaskSendBody({
         admissionId: newId(), modelId: task.modelId, prompt: task.prompt, provider: task.provider, searchPlan, target,
         timeZone: task.timeZone, toolCalling: model.capabilities.toolCalling
       }),
       chatId: target.chatId,
-      occurrence: { occurrenceId: occurrence.id, taskId: occurrence.taskId },
+      // The revision read above fences preparation against a pause or edit made meanwhile.
+      occurrence: {
+        occurrenceId: occurrence.id, previousResult, taskGeneration: task.generation, taskId: occurrence.taskId,
+        taskRevision: task.revision
+      },
       userId: occurrence.userId
     });
     // The occurrence, not the HTTP outcome, says whether a run exists: admission links them atomically.
     const current = await deps.store.readOccurrence(occurrence.id);
     if (current?.state === "RUNNING" && current.runId) {
       log({ job_id: occurrence.id, outcome: "completed", run_id: current.runId, stage: "dispatch" });
-      if (target.kind === "new") {
-        await deps.renameChat({ chatId: target.chatId, title: task.title, userId: occurrence.userId }).catch(() =>
+      if (title !== null) {
+        await deps.renameChat({ chatId: target.chatId, title, userId: occurrence.userId }).catch(() =>
           log({ action: "skip", code: "chat_title_unavailable", job_id: occurrence.id, outcome: "failed", stage: "dispatch" }));
       }
       await drain(response.body);
