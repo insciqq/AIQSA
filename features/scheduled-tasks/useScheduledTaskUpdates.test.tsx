@@ -20,7 +20,7 @@ let account = 0;
 let visibility: DocumentVisibilityState = "visible";
 
 function listed(tasks: ScheduledTask[]): ScheduledTaskListResponse {
-  return { tasks, limits: { maxActive: 10, maxTotal: 50 }, emailAvailable: false };
+  return { tasks, limits: { maxActive: 10, maxActiveHourly: 3, maxTotal: 50 }, emailAvailable: false };
 }
 
 function setVisibility(next: DocumentVisibilityState) {
