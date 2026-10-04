@@ -9,6 +9,8 @@ import { decodeScheduledTaskCreateRequest, decodeScheduledTaskUpdateRequest } fr
 import { ScheduledTaskError, type ScheduledTaskStore } from "./store";
 
 export type ScheduledTaskHandlerDeps = Readonly<{
+  /** Wakes the runner after a change that may make an occurrence due. */
+  kick?: () => void;
   loadCatalog: ScheduledTaskCatalogLoader;
   now?: () => Date;
   resolveAuth: RequestAuthResolver;
@@ -26,6 +28,7 @@ const STATUS: Record<ScheduledTaskErrorCode, number> = {
   scheduled_task_limit: 409,
   scheduled_task_stale: 409,
   scheduled_task_not_found: 404,
+  scheduled_task_running: 409,
   scheduled_tasks_unavailable: 503
 };
 const TASK_ID = /^[A-Za-z0-9_-]{1,128}$/u;
@@ -77,7 +80,9 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
       const first = firstScheduledTaskRunAt(decoded.value.schedule, decoded.value.timeZone, now());
       if (!first.ok) return failure(first.code);
       await admitModel(userId, decoded.value);
-      return Response.json({ task: await deps.store.create(userId, decoded.value, first.nextRunAt) }, { status: 201, headers });
+      const task = await deps.store.create(userId, decoded.value, first.nextRunAt);
+      deps.kick?.();
+      return Response.json({ task }, { status: 201, headers });
     }),
 
     detail: (request: Request, taskId: string) => handle(request, "read", taskId, async (userId) => {
@@ -100,6 +105,14 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
       const task = await deps.store.update(userId, taskId, {
         draft: plan.draft, expectedRevision: decoded.value.expectedRevision, nextRunAt: plan.nextRunAt, status: plan.status
       });
+      deps.kick?.();
+      return Response.json({ task }, { headers });
+    }),
+
+    /** Queues a manual run now; the schedule and status stay as they are. */
+    runNow: (request: Request, taskId: string) => handle(request, "write", taskId, async (userId) => {
+      const task = await deps.store.requestRun(userId, taskId, now());
+      deps.kick?.();
       return Response.json({ task }, { headers });
     }),
 
