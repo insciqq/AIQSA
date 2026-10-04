@@ -77,6 +77,18 @@ describe("AIQSA converter", () => {
     expect(chat.chat.document.chat).toMatchObject({ activeLeafId: "m4", pinned: true, title: "Cats" });
   });
 
+  it("says how an answer without text ended, since imported messages are stored complete", async () => {
+    const base = exportDocument("Endings");
+    const messages = base.chat.messages.map((message) =>
+      message.id === "m3" ? { ...message, text: "" } : message.id === "m2" ? { ...message, status: "error" as const, text: " " } : message);
+    const output = await events([await file(pretty({ ...base, chat: { ...base.chat, messages } }), "endings.json")]);
+    const chat = output.find((event) => event.type === "chat");
+    if (chat?.type !== "chat") throw new Error("no chat");
+    expect(chat.chat.document.chat.messages.map((message) => message.text)).toEqual([
+      "Look at this\n\n_[Attachment not imported: photo\\_1.png]_", "_[Answer failed]_", "_[Answer stopped before any text]_", "Regenerated"
+    ]);
+  });
+
   it("imports a bulk tar.gz through its manifest, reading only listed documents", async () => {
     const empty = exportDocument("Empty", { activeLeafId: null, messages: [] });
     const archive = await buildTarGz([
