@@ -16,6 +16,10 @@ GPT, Claude, Gemini, DeepSeek and your own models in one private workspace, on y
 
 </div>
 
+
+https://github.com/user-attachments/assets/95ab8feb-95bc-4e99-9439-92b5cbb8fcbb
+
+
 ## Why AIQSA
 
 - **Every model in one place.** Connect OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, or any OpenAI-compatible server, including models running on your own network. Choose the model for each message; the whole team works in the same workspace.
