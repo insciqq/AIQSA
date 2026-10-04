@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 
 /**
  * Whether a user message is a scheduled task's prompt. The message carries
@@ -21,4 +21,30 @@ export function memoryScheduledPromptSql(chatId: string, messageId: Prisma.Sql):
     WHERE scheduled_prompt."chatId" = ${chatId}
       AND scheduled_prompt."scheduledTaskPrompt"
   ), false)`;
+}
+
+/**
+ * Whether a turn in a chat of this Memory mode may read Memory: any turn of
+ * an ordinary chat, and an answer to a scheduled task's prompt also in its
+ * excluded chat (exclusion keeps a task chat out of learning, not out of its
+ * own task's reads). A temporary chat never reads.
+ */
+export function memoryReadableChatMode(chatMemoryMode: string, scheduledPrompt: boolean): boolean {
+  return chatMemoryMode === "NORMAL" || (scheduledPrompt && chatMemoryMode === "EXCLUDED");
+}
+
+/**
+ * Whether a run answers a scheduled task's prompt. Such a run reads Memory
+ * without ever touching it: a task repeating every hour would otherwise make
+ * the facts it reads look used. A run that cannot be read counts as one.
+ */
+export async function memoryRunAnswersScheduledPrompt(
+  client: Pick<PrismaClient, "modelRun">,
+  input: Readonly<{ runId: string; userId: string }>
+): Promise<boolean> {
+  const run = await client.modelRun.findFirst({
+    select: { userMessage: { select: { scheduledTaskPrompt: true } } },
+    where: { id: input.runId, userId: input.userId }
+  });
+  return run?.userMessage.scheduledTaskPrompt !== false;
 }
