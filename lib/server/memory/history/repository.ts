@@ -36,6 +36,7 @@ import {
   type LockedMemorySourceChat,
   type MemorySourceSnapshot
 } from "../sourceState";
+import { memoryScheduledPromptSql } from "../scheduledPrompt";
 import {
   chunkMemoryRecallProjectionPage,
   MEMORY_HISTORY_CHUNKING_VERSION,
@@ -195,6 +196,8 @@ type HistoryPathMessageMetadata = Readonly<{
   id: string;
   parentMessageId: string | null;
   role: string;
+  /** A scheduled task's prompt or an answer to it: never Memory history. */
+  scheduledTurn: boolean;
   status: string;
   updatedAt: Date;
 }>;
@@ -293,7 +296,12 @@ async function loadHistoryPathMetadata(
     )
     SELECT
       "id", "parentMessageId", "role", "status", "createdAt", "updatedAt",
-      "depth"
+      "depth",
+      -- An answer follows its parent, the user message its runs answered.
+      ${memoryScheduledPromptSql(chatId, Prisma.sql`CASE "role"
+        WHEN 'user' THEN "id"
+        WHEN 'assistant' THEN "parentMessageId"
+      END`)} AS "scheduledTurn"
     FROM active_path
     ORDER BY "depth" DESC
   `);
@@ -369,7 +377,8 @@ function pathOrigin(role: string): Readonly<{
 async function loadHistoryAdmission(
   tx: MemoryTransaction,
   source: MemorySourceSnapshot,
-  now: Date
+  now: Date,
+  scheduledTurnMessageIds: readonly string[]
 ): Promise<HistoryAdmission> {
   const pathMessageIds = source.messages.map((message) => message.id);
   const [barriers, checkpoint, pauseIntervals] = await Promise.all([
@@ -453,9 +462,12 @@ async function loadHistoryAdmission(
           : []);
   const pauseExcludedMessageIds = source.messages.flatMap((message) =>
     memorySourceIsInsidePause(message.createdAt, pauseIntervals) ? [message.id] : []);
+  // A scheduled task's turns stay out whatever the chat's mode, so its
+  // prompt never becomes user testimony even after Memory is turned on.
   const excludedMessageIds = [
     ...suppressionExcludedMessageIds,
-    ...pauseExcludedMessageIds
+    ...pauseExcludedMessageIds,
+    ...scheduledTurnMessageIds
   ];
   const globalCutoff = memoryDestructiveSourceCutoff(barriers);
   const chatResumeCutoff = checkpoint?.resumeCreatedAtCutoff ?? null;
@@ -891,7 +903,8 @@ async function prepareWith(
     sourceMessageUpdatedAt: message.updatedAt.toISOString()
   }));
   const [admission, previous] = await Promise.all([
-    loadHistoryAdmission(tx, source, now),
+    loadHistoryAdmission(tx, source, now,
+      path.flatMap(({ id, scheduledTurn }) => scheduledTurn ? [id] : [])),
     loadIncrementalHistoryState(tx, source)
   ]);
   const previousIsCurrent = previous.checkpointPipelineVersion ===
