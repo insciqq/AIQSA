@@ -2298,7 +2298,9 @@ async function prepareRunWith(
   // Project, Assistant, Agent or Knowledge run, nor one without tool calling.
   // Frozen here: the settings the task takes from this run, never mutable chat
   // state read later, and only in the shape recovery decodes. The task reads
-  // Memory only when this run itself was admitted to read it.
+  // Memory only when this run itself was admitted to read it: an eligible
+  // chat, and the owner's Memory on (search admission, which every run that
+  // may create a task attempts, reads exactly that).
   const scheduledTaskSettings = !scheduledPromptAnswer && !project && !assistantRun &&
     !agentEnabled && !knowledgeRequested && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
@@ -2309,7 +2311,7 @@ async function prepareRunWith(
         searchEnabled: admissionPlan.searches.length > 0,
         toolsEnabled: ordinaryMcpSelection !== null && ordinaryMcpSelection.mode !== "off",
         workspaceEnabled: workspaceAdmissionPlan !== undefined,
-        memoryEnabled: memoryStandingEligible
+        memoryEnabled: memoryStandingEligible && memorySearch !== null
       }
     : undefined;
   const scheduledTaskTool = isScheduledTaskToolSettings(scheduledTaskSettings) ? scheduledTaskSettings : undefined;
