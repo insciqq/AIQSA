@@ -939,6 +939,13 @@ function validMcpSnapshot(value: unknown): boolean {
   return true;
 }
 
+/** Chat System Vision outside a Workspace: only an available plan, only for an
+ * answer model without vision. */
+function validChatVisionAnalysis(value: Record<string, unknown>): boolean {
+  return isRecord(value.visionAnalysis) && value.visionAnalysis.available === true &&
+    isRecord(value.modelCapabilities) && value.modelCapabilities.vision !== true;
+}
+
 function decodeProviderDispatchRecoveryRequest(
   value: unknown,
   identity: Readonly<{ chatId: string; modelId: string; provider: string; runId: string }>
@@ -968,7 +975,8 @@ function decodeProviderDispatchRecoveryRequest(
       value.knowledgeEvidencePackingVersion !== 2 && value.knowledgeEvidencePackingVersion !== 3 && value.knowledgeEvidencePackingVersion !== 4 && value.knowledgeEvidencePackingVersion !== 5 ||
     value.knowledgeSearchInstructionVersion !== undefined && value.knowledgeSearchInstructionVersion !== 2 && value.knowledgeSearchInstructionVersion !== 3 ||
     value.knowledgeQueryAnchorVersion !== undefined && value.knowledgeQueryAnchorVersion !== 2 ||
-    value.visionAnalysis !== undefined && (!value.workspace || !decodeAcceptedVisionAnalysisPlan(value.visionAnalysis)) ||
+    value.visionAnalysis !== undefined && (!decodeAcceptedVisionAnalysisPlan(value.visionAnalysis) ||
+      !value.workspace && !validChatVisionAnalysis(value)) ||
     value.workspaceCheckpoints !== undefined && (value.workspaceCheckpoints !== true || !value.workspace) ||
     value.workspaceCheckpointToolDescription !== undefined &&
       (value.workspaceCheckpoints !== true || !nonBlank(value.workspaceCheckpointToolDescription, 16_384)) ||
@@ -985,7 +993,7 @@ function decodeProviderDispatchRecoveryRequest(
     (value.artifactEdit !== undefined && (!decodeArtifactEdit(value.artifactEdit) || !Array.isArray(value.artifactReferences) ||
       !value.artifactReferences.some((reference) => isRecord(reference) && isRecord(value.artifactEdit) &&
         reference.artifactId === value.artifactEdit.artifactId && reference.versionId === value.artifactEdit.versionId))) ||
-    value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true && !value.workspace || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
+    value.imageReferences !== undefined && (!value.imagePlan && value.artifactTool !== true && !value.workspace && value.visionAnalysis === undefined || !Array.isArray(value.imageReferences) || value.imageReferences.length > 256 || value.imageReferences.some((reference) => !isRecord(reference) || !onlyKnownKeys(reference, new Set(["attachmentId", "messageId", "fileName", "origin"])) || !nonBlank(reference.attachmentId, 128) || !nonBlank(reference.messageId, 128) || !nonBlank(reference.fileName, 256) || !["upload", "generated"].includes(String(reference.origin)))) ||
     !validCapabilities(value.modelCapabilities) || !validWorkspace(value.workspace, identity.runId) ||
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
     (value.toolCallReader !== undefined && value.toolCallReader !== true) ||

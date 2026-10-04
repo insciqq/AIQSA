@@ -217,6 +217,15 @@ describe("run lifecycle v2 presentation", () => {
     expect(describeToolCallV2({ origin: "artifact", toolName: "read_artifact" }, "failed")).toBe("Artifact reading failed");
   });
 
+  it("names chat System Vision analysis without exposing the tool identifier", () => {
+    const call = { origin: "vision", serverName: "System Vision", toolName: "analyze_image" };
+    expect(toolActivityOriginV2(call)).toBe("vision");
+    expect(describeToolCallV2(call, "running")).toBe("Analyzing image");
+    expect(describeToolCallV2(call, "settled")).toBe("Analyzed image");
+    expect(describeToolCallV2(call, "failed")).toBe("Image analysis failed");
+    expect(describeToolCallV2(call, "cancelled")).toBe("Image analysis stopped");
+  });
+
   it("shows Workspace waiting before document work, and leaves a published answer complete", () => {
     expect(presentRunLifecycleV2(state({ status: "queued", runId: "next", workspacePreparation: true,
       pdfPreparation: [{ completedPages: 0, pageCount: null, phase: "checking", retryable: false,

@@ -294,7 +294,7 @@ export function AdminSystemRolesTable({
         }]}
         status={roleStatus(policy.visionModel ?? null)}
         statusLabel={policy.visionModel ? policy.visionModel.available ? "Model ready" : "Model unavailable" : "Not assigned"}
-        description="System model for image analysis."
+        description="System model for image analysis. It also answers image questions in chats for answer models without vision."
       >
         <AdminRolePicker
           busy={busy}

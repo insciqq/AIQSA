@@ -1,5 +1,5 @@
 import { checkpointOutputsTool, WORKSPACE_CHECKPOINT_GUIDANCE } from "../tools/checkpointOutputs";
-import { analyzeImageTool, visionAnalysisGuidance } from "../tools/analyzeImage";
+import { analyzeImageTools, visionAnalysisGuidance } from "../tools/analyzeImage";
 import { IMAGE_EDITING_GUIDANCE, imageGenerationTool, imageReferenceInstructions } from "../tools/imageGeneration";
 import { artifactTool, describeArtifactTool, readArtifactTool } from "../tools/artifact";
 import { getArtifactResourcePolicy } from "../artifacts/resourcePolicy";
@@ -168,6 +168,8 @@ const pdfTextUnavailableMessage =
   "No extractable text was found. Choose a model with native PDF support or remove this file.";
 const zeroEmittedPdfTextUnavailableMessage =
   "No PDF text could be retained within the configured limit. Choose a model with native PDF support or remove this file.";
+const KNOWLEDGE_IMAGE_REFUSAL =
+  "Knowledge answers can't use images with this model. Remove the image, choose a model that supports images, or ask without Knowledge.";
 
 /** The parameter dialect params are materialized and validated in for a model. */
 export function parameterDialect(adapterKind: CatalogAdapterKind, providerFamily: string): string {
@@ -1042,7 +1044,8 @@ function validateAttachmentCapabilities(
   attachments: ProviderAttachment[],
   capabilities: ProviderModelCapabilities,
   workspaceEnabled = false,
-  imageEditing = false
+  imageEditing = false,
+  systemVision = false
 ): { code: string; status: 400 } | null {
   const hasPdf = attachments.some((attachment) => attachment.kind === "pdf");
   const hasImage = attachments.some((attachment) => attachment.kind === "image");
@@ -1055,7 +1058,7 @@ function validateAttachmentCapabilities(
     return { code: "pdf_attachment_not_supported", status: 400 };
   }
 
-  if (hasImage && !workspaceEnabled && !capabilities.vision && !imageEditing) {
+  if (hasImage && !workspaceEnabled && !capabilities.vision && !imageEditing && !systemVision) {
     return { code: "image_attachment_not_supported", status: 400 };
   }
 
@@ -1962,11 +1965,36 @@ async function prepareRunWith(
     return failure("attachment_not_found", 400);
   }
 
+  // Knowledge answers are grounded on the question text and evidence only: an
+  // image a model without vision cannot read is refused, never silently ignored.
+  if (knowledgeRequested && !workspaceEnabled && modelCapabilities.vision !== true &&
+    attachments.some((attachment) => attachment.kind === "image")) {
+    return failure("knowledge_image_not_supported", 400, KNOWLEDGE_IMAGE_REFUSAL);
+  }
+  // The conversation path already ends with the current message; appending it
+  // again would list each of its images twice.
+  const currentReferenceMessageId = input.source.kind === "send" ? currentSendMessageId : input.source.source.userMessage.id;
+  const referenceMessages = contextMessages.some((message) => message.id === currentReferenceMessageId)
+    ? contextMessages
+    : [...contextMessages, { id: currentReferenceMessageId, role: "user" as const, content }];
+  const imageReferenceIds = [...new Set(referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks)))].slice(-256);
+  // Answer models without verified vision ask the separately assigned System
+  // Vision Model about conversation images on demand (chat System Vision).
+  // Workspace keeps its own form and Knowledge runs never admit it. Only an
+  // available plan is admitted in chat; nothing substitutes another model.
+  const chatVisionEligible = !workspaceEnabled && !knowledgeRequested && modelCapabilities.vision !== true &&
+    body?.tools !== "none" && modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true &&
+    (imageReferenceIds.length > 0 || Boolean(imagePlan));
+  const chatVisionResolution = chatVisionEligible ? await deps.vision?.resolve() : undefined;
+  const chatVisionPlan = chatVisionResolution?.available ? chatVisionResolution : undefined;
+
   const attachmentAccess = validateAttachmentCapabilities(
     attachments,
     pdfRoute ? { ...modelCapabilities, pdf: true } : modelCapabilities,
     workspaceEnabled,
-    imagePlan?.snapshot.model.capabilities.imageEditing === true
+    imagePlan?.snapshot.model.capabilities.imageEditing === true,
+    Boolean(chatVisionPlan)
   );
   if (attachmentAccess) {
     return failure(attachmentAccess.code, attachmentAccess.status);
@@ -1985,20 +2013,16 @@ async function prepareRunWith(
     );
   }
 
-  // The conversation path already ends with the current message; appending it
-  // again would list each of its images twice.
-  const currentReferenceMessageId = input.source.kind === "send" ? currentSendMessageId : input.source.source.userMessage.id;
-  const referenceMessages = contextMessages.some((message) => message.id === currentReferenceMessageId)
-    ? contextMessages
-    : [...contextMessages, { id: currentReferenceMessageId, role: "user" as const, content }];
-  const imageReferenceIds = [...new Set(referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks)))].slice(-256);
-  const imageRecords = (imagePlan || artifactToolAvailable || workspaceEnabled) && imageReferenceIds.length
+  const imageRecords = (imagePlan || artifactToolAvailable || workspaceEnabled || chatVisionPlan) && imageReferenceIds.length
     ? await deps.repository.loadAttachments(input.userId, imageReferenceIds, project?.projectId)
     : [];
   const imageReferences = referenceMessages.flatMap((message) => attachmentIdsFromContentBlocks(message.content.blocks).flatMap((id) => {
     const row = imageRecords.find((entry) => entry.id === id && entry.kind === "image" && entry.status === "ready");
     return row ? [{ attachmentId: id, messageId: message.id, fileName: row.fileName, origin: message.role === "assistant" ? "generated" as const : "upload" as const }] : [];
   })).slice(-256);
+  // Admitted only with something to analyze: a conversation image, or an
+  // image this run may generate. A text-only chat keeps its plain tool set.
+  const chatVision = chatVisionPlan && (imageReferences.length > 0 || imagePlan) ? chatVisionPlan : undefined;
   let hasWorkspaceIndexedFiles = false;
   let workspaceAdmissionPlan: WorkspaceRunAdmissionPlan | undefined;
   let workspaceTurnContract = "";
@@ -2058,21 +2082,22 @@ async function prepareRunWith(
 
   const workspaceCheckpoints = Boolean(workspaceAdmissionPlan && body?.tools !== "none");
   if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n") };
-  const visionAnalysis = workspaceAdmissionPlan && body?.tools !== "none" && modelCapabilities.toolCalling === true
+  const workspaceVision = workspaceAdmissionPlan && body?.tools !== "none" && modelCapabilities.toolCalling === true
     ? await deps.vision?.resolve() : undefined;
   // New Workspace runs use only the independently admitted Vision role. Direct
   // image flags remain decodable for already accepted execution and recovery.
-  if (visionAnalysis) prompt = { ...prompt, system: [prompt.system, visionAnalysisGuidance(visionAnalysis, false, {
+  if (workspaceVision) prompt = { ...prompt, system: [prompt.system, visionAnalysisGuidance(workspaceVision, false, {
     nativeCurrentImages: !agentEnabled && modelCapabilities.vision && attachments.some(file => file.kind === "image" && Boolean(file.base64Data || file.dataUrl)),
     hasIndexedFiles: hasWorkspaceIndexedFiles
   })].filter(Boolean).join("\n\n") };
+  const visionAnalysis = workspaceVision ?? chatVision;
   // Turn paths and chat facts follow the stable checkpoint and Vision guidance.
   if (workspaceTurnContract) prompt = { ...prompt, system: [prompt.system, workspaceTurnContract].filter(Boolean).join("\n\n") };
   if (imagePlan || imageReferences.length > 0) {
     prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n") };
   }
-  if (imagePlan || artifactToolAvailable) {
-    const imageGuidance = imageReferenceInstructions(imageReferences, modelCapabilities.vision === true);
+  if (imagePlan || artifactToolAvailable || chatVision) {
+    const imageGuidance = imageReferenceInstructions(imageReferences, modelCapabilities.vision === true, Boolean(chatVision));
     const artifactImageGuidance = artifactToolAvailable
       ? "When an artifact includes a conversation image, use its exact image_id as the file asset_ref. The server will verify ownership and copy the bytes; never use a URL, filename, or invented identifier."
       : "";
@@ -2296,7 +2321,7 @@ async function prepareRunWith(
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
-        ...(visionAnalysis ? [analyzeImageTool(visionAnalysis)] : []),
+        ...analyzeImageTools(baseNormalizedRequest),
         ...(imagePlan ? [imageGenerationTool(imagePlan)] : []),
         ...(baseNormalizedRequest.artifactTool ? [artifactTool(baseNormalizedRequest.artifactToolDescription), ...(artifactReferences?.length ? [readArtifactTool()] : [])] : []),
         ...plannedSearchTools,
