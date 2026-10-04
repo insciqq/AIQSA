@@ -14,8 +14,9 @@ const catalog: ScheduledTaskCatalog = {
 };
 const draft = {
   title: "Morning brief", prompt: "fixture-private-prompt", schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow",
-  modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false
+  modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false, chatMode: "new"
 } as const;
+const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } as const;
 
 function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
@@ -83,7 +84,12 @@ describe("scheduled tasks owner API", () => {
       [{ ...draft, timeZone: "Mars/Olympus" }, "scheduled_task_time_zone_invalid"],
       [{ ...draft, schedule: { kind: "once", date: "2026-10-04", time: "11:01" } }, "scheduled_task_once_in_past"],
       [{ ...draft, modelId: "model-gone" }, "scheduled_task_model_unavailable"],
-      [{ ...draft, modelId: "model-plain" }, "scheduled_task_search_unavailable"]
+      [{ ...draft, modelId: "model-plain" }, "scheduled_task_search_unavailable"],
+      [{ ...draft, chatMode: "fresh" }, "scheduled_task_invalid"],
+      [{ ...draft, chatMode: undefined }, "scheduled_task_invalid"],
+      [{ ...draft, schedule: { ...hourly, everyHours: 5 }, chatMode: "same" }, "scheduled_task_schedule_invalid"],
+      // Hourly tasks always continue in one chat.
+      [{ ...draft, schedule: hourly }, "scheduled_task_chat_mode_invalid"]
     ];
     for (const [body, error] of cases) {
       const response = await f.handlers.create(json("POST", body));
@@ -96,6 +102,11 @@ describe("scheduled tasks owner API", () => {
       ...draft, modelId: "model-plain", searchEnabled: false, schedule: { kind: "once", date: "2026-10-04", time: "11:02" }
     }));
     expect(accepted.status).toBe(201);
+    // 4 October 2026 is a Sunday: the first hourly run is Monday 09:00 in Moscow.
+    const hourlyTask = await f.handlers.create(json("POST", { ...draft, schedule: hourly, chatMode: "same" }));
+    expect(hourlyTask.status).toBe(201);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, schedule: hourly, chatMode: "same" },
+      new Date("2026-10-05T06:00:00.000Z"));
   });
 
   it("maps store limits and hides unexpected failures", async () => {
@@ -103,6 +114,9 @@ describe("scheduled tasks owner API", () => {
     f.store.create.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_limit"));
     const limited = await f.handlers.create(json("POST", draft));
     expect([limited.status, await limited.json()]).toEqual([409, { error: "scheduled_task_limit" }]);
+    f.store.create.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_hourly_limit"));
+    const hourlyLimited = await f.handlers.create(json("POST", { ...draft, schedule: hourly, chatMode: "same" }));
+    expect([hourlyLimited.status, await hourlyLimited.json()]).toEqual([409, { error: "scheduled_task_hourly_limit" }]);
     f.store.create.mockRejectedValueOnce(new Error(draft.prompt));
     const failed = await f.handlers.create(json("POST", draft));
     expect(failed.status).toBe(503);
@@ -174,6 +188,22 @@ describe("scheduled tasks owner API", () => {
     expect(lastWrite(claimed)).toMatchObject({ nextRunAt: undefined, status: "active" });
   });
 
+  it("changes the chat mode only explicitly and keeps hourly tasks in one chat", async () => {
+    const f = fixture();
+    await f.handlers.update(patch({ expectedRevision: 2, chatMode: "same" }), "task-1");
+    expect(lastWrite(f)).toMatchObject({ draft: { ...draft, chatMode: "same" }, nextRunAt: undefined, status: "active" });
+    // A new-chat task cannot become hourly without continuing in one chat.
+    const silent = await f.handlers.update(patch({ expectedRevision: 2, schedule: hourly }), "task-1");
+    expect([silent.status, await silent.json()]).toEqual([400, { error: "scheduled_task_chat_mode_invalid" }]);
+    await f.handlers.update(patch({ expectedRevision: 2, schedule: hourly, chatMode: "same" }), "task-1");
+    expect(lastWrite(f)).toMatchObject({ draft: { chatMode: "same", schedule: hourly }, nextRunAt: new Date("2026-10-05T06:00:00.000Z") });
+    const same = fixture(task({ chatMode: "same", schedule: hourly }));
+    const back = await same.handlers.update(patch({ expectedRevision: 2, chatMode: "new" }), "task-1");
+    expect(await back.json()).toEqual({ error: "scheduled_task_chat_mode_invalid" });
+    expect((await same.handlers.update(patch({ expectedRevision: 2, chatMode: "rotating" }), "task-1")).status).toBe(400);
+    expect(same.store.update).not.toHaveBeenCalled();
+  });
+
   it("reactivates a completed once task only for a new future schedule", async () => {
     const once = { kind: "once", date: "2026-10-01", time: "09:00" } as const;
     const f = fixture(task({ nextRunAt: null, schedule: once, status: "completed" }));
@@ -186,17 +216,24 @@ describe("scheduled tasks owner API", () => {
     expect(lastWrite(f)).toMatchObject({ nextRunAt: new Date("2026-10-12T06:00:00.000Z"), status: "active" });
   });
 
-  it("deletes and marks results seen for the owner only", async () => {
+  it("deletes and marks rendered results seen for the owner only", async () => {
     const f = fixture();
     const removed = await f.handlers.remove(new Request("http://localhost/api/me/scheduled-tasks/task-1", { method: "DELETE" }), "task-1");
     expect(removed.status).toBe(204);
     expect(f.store.delete).toHaveBeenCalledWith("owner", "task-1");
     f.store.delete.mockResolvedValueOnce(false);
     expect((await f.handlers.remove(new Request("http://localhost/x", { method: "DELETE" }), "task-2")).status).toBe(404);
-    expect((await f.handlers.markSeen(new Request("http://localhost/x", { method: "POST" }), "task-1")).status).toBe(204);
-    expect(f.store.markSeen).toHaveBeenCalledWith("owner", "task-1");
+    const seen = (body: unknown, id = "task-1") => f.handlers.markSeen(json("POST", body, `/${id}/seen`), id);
+    expect((await seen({ runIds: ["run-1", "run-2"] })).status).toBe(204);
+    expect(f.store.markSeen).toHaveBeenCalledWith("owner", "task-1", ["run-1", "run-2"]);
     f.store.markSeen.mockResolvedValueOnce(false);
-    expect((await f.handlers.markSeen(new Request("http://localhost/x", { method: "POST" }), "task-2")).status).toBe(404);
+    expect((await seen({ runIds: ["run-1"] }, "task-2")).status).toBe(404);
+    // Only named results: marking everything blindly could hide one that settled meanwhile.
+    for (const body of [{}, { runIds: [] }, { runIds: ["run-1"], all: true }]) {
+      const refused = await seen(body);
+      expect([refused.status, await refused.json()]).toEqual([400, { error: "scheduled_task_invalid" }]);
+    }
+    expect(f.store.markSeen).toHaveBeenCalledTimes(2);
   });
 
   it("queues a manual run now for the owner, refuses while one is open and wakes the runner", async () => {

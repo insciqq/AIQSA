@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  SCHEDULED_TASK_MAX_EXECUTING,
+  SCHEDULED_TASK_MAX_EXECUTING_PER_USER,
   classifySendRefusal,
   expiredPendingOutcome,
   linkedRunOutcome,
+  planClaimOverlap,
   planScheduledTaskClaim,
   planTaskSettlement,
+  settlementBaseline,
   settlementNotifiesOwner
 } from "./runnerPolicy";
 
 const daily = { kind: "daily", time: "09:00" } as const; // 06:00 UTC in Moscow
+const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } as const;
 const at = (iso: string) => new Date(iso);
 
 describe("claim planning", () => {
@@ -42,6 +47,21 @@ describe("claim planning", () => {
       .toEqual({ nextRunAt: null, occurrences: [{ missed: false, scheduledFor: instant }], pauseReason: null, status: "COMPLETED" });
     expect(planScheduledTaskClaim({ nextRunAt: instant, schedule: once, timeZone: "Europe/Moscow" }, at("2026-10-13T08:00:00Z")))
       .toMatchObject({ occurrences: [{ missed: true, scheduledFor: instant }], status: "COMPLETED" });
+  });
+
+  it("runs only the newest due hourly instant and records the older backlog quietly as one missed instant", () => {
+    // Moscow (+03:00): 06:00, 07:00 and 08:00 local were due by 08:30.
+    expect(planScheduledTaskClaim({ nextRunAt: at("2026-10-05T03:00:00Z"), schedule: hourly, timeZone: "Europe/Moscow" },
+      at("2026-10-05T05:30:00Z"))).toEqual({
+      nextRunAt: at("2026-10-05T06:00:00Z"), pauseReason: null, status: "ACTIVE",
+      occurrences: [{ missed: true, scheduledFor: at("2026-10-05T03:00:00Z") }, { missed: false, scheduledFor: at("2026-10-05T05:00:00Z") }]
+    });
+    // Down for two days: the newest instant still runs, never one per missed hour.
+    const plan = planScheduledTaskClaim({ nextRunAt: at("2026-10-03T03:00:00Z"), schedule: hourly, timeZone: "Europe/Moscow" },
+      at("2026-10-05T05:30:00Z"));
+    expect(plan.occurrences).toEqual([
+      { missed: true, scheduledFor: at("2026-10-03T03:00:00Z") }, { missed: false, scheduledFor: at("2026-10-05T05:00:00Z") }
+    ]);
   });
 
   it("records the due instant and pauses when the zone no longer resolves", () => {
@@ -86,11 +106,51 @@ describe("settlement bookkeeping", () => {
       .toEqual({ consecutiveFailures: 2, pauseReason: null });
   });
 
-  it("notifies the owner of every settlement except a skip caused by their own pause", () => {
-    expect(settlementNotifiesOwner({ reasonCode: "paused", state: "SKIPPED" })).toBe(false);
-    expect(settlementNotifiesOwner({ reasonCode: "missed", state: "SKIPPED" })).toBe(true);
-    expect(settlementNotifiesOwner({ reasonCode: "admission_failed", state: "FAILED" })).toBe(true);
-    expect(settlementNotifiesOwner({ reasonCode: null, state: "COMPLETED" })).toBe(true);
+  it("notifies the owner only of shown results and failures that paused the task", () => {
+    expect(settlementNotifiesOwner({ state: "COMPLETED", taskPaused: false })).toBe(true);
+    expect(settlementNotifiesOwner({ state: "FAILED", taskPaused: true })).toBe(true);
+    // Routine skips and failures that did not pause stay in the history.
+    expect(settlementNotifiesOwner({ state: "FAILED", taskPaused: false })).toBe(false);
+    expect(settlementNotifiesOwner({ state: "SKIPPED", taskPaused: false })).toBe(false);
+  });
+
+  it("makes only a completed result of the current generation the next same-chat baseline", () => {
+    const occurrence = { runId: "run-1", taskGeneration: 2, userMessageId: "user-1" };
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: { state: "COMPLETED" }, taskGeneration: 2 }))
+      .toEqual({ assistantMessageId: "answer-1", generation: 2, runId: "run-1", userMessageId: "user-1" });
+    // The prompt changed while the run executed: its result answers an older question.
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: { state: "COMPLETED" }, taskGeneration: 3 })).toBeNull();
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: { state: "FAILED" }, taskGeneration: 2 })).toBeNull();
+    expect(settlementBaseline({ assistantMessageId: null, occurrence, outcome: { state: "COMPLETED" }, taskGeneration: 2 })).toBeNull();
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence: { ...occurrence, userMessageId: null },
+      outcome: { state: "COMPLETED" }, taskGeneration: 2 })).toBeNull();
+  });
+});
+
+describe("claims over open runs", () => {
+  const now = at("2026-10-05T10:00:00Z");
+  const open = (overrides: Record<string, unknown>) => ({ id: "open-1", leaseExpiresAt: null, reasonCode: null, runId: null,
+    state: "PENDING", ...overrides });
+
+  it("skips a newly due instant while the previous run of a recurring task is still in progress", () => {
+    for (const running of [open({ runId: "run-1", state: "RUNNING" }), open({ leaseExpiresAt: at("2026-10-05T10:04:00Z") })]) {
+      expect(planClaimOverlap({ now, open: [running], recurring: true })).toEqual({ previousRunning: true, superseded: [] });
+    }
+    expect(planClaimOverlap({ now, open: [], recurring: true })).toEqual({ previousRunning: false, superseded: [] });
+    // A once task's only instant always queues.
+    expect(planClaimOverlap({ now, open: [open({ runId: "run-1", state: "RUNNING" })], recurring: false }).previousRunning).toBe(false);
+  });
+
+  it("replaces a pending occurrence that never got a run once the next instant arrives", () => {
+    expect(planClaimOverlap({ now, open: [open({}), open({ id: "busy", leaseExpiresAt: at("2026-10-05T09:00:00Z"),
+      reasonCode: "chat_busy", startedAt: at("2026-10-05T09:00:00Z") })], recurring: true })).toEqual({
+      previousRunning: false,
+      superseded: [{ id: "open-1", reasonCode: "superseded" }, { id: "busy", reasonCode: "chat_busy" }]
+    });
+  });
+
+  it("executes at most five scheduled runs installation-wide and one per owner", () => {
+    expect([SCHEDULED_TASK_MAX_EXECUTING, SCHEDULED_TASK_MAX_EXECUTING_PER_USER]).toEqual([5, 1]);
   });
 });
 

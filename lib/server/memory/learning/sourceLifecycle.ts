@@ -48,12 +48,14 @@ async function settledDirectUserMessageId(
   event: MemoryRetainedSourceMutationEvent
 ): Promise<string | null> {
   if (!event.settlement?.assistantMessageId) return null;
+  // A scheduled task's turn never teaches Memory, whatever the chat's mode.
   const run = await tx.modelRun.findFirst({
     select: { userMessageId: true },
     where: {
       assistantMessageId: event.settlement.assistantMessageId,
       chatId: event.snapshot.id,
       id: event.settlement.runId,
+      scheduledTaskId: null,
       status: "complete",
       userId: event.snapshot.userId
     }

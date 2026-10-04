@@ -265,10 +265,11 @@ const hydratedMessageSelect = {
   parentMessageId: true,
   provider: true,
   role: true,
-  // A user turn a scheduled task posted; the task's current title labels it.
+  // A user turn a scheduled task posted: the task's current title labels it,
+  // and its run's id and unread state let the viewer mark it seen.
   scheduledTaskOccurrences: {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { task: { select: { id: true, title: true } } },
+    select: { id: true, task: { select: { id: true, title: true } }, unseenAt: true },
     take: 1
   },
   status: true
@@ -747,7 +748,7 @@ function serializeHydratedMessage(
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0] ?? message.branchSourceModelRun ?? undefined;
   const followups = projectMessageFollowups(message);
-  const scheduledTask = message.scheduledTaskOccurrences?.[0]?.task;
+  const scheduledRun = message.scheduledTaskOccurrences?.[0];
   const artifactSummary = modelRun
     ? summarizeMessageRunArtifacts(
         modelRun,
@@ -788,7 +789,9 @@ function serializeHydratedMessage(
     parentMessageId: message.parentMessageId,
     provider: message.provider,
     role: message.role,
-    ...(scheduledTask ? { scheduledTask: { taskId: scheduledTask.id, title: scheduledTask.title } } : {}),
+    ...(scheduledRun ? { scheduledTask: {
+      taskId: scheduledRun.task.id, taskRunId: scheduledRun.id, title: scheduledRun.task.title, unseen: scheduledRun.unseenAt !== null
+    } } : {}),
     status: message.status,
     toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun, viewerUserId) : null,
     workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null

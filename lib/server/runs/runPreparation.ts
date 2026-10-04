@@ -149,7 +149,8 @@ import type {
   AcceptedSkillRun,
   ProjectRunAdmission,
   RunModelConfiguration,
-  RunRepository
+  RunRepository,
+  ScheduledOccurrenceAdmission
 } from "./runRepositoryContract";
 import {
   DEFAULT_TOOL_RUN_BUDGETS,
@@ -239,6 +240,35 @@ async function carriedContextSummary(input: Readonly<{
   return null;
 }
 
+/**
+ * The earlier turns a scheduled run's model sees: only the task's previous
+ * shown result (its user message and final answer) while both still lie, in
+ * order, on the path the run appends to; otherwise none, as for a first run.
+ * Turns the user wrote between runs, follow-ups and older results stay out,
+ * so the context is flat however long the task's chat grows.
+ */
+function scheduledRunContext(
+  path: readonly ProviderConversationMessage[],
+  previousResult: ScheduledOccurrenceAdmission["previousResult"]
+): ProviderConversationMessage[] {
+  if (!previousResult) return [];
+  const selected = path.filter((message) =>
+    message.id === previousResult.userMessageId || message.id === previousResult.assistantMessageId);
+  return selected.length === 2 && selected[0]!.id === previousResult.userMessageId && selected[0]!.role === "user" &&
+    selected[1]!.role === "assistant" ? selected : [];
+}
+
+/** A scheduled run's frozen tool history follows its context: only the previous result's turn. */
+function scheduledRunToolHistory(history: ToolHistorySnapshot, context: readonly ProviderConversationMessage[]): ToolHistorySnapshot {
+  const [user, answer] = context;
+  if (!user || !answer) return { version: TOOL_HISTORY_VERSION, turns: [] };
+  return {
+    version: history.version,
+    turns: history.turns.filter((turn) => turn.userMessageId === user.id || turn.turnMessageId === answer.id),
+    ...(history.unavailable ? { unavailable: true as const } : {})
+  };
+}
+
 export type RunPreparationDeps = Readonly<{
   memorySearchAdmission?: Readonly<{ admit(userId: string, assistantId?: string | null): Promise<MemorySearchSnapshot | null> }>;
   artifacts?: import("../artifacts/service").ArtifactService;
@@ -322,6 +352,8 @@ export type SendRunPreparationSource = Readonly<{
   draftProjectChat?: boolean;
   draftPersonalChat?: boolean;
   kind: "send";
+  /** Server-only: the scheduled task occurrence this send admits. */
+  scheduledOccurrence?: ScheduledOccurrenceAdmission;
 }>;
 
 export type RegenerateRunPreparationSource = Readonly<{
@@ -1197,6 +1229,8 @@ async function prepareRunWith(
     : DEFAULT_TOOL_RUN_BUDGETS;
   const observationPolicy = normalizeToolObservationPolicy(toolBudgets.toolObservationPolicy);
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
+  // A scheduled task's send: a flat selected context and no Personal Memory, whatever the chat's mode.
+  const scheduledOccurrence = input.source.kind === "send" ? input.source.scheduledOccurrence : undefined;
   if (body?.agentEnabled !== undefined && typeof body.agentEnabled !== "boolean") return failure("agent_selection_invalid", 400);
   const agentEnabled = body?.agentEnabled === true;
   const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
@@ -1740,7 +1774,7 @@ async function prepareRunWith(
     responseReminder: normalizedPrompt.responseReminder ?? renderedInstructions?.responseReminder ?? "",
     memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
   };
-  const sendContext =
+  const branchContext =
     input.source.kind === "send"
       ? input.source.draftProjectChat || input.source.draftPersonalChat
         ? []
@@ -1750,9 +1784,13 @@ async function prepareRunWith(
             input.source.chat.activeLeafMessageId
           )
       : null;
-  if (input.source.kind === "send" && !sendContext) {
+  if (input.source.kind === "send" && !branchContext) {
     return failure("active_leaf_changed", 409);
   }
+  // The new turn still appends to the active leaf; only the model's view is selected.
+  const sendContext = branchContext && scheduledOccurrence
+    ? scheduledRunContext(branchContext, scheduledOccurrence.previousResult)
+    : branchContext;
   const conversationMessages: ProviderConversationMessage[] =
     input.source.kind === "send"
       ? [
@@ -2080,7 +2118,8 @@ async function prepareRunWith(
   let artifactFocus: NormalizedRunRequest["artifactFocus"];
   let artifactCompactSystem: string | undefined;
   const beforeArtifactSystem = prompt.system;
-  if (artifactToolAvailable && deps.artifacts) {
+  // A scheduled run's context is its selection alone: the chat's other artifacts stay out of it.
+  if (artifactToolAvailable && deps.artifacts && !scheduledOccurrence) {
     const artifactContext = await deps.artifacts.contextForChat({ chatId: chat.id, ownerUserId: input.userId,
       ...(artifactEdit ? { requiredArtifactId: artifactEdit.artifactId } : {}) }).catch(() => []);
     if (artifactEdit && !artifactContext.some((artifact) =>
@@ -2156,15 +2195,19 @@ async function prepareRunWith(
     : input.source.source.userMessage.id;
   // A failed or slow history read never refuses the message: the run then
   // freezes that the history could not be loaded (content-free log), and
-  // every request of it says so instead of implying no earlier calls.
-  const toolHistory: ToolHistorySnapshot = await (deps.repository.loadToolHistory?.({ chatId: chat.id,
-    leafMessageId: toolHistoryLeafMessageId, userId: input.userId }) ?? null)?.catch((error: unknown) => {
+  // every request of it says so instead of implying no earlier calls. A
+  // scheduled run reads it only for its previous result's turn.
+  const historyRead = !scheduledOccurrence || (sendContext?.length ?? 0) > 0
+    ? deps.repository.loadToolHistory?.({ chatId: chat.id, leafMessageId: toolHistoryLeafMessageId, userId: input.userId })
+    : undefined;
+  const branchToolHistory: ToolHistorySnapshot = await historyRead?.catch((error: unknown) => {
     logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
       code: "tool_history_unavailable", prisma_code: databaseFailureCode(error) });
     return { version: TOOL_HISTORY_VERSION, turns: [], unavailable: true as const };
   }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
+  const toolHistory = scheduledOccurrence ? scheduledRunToolHistory(branchToolHistory, sendContext ?? []) : branchToolHistory;
   const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
-  const memoryStandingEligible = !project && !agent && resolvedChatMode.mode === "NORMAL" &&
+  const memoryStandingEligible = !project && !agent && !scheduledOccurrence && resolvedChatMode.mode === "NORMAL" &&
     !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content));
   const memorySearchAdmission = memoryStandingEligible && body?.tools !== "none" &&
     modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
@@ -2209,9 +2252,11 @@ async function prepareRunWith(
     context: { messages: contextMessages, mode: "branch_path" },
     // Every non-Agent run compacts by notes before anything leaves its
     // context, whatever Knowledge, Memory search, Observation or tool support
-    // it has; Codex owns Agent context.
+    // it has; Codex owns Agent context. A scheduled run's selected context is
+    // no branch prefix: it carries no branch notes (no leaf to reuse them from).
     ...(!agent ? { contextCompactionPolicy: conversationContextPolicy({
-      leafMessageId: input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
+      leafMessageId: scheduledOccurrence ? null
+        : input.source.kind === "send" ? input.source.chat.activeLeafMessageId : input.source.source.userMessage.id,
       messages: contextMessages
     }) } : {}),
     ...(knowledgeRequested ? {

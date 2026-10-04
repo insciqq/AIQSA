@@ -1533,7 +1533,9 @@ export function createPrismaRunToolLoopOperations(
       // a summary source; Knowledge purge scrubs their notes). Settled runs
       // qualify; a failure that recovery may still resume qualifies only
       // through its committed receipt for exactly the checkpoint notes:
-      // committed notes are final even when the run later failed.
+      // committed notes are final even when the run later failed. A scheduled
+      // task's run summarizes only its selected context, never the branch
+      // prefix, so its notes are never carried.
       const rows = await prismaClient.$queryRaw<Array<{
         assistantMessageId: string | null;
         compaction: unknown;
@@ -1561,7 +1563,7 @@ export function createPrismaRunToolLoopOperations(
           FROM "answers" AS a
           INNER JOIN "ModelRun" AS r ON r."assistantMessageId" = a."id"
           WHERE r."chatId" = ${input.chatId} AND r."userId" = ${input.userId}
-            AND r."status" IN ('complete', 'cancelled', 'error')
+            AND r."status" IN ('complete', 'cancelled', 'error') AND r."scheduledTaskId" IS NULL
             AND r."toolLoopState" -> 'contextCompaction' -> 'summary' IS NOT NULL
             AND (NOT ${activeToolLoopRunSql("r")} OR COALESCE(
               r."toolLoopState" -> 'contextCompaction' -> 'summaryAttempts' @> jsonb_build_array(jsonb_build_object(
