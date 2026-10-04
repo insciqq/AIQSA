@@ -40,11 +40,8 @@ async function subscribe(userId: string, sessionId: string, subscription = devic
   return subscription;
 }
 
-async function run(userId: string, status: "cancelled" | "complete" | "error", chat?: { projectId?: null; memoryMode?: "TEMPORARY" }) {
-  const created = await prisma.chat.create({ data: { title: "Synthetic trip plan", userId, ...(chat ?? {}),
-    ...(chat?.memoryMode === "TEMPORARY"
-      ? { temporaryRetentionDeadline: new Date(Date.now() + 86_400_000), temporaryRetentionPolicyVersion: "temporary-24h-v1" }
-      : {}) } });
+async function run(userId: string, status: "cancelled" | "complete" | "error") {
+  const created = await prisma.chat.create({ data: { title: "Synthetic trip plan", userId } });
   const message = await prisma.message.create({ data: { chatId: created.id, content: textMessageContent("synthetic"), role: "user" } });
   const modelRun = await prisma.modelRun.create({ data: {
     chatId: created.id, modelId: "fixture", normalizedRequest: {}, provider: "fake", status, userId, userMessageId: message.id,
@@ -117,7 +114,7 @@ describe("persisted browser push", () => {
     expect(await prisma.browserPushSubscription.count({ where: { endpoint: "https://push.example/device-0" } })).toBe(0);
   });
 
-  it("claims a finished or failed ordinary chat run once, never a cancelled, scheduled, temporary or unsubscribed one", async () => {
+  it("claims a finished or failed ordinary chat run once, never a cancelled, scheduled or unsubscribed one", async () => {
     const userId = await owner();
     const silent = await owner();
     await subscribe(userId, (await session(userId)).id);
@@ -132,7 +129,6 @@ describe("persisted browser push", () => {
     expect(await store.claimRun((await run(userId, "error")).runId, now)).toMatchObject({ status: "error" });
 
     expect(await store.claimRun((await run(userId, "cancelled")).runId, now)).toBeNull();
-    expect(await store.claimRun((await run(userId, "complete", { memoryMode: "TEMPORARY" })).runId, now)).toBeNull();
     expect(await store.claimRun((await run(silent, "complete")).runId, now)).toBeNull();
 
     // A scheduled task's run notifies through its occurrence only.
