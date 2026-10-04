@@ -6,7 +6,6 @@ import {
   type ScheduledTask,
   type ScheduledTaskLimits
 } from "@/lib/contracts/scheduledTasks";
-import { isScheduledTaskNews } from "./scheduledTaskPresentation";
 import { listScheduledTasks, ScheduledTaskApiError } from "./scheduledTasksApi";
 
 /**
@@ -59,21 +58,18 @@ export function activateScheduledTasksAccount(accountId: string | null): void {
 }
 
 /**
- * Tasks with news that arrived since the previous read. The server decides
- * which settlements are news (`ScheduledTaskRun.unseen`): its unread
- * aggregate turning on is the signal, so a monitoring check with no update
- * and a repeated check that could not reach a source never count. While an
- * older result is still unread the aggregate cannot tell, and the newest
- * run's own outcome decides (`isScheduledTaskNews`), so a later routine skip
- * or failure never looks new.
+ * Tasks whose newest run settled since the previous read with news. The
+ * server decides which settlements are news (`ScheduledTaskLastRun.unseen`),
+ * so a monitoring check with no update, a repeated check that could not reach
+ * a source and a routine skip or failure never count, also while an older
+ * result is still unread. A task new to the list counts when its newest run
+ * is unread.
  */
 export function newlyFinishedScheduledTasks(previous: readonly ScheduledTask[], next: readonly ScheduledTask[]): ScheduledTask[] {
   const before = new Map(previous.map((task) => [task.id, task]));
   return next.filter((task) => {
-    if (!task.unseenResult || !task.lastRun) return false;
-    const old = before.get(task.id);
-    if (!old || !old.unseenResult) return true;
-    return old.lastRun?.finishedAt !== task.lastRun.finishedAt && isScheduledTaskNews(task);
+    if (!task.lastRun?.unseen) return false;
+    return before.get(task.id)?.lastRun?.finishedAt !== task.lastRun.finishedAt;
   });
 }
 
