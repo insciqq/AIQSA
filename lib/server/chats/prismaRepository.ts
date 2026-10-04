@@ -141,6 +141,7 @@ import type {
 } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
 import { activityName, toolActivityDescriptors, skillToolActivityFacts, memorySearchActivityFacts } from "../tools/activityDescriptors";
+import { fetchUrlActivityFacts } from "../tools/fetchUrlPlan";
 import { acceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
@@ -1129,6 +1130,7 @@ export function summarizeMessageRunToolActivity(
     return {
       ...(details ? { details } : {}),
       ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
+      ...(descriptor.origin === "web_fetch" ? fetchUrlActivityFacts(call.toolName, call.arguments, call.result) : {}),
       ...memorySearch,
       ...(duration !== null && duration >= 0 ? { durationMs: duration } : {}),
       origin: descriptor.origin,

@@ -6,8 +6,9 @@ import {
 import type { Readable } from "node:stream";
 import type { StructuredDocumentFormat } from "../../domain/uploadFormats";
 import { applicationRootPath } from "../runtimeModulePath";
-import { withPdfWorkerAdmission } from "../uploads/pdfWorkerAdmission";
+import { withPageParserAdmission, withPdfWorkerAdmission } from "../uploads/pdfWorkerAdmission";
 import type { TextDocumentExtractionResult } from "../uploads/textDocuments";
+import { PAGE_TITLE_MAX_CHARACTERS, type ExtractedPage } from "../webFetch/pageKinds";
 import { DocumentParserError } from "./errors";
 import { SPREADSHEET_DEFAULT_MAX_CHARACTERS } from "./spreadsheetLimits";
 import type { DocumentParserEngine, ParsedDocument } from "./types";
@@ -19,6 +20,15 @@ const ISOLATED_PARSER_MEMORY_BUDGET_BYTES = 1_024 * 1_024 * 1_024;
 const CHILD_ENTRY = "lib/server/parsing/isolatedParserChild.ts";
 const OUTPUT_BASE_BYTES = 64 * 1_024 * 1_024;
 const OUTPUT_BYTES_PER_CHARACTER = 16;
+/**
+ * A page read waits on an answer and holds the page slot: its parse is
+ * bounded far below a document's. Real pages finish within a few seconds,
+ * process start included.
+ */
+const PAGE_PARSER_TIMEOUT_MS = 10_000;
+const PAGE_PARSER_MEMORY_BUDGET_BYTES = 512 * 1_024 * 1_024;
+const PAGE_OUTPUT_BASE_BYTES = 64 * 1_024;
+const PAGE_CONTENT_KINDS: ReadonlySet<unknown> = new Set(["html", "json", "markdown", "text"]);
 const EXIT_WAIT_MS = 5_000;
 const MAX_TIMER_MS = 2_147_483_647;
 const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin";
@@ -231,6 +241,8 @@ function runIsolatedChild(run: IsolatedRun): Promise<unknown> {
 
 function isolatedParse(
   input: Readonly<{
+    /** The process slot the parse holds; document parsing shares the local PDF memory slot. */
+    admission?: typeof withPdfWorkerAdmission;
     bytes: Buffer;
     engine: DocumentParserEngine;
     maxOutputBytes: number;
@@ -253,8 +265,8 @@ function isolatedParse(
     timeoutMs: positiveLimit(options.timeoutMs, ISOLATED_PARSER_TIMEOUT_MS, MAX_TIMER_MS)
   };
   if (input.signal?.aborted) return Promise.reject(abortReason(input.signal));
-  // Share the local PDF memory slot; the deadline starts only after admission.
-  return withPdfWorkerAdmission(() => runIsolatedChild(run), input.signal);
+  // The deadline starts only after admission.
+  return (input.admission ?? withPdfWorkerAdmission)(() => runIsolatedChild(run), input.signal);
 }
 
 function everyRecord(
@@ -348,4 +360,58 @@ export async function extractHtmlTextInIsolation(
     value.text.length > maxChars || typeof value.truncated !== "boolean"
   ) throw new DocumentParserError("parser_invalid_output", "inline");
   return { kind: "html", text: value.text, truncated: value.truncated };
+}
+
+function extractedPage(value: unknown, maxCharacters: number): ExtractedPage | null {
+  const page = isRecord(value) && "page" in value ? value.page : undefined;
+  if (page === null) return null;
+  if (
+    !isRecord(page) || !PAGE_CONTENT_KINDS.has(page.kind) ||
+    typeof page.text !== "string" || page.text.length > maxCharacters ||
+    (page.title !== null && (typeof page.title !== "string" || page.title.length > PAGE_TITLE_MAX_CHARACTERS)) ||
+    typeof page.truncated !== "boolean"
+  ) throw new DocumentParserError("parser_invalid_output", "inline");
+  return {
+    kind: page.kind as ExtractedPage["kind"],
+    text: page.text,
+    title: page.title as string | null,
+    truncated: page.truncated
+  };
+}
+
+/**
+ * Extracts one fetched web page's bounded text in the same disposable,
+ * resource-limited process: a hostile page can exhaust only that process's
+ * CPU, memory and deadline, never the application's event loop. Page parses
+ * hold their own process slot, never the document one. Null when the body is
+ * not a readable kind.
+ */
+export async function extractWebPageInIsolation(
+  input: Readonly<{
+    body: Uint8Array;
+    /** The Content-Type header value, charset included; null when the response had none. */
+    contentType: string | null;
+    finalUrl: string;
+    maxCharacters: number;
+    signal?: AbortSignal;
+  }>,
+  options: IsolatedParserOptions = {}
+): Promise<ExtractedPage | null> {
+  const maxCharacters = Math.max(1, Math.floor(input.maxCharacters));
+  const value = await isolatedParse({
+    admission: withPageParserAdmission,
+    bytes: Buffer.from(input.body.buffer, input.body.byteOffset, input.body.byteLength),
+    engine: "inline",
+    maxOutputBytes: PAGE_OUTPUT_BASE_BYTES +
+      OUTPUT_BYTES_PER_CHARACTER * (maxCharacters + PAGE_TITLE_MAX_CHARACTERS),
+    request: {
+      byteLength: input.body.byteLength,
+      contentType: input.contentType ?? "",
+      finalUrl: input.finalUrl,
+      maxCharacters,
+      op: "page"
+    },
+    ...(input.signal ? { signal: input.signal } : {})
+  }, { memoryBudgetBytes: PAGE_PARSER_MEMORY_BUDGET_BYTES, timeoutMs: PAGE_PARSER_TIMEOUT_MS, ...options });
+  return extractedPage(value, maxCharacters);
 }

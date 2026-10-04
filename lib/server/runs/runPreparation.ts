@@ -96,6 +96,14 @@ import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { isScheduledTaskToolSettings, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
+import {
+  FETCH_URL_LIMITS,
+  fetchUrlAuthoringMessages,
+  fetchUrlToolsForRequest,
+  userAuthoredFetchUrlDigests,
+  type FetchUrlPlan
+} from "../tools/fetchUrlPlan";
+import { isFetchUrlDigest } from "../webFetch/urls";
 import { readToolCallTool } from "../tools/readToolCall";
 import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { insertToolHistory, type ToolHistoryProjection } from "./toolHistory";
@@ -199,6 +207,8 @@ type RunPreparationRepository = Pick<
   | "loadBranchContextCheckpoints"
   | "loadKnowledgeFullContextPassages"
   | "loadProjectAssistantRowContext"
+  /** Without it only the current message's links are authorized for `fetch_url`. */
+  | "loadScheduledPromptMessageIds"
   | "loadToolHistory"
   | "projectToolHistory"
 >>;
@@ -2297,6 +2307,36 @@ async function prepareRunWith(
       }
     : undefined;
   const scheduledTaskTool = isScheduledTaskToolSettings(scheduledTaskSettings) ? scheduledTaskSettings : undefined;
+  // One page reader for every tool-calling model, never an Agent run or a
+  // Project with external tools off. Frozen here: the links user-authored text
+  // on this branch authorizes (never a scheduled prompt's), or a scheduled
+  // run's task snapshot, read with the task revision the link fences.
+  const fetchUrlOffered = !agentEnabled && body?.tools !== "none" && (!project || project.policy.externalToolsEnabled) &&
+    modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  let fetchUrlPlan: FetchUrlPlan | undefined;
+  if (fetchUrlOffered && scheduledOccurrence) {
+    fetchUrlPlan = { version: 1, userUrlDigests: [], taskUrlDigests: (scheduledOccurrence.promptUrlDigests ?? [])
+      .filter(isFetchUrlDigest).slice(0, FETCH_URL_LIMITS.authorizedUrls) };
+  } else if (fetchUrlOffered) {
+    const storedIds = fetchUrlAuthoringMessages(conversationMessages).map((message) => message.id)
+      .filter((id) => id !== currentSendMessageId);
+    let promptIds: ReadonlySet<string>;
+    try {
+      // Without the marks, only the current message (never a stored prompt) authorizes links.
+      promptIds = deps.repository.loadScheduledPromptMessageIds
+        ? await deps.repository.loadScheduledPromptMessageIds({ chatId: chat.id, messageIds: storedIds, userId: input.userId })
+        : new Set(storedIds);
+    } catch (error) {
+      logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
+        code: "fetch_url_authority_unavailable", prisma_code: databaseFailureCode(error) });
+      promptIds = new Set(storedIds);
+    }
+    if (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt) {
+      promptIds = new Set([...promptIds, input.source.source.userMessage.id]);
+    }
+    fetchUrlPlan = { version: 1, userUrlDigests: userAuthoredFetchUrlDigests(conversationMessages, promptIds) };
+  }
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
@@ -2320,6 +2360,7 @@ async function prepareRunWith(
     ...(toolCallReader ? { toolCallReader: true as const } : {}),
     ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
     ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
+    ...(fetchUrlPlan ? { fetchUrl: fetchUrlPlan } : {}),
     toolHistory,
     attachmentIds,
     chatId: chat.id,
@@ -2409,6 +2450,7 @@ async function prepareRunWith(
     ...(baseNormalizedRequest.toolCallReader ? [readToolCallTool] : []),
     ...(baseNormalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
     ...scheduledTaskToolsForRequest(baseNormalizedRequest),
+    ...fetchUrlToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),

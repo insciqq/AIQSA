@@ -1,4 +1,5 @@
 import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from "./memorySearchActivity";
+import { decodeFetchUrlTarget, isFetchUrlActivityOutcome, isFetchUrlHttpStatus, type FetchUrlActivityOutcome } from "./fetchUrlActivity";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "./imageGeneration";
@@ -269,17 +270,26 @@ export type ThreadToolActivityOrigin =
   | "session"
   | "skill"
   | "tool"
+  | "web_fetch"
   | "web_search"
   | "workspace";
 
 export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolActivityOrigin {
   return value === "artifact" || value === "image" || value === "discovery" || value === "knowledge" || value === "mcp" ||
-    value === "memory" || value === "session" || value === "skill" || value === "tool" ||
+    value === "memory" || value === "session" || value === "skill" || value === "tool" || value === "web_fetch" ||
     value === "web_search" || value === "workspace";
 }
 
 export type ThreadToolActivityCall = {
   details?: { roundIndex: number; ordinal: number };
+  /** `web_fetch` only: the HTTP status of a `fetch_http_status` outcome. */
+  fetchHttpStatus?: number;
+  /** `web_fetch` only: the settled outcome (`read` or a refusal/failure code). */
+  fetchOutcome?: FetchUrlActivityOutcome;
+  /** `web_fetch` only: a scheduled run refused a link its task does not allow; the owner edits the task. */
+  fetchScheduled?: true;
+  /** `web_fetch` only: the page's "host/path", never its scheme, query or content. */
+  fetchTarget?: string;
   memorySearchCall?: number;
   memorySearchOutcome?: MemorySearchActivityOutcome;
   skillId?: string;
@@ -1175,6 +1185,14 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
       ...(candidate.origin === "skill" && typeof candidate.skillName === "string" && candidate.skillName.length <= 160 ? { skillName: candidate.skillName } : {}),
       ...(candidate.origin === "skill" && typeof candidate.skillPath === "string" && candidate.skillPath.length <= 256 ? { skillPath: candidate.skillPath } : {}),
       ...(typeof durationMs === "number" ? { durationMs } : {}),
+      ...(candidate.origin === "web_fetch" ? {
+        ...(decodeFetchUrlTarget(candidate.fetchTarget) ? { fetchTarget: decodeFetchUrlTarget(candidate.fetchTarget)! } : {}),
+        ...(isFetchUrlActivityOutcome(candidate.fetchOutcome) ? { fetchOutcome: candidate.fetchOutcome } : {}),
+        ...(candidate.fetchOutcome === "fetch_url_not_in_conversation" && candidate.fetchScheduled === true
+          ? { fetchScheduled: true as const } : {}),
+        ...(candidate.fetchOutcome === "fetch_http_status" && isFetchUrlHttpStatus(candidate.fetchHttpStatus)
+          ? { fetchHttpStatus: candidate.fetchHttpStatus } : {})
+      } : {}),
       ...(candidate.origin !== undefined ? { origin: candidate.origin } : {}),
       round,
       ...(serverName ? { serverName } : {}),
