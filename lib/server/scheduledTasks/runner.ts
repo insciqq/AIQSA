@@ -13,6 +13,7 @@ import {
   SCHEDULED_TASK_MAX_EXECUTING_PER_USER,
   classifySendRefusal,
   pausingOutcome,
+  settlementNotifiesOwner,
   type ScheduledTaskOutcome
 } from "./runnerPolicy";
 import type { ScheduledTaskExecution, ScheduledTaskRunnerStore, ScheduledTaskSettlement } from "./runnerStore";
@@ -34,6 +35,11 @@ export type ScheduledTaskRunnerDeps = Readonly<{
 }>;
 
 const BATCH = 50;
+/**
+ * Result emails waiting for the one sending slot. Beyond this a burst drops
+ * its emails (they are best effort) instead of growing without bound.
+ */
+const EMAIL_QUEUE_LIMIT = 200;
 
 /** Content-free: occurrence and run identities, stable codes and counts only. */
 function log(fields: Readonly<{
@@ -78,6 +84,34 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
   const newId = deps.newId ?? randomUUID;
   const background = deps.background ?? ((work) => work());
   const inFlight = new Map<string, Promise<void>>();
+  const emailQueue: string[] = [];
+  let emailing: Promise<void> | null = null;
+
+  async function sendResultEmail(occurrenceId: string, sendEmail: NonNullable<ScheduledTaskRunnerDeps["sendEmail"]>): Promise<void> {
+    try {
+      // Best effort and at most once: the claim is recorded before sending.
+      const notification = await deps.store.claimNotification(occurrenceId, clock());
+      if (notification) await sendEmail(scheduledTaskResultEmail({ ...notification, appBaseUrl: deps.appBaseUrl }));
+    } catch (error) {
+      log({ action: "skip", code: "email_repository_failed", job_id: occurrenceId, outcome: "failed",
+        prisma_code: databaseFailureCode(error), stage: "release" });
+    }
+  }
+
+  /**
+   * Sends queued result emails one at a time outside every tick and admission,
+   * so slow SMTP never delays a run and a burst holds at most one slot of the
+   * shared SMTP gate that sign-in and verification emails also use.
+   */
+  function pumpEmails(): void {
+    const sendEmail = deps.sendEmail;
+    const occurrenceId = emailing || !sendEmail ? undefined : emailQueue.shift();
+    if (!sendEmail || occurrenceId === undefined) return;
+    emailing = background(() => sendResultEmail(occurrenceId, sendEmail)).catch(() => undefined).finally(() => {
+      emailing = null;
+      pumpEmails();
+    });
+  }
 
   async function notify(settlements: readonly ScheduledTaskSettlement[]): Promise<void> {
     for (const settlement of settlements) {
@@ -87,16 +121,14 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
         ...(settlement.state === "COMPLETED" ? { outcome: "completed" as const }
           : settlement.state === "SKIPPED" ? { outcome: "skipped" as const } : { action: "fail" as const, outcome: "failed" as const })
       });
-      if (!deps.sendEmail) continue;
-      try {
-        // Best effort and at most once: the claim is recorded before sending.
-        const notification = await deps.store.claimNotification(settlement.occurrenceId, clock());
-        if (notification) await deps.sendEmail(scheduledTaskResultEmail({ ...notification, appBaseUrl: deps.appBaseUrl }));
-      } catch (error) {
-        log({ action: "skip", code: "email_repository_failed", job_id: settlement.occurrenceId, outcome: "failed",
-          prisma_code: databaseFailureCode(error), stage: "release" });
+      if (!deps.sendEmail || !settlementNotifiesOwner(settlement)) continue;
+      if (emailQueue.length >= EMAIL_QUEUE_LIMIT) {
+        log({ action: "skip", code: "email_queue_full", job_id: settlement.occurrenceId, outcome: "skipped", stage: "release" });
+        continue;
       }
+      emailQueue.push(settlement.occurrenceId);
     }
+    pumpEmails();
   }
 
   async function settlePending(execution: ScheduledTaskExecution, outcome: ScheduledTaskOutcome): Promise<"done"> {
@@ -218,9 +250,9 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       await notify(claim.settlements);
       await dispatch(now);
     },
-    /** Resolves when the executions started so far have settled (tests and shutdown). */
+    /** Resolves when the executions started so far and the queued emails have settled (tests and shutdown). */
     async idle(): Promise<void> {
-      while (inFlight.size > 0) await Promise.allSettled([...inFlight.values()]);
+      while (inFlight.size > 0 || emailing) await Promise.allSettled([...inFlight.values(), ...(emailing ? [emailing] : [])]);
     }
   };
 }

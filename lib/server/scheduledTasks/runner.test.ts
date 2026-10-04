@@ -9,6 +9,7 @@ import {
   linkedRunOutcome,
   planScheduledTaskClaim,
   planTaskSettlement,
+  settlementNotifiesOwner,
   type ScheduledTaskOutcome,
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
@@ -53,7 +54,8 @@ function harness() {
     const task = tasks.get(occurrence.taskId)!;
     Object.assign(occurrence, { finishedAt: clock, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state });
     const plan = planTaskSettlement({ observedRevision, outcome, task, trigger: occurrence.trigger });
-    Object.assign(task, { consecutiveFailures: plan.consecutiveFailures, unseenResultAt: clock },
+    Object.assign(task, { consecutiveFailures: plan.consecutiveFailures },
+      settlementNotifiesOwner(outcome) ? { unseenResultAt: clock } : {},
       plan.pauseReason ? { nextRunAt: null, pauseReason: plan.pauseReason, revision: task.revision + 1, status: "PAUSED" } : {});
     return { occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, state: outcome.state,
       taskPaused: plan.pauseReason !== null };
@@ -289,6 +291,74 @@ describe("scheduled task runner", () => {
     expect(task).toMatchObject({ consecutiveFailures: 0, status: "ACTIVE" });
   });
 
+  it("retries a server error before any run within the window without counting a failure", async () => {
+    const h = harness();
+    const task = h.addTask({ consecutiveFailures: 2 });
+    h.setReply(() => ({ error: "internal_error", status: 500 }));
+    await h.tick();
+    const [occurrence] = h.forTask(task);
+    expect(occurrence).toMatchObject({ leaseExpiresAt: null, reasonCode: null, runId: null, state: "PENDING" });
+    expect(task).toMatchObject({ consecutiveFailures: 2, status: "ACTIVE", unseenResultAt: null });
+    // Retried by the timer only: no wake-up that would spin on a failing database.
+    expect(h.kick).not.toHaveBeenCalled();
+    h.advance(MINUTE);
+    await h.tick();
+    expect(h.sent).toHaveLength(2);
+    expect(occurrence!.state).toBe("PENDING");
+    // A recovered handler admits it on a later tick.
+    h.setReply(() => ({ runStatus: "complete" }));
+    h.advance(MINUTE);
+    await h.tick();
+    expect(occurrence).toMatchObject({ reasonCode: null, state: "COMPLETED" });
+    expect(task.consecutiveFailures).toBe(0);
+
+    // Still failing when the window ends: one failure, counted once.
+    const failing = h.addTask({ consecutiveFailures: 1, userId: "owner-2" });
+    h.setReply(() => ({ error: "internal_error", status: 503 }));
+    await h.tick();
+    h.advance(31 * MINUTE);
+    await h.tick();
+    expect(h.forTask(failing)).toMatchObject([{ reasonCode: "admission_failed", runId: null, state: "FAILED" }]);
+    expect(failing).toMatchObject({ consecutiveFailures: 2, status: "ACTIVE" });
+  });
+
+  it("sends result emails outside the tick, one at a time", async () => {
+    const h = harness();
+    const first = h.addTask({ emailNotify: true });
+    const second = h.addTask({ emailNotify: true, userId: "owner-2" });
+    const delivered: SmtpProductMessage[] = [];
+    const pending: Array<() => void> = [];
+    const runner = createScheduledTaskRunner({
+      appBaseUrl: "https://aiqsa.example.test",
+      loadCatalog: async () => ({ models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false,
+        nativeWebSearch: false, openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
+      modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }], searchPlan: { mode: "all_selected", optionIds: [] },
+      searchStrategies: [] }),
+      now: () => new Date("2026-10-05T06:00:05.000Z"),
+      renameChat: async () => undefined,
+      send: async () => Response.json({ error: "context_too_large" }, { status: 400 }),
+      // SMTP that hangs until released.
+      sendEmail: (message) => new Promise<void>((resolve) => { pending.push(() => { delivered.push(message); resolve(); }); }),
+      store: h.store
+    });
+    await runner.tick();
+    // Both runs settled without waiting for mail; only one email holds an SMTP slot.
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    expect(h.forTask(first)).toMatchObject([{ reasonCode: "context_too_large", state: "FAILED" }]);
+    expect(h.forTask(second)).toMatchObject([{ reasonCode: "context_too_large", state: "FAILED" }]);
+    await runner.tick();
+    expect(pending).toHaveLength(1);
+    pending[0]!();
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    pending[1]!();
+    await runner.idle();
+    expect(delivered.map((message) => message.subject)).toEqual(["Scheduled task did not complete", "Scheduled task did not complete"]);
+    // At most once: a later settlement pass never claims them again.
+    await runner.tick();
+    await runner.idle();
+    expect(pending).toHaveLength(2);
+  });
+
   it("pauses a scheduled task on a permanent refusal without trying another model", async () => {
     const h = harness();
     const task = h.addTask();
@@ -440,12 +510,15 @@ describe("scheduled task runner", () => {
 
   it("skips scheduled occurrences of paused tasks and pauses tasks of inactive owners", async () => {
     const h = harness();
-    const paused = h.addTask({ nextRunAt: null, status: "PAUSED" });
+    const paused = h.addTask({ emailNotify: true, nextRunAt: null, status: "PAUSED" });
     const leftover = h.addOccurrence(paused, { trigger: "schedule" });
     const inactive = h.addTask({ userId: "owner-2" });
     h.inactiveUsers.add("owner-2");
     await h.tick();
     expect(leftover).toMatchObject({ reasonCode: "paused", state: "SKIPPED" });
+    // The owner's own pause is not news: no unread marker and no email.
+    expect(paused.unseenResultAt).toBeNull();
+    expect(h.emails).toHaveLength(0);
     expect(h.forTask(inactive)).toMatchObject([{ reasonCode: "account_inactive", state: "FAILED" }]);
     expect(inactive).toMatchObject({ pauseReason: "account_inactive", status: "PAUSED" });
     expect(h.sent).toHaveLength(0);
