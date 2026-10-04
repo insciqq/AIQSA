@@ -50,10 +50,11 @@ const BATCH = 50;
 const RUN_DEADLINE_MESSAGE = "Scheduled run stopped at its time limit";
 /** The pause a failed save-time admission maps to when the same check fails before a run. */
 const RESOLUTION_PAUSES: Readonly<Record<
-  "scheduled_task_model_unavailable" | "scheduled_task_search_unavailable" | "scheduled_task_tools_unavailable" |
-  "scheduled_task_workspace_unavailable",
+  "scheduled_task_model_cannot_report" | "scheduled_task_model_unavailable" | "scheduled_task_search_unavailable" |
+  "scheduled_task_tools_unavailable" | "scheduled_task_workspace_unavailable",
   ScheduledTaskPauseReason
 >> = {
+  scheduled_task_model_cannot_report: "model_cannot_report",
   scheduled_task_model_unavailable: "model_unavailable",
   scheduled_task_search_unavailable: "search_unavailable",
   scheduled_task_tools_unavailable: "tools_unavailable",
@@ -215,7 +216,7 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     }
     if (!execution.ownerActive) return settlePending(execution, pausingOutcome("account_inactive"));
     // Current catalog and entitlement, the exact saved model and no substitute;
-    // tools and Workspace still need its tool calling.
+    // a monitoring check, tools and Workspace still need its tool calling.
     const catalog = await deps.loadCatalog(occurrence.userId);
     const resolution = resolveScheduledTaskModel(catalog, task);
     const model = catalog?.models.find((entry) => entry.modelId === task.modelId && entry.provider === task.provider);
@@ -232,10 +233,12 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
         workspaceEnabled: task.workspaceEnabled
       }),
       chatId: target.chatId,
-      // The revision read above fences preparation against a pause or edit made meanwhile.
+      // The revision read above fences preparation against a pause or edit made
+      // meanwhile, so the task kind it carries is the one the link accepts.
       occurrence: {
         occurrenceId: occurrence.id, previousResult, relevantMcpServerIds: execution.relevantMcpServerIds,
-        taskGeneration: task.generation, taskId: occurrence.taskId, taskRevision: task.revision
+        taskGeneration: task.generation, taskId: occurrence.taskId, taskRevision: task.revision,
+        ...(task.kind === "monitoring" ? { monitoring: true as const } : {})
       },
       userId: occurrence.userId
     });

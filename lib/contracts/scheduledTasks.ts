@@ -54,10 +54,39 @@ export type ScheduledTaskSchedule =
 
 /**
  * `new`: every run, Run now included, starts its own Memory-excluded chat.
- * `same`: runs continue in the task's chat. Hourly tasks are always `same`.
+ * `same`: runs continue in the task's chat. Hourly and monitoring tasks are always `same`.
  */
 export type ScheduledTaskChatMode = "new" | "same";
 export const SCHEDULED_TASK_CHAT_MODES = ["new", "same"] as const satisfies readonly ScheduledTaskChatMode[];
+
+/**
+ * `standard`: every completed run is a shown result. `monitoring`: each run is
+ * a check whose model reports through a built-in tool whether anything changed
+ * since the previous shown result; only checks with news are shown and notify,
+ * and a reached goal completes the task. Monitoring needs a model that can
+ * call tools and always continues in one chat.
+ */
+export type ScheduledTaskKind = "standard" | "monitoring";
+export const SCHEDULED_TASK_KINDS = ["standard", "monitoring"] as const satisfies readonly ScheduledTaskKind[];
+
+/**
+ * The settled outcome of a monitoring check, the `reasonCode` of its completed
+ * run and the transcript marker of its turn. Only `no_update` is hidden: it is
+ * neither shown in the chat, nor unread, nor notified, nor the next check's
+ * previous result. `baseline` is the first check of a task or after a changed
+ * prompt, schedule kind or type; `unreported` is a check whose model never
+ * reported, shown because an update is never hidden by mistake;
+ * `could_not_check` is a check whose sources were unavailable.
+ */
+export type ScheduledTaskCheckOutcome = "baseline" | "update" | "no_update" | "goal_reached" | "unreported" |
+  "could_not_check";
+export const SCHEDULED_TASK_CHECK_OUTCOMES = [
+  "baseline", "update", "no_update", "goal_reached", "unreported", "could_not_check"
+] as const satisfies readonly ScheduledTaskCheckOutcome[];
+
+export function isScheduledTaskCheckOutcome(value: unknown): value is ScheduledTaskCheckOutcome {
+  return (SCHEDULED_TASK_CHECK_OUTCOMES as readonly unknown[]).includes(value);
+}
 
 export type ScheduledTaskStatus = "active" | "paused" | "completed";
 export type ScheduledTaskRunState = "pending" | "running" | "completed" | "failed" | "skipped";
@@ -87,9 +116,15 @@ export type ScheduledTask = {
   /** See `ScheduledTaskDraft.workspaceEnabled`. */
   workspaceEnabled: boolean;
   chatMode: ScheduledTaskChatMode;
+  kind: ScheduledTaskKind;
   status: ScheduledTaskStatus;
   /** Stable code of an automatic pause; null for owner pauses and other states. */
   pauseReason: string | null;
+  /**
+   * Why a completed task stopped: `goal_reached` when a monitoring check met
+   * its goal. Null for a once task's single run and for other states.
+   */
+  completionReason: string | null;
   /** Null unless active. */
   nextRunAt: string | null;
   lastRun: ScheduledTaskLastRun | null;
@@ -127,13 +162,15 @@ export type ScheduledTaskRun = {
   scheduledFor: string;
   trigger: ScheduledTaskRunTrigger;
   state: ScheduledTaskRunState;
+  /** Why it was skipped or failed; for a completed monitoring check its `ScheduledTaskCheckOutcome`. */
   reasonCode: string | null;
   startedAt: string | null;
   finishedAt: string | null;
   chatId: string | null;
   /**
-   * The result is news the owner has not seen: a finished answer or a failure
-   * that paused the task. Routine skips and other failures stay history only.
+   * The result is news the owner has not seen: a finished answer (except a
+   * monitoring check with no update) or a failure that paused the task.
+   * Routine skips and other failures stay history only.
    */
   unseen: boolean;
   /**
@@ -201,8 +238,10 @@ export type ScheduledTaskDraft = {
    * tool calling and an installation with Workspace on.
    */
   workspaceEnabled: boolean;
-  /** `new` is the default the editor offers; hourly schedules require `same`. */
+  /** `new` is the default the editor offers; hourly schedules and monitoring tasks require `same`. */
   chatMode: ScheduledTaskChatMode;
+  /** `monitoring` requires a model that can call tools. */
+  kind: ScheduledTaskKind;
 };
 export type ScheduledTaskCreateRequest = ScheduledTaskDraft;
 
@@ -220,12 +259,14 @@ export function scheduledTaskToolDefaults(defaults: Readonly<{ mcpMode?: ChatDef
  * `PATCH /api/me/scheduled-tasks/[taskId]`: `expectedRevision` plus at least one
  * change. Pausing clears the next run; resuming or changing the schedule or time
  * zone takes the next occurrence from now without catch-up, while other edits
- * keep an active task's due run. Every update clears the failure count, the
- * incomplete-run count and the pause reason. A schedule change reactivates a
- * completed once task. A change to an hourly schedule must also send
- * `chatMode: "same"` unless the task already continues in one chat. Turning
- * tools or Workspace on, like an active result, rechecks them against the
- * model.
+ * keep an active task's due run. Every update clears the failure, incomplete-run
+ * and missing report counts and the pause reason; leaving the completed status
+ * clears the completion reason. A schedule change reactivates a completed task.
+ * A change to an hourly schedule or to monitoring must also send
+ * `chatMode: "same"` unless the task already continues in one chat. A changed
+ * prompt, schedule kind or type starts the task's checks afresh: the next run
+ * has no previous result. Turning tools or Workspace on, like an active
+ * result, rechecks them against the model.
  */
 export type ScheduledTaskUpdateRequest = Partial<ScheduledTaskDraft> & {
   expectedRevision: number;
@@ -239,6 +280,7 @@ export const SCHEDULED_TASK_ERROR_CODES = [
   "scheduled_task_once_in_past",
   "scheduled_task_chat_mode_invalid",
   "scheduled_task_model_unavailable",
+  "scheduled_task_model_cannot_report",
   "scheduled_task_search_unavailable",
   "scheduled_task_tools_unavailable",
   "scheduled_task_workspace_unavailable",
@@ -360,18 +402,26 @@ export function decodeScheduledTaskSchedule(value: unknown): ScheduledTaskSchedu
   }
 }
 
-/** Hourly tasks always continue in one chat; every other kind may start a new chat per run. */
-export function scheduledTaskChatModeAllowed(schedule: ScheduledTaskSchedule, chatMode: ScheduledTaskChatMode): boolean {
-  return chatMode === "same" || schedule.kind !== "hourly";
+/**
+ * Hourly and monitoring tasks always continue in one chat (a monitoring check
+ * compares with the chat's previous shown result); other tasks may start a
+ * new chat per run.
+ */
+export function scheduledTaskChatModeAllowed(
+  task: Readonly<{ kind: ScheduledTaskKind; schedule: ScheduledTaskSchedule }>,
+  chatMode: ScheduledTaskChatMode
+): boolean {
+  return chatMode === "same" || (task.schedule.kind !== "hourly" && task.kind !== "monitoring");
 }
 
 const TASK_KEYS = [
   "id", "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "toolsEnabled",
-  "workspaceEnabled", "chatMode", "status", "pauseReason", "nextRunAt", "lastRun", "running", "chatId", "unseenResult",
-  "revision", "createdAt", "updatedAt"
+  "workspaceEnabled", "chatMode", "kind", "status", "pauseReason", "completionReason", "nextRunAt", "lastRun", "running",
+  "chatId", "unseenResult", "revision", "createdAt", "updatedAt"
 ] as const;
 const STATUSES: readonly unknown[] = ["active", "paused", "completed"] satisfies ScheduledTaskStatus[];
 const CHAT_MODES: readonly unknown[] = SCHEDULED_TASK_CHAT_MODES;
+const KINDS: readonly unknown[] = SCHEDULED_TASK_KINDS;
 const RUN_STATES: readonly unknown[] = ["pending", "running", "completed", "failed", "skipped"] satisfies ScheduledTaskRunState[];
 const SETTLED_RUN_STATES: readonly unknown[] = ["completed", "failed", "skipped"] satisfies ScheduledTaskSettledRunState[];
 
@@ -389,9 +439,10 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     !isScheduledTaskTimeZoneShape(value.timeZone) || !isScheduledTaskModelIdentity(value.modelId) ||
     !isScheduledTaskModelIdentity(value.provider) || typeof value.searchEnabled !== "boolean" ||
     typeof value.emailNotify !== "boolean" || typeof value.toolsEnabled !== "boolean" ||
-    typeof value.workspaceEnabled !== "boolean" || !CHAT_MODES.includes(value.chatMode) ||
-    !scheduledTaskChatModeAllowed(schedule, value.chatMode as ScheduledTaskChatMode) || !STATUSES.includes(value.status) ||
-    !nullable(value.pauseReason, code) ||
+    typeof value.workspaceEnabled !== "boolean" || !CHAT_MODES.includes(value.chatMode) || !KINDS.includes(value.kind) ||
+    !scheduledTaskChatModeAllowed({ kind: value.kind as ScheduledTaskKind, schedule }, value.chatMode as ScheduledTaskChatMode) ||
+    !STATUSES.includes(value.status) || !nullable(value.pauseReason, code) ||
+    !nullable(value.completionReason, code) || (value.status !== "completed" && value.completionReason !== null) ||
     !nullable(value.nextRunAt, instant) || (value.status !== "active" && value.nextRunAt !== null) ||
     !nullable(value.lastRun, lastRun) || typeof value.running !== "boolean" || !nullable(value.chatId, id) ||
     typeof value.unseenResult !== "boolean" || !count(value.revision, 1) || !instant(value.createdAt) ||
@@ -401,7 +452,8 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     id: value.id, title, prompt, schedule, timeZone: value.timeZone, modelId: value.modelId, provider: value.provider,
     searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, toolsEnabled: value.toolsEnabled,
     workspaceEnabled: value.workspaceEnabled, chatMode: value.chatMode as ScheduledTaskChatMode,
-    status: value.status as ScheduledTaskStatus, pauseReason: value.pauseReason, nextRunAt: value.nextRunAt,
+    kind: value.kind as ScheduledTaskKind, status: value.status as ScheduledTaskStatus, pauseReason: value.pauseReason,
+    completionReason: value.completionReason, nextRunAt: value.nextRunAt,
     lastRun: run && { scheduledFor: run.scheduledFor, state: run.state, reasonCode: run.reasonCode, finishedAt: run.finishedAt },
     running: value.running, chatId: value.chatId, unseenResult: value.unseenResult, revision: value.revision,
     createdAt: value.createdAt, updatedAt: value.updatedAt
@@ -480,8 +532,9 @@ export function scheduledTaskErrorMessage(errorCode: unknown): string {
     case "scheduled_task_schedule_invalid": return "Check the schedule.";
     case "scheduled_task_time_zone_invalid": return "Choose a valid time zone.";
     case "scheduled_task_once_in_past": return "Choose a time at least a minute from now.";
-    case "scheduled_task_chat_mode_invalid": return "Hourly tasks always continue in the same chat.";
+    case "scheduled_task_chat_mode_invalid": return "Hourly and monitoring tasks always continue in the same chat.";
     case "scheduled_task_model_unavailable": return "This model is no longer available to you. Choose another model.";
+    case "scheduled_task_model_cannot_report": return "Monitoring needs a model that can use tools. Choose another model.";
     case "scheduled_task_search_unavailable": return "Web search is not available with this model. Turn it off or choose another model.";
     case "scheduled_task_tools_unavailable": return "This model cannot use tools. Turn tools off or choose another model.";
     case "scheduled_task_workspace_unavailable":
@@ -497,7 +550,10 @@ export function scheduledTaskErrorMessage(errorCode: unknown): string {
   }
 }
 
-/** Human copy for a pause reason or an occurrence reason code; unknown codes get a generic line. */
+/**
+ * Human copy for a pause or completion reason, an occurrence reason code or a
+ * monitoring check outcome; unknown codes get a generic line.
+ */
 export function scheduledTaskReasonMessage(reasonCode: string | null): string | null {
   switch (reasonCode) {
     case null: return null;
@@ -514,6 +570,14 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "account_inactive": return "Paused while the account was not active. Resume to continue.";
     case "schedule_invalid": return "The schedule can no longer be calculated. Edit the schedule and resume.";
     case "repeated_failures": return "Paused after three failed runs in a row.";
+    case "model_cannot_report": return "Monitoring needs a model that can use tools. Choose another model and resume.";
+    case "verdict_missing": return "Paused after three checks in a row did not report whether anything changed. Resume to try again.";
+    case "baseline": return "First check: the starting point later checks compare with.";
+    case "update": return "Update: something changed since the last shown result.";
+    case "no_update": return "No update: nothing changed since the last shown result.";
+    case "goal_reached": return "Goal reached — task completed.";
+    case "unreported": return "Shown: the check did not report whether anything changed.";
+    case "could_not_check": return "Could not check: a source was unavailable.";
     case "missed": return "Skipped: the scheduled time passed while runs were unavailable.";
     case "previous_running": return "Skipped: the previous run was still in progress.";
     case "superseded": return "Skipped: a newer scheduled time arrived before this run could start.";

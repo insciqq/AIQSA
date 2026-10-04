@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scheduledTaskReasonMessage, type ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
+import { SCHEDULED_TASK_CHECK_OUTCOMES, scheduledTaskReasonMessage, type ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import {
   SCHEDULED_TASK_MAX_EXECUTING,
   SCHEDULED_TASK_MAX_EXECUTING_PER_USER,
@@ -8,11 +8,13 @@ import {
   classifySendRefusal,
   expiredPendingOutcome,
   linkedRunOutcome,
+  monitoringCheckSettlement,
   planClaimOverlap,
   planScheduledTaskClaim,
   planTaskSettlement,
   settlementBaseline,
-  settlementNotifiesOwner
+  settlementNotifiesOwner,
+  type MonitoringVerdict
 } from "./runnerPolicy";
 
 const daily = { kind: "daily", time: "09:00" } as const; // 06:00 UTC in Moscow
@@ -77,10 +79,13 @@ describe("claim planning", () => {
 });
 
 describe("settlement bookkeeping", () => {
-  const active = { consecutiveFailures: 0, consecutiveIncompleteRuns: 0, revision: 4, status: "ACTIVE" } as const;
+  const active = {
+    consecutiveFailures: 0, consecutiveIncompleteRuns: 0, consecutiveMissingVerdicts: 0, revision: 4, status: "ACTIVE"
+  } as const;
   const failed = { reasonCode: "run_orphaned", state: "FAILED" } as const;
   const completed = { reasonCode: null, state: "COMPLETED" } as const;
-  const quiet = { consecutiveIncompleteRuns: 0, sourceAlert: false } as const;
+  const quiet = { consecutiveIncompleteRuns: 0, consecutiveMissingVerdicts: 0, sourceAlert: false } as const;
+  const completedCount = (consecutiveMissingVerdicts = 0) => ({ ...quiet, consecutiveFailures: 0, consecutiveMissingVerdicts });
 
   it("resets on success and pauses scheduled runs at the third consecutive failure", () => {
     expect(planTaskSettlement({ outcome: completed, task: { ...active, consecutiveFailures: 2 }, trigger: "schedule" }))
@@ -119,54 +124,126 @@ describe("settlement bookkeeping", () => {
       .toEqual({ ...quiet, consecutiveFailures: 2, pauseReason: null });
   });
 
+  it("pauses a monitoring task after three scheduled checks in a row without a reported outcome", () => {
+    const unreported = { reasonCode: "unreported", state: "COMPLETED" } as const;
+    const check = (consecutiveMissingVerdicts: number, verdictMissing: boolean, trigger: "manual" | "schedule" = "schedule") =>
+      planTaskSettlement({ outcome: unreported, task: { ...active, consecutiveMissingVerdicts }, trigger, verdictMissing });
+    expect(check(0, true)).toEqual({ ...completedCount(1), pauseReason: null });
+    expect(check(1, true)).toEqual({ ...completedCount(2), pauseReason: null });
+    expect(check(2, true)).toEqual({ ...completedCount(3), pauseReason: "verdict_missing" });
+    // Any reported outcome resets the count; manual checks neither count nor pause.
+    expect(check(2, false)).toEqual({ ...completedCount(0), pauseReason: null });
+    expect(check(2, true, "manual")).toEqual({ ...completedCount(2), pauseReason: null });
+    // An inactive task is never paused again, and a standard run leaves the count alone.
+    expect(planTaskSettlement({ outcome: unreported, task: { ...active, consecutiveMissingVerdicts: 2, status: "PAUSED" },
+      trigger: "schedule", verdictMissing: true })).toEqual({ ...completedCount(3), pauseReason: null });
+    expect(planTaskSettlement({ outcome: completed, task: { ...active, consecutiveMissingVerdicts: 2 }, trigger: "schedule" }))
+      .toEqual({ ...completedCount(2), pauseReason: null });
+    // A failed run is not a check: it counts as a failure only.
+    expect(planTaskSettlement({ outcome: failed, task: { ...active, consecutiveMissingVerdicts: 2 }, trigger: "schedule" }))
+      .toEqual({ ...quiet, consecutiveFailures: 1, consecutiveMissingVerdicts: 2, pauseReason: null });
+  });
+
   it("alerts once per streak of incomplete runs and pauses at the third, separately from failures", () => {
     const incomplete = (task: Parameters<typeof planTaskSettlement>[0]["task"], trigger: "schedule" | "manual" = "schedule") =>
       planTaskSettlement({ outcome: completed, sourcesIncomplete: true, task, trigger });
+    const counts = { consecutiveFailures: 0, consecutiveMissingVerdicts: 0 } as const;
     // The first incomplete run still completes (resetting failures) and is the streak's one alert.
     expect(incomplete({ ...active, consecutiveFailures: 2 }))
-      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 1, pauseReason: null, sourceAlert: true });
+      .toEqual({ ...counts, consecutiveIncompleteRuns: 1, pauseReason: null, sourceAlert: true });
     expect(incomplete({ ...active, consecutiveIncompleteRuns: 1 }))
-      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
+      .toEqual({ ...counts, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
     expect(incomplete({ ...active, consecutiveIncompleteRuns: 2 }))
-      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 3, pauseReason: "source_unavailable", sourceAlert: false });
+      .toEqual({ ...counts, consecutiveIncompleteRuns: 3, pauseReason: "source_unavailable", sourceAlert: false });
     // An owner pause meanwhile wins; the streak still counts.
     expect(incomplete({ ...active, consecutiveIncompleteRuns: 2, status: "PAUSED" }))
-      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 3, pauseReason: null, sourceAlert: false });
+      .toEqual({ ...counts, consecutiveIncompleteRuns: 3, pauseReason: null, sourceAlert: false });
     // A complete run ends the streak; failures and skips leave it alone.
     expect(planTaskSettlement({ outcome: completed, sourcesIncomplete: false, task: { ...active, consecutiveIncompleteRuns: 2 }, trigger: "schedule" }))
-      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 0, pauseReason: null, sourceAlert: false });
+      .toEqual({ ...counts, consecutiveIncompleteRuns: 0, pauseReason: null, sourceAlert: false });
     expect(planTaskSettlement({ outcome: failed, task: { ...active, consecutiveIncompleteRuns: 2 }, trigger: "schedule" }))
-      .toEqual({ consecutiveFailures: 1, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
+      .toEqual({ ...counts, consecutiveFailures: 1, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
     expect(planTaskSettlement({ outcome: { reasonCode: "previous_running", state: "SKIPPED" }, task: { ...active, consecutiveIncompleteRuns: 2 },
-      trigger: "schedule" })).toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
+      trigger: "schedule" })).toEqual({ ...counts, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
     // A manual run neither extends the streak nor alerts, but a complete one proves the source again.
     expect(incomplete({ ...active, consecutiveIncompleteRuns: 2 }, "manual"))
-      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
+      .toEqual({ ...counts, consecutiveIncompleteRuns: 2, pauseReason: null, sourceAlert: false });
     expect(planTaskSettlement({ outcome: completed, task: { ...active, consecutiveIncompleteRuns: 2 }, trigger: "manual" }))
-      .toEqual({ consecutiveFailures: 0, consecutiveIncompleteRuns: 0, pauseReason: null, sourceAlert: false });
+      .toEqual({ ...counts, consecutiveIncompleteRuns: 0, pauseReason: null, sourceAlert: false });
   });
 
   it("notifies the owner of shown results, pauses and the health alert, never routine skips", () => {
-    expect(settlementNotifiesOwner({ state: "COMPLETED", taskPaused: false })).toBe(true);
-    expect(settlementNotifiesOwner({ state: "FAILED", taskPaused: true })).toBe(true);
+    expect(settlementNotifiesOwner({ reasonCode: null, state: "COMPLETED", taskPaused: false })).toBe(true);
+    expect(settlementNotifiesOwner({ reasonCode: "model_unavailable", state: "FAILED", taskPaused: true })).toBe(true);
     // The incomplete run that pauses its task, and the alert that starts a streak.
-    expect(settlementNotifiesOwner({ state: "COMPLETED", taskPaused: true })).toBe(true);
-    expect(settlementNotifiesOwner({ sourceAlert: true, state: "COMPLETED", taskPaused: false })).toBe(true);
+    expect(settlementNotifiesOwner({ reasonCode: null, state: "COMPLETED", taskPaused: true })).toBe(true);
+    expect(settlementNotifiesOwner({ reasonCode: null, sourceAlert: true, state: "COMPLETED", taskPaused: false })).toBe(true);
     // Routine skips and failures that did not pause stay in the history.
-    expect(settlementNotifiesOwner({ state: "FAILED", taskPaused: false })).toBe(false);
-    expect(settlementNotifiesOwner({ state: "SKIPPED", taskPaused: false })).toBe(false);
+    expect(settlementNotifiesOwner({ reasonCode: "run_failed", state: "FAILED", taskPaused: false })).toBe(false);
+    expect(settlementNotifiesOwner({ reasonCode: "chat_busy", state: "SKIPPED", taskPaused: false })).toBe(false);
   });
 
   it("makes only a completed result of the current generation the next same-chat baseline", () => {
     const occurrence = { runId: "run-1", taskGeneration: 2, userMessageId: "user-1" };
-    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: { state: "COMPLETED" }, taskGeneration: 2 }))
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: completed, taskGeneration: 2 }))
       .toEqual({ assistantMessageId: "answer-1", generation: 2, runId: "run-1", userMessageId: "user-1" });
     // The prompt changed while the run executed: its result answers an older question.
-    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: { state: "COMPLETED" }, taskGeneration: 3 })).toBeNull();
-    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: { state: "FAILED" }, taskGeneration: 2 })).toBeNull();
-    expect(settlementBaseline({ assistantMessageId: null, occurrence, outcome: { state: "COMPLETED" }, taskGeneration: 2 })).toBeNull();
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: completed, taskGeneration: 3 })).toBeNull();
+    expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence, outcome: failed, taskGeneration: 2 })).toBeNull();
+    expect(settlementBaseline({ assistantMessageId: null, occurrence, outcome: completed, taskGeneration: 2 })).toBeNull();
     expect(settlementBaseline({ assistantMessageId: "answer-1", occurrence: { ...occurrence, userMessageId: null },
-      outcome: { state: "COMPLETED" }, taskGeneration: 2 })).toBeNull();
+      outcome: completed, taskGeneration: 2 })).toBeNull();
+  });
+});
+
+describe("monitoring check settlement", () => {
+  const verdicts: readonly (MonitoringVerdict | null)[] = ["update", "no_update", "goal_reached", null];
+  const settle = (verdict: MonitoringVerdict | null, overrides: Partial<Parameters<typeof monitoringCheckSettlement>[0]> = {}) =>
+    monitoringCheckSettlement({ firstCheck: false, healthIncomplete: false, ownerUnchanged: true, verdict, ...overrides });
+  const effects = (outcome: string) => ({
+    baseline: settlementBaseline({ assistantMessageId: "answer", occurrence: { runId: "run", taskGeneration: 1, userMessageId: "user" },
+      outcome: { reasonCode: outcome, state: "COMPLETED" }, taskGeneration: 1 }) !== null,
+    notifies: settlementNotifiesOwner({ reasonCode: outcome, state: "COMPLETED", taskPaused: false })
+  });
+
+  it("maps every verdict of a later healthy check to its outcome, news and comparison basis", () => {
+    expect(verdicts.map((verdict) => {
+      const settled = settle(verdict);
+      return { ...settled, ...effects(settled.outcome) };
+    })).toEqual([
+      { baseline: true, completesTask: false, notifies: true, outcome: "update", verdictMissing: false },
+      // Nothing changed: hidden, silent and never the next check's previous result.
+      { baseline: false, completesTask: false, notifies: false, outcome: "no_update", verdictMissing: false },
+      { baseline: true, completesTask: true, notifies: true, outcome: "goal_reached", verdictMissing: false },
+      // Fail-open: a check that never reported is shown, and counts towards the pause.
+      { baseline: true, completesTask: false, notifies: true, outcome: "unreported", verdictMissing: true }
+    ]);
+  });
+
+  it("always shows the first check of a generation unless it already reached the goal", () => {
+    expect(verdicts.map((verdict) => settle(verdict, { firstCheck: true }).outcome))
+      .toEqual(["baseline", "baseline", "goal_reached", "unreported"]);
+    expect(effects("baseline")).toEqual({ baseline: true, notifies: true });
+  });
+
+  it("never settles an incomplete check as a healthy no update or reached goal", () => {
+    for (const verdict of verdicts) {
+      for (const firstCheck of [false, true]) {
+        const settled = settle(verdict, { firstCheck, healthIncomplete: true });
+        expect(settled).toMatchObject({ completesTask: false, outcome: "could_not_check", verdictMissing: verdict === null });
+      }
+    }
+    // Shown and notified, but no basis for the next comparison.
+    expect(effects("could_not_check")).toEqual({ baseline: false, notifies: true });
+  });
+
+  it("completes the task on a reached goal only while no owner transition happened since admission", () => {
+    expect(settle("goal_reached", { ownerUnchanged: false })).toEqual({ completesTask: false, outcome: "update", verdictMissing: false });
+    expect(settle("goal_reached", { firstCheck: true, ownerUnchanged: false }).outcome).toBe("update");
+  });
+
+  it("treats every outcome but no update as news", () => {
+    for (const outcome of SCHEDULED_TASK_CHECK_OUTCOMES) expect(effects(outcome).notifies).toBe(outcome !== "no_update");
   });
 });
 
@@ -236,6 +313,9 @@ describe("send refusals", () => {
     expect(classifySendRefusal(403, "search_strategy_not_available")).toMatchObject({ outcome: { pauseReason: "search_unavailable" } });
     expect(classifySendRefusal(403, "user_not_available")).toMatchObject({ outcome: { pauseReason: "account_inactive" } });
     expect(classifySendRefusal(409, "credential_assignment_ambiguous")).toMatchObject({ outcome: { pauseReason: "provider_unavailable" } });
+    // A monitoring check whose model cannot call its reporting tool.
+    expect(classifySendRefusal(409, "model_cannot_report")).toEqual({ kind: "fail",
+      outcome: { pauseReason: "model_cannot_report", reasonCode: "model_cannot_report", state: "FAILED" } });
     expect(classifySendRefusal(400, "context_too_large")).toEqual({ kind: "fail", outcome: { reasonCode: "context_too_large", state: "FAILED" } });
     // No run exists after a server error: retried within the window, never counted at once.
     expect(classifySendRefusal(500, "internal_error")).toEqual({ kind: "retry", reasonCode: null });

@@ -11,6 +11,7 @@ import {
   type ScheduledTaskChatMode,
   type ScheduledTaskDraft,
   type ScheduledTaskEveryHours,
+  type ScheduledTaskKind,
   type ScheduledTaskSchedule,
   type ScheduledTaskUpdateRequest,
   type ScheduledTaskWeekday
@@ -68,6 +69,8 @@ export type ScheduledTaskEditorDraft = Readonly<{
   workspaceEnabled: boolean;
   /** The owner's choice for other schedules; hourly ones always continue in one chat. */
   chatMode: ScheduledTaskChatMode;
+  /** Carried unchanged until the editor offers a Type choice. */
+  kind: ScheduledTaskKind;
 }>;
 
 export type ScheduledTaskFieldErrors = Partial<Record<
@@ -133,6 +136,7 @@ export function blankScheduledTaskDraft(
     toolsEnabled: false,
     workspaceEnabled: false,
     chatMode: "new",
+    kind: "standard",
     ...preset
   };
 }
@@ -166,7 +170,8 @@ export function scheduledTaskDraftFromTask(task: ScheduledTask, now: Date = new 
     emailNotify: task.emailNotify,
     toolsEnabled: task.toolsEnabled,
     workspaceEnabled: task.workspaceEnabled,
-    chatMode: task.chatMode
+    chatMode: task.chatMode,
+    kind: task.kind
   };
 }
 
@@ -287,7 +292,8 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
     emailNotify: draft.emailNotify,
     toolsEnabled: draft.toolsEnabled,
     workspaceEnabled: draft.workspaceEnabled,
-    chatMode: scheduledTaskDraftChatMode(draft)
+    chatMode: scheduledTaskDraftChatMode(draft),
+    kind: draft.kind
   } : null;
 }
 
@@ -312,6 +318,7 @@ export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, orig
   if (next.toolsEnabled !== original.toolsEnabled) patch.toolsEnabled = next.toolsEnabled;
   if (next.workspaceEnabled !== original.workspaceEnabled) patch.workspaceEnabled = next.workspaceEnabled;
   if (next.chatMode !== original.chatMode) patch.chatMode = next.chatMode;
+  if (next.kind !== original.kind) patch.kind = next.kind;
   return patch;
 }
 
@@ -321,7 +328,7 @@ export function sameScheduledTaskDraft(left: ScheduledTaskEditorDraft, right: Sc
     left.timeZone === right.timeZone && left.modelId === right.modelId && left.provider === right.provider &&
     left.searchEnabled === right.searchEnabled && left.emailNotify === right.emailNotify && left.chatMode === right.chatMode &&
     left.everyHours === right.everyHours && left.hourlyWindow === right.hourlyWindow && left.until === right.until &&
-    left.toolsEnabled === right.toolsEnabled && left.workspaceEnabled === right.workspaceEnabled &&
+    left.toolsEnabled === right.toolsEnabled && left.workspaceEnabled === right.workspaceEnabled && left.kind === right.kind &&
     scheduledTaskWeekdayMask(left.days) === scheduledTaskWeekdayMask(right.days) &&
     scheduledTaskWeekdayMask(left.hourlyDays) === scheduledTaskWeekdayMask(right.hourlyDays);
 }

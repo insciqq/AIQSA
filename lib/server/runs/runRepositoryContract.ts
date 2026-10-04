@@ -314,6 +314,12 @@ export type ScheduledOccurrenceAdmission = Readonly<{
    * Null: every server (the task has no previous shown result to judge by).
    */
   relevantMcpServerIds: readonly string[] | null;
+  /**
+   * The task is a monitoring task: the run is a check that must be able to
+   * report its outcome through the built-in verdict tool, or it is refused
+   * with `model_cannot_report`. The task revision fence keeps it current.
+   */
+  monitoring?: true;
 }>;
 
 /**
@@ -865,6 +871,16 @@ export type RunRepository = {
      * attempts when the reader's context cannot be read. */
     currentUserMessageId?: string | null;
   }): Promise<import("./toolHistory").ToolHistoryProjection>;
+  /**
+   * Records the outcome a monitoring check's run reported on the scheduled
+   * occurrence that admitted it, while that occurrence is running; repeatable,
+   * the last report wins. False when the run has no running occurrence.
+   */
+  recordMonitoringVerdict?(input: Readonly<{
+    runId: string;
+    userId: string;
+    verdict: import("../scheduledTasks/runnerPolicy").MonitoringVerdict;
+  }>): Promise<boolean>;
   /** The authorized record `read_tool_call` returns, or null when unavailable. */
   readToolCall?(
     actor: Readonly<{ runId: string; userId: string }>,

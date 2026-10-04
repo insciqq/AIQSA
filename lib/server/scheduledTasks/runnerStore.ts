@@ -1,18 +1,18 @@
-import { Prisma, type PrismaClient } from "@prisma/client";
-import type { ScheduledTaskChatMode, ScheduledTaskRunTrigger } from "../../contracts/scheduledTasks";
+import { Prisma, type PrismaClient, type ScheduledTaskKind as TaskKindColumn } from "@prisma/client";
+import type { ScheduledTaskChatMode, ScheduledTaskKind, ScheduledTaskRunTrigger } from "../../contracts/scheduledTasks";
 import { SMTP_CONTROL_ID } from "../email/repository";
 import type { ScheduledTaskNotification } from "./notifications";
 import {
   SCHEDULED_TASK_LATENESS_MS,
   SCHEDULED_TASK_RETRY_WINDOW_MS,
   SCHEDULED_TASK_RUN_DEADLINE_MS,
+  completedRunCheck,
   expiredPendingOutcome,
   linkedRunOutcome,
   planClaimOverlap,
+  planOccurrenceSettlement,
   planScheduledTaskClaim,
-  planTaskSettlement,
-  settlementBaseline,
-  settlementNotifiesOwner,
+  type MonitoringCheckSettlement,
   type ScheduledTaskBaseline,
   type ScheduledTaskOpenOccurrence,
   type ScheduledTaskOutcome,
@@ -23,6 +23,7 @@ import { occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHea
 import {
   pruneScheduledTaskOccurrences,
   scheduledTaskChatModeFromColumn,
+  scheduledTaskKindFromColumn,
   scheduledTaskScheduleFromColumns,
   type ScheduledTaskScheduleColumns
 } from "./store";
@@ -61,6 +62,7 @@ export type ScheduledTaskExecution = Readonly<{
     baseline: ScheduledTaskBaseline | null;
     chatMode: ScheduledTaskChatMode;
     generation: number;
+    kind: ScheduledTaskKind;
     modelId: string; prompt: string; provider: string; revision: number; searchEnabled: boolean;
     status: ScheduledTaskStatusColumn; timeZone: string; title: string; toolsEnabled: boolean; workspaceEnabled: boolean;
   }>;
@@ -112,13 +114,15 @@ export interface ScheduledTaskRunnerStore {
 }
 
 type LockedTask = {
-  consecutiveFailures: number; consecutiveIncompleteRuns: number; generation: number; revision: number;
+  baselineGeneration: number | null; consecutiveFailures: number; consecutiveIncompleteRuns: number;
+  consecutiveMissingVerdicts: number; generation: number; kind: TaskKindColumn; revision: number;
   status: ScheduledTaskStatusColumn;
 };
 type LockedOccurrence = {
   id: string; leaseExpiresAt: Date | null; reasonCode: string | null; runId: string | null; scheduledFor: Date;
-  startedAt: Date | null; state: string; taskGeneration: number | null; taskId: string; trigger: string;
-  unavailableSources: Prisma.JsonValue | null; userId: string; userMessageId: string | null;
+  startedAt: Date | null; state: string; taskGeneration: number | null; taskId: string; taskRevision: number | null;
+  trigger: string; unavailableSources: Prisma.JsonValue | null; userId: string; userMessageId: string | null;
+  verdict: string | null;
 };
 type Locked = Readonly<{ occurrence: LockedOccurrence; task: LockedTask }>;
 type ClaimRow = ScheduledTaskScheduleColumns & { id: string; nextRunAt: Date; timeZone: string; userId: string };
@@ -134,14 +138,15 @@ async function lockForSettlement(tx: Prisma.TransactionClient, occurrenceId: str
   `);
   if (!reference) return null;
   const [task] = await tx.$queryRaw<LockedTask[]>(Prisma.sql`
-    SELECT "status"::text AS "status", "consecutiveFailures", "consecutiveIncompleteRuns", "revision", "generation"
+    SELECT "status"::text AS "status", "kind"::text AS "kind", "consecutiveFailures", "consecutiveIncompleteRuns",
+      "consecutiveMissingVerdicts", "revision", "generation", "baselineGeneration"
     FROM "ScheduledTask" WHERE "id" = ${reference.taskId}
     FOR NO KEY UPDATE
   `);
   if (!task) return null;
   const [occurrence] = await tx.$queryRaw<LockedOccurrence[]>(Prisma.sql`
     SELECT "id", "taskId", "userId", "trigger", "state"::text AS "state", "runId", "scheduledFor", "startedAt",
-      "reasonCode", "leaseExpiresAt", "userMessageId", "taskGeneration", "unavailableSources"
+      "reasonCode", "leaseExpiresAt", "userMessageId", "taskGeneration", "taskRevision", "verdict", "unavailableSources"
     FROM "ScheduledTaskOccurrence" WHERE "id" = ${occurrenceId} AND "taskId" = ${reference.taskId}
     FOR UPDATE
   `);
@@ -149,51 +154,79 @@ async function lockForSettlement(tx: Prisma.TransactionClient, occurrenceId: str
 }
 
 /**
- * Settles one locked occurrence and writes its task's bookkeeping: the failure
- * count, the incomplete-run streak, an automatic pause, the unread result
- * (only news per the notification matrix) and, for a shown result of the
- * current generation, the baseline the next same-chat run sees.
+ * The monitoring settlement of a completed linked run (see `completedRunCheck`).
+ * Source health of scheduled runs joins here once runs record it; until then
+ * every check counts as healthy.
+ */
+function monitoringSettlementOf({ occurrence, task }: Locked): MonitoringCheckSettlement | null {
+  return completedRunCheck({
+    healthIncomplete: false,
+    occurrence,
+    task: { ...task, kind: scheduledTaskKindFromColumn(task.kind) }
+  });
+}
+
+/**
+ * Settles one locked occurrence and writes its task's bookkeeping per
+ * `planOccurrenceSettlement`: the counters and the incomplete-run streak, an
+ * automatic pause, a monitoring goal's completion (decided under the task lock
+ * against the revision the run was accepted under), the unread result and the
+ * baseline the next same-chat run sees. A monitoring check's outcome is also
+ * kept on its run, where the transcript reads it after the occurrence history
+ * is pruned.
  */
 async function applySettlement(
   tx: Prisma.TransactionClient,
   { occurrence, task }: Locked,
   outcome: ScheduledTaskOutcome,
   now: Date,
-  options: Readonly<{ assistantMessageId?: string | null; observedRevision?: number }> = {}
+  options: Readonly<{
+    assistantMessageId?: string | null; check?: MonitoringCheckSettlement | null; observedRevision?: number;
+  }> = {}
 ): Promise<ScheduledTaskSettlement> {
+  const check = options.check ?? null;
   const sourcesIncomplete = outcome.state === "COMPLETED" && occurrenceSourcesIncomplete(occurrence.unavailableSources);
-  const plan = planTaskSettlement({
-    observedRevision: options.observedRevision, outcome, sourcesIncomplete, task, trigger: trigger(occurrence.trigger)
+  const plan = planOccurrenceSettlement({
+    assistantMessageId: options.assistantMessageId ?? null, check, observedRevision: options.observedRevision,
+    occurrence: { ...occurrence, trigger: trigger(occurrence.trigger) }, outcome, sourcesIncomplete, task
   });
-  const taskPaused = plan.pauseReason !== null;
   await tx.scheduledTaskOccurrence.update({
     data: {
       finishedAt: now, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state,
-      unseenAt: settlementNotifiesOwner({ sourceAlert: plan.sourceAlert, state: outcome.state, taskPaused }) ? now : null
+      unseenAt: plan.notifies ? now : null
     },
     where: { id: occurrence.id }
   });
-  const baseline = settlementBaseline({
-    assistantMessageId: options.assistantMessageId ?? null, occurrence, outcome, taskGeneration: task.generation
-  });
+  const { baseline } = plan;
   await tx.scheduledTask.update({
     data: {
       consecutiveFailures: plan.consecutiveFailures,
       consecutiveIncompleteRuns: plan.consecutiveIncompleteRuns,
+      consecutiveMissingVerdicts: plan.consecutiveMissingVerdicts,
       ...(baseline ? {
         baselineAssistantMessageId: baseline.assistantMessageId, baselineGeneration: baseline.generation,
         baselineRunId: baseline.runId, baselineUserMessageId: baseline.userMessageId
       } : {}),
-      // An automatic pause is a runner status transition: it bumps the revision.
-      ...(taskPaused
+      // An automatic pause and a reached goal are runner status transitions: they bump the revision.
+      ...(plan.pauseReason
         ? { nextRunAt: null, pauseReason: plan.pauseReason, revision: { increment: 1 }, status: "PAUSED" as const }
+        : {}),
+      ...(plan.goalCompletes
+        ? { completionReason: "goal_reached", nextRunAt: null, pauseReason: null, revision: { increment: 1 },
+          status: "COMPLETED" as const }
         : {})
     },
     where: { id: occurrence.taskId }
   });
+  if (check && occurrence.runId) {
+    await tx.$executeRaw(Prisma.sql`
+      UPDATE "ModelRun" SET "scheduledOutcome" = ${check.outcome}
+      WHERE "id" = ${occurrence.runId} AND "userId" = ${occurrence.userId} AND "scheduledOccurrenceId" = ${occurrence.id}
+    `);
+  }
   return {
     occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, sourceAlert: plan.sourceAlert,
-    sourcesIncomplete, state: outcome.state, taskPaused
+    sourcesIncomplete, state: outcome.state, taskPaused: plan.pauseReason !== null
   };
 }
 
@@ -238,7 +271,11 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         })
         : null;
       const outcome = linkedRunOutcome(run);
-      return outcome ? applySettlement(tx, locked, outcome, now, { assistantMessageId: run?.assistantMessageId ?? null }) : null;
+      if (!outcome) return null;
+      // A completed monitoring check settles with its outcome as the reason.
+      const check = outcome.state === "COMPLETED" ? monitoringSettlementOf(locked) : null;
+      return applySettlement(tx, locked, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, now,
+        { assistantMessageId: run?.assistantMessageId ?? null, check });
     });
   }
 
@@ -378,7 +415,7 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
           task: {
             select: {
               baselineAssistantMessageId: true, baselineGeneration: true, baselineRunId: true, baselineUserMessageId: true,
-              chatMode: true, generation: true, modelId: true, prompt: true, provider: true, revision: true,
+              chatMode: true, generation: true, kind: true, modelId: true, prompt: true, provider: true, revision: true,
               searchEnabled: true, status: true, timeZone: true, title: true, toolsEnabled: true, workspaceEnabled: true,
               user: { select: { status: true } },
               chat: {
@@ -393,7 +430,7 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
       });
       if (!row || row.state !== "PENDING" || row.runId !== null) return null;
       const {
-        baselineAssistantMessageId, baselineGeneration, baselineRunId, baselineUserMessageId, chat, chatMode, user, ...task
+        baselineAssistantMessageId, baselineGeneration, baselineRunId, baselineUserMessageId, chat, chatMode, kind, user, ...task
       } = row.task;
       const usable = chat && !chat.archived && chat.permanentDeletionAt === null && chat.projectId === null &&
         chat.assistantId === null;
@@ -410,7 +447,7 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
         relevantMcpServerIds: task.toolsEnabled && baseline?.generation === task.generation
           ? await previousResultMcpServerIds(prisma, { runId: baseline.runId, userId: row.userId })
           : null,
-        task: { ...task, baseline, chatMode: scheduledTaskChatModeFromColumn(chatMode) }
+        task: { ...task, baseline, chatMode: scheduledTaskChatModeFromColumn(chatMode), kind: scheduledTaskKindFromColumn(kind) }
       };
     },
 

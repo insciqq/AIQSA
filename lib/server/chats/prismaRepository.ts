@@ -6,6 +6,8 @@ import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
 import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeThreadGeneratedArtifact } from "../../contracts/chats";
+import { isScheduledTaskCheckOutcome } from "../../contracts/scheduledTasks";
+import { isMonitoringVerdictCall } from "../tools/monitoringVerdict";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
 import { decodeSessionContextStatus } from "../../contracts/sessionStatus";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
@@ -176,6 +178,7 @@ const assistantRunDetailSelect = {
   createdAt: true,
   errorPayload: true,
   id: true,
+  scheduledOutcome: true,
   knowledgeRuns: {
     orderBy: { invocationOrdinal: "asc" },
     select: {
@@ -271,6 +274,14 @@ const hydratedMessageSelect = {
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: { id: true, task: { select: { id: true, title: true } }, unseenAt: true },
     take: 1
+  },
+  // The settled monitoring outcome of the scheduled turn this user message
+  // started, kept on its run so it outlives the pruned occurrence history.
+  userModelRuns: {
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { scheduledOutcome: true },
+    take: 1,
+    where: { scheduledOccurrenceId: { not: null } }
   },
   status: true
 } satisfies Prisma.MessageSelect;
@@ -749,6 +760,8 @@ function serializeHydratedMessage(
   const modelRun = message.assistantModelRuns[0] ?? message.branchSourceModelRun ?? undefined;
   const followups = projectMessageFollowups(message);
   const scheduledRun = message.scheduledTaskOccurrences?.[0];
+  // A scheduled check's turn: the user message through its scheduled run, the answer through its own run.
+  const scheduledOutcome = message.role === "user" ? message.userModelRuns?.[0]?.scheduledOutcome : modelRun?.scheduledOutcome;
   const artifactSummary = modelRun
     ? summarizeMessageRunArtifacts(
         modelRun,
@@ -792,6 +805,7 @@ function serializeHydratedMessage(
     ...(scheduledRun ? { scheduledTask: {
       taskId: scheduledRun.task.id, taskRunId: scheduledRun.id, title: scheduledRun.task.title, unseen: scheduledRun.unseenAt !== null
     } } : {}),
+    ...(isScheduledTaskCheckOutcome(scheduledOutcome) ? { scheduledOutcome } : {}),
     status: message.status,
     toolActivity: modelRun ? summarizeMessageRunToolActivity(modelRun, viewerUserId) : null,
     workspaceActivity: modelRun ? summarizeMessageRunWorkspaceActivity(modelRun) : null
@@ -1021,7 +1035,9 @@ function toolBudgetWarning(
     return { kind: "rounds", limit: budgets?.maxToolRounds ?? 3 };
   }
   if (!budgets) return undefined;
-  const providerToolCalls = run.toolCalls.filter((call) => call.roundIndex > 0);
+  // A monitoring check's reserved verdict never counts against the budgets.
+  const providerToolCalls = run.toolCalls.filter((call) => call.roundIndex > 0 &&
+    !(isRecord(run.normalizedRequest) && isMonitoringVerdictCall(run.normalizedRequest, call.toolName)));
   if (providerToolCalls.length >= budgets.maxToolCalls) {
     return { kind: "calls", limit: budgets.maxToolCalls };
   }

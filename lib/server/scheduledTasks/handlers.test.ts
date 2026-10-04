@@ -15,14 +15,15 @@ const catalog: ScheduledTaskCatalog = {
 const draft = {
   title: "Morning brief", prompt: "fixture-private-prompt", schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow",
   modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false, toolsEnabled: true,
-  workspaceEnabled: false, chatMode: "new"
+  workspaceEnabled: false, chatMode: "new", kind: "standard"
 } as const;
 const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } satisfies ScheduledTaskSchedule;
 
 function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
     ...draft, id: "task-1", schedule: { kind: "daily", time: "09:00" }, status: "active", pauseReason: null,
-    nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false, revision: 2,
+    completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null,
+    unseenResult: false, revision: 2,
     createdAt: "2026-10-01T08:00:00.000Z", updatedAt: "2026-10-01T08:00:00.000Z", ...overrides
   };
 }
@@ -96,8 +97,13 @@ describe("scheduled tasks owner API", () => {
       [{ ...draft, modelId: "model-plain", searchEnabled: false, toolsEnabled: false, workspaceEnabled: true },
         "scheduled_task_workspace_unavailable"],
       [{ ...draft, schedule: { ...hourly, everyHours: 5 }, chatMode: "same" }, "scheduled_task_schedule_invalid"],
-      // Hourly tasks always continue in one chat.
-      [{ ...draft, schedule: hourly }, "scheduled_task_chat_mode_invalid"]
+      // Hourly and monitoring tasks always continue in one chat.
+      [{ ...draft, schedule: hourly }, "scheduled_task_chat_mode_invalid"],
+      [{ ...draft, kind: "monitoring" }, "scheduled_task_chat_mode_invalid"],
+      [{ ...draft, kind: "watch" }, "scheduled_task_invalid"],
+      [{ ...draft, kind: undefined }, "scheduled_task_invalid"],
+      // A monitoring check reports through a tool: its model must call tools.
+      [{ ...draft, kind: "monitoring", chatMode: "same", modelId: "model-plain", searchEnabled: false }, "scheduled_task_model_cannot_report"]
     ];
     for (const [body, error] of cases) {
       const response = await f.handlers.create(json("POST", body));
@@ -211,6 +217,29 @@ describe("scheduled tasks owner API", () => {
     expect(await back.json()).toEqual({ error: "scheduled_task_chat_mode_invalid" });
     expect((await same.handlers.update(patch({ expectedRevision: 2, chatMode: "rotating" }), "task-1")).status).toBe(400);
     expect(same.store.update).not.toHaveBeenCalled();
+  });
+
+  it("switches the type only with one chat and a tool-calling model, readmitting the model", async () => {
+    const f = fixture(task({ chatMode: "same" }));
+    await f.handlers.update(patch({ expectedRevision: 2, kind: "monitoring" }), "task-1");
+    expect(lastWrite(f)).toMatchObject({ draft: { chatMode: "same", kind: "monitoring" }, nextRunAt: undefined, status: "active" });
+    const separate = fixture();
+    const newChat = await separate.handlers.update(patch({ expectedRevision: 2, kind: "monitoring" }), "task-1");
+    expect([newChat.status, await newChat.json()]).toEqual([400, { error: "scheduled_task_chat_mode_invalid" }]);
+    // A paused task's type change still readmits its model.
+    const paused = fixture(task({ chatMode: "same", modelId: "model-plain", nextRunAt: null, searchEnabled: false, status: "paused" }));
+    const plain = await paused.handlers.update(patch({ expectedRevision: 2, kind: "monitoring" }), "task-1");
+    expect(await plain.json()).toEqual({ error: "scheduled_task_model_cannot_report" });
+    expect(paused.store.update).not.toHaveBeenCalled();
+    expect((await paused.handlers.update(patch({ expectedRevision: 2, kind: "daily" }), "task-1")).status).toBe(400);
+  });
+
+  it("resumes a task that reached its goal from now", async () => {
+    const goal = fixture(task({ chatMode: "same", completionReason: "goal_reached", kind: "monitoring", nextRunAt: null, status: "completed" }));
+    await goal.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1");
+    expect(lastWrite(goal)).toMatchObject({ nextRunAt: null, status: "completed" });
+    await goal.handlers.update(patch({ expectedRevision: 2, status: "active" }), "task-1");
+    expect(lastWrite(goal)).toMatchObject({ nextRunAt: new Date("2026-10-05T06:00:00.000Z"), status: "active" });
   });
 
   it("reactivates a completed once task only for a new future schedule", async () => {

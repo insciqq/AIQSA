@@ -8,13 +8,13 @@ import {
 /**
  * Called by run creation inside its transaction: the PENDING occurrence
  * without a run becomes RUNNING with the new run, chat, user message, the
- * task generation and the run's source health (the relevant sources its plan
- * lacked, if any), and the task points at the run's chat (bookkeeping, no
- * revision change). The task must still be at the revision and generation the
- * runner read before preparation, so a pause or edit made meanwhile fences
- * this admission. A missing, already linked or fenced occurrence throws,
- * rolling the whole admission back, so an occurrence without a run proves
- * that no run was created for it.
+ * task generation and revision and the run's source health (the relevant
+ * sources its plan lacked, if any), and the task points at the run's chat
+ * (bookkeeping, no revision change). The task must still be at the revision
+ * and generation the runner read before preparation, so a pause or edit made
+ * meanwhile fences this admission. A missing, already linked or fenced
+ * occurrence throws, rolling the whole admission back, so an occurrence
+ * without a run proves that no run was created for it.
  */
 export async function linkScheduledTaskOccurrence(
   tx: Prisma.TransactionClient,
@@ -43,7 +43,7 @@ export async function linkScheduledTaskOccurrence(
     SET "state" = 'RUNNING'::"ScheduledTaskOccurrenceState", "runId" = ${input.runId}, "chatId" = ${input.chatId},
       "userMessageId" = ${input.userMessageId}, "startedAt" = COALESCE("startedAt", ${input.now}),
       "leaseExpiresAt" = NULL, "reasonCode" = NULL, "taskGeneration" = ${input.taskGeneration},
-      "unavailableSources" = ${unavailableSources}::jsonb
+      "taskRevision" = ${input.taskRevision}, "unavailableSources" = ${unavailableSources}::jsonb
     WHERE "id" = ${input.occurrenceId} AND "taskId" = ${input.taskId} AND "userId" = ${input.userId}
       AND "state" = 'PENDING'::"ScheduledTaskOccurrenceState" AND "runId" IS NULL
   `);
