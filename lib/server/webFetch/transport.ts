@@ -1,5 +1,6 @@
 import { brotliDecompressSync, inflateRawSync, unzipSync } from "node:zlib";
 import { mcpSafeFetch, McpSafeFetchError, networkAddressScope, type McpSafeFetchOptions } from "../mcp/safeFetch";
+import { FETCH_URL_MAX_LENGTH } from "./urls";
 
 /**
  * The page transport of `fetch_url`: GET only, over the pinned SSRF-safe
@@ -208,7 +209,9 @@ export async function fetchWebPage(url: string, options: WebFetchOptions): Promi
       } catch {
         throw new WebFetchError("fetch_redirect_invalid", { dispatched });
       }
-      if (current.protocol !== "http:" && current.protocol !== "https:") {
+      current.hash = "";
+      // A redirect target obeys the requested URL's length bound too.
+      if ((current.protocol !== "http:" && current.protocol !== "https:") || current.href.length > FETCH_URL_MAX_LENGTH) {
         throw new WebFetchError("fetch_redirect_invalid", { dispatched });
       }
     }

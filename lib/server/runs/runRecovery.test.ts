@@ -47,6 +47,8 @@ import { createSkillToolService, type SkillToolRepository } from "../skills/tool
 import { isSkillToolName } from "../tools/skill";
 import { scheduledTaskCreatedResult } from "../tools/scheduledTaskCreation";
 import { createFetchUrlSession } from "../tools/fetchUrl";
+import { extractPage as extractPageText } from "../webFetch/extract";
+import type { FetchedPageInput } from "../webFetch/pageText";
 import { fetchUrlDigest } from "../webFetch/urls";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
@@ -10562,6 +10564,8 @@ describe("page reader recovery", () => {
   const readCall = { arguments: { url }, id: "provider-call-1", name: "fetch_url" };
   const page = () => vi.fn(async () => ({ body: new TextEncoder().encode("<p>Fresh news for the reader.</p>"),
     contentType: "text/html", finalUrl: url, status: 200 }));
+  // The same extraction as the parser process, run here.
+  const extractPage = async (input: FetchedPageInput) => extractPageText(input);
 
   it.each(["running", "complete", "pending"] as const)(
     "reuses a settled read, settles an interrupted one without sending it again, and sends a never-claimed one once (%s)",
@@ -10571,7 +10575,7 @@ describe("page reader recovery", () => {
       const harness = createHarness({ providers: { openai: adapter } });
       const plan = { version: 1 as const, userUrlDigests: [fetchUrlDigest(url)] };
       // The settled result exactly as the live run stored it.
-      const settled = snapshotToolExecutionResult(await createFetchUrlSession({ fetchPage: page(), plan, scheduled: false })
+      const settled = snapshotToolExecutionResult(await createFetchUrlSession({ extractPage, fetchPage: page(), plan, scheduled: false })
         .execute(readCall, { persistedToolCallId: "stored-call-1", signal: new AbortController().signal }), 64_000);
       const call: PersistedToolLoopCall = { ...persistedRecoveryCall(state), arguments: { url }, mcpBinding: null,
         toolName: "fetch_url", ...(state === "complete" ? { result: settled } : {}) };
@@ -10581,7 +10585,7 @@ describe("page reader recovery", () => {
       installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, fetchUrl: plan, toolMode: "auto",
         searchPlan: { mode: "all_selected", options: [] } } });
       const fetchPage = page();
-      await refreshProviderRunIfNeeded({ ...harness.deps, fetchPage }, runId, userId);
+      await refreshProviderRunIfNeeded({ ...harness.deps, extractPage, fetchPage }, runId, userId);
       expect(harness.state.recoveredErrors).toEqual([]);
       // Only a call that never left is sent, once; settled and interrupted calls never reach the network again.
       expect(fetchPage).toHaveBeenCalledTimes(state === "pending" ? 1 : 0);

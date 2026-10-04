@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { DocumentParserError } from "../parsing/errors";
 import { readOnlyRunTool } from "../runs/toolReadOnly";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { extractPage as extractPageText } from "../webFetch/extract";
+import type { FetchedPageInput } from "../webFetch/pageText";
 import { WebFetchError, type WebFetchOptions, type WebFetchResponse } from "../webFetch/transport";
 import { fetchUrlDigest } from "../webFetch/urls";
 import {
@@ -29,11 +32,14 @@ function json(result: ToolExecutionResult): Record<string, unknown> {
   return part.value as Record<string, unknown>;
 }
 
+// The same extraction as the parser process, run here.
+const inProcess = async (input: FetchedPageInput) => extractPageText(input);
+
 function session(options: Partial<Parameters<typeof createFetchUrlSession>[0]> = {}) {
   const fetchPage = options.fetchPage ?? vi.fn(async (_url: string, _options: WebFetchOptions) => page());
   const created = createFetchUrlSession({
-    now: () => new Date("2026-10-05T09:00:00.000Z"), plan: { userUrlDigests: [fetchUrlDigest(USER_URL)], version: 1 },
-    scheduled: false, ...options, fetchPage
+    extractPage: inProcess, now: () => new Date("2026-10-05T09:00:00.000Z"),
+    plan: { userUrlDigests: [fetchUrlDigest(USER_URL)], version: 1 }, scheduled: false, ...options, fetchPage
   });
   return { fetchPage, ...created };
 }
@@ -154,6 +160,32 @@ describe("fetch_url failures", () => {
     const s = session({ fetchPage: vi.fn(async () => { throw new DOMException("stopped", "AbortError"); }) });
     await expect(s.execute(call(USER_URL), { persistedToolCallId: "c1", signal })).rejects.toMatchObject({ name: "AbortError" });
   });
+
+  it.each([
+    [new DocumentParserError("parser_timeout", "inline"), "fetch_timeout"],
+    [new DOMException("Page processing deadline exceeded", "TimeoutError"), "fetch_timeout"],
+    [new DocumentParserError("parser_output_too_large", "inline"), "fetch_too_large"],
+    [new DocumentParserError("parser_rejected", "inline"), "fetch_no_readable_text"],
+    [new DocumentParserError("parser_unavailable", "inline"), "fetch_reader_unavailable"],
+    [new DocumentParserError("parser_invalid_output", "inline"), "fetch_reader_unavailable"],
+    [new Error("unexpected"), "fetch_reader_unavailable"]
+  ] as const)("settles a parse that ended in %s as %s after the page was sent", async (error, code) => {
+    const s = session({ extractPage: vi.fn(async () => { throw error; }) });
+    const result = await s.execute(call(USER_URL), { persistedToolCallId: "c1", signal });
+    expect(json(result).error).toBe(code);
+    expect(result.rawPreview).toMatchObject({ fetchUrl: { outcome: code, dispatched: true } });
+    expect(s.fetchPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the run's cancellation during the parse instead of settling a failure", async () => {
+    const controller = new AbortController();
+    const s = session({ extractPage: vi.fn(async () => {
+      controller.abort(new DOMException("stopped", "AbortError"));
+      throw controller.signal.reason;
+    }) });
+    await expect(s.execute(call(USER_URL), { persistedToolCallId: "c1", signal: controller.signal }))
+      .rejects.toMatchObject({ name: "AbortError" });
+  });
 });
 
 describe("fetch_url per-run cap and cache", () => {
@@ -200,6 +232,26 @@ describe("fetch_url per-run cap and cache", () => {
     // Four persisted calls may have sent a request: one more is allowed, then the cap holds.
     expect((await recovered.execute(call(urls[4]), { persistedToolCallId: "n2", signal })).status).toBe("complete");
     expect(json(await recovered.execute(call(urls[5]), { persistedToolCallId: "n3", signal })).error).toBe("fetch_url_limit_reached");
+  });
+
+  it("frees the cap slot of a call it refused, whether a seed saw that call running before or after", async () => {
+    const plan = { userUrlDigests: urls.map(fetchUrlDigest), version: 1 as const };
+    // Refused first: the persisted row is still running when a later call seeds.
+    const before = session({ loadCalls: async () => [{ id: "refused", result: null, state: "running" }], plan });
+    expect(json(await before.execute(call("https://unlisted.example/"), { persistedToolCallId: "refused", signal })).error)
+      .toBe("fetch_url_not_in_conversation");
+    for (const [index, url] of urls.slice(0, 5).entries()) {
+      expect((await before.execute(call(url), { persistedToolCallId: `b${index}`, signal })).status).toBe("complete");
+    }
+    // Seeded first: the concurrent refusal settles after the seed counted it.
+    const after = session({ loadCalls: async () => [{ id: "refused", result: null, state: "running" }], plan });
+    expect((await after.execute(call(urls[0]), { persistedToolCallId: "a0", signal })).status).toBe("complete");
+    await after.execute(call("https://unlisted.example/"), { persistedToolCallId: "refused", signal });
+    for (const [index, url] of urls.slice(1, 5).entries()) {
+      expect((await after.execute(call(url), { persistedToolCallId: `a${index + 1}`, signal })).status).toBe("complete");
+    }
+    expect(before.fetchPage).toHaveBeenCalledTimes(5);
+    expect(after.fetchPage).toHaveBeenCalledTimes(5);
   });
 
   it("settles an interrupted call without sending it again", () => {

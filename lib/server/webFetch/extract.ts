@@ -1,58 +1,29 @@
 import { Readability } from "@mozilla/readability";
 import { DOMParser } from "linkedom";
 import { parse as parse5, serialize } from "parse5";
+import {
+  PAGE_SNIFF_BYTES,
+  PAGE_TEXT_MAX_CHARACTERS,
+  PAGE_TITLE_MAX_CHARACTERS,
+  pageContentKind,
+  type ExtractedPage,
+  type PageContentKind
+} from "./pageKinds";
 
-/**
+/*
  * Turns one fetched body into bounded, Markdown-like page text: HTML main
  * content through Readability (headings, lists, links, code and tables kept),
  * plain text, Markdown and JSON as text. Nothing is executed: the DOM has no
  * script engine, network or resource loading. Pure and synchronous over an
- * already bounded body.
+ * already bounded body, and loaded and run only inside the disposable parser
+ * process (`pageText.ts`): parse5's tokenizer and tree builder are quadratic
+ * on hostile markup, which no in-process bound can rule out. The application
+ * imports only `pageKinds.ts`.
  */
-export const PAGE_TEXT_MAX_CHARACTERS = 24_000;
-/** Larger documents skip Readability and read as plain text (its scoring would stall the event loop). */
+
+/** Larger documents skip Readability and read as plain text, bounding the parser process's work. */
 const READABILITY_MAX_ELEMENTS = 15_000;
 const MAX_RENDER_DEPTH = 256;
-const TITLE_MAX_CHARACTERS = 300;
-const SNIFF_BYTES = 4_096;
-
-export type PageContentKind = "html" | "json" | "markdown" | "text";
-
-export type ExtractedPage = Readonly<{
-  kind: PageContentKind;
-  text: string;
-  title: string | null;
-  truncated: boolean;
-}>;
-
-function mediaType(contentType: string | null): string | null {
-  const type = contentType?.split(";", 1)[0]?.trim().toLowerCase();
-  return type ? type : null;
-}
-
-/**
- * The kind a declared media type is read as: HTML, XHTML, plain text,
- * Markdown and JSON. `sniff` for a missing type (decided from the body);
- * null refuses everything else, PDFs and images included.
- */
-export function declaredPageContentKind(contentType: string | null): PageContentKind | "sniff" | null {
-  const type = mediaType(contentType);
-  if (type === null) return "sniff";
-  if (type === "text/html" || type === "application/xhtml+xml") return "html";
-  if (type === "text/plain") return "text";
-  if (type === "text/markdown" || type === "text/x-markdown") return "markdown";
-  if (type === "application/json" || type === "text/json" || /^application\/[a-z0-9.+-]+\+json$/u.test(type)) return "json";
-  return null;
-}
-
-function sniffedKind(bytes: Uint8Array): PageContentKind | null {
-  const head = bytes.subarray(0, SNIFF_BYTES);
-  if (head.includes(0)) return null;
-  const start = Buffer.from(head).toString("latin1").trimStart().toLowerCase();
-  if (/^(?:﻿)?(?:<!doctype html|<html|<head|<body|<!--)/u.test(start)) return "html";
-  if (start.startsWith("{") || start.startsWith("[")) return "json";
-  return "text";
-}
 
 function decoder(label: string | null | undefined, fatal = false): TextDecoder | null {
   if (!label) return null;
@@ -77,7 +48,7 @@ function headerCharset(contentType: string | null): string | null {
 
 /** `<meta charset>` or `<meta http-equiv content="...charset=...">` within the first bytes. */
 function metaCharset(bytes: Uint8Array): string | null {
-  const head = Buffer.from(bytes.subarray(0, SNIFF_BYTES)).toString("latin1");
+  const head = Buffer.from(bytes.subarray(0, PAGE_SNIFF_BYTES)).toString("latin1");
   const match = /<meta[^>]*?charset\s*=\s*["']?\s*([a-z0-9_:.+-]+)/iu.exec(head);
   return match?.[1] ?? null;
 }
@@ -114,7 +85,7 @@ function cleanText(text: string): string {
 function collapseTitle(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const title = value.replace(/\s+/gu, " ").trim();
-  return title ? title.slice(0, TITLE_MAX_CHARACTERS) : null;
+  return title ? title.slice(0, PAGE_TITLE_MAX_CHARACTERS) : null;
 }
 
 const SKIPPED = new Set(["AREA", "AUDIO", "BUTTON", "CANVAS", "EMBED", "FRAME", "FRAMESET", "HEAD", "IFRAME", "IMG", "INPUT",
@@ -255,14 +226,20 @@ function render(node: DomNode, context: RenderContext, depth: number, preformatt
   }
 }
 
-/** Trailing spaces go, and runs of spaces after text collapse outside code fences (indentation stays). */
-function tidy(markdown: string): string {
+/**
+ * Trailing blanks go and blank-line runs shrink. Rendered HTML also collapses
+ * runs of spaces after text outside code fences (indentation stays).
+ */
+function tidy(text: string, collapseInline = true): string {
   let fenced = false;
-  return cleanText(markdown)
+  return cleanText(text)
     .split("\n").map((line) => {
       if (/^`{3,}/u.test(line)) fenced = !fenced;
-      const trimmed = line.replace(/[ \t]+$/u, "");
-      return fenced ? trimmed : trimmed.replace(/(\S)[ \t]{2,}/gu, "$1 ");
+      // A loop, not /[ \t]+$/: that pattern backtracks quadratically over inner blank runs.
+      let end = line.length;
+      while (end > 0 && (line[end - 1] === " " || line[end - 1] === "\t")) end -= 1;
+      const trimmed = line.slice(0, end);
+      return fenced || !collapseInline ? trimmed : trimmed.replace(/(\S)[ \t]{2,}/gu, "$1 ");
     }).join("\n")
     .replace(/\n{3,}/gu, "\n\n")
     .trim();
@@ -322,9 +299,8 @@ function plainTreeText(root: Tree5Node, budget: number): Readonly<{ text: string
 }
 
 /**
- * Trees beyond these bounds read as plain text: parse5's serializer and
- * Readability recurse per nesting level, and Readability's scoring is the
- * costly synchronous step (about 0.7 s for 30,000 elements).
+ * Trees deeper than this read as plain text: parse5's serializer and
+ * Readability recurse per nesting level and would run out of stack.
  */
 const MAX_HTML_DEPTH = 400;
 
@@ -347,85 +323,7 @@ function baseUrl(value: string): URL | null {
   }
 }
 
-/** Above this pre-parse nesting estimate no DOM is built: parse5's tree builder slows quadratically with depth. */
-const MAX_TAG_NESTING = 1_000;
-const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-/** Elements a parser closes implicitly; they never nest without bound. */
-const IMPLIED_END_TAGS = new Set(["body", "caption", "colgroup", "dd", "dt", "head", "html", "li", "optgroup", "option", "p", "rb",
-  "rp", "rt", "rtc", "tbody", "td", "tfoot", "th", "thead", "tr"]);
-const RAW_TEXT_TAGS = new Set(["noscript", "script", "style", "template", "textarea", "title", "xmp"]);
-const tagPattern = () => /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)[^>]*>/gu;
-
-/** The end of a raw-text element's content (or the input), found without a parser. */
-function rawTextEnd(lower: string, name: string, from: number): number {
-  const end = lower.indexOf(`</${name}`, from);
-  return end < 0 ? lower.length : end;
-}
-
-/** A linear estimate of the deepest element nesting, stopping once it passes `limit`. */
-function exceedsNesting(html: string, limit: number): boolean {
-  const lower = html.toLowerCase();
-  let depth = 0;
-  const pattern = tagPattern();
-  for (let match = pattern.exec(lower); match; match = pattern.exec(lower)) {
-    const name = match[2]!;
-    if (match[1]) {
-      if (!VOID_TAGS.has(name) && !IMPLIED_END_TAGS.has(name)) depth = Math.max(0, depth - 1);
-      continue;
-    }
-    if (RAW_TEXT_TAGS.has(name)) {
-      pattern.lastIndex = rawTextEnd(lower, name, pattern.lastIndex);
-      continue;
-    }
-    if (VOID_TAGS.has(name) || IMPLIED_END_TAGS.has(name) || match[0].endsWith("/>")) continue;
-    if ((depth += 1) > limit) return true;
-  }
-  return false;
-}
-
-const ENTITIES: Readonly<Record<string, string>> = { amp: "&", apos: "'", gt: ">", lt: "<", nbsp: " ", quot: "\"" };
-
-function decodeEntities(text: string): string {
-  return text.replace(/&(#x[0-9a-f]{1,6}|#[0-9]{1,7}|[a-z]{2,6});/giu, (entity, body: string) => {
-    if (body[0] !== "#") return ENTITIES[body.toLowerCase()] ?? entity;
-    const code = body[1] === "x" || body[1] === "X" ? Number.parseInt(body.slice(2), 16) : Number.parseInt(body.slice(1), 10);
-    return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : "";
-  });
-}
-
-/**
- * The text of markup too deeply nested for any DOM, in one linear pass: raw
- * text elements and skipped elements stay out, block tags break lines, every
- * other tag goes, a few entities are decoded, and the bound stops the pass.
- */
-function strippedText(html: string, budget: number): Readonly<{ text: string; title: string | null; stopped: boolean }> {
-  const lower = html.toLowerCase();
-  const parts: string[] = [];
-  let produced = 0;
-  let title: string | null = null;
-  let cursor = 0;
-  const pattern = tagPattern();
-  for (let match = pattern.exec(lower); match && produced <= budget; match = pattern.exec(lower)) {
-    const text = decodeEntities(html.slice(cursor, match.index)).replace(/\s+/gu, " ");
-    parts.push(text);
-    produced += text.length;
-    const name = match[2]!.toUpperCase();
-    cursor = pattern.lastIndex;
-    if (!match[1] && (RAW_TEXT_TAGS.has(name.toLowerCase()) || name === "SVG" || name === "MATH")) {
-      const end = rawTextEnd(lower, name.toLowerCase(), cursor);
-      if (name === "TITLE" && title === null) title = collapseTitle(decodeEntities(html.slice(cursor, end)));
-      cursor = end;
-      pattern.lastIndex = end;
-      continue;
-    }
-    if (BLOCKS.has(name) || /^H[1-6]$/u.test(name) || name === "BR" || name === "LI" || name === "TR" || name === "PRE") parts.push("\n\n");
-  }
-  if (produced <= budget) parts.push(decodeEntities(html.slice(cursor)).replace(/\s+/gu, " "));
-  return { stopped: produced > budget, text: tidy(parts.join("")), title };
-}
-
 function htmlText(html: string, finalUrl: string, budget: number): Readonly<{ text: string; title: string | null; stopped: boolean }> {
-  if (exceedsNesting(html, MAX_TAG_NESTING)) return strippedText(html, budget);
   // linkedom keeps only what an explicit <body> holds; parse5 builds the tree
   // as browsers do (implied html/head/body, foster parenting) and serializes
   // it complete, so a fragment or a page without those tags reads the same.
@@ -470,14 +368,6 @@ function readableText(document5: string, finalUrl: string, budget: number): Read
   return { stopped: context.produced > budget, text, title };
 }
 
-function jsonText(text: string): string {
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2);
-  } catch {
-    return text;
-  }
-}
-
 /**
  * The bounded page text of one fetched body. Null when the body is not one of
  * the accepted kinds (a missing media type is sniffed: HTML markers, JSON, or
@@ -489,8 +379,7 @@ export function extractPage(input: Readonly<{
   finalUrl: string;
   maxCharacters?: number;
 }>): ExtractedPage | null {
-  const declared = declaredPageContentKind(input.contentType);
-  const kind = declared === "sniff" ? sniffedKind(input.body) : declared;
+  const kind = pageContentKind(input.body, input.contentType);
   if (kind === null) return null;
   const maxCharacters = input.maxCharacters ?? PAGE_TEXT_MAX_CHARACTERS;
   const decoded = decodePageBytes(input.body, input.contentType, kind);
@@ -499,7 +388,9 @@ export function extractPage(input: Readonly<{
     const bounded = truncatePageText(page.text, maxCharacters);
     return { kind, text: bounded.text, title: page.title, truncated: bounded.truncated || page.stopped };
   }
-  const text = tidy(kind === "json" ? jsonText(decoded) : decoded);
+  // Text, Markdown and JSON keep their own spacing. JSON is not re-indented:
+  // indentation grows with nesting depth and would amplify a hostile document.
+  const text = tidy(decoded, false);
   const bounded = truncatePageText(text, maxCharacters);
   return { kind, text: bounded.text, title: null, truncated: bounded.truncated };
 }

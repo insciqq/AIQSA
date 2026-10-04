@@ -390,6 +390,8 @@ export type RunRecoveryDeps = Readonly<{
   images?: import("../images/service").ImageGenerationService;
   /** Test seam of the page reader's transport; production uses the pinned SSRF-safe one. */
   fetchPage?: import("../tools/fetchUrl").FetchUrlSessionDeps["fetchPage"];
+  /** Test seam of the page reader's text extraction; production parses in the disposable parser process. */
+  extractPage?: import("../tools/fetchUrl").FetchUrlSessionDeps["extractPage"];
   getAttachmentLimits?: () => RunAttachmentLimits;
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
@@ -2655,6 +2657,7 @@ async function recoverCheckpointedToolLoop(
         plan: fetchPlan,
         scheduled: fetchPlan.taskUrlDigests !== undefined,
         ...(deps.fetchPage ? { fetchPage: deps.fetchPage } : {}),
+        ...(deps.extractPage ? { extractPage: deps.extractPage } : {}),
         ...(loadSearchUrls ? { loadSearchUrls: () => loadSearchUrls({ runId: run.id, userId: run.userId }) } : {}),
         ...(loadFetchCalls ? { loadCalls: () => loadFetchCalls({ runId: run.id, userId: run.userId }) } : {})
       }) : null,

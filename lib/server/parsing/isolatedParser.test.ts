@@ -8,9 +8,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { utils, write, type BookType } from "xlsx";
 import { extractTextDocument } from "../uploads/textDocuments";
+import { extractPage } from "../webFetch/extract";
 import { createDocumentParserBoundary } from "./boundary";
 import {
   extractHtmlTextInIsolation,
+  extractWebPageInIsolation,
   parseSpreadsheetInIsolation,
   type SpawnIsolatedParser
 } from "./isolatedParser";
@@ -145,6 +147,23 @@ describe("isolated document parser process", () => {
     }
   }, 30_000);
 
+  it("extracts a fetched page exactly as in process", async () => {
+    const cyrillic = Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]); // "Привет" in windows-1251
+    const pages = [
+      { body: Buffer.concat([Buffer.from("<html><head><meta charset=\"windows-1251\"><title>T</title></head><body><article><h1>"),
+        cyrillic, Buffer.from("</h1><p>See <a href=\"/next\">next</a>.</p></article></body></html>")]),
+      contentType: "text/html" },
+      { body: Buffer.from("plain   text\n\n\n\nsecond"), contentType: "text/plain; charset=utf-8" },
+      { body: Buffer.from("{\"a\":[1,2]}"), contentType: null }
+    ];
+    for (const page of pages) {
+      const request = { ...page, finalUrl: "https://news.example/today", maxCharacters: 1_000 };
+      await expect(extractWebPageInIsolation(request)).resolves.toEqual(extractPage(request));
+    }
+    await expect(extractWebPageInIsolation({ body: Buffer.from([0, 1, 2]), contentType: null,
+      finalUrl: "https://news.example/", maxCharacters: 1_000 })).resolves.toBeNull();
+  }, 60_000);
+
   it("stops an overdue parser together with its process group", async () => {
     const pids: number[] = [];
     await expect(parseSpreadsheetInIsolation({
@@ -256,6 +275,13 @@ describe("isolated document parser process", () => {
         bytes: Buffer.from("<a".repeat(512 * 1_024)),
         maxChars: 1_000
       }).then((result) => result.truncated);
+      // Stray end tags keep parse5 scanning an ever deeper stack: quadratic work, ended by the deadline.
+      outcomes.quadraticPage = await extractWebPageInIsolation({
+        body: Buffer.from("<div></x>".repeat(200_000)),
+        contentType: "text/html",
+        finalUrl: "https://hostile.example/",
+        maxCharacters: 1_000
+      }, { timeoutMs: 2_000 }).then(() => "read", (error: { code?: string }) => error.code);
     } finally {
       probing = false;
       await probe;
@@ -265,6 +291,7 @@ describe("isolated document parser process", () => {
       declaredZero: "parser_rejected",
       forgedTrailingDirectory: 10,
       localMismatch: "parser_rejected",
+      quadraticPage: "parser_timeout",
       unclosedTags: true,
       zip64Extra: "parser_rejected"
     });

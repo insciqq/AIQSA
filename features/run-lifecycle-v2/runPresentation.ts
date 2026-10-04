@@ -286,6 +286,7 @@ function describeFetchCallV2(call: ToolActivityIdentity, phase: "cancelled" | "f
     }
     case "fetch_network_error": return `Couldn't read ${target}: the site is unreachable`;
     case "fetch_no_readable_text": return `No readable text on ${target}`;
+    case "fetch_reader_unavailable": return `Couldn't read ${target}: page reading is unavailable`;
     case "fetch_url_limit_reached": return `Skipped ${target}: page limit for this answer reached`;
     case "fetch_url_interrupted": return `Reading ${target} was interrupted`;
     default: return `Couldn't read ${target}`;

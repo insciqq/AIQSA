@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { declaredPageContentKind, decodePageBytes, extractPage, truncatePageText } from "./extract";
+import { decodePageBytes, extractPage, truncatePageText } from "./extract";
+import { declaredPageContentKind } from "./pageKinds";
 
 const encoder = new TextEncoder();
 
@@ -38,8 +39,11 @@ describe("accepted media types", () => {
   it("sniffs a missing media type and refuses binary bodies", () => {
     expect(extractPage({ body: encoder.encode("<html><body><p>Hello sniffed</p></body></html>"), contentType: null,
       finalUrl: "https://example.com/" })?.kind).toBe("html");
+    // A UTF-8 byte order mark before the markup still sniffs as HTML.
+    expect(extractPage({ body: encoder.encode("﻿<!DOCTYPE html><p>Marked</p>"), contentType: null,
+      finalUrl: "https://example.com/" })).toMatchObject({ kind: "html", text: "Marked" });
     expect(extractPage({ body: encoder.encode("{\"a\":1}"), contentType: null, finalUrl: "https://example.com/" })?.text)
-      .toBe("{\n  \"a\": 1\n}");
+      .toBe("{\"a\":1}");
     expect(extractPage({ body: Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0, 1, 2]), contentType: null,
       finalUrl: "https://example.com/" })).toBeNull();
   });
@@ -132,8 +136,9 @@ describe("hostile pages", () => {
   const html = (body: string) => extractPage({ body: encoder.encode(`<html><body>${body}</body></html>`), contentType: "text/html",
     finalUrl: "https://example.com/" });
 
+  // Quadratic markup is the parser process's concern (isolatedParser.test.ts); these stay within its budget.
   it("reads deeply nested and unclosed markup within the render bound", () => {
-    expect(html(`${"<div>".repeat(20_000)}deep text${"</div>".repeat(20_000)}`)?.text).toContain("deep text");
+    expect(html(`${"<div>".repeat(5_000)}deep text${"</div>".repeat(5_000)}`)?.text).toContain("deep text");
     expect(html(`${"<b><i>".repeat(5_000)}unclosed text`)?.text).toContain("unclosed text");
   });
 
@@ -144,14 +149,13 @@ describe("hostile pages", () => {
     expect(page.text).toContain("Paragraph text for a very long page.");
   });
 
-  it("reads megabytes of nested tags in one linear pass without building a DOM", () => {
+  it("trims megabytes of blanks inside one text line in linear time", () => {
     const started = performance.now();
-    const page = html(`<title>Deep &amp; wide</title>${"<div><span>".repeat(200_000)}deep&nbsp;text &#x41;&#66;` +
-      `<script>var s = "<div>".repeat(9)</script>`)!;
-    expect(performance.now() - started).toBeLessThan(3_000);
-    expect(page.title).toBe("Deep & wide");
-    expect(page.text).toContain("deep text AB");
-    expect(page.text).not.toContain("repeat");
+    const page = extractPage({ body: encoder.encode(`a${" ".repeat(2_000_000)}b\n`), contentType: "text/plain",
+      finalUrl: "https://example.com/" })!;
+    expect(performance.now() - started).toBeLessThan(2_000);
+    // The cut lands inside the blank run, whose tail is then trimmed.
+    expect(page).toMatchObject({ text: "a", truncated: true });
   });
 
   it("keeps markup, entities and control characters inert text", () => {

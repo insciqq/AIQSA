@@ -326,6 +326,8 @@ export type RunExecutionInput = Readonly<{
   images?: import("../images/service").ImageGenerationService;
   /** Test seam of the page reader's transport; production uses the pinned SSRF-safe one. */
   fetchPage?: import("../tools/fetchUrl").FetchUrlSessionDeps["fetchPage"];
+  /** Test seam of the page reader's text extraction; production parses in the disposable parser process. */
+  extractPage?: import("../tools/fetchUrl").FetchUrlSessionDeps["extractPage"];
   adapter: ProviderAdapter;
   /** Names a personal chat after its first answer; absent on recovery paths. */
   chatTitleGenerator?: ChatTitleGenerator;
@@ -2202,6 +2204,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           scheduled: fetchPlan.taskUrlDigests !== undefined,
           followupTexts: () => followups?.entries.map((entry) => entry.text) ?? [],
           ...(input.fetchPage ? { fetchPage: input.fetchPage } : {}),
+          ...(input.extractPage ? { extractPage: input.extractPage } : {}),
           ...(loadSearchUrls ? { loadSearchUrls: () => loadSearchUrls({ runId, userId: input.userId }) } : {}),
           ...(loadFetchCalls ? { loadCalls: () => loadFetchCalls({ runId, userId: input.userId }) } : {})
         }) : null;

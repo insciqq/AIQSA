@@ -18,6 +18,7 @@ async function main() {
   const { utils, write } = require("xlsx");
   const {
     extractHtmlTextInIsolation,
+    extractWebPageInIsolation,
     parseSpreadsheetInIsolation
   } = require("../lib/server/parsing/isolatedParser.ts");
 
@@ -46,7 +47,20 @@ async function main() {
     { kind: "html", text: "Release\n\ncheck", truncated: false },
     "isolated_parser_release_html_invalid"
   );
-  console.log(JSON.stringify({ architecture: process.arch, csv: true, html: true, xlsx: true }));
+
+  // fetch_url pages need parse5, linkedom and Readability in the pruned tools image.
+  const page = await extractWebPageInIsolation({
+    body: Buffer.from("<title>Release</title><script>probe()</script><article><h1>Page</h1><p>Check.</p></article>"),
+    contentType: "text/html",
+    finalUrl: "https://release.invalid/",
+    maxCharacters: 100
+  });
+  assert.deepEqual(
+    page,
+    { kind: "html", text: "## Page\n\nCheck.", title: "Release", truncated: false },
+    "isolated_parser_release_page_invalid"
+  );
+  console.log(JSON.stringify({ architecture: process.arch, csv: true, html: true, page: true, xlsx: true }));
 }
 
 main().catch(() => {

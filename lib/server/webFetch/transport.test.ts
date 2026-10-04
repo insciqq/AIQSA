@@ -106,6 +106,15 @@ describe("redirects", () => {
     expect((await failure(fetchWebPage("https://example.com/", { ...acceptsAll, ...two }))).code).toBe("fetch_url_credentials");
     const three = harness({ "https://example.com/": () => redirect("file:///etc/passwd") });
     expect((await failure(fetchWebPage("https://example.com/", { ...acceptsAll, ...three }))).code).toBe("fetch_redirect_invalid");
+    // A target beyond the URL length bound is refused; a long fragment alone is dropped, not counted.
+    const long = harness({ "https://example.com/": () => redirect(`/${"a".repeat(2_100)}`) });
+    expect((await failure(fetchWebPage("https://example.com/", { ...acceptsAll, ...long }))).code).toBe("fetch_redirect_invalid");
+    expect(long.dispatch).toHaveBeenCalledTimes(1);
+    const fragment = harness({
+      "https://example.com/": () => redirect(`/next#${"f".repeat(4_000)}`),
+      "https://example.com/next": () => html("<p>Done</p>")
+    });
+    expect((await fetchWebPage("https://example.com/", { ...acceptsAll, ...fragment })).finalUrl).toBe("https://example.com/next");
     const loop = harness(Object.fromEntries(Array.from({ length: 7 }, (_, index) =>
       [`https://example.com/${index}`, () => redirect(`/${index + 1}`)])));
     expect((await failure(fetchWebPage("https://example.com/0", { ...acceptsAll, ...loop }))).code).toBe("fetch_redirect_limit");

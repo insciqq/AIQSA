@@ -54,6 +54,17 @@ describe("URLs written in text", () => {
     ]);
   });
 
+  it("trims long bracket runs in linear time and skips candidates no URL can be", () => {
+    expect(extractFetchUrls(`(see https://a.example/x${")".repeat(3_000)}`)).toEqual(["https://a.example/x"]);
+    const started = performance.now();
+    expect(extractFetchUrls(`https://a.example/${")".repeat(1_000_000)} and https://b.example/`))
+      .toEqual(["https://b.example/"]);
+    // Balanced brackets stay part of the URL.
+    expect(extractFetchUrls(`https://c.example/${"a(".repeat(500)}${")".repeat(500)}`))
+      .toEqual([`https://c.example/${"a(".repeat(500)}${")".repeat(500)}`]);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
   it("bounds the digests of many texts", () => {
     const digests = fetchUrlDigestsOf(["https://a.example/1 https://a.example/2", "https://a.example/3"], 2);
     expect(digests).toEqual([
