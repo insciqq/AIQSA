@@ -1,44 +1,17 @@
 import type { PrismaClient } from "@prisma/client";
-import type { RunFollowupState } from "../../contracts/runFollowups";
-import { messageFollowupSelect } from "../runs/prismaRepositoryFollowups";
-import { projectMessageFollowups } from "../runs/runFollowups";
 import {
-  chatExportFileBaseName,
-  chatExportMarkdown,
-  chatExportText
-} from "../../domain/chatExport";
+  CHAT_ARCHIVE_FORMAT,
+  CHAT_ARCHIVE_MANIFEST_PATH,
+  CHAT_ARCHIVE_VERSION,
+  type ChatArchiveManifest
+} from "../../contracts/chatExport";
+import { chatExportFileBaseName } from "../../domain/chatExport";
+import { chatExportActiveBranchMarkdown, chatExportDocument } from "../../domain/chatExportDocument";
 import type { RequestAuthResolver } from "../auth/requestAuth";
+import { chatExportChatSelect, loadChatExportSource } from "./exportChat";
 import { tarGzipStream, type TarEntry } from "./tarArchive";
 
-type ExportPrismaClient = Pick<PrismaClient, "chat" | "message">;
-
-type ExportMessageRow = {
-  followups?: RunFollowupState;
-  content: unknown;
-  id: string;
-  modelId: string | null;
-  parentMessageId: string | null;
-  provider: string | null;
-  role: string;
-  status: string;
-};
-
-function activeBranch(rows: readonly ExportMessageRow[], leafId: string | null): ExportMessageRow[] {
-  if (!leafId) return [];
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  const path: ExportMessageRow[] = [];
-  const seen = new Set<string>();
-  let cursor: string | null = leafId;
-  while (cursor) {
-    if (seen.has(cursor)) return [];
-    const row = byId.get(cursor);
-    if (!row) return [];
-    seen.add(cursor);
-    path.push(row);
-    cursor = row.parentMessageId;
-  }
-  return path.reverse();
-}
+type ExportPrismaClient = Pick<PrismaClient, "attachment" | "chat" | "message">;
 
 function uniqueBaseName(used: Set<string>, base: string): string {
   let candidate = base;
@@ -53,8 +26,9 @@ function uniqueBaseName(used: Set<string>, base: string): string {
 
 /**
  * Every personal chat (active and archived; never Project or Temporary chats)
- * as the same Markdown and JSON documents the per-chat export produces, one
- * pair per chat. Archived chats live under `archived/`.
+ * as the same `aiqsa.chat` JSON and Markdown documents the single-chat export
+ * produces, one pair per chat, after a root `manifest.json` that lists them.
+ * Archived chats live under `archived/`.
  */
 export async function* personalChatExportEntries(
   db: ExportPrismaClient,
@@ -63,13 +37,7 @@ export async function* personalChatExportEntries(
 ): AsyncGenerator<TarEntry> {
   const chats = await db.chat.findMany({
     orderBy: { updatedAt: "desc" },
-    select: {
-      activeLeafMessageId: true,
-      archived: true,
-      id: true,
-      title: true,
-      updatedAt: true
-    },
+    select: chatExportChatSelect,
     where: {
       memoryMode: { not: "TEMPORARY" },
       permanentDeletionAt: null,
@@ -78,47 +46,39 @@ export async function* personalChatExportEntries(
     }
   });
   const used = new Set<string>();
-  for (const chat of chats) {
-    const rows = await db.message.findMany({
-      select: {
-        ...messageFollowupSelect,
-        content: true,
-        id: true,
-        modelId: true,
-        parentMessageId: true,
-        provider: true,
-        role: true,
-        status: true
-      },
-      where: { chatId: chat.id }
-    });
-    const branch = activeBranch(rows.map(row => {
-      const followups = projectMessageFollowups(row);
-      return { ...row, ...(followups ? { followups } : {}) };
-    }), chat.activeLeafMessageId);
-    const base = uniqueBaseName(
+  const planned = chats.map((chat) => ({
+    base: uniqueBaseName(
       used,
       `${chat.archived ? "archived/" : ""}${chatExportFileBaseName(chat.title, chat.updatedAt)}`
-    );
+    ),
+    chat
+  }));
+  const manifest: ChatArchiveManifest = {
+    format: CHAT_ARCHIVE_FORMAT,
+    version: CHAT_ARCHIVE_VERSION,
+    exportedAt: exportedAt.toISOString(),
+    chats: planned.map(({ base, chat }) => ({
+      path: `${base}.json`,
+      markdownPath: `${base}.md`,
+      title: chat.title,
+      archived: chat.archived,
+      updatedAt: chat.updatedAt.toISOString()
+    }))
+  };
+  yield {
+    content: `${JSON.stringify(manifest, null, 2)}\n`,
+    mtime: exportedAt,
+    path: CHAT_ARCHIVE_MANIFEST_PATH
+  };
+  for (const { base, chat } of planned) {
+    const source = await loadChatExportSource(db, chat);
     yield {
-      content: chatExportMarkdown(chat.title, branch),
+      content: chatExportActiveBranchMarkdown(source),
       mtime: chat.updatedAt,
       path: `${base}.md`
     };
     yield {
-      content: JSON.stringify({
-        archived: chat.archived,
-        exportedAt: exportedAt.toISOString(),
-        messages: branch.map((message) => ({
-          ...(message.followups?.entries.length ? { followups: message.followups.entries } : {}),
-          content: chatExportText(message.content),
-          modelId: message.modelId,
-          provider: message.provider,
-          role: message.role,
-          status: message.status
-        })),
-        title: chat.title
-      }, null, 2),
+      content: `${JSON.stringify(chatExportDocument(source, exportedAt), null, 2)}\n`,
       mtime: chat.updatedAt,
       path: `${base}.json`
     };
