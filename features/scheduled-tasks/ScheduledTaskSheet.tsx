@@ -19,18 +19,23 @@ import {
 } from "@/lib/contracts/scheduledTasks";
 import {
   SCHEDULED_TASK_EVERY_HOURS_OPTIONS,
+  SCHEDULED_TASK_KIND_OPTIONS,
   SCHEDULED_TASK_REPEAT_OPTIONS,
   catalogModel,
+  modelCanUseTools,
   modelHasSearch,
   modelKey,
   sameScheduledTaskDraft,
+  scheduledTaskCapabilityBlockers,
   scheduledTaskDraftChatMode,
+  scheduledTaskForcedChatReason,
   scheduledTaskPreview,
   scheduledTaskToday,
   type ScheduledTaskEditorDraft,
   type ScheduledTaskFieldErrors,
   type ScheduledTaskHourlyWindow,
-  type ScheduledTaskRepeat
+  type ScheduledTaskRepeat,
+  type ScheduledTaskWorkspaceAvailability
 } from "./scheduledTaskDraft";
 import {
   SCHEDULED_TASK_CHAT_MODE_LABELS,
@@ -72,10 +77,12 @@ export type ScheduledTaskSheetProps = Readonly<{
   original: ScheduledTask | null;
   recentRuns: ScheduledTaskRecentRuns | null;
   viewerTimeZone: string;
+  /** The installation's Workspace availability; the task's model decides the rest. */
+  workspace?: ScheduledTaskWorkspaceAvailability;
 }>;
 
-function FieldError({ id, children }: Readonly<{ id: string; children: ReactNode }>) {
-  return <p className="v2-scheduled-field-error" id={id} role="alert">{children}</p>;
+function FieldError({ id, children, live = true }: Readonly<{ id: string; children: ReactNode; live?: boolean }>) {
+  return <p className="v2-scheduled-field-error" id={id} role={live ? "alert" : undefined}>{children}</p>;
 }
 
 function DayChips({ days, labelId, onToggle }: Readonly<{
@@ -108,7 +115,7 @@ function toggled(days: readonly ScheduledTaskWeekday[], day: ScheduledTaskWeekda
 /** Create and edit sheet: one form, a live next-run preview and the task's recent runs. */
 export function ScheduledTaskSheet({
   busy, catalog, draft, emailAvailable, errors, initialDraft, notice, onChange, onClose, onOpenRunChat, onRunsShown, onSubmit,
-  original, recentRuns, viewerTimeZone
+  original, recentRuns, viewerTimeZone, workspace = "unknown"
 }: ScheduledTaskSheetProps) {
   const formId = useId();
   const ids = {
@@ -116,7 +123,8 @@ export function ScheduledTaskSheet({
     days: useId(), dayOfMonth: useId(), date: useId(), timeZone: useId(), model: useId(), search: useId(),
     searchHelp: useId(), email: useId(), emailHelp: useId(), form: useId(), monthHint: useId(),
     scheduleHeading: useId(), answerHeading: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
-    chatMode: useId(), chatModeHint: useId()
+    chatMode: useId(), chatModeHint: useId(), kind: useId(), kindHint: useId(), tools: useId(), toolsHelp: useId(),
+    workspace: useId(), workspaceHelp: useId()
   };
   const titleInput = useRef<HTMLInputElement>(null);
   /** The navigation waiting for a discard answer: closing, or leaving for a run's chat. */
@@ -142,7 +150,17 @@ export function ScheduledTaskSheet({
   const preview = scheduledTaskPreview(draft, original, now);
   const promptLength = Array.from(draft.prompt).length;
   const hourly = draft.repeat === "hourly";
+  const monitoring = draft.kind === "monitoring";
   const chatMode = scheduledTaskDraftChatMode(draft);
+  const forcedChat = scheduledTaskForcedChatReason(draft);
+  const blockers = scheduledTaskCapabilityBlockers(catalog, draft, workspace);
+  // A blocked choice the task already has stays visible and can be turned off; saving explains it.
+  const kindError = errors.kind ?? (monitoring ? blockers.monitoring : null);
+  const toolsReason = blockers.tools ?? "Lets each run use your MCP tools and Skills in Auto mode, as in a chat.";
+  const workspaceReason = blockers.workspace ?? (workspace === "runtime_unavailable"
+    ? "Workspace is unavailable right now. Runs that need it try again later."
+    : chatMode === "same" ? "Runs share this task's Workspace, so its files stay from run to run."
+      : "Each run starts with an empty Workspace in its new chat.");
   const leave = (proceed: () => void) => {
     if (busy) return;
     if (dirty) setPendingLeave(() => proceed);
@@ -156,10 +174,13 @@ export function ScheduledTaskSheet({
   const changeModel = (key: string) => {
     const model = models.find((candidate) => modelKey(candidate) === key);
     if (!model) return;
+    const tools = modelCanUseTools(model);
     onChange({
       modelId: model.modelId,
       provider: model.provider,
-      ...(draft.searchEnabled && !modelHasSearch(catalog, model) ? { searchEnabled: false } : {})
+      ...(draft.searchEnabled && !modelHasSearch(catalog, model) ? { searchEnabled: false } : {}),
+      ...(!tools && draft.toolsEnabled ? { toolsEnabled: false } : {}),
+      ...(!tools && draft.workspaceEnabled ? { workspaceEnabled: false } : {})
     });
   };
   const describedBy = (...entries: (string | false | null | undefined)[]) => entries.filter(Boolean).join(" ") || undefined;
@@ -218,13 +239,36 @@ export function ScheduledTaskSheet({
             />
             {errors.title ? <FieldError id={`${ids.title}-error`}>{errors.title}</FieldError> : null}
           </div>
+          <fieldset className="v2-scheduled-choice" id={ids.kind}
+            aria-describedby={describedBy(ids.kindHint, kindError && `${ids.kind}-error`)}>
+            <legend className="v2-scheduled-label">Type</legend>
+            <div className="v2-scheduled-options" data-inline="">
+              {SCHEDULED_TASK_KIND_OPTIONS.map((option) => (
+                <label key={option.value} className="v2-scheduled-option">
+                  <input
+                    type="radio"
+                    name={`${formId}-kind`}
+                    checked={draft.kind === option.value}
+                    onChange={() => onChange({ kind: option.value })}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
+            <p className="v2-scheduled-hint" id={ids.kindHint}>
+              Monitoring reports only when something changed and can stop itself when the goal is reached.
+            </p>
+            {kindError ? <FieldError id={`${ids.kind}-error`} live={Boolean(errors.kind)}>{kindError}</FieldError> : null}
+          </fieldset>
           <div className="v2-scheduled-control">
             <label htmlFor={ids.prompt}>Instructions</label>
             <textarea
               id={ids.prompt}
               className={`${field} v2-scheduled-prompt`}
               rows={5}
-              placeholder="Summarize the most important technology news from the last day in five bullet points."
+              placeholder={monitoring
+                ? "Tell me when a new stable release of the project is published. Stop once version 2.0 is out."
+                : "Summarize the most important technology news from the last day in five bullet points."}
               value={draft.prompt}
               aria-invalid={Boolean(errors.prompt) || undefined}
               aria-describedby={describedBy(promptLength >= PROMPT_COUNTER_FROM && ids.promptCount, errors.prompt && `${ids.prompt}-error`)}
@@ -383,7 +427,7 @@ export function ScheduledTaskSheet({
               {errors.model ? <FieldError id={`${ids.model}-error`}>{errors.model}</FieldError> : null}
             </div>
             <fieldset className="v2-scheduled-choice" id={ids.chatMode}
-              aria-describedby={describedBy(hourly && ids.chatModeHint, errors.chatMode && `${ids.chatMode}-error`)}>
+              aria-describedby={describedBy(forcedChat && ids.chatModeHint, errors.chatMode && `${ids.chatMode}-error`)}>
               <legend className="v2-scheduled-label">Chat</legend>
               <div className="v2-scheduled-options">
                 {CHAT_MODES.map((mode) => (
@@ -392,14 +436,14 @@ export function ScheduledTaskSheet({
                       type="radio"
                       name={`${formId}-chat-mode`}
                       checked={chatMode === mode}
-                      disabled={hourly && mode === "new"}
+                      disabled={Boolean(forcedChat) && mode === "new"}
                       onChange={() => onChange({ chatMode: mode })}
                     />
                     <span>{SCHEDULED_TASK_CHAT_MODE_LABELS[mode]}</span>
                   </label>
                 ))}
               </div>
-              {hourly ? <p className="v2-scheduled-hint" id={ids.chatModeHint}>Hourly tasks always continue in one chat.</p> : null}
+              {forcedChat ? <p className="v2-scheduled-hint" id={ids.chatModeHint}>{forcedChat}</p> : null}
               {errors.chatMode ? <FieldError id={`${ids.chatMode}-error`}>{errors.chatMode}</FieldError> : null}
             </fieldset>
             <div className="v2-scheduled-toggle">
@@ -419,6 +463,34 @@ export function ScheduledTaskSheet({
                 onChange={(searchEnabled) => onChange({ searchEnabled })}
               />
               {errors.search ? <FieldError id={`${ids.search}-error`}>{errors.search}</FieldError> : null}
+            </div>
+            <div className="v2-scheduled-toggle">
+              <span className="v2-scheduled-toggle-copy">
+                <span id={ids.tools} className="v2-scheduled-label">Tools (MCP and Skills)</span>
+                <span id={ids.toolsHelp} className="v2-scheduled-hint">{toolsReason}</span>
+              </span>
+              <UiV2Switch
+                checked={draft.toolsEnabled}
+                disabled={busy || (Boolean(blockers.tools) && !draft.toolsEnabled)}
+                label="Tools (MCP and Skills)"
+                aria-describedby={describedBy(ids.toolsHelp, errors.tools && `${ids.tools}-error`)}
+                onChange={(toolsEnabled) => onChange({ toolsEnabled })}
+              />
+              {errors.tools ? <FieldError id={`${ids.tools}-error`}>{errors.tools}</FieldError> : null}
+            </div>
+            <div className="v2-scheduled-toggle">
+              <span className="v2-scheduled-toggle-copy">
+                <span id={ids.workspace} className="v2-scheduled-label">Workspace</span>
+                <span id={ids.workspaceHelp} className="v2-scheduled-hint">{workspaceReason}</span>
+              </span>
+              <UiV2Switch
+                checked={draft.workspaceEnabled}
+                disabled={busy || (Boolean(blockers.workspace) && !draft.workspaceEnabled)}
+                label="Workspace"
+                aria-describedby={describedBy(ids.workspaceHelp, errors.workspace && `${ids.workspace}-error`)}
+                onChange={(workspaceEnabled) => onChange({ workspaceEnabled })}
+              />
+              {errors.workspace ? <FieldError id={`${ids.workspace}-error`}>{errors.workspace}</FieldError> : null}
             </div>
             {emailAvailable ? (
               <div className="v2-scheduled-toggle">
@@ -499,6 +571,7 @@ function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Read
                       <span className="v2-scheduled-run-outcome">
                         {run.unseen ? <><span className="v2-scheduled-unread" aria-hidden="true" /><span className="sr-only">New result: </span></> : null}
                         {row.outcome}
+                        {row.sources.map((source, index) => <span key={`${index}:${source}`} className="v2-scheduled-run-source">{source}</span>)}
                       </span>
                       {chatId ? (
                         <button type="button" className="v2-scheduled-run-chat v2-focusable"

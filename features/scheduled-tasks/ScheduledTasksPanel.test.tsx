@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ScheduledTask, ScheduledTaskListResponse } from "@/lib/contracts/scheduledTasks";
+import type { ScheduledTask, ScheduledTaskListResponse, ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
 import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
+import type { ScheduledTaskWorkspaceAvailability } from "./scheduledTaskDraft";
 import {
   createScheduledTask,
   deleteScheduledTask,
@@ -42,9 +43,9 @@ function listed(tasks: ScheduledTask[], emailAvailable = false): ScheduledTaskLi
   return { tasks, limits: { maxActive: 10, maxActiveHourly: 3, maxTotal: 50 }, emailAvailable };
 }
 
-function renderPanel(onOpenChat = vi.fn()) {
+function renderPanel(onOpenChat = vi.fn(), workspace: ScheduledTaskWorkspaceAvailability = "available") {
   account += 1;
-  render(<ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} onOpenChat={onOpenChat} />);
+  render(<ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} onOpenChat={onOpenChat} workspace={workspace} />);
   return { onOpenChat };
 }
 
@@ -320,6 +321,110 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.click(within(confirm).getByRole("button", { name: "Delete task" }));
     expect(await screen.findByTestId("scheduled-tasks-empty")).toBeInTheDocument();
     expect(remove).toHaveBeenCalledWith(task.id);
+  });
+
+  it("offers a monitoring type that continues in one chat and needs a model that can call tools", async () => {
+    list.mockResolvedValue(listed([]));
+    create.mockResolvedValue(scheduledTaskFixture({ id: "new", chatMode: "new" }));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "New task" }));
+    const sheet = screen.getByRole("dialog", { name: "New scheduled task" });
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Release watch" } });
+    fireEvent.change(within(sheet).getByLabelText("Instructions"), { target: { value: "Tell me when 2.0 ships." } });
+    const type = within(sheet).getByRole("group", { name: "Type" });
+    expect(within(type).getByRole("radio", { name: "Regular" })).toBeChecked();
+    expect(type).toHaveAccessibleDescription("Monitoring reports only when something changed and can stop itself when the goal is reached.");
+    expect(within(sheet).getByRole("radio", { name: "Each run starts a new chat" })).toBeChecked();
+
+    fireEvent.click(within(type).getByRole("radio", { name: "Monitoring" }));
+    const chat = within(sheet).getByRole("group", { name: "Chat" });
+    expect(within(chat).getByRole("radio", { name: "Each run starts a new chat" })).toBeDisabled();
+    expect(within(chat).getByRole("radio", { name: "Continue in this task's chat" })).toBeChecked();
+    expect(chat).toHaveAccessibleDescription("Monitoring compares each check with the last result, so it always continues in one chat.");
+
+    // A model without tool calling cannot report a check: the reason shows at once, and its switches turn off.
+    expect(within(sheet).getByRole("switch", { name: "Tools (MCP and Skills)" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.change(within(sheet).getByLabelText("Model"), { target: { value: "provider-a:model-c" } });
+    expect(type).toHaveAccessibleDescription(/Monitoring needs a model that can use tools\. Choose another model\./u);
+    for (const name of ["Tools (MCP and Skills)", "Workspace"]) {
+      const control = within(sheet).getByRole("switch", { name });
+      expect(control).toHaveAttribute("aria-checked", "false");
+      expect(control).toBeDisabled();
+      expect(control).toHaveAccessibleDescription("Not available with this model.");
+    }
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create task" }));
+    expect(within(sheet).getByRole("alert")).toHaveTextContent("Monitoring needs a model that can use tools. Choose another model.");
+    expect(create).not.toHaveBeenCalled();
+
+    // Back to Regular: the owner's own chat choice returns and the task saves.
+    fireEvent.click(within(type).getByRole("radio", { name: "Regular" }));
+    expect(within(chat).getByRole("radio", { name: "Each run starts a new chat" })).toBeChecked();
+    expect(within(sheet).queryByText(/Monitoring needs a model/u)).toBeNull();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create task" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "standard", chatMode: "new", modelId: "model-c", toolsEnabled: false, workspaceEnabled: false
+    })));
+  });
+
+  it("starts the tool switches from the composer defaults, explains a Workspace the administrator turned off and shows save refusals inline", async () => {
+    list.mockResolvedValue(listed([]));
+    create.mockRejectedValueOnce(new ScheduledTaskApiError("scheduled_task_tools_unavailable", 400));
+    renderPanel(vi.fn(), "installation_disabled");
+    fireEvent.click(await screen.findByRole("button", { name: "New task" }));
+    const sheet = screen.getByRole("dialog", { name: "New scheduled task" });
+    const tools = within(sheet).getByRole("switch", { name: "Tools (MCP and Skills)" });
+    expect(tools).toHaveAttribute("aria-checked", "true");
+    expect(tools).toHaveAccessibleDescription("Lets each run use your MCP tools and Skills in Auto mode, as in a chat.");
+    const workspace = within(sheet).getByRole("switch", { name: "Workspace" });
+    expect(workspace).toHaveAttribute("aria-checked", "false");
+    expect(workspace).toBeDisabled();
+    expect(workspace).toHaveAccessibleDescription("Workspace is turned off by the administrator.");
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Inbox" } });
+    fireEvent.change(within(sheet).getByLabelText("Instructions"), { target: { value: "Check mail." } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create task" }));
+    const error = await within(sheet).findByText("This model cannot use tools. Turn tools off or choose another model.");
+    expect(tools.getAttribute("aria-describedby")).toContain(error.id);
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ toolsEnabled: true, workspaceEnabled: false }));
+  });
+
+  it("labels monitoring tasks, keeps Resume for a reached goal and shows check outcomes and missing sources in the history", async () => {
+    const watching = scheduledTaskFixture({ id: "watch", title: "Release watch", kind: "monitoring", chatId: "chat-w" });
+    const done = scheduledTaskFixture({ id: "done", title: "Ticket watch", kind: "monitoring", status: "completed", nextRunAt: null,
+      completionReason: "goal_reached", schedule: { kind: "daily", time: "09:00" },
+      lastRun: { scheduledFor: "2026-10-03T08:00:00.000Z", state: "completed", reasonCode: "goal_reached", finishedAt: "2026-10-03T08:01:00.000Z" } });
+    list.mockResolvedValue(listed([watching, done]));
+    update.mockResolvedValueOnce({ ...done, status: "active", completionReason: null, nextRunAt: "2026-10-05T08:00:00.000Z", revision: 2 });
+    const run = (id: string, reasonCode: string, extra: Partial<ScheduledTaskRun> = {}): ScheduledTaskRun => ({
+      id, scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode,
+      startedAt: "2026-10-02T08:00:01.000Z", finishedAt: "2026-10-02T08:01:00.000Z", chatId: "chat-w", unseen: false,
+      unavailableSources: [], ...extra
+    });
+    detail.mockResolvedValueOnce({ task: watching, recentRuns: [
+      run("r3", "could_not_check", { unavailableSources: [{ name: "Release tracker", reason: "mcp_reauthorization_required" }] }),
+      run("r2", "no_update"),
+      run("r1", "baseline")
+    ] });
+    renderPanel();
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("Monitoring · Next run Tue 6 Oct, 09:00");
+    expect(rows[1]).toHaveTextContent("Monitoring · Goal reached — completed");
+    expect(rows[1]).toHaveTextContent("Last run Sat 3 Oct, 09:00 · Goal reached");
+    const resume = within(rows[1]!).getByRole("switch", { name: "Run Ticket watch on schedule" });
+    expect(resume).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(resume);
+    await waitFor(() => expect(update).toHaveBeenCalledWith("done", { expectedRevision: 1, status: "active" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Release watch" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit scheduled task" });
+    expect(within(sheet).getByRole("radio", { name: "Monitoring" })).toBeChecked();
+    const history = await within(sheet).findByRole("region", { name: "Recent runs" });
+    const entries = within(history).getAllByRole("listitem");
+    expect(entries[0]).toHaveAttribute("data-tone", "attention");
+    expect(entries[0]).toHaveTextContent("Could not check: a source was unavailableRelease tracker needs sign-in.");
+    expect(entries[1]).toHaveAttribute("data-tone", "quiet");
+    expect(entries[1]).toHaveTextContent("No update: nothing changed since the last shown result");
+    expect(entries[2]).toHaveTextContent("First check: the starting point later checks compare with");
   });
 
   it("disables New task at the active limit with the reason", async () => {

@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { ChatDetailWire, ChatMessageWire } from "../../lib/contracts/chats";
-import type { ScheduledTask, ScheduledTaskRun, ScheduledTaskWeekday } from "../../lib/contracts/scheduledTasks";
+import type {
+  ScheduledTask,
+  ScheduledTaskCheckOutcome,
+  ScheduledTaskRun,
+  ScheduledTaskWeekday
+} from "../../lib/contracts/scheduledTasks";
 import { matrixCatalog } from "./shell/catalog";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction } from "./shell/page";
@@ -12,6 +17,7 @@ import { signInWithLocalToken } from "./support/localAuth";
 const now = new Date("2026-10-04T10:00:00.000Z");
 const model = matrixCatalog.models[0]!;
 const chatId = "scheduled-brief-chat";
+const watchChatId = "scheduled-watch-chat";
 const touchSizes = [{ width: 390, height: 844 }, { width: 844, height: 390 }];
 const workdays: ScheduledTaskWeekday[] = ["mon", "tue", "wed", "thu", "fri"];
 
@@ -59,7 +65,39 @@ const listFixture: ScheduledTask[] = [
     lastRun: { scheduledFor: "2026-09-30T09:00:00.000Z", state: "skipped", reasonCode: "missed", finishedAt: "2026-09-30T21:00:00.000Z" } })
 ];
 
+// Monitoring: one task watching in its chat, one that reached its goal; both use tools.
+const monitoringFixture: ScheduledTask[] = [
+  task({
+    id: "watch", title: "Release watch", kind: "monitoring", chatId: watchChatId, toolsEnabled: true,
+    schedule: { kind: "hourly", everyHours: 4, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
+    nextRunAt: "2026-10-04T12:00:00.000Z",
+    lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: "update", finishedAt: "2026-10-04T08:01:30.000Z" }
+  }),
+  task({
+    id: "tickets", title: "Concert ticket watch", kind: "monitoring", chatId: "scheduled-tickets-chat", toolsEnabled: true,
+    workspaceEnabled: true, status: "completed", nextRunAt: null, completionReason: "goal_reached",
+    lastRun: { scheduledFor: "2026-10-03T08:00:00.000Z", state: "completed", reasonCode: "goal_reached", finishedAt: "2026-10-03T08:02:00.000Z" }
+  })
+];
+
+function checkRun(id: string, scheduledFor: string, reasonCode: ScheduledTaskCheckOutcome,
+  extra: Partial<ScheduledTaskRun> = {}): ScheduledTaskRun {
+  const startedAt = new Date(Date.parse(scheduledFor) + 2_000).toISOString();
+  const finishedAt = new Date(Date.parse(scheduledFor) + 90_000).toISOString();
+  return { id, scheduledFor, trigger: "schedule", state: "completed", reasonCode, startedAt, finishedAt,
+    chatId: "scheduled-tickets-chat", unseen: false, unavailableSources: [], ...extra };
+}
+
 const runsFixture: Readonly<Record<string, readonly ScheduledTaskRun[]>> = {
+  tickets: [
+    checkRun("tickets-run-5", "2026-10-03T08:00:00.000Z", "goal_reached"),
+    checkRun("tickets-run-4", "2026-10-02T08:00:00.000Z", "could_not_check", {
+      unavailableSources: [{ name: "Ticket marketplace", reason: "mcp_reauthorization_required" }]
+    }),
+    checkRun("tickets-run-3", "2026-10-01T08:00:00.000Z", "no_update"),
+    checkRun("tickets-run-2", "2026-09-30T08:00:00.000Z", "no_update"),
+    checkRun("tickets-run-1", "2026-09-29T08:00:00.000Z", "baseline")
+  ],
   brief: [
     { id: "brief-run-3", scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
       startedAt: "2026-10-02T08:00:03.000Z", finishedAt: "2026-10-02T08:01:10.000Z", chatId, unseen: true, unavailableSources: [] },
@@ -157,24 +195,69 @@ function chatFixture(): ChatDetailWire {
   };
 }
 
-async function prepare(page: Page, tasks: readonly ScheduledTask[], theme: "dark" | "light" = "light") {
+/** A monitoring chat: its first check, checks with no update around one that could not check, then an update. */
+const watchChecks: readonly Readonly<{ answer: string; outcome: ScheduledTaskCheckOutcome }>[] = [
+  { outcome: "baseline", answer: "Watching: the latest release is 1.4.0, published on 28 September." },
+  { outcome: "no_update", answer: "Still 1.4.0. No new release since the last check." },
+  { outcome: "no_update", answer: "Still 1.4.0. The release page is unchanged." },
+  { outcome: "could_not_check", answer: "I could not reach the release tracker, so I could not check for a new release." },
+  { outcome: "no_update", answer: "Still 1.4.0. Nothing new in the changelog." },
+  { outcome: "no_update", answer: "Still 1.4.0. No new tags." },
+  { outcome: "no_update", answer: "Still 1.4.0. The download page is unchanged." },
+  { outcome: "update", answer: "Release 1.5.0 is out:\n\n- Faster sync.\n- A new export format." }
+];
+
+function watchChatFixture(): ChatDetailWire {
+  const updatedAt = "2026-10-04T08:01:30.000Z";
+  const messages: ChatMessageWire[] = [];
+  watchChecks.forEach((check, index) => {
+    const turn = `watch-${index + 1}`;
+    const marker = { taskId: "watch", taskRunId: `watch-run-${index + 1}`, title: "Release watch", unseen: false };
+    messages.push(message(`${turn}-question`, "user", "Tell me when a new release of the project is published.",
+      messages.at(-1)?.id ?? null, { scheduledTask: marker, scheduledOutcome: check.outcome }));
+    messages.push(message(`${turn}-answer`, "assistant", check.answer, `${turn}-question`, { scheduledOutcome: check.outcome }));
+  });
+  const leaf = messages.at(-1)!.id;
+  return {
+    assistant: null, id: watchChatId, title: "Release watch", createdAt: "2026-09-28T08:00:00.000Z", updatedAt,
+    activeLeafMessageId: leaf, defaultModelId: model.modelId, defaultProvider: model.provider, folderId: null,
+    pinned: false, messageCount: messages.length, usageStats: null, contextStats: { approximateActiveBranchInputTokens: 900 },
+    pageInfo: { activeLeafMessageId: leaf, beforeCursor: null, hasOlder: false, snapshotUpdatedAt: updatedAt },
+    workspace: { available: false, enabled: false, internetEnabled: false, sessionState: null },
+    messages
+  };
+}
+
+/** The navigation marker each fixture chat carries. */
+const chatMarkers: Readonly<Record<string, Readonly<{ taskId: string; unseen: boolean }>>> = {
+  [chatId]: { taskId: "brief", unseen: true },
+  [watchChatId]: { taskId: "watch", unseen: false }
+};
+
+async function prepare(page: Page, tasks: readonly ScheduledTask[], theme: "dark" | "light" = "light",
+  chats: readonly ChatDetailWire[] = [chatFixture()]) {
   await page.clock.setFixedTime(now);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.context().addCookies([{ name: "aiqsa.theme", value: theme, url: "http://127.0.0.1:3000" }]);
-  const chat = chatFixture();
-  await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
+  await installMatrixCatalogFixture(page, { chats, folders: [] });
   await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
+  // The installation offers Workspace, so the editor's switch depends only on the task's model.
+  await page.route("**/api/workspace", (route) => route.fulfill({ json: { workspace: {
+    available: true, enabled: false, internetEnabled: false, sessionState: null
+  } } }));
   await page.route("**/api/chats/compact?*", (route) => route.fulfill({ json: {
-    chats: [{ activeRun: false, assistant: null, folderId: null, id: chatId, title: chat.title, updatedAt: chat.updatedAt,
-      scheduledTask: { taskId: "brief", unseen: true } }],
+    chats: chats.map((chat) => ({ activeRun: false, assistant: null, folderId: null, id: chat.id, title: chat.title,
+      updatedAt: chat.updatedAt, scheduledTask: chatMarkers[chat.id] ?? null })),
     folders: [], nextCursor: null
   } }));
-  await page.route(`**/api/chats/${chatId}`, (route) => route.fulfill({ json: { chat } }));
-  await page.route(`**/api/chats/${chatId}/branches`, (route) => route.fulfill({ json: { branchGraph: {
-    activeLeafMessageId: chat.activeLeafMessageId, snapshotUpdatedAt: chat.updatedAt,
-    nodes: chat.messages.map((item) => ({ id: item.id, parentMessageId: item.parentMessageId, preview: String(item.content),
-      role: item.role, status: item.status }))
-  } } }));
+  for (const chat of chats) {
+    await page.route(`**/api/chats/${chat.id}`, (route) => route.fulfill({ json: { chat } }));
+    await page.route(`**/api/chats/${chat.id}/branches`, (route) => route.fulfill({ json: { branchGraph: {
+      activeLeafMessageId: chat.activeLeafMessageId, snapshotUpdatedAt: chat.updatedAt,
+      nodes: chat.messages.map((item) => ({ id: item.id, parentMessageId: item.parentMessageId, preview: String(item.content),
+        role: item.role, status: item.status }))
+    } } }));
+  }
   // A missed fixture must fail before it can dispatch a provider request.
   await page.route("**/api/chats/*/messages", (route) => route.request().method() === "POST"
     ? route.fulfill({ status: 409, json: { error: "unexpected_fixture_run" } }) : route.fallback());
@@ -265,7 +348,7 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
   expect(api.writes).toEqual([{ method: "POST", path: "", body: {
     title: "Weekly planning", prompt: "List three priorities for the coming week.",
     schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, timeZone: "Europe/London",
-    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: false,
+    modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: true,
     workspaceEnabled: false, chatMode: "new", kind: "standard"
   } }]);
   await expect(panel.getByRole("heading", { name: "Weekly planning" })).toBeFocused();
@@ -421,6 +504,154 @@ test("an unread scheduled chat shows a dot, clears only its rendered result and 
   await expect(page.getByTestId("library-v2").getByRole("tab", { name: "Scheduled" })).toHaveAttribute("aria-selected", "true");
 });
 
+test("monitoring tasks show their type, the editor offers Type and the tool switches, and the history names each check", async ({ page }, info) => {
+  const api = await prepare(page, [...listFixture.slice(0, 1), ...monitoringFixture]);
+  await runAccountMenuAction(page, "Scheduled");
+  const panel = page.getByTestId("scheduled-tasks-panel");
+  const rows = panel.getByRole("list", { name: "Scheduled tasks" }).getByRole("listitem");
+  const watch = rows.filter({ hasText: "Release watch" });
+  await expect(watch).toContainText("Monitoring · Next run Sun 4 Oct, 13:00");
+  await expect(watch).toContainText("Last run Sun 4 Oct, 09:00 · Update");
+  const tickets = rows.filter({ hasText: "Concert ticket watch" });
+  await expect(tickets).toContainText("Monitoring · Goal reached — completed");
+  await expect(tickets).toContainText("Last run Sat 3 Oct, 09:00 · Goal reached");
+  // A reached goal completes the task, and it can still be resumed.
+  await expect(tickets.getByRole("switch", { name: "Run Concert ticket watch on schedule", exact: true })).toHaveAttribute("aria-checked", "false");
+  await expect(rows.filter({ hasText: "Weekday news brief" })).not.toContainText("Monitoring");
+  await captureState(page, info, "scheduled-list-monitoring", {
+    anchor: tickets,
+    atEachSize: async () => {
+      await expectWithinViewport(page, tickets.getByRole("switch"));
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+
+  // The editor of a monitoring task: Type, the chat fixed to its own, the tool switches and the check history.
+  await panel.getByRole("button", { name: "More actions for Concert ticket watch", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+  const sheet = page.getByTestId("scheduled-task-sheet");
+  const dialog = sheet.getByRole("dialog", { name: "Edit scheduled task", exact: true });
+  const type = dialog.getByRole("group", { name: "Type", exact: true });
+  await expect(type.getByRole("radio", { name: "Monitoring", exact: true })).toBeChecked();
+  await expect(type).toContainText("Monitoring reports only when something changed and can stop itself when the goal is reached.");
+  const chat = dialog.getByRole("group", { name: "Chat", exact: true });
+  await expect(chat.getByRole("radio", { name: "Each run starts a new chat", exact: true })).toBeDisabled();
+  await expect(chat.getByRole("radio", { name: "Continue in this task's chat", exact: true })).toBeChecked();
+  await expect(chat).toContainText("Monitoring compares each check with the last result, so it always continues in one chat.");
+  const tools = dialog.getByRole("switch", { name: "Tools (MCP and Skills)", exact: true });
+  const workspace = dialog.getByRole("switch", { name: "Workspace", exact: true });
+  await expect(tools).toHaveAttribute("aria-checked", "true");
+  await expect(workspace).toHaveAttribute("aria-checked", "true");
+  await expect(workspace).toHaveAccessibleDescription("Runs share this task's Workspace, so its files stay from run to run.");
+  const runs = dialog.getByRole("region", { name: "Recent runs", exact: true });
+  const entries = runs.getByRole("listitem");
+  await expect(entries).toHaveCount(runsFixture.tickets!.length);
+  await expect(entries.nth(0)).toContainText("Goal reached — task completed");
+  await expect(entries.nth(1)).toContainText("Could not check: a source was unavailable");
+  await expect(entries.nth(1)).toContainText("Ticket marketplace needs sign-in.");
+  await expect(entries.nth(1)).toHaveAttribute("data-tone", "attention");
+  await expect(entries.nth(2)).toContainText("No update: nothing changed since the last shown result");
+  await expect(entries.nth(2)).toHaveAttribute("data-tone", "quiet");
+  await expect(entries.nth(4)).toContainText("First check: the starting point later checks compare with");
+  await expect(dialog).not.toContainText(/no_update|could_not_check|goal_reached|mcp_reauthorization_required/u);
+  await captureState(page, info, "scheduled-edit-monitoring", {
+    anchor: type,
+    atEachSize: async (step) => {
+      await expectWithinViewport(page, dialog);
+      expect(Math.round((await dialog.boundingBox())!.width)).toBe(sheetWidth(step));
+      await expectWithinViewport(page, type.getByRole("radio", { name: "Monitoring", exact: true }));
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+  await captureState(page, info, "scheduled-edit-monitoring-tools", {
+    anchor: workspace,
+    atEachSize: async () => {
+      await expectWithinViewport(page, tools);
+      await expectWithinViewport(page, workspace);
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+  await captureState(page, info, "scheduled-edit-monitoring-history", {
+    anchor: entries.nth(1),
+    atEachSize: async () => {
+      await expectWithinViewport(page, entries.nth(1));
+      await expectWithinViewport(page, sheet.getByRole("button", { name: "Save changes", exact: true }));
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+
+  // Back to Regular restores the owner's chat choice; no save leaves the editor.
+  await type.getByRole("radio", { name: "Regular", exact: true }).check();
+  await expect(chat.getByRole("radio", { name: "Continue in this task's chat", exact: true })).toBeChecked();
+  await expect(chat.getByRole("radio", { name: "Each run starts a new chat", exact: true })).toBeEnabled();
+  await type.getByRole("radio", { name: "Monitoring", exact: true }).check();
+  await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(sheet).toHaveCount(0);
+
+  // A new task starts with the composer's tool defaults and switches to monitoring in one chat.
+  await panel.getByRole("button", { name: "New task", exact: true }).click();
+  const create = sheet.getByRole("dialog", { name: "New scheduled task", exact: true });
+  await create.getByLabel("Name", { exact: true }).fill("Docs watch");
+  await create.getByRole("group", { name: "Type", exact: true }).getByRole("radio", { name: "Monitoring", exact: true }).check();
+  await create.getByLabel("Instructions", { exact: true }).fill("Tell me when the documentation changes.");
+  await expect(create.getByRole("switch", { name: "Tools (MCP and Skills)", exact: true })).toHaveAttribute("aria-checked", "true");
+  await expect(create.getByRole("switch", { name: "Workspace", exact: true })).toHaveAttribute("aria-checked", "false");
+  await expect(create.getByRole("switch", { name: "Workspace", exact: true }))
+    .toHaveAccessibleDescription("Runs share this task's Workspace, so its files stay from run to run.");
+  await create.getByRole("button", { name: "Create task", exact: true }).click();
+  await expect(sheet).toHaveCount(0);
+  expect(api.writes.at(-1)).toMatchObject({ method: "POST", path: "", body: {
+    title: "Docs watch", kind: "monitoring", chatMode: "same", toolsEnabled: true, workspaceEnabled: false
+  } });
+  expect(api.writes.filter((write) => write.method === "PATCH")).toEqual([]);
+});
+
+test("a monitoring chat folds checks with no update into one row and shows them unchanged on request", async ({ page }, info) => {
+  await prepare(page, monitoringFixture, "light", [chatFixture(), watchChatFixture()]);
+  if ((page.viewportSize()?.width ?? 0) < 768) await page.getByRole("button", { name: "Open sidebar" }).click();
+  await page.getByRole("treeitem", { name: "Release watch", exact: true }).click();
+  const thread = page.getByTestId("conversation-thread");
+  await expect(thread.getByText("Release 1.5.0 is out:")).toBeVisible();
+  const groups = page.getByTestId("scheduled-checks-row");
+  await expect(groups).toHaveCount(2);
+  await expect(groups.nth(0)).toHaveText(/2 checks with no update\s*·\s*Show/u);
+  await expect(groups.nth(1)).toHaveText(/3 checks with no update\s*·\s*Show/u);
+  // The first check, the one that could not check and the update stay visible; checks with no update do not.
+  await expect(thread.getByText("Watching: the latest release is 1.4.0")).toBeVisible();
+  await expect(thread.getByText("I could not reach the release tracker")).toBeVisible();
+  await expect(thread.getByText(/^Still 1\.4\.0/u)).toHaveCount(0);
+  const show = page.getByRole("button", { name: "Show 3 checks with no update", exact: true });
+  await expect(show).toHaveAttribute("aria-expanded", "false");
+  await captureState(page, info, "scheduled-transcript-checks-collapsed", {
+    anchor: groups.nth(1),
+    atEachSize: async () => {
+      await expectWithinViewport(page, show);
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+
+  // The toggle is a keyboard control; the checks appear unchanged, each with its own turn.
+  await show.focus();
+  await page.keyboard.press("Enter");
+  const hide = page.getByRole("button", { name: "Hide 3 checks with no update", exact: true });
+  await expect(hide).toHaveAttribute("aria-expanded", "true");
+  await expect(hide).toBeFocused();
+  for (const text of ["Still 1.4.0. Nothing new in the changelog.", "Still 1.4.0. No new tags.", "Still 1.4.0. The download page is unchanged."]) {
+    await expect(thread.getByText(text, { exact: true })).toBeVisible();
+  }
+  await expect(thread.getByText("Still 1.4.0. No new release since the last check.", { exact: true })).toHaveCount(0);
+  await captureState(page, info, "scheduled-transcript-checks-expanded", {
+    anchor: hide,
+    atEachSize: async () => {
+      await expectWithinViewport(page, hide);
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+  await page.keyboard.press("Space");
+  await expect(page.getByRole("button", { name: "Show 3 checks with no update", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(thread.getByText(/^Still 1\.4\.0/u)).toHaveCount(0);
+});
+
 test.describe("touch controls", () => {
   test.use({ hasTouch: true });
   test("rows and the editor keep touch-safe controls and reachable actions in both phone orientations", async ({ page }, info) => {
@@ -459,6 +690,44 @@ test.describe("touch controls", () => {
       await page.screenshot({ path: info.outputPath(`scheduled-sheet-hourly-touch-${size.width}x${size.height}.png`) });
       await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
       await sheet.getByRole("button", { name: "Confirm discard changes", exact: true }).click();
+      await expect(sheet).toHaveCount(0);
+      await page.getByRole("button", { name: "Back to chat", exact: true }).click();
+    }
+  });
+
+  test("the monitoring editor and folded checks keep touch-safe controls in both phone orientations", async ({ page }, info) => {
+    await prepare(page, monitoringFixture, "light", [chatFixture(), watchChatFixture()]);
+    await page.setViewportSize(touchSizes[0]!);
+    await page.getByRole("button", { name: "Open sidebar" }).click();
+    await page.getByRole("treeitem", { name: "Release watch", exact: true }).click();
+    const show = page.getByRole("button", { name: "Show 3 checks with no update", exact: true });
+    for (const size of touchSizes) {
+      await page.setViewportSize(size);
+      await show.scrollIntoViewIfNeeded();
+      await expectTouchSafe(show);
+      await expectWithinViewport(page, show);
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: info.outputPath(`scheduled-transcript-checks-touch-${size.width}x${size.height}.png`) });
+    }
+    for (const size of touchSizes) {
+      await page.setViewportSize(size);
+      await runAccountMenuAction(page, "Scheduled");
+      const panel = page.getByTestId("scheduled-tasks-panel");
+      await panel.getByRole("button", { name: "More actions for Release watch", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
+      const sheet = page.getByTestId("scheduled-task-sheet");
+      for (const name of ["Regular", "Monitoring"]) {
+        await expectTouchSafe(sheet.getByRole("radio", { name, exact: true }).locator("xpath=.."));
+      }
+      for (const name of ["Tools (MCP and Skills)", "Workspace"]) {
+        const control = sheet.getByRole("switch", { name, exact: true });
+        await control.scrollIntoViewIfNeeded();
+        await expectTouchSafe(control);
+        await expectWithinViewport(page, control);
+      }
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: info.outputPath(`scheduled-sheet-monitoring-touch-${size.width}x${size.height}.png`) });
+      await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
       await expect(sheet).toHaveCount(0);
       await page.getByRole("button", { name: "Back to chat", exact: true }).click();
     }

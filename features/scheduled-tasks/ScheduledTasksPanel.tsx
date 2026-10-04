@@ -16,7 +16,8 @@ import {
   scheduledTaskUpdateRequest,
   validateScheduledTaskDraft,
   type ScheduledTaskEditorDraft,
-  type ScheduledTaskFieldErrors
+  type ScheduledTaskFieldErrors,
+  type ScheduledTaskWorkspaceAvailability
 } from "./scheduledTaskDraft";
 import {
   browserTimeZone,
@@ -90,16 +91,30 @@ const FIELD_FOR_CODE: Readonly<Record<string, keyof ScheduledTaskFieldErrors>> =
   scheduled_task_hourly_limit: "schedule",
   scheduled_task_chat_mode_invalid: "chatMode",
   scheduled_task_model_unavailable: "model",
-  scheduled_task_search_unavailable: "search"
+  scheduled_task_model_cannot_report: "kind",
+  scheduled_task_search_unavailable: "search",
+  scheduled_task_tools_unavailable: "tools",
+  scheduled_task_workspace_unavailable: "workspace"
 };
 
-/** A new task opened before the catalog arrived takes its default model once it does. */
-function withCatalogDefault(editor: Editor | null, catalog: Catalog | null): Editor | null {
-  if (!editor || editor.original || editor.draft.modelId || !catalog) return editor;
-  const fallback = blankScheduledTaskDraft(catalog, editor.draft.timeZone);
-  if (!fallback.modelId) return editor;
-  const model = { modelId: fallback.modelId, provider: fallback.provider };
-  return { ...editor, draft: { ...editor.draft, ...model }, initialDraft: { ...editor.initialDraft, ...model } };
+/**
+ * A new task opened before the catalog arrived takes its default model and
+ * tool switches once it does; one opened before the Workspace availability
+ * arrived leaves Workspace off, untouched, when the administrator turned it off.
+ */
+function withLateDefaults(editor: Editor | null, catalog: Catalog | null, workspace: ScheduledTaskWorkspaceAvailability): Editor | null {
+  if (!editor || editor.original) return editor;
+  if (!editor.draft.modelId && catalog) {
+    const fallback = blankScheduledTaskDraft(catalog, editor.draft.timeZone, new Date(), {}, workspace);
+    if (!fallback.modelId) return editor;
+    const { modelId, provider, toolsEnabled, workspaceEnabled } = fallback;
+    const defaults = { modelId, provider, toolsEnabled, workspaceEnabled };
+    return { ...editor, draft: { ...editor.draft, ...defaults }, initialDraft: { ...editor.initialDraft, ...defaults } };
+  }
+  if (workspace === "installation_disabled" && editor.initialDraft.workspaceEnabled && editor.draft.workspaceEnabled) {
+    return { ...editor, draft: { ...editor.draft, workspaceEnabled: false }, initialDraft: { ...editor.initialDraft, workspaceEnabled: false } };
+  }
+  return editor;
 }
 
 function errorCode(error: unknown): string | null {
@@ -111,12 +126,15 @@ export function ScheduledTasksPanel({
   accountId,
   catalog,
   onBusyChange,
-  onOpenChat
+  onOpenChat,
+  workspace = "unknown"
 }: Readonly<{
   accountId: string;
   catalog: Catalog | null;
   onBusyChange?(busy: boolean): void;
   onOpenChat(chatId: string): Promise<void> | void;
+  /** The installation's Workspace availability, from the shell's own read. */
+  workspace?: ScheduledTaskWorkspaceAvailability;
 }>) {
   const tasks = useScheduledTasksStore((state) => state.tasks);
   const loadState = useScheduledTasksStore((state) => state.loadState);
@@ -124,7 +142,7 @@ export function ScheduledTasksPanel({
   const emailAvailable = useScheduledTasksStore((state) => state.emailAvailable);
   const [viewerTimeZone] = useState(browserTimeZone);
   const [editorState, setEditor] = useState<Editor | null>(null);
-  const editor = withCatalogDefault(editorState, catalog);
+  const editor = withLateDefaults(editorState, catalog, workspace);
   const [saving, setSaving] = useState(false);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Readonly<Record<string, string>>>({});
@@ -169,7 +187,7 @@ export function ScheduledTasksPanel({
     if (busy || limitReason) return;
     editorEpoch.current += 1;
     // An idea only prefills the sheet; closing it unchanged needs no confirmation.
-    const draft = blankScheduledTaskDraft(catalog, viewerTimeZone, new Date(), preset);
+    const draft = blankScheduledTaskDraft(catalog, viewerTimeZone, new Date(), preset, workspace);
     setNotice(null); setDeleting(null);
     setEditor({ draft, errors: {}, initialDraft: draft, notice: null, original: null, recentRuns: null });
   }
@@ -242,7 +260,7 @@ export function ScheduledTasksPanel({
 
   async function save() {
     if (!editor || pending.current) return;
-    const errors = validateScheduledTaskDraft(editor.draft, catalog, editor.original);
+    const errors = validateScheduledTaskDraft(editor.draft, catalog, editor.original, new Date(), workspace);
     if (Object.keys(errors).length) { setEditor({ ...editor, errors }); return; }
     const original = editor.original;
     const create = original ? null : scheduledTaskCreateRequest(editor.draft);
@@ -395,6 +413,7 @@ export function ScheduledTasksPanel({
           original={editor.original}
           recentRuns={editor.recentRuns}
           viewerTimeZone={viewerTimeZone}
+          workspace={workspace}
           onChange={(patch) => setEditor((current) => current && {
             ...current,
             draft: { ...current.draft, ...patch },
@@ -432,6 +451,8 @@ function ScheduledTaskRow({
   const status = scheduledTaskStatusLine(task);
   const lastRun = scheduledTaskLastRunLine(task);
   const headingId = `v2-scheduled-task-${task.id}`;
+  // A goal a monitoring check reached completes the task; it can still be resumed to keep watching.
+  const resumable = task.status !== "completed" || task.completionReason === "goal_reached";
   return (
     <li className="v2-scheduled-row" data-status={task.status} aria-labelledby={headingId}>
       <span className="v2-scheduled-row-icon" aria-hidden="true"><UiV2Icon name="clock" /></span>
@@ -441,15 +462,18 @@ function ScheduledTaskRow({
           {task.unseenResult ? <><span className="v2-scheduled-unread" aria-hidden="true" /><span className="sr-only">New result</span></> : null}
         </h3>
         <p className="v2-scheduled-row-schedule">{scheduledTaskScheduleText(task.schedule, task.timeZone, viewerTimeZone)}</p>
-        <p className="v2-scheduled-row-status" data-tone={status.tone}>{status.text}</p>
-        {lastRun ? <p className="v2-scheduled-row-last" data-tone={task.lastRun?.state === "failed" ? "attention" : undefined}>{lastRun}</p> : null}
+        <p className="v2-scheduled-row-status" data-tone={status.tone}>
+          {task.kind === "monitoring" ? <span className="v2-scheduled-row-kind">Monitoring · </span> : null}
+          {status.text}
+        </p>
+        {lastRun ? <p className="v2-scheduled-row-last" data-tone={task.lastRun?.state === "failed" || task.lastRun?.reasonCode === "could_not_check" ? "attention" : undefined}>{lastRun}</p> : null}
         {error ? <p className="v2-scheduled-row-error" role="alert">{error}</p> : null}
       </div>
       <div className="v2-scheduled-row-actions">
         {task.chatId ? (
           <UiV2Button type="button" disabled={busy} aria-label={`Open chat for ${task.title}`} onClick={onOpenChat}>Open chat</UiV2Button>
         ) : null}
-        {task.status !== "completed" ? (
+        {resumable ? (
           <UiV2Switch
             checked={task.status === "active"}
             disabled={busy}

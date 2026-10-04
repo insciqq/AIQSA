@@ -180,6 +180,8 @@ export type ThreadMessage = {
   role: "assistant" | "user";
   runId?: string | null;
   scheduledTask?: ChatMessageScheduledTaskWire | null;
+  /** See `ChatMessageWire.scheduledOutcome`. */
+  scheduledOutcome?: ScheduledTaskCheckOutcome;
   status: "cancelled" | "complete" | "error" | "streaming";
   toolActivity?: ThreadToolActivity | null;
   workspaceActivity?: ThreadWorkspaceActivity | null;
