@@ -5,27 +5,35 @@ import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
 import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
+import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import type { Catalog } from "@/lib/contracts/catalog";
 import {
   SCHEDULED_TASK_PROMPT_MAX_LENGTH,
   SCHEDULED_TASK_TITLE_MAX_LENGTH,
   SCHEDULED_TASK_WEEKDAYS,
   type ScheduledTask,
-  type ScheduledTaskRun
+  type ScheduledTaskChatMode,
+  type ScheduledTaskEveryHours,
+  type ScheduledTaskRun,
+  type ScheduledTaskWeekday
 } from "@/lib/contracts/scheduledTasks";
 import {
+  SCHEDULED_TASK_EVERY_HOURS_OPTIONS,
   SCHEDULED_TASK_REPEAT_OPTIONS,
   catalogModel,
   modelHasSearch,
   modelKey,
   sameScheduledTaskDraft,
+  scheduledTaskDraftChatMode,
   scheduledTaskPreview,
   scheduledTaskToday,
   type ScheduledTaskEditorDraft,
   type ScheduledTaskFieldErrors,
+  type ScheduledTaskHourlyWindow,
   type ScheduledTaskRepeat
 } from "./scheduledTaskDraft";
 import {
+  SCHEDULED_TASK_CHAT_MODE_LABELS,
   WEEKDAY_LONG_LABELS,
   WEEKDAY_SHORT_LABELS,
   scheduledTaskRunRow,
@@ -35,6 +43,11 @@ import {
 
 const field = "v2-scheduled-field w-full min-w-0 rounded-lg border border-trace bg-answer-paper px-3 py-2 text-sm text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60";
 const PROMPT_COUNTER_FROM = SCHEDULED_TASK_PROMPT_MAX_LENGTH - 1_000;
+const CHAT_MODES: readonly ScheduledTaskChatMode[] = ["new", "same"];
+const HOURLY_WINDOWS: readonly Readonly<{ label: string; value: ScheduledTaskHourlyWindow }>[] = [
+  { label: "All day", value: "all_day" },
+  { label: "Set hours", value: "hours" }
+];
 
 export type ScheduledTaskRecentRuns =
   | Readonly<{ state: "loading" }>
@@ -51,6 +64,10 @@ export type ScheduledTaskSheetProps = Readonly<{
   notice: string | null;
   onChange(patch: Partial<ScheduledTaskEditorDraft>): void;
   onClose(): void;
+  /** Leaves the editor for a run's chat; unsaved changes are confirmed first. */
+  onOpenRunChat(chatId: string): void;
+  /** The runs the history rendered with unread results, once per load. */
+  onRunsShown(runs: readonly ScheduledTaskRun[]): void;
   onSubmit(): void;
   original: ScheduledTask | null;
   recentRuns: ScheduledTaskRecentRuns | null;
@@ -61,20 +78,49 @@ function FieldError({ id, children }: Readonly<{ id: string; children: ReactNode
   return <p className="v2-scheduled-field-error" id={id} role="alert">{children}</p>;
 }
 
+function DayChips({ days, labelId, onToggle }: Readonly<{
+  days: readonly ScheduledTaskWeekday[];
+  labelId: string;
+  onToggle(day: ScheduledTaskWeekday): void;
+}>) {
+  return (
+    <div className="v2-scheduled-days" role="group" aria-labelledby={labelId}>
+      {SCHEDULED_TASK_WEEKDAYS.map((day) => (
+        <button
+          key={day}
+          type="button"
+          className="v2-scheduled-day v2-focusable"
+          aria-label={WEEKDAY_LONG_LABELS[day]}
+          aria-pressed={days.includes(day)}
+          onClick={() => onToggle(day)}
+        >
+          {WEEKDAY_SHORT_LABELS[day]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function toggled(days: readonly ScheduledTaskWeekday[], day: ScheduledTaskWeekday): ScheduledTaskWeekday[] {
+  return days.includes(day) ? days.filter((entry) => entry !== day) : [...days, day];
+}
+
 /** Create and edit sheet: one form, a live next-run preview and the task's recent runs. */
 export function ScheduledTaskSheet({
-  busy, catalog, draft, emailAvailable, errors, initialDraft, notice, onChange, onClose, onSubmit, original,
-  recentRuns, viewerTimeZone
+  busy, catalog, draft, emailAvailable, errors, initialDraft, notice, onChange, onClose, onOpenRunChat, onRunsShown, onSubmit,
+  original, recentRuns, viewerTimeZone
 }: ScheduledTaskSheetProps) {
   const formId = useId();
   const ids = {
     title: useId(), prompt: useId(), promptCount: useId(), repeat: useId(), time: useId(), schedule: useId(),
     days: useId(), dayOfMonth: useId(), date: useId(), timeZone: useId(), model: useId(), search: useId(),
     searchHelp: useId(), email: useId(), emailHelp: useId(), form: useId(), monthHint: useId(),
-    scheduleHeading: useId(), answerHeading: useId()
+    scheduleHeading: useId(), answerHeading: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
+    chatMode: useId(), chatModeHint: useId()
   };
   const titleInput = useRef<HTMLInputElement>(null);
-  const [discarding, setDiscarding] = useState(false);
+  /** The navigation waiting for a discard answer: closing, or leaving for a run's chat. */
+  const [pendingLeave, setPendingLeave] = useState<(() => void) | null>(null);
   const [now, setNow] = useState(() => new Date());
   const dirty = !sameScheduledTaskDraft(draft, initialDraft);
   useBeforeUnloadGuard(dirty || busy);
@@ -95,19 +141,18 @@ export function ScheduledTaskSheet({
   const searchAvailable = modelHasSearch(catalog, selectedModel);
   const preview = scheduledTaskPreview(draft, original, now);
   const promptLength = Array.from(draft.prompt).length;
-  const requestClose = () => {
+  const hourly = draft.repeat === "hourly";
+  const chatMode = scheduledTaskDraftChatMode(draft);
+  const leave = (proceed: () => void) => {
     if (busy) return;
-    if (dirty) setDiscarding(true);
-    else onClose();
+    if (dirty) setPendingLeave(() => proceed);
+    else proceed();
   };
+  const requestClose = () => leave(onClose);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!busy) onSubmit();
   };
-  const changeRepeat = (repeat: ScheduledTaskRepeat) => onChange({ repeat });
-  const toggleDay = (day: (typeof SCHEDULED_TASK_WEEKDAYS)[number]) => onChange({
-    days: draft.days.includes(day) ? draft.days.filter((entry) => entry !== day) : [...draft.days, day]
-  });
   const changeModel = (key: string) => {
     const model = models.find((candidate) => modelKey(candidate) === key);
     if (!model) return;
@@ -119,6 +164,21 @@ export function ScheduledTaskSheet({
   };
   const describedBy = (...entries: (string | false | null | undefined)[]) => entries.filter(Boolean).join(" ") || undefined;
   const editing = Boolean(original);
+  const timeInput = (id: string, label: string) => (
+    <div className="v2-scheduled-control">
+      <label htmlFor={id}>{label}</label>
+      <input
+        id={id}
+        className={field}
+        type="time"
+        step={60}
+        required
+        value={draft.time}
+        aria-invalid={Boolean(errors.schedule) || undefined}
+        onChange={(event) => onChange({ time: event.target.value.slice(0, 5) })}
+      />
+    </div>
+  );
 
   return (
     <UiV2Sheet
@@ -127,7 +187,7 @@ export function ScheduledTaskSheet({
       width="wide"
       testId="scheduled-task-sheet"
       title={editing ? "Edit scheduled task" : "New scheduled task"}
-      description="Runs your instructions on a schedule. Each answer is added to the task's own chat."
+      description="Runs your instructions on a schedule and adds each answer to a chat."
       closeBlocked={busy}
       onClose={requestClose}
       footer={<>
@@ -184,41 +244,69 @@ export function ScheduledTaskSheet({
             <div className="v2-scheduled-pair">
               <div className="v2-scheduled-control">
                 <label htmlFor={ids.repeat}>Repeat</label>
-                <select id={ids.repeat} className={field} value={draft.repeat} onChange={(event) => changeRepeat(event.target.value as ScheduledTaskRepeat)}>
+                <select id={ids.repeat} className={field} value={draft.repeat}
+                  onChange={(event) => onChange({ repeat: event.target.value as ScheduledTaskRepeat })}>
                   {SCHEDULED_TASK_REPEAT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </div>
-              <div className="v2-scheduled-control">
-                <label htmlFor={ids.time}>Time</label>
-                <input
-                  id={ids.time}
-                  className={field}
-                  type="time"
-                  step={60}
-                  required
-                  value={draft.time}
-                  aria-invalid={Boolean(errors.schedule) || undefined}
-                  onChange={(event) => onChange({ time: event.target.value.slice(0, 5) })}
-                />
-              </div>
+              {hourly ? (
+                <div className="v2-scheduled-control">
+                  <label htmlFor={ids.everyHours}>Interval</label>
+                  <select id={ids.everyHours} className={field} value={draft.everyHours}
+                    onChange={(event) => onChange({ everyHours: Number(event.target.value) as ScheduledTaskEveryHours })}>
+                    {SCHEDULED_TASK_EVERY_HOURS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                </div>
+              ) : timeInput(ids.time, "Time")}
             </div>
+            {hourly ? (
+              <>
+                <fieldset className="v2-scheduled-choice">
+                  <legend className="v2-scheduled-label">Hours</legend>
+                  <div className="v2-scheduled-options" data-inline="">
+                    {HOURLY_WINDOWS.map((option) => (
+                      <label key={option.value} className="v2-scheduled-option">
+                        <input
+                          type="radio"
+                          name={`${formId}-window`}
+                          checked={draft.hourlyWindow === option.value}
+                          onChange={() => onChange({ hourlyWindow: option.value })}
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+                {draft.hourlyWindow === "hours" ? (
+                  <div className="v2-scheduled-pair">
+                    {timeInput(ids.time, "From")}
+                    <div className="v2-scheduled-control">
+                      <label htmlFor={ids.until}>Until</label>
+                      <input
+                        id={ids.until}
+                        className={field}
+                        type="time"
+                        step={60}
+                        value={draft.until}
+                        aria-invalid={Boolean(errors.schedule) || undefined}
+                        aria-describedby={describedBy(!draft.until && ids.untilHint)}
+                        onChange={(event) => onChange({ until: event.target.value.slice(0, 5) })}
+                      />
+                    </div>
+                    {!draft.until ? <p className="v2-scheduled-hint v2-scheduled-pair-hint" id={ids.untilHint}>Without an end time it runs until the end of the day.</p> : null}
+                  </div>
+                ) : null}
+                <div className="v2-scheduled-control">
+                  <span id={ids.days} className="v2-scheduled-label">Days</span>
+                  <DayChips days={draft.hourlyDays} labelId={ids.days}
+                    onToggle={(day) => onChange({ hourlyDays: toggled(draft.hourlyDays, day) })} />
+                </div>
+              </>
+            ) : null}
             {draft.repeat === "weekly" ? (
               <div className="v2-scheduled-control">
                 <span id={ids.days} className="v2-scheduled-label">Days</span>
-                <div className="v2-scheduled-days" role="group" aria-labelledby={ids.days}>
-                  {SCHEDULED_TASK_WEEKDAYS.map((day) => (
-                    <button
-                      key={day}
-                      type="button"
-                      className="v2-scheduled-day v2-focusable"
-                      aria-label={WEEKDAY_LONG_LABELS[day]}
-                      aria-pressed={draft.days.includes(day)}
-                      onClick={() => toggleDay(day)}
-                    >
-                      {WEEKDAY_SHORT_LABELS[day]}
-                    </button>
-                  ))}
-                </div>
+                <DayChips days={draft.days} labelId={ids.days} onToggle={(day) => onChange({ days: toggled(draft.days, day) })} />
               </div>
             ) : null}
             {draft.repeat === "monthly" ? (
@@ -294,6 +382,26 @@ export function ScheduledTaskSheet({
               </select>
               {errors.model ? <FieldError id={`${ids.model}-error`}>{errors.model}</FieldError> : null}
             </div>
+            <fieldset className="v2-scheduled-choice" id={ids.chatMode}
+              aria-describedby={describedBy(hourly && ids.chatModeHint, errors.chatMode && `${ids.chatMode}-error`)}>
+              <legend className="v2-scheduled-label">Chat</legend>
+              <div className="v2-scheduled-options">
+                {CHAT_MODES.map((mode) => (
+                  <label key={mode} className="v2-scheduled-option">
+                    <input
+                      type="radio"
+                      name={`${formId}-chat-mode`}
+                      checked={chatMode === mode}
+                      disabled={hourly && mode === "new"}
+                      onChange={() => onChange({ chatMode: mode })}
+                    />
+                    <span>{SCHEDULED_TASK_CHAT_MODE_LABELS[mode]}</span>
+                  </label>
+                ))}
+              </div>
+              {hourly ? <p className="v2-scheduled-hint" id={ids.chatModeHint}>Hourly tasks always continue in one chat.</p> : null}
+              {errors.chatMode ? <FieldError id={`${ids.chatMode}-error`}>{errors.chatMode}</FieldError> : null}
+            </fieldset>
             <div className="v2-scheduled-toggle">
               <span className="v2-scheduled-toggle-copy">
                 <span id={ids.search} className="v2-scheduled-label">Web search</span>
@@ -329,10 +437,18 @@ export function ScheduledTaskSheet({
             ) : null}
           </div>
 
-          {recentRuns ? <RecentRuns recentRuns={recentRuns} timeZone={original?.timeZone ?? draft.timeZone} now={now} /> : null}
+          {recentRuns ? (
+            <RecentRuns
+              recentRuns={recentRuns}
+              timeZone={original?.timeZone ?? draft.timeZone}
+              now={now}
+              onOpenChat={(chatId) => leave(() => onOpenRunChat(chatId))}
+              onRunsShown={onRunsShown}
+            />
+          ) : null}
         </fieldset>
       </form>
-      {discarding ? (
+      {pendingLeave ? (
         <ConfirmationDialog
           cancelLabel="Keep editing"
           confirmLabel="Discard changes"
@@ -340,8 +456,8 @@ export function ScheduledTaskSheet({
           title="Discard unsaved changes?"
           testId="scheduled-task-discard"
           tone="warning"
-          onCancel={() => setDiscarding(false)}
-          onConfirm={() => { setDiscarding(false); onClose(); }}
+          onCancel={() => setPendingLeave(null)}
+          onConfirm={() => { const proceed = pendingLeave; setPendingLeave(null); proceed(); }}
         >
           Your changes to this scheduled task will be lost.
         </ConfirmationDialog>
@@ -350,8 +466,21 @@ export function ScheduledTaskSheet({
   );
 }
 
-function RecentRuns({ recentRuns, timeZone, now }: Readonly<{ recentRuns: ScheduledTaskRecentRuns; timeZone: string; now: Date }>) {
+function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Readonly<{
+  recentRuns: ScheduledTaskRecentRuns;
+  timeZone: string;
+  now: Date;
+  onOpenChat(chatId: string): void;
+  onRunsShown(runs: readonly ScheduledTaskRun[]): void;
+}>) {
   const headingId = useId();
+  const shown = useEventCallback(onRunsShown);
+  // Runs count as seen only after this list has rendered them.
+  useEffect(() => {
+    if (recentRuns.state !== "ready") return;
+    const unseen = recentRuns.runs.filter((run) => run.unseen);
+    if (unseen.length) shown(unseen);
+  }, [recentRuns, shown]);
   return (
     <section className="v2-scheduled-runs" aria-labelledby={headingId}>
       <h3 id={headingId}>Recent runs</h3>
@@ -362,11 +491,21 @@ function RecentRuns({ recentRuns, timeZone, now }: Readonly<{ recentRuns: Schedu
               <ul>
                 {recentRuns.runs.map((run) => {
                   const row = scheduledTaskRunRow(run, timeZone, now);
+                  const chatId = run.chatId;
                   return (
-                    <li key={`${run.trigger}:${run.scheduledFor}`} data-tone={row.tone}>
+                    <li key={run.id} data-tone={row.tone} data-unseen={run.unseen || undefined}>
                       <span className="v2-scheduled-run-time">{row.time}</span>
                       <span className="v2-scheduled-run-trigger">{row.trigger}</span>
-                      <span className="v2-scheduled-run-outcome">{row.outcome}</span>
+                      <span className="v2-scheduled-run-outcome">
+                        {run.unseen ? <><span className="v2-scheduled-unread" aria-hidden="true" /><span className="sr-only">New result: </span></> : null}
+                        {row.outcome}
+                      </span>
+                      {chatId ? (
+                        <button type="button" className="v2-scheduled-run-chat v2-focusable"
+                          aria-label={`Open chat from ${row.time}`} onClick={() => onOpenChat(chatId)}>
+                          Open chat
+                        </button>
+                      ) : null}
                     </li>
                   );
                 })}

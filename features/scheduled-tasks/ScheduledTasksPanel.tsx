@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { UiV2Button, UiV2Icon, UiV2IconButton, UiV2MenuItem, UiV2Switch } from "@/components/ui-v2";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
+import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import type { Catalog } from "@/lib/contracts/catalog";
-import type { ScheduledTask } from "@/lib/contracts/scheduledTasks";
+import type { ScheduledTask, ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
 import { ScheduledTaskSheet, type ScheduledTaskRecentRuns } from "./ScheduledTaskSheet";
 import {
   blankScheduledTaskDraft,
@@ -39,9 +40,10 @@ import {
   applyScheduledTask,
   refreshScheduledTasks,
   removeScheduledTask,
+  takeScheduledTaskEditRequest,
   useScheduledTasksStore
 } from "./scheduledTasksStore";
-import { markScheduledTaskResultSeen } from "./useScheduledTaskUpdates";
+import { markScheduledTaskRunsSeen } from "./useScheduledTaskUpdates";
 
 type Editor = Readonly<{
   draft: ScheduledTaskEditorDraft;
@@ -85,6 +87,8 @@ const FIELD_FOR_CODE: Readonly<Record<string, keyof ScheduledTaskFieldErrors>> =
   scheduled_task_schedule_invalid: "schedule",
   scheduled_task_once_in_past: "schedule",
   scheduled_task_time_zone_invalid: "timeZone",
+  scheduled_task_hourly_limit: "schedule",
+  scheduled_task_chat_mode_invalid: "chatMode",
   scheduled_task_model_unavailable: "model",
   scheduled_task_search_unavailable: "search"
 };
@@ -133,6 +137,8 @@ export function ScheduledTasksPanel({
   const newButton = useRef<HTMLButtonElement>(null);
   const headings = useRef(new Map<string, HTMLHeadingElement>());
   const restoreFocus = useRef<string | null>(null);
+  /** Run ids the editor already marked seen (or is marking). */
+  const seenRuns = useRef(new Set<string>());
   const busy = saving || rowBusy !== null;
 
   useEffect(() => {
@@ -172,8 +178,6 @@ export function ScheduledTasksPanel({
     getScheduledTask(task.id).then((detail) => {
       if (!active.current || editorEpoch.current !== epoch) return;
       applyScheduledTask(detail.task);
-      // A result that landed before this read is shown among the recent runs.
-      if (detail.task.unseenResult) void markScheduledTaskResultSeen(detail.task.id, detail.task.chatId);
       onTask?.(detail.task);
       setEditor((current) => current && current.original?.id === task.id
         ? { ...current, recentRuns: { state: "ready", runs: detail.recentRuns } } : current);
@@ -190,10 +194,37 @@ export function ScheduledTasksPanel({
     const draft = scheduledTaskDraftFromTask(task);
     setNotice(null); setDeleting(null);
     setEditor({ draft, errors: {}, initialDraft: draft, notice: null, original: task, recentRuns: { state: "loading" } });
-    // The sheet shows the task's runs, so its result counts as seen, even without a chat to open.
-    if (task.unseenResult) void markScheduledTaskResultSeen(task.id, task.chatId);
     loadRecentRuns(task, epoch);
   }
+
+  /** The editor rendered these unread results; only they become seen. */
+  function runsShown(task: ScheduledTask, runs: readonly ScheduledTaskRun[]) {
+    const fresh = runs.filter((run) => !seenRuns.current.has(run.id));
+    if (!fresh.length) return;
+    for (const run of fresh) seenRuns.current.add(run.id);
+    void markScheduledTaskRunsSeen(task.id, fresh.map((run) => run.id), fresh.flatMap((run) => run.chatId ? [run.chatId] : []))
+      .then((marked) => { if (!marked) for (const run of fresh) seenRuns.current.delete(run.id); });
+  }
+
+  /** Leaves the editor for one run's chat; a chat that is gone reports on the task's row. */
+  function openRunChat(task: ScheduledTask, chatId: string) {
+    restoreFocus.current = task.id;
+    editorEpoch.current += 1;
+    setEditor(null);
+    void rowMutation(task, async () => { await onOpenChat(chatId); });
+  }
+
+  // "Edit task" in a task's chat opens Studio › Scheduled with that task's editor.
+  const editRequest = useScheduledTasksStore((state) => state.editRequest);
+  const takeEditRequest = useEventCallback(() => {
+    const taskId = takeScheduledTaskEditRequest();
+    const task = tasks.find((candidate) => candidate.id === taskId);
+    if (task) openEdit(task);
+    else setNotice("This task is no longer available.");
+  });
+  useEffect(() => {
+    if (editRequest && loadState === "ready" && !busy && !editorState) takeEditRequest();
+  }, [busy, editRequest, editorState, loadState, takeEditRequest]);
 
   function closeEditor() {
     restoreFocus.current = editor?.original?.id ?? "new";
@@ -278,14 +309,14 @@ export function ScheduledTasksPanel({
   });
   const runNow = (task: ScheduledTask) => rowMutation(task, async () => {
     applyScheduledTask(await runScheduledTaskNow(task.id));
-    if (active.current) setNotice(`“${task.title}” is running now. The answer will appear in its chat.`);
+    if (active.current) setNotice(`“${task.title}” is running now. The answer will appear in ${task.chatMode === "new" ? "a new chat" : "its chat"}.`);
   });
   const remove = (task: ScheduledTask) => rowMutation(task, async () => {
     await deleteScheduledTask(task.id);
     removeScheduledTask(task.id);
     restoreFocus.current = "new";
     setDeleting(null);
-    if (active.current) setNotice(`“${task.title}” was deleted. Its chat and answers stay in your history.`);
+    if (active.current) setNotice(`“${task.title}” was deleted. Its chats and answers stay in your history.`);
   });
   const openChat = (task: ScheduledTask) => rowMutation(task, async () => {
     if (task.chatId) await onOpenChat(task.chatId);
@@ -299,7 +330,7 @@ export function ScheduledTasksPanel({
   return (
     <section className="v2-studio-settings-page v2-scheduled-page" aria-label="Scheduled tasks" data-testid="scheduled-tasks-panel">
       <SectionHeading
-        description="Run a prompt on a schedule. Answers arrive in the task's own chat."
+        description="Run a prompt on a schedule. Answers arrive in your chats."
         meta={loadState === "ready" ? <span className="v2-scheduled-meta">{activeCount} of {limits.maxActive} active</span> : undefined}
         action={<UiV2Button ref={newButton} type="button" tone="primary" icon="plus" disabled={busy || loadState !== "ready" || Boolean(limitReason)}
           aria-describedby={limitReason ? "v2-scheduled-limit" : undefined} onClick={() => openCreate()}>New task</UiV2Button>}
@@ -370,6 +401,8 @@ export function ScheduledTasksPanel({
             errors: Object.fromEntries(Object.entries(current.errors).filter(([key]) => key === "form"))
           })}
           onClose={closeEditor}
+          onOpenRunChat={(chatId) => { if (editor.original) openRunChat(editor.original, chatId); }}
+          onRunsShown={(runs) => { if (editor.original) runsShown(editor.original, runs); }}
           onSubmit={() => void save()}
         />
       ) : null}
@@ -429,7 +462,7 @@ function ScheduledTaskRow({
       </div>
       {deleting ? (
         <div className="v2-scheduled-row-delete" role="group" aria-label={`Delete ${task.title}`}>
-          <p>Delete “{task.title}”? Its chat and answers stay in your history.</p>
+          <p>Delete “{task.title}”? Its chats and answers stay in your history.</p>
           <span>
             <UiV2Button type="button" tone="destructive" busy={rowBusy} disabled={busy && !rowBusy} onClick={onConfirmDelete}>Delete task</UiV2Button>
             <UiV2Button type="button" disabled={busy} onClick={onCancelDelete}>Keep task</UiV2Button>

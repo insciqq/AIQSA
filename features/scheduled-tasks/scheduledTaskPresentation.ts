@@ -102,6 +102,8 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
   switch (reasonCode) {
     case "missed": return "the scheduled time passed while runs were unavailable";
     case "chat_busy": return "the task's chat was busy with another answer";
+    case "previous_running": return "the previous run was still in progress";
+    case "superseded": return "a newer scheduled time arrived before it could start";
     case "model_unavailable": return "the model was unavailable";
     case "search_unavailable": return "web search was unavailable with this model";
     case "provider_unavailable": return "the model's provider was unavailable";
@@ -153,11 +155,6 @@ export function scheduledTaskLastRunLine(task: ScheduledTask, now: Date = new Da
   return `Last run ${formatScheduledInstant(task.lastRun.scheduledFor, task.timeZone, now)} · ${outcomeText(task.lastRun.state, task.lastRun.reasonCode)}`;
 }
 
-/** A scheduled instant skipped because the owner paused the task: not news, so never unread or announced. */
-export function isOwnerPauseSkip(run: ScheduledTask["lastRun"]): boolean {
-  return run?.state === "skipped" && run.reasonCode === "paused";
-}
-
 export type ScheduledTaskResultNotice = Readonly<{
   kind: "error" | "success";
   /** Where the notice's action leads: the answer in the task's chat, or the task's runs in Studio › Scheduled. */
@@ -165,21 +162,30 @@ export type ScheduledTaskResultNotice = Readonly<{
   text: string;
 }>;
 
-/** The notice for a newly settled run, saying what happened; null when there is nothing to announce. */
-export function scheduledTaskResultNotice(task: ScheduledTask): ScheduledTaskResultNotice | null {
+/**
+ * Whether the task's newest settled run is news for its owner: an answer, or
+ * a failure that paused the task. Routine skips and other failures stay in the
+ * run history, matching the server's per-run unread rule.
+ */
+export function isScheduledTaskNews(task: ScheduledTask): boolean {
   const run = task.lastRun;
-  if (!run || isOwnerPauseSkip(run)) return null;
-  switch (run.state) {
-    case "completed":
-      return { kind: "success", open: task.chatId ? "chat" : "scheduled", text: `“${task.title}” has a new result` };
-    case "failed":
-      return { kind: "error", open: "scheduled", text: `“${task.title}” could not run` };
-    case "skipped":
-      return { kind: "success", open: "scheduled", text: `“${task.title}” was skipped` };
-  }
+  return run?.state === "completed" || (run?.state === "failed" && task.status === "paused" && task.pauseReason !== null);
 }
 
-export type ScheduledTaskRunRow =Readonly<{ time: string; trigger: string; outcome: string; tone: "neutral" | "attention" | "live" }>;
+/** The notice for a newly settled run, saying what happened; null when it is not news. */
+export function scheduledTaskResultNotice(task: ScheduledTask): ScheduledTaskResultNotice | null {
+  if (!isScheduledTaskNews(task)) return null;
+  return task.lastRun?.state === "completed"
+    ? { kind: "success", open: task.chatId ? "chat" : "scheduled", text: `“${task.title}” has a new result` }
+    : { kind: "error", open: "scheduled", text: `“${task.title}” could not run` };
+}
+
+export type ScheduledTaskRunRow = Readonly<{
+  outcome: string;
+  time: string;
+  tone: "neutral" | "attention" | "live";
+  trigger: string;
+}>;
 
 export function scheduledTaskRunRow(run: ScheduledTaskRun, timeZone: string, now: Date = new Date()): ScheduledTaskRunRow {
   return {
@@ -189,6 +195,12 @@ export function scheduledTaskRunRow(run: ScheduledTaskRun, timeZone: string, now
     trigger: run.trigger === "manual" ? "Run now" : "Scheduled"
   };
 }
+
+/** Where a run's answer appears, for the editor's chat-mode control and Run now notices. */
+export const SCHEDULED_TASK_CHAT_MODE_LABELS: Readonly<Record<ScheduledTask["chatMode"], string>> = {
+  new: "Each run starts a new chat",
+  same: "Continue in this task's chat"
+};
 
 /** Copy for API failures, including codes the shared contract does not name. */
 export function scheduledTaskFailureMessage(code: string | null): string {
