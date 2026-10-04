@@ -758,9 +758,11 @@ async function expectAcceptedReceiptDerivatives(
     });
     expect(JSON.stringify(history)).not.toContain(receipt.marker);
     expect(toolCall.arguments).toEqual({});
+    // Deletion scrubs private content, never the settled outcome.
+    expect(toolCall.state).toBe("complete");
     expect(toolCall.result).toMatchObject({
       content: [{ value: { error: "memory_history_receipt_scrubbed" } }],
-      status: "error"
+      status: "complete"
     });
     expect(JSON.stringify(toolCall)).not.toContain(receipt.marker);
   } else {
@@ -1558,8 +1560,10 @@ describe("Prisma Memory Forget and purge lifecycle", () => {
       for (const search of searches) {
         expect(await prisma.memoryHistoryRun.findUniqueOrThrow({ where: { id: search.receiptId } }))
           .toMatchObject({ retentionState: "SCRUBBED", query: null, results: null, providerResult: null });
+        // The scrub removes the query and evidence; the settled call outcome stays.
         expect(await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: search.toolCallId } }))
-          .toMatchObject({ state: "error", arguments: {} });
+          .toMatchObject({ state: "complete", arguments: {},
+            result: { content: [{ value: { error: "memory_history_receipt_scrubbed" } }], status: "complete" } });
       }
     } finally { await cleanupUsers([userId]); }
   });
