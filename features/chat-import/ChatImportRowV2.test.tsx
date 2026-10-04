@@ -54,7 +54,7 @@ describe("ChatImportRowV2", () => {
         deps: scriptedDeps([
           step({
             body: "{\"chats\":[]}",
-            failed: [{ reason: "too_large", title: "Huge chat" }, { reason: "unsupported_file", title: "notes.txt" }],
+            failed: [{ reason: "too_large", title: "Huge chat" }, { file: true, reason: "unsupported_file", title: "notes.txt" }],
             sent: [{ messages: 3, title: "One" }, { messages: 5, title: "Two" }],
             skipped: { attachment: 2, empty_chat: 1 },
             totalDelta: 4
@@ -64,8 +64,9 @@ describe("ChatImportRowV2", () => {
         onImported
       });
     });
-    expect(await screen.findByText("Importing chats: 3 of 4")).toBeInTheDocument();
-    expect(screen.getByRole("progressbar", { name: "Chats processed" })).toHaveAttribute("aria-valuenow", "3");
+    // The unreadable file is no chat: only the too-large chat and the empty one count.
+    expect(await screen.findByText("Importing chats: 2 of 4")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Chats processed" })).toHaveAttribute("aria-valuenow", "2");
     expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
     await act(async () => {
       release({ results: [{ messages: 3, status: "imported" }, { status: "already_imported" }] });
@@ -75,6 +76,7 @@ describe("ChatImportRowV2", () => {
     expect(report).toHaveTextContent("Imported 1 chat (3 messages).");
     expect(report).toHaveTextContent("1 chat already imported.");
     expect(report).toHaveTextContent("Not imported, marked in the messages: 2 attachments, 1 empty chat.");
+    expect(report).toHaveTextContent("Couldn't import 1 chat and 1 file:");
     expect(screen.getByTestId("chat-import-failed")).toHaveTextContent("Huge chat — Too large to import (over 8 MB)");
     expect(screen.getByTestId("chat-import-failed")).toHaveTextContent("notes.txt — Not a supported export file");
     expect(onImported).toHaveBeenCalledTimes(1);

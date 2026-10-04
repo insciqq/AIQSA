@@ -70,3 +70,8 @@ export function chatsCount(count: number): string {
 export function messagesCount(count: number): string {
   return counted(count, ["message", "messages"]);
 }
+
+/** "1 chat and 2 files" for the failures heading; files that could not be read are no chats. */
+export function failuresCount(chats: number, files: number): string {
+  return [chats ? chatsCount(chats) : "", files ? counted(files, ["file", "files"]) : ""].filter(Boolean).join(" and ");
+}

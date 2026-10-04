@@ -126,8 +126,8 @@ describe("import pipeline", () => {
     ));
     expect(batches.flatMap((batch) => bodyTitles(batch) ?? [])).toEqual(["from first", "from second"]);
     expect(batches.flatMap((batch) => batch.failed)).toEqual([
-      { message: "Pick the conversations file.", reason: "unsupported_file", title: "claude-index.json" },
-      { reason: "unsupported_file", title: "photo.png" }
+      { file: true, message: "Pick the conversations file.", reason: "unsupported_file", title: "claude-index.json" },
+      { file: true, reason: "unsupported_file", title: "photo.png" }
     ]);
   });
 

@@ -6,7 +6,8 @@ import type { ImportWorkerPort, ImportWorkerResponse } from "./importWorkerProto
 
 export type ChatImportPhase = "cancelled" | "failed" | "finished" | "importing" | "reading" | "stopping";
 
-export type ChatImportFailedChat = Readonly<{ title: string; reason: string }>;
+/** A chat that was not imported, or with `file` a whole file that could not be read. */
+export type ChatImportFailedChat = Readonly<{ title: string; reason: string; file?: true }>;
 
 export type ChatImportState = Readonly<{
   phase: ChatImportPhase;
@@ -106,13 +107,15 @@ export function runChatImport(
       skipped[kind] = (skipped[kind] ?? 0) + count;
       if (IMPORT_SKIPPED_CHAT_KINDS.has(kind)) skippedChats += count;
     }
-    const failed = batch.failed.map((failure) => ({
+    const failed: ChatImportFailedChat[] = batch.failed.map((failure) => ({
       reason: failure.message ?? importFailureMessage(failure.reason),
-      title: failure.title
+      title: failure.title,
+      ...(failure.file ? { file: true as const } : {})
     }));
     update({
       failed: [...state.failed, ...failed],
-      processed: state.processed + failed.length + skippedChats,
+      // A file that could not be read is no chat of the progress.
+      processed: state.processed + failed.filter((failure) => !failure.file).length + skippedChats,
       skipped,
       total: state.total + batch.totalDelta
     });

@@ -225,7 +225,7 @@ export function createAiqsaConverter(): ChatImportConverter {
           yield* archiveEvents(file, found);
         } catch (error) {
           if (!(error instanceof ImportArchiveError)) throw error;
-          yield { reason: error.code, title: file.name, type: "failed" };
+          yield { file: true, reason: error.code, title: file.name, type: "failed" };
         }
       }
     },

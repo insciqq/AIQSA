@@ -11,7 +11,7 @@ import {
   useChatImportState
 } from "./chatImportClient";
 import type { ChatImportState } from "./chatImportRunner";
-import { chatsCount, messagesCount, skippedSummary } from "./importReport";
+import { chatsCount, failuresCount, messagesCount, skippedSummary } from "./importReport";
 import "./chat-import.css";
 
 /** `.tar.gz` is matched through `.gz`: multi-dot extensions are unreliable in `accept`. */
@@ -56,6 +56,7 @@ function ChatImportReportV2({ onDismiss, state }: Readonly<{
 }>) {
   const skipped = skippedSummary(state.skipped);
   const shown = state.failed.slice(0, FAILED_SHOWN);
+  const fileFailures = state.failed.filter((failure) => failure.file).length;
   return (
     <section aria-label="Import report" className="v2-chat-import" data-testid="chat-import-report">
       <h3>{heading(state)}</h3>
@@ -72,7 +73,7 @@ function ChatImportReportV2({ onDismiss, state }: Readonly<{
       </ul>
       {state.failed.length > 0 ? (
         <>
-          <p>{`Couldn't import ${chatsCount(state.failed.length)}:`}</p>
+          <p>{`Couldn't import ${failuresCount(state.failed.length - fileFailures, fileFailures)}:`}</p>
           <ul className="v2-chat-import-failed" data-testid="chat-import-failed">
             {shown.map((failure, index) => (
               <li key={`${index}-${failure.title}`}>

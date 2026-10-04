@@ -62,8 +62,11 @@ export type ImportConverterEvent =
   | Readonly<{ type: "total"; chats: number }>
   | Readonly<{ type: "chat"; chat: ConvertedChat }>
   | Readonly<{ type: "skipped"; kind: ImportSkipKind; count: number }>
-  /** A source chat (or file) that cannot be imported, named for the report. */
-  | Readonly<{ type: "failed"; title: string; reason: ImportLocalFailureReason; message?: string }>;
+  /**
+   * A source chat that cannot be imported, named for the report; with `file`,
+   * a whole file that could not be read, which counts as no chat.
+   */
+  | Readonly<{ type: "failed"; title: string; reason: ImportLocalFailureReason; message?: string; file?: true }>;
 
 const NOTE_NAME_MAX_LENGTH = 200;
 
