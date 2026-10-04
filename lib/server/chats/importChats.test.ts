@@ -3,7 +3,7 @@ import { createTestAuth } from "@/tests/support/auth";
 import type { ChatExportDocument } from "../../contracts/chatExport";
 import { CHAT_IMPORT_REQUEST_MAX_BYTES, type ChatImportItem } from "../../contracts/chatImport";
 import { getAuthConfig } from "../auth/config";
-import { chatImportSourceKey, createImportChatsHandler, type ImportChatsHandlerDeps } from "./importChats";
+import { chatImportSourceKey, createImportChatsHandler, importChatForUser, type ImportChatsHandlerDeps } from "./importChats";
 
 const config = getAuthConfig({ AIQSA_AUTH_SESSION_SECRET: "secret", AIQSA_BOOTSTRAP_AUTH_TOKEN: "token" });
 const auth = createTestAuth({ user: { id: config.bootstrapUserId } });
@@ -50,6 +50,7 @@ describe("chat import handler", () => {
       .mockResolvedValueOnce({ status: "already_imported" })
       .mockRejectedValueOnce(new Error("database unavailable"));
     const response = await handler(importChat)(request({
+      accountId: config.bootstrapUserId,
       chats: [
         { document: document(), source: "AIQSA" },
         { document: { ...document(), version: 9 }, source: "AIQSA" },
@@ -80,13 +81,31 @@ describe("chat import handler", () => {
       body: JSON.stringify({ chats: [] }), headers: { "content-type": "application/json" }, method: "POST"
     }));
     expect(unauthenticated.status).toBe(401);
-    expect((await run(request({ chats: [] }, { headers: { "content-type": "text/plain" } }))).status).toBe(400);
+    const accountId = config.bootstrapUserId;
+    expect((await run(request({ accountId, chats: [] }, { headers: { "content-type": "text/plain" } }))).status).toBe(400);
     expect((await run(request("{not json"))).status).toBe(400);
-    expect((await run(request({ chats: [] }))).status).toBe(400);
-    expect((await run(request({ items: [{ document: document(), source: "AIQSA" }] }))).status).toBe(400);
+    expect((await run(request({ accountId, chats: [] }))).status).toBe(400);
+    expect((await run(request({ accountId, items: [{ document: document(), source: "AIQSA" }] }))).status).toBe(400);
     const oversized = await run(request("x".repeat(CHAT_IMPORT_REQUEST_MAX_BYTES + 1)));
     expect(oversized.status).toBe(413);
     await expect(oversized.json()).resolves.toMatchObject({ error: "request_body_too_large", limit: CHAT_IMPORT_REQUEST_MAX_BYTES });
+    expect(importChat).not.toHaveBeenCalled();
+  });
+
+  it("refuses a batch started for another account before decoding or storing anything", async () => {
+    const importChat = vi.fn<ImportChatsHandlerDeps["importChat"]>();
+    const run = handler(importChat);
+    const chats = [{ document: document(), source: "AIQSA" }];
+    const changed = await run(request({ accountId: "the-account-that-started-the-import", chats }));
+    expect(changed.status).toBe(409);
+    expect(changed.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    await expect(changed.json()).resolves.toEqual({ error: "chat_import_account_changed" });
+    // The account is checked first: malformed chats behind it change nothing.
+    const changedMalformed = await run(request({ accountId: "another-account", chats: "not an array" }));
+    expect(changedMalformed.status).toBe(409);
+    for (const accountId of [undefined, "", 42, "line\nbreak"]) {
+      expect((await run(request({ ...(accountId === undefined ? {} : { accountId }), chats }))).status).toBe(400);
+    }
     expect(importChat).not.toHaveBeenCalled();
   });
 
@@ -97,9 +116,28 @@ describe("chat import handler", () => {
       { ...large.chat.messages[0]!, text: "y".repeat(700_000) },
       { ...large.chat.messages[1]!, text: "z".repeat(700_000) }
     ] } };
-    const response = await handler(importChat)(request({ chats: [{ document: big, source: "AIQSA" }] }));
+    const response = await handler(importChat)(request({ accountId: config.bootstrapUserId, chats: [{ document: big, source: "AIQSA" }] }));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ results: [{ messages: 2, status: "imported" }] });
+  });
+});
+
+describe("imported chat title", () => {
+  /** A transaction that records the chat row and stops there. */
+  function capturingClient() {
+    const created: Array<Record<string, unknown>> = [];
+    const stop = new Error("captured");
+    const tx = { chat: { create: async ({ data }: { data: Record<string, unknown> }) => { created.push(data); throw stop; } } };
+    const db = { $transaction: async (run: (client: typeof tx) => Promise<unknown>) => run(tx), chat: { findFirst: async () => null } };
+    return { created, db, stop };
+  }
+
+  it("stores a trimmed title and the default chat title for an empty or blank one", async () => {
+    for (const [title, stored] of [["", "New Chat"], ["   ", "New Chat"], [" ".repeat(300), "New Chat"], ["  Release plan ", "Release plan"]]) {
+      const { created, db, stop } = capturingClient();
+      await expect(importChatForUser(db as never, "user-1", { document: document({ title: title! }), source: "AIQSA" })).rejects.toBe(stop);
+      expect(created).toEqual([expect.objectContaining({ importSource: "AIQSA", memoryMode: "EXCLUDED", title: stored, userId: "user-1" })]);
+    }
   });
 });
 

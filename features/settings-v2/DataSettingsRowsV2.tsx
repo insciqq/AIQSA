@@ -34,10 +34,13 @@ export function deleteAllSummary(result: DeleteAllPersonalChatsResponse): string
  * confirmation that names its consequence.
  */
 export function DataSettingsRowsV2({
+  accountId,
   onDeleteAll,
   onDeleted,
   onImported
 }: Readonly<{
+  /** The signed-in account an import is started for. */
+  accountId: string;
   onDeleteAll(): Promise<DeleteAllPersonalChatsResponse>;
   onDeleted?(result: DeleteAllPersonalChatsResponse): void;
   /** Runs when an import created chats, so the chat list shows them. */
@@ -73,7 +76,7 @@ export function DataSettingsRowsV2({
           <span>Export…</span>
         </a>
       </SettingsRowV2>
-      <ChatImportRowV2 {...(onImported ? { onImported } : {})} />
+      <ChatImportRowV2 accountId={accountId} {...(onImported ? { onImported } : {})} />
       <SettingsGroupLabelV2 tone="danger">Danger zone</SettingsGroupLabelV2>
       <SettingsRowV2
         description={state.kind === "done"

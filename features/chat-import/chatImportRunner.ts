@@ -1,10 +1,18 @@
-import type { ChatImportResponse } from "@/lib/contracts/chatImport";
+import { CHAT_IMPORT_ACCOUNT_CHANGED, type ChatImportResponse } from "@/lib/contracts/chatImport";
+import { DEFAULT_CHAT_TITLE } from "@/lib/contracts/chats";
 import { IMPORT_SKIPPED_CHAT_KINDS, type ImportSkipKind } from "./converters/converterTypes";
 import type { ImportBatch } from "./importPipeline";
 import { importFailureMessage, type ImportFailureReason } from "./importReport";
-import type { ImportWorkerPort, ImportWorkerResponse } from "./importWorkerProtocol";
+import type { ImportWorkerPort, ImportWorkerRequest, ImportWorkerResponse } from "./importWorkerProtocol";
 
-export type ChatImportPhase = "cancelled" | "failed" | "finished" | "importing" | "reading" | "stopping";
+export type ChatImportPhase =
+  | "account_changed"
+  | "cancelled"
+  | "failed"
+  | "finished"
+  | "importing"
+  | "reading"
+  | "stopping";
 
 /** A chat that was not imported, or with `file` a whole file that could not be read. */
 export type ChatImportFailedChat = Readonly<{ title: string; reason: string; file?: true }>;
@@ -20,13 +28,13 @@ export type ChatImportState = Readonly<{
   alreadyImported: number;
   skipped: Readonly<Partial<Record<ImportSkipKind, number>>>;
   failed: readonly ChatImportFailedChat[];
-  /** Why the import stopped early, for `failed`. */
+  /** Why the import stopped early, for `failed` and `account_changed`. */
   error: string | null;
 }>;
 
-/** Thrown by `sendBatch` for a response that confirms nothing. */
+/** Thrown by `sendBatch` for a response that confirms nothing; `code` is the server's error code. */
 export class ChatImportRequestError extends Error {
-  constructor(readonly status: number) {
+  constructor(readonly status: number, readonly code: string | null = null) {
     super(`chat_import_request_failed_${status}`);
     this.name = "ChatImportRequestError";
   }
@@ -34,11 +42,17 @@ export class ChatImportRequestError extends Error {
 
 export type ChatImportRunnerDeps = Readonly<{
   createWorker(): ImportWorkerPort;
-  sendBatch(body: string, count: number): Promise<ChatImportResponse>;
+  sendBatch(body: string, count: number, signal: AbortSignal): Promise<ChatImportResponse>;
 }>;
 
 export type ChatImportRun = Readonly<{
   cancel(): void;
+  /**
+   * The account that started the import is no longer signed in: stop now,
+   * drop the worker and its files, abort a request in flight and keep
+   * nothing of the report but the reason.
+   */
+  stopForAccountChange(): void;
   finished: Promise<ChatImportState>;
 }>;
 
@@ -54,7 +68,24 @@ export const INITIAL_CHAT_IMPORT_STATE: ChatImportState = Object.freeze({
   total: 0
 });
 
-type WorkerOutcome = ImportWorkerResponse | Readonly<{ type: "cancelled" }> | Readonly<{ type: "crashed" }>;
+export const CHAT_IMPORT_ACCOUNT_CHANGED_MESSAGE =
+  "You signed out or switched accounts, so the import stopped and its details were cleared. " +
+  "Chats imported before that stay in the account that started the import.";
+
+/** What remains of an import after its account changed: the reason, nothing about the chats. */
+export const ACCOUNT_CHANGED_CHAT_IMPORT_STATE: ChatImportState = Object.freeze({
+  ...INITIAL_CHAT_IMPORT_STATE,
+  error: CHAT_IMPORT_ACCOUNT_CHANGED_MESSAGE,
+  phase: "account_changed"
+});
+
+const TERMINAL_PHASES: ReadonlySet<ChatImportPhase> = new Set(["account_changed", "cancelled", "failed", "finished"]);
+
+type WorkerOutcome =
+  | ImportWorkerResponse
+  | Readonly<{ type: "account_changed" }>
+  | Readonly<{ type: "cancelled" }>
+  | Readonly<{ type: "crashed" }>;
 
 function stoppedMessage(error: unknown): string {
   if (error instanceof ChatImportRequestError && error.status === 401) {
@@ -64,12 +95,13 @@ function stoppedMessage(error: unknown): string {
 }
 
 /**
- * Drives one import: the worker reads and packs the files one step at a
- * time, and each step's request is sent before the next is read. Cancel
- * stops further steps; a request already sent completes and its chats stay.
+ * Drives one import for the account that started it: the worker reads and
+ * packs the files one step at a time, each step's request names that account
+ * and is sent before the next is read. Cancel stops further steps; a request
+ * already sent completes and its chats stay.
  */
 export function runChatImport(
-  files: readonly File[],
+  input: Readonly<{ accountId: string; files: readonly File[] }>,
   deps: ChatImportRunnerDeps,
   onState: (state: ChatImportState) => void
 ): ChatImportRun {
@@ -79,8 +111,10 @@ export function runChatImport(
     onState(state);
   };
   const worker = deps.createWorker();
+  const requests = new AbortController();
   let pending: ((outcome: WorkerOutcome) => void) | null = null;
   let cancelled = false;
+  let accountChanged = false;
   let sending = false;
   const deliver = (outcome: WorkerOutcome) => {
     const resolve = pending;
@@ -89,10 +123,14 @@ export function runChatImport(
   };
   worker.onmessage = (event) => deliver(event.data);
   worker.onerror = () => deliver({ type: "crashed" });
-  const request = (message: Parameters<ImportWorkerPort["postMessage"]>[0]) => {
+  const request = (message: ImportWorkerRequest) => {
     const outcome = new Promise<WorkerOutcome>((resolve) => { pending = resolve; });
     worker.postMessage(message);
     return outcome;
+  };
+  const endForAccountChange = () => {
+    state = ACCOUNT_CHANGED_CHAT_IMPORT_STATE;
+    onState(state);
   };
 
   const fail = (failed: readonly ChatImportFailedChat[], count: number) => ({
@@ -133,7 +171,7 @@ export function runChatImport(
       } else if (result.status === "already_imported") {
         alreadyImported += 1;
       } else {
-        failed.push({ reason: importFailureMessage(result.code), title: batch.sent[index]?.title ?? "Untitled chat" });
+        failed.push({ reason: importFailureMessage(result.code), title: batch.sent[index]?.title ?? DEFAULT_CHAT_TITLE });
       }
     });
     update({ alreadyImported, importedChats, importedMessages, ...fail(failed, response.results.length) });
@@ -142,8 +180,12 @@ export function runChatImport(
   const finished = (async () => {
     onState(state);
     try {
-      let outcome = await request({ files, type: "start" });
+      let outcome = await request({ accountId: input.accountId, files: input.files, type: "start" });
       for (;;) {
+        if (accountChanged || outcome.type === "account_changed") {
+          endForAccountChange();
+          break;
+        }
         if (outcome.type === "cancelled") {
           update({ phase: "cancelled" });
           break;
@@ -163,8 +205,13 @@ export function runChatImport(
           if (!cancelled) update({ phase: "importing" });
           sending = true;
           try {
-            applyResults(batch, await deps.sendBatch(batch.body, batch.sent.length));
+            const response = await deps.sendBatch(batch.body, batch.sent.length, requests.signal);
+            if (!accountChanged) applyResults(batch, response);
           } catch (error) {
+            if (accountChanged || (error instanceof ChatImportRequestError && error.code === CHAT_IMPORT_ACCOUNT_CHANGED)) {
+              endForAccountChange();
+              break;
+            }
             const unconfirmed = batch.sent.map((chat) => ({
               reason: importFailureMessage("server_unconfirmed" satisfies ImportFailureReason),
               title: chat.title
@@ -174,6 +221,10 @@ export function runChatImport(
           } finally {
             sending = false;
           }
+        }
+        if (accountChanged) {
+          endForAccountChange();
+          break;
         }
         if (batch.done) {
           update({ phase: "finished", total: Math.max(state.total, state.processed) });
@@ -193,10 +244,17 @@ export function runChatImport(
 
   return {
     cancel() {
-      if (cancelled || state.phase === "finished" || state.phase === "failed") return;
+      if (cancelled || TERMINAL_PHASES.has(state.phase)) return;
       cancelled = true;
       if (sending) update({ phase: "stopping" });
       else deliver({ type: "cancelled" });
+    },
+    stopForAccountChange() {
+      if (accountChanged || TERMINAL_PHASES.has(state.phase)) return;
+      accountChanged = true;
+      requests.abort();
+      worker.terminate();
+      deliver({ type: "account_changed" });
     },
     finished
   };

@@ -7,6 +7,7 @@ import {
   CHAT_IMPORT_MAX_MESSAGES,
   chatImportDocumentFailure,
   decodeChatImportItem,
+  chatImportRequestAccountId,
   decodeChatImportRequestItems,
   decodeChatImportResponse,
   normalizeChatImportSourceModel
@@ -114,11 +115,15 @@ describe("chat import contract", () => {
   });
 
   it("bounds the request envelope", () => {
-    expect(decodeChatImportRequestItems({ chats: [1] })).toEqual([1]);
-    expect(decodeChatImportRequestItems({ chats: [] })).toBeNull();
-    expect(decodeChatImportRequestItems({ chats: Array(CHAT_IMPORT_MAX_CHATS_PER_REQUEST + 1).fill(1) })).toBeNull();
-    expect(decodeChatImportRequestItems({ chats: [1], other: true })).toBeNull();
+    expect(decodeChatImportRequestItems({ accountId: "user-1", chats: [1] })).toEqual([1]);
+    expect(decodeChatImportRequestItems({ accountId: "user-1", chats: [] })).toBeNull();
+    expect(decodeChatImportRequestItems({ accountId: "user-1", chats: Array(CHAT_IMPORT_MAX_CHATS_PER_REQUEST + 1).fill(1) })).toBeNull();
+    expect(decodeChatImportRequestItems({ accountId: "user-1", chats: [1], other: true })).toBeNull();
     expect(decodeChatImportRequestItems([1])).toBeNull();
+    expect(chatImportRequestAccountId({ accountId: "user-1", chats: [1] })).toBe("user-1");
+    for (const accountId of [undefined, "", "  ", 7, "a\u0000b", "x".repeat(257)]) {
+      expect(chatImportRequestAccountId({ accountId, chats: [1] })).toBeNull();
+    }
   });
 
   it("decodes one result per sent chat and nothing else", () => {

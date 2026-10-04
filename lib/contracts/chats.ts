@@ -119,6 +119,8 @@ export const THREAD_SEARCH_SOURCE_MAX_ITEMS = 4_000;
  * code units, so any input the field accepts also fits here.
  */
 export const CHAT_TITLE_MAX_LENGTH = 120;
+/** The title of a chat created without one; never empty, which every chat decoder requires. */
+export const DEFAULT_CHAT_TITLE = "New Chat";
 export const PERSONAL_FOLDER_NAME_MAX_LENGTH = 80;
 export function codePointLength(value: string): number {
   return Array.from(value).length;
@@ -128,6 +130,15 @@ export function boundedChatTitle(value: string): string {
   return codePointLength(value) <= CHAT_TITLE_MAX_LENGTH
     ? value
     : Array.from(value).slice(0, CHAT_TITLE_MAX_LENGTH).join("").trimEnd();
+}
+/**
+ * The stored title of an imported chat: trimmed, cut to the title bound, and
+ * the default chat title when nothing is left. Export formats allow an empty
+ * title (ChatGPT writes none for some conversations), but every chat list and
+ * search decoder refuses one.
+ */
+export function importedChatTitle(value: string): string {
+  return boundedChatTitle(value.trim()) || DEFAULT_CHAT_TITLE;
 }
 export function boundedChatBranchPreview(value: string): string {
   if (value.length <= CHAT_BRANCH_PREVIEW_MAX_LENGTH) return value;

@@ -4,6 +4,7 @@ import {
   decodeChatImportItem,
   normalizeChatImportSourceModel
 } from "@/lib/contracts/chatImport";
+import { importedChatTitle } from "@/lib/contracts/chats";
 import {
   IMPORT_SKIPPED_CHAT_KINDS,
   type ChatImportConverter,
@@ -34,6 +35,8 @@ export type ImportBatch = Readonly<{
 }>;
 
 export type ImportPipelineOptions = Readonly<{
+  /** The account the import was started for; every batch names it (`ChatImportRequest`). */
+  accountId: string;
   converters: readonly ChatImportConverter[];
   maxBodyBytes?: number;
   maxChats?: number;
@@ -44,9 +47,7 @@ export type ImportPipelineOptions = Readonly<{
 
 /** Small requests keep the progress moving; a large chat still travels alone. */
 export const CLIENT_BATCH_MAX_CHATS = 25;
-const ENVELOPE_START = '{"chats":[';
 const ENVELOPE_END = "]}";
-const ENVELOPE_BYTES = ENVELOPE_START.length + ENVELOPE_END.length;
 
 /** UTF-8 length of a string without encoding it. */
 export function utf8ByteLength(value: string): number {
@@ -64,20 +65,17 @@ export function utf8ByteLength(value: string): number {
   return bytes;
 }
 
-function displayTitle(title: string): string {
-  return title.trim() || "Untitled chat";
-}
-
 type PreparedItem =
   | Readonly<{ ok: true; json: string; bytes: number; sent: ImportSentChat }>
   | Readonly<{ ok: false; failure: ImportLocalFailure }>;
 
 /** The request item exactly as the server will validate it, refused here with the same code. */
 function prepareItem(chat: ConvertedChat, now: Date): PreparedItem {
-  const title = displayTitle(chat.document.chat.title);
+  // The title as the chat will be stored: converters may pass an empty one.
+  const title = importedChatTitle(chat.document.chat.title);
   const sourceModel = normalizeChatImportSourceModel(chat.sourceModel);
   const item = {
-    document: chat.document,
+    document: { ...chat.document, chat: { ...chat.document.chat, title } },
     source: chat.source,
     ...(chat.source !== "AIQSA" && chat.sourceKey !== undefined ? { sourceKey: chat.sourceKey } : {}),
     ...(sourceModel ? { sourceModel } : {})
@@ -104,12 +102,14 @@ export async function* importBatches(
   options: ImportPipelineOptions
 ): AsyncGenerator<ImportBatch> {
   const maxBodyBytes = options.maxBodyBytes ?? CHAT_IMPORT_REQUEST_MAX_BYTES;
+  const envelopeStart = `{"accountId":${JSON.stringify(options.accountId)},"chats":[`;
+  const envelopeBytes = utf8ByteLength(envelopeStart) + ENVELOPE_END.length;
   const maxChats = Math.min(options.maxChats ?? CLIENT_BATCH_MAX_CHATS, CHAT_IMPORT_MAX_CHATS_PER_REQUEST);
   const flushOutcomes = options.flushOutcomes ?? 25;
   const now = options.now ?? (() => new Date());
 
   let items: string[] = [];
-  let bodyBytes = ENVELOPE_BYTES;
+  let bodyBytes = envelopeBytes;
   let sent: ImportSentChat[] = [];
   let totalDelta = 0;
   let skipped: Partial<Record<ImportSkipKind, number>> = {};
@@ -118,7 +118,7 @@ export async function* importBatches(
 
   const step = (done: boolean): ImportBatch => {
     const batch: ImportBatch = {
-      body: items.length ? `${ENVELOPE_START}${items.join(",")}${ENVELOPE_END}` : null,
+      body: items.length ? `${envelopeStart}${items.join(",")}${ENVELOPE_END}` : null,
       done,
       failed,
       sent,
@@ -126,7 +126,7 @@ export async function* importBatches(
       totalDelta
     };
     items = [];
-    bodyBytes = ENVELOPE_BYTES;
+    bodyBytes = envelopeBytes;
     sent = [];
     totalDelta = 0;
     skipped = {};
@@ -172,7 +172,7 @@ export async function* importBatches(
         const prepared = prepareItem(event.chat, now());
         if (!prepared.ok) {
           fail(prepared.failure);
-        } else if (ENVELOPE_BYTES + prepared.bytes > maxBodyBytes) {
+        } else if (envelopeBytes + prepared.bytes > maxBodyBytes) {
           fail({ reason: "too_large", title: prepared.sent.title });
         } else {
           if (items.length > 0 && bodyBytes + 1 + prepared.bytes > maxBodyBytes) yield step(false);
