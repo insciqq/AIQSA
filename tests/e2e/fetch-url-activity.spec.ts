@@ -1,13 +1,34 @@
+import { PrismaClient } from "@prisma/client";
 import { expect, test, type Page } from "@playwright/test";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import { chooseSearchStrategy, selectModel } from "./shell/composer";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
+import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
 
 // The fake provider asks for one page through the real server pipeline; both
 // links are refused before any network request (loopback, and a link the chat
 // never contained), so the run is deterministic and offline.
 test.describe.configure({ mode: "serial" });
 test.setTimeout(90_000);
+
+const prisma = new PrismaClient();
+let restoreFakeContext: (() => Promise<void>) | null = null;
+
+// The default tool schemas already fill most of Fake QSA's 8k seed window
+// (about 7.2k tokens before any message), so the second answer's tool round
+// would need context compaction, and the fake provider writes no summary.
+// Like the Workspace specs, this spec uses the 64k fake context.
+test.beforeAll(async () => {
+  restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
+});
+
+test.afterAll(async () => {
+  try {
+    await restoreFakeContext?.();
+  } finally {
+    await prisma.$disconnect();
+  }
+});
 
 const titlePrefix = "E2E page reader";
 
