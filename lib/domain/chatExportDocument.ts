@@ -170,7 +170,7 @@ export function chatExportDocument(source: ChatExportSource, exportedAt: Date): 
 }
 
 /** Root-to-leaf path of the active branch; empty without a reachable leaf. */
-function activeBranch(source: ChatExportSource): ChatExportSourceMessage[] {
+export function chatExportActiveBranch(source: ChatExportSource): ChatExportSourceMessage[] {
   const byKey = new Map(source.messages.map((message) => [message.key, message]));
   const path: ChatExportSourceMessage[] = [];
   const seen = new Set<string>();
@@ -190,7 +190,7 @@ function activeBranch(source: ChatExportSource): ChatExportSourceMessage[] {
  * stopped answer without text reads "Stopped.".
  */
 export function chatExportActiveBranchMarkdown(source: ChatExportSource): string {
-  return chatExportMarkdown(source.chat.title, activeBranch(source).map((message) => ({
+  return chatExportMarkdown(source.chat.title, chatExportActiveBranch(source).map((message) => ({
     content: message.status === "cancelled" ? chatExportText(message.content) || "Stopped." : message.content,
     role: message.role,
     ...(message.followups ? { followups: message.followups } : {})

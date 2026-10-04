@@ -89,15 +89,28 @@ export async function loadAuthorizedChatExportSource(
   input: Readonly<{ chatId: string; userId: string }>
 ): Promise<ChatExportSource | null> {
   return db.$transaction(async (tx) => {
-    const access = await resolveChatAccess(tx, input);
-    if (!access) return null;
-    const chat = await tx.chat.findFirst({
-      select: { ...chatExportChatSelect, memoryMode: true },
-      where: { id: input.chatId, permanentDeletionAt: null }
-    });
-    if (!chat || chat.archived && (access.kind !== "personal" || chat.memoryMode === "TEMPORARY")) return null;
-    return loadChatExportSource(tx, chat);
+    const chat = await findReadableExportChat(tx, input);
+    return chat ? loadChatExportSource(tx, chat) : null;
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+}
+
+/**
+ * The chat row under the read rule of the chat page: an active chat under
+ * the personal or Project rule, an archived chat only for its personal
+ * owner and never a temporary one; null for anything else.
+ */
+export async function findReadableExportChat(
+  tx: Prisma.TransactionClient,
+  input: Readonly<{ chatId: string; userId: string }>
+): Promise<ChatExportChatRow | null> {
+  const access = await resolveChatAccess(tx, input);
+  if (!access) return null;
+  const chat = await tx.chat.findFirst({
+    select: { ...chatExportChatSelect, memoryMode: true },
+    where: { id: input.chatId, permanentDeletionAt: null }
+  });
+  if (!chat || chat.archived && (access.kind !== "personal" || chat.memoryMode === "TEMPORARY")) return null;
+  return chat;
 }
 
 type ChatExportFormat = "json" | "markdown";
@@ -125,7 +138,8 @@ function requestedFormat(request: Request): ChatExportFormat | null {
   return format === "json" || format === "markdown" ? format : null;
 }
 
-function routeChatId(value: unknown): string | null {
+/** A chat id from a route segment, or null when it cannot name a chat. */
+export function routeChatId(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000- \u007f]/u.test(value)
     ? value
     : null;
