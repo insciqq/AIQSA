@@ -1336,8 +1336,15 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
         else retryChatNavigation();
       }}
       onSearch={(value) => {
-        if (value) useWorkspaceStore.getState().setNavigationSearchQuery(value);
-        else clearChatNavigationSearch();
+        if (!value) {
+          clearChatNavigationSearch();
+          return;
+        }
+        // The shell starts the request after a short pause; until it answers
+        // the list reads as searching, never as an empty result.
+        const workspace = useWorkspaceStore.getState();
+        workspace.setNavigationSearchQuery(value);
+        workspace.setNavigationSearchLoading(true);
       }}
       ready={ready}
       searchError={searchError}

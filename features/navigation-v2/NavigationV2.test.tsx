@@ -664,6 +664,18 @@ describe("Navigation v2", () => {
     expect(onOpenMessageMatch).toHaveBeenCalledWith(messageMatch);
   });
 
+  it("reads as searching, not as nothing found, while a new query waits for its request", () => {
+    vi.useFakeTimers();
+    useWorkspaceStore.getState().applyNavigationPage({ chats, folders: [], nextCursor: null }, false);
+    render(<NavigationSidebarContainer onClose={vi.fn()} onNewChat={vi.fn()} onSelectChat={vi.fn()} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Filter chats" }), { target: { value: "budget" } });
+    act(() => vi.advanceTimersByTime(300));
+
+    expect(useWorkspaceStore.getState().navigationSearchQuery).toBe("budget");
+    expect(screen.getByText("Searching chats…")).toBeVisible();
+    expect(screen.queryByText("Nothing found")).toBeNull();
+  });
+
   it("keeps a search with only message matches out of the empty state and names a timeout", () => {
     const { view } = sidebar({ chats: [], messageMatches: [messageMatch], searchQuery: "budget" });
     expect(screen.queryByRole("group", { name: "Results" })).toBeNull();
