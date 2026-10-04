@@ -58,6 +58,19 @@ export type ChatNavigationHandlerDeps = Readonly<{
   resolveAuth: RequestAuthResolver;
 }>;
 
+/**
+ * A chat's scheduled task marker: the task whose current chat it is, or whose
+ * run posted into it, and whether a result in this chat is unread. Unread is
+ * per result, so it never follows the task's newest chat to another chat.
+ */
+function scheduledTaskMarker(row: Readonly<{
+  scheduledTaskOccurrences: readonly Readonly<{ taskId: string; unseenAt: Date | null }>[];
+  scheduledTasks: readonly Readonly<{ id: string }>[];
+}>): Readonly<{ taskId: string; unseen: boolean }> | null {
+  const taskId = row.scheduledTasks[0]?.id ?? row.scheduledTaskOccurrences[0]?.taskId;
+  return taskId ? { taskId, unseen: Boolean(row.scheduledTaskOccurrences[0]?.unseenAt) } : null;
+}
+
 function normalizedQuery(value: string): string {
   return value.normalize("NFKC").trim().toLowerCase();
 }
@@ -159,10 +172,17 @@ async function page(
           take: 1,
           where: { status: { in: ACTIVE_RUN_STATUSES } }
         },
-        // The task this chat belongs to; only its unread marker crosses the boundary.
+        // The task that posts into this chat, now or by an earlier run, and
+        // whether a result here is unread; nothing else crosses the boundary.
         scheduledTasks: {
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-          select: { id: true, unseenResultAt: true },
+          select: { id: true },
+          take: 1
+        },
+        // An unread result first, else the newest run in this chat.
+        scheduledTaskOccurrences: {
+          orderBy: [{ unseenAt: { nulls: "last", sort: "desc" } }, { createdAt: "desc" }, { id: "desc" }],
+          select: { taskId: true, unseenAt: true },
           take: 1
         },
         title: true,
@@ -195,9 +215,7 @@ async function page(
         assistant: row.assistantId ? identities.get(row.assistantId) ?? null : null,
         folderId: row.folderId,
         id: row.id,
-        scheduledTask: row.scheduledTasks[0]
-          ? { taskId: row.scheduledTasks[0].id, unseen: row.scheduledTasks[0].unseenResultAt !== null }
-          : null,
+        scheduledTask: scheduledTaskMarker(row),
         title: row.title,
         updatedAt: row.updatedAt.toISOString()
       })),

@@ -3,14 +3,17 @@ import { ScheduledOccurrenceConflictError, type ScheduledOccurrenceAdmission } f
 
 /**
  * Called by run creation inside its transaction: the PENDING occurrence
- * without a run becomes RUNNING with the new run, chat and user message, and
- * the task remembers its chat (bookkeeping, no revision change). A missing or
- * already linked occurrence throws, rolling the whole admission back, so an
- * occurrence without a run proves that no run was created for it.
+ * without a run becomes RUNNING with the new run, chat, user message and the
+ * task generation, and the task points at the run's chat (bookkeeping, no
+ * revision change). The task must still be at the revision and generation the
+ * runner read before preparation, so a pause or edit made meanwhile fences
+ * this admission. A missing, already linked or fenced occurrence throws,
+ * rolling the whole admission back, so an occurrence without a run proves
+ * that no run was created for it.
  */
 export async function linkScheduledTaskOccurrence(
   tx: Prisma.TransactionClient,
-  input: ScheduledOccurrenceAdmission & Readonly<{
+  input: Pick<ScheduledOccurrenceAdmission, "occurrenceId" | "taskGeneration" | "taskId" | "taskRevision"> & Readonly<{
     chatId: string;
     now: Date;
     runId: string;
@@ -22,6 +25,7 @@ export async function linkScheduledTaskOccurrence(
   const tasks = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT "id" FROM "ScheduledTask"
     WHERE "id" = ${input.taskId} AND "userId" = ${input.userId}
+      AND "revision" = ${input.taskRevision} AND "generation" = ${input.taskGeneration}
     FOR NO KEY UPDATE
   `);
   if (tasks.length !== 1) throw new ScheduledOccurrenceConflictError();
@@ -29,7 +33,7 @@ export async function linkScheduledTaskOccurrence(
     UPDATE "ScheduledTaskOccurrence"
     SET "state" = 'RUNNING'::"ScheduledTaskOccurrenceState", "runId" = ${input.runId}, "chatId" = ${input.chatId},
       "userMessageId" = ${input.userMessageId}, "startedAt" = COALESCE("startedAt", ${input.now}),
-      "leaseExpiresAt" = NULL, "reasonCode" = NULL
+      "leaseExpiresAt" = NULL, "reasonCode" = NULL, "taskGeneration" = ${input.taskGeneration}
     WHERE "id" = ${input.occurrenceId} AND "taskId" = ${input.taskId} AND "userId" = ${input.userId}
       AND "state" = 'PENDING'::"ScheduledTaskOccurrenceState" AND "runId" IS NULL
   `);

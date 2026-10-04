@@ -1,8 +1,11 @@
 import {
+  SCHEDULED_TASK_CHAT_MODES,
   decodeScheduledTaskSchedule,
   isScheduledTaskModelIdentity,
   isScheduledTaskPrompt,
   normalizeScheduledTaskTitle,
+  scheduledTaskChatModeAllowed,
+  type ScheduledTaskChatMode,
   type ScheduledTaskDraft,
   type ScheduledTaskUpdateRequest
 } from "../../contracts/scheduledTasks";
@@ -10,11 +13,12 @@ import { validScheduledTaskTimeZone, validateScheduledTaskSchedule } from "../..
 
 export type ScheduledTaskRequestFailure = {
   ok: false;
-  code: "scheduled_task_invalid" | "scheduled_task_schedule_invalid" | "scheduled_task_time_zone_invalid";
+  code: "scheduled_task_invalid" | "scheduled_task_schedule_invalid" | "scheduled_task_time_zone_invalid" |
+    "scheduled_task_chat_mode_invalid";
 };
 export type ScheduledTaskRequestResult<T> = { ok: true; value: T } | ScheduledTaskRequestFailure;
 
-const DRAFT_KEYS = ["title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify"];
+const DRAFT_KEYS = ["title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "chatMode"];
 const UPDATE_KEYS = [...DRAFT_KEYS, "expectedRevision", "status"];
 const invalid: ScheduledTaskRequestFailure = { ok: false, code: "scheduled_task_invalid" };
 
@@ -22,9 +26,14 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function chatMode(value: unknown): value is ScheduledTaskChatMode {
+  return (SCHEDULED_TASK_CHAT_MODES as readonly unknown[]).includes(value);
+}
+
 /**
  * Create body: every editable field, nothing else. Shape and bounds fail as
- * `scheduled_task_invalid` before the schedule and then the zone are judged.
+ * `scheduled_task_invalid` before the schedule, then the zone, then a chat
+ * mode the schedule does not allow are judged.
  */
 export function decodeScheduledTaskCreateRequest(value: unknown): ScheduledTaskRequestResult<ScheduledTaskDraft> {
   if (!record(value) || Object.keys(value).length !== DRAFT_KEYS.length || !DRAFT_KEYS.every((key) => key in value)) {
@@ -33,19 +42,24 @@ export function decodeScheduledTaskCreateRequest(value: unknown): ScheduledTaskR
   const title = normalizeScheduledTaskTitle(value.title);
   if (!title || !isScheduledTaskPrompt(value.prompt) || !isScheduledTaskModelIdentity(value.modelId) ||
     !isScheduledTaskModelIdentity(value.provider) || typeof value.searchEnabled !== "boolean" ||
-    typeof value.emailNotify !== "boolean") return invalid;
+    typeof value.emailNotify !== "boolean" || !chatMode(value.chatMode)) return invalid;
   const schedule = validateScheduledTaskSchedule(value.schedule, value.timeZone);
   if (!schedule.ok) return schedule;
+  if (!scheduledTaskChatModeAllowed(schedule.schedule, value.chatMode)) return { ok: false, code: "scheduled_task_chat_mode_invalid" };
   return {
     ok: true,
     value: {
       title, prompt: value.prompt, schedule: schedule.schedule, timeZone: schedule.timeZone, modelId: value.modelId,
-      provider: value.provider, searchEnabled: value.searchEnabled, emailNotify: value.emailNotify
+      provider: value.provider, searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, chatMode: value.chatMode
     }
   };
 }
 
-/** Update body: `expectedRevision` plus at least one change; `modelId` and `provider` only together. */
+/**
+ * Update body: `expectedRevision` plus at least one change; `modelId` and
+ * `provider` only together. Whether the resulting chat mode suits the
+ * resulting schedule is judged against the stored task.
+ */
 export function decodeScheduledTaskUpdateRequest(value: unknown): ScheduledTaskRequestResult<ScheduledTaskUpdateRequest> {
   if (!record(value) || Object.keys(value).length < 2 || Object.keys(value).some((key) => !UPDATE_KEYS.includes(key)) ||
     typeof value.expectedRevision !== "number" || !Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1 ||
@@ -70,6 +84,10 @@ export function decodeScheduledTaskUpdateRequest(value: unknown): ScheduledTaskR
     const flag = value[key];
     if (typeof flag !== "boolean") return invalid;
     patch[key] = flag;
+  }
+  if ("chatMode" in value) {
+    if (!chatMode(value.chatMode)) return invalid;
+    patch.chatMode = value.chatMode;
   }
   if ("status" in value) {
     if (value.status !== "active" && value.status !== "paused") return invalid;

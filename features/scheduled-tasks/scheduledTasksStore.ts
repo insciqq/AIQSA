@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   SCHEDULED_TASK_MAX_ACTIVE,
+  SCHEDULED_TASK_MAX_ACTIVE_HOURLY,
   SCHEDULED_TASK_MAX_TOTAL,
   type ScheduledTask,
   type ScheduledTaskLimits
@@ -32,7 +33,7 @@ const initial: ScheduledTasksState = {
   accountId: null,
   emailAvailable: false,
   error: null,
-  limits: { maxActive: SCHEDULED_TASK_MAX_ACTIVE, maxTotal: SCHEDULED_TASK_MAX_TOTAL },
+  limits: { maxActive: SCHEDULED_TASK_MAX_ACTIVE, maxActiveHourly: SCHEDULED_TASK_MAX_ACTIVE_HOURLY, maxTotal: SCHEDULED_TASK_MAX_TOTAL },
   loadState: "idle",
   newResults: { sequence: 0, tasks: [] },
   tasks: []

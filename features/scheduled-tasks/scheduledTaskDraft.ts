@@ -7,6 +7,7 @@ import {
   isScheduledTaskLocalDate,
   isScheduledTaskTime,
   type ScheduledTask,
+  type ScheduledTaskChatMode,
   type ScheduledTaskDraft,
   type ScheduledTaskSchedule,
   type ScheduledTaskUpdateRequest,
@@ -22,8 +23,12 @@ import {
 } from "@/lib/domain/scheduledTaskSchedule";
 import { WORKDAYS, formatScheduledInstant } from "./scheduledTaskPresentation";
 
-/** "Weekdays" is a preset of the weekly schedule (Monday to Friday). */
-export type ScheduledTaskRepeat = "once" | "daily" | "weekdays" | "weekly" | "monthly";
+/**
+ * "Weekdays" is a preset of the weekly schedule (Monday to Friday). Hourly
+ * tasks are not offered here yet: an hourly task opens with an incomplete
+ * schedule, so this editor never saves it as another kind.
+ */
+export type ScheduledTaskRepeat = "once" | "daily" | "weekdays" | "weekly" | "monthly" | "hourly";
 
 export const SCHEDULED_TASK_REPEAT_OPTIONS: readonly Readonly<{ label: string; value: ScheduledTaskRepeat }>[] = [
   { label: "Once", value: "once" },
@@ -46,6 +51,7 @@ export type ScheduledTaskEditorDraft = Readonly<{
   provider: string;
   searchEnabled: boolean;
   emailNotify: boolean;
+  chatMode: ScheduledTaskChatMode;
 }>;
 
 export type ScheduledTaskFieldErrors = Partial<Record<
@@ -104,6 +110,7 @@ export function blankScheduledTaskDraft(
     ...defaultModel(catalog),
     searchEnabled: false,
     emailNotify: false,
+    chatMode: "new",
     ...preset
   };
 }
@@ -127,7 +134,8 @@ export function scheduledTaskDraftFromTask(task: ScheduledTask, now: Date = new 
     modelId: task.modelId,
     provider: task.provider,
     searchEnabled: task.searchEnabled,
-    emailNotify: task.emailNotify
+    emailNotify: task.emailNotify,
+    chatMode: task.chatMode
   };
 }
 
@@ -135,6 +143,7 @@ export function scheduledTaskDraftFromTask(task: ScheduledTask, now: Date = new 
 export function scheduledTaskDraftSchedule(draft: ScheduledTaskEditorDraft): ScheduledTaskSchedule | null {
   if (!isScheduledTaskTime(draft.time)) return null;
   switch (draft.repeat) {
+    case "hourly": return null;
     case "once": return isScheduledTaskLocalDate(draft.date) ? { kind: "once", date: draft.date, time: draft.time } : null;
     case "daily": return { kind: "daily", time: draft.time };
     case "weekdays": return { kind: "weekly", time: draft.time, days: [...WORKDAYS] };
@@ -218,7 +227,8 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
     modelId: draft.modelId,
     provider: draft.provider,
     searchEnabled: draft.searchEnabled,
-    emailNotify: draft.emailNotify
+    emailNotify: draft.emailNotify,
+    chatMode: draft.chatMode
   } : null;
 }
 
@@ -237,6 +247,7 @@ export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, orig
   }
   if (next.searchEnabled !== original.searchEnabled) patch.searchEnabled = next.searchEnabled;
   if (next.emailNotify !== original.emailNotify) patch.emailNotify = next.emailNotify;
+  if (next.chatMode !== original.chatMode) patch.chatMode = next.chatMode;
   return patch;
 }
 
@@ -244,7 +255,7 @@ export function sameScheduledTaskDraft(left: ScheduledTaskEditorDraft, right: Sc
   return left.title === right.title && left.prompt === right.prompt && left.repeat === right.repeat &&
     left.time === right.time && left.dayOfMonth === right.dayOfMonth && left.date === right.date &&
     left.timeZone === right.timeZone && left.modelId === right.modelId && left.provider === right.provider &&
-    left.searchEnabled === right.searchEnabled && left.emailNotify === right.emailNotify &&
+    left.searchEnabled === right.searchEnabled && left.emailNotify === right.emailNotify && left.chatMode === right.chatMode &&
     scheduledTaskWeekdayMask(left.days) === scheduledTaskWeekdayMask(right.days);
 }
 

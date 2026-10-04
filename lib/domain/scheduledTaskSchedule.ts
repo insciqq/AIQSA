@@ -1,4 +1,5 @@
 import {
+  SCHEDULED_TASK_TITLE_MAX_LENGTH,
   SCHEDULED_TASK_WEEKDAYS,
   decodeScheduledTaskSchedule,
   isScheduledTaskTimeZoneShape,
@@ -11,8 +12,11 @@ import {
  * Wall-clock schedule arithmetic for scheduled tasks. Client-safe: zone offsets
  * come only from `Intl.DateTimeFormat`. A local time skipped by a forward
  * transition runs at the same wall time shifted forward by the gap; a repeated
- * local time runs at its earlier instant. Each local day yields at most one
- * occurrence, so no day is skipped or run twice.
+ * local time runs at its earlier instant, so each local wall time runs at most
+ * once. Daily, weekly and monthly schedules yield at most one occurrence per
+ * local day, so no day is skipped or run twice. Hourly slots are spaced in
+ * nominal wall-clock time: slots that land on the same instant run once, and a
+ * slot that a transition shifts outside its window (or its day) is skipped.
  */
 
 export type ScheduledTaskLocalDate = Readonly<{ year: number; month: number; day: number }>;
@@ -22,6 +26,8 @@ export type ScheduledTaskScheduleValidation =
   | { ok: false; code: "scheduled_task_schedule_invalid" | "scheduled_task_time_zone_invalid" };
 
 const DAY_MS = 86_400_000;
+const MINUTE_MS = 60_000;
+const LAST_MINUTE_OF_DAY = 1439;
 /** More than a year: monthly needs at most 63 local days, weekly 8. */
 const MAX_SCAN_DAYS = 400;
 const ALL_DAYS_MASK = 0b1111111;
@@ -76,6 +82,8 @@ export function sameScheduledTaskSchedule(left: ScheduledTaskSchedule, right: Sc
     case "weekly": return right.kind === "weekly" &&
       scheduledTaskWeekdayMask(left.days) === scheduledTaskWeekdayMask(right.days);
     case "monthly": return right.kind === "monthly" && left.dayOfMonth === right.dayOfMonth;
+    case "hourly": return right.kind === "hourly" && left.everyHours === right.everyHours && left.until === right.until &&
+      scheduledTaskWeekdayMask(left.days) === scheduledTaskWeekdayMask(right.days);
     default: return true;
   }
 }
@@ -151,15 +159,41 @@ export function scheduledTaskOnceInstant(schedule: Extract<ScheduledTaskSchedule
   return scheduledTaskZonedInstant(parseLocalDate(schedule.date), scheduledTaskTimeToMinutes(schedule.time), timeZone);
 }
 
-function runsOn(schedule: Exclude<ScheduledTaskSchedule, { kind: "once" }>, date: ScheduledTaskLocalDate): boolean {
+function weekdayOf(date: ScheduledTaskLocalDate): ScheduledTaskWeekday {
+  return SCHEDULED_TASK_WEEKDAYS[(new Date(utcMilliseconds(date.year, date.month, date.day)).getUTCDay() + 6) % 7]!;
+}
+
+function runsOn(schedule: Exclude<ScheduledTaskSchedule, { kind: "once" | "hourly" }>, date: ScheduledTaskLocalDate): boolean {
   switch (schedule.kind) {
     case "daily": return true;
-    case "weekly": {
-      const isoIndex = (new Date(utcMilliseconds(date.year, date.month, date.day)).getUTCDay() + 6) % 7;
-      return schedule.days.includes(SCHEDULED_TASK_WEEKDAYS[isoIndex]!);
-    }
+    case "weekly": return schedule.days.includes(weekdayOf(date));
     case "monthly": return date.day === Math.min(schedule.dayOfMonth, scheduledTaskDaysInMonth(date.year, date.month));
   }
+}
+
+/**
+ * The instants of an hourly schedule on one local date, ascending and unique.
+ * Nominal slots run every `everyHours` from the window start through its end
+ * inclusive. A slot a forward transition shifts outside the window, or into
+ * another date, is skipped; slots that convert to the same instant run once.
+ */
+function hourlyInstants(
+  schedule: Extract<ScheduledTaskSchedule, { kind: "hourly" }>,
+  date: ScheduledTaskLocalDate,
+  timeZone: string
+): number[] {
+  if (!schedule.days.includes(weekdayOf(date))) return [];
+  const start = scheduledTaskTimeToMinutes(schedule.time);
+  const end = schedule.until === null ? LAST_MINUTE_OF_DAY : scheduledTaskTimeToMinutes(schedule.until);
+  const midnight = utcMilliseconds(date.year, date.month, date.day);
+  const instants: number[] = [];
+  for (let minute = start; minute <= end; minute += schedule.everyHours * 60) {
+    const instant = scheduledTaskZonedInstant(date, minute, timeZone).getTime();
+    const wallSinceMidnight = wallClock(instant, timeZone) - midnight;
+    if (wallSinceMidnight < start * MINUTE_MS || wallSinceMidnight > end * MINUTE_MS) continue;
+    if (!instants.includes(instant)) instants.push(instant);
+  }
+  return instants.sort((left, right) => left - right);
 }
 
 /**
@@ -174,24 +208,46 @@ export function nextOccurrenceAfter(schedule: ScheduledTaskSchedule, timeZone: s
     const instant = scheduledTaskOnceInstant(schedule, timeZone);
     return instant.getTime() > afterMs ? instant : null;
   }
-  const minuteOfDay = scheduledTaskTimeToMinutes(schedule.time);
   // Start a day early: the previous day's time can be shifted past midnight by a gap.
   let date = addDays(scheduledTaskLocalDate(after, timeZone), -1);
   for (let scanned = 0; scanned < MAX_SCAN_DAYS; scanned += 1, date = addDays(date, 1)) {
+    if (schedule.kind === "hourly") {
+      const next = hourlyInstants(schedule, date, timeZone).find((instant) => instant > afterMs);
+      if (next !== undefined) return new Date(next);
+      continue;
+    }
     if (!runsOn(schedule, date)) continue;
-    const instant = scheduledTaskZonedInstant(date, minuteOfDay, timeZone);
+    const instant = scheduledTaskZonedInstant(date, scheduledTaskTimeToMinutes(schedule.time), timeZone);
     if (instant.getTime() > afterMs) return instant;
   }
   return null;
 }
 
-/** English summary, e.g. "Every weekday at 09:00" or "Once on 12 Oct 2026 at 10:00". */
+function dateLabel(date: ScheduledTaskLocalDate): string {
+  return `${date.day} ${MONTH_LABELS[date.month - 1]} ${date.year}`;
+}
+
+/** Weekdays after an hourly summary: none for every day, else ", Mon–Fri" or ", Mon, Wed". */
+function hourlyDaysLabel(days: readonly ScheduledTaskWeekday[]): string {
+  const mask = scheduledTaskWeekdayMask(days);
+  if (mask === ALL_DAYS_MASK) return "";
+  if (mask === WORKDAYS_MASK) return ", Mon–Fri";
+  return `, ${scheduledTaskWeekdaysFromMask(mask).map((day) => WEEKDAY_LABELS[day]).join(", ")}`;
+}
+
+/**
+ * English summary, e.g. "Every weekday at 09:00", "Once on 12 Oct 2026 at 10:00"
+ * or "Every 2 hours, 09:00–18:00, Mon–Fri".
+ */
 export function describeScheduledTaskSchedule(schedule: ScheduledTaskSchedule): string {
   const at = `at ${schedule.time}`;
   switch (schedule.kind) {
-    case "once": {
-      const date = parseLocalDate(schedule.date);
-      return `Once on ${date.day} ${MONTH_LABELS[date.month - 1]} ${date.year} ${at}`;
+    case "once": return `Once on ${dateLabel(parseLocalDate(schedule.date))} ${at}`;
+    case "hourly": {
+      const every = schedule.everyHours === 1 ? "Every hour" : `Every ${schedule.everyHours} hours`;
+      const window = schedule.until !== null ? `, ${schedule.time}–${schedule.until}`
+        : schedule.time !== "00:00" ? ` from ${schedule.time}` : "";
+      return `${every}${window}${hourlyDaysLabel(schedule.days)}`;
     }
     case "daily": return `Every day ${at}`;
     case "weekly": {
@@ -202,4 +258,16 @@ export function describeScheduledTaskSchedule(schedule: ScheduledTaskSchedule): 
     }
     case "monthly": return `Monthly on day ${schedule.dayOfMonth} ${at}`;
   }
+}
+
+/**
+ * The title of the chat a run starts in "new chat each run" mode: "<task title> ·
+ * <local date of the run>", shortening the task title to keep the chat title bound.
+ */
+export function scheduledTaskRunChatTitle(title: string, instant: Date, timeZone: string): string {
+  const suffix = ` · ${dateLabel(scheduledTaskLocalDate(instant, timeZone))}`;
+  const room = SCHEDULED_TASK_TITLE_MAX_LENGTH - Array.from(suffix).length;
+  const characters = Array.from(title.trim());
+  const shortened = characters.length > room ? `${characters.slice(0, room - 1).join("").trimEnd()}…` : characters.join("");
+  return `${shortened}${suffix}`;
 }

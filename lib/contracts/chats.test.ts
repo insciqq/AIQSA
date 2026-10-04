@@ -233,13 +233,14 @@ describe("chat wire contracts", () => {
     const decode = (scheduledTask: unknown) => decodeChatDetailResponse({ chat: detailChat({
       messages: [{ ...message, role: "user", scheduledTask }], usageStats
     }) });
-    expect(decode({ taskId: "task-1", title: "Morning brief" })?.messages[0]?.scheduledTask)
-      .toEqual({ taskId: "task-1", title: "Morning brief" });
+    const marker = { taskId: "task-1", taskRunId: "run-1", title: "Morning brief", unseen: true };
+    expect(decode(marker)?.messages[0]?.scheduledTask).toEqual(marker);
+    expect(decode({ ...marker, unseen: false })?.messages[0]?.scheduledTask).toEqual({ ...marker, unseen: false });
     expect(decode(null)?.messages[0]?.scheduledTask).toBeNull();
     expect(decode(undefined)?.messages[0]).not.toHaveProperty("scheduledTask");
-    for (const marker of [{ taskId: "task-1" }, { taskId: "task-1", title: "" }, { taskId: "task-1", title: "x", prompt: "secret" },
-      { taskId: "task-1", title: "x".repeat(CHAT_TITLE_MAX_LENGTH + 1) }]) {
-      expect(decode(marker)).toBeNull();
+    for (const malformed of [{ taskId: "task-1", title: "Morning brief" }, { ...marker, title: "" }, { ...marker, prompt: "secret" },
+      { ...marker, title: "x".repeat(CHAT_TITLE_MAX_LENGTH + 1) }, { ...marker, taskRunId: "" }, { ...marker, unseen: "yes" }]) {
+      expect(decode(malformed)).toBeNull();
     }
   });
 
