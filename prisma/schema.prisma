@@ -3298,6 +3298,10 @@ model Message {
   authorProjectRole      ProjectRole?
   branchSourceModelRunId String?
   branchFollowups        Json?
+  /// A user message a scheduled task posted (its prompt, possibly model-written). Set
+  /// with the scheduled run and kept by branch copies: every answer to it stays out
+  /// of Personal Memory and never creates a scheduled task.
+  scheduledTaskPrompt    Boolean           @default(false)
   createdAt              DateTime          @default(now())
   updatedAt              DateTime          @updatedAt
   assistantModelRuns     ModelRun[]        @relation("AssistantMessageRun")

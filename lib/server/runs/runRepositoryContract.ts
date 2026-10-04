@@ -484,8 +484,9 @@ export type CreateRunInput = {
   projectChat?: Readonly<{ folderId: string | null }>;
   /** A scheduled task's personal send: the run links this occurrence in its
    * creating transaction or is not created, records its scheduled origin,
-   * bypasses Personal Memory, and leaves the owner's saved composer controls
-   * and an existing chat's Workspace switch unchanged. */
+   * marks its user message as the task's prompt, bypasses Personal Memory,
+   * and leaves the owner's saved composer controls and an existing chat's
+   * Workspace switch unchanged. */
   scheduledOccurrence?: ScheduledOccurrenceAdmission;
   /** With `scheduledOccurrence`: the relevant sources its plan lacked, frozen on the occurrence. */
   scheduledUnavailableSources?: readonly ScheduledUnavailableSource[];
@@ -547,6 +548,9 @@ export type PreparingRunAdmissionResult = Readonly<{
   memoryCommandQueued?: boolean;
   memoryRevision: number;
   runId: string;
+  /** The run answers a scheduled task's prompt, as its user message read in the
+   * admitting transaction says: it was made dispatchable without Personal Memory. */
+  scheduledPrompt?: true;
   settingsSnapshot: MemoryPreparingSettingsSnapshot;
   userMessageId: string;
 }>;
@@ -802,6 +806,8 @@ export type RunRepository = {
     userMessage: {
       content: unknown;
       id: string;
+      /** The stored message is a scheduled task's prompt (`Message.scheduledTaskPrompt`). */
+      scheduledTaskPrompt: boolean;
     };
   } | null>;
   loadConversationContext(chatId: string, userId: string): Promise<ProviderConversationMessage[]>;
