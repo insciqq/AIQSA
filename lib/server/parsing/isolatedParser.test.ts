@@ -7,6 +7,7 @@ import type { AddressInfo } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { utils, write, type BookType } from "xlsx";
+import { withPdfWorkerAdmission } from "../uploads/pdfWorkerAdmission";
 import { extractTextDocument } from "../uploads/textDocuments";
 import { extractPage } from "../webFetch/extract";
 import { createDocumentParserBoundary } from "./boundary";
@@ -156,12 +157,20 @@ describe("isolated document parser process", () => {
       { body: Buffer.from("plain   text\n\n\n\nsecond"), contentType: "text/plain; charset=utf-8" },
       { body: Buffer.from("{\"a\":[1,2]}"), contentType: null }
     ];
-    for (const page of pages) {
-      const request = { ...page, finalUrl: "https://news.example/today", maxCharacters: 1_000 };
-      await expect(extractWebPageInIsolation(request)).resolves.toEqual(extractPage(request));
+    // A document parse holds its slot throughout: page reads never wait behind it.
+    let releaseDocumentSlot = () => {};
+    const documentSlot = withPdfWorkerAdmission(() => new Promise<void>((resolve) => { releaseDocumentSlot = resolve; }));
+    try {
+      for (const page of pages) {
+        const request = { ...page, finalUrl: "https://news.example/today", maxCharacters: 1_000 };
+        await expect(extractWebPageInIsolation(request)).resolves.toEqual(extractPage(request));
+      }
+      await expect(extractWebPageInIsolation({ body: Buffer.from([0, 1, 2]), contentType: null,
+        finalUrl: "https://news.example/", maxCharacters: 1_000 })).resolves.toBeNull();
+    } finally {
+      releaseDocumentSlot();
+      await documentSlot;
     }
-    await expect(extractWebPageInIsolation({ body: Buffer.from([0, 1, 2]), contentType: null,
-      finalUrl: "https://news.example/", maxCharacters: 1_000 })).resolves.toBeNull();
   }, 60_000);
 
   it("stops an overdue parser together with its process group", async () => {
