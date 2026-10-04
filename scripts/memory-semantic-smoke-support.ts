@@ -15,6 +15,10 @@ import { MEMORY_HISTORY_CHUNKING_VERSION } from "../lib/server/memory/history/ch
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../lib/server/memory/history/sourceProjection";
 import { MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../lib/server/memory/learning/extraction/contract";
 import { normalizeMemorySearchText } from "../lib/server/memory/persistence/lexical";
+import {
+  MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
+  MEMORY_RERANK_AGGREGATION_MAX_BATCHES
+} from "../lib/server/memory/retrieval/runUtilities";
 import { MEMORY_SEARCH_TOOL_NAME } from "../lib/server/memory/search/contract";
 import { decodeMemorySearchSourceEvidence } from "../lib/server/memory/sources/searchEvidence";
 import { loadProviderAdmissionPlan } from "../lib/server/providerRuntime/admission";
@@ -574,6 +578,91 @@ export function assessMemorySemanticSmokeHistorySearch(
 }
 
 /**
+ * Route evidence of the reranks inside one recall run's `memory_search`
+ * calls. Standing-v1 reranks only there, so the approved route is proven by
+ * the tool-call-owned MEMORY_RERANK bindings and the receipts' diagnostics.
+ */
+export type MemorySemanticSmokeRerankRouteEvidence = Readonly<{
+  /** Tool-call-owned MEMORY_RERANK bindings of the run's memory_search calls. */
+  bindings: number;
+  /** Longest settled rerank binding, for the aggregate report only. */
+  maxRerankMs: number | null;
+  /** Bindings that succeeded on the primary deployment in the dedicated route's first slot. */
+  primaryRouteBindings: number;
+  /** Search receipts whose retrieval offered candidates to the reranker. */
+  rerankedSearches: number;
+  /** Diagnostic reasons the searches recorded at the rerank stage. */
+  rerankStageReasons: number;
+}>;
+
+export const MEMORY_SEMANTIC_SMOKE_RERANKER_ROUTE_CODES = [
+  "memory_smoke_reranker_route_not_exercised",
+  "memory_smoke_reranker_route_regression_failed"
+] as const;
+
+/**
+ * The approved route holds only when a search actually reranked, every rerank
+ * binding succeeded on the primary deployment's first route slot (no fallback
+ * model, failed or unknown attempt, or off-route pipeline), each reranked
+ * search owns a binding, and no search recorded a skipped or failed rerank.
+ */
+export function assessMemorySemanticSmokeRerankerRoute(
+  evidence: MemorySemanticSmokeRerankRouteEvidence
+):
+  | Readonly<{ code: (typeof MEMORY_SEMANTIC_SMOKE_RERANKER_ROUTE_CODES)[number]; ok: false }>
+  | Readonly<{ ok: true }> {
+  if (evidence.rerankedSearches < 1 || evidence.bindings < 1) {
+    return { code: "memory_smoke_reranker_route_not_exercised", ok: false };
+  }
+  if (evidence.rerankStageReasons > 0 ||
+    evidence.primaryRouteBindings !== evidence.bindings ||
+    evidence.bindings < evidence.rerankedSearches) {
+    return { code: "memory_smoke_reranker_route_regression_failed", ok: false };
+  }
+  return { ok: true };
+}
+
+/**
+ * Settled `memory_search` calls of one recall run after the smoke's cleanup.
+ * Deletion scrubs a receipt's private query and evidence, never the call's
+ * settled outcome.
+ */
+export type MemorySemanticSmokeSearchCallSettlement = Readonly<{
+  calls: number;
+  /** Calls whose state or stored result status no longer reads complete. */
+  rewrittenCalls: number;
+  /** Receipts of the run whose private content deletion has scrubbed. */
+  scrubbedReceipts: number;
+}>;
+
+function searchDiagnostics(results: unknown): Readonly<{
+  rerankCandidateCount: number;
+  rerankStageReasons: number;
+}> | null {
+  if (typeof results !== "object" || results === null || Array.isArray(results)) return null;
+  const diagnostic = (results as Record<string, unknown>).diagnosticEvidence;
+  if (typeof diagnostic !== "object" || diagnostic === null || Array.isArray(diagnostic)) {
+    return null;
+  }
+  const evidence = diagnostic as Record<string, unknown>;
+  const count = evidence.rerankCandidateCount;
+  if (evidence.version !== 1 || typeof count !== "number" || !Number.isSafeInteger(count) ||
+    count < 0 || !Array.isArray(evidence.reasons)) return null;
+  return {
+    rerankCandidateCount: count,
+    rerankStageReasons: evidence.reasons.filter((reason) =>
+      typeof reason === "object" && reason !== null &&
+      (reason as Record<string, unknown>).stage === "rerank").length
+  };
+}
+
+function storedResultStatus(result: unknown): unknown {
+  return typeof result === "object" && result !== null && !Array.isArray(result)
+    ? (result as Record<string, unknown>).status
+    : undefined;
+}
+
+/**
  * Aggregate outcome of the plain-language secret save command. Safety Lite may
  * not recognize every span; the Memory control model may then commit only a
  * safe remainder. The invariant is that the secret itself is never persisted.
@@ -875,10 +964,12 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
       });
     },
 
+    /** Strict control of a synchronous `/memory` command, owned by the run's
+     * retrieval attempt. Natural-language commands use their command job. */
     async successfulRetrievalExecutionCount(
       input: Readonly<{
         modelRunId: string;
-        role: "MEMORY_CONTROL" | "MEMORY_RERANK";
+        role: "MEMORY_CONTROL";
         userId: string;
       }>
     ): Promise<number> {
@@ -1131,6 +1222,111 @@ export function createPrismaMemorySemanticSmokeVerifier(client: PrismaClient) {
           finiteScore(featureSnapshot))),
         rerankExecutions,
         unhealthy
+      };
+    },
+
+    async rerankRouteEvidence(
+      input: Readonly<{
+        primaryProviderModelId: string;
+        recallModelRunId: string;
+        userId: string;
+      }>
+    ): Promise<MemorySemanticSmokeRerankRouteEvidence> {
+      const calls = await client.modelRunToolCall.findMany({
+        select: { id: true },
+        where: {
+          modelRun: { userId: input.userId },
+          modelRunId: input.recallModelRunId,
+          toolName: MEMORY_SEARCH_TOOL_NAME
+        }
+      });
+      const callIds = calls.map(({ id }) => id);
+      if (callIds.length === 0) {
+        return {
+          bindings: 0,
+          maxRerankMs: null,
+          primaryRouteBindings: 0,
+          rerankedSearches: 0,
+          rerankStageReasons: 0
+        };
+      }
+      const [receipts, bindings] = await Promise.all([
+        client.memoryHistoryRun.findMany({
+          select: { results: true },
+          where: {
+            modelRunId: input.recallModelRunId,
+            modelRunToolCallId: { in: callIds },
+            userId: input.userId
+          }
+        }),
+        client.memoryExecutionBinding.findMany({
+          select: {
+            completedAt: true,
+            ordinal: true,
+            pipelineVersion: true,
+            providerModelId: true,
+            startedAt: true,
+            state: true
+          },
+          where: {
+            logicalRole: "MEMORY_RERANK",
+            modelRunId: input.recallModelRunId,
+            modelRunToolCallId: { in: callIds },
+            ownerType: "MODEL_RUN_TOOL_CALL",
+            userId: input.userId
+          }
+        })
+      ]);
+      const diagnostics = receipts.flatMap(({ results }) => {
+        const decoded = searchDiagnostics(results);
+        return decoded ? [decoded] : [];
+      });
+      // Route slot 0 holds the primary model's batches; a fallback model
+      // starts after every batch slot of the slot before it.
+      const firstRouteSlot = (ordinal: number) =>
+        ordinal >= 2 && ordinal < 2 + MEMORY_RERANK_AGGREGATION_MAX_BATCHES;
+      const durations = bindings.flatMap(({ completedAt, startedAt }) =>
+        completedAt && startedAt ? [completedAt.getTime() - startedAt.getTime()] : []);
+      return {
+        bindings: bindings.length,
+        maxRerankMs: durations.length > 0 ? Math.max(...durations) : null,
+        primaryRouteBindings: bindings.filter((binding) =>
+          binding.state === "SUCCEEDED" &&
+          binding.providerModelId === input.primaryProviderModelId &&
+          binding.pipelineVersion === MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION &&
+          firstRouteSlot(binding.ordinal)).length,
+        rerankedSearches: diagnostics.filter(({ rerankCandidateCount }) =>
+          rerankCandidateCount > 0).length,
+        rerankStageReasons: diagnostics.reduce((total, { rerankStageReasons }) =>
+          total + rerankStageReasons, 0)
+      };
+    },
+
+    async searchCallSettlement(
+      input: Readonly<{ recallModelRunId: string; userId: string }>
+    ): Promise<MemorySemanticSmokeSearchCallSettlement> {
+      const [calls, scrubbedReceipts] = await Promise.all([
+        client.modelRunToolCall.findMany({
+          select: { result: true, state: true },
+          where: {
+            modelRun: { userId: input.userId },
+            modelRunId: input.recallModelRunId,
+            toolName: MEMORY_SEARCH_TOOL_NAME
+          }
+        }),
+        client.memoryHistoryRun.count({
+          where: {
+            modelRunId: input.recallModelRunId,
+            retentionState: "SCRUBBED",
+            userId: input.userId
+          }
+        })
+      ]);
+      return {
+        calls: calls.length,
+        rewrittenCalls: calls.filter(({ result, state }) =>
+          state !== "complete" || storedResultStatus(result) !== "complete").length,
+        scrubbedReceipts
       };
     }
   });
