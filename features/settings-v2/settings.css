@@ -1216,6 +1216,19 @@
   gap: 0.5rem;
 }
 
+/* Chat defaults › Image model: the choice, then why it cannot run and the way
+   back to the organization default, stacked under it. */
+.v2-image-model-control {
+  display: grid;
+  max-width: 24rem;
+  justify-items: start;
+  gap: 0.5rem;
+}
+
+.v2-image-model-control > .v2-settings-error {
+  margin: 0;
+}
+
 .v2-settings-saved {
   color: var(--v2-color-ok);
   font-size: 0.78125rem;

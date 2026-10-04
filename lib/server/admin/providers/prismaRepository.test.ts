@@ -23,6 +23,7 @@ function transactional<T extends Record<string, unknown>>(db: T): T & {
     $queryRaw: vi.fn(async () => [{ id: "installation" }]),
     memoryExecutionBinding: { count: vi.fn(async () => 0) },
     memoryUtilityModelPolicy: { count: vi.fn(async () => 0), findUnique: vi.fn(async () => null) },
+    publishedImageModel: { count: vi.fn(async () => 0) },
     systemModelPolicy: { findUnique: vi.fn(async () => null) },
     chatTitleGeneration: { count: vi.fn(async () => 0) }
   }, db);
@@ -349,6 +350,33 @@ describe("Prisma admin provider repository", () => {
     expect(db.searchIntegrationRevision.count).toHaveBeenCalledWith({
       where: { providerModelId: "model-1" }
     });
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("blocks model deletion while the model is a published image model", async () => {
+    const remove = vi.fn(async () => ({}));
+    const db = transactional({
+      accessGrant: { count: vi.fn(async () => 0) },
+      assistantDefinition: { count: vi.fn(async () => 0) },
+      chat: { count: vi.fn(async () => 0) },
+      modelPolicy: { count: vi.fn(async () => 0) },
+      providerModel: { delete: remove, findUnique: vi.fn(async () => ({ enabled: false, templateKey: null })) },
+      providerCredentialVersion: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
+      providerRunBinding: { count: vi.fn(async () => 0), updateMany: vi.fn(async () => ({ count: 0 })) },
+      publishedImageModel: { count: vi.fn(async () => 1) },
+      searchIntegrationRevision: { count: vi.fn(async () => 0) },
+      searchStrategy: { count: vi.fn(async () => 0) },
+      systemModelPolicy: { count: vi.fn(async () => 0) },
+      userSettings: { count: vi.fn(async () => 0) }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+
+    await expect(repository.deleteModel("model-1")).resolves.toEqual({
+      blockers: [{ count: 1, kind: "system_model" }],
+      status: "conflict"
+    });
+    expect(db.publishedImageModel.count).toHaveBeenCalledWith({ where: { providerModelId: "model-1" } });
     expect(remove).not.toHaveBeenCalled();
   });
 

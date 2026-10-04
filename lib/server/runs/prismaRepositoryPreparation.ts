@@ -1168,6 +1168,7 @@ export async function admitProjectRunWithClient(
       });
       await insertAcceptedProviderRunBindings(tx, {
         imagePlan: input.normalizedRequest.imagePlan,
+        imageScope: "project",
         visionAnalysis: input.normalizedRequest.visionAnalysis,
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
@@ -1699,6 +1700,7 @@ export async function admitPreparingRunWithClient(
       });
       await insertAcceptedProviderRunBindings(tx, {
         imagePlan: input.normalizedRequest.imagePlan,
+        imageScope: input.project ? "project" : "personal",
         visionAnalysis: input.normalizedRequest.visionAnalysis,
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,

@@ -12,6 +12,11 @@ import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { createPrismaAttachmentDownloadRepository } from "../uploads/downloadRepository";
 import { createSavedFileRepository } from "../uploads/savedFileRepository";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
+import { insertAcceptedProviderRunBindings } from "../runs/prismaRepositoryBindings";
+import { ProviderAdmissionConflictError } from "../runs/runRepositoryContract";
+import { createAdminSystemModelPolicyService } from "../admin/providers/systemModelPolicyService";
+import { createUserImageModelService } from "./userImageModels";
+import type { AcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import type { ModelToolCall, ToolExecutionContext } from "../tools/types";
 import type { ProviderRunRequest } from "../providers/types";
 
@@ -23,6 +28,9 @@ async function fixture(runTest: (fixture: {
   db: PrismaClient; userId: string; runId: string; assistantId: string; modelId: string; credentialVersionId: string;
   request: ProviderRunRequest; storage: ReturnType<typeof createMemoryStorageAdapter>;
   call(ids?: string[]): Promise<{ call: ModelToolCall; context: ToolExecutionContext }>;
+  /** Another verified image model on the same key, published with the given parameters. */
+  publishImageModel(upstreamModelId: string, paramsJson?: Prisma.InputJsonObject): Promise<string>;
+  chooseImageModel(providerModelId: string | null): Promise<void>;
 }) => Promise<void>) {
   const rollback = new Error("image_fixture_rollback");
   try { await prisma.$transaction(async (tx) => {
@@ -41,16 +49,23 @@ async function fixture(runTest: (fixture: {
       activatedAt: new Date(), testedAt: new Date(), testEvidence: { authenticationMode: "bearer" } } });
     await db.providerCredential.update({ where: { id: credential.id }, data: { activeVersionId: credentialVersionId, activatedAt: new Date() } });
     await db.providerConnection.update({ where: { id: connection.id }, data: { defaultCredentialId: credential.id } });
-    const model = await db.providerModel.create({ data: { id: randomUUID(), connectionId: connection.id, modelId: configuration.upstreamModelId, modelClass: "image",
-      provider: "openai", displayName: "Image fixture", capabilities: configuration.capabilities, defaultParams: {}, activeConfig: configuration,
-      activeVersion: 1, activatedAt: new Date() } });
-    const proof = { adapterKind: configuration.adapterKind, upstreamModelId: configuration.upstreamModelId, verified: true, probeVersion: 1 };
-    await db.providerModelCredentialCheck.create({ data: { connectionId: connection.id, providerModelId: model.id, connectionVersion: 1, modelVersion: 1,
-      credentialId: credential.id, credentialVersionId, checkedAt: new Date(), status: "available", evidence: {
-        method: "tiny_generation", selectedProviders: [], upstreamModelId: configuration.upstreamModelId, detail: "ok", imageGeneration: proof, imageEditing: proof
-      } } });
-    await db.systemModelPolicy.upsert({ where: { id: "installation" }, create: { id: "installation", imageProviderModelId: model.id, imageParamsJson: { quality: "low" } },
-      update: { imageProviderModelId: model.id, imageParamsJson: { quality: "low" } } });
+    const addImageModel = async (upstreamModelId: string) => {
+      const modelConfiguration = imageModelConfiguration(upstreamModelId, { profile: "openai" });
+      const created = await db.providerModel.create({ data: { id: randomUUID(), connectionId: connection.id, modelId: upstreamModelId, modelClass: "image",
+        provider: "openai", displayName: `Image fixture ${upstreamModelId}`, capabilities: modelConfiguration.capabilities, defaultParams: {},
+        activeConfig: modelConfiguration, activeVersion: 1, activatedAt: new Date() } });
+      const proof = { adapterKind: modelConfiguration.adapterKind, upstreamModelId, verified: true, probeVersion: 1 };
+      await db.providerModelCredentialCheck.create({ data: { connectionId: connection.id, providerModelId: created.id, connectionVersion: 1, modelVersion: 1,
+        credentialId: credential.id, credentialVersionId, checkedAt: new Date(), status: "available", evidence: {
+          method: "tiny_generation", selectedProviders: [], upstreamModelId, detail: "ok", imageGeneration: proof, imageEditing: proof
+        } } });
+      return created;
+    };
+    const model = await addImageModel(configuration.upstreamModelId);
+    // The default is a published model and owns the administrator parameters.
+    await db.publishedImageModel.create({ data: { providerModelId: model.id, paramsJson: { quality: "low" } } });
+    await db.systemModelPolicy.upsert({ where: { id: "installation" }, create: { id: "installation", imageProviderModelId: model.id },
+      update: { imageProviderModelId: model.id } });
     const plan = await createImageModelRoleResolver(db).resolve();
     expect(plan).not.toBeNull();
     const chat = await db.chat.create({ data: { userId: user.id, title: "Image fixture", memoryMode: "EXCLUDED" } });
@@ -71,6 +86,15 @@ async function fixture(runTest: (fixture: {
         const row = await db.modelRunToolCall.create({ data: { modelRunId: run.id, providerCallId: call.id, roundIndex: ordinal, ordinal: ordinal++,
           toolName: call.name, arguments: json(call.arguments), state: "running", startedAt: new Date() } });
         return { call, context: { request, runId: run.id, userId: user.id, persistedToolCallId: row.id } };
+      },
+      async publishImageModel(upstreamModelId, paramsJson = {}) {
+        const published = await addImageModel(upstreamModelId);
+        await db.publishedImageModel.create({ data: { providerModelId: published.id, paramsJson } });
+        return published.id;
+      },
+      async chooseImageModel(providerModelId) {
+        await db.userSettings.upsert({ where: { userId: user.id }, create: { userId: user.id, imageProviderModelId: providerModelId },
+          update: { imageProviderModelId: providerModelId } });
       } });
     await db.$executeRawUnsafe("SET CONSTRAINTS ALL IMMEDIATE");
     throw rollback;
@@ -199,6 +223,90 @@ describe("durable conversational images", () => {
     expect(await f.db.attachmentDeletionJob.findUnique({ where: { storageKey: storageKey! } })).toMatchObject({ claimToken: null });
     expect(fetchFn).toHaveBeenCalledTimes(1);
   }));
+  it("binds personal runs to the user's published choice and Project runs to the administrator default", async () => fixture(async (f) => {
+    const chosen = await f.publishImageModel("gpt-image-1", { quality: "high" });
+    await f.chooseImageModel(chosen);
+    const resolver = createImageModelRoleResolver(f.db);
+    const personal = await resolver.resolveFor({ kind: "personal", userId: f.userId });
+    const project = await resolver.resolveFor({ kind: "project" });
+    expect(personal).toMatchObject({ ok: true, providerModelId: chosen, source: "personal", plan: { parameters: { quality: "high" } } });
+    expect(project).toMatchObject({ ok: true, providerModelId: f.modelId, source: "organization", plan: { parameters: { quality: "low" } } });
+    if (!personal.ok || !project.ok) throw new Error("fixture_plans_unavailable");
+    const admit = async (imagePlan: AcceptedImageGenerationPlan, imageScope: "personal" | "project") => {
+      await f.db.providerRunBinding.deleteMany({ where: { modelRunId: f.runId, bindingKey: "image" } });
+      await insertAcceptedProviderRunBindings(f.db as unknown as Prisma.TransactionClient, {
+        imagePlan, imageScope, nativeBackgroundRequested: false, plan: undefined, runId: f.runId, userId: f.userId
+      });
+      return f.db.providerRunBinding.findFirstOrThrow({ where: { modelRunId: f.runId, bindingKey: "image" } });
+    };
+    // A Project member who chose another model personally is admitted on the
+    // default, as every tool-capable message, text-only ones included, is.
+    expect(await admit(project.plan, "project")).toMatchObject({ providerModelId: f.modelId });
+    await expect(admit(personal.plan, "project")).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
+    expect(await admit(personal.plan, "personal")).toMatchObject({ providerModelId: chosen });
+    await expect(admit(project.plan, "personal")).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
+    // A later Studio change affects only future admissions; the accepted binding stays.
+    await admit(personal.plan, "personal");
+    await f.chooseImageModel(null);
+    expect(await f.db.providerRunBinding.findFirstOrThrow({ where: { modelRunId: f.runId, bindingKey: "image" } }))
+      .toMatchObject({ providerModelId: chosen });
+    await expect(admit(personal.plan, "personal")).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
+    expect(await admit(project.plan, "personal")).toMatchObject({ providerModelId: f.modelId });
+    // Changed administrator parameters fence a plan resolved before the change.
+    await f.db.publishedImageModel.update({ where: { providerModelId: f.modelId }, data: { paramsJson: { quality: "medium" } } });
+    await expect(admit(project.plan, "project")).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
+  }));
+
+  it("withdraws a model and clears the role in one save each, returning users to the default and keeping accepted bindings", async () => fixture(async (f) => {
+    const admin = await f.db.user.create({ data: { id: randomUUID(), displayName: "Image administrator", role: "admin", status: "active" } });
+    const service = createAdminSystemModelPolicyService(f.db);
+    const version = async () => (await f.db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).version;
+    const chosen = await f.publishImageModel("gpt-image-1");
+    await f.chooseImageModel(chosen);
+    const both = [{ providerModelId: f.modelId, parameters: { quality: "low" } }, { providerModelId: chosen, parameters: {} }];
+    await expect(service.update({ expectedVersion: await version(), userId: admin.id, imageProviderModelId: f.modelId,
+      imageModels: [{ providerModelId: chosen, parameters: {} }] })).rejects.toMatchObject({ code: "system_model_policy_image_models_invalid" });
+    await expect(service.update({ expectedVersion: await version(), userId: admin.id, imageProviderModelId: f.modelId,
+      imageModels: [...both, { providerModelId: randomUUID(), parameters: {} }] })).rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
+    expect(await f.db.publishedImageModel.count({ where: { providerModelId: { in: [f.modelId, chosen] } } })).toBe(2);
+
+    const before = await version();
+    await service.update({ expectedVersion: before, userId: admin.id, imageProviderModelId: f.modelId, imageModels: both.slice(0, 1) });
+    expect(await version()).toBe(before + 1);
+    expect(await f.db.userSettings.findUniqueOrThrow({ where: { userId: f.userId } })).toMatchObject({ imageProviderModelId: null });
+    expect(await f.db.publishedImageModel.findMany({ where: { providerModelId: { in: [f.modelId, chosen] } } }))
+      .toEqual([expect.objectContaining({ providerModelId: f.modelId, paramsJson: { quality: "low" } })]);
+    expect((await createUserImageModelService(f.db).read(f.userId)).effective).toEqual({ id: f.modelId, source: "organization" });
+
+    await service.update({ expectedVersion: await version(), userId: admin.id, imageProviderModelId: f.modelId, imageModels: both });
+    await f.chooseImageModel(chosen);
+    await service.update({ expectedVersion: await version(), userId: admin.id, imageProviderModelId: null, imageModels: [] });
+    expect(await f.db.publishedImageModel.count()).toBe(0);
+    expect(await f.db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toMatchObject({ imageProviderModelId: null });
+    expect(await f.db.userSettings.count({ where: { imageProviderModelId: { not: null } } })).toBe(0);
+    expect(await f.db.providerRunBinding.count({ where: { modelRunId: f.runId, bindingKey: "image", providerModelId: f.modelId } })).toBe(1);
+    expect(await createImageModelRoleResolver(f.db).resolveFor({ kind: "personal", userId: f.userId }))
+      .toEqual({ ok: false, reason: "not_configured", providerModelId: null, source: "organization" });
+  }));
+
+  it("keeps a published model that lost its provider, names the reason and never substitutes it", async () => fixture(async (f) => {
+    const chosen = await f.publishImageModel("gpt-image-1");
+    await f.chooseImageModel(chosen);
+    await f.db.providerModel.update({ where: { id: chosen }, data: { enabled: false } });
+    const resolver = createImageModelRoleResolver(f.db);
+    expect(await resolver.resolveFor({ kind: "personal", userId: f.userId }))
+      .toEqual({ ok: false, reason: "model_unavailable", providerModelId: chosen, source: "personal" });
+    expect(await resolver.resolveFor({ kind: "project" })).toMatchObject({ ok: true, providerModelId: f.modelId });
+    expect(await f.db.userSettings.findUniqueOrThrow({ where: { userId: f.userId } })).toMatchObject({ imageProviderModelId: chosen });
+    expect((await createUserImageModelService(f.db).read(f.userId)).models.find((model) => model.id === chosen))
+      .toMatchObject({ unavailableReason: "model_unavailable", generation: false, editing: false });
+    await f.db.providerModelCredentialCheck.updateMany({ where: { providerModelId: f.modelId }, data: { status: "unavailable" } });
+    expect(await resolver.resolveFor({ kind: "project" })).toMatchObject({ ok: false, reason: "verification_required", providerModelId: f.modelId });
+    await f.db.providerCredentialVersion.update({ where: { id: f.credentialVersionId }, data: { revokedAt: new Date() } });
+    expect(await resolver.resolveFor({ kind: "project" })).toMatchObject({ ok: false, reason: "credential_unavailable", providerModelId: f.modelId });
+    await expect(createUserImageModelService(f.db).select(f.userId, randomUUID())).rejects.toMatchObject({ code: "image_model_not_published" });
+  }));
+
   it("never estimates usage when the provider call fails", async () => fixture(async (f) => {
     const { call, context } = await f.call();
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ error: { message: "synthetic failure" } }, { status: 500 }));

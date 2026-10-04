@@ -46,6 +46,7 @@ import type { RefObject } from "react";
 import type { SearchPlan, SearchPlanMode } from "@/lib/domain/search";
 import type { ChatDefaultMcpMode } from "@/lib/contracts/chatDefaults";
 import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
+import type { UserImageModelSettings } from "@/lib/contracts/imageModels";
 import type {
   ChatWorkspaceState,
   ThreadGeneratedFile,
@@ -325,6 +326,18 @@ export type ShellComposerView = {
       set(assistantId: string | null): void;
       /** A saved default that is no longer available; it is never applied. */
       unavailable: boolean;
+    };
+    /** The user's one image model for personal chats; Projects keep the organization default. */
+    imageModel?: {
+      /** Null until the published list first loads. */
+      settings: UserImageModelSettings | null;
+      loadState: "error" | "idle" | "loading" | "ready";
+      saving: boolean;
+      loadError: string | null;
+      saveError: string | null;
+      load(): void;
+      /** A published model, or null to follow the organization default. */
+      select(providerModelId: string | null): void;
     };
     knowledgePlan: KnowledgeSelection | null;
     mcpMode: ChatDefaultMcpMode;

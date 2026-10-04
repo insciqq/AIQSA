@@ -94,6 +94,7 @@ import {
 import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
 import { fetchKnowledgeSources } from "@/components/knowledge/knowledgeApi";
 import { useSkillLibraryStore } from "@/components/app-shell/skillLibraryStore";
+import { loadImageModels, selectImageModel, useImageModelStore } from "@/components/app-shell/imageModelStore";
 import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import { deactivateMcpSettings } from "@/components/app-shell/mcpSettingsStore";
 import { deactivatePersonalMcp } from "@/components/app-shell/personalMcpStore";
@@ -720,6 +721,7 @@ export function PowerAppShellV2({
   const librarySnapshot = useAssistantLibraryStore();
   const knowledgeSnapshot = useKnowledgeLibraryStore();
   const skillSnapshot = useSkillLibraryStore();
+  const imageModelSnapshot = useImageModelStore();
   const appearance = useShellAppearanceController();
   const { change: changeTheme, id: themeId } = appearance.theme;
   const workspaceInteraction = useWorkspaceInteractionController();
@@ -2660,6 +2662,11 @@ export function PowerAppShellV2({
         loadAssistants: loadDefaultAssistantChoices,
         set: setDefaultAssistant,
         unavailable: catalog.defaults.assistantUnavailable ?? false
+      },
+      imageModel: {
+        ...imageModelSnapshot,
+        load: () => void loadImageModels(),
+        select: (providerModelId) => void selectImageModel(providerModelId)
       },
       knowledgePlan: catalog.defaults.knowledgePlan ?? null,
       mcpMode: catalog.defaults.mcpMode ?? "auto",

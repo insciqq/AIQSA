@@ -20,23 +20,101 @@ import type { AdminConfirmationController } from "@/components/admin/useAdminCon
 import { UiV2Button, type UiV2MenuAction } from "@/components/ui-v2";
 import { useState, type ReactNode } from "react";
 import { ImageParameterFields } from "@/components/admin/providers/models/ImageParameterFields";
-import { initialChatTitleReasoningEffort, type AdminImageModelCandidate } from "@/lib/contracts/adminSystemModelPolicy";
-import type { ImageGenerationParameters } from "@/lib/contracts/imageGeneration";
+import { initialChatTitleReasoningEffort, type AdminPublishedImageModel, type AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
+import type { ImageGenerationParameters, ImageModelConfiguration } from "@/lib/contracts/imageGeneration";
+import type { ImageModelUnavailableReason } from "@/lib/contracts/imageModels";
 
 const rowGrid = "grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-3 px-4 py-3 xl:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)_8.5rem_2.5rem] xl:items-start xl:gap-4";
 
-function ImageRoleParameters({ model, parameters, busy, save }: {
-  model: AdminImageModelCandidate; parameters: ImageGenerationParameters; busy: boolean;
-  save(parameters: ImageGenerationParameters): void;
+function ImageRoleParameters({ image, modelId, parameters, busy, save, summary = "Image settings" }: {
+  image: ImageModelConfiguration; modelId: string; parameters: ImageGenerationParameters; busy: boolean;
+  save(parameters: ImageGenerationParameters): void; summary?: string;
 }) {
   const [draft, setDraft] = useState(parameters);
   return <details>
-    <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">Image settings</summary>
+    <summary className="cursor-pointer text-xs text-ink-muted outline-none focus-visible:ring-2 focus-visible:ring-focus">{summary}</summary>
     <div className="flex flex-col gap-3 pt-3">
-      <ImageParameterFields image={model.image} modelId={model.upstreamModelId} parameters={draft} onChange={setDraft} disabled={busy} defaultLabel="Model default" />
+      <ImageParameterFields image={image} modelId={modelId} parameters={draft} onChange={setDraft} disabled={busy} defaultLabel="Model default" />
       <UiV2Button disabled={busy || JSON.stringify(draft) === JSON.stringify(parameters)} onClick={() => save(draft)} type="button">Apply image settings</UiV2Button>
     </div>
   </details>;
+}
+
+const IMAGE_MODEL_UNAVAILABLE: Record<ImageModelUnavailableReason, string> = {
+  model_unavailable: "Unavailable · the model or its provider is turned off",
+  credential_unavailable: "Unavailable · the provider default key is missing or revoked",
+  verification_required: "Unavailable · run a successful image check in Providers",
+  parameters_invalid: "Unavailable · its saved image settings are no longer supported"
+};
+
+const imageModelLabel = (model: Readonly<{ displayName: string; connectionDisplayName: string }>) =>
+  `${model.displayName} · ${model.connectionDisplayName}`;
+
+/**
+ * Image generation publishes several verified models; every user picks one in
+ * Studio and Projects use the default. Withdrawal and clearing return users to
+ * the default (or to none) in the same save; an unusable model is only marked.
+ */
+function ImageGenerationRoleRow({ busy, catalog, controller, requestConfirmation }: Readonly<{
+  busy: boolean;
+  catalog: AdminSystemModelPolicyCatalog;
+  controller: AdminRolesController;
+  requestConfirmation: AdminConfirmationController["requestConfirmation"];
+}>) {
+  const published = catalog.policy.imageModels ?? [];
+  const defaultModel = catalog.policy.imageModel ?? null;
+  const publishedIds = new Set(published.map((model) => model.id));
+  const unpublished = (catalog.imageCandidates ?? []).filter((model) => !publishedIds.has(model.id));
+  const entries = (models: readonly AdminPublishedImageModel[]) =>
+    models.map((model) => ({ providerModelId: model.id, parameters: model.parameters }));
+  const undo = { imageModels: entries(published), imageProviderModelId: defaultModel?.id ?? null };
+  const save = (imageModels: ReturnType<typeof entries>, imageProviderModelId: string | null) =>
+    void controller.assign({ imageModels, imageProviderModelId }, undo);
+  const publish = (id: string, makeDefault: boolean) => save(publishedIds.has(id) ? entries(published)
+    : [...entries(published), { providerModelId: id, parameters: {} }], makeDefault ? id : defaultModel?.id ?? id);
+  return (
+    <RoleRow title="Image generation" testId="admin-role-image" status={roleStatus(defaultModel)}
+      statusLabel={defaultModel ? defaultModel.available ? "Default ready" : "Default unavailable" : "Not assigned"}
+      description="Creates and edits images in chats. People choose one published model in Studio; Projects always use the default. Each model uses its provider's default key."
+      menu={[{ disabled: !published.length || busy, label: "Clear role",
+        onSelect: () => requestConfirmation({
+          body: `All ${published.length} published image ${published.length === 1 ? "model is" : "models are"} withdrawn and nobody can generate images until you publish one again. Personal choices are cleared. Messages already sent keep their image model.`,
+          confirmLabel: "Clear role", dialogLabel: "Clear image generation", title: "Clear image generation?",
+          testId: "admin-image-clear-confirm", tone: "destructive", icon: "x",
+          onConfirm: () => save([], null)
+        }) }]}>
+      <AdminRolePicker busy={busy} label="Default image model" roleName="Image generation" testId="admin-image-picker"
+        items={[...published.filter((model) => model.available), ...unpublished].map((model) => ({ group: "ready" as const, id: model.id, label: imageModelLabel(model) }))}
+        selectedId={defaultModel?.id ?? null} selectedLabel={defaultModel ? imageModelLabel(defaultModel) : null}
+        onSelect={(id) => publish(id, true)} />
+      {published.length ? <ul aria-label="Published image models" className="grid gap-2">
+        {published.map((model) => {
+          const isDefault = model.id === defaultModel?.id;
+          return <li className="grid gap-1.5 rounded-md border border-trace-subtle p-2" data-testid="admin-image-published-model" key={model.id}>
+            <p className="text-xs font-medium text-ink">{imageModelLabel(model)}{isDefault ? " · Default" : ""}</p>
+            <p className="text-xs text-ink-muted" role={model.unavailableReason ? "status" : undefined}>
+              {model.unavailableReason ? IMAGE_MODEL_UNAVAILABLE[model.unavailableReason]
+                : [model.generation ? "Generation verified" : "Generation unavailable", model.editing ? "Editing verified" : "Editing unavailable"].join(" · ")}
+            </p>
+            {model.image && model.upstreamModelId ? <ImageRoleParameters key={`${model.id}:${catalog.policy.version}`} image={model.image}
+              modelId={model.upstreamModelId} parameters={model.parameters} busy={busy} summary={`Image settings · ${model.displayName}`}
+              save={(parameters) => save(published.map((entry) => ({ providerModelId: entry.id,
+                parameters: entry.id === model.id ? parameters : entry.parameters })), defaultModel?.id ?? model.id)} /> : null}
+            {isDefault ? null : <UiV2Button disabled={busy} type="button" onClick={() => requestConfirmation({
+              body: `People who chose ${model.displayName} return to the organization default${defaultModel ? `, ${defaultModel.displayName}` : ""}. Publishing it again does not restore their choice. Messages already sent keep their image model.`,
+              confirmLabel: "Withdraw", dialogLabel: `Withdraw ${model.displayName}`, title: `Withdraw ${model.displayName}?`,
+              testId: "admin-image-withdraw-confirm", tone: "warning", icon: "x",
+              onConfirm: () => save(entries(published.filter((entry) => entry.id !== model.id)), defaultModel?.id ?? null)
+            })}>Withdraw {model.displayName}</UiV2Button>}
+          </li>;
+        })}
+      </ul> : <p className="text-xs text-ink-muted">Add and test an image model in Providers to make it available here.</p>}
+      {published.length && unpublished.length ? <AdminRolePicker busy={busy} label="Publish another image model" placeholder="Publish another model"
+        roleName="Image generation" testId="admin-image-publish-picker" selectedId={null}
+        items={unpublished.map((model) => ({ group: "ready" as const, id: model.id, label: imageModelLabel(model) }))}
+        onSelect={(id) => publish(id, false)} /> : null}
+    </RoleRow>
+  );
 }
 
 function RoleRow({
@@ -119,7 +197,6 @@ export function AdminSystemRolesTable({
     : { working: "Ready", unavailable: "Unavailable", not_assigned: "Not assigned" }[pdfStatus];
   const rerankerUndo = { rerankerProviderModelId: policy.rerankerModel?.id ?? null };
   const decisionUndo = { decisionProviderModelId: policy.decisionModel?.id ?? null };
-  const imageUndo = { imageProviderModelId: policy.imageModel?.id ?? null, imageParameters: policy.imageParameters ?? {} };
   const fallbacks = rerankerFallbacksLine(catalog);
 
   return (
@@ -437,20 +514,7 @@ export function AdminSystemRolesTable({
           <p className="text-xs leading-5 text-ink-muted">Standard retrieval remains available. Check this model in Providers to restore optional checks.</p> : null}
       </RoleRow>
 
-      <RoleRow title="Image generation" testId="admin-role-image" status={roleStatus(policy.imageModel ?? null)}
-        description="Creates and edits images when requested in chat. Uses this model and the provider's default key."
-        menu={[{ disabled: !policy.imageModel || busy, label: "Clear assignment",
-          onSelect: () => void controller.assign({ imageProviderModelId: null, imageParameters: {} }, imageUndo) }]}>
-        <AdminRolePicker busy={busy} items={(catalog.imageCandidates ?? []).map((model) => ({ group: "ready", id: model.id, label: `${model.displayName} · ${model.connectionDisplayName}` }))}
-          label="Image generation deployment" roleName="Image generation" testId="admin-image-picker"
-          selectedId={policy.imageModel?.id ?? null} selectedLabel={policy.imageModel ? `${policy.imageModel.displayName} · ${policy.imageModel.connectionDisplayName}` : null}
-          onSelect={(id) => void controller.assign({ imageProviderModelId: id, imageParameters: {} }, imageUndo)} />
-        {policy.imageModel ? <>
-          <p className="text-xs text-ink-muted">{[policy.imageModel.generation ? "Generation verified" : "Generation unavailable", policy.imageModel.editing ? "Editing verified" : "Editing unavailable"].join(" · ")}</p>
-          <ImageRoleParameters key={`${policy.imageModel.id}:${policy.version}`} model={policy.imageModel} parameters={policy.imageParameters ?? {}} busy={busy}
-            save={(parameters) => void controller.assign({ imageProviderModelId: policy.imageModel!.id, imageParameters: parameters }, imageUndo)} />
-        </> : <p className="text-xs text-ink-muted">Add and test an image model in Providers to make it available here.</p>}
-      </RoleRow>
+      <ImageGenerationRoleRow busy={busy} catalog={catalog} controller={controller} requestConfirmation={requestConfirmation} />
 
       <AdminKnowledgeProcessingRows controller={controller} requestConfirmation={requestConfirmation} />
     </div>
