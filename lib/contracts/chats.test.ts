@@ -176,10 +176,14 @@ describe("chat wire contracts", () => {
       .toEqual({ origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url" });
     expect(decode({ ...call, origin: "mcp" })).not.toHaveProperty("fetchTarget");
     expect(decode({ ...call, fetchOutcome: "read" })).not.toHaveProperty("fetchHttpStatus");
-    // The scheduled marker belongs only to a not-in-conversation refusal.
-    expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchScheduled: true }))
-      .toMatchObject({ fetchScheduled: true });
-    expect(decode({ ...call, fetchScheduled: true })).not.toHaveProperty("fetchScheduled");
+    // Where a refused link is allowed belongs only to a not-in-conversation refusal, with a known scope.
+    for (const scope of ["scheduled_run", "task_instructions"]) {
+      expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: scope }))
+        .toMatchObject({ fetchRefusalScope: scope });
+    }
+    expect(decode({ ...call, fetchRefusalScope: "scheduled_run" })).not.toHaveProperty("fetchRefusalScope");
+    expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: "everywhere" }))
+      .not.toHaveProperty("fetchRefusalScope");
   });
 
   it("preserves bounded MCP call references and refuses references on other origins", () => {

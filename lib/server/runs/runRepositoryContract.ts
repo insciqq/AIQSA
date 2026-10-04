@@ -942,7 +942,11 @@ export type RunRepository = {
    * events), unnormalized, bounded. Another run's Search never counts.
    */
   loadRunSearchSourceUrls?(input: Readonly<{ runId: string; userId: string }>): Promise<readonly string[]>;
-  /** The run's persisted `fetch_url` calls, so a recovered run keeps its page cap and cache. */
+  /**
+   * Every persisted `fetch_url` call of the run, in round and call order, so a
+   * recovered run keeps its page cap and cache. No bound below the run's
+   * accepted tool-call budget: a hidden sent call could be sent again.
+   */
   loadRunFetchUrlCalls?(input: Readonly<{ runId: string; userId: string }>): Promise<readonly Readonly<{
     id: string; result: unknown; state: string;
   }>[]>;

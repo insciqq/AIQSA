@@ -2481,7 +2481,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 // the run's authority before it leaves.
                 if (claim.kind === "claimed") await assertProjectRunAccessCurrent(true);
                 const result = claim.kind === "ambiguous"
-                  ? fetchUrlInterruptedResult(call, fetchPlan?.taskUrlDigests !== undefined)
+                  ? fetchUrlInterruptedResult(call)
                   : await fetchSession.execute(call, { persistedToolCallId: persisted.id, signal: context.signal });
                 const settleable = settleableToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
                 const settled = settleable && await input.repository.settleToolLoopCall({ callId: persisted.id,

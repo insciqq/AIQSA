@@ -173,6 +173,34 @@ describe("isolated document parser process", () => {
     }
   }, 60_000);
 
+  it("makes every parser process, page or document, the first out-of-memory victim", async () => {
+    // Page and document parses hold separate slots, so both children can run beside the application.
+    const pids: number[] = [];
+    const page = extractWebPageInIsolation({ body: Buffer.from("<div></x>".repeat(200_000)), contentType: "text/html",
+      finalUrl: "https://hostile.example/", maxCharacters: 1_000 }, { spawn: recordingSpawn(pids), timeoutMs: 4_000 })
+      .catch((error: { code?: string }) => error.code);
+    const document = parseSpreadsheetInIsolation({ bytes: slowCsv(), format: "csv", mediaType: mimeByType.csv },
+      { spawn: recordingSpawn(pids), timeoutMs: 4_000 }).catch((error: { code?: string }) => error.code);
+    const adjustment = (pid: number) => {
+      try {
+        return readFileSync(`/proc/${pid}/oom_score_adj`, "utf8").trim();
+      } catch {
+        return "exited";
+      }
+    };
+    const observed = new Map<number, string>();
+    for (let attempt = 0; attempt < 200 && (pids.length < 2 || pids.some((pid) => observed.get(pid) !== "1000")); attempt += 1) {
+      for (const pid of pids) if (observed.get(pid) !== "1000") observed.set(pid, adjustment(pid));
+      await delay(20);
+    }
+    expect(pids).toHaveLength(2);
+    expect(pids.map((pid) => observed.get(pid))).toEqual(["1000", "1000"]);
+    // The application's own score stays as it was.
+    expect(adjustment(process.pid)).not.toBe("1000");
+    await expect(page).resolves.toBe("parser_timeout");
+    await document;
+  }, 30_000);
+
   it("stops an overdue parser together with its process group", async () => {
     const pids: number[] = [];
     await expect(parseSpreadsheetInIsolation({
