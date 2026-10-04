@@ -90,9 +90,9 @@ export function occurrenceSourcesIncomplete(unavailableSources: unknown): boolea
  * A settled monitoring check could not check: its admission missed a source
  * the previous shown result relied on. Sources recorded only because there was
  * no previous result to judge by still make the run incomplete, but not the
- * check: such a check can become the first result that relevance is judged by,
- * so an unrelated unavailable server never keeps a monitoring task from its
- * baseline, nor pauses it.
+ * check: it can still become the baseline that later relevance is judged by,
+ * so an unrelated unavailable server never keeps a monitoring task from
+ * forming one.
  */
 export function occurrenceCheckSourcesMissing(unavailableSources: unknown): boolean {
   return decodeStoredUnavailableSources(unavailableSources).some((source) => source.relied);

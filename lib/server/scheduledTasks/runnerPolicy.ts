@@ -334,8 +334,8 @@ export type ScheduledTaskSettlementPlan = ScheduledTaskBookkeeping & Readonly<{
  * task's counters, health alert and automatic pause, a monitoring goal's
  * completion (only when nothing paused the task), the notification matrix and
  * the baseline the next same-chat run sees. `sourcesIncomplete` is the source
- * health its admission froze, the same fact a monitoring `check` was settled
- * with.
+ * health its admission froze; a monitoring `check` was settled from the same
+ * record.
  */
 export function planOccurrenceSettlement(input: Readonly<{
   assistantMessageId: string | null;
