@@ -25,7 +25,8 @@ it("keeps a monitoring check's outcome on both messages of its turn after its oc
       await prisma.message.create({ data: { chatId, content: textMessageContent("Result"), id: answerId, parentMessageId: questionId,
         role: "assistant", status: "complete" } });
       await prisma.modelRun.create({ data: {
-        assistantMessageId: answerId, chatId, id: randomUUID(), modelId: "fake-qsa", provider: "fake", status: "complete", userId,
+        assistantMessageId: answerId, chatId, id: randomUUID(), modelId: "fake-qsa", normalizedRequest: {}, provider: "fake",
+        status: "complete", userId,
         userMessageId: questionId,
         ...(outcome ? { scheduledOccurrenceId: randomUUID(), scheduledOutcome: outcome, scheduledTaskGeneration: 1,
           scheduledTaskId: randomUUID() } : {})

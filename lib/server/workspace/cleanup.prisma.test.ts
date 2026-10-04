@@ -700,7 +700,7 @@ describe("Prisma Workspace residency and retention of scheduled tasks", () => {
       } });
       await prisma.workspaceRunBinding.create({ data: {
         imageRef: config.imageRef, internetEnabled: true, mcpVersion: "fixture", modelRunId: run.id, outputDirectory: `/workspace/output/${run.id}`,
-        policyRevision: 1, runtimeVersion: "fixture", toolCatalogHash: "a".repeat(64), toolDefinitions: [], workspaceSessionId: session.id
+        policyRevision: 1, runtimeVersion: "fixture", toolCatalogHash: "a".repeat(64), toolDefinitions: [{ name: "fixture" }], workspaceSessionId: session.id
       } });
       return { chat, run, session, task, userId };
     }
