@@ -1,9 +1,11 @@
 "use client";
 
 import { Download } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CODE_CHROME_BUTTON_CLASS, CodeCopyButton } from "./CodeCopyButton";
 import {
+  fitSvgToDrawing,
+  MERMAID_DIAGRAM_TYPOGRAPHY,
   MERMAID_SOURCE_MAX_CHARACTERS,
   renderMermaidDiagram,
   type MermaidColorScheme,
@@ -84,6 +86,24 @@ export function MermaidBlock({ code, language }: { code: string; language: strin
   const failure = result && !result.ok ? result.reason : null;
   const showDiagram = svg !== null && view === "diagram";
   const state = svg !== null ? "rendered" : failure ? "failed" : "pending";
+  const diagramRef = useRef<HTMLDivElement>(null);
+
+  // Fit the viewBox to the drawing where it is shown, and again once web
+  // fonts settle, so the diagram is never offset or clipped by its box.
+  useLayoutEffect(() => {
+    const host = diagramRef.current;
+    if (!showDiagram || !host) return;
+    let active = true;
+    const fit = () => {
+      const root = host.querySelector(":scope > svg");
+      if (active && root instanceof SVGSVGElement) fitSvgToDrawing(root);
+    };
+    fit();
+    void document.fonts?.ready.then(fit);
+    return () => {
+      active = false;
+    };
+  }, [showDiagram, svg]);
 
   return (
     <div
@@ -133,8 +153,11 @@ export function MermaidBlock({ code, language }: { code: string; language: strin
           // Diagram labels are drawing, not answer text for comment offsets.
           data-markdown-chrome=""
           data-testid="mermaid-diagram-scroll"
+          ref={diagramRef}
           role="region"
           aria-label="Scrollable diagram"
+          // The typography the diagram was measured with, not the answer's.
+          style={MERMAID_DIAGRAM_TYPOGRAPHY}
           tabIndex={0}
           dangerouslySetInnerHTML={{ __html: svg }}
         />
