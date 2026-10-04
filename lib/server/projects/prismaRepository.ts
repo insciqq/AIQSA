@@ -45,6 +45,7 @@ import {
   type CatalogProviderModelRow,
   type CatalogSearchOptionRow
 } from "../catalog/prismaCatalogData";
+import { resolveImageRouteFacts, withImageRoutes, type ImageRouteFacts } from "../catalog/imageRoutes";
 import { KNOWLEDGE_INDEX_PROFILE_ID } from "../knowledge/knowledgeProfile";
 import {
   getRunAttachmentLimits,
@@ -805,10 +806,14 @@ function projectCatalogEntries(
 function projectComposer(
   row: ProjectDetailRow,
   visibleResources: readonly ProjectResourceWire[],
-  defaults: ProjectDefaultsWire
+  defaults: ProjectDefaultsWire,
+  imageRoutes?: ImageRouteFacts
 ): ProjectDetailWire["composer"] {
   const visible = new Map(visibleResources.filter((resource) => resource.available).map((resource) => [resource.id, resource] as const));
-  const { modelEntries, models, searchEntries } = projectCatalogEntries(row, visibleResources);
+  const entries = projectCatalogEntries(row, visibleResources);
+  const { modelEntries, searchEntries } = entries;
+  // Project runs use the installation Vision and image models like any chat.
+  const models = imageRoutes ? entries.models.map((model) => withImageRoutes(model, imageRoutes)) : entries.models;
   const available = projectResourceSets(row, visibleResources);
   const defaultModel = models.find((model) => model.modelId === defaults.providerModelId) ?? null;
   const providers = Array.from(new Set(models.map((model) => model.provider))).map((provider) => {
@@ -1056,7 +1061,8 @@ export function projectDefaultsProjection(
 function detail(
   row: ProjectDetailRow,
   access: NonNullable<Awaited<ReturnType<typeof resolveProjectAccess>>>,
-  audienceCount?: number
+  audienceCount?: number,
+  imageRoutes?: ImageRouteFacts
 ): ProjectDetailWire {
   const visibleResources = resources(row);
   const visibleModels = new Set(visibleResources.flatMap((resource) =>
@@ -1102,7 +1108,7 @@ function detail(
   return {
     ...base,
     capabilities: PROJECT_ROLE_CAPABILITIES[access.effectiveRole],
-    composer: projectComposer(row, visibleResources, safeDefaults),
+    composer: projectComposer(row, visibleResources, safeDefaults, imageRoutes),
     createdAt: iso(row.createdAt),
     defaults: safeDefaults,
     fileCount: row._count.attachments,
@@ -1659,8 +1665,13 @@ async function publishProjectResult<Value>(
 
 export function createPrismaProjectRepository(
   prisma: PrismaClient,
-  options: Readonly<{ workspaceRuntime?: WorkspaceRuntime }> = {}
+  options: Readonly<{
+    workspaceRuntime?: WorkspaceRuntime;
+    /** The composer's image routes: installation Vision and image models. */
+    imageRoutes?: () => Promise<ImageRouteFacts>;
+  }> = {}
 ) {
+  const imageRoutes = options.imageRoutes ?? (() => resolveImageRouteFacts(prisma));
   async function eligibleProjectModels(
     db: PrismaClient | Prisma.TransactionClient,
     preferredModelId?: string
@@ -2113,7 +2124,8 @@ export function createPrismaProjectRepository(
       return row ? deletionDetail(row, userId) : null;
     }
     const row = await prisma.project.findUnique({ include: projectDetailInclude, where: { id: projectId } });
-    return row ? row.status === "DELETING" ? deletionDetail(row, userId) : detail(row, access, await effectiveAudienceCount(prisma, projectId)) : null;
+    return row ? row.status === "DELETING" ? deletionDetail(row, userId)
+      : detail(row, access, await effectiveAudienceCount(prisma, projectId), await imageRoutes()) : null;
   }
 
   return {
