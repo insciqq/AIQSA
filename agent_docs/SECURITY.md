@@ -27,6 +27,8 @@ Browser multipart authority requires an explicit endpoint for the same private b
 
 External parser endpoints require operator trust. Preflight archive expansion/document structure. Formulas, OCR, tables, layout and retrieved Source blocks remain inert evidence, never code/tool/network authority. Knowledge egress permits only bounded, currently authorized content at the exact disclosed destination, without scope expansion.
 
+Chat import unpacks the user's exports in a browser worker and reads only the entries a converter selects, under entry-count, total-uncompressed-byte and compression-ratio bounds; declared sizes and checksums are verified, never trusted. Zip and tar containers are parsed in-house over the browser's native `DecompressionStream`; no unpack library is involved. The server accepts only normalized `aiqsa.chat` documents under a route-specific body limit and validates each chat before mutation; an invalid chat fails alone.
+
 Catalogs, JSON/SSE, URLs, and upstream bodies are untrusted. Discovery cannot grant capabilities. Enforce deadlines, pre-parse bounds, SSRF-safe DNS pinning, and redirect policy. Browser/durable Search output is safe normalized findings/citations; Gemini Suggestions require closed server/browser structural allowlists. Raw provider markup/CSS/query records and operation metadata are not grounding output.
 
 Markdown remains React text except reviewed local Shiki/KaTeX sinks. Bound highlighting and macro/source work; disable math trust, reject HTML/link/resource commands, escape failures. Real-library hostile-input tests protect exceptions.
