@@ -1,7 +1,10 @@
 import type { Catalog, FolderSummary, WorkspaceChatSummary } from "@/components/app-shell/types";
 import type {
+  ChatMessageMatchPageWire,
+  ChatMessageMatchWire,
   ChatNavigationFolderWire,
   ChatNavigationPageWire,
+  ChatNavigationSearchPageWire,
   ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
 import { create } from "zustand";
@@ -23,6 +26,11 @@ export type WorkspaceSnapshot = {
   navigationError: string | null;
   navigationFolders: ChatNavigationFolderWire[];
   navigationLoading: boolean;
+  /** Chats whose message text matches the search query: a list of its own, beside the title results. */
+  navigationMessageMatches: ChatMessageMatchWire[];
+  navigationMessageMatchesError: string | null;
+  navigationMessageMatchesLoading: boolean;
+  navigationMessageMatchesNextCursor: string | null;
   navigationNextCursor: string | null;
   navigationReady: boolean;
   navigationSearchChats: ChatNavigationSummaryWire[];
@@ -46,9 +54,13 @@ export type WorkspaceStore = WorkspaceSnapshot & {
   setCreatingChat(value: boolean): void;
   setFolders(update: StateUpdate<FolderSummary[]>): void;
   applyNavigationPage(page: ChatNavigationPageWire, append: boolean): void;
-  applyNavigationSearchPage(page: ChatNavigationPageWire, append: boolean): void;
+  /** A first page replaces both result lists; a title continuation page leaves message matches alone. */
+  applyNavigationSearchPage(page: ChatNavigationSearchPageWire, append: boolean): void;
+  appendNavigationMessageMatches(page: ChatMessageMatchPageWire): void;
   setNavigationError(value: string | null): void;
   setNavigationLoading(value: boolean): void;
+  setNavigationMessageMatchesError(value: string | null): void;
+  setNavigationMessageMatchesLoading(value: boolean): void;
   setNavigationSearchError(value: string | null): void;
   setNavigationSearchLoading(value: boolean): void;
   setNavigationSearchQuery(value: string): void;
@@ -81,6 +93,10 @@ export const initialWorkspaceSnapshot: WorkspaceSnapshot = {
   navigationError: null,
   navigationFolders: [],
   navigationLoading: false,
+  navigationMessageMatches: [],
+  navigationMessageMatchesError: null,
+  navigationMessageMatchesLoading: false,
+  navigationMessageMatchesNextCursor: null,
   navigationNextCursor: null,
   navigationReady: false,
   navigationSearchChats: [],
@@ -188,11 +204,38 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
       ),
       navigationSearchError: null,
       navigationSearchLoading: false,
-      navigationSearchNextCursor: page.nextCursor
+      navigationSearchNextCursor: page.nextCursor,
+      ...(append ? {} : {
+        navigationMessageMatches: page.messageMatches ? [...page.messageMatches.matches] : [],
+        navigationMessageMatchesError: null,
+        navigationMessageMatchesLoading: false,
+        navigationMessageMatchesNextCursor: page.messageMatches?.nextCursor ?? null
+      })
     }));
+  },
+  appendNavigationMessageMatches(page) {
+    set((state) => {
+      // Server order continues the list; a chat already shown keeps its place.
+      const shown = new Set(state.navigationMessageMatches.map((match) => match.chatId));
+      return {
+        navigationMessageMatches: [
+          ...state.navigationMessageMatches,
+          ...page.matches.filter((match) => !shown.has(match.chatId))
+        ],
+        navigationMessageMatchesError: null,
+        navigationMessageMatchesLoading: false,
+        navigationMessageMatchesNextCursor: page.nextCursor
+      };
+    });
   },
   setNavigationError(value) {
     set({ navigationError: value });
+  },
+  setNavigationMessageMatchesError(value) {
+    set({ navigationMessageMatchesError: value });
+  },
+  setNavigationMessageMatchesLoading(value) {
+    set({ navigationMessageMatchesLoading: value });
   },
   setNavigationLoading(value) {
     // A started request (like an applied page) marks the list attempted; the
@@ -207,6 +250,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   },
   setNavigationSearchQuery(value) {
     set({
+      navigationMessageMatches: [],
+      navigationMessageMatchesError: null,
+      navigationMessageMatchesLoading: false,
+      navigationMessageMatchesNextCursor: null,
       navigationSearchChats: [],
       navigationSearchError: null,
       navigationSearchLoading: false,
@@ -227,6 +274,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   upsertNavigationChat(chat) {
     set((state) => ({
       navigationChats: mergeNavigationChats(state.navigationChats, [chat], true),
+      // A renamed chat keeps its message match under the new title.
+      navigationMessageMatches: state.navigationMessageMatches.some((match) =>
+        match.chatId === chat.id && match.title !== chat.title)
+        ? state.navigationMessageMatches.map((match) =>
+            match.chatId === chat.id ? { ...match, title: chat.title } : match)
+        : state.navigationMessageMatches,
       navigationSearchChats: state.navigationSearchChats.some((item) => item.id === chat.id)
         ? mergeNavigationChats(state.navigationSearchChats, [chat], true)
         : state.navigationSearchChats
@@ -235,6 +288,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set) => ({
   removeNavigationChat(chatId) {
     set((state) => ({
       navigationChats: state.navigationChats.filter((chat) => chat.id !== chatId),
+      navigationMessageMatches: state.navigationMessageMatches.filter((match) => match.chatId !== chatId),
       navigationSearchChats: state.navigationSearchChats.filter((chat) => chat.id !== chatId)
     }));
   },

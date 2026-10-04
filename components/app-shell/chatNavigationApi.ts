@@ -1,8 +1,12 @@
 import { shellFetch } from "@/components/app-shell/shellApi";
 import {
   CHAT_NAVIGATION_DEFAULT_PAGE_SIZE,
+  decodeChatMessageMatchPage,
   decodeChatNavigationPage,
-  type ChatNavigationPageWire
+  decodeChatNavigationSearchPage,
+  type ChatMessageMatchPageWire,
+  type ChatNavigationPageWire,
+  type ChatNavigationSearchPageWire
 } from "@/lib/contracts/chats";
 
 export class ChatNavigationApiError extends Error {
@@ -15,10 +19,18 @@ export class ChatNavigationApiError extends Error {
   }
 }
 
-async function page(
-  path: "/api/chats/compact" | "/api/chats/search",
-  input: { cursor?: string | null; limit?: number; query?: string; signal?: AbortSignal }
-): Promise<ChatNavigationPageWire> {
+type PageInput = Readonly<{
+  cursor?: string | null;
+  limit?: number;
+  query?: string;
+  signal?: AbortSignal;
+}>;
+
+async function page<Page>(
+  path: "/api/chats/compact" | "/api/chats/search" | "/api/chats/search/messages",
+  input: PageInput,
+  decode: (value: unknown) => Page | null
+): Promise<Page> {
   const query = new URLSearchParams();
   if (input.cursor) query.set("cursor", input.cursor);
   query.set("limit", String(input.limit ?? CHAT_NAVIGATION_DEFAULT_PAGE_SIZE));
@@ -41,7 +53,7 @@ async function page(
       : "chat_navigation_failed";
     throw new ChatNavigationApiError(code, response.status);
   }
-  const decoded = decodeChatNavigationPage(value);
+  const decoded = decode(value);
   if (!decoded) throw new ChatNavigationApiError("chat_navigation_response_invalid", 502);
   return decoded;
 }
@@ -50,15 +62,26 @@ export function listChatNavigation(input: {
   cursor?: string | null;
   limit?: number;
   signal?: AbortSignal;
-} = {}) {
-  return page("/api/chats/compact", input);
+} = {}): Promise<ChatNavigationPageWire> {
+  return page("/api/chats/compact", input, decodeChatNavigationPage);
 }
 
+/** Title and folder results; the first page also carries the first page of message matches. */
 export function searchChatNavigation(input: {
   cursor?: string | null;
   limit?: number;
   query: string;
   signal?: AbortSignal;
-}) {
-  return page("/api/chats/search", input);
+}): Promise<ChatNavigationSearchPageWire> {
+  return page("/api/chats/search", input, decodeChatNavigationSearchPage);
+}
+
+/** A later page of message matches, continued by the message cursor. */
+export function searchChatMessageMatches(input: {
+  cursor: string;
+  limit?: number;
+  query: string;
+  signal?: AbortSignal;
+}): Promise<ChatMessageMatchPageWire> {
+  return page("/api/chats/search/messages", input, decodeChatMessageMatchPage);
 }

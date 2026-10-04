@@ -1,11 +1,13 @@
 import {
   listChatNavigation,
+  searchChatMessageMatches,
   searchChatNavigation
 } from "@/components/app-shell/chatNavigationApi";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 
 let listGeneration = 0;
 let searchGeneration = 0;
+let messageMatchGeneration = 0;
 
 function readableError(error: unknown): string {
   return error instanceof Error && error.message ? error.message : "chat_navigation_failed";
@@ -40,6 +42,10 @@ export async function loadChatNavigation(options: {
   }
 }
 
+/**
+ * The first search page (title results with the first page of message
+ * matches), or with `append` the next page of title results.
+ */
 export async function loadChatNavigationSearch(options: {
   append?: boolean;
   query: string;
@@ -50,7 +56,11 @@ export async function loadChatNavigationSearch(options: {
   const state = useWorkspaceStore.getState();
   if (!query || (append && !state.navigationSearchNextCursor)) return false;
   const generation = ++searchGeneration;
-  if (!append) state.setNavigationSearchQuery(query);
+  if (!append) {
+    // A new first page supersedes message pages still loading for it.
+    messageMatchGeneration += 1;
+    state.setNavigationSearchQuery(query);
+  }
   state.setNavigationSearchLoading(true);
   state.setNavigationSearchError(null);
   try {
@@ -75,7 +85,41 @@ export async function loadChatNavigationSearch(options: {
   }
 }
 
+/** The next page of message matches for the current query. */
+export async function loadChatMessageMatches(options: {
+  query: string;
+  signal?: AbortSignal;
+}): Promise<boolean> {
+  const query = options.query.trim();
+  const state = useWorkspaceStore.getState();
+  const cursor = state.navigationMessageMatchesNextCursor;
+  if (!query || !cursor || state.navigationMessageMatchesLoading || state.navigationSearchQuery !== query) {
+    return false;
+  }
+  const generation = ++messageMatchGeneration;
+  state.setNavigationMessageMatchesLoading(true);
+  state.setNavigationMessageMatchesError(null);
+  try {
+    const page = await searchChatMessageMatches({ cursor, query, signal: options.signal });
+    const current = useWorkspaceStore.getState();
+    if (generation !== messageMatchGeneration || current.navigationSearchQuery !== query) return false;
+    current.appendNavigationMessageMatches(page);
+    return true;
+  } catch (error) {
+    const current = useWorkspaceStore.getState();
+    if (
+      generation !== messageMatchGeneration ||
+      options.signal?.aborted ||
+      current.navigationSearchQuery !== query
+    ) return false;
+    current.setNavigationMessageMatchesLoading(false);
+    current.setNavigationMessageMatchesError(readableError(error));
+    return false;
+  }
+}
+
 export function clearChatNavigationSearch(): void {
   searchGeneration += 1;
+  messageMatchGeneration += 1;
   useWorkspaceStore.getState().setNavigationSearchQuery("");
 }

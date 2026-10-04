@@ -6,7 +6,7 @@ import {
   resetRunLifecycleStoreForTest,
   resetWorkspaceStoreForTest
 } from "@/tests/support/appShellStores";
-import type { ChatNavigationSummaryWire } from "@/lib/contracts/chats";
+import type { ChatMessageMatchWire, ChatNavigationSummaryWire } from "@/lib/contracts/chats";
 import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
 import * as announcementsApi from "@/components/announcements/api";
 import {
@@ -35,6 +35,15 @@ const chats: ChatNavigationSummaryWire[] = [
     updatedAt: "2026-08-12T08:00:00.000Z"
   }
 ];
+
+const messageMatch: ChatMessageMatchWire = {
+  chatId: "found",
+  createdAt: "2026-08-10T09:00:00.000Z",
+  matchCount: 3,
+  messageId: "message-7",
+  snippet: "…we moved the Budget review to Friday…",
+  title: "Planning"
+};
 
 function responsiveMatchMedia(getWidth: () => number) {
   return vi.fn((query: string) => ({
@@ -624,6 +633,124 @@ describe("Navigation v2", () => {
     fireEvent.click(screen.getByRole("treeitem", { name: "Selected brief" }));
     expect(onSearch).toHaveBeenCalledWith("");
     expect(onSelectChat).toHaveBeenCalledWith(chats[1]);
+  });
+
+  it("lists message matches after the title results, marks the query and opens the match", () => {
+    const onOpenMessageMatch = vi.fn();
+    const onSearch = vi.fn();
+    sidebar({
+      chats: [chats[1]!],
+      messageMatches: [messageMatch, { ...messageMatch, chatId: "markup", matchCount: 1, messageId: "message-8",
+        snippet: "<b>budget</b> stays text", title: "Markup" }],
+      onOpenMessageMatch,
+      onSearch,
+      searchQuery: "budget"
+    });
+
+    const results = screen.getByRole("group", { name: "Results" });
+    const inMessages = screen.getByRole("group", { name: "In messages" });
+    expect(results.compareDocumentPosition(inMessages) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const row = within(inMessages).getByRole("treeitem", { name: "Planning" });
+    expect(row).toHaveAccessibleDescription(/we moved the Budget review to Friday… · 3 matches Aug 10/u);
+    expect(within(row).getByText("Budget", { selector: "mark" })).toBeVisible();
+    expect(row.querySelector("time")).toHaveAttribute("dateTime", messageMatch.createdAt);
+    // Server text never becomes markup.
+    const markup = within(inMessages).getByRole("treeitem", { name: "Markup" });
+    expect(markup.querySelector("b")).toBeNull();
+    expect(markup).toHaveTextContent("<b>budget</b> stays text");
+
+    fireEvent.click(row);
+    expect(onSearch).toHaveBeenCalledWith("");
+    expect(onOpenMessageMatch).toHaveBeenCalledWith(messageMatch);
+  });
+
+  it("keeps a search with only message matches out of the empty state and names a timeout", () => {
+    const { view } = sidebar({ chats: [], messageMatches: [messageMatch], searchQuery: "budget" });
+    expect(screen.queryByRole("group", { name: "Results" })).toBeNull();
+    expect(screen.getByRole("group", { name: "In messages" })).toBeVisible();
+    expect(screen.queryByText("Nothing found")).toBeNull();
+
+    view.rerender(<NavigationSidebar {...sidebarProps({ chats: [], searchLoading: true, searchQuery: "budget" })} />);
+    expect(screen.getByText("Searching chats…")).toBeVisible();
+
+    view.rerender(<NavigationSidebar {...sidebarProps({
+      chats: [], searchError: "chat_navigation_search_timeout", searchQuery: "the"
+    })} />);
+    expect(screen.getByText("Search took too long. Try a more specific phrase.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+  });
+
+  it("continues message matches at the end of the list and title results in their section", () => {
+    const onLoadMore = vi.fn();
+    const onLoadMoreMessageMatches = vi.fn();
+    const { view } = sidebar({
+      chats: [chats[1]!],
+      hasMore: true,
+      messageMatches: [messageMatch],
+      messageMatchesHasMore: true,
+      onLoadMore,
+      onLoadMoreMessageMatches,
+      searchQuery: "budget"
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier" }));
+    expect(onLoadMoreMessageMatches).toHaveBeenCalledOnce();
+    expect(onLoadMore).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole("group", { name: "Results" }))
+      .getByRole("treeitem", { name: "Show more chats" }));
+    expect(onLoadMore).toHaveBeenCalledOnce();
+
+    view.rerender(<NavigationSidebar {...sidebarProps({
+      chats: [chats[1]!],
+      messageMatches: [messageMatch],
+      messageMatchesError: "chat_navigation_failed",
+      messageMatchesHasMore: true,
+      onLoadMoreMessageMatches,
+      searchQuery: "budget"
+    })} />);
+    expect(screen.getByText("Could not load earlier chats.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onLoadMoreMessageMatches).toHaveBeenCalledTimes(2);
+  });
+
+  it("moves between title results and message matches with the arrow keys", () => {
+    sidebar({ chats: [chats[1]!], messageMatches: [messageMatch], searchQuery: "budget" });
+    const titleRow = screen.getByRole("treeitem", { name: "Selected brief" });
+    act(() => titleRow.focus());
+    fireEvent.keyDown(titleRow, { key: "ArrowDown" });
+    const matchRow = screen.getByRole("treeitem", { name: "Planning" });
+    expect(matchRow).toHaveFocus();
+    fireEvent.keyDown(matchRow, { key: "ArrowUp" });
+    expect(titleRow).toHaveFocus();
+  });
+
+  it("opens a message match from the mobile drawer and closes the drawer", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true } as MediaQueryList)));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+    const store = useWorkspaceStore.getState();
+    store.applyNavigationPage({ chats, folders: [], nextCursor: null }, false);
+    store.setNavigationSearchQuery("budget");
+    useWorkspaceStore.getState().applyNavigationSearchPage({
+      chats: [],
+      folders: [],
+      messageMatches: { matches: [messageMatch], nextCursor: null },
+      nextCursor: null
+    }, false);
+    const onOpenMessageMatch = vi.fn();
+    render(
+      <ReadingRoomShellV2 onNewChat={vi.fn()} onOpenMessageMatch={onOpenMessageMatch} onSelectChat={vi.fn()}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    expect(shell).toHaveAttribute("data-mobile-sidebar", "true");
+
+    fireEvent.click(within(screen.getByRole("group", { name: "In messages" }))
+      .getByRole("treeitem", { name: "Planning" }));
+    expect(onOpenMessageMatch).toHaveBeenCalledWith(messageMatch);
+    expect(shell).not.toHaveAttribute("data-mobile-sidebar");
+    expect(useWorkspaceStore.getState().navigationSearchQuery).toBe("");
   });
 
   it("keeps the rail with its destinations beside the list and hides it on mobile", () => {
