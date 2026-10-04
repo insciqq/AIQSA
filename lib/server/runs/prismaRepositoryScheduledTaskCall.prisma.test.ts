@@ -126,7 +126,7 @@ describe("a chat answer's scheduled task creation", () => {
     await prisma.message.create({ data: { chatId: turn.chatId, content: textMessageContent(""), id: answerId,
       parentMessageId: question.userMessageId, role: "assistant", status: "streaming" } });
     await prisma.modelRun.create({ data: { assistantMessageId: answerId, chatId: turn.chatId, id: regenerationId,
-      modelId: "fake-qsa", provider: "fake", status: "streaming", userId: turn.userId, userMessageId: question.userMessageId } });
+      modelId: "fake-qsa", normalizedRequest: {}, provider: "fake", status: "streaming", userId: turn.userId, userMessageId: question.userMessageId } });
     const regenerate = async () => {
       const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: regenerationId,
         ordinal: await prisma.modelRunToolCall.count({ where: { modelRunId: regenerationId } }), providerCallId: randomUUID(),
