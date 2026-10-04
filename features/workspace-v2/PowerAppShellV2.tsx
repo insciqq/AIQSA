@@ -2218,18 +2218,28 @@ export function PowerAppShellV2({
     onNewResult: (task) => {
       const chatId = task.chatId;
       if (!chatId) return;
+      // The open chat rereads its transcript itself; elsewhere the notice opens the chat.
+      const open = chatId === useWorkspaceStore.getState().activeChatId;
       setNotice({
-        action: {
-          label: chatId === useWorkspaceStore.getState().activeChatId ? "Show" : "Open",
-          onClick: () => {
-            setNotice(null);
-            if (chatId === useWorkspaceStore.getState().activeChatId) retryActiveChatDetail();
-            else void activatePersonalChatDeepLink(chatId);
+        ...(open ? {} : {
+          action: {
+            label: "Open",
+            onClick: () => {
+              setNotice(null);
+              void activatePersonalChatDeepLink(chatId);
+            }
           }
-        },
+        }),
         kind: "success",
         text: `“${task.title}” has a new result`
       });
+    },
+    async refreshOpenChat(chatId) {
+      // Same guards as returning to the tab: never race a foreground send, stream or branch change.
+      if (stopping || activeStreamAbortRef.current.has(chatId) ||
+        useRunLifecycleStore.getState().activeStreams[chatId] ||
+        pendingBranchCheckouts.has(chatId) || pendingThreadMutations.has(chatId)) return false;
+      return Boolean(await refreshActiveChat(chatId, { forceDetail: true, preserveControls: true, resumeRuns: true }));
     }
   });
   const projectCurrentModel = projectContext
