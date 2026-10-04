@@ -66,19 +66,20 @@ async function fixture(runTest: (fixture: {
     await db.publishedImageModel.create({ data: { providerModelId: model.id, paramsJson: { quality: "low" } } });
     await db.systemModelPolicy.upsert({ where: { id: "installation" }, create: { id: "installation", imageProviderModelId: model.id },
       update: { imageProviderModelId: model.id } });
-    const plan = await createImageModelRoleResolver(db).resolve();
-    expect(plan).not.toBeNull();
+    const resolved = await createImageModelRoleResolver(db).resolveFor({ kind: "project" });
+    if (!resolved.ok) throw new Error("image_fixture_plan_unavailable");
+    const plan = resolved.plan;
     const chat = await db.chat.create({ data: { userId: user.id, title: "Image fixture", memoryMode: "EXCLUDED" } });
     const message = await db.message.create({ data: { chatId: chat.id, role: "user", content: { blocks: [{ type: "text", text: "Create an image" }] } } });
     const assistant = await db.message.create({ data: { chatId: chat.id, parentMessageId: message.id, role: "assistant", content: { blocks: [] }, status: "streaming" } });
     await db.chat.update({ where: { id: chat.id }, data: { activeLeafMessageId: assistant.id } });
-    const request: ProviderRunRequest = { attachmentIds: [], attachments: [], chatId: chat.id, content: { blocks: [] }, imagePlan: plan!, imageReferences: [],
+    const request: ProviderRunRequest = { attachmentIds: [], attachments: [], chatId: chat.id, content: { blocks: [] }, imagePlan: plan, imageReferences: [],
       modelId: "chat", provider: "fake", modelCapabilities: { vision: false, pdf: false, nativePdfInput: false, nativeSearch: false, reasoning: false },
       knowledgePlan: { mode: "none", baseIds: [], sourceIds: [], version: 1 }, searchPlan: { options: [], mode: "all_selected" }, params: {}, prompt: { system: null, developer: null }, toolMode: "auto" };
     const run = await db.modelRun.create({ data: { chatId: chat.id, userId: user.id, userMessageId: message.id, assistantMessageId: assistant.id,
       modelId: "chat", provider: "fake", status: "streaming", normalizedRequest: json(request) } });
     await db.providerRunBinding.create({ data: { modelRunId: run.id, bindingKey: "image", role: "image", connectionId: connection.id, providerModelId: model.id,
-      credentialId: credential.id, credentialVersionId, credentialSource: "default", executionSnapshot: json(plan!.snapshot) } });
+      credentialId: credential.id, credentialVersionId, credentialSource: "default", executionSnapshot: json(plan.snapshot) } });
     let ordinal = 0;
     await runTest({ db, userId: user.id, runId: run.id, assistantId: assistant.id, modelId: model.id, credentialVersionId, request, storage: createMemoryStorageAdapter(),
       async call(ids = []) {
@@ -305,6 +306,33 @@ describe("durable conversational images", () => {
     await f.db.providerCredentialVersion.update({ where: { id: f.credentialVersionId }, data: { revokedAt: new Date() } });
     expect(await resolver.resolveFor({ kind: "project" })).toMatchObject({ ok: false, reason: "credential_unavailable", providerModelId: f.modelId });
     await expect(createUserImageModelService(f.db).select(f.userId, randomUUID())).rejects.toMatchObject({ code: "image_model_not_published" });
+  }));
+
+  it("keeps image generation off for everyone after a previous release clears the default without withdrawing", async () => fixture(async (f) => {
+    const chosen = await f.publishImageModel("gpt-image-1");
+    await f.chooseImageModel(chosen);
+    const resolver = createImageModelRoleResolver(f.db);
+    const before = await resolver.resolveFor({ kind: "personal", userId: f.userId });
+    if (!before.ok) throw new Error("fixture_plan_unavailable");
+    // The previous release's role clear: only the default is nulled; publications and choices stay.
+    await f.db.systemModelPolicy.update({ where: { id: "installation" }, data: { imageProviderModelId: null } });
+    const off = { ok: false, reason: "not_configured", providerModelId: null, source: "organization" };
+    expect(await resolver.resolveFor({ kind: "personal", userId: f.userId })).toEqual(off);
+    expect(await resolver.resolveFor({ kind: "project" })).toEqual(off);
+    const users = createUserImageModelService(f.db);
+    expect(await users.read(f.userId)).toEqual({ models: [], organizationDefaultId: null, selectedId: null, effective: null });
+    await expect(users.select(f.userId, chosen)).rejects.toMatchObject({ code: "image_model_not_published" });
+    // A plan resolved before the clear is fenced at admission; nothing generates on it.
+    await f.db.providerRunBinding.deleteMany({ where: { modelRunId: f.runId, bindingKey: "image" } });
+    await expect(insertAcceptedProviderRunBindings(f.db as unknown as Prisma.TransactionClient, {
+      imagePlan: before.plan, imageScope: "personal", nativeBackgroundRequested: false, plan: undefined, runId: f.runId, userId: f.userId
+    })).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
+    // The administrator withdraws the leftovers by clearing the role, which also resets the choice.
+    const admin = await f.db.user.create({ data: { id: randomUUID(), displayName: "Image administrator", role: "admin", status: "active" } });
+    const { version } = await f.db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+    await createAdminSystemModelPolicyService(f.db).update({ expectedVersion: version, userId: admin.id, imageProviderModelId: null, imageModels: [] });
+    expect(await f.db.publishedImageModel.count()).toBe(0);
+    expect(await f.db.userSettings.findUniqueOrThrow({ where: { userId: f.userId } })).toMatchObject({ imageProviderModelId: null });
   }));
 
   it("never estimates usage when the provider call fails", async () => fixture(async (f) => {

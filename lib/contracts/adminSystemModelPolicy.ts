@@ -116,7 +116,8 @@ export type AdminSystemModelPolicyCatalog = {
   policy: {
     decisionModel?: (AdminModelDefaultCandidate & { available: boolean }) | null;
     decisionFeatures?: DecisionFeatureOverrides;
-    /** The administrator default; always one of `imageModels`. */
+    /** The administrator default; always one of `imageModels`. Null turns image
+     * generation off, even with models a previous release left published. */
     imageModel?: AdminPublishedImageModel | null;
     imageModels?: AdminPublishedImageModel[];
     chatTitleModel: (AdminSystemModelCandidate & { available: boolean }) | null;
@@ -293,8 +294,7 @@ export function decodeAdminSystemModelPolicyResponse(
   if (catalog.imageCandidates !== undefined && (!Array.isArray(catalog.imageCandidates) || !catalog.imageCandidates.every(imageCandidate)) ||
     !Array.isArray(imageModels) || imageModels.length > ADMIN_IMAGE_MODEL_LIST_LIMIT || !imageModels.every(publishedImageModel) ||
     new Set(imageModels.map((model) => model.id)).size !== imageModels.length ||
-    (imageModel === null ? imageModels.length > 0
-      : !publishedImageModel(imageModel) || !imageModels.some((model) => model.id === imageModel.id))) return null;
+    (imageModel !== null && (!publishedImageModel(imageModel) || !imageModels.some((model) => model.id === imageModel.id)))) return null;
   const reasoningEffort = policy.reasoningEffort;
   const systemModel = policy.systemModel;
   const rerankerModel = policy.rerankerModel;

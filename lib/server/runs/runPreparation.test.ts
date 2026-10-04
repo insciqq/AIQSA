@@ -38,6 +38,7 @@ import { DEFAULT_AGENT_POLICY } from "@/lib/contracts/agentPolicy";
 import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceService";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { syntheticImagePlan } from "@/tests/support/imagePlan";
+import type { AcceptedImageGenerationPlan, ImageModelResolution, ImageModelScope } from "../providerRuntime/imageModelRole";
 import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
 import { conversationMessagesFromPathRows } from "./prismaRepository";
@@ -79,6 +80,13 @@ const baseCapabilities: ProviderModelCapabilities = {
 
 function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** Image models whose effective model is `plan` in every chat scope; none without one. */
+function imageModels(plan: AcceptedImageGenerationPlan | null = syntheticImagePlan()) {
+  return { resolveFor: vi.fn(async (_scope: ImageModelScope): Promise<ImageModelResolution> => plan
+    ? { ok: true, plan, providerModelId: plan.authority.providerModelId, source: "organization" }
+    : { ok: false, reason: "not_configured", providerModelId: null, source: "organization" }) };
 }
 
 const priorMessage: ProviderConversationMessage = {
@@ -1238,7 +1246,8 @@ describe("run preparation", () => {
           syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
       } })) };
       let imagePlan: ReturnType<typeof syntheticImagePlan> | null = syntheticImagePlan();
-      const deps = { ...h.deps, artifacts, workspace, images: { resolve: async () => imagePlan }, agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
+      const deps = { ...h.deps, artifacts, workspace, images: { resolveFor: (scope: ImageModelScope) => imageModels(imagePlan).resolveFor(scope) },
+        agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } };
       const body = successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture", mcp: { mode: "off" } });
       const first = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
       expect(first).toMatchObject({ artifactTool: true, agent: { mcpMode: "off" }, artifactReferences: [{ artifactId: "artifact-one", versionId: version }] });
@@ -1285,7 +1294,7 @@ describe("run preparation", () => {
       sendContext: [earlier],
       storageObjects: { "private/current-image": { body: bytes, contentType: "image/png" } }
     });
-    const deps = { ...harness.deps, images: { resolve: async () => syntheticImagePlan() } };
+    const deps = { ...harness.deps, images: imageModels() };
     const body = successBody({ content: imageBlock("current-image"), provider: "openai", modelId: "gpt-fixture" });
 
     const sent = preparedFrom(await prepareRun(deps, sendInput(body))).normalizedRequest;
@@ -1402,7 +1411,7 @@ describe("run preparation", () => {
         const prepared = preparedFrom(await prepareRun({ ...h.deps, workspace: contractWorkspace(),
           vision: { resolve: async () => ({ version: 1 as const, available: false as const, code: "vision_model_absent" as const }) },
           agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) },
-          ...(mode === "image-plan" ? { images: { resolve: async () => syntheticImagePlan() } } : {})
+          ...(mode === "image-plan" ? { images: imageModels() } : {})
         }, sendInput(successBody({ workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture",
           ...(mode === "agent" ? { agentEnabled: true } : {}),
           ...(mode === "agent" || mode === "nonvisual" ? { content: imageContent } : {}) }))));
@@ -5669,7 +5678,7 @@ describe("chat System Vision admission", () => {
     const deps = { ...h.deps, vision: { resolve: async () => plan } };
     await expect(prepareRun(deps, send({ content: imageContent(image.id) })))
       .resolves.toMatchObject({ ok: false, code: "image_attachment_not_supported", status: 400 });
-    const text = preparedFrom(await prepareRun({ ...deps, images: { resolve: async () => syntheticImagePlan() } }, send()));
+    const text = preparedFrom(await prepareRun({ ...deps, images: imageModels() }, send()));
     expect(text.normalizedRequest.visionAnalysis).toBeUndefined();
     expect(tools(text)).not.toContain("analyze_image");
   });
@@ -5682,7 +5691,7 @@ describe("chat System Vision admission", () => {
       storageObjects: { [visible.storageKey]: { body: bytes, contentType: "image/png" } } });
     const resolve = vi.fn(async () => availablePlan());
     const prepared = preparedFrom(await prepareRun({ ...h.deps, vision: { resolve },
-      images: { resolve: async () => syntheticImagePlan() } }, send({ content: imageContent(visible.id) })));
+      images: imageModels() }, send({ content: imageContent(visible.id) })));
     expect(resolve).not.toHaveBeenCalled();
     expect(prepared.normalizedRequest.visionAnalysis).toBeUndefined();
     expect(tools(prepared)).not.toContain("analyze_image");
@@ -5698,7 +5707,7 @@ describe("chat System Vision admission", () => {
     expect(tools(plain)).not.toContain("analyze_image");
     // Nothing to analyze needs no Vision lookup either.
     expect(resolve).not.toHaveBeenCalled();
-    const generating = preparedFrom(await prepareRun({ ...deps, images: { resolve: async () => syntheticImagePlan() } }, send()));
+    const generating = preparedFrom(await prepareRun({ ...deps, images: imageModels() }, send()));
     expect(generating.normalizedRequest.visionAnalysis).toEqual(availablePlan());
     expect(tools(generating)).toEqual(expect.arrayContaining(["analyze_image", "generate_image"]));
   });
@@ -5727,7 +5736,7 @@ describe("chat System Vision admission", () => {
   it("refuses a current image for a model without vision when Knowledge is in scope, before any Vision lookup", async () => {
     const h = createHarness({ attachments: [image], capabilities: textOnly });
     const resolve = vi.fn(async () => availablePlan());
-    const deps = { ...h.deps, vision: { resolve }, images: { resolve: async () => syntheticImagePlan() },
+    const deps = { ...h.deps, vision: { resolve }, images: imageModels(),
       knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "e") } };
     const knowledge = { knowledgePlan: knowledgeSelection(["knowledge-base-1"]) };
     await expect(prepareRun(deps, send({ ...knowledge, content: imageContent(image.id) }))).resolves.toMatchObject({
@@ -5765,5 +5774,140 @@ describe("chat System Vision admission", () => {
     expect(prepared.normalizedRequest.visionAnalysis).toEqual(availablePlan());
     expect(tools(prepared)).toContain("analyze_image");
     expect(loads.every((load) => load.projectId === "project-1")).toBe(true);
+  });
+});
+
+describe("image model admission by chat scope", () => {
+  const textOnly: ProviderModelCapabilities = { ...baseCapabilities, toolCalling: true, vision: false };
+  const image = runAttachment({ id: "current-image", kind: "image", mimeType: "image/png", storageKey: "private/current-image" });
+  const imageContent = (attachmentId: string) => ({ blocks: [{ type: "text", text: "Make the sky purple" }, { type: "image", attachmentId }] });
+  const send = (overrides: Readonly<Record<string, unknown>> = {}, chat: Partial<SendRunPreparationSource["chat"]> = {}) =>
+    sendInput(successBody({ provider: "openai", modelId: "gpt-fixture", ...overrides }), chat);
+  const project = () => projectAdmission({ modelIds: ["gpt-fixture"], defaults: { ...projectAdmission().defaults, providerModelId: "gpt-fixture" } });
+  const tools = (prepared: PreparedRun) => prepared.providerRequest.tools?.map((tool) => tool.name) ?? [];
+  const UNAVAILABLE = "Image generation and editing are unavailable for this message";
+  /** One plan per published model, with its own capabilities and administrator parameters. */
+  function publishedPlan(providerModelId: string, imageEditing: boolean, quality = "low"): AcceptedImageGenerationPlan {
+    const base = syntheticImagePlan();
+    return { ...base, parameters: { quality }, authority: { ...base.authority, providerModelId },
+      snapshot: { ...base.snapshot, providerModelId, model: { ...base.snapshot.model,
+        capabilities: { ...base.snapshot.model.capabilities, imageEditing } } } };
+  }
+  /** The installation: an administrator default that edits, and the user's generation-only choice. */
+  const organizationDefault = publishedPlan("image-default", true);
+  const personalChoice = publishedPlan("image-chosen", false, "high");
+  function scopedImageModels(personal: ImageModelResolution = { ok: true, plan: personalChoice, providerModelId: "image-chosen", source: "personal" }) {
+    return { resolveFor: vi.fn(async (scope: ImageModelScope): Promise<ImageModelResolution> => scope.kind === "project"
+      ? { ok: true, plan: organizationDefault, providerModelId: "image-default", source: "organization" } : personal) };
+  }
+  const assistant = (): AssistantRunResolution => ({ ok: true, assistant: {
+    answerRules: null, assistantId: "assistant-1", definitionVersion: 1,
+    identity: { name: "Shared illustrator", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring",
+      kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
+    knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [], name: "Shared illustrator", provider: "openai",
+    providerModelId: "gpt-fixture", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] },
+    rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
+      providerModelId: "gpt-fixture", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
+    skillIds: [], systemPrompt: "Illustrate what the user asks for."
+  } });
+  const assistantRows = assistantRowContextLoader({ defaultModelId: "gpt-fixture", models: { "gpt-fixture": "openai" } });
+
+  it("uses the initiating user's effective model in personal chats, with or without another user's Assistant, and in Workspace", async () => {
+    const h = createHarness({ capabilities: textOnly });
+    const images = scopedImageModels();
+    // A browser field never chooses the scope or the model.
+    const plain = preparedFrom(await prepareRun({ ...h.deps, images }, send({ imageModelScope: "project", imageProviderModelId: "image-default" })));
+    expect(plain.normalizedRequest.imagePlan).toEqual(personalChoice);
+    expect(plain.providerRequest.tools?.find((tool) => tool.name === "generate_image")?.description)
+      .toContain("Generation available; editing unavailable.");
+    const shared = preparedFrom(await prepareRun({ ...h.deps, images,
+      assistants: { resolveForRun: vi.fn(async () => assistant()) },
+      repository: { ...h.deps.repository, loadAssistantRowContext: assistantRows } },
+    sendInput({ assistantId: "assistant-1", content: textMessageContent("Draw a fox"), timeZone: "Europe/Berlin" })));
+    expect(shared.assistant?.assistantId).toBe("assistant-1");
+    expect(shared.normalizedRequest.imagePlan).toEqual(personalChoice);
+    const workspace = preparedFrom(await prepareRun({ ...h.deps, images, workspace: contractWorkspace() },
+      send({ workspace: { enabled: true } })));
+    expect(workspace.normalizedRequest.workspace).toBeDefined();
+    expect(workspace.normalizedRequest.imagePlan).toEqual(personalChoice);
+    expect(images.resolveFor.mock.calls).toEqual([[{ kind: "personal", userId: "user-1" }], [{ kind: "personal", userId: "user-1" }],
+      [{ kind: "personal", userId: "user-1" }]]);
+  });
+
+  it("admits Project chats, with or without a bound Assistant, only on the administrator default, also for a member with another choice", async () => {
+    const h = createHarness({ attachments: [image], capabilities: textOnly });
+    const images = scopedImageModels();
+    const text = preparedFrom(await prepareRun({ ...h.deps, images }, send({}, { project: project() })));
+    expect(text.normalizedRequest.imagePlan).toEqual(organizationDefault);
+    expect(tools(text)).toContain("generate_image");
+    // The member's own choice cannot edit, the administrator default can: the image is admitted on the default.
+    const edit = preparedFrom(await prepareRun({ ...h.deps, images }, send({ content: imageContent(image.id) }, { project: project() })));
+    expect(edit.normalizedRequest.imagePlan).toEqual(organizationDefault);
+    expect(edit.normalizedRequest.imageReferences?.map(({ attachmentId }) => attachmentId)).toEqual([image.id]);
+    const bound = projectAdmission({ ...project(), assistantBindings: [{ assistantId: "assistant-1" }],
+      defaults: { ...project().defaults, assistantId: "assistant-1" } });
+    const projectAssistant = preparedFrom(await prepareRun({ ...h.deps, images,
+      assistants: { resolveForRun: vi.fn(), resolveForProject: vi.fn(async () => assistant()) },
+      repository: { ...h.deps.repository, loadProjectAssistantRowContext: () => assistantRows({ ids: {
+        knowledgeBaseIds: [], knowledgeSourceIds: [], skillIds: [] }, userId: "user-1" }) } },
+    sendInput({ content: textMessageContent("Draw a fox"), timeZone: "Europe/Berlin" }, { assistantId: "assistant-1", project: bound })));
+    expect(projectAssistant.normalizedRequest.imagePlan).toEqual(organizationDefault);
+    expect(images.resolveFor.mock.calls).toEqual([[{ kind: "project" }], [{ kind: "project" }], [{ kind: "project" }]]);
+    // The same image in a personal chat meets the member's generation-only choice and no other route.
+    await expect(prepareRun({ ...h.deps, images }, send({ content: imageContent(image.id) })))
+      .resolves.toMatchObject({ ok: false, code: "image_attachment_not_supported", status: 400 });
+  });
+
+  it("never substitutes an unusable effective model: no image tool, and the answer model is told why and how to recover", async () => {
+    const h = createHarness({ attachments: [image], capabilities: textOnly });
+    const images = scopedImageModels({ ok: false, reason: "credential_unavailable", providerModelId: "image-chosen", source: "personal" });
+    const personal = preparedFrom(await prepareRun({ ...h.deps, images }, send()));
+    expect(personal.normalizedRequest.imagePlan).toBeUndefined();
+    expect(tools(personal)).not.toContain("generate_image");
+    const system = personal.normalizedRequest.prompt.system ?? "";
+    expect(system).toContain(`${UNAVAILABLE} because the image model's provider key is missing or revoked. No other image model is used instead.`);
+    expect(system).toContain("choose another image model or the organization default in Studio > Chat defaults > Image model");
+    // The organization default could edit, yet the unusable choice is never replaced by it.
+    await expect(prepareRun({ ...h.deps, images }, send({ content: imageContent(image.id) })))
+      .resolves.toMatchObject({ ok: false, code: "image_attachment_not_supported" });
+    const following = preparedFrom(await prepareRun({ ...h.deps, images: scopedImageModels({ ok: false,
+      reason: "verification_required", providerModelId: "image-default", source: "organization" }) }, send()));
+    expect(following.normalizedRequest.prompt.system).toContain("the image model needs a new successful check by an administrator");
+    expect(following.normalizedRequest.prompt.system).toContain("choose another image model in Studio > Chat defaults > Image model, or ask an administrator");
+    const projectImages = { resolveFor: vi.fn(async (): Promise<ImageModelResolution> =>
+      ({ ok: false, reason: "parameters_invalid", providerModelId: "image-default", source: "organization" })) };
+    const shared = preparedFrom(await prepareRun({ ...h.deps, images: projectImages }, send({}, { project: project() })));
+    expect(tools(shared)).not.toContain("generate_image");
+    expect(shared.normalizedRequest.prompt.system).toContain("the image model's organization settings are no longer supported");
+    expect(shared.normalizedRequest.prompt.system).toContain("Projects always use the organization's default image model");
+    expect(shared.normalizedRequest.prompt.system).not.toContain("Studio");
+  });
+
+  it("stays silent where image generation is not set up and asks nothing with tools off", async () => {
+    const h = createHarness({ capabilities: textOnly });
+    const unset = preparedFrom(await prepareRun({ ...h.deps, images: imageModels(null) }, send()));
+    expect(unset.normalizedRequest.imagePlan).toBeUndefined();
+    expect(unset.normalizedRequest.prompt.system).not.toContain(UNAVAILABLE);
+    const images = scopedImageModels({ ok: false, reason: "model_unavailable", providerModelId: "image-chosen", source: "personal" });
+    const off = preparedFrom(await prepareRun({ ...h.deps, images }, send({ tools: "none" })));
+    expect(images.resolveFor).not.toHaveBeenCalled();
+    expect(off.normalizedRequest.prompt.system).not.toContain(UNAVAILABLE);
+  });
+
+  it("admits an image for a generation-only model only through another route, never routing the edit elsewhere", async () => {
+    const h = createHarness({ attachments: [image], capabilities: textOnly });
+    const images = scopedImageModels();
+    await expect(prepareRun({ ...h.deps, images }, send({ content: imageContent(image.id) })))
+      .resolves.toMatchObject({ ok: false, code: "image_attachment_not_supported" });
+    const snapshot = compatibleAdmissionPlan("openai_responses_compatible").answer.snapshot;
+    const vision: AcceptedVisionAnalysisPlan = { version: 1, available: true, policyVersion: 1, verifiedVisionInput: true, reasoningEffort: null,
+      snapshot, authority: { connectionId: snapshot.connectionId, connectionVersion: 1, credentialId: snapshot.credentialId!,
+        credentialVersionId: snapshot.credentialVersionId!, providerModelId: snapshot.providerModelId, modelVersion: 1 } };
+    const analyzed = preparedFrom(await prepareRun({ ...h.deps, images, vision: { resolve: async () => vision } },
+      send({ content: imageContent(image.id) })));
+    // System Vision takes the image; the image tool still cannot edit it.
+    expect(analyzed.normalizedRequest.imagePlan).toEqual(personalChoice);
+    expect(tools(analyzed)).toEqual(expect.arrayContaining(["analyze_image", "generate_image"]));
+    expect(analyzed.providerRequest.tools?.find((tool) => tool.name === "generate_image")?.description).toContain("editing unavailable");
   });
 });

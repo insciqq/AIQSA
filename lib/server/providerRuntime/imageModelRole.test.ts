@@ -63,11 +63,10 @@ describe("Gemini image output admission", () => {
     const loadRole = vi.fn<typeof loadInstallationImageProviderRole>(async () => ({ configuration: model,
       authority, snapshot: plan.snapshot } as Role));
     const resolver = createImageModelRoleResolver(asDb(db), loadRole);
-    expect(await resolver.resolve()).toBeNull();
     expect(await resolver.resolveFor({ kind: "project" })).toEqual({ ok: false, reason: "parameters_invalid",
       providerModelId: "model", source: "organization" });
     paramsJson.mime_type = "image/jpeg";
-    expect(await resolver.resolve()).toMatchObject({ parameters: { mime_type: "image/jpeg" } });
+    expect(await resolver.resolveFor({ kind: "project" })).toMatchObject({ ok: true, plan: { parameters: { mime_type: "image/jpeg" } } });
   });
 
   it.each(["arguments", "accepted plan"])("rejects PNG in %s before a paid dispatch or storage mutation", async (from) => {
@@ -87,14 +86,16 @@ describe("Gemini image output admission", () => {
 });
 
 describe("published image model resolution", () => {
-  it("keeps the no-argument path on the administrator default with its parameters over the model defaults", async () => {
+  it("resolves the administrator default with its parameters over the model defaults as a version 1 plan", async () => {
     const db = database({ policy: { version: 4, imagePublication: published("default", { quality: "low" }) } });
     const loadRole = vi.fn<typeof loadInstallationImageProviderRole>(async (_db, input) => roleFor(input.providerModelId));
-    const resolved = await createImageModelRoleResolver(asDb(db), loadRole).resolve();
-    expect(resolved).toMatchObject({ version: 1, policyVersion: 4, authority: { providerModelId: "default" },
+    const resolved = await createImageModelRoleResolver(asDb(db), loadRole).resolveFor({ kind: "project" });
+    if (!resolved.ok) throw new Error("fixture_plan_unavailable");
+    expect(resolved.plan).toMatchObject({ version: 1, policyVersion: 4, authority: { providerModelId: "default" },
       parameters: { quality: "low", size: "1024x1024" } });
     expect(db.userSettings.findUnique).not.toHaveBeenCalled();
-    expect(decodeAcceptedImageGenerationPlan(resolved)).toEqual(resolved);
+    // Plans accepted before per-user choices have the same shape and still decode.
+    expect(decodeAcceptedImageGenerationPlan(structuredClone(resolved.plan))).toEqual(resolved.plan);
   });
 
   it("uses the personal choice for personal runs and follows the default without one", async () => {
@@ -147,9 +148,21 @@ describe("published image model resolution", () => {
     const loadRole = vi.fn<typeof loadInstallationImageProviderRole>();
     for (const policy of [null, { version: 1, imagePublication: null }]) {
       const resolver = createImageModelRoleResolver(asDb(database({ policy })), loadRole);
-      expect(await resolver.resolveFor({ kind: "personal", userId: "user" }))
-        .toEqual({ ok: false, reason: "not_configured", providerModelId: null, source: "organization" });
-      expect(await resolver.resolve()).toBeNull();
+      for (const scope of [{ kind: "personal", userId: "user" }, { kind: "project" }] as const) {
+        expect(await resolver.resolveFor(scope)).toEqual({ ok: false, reason: "not_configured", providerModelId: null, source: "organization" });
+      }
+    }
+    expect(loadRole).not.toHaveBeenCalled();
+  });
+
+  it("keeps image generation off for everyone without an administrator default, despite a leftover personal choice", async () => {
+    // A previous release cleared the role by nulling the default without
+    // withdrawing publications; the personal choice still references one.
+    const db = database({ policy: { version: 5, imagePublication: null }, settings: { imagePublication: published("chosen", { quality: "high" }) } });
+    const loadRole = vi.fn<typeof loadInstallationImageProviderRole>(async (_db, input) => roleFor(input.providerModelId));
+    const resolver = createImageModelRoleResolver(asDb(db), loadRole);
+    for (const scope of [{ kind: "personal", userId: "user" }, { kind: "project" }] as const) {
+      expect(await resolver.resolveFor(scope)).toEqual({ ok: false, reason: "not_configured", providerModelId: null, source: "organization" });
     }
     expect(loadRole).not.toHaveBeenCalled();
   });

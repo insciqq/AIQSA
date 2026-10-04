@@ -1,4 +1,4 @@
-import type { CatalogModel } from "@/components/app-shell/types";
+import type { Catalog, CatalogModel } from "@/components/app-shell/types";
 import type {
   ComposerAttachment,
   ComposerAttachmentWarning,
@@ -196,6 +196,17 @@ export function attachmentBlocksSend(
 export function imageRouteAvailable(model: CatalogModel | undefined): boolean {
   const routes = model?.capabilities.imageRoutes;
   return Boolean(model?.capabilities.imageInput || routes?.systemVision || routes?.imageEditing);
+}
+
+/**
+ * The personal catalog after the user changed their image model: only the
+ * editing route follows the new effective model, as the server resolved it.
+ * Which models carry routes stays the server's projection.
+ */
+export function catalogWithImageEditing(catalog: Catalog, imageEditing: boolean): Catalog {
+  return { ...catalog, models: catalog.models.map((model) => model.capabilities.imageRoutes
+    ? { ...model, capabilities: { ...model.capabilities, imageRoutes: { ...model.capabilities.imageRoutes, imageEditing } } }
+    : model) };
 }
 
 /** Why no route takes an image with this model, and what the user can do. */

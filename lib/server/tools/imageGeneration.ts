@@ -1,4 +1,5 @@
 import { imageParameterDefinitions, IMAGE_MAX_INPUTS, IMAGE_MAX_PROMPT_CHARACTERS, type ConversationImageReference } from "../../contracts/imageGeneration";
+import type { ImageModelUnavailableReason } from "../../contracts/imageModels";
 import type { AcceptedImageGenerationPlan } from "../providerRuntime/imageModelRole";
 import type { RunTool } from "./types";
 
@@ -38,6 +39,33 @@ export function imageGenerationTool(plan: AcceptedImageGenerationPlan): RunTool 
         parameters: { type: "object", properties, additionalProperties: false }
       }, required: ["prompt", "image_ids"] }
   };
+}
+
+const IMAGE_MODEL_UNAVAILABLE: Record<ImageModelUnavailableReason, string> = {
+  model_unavailable: "the image model or its provider is turned off or removed",
+  credential_unavailable: "the image model's provider key is missing or revoked",
+  verification_required: "the image model needs a new successful check by an administrator",
+  parameters_invalid: "the image model's organization settings are no longer supported"
+};
+
+/**
+ * The run's image model is published but cannot run: the run has no image
+ * tool and no other model stands in, so the answer model can say why and
+ * how to recover. Personal chats recover in Studio; Projects only through
+ * an administrator, since they always use the organization default.
+ */
+export function imageGenerationUnavailableGuidance(input: Readonly<{
+  reason: ImageModelUnavailableReason;
+  scope: "personal" | "project";
+  source: "organization" | "personal";
+}>): string {
+  const recovery = input.scope === "project"
+    ? "Projects always use the organization's default image model, so only an administrator can restore it"
+    : input.source === "personal"
+      ? "the user can choose another image model or the organization default in Studio > Chat defaults > Image model"
+      : "the user can choose another image model in Studio > Chat defaults > Image model, or ask an administrator";
+  return `Image generation and editing are unavailable for this message because ${IMAGE_MODEL_UNAVAILABLE[input.reason]}. ` +
+    `No other image model is used instead. If the user asks to create or edit an image, say so briefly: ${recovery}.`;
 }
 
 /** `systemVision`: chat System Vision is admitted for an answer model without vision. */

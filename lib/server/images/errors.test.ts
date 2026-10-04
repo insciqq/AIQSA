@@ -60,6 +60,16 @@ describe("image generation failure causes", () => {
     expect(failure.message).toContain(NOT_REPEATED);
   });
 
+  it.each([
+    ["image_editing_unavailable", "Image editing is unavailable with this chat's image model"],
+    ["image_generation_unavailable", "Creating new images is unavailable with this chat's image model"]
+  ] as const)("names %s as refused before any dispatch, never as an unknown outcome", (code, cause) => {
+    const failure = imageGenerationFailure(new Error(code));
+    expect(failure.evidence).toEqual({ category: null, code, httpStatus: null });
+    expect(failure.message).toContain(`${cause}, so nothing was sent to the image provider.`);
+    expect(failure.message).not.toContain("could not finish");
+  });
+
   it("keeps the unconfirmed text for other failures and never trusts foreign fields", () => {
     const forged = Object.assign(new Error("PRIVATE_PROVIDER_TEXT"), { code: "image_provider_http_error", httpStatus: 429,
       diagnostic: { category: "quota" } });

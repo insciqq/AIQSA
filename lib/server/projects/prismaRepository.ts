@@ -812,7 +812,7 @@ function projectComposer(
   const visible = new Map(visibleResources.filter((resource) => resource.available).map((resource) => [resource.id, resource] as const));
   const entries = projectCatalogEntries(row, visibleResources);
   const { modelEntries, searchEntries } = entries;
-  // Project runs use the installation Vision and image models like any chat.
+  // Project runs use the installation Vision model and the administrator default image model.
   const models = imageRoutes ? entries.models.map((model) => withImageRoutes(model, imageRoutes)) : entries.models;
   const available = projectResourceSets(row, visibleResources);
   const defaultModel = models.find((model) => model.modelId === defaults.providerModelId) ?? null;
@@ -1667,11 +1667,12 @@ export function createPrismaProjectRepository(
   prisma: PrismaClient,
   options: Readonly<{
     workspaceRuntime?: WorkspaceRuntime;
-    /** The composer's image routes: installation Vision and image models. */
+    /** The composer's image routes: installation Vision and the administrator
+     * default image model; Projects never read personal image choices. */
     imageRoutes?: () => Promise<ImageRouteFacts>;
   }> = {}
 ) {
-  const imageRoutes = options.imageRoutes ?? (() => resolveImageRouteFacts(prisma));
+  const imageRoutes = options.imageRoutes ?? (() => resolveImageRouteFacts(prisma, { kind: "project" }));
   async function eligibleProjectModels(
     db: PrismaClient | Prisma.TransactionClient,
     preferredModelId?: string
