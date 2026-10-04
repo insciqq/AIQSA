@@ -374,3 +374,29 @@ test("the composer takes an image through chat System Vision for a model without
   await expect(page.getByRole("region", { name: "Attachments" })).toContainText("vision-route.png");
   await expect(page.locator(".v2-live-composer-error")).toHaveCount(0);
 });
+
+test("an image pasted from the clipboard becomes an attachment through the same route", async ({ page }) => {
+  test.setTimeout(90_000);
+  await installMatrixCatalogFixture(page, undefined, { catalog: catalogWithImageRoutes({ systemVision: true, imageEditing: false }) });
+  await page.route("**/api/workspace", (route) => route.fulfill({ json: unavailableWorkspace }));
+  const uploads: string[] = [];
+  await page.route("**/api/uploads", (route) => {
+    uploads.push(route.request().url());
+    return route.fulfill({ status: 201, json: { attachment: { byteSize: 68, extractedText: null,
+      fileName: "image.png", id: "pasted-image-e2e", kind: "image", metadata: {}, mimeType: "image/png", processingErrorCode: null,
+      status: "ready", updatedAt: "2026-10-04T00:00:00.000Z" } } });
+  });
+  await signInWithLocalToken(page);
+  const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  await composer.fill("What is in this screenshot?");
+  // Clipboard history and screenshot tools paste a bitmap as an image file.
+  await composer.evaluate((element, bytes) => {
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([new Uint8Array(bytes)], "image.png", { type: "image/png" }));
+    element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
+  }, [...syntheticPng()]);
+  await expect(page.getByRole("region", { name: "Attachments" })).toContainText("image.png");
+  expect(uploads).toHaveLength(1);
+  await expect(composer).toHaveValue("What is in this screenshot?");
+  await expect(page.locator(".v2-live-composer-error")).toHaveCount(0);
+});
