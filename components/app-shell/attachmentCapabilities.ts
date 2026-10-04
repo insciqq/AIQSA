@@ -209,15 +209,23 @@ export function catalogWithImageEditing(catalog: Catalog, imageEditing: boolean)
     : model) };
 }
 
-/** Why no route takes an image with this model, and what the user can do. */
+/**
+ * Why no route takes an image with this model, and what the user can do.
+ * `imageModelChoice`: the user's own image model decides this chat's editing
+ * route (a personal chat) and a published model that can edit is available;
+ * the suggestion applies only to a model with image routes (tool calling).
+ */
 export function imageRouteUnavailableMessage(
   model: CatalogModel | undefined,
-  workspaceAvailable = false
+  workspaceAvailable = false,
+  imageModelChoice = false
 ): string {
   const label = model?.displayName ?? "The selected model";
   const tools = model?.capabilities.toolCalling === true;
   const steps = [
     "choose a model that supports images",
+    ...(imageModelChoice && model?.capabilities.imageRoutes
+      ? ["pick an image model that can edit in Studio → Chat defaults → Image model"] : []),
     ...(workspaceAvailable ? ["turn on Workspace"] : []),
     ...(tools ? ["ask an administrator to assign the Vision Model"] : [])
   ];
@@ -285,7 +293,8 @@ export function unsupportedAttachmentMessage(
   fileNames: readonly string[],
   model: CatalogModel | undefined,
   removed = false,
-  workspaceAvailable = false
+  workspaceAvailable = false,
+  imageModelChoice = false
 ): string {
   const label = model?.displayName ?? "The selected model";
   const names = fileNames.join(", ");
@@ -295,5 +304,5 @@ export function unsupportedAttachmentMessage(
   // A refused image names why no image route exists and how to get one.
   const image = !imageRouteAvailable(model) &&
     fileNames.some((fileName) => uploadAdmissionFormatFor(fileName, "", "attachment")?.kind === "image");
-  return image ? `${message}. ${imageRouteUnavailableMessage(model, workspaceAvailable)}` : message;
+  return image ? `${message}. ${imageRouteUnavailableMessage(model, workspaceAvailable, imageModelChoice)}` : message;
 }
