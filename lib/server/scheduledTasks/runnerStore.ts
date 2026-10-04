@@ -9,6 +9,7 @@ import {
   linkedRunOutcome,
   planScheduledTaskClaim,
   planTaskSettlement,
+  settlementNotifiesOwner,
   type ScheduledTaskOutcome,
   type ScheduledTaskSettledState,
   type ScheduledTaskStatusColumn
@@ -114,7 +115,7 @@ async function applySettlement(
   const plan = planTaskSettlement({ observedRevision, outcome, task, trigger: trigger(occurrence.trigger) });
   await tx.scheduledTask.update({
     data: {
-      consecutiveFailures: plan.consecutiveFailures, unseenResultAt: now,
+      consecutiveFailures: plan.consecutiveFailures, ...(settlementNotifiesOwner(outcome) ? { unseenResultAt: now } : {}),
       // An automatic pause is a runner status transition: it bumps the revision.
       ...(plan.pauseReason
         ? { nextRunAt: null, pauseReason: plan.pauseReason, revision: { increment: 1 }, status: "PAUSED" as const }

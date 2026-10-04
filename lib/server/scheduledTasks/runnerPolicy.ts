@@ -115,6 +115,14 @@ export function planTaskSettlement(input: Readonly<{
   };
 }
 
+/**
+ * Whether a settlement is news for the owner: an unread marker and a result
+ * email. A scheduled instant skipped because the owner paused the task is not.
+ */
+export function settlementNotifiesOwner(outcome: Readonly<{ state: ScheduledTaskSettledState; reasonCode: string | null }>): boolean {
+  return !(outcome.state === "SKIPPED" && outcome.reasonCode === "paused");
+}
+
 /** A pending occurrence that may no longer be admitted, or null. */
 export function expiredPendingOutcome(
   occurrence: Readonly<{ scheduledFor: Date; startedAt: Date | null; reasonCode: string | null }>,
@@ -176,10 +184,11 @@ export function pausingOutcome(reason: ScheduledTaskPauseReason): ScheduledTaskO
 }
 
 /**
- * How a send refusal that created no run affects its occurrence: busy chats
- * and transient races retry within the window, catalog, entitlement and
- * account refusals fail and pause, anything else fails with its stable code.
- * The runner rechecks the owner itself for an unauthenticated refusal.
+ * How a send refusal that created no run affects its occurrence: busy chats,
+ * transient races and server errors retry within the window (no run exists,
+ * so nothing failed yet), catalog, entitlement and account refusals fail and
+ * pause, anything else fails with its stable code. The runner rechecks the
+ * owner itself for an unauthenticated refusal.
  */
 export function classifySendRefusal(status: number, errorCode: unknown): ScheduledTaskRefusal {
   const code = stableCode(errorCode);
@@ -187,5 +196,6 @@ export function classifySendRefusal(status: number, errorCode: unknown): Schedul
   if (code && TRANSIENT_CODES.has(code)) return { kind: "retry", reasonCode: null };
   const pause = code ? PAUSE_CODES.get(code) : undefined;
   if (pause) return { kind: "fail", outcome: pausingOutcome(pause) };
-  return { kind: "fail", outcome: { reasonCode: status >= 500 || !code ? "admission_failed" : code, state: "FAILED" } };
+  if (status >= 500) return { kind: "retry", reasonCode: null };
+  return { kind: "fail", outcome: { reasonCode: code ?? "admission_failed", state: "FAILED" } };
 }

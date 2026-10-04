@@ -164,6 +164,7 @@
   "draft_shape_invalid",
   "draft_unknown_handle",
   "email_invalid",
+  "email_queue_full",
   "email_repository_failed",
   "embedding_batch_invalid",
   "embedding_failed",

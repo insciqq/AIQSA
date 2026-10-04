@@ -4,7 +4,8 @@ import {
   expiredPendingOutcome,
   linkedRunOutcome,
   planScheduledTaskClaim,
-  planTaskSettlement
+  planTaskSettlement,
+  settlementNotifiesOwner
 } from "./runnerPolicy";
 
 const daily = { kind: "daily", time: "09:00" } as const; // 06:00 UTC in Moscow
@@ -84,6 +85,13 @@ describe("settlement bookkeeping", () => {
     expect(planTaskSettlement({ outcome: { reasonCode: "chat_busy", state: "SKIPPED" }, task: { ...active, consecutiveFailures: 2 }, trigger: "schedule" }))
       .toEqual({ consecutiveFailures: 2, pauseReason: null });
   });
+
+  it("notifies the owner of every settlement except a skip caused by their own pause", () => {
+    expect(settlementNotifiesOwner({ reasonCode: "paused", state: "SKIPPED" })).toBe(false);
+    expect(settlementNotifiesOwner({ reasonCode: "missed", state: "SKIPPED" })).toBe(true);
+    expect(settlementNotifiesOwner({ reasonCode: "admission_failed", state: "FAILED" })).toBe(true);
+    expect(settlementNotifiesOwner({ reasonCode: null, state: "COMPLETED" })).toBe(true);
+  });
 });
 
 describe("pending expiry and run outcomes", () => {
@@ -126,7 +134,10 @@ describe("send refusals", () => {
     expect(classifySendRefusal(403, "user_not_available")).toMatchObject({ outcome: { pauseReason: "account_inactive" } });
     expect(classifySendRefusal(409, "credential_assignment_ambiguous")).toMatchObject({ outcome: { pauseReason: "provider_unavailable" } });
     expect(classifySendRefusal(400, "context_too_large")).toEqual({ kind: "fail", outcome: { reasonCode: "context_too_large", state: "FAILED" } });
-    expect(classifySendRefusal(500, "internal_error")).toEqual({ kind: "fail", outcome: { reasonCode: "admission_failed", state: "FAILED" } });
+    // No run exists after a server error: retried within the window, never counted at once.
+    expect(classifySendRefusal(500, "internal_error")).toEqual({ kind: "retry", reasonCode: null });
+    expect(classifySendRefusal(503, undefined)).toEqual({ kind: "retry", reasonCode: null });
+    expect(classifySendRefusal(503, "provider_not_available")).toMatchObject({ outcome: { pauseReason: "provider_unavailable" } });
     expect(classifySendRefusal(400, "Not a code")).toEqual({ kind: "fail", outcome: { reasonCode: "admission_failed", state: "FAILED" } });
   });
 });
