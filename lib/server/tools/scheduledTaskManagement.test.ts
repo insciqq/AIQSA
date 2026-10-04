@@ -34,8 +34,8 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     id: "task-1", title: "Report reminder", prompt: "Remind me to send the weekly report.",
     schedule: { kind: "weekly", time: "09:00", days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow",
     modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false, toolsEnabled: true,
-    workspaceEnabled: false, chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
-    nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false, revision: 4,
+    workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", status: "active", pauseReason: null,
+    completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false, revision: 4,
     createdAt: "2026-10-01T10:00:00.000Z", updatedAt: "2026-10-01T10:00:00.000Z", ...overrides
   };
 }
@@ -54,7 +54,7 @@ describe("manage_scheduled_task tool", () => {
         action: { enum: ["list", "get", "update", "pause", "resume", "propose_delete"] },
         schedule: { additionalProperties: false },
         searchEnabled: { type: "boolean" }, emailNotify: { type: "boolean" }, toolsEnabled: { type: "boolean" },
-        workspaceEnabled: { type: "boolean" }
+        workspaceEnabled: { type: "boolean" }, memoryEnabled: { type: "boolean" }
       }
     } });
     // The model is the editor's: the tool cannot name one.
@@ -278,7 +278,7 @@ describe("management results", () => {
       { taskId: "task-1", title: "Report reminder", kind: "standard", status: "active",
         schedule: { kind: "weekly", time: "09:00", days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow",
         nextRun: "Mon 2026-10-05 09:00", chatMode: "new", searchEnabled: false, emailNotify: false, toolsEnabled: true,
-        workspaceEnabled: false },
+        workspaceEnabled: false, memoryEnabled: true },
       expect.objectContaining({ taskId: "task-2", kind: "monitoring", status: "paused", nextRun: null })
     ] } }]);
     expect(JSON.stringify(result.content)).not.toMatch(/weekly report\.|deployment-1|revision/u);
