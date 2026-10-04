@@ -148,6 +148,8 @@ import {
 import { AccountSettingsRowsV2 } from "@/features/settings-v2/AccountSettingsRowsV2";
 import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV2";
 import { DataSettingsRowsV2 } from "@/features/settings-v2/DataSettingsRowsV2";
+import { importedFromLabel } from "@/features/chat-import/importLabels";
+import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
 import { SettingsSelectV2 } from "@/features/settings-v2/SettingsSelectV2";
 import { deleteAllPersonalChats } from "@/components/app-shell/accountApi";
 import { loadChatNavigation } from "@/components/app-shell/chatNavigationActions";
@@ -1270,9 +1272,16 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       : null;
     const mutationBlocked = thread.activeChatStreaming ||
       Boolean(projectMutationReason) || Boolean(editMutationReason);
+    // Regeneration answers the question before an answer again. A converted
+    // import can hold an answer with no question before it (a root, or an
+    // answer after an answer); a parent outside the loaded page stays allowed.
+    const question = message.parentMessageId ? messageById.get(message.parentMessageId) : null;
+    const regenerateUnavailable = message.role === "assistant" &&
+      (question === null || (question !== undefined && question.role !== "user"));
     const disabledReason = thread.activeChatStreaming
       ? "Wait for the current answer to finish."
-      : projectMutationReason ?? editMutationReason;
+      : projectMutationReason ?? editMutationReason ??
+        (regenerateUnavailable ? "There is no question before this answer to answer again." : null);
     return {
       branchDisabled: mutationBlocked,
       deleteDisabled: mutationBlocked || projectContext,
@@ -1285,7 +1294,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onEdit: () => thread.handleEditMessage(message)
       } : {
         onRegenerate: () => thread.handleRegenerateMessage(message.id),
-        regenerateDisabled: mutationBlocked
+        regenerateDisabled: mutationBlocked || regenerateUnavailable
       })
     };
   };
@@ -1830,9 +1839,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 if (full) workspace.pane.actions.exportChat(full, format);
               }}
               favorite={Boolean(session.activeChatId && currentWorkspaceChat(session.activeChatId)?.pinned)}
+              importLabel={activeChatSummary?.importSource ? importedFromLabel(activeChatSummary.importSource) : null}
+              importTitle={activeChatSummary?.importSource && activeChatSummary.importSourceModel
+                ? `${importedFromLabel(activeChatSummary.importSource)} (${activeChatSummary.importSourceModel})`
+                : undefined}
+              memoryLockedReason={!projectContext && activeChatSummary?.importSource
+                ? resolveMemoryCopy("imported.unavailable")
+                : null}
               memoryUsed={projectContext || !session.activeChatId
                 ? null
-                : (currentWorkspaceChat(session.activeChatId)?.memoryMode ?? "NORMAL") !== "EXCLUDED"}
+                : !activeChatSummary?.importSource &&
+                  (currentWorkspaceChat(session.activeChatId)?.memoryMode ?? "NORMAL") !== "EXCLUDED"}
               onFavorite={projectContext
                 ? null
                 : withActiveChat((full) => void workspace.pane.actions.toggleChatFavorite(full))}
@@ -2137,6 +2154,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                   <DataSettingsRowsV2
                     onDeleteAll={deleteAllPersonalChats}
                     onDeleted={() => {
+                      void workspace.pane.actions.retry();
+                      void loadChatNavigation();
+                    }}
+                    onImported={() => {
                       void workspace.pane.actions.retry();
                       void loadChatNavigation();
                     }}
