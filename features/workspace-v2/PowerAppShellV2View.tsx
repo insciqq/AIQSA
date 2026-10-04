@@ -3,6 +3,7 @@
 import { libraryTabGroups } from "@/features/library-v2/LibraryV2";
 import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 import { ScheduledMessageChipV2 } from "@/features/scheduled-tasks/ScheduledMessageChipV2";
+import { ScheduledTaskChatHintV2 } from "@/features/scheduled-tasks/ScheduledTaskChatHintV2";
 import { BrowserNotificationsBannerV2, BrowserNotificationsSettingsRowV2 } from "@/features/browser-notifications/BrowserNotificationsV2";
 import { openAssistantDetail } from "@/components/app-shell/assistantGalleryActions";
 
@@ -1176,6 +1177,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const browserNotificationsBanner = composer.browserNotifications ? (
     <BrowserNotificationsBannerV2 notifications={composer.browserNotifications} />
   ) : null;
+  const scheduledTaskHint = thread.scheduledTaskChat && !projectContext ? (
+    <ScheduledTaskChatHintV2 onEdit={thread.scheduledTaskChat.onEdit} title={thread.scheduledTaskChat.title} />
+  ) : null;
   // A blank chat with an Assistant opens with its quiet intro; the intro stays
   // while the user types so the composer below it never moves.
   const assistantOrientation = chatAssistant?.state === "bound" ? (
@@ -1834,6 +1838,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 <div className="v2-live-empty-composer-stack" ref={setComposerDockRef}>
                   {shellNotice}
                   {browserNotificationsBanner}
+                  {scheduledTaskHint}
                   {composerOperationError}
                   {composerSurface}
                   {blankComposerRow}
@@ -1912,6 +1917,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               <div className="v2-live-composer-dock" data-thread-composer-dock="" ref={setComposerDockRef}>
                 {shellNotice}
                 {browserNotificationsBanner}
+                {scheduledTaskHint}
                 {composerOperationError}
                 {composerSurface}
               </div>

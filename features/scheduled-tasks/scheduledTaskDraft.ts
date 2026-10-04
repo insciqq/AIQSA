@@ -1,5 +1,6 @@
 import type { Catalog, CatalogModel } from "@/lib/contracts/catalog";
 import {
+  SCHEDULED_TASK_EVERY_HOURS,
   SCHEDULED_TASK_ONCE_MIN_LEAD_MS,
   SCHEDULED_TASK_PROMPT_MAX_LENGTH,
   SCHEDULED_TASK_TITLE_MAX_LENGTH,
@@ -9,6 +10,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskChatMode,
   type ScheduledTaskDraft,
+  type ScheduledTaskEveryHours,
   type ScheduledTaskSchedule,
   type ScheduledTaskUpdateRequest,
   type ScheduledTaskWeekday
@@ -23,27 +25,37 @@ import {
 } from "@/lib/domain/scheduledTaskSchedule";
 import { WORKDAYS, formatScheduledInstant } from "./scheduledTaskPresentation";
 
-/**
- * "Weekdays" is a preset of the weekly schedule (Monday to Friday). Hourly
- * tasks are not offered here yet: an hourly task opens with an incomplete
- * schedule, so this editor never saves it as another kind.
- */
+/** "Weekdays" is a preset of the weekly schedule (Monday to Friday). */
 export type ScheduledTaskRepeat = "once" | "daily" | "weekdays" | "weekly" | "monthly" | "hourly";
 
 export const SCHEDULED_TASK_REPEAT_OPTIONS: readonly Readonly<{ label: string; value: ScheduledTaskRepeat }>[] = [
   { label: "Once", value: "once" },
+  { label: "Every few hours", value: "hourly" },
   { label: "Daily", value: "daily" },
   { label: "Weekdays", value: "weekdays" },
   { label: "Weekly", value: "weekly" },
   { label: "Monthly", value: "monthly" }
 ];
 
+export const SCHEDULED_TASK_EVERY_HOURS_OPTIONS: readonly Readonly<{ label: string; value: ScheduledTaskEveryHours }>[] =
+  SCHEDULED_TASK_EVERY_HOURS.map((value) => ({ label: value === 1 ? "Every hour" : `Every ${value} hours`, value }));
+
+/** An hourly schedule runs all day, or from a start time until an optional end time. */
+export type ScheduledTaskHourlyWindow = "all_day" | "hours";
+
 export type ScheduledTaskEditorDraft = Readonly<{
   title: string;
   prompt: string;
   repeat: ScheduledTaskRepeat;
+  /** The run time, or the start of an hourly window. */
   time: string;
+  /** Weekly days. */
   days: readonly ScheduledTaskWeekday[];
+  everyHours: ScheduledTaskEveryHours;
+  hourlyWindow: ScheduledTaskHourlyWindow;
+  /** The inclusive end of an hourly window; empty runs through the end of the day. */
+  until: string;
+  hourlyDays: readonly ScheduledTaskWeekday[];
   dayOfMonth: number;
   date: string;
   timeZone: string;
@@ -51,11 +63,12 @@ export type ScheduledTaskEditorDraft = Readonly<{
   provider: string;
   searchEnabled: boolean;
   emailNotify: boolean;
+  /** The owner's choice for other schedules; hourly ones always continue in one chat. */
   chatMode: ScheduledTaskChatMode;
 }>;
 
 export type ScheduledTaskFieldErrors = Partial<Record<
-  "title" | "prompt" | "schedule" | "timeZone" | "model" | "search" | "form",
+  "title" | "prompt" | "schedule" | "timeZone" | "model" | "search" | "chatMode" | "form",
   string
 >>;
 
@@ -89,7 +102,7 @@ function defaultModel(catalog: Catalog | null): Readonly<{ modelId: string; prov
   return model ? { modelId: model.modelId, provider: model.provider } : { modelId: "", provider: "" };
 }
 
-/** A new task: daily at 09:00 in the viewer's zone with the catalog's default model. */
+/** A new task: daily at 09:00 in the viewer's zone with the catalog's default model, a new chat per run. */
 export function blankScheduledTaskDraft(
   catalog: Catalog | null,
   timeZone: string,
@@ -104,6 +117,10 @@ export function blankScheduledTaskDraft(
     repeat: "daily",
     time: "09:00",
     days: [SCHEDULED_TASK_WEEKDAYS[isoIndex]!],
+    everyHours: 1,
+    hourlyWindow: "all_day",
+    until: "18:00",
+    hourlyDays: [...SCHEDULED_TASK_WEEKDAYS],
     dayOfMonth: today.day,
     date: tomorrow(timeZone, now),
     timeZone,
@@ -121,13 +138,20 @@ export function scheduledTaskDraftFromTask(task: ScheduledTask, now: Date = new 
   const repeat: ScheduledTaskRepeat = schedule.kind === "weekly"
     ? scheduledTaskWeekdayMask(schedule.days) === scheduledTaskWeekdayMask(WORKDAYS) ? "weekdays" : "weekly"
     : schedule.kind;
+  const hourly = schedule.kind === "hourly" ? schedule : null;
+  const hourlyWindow: ScheduledTaskHourlyWindow = hourly && (hourly.time !== "00:00" || hourly.until !== null) ? "hours" : "all_day";
   return {
     ...base,
     title: task.title,
     prompt: task.prompt,
     repeat,
-    time: schedule.time,
+    // An all-day hourly schedule starts at midnight; another kind chosen later starts from the default time.
+    time: hourly && hourlyWindow === "all_day" ? base.time : schedule.time,
     days: schedule.kind === "weekly" ? schedule.days : base.days,
+    everyHours: hourly?.everyHours ?? base.everyHours,
+    hourlyWindow,
+    until: !hourly ? base.until : hourly.until ?? (hourlyWindow === "hours" ? "" : base.until),
+    hourlyDays: hourly?.days ?? base.hourlyDays,
     dayOfMonth: schedule.kind === "monthly" ? schedule.dayOfMonth : base.dayOfMonth,
     date: schedule.kind === "once" ? schedule.date : base.date,
     timeZone: task.timeZone,
@@ -139,11 +163,28 @@ export function scheduledTaskDraftFromTask(task: ScheduledTask, now: Date = new 
   };
 }
 
+/** What keeps an hourly draft from decoding, in the decoder's terms; null when it is complete. */
+function hourlyScheduleError(draft: ScheduledTaskEditorDraft): string | null {
+  if (!draft.hourlyDays.length) return "Choose at least one day.";
+  if (draft.hourlyWindow === "all_day") return null;
+  if (!isScheduledTaskTime(draft.time)) return "Enter a start time.";
+  if (draft.until && !isScheduledTaskTime(draft.until)) return "Enter an end time.";
+  // "HH:MM" strings compare in time order.
+  if (draft.until && draft.until <= draft.time) return "Choose an end time later than the start time.";
+  return null;
+}
+
 /** The wire schedule for a draft, or null while it is incomplete. */
 export function scheduledTaskDraftSchedule(draft: ScheduledTaskEditorDraft): ScheduledTaskSchedule | null {
+  if (draft.repeat === "hourly") {
+    if (hourlyScheduleError(draft)) return null;
+    const days = SCHEDULED_TASK_WEEKDAYS.filter((day) => draft.hourlyDays.includes(day));
+    return draft.hourlyWindow === "all_day"
+      ? { kind: "hourly", everyHours: draft.everyHours, time: "00:00", until: null, days }
+      : { kind: "hourly", everyHours: draft.everyHours, time: draft.time, until: draft.until || null, days };
+  }
   if (!isScheduledTaskTime(draft.time)) return null;
   switch (draft.repeat) {
-    case "hourly": return null;
     case "once": return isScheduledTaskLocalDate(draft.date) ? { kind: "once", date: draft.date, time: draft.time } : null;
     case "daily": return { kind: "daily", time: draft.time };
     case "weekdays": return { kind: "weekly", time: draft.time, days: [...WORKDAYS] };
@@ -155,6 +196,11 @@ export function scheduledTaskDraftSchedule(draft: ScheduledTaskEditorDraft): Sch
       return Number.isInteger(draft.dayOfMonth) && draft.dayOfMonth >= 1 && draft.dayOfMonth <= 31
         ? { kind: "monthly", time: draft.time, dayOfMonth: draft.dayOfMonth } : null;
   }
+}
+
+/** The chat mode a save sends: hourly schedules always continue in one chat. */
+export function scheduledTaskDraftChatMode(draft: Pick<ScheduledTaskEditorDraft, "chatMode" | "repeat">): ScheduledTaskChatMode {
+  return draft.repeat === "hourly" ? "same" : draft.chatMode;
 }
 
 function codePoints(value: string): number {
@@ -169,6 +215,17 @@ export function modelHasSearch(catalog: Catalog | null, model: CatalogModel | un
 
 export function catalogModel(catalog: Catalog | null, draft: Pick<ScheduledTaskEditorDraft, "modelId" | "provider">): CatalogModel | undefined {
   return catalog?.models.find((model) => model.modelId === draft.modelId && model.provider === draft.provider);
+}
+
+function scheduleError(draft: ScheduledTaskEditorDraft, zone: string | null, original: ScheduledTask | null, now: Date): string | null {
+  if (draft.repeat === "hourly") return hourlyScheduleError(draft);
+  if (!isScheduledTaskTime(draft.time)) return "Enter a time.";
+  if (draft.repeat === "weekly" && !draft.days.length) return "Choose at least one day.";
+  if (draft.repeat !== "once") return null;
+  if (!isScheduledTaskLocalDate(draft.date)) return "Choose a date.";
+  return zone && scheduledTaskOnceInstant({ kind: "once", date: draft.date, time: draft.time }, zone).getTime() <=
+    now.getTime() + SCHEDULED_TASK_ONCE_MIN_LEAD_MS && changedSchedule(draft, original)
+    ? "Choose a time at least a minute from now." : null;
 }
 
 /**
@@ -191,15 +248,8 @@ export function validateScheduledTaskDraft(
   }
   const zone = validScheduledTaskTimeZone(draft.timeZone);
   if (!zone) errors.timeZone = "Choose a time zone.";
-  if (!isScheduledTaskTime(draft.time)) errors.schedule = "Enter a time.";
-  else if (draft.repeat === "weekly" && !draft.days.length) errors.schedule = "Choose at least one day.";
-  else if (draft.repeat === "once") {
-    if (!isScheduledTaskLocalDate(draft.date)) errors.schedule = "Choose a date.";
-    else if (zone && scheduledTaskOnceInstant({ kind: "once", date: draft.date, time: draft.time }, zone).getTime() <=
-      now.getTime() + SCHEDULED_TASK_ONCE_MIN_LEAD_MS && changedSchedule(draft, original)) {
-      errors.schedule = "Choose a time at least a minute from now.";
-    }
-  }
+  const schedule = scheduleError(draft, zone, original, now);
+  if (schedule) errors.schedule = schedule;
   const model = catalogModel(catalog, draft);
   const keptModel = original && original.modelId === draft.modelId && original.provider === draft.provider;
   if (!draft.modelId || (!model && !keptModel)) errors.model = "Choose a model.";
@@ -228,11 +278,14 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
     provider: draft.provider,
     searchEnabled: draft.searchEnabled,
     emailNotify: draft.emailNotify,
-    chatMode: draft.chatMode
+    chatMode: scheduledTaskDraftChatMode(draft)
   } : null;
 }
 
-/** Only the changed fields, so an unchanged schedule keeps an active task's due run. */
+/**
+ * Only the changed fields, so an unchanged schedule keeps an active task's due
+ * run. A switch to an hourly schedule carries `chatMode: "same"` with it.
+ */
 export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, original: ScheduledTask): ScheduledTaskUpdateRequest | null {
   const next = scheduledTaskCreateRequest(draft);
   if (!next) return null;
@@ -256,7 +309,9 @@ export function sameScheduledTaskDraft(left: ScheduledTaskEditorDraft, right: Sc
     left.time === right.time && left.dayOfMonth === right.dayOfMonth && left.date === right.date &&
     left.timeZone === right.timeZone && left.modelId === right.modelId && left.provider === right.provider &&
     left.searchEnabled === right.searchEnabled && left.emailNotify === right.emailNotify && left.chatMode === right.chatMode &&
-    scheduledTaskWeekdayMask(left.days) === scheduledTaskWeekdayMask(right.days);
+    left.everyHours === right.everyHours && left.hourlyWindow === right.hourlyWindow && left.until === right.until &&
+    scheduledTaskWeekdayMask(left.days) === scheduledTaskWeekdayMask(right.days) &&
+    scheduledTaskWeekdayMask(left.hourlyDays) === scheduledTaskWeekdayMask(right.hourlyDays);
 }
 
 /** The footer's live sentence about when the saved task will run next. */
@@ -269,8 +324,8 @@ export function scheduledTaskPreview(
   const schedule = scheduledTaskDraftSchedule(draft);
   if (!zone) return "Choose a time zone to see the next run.";
   if (!schedule) {
-    return draft.repeat === "weekly" && !draft.days.length ? "Choose at least one day to see the next run."
-      : "Complete the schedule to see the next run.";
+    const noDays = draft.repeat === "weekly" ? !draft.days.length : draft.repeat === "hourly" && !draft.hourlyDays.length;
+    return noDays ? "Choose at least one day to see the next run." : "Complete the schedule to see the next run.";
   }
   const changed = !original || !sameScheduledTaskSchedule(schedule, original.schedule) || zone !== original.timeZone;
   if (original?.status === "completed" && !changed) return "Completed. Change the schedule to run it again.";

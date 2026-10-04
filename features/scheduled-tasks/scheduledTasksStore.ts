@@ -6,7 +6,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskLimits
 } from "@/lib/contracts/scheduledTasks";
-import { isOwnerPauseSkip } from "./scheduledTaskPresentation";
+import { isScheduledTaskNews } from "./scheduledTaskPresentation";
 import { listScheduledTasks, ScheduledTaskApiError } from "./scheduledTasksApi";
 
 /**
@@ -16,6 +16,11 @@ import { listScheduledTasks, ScheduledTaskApiError } from "./scheduledTasksApi";
  */
 export type ScheduledTasksState = Readonly<{
   accountId: string | null;
+  /**
+   * A task whose editor another surface asked to open (the task chat's "Edit
+   * task"); the Scheduled panel takes it once its list is ready.
+   */
+  editRequest: string | null;
   emailAvailable: boolean;
   /** Code of the last failed list read; the previous rows stay visible. */
   error: string | null;
@@ -31,6 +36,7 @@ export type ScheduledTasksState = Readonly<{
 
 const initial: ScheduledTasksState = {
   accountId: null,
+  editRequest: null,
   emailAvailable: false,
   error: null,
   limits: { maxActive: SCHEDULED_TASK_MAX_ACTIVE, maxActiveHourly: SCHEDULED_TASK_MAX_ACTIVE_HOURLY, maxTotal: SCHEDULED_TASK_MAX_TOTAL },
@@ -52,10 +58,15 @@ export function activateScheduledTasksAccount(accountId: string | null): void {
   useScheduledTasksStore.setState({ ...initial, accountId });
 }
 
+/**
+ * Tasks whose newest settled run is news that arrived since the previous read.
+ * `unseenResult` aggregates every run, so an older unread answer never makes a
+ * later routine skip or failure look new.
+ */
 function newlyFinished(previous: readonly ScheduledTask[], next: readonly ScheduledTask[]): ScheduledTask[] {
   const before = new Map(previous.map((task) => [task.id, task]));
   return next.filter((task) => {
-    if (!task.unseenResult || !task.lastRun || isOwnerPauseSkip(task.lastRun)) return false;
+    if (!task.unseenResult || !task.lastRun || !isScheduledTaskNews(task)) return false;
     const old = before.get(task.id);
     return !old || !old.unseenResult || old.lastRun?.finishedAt !== task.lastRun.finishedAt;
   });
@@ -99,6 +110,18 @@ export function refreshScheduledTasks(): Promise<boolean> {
   return request;
 }
 
+/**
+ * Reads the list again after a change the browser cannot project itself, such
+ * as a task's unread aggregate once some of its results were seen. A read
+ * already in flight may predate the change, so this one starts after it.
+ */
+export function refreshScheduledTasksAfterChange(): Promise<boolean> {
+  const owner = generation;
+  const pending = inFlight;
+  if (!pending) return refreshScheduledTasks();
+  return pending.then(() => owner === generation ? refreshScheduledTasks() : false);
+}
+
 /** A created or updated task from a mutation response; new tasks lead the list. */
 export function applyScheduledTask(task: ScheduledTask): void {
   useScheduledTasksStore.setState((state) => ({
@@ -112,8 +135,14 @@ export function removeScheduledTask(taskId: string): void {
   useScheduledTasksStore.setState((state) => ({ tasks: state.tasks.filter((task) => task.id !== taskId) }));
 }
 
-export function markScheduledTaskSeenLocally(taskId: string): void {
-  useScheduledTasksStore.setState((state) => ({
-    tasks: state.tasks.map((task) => task.id === taskId && task.unseenResult ? { ...task, unseenResult: false } : task)
-  }));
+/** Asks the Scheduled panel to open this task's editor. */
+export function requestScheduledTaskEdit(taskId: string): void {
+  useScheduledTasksStore.setState({ editRequest: taskId });
+}
+
+/** The pending editor request, cleared so that it opens once. */
+export function takeScheduledTaskEditRequest(): string | null {
+  const taskId = useScheduledTasksStore.getState().editRequest;
+  if (taskId) useScheduledTasksStore.setState({ editRequest: null });
+  return taskId;
 }
