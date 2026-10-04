@@ -56,6 +56,8 @@ afterEach(async () => {
   const ids = users.splice(0);
   await prisma.scheduledTask.deleteMany({ where: { userId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
+  // An administrator's revocation keeps a restricting reference on the revoked session.
+  await prisma.authSession.deleteMany({ where: { OR: [{ userId: { in: ids } }, { revokedByUserId: { in: ids } }] } });
   await prisma.user.deleteMany({ where: { id: { in: ids } } });
 });
 afterAll(() => prisma.$disconnect());
