@@ -17,6 +17,7 @@ import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "../../con
 import { decodeThreadGeneratedArtifact, type ThreadCitation } from "../../contracts/chats";
 import { decodeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeThreadSearchActivitySnapshot, type ThreadSearchActivitySnapshot } from "../../contracts/searchActivity";
+import { decodeScheduledTaskCard, type ScheduledTaskCard } from "../../contracts/scheduledTasks";
 
 type RunOutputGeneratedArtifact = {
   byteSize?: number;
@@ -36,6 +37,8 @@ export type RunOutputArtifactEvent =
   | { type: "artifact"; data: { artifactType: "context_status"; payload: SessionContextStatus } }
   | { type: "artifact"; data: { artifactType: "context_compaction"; payload: ContextCompactionStatus } }
   | { type: "artifact"; data: { artifactType: "search_activity"; payload: ThreadSearchActivitySnapshot } }
+  /** A task the answer's `create_scheduled_task` call created, as created. */
+  | { type: "artifact"; data: { artifactType: "scheduled_task"; payload: ScheduledTaskCard } }
   | { type: "grounding_display"; data: GroundingDisplay }
   | {
       data: {
@@ -202,6 +205,12 @@ export function projectRunOutputArtifactEvent(
     return payload ? { type: "artifact", data: { artifactType: "search_activity", payload } } : null;
   }
 
+  if (event.data.artifactType === "scheduled_task") {
+    const payload = decodeScheduledTaskCard(event.data.payload);
+    // The created task only: a read marks deletion from the current task, never the event.
+    return payload && !payload.deleted ? { type: "artifact", data: { artifactType: "scheduled_task", payload } } : null;
+  }
+
   if (event.data.artifactType === "workspace_checkpoint") {
     const payload = decodeThreadWorkspaceCheckpointOutput(event.data.payload);
     return payload ? { type: "artifact", data: { artifactType: "workspace_checkpoint", payload } } : null;
@@ -276,6 +285,11 @@ export function isRunOutputArtifactEvent(
   if (event.data.artifactType === "search_activity") {
     const decoded = decodeThreadSearchActivitySnapshot(event.data.payload);
     return decoded !== null && JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
+  }
+  if (event.data.artifactType === "scheduled_task") {
+    const decoded = decodeScheduledTaskCard(event.data.payload);
+    return decoded !== null && !decoded.deleted &&
+      JSON.stringify(sortedKeys(decoded)) === JSON.stringify(sortedKeys(event.data.payload));
   }
   if (event.data.artifactType !== "search" || !isRecord(event.data.payload) ||
     !hasOnlyKeys(event.data.payload, ["action"]) ||

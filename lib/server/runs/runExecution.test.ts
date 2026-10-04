@@ -17,6 +17,7 @@ import { textMessageContent } from "../../domain/content";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringVerdictTool } from "../tools/monitoringVerdict";
+import { createScheduledTaskTool } from "../tools/scheduledTaskCreation";
 import { loadSkillTool, readSkillFileTool } from "../tools/skill";
 import { freezeSkillManifest } from "../skills/runManifest";
 import { artifactTool } from "../tools/artifact";
@@ -8212,5 +8213,121 @@ describe("monitoring verdict execution", () => {
     expect([...repository.toolCalls.values()].map((call) => call.toolName)).toEqual(["get_session_status"]);
     expect(repository.failedRuns).toEqual([]);
     expect(repository.completeRuns).toHaveLength(1);
+  });
+});
+
+describe("scheduled task creation execution", () => {
+  const settings = { modelId: "deployment-1", provider: "connection-1", searchEnabled: false, toolsEnabled: true,
+    workspaceEnabled: false };
+  function creationPrepared(marker = true) {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const prompt = { ...base.normalizedRequest.prompt, baseline: { source: "standard_chat" as const, timeZone: "Europe/Moscow",
+      timeZoneSource: "client" as const } };
+    const tools = [sessionStatusTool, ...(marker ? [createScheduledTaskTool("Europe/Moscow")] : [])];
+    return {
+      ...base,
+      normalizedRequest: { ...base.normalizedRequest, prompt, sessionStatusTool: true as const,
+        ...(marker ? { scheduledTaskTool: settings } : {}) },
+      providerRequest: { ...base.providerRequest, prompt, sessionStatusTool: true as const,
+        ...(marker ? { scheduledTaskTool: settings } : {}), tools }
+    };
+  }
+  const schedule = { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"], date: null, dayOfMonth: null,
+    everyHours: null, until: null };
+  const create = (id = "create-call") => ({ arguments: { title: "Check mail", prompt: "Remind me to check my mail.",
+    kind: "standard", chatMode: null, schedule }, id, name: "create_scheduled_task" });
+  const task = {
+    id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.",
+    schedule: { kind: "weekly" as const, time: "09:00", days: ["mon" as const, "tue" as const, "wed" as const, "thu" as const, "fri" as const] },
+    timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
+    toolsEnabled: true, workspaceEnabled: false, chatMode: "new" as const, kind: "standard" as const, status: "active" as const,
+    pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null,
+    unseenResult: false, revision: 1, createdAt: "2026-10-04T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
+  };
+  const creator = () => vi.fn<NonNullable<RunExecutionRepository["createScheduledTaskForCall"]>>(async (input) =>
+    ({ kind: "created", result: input.result(task), task }));
+
+  it("creates the task once through the repository and shows its card live and durably", async () => {
+    const repository = createRepository();
+    const createScheduledTaskForCall = creator();
+    repository.repository.createScheduledTaskForCall = createScheduledTaskForCall;
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1 ? providerResult({ finalText: "", toolCalls: [create()] })
+        : providerResult({ finalText: "Created: every weekday at 09:00." });
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared: creationPrepared(),
+      repository: repository.repository })).text());
+    expect(repository.failedRuns).toEqual([]);
+    expect(repository.completeRuns).toHaveLength(1);
+    expect(requests[0]?.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "create_scheduled_task"]);
+    expect(createScheduledTaskForCall).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      callId: "persisted-tool-call-1", runId: "run-1", userId: "user-1",
+      body: expect.objectContaining({ timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1", chatMode: "new" })
+    }));
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ state: "complete", toolName: "create_scheduled_task" })]);
+    expect(JSON.stringify(requests[1]?.providerToolMessages)).toContain('\\"created\\":true');
+    const card = { artifactType: "scheduled_task", payload: expect.objectContaining({ taskId: "task-1", status: "active" }) };
+    expect(events).toContainEqual({ type: "artifact", data: card });
+    expect(repository.persistedEvents.map((entry) => entry.event)).toContainEqual({ type: "artifact", data: card });
+    expect(events).toContainEqual(expect.objectContaining({ type: "artifact", data: expect.objectContaining({ artifactType: "tool_call",
+      payload: expect.objectContaining({ name: "create_scheduled_task", origin: "session", serverName: "Scheduled tasks" }) }) }));
+  });
+
+  it("never dispatches a creation for a run admitted without the frozen marker", async () => {
+    const repository = createRepository();
+    const createScheduledTaskForCall = creator();
+    repository.repository.createScheduledTaskForCall = createScheduledTaskForCall;
+    const adapter = createAdapter(async function* () {
+      return providerResult({ finalText: "", toolCalls: [create()] });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, prepared: creationPrepared(false),
+      repository: repository.repository })).text();
+    expect(createScheduledTaskForCall).not.toHaveBeenCalled();
+    expect(repository.failedRuns).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "unsupported_tool_call" }) })]);
+  });
+
+  it("returns the repository's refusal of a second creation in one answer as a tool error", async () => {
+    const repository = createRepository();
+    let attempts = 0;
+    repository.repository.createScheduledTaskForCall = vi.fn(async (input) => (attempts += 1) === 1
+      ? { kind: "created" as const, result: input.result(task), task }
+      : { code: "scheduled_task_answer_limit" as const, kind: "refused" as const });
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length <= 2) return providerResult({ finalText: "", toolCalls: [create(`create-${requests.length}`)] });
+      return providerResult({ finalText: "One task was created." });
+    });
+    const events = parseSse(await createRunExecutionResponse(executionInput({ adapter, prepared: creationPrepared(),
+      repository: repository.repository })).text());
+    expect(repository.completeRuns).toHaveLength(1);
+    expect([...repository.toolCalls.values()].map((call) => call.state)).toEqual(["complete", "error"]);
+    expect(JSON.stringify(requests[2]?.providerToolMessages)).toContain("scheduled_task_answer_limit");
+    expect(events.filter((event) => event.type === "artifact" && event.data.artifactType === "scheduled_task")).toHaveLength(1);
+  });
+
+  it("runs an interrupted creation again through the creation that settles it atomically, never as an unknown outcome", async () => {
+    const repository = createRepository();
+    const createScheduledTaskForCall = creator();
+    repository.repository.createScheduledTaskForCall = createScheduledTaskForCall;
+    const claim = repository.repository.claimToolLoopCall;
+    // The first claim finds the call already running: an earlier executor stopped mid-call.
+    repository.repository.claimToolLoopCall = vi.fn(async (input) => {
+      const claimed = await claim(input);
+      return claimed.kind === "claimed" ? { ...claimed, kind: "ambiguous" as const } : claimed;
+    });
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      return requests.length === 1 ? providerResult({ finalText: "", toolCalls: [create()] })
+        : providerResult({ finalText: "Created." });
+    });
+    await createRunExecutionResponse(executionInput({ adapter, prepared: creationPrepared(),
+      repository: repository.repository })).text();
+    expect(repository.failedRuns).toEqual([]);
+    expect(createScheduledTaskForCall).toHaveBeenCalledOnce();
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ state: "complete" })]);
   });
 });

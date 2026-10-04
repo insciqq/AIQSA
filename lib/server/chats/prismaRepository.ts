@@ -6,8 +6,16 @@ import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
 import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeThreadGeneratedArtifact } from "../../contracts/chats";
-import { isScheduledTaskCheckOutcome } from "../../contracts/scheduledTasks";
+import {
+  decodeScheduledTaskCard,
+  foldScheduledTaskCards,
+  isScheduledTaskCheckOutcome,
+  scheduledTaskCard,
+  type ScheduledTask,
+  type ScheduledTaskCard
+} from "../../contracts/scheduledTasks";
 import { isMonitoringVerdictCall } from "../tools/monitoringVerdict";
+import { scheduledTaskRowSelect, toScheduledTask } from "../scheduledTasks/store";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
 import { decodeSessionContextStatus } from "../../contracts/sessionStatus";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
@@ -390,7 +398,14 @@ type HydratedMessagePath = Readonly<{
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>;
   memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>;
   messages: HydratedMessageRow[];
+  scheduledTasks: CurrentScheduledTasks;
 }>;
+/**
+ * The reader's current tasks among those the page's answers created, by id; a
+ * created task missing here is gone (or never was the reader's) and shows as
+ * deleted.
+ */
+type CurrentScheduledTasks = ReadonlyMap<string, ScheduledTask>;
 type LightweightMessageRow = Prisma.MessageGetPayload<{ select: typeof lightweightMessageSelect }>;
 type ArtifactSummaryRun = {
   normalizedRequest?: unknown;
@@ -614,7 +629,8 @@ async function hydrateMessagePath(
       memoryActionsByRun: new Map(),
       memorySourcesByRun: new Map(),
       memoryStatusesByRun: new Map(),
-      messages: []
+      messages: [],
+      scheduledTasks: new Map()
     };
   }
   const hydrated = await tx.message.findMany({
@@ -635,12 +651,30 @@ async function hydrateMessagePath(
       : message.branchSourceModelRun?.id
         ? [message.branchSourceModelRun.id]
         : []);
-  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun] = await Promise.all([
+  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks] = await Promise.all([
     loadMemoryRunActions(tx, { runIds, userId }),
     loadMemoryRunSources(tx, { runIds, userId }),
-    loadMemoryRunPresentationStatuses(tx, { runIds, userId })
+    loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
+    loadCurrentScheduledTasks(tx, ordered.flatMap((message) =>
+      (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId)
   ]);
-  return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, messages: ordered };
+  return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, messages: ordered, scheduledTasks };
+}
+
+/** The reader's current tasks among those the given answers' cards name; one read per page, none without cards. */
+async function loadCurrentScheduledTasks(
+  tx: Prisma.TransactionClient,
+  events: readonly Readonly<{ payload: unknown }>[],
+  userId: string
+): Promise<CurrentScheduledTasks> {
+  const taskIds = [...new Set(events.flatMap((event) => {
+    const card = artifactType(event.payload) === "scheduled_task" ? decodeScheduledTaskCard(artifactInnerPayload(event.payload)) : null;
+    return card ? [card.taskId] : [];
+  }))];
+  if (taskIds.length === 0) return new Map();
+  const rows = await tx.scheduledTask.findMany({ select: scheduledTaskRowSelect, where: { id: { in: taskIds }, userId } });
+  // A card needs the task's own fields only, never its run history.
+  return new Map(rows.map((row) => [row.id, toScheduledTask(row, { lastRun: null, running: false, unseen: false })]));
 }
 
 async function approximateActiveBranchInputTokens(
@@ -755,7 +789,8 @@ function serializeHydratedMessage(
   memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>,
   memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>,
   memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>,
-  viewerUserId: string
+  viewerUserId: string,
+  scheduledTasks: CurrentScheduledTasks
 ): ChatDetailRecord["messages"][number] {
   const modelRun = message.assistantModelRuns[0] ?? message.branchSourceModelRun ?? undefined;
   const followups = projectMessageFollowups(message);
@@ -768,7 +803,8 @@ function serializeHydratedMessage(
         message.content,
         memoryActionsByRun.get(modelRun.id) ?? null,
         memorySourcesByRun.get(modelRun.id) ?? [],
-        memoryStatusesByRun.get(modelRun.id)
+        memoryStatusesByRun.get(modelRun.id),
+        scheduledTasks
       )
     : null;
   return {
@@ -871,7 +907,8 @@ function serializeChatDetail(input: {
         input.messages.memoryActionsByRun,
         input.messages.memorySourcesByRun,
         input.messages.memoryStatusesByRun,
-        input.viewerUserId
+        input.viewerUserId,
+        input.messages.scheduledTasks
       )),
     pageInfo: {
       activeLeafMessageId: chat.activeLeafMessageId,
@@ -1251,12 +1288,30 @@ function sourceValuesFromSearchPayload(payload: unknown): unknown[] {
   return Array.isArray(action?.sources) ? [action.sources] : [];
 }
 
+/**
+ * The cards of the tasks an answer created. With the reader's current tasks
+ * each card shows its task as it is now, or deleted once it is gone; without
+ * them (a run's own chat update) the tasks show as created.
+ */
+function answerScheduledTaskCards(
+  payloads: readonly unknown[],
+  current?: CurrentScheduledTasks
+): ScheduledTaskCard[] {
+  return foldScheduledTaskCards(payloads.filter((payload) => artifactType(payload) === "scheduled_task")
+    .map(artifactInnerPayload)).map((card) => {
+    if (!current) return card;
+    const task = current.get(card.taskId);
+    return task ? scheduledTaskCard(task, card.timeZoneFallback) : { ...card, deleted: true as const };
+  });
+}
+
 export function summarizeMessageRunArtifacts(
   run: ArtifactSummaryRun,
   answerContent?: unknown,
   memoryAction: MemoryActionFeedback | null = null,
   memorySources: readonly MemoryAnswerSource[] = [],
-  memoryStatus?: MemoryRunPresentationStatus
+  memoryStatus?: MemoryRunPresentationStatus,
+  currentScheduledTasks?: CurrentScheduledTasks
 ): ThreadArtifactSummary | null {
   const grounding = run.events.filter((event) => event.eventType === "grounding_display")
     .map((event) => projectGroundingDisplay(event.payload))
@@ -1309,6 +1364,7 @@ export function summarizeMessageRunArtifacts(
       const decoded = decodeThreadGeneratedArtifact(artifactInnerPayload(event.payload));
       return decoded ? [decoded] : [];
     }));
+  const scheduledTasks = answerScheduledTaskCards(artifactPayloads, currentScheduledTasks);
 
   const knowledgeRuns = (run.knowledgeRuns ?? [])
     .filter((knowledgeRun) =>
@@ -1361,6 +1417,7 @@ export function summarizeMessageRunArtifacts(
     generatedImages.length === 0 &&
     generatedFiles.length === 0 &&
     generatedArtifacts.length === 0 &&
+    scheduledTasks.length === 0 &&
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
     knowledgeCitations.length === 0 &&
@@ -1391,6 +1448,7 @@ export function summarizeMessageRunArtifacts(
     ...(memorySources.length > 0 ? { memorySources: [...memorySources] } : {}),
     reasoningText: reasoningTexts,
     ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
+    ...(scheduledTasks.length > 0 ? { scheduledTasks } : {}),
     sources,
     ...(sourceList.truncated ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== null ? { workDurationMs } : {})
@@ -1897,7 +1955,8 @@ export function createPrismaChatRepository(
                 messages.memoryActionsByRun,
                 messages.memorySourcesByRun,
                 messages.memoryStatusesByRun,
-                userId
+                userId,
+                messages.scheduledTasks
               )),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,
@@ -2048,7 +2107,8 @@ export function createPrismaChatRepository(
                 messages.memoryActionsByRun,
                 messages.memorySourcesByRun,
                 messages.memoryStatusesByRun,
-                userId
+                userId,
+                messages.scheduledTasks
               )),
             pageInfo: {
               activeLeafMessageId: chat.activeLeafMessageId,

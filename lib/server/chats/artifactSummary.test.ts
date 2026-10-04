@@ -15,6 +15,7 @@ import {
 } from "../../contracts/chats";
 import { createReasoningFragmentBuffer } from "../../domain/answerReasoning";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
+import type { ScheduledTask } from "../../contracts/scheduledTasks";
 
 /** Provider events → durable rows → reload summary → browser decoder, beside the live summary. */
 function roundTrip(providerEvents: readonly ModelRunSseEvent[], storedRows: readonly unknown[] = []) {
@@ -962,5 +963,47 @@ describe("Workspace terminal proof projection", () => {
     expect(activity.outputStatus).toEqual({ state: "complete", revision: "2026-09-24T10:00:00.000Z" });
     expect(JSON.stringify(activity)).not.toContain("private-capture");
     expect(summarizeMessageRunWorkspaceActivity({ ...run, workspaceRunBinding: { ...run.workspaceRunBinding, outputCapture: null } })?.entries[0]?.phase).toBe("unknown");
+  });
+});
+
+describe("scheduled task cards", () => {
+  const card = {
+    taskId: "task-1", title: "Check mail", kind: "standard" as const,
+    schedule: { kind: "weekly" as const, time: "09:00", days: ["mon" as const, "tue" as const, "wed" as const, "thu" as const, "fri" as const] },
+    timeZone: "Europe/Moscow", timeZoneFallback: false, toolsEnabled: true, workspaceEnabled: false, status: "active" as const,
+    nextRunAt: "2026-10-05T06:00:00.000Z"
+  };
+  const created = { data: { artifactType: "scheduled_task" as const, payload: card }, type: "artifact" as const };
+  const task: ScheduledTask = {
+    ...card, id: "task-1", prompt: "Remind me to check my mail.", modelId: "deployment-1", provider: "connection-1",
+    searchEnabled: false, emailNotify: false, chatMode: "new", pauseReason: null, completionReason: null, lastRun: null,
+    running: false, chatId: null, unseenResult: false, revision: 2, createdAt: "2026-10-04T10:00:00.000Z",
+    updatedAt: "2026-10-04T11:00:00.000Z"
+  };
+
+  it("shows the created task live and after reload, once however often a recovered answer publishes it", () => {
+    const { decoded, live, reloaded } = roundTrip([created, created]);
+    expect(live?.scheduledTasks).toEqual([card]);
+    expect(reloaded?.scheduledTasks).toEqual([card]);
+    expect(decoded?.scheduledTasks).toEqual([card]);
+  });
+
+  it("keeps only an exact created card at the durable boundary", () => {
+    for (const payload of [{ ...card, deleted: true }, { ...card, prompt: "Private instructions" }, { ...card, nextRunAt: "soon" },
+      { ...card, status: "paused" }, { ...card, schedule: { kind: "daily", time: "25:00" } }]) {
+      expect(projectRunOutputArtifactEvent({ ...created, data: { ...created.data, payload } } as ModelRunSseEvent)).toBeNull();
+    }
+    expect(projectRunOutputArtifactEvent(created)).toEqual(created);
+  });
+
+  it("reads the owner's current task over the created card, and a gone task as deleted", () => {
+    const run = { events: [{ eventType: "artifact", payload: created.data }], searchRuns: [] };
+    const edited = new Map([["task-1", { ...task, title: "Inbox", status: "paused" as const, nextRunAt: null, workspaceEnabled: true }]]);
+    expect(summarizeMessageRunArtifacts(run, undefined, null, [], undefined, edited)?.scheduledTasks)
+      .toEqual([{ ...card, title: "Inbox", status: "paused", nextRunAt: null, workspaceEnabled: true }]);
+    expect(summarizeMessageRunArtifacts(run, undefined, null, [], undefined, new Map())?.scheduledTasks)
+      .toEqual([{ ...card, deleted: true }]);
+    // A run's own chat update has no current read: the task shows as created.
+    expect(summarizeMessageRunArtifacts(run)?.scheduledTasks).toEqual([card]);
   });
 });

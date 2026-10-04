@@ -338,6 +338,26 @@ export type ScheduledUnavailableSource = Readonly<{
   serverId: string;
 }>;
 
+/**
+ * Why a chat run's `create_scheduled_task` call created nothing: an owner
+ * create rule's code, `scheduled_task_answer_limit` when this answer already
+ * created its one task, `scheduled_task_already_created` when another answer
+ * to the same message did and the owner still has that task, or
+ * `scheduled_task_call_unavailable` when the call cannot create at all (a
+ * scheduled, settled or missing run, another answer to a scheduled task's own
+ * turn, or a call that is not this run's claimed creation).
+ */
+export type ScheduledTaskCallRefusal = import("../../contracts/scheduledTasks").ScheduledTaskErrorCode |
+  "scheduled_task_already_created" | "scheduled_task_answer_limit" | "scheduled_task_call_unavailable";
+
+export type ScheduledTaskCallCreation =
+  /** Created; the call settled with `result` in the creation's transaction. */
+  | Readonly<{ kind: "created"; result: import("../tools/types").ToolExecutionResult;
+    task: import("../../contracts/scheduledTasks").ScheduledTask }>
+  /** The call had settled before (a recovered replay): its stored result, null when unreadable. Nothing was created. */
+  | Readonly<{ kind: "settled"; result: import("../tools/types").ToolExecutionResult | null }>
+  | Readonly<{ kind: "refused"; code: ScheduledTaskCallRefusal }>;
+
 /** The occurrence is gone, already has its run, or its task changed since preparation; the admission rolled back. */
 export class ScheduledOccurrenceConflictError extends Error {
   constructor() {
@@ -881,6 +901,23 @@ export type RunRepository = {
     userId: string;
     verdict: import("../scheduledTasks/runnerPolicy").MonitoringVerdict;
   }>): Promise<boolean>;
+  /**
+   * Creates the scheduled task a run's `create_scheduled_task` call asked
+   * for, as the owner's own create (`body` is validated exactly as
+   * `POST /api/me/scheduled-tasks` validates it), and settles the call with
+   * `result(task)` and appends that result's output events in the same
+   * transaction. A recovered call therefore finds it settled or finds nothing
+   * created; the call must be running, and the run active, unscheduled and
+   * without another created task.
+   */
+  createScheduledTaskForCall?(input: Readonly<{
+    body: unknown;
+    /** The persisted `ModelRunToolCall` id. */
+    callId: string;
+    result(task: import("../../contracts/scheduledTasks").ScheduledTask): import("../tools/types").ToolExecutionResult;
+    runId: string;
+    userId: string;
+  }>): Promise<ScheduledTaskCallCreation>;
   /** The authorized record `read_tool_call` returns, or null when unavailable. */
   readToolCall?(
     actor: Readonly<{ runId: string; userId: string }>,

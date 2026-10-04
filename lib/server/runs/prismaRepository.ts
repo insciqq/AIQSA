@@ -86,6 +86,9 @@ import {
 import { createPrismaMcpDiscoveryOperations } from "./prismaRepositoryMcpDiscovery";
 import { createPrismaToolHistoryOperations } from "./prismaRepositoryToolHistory";
 import { recordScheduledMonitoringVerdict } from "../scheduledTasks/monitoringVerdict";
+import { createPrismaScheduledTaskCatalogLoader } from "../scheduledTasks/catalog";
+import { createPrismaWorkspacePolicyRepository } from "../workspace/policyRepository";
+import { createScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskCall";
 import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
 import {
   decodeProjectDefaults,
@@ -200,6 +203,11 @@ export function createPrismaRunRepository(
   );
   const mcpDiscoveryOperations = createPrismaMcpDiscoveryOperations(prismaClient);
   const toolHistoryOperations = createPrismaToolHistoryOperations(prismaClient);
+  // A chat's scheduled task is created under the owner API's own rules.
+  const scheduledTaskCreationDeps = {
+    loadCatalog: createPrismaScheduledTaskCatalogLoader(prismaClient),
+    workspacePolicy: createPrismaWorkspacePolicyRepository(prismaClient)
+  };
   async function loadMemoryAdmissionDeadlineMs(request?: { memoryStandingVersion?: 1 }): Promise<number> {
     if (request?.memoryStandingVersion === 1) return MEMORY_STANDING_PREPARATION_TIMEOUT_MS;
     if (options.memoryAdmissionDeadlineMs !== undefined) {
@@ -464,6 +472,8 @@ export function createPrismaRunRepository(
     }).catch(retainRunPrismaCode)),
     recordMonitoringVerdict: (input) =>
       recordScheduledMonitoringVerdict(prismaClient, input).catch(retainRunPrismaCode),
+    createScheduledTaskForCall: (input) => createScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
+      .catch(retainRunPrismaCode),
     recoverPreparingRun: (input) =>
       recoverPreparingRunWithClient(prismaClient, input, memorySourceHooks).catch(retainRunPrismaCode),
     retryPreparingRunAttempt: (input) =>

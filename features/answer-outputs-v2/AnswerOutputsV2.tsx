@@ -57,6 +57,7 @@ import {
   type ReactNode
 } from "react";
 import { GeminiSearchSuggestionsV2 } from "./GeminiSearchSuggestionsV2";
+import { ScheduledTaskCardsV2 } from "./ScheduledTaskCardV2";
 import { presentSearchSourcesV2 } from "./sourcePresentation";
 
 function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
@@ -527,24 +528,30 @@ export function AnswerOutputsV2({
   canSaveFiles = false,
   live = false,
   onEditArtifact,
+  onEditScheduledTask,
   onOpenArtifact,
   onUseImageInArtifact,
   workspaceOutputStatus = null
 }: Readonly<{
   artifact: ThreadArtifactSummary | null;
   canSaveFiles?: boolean;
-  /** While running, show only already-settled draft downloads. */
+  /** While running, show only already-settled draft downloads and created scheduled tasks. */
   live?: boolean;
   onEditArtifact?(artifact: ThreadGeneratedArtifact): void | Promise<void>;
+  /** Opens a scheduled task the answer created in its editor. */
+  onEditScheduledTask?(taskId: string): void | Promise<void>;
   onOpenArtifact?(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
   onUseImageInArtifact?(attachmentId: string): void | Promise<void>;
   /** Export state of the run's Workspace outputs; shown above the generated files. */
   workspaceOutputStatus?: ThreadWorkspaceOutputStatus | null;
 }>) {
+  const scheduledTasks = artifact?.scheduledTasks ?? [];
   if (live) {
+    // A created task already exists: its card does not wait for the answer.
     const drafts = artifact?.generatedFiles?.filter(file => file.checkpoint) ?? [];
-    return drafts.length ? <div className="v2-answer-outputs" data-testid="answer-outputs">
-      <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} />
+    return drafts.length || scheduledTasks.length ? <div className="v2-answer-outputs" data-testid="answer-outputs">
+      {drafts.length ? <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} /> : null}
+      <ScheduledTaskCardsV2 cards={scheduledTasks} onEdit={onEditScheduledTask} />
     </div> : null;
   }
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
@@ -561,7 +568,8 @@ export function AnswerOutputsV2({
   );
 
   if ((!artifact || (
-    !hasSuggestions && !hasKnowledgeState && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts
+    !hasSuggestions && !hasKnowledgeState && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts &&
+    scheduledTasks.length === 0
   )) && !outputStatusCopy) {
     return null;
   }
@@ -581,6 +589,7 @@ export function AnswerOutputsV2({
       ) : null}
       {artifact?.generatedImages?.map((image) => <ChatImageV2 key={image.attachmentId} attachmentId={image.attachmentId} label="Generated image" width={image.width} height={image.height} canSave={canSaveFiles} onUseInArtifact={onUseImageInArtifact ? () => onUseImageInArtifact(image.attachmentId) : undefined} />)}
       {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} onOpenArtifact={onOpenArtifact} /> : null}
+      <ScheduledTaskCardsV2 cards={scheduledTasks} onEdit={onEditScheduledTask} />
       {hasGeneratedFiles ? (
         <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} />
       ) : null}
