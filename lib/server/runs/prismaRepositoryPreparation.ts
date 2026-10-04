@@ -688,20 +688,23 @@ type TemporaryPreparingRunAdmissionInput = Readonly<{
   memoryRevision: number;
   normalizedRequest: PreparingRunAdmissionInput["normalizedRequest"];
   runId: string;
+  /** A scheduled task's run, whatever its chat's Memory mode. */
+  scheduled?: true;
   settingsSnapshot: MemoryPreparingSettingsSnapshot;
   userMessageId: string;
 }>;
 
 /**
- * Temporary Chat and Agent turns bypass Personal Memory preparation entirely.
- * The ordinary run is made dispatchable in the admission transaction, while
- * no Memory attempt/binding receives the content-bearing base request.
+ * Temporary Chat, Agent and scheduled task turns bypass Personal Memory
+ * preparation entirely. The ordinary run is made dispatchable in the admission
+ * transaction, while no Memory attempt/binding receives the content-bearing
+ * base request.
  */
 export async function finalizeTemporaryPreparingRunAdmission(
   tx: Pick<Prisma.TransactionClient, "modelRun">,
   input: TemporaryPreparingRunAdmissionInput
 ): Promise<PreparingRunAdmissionResult | null> {
-  if (input.chatMemoryMode !== "TEMPORARY" && !input.normalizedRequest.agent) return null;
+  if (input.chatMemoryMode !== "TEMPORARY" && !input.normalizedRequest.agent && !input.scheduled) return null;
   await tx.modelRun.update({
     data: {
       normalizedRequest: json(input.normalizedRequest),
@@ -1248,7 +1251,7 @@ async function enqueuePreparingMemoryCommand(
     userMessageId: string;
   }>
 ): Promise<boolean> {
-  if (input.admissionKind !== "NORMAL_SEND" || input.project ||
+  if (input.admissionKind !== "NORMAL_SEND" || input.project || input.scheduledOccurrence ||
     input.normalizedRequest.agent || source.chatMemoryMode !== "NORMAL" ||
     !settings.useMemoryFacts ||
     admitMemoryAction(textFromContentBlocks(input.content)).state !== "SEMANTIC_CANDIDATE") {
@@ -1651,13 +1654,20 @@ export async function admitPreparingRunWithClient(
         });
       }
 
+      // A scheduled task's run never uses Personal Memory, whatever its chat's mode.
+      const scheduledOccurrence = input.admissionKind === "NORMAL_SEND" ? input.scheduledOccurrence : undefined;
       const settings = lockedChat.memoryMode === "TEMPORARY" || input.normalizedRequest.agent ||
-          options.memoryUnavailableFallback
+          scheduledOccurrence || options.memoryUnavailableFallback
         ? TEMPORARY_PREPARING_SETTINGS
         : await loadPreparingSettings(tx, input.userId, true);
 
       const run = await tx.modelRun.create({
         data: {
+          ...(scheduledOccurrence ? {
+            scheduledOccurrenceId: scheduledOccurrence.occurrenceId,
+            scheduledTaskGeneration: scheduledOccurrence.taskGeneration,
+            scheduledTaskId: scheduledOccurrence.taskId
+          } : {}),
           ...admittedFollowupFields(input),
           assistantMessageId,
           ...(input.assistant
@@ -1676,10 +1686,10 @@ export async function admitPreparingRunWithClient(
           userMessageId
         }
       });
-      const scheduledOccurrence = input.admissionKind === "NORMAL_SEND" ? input.scheduledOccurrence : undefined;
       if (scheduledOccurrence) {
-        await linkScheduledTaskOccurrence(tx, { ...scheduledOccurrence, chatId: input.chatId, now: admissionNow,
-          runId: run.id, userId: input.userId, userMessageId });
+        await linkScheduledTaskOccurrence(tx, { chatId: input.chatId, now: admissionNow,
+          occurrenceId: scheduledOccurrence.occurrenceId, runId: run.id, taskGeneration: scheduledOccurrence.taskGeneration,
+          taskId: scheduledOccurrence.taskId, taskRevision: scheduledOccurrence.taskRevision, userId: input.userId, userMessageId });
       }
       await insertAdmittedRunFollowups(tx, input, run.id);
       await insertAcceptedWorkspaceRunBinding(tx, input, {
@@ -1745,6 +1755,7 @@ export async function admitPreparingRunWithClient(
         memoryRevision: settings.memoryRevision,
         normalizedRequest: input.normalizedRequest,
         runId: run.id,
+        ...(scheduledOccurrence ? { scheduled: true as const } : {}),
         settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
         userMessageId
       });
@@ -4073,10 +4084,13 @@ export async function createDormantPreparingRun(
       preparation: fallback.deferredPdf ? "pdf" : "ready" });
     return fallback;
   }
+  // Temporary, Agent and scheduled task turns were made dispatchable without Personal Memory.
+  const withoutMemory = created.chatMemoryMode === "TEMPORARY" || Boolean(admission.normalizedRequest.agent) ||
+    (admission.admissionKind === "NORMAL_SEND" && admission.scheduledOccurrence !== undefined);
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
-    preparation: created.deferredPdf ? "pdf" : created.chatMemoryMode === "TEMPORARY" || admission.normalizedRequest.agent ? "ready" : "memory" });
-  if (created.deferredPdf || created.deferredWorkspace || created.chatMemoryMode === "TEMPORARY" || admission.normalizedRequest.agent) return created;
+    preparation: created.deferredPdf ? "pdf" : withoutMemory ? "ready" : "memory" });
+  if (created.deferredPdf || created.deferredWorkspace || withoutMemory) return created;
   // Durable acceptance transfers cancellation from the HTTP request to the
   // run owner. Stop still aborts this controller; recovery sees an active owner
   // until Memory settlement. PDF preparation already owns its own registration.

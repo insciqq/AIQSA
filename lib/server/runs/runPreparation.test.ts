@@ -5603,3 +5603,74 @@ describe("cross-turn tool history admission", () => {
     expect(prepared.providerRequest.tools?.some((tool) => tool.name === "read_tool_call") ?? false).toBe(false);
   });
 });
+
+describe("scheduled task sends", () => {
+  const say = (id: string, role: "assistant" | "user", text: string): ProviderConversationMessage =>
+    ({ content: textMessageContent(text), id, role });
+  // The task chat's active branch: the owner's own turns around the task's previous result.
+  const path = [say("owner-user", "user", "Owner question"), say("owner-answer", "assistant", "Owner answer"),
+    say("result-user", "user", "Task prompt"), say("result-answer", "assistant", "Task result"),
+    say("later-user", "user", "Owner follow-up"), say("prior-user-message", "assistant", "Owner follow-up answer")];
+  const history = { version: 1 as const, omittedCalls: 4, turns: [
+    { callRefs: [`tcr1_${"a".repeat(32)}`], digest: "a".repeat(64), turnMessageId: "owner-answer", userMessageId: "owner-user" },
+    { callRefs: [`tcr1_${"b".repeat(32)}`], digest: "b".repeat(64), turnMessageId: "result-answer", userMessageId: "result-user" }
+  ] };
+  const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
+
+  function scheduledInput(previousResult: Readonly<{ assistantMessageId: string; userMessageId: string }> | null,
+    chatOverrides: Partial<SendRunPreparationSource["chat"]> = {}): RunPreparationInput {
+    const input = sendInput(toolBody, chatOverrides);
+    if (input.source.kind !== "send") throw new Error("invalid send fixture");
+    return { ...input, source: { ...input.source,
+      scheduledOccurrence: { occurrenceId: "occurrence-1", previousResult, taskGeneration: 1, taskId: "task-1", taskRevision: 1 } } };
+  }
+
+  function scheduledDeps() {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true }, sendContext: path });
+    const loadToolHistory = vi.fn(async () => history);
+    const loadBranchContextCheckpoints = vi.fn(async () => ({ ancestorMessageIds: path.map((message) => message.id), checkpoints: [] }));
+    const contextForChat = vi.fn(async () => []);
+    const deps: RunPreparationDeps = { ...harness.deps, artifacts: { contextForChat } as never,
+      repository: { ...harness.deps.repository, loadBranchContextCheckpoints, loadToolHistory } };
+    return { contextForChat, deps, loadBranchContextCheckpoints, loadToolHistory };
+  }
+
+  it("selects the previous result alone and keeps branch notes, other turns' tool history and chat artifacts out", async () => {
+    const f = scheduledDeps();
+    const prepared = preparedFrom(await prepareRun(f.deps, scheduledInput({ assistantMessageId: "result-answer", userMessageId: "result-user" })));
+    expect(prepared.normalizedRequest.context!.messages.map((message) => message.id))
+      .toEqual(["result-user", "result-answer", "current-user-message"]);
+    // The tool history follows the selection: only the result's own turn, nothing counted from other turns.
+    expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [history.turns[1]] });
+    expect(prepared.normalizedRequest.contextCompactionPolicy).toMatchObject({ mode: "hybrid", source: { leafMessageId: null } });
+    expect(f.loadBranchContextCheckpoints).not.toHaveBeenCalled();
+    expect(f.contextForChat).not.toHaveBeenCalled();
+
+    // The owner's own message in the same chat keeps all of them.
+    const ordinary = preparedFrom(await prepareRun(f.deps, sendInput(toolBody)));
+    expect(ordinary.normalizedRequest.context!.messages).toHaveLength(path.length + 1);
+    expect(ordinary.normalizedRequest.toolHistory).toEqual(history);
+    expect(f.loadBranchContextCheckpoints).toHaveBeenCalledOnce();
+    expect(f.contextForChat).toHaveBeenCalledOnce();
+  });
+
+  it("reads no tool history when the run's context holds no earlier result", async () => {
+    const f = scheduledDeps();
+    for (const previousResult of [null, { assistantMessageId: "gone-answer", userMessageId: "result-user" }]) {
+      const prepared = preparedFrom(await prepareRun(f.deps, scheduledInput(previousResult)));
+      expect(prepared.normalizedRequest.context!.messages.map((message) => message.id)).toEqual(["current-user-message"]);
+      expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [] });
+    }
+    expect(f.loadToolHistory).not.toHaveBeenCalled();
+  });
+
+  it("admits no standing Memory or Memory search, even in a chat the owner switched to Memory", async () => {
+    const f = scheduledDeps();
+    const admit = vi.fn(async () => null);
+    const prepared = preparedFrom(await prepareRun({ ...f.deps, memorySearchAdmission: { admit } },
+      scheduledInput(null, { memoryMode: "NORMAL" })));
+    expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
+    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+    expect(admit).not.toHaveBeenCalled();
+  });
+});

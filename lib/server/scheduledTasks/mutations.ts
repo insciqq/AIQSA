@@ -1,5 +1,6 @@
 import {
   SCHEDULED_TASK_ONCE_MIN_LEAD_MS,
+  scheduledTaskChatModeAllowed,
   type ScheduledTask,
   type ScheduledTaskDraft,
   type ScheduledTaskSchedule,
@@ -10,7 +11,7 @@ import { nextOccurrenceAfter, sameScheduledTaskSchedule } from "../../domain/sch
 
 export type ScheduledTaskPlanFailure = {
   ok: false;
-  code: "scheduled_task_once_in_past" | "scheduled_task_schedule_invalid";
+  code: "scheduled_task_once_in_past" | "scheduled_task_schedule_invalid" | "scheduled_task_chat_mode_invalid";
 };
 export type ScheduledTaskUpdatePlan = {
   ok: true;
@@ -44,7 +45,8 @@ export function firstScheduledTaskRunAt(
  * the next occurrence from now; an unchanged active schedule keeps its due time
  * so that an edit never skips a run that is already due. A changed once
  * schedule must lie ahead in any status. The model is readmitted whenever the
- * result is active or its identity or Search changed.
+ * result is active or its identity or Search changed. An hourly result must
+ * continue in one chat; the chat mode is never changed silently.
  */
 export function planScheduledTaskUpdate(
   current: ScheduledTask,
@@ -59,8 +61,10 @@ export function planScheduledTaskUpdate(
     modelId: patch.modelId ?? current.modelId,
     provider: patch.provider ?? current.provider,
     searchEnabled: patch.searchEnabled ?? current.searchEnabled,
-    emailNotify: patch.emailNotify ?? current.emailNotify
+    emailNotify: patch.emailNotify ?? current.emailNotify,
+    chatMode: patch.chatMode ?? current.chatMode
   };
+  if (!scheduledTaskChatModeAllowed(draft.schedule, draft.chatMode)) return { ok: false, code: "scheduled_task_chat_mode_invalid" };
   const scheduleChanged = draft.timeZone !== current.timeZone || !sameScheduledTaskSchedule(draft.schedule, current.schedule);
   const modelChanged = draft.modelId !== current.modelId || draft.provider !== current.provider ||
     draft.searchEnabled !== current.searchEnabled;

@@ -15,7 +15,8 @@ export const SCHEDULED_TASK_ADMISSION_LEASE_MS = 5 * 60 * 1000;
 export const SCHEDULED_TASK_FAILURE_PAUSE_THRESHOLD = 3;
 /** Newest occurrences kept per task. */
 export const SCHEDULED_TASK_OCCURRENCE_RETENTION = 50;
-export const SCHEDULED_TASK_MAX_EXECUTING = 3;
+/** Scheduled runs executing installation-wide and per owner; a run counts until it is terminal. */
+export const SCHEDULED_TASK_MAX_EXECUTING = 5;
 export const SCHEDULED_TASK_MAX_EXECUTING_PER_USER = 1;
 
 export type ScheduledTaskStatusColumn = "ACTIVE" | "PAUSED" | "COMPLETED";
@@ -43,20 +44,21 @@ const CODE = /^[a-z][a-z0-9_]{0,63}$/u;
 
 function latestInstantIn(schedule: ScheduledTaskSchedule, timeZone: string, after: Date, until: Date): Date | null {
   let latest: Date | null = null;
-  // A schedule yields at most one instant per local day, so this ends at once.
+  // The window is the lateness bound: at most 13 hourly instants, one for the other kinds.
   for (let next = nextOccurrenceAfter(schedule, timeZone, after), steps = 0;
-    next && next.getTime() <= until.getTime() && steps < 32;
+    next && next.getTime() <= until.getTime() && steps < 64;
     next = nextOccurrenceAfter(schedule, timeZone, next), steps += 1) latest = next;
   return latest;
 }
 
 /**
- * The occurrences a due task records at `now` and its next state. A due
- * instant within the lateness window runs once; an older one is recorded as
- * missed, and the newest instant of the window, if any, runs instead, so a
- * backlog collapses to one run. The next instant is taken strictly after
- * `now`; a once task completes. A schedule that can no longer be computed (an
- * unknown zone) pauses the task after recording the due instant.
+ * The occurrences a due task records at `now` and its next state. Only the
+ * newest due instant within the lateness window runs; when older instants
+ * were due too, the oldest one is recorded as missed for the whole backlog
+ * (quietly), and when no instant lies within the window only that missed
+ * record remains. The next instant is taken strictly after `now`; a once task
+ * completes. A schedule that can no longer be computed (an unknown zone)
+ * pauses the task after recording the due instant.
  */
 export function planScheduledTaskClaim(
   task: Readonly<{ schedule: ScheduledTaskSchedule; timeZone: string; nextRunAt: Date }>,
@@ -67,11 +69,12 @@ export function planScheduledTaskClaim(
   const dueMissed = due.getTime() < windowStart.getTime();
   const once = task.schedule.kind === "once";
   try {
-    const recent = dueMissed ? latestInstantIn(task.schedule, task.timeZone, windowStart, now) : null;
-    const occurrences = [
-      { missed: dueMissed, scheduledFor: due },
-      ...(recent && recent.getTime() > due.getTime() ? [{ missed: false, scheduledFor: recent }] : [])
-    ];
+    const newest = once ? null
+      : latestInstantIn(task.schedule, task.timeZone, new Date(Math.max(due.getTime(), windowStart.getTime()) - 1), now);
+    const runAt = newest && newest.getTime() > due.getTime() ? newest : dueMissed ? null : due;
+    const occurrences = runAt === null ? [{ missed: true, scheduledFor: due }]
+      : runAt === due ? [{ missed: false, scheduledFor: due }]
+        : [{ missed: true, scheduledFor: due }, { missed: false, scheduledFor: runAt }];
     if (once) return { nextRunAt: null, occurrences, pauseReason: null, status: "COMPLETED" };
     const nextRunAt = nextOccurrenceAfter(task.schedule, task.timeZone, now);
     return nextRunAt
@@ -116,11 +119,73 @@ export function planTaskSettlement(input: Readonly<{
 }
 
 /**
- * Whether a settlement is news for the owner: an unread marker and a result
- * email. A scheduled instant skipped because the owner paused the task is not.
+ * Whether a settlement is news for the owner: an unread result and a result
+ * email (later a push). Only a shown result (every completed run until
+ * monitoring outcomes exist) and a failure that paused the task are; routine
+ * skips (missed, previous_running, superseded, chat_busy, paused) and other
+ * failures stay in the run history only.
  */
-export function settlementNotifiesOwner(outcome: Readonly<{ state: ScheduledTaskSettledState; reasonCode: string | null }>): boolean {
-  return !(outcome.state === "SKIPPED" && outcome.reasonCode === "paused");
+export function settlementNotifiesOwner(outcome: Readonly<{ state: ScheduledTaskSettledState; taskPaused: boolean }>): boolean {
+  return outcome.state === "COMPLETED" || (outcome.state === "FAILED" && outcome.taskPaused);
+}
+
+/** What the next same-chat run sees besides the prompt. */
+export type ScheduledTaskBaseline = Readonly<{
+  assistantMessageId: string;
+  generation: number;
+  runId: string;
+  userMessageId: string;
+}>;
+
+/**
+ * The baseline a settlement leaves: a completed (shown) result accepted under
+ * the task's current generation; anything else, including a result of an
+ * older generation, keeps the stored one.
+ */
+export function settlementBaseline(input: Readonly<{
+  assistantMessageId: string | null;
+  occurrence: Readonly<{ runId: string | null; taskGeneration: number | null; userMessageId: string | null }>;
+  outcome: Readonly<{ state: ScheduledTaskSettledState }>;
+  taskGeneration: number;
+}>): ScheduledTaskBaseline | null {
+  const { occurrence } = input;
+  return input.outcome.state === "COMPLETED" && occurrence.taskGeneration === input.taskGeneration &&
+    occurrence.runId !== null && occurrence.userMessageId !== null && input.assistantMessageId !== null
+    ? { assistantMessageId: input.assistantMessageId, generation: input.taskGeneration, runId: occurrence.runId,
+      userMessageId: occurrence.userMessageId }
+    : null;
+}
+
+/** An open (pending or running) occurrence of a task whose next instant is being claimed. */
+export type ScheduledTaskOpenOccurrence = Readonly<{
+  id: string;
+  leaseExpiresAt: Date | null;
+  reasonCode: string | null;
+  runId: string | null;
+  state: string;
+}>;
+
+/**
+ * How a newly due instant meets its task's open occurrences. A pending one
+ * that holds no run and no live admission lease is fresh no longer: it ends
+ * skipped (`chat_busy` after busy retries, else `superseded`) and the new
+ * instant takes its place. Any other open occurrence of a recurring task is a
+ * run still in progress, and the new instant is skipped `previous_running`
+ * instead of queuing. A once task's only instant always queues.
+ */
+export function planClaimOverlap(input: Readonly<{
+  now: Date;
+  open: readonly ScheduledTaskOpenOccurrence[];
+  recurring: boolean;
+}>): Readonly<{ previousRunning: boolean; superseded: readonly Readonly<{ id: string; reasonCode: "chat_busy" | "superseded" }>[] }> {
+  const waiting = (occurrence: ScheduledTaskOpenOccurrence) => occurrence.state === "PENDING" && occurrence.runId === null &&
+    (occurrence.leaseExpiresAt === null || occurrence.leaseExpiresAt.getTime() <= input.now.getTime());
+  return {
+    previousRunning: input.recurring && input.open.some((occurrence) => !waiting(occurrence)),
+    superseded: input.open.filter(waiting).map((occurrence) => ({
+      id: occurrence.id, reasonCode: occurrence.reasonCode === "chat_busy" ? "chat_busy" as const : "superseded" as const
+    }))
+  };
 }
 
 /** A pending occurrence that may no longer be admitted, or null. */

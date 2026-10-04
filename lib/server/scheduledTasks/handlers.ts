@@ -1,4 +1,4 @@
-import type { ScheduledTaskDraft, ScheduledTaskErrorCode } from "../../contracts/scheduledTasks";
+import { decodeScheduledTaskSeenRequest, type ScheduledTaskDraft, type ScheduledTaskErrorCode } from "../../contracts/scheduledTasks";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import { logEvent } from "../observability";
@@ -23,9 +23,11 @@ const STATUS: Record<ScheduledTaskErrorCode, number> = {
   scheduled_task_schedule_invalid: 400,
   scheduled_task_time_zone_invalid: 400,
   scheduled_task_once_in_past: 400,
+  scheduled_task_chat_mode_invalid: 400,
   scheduled_task_model_unavailable: 400,
   scheduled_task_search_unavailable: 400,
   scheduled_task_limit: 409,
+  scheduled_task_hourly_limit: 409,
   scheduled_task_stale: 409,
   scheduled_task_not_found: 404,
   scheduled_task_running: 409,
@@ -119,7 +121,16 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
     remove: (request: Request, taskId: string) => handle(request, "write", taskId, async (userId) =>
       await deps.store.delete(userId, taskId) ? new Response(null, { status: 204, headers }) : failure("scheduled_task_not_found")),
 
-    markSeen: (request: Request, taskId: string) => handle(request, "write", taskId, async (userId) =>
-      await deps.store.markSeen(userId, taskId) ? new Response(null, { status: 204, headers }) : failure("scheduled_task_not_found"))
+    /** Marks the results the viewer rendered seen, by run id; nothing else becomes seen. */
+    markSeen: (request: Request, taskId: string) => handle(request, "write", taskId, async (userId) => {
+      const raw = await readJsonBodyOrNull(request);
+      const bodyError = requestBodyErrorResponse(raw);
+      if (bodyError) return bodyError;
+      const decoded = decodeScheduledTaskSeenRequest(raw);
+      if (!decoded) return failure("scheduled_task_invalid");
+      return await deps.store.markSeen(userId, taskId, decoded.runIds)
+        ? new Response(null, { status: 204, headers })
+        : failure("scheduled_task_not_found");
+    })
   };
 }

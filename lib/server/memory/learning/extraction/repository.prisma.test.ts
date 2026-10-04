@@ -1716,6 +1716,38 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
+  it("enqueues no fact extraction from a scheduled task's turn, whatever the chat's mode", async () => {
+    const userId = await createOwner("scheduled-turn");
+    try {
+      // The owner switched the task's chat to Memory: an ordinary NORMAL chat.
+      const chat = await prisma.chat.create({ data: { title: "Scheduled task chat", userId } });
+      const scheduled = await createTurn({
+        assistantText: "Here is today's brief.", chatId: chat.id, createdAt: new Date("2026-10-05T06:00:00.000Z"),
+        parentMessageId: null, userId, userText: "I live in Lisbon. Summarize the news."
+      });
+      // The run's scheduled origin: plain values that outlive its task.
+      await prisma.modelRun.update({
+        data: { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1, scheduledTaskId: randomUUID() },
+        where: { id: scheduled.run.id }
+      });
+      await settleChat(userId, chat.id, scheduled);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "EXTRACT_FACTS", sourceMessageId: scheduled.userMessage.id, userId }
+      })).resolves.toBe(0);
+      // The owner's own next turn in the same chat is still learned from.
+      const own = await createTurn({
+        assistantText: "Noted.", chatId: chat.id, createdAt: new Date("2026-10-05T07:00:00.000Z"),
+        parentMessageId: scheduled.assistantMessage.id, userId, userText: "I prefer quiet rooms."
+      });
+      await settleChat(userId, chat.id, own);
+      await expect(prisma.memoryJob.count({
+        where: { kind: "EXTRACT_FACTS", sourceMessageId: own.userMessage.id, userId }
+      })).resolves.toBe(1);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("finds an old proposition beyond fifty recent facts and preserves frozen owner refs", async () => {
     const userId = await createOwner("context-relevance");
     const foreign = await createOwner("context-relevance-foreign");

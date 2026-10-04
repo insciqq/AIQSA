@@ -286,10 +286,31 @@ export class SkillRunConflictError extends Error {
   }
 }
 
-/** The scheduled task occurrence a send admits; a server dependency, never a request field. */
-export type ScheduledOccurrenceAdmission = Readonly<{ occurrenceId: string; taskId: string }>;
+/**
+ * The scheduled task occurrence a send admits; a server dependency, never a
+ * request field. The accepted run persists the task, occurrence and generation
+ * as its scheduled origin. Memory never applies to such a run.
+ */
+export type ScheduledOccurrenceAdmission = Readonly<{
+  occurrenceId: string;
+  taskId: string;
+  /** Frozen on the accepted occurrence and run. */
+  taskGeneration: number;
+  /**
+   * The task revision read before preparation: an owner edit or pause since
+   * then refuses the link, so the occurrence is admitted again under the
+   * current task.
+   */
+  taskRevision: number;
+  /**
+   * The only earlier turn the run's context keeps besides its prompt: the
+   * task's previous shown result (same-chat mode), used only while both
+   * messages lie on the path the run appends to. Null: the prompt alone.
+   */
+  previousResult: Readonly<{ assistantMessageId: string; userMessageId: string }> | null;
+}>;
 
-/** The occurrence is gone or already has its run; the admission rolled back. */
+/** The occurrence is gone, already has its run, or its task changed since preparation; the admission rolled back. */
 export class ScheduledOccurrenceConflictError extends Error {
   constructor() {
     super("scheduled_task_occurrence_unavailable");
@@ -414,8 +435,9 @@ export type CreateRunInput = {
    * the same transaction, so a rejected admission cannot leave an empty chat. */
   projectChat?: Readonly<{ folderId: string | null }>;
   /** A scheduled task's personal send: the run links this occurrence in its
-   * creating transaction or is not created, and the owner's saved composer
-   * controls stay unchanged. */
+   * creating transaction or is not created, records its scheduled origin,
+   * bypasses Personal Memory, and leaves the owner's saved composer controls
+   * unchanged. */
   scheduledOccurrence?: ScheduledOccurrenceAdmission;
   signal?: AbortSignal;
   userId: string;

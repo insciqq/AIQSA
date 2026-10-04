@@ -1,42 +1,49 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ScheduledTaskRunTrigger, ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
+import type { ScheduledTaskChatMode, ScheduledTaskRunTrigger, ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import type { SmtpProductMessage } from "../email/definitions";
+import type { ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
 import type { ScheduledTaskSend } from "./admission";
 import type { ScheduledTaskRunCatalog } from "./catalog";
 import { createScheduledTaskRunner } from "./runner";
 import {
   expiredPendingOutcome,
   linkedRunOutcome,
+  planClaimOverlap,
   planScheduledTaskClaim,
   planTaskSettlement,
+  settlementBaseline,
   settlementNotifiesOwner,
+  type ScheduledTaskBaseline,
   type ScheduledTaskOutcome,
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
 import type { ScheduledTaskRunnerStore, ScheduledTaskSettlement } from "./runnerStore";
 
 type Task = {
-  chatId: string | null; consecutiveFailures: number; emailNotify: boolean; id: string; modelId: string; nextRunAt: Date | null;
-  pauseReason: string | null; prompt: string; provider: string; revision: number; schedule: ScheduledTaskSchedule;
-  searchEnabled: boolean; status: ScheduledTaskStatusColumn; timeZone: string; title: string; unseenResultAt: Date | null; userId: string;
+  baseline: ScheduledTaskBaseline | null; chatId: string | null; chatMode: ScheduledTaskChatMode; consecutiveFailures: number;
+  emailNotify: boolean; generation: number; id: string; modelId: string; nextRunAt: Date | null; pauseReason: string | null;
+  prompt: string; provider: string; revision: number; schedule: ScheduledTaskSchedule; searchEnabled: boolean;
+  status: ScheduledTaskStatusColumn; timeZone: string; title: string; userId: string;
 };
 type Occurrence = {
   chatId: string | null; createdAt: number; finishedAt: Date | null; id: string; leaseExpiresAt: Date | null; notifiedAt: Date | null;
-  reasonCode: string | null; runId: string | null; scheduledFor: Date; startedAt: Date | null; state: string; taskId: string;
-  trigger: ScheduledTaskRunTrigger; userId: string;
+  reasonCode: string | null; runId: string | null; scheduledFor: Date; startedAt: Date | null; state: string; taskGeneration: number | null;
+  taskId: string; trigger: ScheduledTaskRunTrigger; unseenAt: Date | null; userId: string; userMessageId: string | null;
 };
+type Run = { assistantMessageId: string; errorPayload: unknown; status: string; userId: string };
 
 function harness() {
   let clock = new Date("2026-10-05T06:00:05.000Z");
   let ids = 0;
   const tasks = new Map<string, Task>();
   const occurrences: Occurrence[] = [];
-  const runs = new Map<string, { errorPayload: unknown; status: string }>();
+  /** Accepted scheduled runs; each carries its scheduled origin, so it outlives its task. */
+  const runs = new Map<string, Run>();
   const chats = new Map<string, { activeLeafMessageId: string | null; usable: boolean; userId: string }>();
   const inactiveUsers = new Set<string>();
   const emails: SmtpProductMessage[] = [];
   const renamed: Array<{ chatId: string; title: string }> = [];
-  const sent: Array<{ body: Record<string, unknown>; chatId: string }> = [];
+  const sent: Array<{ body: Record<string, unknown>; chatId: string; occurrence: ScheduledOccurrenceAdmission }> = [];
   const catalog: ScheduledTaskRunCatalog = {
     models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
       openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
@@ -52,17 +59,23 @@ function harness() {
 
   function settle(occurrence: Occurrence, outcome: ScheduledTaskOutcome, observedRevision?: number): ScheduledTaskSettlement {
     const task = tasks.get(occurrence.taskId)!;
-    Object.assign(occurrence, { finishedAt: clock, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state });
     const plan = planTaskSettlement({ observedRevision, outcome, task, trigger: occurrence.trigger });
-    Object.assign(task, { consecutiveFailures: plan.consecutiveFailures },
-      settlementNotifiesOwner(outcome) ? { unseenResultAt: clock } : {},
-      plan.pauseReason ? { nextRunAt: null, pauseReason: plan.pauseReason, revision: task.revision + 1, status: "PAUSED" } : {});
-    return { occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, state: outcome.state,
-      taskPaused: plan.pauseReason !== null };
+    const taskPaused = plan.pauseReason !== null;
+    Object.assign(occurrence, { finishedAt: clock, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state,
+      unseenAt: settlementNotifiesOwner({ state: outcome.state, taskPaused }) ? clock : null });
+    const baseline = settlementBaseline({ assistantMessageId: occurrence.runId ? runs.get(occurrence.runId)?.assistantMessageId ?? null : null,
+      occurrence, outcome, taskGeneration: task.generation });
+    Object.assign(task, { consecutiveFailures: plan.consecutiveFailures }, baseline ? { baseline } : {},
+      taskPaused ? { nextRunAt: null, pauseReason: plan.pauseReason, revision: task.revision + 1, status: "PAUSED" } : {});
+    return { occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, state: outcome.state, taskPaused };
   }
   const find = (id: string) => occurrences.find((occurrence) => occurrence.id === id && tasks.has(occurrence.taskId));
-  const open = (occurrence: Occurrence) => occurrence.state === "RUNNING" ||
-    (occurrence.state === "PENDING" && occurrence.leaseExpiresAt !== null && occurrence.leaseExpiresAt > clock);
+  const leased = (occurrence: Occurrence) =>
+    occurrence.state === "PENDING" && occurrence.runId === null && occurrence.leaseExpiresAt !== null && occurrence.leaseExpiresAt > clock;
+  const quietSkip = (occurrence: Occurrence, reasonCode: string): ScheduledTaskSettlement => {
+    Object.assign(occurrence, { finishedAt: clock, leaseExpiresAt: null, reasonCode, state: "SKIPPED" });
+    return { occurrenceId: occurrence.id, reasonCode, runId: null, state: "SKIPPED", taskPaused: false };
+  };
 
   const store: ScheduledTaskRunnerStore = {
     async claimDue(now) {
@@ -70,19 +83,22 @@ function harness() {
       const settlements: ScheduledTaskSettlement[] = [];
       for (const task of due) {
         const plan = planScheduledTaskClaim({ nextRunAt: task.nextRunAt!, schedule: task.schedule, timeZone: task.timeZone }, now);
+        const open = plan.occurrences.some((planned) => !planned.missed)
+          ? occurrences.filter((row) => row.taskId === task.id && (row.state === "PENDING" || row.state === "RUNNING")) : [];
+        const overlap = planClaimOverlap({ now, open, recurring: task.schedule.kind !== "once" });
+        for (const stale of overlap.superseded) settlements.push(quietSkip(find(stale.id)!, stale.reasonCode));
         for (const planned of plan.occurrences) {
           if (occurrences.some((row) => row.taskId === task.id && row.trigger === "schedule" &&
             row.scheduledFor.getTime() === planned.scheduledFor.getTime())) continue;
+          const reasonCode = planned.missed ? "missed" : overlap.previousRunning ? "previous_running" : null;
           const occurrence: Occurrence = {
-            chatId: null, createdAt: ids, finishedAt: planned.missed ? now : null, id: nextId("occurrence"), leaseExpiresAt: null,
-            notifiedAt: null, reasonCode: planned.missed ? "missed" : null, runId: null, scheduledFor: planned.scheduledFor,
-            startedAt: null, state: planned.missed ? "SKIPPED" : "PENDING", taskId: task.id, trigger: "schedule", userId: task.userId
+            chatId: null, createdAt: ids, finishedAt: reasonCode ? now : null, id: nextId("occurrence"), leaseExpiresAt: null,
+            notifiedAt: null, reasonCode, runId: null, scheduledFor: planned.scheduledFor, startedAt: null,
+            state: reasonCode ? "SKIPPED" : "PENDING", taskGeneration: null, taskId: task.id, trigger: "schedule", unseenAt: null,
+            userId: task.userId, userMessageId: null
           };
           occurrences.push(occurrence);
-          if (planned.missed) {
-            task.unseenResultAt = now;
-            settlements.push({ occurrenceId: occurrence.id, reasonCode: "missed", runId: null, state: "SKIPPED", taskPaused: false });
-          }
+          if (reasonCode) settlements.push({ occurrenceId: occurrence.id, reasonCode, runId: null, state: "SKIPPED", taskPaused: false });
         }
         Object.assign(task, { nextRunAt: plan.nextRunAt },
           plan.status === "ACTIVE" ? {} : { pauseReason: plan.pauseReason, revision: task.revision + 1, status: plan.status });
@@ -98,16 +114,16 @@ function harness() {
       return settled;
     },
     async expirePending(now) {
-      return occurrences.filter((row) => row.state === "PENDING" && tasks.has(row.taskId) && !open(row)).flatMap((row) => {
+      return occurrences.filter((row) => row.state === "PENDING" && tasks.has(row.taskId) && !leased(row)).flatMap((row) => {
         const outcome = expiredPendingOutcome(row, now);
         return outcome ? [settle(row, outcome)] : [];
       });
     },
     async loadDispatch(now) {
       const executing = new Map<string, number>();
-      for (const row of occurrences.filter((candidate) => tasks.has(candidate.taskId) && open(candidate))) {
-        executing.set(row.userId, (executing.get(row.userId) ?? 0) + 1);
-      }
+      const count = (userId: string) => executing.set(userId, (executing.get(userId) ?? 0) + 1);
+      for (const run of runs.values()) if (!["complete", "cancelled", "error"].includes(run.status)) count(run.userId);
+      for (const row of occurrences.filter((candidate) => tasks.has(candidate.taskId) && leased(candidate))) count(row.userId);
       const pending = occurrences.filter((row) => row.state === "PENDING" && tasks.has(row.taskId) &&
         (!row.leaseExpiresAt || row.leaseExpiresAt <= now))
         .sort((left, right) => left.scheduledFor.getTime() - right.scheduledFor.getTime() || left.createdAt - right.createdAt)
@@ -129,8 +145,9 @@ function harness() {
         chat: chat?.usable ? { activeLeafMessageId: chat.activeLeafMessageId, id: task.chatId! } : null,
         occurrence: { id: row.id, scheduledFor: row.scheduledFor, taskId: row.taskId, trigger: row.trigger, userId: row.userId },
         ownerActive: !inactiveUsers.has(row.userId),
-        task: { modelId: task.modelId, prompt: task.prompt, provider: task.provider, revision: task.revision,
-          searchEnabled: task.searchEnabled, status: task.status, timeZone: task.timeZone, title: task.title }
+        task: { baseline: task.baseline, chatMode: task.chatMode, generation: task.generation, modelId: task.modelId,
+          prompt: task.prompt, provider: task.provider, revision: task.revision, searchEnabled: task.searchEnabled,
+          status: task.status, timeZone: task.timeZone, title: task.title }
       };
     },
     async readOccurrence(id) {
@@ -162,19 +179,27 @@ function harness() {
   };
 
   const send: ScheduledTaskSend = async ({ body, chatId, occurrence: origin }) => {
-    sent.push({ body, chatId });
+    sent.push({ body, chatId, occurrence: origin });
     const occurrence = find(origin.occurrenceId)!;
+    const task = tasks.get(occurrence.taskId)!;
     const decision = reply(occurrence);
     if ("error" in decision) return Response.json({ error: decision.error }, { status: decision.status });
     const stream = () => new Response("event: done\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } });
     if (decision.unlinked) return stream();
+    // The real link refuses a task paused or edited since the runner read it.
+    if (task.revision !== origin.taskRevision || task.generation !== origin.taskGeneration) {
+      return Response.json({ error: "scheduled_task_occurrence_unavailable" }, { status: 409 });
+    }
     // The real handler links the occurrence in the run's creating transaction.
     const runId = nextId("run");
-    runs.set(runId, { errorPayload: decision.errorCode ? { code: decision.errorCode } : null, status: decision.runStatus });
-    const leaf = nextId("assistant-message");
-    chats.set(chatId, { activeLeafMessageId: leaf, usable: true, userId: occurrence.userId });
-    Object.assign(occurrence, { chatId, leaseExpiresAt: null, reasonCode: null, runId, state: "RUNNING" });
-    tasks.get(occurrence.taskId)!.chatId = chatId;
+    const userMessageId = nextId("user-message");
+    const assistantMessageId = nextId("assistant-message");
+    runs.set(runId, { assistantMessageId, errorPayload: decision.errorCode ? { code: decision.errorCode } : null,
+      status: decision.runStatus, userId: occurrence.userId });
+    chats.set(chatId, { activeLeafMessageId: assistantMessageId, usable: true, userId: occurrence.userId });
+    Object.assign(occurrence, { chatId, leaseExpiresAt: null, reasonCode: null, runId, state: "RUNNING",
+      taskGeneration: origin.taskGeneration, userMessageId });
+    task.chatId = chatId;
     return stream();
   };
 
@@ -193,10 +218,10 @@ function harness() {
 
   function addTask(overrides: Partial<Task> = {}): Task {
     const task: Task = {
-      chatId: null, consecutiveFailures: 0, emailNotify: false, id: nextId("task"), modelId: "model-a",
-      nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null, prompt: "  Summarize the synthetic fixture  ",
-      provider: "connection-a", revision: 1, schedule: { kind: "daily", time: "09:00" }, searchEnabled: false, status: "ACTIVE",
-      timeZone: "Europe/Moscow", title: "Synthetic brief", unseenResultAt: null, userId: "owner-1", ...overrides
+      baseline: null, chatId: null, chatMode: "same", consecutiveFailures: 0, emailNotify: false, generation: 1, id: nextId("task"),
+      modelId: "model-a", nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null,
+      prompt: "  Summarize the synthetic fixture  ", provider: "connection-a", revision: 1, schedule: { kind: "daily", time: "09:00" },
+      searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow", title: "Synthetic brief", userId: "owner-1", ...overrides
     };
     tasks.set(task.id, task);
     return task;
@@ -204,8 +229,8 @@ function harness() {
   function addOccurrence(task: Task, overrides: Partial<Occurrence> = {}): Occurrence {
     const occurrence: Occurrence = {
       chatId: null, createdAt: ids, finishedAt: null, id: nextId("occurrence"), leaseExpiresAt: null, notifiedAt: null, reasonCode: null,
-      runId: null, scheduledFor: clock, startedAt: null, state: "PENDING", taskId: task.id, trigger: "manual", userId: task.userId,
-      ...overrides
+      runId: null, scheduledFor: clock, startedAt: null, state: "PENDING", taskGeneration: null, taskId: task.id, trigger: "manual",
+      unseenAt: null, userId: task.userId, userMessageId: null, ...overrides
     };
     occurrences.push(occurrence);
     return occurrence;
@@ -224,6 +249,7 @@ function harness() {
 }
 
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 
 describe("scheduled task runner", () => {
   it("claims a due task, runs it once into a new Memory-excluded chat and advances the schedule", async () => {
@@ -232,13 +258,16 @@ describe("scheduled task runner", () => {
     await h.tick();
     expect(h.forTask(task)).toMatchObject([{ reasonCode: null, scheduledFor: new Date("2026-10-05T06:00:00.000Z"), state: "COMPLETED" }]);
     expect(task).toMatchObject({ consecutiveFailures: 0, nextRunAt: new Date("2026-10-06T06:00:00.000Z"), revision: 1, status: "ACTIVE" });
-    expect(task.unseenResultAt).not.toBeNull();
+    expect(h.forTask(task)[0]!.unseenAt).not.toBeNull();
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0]!.body).toMatchObject({
       content: { blocks: [{ text: "Summarize the synthetic fixture", type: "text" }] }, expectedActiveLeafId: null,
       mcp: { mode: "off" }, modelId: "model-a", personalDraft: { folderId: null, memoryMode: "EXCLUDED" }, provider: "connection-a",
       searchPlan: { mode: "all_selected", optionIds: [] }, skills: { mode: "off" }, timeZone: "Europe/Moscow", workspace: { enabled: false }
     });
+    // The first run of a task has no earlier result to see.
+    expect(h.sent[0]!.occurrence).toEqual({ occurrenceId: h.forTask(task)[0]!.id, previousResult: null, taskGeneration: 1,
+      taskId: task.id, taskRevision: 1 });
     expect(h.renamed).toEqual([{ chatId: h.sent[0]!.chatId, title: "Synthetic brief" }]);
     expect(h.emails).toHaveLength(1);
     expect(h.emails[0]).toMatchObject({ kind: "scheduled_task_result", subject: "Scheduled task finished", to: "owner@example.test" });
@@ -251,20 +280,121 @@ describe("scheduled task runner", () => {
     await h.tick();
     expect(h.sent).toHaveLength(1);
     const leaf = h.chats.get(h.sent[0]!.chatId)!.activeLeafMessageId;
-    h.advance(24 * 60 * MINUTE);
+    h.advance(24 * HOUR);
     await h.tick();
     expect(h.sent).toHaveLength(2);
     expect(h.sent[1]).toMatchObject({ chatId: h.sent[0]!.chatId });
     expect(h.sent[1]!.body).toMatchObject({ expectedActiveLeafId: leaf });
     expect(h.sent[1]!.body).not.toHaveProperty("personalDraft");
+    // Its model sees the previous shown result besides the prompt.
+    expect(h.sent[1]!.occurrence.previousResult).toEqual({ assistantMessageId: leaf, userMessageId: h.forTask(task)[0]!.userMessageId });
     expect(h.renamed).toHaveLength(1);
     expect(h.emails).toHaveLength(2);
+  });
+
+  it("starts a dated, Memory-excluded chat for every run in new-chat mode, Run now included", async () => {
+    const h = harness();
+    const task = h.addTask({ chatMode: "new", title: "Morning brief" });
+    await h.tick();
+    h.advance(24 * HOUR);
+    await h.tick();
+    const manual = h.addOccurrence(task);
+    await h.tick();
+    const chatIds = h.sent.map((send) => send.chatId);
+    expect(new Set(chatIds).size).toBe(3);
+    for (const send of h.sent) {
+      expect(send.body).toMatchObject({ expectedActiveLeafId: null, personalDraft: { folderId: null, memoryMode: "EXCLUDED" } });
+      expect(send.occurrence.previousResult).toBeNull();
+    }
+    expect(h.renamed.map((entry) => entry.title)).toEqual(["Morning brief · 5 Oct 2026", "Morning brief · 6 Oct 2026",
+      "Morning brief · 6 Oct 2026"]);
+    // The task opens its newest chat; every run keeps its own.
+    expect(task.chatId).toBe(chatIds[2]);
+    expect(h.forTask(task).map((row) => row.chatId)).toEqual(chatIds);
+    expect(manual).toMatchObject({ chatId: chatIds[2], state: "COMPLETED", trigger: "manual" });
+  });
+
+  it("gives a same-chat run only the previous result of the current prompt", async () => {
+    const h = harness();
+    const task = h.addTask();
+    await h.tick();
+    const first = h.forTask(task)[0]!;
+    expect(task.baseline).toMatchObject({ generation: 1, runId: first.runId, userMessageId: first.userMessageId });
+    // The owner rewrites the prompt: a new generation, whose first run sees no earlier result.
+    Object.assign(task, { baseline: null, generation: 2, prompt: "A different question", revision: 2 });
+    h.advance(24 * HOUR);
+    await h.tick();
+    expect(h.sent[1]!.occurrence).toMatchObject({ previousResult: null, taskGeneration: 2, taskRevision: 2 });
+    expect(task.baseline).toMatchObject({ generation: 2, runId: h.forTask(task)[1]!.runId });
+
+    // A result of an older generation never becomes the baseline.
+    h.setReply(() => ({ runStatus: "streaming" }));
+    h.advance(24 * HOUR);
+    await h.tick();
+    const late = h.forTask(task)[2]!;
+    const baseline = task.baseline;
+    Object.assign(task, { baseline: null, generation: 3, revision: 3 });
+    h.runs.get(late.runId!)!.status = "complete";
+    await h.tick();
+    expect(late.state).toBe("COMPLETED");
+    expect(task.baseline).toBeNull();
+    expect(baseline).not.toBeNull();
+  });
+
+  it("skips an instant that comes due while the previous run is still in progress, quietly", async () => {
+    const h = harness();
+    const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } as const;
+    const task = h.addTask({ emailNotify: true, schedule: hourly });
+    h.setReply(() => ({ runStatus: "streaming" }));
+    await h.tick();
+    const [running] = h.forTask(task);
+    expect(running).toMatchObject({ state: "RUNNING" });
+    expect(task.nextRunAt).toEqual(new Date("2026-10-05T07:00:00.000Z"));
+    h.advance(HOUR);
+    await h.tick();
+    expect(h.forTask(task).map((row) => [row.scheduledFor.toISOString(), row.state, row.reasonCode])).toEqual([
+      ["2026-10-05T06:00:00.000Z", "RUNNING", null],
+      ["2026-10-05T07:00:00.000Z", "SKIPPED", "previous_running"]
+    ]);
+    expect(h.sent).toHaveLength(1);
+    // Routine skips stay history only: no unread result and no email.
+    expect(h.forTask(task)[1]!.unseenAt).toBeNull();
+    expect(h.emails).toHaveLength(0);
+    h.runs.get(running!.runId!)!.status = "complete";
+    h.setReply(() => ({ runStatus: "complete" }));
+    h.advance(HOUR);
+    await h.tick();
+    expect(h.forTask(task).map((row) => row.state)).toEqual(["COMPLETED", "SKIPPED", "COMPLETED"]);
+    expect(h.emails.map((email) => email.subject)).toEqual(["Scheduled task finished", "Scheduled task finished"]);
+  });
+
+  it("replaces a pending run that could not start once the next instant arrives", async () => {
+    const h = harness();
+    const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } as const;
+    const next = new Date("2026-10-05T07:00:00.000Z");
+    // Busy retries since 06:45, still within their window when 07:00 arrives.
+    const busyTask = h.addTask({ nextRunAt: next, schedule: hourly });
+    const busy = h.addOccurrence(busyTask, { reasonCode: "chat_busy", scheduledFor: new Date("2026-10-05T06:00:00.000Z"),
+      startedAt: new Date("2026-10-05T06:45:00.000Z"), trigger: "schedule" });
+    // Never leased: no execution slot was free.
+    const waitingTask = h.addTask({ nextRunAt: next, schedule: hourly, userId: "owner-2" });
+    const waiting = h.addOccurrence(waitingTask, { scheduledFor: new Date("2026-10-05T06:00:00.000Z"), trigger: "schedule" });
+    h.advance(HOUR);
+    await h.tick();
+    expect(busy).toMatchObject({ reasonCode: "chat_busy", state: "SKIPPED", unseenAt: null });
+    expect(waiting).toMatchObject({ reasonCode: "superseded", state: "SKIPPED", unseenAt: null });
+    // The fresh instant runs instead.
+    for (const task of [busyTask, waitingTask]) {
+      expect(h.forTask(task).map((row) => [row.scheduledFor.toISOString(), row.state])).toEqual([
+        ["2026-10-05T06:00:00.000Z", "SKIPPED"], ["2026-10-05T07:00:00.000Z", "COMPLETED"]
+      ]);
+    }
   });
 
   it("collapses a backlog to one missed record and one run of the newest instant", async () => {
     const h = harness();
     const task = h.addTask({ nextRunAt: new Date("2026-10-02T06:00:00.000Z") });
-    h.advance(2 * 60 * MINUTE);
+    h.advance(2 * HOUR);
     await h.tick();
     expect(h.forTask(task).map((row) => [row.scheduledFor.toISOString(), row.state, row.reasonCode])).toEqual([
       ["2026-10-02T06:00:00.000Z", "SKIPPED", "missed"],
@@ -272,6 +402,7 @@ describe("scheduled task runner", () => {
     ]);
     expect(task.nextRunAt).toEqual(new Date("2026-10-06T06:00:00.000Z"));
     expect(h.sent).toHaveLength(1);
+    expect(h.forTask(task)[0]!.unseenAt).toBeNull();
   });
 
   it("retries a busy chat each tick within the window, then records chat_busy", async () => {
@@ -287,7 +418,7 @@ describe("scheduled task runner", () => {
     h.advance(16 * MINUTE);
     await h.tick();
     expect(h.sent).toHaveLength(2);
-    expect(occurrence).toMatchObject({ reasonCode: "chat_busy", state: "SKIPPED" });
+    expect(occurrence).toMatchObject({ reasonCode: "chat_busy", state: "SKIPPED", unseenAt: null });
     expect(task).toMatchObject({ consecutiveFailures: 0, status: "ACTIVE" });
   });
 
@@ -297,8 +428,8 @@ describe("scheduled task runner", () => {
     h.setReply(() => ({ error: "internal_error", status: 500 }));
     await h.tick();
     const [occurrence] = h.forTask(task);
-    expect(occurrence).toMatchObject({ leaseExpiresAt: null, reasonCode: null, runId: null, state: "PENDING" });
-    expect(task).toMatchObject({ consecutiveFailures: 2, status: "ACTIVE", unseenResultAt: null });
+    expect(occurrence).toMatchObject({ leaseExpiresAt: null, reasonCode: null, runId: null, state: "PENDING", unseenAt: null });
+    expect(task).toMatchObject({ consecutiveFailures: 2, status: "ACTIVE" });
     // Retried by the timer only: no wake-up that would spin on a failing database.
     expect(h.kick).not.toHaveBeenCalled();
     h.advance(MINUTE);
@@ -318,7 +449,7 @@ describe("scheduled task runner", () => {
     await h.tick();
     h.advance(31 * MINUTE);
     await h.tick();
-    expect(h.forTask(failing)).toMatchObject([{ reasonCode: "admission_failed", runId: null, state: "FAILED" }]);
+    expect(h.forTask(failing)).toMatchObject([{ reasonCode: "admission_failed", runId: null, state: "FAILED", unseenAt: null }]);
     expect(failing).toMatchObject({ consecutiveFailures: 2, status: "ACTIVE" });
   });
 
@@ -336,7 +467,8 @@ describe("scheduled task runner", () => {
       searchStrategies: [] }),
       now: () => new Date("2026-10-05T06:00:05.000Z"),
       renameChat: async () => undefined,
-      send: async () => Response.json({ error: "context_too_large" }, { status: 400 }),
+      // A permanent refusal pauses each task: news the owner hears about.
+      send: async () => Response.json({ error: "model_not_available" }, { status: 403 }),
       // SMTP that hangs until released.
       sendEmail: (message) => new Promise<void>((resolve) => { pending.push(() => { delivered.push(message); resolve(); }); }),
       store: h.store
@@ -344,15 +476,15 @@ describe("scheduled task runner", () => {
     await runner.tick();
     // Both runs settled without waiting for mail; only one email holds an SMTP slot.
     await vi.waitFor(() => expect(pending).toHaveLength(1));
-    expect(h.forTask(first)).toMatchObject([{ reasonCode: "context_too_large", state: "FAILED" }]);
-    expect(h.forTask(second)).toMatchObject([{ reasonCode: "context_too_large", state: "FAILED" }]);
+    expect(h.forTask(first)).toMatchObject([{ reasonCode: "model_unavailable", state: "FAILED" }]);
+    expect(h.forTask(second)).toMatchObject([{ reasonCode: "model_unavailable", state: "FAILED" }]);
     await runner.tick();
     expect(pending).toHaveLength(1);
     pending[0]!();
     await vi.waitFor(() => expect(pending).toHaveLength(2));
     pending[1]!();
     await runner.idle();
-    expect(delivered.map((message) => message.subject)).toEqual(["Scheduled task did not complete", "Scheduled task did not complete"]);
+    expect(delivered.map((message) => message.subject)).toEqual(["Scheduled task paused", "Scheduled task paused"]);
     // At most once: a later settlement pass never claims them again.
     await runner.tick();
     await runner.idle();
@@ -366,6 +498,7 @@ describe("scheduled task runner", () => {
     await h.tick();
     expect(h.sent).toHaveLength(0);
     expect(h.forTask(task)).toMatchObject([{ reasonCode: "model_unavailable", state: "FAILED" }]);
+    expect(h.forTask(task)[0]!.unseenAt).not.toBeNull();
     expect(task).toMatchObject({ nextRunAt: null, pauseReason: "model_unavailable", revision: 2, status: "PAUSED" });
 
     const searching = h.addTask({ searchEnabled: true, userId: "owner-2" });
@@ -394,39 +527,61 @@ describe("scheduled task runner", () => {
     h.setReply(() => ({ errorCode: "provider_timeout", runStatus: "error" }));
     for (let day = 0; day < 2; day += 1) {
       await h.tick();
-      h.advance(24 * 60 * MINUTE);
+      h.advance(24 * HOUR);
     }
     expect(task).toMatchObject({ consecutiveFailures: 2, status: "ACTIVE" });
+    // A failure that does not pause the task stays history only.
+    expect(h.forTask(task).every((row) => row.unseenAt === null)).toBe(true);
     h.setReply(() => ({ runStatus: "complete" }));
     await h.tick();
     expect(task.consecutiveFailures).toBe(0);
     h.setReply(() => ({ errorCode: "provider_timeout", runStatus: "error" }));
     for (let day = 0; day < 3; day += 1) {
-      h.advance(24 * 60 * MINUTE);
+      h.advance(24 * HOUR);
       await h.tick();
     }
     expect(h.forTask(task).filter((row) => row.state === "FAILED").map((row) => row.reasonCode)).toEqual(
       ["provider_timeout", "provider_timeout", "provider_timeout", "provider_timeout", "provider_timeout"]);
     expect(task).toMatchObject({ consecutiveFailures: 3, nextRunAt: null, pauseReason: "repeated_failures", status: "PAUSED" });
+    // Only the failure that paused it is news.
+    expect(h.forTask(task).filter((row) => row.unseenAt !== null).map((row) => row.state)).toEqual(["COMPLETED", "FAILED"]);
   });
 
-  it("caps executions at three installation-wide and one per owner", async () => {
+  it("caps executions at five installation-wide and one per owner, counting runs of deleted tasks", async () => {
     const h = harness();
     let admitted = 0;
     h.setReply(() => { admitted += 1; return { runStatus: "streaming" }; });
-    const owners = ["owner-1", "owner-1", "owner-2", "owner-3", "owner-4"].map((userId) => h.addTask({ userId }));
-    await h.tick();
-    expect(admitted).toBe(3);
-    const running = h.occurrences.filter((row) => row.state === "RUNNING");
-    expect(new Set(running.map((row) => row.userId)).size).toBe(3);
-    expect(h.occurrences.filter((row) => row.state === "PENDING")).toHaveLength(2);
-    // Runs still active keep their slots; finished ones free them for the next tick.
-    await h.tick();
-    expect(admitted).toBe(3);
-    for (const row of running) h.runs.get(row.runId!)!.status = "complete";
+    const owners = ["owner-1", "owner-1", "owner-2", "owner-3", "owner-4", "owner-5", "owner-6"].map((userId) => h.addTask({ userId }));
     await h.tick();
     expect(admitted).toBe(5);
-    expect(owners.every((task) => h.forTask(task).length === 1)).toBe(true);
+    const running = h.occurrences.filter((row) => row.state === "RUNNING");
+    expect(new Set(running.map((row) => row.userId)).size).toBe(5);
+    expect(h.occurrences.filter((row) => row.state === "PENDING")).toHaveLength(2);
+    // Runs still active keep their slots, even when their task and history are gone.
+    h.tasks.delete(running[0]!.taskId);
+    await h.tick();
+    expect(admitted).toBe(5);
+    for (const row of running) h.runs.get(row.runId!)!.status = "complete";
+    await h.tick();
+    expect(admitted).toBe(7);
+    expect(owners.filter((task) => h.tasks.has(task.id)).every((task) => h.forTask(task).length === 1)).toBe(true);
+  });
+
+  it("fences an admission against a pause made while it was prepared", async () => {
+    const h = harness();
+    const task = h.addTask();
+    h.setReply(() => {
+      // The owner pauses the task while the send is prepared.
+      Object.assign(task, { nextRunAt: null, revision: task.revision + 1, status: "PAUSED" });
+      return { runStatus: "complete" };
+    });
+    await h.tick();
+    expect(h.forTask(task)).toMatchObject([{ runId: null, state: "PENDING" }]);
+    h.setReply(() => ({ runStatus: "complete" }));
+    await h.tick();
+    // Re-admitted under the current task: a paused task's scheduled instant is skipped, quietly.
+    expect(h.forTask(task)).toMatchObject([{ reasonCode: "paused", runId: null, state: "SKIPPED", unseenAt: null }]);
+    expect(h.runs.size).toBe(0);
   });
 
   it("re-admits an interrupted admission once and never a linked occurrence", async () => {
@@ -437,14 +592,15 @@ describe("scheduled task runner", () => {
       startedAt: new Date("2026-10-05T05:59:00.000Z"), trigger: "schedule" });
     // A crash after the link: its run is left active until run recovery settles it.
     const other = h.addTask({ nextRunAt: null, userId: "owner-2" });
-    h.runs.set("run-orphan", { errorPayload: null, status: "streaming" });
+    h.runs.set("run-orphan", { assistantMessageId: "assistant-orphan", errorPayload: null, status: "streaming", userId: "owner-2" });
     const linked = h.addOccurrence(other, { runId: "run-orphan", startedAt: new Date("2026-10-05T06:00:00.000Z"), state: "RUNNING",
       trigger: "schedule" });
     await h.tick();
     expect(h.sent).toHaveLength(1);
     expect(interrupted).toMatchObject({ state: "COMPLETED" });
     expect(linked.state).toBe("RUNNING");
-    h.runs.set("run-orphan", { errorPayload: { code: "run_orphaned" }, status: "error" });
+    h.runs.set("run-orphan", { assistantMessageId: "assistant-orphan", errorPayload: { code: "run_orphaned" }, status: "error",
+      userId: "owner-2" });
     await h.tick();
     expect(h.sent).toHaveLength(1);
     expect(linked).toMatchObject({ reasonCode: "run_orphaned", state: "FAILED" });
@@ -503,7 +659,7 @@ describe("scheduled task runner", () => {
     active.nextRunAt = new Date("2026-10-06T06:00:00.000Z");
     const activeManual = h.addOccurrence(active);
     await h.tick();
-    expect(refused).toMatchObject({ reasonCode: "model_unavailable", state: "FAILED" });
+    expect(refused).toMatchObject({ reasonCode: "model_unavailable", state: "FAILED", unseenAt: null });
     expect(activeManual).toMatchObject({ reasonCode: "model_unavailable", state: "FAILED" });
     expect(active).toMatchObject({ consecutiveFailures: 0, nextRunAt: new Date("2026-10-06T06:00:00.000Z"), status: "ACTIVE" });
   });
@@ -516,8 +672,8 @@ describe("scheduled task runner", () => {
     h.inactiveUsers.add("owner-2");
     await h.tick();
     expect(leftover).toMatchObject({ reasonCode: "paused", state: "SKIPPED" });
-    // The owner's own pause is not news: no unread marker and no email.
-    expect(paused.unseenResultAt).toBeNull();
+    // The owner's own pause is not news: no unread result and no email.
+    expect(leftover.unseenAt).toBeNull();
     expect(h.emails).toHaveLength(0);
     expect(h.forTask(inactive)).toMatchObject([{ reasonCode: "account_inactive", state: "FAILED" }]);
     expect(inactive).toMatchObject({ pauseReason: "account_inactive", status: "PAUSED" });

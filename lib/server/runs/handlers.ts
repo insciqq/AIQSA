@@ -605,8 +605,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     const activeRun = await deps.repository.findRecentActiveRunForChat({
       chatId: chat.id, since: new Date(Date.now() - activeRunGateWindowMs), userId: auth.userId
     });
-    const predecessorRunId = deps.workspaceFollowup && activeRun?.answerComplete && !activeRun.workspaceWaitPending &&
-      activeRun.assistantMessageId === chat.activeLeafMessageId ? activeRun.id : null;
+    // A scheduled send never waits behind a retiring Workspace run: the chat counts as busy.
+    const predecessorRunId = deps.workspaceFollowup && !deps.scheduledOccurrence && activeRun?.answerComplete &&
+      !activeRun.workspaceWaitPending && activeRun.assistantMessageId === chat.activeLeafMessageId ? activeRun.id : null;
     if (activeRun && !predecessorRunId) {
       return Response.json({ error: "active_run_in_progress", run: {
         id: activeRun.id, status: activeRun.status === "preparing"
@@ -647,7 +648,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         },
         ...(projectChat ? { draftProjectChat: true } : {}),
         ...(personalChat ? { draftPersonalChat: true } : {}),
-        kind: "send"
+        kind: "send",
+        ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {})
       },
       userId: auth.userId
     });
