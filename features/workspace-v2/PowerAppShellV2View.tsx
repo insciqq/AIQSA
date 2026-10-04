@@ -452,6 +452,8 @@ export function chatLocationCrumbV2(input: Readonly<{
   chat: Readonly<{ folderId: string | null; projectId?: string | null }> | null;
   personalFolders: readonly ChatLocationFolderV2[];
   project: Readonly<{ id: string; name: string }> | null;
+  /** The header's Project chip already names the Project. */
+  projectNamed?: boolean;
   projectFolders: readonly ChatLocationFolderV2[];
 }>): string | null {
   const projectId = input.chat?.projectId ?? null;
@@ -469,7 +471,7 @@ export function chatLocationCrumbV2(input: Readonly<{
     folderNames.unshift(folder.name);
     cursor = folder.parentId;
   }
-  const names = projectMatches ? [input.project!.name, ...folderNames] : folderNames;
+  const names = projectMatches && !input.projectNamed ? [input.project!.name, ...folderNames] : folderNames;
   return names.length > 0 ? names.join(" / ") : null;
 }
 
@@ -783,9 +785,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     [workspace.projects.workspace?.folders]
   );
   const headerFolders = projectContext ? projectHeaderFolders : navigationFolders;
-  // Project chat locations use the Project-owned folder tree and keep the
-  // Project name as the first crumb. Personal chats retain their folder-only
-  // path. The cycle guard makes older malformed parent data harmless.
+  // Project chat locations use the Project-owned folder tree. The Project name
+  // leads the crumb only while the header's Project chip, which names the
+  // loaded Project, is absent. Personal chats retain their folder-only path.
+  // The cycle guard makes older malformed parent data harmless.
   const activeChatCrumb = useMemo(() => {
     const projectId = activeChatSummary?.projectId ?? null;
     const project = projectId
@@ -797,6 +800,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       chat: activeChatSummary,
       personalFolders: navigationFolders,
       project,
+      projectNamed: Boolean(projectId && workspace.projects.detail?.id === projectId),
       projectFolders: projectId === workspace.projects.selectedProjectId
         ? workspace.projects.workspace?.folders ?? []
         : []
