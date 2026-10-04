@@ -1324,9 +1324,10 @@ async function expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(
     where: { id: receipt.toolCallId }
   });
   expect(scrubbedCall.arguments).toEqual({});
+  expect(scrubbedCall.state).toBe("complete");
   expect(scrubbedCall.result).toMatchObject({
     content: [{ value: { error: "memory_history_receipt_scrubbed" } }],
-    status: "error"
+    status: "complete"
   });
   expect(JSON.stringify(scrubbedCall)).not.toContain(receipt.marker);
   await expect(prisma.memoryToolEgressReceipt.findUniqueOrThrow({
