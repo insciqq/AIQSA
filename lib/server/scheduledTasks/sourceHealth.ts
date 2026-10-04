@@ -85,3 +85,15 @@ export function unavailableSourcesWire(value: unknown): ScheduledTaskUnavailable
 export function occurrenceSourcesIncomplete(unavailableSources: unknown): boolean {
   return decodeStoredUnavailableSources(unavailableSources).length > 0;
 }
+
+/**
+ * A settled monitoring check could not check: its admission missed a source
+ * the previous shown result relied on. Sources recorded only because there was
+ * no previous result to judge by still make the run incomplete, but not the
+ * check: such a check can become the first result that relevance is judged by,
+ * so an unrelated unavailable server never keeps a monitoring task from its
+ * baseline, nor pauses it.
+ */
+export function occurrenceCheckSourcesMissing(unavailableSources: unknown): boolean {
+  return decodeStoredUnavailableSources(unavailableSources).some((source) => source.relied);
+}

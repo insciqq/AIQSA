@@ -70,8 +70,12 @@ export type MonitoringCheckSettlement = Readonly<{
   outcome: ScheduledTaskCheckOutcome;
   /** The guarded goal completion of the task applies. */
   completesTask: boolean;
-  /** The model never reported: counts towards the `verdict_missing` pause. */
-  verdictMissing: boolean;
+  /**
+   * The model never reported: counts towards the `verdict_missing` pause, and
+   * a report resets that count. Null for a check that could not check, which
+   * its sources judge instead: its report neither counts nor resets.
+   */
+  verdictMissing: boolean | null;
 }>;
 
 /**
@@ -94,7 +98,7 @@ export function monitoringCheckSettlement(input: Readonly<{
 }>): MonitoringCheckSettlement {
   const settle = (outcome: ScheduledTaskCheckOutcome, completesTask = false): MonitoringCheckSettlement =>
     ({ completesTask, outcome, verdictMissing: input.verdict === null });
-  if (input.healthIncomplete) return settle("could_not_check");
+  if (input.healthIncomplete) return { completesTask: false, outcome: "could_not_check", verdictMissing: null };
   if (input.verdict === null) return settle("unreported");
   if (input.verdict === "goal_reached") return input.ownerUnchanged ? settle("goal_reached", true) : settle("update");
   if (input.firstCheck) return settle("baseline");
@@ -182,7 +186,9 @@ export type ScheduledTaskBookkeeping = Readonly<{
  *
  * A completed scheduled monitoring check without a reported outcome
  * (`verdictMissing`) counts likewise towards a `verdict_missing` pause, and
- * any reported outcome resets that count; the source pause comes first.
+ * any reported outcome resets that count; a check that could not check
+ * reports neither (see `MonitoringCheckSettlement`), and the source pause
+ * comes first.
  */
 export function planTaskSettlement(input: Readonly<{
   trigger: ScheduledTaskRunTrigger;
@@ -193,7 +199,7 @@ export function planTaskSettlement(input: Readonly<{
     consecutiveMissingVerdicts: number; revision: number;
   }>;
   observedRevision?: number;
-  /** A completed monitoring check: whether its model never reported an outcome. */
+  /** A completed monitoring check whose report counts: whether its model never reported an outcome. */
   verdictMissing?: boolean;
 }>): ScheduledTaskBookkeeping {
   const { outcome, task } = input;
@@ -344,7 +350,7 @@ export function planOccurrenceSettlement(input: Readonly<{
   const { check, occurrence, outcome, task } = input;
   const plan = planTaskSettlement({
     observedRevision: input.observedRevision, outcome, sourcesIncomplete: input.sourcesIncomplete, task,
-    trigger: occurrence.trigger, ...(check ? { verdictMissing: check.verdictMissing } : {})
+    trigger: occurrence.trigger, ...(check && check.verdictMissing !== null ? { verdictMissing: check.verdictMissing } : {})
   });
   const taskPaused = plan.pauseReason !== null;
   return {
