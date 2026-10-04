@@ -420,6 +420,34 @@ describe("automatic and explicit equivalence", () => {
     await expect(sweepMemoryExplicitEquivalenceOwner(prisma, userId)).resolves.toBe(0);
   });
 
+  it("sweeps in single-row batches across passes and finds every pair that spans batches", async () => {
+    const { s, userId } = await ownerFixture();
+    for (const statement of ["My name is Ada.", "I live in Riga.", "I work as a potter.", "I play the cello."]) {
+      await save(s, userId, statement);
+    }
+    const twins = [
+      await learned(userId, "my name is ada", "hi my name is ada"),
+      await learned(userId, "I live in Riga!", "i live in riga"),
+      await learned(userId, "i work as a potter", "i work as a potter")
+    ].map(({ versionId }) => versionId);
+    await learned(userId, "The user is called Ada.", "people call me ada");
+    await learned(userId, "I play the cello.", "i play the cello", { pinned: true });
+    const swept = async () => (await relationJobs(userId))
+      .flatMap(({ targetFactVersionId }) => targetFactVersionId && twins.includes(targetFactVersionId) ? [targetFactVersionId] : []);
+    const version = async () => (await prisma.userMemorySettings.findUniqueOrThrow({
+      select: { explicitEquivalenceSweepVersion: true }, where: { userId }
+    })).explicitEquivalenceSweepVersion;
+    const limits = { automaticBatch: 1, explicitWindow: 1, jobs: 2 };
+    await expect(sweepMemoryExplicitEquivalenceOwner(prisma, userId, limits)).resolves.toBe(2);
+    expect(await swept()).toHaveLength(2);
+    await expect(version()).resolves.toBeNull();
+    await expect(sweepMemoryExplicitEquivalenceOwner(prisma, userId, limits)).resolves.toBe(1);
+    expect((await swept()).sort()).toEqual([...twins].sort());
+    await expect(version()).resolves.toBe(MEMORY_EXPLICIT_EQUIVALENCE_SWEEP_VERSION);
+    await expect(sweepMemoryExplicitEquivalenceOwner(prisma, userId, limits)).resolves.toBe(0);
+    expect(await swept()).toHaveLength(3);
+  });
+
   it("does not sweep an owner with automatic learning off", async () => {
     const { s, userId } = await ownerFixture({ learnAutomatically: false });
     await save(s, userId, "My name is Ada.");
