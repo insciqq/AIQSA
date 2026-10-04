@@ -48,6 +48,12 @@ const codeMessages: Readonly<Partial<Record<ImageGenerationErrorCode, string>>> 
   image_response_too_large: `The image provider returned a response larger than the allowed size. ${NOT_REPEATED} ${SAVED}`,
   image_output_missing: `The image provider responded without an image. ${NOT_REPEATED} Rephrasing the request may help. ${SAVED}`
 };
+// The run's image model lacks the verified capability: refused before any
+// dispatch, and no other model stands in.
+const capabilityMessages: Readonly<Record<string, string>> = {
+  image_editing_unavailable: `Image editing is unavailable with this chat's image model, so nothing was sent to the image provider. Ask for a new image instead, or use an image model that can edit images. ${SAVED}`,
+  image_generation_unavailable: `Creating new images is unavailable with this chat's image model, so nothing was sent to the image provider. Ask to edit an existing image instead, or use an image model that can create images. ${SAVED}`
+};
 
 function evidenceMessage(evidence: ImageFailureEvidence): string {
   if (evidence.category === "invalid_parameter") {
@@ -57,6 +63,7 @@ function evidenceMessage(evidence: ImageFailureEvidence): string {
     return `Image generation failed because the image provider rejected the request${evidence.httpStatus ? ` with HTTP ${evidence.httpStatus}` : ""}. ${NOT_REPEATED} ${SAVED}`;
   }
   if (evidence.category) return categoryMessages[evidence.category];
+  if (Object.hasOwn(capabilityMessages, evidence.code)) return capabilityMessages[evidence.code]!;
   return Object.hasOwn(codeMessages, evidence.code) ? codeMessages[evidence.code as ImageGenerationErrorCode]! : UNCONFIRMED;
 }
 

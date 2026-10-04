@@ -16,8 +16,10 @@ import { decodeAnswerSoundPreferences, DEFAULT_ANSWER_SOUND } from "@/lib/contra
 import { toolActivityOriginV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import {
   attachmentPolicyForModel,
+  catalogWithImageEditing,
   unsupportedAttachmentMessage
 } from "@/components/app-shell/attachmentCapabilities";
+import { effectiveImageEditing } from "@/lib/contracts/imageModels";
 import { partitionAttachmentSelection } from "@/components/app-shell/attachmentSelection";
 import {
   attachmentCountSelectionLimitMessage,
@@ -2667,7 +2669,13 @@ export function PowerAppShellV2({
       imageModel: {
         ...imageModelSnapshot,
         load: () => void loadImageModels(),
-        select: (providerModelId) => void selectImageModel(providerModelId)
+        // The composer's editing route follows the saved effective model
+        // without a reload, so it refuses an image exactly when admission would.
+        select: (providerModelId) => void selectImageModel(providerModelId).then((saved) => {
+          const settings = useImageModelStore.getState().settings;
+          if (!saved || !settings || useWorkspaceStore.getState().catalogAccountId !== accountId) return;
+          setCatalog((current) => current && catalogWithImageEditing(current, effectiveImageEditing(settings)));
+        })
       },
       knowledgePlan: catalog.defaults.knowledgePlan ?? null,
       mcpMode: catalog.defaults.mcpMode ?? "auto",

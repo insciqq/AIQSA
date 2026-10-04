@@ -101,24 +101,18 @@ export function createImageModelRoleResolver(
         ? db.userSettings.findUnique({ where: { userId: scope.userId }, select: { imagePublication: publication } })
         : Promise.resolve(null)
     ]);
+    // No administrator default turns image generation off for everyone. A
+    // previous release can clear the role without withdrawing publications;
+    // leftover publications or personal choices never keep it on.
+    if (!policy?.imagePublication) return { ok: false, reason: "not_configured", providerModelId: null, source: "organization" };
     const personal = settings?.imagePublication ?? null;
-    const target = personal ?? policy?.imagePublication ?? null;
+    const target = personal ?? policy.imagePublication;
     const source = personal ? "personal" as const : "organization" as const;
-    if (!policy || !target) return { ok: false, reason: "not_configured", providerModelId: null, source: "organization" };
     const resolved = await resolvePublished(target, policy.version);
     return resolved.ok
       ? { ok: true, plan: resolved.plan, providerModelId: target.providerModelId, source }
       : { ok: false, reason: resolved.reason, providerModelId: target.providerModelId, source };
   }
 
-  return {
-    resolveFor,
-    resolvePublished,
-    /** The administrator default, as before per-user choices; callers that
-     * know the run scope use `resolveFor`. */
-    async resolve(): Promise<AcceptedImageGenerationPlan | null> {
-      const resolved = await resolveFor({ kind: "project" });
-      return resolved.ok ? resolved.plan : null;
-    }
-  };
+  return { resolveFor, resolvePublished };
 }

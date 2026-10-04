@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { execFileSync } from "node:child_process";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient, type ModelPolicy, type SystemModelPolicy } from "@prisma/client";
 import { expect, test, type Page } from "@playwright/test";
 import sharp from "sharp";
 import type { Catalog } from "../../lib/contracts/catalog";
@@ -84,83 +84,97 @@ async function installVisionProviderFixture() {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const connectionId = randomUUID(), credentialId = randomUUID(), credentialVersionId = randomUUID();
   const ids = { chat: randomUUID(), visual: randomUUID(), analyst: randomUUID(), image: randomUUID() };
-  const priorChat = await prisma.modelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-  const priorRoles = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-  const connectionConfig = { apiRoot: "http://127.0.0.1:" + (server.address() as AddressInfo).port, authenticationMode: "bearer",
-    allowPrivateNetwork: true, responseTimeoutMs: 30_000 };
-  const answer = (upstreamModelId: string, vision: boolean, answerSelectable = true) => ({ adapterKind: "openai_responses_native", answerSelectable,
-    modelClass: "answer", upstreamModelId, defaultParams: {},
-    capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision, toolCalling: true, streaming: true } });
-  const image = imageModelConfiguration("gpt-image-2", { profile: "openai" });
-  const models = [
-    { id: ids.chat, name: "Vision Browser Chat", configuration: answer("vision-browser-chat", false), modelClass: "answer" },
-    { id: ids.visual, name: "Vision Browser Visual", configuration: answer("vision-browser-visual", true), modelClass: "answer" },
-    { id: ids.analyst, name: "Vision Browser Analyst", configuration: answer("vision-browser-analyst", true, false), modelClass: "answer" },
-    { id: ids.image, name: "Vision Browser Image", configuration: image, modelClass: "image" }
-  ] as const;
-  await prisma.providerConnection.create({ data: { id: connectionId, displayName: "Vision browser fixture", family: "openai", enabled: true,
-    draftConfig: connectionConfig, activeConfig: connectionConfig, activeVersion: 1, activatedAt: new Date() } });
-  await prisma.providerCredential.create({ data: { id: credentialId, connectionId, label: "Fixture", enabled: true } });
-  await prisma.providerCredentialVersion.create({ data: { id: credentialVersionId, credentialId, version: 1, activatedAt: new Date(), testedAt: new Date(),
-    testEvidence: { authenticationMode: "bearer" }, secretEnvelope: encryptProviderCredentialSecret({ credentialId, valueId: credentialVersionId,
-      key: getSecretEncryptionKey(), secret: "vision-browser-fixture" }) } });
-  await prisma.providerCredential.update({ where: { id: credentialId }, data: { activeVersionId: credentialVersionId, activatedAt: new Date() } });
-  await prisma.providerConnection.update({ where: { id: connectionId }, data: { defaultCredentialId: credentialId } });
-  for (const model of models) {
-    const configuration = model.configuration;
-    await prisma.providerModel.create({ data: { id: model.id, connectionId, provider: "openai", modelId: configuration.upstreamModelId,
-      displayName: model.name, enabled: true, modelClass: model.modelClass, capabilities: configuration.capabilities, defaultParams: {},
-      draftConfig: json(configuration), activeConfig: json(configuration), activeVersion: 1, activatedAt: new Date() } });
-    const imageProof = { adapterKind: image.adapterKind, upstreamModelId: image.upstreamModelId, probeVersion: 1, verified: true };
-    const visionProof = { adapterKind: "openai_responses_native", upstreamModelId: configuration.upstreamModelId, probeVersion: 1, verified: true };
-    await prisma.providerModelCredentialCheck.create({ data: { connectionId, providerModelId: model.id, credentialId, credentialVersionId,
-      connectionVersion: 1, modelVersion: 1, checkedAt: new Date(), status: "available", evidence: { method: "tiny_generation", detail: "ok",
-        selectedProviders: [], upstreamModelId: configuration.upstreamModelId,
-        ...(model.modelClass === "image" ? { imageGeneration: imageProof, imageEditing: imageProof }
-          : { compatibility: { toolCalling: "supported", streaming: "supported" },
-            ...(configuration.capabilities.vision ? { visionInput: visionProof } : {}) }) } } });
-  }
-  await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: ids.chat, reasoningEffort: null, version: { increment: 1 } } });
-  await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { visionProviderModelId: ids.analyst, visionReasoningEffort: null,
-    imageProviderModelId: ids.image, imageParamsJson: { quality: "low" }, version: { increment: 1 } } });
   const chatIds: string[] = [];
   const projectIds: string[] = [];
+  let priorChat: ModelPolicy | null = null;
+  let priorRoles: SystemModelPolicy | null = null;
+  /** Removes everything this fixture created and restores the roles it changed, also after a partial setup. */
+  async function cleanup(page?: Page) {
+    if (page) for (const projectId of projectIds) await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
+    const runs = await prisma.modelRun.findMany({ where: { providerRunBindings: { some: { connectionId } } }, select: { chatId: true } });
+    const allChats = [...new Set([...runs.map((row) => row.chatId), ...chatIds])];
+    const outputs = await prisma.attachment.findMany({ where: { chatId: { in: allChats } }, select: { storageKey: true } });
+    await prisma.attachmentDeletionJob.createMany({ data: outputs.map(({ storageKey }) => ({ storageKey })), skipDuplicates: true });
+    await prisma.$transaction(async (tx) => {
+      await tx.attachment.deleteMany({ where: { chatId: { in: allChats } } });
+      await tx.modelRun.deleteMany({ where: { chatId: { in: allChats } } });
+      await tx.memoryJob.deleteMany({ where: { chatId: { in: allChats } } });
+      await tx.memoryRetrievalAttempt.deleteMany({ where: { chatId: { in: allChats } } });
+      await tx.chatMemoryCheckpointMessage.deleteMany({ where: { chatId: { in: allChats } } });
+      await tx.chatMemoryCheckpoint.deleteMany({ where: { chatId: { in: allChats } } });
+      await tx.memoryRecallChunk.deleteMany({ where: { chatId: { in: allChats } } });
+      await tx.chat.deleteMany({ where: { id: { in: allChats } } });
+    });
+    if (priorChat) await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: priorChat.defaultProviderModelId,
+      reasoningEffort: priorChat.reasoningEffort, version: { increment: 1 } } });
+    // The prior default is published (its foreign key says so); the fixture's
+    // publication goes only after no default or user choice references it.
+    if (priorRoles) await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { visionProviderModelId: priorRoles.visionProviderModelId,
+      visionReasoningEffort: priorRoles.visionReasoningEffort, imageProviderModelId: priorRoles.imageProviderModelId, version: { increment: 1 } } });
+    await prisma.userSettings.updateMany({ where: { imageProviderModelId: ids.image }, data: { imageProviderModelId: null } });
+    await prisma.publishedImageModel.deleteMany({ where: { providerModelId: ids.image } });
+    await prisma.providerConnection.updateMany({ where: { id: connectionId }, data: { defaultCredentialId: null } });
+    // A Project deletion may still be pending; its model bindings restrict model removal.
+    await prisma.projectModelBinding.deleteMany({ where: { providerModelId: { in: Object.values(ids) } } });
+    await prisma.providerModel.deleteMany({ where: { connectionId } });
+    await prisma.providerCredential.updateMany({ where: { connectionId }, data: { activeVersionId: null } });
+    await prisma.providerCredentialVersion.deleteMany({ where: { credentialId } });
+    await prisma.providerCredential.deleteMany({ where: { connectionId } });
+    await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  try {
+    priorChat = await prisma.modelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+    priorRoles = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
+    const connectionConfig = { apiRoot: "http://127.0.0.1:" + (server.address() as AddressInfo).port, authenticationMode: "bearer",
+      allowPrivateNetwork: true, responseTimeoutMs: 30_000 };
+    const answer = (upstreamModelId: string, vision: boolean, answerSelectable = true) => ({ adapterKind: "openai_responses_native", answerSelectable,
+      modelClass: "answer", upstreamModelId, defaultParams: {},
+      capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision, toolCalling: true, streaming: true } });
+    const image = imageModelConfiguration("gpt-image-2", { profile: "openai" });
+    const models = [
+      { id: ids.chat, name: "Vision Browser Chat", configuration: answer("vision-browser-chat", false), modelClass: "answer" },
+      { id: ids.visual, name: "Vision Browser Visual", configuration: answer("vision-browser-visual", true), modelClass: "answer" },
+      { id: ids.analyst, name: "Vision Browser Analyst", configuration: answer("vision-browser-analyst", true, false), modelClass: "answer" },
+      { id: ids.image, name: "Vision Browser Image", configuration: image, modelClass: "image" }
+    ] as const;
+    await prisma.providerConnection.create({ data: { id: connectionId, displayName: "Vision browser fixture", family: "openai", enabled: true,
+      draftConfig: connectionConfig, activeConfig: connectionConfig, activeVersion: 1, activatedAt: new Date() } });
+    await prisma.providerCredential.create({ data: { id: credentialId, connectionId, label: "Fixture", enabled: true } });
+    await prisma.providerCredentialVersion.create({ data: { id: credentialVersionId, credentialId, version: 1, activatedAt: new Date(), testedAt: new Date(),
+      testEvidence: { authenticationMode: "bearer" }, secretEnvelope: encryptProviderCredentialSecret({ credentialId, valueId: credentialVersionId,
+        key: getSecretEncryptionKey(), secret: "vision-browser-fixture" }) } });
+    await prisma.providerCredential.update({ where: { id: credentialId }, data: { activeVersionId: credentialVersionId, activatedAt: new Date() } });
+    await prisma.providerConnection.update({ where: { id: connectionId }, data: { defaultCredentialId: credentialId } });
+    for (const model of models) {
+      const configuration = model.configuration;
+      await prisma.providerModel.create({ data: { id: model.id, connectionId, provider: "openai", modelId: configuration.upstreamModelId,
+        displayName: model.name, enabled: true, modelClass: model.modelClass, capabilities: configuration.capabilities, defaultParams: {},
+        draftConfig: json(configuration), activeConfig: json(configuration), activeVersion: 1, activatedAt: new Date() } });
+      const imageProof = { adapterKind: image.adapterKind, upstreamModelId: image.upstreamModelId, probeVersion: 1, verified: true };
+      const visionProof = { adapterKind: "openai_responses_native", upstreamModelId: configuration.upstreamModelId, probeVersion: 1, verified: true };
+      await prisma.providerModelCredentialCheck.create({ data: { connectionId, providerModelId: model.id, credentialId, credentialVersionId,
+        connectionVersion: 1, modelVersion: 1, checkedAt: new Date(), status: "available", evidence: { method: "tiny_generation", detail: "ok",
+          selectedProviders: [], upstreamModelId: configuration.upstreamModelId,
+          ...(model.modelClass === "image" ? { imageGeneration: imageProof, imageEditing: imageProof }
+            : { compatibility: { toolCalling: "supported", streaming: "supported" },
+              ...(configuration.capabilities.vision ? { visionInput: visionProof } : {}) }) } } });
+    }
+    await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: ids.chat, reasoningEffort: null, version: { increment: 1 } } });
+    // The administrator default is always a published model with its own parameters.
+    await prisma.publishedImageModel.create({ data: { providerModelId: ids.image, paramsJson: { quality: "low" } } });
+    await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { visionProviderModelId: ids.analyst, visionReasoningEffort: null,
+      imageProviderModelId: ids.image, version: { increment: 1 } } });
+  } catch (error) {
+    await cleanup().catch(() => undefined);
+    throw error;
+  }
   return {
-    chatIds, connectionId, ids, projectIds, state,
+    chatIds, connectionId, ids, projectIds, state, cleanup,
+    /** Without an image default image generation is off; the publication stays until cleanup. */
     async roles(roles: { vision: boolean; image: boolean }) {
       await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { visionProviderModelId: roles.vision ? ids.analyst : null,
         visionReasoningEffort: null, imageProviderModelId: roles.image ? ids.image : null, version: { increment: 1 } } });
-    },
-    async cleanup(page: Page) {
-      for (const projectId of projectIds) await page.request.delete(`/api/projects/${projectId}`).catch(() => undefined);
-      const runs = await prisma.modelRun.findMany({ where: { providerRunBindings: { some: { connectionId } } }, select: { chatId: true } });
-      const allChats = [...new Set([...runs.map((row) => row.chatId), ...chatIds])];
-      const outputs = await prisma.attachment.findMany({ where: { chatId: { in: allChats } }, select: { storageKey: true } });
-      await prisma.attachmentDeletionJob.createMany({ data: outputs.map(({ storageKey }) => ({ storageKey })), skipDuplicates: true });
-      await prisma.$transaction(async (tx) => {
-        await tx.attachment.deleteMany({ where: { chatId: { in: allChats } } });
-        await tx.modelRun.deleteMany({ where: { chatId: { in: allChats } } });
-        await tx.memoryJob.deleteMany({ where: { chatId: { in: allChats } } });
-        await tx.memoryRetrievalAttempt.deleteMany({ where: { chatId: { in: allChats } } });
-        await tx.chatMemoryCheckpointMessage.deleteMany({ where: { chatId: { in: allChats } } });
-        await tx.chatMemoryCheckpoint.deleteMany({ where: { chatId: { in: allChats } } });
-        await tx.memoryRecallChunk.deleteMany({ where: { chatId: { in: allChats } } });
-        await tx.chat.deleteMany({ where: { id: { in: allChats } } });
-      });
-      await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: priorChat.defaultProviderModelId,
-        reasoningEffort: priorChat.reasoningEffort, version: { increment: 1 } } });
-      await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { visionProviderModelId: priorRoles.visionProviderModelId,
-        visionReasoningEffort: priorRoles.visionReasoningEffort, imageProviderModelId: priorRoles.imageProviderModelId,
-        imageParamsJson: json(priorRoles.imageParamsJson), version: { increment: 1 } } });
-      await prisma.providerConnection.updateMany({ where: { id: connectionId }, data: { defaultCredentialId: null } });
-      // A Project deletion may still be pending; its model bindings restrict model removal.
-      await prisma.projectModelBinding.deleteMany({ where: { providerModelId: { in: Object.values(ids) } } });
-      await prisma.providerModel.deleteMany({ where: { connectionId } });
-      await prisma.providerCredential.updateMany({ where: { connectionId }, data: { activeVersionId: null } });
-      await prisma.providerCredentialVersion.deleteMany({ where: { credentialId } });
-      await prisma.providerCredential.deleteMany({ where: { connectionId } });
-      await prisma.providerConnection.deleteMany({ where: { id: connectionId } });
-      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   };
 }

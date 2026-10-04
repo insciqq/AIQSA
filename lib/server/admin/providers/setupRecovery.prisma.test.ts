@@ -72,7 +72,6 @@ describe("persisted provider setup recovery", () => {
       await db.systemModelPolicy.upsert({ where: { id: "installation" },
         create: { id: "installation", imageProviderModelId: modelId },
         update: { imageProviderModelId: modelId } });
-      expect(await createImageModelRoleResolver(db).resolve()).toBeNull();
       expect(await createImageModelRoleResolver(db).resolveFor({ kind: "project" }))
         .toEqual({ ok: false, reason: "verification_required", providerModelId: modelId, source: "organization" });
       const png = await sharp({ create: { width: 32, height: 32, channels: 3, background: "blue" } }).png().toBuffer();
@@ -93,10 +92,12 @@ describe("persisted provider setup recovery", () => {
       expect(partial).toMatchObject({ credentialId, credentialVersionId, evidence: { capabilitySetup: {
         checks: { imageGeneration: "incomplete", imageEditing: "verified" }, attempts: { imageGeneration: {
           reason: "invalid_input", httpStatus: 400, imageFailure: { category: "invalid_parameter", parameter: "resolution" } } } } } });
-      expect((await createImageModelRoleResolver(db).resolve())?.snapshot.model.capabilities).toMatchObject({ imageGeneration: false, imageEditing: true });
+      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "project" })).toMatchObject({ ok: true,
+        plan: { snapshot: { model: { capabilities: { imageGeneration: false, imageEditing: true } } } } });
       expect((await check()).failed).toEqual([]);
       expect(fetchFn).toHaveBeenCalledTimes(3);
-      expect((await createImageModelRoleResolver(db).resolve())?.snapshot.model.capabilities).toMatchObject({ imageGeneration: true, imageEditing: true });
+      expect(await createImageModelRoleResolver(db).resolveFor({ kind: "project" })).toMatchObject({ ok: true,
+        plan: { snapshot: { model: { capabilities: { imageGeneration: true, imageEditing: true } } } } });
       // The administrator list marks the same published model usable again.
       const roles = await createAdminSystemModelPolicyService(db).list();
       expect(roles.policy.imageModels).toEqual([expect.objectContaining({ id: modelId, available: true, unavailableReason: null,

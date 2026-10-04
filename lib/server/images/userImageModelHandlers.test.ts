@@ -63,15 +63,16 @@ describe("personal image model API", () => {
 
 const configuration = imageModelConfiguration("gpt-image-2", { profile: "openai" });
 
-function serviceFixture(selectedId: string | null = null) {
+function serviceFixture(selectedId: string | null = null, defaultId: string | null = "image-1") {
   const tx = {
     publishedImageModel: { findUnique: vi.fn(async ({ where }: { where: { providerModelId: string } }) =>
       ["image-1", "image-2"].includes(where.providerModelId) ? { providerModelId: where.providerModelId } : null) },
+    systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ imageProviderModelId: defaultId }) },
     userSettings: { upsert: vi.fn() }
   };
   const prisma = {
     $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<void>) => operation(tx)),
-    systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ version: 6, imageProviderModelId: "image-1" }) },
+    systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ version: 6, imageProviderModelId: defaultId }) },
     userSettings: { findUnique: vi.fn().mockResolvedValue({ imageProviderModelId: selectedId }) },
     publishedImageModel: { findMany: vi.fn().mockResolvedValue([
       { providerModelId: "image-1", paramsJson: { quality: "low" }, providerModel: { displayName: "GPT Image 2", connection: { displayName: "OpenAI" } } },
@@ -113,5 +114,18 @@ describe("personal image model service", () => {
     expect(fixture.tx.userSettings.upsert).toHaveBeenCalledTimes(2);
     fixture.tx.userSettings.upsert.mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError("foreign key", { code: "P2003", clientVersion: "test" }));
     await expect(fixture.service.select("user-1", "image-1")).rejects.toMatchObject({ code: "image_model_not_published" });
+  });
+
+  it("shows image generation as not set up without an administrator default, whatever was left published or chosen", async () => {
+    // A previous release cleared the default without withdrawing publications.
+    const off = serviceFixture("image-2", null);
+    expect(await off.service.read("user-1")).toEqual({ models: [], organizationDefaultId: null, selectedId: null, effective: null });
+    expect(off.loadRole).not.toHaveBeenCalled();
+    await expect(off.service.select("user-1", "image-2")).rejects.toMatchObject({ code: "image_model_not_published" });
+    expect(off.tx.userSettings.upsert).not.toHaveBeenCalled();
+    // Following the default stays possible and is what the next default applies to.
+    await off.service.select("user-1", null);
+    expect(off.tx.userSettings.upsert).toHaveBeenCalledWith({ where: { userId: "user-1" },
+      create: { userId: "user-1", imageProviderModelId: null }, update: { imageProviderModelId: null } });
   });
 });

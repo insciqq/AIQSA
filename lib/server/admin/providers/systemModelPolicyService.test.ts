@@ -1259,7 +1259,7 @@ describe("published image models", () => {
     expect(writes).toEqual([]);
   });
 
-  it("lists published models with saved parameters and marks an unusable one without substituting it", async () => {
+  async function listPublishedImageModels(imageProviderModelId: string | null) {
     const rows = [
       imageRow("image-default", { providerModelId: "image-default", paramsJson: { quality: "low" } }),
       imageRow("image-keyless", { providerModelId: "image-keyless", paramsJson: { quality: "high" } }),
@@ -1273,7 +1273,7 @@ describe("published image models", () => {
         findMany: vi.fn().mockImplementation(async ({ where }: { where: { OR?: unknown } }) => where.OR ? rows : []),
         findUnique: vi.fn()
       },
-      systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ imageProviderModelId: "image-default", updatedAt: NOW, updatedBy: null, version: 5 }) }
+      systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ imageProviderModelId, updatedAt: NOW, updatedBy: null, version: 5 }) }
     } as unknown as PrismaClient;
     const absent = vi.fn().mockResolvedValue({ ok: false, code: "system_model_absent" });
     const loadImageRole = vi.fn().mockImplementation(async (_db: unknown, input: { providerModelId: string }) => {
@@ -1285,6 +1285,11 @@ describe("published image models", () => {
       resolveRole: absent, resolveChatPdfRole: absent, resolveRerankerRole: absent, resolveChatTitleRole: absent, resolveVisionRole: absent,
       resolveMemoryRole: absent
     }).list();
+    return { catalog, loadImageRole };
+  }
+
+  it("lists published models with saved parameters and marks an unusable one without substituting it", async () => {
+    const { catalog, loadImageRole } = await listPublishedImageModels("image-default");
     expect(catalog.imageCandidates?.map(({ id }) => id)).toEqual(["image-default", "image-keyless", "image-candidate"]);
     expect(catalog.policy.imageModels).toEqual([
       expect.objectContaining({ id: "image-default", parameters: { quality: "low" }, generation: true, editing: false,
@@ -1294,5 +1299,11 @@ describe("published image models", () => {
     ]);
     expect(catalog.policy.imageModel).toMatchObject({ id: "image-default", available: true });
     expect(loadImageRole.mock.calls.map(([, input]) => input)).toEqual([{ providerModelId: "image-default" }, { providerModelId: "image-keyless" }]);
+  });
+
+  it("keeps listing models a previous release left published without a default, so they can be withdrawn", async () => {
+    const { catalog } = await listPublishedImageModels(null);
+    expect(catalog.policy.imageModel).toBeNull();
+    expect(catalog.policy.imageModels?.map(({ id }) => id)).toEqual(["image-default", "image-keyless"]);
   });
 });
