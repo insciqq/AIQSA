@@ -162,13 +162,18 @@ describe("Prisma message content search", () => {
 
       const repository = createPrismaChatNavigationRepository(prisma);
       const search = (query: string, limit = 30) =>
-        repository.searchPage({ cursor: null, limit, query, userId: ownerId });
+        repository.searchMessagesPage({ cursor: null, limit, query, userId: ownerId });
+      const matchedChats = async (query: string) => {
+        const result = await search(query);
+        if (result.kind !== "ok") throw new Error(`message_search_${result.kind}`);
+        return result.page.matches.map((match) => match.chatId);
+      };
 
       const first = await search(needle);
       if (first.kind !== "ok") throw new Error("message_search_missing");
-      expect(first.page.chats).toEqual([]);
-      const matches = first.page.messageMatches?.matches ?? [];
+      const matches = first.page.matches;
       expect(matches.map((match) => match.chatId)).toEqual([trip.id, branched.id]);
+      expect(first.page.nextCursor).toBeNull();
       for (const excluded of [archived.id, foreign.id, deleting.id]) {
         expect(JSON.stringify(first)).not.toContain(excluded);
       }
@@ -184,12 +189,15 @@ describe("Prisma message content search", () => {
       expect(matches[0]?.snippet).not.toMatch(/blocks|"type"|\{/u);
       expect(Array.from(matches[0]!.snippet).length).toBeLessThanOrEqual(80 * 2 + needle.length + 2);
       expect(matches[1]).toMatchObject({ matchCount: 2, messageId: offBranch.id, title: "Branch plans" });
+      // The title search stays separate: no title holds the word.
+      await expect(repository.searchPage({ cursor: null, limit: 30, query: needle, userId: ownerId }))
+        .resolves.toMatchObject({ kind: "ok", page: { chats: [], nextCursor: null } });
 
       // One chat per page; the cursor continues exactly where the page ended.
       const paged = await search(needle, 1);
-      if (paged.kind !== "ok" || !paged.page.messageMatches) throw new Error("message_page_missing");
-      expect(paged.page.messageMatches.matches.map((match) => match.chatId)).toEqual([trip.id]);
-      const cursor = paged.page.messageMatches.nextCursor;
+      if (paged.kind !== "ok") throw new Error("message_page_missing");
+      expect(paged.page.matches.map((match) => match.chatId)).toEqual([trip.id]);
+      const cursor = paged.page.nextCursor;
       expect(cursor).toEqual(expect.any(String));
       expect(Buffer.from(cursor ?? "", "base64url").toString("utf8")).not.toMatch(new RegExp(`${needle}|${ownerId}`, "u"));
       await expect(repository.searchMessagesPage({ cursor, limit: 1, query: needle, userId: ownerId }))
@@ -198,12 +206,10 @@ describe("Prisma message content search", () => {
         .resolves.toEqual({ kind: "cursor_invalid" });
       await expect(repository.searchMessagesPage({ cursor, limit: 1, query: needle, userId: foreignId }))
         .resolves.toEqual({ kind: "cursor_invalid" });
-      // A message cursor never continues the title results.
+      // A message cursor never continues the title results, nor a title cursor the matches.
       await expect(repository.searchPage({ cursor, limit: 1, query: needle, userId: ownerId }))
         .resolves.toEqual({ kind: "cursor_invalid" });
-
-      // Title continuation pages and short queries carry no message page.
-      const titles = await search("release", 1);
+      const titles = await repository.searchPage({ cursor: null, limit: 1, query: "release", userId: ownerId });
       if (titles.kind !== "ok") throw new Error("title_search_missing");
       expect(titles.page.chats.map((row) => row.id)).toEqual([literal.id]);
       await expect(repository.searchMessagesPage({
@@ -211,21 +217,16 @@ describe("Prisma message content search", () => {
       })).resolves.toEqual({ kind: "cursor_invalid" });
       await expect(repository.searchPage({
         cursor: titles.page.nextCursor, limit: 1, query: "release", userId: ownerId
-      })).resolves.toMatchObject({ kind: "ok", page: { chats: [{ id: decoy.id }], messageMatches: null } });
-      await expect(search("ze")).resolves.toMatchObject({ kind: "ok", page: { messageMatches: null } });
+      })).resolves.toMatchObject({ kind: "ok", page: { chats: [{ id: decoy.id }] } });
+      // Below three characters nothing is matched, not even through the repository.
+      await expect(search("ze")).resolves.toEqual({ kind: "ok", page: { matches: [], nextCursor: null } });
 
       // `%` and `_` are literal; a JSON key or block type is not text.
-      const escaped = await search("100%_");
-      expect(escaped.kind === "ok" ? escaped.page.messageMatches?.matches.map((match) => match.chatId) : null)
-        .toEqual([literal.id]);
-      for (const query of ["type", "image", "attachmentId", "blocks"]) {
-        const result = await search(query);
-        expect(result.kind === "ok" ? result.page.messageMatches?.matches.map((match) => match.chatId) : null)
-          .not.toContain(picture.id);
+      await expect(matchedChats("100%_")).resolves.toEqual([literal.id]);
+      for (const query of ["type", "image", "attachmentid", "blocks"]) {
+        await expect(matchedChats(query)).resolves.not.toContain(picture.id);
       }
-      await expect(search("just a picture")).resolves.toMatchObject({
-        kind: "ok", page: { messageMatches: { matches: [{ chatId: picture.id }] } }
-      });
+      await expect(matchedChats("just a picture")).resolves.toEqual([picture.id]);
     } finally {
       // A chat pending permanent deletion goes before its deletion obligation,
       // and the obligation before its owner.

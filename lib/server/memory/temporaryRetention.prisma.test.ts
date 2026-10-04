@@ -252,15 +252,11 @@ describe("Temporary chat retention", () => {
       const chats = createPrismaChatRepository(prisma);
       await expect(chats.listWorkspace(userId)).resolves.toMatchObject({ chats: [] });
       // Sidebar search, message text included, never reaches a Temporary chat.
-      await expect(createPrismaChatNavigationRepository(prisma).searchPage({
-        cursor: null,
-        limit: 10,
-        query: "temporary",
-        userId
-      })).resolves.toMatchObject({
-        kind: "ok",
-        page: { chats: [], messageMatches: { matches: [], nextCursor: null } }
-      });
+      const navigation = createPrismaChatNavigationRepository(prisma);
+      await expect(navigation.searchPage({ cursor: null, limit: 10, query: "temporary", userId }))
+        .resolves.toMatchObject({ kind: "ok", page: { chats: [] } });
+      await expect(navigation.searchMessagesPage({ cursor: null, limit: 10, query: "temporary", userId }))
+        .resolves.toEqual({ kind: "ok", page: { matches: [], nextCursor: null } });
       await expect(chats.archiveChat({ chatId: chat.id, userId })).resolves.toBe(false);
       const shares = createPrismaShareRepository(prisma);
       await expect(shares.createChatShare({

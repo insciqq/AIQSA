@@ -18,10 +18,11 @@ import {
   decodeChatLifecycleResponse,
   decodeChatMemoryStateResponse,
   CHAT_MESSAGE_MATCH_SNIPPET_MAX_LENGTH,
+  chatMessageSearchApplies,
   decodeChatMessageMatchPage,
   decodeChatNavigationPage,
-  decodeChatNavigationSearchPage,
   decodeChatMessagesPageResponse,
+  normalizeChatNavigationQuery,
   decodeChatSourceResolutionResponse,
   decodeChatSummaryResponse,
   decodeChatUpdateData,
@@ -216,8 +217,7 @@ describe("chat wire contracts", () => {
     })).toBeNull();
   });
 
-  it("decodes message matches as their own page beside the title results", () => {
-    const titles = { chats: [], folders: [], nextCursor: null };
+  it("decodes a message match page on its own and keeps it out of title pages", () => {
     const match = {
       chatId: "chat-1",
       createdAt: "2026-08-12T10:00:00.000Z",
@@ -228,12 +228,10 @@ describe("chat wire contracts", () => {
     };
     const messageMatches = { matches: [match], nextCursor: "opaque_cursor" };
 
-    expect(decodeChatNavigationSearchPage({ ...titles, messageMatches })).toEqual({ ...titles, messageMatches });
-    expect(decodeChatNavigationSearchPage({ ...titles, messageMatches: null })).toEqual({ ...titles, messageMatches: null });
     expect(decodeChatMessageMatchPage(messageMatches)).toEqual(messageMatches);
-    // The title page alone is not a search response, and a title decoder never accepts matches.
-    expect(decodeChatNavigationSearchPage(titles)).toBeNull();
-    expect(decodeChatNavigationPage({ ...titles, messageMatches })).toBeNull();
+    expect(decodeChatMessageMatchPage({ matches: [], nextCursor: null })).toEqual({ matches: [], nextCursor: null });
+    // The title search response carries no message matches.
+    expect(decodeChatNavigationPage({ chats: [], folders: [], messageMatches, nextCursor: null })).toBeNull();
     for (const malformed of [
       { ...match, matchCount: 0 },
       { ...match, matchCount: 1.5 },
@@ -246,11 +244,21 @@ describe("chat wire contracts", () => {
       { ...match, content: { blocks: [] } }
     ]) {
       expect(decodeChatMessageMatchPage({ matches: [malformed], nextCursor: null })).toBeNull();
-      expect(decodeChatNavigationSearchPage({ ...titles, messageMatches: { matches: [malformed], nextCursor: null } })).toBeNull();
     }
     expect(decodeChatMessageMatchPage({ matches: [match, { ...match, messageId: "message-8" }], nextCursor: null })).toBeNull();
     expect(decodeChatMessageMatchPage({ ...messageMatches, nextCursor: "bad!" })).toBeNull();
-    expect(decodeChatMessageMatchPage({ matches: [], nextCursor: null })).toEqual({ matches: [], nextCursor: null });
+    expect(decodeChatMessageMatchPage({ ...messageMatches, chats: [] })).toBeNull();
+  });
+
+  it("applies message matching from three characters of the normalized query", () => {
+    expect(normalizeChatNavigationQuery("  ＢＵＤＧＥＴ  ")).toBe("budget");
+    expect(chatMessageSearchApplies("ab")).toBe(false);
+    expect(chatMessageSearchApplies(" ab ")).toBe(false);
+    expect(chatMessageSearchApplies("abc")).toBe(true);
+    // Characters, not UTF-16 units: two astral characters stay too short.
+    expect(chatMessageSearchApplies("😀😀")).toBe(false);
+    // Compatibility characters count as they are matched: ㍍ is メートル.
+    expect(chatMessageSearchApplies("㍍")).toBe(true);
   });
 
   it("decodes a scheduled task chat's unread marker and rejects extra or malformed fields", () => {
