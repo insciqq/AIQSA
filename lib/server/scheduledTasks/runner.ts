@@ -31,6 +31,8 @@ export type ScheduledTaskRunnerDeps = Readonly<{
   renameChat: (input: Readonly<{ chatId: string; title: string; userId: string }>) => Promise<void>;
   send: ScheduledTaskSend;
   sendEmail?: (message: SmtpProductMessage) => Promise<unknown>;
+  /** Queues the occurrence's browser push; the sender claims it at most once and never blocks the tick. */
+  sendPush?: (occurrenceId: string) => void;
   store: ScheduledTaskRunnerStore;
 }>;
 
@@ -121,7 +123,13 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
         ...(settlement.state === "COMPLETED" ? { outcome: "completed" as const }
           : settlement.state === "SKIPPED" ? { outcome: "skipped" as const } : { action: "fail" as const, outcome: "failed" as const })
       });
-      if (!deps.sendEmail || !settlementNotifiesOwner(settlement)) continue;
+      if (!settlementNotifiesOwner(settlement)) continue;
+      try {
+        deps.sendPush?.(settlement.occurrenceId);
+      } catch {
+        // Browser push is best effort and never holds a settlement.
+      }
+      if (!deps.sendEmail) continue;
       if (emailQueue.length >= EMAIL_QUEUE_LIMIT) {
         log({ action: "skip", code: "email_queue_full", job_id: settlement.occurrenceId, outcome: "skipped", stage: "release" });
         continue;

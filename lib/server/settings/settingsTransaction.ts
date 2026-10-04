@@ -11,7 +11,7 @@ import { isAssistantAvailable } from "../assistants/bindingAccess";
 
 export type SettingsTransactionClient = Pick<
   Prisma.TransactionClient,
-  "$queryRaw" | "userSettings"
+  "$queryRaw" | "browserPushSubscription" | "userSettings"
 >;
 
 type LockedSettingsRow = {
@@ -36,6 +36,7 @@ function serializeSettings(settings: {
   defaultSearchPlan: unknown;
   answerSoundEnabled: boolean;
   answerSoundId: string;
+  browserNotificationsEnabled: boolean;
   sendWithEnter: boolean;
   showCitations: boolean;
   showReasoningBlocks: boolean;
@@ -52,6 +53,7 @@ function serializeSettings(settings: {
     defaultSearchPlan: settings.defaultSearchPlan,
     answerSoundEnabled: settings.answerSoundEnabled,
     answerSoundId: isAnswerSoundId(settings.answerSoundId) ? settings.answerSoundId : "rise",
+    browserNotificationsEnabled: settings.browserNotificationsEnabled,
     sendWithEnter: settings.sendWithEnter,
     showCitations: settings.showCitations,
     showReasoningBlocks: settings.showReasoningBlocks
@@ -223,6 +225,7 @@ export async function applySettingsUpdateInTransaction(
       defaultSearchPlan: true,
       answerSoundEnabled: true,
       answerSoundId: true,
+      browserNotificationsEnabled: true,
       sendWithEnter: true,
       showCitations: true,
       showReasoningBlocks: true
@@ -231,6 +234,11 @@ export async function applySettingsUpdateInTransaction(
       userId
     }
   });
+  // Under the settings row lock that subscription registration shares: no
+  // device stays subscribed once notifications are off.
+  if (update.browserNotificationsEnabled === false) {
+    await tx.browserPushSubscription.deleteMany({ where: { userId } });
+  }
 
   return {
     kind: "updated",

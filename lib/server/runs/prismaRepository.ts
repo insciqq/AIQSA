@@ -46,6 +46,7 @@ import {
   boundedMemoryAdmissionDeadlineMs,
   MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
 } from "../memory/admissionDeadline";
+import { signalRunTerminal } from "../push/runTerminalSignal";
 import { serializeRunAssistantIdentity } from "./prismaRepositoryBindings";
 import {
   admitPreparingRunWithClient,
@@ -668,7 +669,7 @@ export function createPrismaRunRepository(
     completeRun: async (input) => {
       const usage = normalizeTokenUsage(input.usage);
 
-      return prismaClient.$transaction(async (tx) => {
+      const completed = await prismaClient.$transaction(async (tx) => {
         await lockRunSettlementScope(tx, input.runId);
         const [existingRun] = await tx.$queryRaw<
           Array<{
@@ -786,6 +787,9 @@ export function createPrismaRunRepository(
         if (!existingRun.answerCompletedAt) await appendRunOutputEvents(tx, input.runId, input.outputEvents ?? []);
         return true;
       }).catch(retainRunPrismaCode);
+      // After commit; the push sender claims the run at most once.
+      if (completed) signalRunTerminal(input.runId);
+      return completed;
     },
     continuePdfPreparedRun: async (input) => {
       const created = await continuePdfPreparedRunWithClient(prismaClient, input,
@@ -884,7 +888,7 @@ export function createPrismaRunRepository(
       }).catch(retainRunPrismaCode);
     },
     failRun: async (runId, assistantMessageId, error, options) => {
-      return prismaClient.$transaction(async (tx) => {
+      const failed = await prismaClient.$transaction(async (tx) => {
         await lockRunSettlementScope(tx, runId);
         const [lockedRun] = await tx.$queryRaw<Array<{
           status: ModelRunStatus;
@@ -958,6 +962,8 @@ export function createPrismaRunRepository(
         }
         return true;
       }).catch(retainRunPrismaCode);
+      if (failed) signalRunTerminal(runId);
+      return failed;
     },
     findOwnedChat: async (chatId, userId) => {
       const chat = await prismaClient.chat.findFirst({
