@@ -111,6 +111,7 @@ function requestBody(patch: SettingsDefaultsPatch): Record<string, unknown> {
   return {
     ...(patch.answerSoundEnabled !== undefined ? { answerSoundEnabled: patch.answerSoundEnabled } : {}),
     ...(patch.answerSoundId !== undefined ? { answerSoundId: patch.answerSoundId } : {}),
+    ...(patch.browserNotificationsEnabled !== undefined ? { browserNotificationsEnabled: patch.browserNotificationsEnabled } : {}),
     ...(updatesPersonalModel
       ? patch.personalModelDefault
         ? { defaultProviderModelId: patch.personalModelDefault.modelId }
@@ -170,6 +171,7 @@ function reconciledPatch(
   const patch: SettingsDefaultsPatch = {};
   if (sent.answerSoundEnabled !== undefined) patch.answerSoundEnabled = settings.answerSoundEnabled;
   if (sent.answerSoundId !== undefined) patch.answerSoundId = settings.answerSoundId;
+  if (sent.browserNotificationsEnabled !== undefined) patch.browserNotificationsEnabled = settings.browserNotificationsEnabled;
 
   if (Object.prototype.hasOwnProperty.call(sent, "personalModelDefault")) {
     const effectiveModel = settings.personalModelDefault ?? settings.organizationModelDefault;
