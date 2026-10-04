@@ -88,7 +88,7 @@ describe("scheduled task occurrences", () => {
   });
 
   it("runs an hourly window at the same local hours on both sides of a Berlin DST change and never on weekends", () => {
-    const office = { kind: "hourly", everyHours: 1, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } as const;
+    const office = { kind: "hourly", everyHours: 1, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } satisfies ScheduledTaskSchedule;
     const hours = (day: string, offset: number) => Array.from({ length: 10 }, (_value, index) =>
       new Date(Date.parse(`${day}T09:00:00Z`) + (index - offset) * 3_600_000).toISOString());
     // Friday 23 October in CEST (+02:00), the clocks go back on Sunday 25 October, Monday in CET (+01:00).
@@ -100,7 +100,7 @@ describe("scheduled task occurrences", () => {
   });
 
   it("runs every Berlin wall-clock hour once across both DST transitions", () => {
-    const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: [...SCHEDULED_TASK_WEEKDAYS] } as const;
+    const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: [...SCHEDULED_TASK_WEEKDAYS] } satisfies ScheduledTaskSchedule;
     expect(sequence(hourly, "Europe/Berlin", "2026-03-28T22:30:00Z", 4)).toEqual([
       "2026-03-28T23:00:00.000Z", // 00:00 CET
       "2026-03-29T00:00:00.000Z", // 01:00 CET
@@ -123,7 +123,7 @@ describe("scheduled task occurrences", () => {
   });
 
   it("follows Lord Howe's half-hour transitions with nominal hourly spacing", () => {
-    const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: [...SCHEDULED_TASK_WEEKDAYS] } as const;
+    const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: [...SCHEDULED_TASK_WEEKDAYS] } satisfies ScheduledTaskSchedule;
     // 4 October 2026: 02:00 (+10:30) jumps to 02:30 (+11:00).
     expect(sequence(hourly, "Australia/Lord_Howe", "2026-10-03T13:00:00Z", 4)).toEqual([
       "2026-10-03T13:30:00.000Z", // 00:00 +10:30
@@ -145,7 +145,7 @@ describe("scheduled task occurrences", () => {
 
   it("aligns hourly slots to the window start in a zone without DST", () => {
     // Asia/Tokyo is +09:00 all year; 9 October 2026 is a Friday.
-    const weekend = { kind: "hourly", everyHours: 3, time: "08:00", until: "20:00", days: ["sat", "sun"] } as const;
+    const weekend = { kind: "hourly", everyHours: 3, time: "08:00", until: "20:00", days: ["sat", "sun"] } satisfies ScheduledTaskSchedule;
     expect(sequence(weekend, "Asia/Tokyo", "2026-10-09T12:00:00Z", 6)).toEqual([
       "2026-10-09T23:00:00.000Z", "2026-10-10T02:00:00.000Z", "2026-10-10T05:00:00.000Z", "2026-10-10T08:00:00.000Z",
       "2026-10-10T11:00:00.000Z", // 20:00: an aligned window end is included
@@ -229,7 +229,7 @@ describe("scheduled task schedule validation", () => {
     expect(sameScheduledTaskSchedule({ kind: "daily", time: "09:00" }, { kind: "weekly", time: "09:00", days: ["mon"] })).toBe(false);
     expect(sameScheduledTaskSchedule({ kind: "monthly", time: "09:00", dayOfMonth: 1 },
       { kind: "monthly", time: "09:00", dayOfMonth: 2 })).toBe(false);
-    const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "fri"] } as const;
+    const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "fri"] } satisfies ScheduledTaskSchedule;
     expect(sameScheduledTaskSchedule(hourly, { ...hourly, days: ["fri", "mon"] })).toBe(true);
     for (const other of [{ ...hourly, everyHours: 3 as const }, { ...hourly, until: null }, { ...hourly, time: "10:00" },
       { ...hourly, days: ["mon" as const] }]) {

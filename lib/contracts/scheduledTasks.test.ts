@@ -14,7 +14,8 @@ import {
   scheduledTaskChatModeAllowed,
   scheduledTaskErrorMessage,
   scheduledTaskReasonMessage,
-  type ScheduledTask
+  type ScheduledTask,
+  type ScheduledTaskSchedule
 } from "./scheduledTasks";
 
 const task: ScheduledTask = {
@@ -26,7 +27,7 @@ const task: ScheduledTask = {
   running: false, chatId: "chat-1", unseenResult: true, revision: 3,
   createdAt: "2026-09-30T10:00:00.000Z", updatedAt: "2026-10-02T06:01:10.000Z"
 };
-const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } as const;
+const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } satisfies ScheduledTaskSchedule;
 
 describe("scheduled task wire contract", () => {
   it("bounds titles like the chat title they become, in code points", () => {

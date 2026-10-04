@@ -343,7 +343,7 @@ describe("scheduled task runner", () => {
 
   it("skips an instant that comes due while the previous run is still in progress, quietly", async () => {
     const h = harness();
-    const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } as const;
+    const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } satisfies ScheduledTaskSchedule;
     const task = h.addTask({ emailNotify: true, schedule: hourly });
     h.setReply(() => ({ runStatus: "streaming" }));
     await h.tick();
@@ -370,7 +370,7 @@ describe("scheduled task runner", () => {
 
   it("replaces a pending run that could not start once the next instant arrives", async () => {
     const h = harness();
-    const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } as const;
+    const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } satisfies ScheduledTaskSchedule;
     const next = new Date("2026-10-05T07:00:00.000Z");
     // Busy retries since 06:45, still within their window when 07:00 arrives.
     const busyTask = h.addTask({ nextRunAt: next, schedule: hourly });

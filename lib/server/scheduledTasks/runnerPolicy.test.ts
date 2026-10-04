@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import {
   SCHEDULED_TASK_MAX_EXECUTING,
   SCHEDULED_TASK_MAX_EXECUTING_PER_USER,
@@ -13,7 +14,7 @@ import {
 } from "./runnerPolicy";
 
 const daily = { kind: "daily", time: "09:00" } as const; // 06:00 UTC in Moscow
-const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } as const;
+const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } satisfies ScheduledTaskSchedule;
 const at = (iso: string) => new Date(iso);
 
 describe("claim planning", () => {

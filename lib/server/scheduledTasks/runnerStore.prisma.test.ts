@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import type { ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { SMTP_CONTROL_ID } from "../email/repository";
@@ -17,7 +18,7 @@ const runner = createPrismaScheduledTaskRunnerStore(prisma);
 const owners = createPrismaScheduledTaskStore(prisma);
 const runs = createPrismaRunRepository(prisma);
 const daily = { kind: "daily", time: "09:00" } as const;
-const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } as const;
+const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } satisfies ScheduledTaskSchedule;
 
 async function owner(): Promise<string> {
   const id = `scheduled-runner-test-${randomUUID()}`;
