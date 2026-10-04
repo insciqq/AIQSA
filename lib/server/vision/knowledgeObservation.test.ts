@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
-import { KNOWLEDGE_IMAGE_OBSERVATION_LIMITS, KNOWLEDGE_IMAGE_OBSERVATION_SYSTEM_PROMPT, knowledgeImageObservationRequestHash,
+import { KNOWLEDGE_IMAGE_OBSERVATION_LIMITS, KNOWLEDGE_IMAGE_OBSERVATION_SYSTEM_PROMPT, knowledgeImageObservationAnswerOutputTokens, knowledgeImageObservationRequestHash,
   type KnowledgeImageObservationPlan } from "../knowledge/imageObservation";
 import { buildOpenAIResponsesRequest } from "../providers/openaiResponsesRequest";
 import type { ConversationImageSource, ConversationVisionImage } from "./conversationImages";
@@ -35,7 +35,7 @@ function fixture(existing: KnowledgeImageObservationOutcome | null = null) {
       row = "dispatched";
       return null;
     }),
-    settle: vi.fn(async (_c: unknown, result: KnowledgeImageObservationOutcome, _usage: unknown, unknown: boolean) => {
+    settle: vi.fn(async (_c: unknown, result: KnowledgeImageObservationOutcome, _usage: unknown, unknown: boolean, _signal: AbortSignal) => {
       row = unknown ? { kind: "unknown" } : result;
       return row;
     })
@@ -126,6 +126,21 @@ describe("Knowledge image observation", () => {
     expect(onDispatch).toHaveBeenCalledOnce();
     expect(onDispatch.mock.calls[0]![1]).toEqual({ provider: "openai_compatible", modelId: "visual-model" });
     expect(finish).toHaveBeenCalledWith(true, null);
+  });
+
+  it("gives an answer model its own bounded allowance and lets only Stop withhold a completed description", async () => {
+    expect(knowledgeImageObservationAnswerOutputTokens({ contextWindow: 32_000, maxOutputTokens: 128_000 })).toBe(16_000);
+    expect(knowledgeImageObservationAnswerOutputTokens({ contextWindow: null, maxOutputTokens: 8_000 })).toBe(8_000);
+    expect(knowledgeImageObservationAnswerOutputTokens({ contextWindow: 1_000_000, maxOutputTokens: 65_536 }))
+      .toBe(KNOWLEDGE_IMAGE_OBSERVATION_LIMITS.answerModelMaxOutputTokens);
+    const f = fixture();
+    await f.observe({ ...f.input, maxOutputTokens: 12_000 });
+    expect(f.execute.mock.calls[0]![1].params).toMatchObject({ maxOutputTokens: 12_000, max_output_tokens: 12_000 });
+    // Settlement sees the run's Stop signal, not the description's own deadline.
+    expect(f.store.settle.mock.calls[0]![4]).toBe(f.input.signal);
+    const capped = fixture();
+    await capped.observe({ ...capped.input, maxOutputTokens: 1_000_000 });
+    expect(capped.execute.mock.calls[0]![1].params).toMatchObject({ maxOutputTokens: KNOWLEDGE_IMAGE_OBSERVATION_LIMITS.answerModelMaxOutputTokens });
   });
 
   it("settles a claim that never reached the provider as a definite failure", async () => {

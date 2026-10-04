@@ -122,7 +122,8 @@ import { knowledgeSearchFailureCode, knowledgeSearchFailureMessage, knowledgeSea
   knowledgeSearchFailureFromToolResult, knowledgeSearchUnavailableMessage, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode } from "../knowledge/searchFailure";
 import type { KnowledgeEvidenceDispatchBinding } from "../knowledge/evidenceDispatchRepository";
 import { KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT } from "../knowledge/fullContext";
-import { KNOWLEDGE_IMAGE_OBSERVATION_FAILURES, type KnowledgeImageObservationBlock } from "../knowledge/imageObservation";
+import { KNOWLEDGE_IMAGE_OBSERVATION_FAILURES, knowledgeImageObservationAnswerOutputTokens,
+  type KnowledgeImageObservationBlock } from "../knowledge/imageObservation";
 import type {
   KnowledgeProviderDispatchLifecycle
 } from "../knowledge/providerDispatchLifecycle";
@@ -1629,14 +1630,17 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         if (!plan) return undefined;
         const failure = KNOWLEDGE_IMAGE_OBSERVATION_FAILURES;
         if (!input.vision) throw new RunPipelineError(failure.failed.code, failure.failed.message);
+        // Lost Project access fails with its own reason, before any image is read.
+        await assertProjectRunAccessCurrent(true);
+        const budget = normalizedRequest.knowledgeGenerationBudget;
         const outcome = await input.vision.observeKnowledgeImages({
           plan, question: textFromContentBlocks(normalizedRequest.content), chatId: normalizedRequest.chatId, runId, userId: input.userId,
           async authorize() {
             await assertProjectRunAccessCurrent(true);
             return plan.route === "system_vision" || await currentAnswerDispatchAllowed();
           },
-          ...(plan.route === "answer_model" && normalizedRequest.knowledgeGenerationBudget
-            ? { timeoutMs: normalizedRequest.knowledgeGenerationBudget.timeoutMs } : {}),
+          ...(plan.route === "answer_model" && budget
+            ? { timeoutMs: budget.timeoutMs, maxOutputTokens: knowledgeImageObservationAnswerOutputTokens(budget) } : {}),
           ...(egressReceiptRequired && input.memoryEgress ? { async onDispatch(request: ProviderRunRequest, destination: Readonly<{ provider: string; modelId: string }>) {
             const receipt = await input.memoryEgress!.beginDispatch({
               destinationKind: plan.route === "system_vision" ? "vision_analysis" : "answer_provider",
