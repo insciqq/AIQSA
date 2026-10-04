@@ -7,6 +7,7 @@ function validResponse(): UpdateSettingsResponse {
     settings: {
       answerSoundEnabled: true,
       answerSoundId: "rise",
+      browserNotificationsEnabled: true,
       defaultControlValues: {},
       defaultKnowledgePlan: null,
       defaultMcpMode: "auto",
@@ -72,6 +73,16 @@ describe("settings wire contract", () => {
       expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, answerSoundId: invalid } })).toBeNull();
     }
     expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, answerSoundEnabled: "false" } })).toBeNull();
+  });
+
+  it("defaults browser notifications to on and accepts only a boolean", () => {
+    const response = validResponse();
+    const olderWire: Record<string, unknown> = { ...response.settings };
+    delete olderWire.browserNotificationsEnabled;
+    expect(decodeUpdateSettingsResponse({ settings: olderWire })?.settings.browserNotificationsEnabled).toBe(true);
+    expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, browserNotificationsEnabled: false } })
+      ?.settings.browserNotificationsEnabled).toBe(false);
+    expect(decodeUpdateSettingsResponse({ settings: { ...response.settings, browserNotificationsEnabled: "off" } })).toBeNull();
   });
 
   it.each(ANSWER_SOUNDS)("accepts the saved $label selection", ({ value }) => {

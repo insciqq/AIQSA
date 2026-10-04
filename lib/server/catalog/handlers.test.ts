@@ -138,6 +138,7 @@ describe("catalog handler", () => {
     expect(Object.keys(body.catalog.defaults)).toEqual([
       "answerSoundEnabled",
       "answerSoundId",
+      "browserNotificationsEnabled",
       "controlValues",
       "modelId",
       "hasPersonalModelDefault",
