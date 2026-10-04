@@ -168,7 +168,9 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
     const timeoutMs = Math.min(Math.max(input.timeoutMs ?? LIMITS.timeoutMs, 1_000), 600_000);
     const bounded = AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)]);
     let images: readonly ConversationVisionImage[] = [];
+    // Claimed: the row exists and must settle. Sent: the provider may have it.
     let dispatched = false;
+    let sent = false;
     let completed = false;
     let usage = normalizeTokenUsage({});
     let finish: ((ok: boolean, code: string | null) => Promise<void>) | null = null;
@@ -195,6 +197,7 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
         finish = await input.onDispatch?.(request, { provider: destination.snapshot.providerFamily,
           modelId: destination.snapshot.model.upstreamModelId }) ?? null;
         bounded.throwIfAborted();
+        sent = true;
         const response = await options.execute(destination.snapshot, request, { signal: bounded, timeoutMs,
           onUsage: update => { usage = mergeTokenUsage(usage, update); } });
         completed = true;
@@ -205,12 +208,13 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
       } catch (error) {
         const observed = observedFailureCode(error);
         const code = input.signal.aborted ? "vision_analysis_cancelled" : bounded.aborted ? "vision_analysis_timeout"
-          : KNOWN_FAILURES.has(observed) ? observed : dispatched ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";
+          : KNOWN_FAILURES.has(observed) ? observed : sent ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";
         result = { kind: "failed", code };
       }
-      // Nothing was sent: the run fails visibly and nothing needs settling.
+      // Nothing was claimed: the run fails visibly and nothing needs settling.
       if (!dispatched) return result;
-      const unknown = !completed;
+      // A claim that never reached the provider settles as a definite failure.
+      const unknown = sent && !completed;
       await finish?.(result.kind === "observed", result.kind === "failed" ? result.code : null).catch(() => undefined);
       // The settlement is keyed by the run and has one winner; retry only this identical local write.
       try { return await store.settle(c, result, usage, unknown, bounded); }

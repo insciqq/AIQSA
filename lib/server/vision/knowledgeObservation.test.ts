@@ -128,6 +128,16 @@ describe("Knowledge image observation", () => {
     expect(finish).toHaveBeenCalledWith(true, null);
   });
 
+  it("settles a claim that never reached the provider as a definite failure", async () => {
+    const f = fixture();
+    const onDispatch = vi.fn(async () => { throw new Error("journal_unavailable"); });
+    await expect(f.observe({ ...f.input, onDispatch })).resolves.toEqual({ kind: "failed", code: "vision_analysis_internal_failed" });
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.store.settle).toHaveBeenCalledOnce();
+    // Not ambiguous: nothing was sent, so the failure is final rather than an unknown outcome.
+    expect(f.store.settle.mock.calls[0]![3]).toBe(false);
+  });
+
   it("settles an empty or tool-calling response as a visible failure with its usage", async () => {
     const f = fixture();
     f.execute.mockResolvedValueOnce({ finalText: " ", finalProviderResponsePreview: {}, usage: { inputTokens: 3, outputTokens: 0 } });
