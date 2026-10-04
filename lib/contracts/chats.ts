@@ -70,7 +70,13 @@ import {
   type ThreadWorkspaceActivity
 } from "./workspace";
 import { decodeContextCompactionStatus, type ContextCompactionStatus } from "./contextCompaction";
-import { isScheduledTaskCheckOutcome, type ScheduledTaskCheckOutcome } from "./scheduledTasks";
+import {
+  SCHEDULED_TASK_CARDS_LIMIT,
+  decodeScheduledTaskCard,
+  isScheduledTaskCheckOutcome,
+  type ScheduledTaskCard,
+  type ScheduledTaskCheckOutcome
+} from "./scheduledTasks";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -210,6 +216,8 @@ export type ThreadArtifactSummary = {
   reasoningText: string[];
   /** Part of the thinking was too long to keep or show. */
   reasoningTruncated?: true;
+  /** Scheduled tasks the answer created; see `ScheduledTaskCard`. */
+  scheduledTasks?: ScheduledTaskCard[];
   sources: ThreadSearchSource[];
   /** Search results beyond THREAD_SEARCH_SOURCE_MAX_ITEMS were left out. */
   sourcesTruncated?: true;
@@ -1048,6 +1056,9 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   const workDurationMs = Number.isSafeInteger(value.workDurationMs) && (value.workDurationMs as number) >= 0
     ? value.workDurationMs as number
     : undefined;
+  const scheduledTasks = Array.isArray(value.scheduledTasks)
+    ? decodeOptionalItems(value.scheduledTasks, decodeScheduledTaskCard, SCHEDULED_TASK_CARDS_LIMIT, (card) => card.taskId).items
+    : undefined;
 
   return {
     citations: citations.items,
@@ -1065,6 +1076,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(memorySources !== undefined ? { memorySources } : {}),
     reasoningText: reasoning.reasoningText,
     ...(reasoning.truncated || value.reasoningTruncated === true ? { reasoningTruncated: true as const } : {}),
+    ...(scheduledTasks?.length ? { scheduledTasks } : {}),
     sources: sources.items,
     ...(sources.truncated || value.sourcesTruncated === true ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== undefined ? { workDurationMs } : {})

@@ -213,6 +213,11 @@ import {
   monitoringVerdictTool,
   type MonitoringVerdictRecorder
 } from "../tools/monitoringVerdict";
+import {
+  executeCreateScheduledTask,
+  isScheduledTaskCreateCall,
+  scheduledTaskToolsForRequest
+} from "../tools/scheduledTaskCreation";
 import type { ProviderToolBridge } from "../tools/types";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { memorySearchTool, MEMORY_SEARCH_TOOL_NAME } from "../memory/search/contract";
@@ -351,6 +356,7 @@ export type RunRecoveryRepository = Pick<
   | "projectToolHistory"
   | "readToolCall"
   | "recordMonitoringVerdict"
+  | "createScheduledTaskForCall"
   | "toolCallsAvailable"
 >>;
 
@@ -980,6 +986,11 @@ function isRecoveredMonitoringCall(context: RecoveryToolContext, name: string): 
   return isMonitoringVerdictCall(context.run.normalizedRequest, name);
 }
 
+/** The run's scheduled task creation as admitted; its creation settles the call atomically. */
+function isRecoveredScheduledTaskCall(context: RecoveryToolContext, name: string): boolean {
+  return isScheduledTaskCreateCall(context.run.normalizedRequest, name);
+}
+
 function recoveredVerdictRecorder(deps: RunRecoveryDeps): MonitoringVerdictRecorder | undefined {
   const record = deps.repository.recordMonitoringVerdict;
   return record ? (input) => record(input) : undefined;
@@ -1568,6 +1579,18 @@ async function executePersistedToolCallInContext(
     }
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: blocked }, round: persisted.roundIndex };
   }
+  if (isRecoveredScheduledTaskCall(context, call.name) && (claim.kind === "claimed" || claim.kind === "ambiguous")) {
+    // Created and settled in one transaction: an interrupted call finds that
+    // settlement or nothing created, so it never creates a second task.
+    const result = await executeCreateScheduledTask(call, { persistedToolCallId: persisted.id,
+      request: context.run.normalizedRequest, runId: context.run.id, userId: context.run.userId },
+    context.deps.repository.createScheduledTaskForCall?.bind(context.deps.repository));
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,
+      result: snapshot, runId: context.run.id, state: result.status, userId: context.run.userId });
+    if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "A recovered scheduled task creation could not be settled.");
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
+  }
   const memoryActivity = async (state: "running" | "complete" | "error" | "cancelled", result?: ToolExecutionResult) => {
     const event = memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex, state, result });
     const projected = projectRunOutputArtifactEvent(event);
@@ -1857,7 +1880,7 @@ async function executePersistedToolCallInContext(
     const isImageCall = Boolean(context.run.normalizedRequest.imagePlan) && call.name === IMAGE_GENERATION_TOOL_NAME;
     const isSessionCall = context.run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME;
     const isMemoryCall = Boolean(context.run.normalizedRequest.memorySearch) && call.name === MEMORY_SEARCH_TOOL_NAME;
-    const externalCall = !isMemoryCall && !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredMonitoringCall(context, call.name) && !isRecoveredObservationRead(context, call.name) && !isRecoveredCallRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
+    const externalCall = !isMemoryCall && !preflightResult && !(isVisionCall && !context.run.normalizedRequest.visionAnalysis?.available) && !isRecoveredMcpDiscoveryCall(context, call.name) && !isSessionCall && !isRecoveredMonitoringCall(context, call.name) && !isRecoveredScheduledTaskCall(context, call.name) && !isRecoveredObservationRead(context, call.name) && !isRecoveredCallRead(context, call.name) && !isRecoveredArtifactCall(context, call.name) && !isRecoveredSkillCall(context, call.name) && !isViewImageCall && !isCheckpointCall;
     if (externalCall) {
       if (!context.deps.memoryEgress && process.env.NODE_ENV === "production") {
         throw new Error("memory_egress_receipt_unavailable");
@@ -2199,6 +2222,7 @@ async function executePersistedToolBatch(
     !isRecoveredObservationRead(context, call.toolName) &&
     !isRecoveredCallRead(context, call.toolName) &&
     !isRecoveredMonitoringCall(context, call.toolName) &&
+    !isRecoveredScheduledTaskCall(context, call.toolName) &&
     !(context.run.normalizedRequest.toolObservationVersion === 1 &&
       (isRecoveredWorkspaceCall(context, call.toolName) || isRecoveredSearchCall(context, call.toolName) ||
         resolveMcpRunTool(context.activeMcpSnapshot, call.toolName))) &&
@@ -2522,6 +2546,7 @@ async function recoverCheckpointedToolLoop(
       ...(clientToolsEnabled && run.normalizedRequest.artifactTool ? [artifactTool(run.normalizedRequest.artifactToolDescription), ...(run.normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
       ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
       ...(run.normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
+      ...scheduledTaskToolsForRequest(run.normalizedRequest),
       ...(run.normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
       ...(run.normalizedRequest.toolCallReader ? [readToolCallTool] : []),
       ...(recoveredKnowledgeEnabled
@@ -3112,7 +3137,8 @@ async function recoverCheckpointedToolLoop(
             !isRecoveredObservationRead(context, call.name) &&
             !isRecoveredCallRead(context, call.name) &&
             !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME) &&
-            !isMonitoringVerdictCall(run.normalizedRequest, call.name)) {
+            !isMonitoringVerdictCall(run.normalizedRequest, call.name) &&
+            !isScheduledTaskCreateCall(run.normalizedRequest, call.name)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`
