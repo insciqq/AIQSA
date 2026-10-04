@@ -142,6 +142,10 @@ describe("persisted browser push", () => {
       chatId: scheduled.chatId, finishedAt: now, runId: scheduled.runId, scheduledFor: now, state: "COMPLETED", taskId: task.id,
       trigger: "manual", userId
     } });
+    await prisma.modelRun.update({
+      data: { scheduledOccurrenceId: occurrence.id, scheduledTaskGeneration: 1, scheduledTaskId: task.id },
+      where: { id: scheduled.runId }
+    });
     expect(await store.claimRun(scheduled.runId, now)).toBeNull();
     expect(await store.claimOccurrence(occurrence.id, now)).toMatchObject({
       chatId: scheduled.chatId, kind: "occurrence", state: "COMPLETED", title: "Synthetic brief", trigger: "manual", userId
