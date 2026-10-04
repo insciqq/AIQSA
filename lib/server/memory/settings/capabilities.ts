@@ -89,8 +89,6 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
     input.operations.workerAvailable;
   const pastChatIndexingAvailable = masterOn && input.settings.referenceChatHistory &&
     input.operations.retrievalIndexAvailable && input.operations.workerAvailable;
-  // The name is retained for one release; it reports maintenance availability.
-  const synthesisAvailable = masterOn && maintenanceAvailable;
   const decayAvailable = masterOn && input.settings.decayEnabled &&
     input.settings.decayPolicyVersion === MEMORY_DECAY_POLICY_VERSION &&
     retrievalAvailable;
@@ -107,7 +105,6 @@ export function deriveMemorySettingsCapabilities(input: Readonly<{
     pastChatIndexingAvailable,
     permanentChatDeletion: input.base.permanentChatDeletion,
     retrievalAvailable,
-    synthesisAvailable,
     temporaryChats: input.base.temporaryChats
   });
 }

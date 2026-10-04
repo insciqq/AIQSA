@@ -1,7 +1,7 @@
 import { calculateContextBudgetLimits, estimateApproxTokens } from "../../domain/contextBudget";
 import { maxOutputTokensFromParams } from "../../domain/providerParams";
 import { structuredOutputInput } from "./modelOutputAllowance";
-import { declaredModelOutputTokenLimit } from "./providerModelCapabilities";
+import { declaredModelOutputTokenLimit, geminiConfiguredThinkingLevels } from "./providerModelCapabilities";
 import { anthropicServerValidatedSchemaConstraint } from "./anthropicStrictSchema";
 import type { JsonSchemaType } from "@modelcontextprotocol/client";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
@@ -117,7 +117,6 @@ const GEMINI_SCHEMA_KEYS = new Set([
   "oneOf", "pattern", "prefixItems", "properties", "required", "title", "type", "uniqueItems"
 ]);
 const GEMINI_SERVER_VALIDATED_SCHEMA_KEYS = new Set(["maxLength", "minLength", "pattern"]);
-const GEMINI_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high"]);
 const ANTHROPIC_SCHEMA_KEYS = new Set([
   "additionalProperties", "allOf", "anyOf", "const", "default", "description", "enum", "format",
   "items", "maximum", "maxItems", "maxLength", "minimum", "minItems", "minLength", "multipleOf",
@@ -602,8 +601,8 @@ export function buildGeminiInteractionsStructuredOutputRequest(
   const effort = normalized.reasoningEffort ?? reasoning.effort ?? model.capabilities.defaultReasoningEffort;
   if (effort !== undefined && effort !== null && (
     model.capabilities.reasoning
-      ? typeof effort !== "string" || !GEMINI_THINKING_LEVELS.has(effort) ||
-        model.capabilities.reasoningEfforts && !model.capabilities.reasoningEfforts.includes(effort)
+      ? typeof effort !== "string" ||
+        !geminiConfiguredThinkingLevels(model.upstreamModelId, model.capabilities).includes(effort)
       : effort !== "none"
   )) throw new Error("structured_output_request_invalid");
   return {

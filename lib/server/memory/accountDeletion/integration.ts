@@ -87,12 +87,9 @@ async function fenceAndAdmit(
       memoryRevision: { increment: 1 },
       referenceChatHistory: false,
       settingsRevision: { increment: 1 },
-      synthesisEnabled: false,
-      synthesisEnabledAt: null,
-      synthesisPolicyVersion: null,
-      lastSynthesisAt: null,
       useMemoryFacts: false
     },
+    select: { userId: true },
     where: { userId }
   });
   await tx.memoryJob.updateMany({

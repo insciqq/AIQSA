@@ -84,6 +84,38 @@
 .v2-chat-context-trigger svg { width: 1.25rem; height: 1.25rem; transform: rotate(-90deg); }
 .v2-chat-context-track { stroke: var(--v2-color-border2); }
 
+/* A suggested continuation marks the gauge, and "⋯" on phones; the panel
+   opens only on click. `::after` belongs to the tooltip. */
+.v2-chat-context-trigger[data-suggested],
+.v2-live-more > .v2-icon-button[data-attention] {
+  position: relative;
+}
+
+.v2-chat-context-trigger[data-suggested]::before,
+.v2-live-more > .v2-icon-button[data-attention]::before {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--v2-color-accent);
+  box-shadow: 0 0 0 2px var(--v2-color-surface);
+  content: "";
+  pointer-events: none;
+}
+
+/* On the gauge the dot takes its own room after the percentage, level with
+   the label's top on both the 32px and the 44px touch trigger. */
+.v2-chat-context-trigger[data-suggested] {
+  padding-right: 0.875rem;
+}
+
+.v2-chat-context-trigger[data-suggested]::before {
+  top: calc(50% - 0.75rem);
+  right: 0.125rem;
+}
+
 .v2-chat-context-popover {
   position: absolute;
   z-index: 95;

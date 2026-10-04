@@ -2,9 +2,10 @@ import { databaseFailureCode, retainDatabaseFailure } from "../observability/dat
 import { logEvent } from "../observability";
 import { loadMcpToolAccess } from "./toolAccess";
 import { randomUUID } from "node:crypto";
-import { Prisma, type PrismaClient } from "@prisma/client";
+import { Prisma, type McpActivationStage as StoredMcpActivationStage, type PrismaClient } from "@prisma/client";
 import {
   boundMcpToolDescription,
+  isMcpAuthorizationHeader,
   isMcpInventoryDifferenceReason,
   isMcpToolName,
   MCP_INVENTORY_EXCLUSION_LIMIT,
@@ -19,6 +20,7 @@ import type {
   AdminMcpActivationSummary,
   AdminMcpInventoryDifference,
   AdminMcpServer,
+  McpActivationStage,
   McpConfigurationSlot,
   McpDraftConfiguration,
   McpDraftTestSummary,
@@ -403,11 +405,19 @@ function serializeActivation(
         id: job.id,
         issues: activationIssuesFrom(job.issues),
         requestedAt: job.requestedAt.toISOString(),
-        stage: job.stage,
+        stage: activationStageFrom(job.stage),
         startedAt: job.startedAt?.toISOString() ?? null,
         updatedAt: job.updatedAt.toISOString()
       }
     : null;
+}
+
+/**
+ * The upgrade migration moved every job out of the retired local stages and no
+ * release writes them; the enum keeps them until a later release drops them.
+ */
+function activationStageFrom(stage: StoredMcpActivationStage): McpActivationStage {
+  return stage === "resolving" || stage === "preparing_runtime" ? "queued" : stage;
 }
 
 function validationEvidenceFrom(value: unknown, fallbackTestedAt: Date): McpValidationEvidence {
@@ -903,6 +913,7 @@ function serializeUserServer(input: {
     }
     const plan = resolved.plan.find((item) => item.slotKey === slot.slotKey)!;
     const field: UserMcpConfigurationField = {
+      ...(isMcpAuthorizationHeader(slot.target.name) ? { authorizationHeader: true as const } : {}),
       configured: plan.source !== "missing",
       label: slot.label,
       sensitive: slot.sensitive,
@@ -1244,8 +1255,6 @@ async function enabledServerLimitReached(
 
 const LIVE_ACTIVATION_STAGES = [
   "queued",
-  "resolving",
-  "preparing_runtime",
   "connecting",
   "discovering_tools",
   "publishing"

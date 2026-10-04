@@ -21,7 +21,7 @@ import {
 } from "./repository";
 import type { MemoryRelationProvider } from "./resolver";
 import { createPrismaMemoryExplicitRelationHandler } from "./explicitHandler";
-import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION } from "./explicitPolicy";
+import { isMemoryExplicitRelationPipelineVersion } from "./explicitPolicy";
 
 type AuthorizedRelationResult = Readonly<{
   acceptedOutputHash: string;
@@ -152,9 +152,9 @@ export function createPrismaMemoryRelationHandler(
   const explicit = createPrismaMemoryExplicitRelationHandler(client, options);
   return Object.freeze({
     kind: "RESOLVE_FACT_RELATIONS" as const,
-    preflight: (job) => job.pipelineVersion === MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION
+    preflight: (job) => isMemoryExplicitRelationPipelineVersion(job.pipelineVersion)
       ? explicit.preflight(job) : direct.preflight(job),
-    execute: (job, context) => job.pipelineVersion === MEMORY_EXPLICIT_RELATION_PIPELINE_VERSION
+    execute: (job, context) => isMemoryExplicitRelationPipelineVersion(job.pipelineVersion)
       ? explicit.execute(job, context) : direct.execute(job, context)
   });
 }

@@ -58,6 +58,7 @@ function userServer(value: unknown): UserMcpServer | null {
         (typeof candidate.minLength !== "number" || !Number.isInteger(candidate.minLength) || candidate.minLength < 0)) ||
       (candidate.description !== undefined && typeof candidate.description !== "string")) return [];
     return [{
+      ...(candidate.authorizationHeader === true ? { authorizationHeader: true as const } : {}),
       configured: candidate.configured,
       ...(typeof candidate.description === "string" ? { description: candidate.description } : {}),
       ...(Array.isArray(candidate.enumValues) ? { enumValues: candidate.enumValues as string[] } : {}),

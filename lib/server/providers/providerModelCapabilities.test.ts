@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { lowestConfiguredReasoningEffort, resolveProviderModelCapabilities } from "./providerModelCapabilities";
+import {
+  geminiConfiguredThinkingLevels,
+  lowestConfiguredReasoningEffort,
+  resolveProviderModelCapabilities
+} from "./providerModelCapabilities";
 
 const capabilities = {
   nativePdfInput: false,
@@ -14,9 +18,21 @@ describe("provider model capability resolution", () => {
     ["gpt-6-astra", "low"], ["gpt-5.6-terra", "none"]
   ])("uses the lowest supported effort for %s probes", (upstreamModelId, expected) => {
     expect(lowestConfiguredReasoningEffort({
-      adapterKind: "openai_responses_native", answerSelectable: true,
-      capabilities, defaultParams: {}, modelClass: "answer", upstreamModelId
+      adapterKind: "openai_responses_native", capabilities, defaultParams: {}, upstreamModelId
     }, "openai")).toBe(expected);
+  });
+
+  it.each([
+    { levels: ["low", "medium", "high"], lowest: "low", upstreamModelId: "gemini-3.8-flash" },
+    { levels: ["minimal", "low", "medium", "high"], lowest: "minimal", upstreamModelId: "gemini-3.6-flash" }
+  ])("derives $upstreamModelId thinking levels from the catalog controls", ({ levels, lowest, upstreamModelId }) => {
+    expect(lowestConfiguredReasoningEffort({
+      adapterKind: "gemini_interactions_native", capabilities, defaultParams: {}, upstreamModelId
+    }, "gemini")).toBe(lowest);
+    expect(geminiConfiguredThinkingLevels(upstreamModelId, {
+      ...capabilities, reasoningEfforts: ["minimal", "low", "medium", "high"]
+    })).toEqual(levels);
+    expect(geminiConfiguredThinkingLevels(upstreamModelId, { ...capabilities, reasoning: false })).toEqual([]);
   });
 
   it("enables AIQSA local PDF extraction without inventing Direct PDF support", () => {

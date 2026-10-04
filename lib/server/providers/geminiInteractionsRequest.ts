@@ -22,6 +22,7 @@ import {
 } from "./geminiInteractionsProtocol";
 import type { ProviderAttachment, ProviderRunRequest } from "./types";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
+import { GEMINI_THINKING_LEVELS, geminiConfiguredThinkingLevels } from "./providerModelCapabilities";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 65_536;
 const MAX_INT32 = 2_147_483_647;
@@ -35,7 +36,6 @@ const imageMimeTypes = new Set([
   "image/bmp",
   "image/tiff"
 ]);
-const thinkingLevels = new Set(["minimal", "low", "medium", "high"]);
 
 export type GeminiInteractionStep = Record<string, unknown>;
 
@@ -387,10 +387,18 @@ function continuationSteps(
   });
 }
 
-function reasoningEffort(params: Record<string, unknown>): string | undefined {
-  const reasoning = isRecord(params.reasoning) ? params.reasoning : null;
+/** Every effort source (run params, a System model or Memory role's effort,
+ * a saved model default) arrives here; a thinking level that the deployment's
+ * configured reasoning control excludes is refused before dispatch. */
+function reasoningEffort(request: ProviderRunRequest): string | undefined {
+  if (!request.modelCapabilities.reasoning) return undefined;
+  const reasoning = isRecord(request.params.reasoning) ? request.params.reasoning : null;
   const effort = reasoning?.effort;
-  return typeof effort === "string" && thinkingLevels.has(effort) ? effort : undefined;
+  if (typeof effort !== "string" || !GEMINI_THINKING_LEVELS.includes(effort)) return undefined;
+  if (!geminiConfiguredThinkingLevels(request.modelId, request.modelCapabilities).includes(effort)) {
+    throw new Error("gemini_interactions_reasoning_effort_unsupported");
+  }
+  return effort;
 }
 
 function maxOutputTokens(params: Record<string, unknown>): number {
@@ -461,7 +469,7 @@ function buildGeminiInteractionsBody(
     throw new Error("gemini_interactions_tool_combination_unsupported");
   }
   const tools: Record<string, unknown>[] = [...hostedTools, ...serializedTools];
-  const effort = request.modelCapabilities.reasoning ? reasoningEffort(request.params) : undefined;
+  const effort = reasoningEffort(request);
   const generationConfig: GeminiInteractionsRequestBody["generation_config"] = {
     max_output_tokens: maxOutputTokens(request.params),
     ...(effort ? { thinking_level: effort } : {}),

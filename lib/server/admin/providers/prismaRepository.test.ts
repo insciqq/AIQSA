@@ -22,7 +22,8 @@ function transactional<T extends Record<string, unknown>>(db: T): T & {
     $executeRaw: vi.fn(async () => 0),
     $queryRaw: vi.fn(async () => [{ id: "installation" }]),
     memoryExecutionBinding: { count: vi.fn(async () => 0) },
-    memoryUtilityModelPolicy: { count: vi.fn(async () => 0) },
+    memoryUtilityModelPolicy: { count: vi.fn(async () => 0), findUnique: vi.fn(async () => null) },
+    systemModelPolicy: { findUnique: vi.fn(async () => null) },
     chatTitleGeneration: { count: vi.fn(async () => 0) }
   }, db);
   return Object.assign(transaction, {
@@ -1085,9 +1086,26 @@ describe("Prisma admin provider repository", () => {
     const loaded = await repository.loadModelActivationCandidate({ connectionId: "connection-1", modelId: "model-1" });
     expect(loaded).toMatchObject({
       connection: { activeVersion: 0, defaultCredential: { id: "credential-1", usable: true }, draftVersion: 2 },
-      model: { draftVersion: 4, id: "model-1" }
+      model: { assignedRoles: [], draftVersion: 4, id: "model-1" }
     });
     expect(JSON.stringify(loaded)).not.toContain("active-envelope");
+  });
+
+  it("names the installation roles pinned to the activated deployment", async () => {
+    const db = transactional({
+      providerConnection: { findUnique: vi.fn(async () => ({ activeVersion: 1, defaultCredential: null,
+        draftConfig: candidate().connection.configuration, draftVersion: 1, family: "openrouter", id: "connection-1" })) },
+      providerModel: { findFirst: vi.fn(async () => ({ activeConfig: candidate().model.configuration, activeVersion: 6,
+        displayName: "Model", draftConfig: candidate().model.configuration, draftVersion: 7, id: "model-1" })) },
+      memoryUtilityModelPolicy: { findUnique: vi.fn(async () => ({ providerModelId: "model-1" })) },
+      systemModelPolicy: { findUnique: vi.fn(async () => ({ providerModelId: "model-2", chatTitleProviderModelId: "model-1",
+        visionProviderModelId: null, chatPdfProviderModelId: "model-1", chatPdfNativeProviderModelId: "model-3" })) }
+    });
+    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
+    const loaded = await repository.loadModelActivationCandidate({ connectionId: "connection-1", modelId: "model-1" });
+    expect(loaded?.model).toMatchObject({ activeConfiguration: candidate().model.configuration,
+      assignedRoles: ["memory", "chat_titles", "chat_pdf"] });
+    expect(db.systemModelPolicy.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "installation" } }));
   });
 
   it("activates exactly one model draft by CAS, taking a never-activated connection live with it", async () => {

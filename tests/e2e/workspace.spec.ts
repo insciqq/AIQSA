@@ -65,11 +65,6 @@ async function assertGeneratedZip(page: Page): Promise<Readonly<{
   expect(responseBytes.includes(Buffer.from("result.txt"))).toBe(true);
   expect(responseBytes.includes(Buffer.from("AIQSA deterministic workspace result\n"))).toBe(true);
 
-  const chatContext = page.getByRole("dialog", { name: "Chat context" });
-  if (await chatContext.isVisible()) {
-    await page.keyboard.press("Escape");
-    await expect(chatContext).toBeHidden();
-  }
   const [download] = await Promise.all([
     page.waitForEvent("download", { timeout: 30_000 }),
     link.click({ timeout: 30_000 })

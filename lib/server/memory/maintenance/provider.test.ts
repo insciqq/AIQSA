@@ -22,8 +22,8 @@ function source(ref: string): MemoryMaintenanceSource {
 const plan = memoryMaintenancePlan(["S1", "S2", "S3"].map(source));
 const owner = { userId: "owner", jobId: "job-1" };
 const signal = new AbortController().signal;
-const decision = (source_ref: string, scope_basis: string, action: string, usefulness: string | null, reason: string) =>
-  ({ source_ref, scope_basis, action, usefulness, reason });
+const decision = (source_ref: string, scope_basis: string, action: string, usefulness: string | null, reason: string,
+  contradicted_by: string | null = null) => ({ source_ref, scope_basis, action, usefulness, reason, contradicted_by });
 const exactRemoval = decision("S1", "single_episode", "REMOVE_TRANSIENT", null, "episode");
 /** Offers each answer in turn to the call's own decoder until one decodes, as
  * the governed executor's validation retries do, and accepts that one. */
@@ -40,9 +40,15 @@ function answers(...outputs: unknown[]): void {
     throw rejected;
   }) as typeof executeGovernedMemoryStructuredOutput);
 }
-function provider() {
+const relatedMemory = { ref: "S2M1", factId: "fact-explicit", versionId: "version-explicit",
+  statement: "I always want complete code with every fix applied.", observedAt: new Date("2026-09-15") };
+/** `related` attaches related memories by source ref; `statements` holds the
+ * current statement of each related version, as revalidation reads it. */
+function provider(options: Readonly<{ related?: ReadonlyMap<string, readonly (typeof relatedMemory)[]>;
+  statements?: ReadonlyMap<string, Readonly<{ factId: string; versionId: string; statement: string; observedAt: Date | null }>> }> = {}) {
   const loaded = { sources: new Map(plan.sources.map((item) => [item.versionId, item])), blockers: new Map() };
-  return createPrismaMemoryMaintenanceProvider({} as PrismaClient, { provider: { run: vi.fn() }, sources: async () => loaded });
+  return createPrismaMemoryMaintenanceProvider({} as PrismaClient, { provider: { run: vi.fn() }, sources: async () => loaded,
+    related: async () => options.related ?? new Map(), relatedStatements: async () => options.statements ?? new Map() });
 }
 
 beforeEach(() => { vi.mocked(logEvent).mockReset(); });
@@ -75,5 +81,37 @@ describe("maintenance review repair counters", () => {
     answers({ decisions: [{ source_ref: "S1", approve: true }] });
     await provider().verify(plan, [plan.sources[0]!], { decisions: review.output.decisions.slice(0, 1) }, signal, owner);
     expect(logEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("maintenance review with related memories", () => {
+  const current = new Map([[relatedMemory.versionId, { ...relatedMemory }]]);
+  // A lasting keep flagged with its related memory: the flag never changes the v3 labels.
+  const contradiction = decision("S2", "general_personal", "KEEP", "DURABLE", "useful_personal_context", "S2M1");
+  it("shows each source's related memories and binds a contradiction to the exact memory it names", async () => {
+    answers({ decisions: [exactRemoval, contradiction, decision("S3", "unresolved_scope", "KEEP", null, "useful_personal_context")] });
+    const review = await provider({ related: new Map([["S2", [relatedMemory]]]), statements: current }).review(plan, signal, owner);
+    const input = vi.mocked(executeGovernedMemoryStructuredOutput).mock.calls.at(-1)![0];
+    expect(JSON.parse(input.request.userPrompt).sources[1].related_memories).toEqual([{ ref: "S2M1",
+      statement: relatedMemory.statement, observed_at: "2026-09-15T00:00:00.000Z" }]);
+    expect(input.request.userPrompt).not.toContain("version-explicit");
+    // The related memories stay outside the reviewed plan's identity.
+    expect(input.inputHash).toBe(review.inputHash);
+    expect(review.output.decisions[1]).toEqual({ sourceRef: "S2", scopeBasis: "general_personal", action: "REMOVE_TRANSIENT",
+      usefulness: null, reason: "contradicted", contradictedBy: { ref: "S2M1", factId: "fact-explicit", versionId: "version-explicit" } });
+  });
+  it("discloses no related memory that changed, was forgotten or lost its authority since it was read", async () => {
+    for (const statements of [new Map(), new Map([[relatedMemory.versionId, { ...relatedMemory, statement: "Edited." }]]),
+      new Map([[relatedMemory.versionId, { ...relatedMemory, factId: "fact-other" }]])]) {
+      vi.mocked(executeGovernedMemoryStructuredOutput).mockClear();
+      await expect(provider({ related: new Map([["S2", [relatedMemory]]]), statements }).review(plan, signal, owner))
+        .rejects.toThrow(expect.objectContaining({ name: "MemoryJobFencedError", code: "memory_maintenance_dispatch_stale" }));
+      expect(executeGovernedMemoryStructuredOutput).not.toHaveBeenCalled();
+      // The verifier revalidates the related memory disclosed with a contradiction the same way.
+      const disclosed = [{ ...plan.sources[1]!, related: [relatedMemory] }];
+      await expect(provider({ statements }).verify(plan, disclosed, { decisions: [] }, signal, owner))
+        .rejects.toThrow(expect.objectContaining({ name: "MemoryJobFencedError", code: "memory_maintenance_dispatch_stale" }));
+      expect(executeGovernedMemoryStructuredOutput).not.toHaveBeenCalled();
+    }
   });
 });

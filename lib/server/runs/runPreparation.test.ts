@@ -1960,6 +1960,26 @@ describe("run preparation", () => {
     expect(result).toMatchObject({ code: "mcp_not_ready", ok: false, status: 409 });
   });
 
+  it("points a Load all message to the personal value its MCP server rejected", async () => {
+    const prepare = (issues: Extract<McpRunPlanResult, { ok: false }>["issues"]) => prepareRun(
+      createHarness({
+        capabilities: { ...baseCapabilities, toolCalling: true },
+        mcpPlan: { code: "mcp_not_ready", issues, ok: false }
+      }).deps,
+      sendInput(successBody({ mcp: { mode: "load_all" } }))
+    );
+
+    await expect(prepare([{ errorCode: "mcp_authorization_required", name: "Kaiten",
+      personalCredentialRejected: true, readiness: "unavailable" }])).resolves.toMatchObject({
+      code: "mcp_not_ready",
+      message: "The MCP server “Kaiten” rejected your credential. Update your personal value or reconnect it in Settings → MCP servers, then try again.",
+      ok: false,
+      status: 409
+    });
+    await expect(prepare([{ errorCode: "mcp_connect_failed", name: "Kaiten", readiness: "unavailable" }]))
+      .resolves.toMatchObject({ code: "mcp_not_ready", message: "MCP tools are not ready: Kaiten.", status: 409 });
+  });
+
   it("rejects personal or OAuth MCP credentials in Project chats", async () => {
     const harness = createHarness({ mcpPlan: readyMcpPlan(["oauth"]) });
     const result = await prepareRun(

@@ -55,11 +55,16 @@ export async function loadMemoryMaintenanceContext(client: Pick<PrismaClient, "$
   userId: string, versionId: string, spans: readonly MemoryMaintenanceContextSpan[]): Promise<readonly ContextItem[] | null> {
   const messageIds = [...new Set(spans.map(({ messageId }) => messageId))];
   if (messageIds.length === 0) return null;
+  // A failed or cancelled reply of the same eligible chat is transparent: the
+  // walk passes over it within the same depth bound, never reading its
+  // content, so it is neither shown nor a dependency. Everything it reaches
+  // still passes the full message fences.
   const rows = await client.$queryRaw<Array<{
     id: string; role: string; content: Prisma.JsonValue; updatedAt: Date; createdAt: Date; depth: number; eligible: boolean;
+    transparent: boolean;
   }>>(Prisma.sql`
     WITH RECURSIVE context_message AS (
-      SELECT message.id, message."chatId", message."parentMessageId", message.role, message.content, message."updatedAt", message."createdAt", 0 AS depth, TRUE AS eligible
+      SELECT message.id, message."chatId", message."parentMessageId", message.role, message.content, message."updatedAt", message."createdAt", 0 AS depth, TRUE AS eligible, FALSE AS transparent
       FROM "Message" message JOIN "Chat" chat ON chat.id = message."chatId"
       WHERE chat."userId" = ${userId} AND chat."projectId" IS NULL AND chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
         AND chat."permanentDeletionAt" IS NULL AND message.id IN (${Prisma.join(messageIds)}) AND message.status = 'complete'
@@ -68,19 +73,21 @@ export async function loadMemoryMaintenanceContext(client: Pick<PrismaClient, "$
       SELECT parent.id, parent."chatId", parent."parentMessageId", parent.role,
         CASE WHEN aiqsa_memory_message_dependency_valid(${userId}, parent.id, parent."updatedAt") THEN parent.content ELSE NULL::jsonb END,
         parent."updatedAt", parent."createdAt", child.depth + 1,
-        aiqsa_memory_message_dependency_valid(${userId}, parent.id, parent."updatedAt") AS eligible
+        aiqsa_memory_message_dependency_valid(${userId}, parent.id, parent."updatedAt") AS eligible,
+        parent.role = 'assistant' AND parent.status IN ('error'::"MessageStatus", 'cancelled'::"MessageStatus") AS transparent
       FROM "Message" parent JOIN context_message child ON parent.id = child."parentMessageId" AND parent."chatId" = child."chatId"
-      WHERE child.depth < 4 AND child.eligible
-    ) SELECT DISTINCT ON (id) id, role, content, "updatedAt", "createdAt", depth, eligible FROM context_message ORDER BY id, depth
+      WHERE child.depth < 4 AND (child.eligible OR child.transparent)
+    ) SELECT DISTINCT ON (id) id, role, content, "updatedAt", "createdAt", depth, eligible, transparent FROM context_message ORDER BY id, depth
   `);
   // A hidden boundary might carry the scope or explicit remember intent of a
   // fragment. Skip this review instead of making a destructive judgment from
-  // incomplete context; never traverse or disclose the denied message.
-  if (rows.some(({ eligible }) => !eligible) || new Set(rows.filter(({ depth }) => depth === 0)
+  // incomplete context; never traverse or disclose the denied message. A
+  // failed or cancelled reply carries neither, so it is no such boundary.
+  if (rows.some(({ eligible, transparent }) => !eligible && !transparent) || new Set(rows.filter(({ depth }) => depth === 0)
     .map(({ id }) => id)).size !== messageIds.length) return null;
   const messages: Array<{ row: (typeof rows)[number]; text: string; window?: TextWindow }> = [];
   for (const row of rows.sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id))) {
-    if (row.role !== "user" && row.role !== "assistant") continue;
+    if (row.transparent || (row.role !== "user" && row.role !== "assistant")) continue;
     const projected = projectMemoryHistorySourceText(textFromContentBlocks(row.content as { blocks?: unknown[] }));
     if (!projected.eligible || projected.processingState !== "COMPLETE" || projected.providerSafeText === null) return null;
     messages.push({ row, text: projected.providerSafeText });

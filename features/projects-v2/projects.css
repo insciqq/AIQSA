@@ -582,6 +582,141 @@
   background: var(--v2-color-border2);
 }
 
+/* Phones: the chip collapses to the Project mark so the model name keeps its
+   room. The name stays the button's accessible name; its title shows it. */
+@media (max-width: 767px) {
+  .v2-live-title:has(> .v2-project-context):not(:has(> .v2-live-title-rename)) {
+    padding: 0;
+  }
+
+  .v2-live-title > .v2-project-context:not(:last-child)::after {
+    display: none;
+  }
+
+  /* The model island and the chip centre together with the header's 0.5rem
+     gap; the island's own auto margins would push the narrow chip to "⋯". */
+  .v2-live-header:has(> .v2-live-title > .v2-project-context) > .v2-live-header-island {
+    margin: 0;
+  }
+
+  /* The details anchor to the full header so they fit beside a centred chip. */
+  .v2-live-title .v2-project-context {
+    position: static;
+  }
+
+  /* The button covers the pill's border, so it is as large as the pill. */
+  .v2-live-title .v2-project-context-trigger {
+    position: relative;
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+    margin: -1px;
+    justify-content: center;
+    gap: 0.25rem;
+    padding: 0 0.5rem;
+    border-radius: 999px;
+  }
+
+  .v2-live-title .v2-project-context-name {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  /* The sync dot marks the corner instead of widening the collapsed chip. */
+  .v2-live-title .v2-project-context-sync {
+    position: absolute;
+    top: 0.375rem;
+    right: 0.375rem;
+  }
+}
+
+/* Touch: the collapsed chip fills a 44px island like "⋯" and the model pill. */
+@media (max-width: 767px) and ((hover: none) or (pointer: coarse)) {
+  .v2-live-title .v2-project-context-trigger {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+}
+
+/* A narrow header bar (768–1023px, or up to 1215px beside the open list)
+   gives a Project chat's title the room: the chip shows its mark, the folder
+   crumb hides as on phones, and Share shows its icon. The names stay the
+   buttons' accessible names; the chip's tooltip names the Project. */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-project-context-name,
+  .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-live-header-actions > .v2-button > span:last-child {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-project-context-trigger {
+    padding-right: 0.25rem;
+  }
+
+  /* The mark keeps its size and the divider its gap while the title ellipsizes. */
+  .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-live-title > .v2-project-context {
+    flex: none;
+  }
+
+  .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-live-crumb {
+    display: none;
+  }
+
+  .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-live-header-actions > .v2-button {
+    min-width: 2rem;
+    justify-content: center;
+    padding-inline: 0.375rem;
+  }
+
+  @media (hover: none), (pointer: coarse) {
+    .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-live-header-actions > .v2-button {
+      min-width: 2.75rem;
+    }
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1215px) {
+  .v2-workspace-shell:not([data-sidebar-collapsed="true"]) .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-project-context-name,
+  .v2-workspace-shell:not([data-sidebar-collapsed="true"]) .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-live-header-actions > .v2-button > span:last-child {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .v2-workspace-shell:not([data-sidebar-collapsed="true"]) .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-project-context-trigger {
+    padding-right: 0.25rem;
+  }
+
+  .v2-workspace-shell:not([data-sidebar-collapsed="true"]) .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-live-title > .v2-project-context {
+    flex: none;
+  }
+
+  .v2-workspace-shell:not([data-sidebar-collapsed="true"]) .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-live-crumb {
+    display: none;
+  }
+
+  .v2-workspace-shell:not([data-sidebar-collapsed="true"]) .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-live-header-actions > .v2-button {
+    min-width: 2rem;
+    justify-content: center;
+    padding-inline: 0.375rem;
+  }
+
+  @media (hover: none), (pointer: coarse) {
+    .v2-workspace-shell:not([data-sidebar-collapsed="true"]) .v2-live-header:has(> .v2-live-title > .v2-project-context) .v2-live-header-actions > .v2-button {
+      min-width: 2.75rem;
+    }
+  }
+}
+
 .v2-project-context-popover {
   position: absolute;
   z-index: 60;

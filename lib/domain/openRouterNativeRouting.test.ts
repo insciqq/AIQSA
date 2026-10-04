@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { resolveOpenRouterNativeProvider } from "./openRouterNativeRouting";
+import { openRouterEndpointServesProvider, openRouterSelectedProvidersMissingParameters,
+  resolveOpenRouterNativeProvider } from "./openRouterNativeRouting";
 
 describe("OpenRouter native provider selection", () => {
   it.each([
@@ -32,6 +33,17 @@ describe("OpenRouter native provider selection", () => {
       .toEqual({ available: true, provider: "google-vertex" });
     expect(resolveOpenRouterNativeProvider({ modelId: "google/example", endpoints, requiredParameters: ["unknown"] }))
       .toMatchObject({ available: false, reason: "native_incompatible", mismatch: { provider: "google-ai-studio", missingParameters: ["unknown"] } });
+  });
+
+  it("matches selected providers to their variants without lookalikes before checking parameter sets", () => {
+    expect(openRouterEndpointServesProvider("DeepSeek/fp8", "deepseek")).toBe(true);
+    expect(openRouterEndpointServesProvider("deepseek-impostor", "deepseek")).toBe(false);
+    expect(openRouterEndpointServesProvider("deepinfra/turbo", "deepinfra/fp8")).toBe(false);
+    const endpoints = [{ tag: "deepseek", supportedParameters: ["tools"] },
+      { tag: "deepseek-impostor", supportedParameters: ["tools", "response_format", "structured_outputs"] }];
+    expect(openRouterSelectedProvidersMissingParameters({ providers: ["deepseek"], endpoints,
+      parameterSets: [["response_format", "structured_outputs"], ["tools"]] })).toEqual(["response_format", "structured_outputs"]);
+    expect(openRouterSelectedProvidersMissingParameters({ providers: ["deepseek"], endpoints, parameterSets: [] })).toEqual([]);
   });
 
   it("does not treat ordinary tools as proof of forced tool choice on a native route", () => {

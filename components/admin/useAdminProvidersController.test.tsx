@@ -163,6 +163,20 @@ describe("useAdminProvidersController", () => {
     expect(api.runConnectionAction).not.toHaveBeenCalled();
   });
 
+  it("reports the roles a failed check of the live model leaves paused", async () => {
+    const original = connection("connection-a", "Provider A");
+    api.getConnections.mockResolvedValue({ ok: true, data: [original] });
+    api.createModel.mockResolvedValue({ ok: true, data: { connectionId: original.id, modelId: "model-1", displayName: "M",
+      draftVersion: 1, saved: "configuration", publication: "active", checks: "failed", affectedRoles: ["memory"] } });
+    const { result } = renderHook(() => useAdminProvidersController(true));
+    await waitFor(() => expect(result.current.state.loaded).toBe(true));
+    await act(async () => {
+      await expect(result.current.actions.saveModel(original.id, null, { configuration: { upstreamModelId: "m" }, displayName: "M" }))
+        .resolves.toMatchObject({ ok: false, error: { code: "provider_model_check_failed_roles",
+          roles: [{ role: "memory", missingParameters: [] }] }, persistence: { receipt: { checks: "failed" } } });
+    });
+  });
+
   it("publishes an acknowledged name-only save through the catalog without starting setup", async () => {
     const original = connection("connection-a", "Provider A");
     const model = fixtureModel({ connectionId: original.id, displayName: "Old name", id: "model-1", enabled: false });

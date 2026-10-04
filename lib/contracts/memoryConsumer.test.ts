@@ -36,7 +36,6 @@ describe("Memory consumer contracts", () => {
         permanentChatDeletion: true,
         pastChatIndexingAvailable: true,
         retrievalAvailable: true,
-        synthesisAvailable: true,
         temporaryChats: true
       },
       resetState: "IDLE",
@@ -44,7 +43,6 @@ describe("Memory consumer contracts", () => {
         decayEnabled: false,
         learnAutomatically: true,
         referenceChatHistory: true,
-        synthesisEnabled: false,
         useMemoryFacts: true
       },
       status: "ON"
@@ -60,7 +58,7 @@ describe("Memory consumer contracts", () => {
     })).toEqual({ code: "memory_contract_invalid", ok: false });
   });
 
-  it("accepts settings with or without the retired Dream fields", () => {
+  it("accepts a previous-release server's retired Dream fields but no longer a Dream patch", () => {
     const current = {
       capabilities: {
         automaticLearningAvailable: true,
@@ -88,10 +86,10 @@ describe("Memory consumer contracts", () => {
       settings: { ...current.settings, synthesisEnabled: false }
     };
     expect(decodeMemoryConsumerSettingsResponse(retained)).toEqual({ ok: true, value: retained });
-    expect(decodeMemoryConsumerSettingsPatch({ synthesisEnabled: true })).toEqual({
-      ok: true,
-      value: { synthesisEnabled: true }
-    });
+    expect(decodeMemoryConsumerSettingsPatch({ synthesisEnabled: true }))
+      .toEqual({ code: "memory_contract_invalid", ok: false });
+    expect(decodeMemoryConsumerSettingsPatch({ learnAutomatically: false, synthesisEnabled: false }))
+      .toEqual({ code: "memory_contract_invalid", ok: false });
     expect(decodeMemoryConsumerSettingsPatch({})).toEqual({ code: "memory_contract_invalid", ok: false });
   });
 

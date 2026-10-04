@@ -243,41 +243,35 @@ describe("Memory capability projection", () => {
   });
 
   it("ties background maintenance to automatic learning, its strict role and the worker", () => {
-    // `synthesisAvailable` keeps its name for one release and reports maintenance.
     expect(derive()).toMatchObject({
-      administratorSetupRequired: false,
-      synthesisAvailable: true
+      administratorSetupRequired: false
     });
+    expect(derive()).not.toHaveProperty("synthesisAvailable");
     expect(derive({ omitted: ["MEMORY_SYNTHESIZE"] })).toMatchObject({
       administratorSetupRequired: true,
-      automaticLearningAvailable: true,
-      synthesisAvailable: false
+      automaticLearningAvailable: true
     });
     expect(derive({ operations: { workerAvailable: false } })).toMatchObject({
-      administratorSetupRequired: true,
-      synthesisAvailable: false
+      administratorSetupRequired: true
     });
     expect(derive({
       omitted: ["MEMORY_SYNTHESIZE"],
       settings: { learnAutomatically: false }
     })).toMatchObject({
-      administratorSetupRequired: false,
-      synthesisAvailable: false
+      administratorSetupRequired: false
     });
     expect(derive({
       omitted: ["MEMORY_SYNTHESIZE"],
       settings: { useMemoryFacts: false }
     })).toMatchObject({
-      administratorSetupRequired: false,
-      synthesisAvailable: false
+      administratorSetupRequired: false
     });
     expect(derive({ settings: {
       acceptedUtilityEgressAt: null,
       acceptedUtilityEgressFingerprint: null,
       acceptedUtilityPolicyVersion: null
     } })).toMatchObject({
-      administratorSetupRequired: false,
-      synthesisAvailable: true
+      administratorSetupRequired: false
     });
   });
 
@@ -315,7 +309,7 @@ describe("Memory capability projection", () => {
     ]) {
       expect(derive({ settings: accepted })).toMatchObject({
         administratorSetupRequired: false, automaticLearningAvailable: true,
-        naturalLanguageActionsAvailable: true, synthesisAvailable: true, retrievalAvailable: true
+        naturalLanguageActionsAvailable: true, retrievalAvailable: true
       });
     }
   });

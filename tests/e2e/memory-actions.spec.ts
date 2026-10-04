@@ -517,8 +517,9 @@ test("confirms reset through the safe consumer action without technical IDs", as
   };
   let resetBody: Record<string, unknown> | null = null;
   await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
+  // An accepted reset keeps cleaning up in the background, as the server reports.
   await page.route("**/api/me/memory/settings", async (route: Route) => {
-    await route.fulfill({ json: memoryConsumerSettingsFixture() });
+    await route.fulfill({ json: memoryConsumerSettingsFixture(resetBody ? { resetState: "IN_PROGRESS" } : {}) });
   });
   await page.route("**/api/me/memory/reset", async (route: Route) => {
     resetBody = route.request().postDataJSON() as Record<string, unknown>;
@@ -527,10 +528,13 @@ test("confirms reset through the safe consumer action without technical IDs", as
   await signInWithLocalToken(page, "/c/chat-memory-reset");
 
   await runAccountMenuAction(page, "Memory");
-  await page.getByTestId("library-memory-panel")
-    .getByRole("button", { name: "Memory settings" })
-    .click();
-  const memory = page.getByRole("dialog", { name: "Settings" });
+  // Memory settings live beside the list in the Library panel; a narrow panel
+  // collapses them behind their disclosure.
+  const memory = page.getByTestId("library-memory-panel")
+    .getByRole("complementary", { name: "How Memory works" });
+  const disclosure = memory.getByRole("button", { name: /^How Memory works/ });
+  await expect(memory).toBeVisible();
+  if (await disclosure.isVisible()) await disclosure.click();
   await memory.getByRole("button", { name: "Forget everything…" }).click();
   const resetDialog = memory.getByRole("alertdialog", { name: "Forget everything?" });
   await expect(resetDialog).toBeVisible();

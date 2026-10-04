@@ -224,6 +224,8 @@ enum McpRuntimeState {
 
 enum McpActivationStage {
   queued
+  // resolving and preparing_runtime are retired with local MCP sources: no
+  // release writes them and a later release drops them.
   resolving
   preparing_runtime
   connecting
@@ -3657,7 +3659,8 @@ model McpActivationJob {
   errorCode           String?
   issues              Json?
   leaseId             String?
-  workloadToken       String?            @unique
+  /// Retired with local MCP sources; kept unread until a later release drops it.
+  workloadToken       String?            @unique @ignore
   requestedAt         DateTime           @default(now())
   startedAt           DateTime?
   completedAt         DateTime?
@@ -5450,6 +5453,7 @@ model UserMemorySettings {
   lastSynthesisAt                  DateTime?
   maintenanceCursor                String?
   maintenanceScannedAt             DateTime?
+  explicitEquivalenceSweepVersion  String?                        @db.VarChar(64)
   decayEnabled                     Boolean                        @default(true)
   decayPolicyVersion               String?                        @default("memory-decay-v1") @db.VarChar(64)
   createdAt                        DateTime                       @default(now())

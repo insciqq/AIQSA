@@ -78,7 +78,6 @@ export function memorySettingsFixture(
       pastChatIndexingAvailable: true,
       permanentChatDeletion: false,
       retrievalAvailable: true,
-      synthesisAvailable: true,
       temporaryChats: true
     },
     historyIndexing: {
@@ -99,7 +98,6 @@ export function memorySettingsFixture(
       referenceChatHistory: false,
       sensitiveAutomaticPolicy: "EXPLICIT_ONLY",
       settingsRevision: 12,
-      synthesisEnabled: false,
       updatedAt: "2026-08-10T08:00:00.000Z",
       useMemoryFacts: false
     }
@@ -136,7 +134,6 @@ export function memoryConsumerSettingsFixture(
       permanentChatDeletion: false,
       pastChatIndexingAvailable: true,
       retrievalAvailable: true,
-      synthesisAvailable: true,
       temporaryChats: true
     },
     resetState: "IDLE",
@@ -144,7 +141,6 @@ export function memoryConsumerSettingsFixture(
       decayEnabled: false,
       learnAutomatically: false,
       referenceChatHistory: false,
-      synthesisEnabled: false,
       useMemoryFacts: false
     },
     status: "PAUSED"

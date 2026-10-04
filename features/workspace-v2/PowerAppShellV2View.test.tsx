@@ -30,6 +30,7 @@ import {
   type RunSetupComposerV2
 } from "./PowerAppShellV2View";
 import { formatTemporaryRetentionDeadlineV2 } from "./WorkspaceHeaderV2";
+import { CONTINUATION_SUGGESTED_DESCRIPTION } from "./ChatContextIndicatorV2";
 import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import { presentRunLifecycleV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import { RunLifecycleAnnouncerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
@@ -606,6 +607,31 @@ describe("Workspace header v2", () => {
     expect(screen.getByRole("group", { name: "Spent" })).toHaveTextContent("Approximate cost≈ $0.250");
   });
 
+  it.each([false, true])("marks a suggested continuation on the gauge or the phone ⋯ without opening the panel (phone: %s)", (phone) => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: phone, addEventListener() {}, removeEventListener() {} })));
+    const continuation = { busy: false, error: null, progress: null, suggested: true, uploading: false,
+      onCancel: vi.fn(), onContinue: vi.fn(), onDismiss: vi.fn() };
+    const props = headerProps({ continuation, contextStats: { approximateInputTokens: 750,
+      safeInputBudgetTokens: 1000, totalContextTokens: 2000 } });
+    const view = render(<WorkspaceHeaderV2 {...props} />);
+    expect(screen.queryByRole("dialog", { name: "Chat context" })).toBeNull();
+    const more = screen.getByTestId("header-more-trigger");
+    expect(screen.getByTestId("header-context-indicator")).toHaveAttribute("data-suggested", "true");
+    if (phone) {
+      expect(more).toHaveAttribute("data-attention", "true");
+      expect(more).toHaveAccessibleDescription(CONTINUATION_SUGGESTED_DESCRIPTION);
+      fireEvent.click(more);
+      fireEvent.click(screen.getByRole("menuitem", { name: /^Context · \d+%$/u }));
+    } else {
+      expect(more).not.toHaveAttribute("data-attention");
+      fireEvent.click(screen.getByTestId("header-context-indicator"));
+    }
+    expect(screen.getByRole("dialog", { name: "Chat context" })).toContainElement(
+      screen.getByRole("button", { name: "Stay here" }));
+    view.rerender(<WorkspaceHeaderV2 {...props} continuation={{ ...continuation, suggested: false }} />);
+    expect(screen.getByTestId("header-more-trigger")).not.toHaveAttribute("data-attention");
+  });
+
   it("keeps one kicker-free header: Share plus a single complete ⋯ menu", () => {
     const props = headerProps({
       favorite: true,
@@ -909,6 +935,17 @@ describe("Chat location crumb v2", () => {
       project: { id: "project-1", name: "Ingest pipeline" },
       projectFolders: []
     })).toBe("Ingest pipeline");
+  });
+
+  it("starts at the Project folders while the header chip names the Project", () => {
+    const project = { id: "project-1", name: "Ingest pipeline" };
+    const projectFolders = [{ id: "project-root", name: "Specs", parentId: null }];
+    expect(chatLocationCrumbV2({
+      chat: { folderId: "project-root", projectId: "project-1" }, personalFolders: [], project, projectNamed: true, projectFolders
+    })).toBe("Specs");
+    expect(chatLocationCrumbV2({
+      chat: { folderId: null, projectId: "project-1" }, personalFolders: [], project, projectNamed: true, projectFolders
+    })).toBeNull();
   });
 
   it("keeps personal paths separate and fails closed for a mismatched Project", () => {

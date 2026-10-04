@@ -126,6 +126,17 @@
   overflow-wrap: anywhere;
 }
 
+.v2-attachment-chip[data-warning-blocking="true"] .v2-attachment-copy > span {
+  color: var(--v2-color-warn);
+}
+
+.v2-attachment-hint-link {
+  border-radius: var(--v2-radius-s);
+  color: var(--v2-color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .v2-attachment-actions {
   display: flex;
   align-items: center;
@@ -283,6 +294,11 @@
 
   .v2-attachment-list {
     display: grid;
+    /* Content-sized rows: a capped grid otherwise squeezes its rows to the
+       max-height, which the tray then measures back as its three-row cap, so
+       a card that grows (a blocking reason with its recovery link) stays
+       clipped instead of the tray growing to show it. */
+    grid-auto-rows: max-content;
     max-height: var(--v2-attachment-list-max-height, 9rem);
   }
 
@@ -297,6 +313,12 @@
   .v2-attachment-retry {
     min-width: 2.5rem;
     min-height: 2.5rem;
+  }
+
+  .v2-attachment-hint-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 1.75rem;
   }
 }
 

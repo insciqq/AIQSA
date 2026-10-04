@@ -26,6 +26,7 @@ import {
 } from "../lib/server/providers/geminiInteractions";
 import { extractGeminiInteractionsUsage } from "../lib/server/providers/geminiInteractionsResponse";
 import { GeminiHttpError } from "../lib/server/providers/geminiInteractionsTransport";
+import { lowestConfiguredReasoningEffort } from "../lib/server/providers/providerModelCapabilities";
 import { createProviderSafeFetch } from "../lib/server/providers/providerSafeFetch";
 import { createProviderRuntimeBinding } from "../lib/server/providers/runtimeFactory";
 import type { ProviderRunRequest } from "../lib/server/providers/types";
@@ -96,9 +97,17 @@ const modelCapabilities = {
   toolCalling: true,
   vision: true
 };
+// The cheapest level the model's catalog controls offer: Gemini rejects an
+// unsupported thinking level (gemini-3.8-flash has no "minimal") with HTTP 400.
+const lowestReasoningEffort = lowestConfiguredReasoningEffort({
+  adapterKind: "gemini_interactions_native",
+  capabilities: modelCapabilities,
+  defaultParams: {},
+  upstreamModelId: modelId
+}, "gemini");
 const defaultParams = {
   maxTokens: maxOutputTokens,
-  reasoning: { effort: searchEnabled ? "medium" : "minimal" },
+  reasoning: { effort: searchEnabled ? "medium" : lowestReasoningEffort },
   stream: !attachmentContextEnabled
 };
 const smokeTool = {

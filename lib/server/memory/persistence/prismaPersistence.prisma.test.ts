@@ -601,7 +601,7 @@ describe("Prisma Memory persistence", () => {
     }
   });
 
-  it("stops reading and writing the retired Dream columns within their shape check", async () => {
+  it("never writes the retired Dream columns, leaving rows within their shape check", async () => {
     const userId = await createActiveUser("retired-dream-columns");
     const service = createMemorySettingsService({
       repository: createPrismaMemorySettingsRepository(prisma),
@@ -624,29 +624,21 @@ describe("Prisma Memory persistence", () => {
       });
       expect(created.synthesisEnabledAt).toBeInstanceOf(Date);
 
-      // A stale tab's toggle-only PATCH changes nothing and returns current settings.
-      for (const synthesisEnabled of [false, true]) {
-        await expect(service.patch(userId, {
-          expectedMemoryRevision: 0, expectedSettingsRevision: 0, synthesisEnabled
-        })).resolves.toMatchObject({
-          settings: { memoryRevision: 0, settingsRevision: 0, synthesisEnabled: false }
-        });
-      }
-      await expect(retiredColumns()).resolves.toEqual(created);
-
-      // Inside another change the retired field is ignored, not written.
-      await expect(service.patch(userId, {
-        decayEnabled: false, expectedMemoryRevision: 0, expectedSettingsRevision: 0, synthesisEnabled: false
-      })).resolves.toMatchObject({ settings: { decayEnabled: false, settingsRevision: 1, synthesisEnabled: false } });
-      await expect(retiredColumns()).resolves.toMatchObject({
-        lastSynthesisAt: null, settingsRevision: 1, synthesisEnabled: true,
-        synthesisEnabledAt: created.synthesisEnabledAt, synthesisPolicyVersion: "memory-synthesis-policy-v6"
+      const decayOff = await service.patch(userId, {
+        decayEnabled: false, expectedMemoryRevision: 0, expectedSettingsRevision: 0
+      });
+      expect(decayOff.settings).toMatchObject({ decayEnabled: false, settingsRevision: 1 });
+      expect(decayOff.settings).not.toHaveProperty("synthesisEnabled");
+      expect(decayOff.capabilities).not.toHaveProperty("synthesisAvailable");
+      await expect(retiredColumns()).resolves.toEqual({
+        ...created, memoryRevision: decayOff.settings.memoryRevision, settingsRevision: 1
       });
 
-      // A fenced row (reset/account deletion values) stays in the first branch.
+      // A row fenced by a previous release (reset/account deletion) stays in
+      // the first branch.
       await prisma.userMemorySettings.update({ data: {
         lastSynthesisAt: null, synthesisEnabled: false, synthesisEnabledAt: null, synthesisPolicyVersion: null
-      }, where: { userId } });
+      }, select: { userId: true }, where: { userId } });
       const current = await service.get(userId);
       await expect(service.patch(userId, {
         expectedMemoryRevision: current.settings.memoryRevision,
@@ -657,9 +649,10 @@ describe("Prisma Memory persistence", () => {
       await expect(retiredColumns()).resolves.toMatchObject({
         lastSynthesisAt: null, synthesisEnabled: false, synthesisEnabledAt: null, synthesisPolicyVersion: null
       });
-      // The CHECK itself is unchanged: the code simply never writes the columns.
-      await expect(prisma.userMemorySettings.update({ data: { synthesisEnabled: true }, where: { userId } }))
-        .rejects.toThrow(/UserMemorySettings_synthesis_shape_check/u);
+      // The CHECK itself is unchanged until the columns are dropped.
+      await expect(prisma.userMemorySettings.update({
+        data: { synthesisEnabled: true }, select: { userId: true }, where: { userId }
+      })).rejects.toThrow(/UserMemorySettings_synthesis_shape_check/u);
     } finally {
       await cleanupUser(userId);
     }

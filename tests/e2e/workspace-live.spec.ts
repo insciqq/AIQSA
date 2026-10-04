@@ -86,17 +86,6 @@ async function expectWorkspaceInternet(page: Page, state: "On" | "Off"): Promise
   await expect(layer).toBeHidden();
 }
 
-/** A long Workspace turn can fill most of the fake context window, so the
- * product may suggest a continuation by opening the Chat context panel. Stay here. */
-async function stayInChat(page: Page): Promise<void> {
-  await expect(page.getByTestId("header-context-indicator"))
-    .toHaveAttribute("data-context-estimate", "snapshot", { timeout: 30_000 });
-  const context = page.getByRole("dialog", { name: "Chat context", exact: true });
-  if (!await context.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false)) return;
-  await context.getByRole("button", { name: "Stay here", exact: true }).click();
-  await expect(context).toHaveCount(0);
-}
-
 async function sendAndExpect(
   page: Page,
   prompt: string,
@@ -127,7 +116,6 @@ async function sendAndExpect(
   await expect(page.getByRole("button", { name: "Stop answer" })).toHaveCount(0, {
     timeout: 30_000
   });
-  await stayInChat(page);
 }
 
 async function openChatActions(page: Page) {

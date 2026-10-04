@@ -660,11 +660,16 @@ async function applyForgetFence(
       version."sourceMode"::text AS "currentSourceMode", version."systemFrom" AS "currentSystemFrom"
     FROM "MemoryFact" AS fact
     INNER JOIN LATERAL (
+      -- A merged automatic version stays in the lineage after its source
+      -- chat retracted it, so Forget still fences and purges its text.
       SELECT candidate.* FROM "MemoryFactVersion" AS candidate
       WHERE candidate."userId" = fact."userId" AND candidate."factId" = fact."id"
-        AND candidate."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
         AND candidate."mergedIntoVersionId" IS NOT NULL
-        AND candidate."state" IN ('MERGED'::"MemoryFactVersionState", 'FORGOTTEN'::"MemoryFactVersionState")
+        AND ((candidate."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
+            AND candidate."state" IN ('MERGED'::"MemoryFactVersionState", 'FORGOTTEN'::"MemoryFactVersionState"))
+          OR (candidate."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
+            AND candidate."state" IN ('MERGED'::"MemoryFactVersionState", 'FORGOTTEN'::"MemoryFactVersionState",
+              'RETRACTED'::"MemoryFactVersionState")))
       ORDER BY candidate."systemFrom" DESC, candidate."id" DESC LIMIT 1
     ) AS version ON TRUE
     WHERE fact."userId" = ${settings.userId} AND fact."currentVersionId" IS NULL
@@ -1084,12 +1089,6 @@ async function applyAllReusableDeletionFence(
       learnAutomatically: false,
       referenceChatHistory: false,
       settingsRevision,
-      // Retired Dream columns: written only as the fence values a
-      // previous-release worker still checks during Compose replacement.
-      synthesisEnabled: false,
-      synthesisEnabledAt: null,
-      synthesisPolicyVersion: null,
-      lastSynthesisAt: null,
       useMemoryFacts: false
     },
     where: {
