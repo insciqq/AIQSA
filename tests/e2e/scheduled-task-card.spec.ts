@@ -53,7 +53,8 @@ function task(source: ScheduledTaskCard): ScheduledTask {
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: source.toolsEnabled,
     workspaceEnabled: source.workspaceEnabled, chatMode: "same", kind: source.kind, status: source.status, pauseReason: null,
     completionReason: null, nextRunAt: source.nextRunAt, lastRun: null, running: false,
-    chatId, unseenResult: false, revision: 1,
+    // A task created from chat gets its own chat on its first run, never the chat that created it.
+    chatId: null, unseenResult: false, revision: 1,
     createdAt: "2026-10-04T09:00:00.000Z", updatedAt: "2026-10-04T09:00:00.000Z"
   };
 }
