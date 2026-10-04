@@ -5890,10 +5890,13 @@ describe("monitoring check admission", () => {
 
 describe("scheduled task creation admission", () => {
   const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
+  // The owner's Memory is on: search admission returns its snapshot.
+  const memorySearch = { version: "memory-search-v1" as const, maxCalls: 3 as const, resultTokens: 6000 as const,
+    comparisonResultTokens: 12000 as const, timeoutSeconds: 30, memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
   function tooling(input: Readonly<{ creator?: boolean; toolCalling?: boolean }> = {}): RunPreparationDeps {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: input.toolCalling ?? true } });
-    return { ...harness.deps, repository: { ...harness.deps.repository,
-      ...(input.creator === false ? {} : { createScheduledTaskForCall: vi.fn() }) } };
+    return { ...harness.deps, memorySearchAdmission: { admit: vi.fn(async () => memorySearch) },
+      repository: { ...harness.deps.repository, ...(input.creator === false ? {} : { createScheduledTaskForCall: vi.fn() }) } };
   }
   const creationTool = (prepared: PreparedRun) =>
     prepared.providerRequest.tools?.find((tool) => tool.name === "create_scheduled_task");
@@ -5919,6 +5922,12 @@ describe("scheduled task creation admission", () => {
     // An excluded chat reads no Memory, nor does an explicit Memory command.
     expect(await memoryOf(sendInput(toolBody, { memoryMode: "EXCLUDED" }))).toBe(false);
     expect(await memoryOf(sendInput({ ...toolBody, content: textMessageContent("/memory list") }))).toBe(false);
+    // Nor does a run of an owner whose Memory is off or paused, nor one whose admission failed.
+    for (const admit of [vi.fn(async () => null), vi.fn(async () => { throw new Error("memory_unavailable"); })]) {
+      const prepared = preparedFrom(await prepareRun({ ...tooling(), memorySearchAdmission: { admit } }, sendInput(toolBody)));
+      expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+      expect(prepared.normalizedRequest.scheduledTaskTool?.memoryEnabled).toBe(false);
+    }
   });
 
   it("freezes the admitted catalog model and its Search, not the execution identity", async () => {
