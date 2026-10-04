@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   blankScheduledTaskDraft,
+  scheduledTaskCreateRequest,
   scheduledTaskDraftFromTask,
   scheduledTaskDraftSchedule,
   scheduledTaskPreview,
@@ -13,6 +14,7 @@ import {
   scheduledTaskFailureMessage,
   scheduledTaskLastRunLine,
   scheduledTaskResultNotice,
+  scheduledTaskRunRow,
   scheduledTaskScheduleText,
   scheduledTaskStatusLine,
   scheduledTaskTimeZoneOptions,
@@ -63,16 +65,32 @@ describe("scheduled task presentation", () => {
     expect(run("skipped", "paused")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: the task was paused");
   });
 
-  it("announces what a settled run did and never the owner's own pause", () => {
-    const notice = (state: "completed" | "failed" | "skipped", reasonCode: string | null, chatId: string | null = "chat-1") =>
-      scheduledTaskResultNotice(scheduledTaskFixture({ chatId, unseenResult: true,
-        lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state, reasonCode, finishedAt: "2026-10-05T08:01:00.000Z" } }));
+  it("announces answers and failures that paused the task, never routine skips or failures", () => {
+    const notice = (state: "completed" | "failed" | "skipped", reasonCode: string | null, chatId: string | null = "chat-1",
+      paused = false) => scheduledTaskResultNotice(scheduledTaskFixture({ chatId, unseenResult: true,
+      ...(paused ? { status: "paused", nextRunAt: null, pauseReason: "repeated_failures" } : {}),
+      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state, reasonCode, finishedAt: "2026-10-05T08:01:00.000Z" } }));
     expect(notice("completed", null)).toEqual({ kind: "success", open: "chat", text: "“Weekday news brief” has a new result" });
     expect(notice("completed", null, null)).toMatchObject({ open: "scheduled" });
-    expect(notice("failed", "admission_failed")).toEqual({ kind: "error", open: "scheduled", text: "“Weekday news brief” could not run" });
-    expect(notice("skipped", "missed")).toEqual({ kind: "success", open: "scheduled", text: "“Weekday news brief” was skipped" });
-    expect(notice("skipped", "paused")).toBeNull();
+    expect(notice("failed", "run_failed", "chat-1", true)).toEqual({ kind: "error", open: "scheduled", text: "“Weekday news brief” could not run" });
+    expect(notice("failed", "admission_failed")).toBeNull();
+    for (const reason of ["missed", "previous_running", "superseded", "chat_busy", "paused"]) expect(notice("skipped", reason)).toBeNull();
     expect(scheduledTaskResultNotice(scheduledTaskFixture())).toBeNull();
+  });
+
+  it("explains overlap skips in the run history", () => {
+    const row = (reasonCode: string) => scheduledTaskRunRow({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z",
+      trigger: "schedule", state: "skipped", reasonCode, startedAt: null, finishedAt: "2026-10-05T08:00:01.000Z",
+      chatId: null, unseen: false }, "Europe/London", now).outcome;
+    expect(row("previous_running")).toBe("Skipped: the previous run was still in progress");
+    expect(row("superseded")).toBe("Skipped: a newer scheduled time arrived before it could start");
+  });
+
+  it("summarizes hourly schedules", () => {
+    expect(scheduledTaskScheduleText({ kind: "hourly", everyHours: 1, time: "00:00", until: null,
+      days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }, "Europe/London", "Europe/London")).toBe("Every hour");
+    expect(scheduledTaskScheduleText({ kind: "hourly", everyHours: 3, time: "08:00", until: "20:00",
+      days: ["sat", "sun"] }, "Europe/Berlin", "Europe/London")).toBe("Every 3 hours, 08:00–20:00, Sat, Sun · Europe/Berlin");
   });
 
   it("gives every runner pause reason a recovery hint", () => {
@@ -145,5 +163,54 @@ describe("scheduled task drafts", () => {
     expect(scheduledTaskPreview({ ...draft, repeat: "weekly", days: [] }, task, now)).toBe("Choose at least one day to see the next run.");
     const paused = scheduledTaskFixture({ status: "paused", nextRunAt: null });
     expect(scheduledTaskPreview(scheduledTaskDraftFromTask(paused, now), paused, now)).toBe("Paused. After you resume, it runs next Mon 5 Oct, 09:00.");
+  });
+
+  it("maps hourly schedules to the window controls and back without changing them", () => {
+    const weekdays = ["mon", "tue", "wed", "thu", "fri"] as const;
+    const cases = [
+      { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: [...weekdays] },
+      { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: [...weekdays] },
+      { kind: "hourly", everyHours: 4, time: "06:00", until: null, days: ["sat"] },
+      { kind: "hourly", everyHours: 12, time: "00:00", until: "12:00", days: ["sun"] }
+    ] as const;
+    for (const schedule of cases) {
+      const task = scheduledTaskFixture({ schedule: { ...schedule, days: [...schedule.days] } });
+      const draft = scheduledTaskDraftFromTask(task, now);
+      expect(draft.repeat).toBe("hourly");
+      expect(scheduledTaskDraftSchedule(draft)).toEqual(schedule);
+      expect(scheduledTaskUpdateRequest(draft, task)).toEqual({ expectedRevision: 1 });
+    }
+    const allDay = scheduledTaskDraftFromTask(scheduledTaskFixture({ schedule: { ...cases[0], days: [...weekdays] } }), now);
+    expect(allDay).toMatchObject({ hourlyWindow: "all_day", time: "09:00", until: "18:00" });
+    expect(scheduledTaskDraftFromTask(scheduledTaskFixture({ schedule: { ...cases[2], days: ["sat"] } }), now))
+      .toMatchObject({ hourlyWindow: "hours", time: "06:00", until: "" });
+  });
+
+  it("validates an hourly window in the decoder's terms and previews its next run", () => {
+    const base = blankScheduledTaskDraft(catalog, "Europe/London", now, { title: "Inbox", prompt: "Check", repeat: "hourly" });
+    expect(validateScheduledTaskDraft(base, catalog, null, now)).toEqual({});
+    expect(scheduledTaskPreview(base, null, now)).toBe("Next run: Sun 4 Oct, 12:00");
+    const window = { ...base, hourlyWindow: "hours" as const, time: "09:00", until: "18:00", everyHours: 3 as const };
+    expect(scheduledTaskPreview({ ...window, hourlyDays: ["mon"] }, null, now)).toBe("Next run: Mon 5 Oct, 09:00");
+    expect(validateScheduledTaskDraft({ ...window, until: "09:00" }, catalog, null, now).schedule)
+      .toBe("Choose an end time later than the start time.");
+    expect(validateScheduledTaskDraft({ ...window, time: "" }, catalog, null, now).schedule).toBe("Enter a start time.");
+    expect(validateScheduledTaskDraft({ ...window, hourlyDays: [] }, catalog, null, now).schedule).toBe("Choose at least one day.");
+    expect(scheduledTaskPreview({ ...window, hourlyDays: [] }, null, now)).toBe("Choose at least one day to see the next run.");
+    expect(scheduledTaskDraftSchedule({ ...window, until: "" })).toMatchObject({ time: "09:00", until: null });
+  });
+
+  it("starts new tasks in a new chat per run and switches to the same chat only for hourly schedules", () => {
+    const draft = blankScheduledTaskDraft(catalog, "Europe/London", now, { title: "Brief", prompt: "Do it" });
+    expect(draft.chatMode).toBe("new");
+    expect(scheduledTaskCreateRequest(draft)?.chatMode).toBe("new");
+    expect(scheduledTaskCreateRequest({ ...draft, repeat: "hourly" })?.chatMode).toBe("same");
+    const daily = scheduledTaskFixture({ chatMode: "new", schedule: { kind: "daily", time: "09:00" } });
+    const edit = scheduledTaskDraftFromTask(daily, now);
+    expect(scheduledTaskUpdateRequest({ ...edit, repeat: "hourly" }, daily)).toMatchObject({ chatMode: "same", schedule: { kind: "hourly" } });
+    // The draft keeps the owner's choice, so leaving hourly again sends no chat change.
+    expect(scheduledTaskUpdateRequest({ ...edit, repeat: "daily" }, daily)).toEqual({ expectedRevision: 1 });
+    const same = scheduledTaskFixture({ chatMode: "same", schedule: { kind: "daily", time: "09:00" } });
+    expect(scheduledTaskUpdateRequest({ ...scheduledTaskDraftFromTask(same, now), repeat: "hourly" }, same)).not.toHaveProperty("chatMode");
   });
 });

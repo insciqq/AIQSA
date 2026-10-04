@@ -7,7 +7,13 @@ import { createChatSearchPreferences } from "@/components/app-shell/chatSearchPr
 
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
 import { scheduledTaskResultNotice } from "@/features/scheduled-tasks/scheduledTaskPresentation";
-import { useScheduledTaskUpdates } from "@/features/scheduled-tasks/useScheduledTaskUpdates";
+import { requestScheduledTaskEdit, useScheduledTasksStore } from "@/features/scheduled-tasks/scheduledTasksStore";
+import {
+  renderedUnseenScheduledRuns,
+  scheduledTaskContinuingIn,
+  useScheduledTaskUpdates,
+  type ScheduledTaskRenderedRun
+} from "@/features/scheduled-tasks/useScheduledTaskUpdates";
 import { useBrowserNotifications } from "@/features/browser-notifications/useBrowserNotifications";
 
 import { removePermanentlyDeletedChat } from "@/components/app-shell/permanentChatDeletionReconciliation";
@@ -264,6 +270,8 @@ type ProjectRouteRequest = {
   readonly projectId: string;
   readonly resolution: ChatRouteResolution;
 };
+
+const NO_SCHEDULED_RUNS: readonly ScheduledTaskRenderedRun[] = [];
 
 const CHAT_ROUTE_UNAVAILABLE_COPY = {
   // One text for missing, foreign, archived and unusable Assistants alike.
@@ -2145,6 +2153,19 @@ export function PowerAppShellV2({
     }
   } satisfies ShellWorkspaceView;
 
+  // A task whose later runs continue in this chat: a quiet line says replies do not change it.
+  const scheduledTasks = useScheduledTasksStore((state) => state.tasks);
+  const scheduledChatTask = activeChat?.projectId ? null : scheduledTaskContinuingIn(scheduledTasks, activeChatId);
+  const scheduledTaskChat = scheduledChatTask ? {
+    onEdit: () => studio.open("scheduled", () => requestScheduledTaskEdit(scheduledChatTask.id)),
+    title: scheduledChatTask.title
+  } : null;
+  // Unread scheduled results this transcript renders; they become seen while the chat is shown.
+  const renderedUnseenRuns = useMemo(
+    () => activeChatDetailLoading || activeChatDetailError ? NO_SCHEDULED_RUNS : renderedUnseenScheduledRuns(visibleMessages),
+    [activeChatDetailError, activeChatDetailLoading, visibleMessages]
+  );
+
   const threadView = {
     usageStats: activeThread.usageStats,
     activeChatDetailError,
@@ -2186,6 +2207,7 @@ export function PowerAppShellV2({
     loadingOlderMessages: activeThreadHistory.loading,
     olderMessagesError: activeThreadHistory.error,
     retryActiveChatDetail,
+    scheduledTaskChat,
     showJumpToLatest,
     submitMessageEdit,
     threadScrollRef,
@@ -2251,7 +2273,8 @@ export function PowerAppShellV2({
         useRunLifecycleStore.getState().activeStreams[chatId] ||
         pendingBranchCheckouts.has(chatId) || pendingThreadMutations.has(chatId)) return false;
       return Boolean(await refreshActiveChat(chatId, { forceDetail: true, preserveControls: true, resumeRuns: true }));
-    }
+    },
+    renderedUnseenRuns
   });
   const projectCurrentModel = projectContext
     ? projectCatalog?.models.find((model) =>

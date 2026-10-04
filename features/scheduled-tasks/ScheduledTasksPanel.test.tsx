@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScheduledTask, ScheduledTaskListResponse } from "@/lib/contracts/scheduledTasks";
 import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
@@ -13,7 +13,7 @@ import {
   updateScheduledTask
 } from "./scheduledTasksApi";
 import { scheduledTaskCatalogFixture, scheduledTaskFixture } from "./scheduledTaskFixtures";
-import { useScheduledTasksStore } from "./scheduledTasksStore";
+import { requestScheduledTaskEdit, useScheduledTasksStore } from "./scheduledTasksStore";
 
 vi.mock("./scheduledTasksApi", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./scheduledTasksApi")>();
@@ -121,7 +121,7 @@ describe("ScheduledTasksPanel", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       title: "Weekly summary", schedule: { kind: "weekly", time: "17:00", days: ["fri"] }, modelId: "model-a", provider: "provider-a",
-      searchEnabled: false, emailNotify: false
+      searchEnabled: false, emailNotify: false, chatMode: "new"
     }));
     expect(screen.getByRole("status")).toHaveTextContent("“Weekly summary” is scheduled.");
     expect(screen.getByRole("heading", { name: "Weekly summary" })).toBeInTheDocument();
@@ -164,7 +164,7 @@ describe("ScheduledTasksPanel", () => {
     const sheet = screen.getByRole("dialog", { name: "Edit scheduled task" });
     const runs = await within(sheet).findByRole("region", { name: "Recent runs" });
     expect(within(runs).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
-      "Fri 2 Oct, 09:00ScheduledAnswered", "Thu 1 Oct, 13:00Run nowFailed: the model was unavailable"
+      "Fri 2 Oct, 09:00ScheduledAnsweredOpen chat", "Thu 1 Oct, 13:00Run nowFailed: the model was unavailableOpen chat"
     ]);
     fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "My brief" } });
     fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
@@ -176,23 +176,119 @@ describe("ScheduledTasksPanel", () => {
     expect(update).toHaveBeenLastCalledWith(task.id, { expectedRevision: 3, title: "My brief" });
   });
 
-  it("marks an unread result seen when its editor opens, even for a task without a chat", async () => {
-    const failed = { scheduledFor: "2026-10-03T08:00:00.000Z", state: "failed", reasonCode: "model_unavailable",
-      finishedAt: "2026-10-03T08:00:02.000Z" } as const;
-    const task = scheduledTaskFixture({ chatId: null, unseenResult: true, lastRun: failed });
-    list.mockResolvedValue(listed([task]));
-    detail.mockResolvedValueOnce({ task, recentRuns: [] });
+  it("marks seen only the unread runs its history renders and opens each run's own chat", async () => {
+    const answered = { scheduledFor: "2026-10-03T08:00:00.000Z", state: "completed", reasonCode: null,
+      finishedAt: "2026-10-03T08:01:00.000Z" } as const;
+    const task = scheduledTaskFixture({ chatMode: "new", chatId: "chat-3", unseenResult: true, lastRun: answered });
+    list.mockResolvedValueOnce(listed([task])).mockResolvedValue(listed([{ ...task, unseenResult: false }]));
+    detail.mockResolvedValueOnce({ task, recentRuns: [
+      { id: "run-3", scheduledFor: "2026-10-03T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
+        startedAt: "2026-10-03T08:00:01.000Z", finishedAt: "2026-10-03T08:01:00.000Z", chatId: "chat-3", unseen: true },
+      { id: "run-2", scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "previous_running",
+        startedAt: null, finishedAt: "2026-10-02T08:00:01.000Z", chatId: null, unseen: false },
+      { id: "run-1", scheduledFor: "2026-10-01T08:00:00.000Z", trigger: "manual", state: "completed", reasonCode: null,
+        startedAt: "2026-10-01T08:00:01.000Z", finishedAt: "2026-10-01T08:01:00.000Z", chatId: "chat-1", unseen: true }
+    ] });
     const seen = vi.mocked(markScheduledTaskSeen).mockReset().mockResolvedValue();
-    renderPanel();
+    const { onOpenChat } = renderPanel();
     expect(await screen.findByRole("heading", { name: "Weekday news briefNew result" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "More actions for Weekday news brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
-    expect(seen).toHaveBeenCalledWith(task.id);
-    expect(useScheduledTasksStore.getState().tasks[0]?.unseenResult).toBe(false);
-    await within(screen.getByRole("dialog", { name: "Edit scheduled task" })).findByText("No runs yet.");
-    // The detail read predates the server's clear: it is cleared again, never shown as unread.
-    expect(seen).toHaveBeenCalledTimes(2);
-    expect(useScheduledTasksStore.getState().tasks[0]?.unseenResult).toBe(false);
+    // Nothing is seen before the history renders it.
+    expect(seen).not.toHaveBeenCalled();
+    const sheet = screen.getByRole("dialog", { name: "Edit scheduled task" });
+    const runs = await within(sheet).findByRole("region", { name: "Recent runs" });
+    expect(within(runs).getAllByRole("listitem").map((row) => row.textContent)).toEqual([
+      "Sat 3 Oct, 09:00ScheduledNew result: AnsweredOpen chat",
+      "Fri 2 Oct, 09:00ScheduledSkipped: the previous run was still in progress",
+      "Thu 1 Oct, 09:00Run nowNew result: AnsweredOpen chat"
+    ]);
+    await waitFor(() => expect(seen).toHaveBeenCalledWith(task.id, ["run-3", "run-1"]));
+    expect(seen).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(useScheduledTasksStore.getState().tasks[0]?.unseenResult).toBe(false));
+
+    // Each run opens its own chat; unsaved edits are confirmed first.
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Edited" } });
+    fireEvent.click(within(runs).getByRole("button", { name: "Open chat from Thu 1 Oct, 09:00" }));
+    expect(onOpenChat).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm discard changes" }));
+    await waitFor(() => expect(onOpenChat).toHaveBeenCalledWith("chat-1"));
+    expect(screen.queryByRole("dialog", { name: "Edit scheduled task" })).toBeNull();
+  });
+
+  it("edits an hourly window with the chat fixed to the task's chat", async () => {
+    list.mockResolvedValue(listed([]));
+    const created = scheduledTaskFixture({ id: "hourly", title: "Inbox check", chatMode: "same",
+      schedule: { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } });
+    create.mockResolvedValue(created);
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "New task" }));
+    const sheet = screen.getByRole("dialog", { name: "New scheduled task" });
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Inbox check" } });
+    fireEvent.change(within(sheet).getByLabelText("Instructions"), { target: { value: "Summarize new mail." } });
+    expect(within(sheet).getByRole("radio", { name: "Each run starts a new chat" })).toBeChecked();
+    fireEvent.change(within(sheet).getByLabelText("Time zone"), { target: { value: "Europe/London" } });
+    fireEvent.change(within(sheet).getByLabelText("Repeat"), { target: { value: "hourly" } });
+    expect(within(sheet).queryByLabelText("Time")).toBeNull();
+    expect(within(sheet).getByRole("radio", { name: "All day" })).toBeChecked();
+    expect(within(sheet).getByTestId("scheduled-task-preview")).toHaveTextContent("Next run: Sun 4 Oct, 12:00");
+    // Hourly tasks continue in one chat: the other choice is unavailable and the line says why.
+    const newChat = within(sheet).getByRole("radio", { name: "Each run starts a new chat" });
+    expect(newChat).toBeDisabled();
+    expect(within(sheet).getByRole("radio", { name: "Continue in this task's chat" })).toBeChecked();
+    expect(within(sheet).getByRole("group", { name: "Chat" })).toHaveAccessibleDescription("Hourly tasks always continue in one chat.");
+
+    fireEvent.change(within(sheet).getByLabelText("Interval"), { target: { value: "2" } });
+    fireEvent.click(within(sheet).getByRole("radio", { name: "Set hours" }));
+    fireEvent.change(within(sheet).getByLabelText("From"), { target: { value: "09:00" } });
+    fireEvent.change(within(sheet).getByLabelText("Until"), { target: { value: "08:00" } });
+    for (const day of ["Saturday", "Sunday"]) fireEvent.click(within(sheet).getByRole("button", { name: day }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create task" }));
+    expect(within(sheet).getByRole("alert")).toHaveTextContent("Choose an end time later than the start time.");
+    expect(create).not.toHaveBeenCalled();
+    fireEvent.change(within(sheet).getByLabelText("Until"), { target: { value: "18:00" } });
+    expect(within(sheet).getByTestId("scheduled-task-preview")).toHaveTextContent("Next run: Mon 5 Oct, 09:00");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create task" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      chatMode: "same",
+      schedule: { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] }
+    }));
+    expect(screen.getByText(/^Every 2 hours, 09:00–18:00, Mon–Fri/u)).toBeInTheDocument();
+  });
+
+  it("sends the same chat when a task switches to hourly, restores its own choice when it switches back and shows the hourly limit inline", async () => {
+    const task = scheduledTaskFixture({ chatMode: "new", schedule: { kind: "daily", time: "08:00" } });
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValue({ task, recentRuns: [] });
+    update.mockRejectedValueOnce(new ScheduledTaskApiError("scheduled_task_hourly_limit", 409));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit scheduled task" });
+    fireEvent.change(within(sheet).getByLabelText("Repeat"), { target: { value: "hourly" } });
+    fireEvent.change(within(sheet).getByLabelText("Repeat"), { target: { value: "daily" } });
+    expect(within(sheet).getByRole("radio", { name: "Each run starts a new chat" })).toBeChecked();
+    fireEvent.change(within(sheet).getByLabelText("Repeat"), { target: { value: "hourly" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
+    const error = await within(sheet).findByText(/up to 3 active hourly tasks/u);
+    expect(within(sheet).getByRole("group", { name: "Schedule" })).toHaveAttribute("aria-describedby", error.id);
+    expect(update).toHaveBeenCalledWith(task.id, {
+      expectedRevision: 1, chatMode: "same",
+      schedule: { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }
+    });
+  });
+
+  it("opens a task's editor when its chat asks for it", async () => {
+    const task = scheduledTaskFixture({ chatId: "chat-1" });
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValue({ task, recentRuns: [] });
+    renderPanel();
+    await screen.findByRole("heading", { name: task.title });
+    act(() => requestScheduledTaskEdit(task.id));
+    const sheet = await screen.findByRole("dialog", { name: "Edit scheduled task" });
+    expect(within(sheet).getByLabelText("Name")).toHaveValue(task.title);
+    expect(useScheduledTasksStore.getState().editRequest).toBeNull();
   });
 
   it("pauses, runs now with a conflict message, opens the chat and deletes after naming the consequence", async () => {
@@ -216,7 +312,7 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "More actions for Weekday news brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     const confirm = screen.getByRole("group", { name: "Delete Weekday news brief" });
-    expect(confirm).toHaveTextContent("Its chat and answers stay in your history.");
+    expect(confirm).toHaveTextContent("Its chats and answers stay in your history.");
     fireEvent.click(within(confirm).getByRole("button", { name: "Delete task" }));
     expect(await screen.findByTestId("scheduled-tasks-empty")).toBeInTheDocument();
     expect(remove).toHaveBeenCalledWith(task.id);
