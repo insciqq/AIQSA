@@ -157,6 +157,20 @@ describe("chat wire contracts", () => {
     }
   });
 
+  it("keeps a page read's bounded target and outcome only on its own origin", () => {
+    const call = { origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url",
+      fetchTarget: "news.example/today", fetchOutcome: "fetch_http_status", fetchHttpStatus: 503 };
+    const decode = (row: Record<string, unknown>) => decodeChatDetailResponse({
+      chat: detailChat({ messages: [{ ...message, toolActivity: { calls: [row] } }], usageStats })
+    })?.messages[0]?.toolActivity?.calls[0];
+    expect(decode(call)).toEqual(call);
+    // Unknown outcomes, a scheme in the target and facts on another origin are dropped.
+    expect(decode({ ...call, fetchOutcome: "fetch_secret", fetchTarget: "https://news.example/today" }))
+      .toEqual({ origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url" });
+    expect(decode({ ...call, origin: "mcp" })).not.toHaveProperty("fetchTarget");
+    expect(decode({ ...call, fetchOutcome: "read" })).not.toHaveProperty("fetchHttpStatus");
+  });
+
   it("preserves bounded MCP call references and refuses references on other origins", () => {
     const call = { origin: "mcp", round: 2, status: "running", toolName: "search" };
     const decode = (details: unknown, origin: unknown = "mcp") => decodeChatDetailResponse({
