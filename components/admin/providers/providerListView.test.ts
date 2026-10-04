@@ -343,6 +343,17 @@ describe("list copy", () => {
       .toContain("Vision Model");
 
     expect(providerSubtitle(openai, usage)).toBe("Default chat provider · 1 Search source");
+    // Image generation is a role, live only with a default image model.
+    const published = { ...candidate, available: true };
+    systemModelPolicy.policy.imageModels = [published] as never;
+    systemModelPolicy.policy.imageModel = null;
+    const imageOff = deriveProviderUsage([openai, openrouter], { knowledge, modelPolicy, search, systemModelPolicy });
+    expect(imageOff.get("conn-openai")).toContain("Image generation · off");
+    expect(imageOff.get("conn-openai")).not.toContain("Image generation");
+    expect(providerSubtitle(openai, imageOff)).toBe("Default chat provider · 1 Search source");
+    systemModelPolicy.policy.imageModel = published as never;
+    expect(deriveProviderUsage([openai, openrouter], { knowledge, modelPolicy, search, systemModelPolicy }).get("conn-openai"))
+      .toContain("Image generation");
     expect(providerSubtitle(openai, new Map([[openai.id, ["Default chat", "Memory"]]]))).toBe("Default chat provider");
     expect(providerSubtitle(openrouter, usage)).toBe("Qwen3 Embedding 8B, Voyage Rerank");
   });
