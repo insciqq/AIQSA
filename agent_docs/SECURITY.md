@@ -29,7 +29,7 @@ External parser endpoints require operator trust. Preflight archive expansion/do
 
 Catalogs, JSON/SSE, URLs, and upstream bodies are untrusted. Discovery cannot grant capabilities. Enforce deadlines, pre-parse bounds, SSRF-safe DNS pinning, and redirect policy. Browser/durable Search output is safe normalized findings/citations; Gemini Suggestions require closed server/browser structural allowlists. Raw provider markup/CSS/query records and operation metadata are not grounding output.
 
-Markdown remains React text except reviewed local Shiki/KaTeX sinks. Bound highlighting and macro/source work; disable math trust, reject HTML/link/resource commands, escape failures. Real-library hostile-input tests protect exceptions.
+Markdown remains React text except reviewed local Shiki/KaTeX/Mermaid sinks. Bound highlighting and macro/source work; disable math trust, reject HTML/link/resource commands, escape failures. Real-library hostile-input tests protect exceptions.
 
 Artifact prompt injection can encode private context in URLs. Enforce exact iframe sources, opaque origins and viewer/parent CSP: no same-origin, popups/top navigation, nested frames or runtime network. Vendoring rechecks host/path policy and pinned DNS per redirect; hashes preserve bytes, not trust. Confirm every external link's full address. Browser state needs per-artifact/origin quotas, isolation and logout cleanup; exclude it from shared renders. Bound requests before bearer lookup; reauthorize owner/publication/membership around loading. Diagnostics grant no authority.
 
@@ -82,5 +82,6 @@ Review this npm-only tree's dependency manifests/locks, registry sources and lif
 | `nanoid` | Patched compatible override addresses zero-size custom-generator denial of service; current use is transitive build tooling, not affected APIs. |
 | `postcss`, `acorn` | Bound untrusted CSS/JavaScript parsing; retain structural checks and hostile-input tests. PostCSS override enforces the advisory floor. |
 | `markdown-it` | Parses untrusted model/user Markdown. Input, node and depth bounds hold before and while rendering; the dialect is limited at the tokenizer; raw HTML and images never reach the DOM, and link policy stays in the React renderer. Real-library hostile-input tests protect it. |
+| `mermaid` | Renders closed model/user Mermaid fences in the browser into SVG, lazily loaded. Strict security level, no HTML labels, no links or click handlers, error rendering suppressed; text cannot change locked security, theme, font or sanitizer configuration. Source size, edge count, render time and output size are bounded with a code fallback. Output passes Mermaid's DOMPurify, then an inert-parse SVG allowlist that drops links, handlers, external references and imports; diagram CSS is re-serialized from a real CSS parse keeping only rules whose subject is inside the diagram root, and its frame contains paint. Enforced CSP needs no `unsafe-eval`; real-library hostile-input tests protect it. |
 
 Keep overrides only while focused hostile-input/build/hermetic verification passes and their reasons hold.
