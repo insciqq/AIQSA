@@ -13,6 +13,11 @@ import {
 } from "./browserNotificationsClient";
 
 const BANNER_DISMISSED_KEY = "aiqsa.browserNotifications.bannerDismissed";
+/**
+ * A shown device rebinds at most this often: another device may have turned
+ * push off and on meanwhile, which drops every subscription of the account.
+ */
+export const BROWSER_PUSH_RESYNC_MS = 10 * 60_000;
 
 let cachedEnvironment: BrowserPushEnvironment | null | undefined;
 function clientEnvironment(): BrowserPushEnvironment | null {
@@ -92,6 +97,8 @@ export function useBrowserNotifications(input: Readonly<{
   const [dismissedAccounts, setDismissedAccounts] = useState<ReadonlySet<string>>(() => new Set());
   const [requesting, setRequesting] = useState(false);
   const synced = useRef<string | null>(null);
+  /** When this device last bound its subscription; 0 retries on the next showing. */
+  const lastBound = useRef(0);
   const setEnabledRef = useRef(input.setEnabled);
   useEffect(() => {
     setEnabledRef.current = input.setEnabled;
@@ -105,7 +112,30 @@ export function useBrowserNotifications(input: Readonly<{
     if (synced.current === key) return;
     synced.current = key;
     if (!enabled) void removeBrowserPushSubscription(environment);
-    else if (permission === "granted") void syncBrowserPushSubscription(environment);
+    else if (permission === "granted") {
+      lastBound.current = Date.now();
+      void syncBrowserPushSubscription(environment).then((result) => {
+        if (result !== "subscribed") lastBound.current = 0;
+      });
+    }
+  }, [accountId, enabled, environment, permission]);
+
+  // Showing the app again rebinds a stale device, and retries a failed binding.
+  useEffect(() => {
+    if (!accountId || enabled !== true || permission !== "granted" || !environment) return;
+    const rebind = () => {
+      if (document.visibilityState !== "visible" || Date.now() - lastBound.current < BROWSER_PUSH_RESYNC_MS) return;
+      lastBound.current = Date.now();
+      void syncBrowserPushSubscription(environment).then((result) => {
+        if (result !== "subscribed") lastBound.current = 0;
+      });
+    };
+    document.addEventListener("visibilitychange", rebind);
+    window.addEventListener("focus", rebind);
+    return () => {
+      document.removeEventListener("visibilitychange", rebind);
+      window.removeEventListener("focus", rebind);
+    };
   }, [accountId, enabled, environment, permission]);
 
   const dismissed = !accountId || dismissedAccounts.has(accountId) || readDismissed(accountId);

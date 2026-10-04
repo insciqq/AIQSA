@@ -3,7 +3,7 @@ import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BrowserPushEnvironment } from "./browserNotificationsClient";
 import { BrowserNotificationsBannerV2, BrowserNotificationsSettingsRowV2 } from "./BrowserNotificationsV2";
-import { useBrowserNotifications } from "./useBrowserNotifications";
+import { BROWSER_PUSH_RESYNC_MS, useBrowserNotifications } from "./useBrowserNotifications";
 
 function bytes(value: string): Uint8Array {
   const base64 = value.replace(/-/gu, "+").replace(/_/gu, "/");
@@ -154,5 +154,36 @@ describe("browser notifications", () => {
     render(<Harness environment={browser.environment} initial={null} />);
     expect(screen.queryByTestId("browser-notifications-banner")).toBeNull();
     expect((screen.getByRole("switch", { name: "Browser notifications" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("rebinds a shown device after a while and retries a binding that failed", async () => {
+    const { environment, requests } = fakeBrowser("granted");
+    let failNext = true;
+    const baseFetch = environment.fetch;
+    environment.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST" && failNext) {
+        failNext = false;
+        requests.push({ body: undefined, method: "POST" });
+        return new Response(null, { status: 503 });
+      }
+      return baseFetch(url, init);
+    }) as typeof fetch;
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      render(<Harness environment={environment} />);
+      await waitFor(() => expect(requests.filter((entry) => entry.method === "POST")).toHaveLength(1));
+      // The failed first binding is retried on the next showing.
+      await act(async () => { window.dispatchEvent(new Event("focus")); });
+      await waitFor(() => expect(requests.filter((entry) => entry.method === "POST")).toHaveLength(2));
+      // A bound device is not rebound on every focus...
+      await act(async () => { window.dispatchEvent(new Event("focus")); });
+      expect(requests.filter((entry) => entry.method === "POST")).toHaveLength(2);
+      // ...but is after a while, in case another device turned push off and on.
+      now.mockReturnValue(1_000_000 + BROWSER_PUSH_RESYNC_MS + 1);
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      await waitFor(() => expect(requests.filter((entry) => entry.method === "POST")).toHaveLength(3));
+    } finally {
+      now.mockRestore();
+    }
   });
 });
