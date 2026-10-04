@@ -87,9 +87,22 @@ function sourceModel(document: ChatExportDocument): string | undefined {
   return normalizeChatImportSourceModel(cursor?.model?.modelId);
 }
 
+/**
+ * Imported messages are stored complete, so an answer that ended without
+ * text says how it ended instead of reading as an empty answer.
+ */
+const EMPTY_ANSWER_NOTES: Readonly<Partial<Record<ChatExportDocumentMessage["status"], string>>> = Object.freeze({
+  cancelled: "_[Answer stopped before any text]_",
+  error: "_[Answer failed]_",
+  queued: "_[Answer incomplete]_",
+  streaming: "_[Answer incomplete]_"
+});
+
 /** Attachments are not imported: each becomes a note in its message; model labels stay out. */
 function importableMessage(message: ChatExportDocumentMessage): ChatExportDocumentMessage {
   const names = message.attachments?.map((attachment) => attachment.name) ?? [];
+  const ending = message.role === "assistant" && !message.text.trim() ? EMPTY_ANSWER_NOTES[message.status] : undefined;
+  const text = ending ?? message.text;
   return {
     createdAt: message.createdAt,
     id: message.id,
@@ -97,8 +110,8 @@ function importableMessage(message: ChatExportDocumentMessage): ChatExportDocume
     role: message.role,
     status: message.status,
     text: names.length
-      ? appendNotes(message.text, [notImportedNote(names.length === 1 ? "Attachment" : "Attachments", names)])
-      : message.text
+      ? appendNotes(text, [notImportedNote(names.length === 1 ? "Attachment" : "Attachments", names)])
+      : text
   };
 }
 

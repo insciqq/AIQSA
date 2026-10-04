@@ -606,6 +606,8 @@ export function createPrismaMessageBranchRepository(
               }
             },
             folderId: true,
+            importSource: true,
+            importSourceModel: true,
             projectFolderId: true,
             projectId: true,
             id: true,

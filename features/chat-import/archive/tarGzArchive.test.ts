@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { buildTarGz, compress, paxPathRecord, tarBytes } from "./archive.testFixtures";
+import { buildTarGz, compress, paxPathRecord, paxRecord, tarBytes } from "./archive.testFixtures";
 import {
   DEFAULT_IMPORT_ARCHIVE_LIMITS,
   ImportArchiveError,
@@ -39,6 +39,9 @@ describe("tar.gz import archive", () => {
       { content: "{\"a\":1}", path: `${"p".repeat(120)}/b.json` },
       { content: paxPathRecord("pax/renamed.json"), path: "PaxHeader", type: "x" },
       { content: "{\"pax\":true}", path: "short.json" },
+      // Byte lengths: a non-ASCII path between other records must not shift them.
+      { content: `${paxRecord("comment", "черновик")}${paxPathRecord("archived/заметки-2026-09-01.json")}${paxRecord("mtime", "1759312800")}`, path: "PaxHeader", type: "x" },
+      { content: "{\"cyrillic\":true}", path: "zametki.json" },
       { content: `${longName}\0`, path: "././@LongLink", type: "L" },
       { content: "{\"long\":true}", path: "truncated-name.json" },
       { content: "target", path: "link.json", type: "2" }
@@ -48,11 +51,13 @@ describe("tar.gz import archive", () => {
       seen.push(entry.path);
       return entry.path.endsWith(".json") ? { maxBytes: 1_000 } : null;
     });
-    expect(seen).toEqual(["manifest.json", "chat.md", `${"p".repeat(120)}/b.json`, "pax/renamed.json", longName]);
+    expect(seen).toEqual(["manifest.json", "chat.md", `${"p".repeat(120)}/b.json`, "pax/renamed.json",
+      "archived/заметки-2026-09-01.json", longName]);
     expect(entries.map((entry) => [entry.path, text(entry)])).toEqual([
       ["manifest.json", "{\"format\":\"aiqsa.chat-archive\"}"],
       [`${"p".repeat(120)}/b.json`, "{\"a\":1}"],
       ["pax/renamed.json", "{\"pax\":true}"],
+      ["archived/заметки-2026-09-01.json", "{\"cyrillic\":true}"],
       [longName, "{\"long\":true}"]
     ]);
   });

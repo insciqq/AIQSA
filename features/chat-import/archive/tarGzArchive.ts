@@ -130,19 +130,23 @@ function checksumValid(header: Uint8Array): boolean {
   return recorded === unsigned || recorded === signed;
 }
 
-/** The `path` record of a pax extended header, if any. */
+const PATH_KEY = new TextEncoder().encode("path=");
+
+/**
+ * The `path` record of a pax extended header, if any. Record lengths count
+ * bytes, so records are split on the raw bytes and only values are decoded.
+ */
 function paxPath(data: Uint8Array): string | null {
-  const text = utf8.decode(data);
   let path: string | null = null;
   let cursor = 0;
-  while (cursor < text.length) {
-    const space = text.indexOf(" ", cursor);
+  while (cursor < data.length) {
+    const space = data.indexOf(0x20, cursor);
     if (space < 0) break;
-    const length = Number.parseInt(text.slice(cursor, space), 10);
-    if (!Number.isSafeInteger(length) || length <= 0) break;
-    const record = text.slice(space + 1, cursor + length - 1);
-    const equals = record.indexOf("=");
-    if (equals > 0 && record.slice(0, equals) === "path") path = record.slice(equals + 1);
+    const length = Number.parseInt(utf8.decode(data.subarray(cursor, space)), 10);
+    // A record is "<length> <key>=<value>\n" and ends inside the header data.
+    if (!Number.isSafeInteger(length) || length <= space - cursor || cursor + length > data.length) break;
+    const record = data.subarray(space + 1, cursor + length - 1);
+    if (PATH_KEY.every((byte, index) => record[index] === byte)) path = utf8.decode(record.subarray(PATH_KEY.length));
     cursor += length;
   }
   return path;

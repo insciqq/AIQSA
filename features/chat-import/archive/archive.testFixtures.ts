@@ -154,12 +154,18 @@ export function tarBytes(entries: readonly TarFixtureEntry[], options: Readonly<
   return concat(parts);
 }
 
-/** A pax extended header record that renames the next entry. */
-export function paxPathRecord(path: string): string {
-  const body = ` path=${path}\n`;
-  let length = body.length + 1;
-  while (`${length}${body}`.length !== length) length = `${length}${body}`.length;
+/** One pax extended header record; its length counts bytes, as the format requires. */
+export function paxRecord(key: string, value: string): string {
+  const body = ` ${key}=${value}\n`;
+  const bytes = (text: string) => encoder.encode(text).byteLength;
+  let length = bytes(body) + 1;
+  while (bytes(`${length}${body}`) !== length) length = bytes(`${length}${body}`);
   return `${length}${body}`;
+}
+
+/** A pax record that renames the next entry. */
+export function paxPathRecord(path: string): string {
+  return paxRecord("path", path);
 }
 
 export async function buildTarGz(entries: readonly TarFixtureEntry[], options: Readonly<{ endMarker?: boolean }> = {}): Promise<Blob> {
