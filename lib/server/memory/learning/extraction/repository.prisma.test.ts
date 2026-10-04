@@ -1868,19 +1868,19 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       // The owner switched the task's chat to Memory; a branch keeps its mode.
       const chat = await prisma.chat.create({ data: { title: "Scheduled task chat", userId } });
       const scheduled = await createTurn({
-        assistantText: "Here is today's brief.", chatId: chat.id, createdAt: new Date("2026-10-05T06:00:00.000Z"),
+        assistantText: "Here is today's brief.", chatId: chat.id, createdAt: new Date("2026-10-03T06:00:00.000Z"),
         parentMessageId: null, scheduled: true, userId, userText: "I live in Lisbon. Summarize the news."
       });
       await settleChat(userId, chat.id, scheduled);
 
       // The copies carry no runs; a Regenerate in the branch answers the marked copy.
       const first = await branch(scheduled.assistantMessage.id);
-      const regenerated = await regenerate(first.chatId, first.copies[0]!.id, new Date("2026-10-05T06:10:00.000Z"));
+      const regenerated = await regenerate(first.chatId, first.copies[0]!.id, new Date("2026-10-03T06:10:00.000Z"));
       await expect(factJobs(first.copies[0]!.id)).resolves.toBe(0);
 
       // The owner's own turn in the branch is learned from, without the copied prompt as context.
       const own = await createTurn({
-        assistantText: "Noted.", chatId: first.chatId, createdAt: new Date("2026-10-05T07:00:00.000Z"),
+        assistantText: "Noted.", chatId: first.chatId, createdAt: new Date("2026-10-03T07:00:00.000Z"),
         parentMessageId: regenerated.id, userId, userText: "I prefer quiet rooms."
       });
       await settleChat(userId, first.chatId, own);
@@ -1890,7 +1890,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
 
       // A branch of the branch, from the regenerated answer: its Regenerate admits no job either.
       const second = await branch(regenerated.id);
-      await regenerate(second.chatId, second.copies[0]!.id, new Date("2026-10-05T08:00:00.000Z"));
+      await regenerate(second.chatId, second.copies[0]!.id, new Date("2026-10-03T08:00:00.000Z"));
       await expect(factJobs(second.copies[0]!.id)).resolves.toBe(0);
     } finally {
       await cleanupOwner(userId);

@@ -4089,7 +4089,8 @@ describe("Memory lexical history index persistence", () => {
   it("keeps a scheduled task's prompt out of its Memory branches' history at any depth, also after a Regenerate there", async () => {
     const userId = await createOwner("memory-history-scheduled-branch");
     try {
-      const startedAt = Date.now();
+      // In the past: a branch copy keeps its source's creation time and is updated now.
+      const startedAt = Date.now() - 600_000;
       const branches = createPrismaMessageBranchRepository(prisma);
       const settle = async (chatId: string, assistantMessageId: string, runId: string,
         mutation: "BRANCH_PATH_CHANGE" | "NORMAL_APPEND") => {
