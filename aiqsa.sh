@@ -1116,7 +1116,7 @@ report_stack_failure() {
     printf '%s\n' "$logs" | sed 's/^/  /' >&2
     if [[ $service == migrate-bootstrap && $logs == *local_mcp_removal_acknowledgement_required* ]]; then
       note "This release removes local MCP servers and stops until you acknowledge it." \
-        "Review the release note in README.md, set AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1 in .env, then rerun ./aiqsa.sh up."
+        "Review the local MCP removal note in SELF_HOSTING.md, set AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1 in .env, then rerun ./aiqsa.sh up."
     fi
   elif [[ -s $compose_output ]]; then
     note "Last lines of docker compose up:"
@@ -1275,7 +1275,7 @@ git_checkout_guard() {
       refuse "git refuses to use $PROJECT_DIR because another user owns it: $reason" \
         "Run ./aiqsa.sh as the owner of the checkout, or trust it with: git config --global --add safe.directory $directory" ;;
     *"not a git repository"*)
-      refuse "$PROJECT_DIR is not a git checkout: $reason" "Update it as described in README.md." ;;
+      refuse "$PROJECT_DIR is not a git checkout: $reason" "Update it as described in SELF_HOSTING.md." ;;
     *)
       refuse "git cannot read $PROJECT_DIR: ${reason:-git rev-parse failed without an error message}" ;;
   esac
@@ -1447,7 +1447,7 @@ cmd_upgrade() {
     refuse "the target version $target is older than the current $current; downgrades are not supported."
   fi
   git_in cat-file -e "$target_ref:aiqsa.sh" 2>/dev/null \
-    || refuse "the target release has no aiqsa.sh." "Update it by hand as described in README.md."
+    || refuse "the target release has no aiqsa.sh." "Update it by hand as described in SELF_HOSTING.md."
   image_guard "$target"
   if (( BACKUP_NOW )); then
     BACKUP_CONTEXT=upgrade
@@ -1868,7 +1868,7 @@ restore_verify() {
     external)
       restore_refuse "this backup uses external object storage (objects=external)." \
         "Its deletion reconciliation needs the bucket inside the isolated restore project, which the CLI cannot provide;" \
-        "restore it by hand as described in README.md." ;;
+        "restore it by hand as described in SELF_HOSTING.md." ;;
     *) restore_refuse "the manifest has an unknown object mode '$objects'." ;;
   esac
   REPLY=$version

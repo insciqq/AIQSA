@@ -1,35 +1,80 @@
+<div align="center">
+
+<img src="public/icon.svg" width="80" alt="AIQSA logo">
+
 # AIQSA
+
+**The self-hosted AI workspace for small and medium teams.**
+
+GPT, Claude, Gemini, DeepSeek and your own models in one private workspace, on your own API keys.
 
 [![Latest release](https://img.shields.io/github/v/release/insciqq/AIQSA)](https://github.com/insciqq/AIQSA/releases/latest)
 [![CI](https://github.com/insciqq/AIQSA/actions/workflows/ci.yml/badge.svg)](https://github.com/insciqq/AIQSA/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 
-AIQSA is a self-hosted, multi-user web interface for working with models from different providers. It combines chat, Projects, Assistants, files, document search, personal Memory, and MCP tools.
+[Quick start](#quick-start) · [Features](#features) · [Self-hosting guide](SELF_HOSTING.md) · [Releases](https://github.com/insciqq/AIQSA/releases)
 
-![AIQSA chat interface](.github/assets/aiqsa-chat.png)
+</div>
+
+## Why AIQSA
+
+- **Every model in one place.** Connect OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, or any OpenAI-compatible server, including models running on your own network. Choose the model for each message; the whole team works in the same workspace.
+- **Ready in minutes.** Add an API key and AIQSA checks what each model can actually do (images, PDFs, tools, web search) and turns on exactly that. There is nothing to wire together before your team starts.
+- **A computer in every chat.** Each chat can get its own isolated Linux virtual machine. The model runs code, works with your files, and hands back reports, charts and archives to download. For larger jobs, give the task to a Codex agent working in the same machine.
+- **Answers you can check.** A built-in Knowledge engine reads PDFs, scans and tables, finds the right passages with hybrid search and reranking, and checks the answer against the passages it cites before you see it. Web search answers come with linked sources.
+- **Memory that understands, not just stores.** AIQSA learns only from what you actually say, keeps track of who each fact is about and when it was true, replaces outdated facts, settles contradictions on its own, and searches your past chats when an answer needs more. You control everything it keeps, and the same Memory works in Claude Code and Codex.
+- **Work that runs on its own.** Scheduled tasks run a prompt daily, weekly or monthly and deliver the answer to its own chat, with an optional email.
+- **Built for teams.** Role-based access control, shared Projects and Assistants, invitations, API keys per installation, group or person, and usage per user.
 
 ## Features
 
-- OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, and OpenAI-compatible endpoints, with model selection per message.
-- Branching conversations, folders, file attachments, and read-only share links.
-- Team Projects, reusable Assistants, invitations, and access groups.
-- Knowledge bases with document search, OCR, and source citations.
-- Web search, MCP tools, and personal Memory accessible from AIQSA or external MCP clients.
-- An optional KVM sandbox for running commands and working with files.
+**Chat**
+- Model choice per message, branching conversations, folders, and read-only share links.
+- File, image and PDF attachments, read natively by models that support them.
+- Artifacts: documents and interactive pages the model builds in chat, with versions and shareable links.
+- Image generation.
 
-AIQSA is pre-1.0 and designed for small, operator-managed installations with a single application replica.
+**Knowledge**
+- Document parsing with OCR for scans; vision models read PDF pages, tables and charts.
+- Hybrid lexical and vector search with reranking; small collections are read in full.
+- Answers are reviewed against the retrieved evidence, and each citation opens the exact passage or PDF page.
+- Versioned sources shared across chats, Projects and Assistants.
 
-## System requirements
+**Tools and automation**
+- Web search with sources.
+- Workspace: an isolated KVM virtual machine per chat, with file exports and personal secrets.
+- Agent mode: Codex runs long tasks inside the chat's Workspace.
+- MCP: connect remote MCP servers with OAuth; Auto mode finds the right tool for the request.
+- Skills: reusable instructions and files that the model loads when they are relevant.
+- Scheduled tasks: once, daily, weekly or monthly runs with optional email notifications.
 
-For local use by one person with external model providers:
+**Memory**
+- Learns from what you say, never from model answers, quotes or documents; facts you save explicitly always take priority.
+- Each fact keeps its subject, source and time. Newer facts replace outdated ones; duplicates and contradictions are settled in the background.
+- Key facts reach every chat without extra model calls; search across facts and past chats covers the rest.
+- Secrets such as API keys and passwords are removed before anything is saved.
+- Review, edit, pause or reset it at any time.
 
-- 64-bit Linux on amd64 or arm64, Docker Engine 25.0 or newer with Compose 2.29.7 or newer, bash 4 or newer, git, and OpenSSL.
-- **KVM (`/dev/kvm`) is required.** Workspace runs commands in KVM virtual machines and much of AIQSA depends on it; installations without it are not supported. On cloud and other virtual machines enable nested virtualization, or use a bare-metal host.
-- **Minimum: 2 CPU cores, 8 GB RAM, and 50 GB free SSD space**, plus storage for uploads and backups. Each workspace defaults to 4 GB RAM and 10 GB disk.
-- **Recommended: 16 GB RAM** for several concurrent workspaces, active Knowledge ingestion and OCR.
+**For Claude Code and Codex**
+- Connect your coding agents to AIQSA over OAuth with one command: your team's MCP tools through the MCP Hub, your Skills, and your Memory.
 
-Memory use depends on document size and workload. No GPU is required; locally hosted model servers need their own resources. OpenSearch requires [`vm.max_map_count` of at least 262144](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/docker/#linux-settings).
+**Team and administration**
+- Projects with shared chats, files, instructions and Knowledge.
+- Assistants with fixed instructions, models and Knowledge.
+- Role-based access control: administrator and user roles, groups that decide who can use which providers, models and search, and Owner, Manager, Contributor and Viewer roles in Projects.
+- Email invitations.
+- Usage and cost per user.
 
-## Install
+**Operations**
+- One command to install, check, upgrade, back up and restore.
+- Prebuilt images and Docker Compose on a single host. No GPU required.
+
+## Quick start
+
+You need 64-bit Linux (amd64 or arm64) with **KVM**, Docker Engine 25.0+ with Compose 2.29.7+, 2 CPU cores, 8 GB RAM (16 GB recommended) and 50 GB of free SSD space.
+
+> [!IMPORTANT]
+> Every Workspace runs in a KVM virtual machine, so `/dev/kvm` is required. On cloud servers, enable nested virtualization or use a bare-metal host. See the full [requirements](SELF_HOSTING.md#requirements).
 
 ```bash
 git clone https://github.com/insciqq/AIQSA.git
@@ -37,75 +82,35 @@ cd AIQSA
 ./aiqsa.sh install --base-url http://localhost:3000 --admin-email admin@example.com
 ```
 
-`install` checks the host (Docker, Compose, `vm.max_map_count`, memory, disk, port, clock and KVM), creates `.env` with unique secrets unless it already exists, starts the stack and waits until it is ready. Without flags it asks for the URL users will open and the administrator email. It never changes host settings: a failed check prints the exact command to fix it. It refuses a host without usable `/dev/kvm` before changing anything and enables Workspace with the matching KVM group. `./aiqsa.sh doctor` rechecks the host, `.env` and the running stack at any time, and `./aiqsa.sh help` lists every command and flag.
+`install` checks the host, creates `.env` with unique secrets, starts the stack and waits until it is ready. It never changes host settings: a failed check prints the command that fixes it.
 
-Open the configured URL ([localhost:3000](http://localhost:3000) by default) and sign in with the email and generated `AIQSA_INITIAL_ADMIN_PASSWORD` from `.env`. Configure model providers in the Control Center. For internet access, put an HTTPS reverse proxy in front of port 3000 and set the public URL in `.env`. Its upstream read timeout must exceed the Memory admission timeout (30 seconds by default, up to 120), because sending a message waits for Memory preparation.
+Open [localhost:3000](http://localhost:3000), sign in with the administrator email and the `AIQSA_INITIAL_ADMIN_PASSWORD` from `.env`, and add an API key in the Control Center. To open AIQSA to your team over the internet, put an HTTPS reverse proxy in front of port 3000; the [self-hosting guide](SELF_HOSTING.md#install) lists the settings it needs.
 
-To prepare `.env` without starting anything, run `./aiqsa.sh configure`, edit `.env`, then `./aiqsa.sh up` (or `docker compose up -d`).
-
-The stack uses prebuilt images and persistent Docker volumes. Keep `.env` with your backups: it contains the keys needed to read encrypted configuration.
-
-## Update
-
-**Installations on v0.2.0–v0.2.30 (bundled MinIO):** back up PostgreSQL first, then update to v0.2.34, not further, and complete its [MinIO → SeaweedFS upgrade runbook](https://github.com/insciqq/AIQSA/blob/v0.2.34/UPGRADING_FROM_MINIO.md). Later releases no longer contain this one-time storage migration. Before updating past v0.2.34, remove any `minio-legacy` service and `/legacy` mount from your Compose overrides and drop `storage-migration` from `COMPOSE_PROFILES`.
-
-**Local MCP servers are removed after v0.2.34.** Local (npm, PyPI, OCI) MCP servers and the bundled ToolHive runtime are removed; remote MCP servers are unaffected. Before the first start of the new release, set `AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1` in `.env`: startup then deletes leftover local servers and local configurations. Without it, startup stops with `local_mcp_removal_acknowledgement_required` and changes nothing; the flag is ignored once nothing local is left. Upstream OAuth grants of removed servers are not revoked; revoke them at the provider if needed. Optionally, before updating, run `docker compose --profile maintenance run --rm mcp-maintenance --execute` in the current release to remove its ToolHive workloads. `--remove-orphans` removes the `toolhive-runtime` container; afterwards remove the `<project>_toolhive_data` volume, any leftover `aiqsa-<hex>-<token>` containers and `toolhivelocal/*` images by hand.
-
-**First update to this release.** Released checkouts up to v0.2.34 do not contain `aiqsa.sh`, so this update is manual. If `.env` pins `AIQSA_IMAGE` (the v0.2.34 runbook did), set it to the new release first, for example `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z`. Then update the checkout and start the stack:
+## Updates and backups
 
 ```bash
-git pull --ff-only                          # installation on a branch
-git fetch --tags && git checkout vX.Y.Z     # installation on a release tag (detached HEAD)
-./aiqsa.sh up                               # or: docker compose pull && docker compose up -d --remove-orphans
+./aiqsa.sh upgrade    # update to the newest release
+./aiqsa.sh backup     # back up the database, files and .env
+./aiqsa.sh doctor     # check the host, .env and the running stack
 ```
 
-**Later updates** use the CLI:
+Read the [self-hosting guide](SELF_HOSTING.md) before you update: it covers release tags, one-time steps for older installations, and restoring from a backup. Every release lists its changes in the [release notes](https://github.com/insciqq/AIQSA/releases).
 
-```bash
-./aiqsa.sh upgrade                # installation on a branch
-./aiqsa.sh upgrade --to vX.Y.Z    # installation on a release tag (detached HEAD): always pass --to
-```
+## Project status
 
-`upgrade` stops on local changes to tracked files or a MinIO-era installation and offers to create a backup first (`--backup` without a prompt), or asks you to confirm a current backup of PostgreSQL, object storage and `.env` (`--backup-confirmed`). It then updates the checkout with `git pull --ff-only`, or moves it to the release tag given with `--to`. Images follow the image settings in `.env` (`AIQSA_IMAGE`, `AIQSA_WORKSPACE_RUNNER_IMAGE`), otherwise the newest release: `upgrade` refuses before changing anything when a pinned image belongs to another release, or when `--to` names an older release while the images are unpinned, and prints the exact `AIQSA_IMAGE=ghcr.io/insciqq/aiqsa:X.Y.Z` line to set. It then pulls the images before any container is replaced, restarts with `--remove-orphans` and waits until the stack is ready; a Workspace runner that is not ready is only a warning, because the rest of AIQSA works without it. It never rewrites `.env`: keys new in `.env.example` are reported, and `--add-missing-keys` appends them.
+AIQSA is pre-1.0 and ships frequently. It runs as a single application replica on one host.
 
-The equivalent manual update: update the checkout first so Compose uses the release's configuration, then pull the images and restart:
+## Contributing
 
-```bash
-git pull --ff-only
-docker compose pull && docker compose up -d --remove-orphans
-```
-
-This tracks stable releases and applies database migrations before starting the application. See the [release notes](https://github.com/insciqq/AIQSA/releases) before updating. Images are published on [GHCR](https://github.com/insciqq/AIQSA/pkgs/container/aiqsa); their digests are included in each release.
-
-If `docker compose pull` reports `pull access denied for minio/mc`, the checkout is older than v0.2.31: stop at v0.2.34 and follow its runbook as described above.
-
-## Backup and restore
-
-```bash
-./aiqsa.sh backup                       # backups/<UTC time>-v<version>/ in the checkout
-./aiqsa.sh backup --output /srv/aiqsa-backup
-./aiqsa.sh restore /srv/aiqsa-backup    # only into an empty installation of the same version
-```
-
-`backup` is a cold copy: it stops the application and workers, dumps PostgreSQL, stops object storage, archives its volume, copies `.env` as `env`, verifies the copies and restarts exactly the services that were running, usually within minutes. It writes `postgres.dump`, `objects.tar.gz`, `env`, `manifest` and `SHA256SUMS` with private permissions. `env` holds the installation secrets, so keep backups private, and copy them to another host: a copy on the same disk does not survive the loss of the host. Schedules, retention and off-site copies are up to you. With external object storage (`AIQSA_S3_ENDPOINT`) only PostgreSQL and `.env` are copied; back up the bucket with its provider at the same time.
-
-`restore` needs a fresh checkout of the backup's release (`git checkout vX.Y.Z`) without `.env`, Compose containers or volumes. It verifies the checksums, restores into the new volumes from an isolated project without network access or published ports, runs the Memory and Knowledge deletion reconciliation, and only then starts the installation; search indexes are rebuilt from PostgreSQL afterwards. If reconciliation fails, nothing starts and the command prints how to discard the attempt. When Workspace is enabled and this host's `/dev/kvm` belongs to another group, the new `.env` gets this host's `AIQSA_KVM_GID`. `restore` refuses backups made with external object storage (`objects=external` in the manifest): restore those by hand.
-
-## Development
-
-Use Node.js 22. Deterministic checks run without a database or provider credentials:
+Development uses Node.js 22. Deterministic checks run without a database or provider credentials:
 
 ```bash
 npm ci
 NODE_OPTIONS=--max-old-space-size=8192 npm run check:hermetic
 ```
 
-The separate `docker-compose.dev.yml` runs the development server. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and verification guidance.
-
-## Further reading
-
-- [Security reporting](SECURITY.md) and [Code of Conduct](CODE_OF_CONDUCT.md)
+See [CONTRIBUTING.md](CONTRIBUTING.md), the [security policy](SECURITY.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-[GNU Affero General Public License v3.0 only](LICENSE).
+[GNU Affero General Public License v3.0 only](LICENSE). You can use, modify and self-host AIQSA freely. If you modify it and let people use your version over a network, you must offer them its source code.
