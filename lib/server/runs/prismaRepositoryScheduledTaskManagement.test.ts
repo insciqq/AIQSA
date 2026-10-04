@@ -35,8 +35,8 @@ function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
   return {
     id: "task-1", title: "Report reminder", prompt: "Remind me to send the weekly report.", ...scheduledTaskScheduleColumns(weekly),
     timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
-    toolsEnabled: true, workspaceEnabled: false, chatMode: "NEW", kind: "STANDARD", status: "ACTIVE", pauseReason: null,
-    completionReason: null, nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: null, revision: 4,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "NEW", kind: "STANDARD", status: "ACTIVE",
+    pauseReason: null, completionReason: null, nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: null, revision: 4,
     createdAt: new Date("2026-10-01T10:00:00.000Z"), updatedAt: new Date("2026-10-01T10:00:00.000Z"), chat: null, ...overrides
   };
 }

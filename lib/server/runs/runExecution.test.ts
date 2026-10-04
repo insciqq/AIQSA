@@ -8352,9 +8352,9 @@ describe("scheduled task management execution", () => {
   const paused = {
     id: "task-1", title: "Price monitor", prompt: "Watch the price.", schedule: { kind: "daily" as const, time: "09:00" },
     timeZone: "UTC", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
-    toolsEnabled: true, workspaceEnabled: false, chatMode: "same" as const, kind: "monitoring" as const, status: "paused" as const,
-    pauseReason: null, completionReason: null, nextRunAt: null, lastRun: null, running: false, chatId: null, unseenResult: false,
-    revision: 3, createdAt: "2026-10-01T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: false, chatMode: "same" as const, kind: "monitoring" as const,
+    status: "paused" as const, pauseReason: null, completionReason: null, nextRunAt: null, lastRun: null, running: false,
+    chatId: null, unseenResult: false, revision: 3, createdAt: "2026-10-01T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
   };
   const manager = () => vi.fn<NonNullable<RunExecutionRepository["manageScheduledTaskForCall"]>>(async (input) =>
     ({ kind: "managed", result: input.result({ action: "pause", changed: true, task: paused }) }));

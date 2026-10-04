@@ -54,7 +54,7 @@ const ACTIONS = ["list", "get", "update", "pause", "resume", "propose_delete"] a
  * the owner update body and every task the model reads follow this list.
  */
 export const SCHEDULED_TASK_MANAGED_SWITCHES = [
-  "searchEnabled", "emailNotify", "toolsEnabled", "workspaceEnabled"
+  "searchEnabled", "emailNotify", "toolsEnabled", "workspaceEnabled", "memoryEnabled"
 ] as const satisfies readonly (keyof ScheduledTaskDraft & keyof ScheduledTask)[];
 /** Everything `update` may change; the model stays the editor's. */
 const UPDATE_KEYS: readonly string[] = ["title", "prompt", "kind", "chatMode", "timeZone", "schedule", ...SCHEDULED_TASK_MANAGED_SWITCHES];

@@ -26,7 +26,8 @@ const store = createPrismaScheduledTaskStore(prisma);
 const draft = (overrides: Partial<ScheduledTaskDraft> = {}): ScheduledTaskDraft => ({
   title: "Synthetic report reminder", prompt: "Synthetic scheduled prompt", schedule: { kind: "weekly", time: "09:00",
     days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false,
-  emailNotify: false, toolsEnabled: false, workspaceEnabled: false, chatMode: "new", kind: "standard", ...overrides
+  emailNotify: false, toolsEnabled: false, workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard",
+  ...overrides
 });
 const moveTo = (time: string) => (current: ScheduledTask) => ({ schedule: { ...current.schedule, time } });
 
