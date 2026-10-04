@@ -278,7 +278,11 @@ test("the empty state offers ideas that prefill the sheet", async ({ page }, inf
   await captureState(page, info, "scheduled-empty", {
     atEachSize: async () => {
       await expectNoHorizontalOverflow(page);
-      for (const idea of await empty.getByRole("button").all()) await expectWithinViewport(page, idea);
+      // Short landscape viewports scroll the ideas into reach; each must still fit on screen.
+      for (const idea of await empty.getByRole("button").all()) {
+        await idea.scrollIntoViewIfNeeded();
+        await expectWithinViewport(page, idea);
+      }
     }
   });
   await empty.getByRole("button", { name: "Reminder on the 1st of each month", exact: true }).click();
