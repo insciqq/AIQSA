@@ -128,7 +128,8 @@ export function MermaidBlock({ code, language }: { code: string; language: strin
       </div>
       {showDiagram ? (
         <div
-          className="max-w-full overflow-x-auto p-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [&>svg]:mx-auto [&>svg]:block [&>svg]:max-w-none"
+          // Paint containment keeps any diagram box, even a fixed one, inside this frame.
+          className="max-w-full overflow-x-auto p-3 outline-none [contain:paint] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [&>svg]:mx-auto [&>svg]:block [&>svg]:max-w-none"
           // Diagram labels are drawing, not answer text for comment offsets.
           data-markdown-chrome=""
           data-testid="mermaid-diagram-scroll"

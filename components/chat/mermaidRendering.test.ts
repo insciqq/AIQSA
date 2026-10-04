@@ -5,7 +5,8 @@ import {
   MERMAID_SOURCE_MAX_CHARACTERS,
   MERMAID_SVG_MAX_CHARACTERS,
   renderMermaidDiagram,
-  sanitizeMermaidSvg
+  sanitizeMermaidSvg,
+  scopeDiagramCss
 } from "./mermaidRendering";
 
 const mermaidMock = vi.hoisted(() => ({
@@ -16,7 +17,7 @@ const mermaidMock = vi.hoisted(() => ({
 vi.mock("mermaid", () => ({ default: mermaidMock }));
 
 const SVG = (body = "") =>
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40" width="100%" style="max-width: 120px;">${body}</svg>`;
+  `<svg xmlns="http://www.w3.org/2000/svg" id="m" viewBox="0 0 120 40" width="100%" style="max-width: 120px;">${body}</svg>`;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -57,7 +58,7 @@ describe("sanitizeMermaidSvg", () => {
     expect(boundary.textContent).toContain("Linked label");
     expect(boundary.textContent).toContain("cdata label");
     expect(sanitized).not.toMatch(/example\.invalid|javascript:|@import|<!--|onclick/iu);
-    expect(svg.querySelector("style")?.textContent).toContain("stroke:url(#grad)");
+    expect(svg.querySelector("style")?.textContent).toMatch(/stroke:\s*url\(["']?#grad["']?\)/u);
     expect(svg.querySelector("path[marker-end]")?.getAttribute("marker-end")).toBe("url(#arrow)");
     expect(svg.querySelectorAll("use")).toHaveLength(2);
     expect(svg.querySelectorAll("use")[0]?.getAttribute("href")).toBe("#arrow");
@@ -68,6 +69,52 @@ describe("sanitizeMermaidSvg", () => {
     expect(svg.getAttribute("width")).toBe("120");
     expect(svg.getAttribute("height")).toBe("40");
     expect(svg.hasAttribute("style")).toBe(false);
+  });
+
+  it("keeps only CSS rules whose subject is the diagram root or inside it", () => {
+    const css = [
+      "#m .node rect{fill:#123}",
+      "#m{font-family:sans-serif}",
+      "#m>g.edge path{stroke:url(#grad)}",
+      "#m .label:nth-child(2n+1){fill:#456}",
+      "#m [data-x~=\"a\"]{fill:#789}",
+      "#m .a{fill:red}body{display:none}",
+      ".chat *{visibility:hidden}",
+      "#m, body{color:red}",
+      "#m ~ div{display:none}",
+      "#m + p{display:none}",
+      "#m .x ~ .y{fill:red}",
+      "#mx .node{fill:red}",
+      "#m-flowchart-A{fill:red}",
+      ":root{--page:none}",
+      "#m .n{fill:red; & ~ div{display:none}}",
+      "@media screen{body{display:none} #m .media-kept{fill:#abc}}",
+      "@supports (display:grid){#m .s{fill:red}}",
+      "@keyframes dash{to{stroke-dashoffset:0}}",
+      "@font-face{font-family:x;src:url(https://example.invalid/f.woff)}",
+      "@layer page{body{display:none}}",
+      "#m .bg{fill:url(https://example.invalid/p.png)}",
+      "p::before{content:'fake'}"
+    ].join("\n");
+    const scoped = scopeDiagramCss(css, "m");
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(scoped);
+    const selectors = [...sheet.cssRules].flatMap((rule) => rule.type === 4
+      ? [...(rule as CSSMediaRule).cssRules].map((inner) => (inner as CSSStyleRule).selectorText)
+      : [(rule as CSSStyleRule).selectorText]);
+    expect(selectors.map((selector) => selector.replace(/\s*>\s*/gu, " > "))).toEqual([
+      "#m .node rect",
+      "#m",
+      "#m > g.edge path",
+      "#m .label:nth-child(2n+1)",
+      "#m [data-x~=\"a\"]",
+      "#m .a",
+      "#m .media-kept",
+      "#m .bg"
+    ]);
+    expect(scoped).toMatch(/url\(["']?#grad["']?\)/u);
+    expect(scoped).not.toMatch(/example\.invalid|body|\.chat|:root|@keyframes|@font-face|@layer|@supports|fake/iu);
+    expect(scopeDiagramCss("#m .a{fill:red}", "bad id")).toBe("");
   });
 
   it("accepts Mermaid's HTML serialization, including undeclared xlink prefixes", () => {
