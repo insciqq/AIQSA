@@ -4,6 +4,7 @@ import {
   finalizePreparingRunWithClient,
   finalizeUnavailablePreparingRunAdmission,
   finalizeTemporaryPreparingRunAdmission,
+  insertAcceptedWorkspaceRunBinding,
   memorySpeculativeQueryResolverInventoryDeclared,
   sameMemoryReadOnlyControlRetryScope,
   validMemoryRerankRetrySettlement,
@@ -20,6 +21,7 @@ import {
 } from "../memory/retrieval/runUtilities";
 import { MEMORY_HISTORY_RELEVANCE_VERSION } from "../memory/retrieval/historyRelevancePolicy";
 import { MEMORY_CONTROL_SCREEN_VERSION } from "../memory/actions/controlScreenPolicy";
+import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
 import { MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES, MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES } from "../../domain/memory/retrieval/config";
 
 const settingsSnapshot = Object.freeze({
@@ -739,5 +741,70 @@ describe("read-only control retry scope", () => {
     expect(sameMemoryReadOnlyControlRetryScope({ ...source,
       settingsSnapshot: { ...source.settingsSnapshot, ...change }
     }, switched)).toBe(false);
+  });
+});
+
+describe("Workspace switch write-back at admission", () => {
+  const ids = { assistantMessageId: "assistant-message-1", runId: "run-1", userMessageId: "user-message-1" };
+  const normalized = {
+    enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+    maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "fixture", messageManifestPath: "/workspace/inbox/messages/user-message-1/manifest.json",
+    outputDirectory: workspaceRunOutputDirectory("run-1"), projectDirectory: "/workspace/project", runtimeVersion: "fixture",
+    sessionId: "ws-1", syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300
+  };
+  const plan = {
+    ...ids, chatId: "chat-1", expiresAt: new Date(Date.now() + 60_000).toISOString(), normalized, policyRevision: 3,
+    sandboxName: "sandbox-1", sessionId: "ws-1",
+    toolDefinitions: [{ description: "Run a command", namespacedName: "workspace_exec" }] as never[]
+  };
+  const scheduledOccurrence = {
+    occurrenceId: "occurrence-1", previousResult: null, relevantMcpServerIds: null, taskGeneration: 1, taskId: "task-1", taskRevision: 1
+  };
+
+  /** A transaction that admits the session, binding and secrets, recording chat switch writes. */
+  function transaction() {
+    const chatUpdates: unknown[] = [];
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ id: "user-1" }]),
+      chat: {
+        findUnique: vi.fn(async () => ({ projectId: null, userId: "user-1" })),
+        findUniqueOrThrow: vi.fn(async () => ({ projectId: null, userId: "user-1" })),
+        update: vi.fn(async (args: unknown) => { chatUpdates.push(args); return {}; })
+      },
+      modelRun: { count: vi.fn(async () => 0) },
+      user: { update: vi.fn(async () => ({ workspaceBrowserSequence: BigInt(1) })) },
+      workspacePolicy: { findUnique: vi.fn(async () => ({ enabled: true, version: 3 })) },
+      workspaceRunBinding: { create: vi.fn(async () => ({})) },
+      workspaceSecret: { findMany: vi.fn(async () => []) },
+      workspaceSession: { create: vi.fn(async () => ({})), findUnique: vi.fn(async () => null) }
+    };
+    return { chatUpdates, tx };
+  }
+
+  function admission(input: Readonly<{ scheduled: boolean; workspace: boolean }>) {
+    return {
+      admissionKind: "NORMAL_SEND", chatId: "chat-1", userId: "user-1", workspaceEnabled: input.workspace,
+      normalizedRequest: input.workspace ? { workspace: normalized } : {},
+      ...(input.workspace ? { workspaceAdmissionPlan: plan } : {}),
+      ...(input.scheduled ? { scheduledOccurrence } : {})
+    } as never;
+  }
+
+  it("lets an ordinary send write its Workspace choice back to the chat's switch", async () => {
+    for (const workspace of [true, false]) {
+      const { chatUpdates, tx } = transaction();
+      await insertAcceptedWorkspaceRunBinding(tx as never, admission({ scheduled: false, workspace }), ids);
+      expect(chatUpdates).toEqual([{ data: { workspaceEnabled: workspace }, where: { id: "chat-1" } }]);
+    }
+  });
+
+  it("never lets a scheduled run change an existing chat's Workspace switch, on or off", async () => {
+    for (const workspace of [true, false]) {
+      const { chatUpdates, tx } = transaction();
+      await insertAcceptedWorkspaceRunBinding(tx as never, admission({ scheduled: true, workspace }), ids);
+      expect(chatUpdates).toEqual([]);
+      // The run itself still gets its Workspace binding.
+      expect(tx.workspaceRunBinding.create).toHaveBeenCalledTimes(workspace ? 1 : 0);
+    }
   });
 });

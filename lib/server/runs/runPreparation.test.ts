@@ -5618,11 +5618,13 @@ describe("scheduled task sends", () => {
   const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
 
   function scheduledInput(previousResult: Readonly<{ assistantMessageId: string; userMessageId: string }> | null,
-    chatOverrides: Partial<SendRunPreparationSource["chat"]> = {}): RunPreparationInput {
-    const input = sendInput(toolBody, chatOverrides);
+    chatOverrides: Partial<SendRunPreparationSource["chat"]> = {}, relevantMcpServerIds: readonly string[] | null = null,
+    body = toolBody): RunPreparationInput {
+    const input = sendInput(body, chatOverrides);
     if (input.source.kind !== "send") throw new Error("invalid send fixture");
-    return { ...input, source: { ...input.source,
-      scheduledOccurrence: { occurrenceId: "occurrence-1", previousResult, taskGeneration: 1, taskId: "task-1", taskRevision: 1 } } };
+    return { ...input, source: { ...input.source, scheduledOccurrence: {
+      occurrenceId: "occurrence-1", previousResult, relevantMcpServerIds, taskGeneration: 1, taskId: "task-1", taskRevision: 1
+    } } };
   }
 
   function scheduledDeps() {
@@ -5672,5 +5674,68 @@ describe("scheduled task sends", () => {
     expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
     expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
     expect(admit).not.toHaveBeenCalled();
+  });
+
+  describe("source health of the Auto catalog", () => {
+    const servers: import("../mcp/runPlan").McpCapabilityCatalog["servers"] = [{ description: "Synthetic tickets", instructions: "",
+      namespace: "tracker", revisionId: "revision-tracker", serverId: "server-tracker", serverName: "Tracker",
+      tools: [{ description: "Read a ticket", namespacedName: "mcp_tracker_read_ticket_1", originalName: "read_ticket" }] }];
+    // The owner's personal servers the catalog had to leave out: one lost its sign-in, one is not ready.
+    const omitted = [
+      { reason: "mcp_reauthorization_required" as const, serverId: "server-mail", serverName: "Synthetic Mail" },
+      { reason: "mcp_server_unavailable" as const, serverId: "server-notes", serverName: "Synthetic Notes" }
+    ];
+    const autoBody = successBody({ mcp: { mode: "auto" }, modelId: "openai-tool-model", provider: "openai" });
+
+    function mcpDeps() {
+      const f = scheduledDeps();
+      const catalog = vi.fn(async () => ({ servers, version: 1 as const }));
+      const catalogWithOmissions = vi.fn(async () => ({ catalog: { servers, version: 1 as const }, omitted }));
+      const deps: RunPreparationDeps = { ...f.deps,
+        mcp: { catalog, catalogWithOmissions, filterTools: allowMcpTools, prepare: async () => readyMcpPlan() } };
+      return { catalog, catalogWithOmissions, deps };
+    }
+
+    it("tells the model which relevant source is missing and freezes it as the run's health", async () => {
+      const f = mcpDeps();
+      const prepared = preparedFrom(await prepareRun(f.deps, scheduledInput(null, {}, ["server-mail", "server-tracker"], autoBody)));
+      expect(f.catalogWithOmissions).toHaveBeenCalledOnce();
+      expect(f.catalog).not.toHaveBeenCalled();
+      // The plan is still the Auto catalog; only the relevant omitted server counts.
+      expect(prepared.normalizedRequest.mcpDiscovery?.catalog.servers.map((server) => server.serverId)).toEqual(["server-tracker"]);
+      expect(prepared.scheduledUnavailableSources).toEqual([
+        { name: "Synthetic Mail", reason: "mcp_reauthorization_required", relied: true, serverId: "server-mail" }
+      ]);
+      const system = prepared.normalizedRequest.prompt.system;
+      expect(system).toContain("This scheduled run cannot use some of the user's tool sources");
+      expect(system).toContain("\"Synthetic Mail\" (needs the user to sign in again)");
+      expect(system).not.toContain("Synthetic Notes");
+    });
+
+    it("counts every omitted server before a first result, and none an unrelated earlier result never used", async () => {
+      const f = mcpDeps();
+      const first = preparedFrom(await prepareRun(f.deps, scheduledInput(null, {}, null, autoBody)));
+      expect(first.scheduledUnavailableSources).toEqual([
+        { name: "Synthetic Mail", reason: "mcp_reauthorization_required", relied: false, serverId: "server-mail" },
+        { name: "Synthetic Notes", reason: "mcp_server_unavailable", relied: false, serverId: "server-notes" }
+      ]);
+      expect(first.normalizedRequest.prompt.system).toContain("\"Synthetic Notes\" (unavailable)");
+      const unrelated = preparedFrom(await prepareRun(f.deps, scheduledInput(null, {}, ["server-tracker"], autoBody)));
+      expect(unrelated.scheduledUnavailableSources).toBeUndefined();
+      expect(unrelated.normalizedRequest.prompt.system).not.toContain("tool sources");
+    });
+
+    it("leaves an ordinary message and a task with tools off without source health", async () => {
+      const f = mcpDeps();
+      const ordinary = preparedFrom(await prepareRun(f.deps, sendInput(autoBody)));
+      expect(f.catalog).toHaveBeenCalledOnce();
+      expect(f.catalogWithOmissions).not.toHaveBeenCalled();
+      expect(ordinary.scheduledUnavailableSources).toBeUndefined();
+      const off = preparedFrom(await prepareRun(f.deps, scheduledInput(null, {}, null,
+        successBody({ mcp: { mode: "off" }, modelId: "openai-tool-model", provider: "openai", skills: { mode: "off" } }))));
+      expect(f.catalogWithOmissions).not.toHaveBeenCalled();
+      expect(off.scheduledUnavailableSources).toBeUndefined();
+      expect(off.normalizedRequest.mcpDiscovery).toBeUndefined();
+    });
   });
 });

@@ -15,6 +15,7 @@ import {
   type ScheduledOccurrenceAdmission
 } from "../runs/runRepositoryContract";
 import type { ToolHistorySnapshot } from "../runs/toolHistoryContract";
+import { WorkspaceSecretError } from "../workspace/secrets/validation";
 import { resetBootOrphanSweepForTest } from "@/tests/support/runExecution";
 import {
   createScheduledTaskSend,
@@ -30,7 +31,7 @@ const owner: AuthenticatedUser = {
   displayName: "Synthetic owner", email: "owner@example.test", id: "00000000-0000-4000-8000-0000000000aa", role: "user", status: "active"
 };
 const occurrence: ScheduledOccurrenceAdmission = {
-  occurrenceId: "occurrence-1", previousResult: null, taskGeneration: 1, taskId: "task-1", taskRevision: 1
+  occurrenceId: "occurrence-1", previousResult: null, relevantMcpServerIds: null, taskGeneration: 1, taskId: "task-1", taskRevision: 1
 };
 const newChatId = "30000000-0000-4000-8000-000000000003";
 
@@ -103,6 +104,7 @@ function fixture(options: Readonly<{
       memoryMode: input.memoryMode, messageCount: 0, projectMemory: null, title: "New Chat", workspaceEnabled: false
     } : null,
     loadRunUsageAttributions: async () => [],
+    loadWorkspaceFileFacts: async () => ({ hasEarlierExports: false, hasFiles: false }),
     markRunAnswerStarted: async () => undefined,
     persistToolLoopCallBatch: async () => { throw new Error("tool_calls_not_expected"); },
     recordRunUsageEvents: async () => true,
@@ -129,11 +131,37 @@ function fixture(options: Readonly<{
   return { loadOwner, send: createScheduledTaskSend({ loadOwner, sendDeps }), sendDeps, state };
 }
 
-function body(target: ScheduledTaskSendTarget, toolCalling = true) {
+function body(target: ScheduledTaskSendTarget, toolCalling = true, tools: Readonly<{ toolsEnabled: boolean; workspaceEnabled: boolean }> =
+  { toolsEnabled: false, workspaceEnabled: false }) {
   return scheduledTaskSendBody({
     admissionId: "40000000-0000-4000-8000-000000000004", modelId: "fake-qsa", prompt: "  Summarize the synthetic fixture\n",
-    provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] }, target, timeZone: "Europe/Moscow", toolCalling
+    provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] }, target, timeZone: "Europe/Moscow", toolCalling, ...tools
   });
+}
+
+/** An available Workspace admission for the run, as the installation's service plans it. */
+const workspaceAdmission: NonNullable<RunHandlerDeps["workspace"]> = { prepare: vi.fn(async ({ signal: _signal, ...input }) => ({
+  ok: true as const, tools: [], plan: {
+  ...input, expiresAt: new Date(Date.now() + 60_000).toISOString(), policyRevision: 1, sandboxName: "scheduled-fixture",
+  sessionId: "ws-scheduled", toolDefinitions: [],
+  normalized: { enabled: true as const, imageRef: "fixture", inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: true,
+    maxToolCalls: 64, maxToolRounds: 16, mcpVersion: "fixture", messageManifestPath: `/workspace/inbox/messages/${input.userMessageId}/manifest.json`,
+    outputDirectory: `/workspace/output/${input.runId}`, projectDirectory: "/workspace/project", runtimeVersion: "fixture",
+    sessionId: "ws-scheduled", syncToolTimeoutSeconds: 30, toolCatalogHash: "a".repeat(64), turnTimeoutSeconds: 300 }
+} })) };
+
+/** The owner's MCP: one connected personal server and one whose sign-in lapsed, so Auto had to leave it out. */
+function ownerMcp() {
+  const catalog = { servers: [{ description: "Synthetic tickets", instructions: "", namespace: "tracker", revisionId: "revision-tracker",
+    serverId: "server-tracker", serverName: "Tracker",
+    tools: [{ description: "Read a ticket", namespacedName: "mcp_tracker_read_ticket_1", originalName: "read_ticket" }] }], version: 1 as const };
+  const omitted = [{ reason: "mcp_reauthorization_required" as const, serverId: "server-mail", serverName: "Synthetic Mail" }];
+  return {
+    catalog: vi.fn(async () => catalog),
+    catalogWithOmissions: vi.fn(async () => ({ catalog, omitted })),
+    filterTools: (async (_userId: string, tools: readonly unknown[]) => [...tools]) as NonNullable<RunHandlerDeps["mcp"]>["filterTools"],
+    prepare: vi.fn(async () => ({ code: "mcp_not_ready" as const, issues: [], ok: false as const }))
+  };
 }
 
 const taskChat: RunOwnedChatRecord = {
@@ -309,6 +337,60 @@ describe("scheduled task admission through the ordinary send handler", () => {
     const response = await f.send({ body: body({ chatId: newChatId, kind: "new" }), chatId: newChatId, occurrence, userId: owner.id });
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({ error: "scheduled_task_occurrence_unavailable" });
+  });
+
+  it("admits the owner's MCP tools and Skills in Auto and the task's Workspace like an ordinary message", async () => {
+    const f = fixture();
+    const mcp = ownerMcp();
+    const sendDeps = { ...f.sendDeps, mcp, workspace: workspaceAdmission };
+    const response = await createScheduledTaskSend({ loadOwner: f.loadOwner, sendDeps })({
+      body: body({ chatId: newChatId, kind: "new" }, true, { toolsEnabled: true, workspaceEnabled: true }),
+      chatId: newChatId, occurrence: { ...occurrence, relevantMcpServerIds: ["server-mail"] }, userId: owner.id
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    const created = f.state.created!;
+    // The Auto catalog is frozen, never a Load all plan; Skills run in Auto; the chat gets its Workspace.
+    expect(created.normalizedRequest.mcpDiscovery?.catalog.servers.map((server) => server.serverId)).toEqual(["server-tracker"]);
+    expect(mcp.prepare).not.toHaveBeenCalled();
+    expect(created.normalizedRequest.skills).toMatchObject({ mode: "auto" });
+    expect(created.normalizedRequest.workspace).toMatchObject({ enabled: true, sessionId: "ws-scheduled" });
+    expect(created).toMatchObject({ personalChat: { memoryMode: "EXCLUDED" }, workspaceEnabled: true });
+    expect(created.workspaceAdmissionPlan).toBeDefined();
+    expect(created.normalizedRequest.knowledgePlan).toMatchObject({ mode: "none" });
+    expect(created.normalizedRequest.agent).toBeUndefined();
+    // The lapsed server the previous result relied on: named to the model and frozen with the occurrence.
+    expect(created.scheduledUnavailableSources).toEqual([
+      { name: "Synthetic Mail", reason: "mcp_reauthorization_required", relied: true, serverId: "server-mail" }
+    ]);
+    expect(created.normalizedRequest.prompt.system).toContain("\"Synthetic Mail\" (needs the user to sign in again)");
+  });
+
+  it("keeps tools and Workspace off for a task that has them off", async () => {
+    const f = fixture();
+    const mcp = ownerMcp();
+    const response = await createScheduledTaskSend({ loadOwner: f.loadOwner, sendDeps: { ...f.sendDeps, mcp, workspace: workspaceAdmission } })({
+      body: body({ chatId: newChatId, kind: "new" }), chatId: newChatId, occurrence, userId: owner.id
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(f.state.created!.normalizedRequest.mcpDiscovery).toBeUndefined();
+    expect(f.state.created!.normalizedRequest.skills).toMatchObject({ mode: "off" });
+    expect(f.state.created).toMatchObject({ workspaceEnabled: false });
+    expect(f.state.created).not.toHaveProperty("scheduledUnavailableSources");
+    expect(mcp.catalogWithOmissions).not.toHaveBeenCalled();
+  });
+
+  it("answers Workspace secret failures at admission with stable codes, a limit permanent and storage transient", async () => {
+    for (const [code, status] of [["workspace_secret_limit", 409], ["workspace_secret_unavailable", 503]] as const) {
+      const f = fixture();
+      f.state.createRun = () => { throw new WorkspaceSecretError(code); };
+      const response = await createScheduledTaskSend({ loadOwner: f.loadOwner, sendDeps: { ...f.sendDeps, workspace: workspaceAdmission } })({
+        body: body({ chatId: newChatId, kind: "new" }, true, { toolsEnabled: false, workspaceEnabled: true }),
+        chatId: newChatId, occurrence, userId: owner.id
+      });
+      expect([response.status, await response.json()]).toEqual([status, { error: code }]);
+    }
   });
 
   it("never takes an occurrence from the request body", async () => {

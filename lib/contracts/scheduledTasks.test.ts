@@ -10,10 +10,13 @@ import {
   decodeScheduledTaskListResponse,
   decodeScheduledTaskSeenRequest,
   isScheduledTaskPrompt,
+  isScheduledTaskRunIncomplete,
   normalizeScheduledTaskTitle,
   scheduledTaskChatModeAllowed,
   scheduledTaskErrorMessage,
   scheduledTaskReasonMessage,
+  scheduledTaskSourceMessage,
+  scheduledTaskToolDefaults,
   type ScheduledTask,
   type ScheduledTaskSchedule
 } from "./scheduledTasks";
@@ -21,7 +24,8 @@ import {
 const task: ScheduledTask = {
   id: "task-1", title: "Morning brief", prompt: "Summarize overnight news.",
   schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
-  modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, chatMode: "new", status: "active",
+  modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true, workspaceEnabled: false,
+  chatMode: "new", status: "active",
   pauseReason: null, nextRunAt: "2026-10-05T06:00:00.000Z",
   lastRun: { scheduledFor: "2026-10-02T06:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T06:01:10.000Z" },
   running: false, chatId: "chat-1", unseenResult: true, revision: 3,
@@ -50,7 +54,8 @@ describe("scheduled task wire contract", () => {
       { ...task, extra: true }, { ...task, status: "paused" }, { ...task, title: " Morning brief" },
       { ...task, lastRun: { ...task.lastRun, state: "running" } }, { ...task, pauseReason: "Not a code" },
       { ...task, revision: 0 }, { ...task, schedule: { kind: "daily", time: "25:00" } }, { ...task, timeZone: "+03:00" },
-      { ...task, chatMode: "other" }, { ...task, chatMode: undefined }, { ...task, schedule: hourly, chatMode: "new" }
+      { ...task, chatMode: "other" }, { ...task, chatMode: undefined }, { ...task, schedule: hourly, chatMode: "new" },
+      { ...task, toolsEnabled: "auto" }, { ...task, workspaceEnabled: undefined }
     ]) {
       expect(decodeScheduledTask(candidate)).toBeNull();
     }
@@ -71,13 +76,32 @@ describe("scheduled task wire contract", () => {
     expect(decodeScheduledTaskListResponse({ ...list, tasks: [task, task] })).toBeNull();
     expect(decodeScheduledTaskListResponse({ ...list, limits: { maxActive: 10, maxTotal: 50 } })).toBeNull();
     const run = { id: "run-1", scheduledFor: "2026-10-02T06:00:00.000Z", trigger: "schedule", state: "skipped",
-      reasonCode: "previous_running", startedAt: null, finishedAt: "2026-10-02T19:00:00.000Z", chatId: null, unseen: false };
-    const result = { ...run, id: "run-2", state: "completed", reasonCode: null, chatId: "chat-1", unseen: true };
+      reasonCode: "previous_running", startedAt: null, finishedAt: "2026-10-02T19:00:00.000Z", chatId: null, unseen: false,
+      unavailableSources: [] };
+    const result = { ...run, id: "run-2", state: "completed", reasonCode: null, chatId: "chat-1", unseen: true,
+      unavailableSources: [{ name: "Почта", reason: "mcp_reauthorization_required" }, { name: "Tracker", reason: "mcp_server_unavailable" }] };
     expect(decodeScheduledTaskDetailResponse({ task, recentRuns: [result, run] })).toEqual({ task, recentRuns: [result, run] });
     for (const malformed of [{ ...run, trigger: "retry" }, { ...run, id: "" }, { ...run, unseen: "no" },
-      { ...run, state: "running", finishedAt: null, unseen: true }, { id: run.id, scheduledFor: run.scheduledFor }]) {
+      { ...run, state: "running", finishedAt: null, unseen: true }, { id: run.id, scheduledFor: run.scheduledFor },
+      { ...run, unavailableSources: undefined }, { ...run, unavailableSources: [{ name: "Tracker", reason: "expired" }] },
+      // Server identifiers never cross the wire.
+      { ...run, unavailableSources: [{ name: "Tracker", reason: "mcp_server_unavailable", serverId: "server-1" }] },
+      { ...run, unavailableSources: [{ name: " Tracker", reason: "mcp_server_unavailable" }] },
+      { ...run, unavailableSources: [{ name: "x".repeat(121), reason: "mcp_server_unavailable" }] },
+      { ...run, unavailableSources: Array.from({ length: 65 }, () => ({ name: "Tracker", reason: "mcp_server_unavailable" })) }]) {
       expect(decodeScheduledTaskDetailResponse({ task, recentRuns: [malformed] })).toBeNull();
     }
+  });
+
+  it("starts a new task's switches from the composer defaults and marks runs that missed a source", () => {
+    expect(scheduledTaskToolDefaults({ mcpMode: "auto", workspaceEnabled: true })).toEqual({ toolsEnabled: true, workspaceEnabled: true });
+    expect(scheduledTaskToolDefaults({ mcpMode: "load_all" })).toEqual({ toolsEnabled: true, workspaceEnabled: false });
+    expect(scheduledTaskToolDefaults({ mcpMode: "off", workspaceEnabled: false })).toEqual({ toolsEnabled: false, workspaceEnabled: false });
+    expect(isScheduledTaskRunIncomplete({ unavailableSources: [] })).toBe(false);
+    const missing = { name: "Почта", reason: "mcp_reauthorization_required" } as const;
+    expect(isScheduledTaskRunIncomplete({ unavailableSources: [missing] })).toBe(true);
+    expect(scheduledTaskSourceMessage(missing)).toBe("Почта needs sign-in.");
+    expect(scheduledTaskSourceMessage({ name: "Tracker", reason: "mcp_server_unavailable" })).toBe("Tracker is unavailable.");
   });
 
   it("names the rendered results a mark-seen request clears", () => {
@@ -99,5 +123,12 @@ describe("scheduled task wire contract", () => {
     expect(scheduledTaskReasonMessage("previous_running")).toBe("Skipped: the previous run was still in progress.");
     expect(scheduledTaskReasonMessage("superseded")).toContain("newer scheduled time");
     expect(scheduledTaskReasonMessage("some_future_code")).toBe("The run did not complete.");
+    // Every tool, Workspace, source and deadline outcome tells the owner what happened, distinctly.
+    const tools = ["tools_unavailable", "workspace_unavailable", "workspace_secret_limit", "source_unavailable", "run_deadline"]
+      .map(scheduledTaskReasonMessage);
+    expect(new Set(tools).size).toBe(tools.length);
+    expect(tools).not.toContain("The run did not complete.");
+    expect(scheduledTaskReasonMessage("run_deadline")).toBe("Stopped after running for 30 minutes.");
+    expect(scheduledTaskReasonMessage("source_unavailable")).toContain("3 runs in a row");
   });
 });
