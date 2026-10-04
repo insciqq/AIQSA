@@ -7,8 +7,8 @@ import { prisma } from "@/lib/server/prisma";
 export const runtime = "nodejs";
 
 export const GET = createCatalogHandler({
-  // Personal chats edit with the installation image model today: see installationImageEditing.
-  resolveImageRoutes: () => resolveImageRouteFacts(prisma),
+  // Personal chats edit with the user's effective image model.
+  resolveImageRoutes: (userId) => resolveImageRouteFacts(prisma, { kind: "personal", userId }),
   loadCatalogData: createPrismaCatalogDataLoader({ prisma }),
   resolveAuth: resolveRequestAuth
 });

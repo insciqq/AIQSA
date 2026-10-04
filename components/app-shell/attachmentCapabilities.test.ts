@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { attachmentAcceptForPolicy } from "./attachmentSelection";
-import type { CatalogModel } from "./types";
+import type { Catalog, CatalogModel } from "./types";
 import {
   attachmentBlocksSend,
   attachmentPolicyForModel,
   attachmentWarningsForModel,
+  catalogWithImageEditing,
   firstBlockingAttachmentWarning,
   imageRouteAvailable,
   imageRouteUnavailableMessage,
@@ -468,6 +469,22 @@ describe("attachment capabilities", () => {
       expect(unsupportedAttachmentMessage(["data.bin"], toolModel)).toBe("Text model does not support this attachment: data.bin");
       expect(unsupportedAttachmentMessage(["photo.webp"], withRoutes(false, true, { systemVision: true, imageEditing: false })))
         .toBe("Text model does not support this attachment: photo.webp");
+    });
+
+    it("follows a changed personal image model only in the editing route the server projected", () => {
+      const editingOnly = withRoutes(false, true, { systemVision: false, imageEditing: true });
+      const visionRoute = { ...withRoutes(false, true, { systemVision: true, imageEditing: true }), modelId: "vision-route" };
+      const noTools = { ...withRoutes(false, false), modelId: "no-tools" };
+      const catalog = { defaults: {} as Catalog["defaults"], models: [editingOnly, visionRoute, noTools], providers: [], searchStrategies: [] };
+      // A generation-only (or unusable) choice: the composer refuses an image no other route takes.
+      const generationOnly = catalogWithImageEditing(catalog, false);
+      expect(generationOnly.models.map((entry) => imageRouteAvailable(entry))).toEqual([false, true, false]);
+      expect(partitionAttachmentsForModel([image], generationOnly.models[0]).unsupported).toEqual([image]);
+      expect(generationOnly.models[1]!.capabilities.imageRoutes).toEqual({ systemVision: true, imageEditing: false });
+      // Models without tools carry no routes and none are invented.
+      expect(generationOnly.models[2]!.capabilities.imageRoutes).toBeUndefined();
+      expect(catalogWithImageEditing(generationOnly, true).models.map((entry) => imageRouteAvailable(entry))).toEqual([true, true, false]);
+      expect(catalog.models[0]!.capabilities.imageRoutes).toEqual({ systemVision: false, imageEditing: true });
     });
   });
 });

@@ -10,6 +10,10 @@ export class UserImageModelError extends Error {
   }
 }
 
+/** Image generation is off for everyone without an administrator default,
+ * whatever publications or choices a previous release left behind. */
+const IMAGE_GENERATION_OFF: UserImageModelSettings = { models: [], organizationDefaultId: null, selectedId: null, effective: null };
+
 /** Every published image model is available to every user; the choice only
  * selects one of them and never changes the administrator's parameters. */
 export function createUserImageModelService(prisma: PrismaClient, loadRole = loadInstallationImageProviderRole) {
@@ -25,31 +29,36 @@ export function createUserImageModelService(prisma: PrismaClient, loadRole = loa
           orderBy: [{ providerModel: { displayName: "asc" } }, { providerModelId: "asc" }]
         })
       ]);
+      if (!policy?.imageProviderModelId) return IMAGE_GENERATION_OFF;
       const models: UserImageModelOption[] = [];
       for (const publication of publications) {
         // The same admission path as a run: usability is never inferred from names.
-        const resolved = await resolver.resolvePublished(publication, policy?.version ?? 1);
+        const resolved = await resolver.resolvePublished(publication, policy.version);
         const capabilities = resolved.ok ? resolved.plan.snapshot.model.capabilities : null;
         models.push({ id: publication.providerModelId, displayName: publication.providerModel.displayName,
           providerName: publication.providerModel.connection.displayName,
           generation: capabilities?.imageGeneration === true, editing: capabilities?.imageEditing === true,
           unavailableReason: resolved.ok ? null : resolved.reason });
       }
-      const organizationDefaultId = policy?.imageProviderModelId ?? null;
+      const organizationDefaultId = policy.imageProviderModelId;
       const selectedId = settings?.imageProviderModelId ?? null;
-      const effectiveId = selectedId ?? organizationDefaultId;
       return { models, organizationDefaultId, selectedId,
-        effective: effectiveId === null ? null : { id: effectiveId, source: selectedId === null ? "organization" : "personal" } };
+        effective: { id: selectedId ?? organizationDefaultId, source: selectedId === null ? "organization" : "personal" } };
     },
 
     /** Null follows the administrator default. Only a published model is
-     * accepted; its foreign key keeps it published until withdrawal resets it. */
+     * accepted while image generation is on; its foreign key keeps it
+     * published until withdrawal resets it. */
     async select(userId: string, providerModelId: string | null): Promise<UserImageModelSettings> {
       try {
         await prisma.$transaction(async (tx) => {
-          if (providerModelId !== null && !await tx.publishedImageModel.findUnique({
-            where: { providerModelId }, select: { providerModelId: true }
-          })) throw new UserImageModelError("image_model_not_published");
+          if (providerModelId !== null) {
+            const [publication, policy] = await Promise.all([
+              tx.publishedImageModel.findUnique({ where: { providerModelId }, select: { providerModelId: true } }),
+              tx.systemModelPolicy.findUnique({ where: { id: "installation" }, select: { imageProviderModelId: true } })
+            ]);
+            if (!publication || !policy?.imageProviderModelId) throw new UserImageModelError("image_model_not_published");
+          }
           await tx.userSettings.upsert({ where: { userId }, create: { userId, imageProviderModelId: providerModelId },
             update: { imageProviderModelId: providerModelId } });
         });
