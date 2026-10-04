@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
+import type { ScheduledTask, ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
 import {
   blankScheduledTaskDraft,
+  scheduledTaskCapabilityBlockers,
   scheduledTaskCreateRequest,
   scheduledTaskDraftFromTask,
   scheduledTaskDraftSchedule,
+  scheduledTaskForcedChatReason,
   scheduledTaskPreview,
+  scheduledTaskStartingTools,
   scheduledTaskUpdateRequest,
+  scheduledTaskWorkspaceAvailability,
   validateScheduledTaskDraft
 } from "./scheduledTaskDraft";
 import { scheduledTaskCatalogFixture, scheduledTaskFixture } from "./scheduledTaskFixtures";
@@ -212,5 +217,114 @@ describe("scheduled task drafts", () => {
     expect(scheduledTaskUpdateRequest({ ...edit, repeat: "daily" }, daily)).toEqual({ expectedRevision: 1 });
     const same = scheduledTaskFixture({ chatMode: "same", schedule: { kind: "daily", time: "09:00" } });
     expect(scheduledTaskUpdateRequest({ ...scheduledTaskDraftFromTask(same, now), repeat: "hourly" }, same)).not.toHaveProperty("chatMode");
+  });
+});
+
+describe("monitoring and tool copy", () => {
+  const run = (overrides: Partial<ScheduledTaskRun>): ScheduledTaskRun => ({
+    id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
+    startedAt: "2026-10-05T08:00:01.000Z", finishedAt: "2026-10-05T08:01:00.000Z", chatId: "chat-1", unseen: false,
+    unavailableSources: [], ...overrides
+  });
+
+  it("gives check outcomes their copy, keeps no-update rows quiet and lists unavailable sources in attention tone", () => {
+    const row = (overrides: Partial<ScheduledTaskRun>) => scheduledTaskRunRow(run(overrides), "Europe/London", now);
+    expect(row({ reasonCode: "no_update" })).toMatchObject({ outcome: "No update: nothing changed since the last shown result", tone: "quiet", sources: [] });
+    expect(row({ reasonCode: "update" })).toMatchObject({ outcome: "Update: something changed since the last shown result", tone: "neutral" });
+    expect(row({ reasonCode: "baseline" }).outcome).toBe("First check: the starting point later checks compare with");
+    expect(row({ reasonCode: "goal_reached" })).toMatchObject({ outcome: "Goal reached — task completed", tone: "neutral" });
+    expect(row({ reasonCode: "unreported" }).outcome).toBe("Shown: the check did not report whether anything changed");
+    expect(row({ reasonCode: "could_not_check", unavailableSources: [{ name: "Tracker", reason: "mcp_reauthorization_required" }] }))
+      .toEqual(expect.objectContaining({ outcome: "Could not check: a source was unavailable", tone: "attention", sources: ["Tracker needs sign-in."] }));
+    // A regular run that went ahead without a source still answered; its sources show in attention tone.
+    expect(row({ unavailableSources: [{ name: "Calendar", reason: "mcp_server_unavailable" }] }))
+      .toEqual(expect.objectContaining({ outcome: "Answered", tone: "attention", sources: ["Calendar is unavailable."] }));
+    expect(row({ state: "failed", reasonCode: "run_deadline" }).outcome).toBe("Failed: it was stopped after running for 30 minutes");
+    expect(row({ state: "failed", reasonCode: "tools_unavailable" }).outcome).toBe("Failed: the task's tools could not be used with this model");
+  });
+
+  it("names a monitoring check's outcome on the last-run line and a reached goal on the status line", () => {
+    const last = (reasonCode: string) => scheduledTaskLastRunLine(scheduledTaskFixture({ kind: "monitoring",
+      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state: "completed", reasonCode, finishedAt: "2026-10-05T08:01:00.000Z" } }), now);
+    expect(last("no_update")).toBe("Last run Mon 5 Oct, 09:00 · No update");
+    expect(last("could_not_check")).toBe("Last run Mon 5 Oct, 09:00 · Could not check");
+    expect(scheduledTaskStatusLine(scheduledTaskFixture({ status: "completed", nextRunAt: null, completionReason: "goal_reached" }), now))
+      .toEqual({ text: "Goal reached — completed", tone: "neutral" });
+  });
+
+  it("gives the tool and monitoring pause reasons a recovery hint", () => {
+    const paused = (pauseReason: string) =>
+      scheduledTaskStatusLine(scheduledTaskFixture({ status: "paused", nextRunAt: null, pauseReason }), now).text;
+    expect(paused("model_cannot_report")).toBe("Paused: monitoring needs a model that can use tools. Edit to choose another model.");
+    expect(paused("verdict_missing")).toBe("Paused: three checks in a row did not report whether anything changed. Resume to try again.");
+    expect(paused("source_unavailable")).toBe("Paused: 3 runs in a row could not reach a source it uses. Reconnect the source, then resume.");
+    expect(paused("tools_unavailable")).toMatch(/^Paused: its tools can no longer be used/u);
+    expect(paused("workspace_unavailable")).toMatch(/^Paused: Workspace can no longer be used/u);
+    expect(paused("workspace_secret_limit")).toMatch(/^Paused: your saved Workspace secrets exceed the limit/u);
+  });
+
+  it("announces a reached goal, a source alert and a pause by a completed check, never a check with no update", () => {
+    const notice = (reasonCode: string | null, task: Partial<ScheduledTask> = {}) => scheduledTaskResultNotice(scheduledTaskFixture({
+      chatId: "chat-1", unseenResult: true, kind: "monitoring", ...task,
+      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state: "completed", reasonCode, finishedAt: "2026-10-05T08:01:00.000Z" } }));
+    expect(notice("goal_reached", { status: "completed", nextRunAt: null, completionReason: "goal_reached" }))
+      .toEqual({ kind: "success", open: "chat", text: "“Weekday news brief” reached its goal" });
+    expect(notice("update")).toEqual({ kind: "success", open: "chat", text: "“Weekday news brief” has a new result" });
+    expect(notice("no_update")).toBeNull();
+    expect(notice("could_not_check")).toEqual({ kind: "error", open: "scheduled", text: "“Weekday news brief” could not check a source" });
+    expect(notice("unreported", { status: "paused", nextRunAt: null, pauseReason: "verdict_missing" }))
+      .toEqual({ kind: "error", open: "scheduled", text: "“Weekday news brief” was paused" });
+  });
+});
+
+describe("scheduled task type and tools in drafts", () => {
+  const base = blankScheduledTaskDraft(catalog, "Europe/London", now, { title: "Watch", prompt: "Tell me when it ships." });
+
+  it("starts the switches from the composer defaults, off for a model without tools or Workspace turned off", () => {
+    expect(base).toMatchObject({ toolsEnabled: true, workspaceEnabled: false, kind: "standard" });
+    const defaults = { ...catalog, defaults: { ...catalog.defaults, mcpMode: "off" as const, workspaceEnabled: true } };
+    expect(blankScheduledTaskDraft(defaults, "Europe/London", now)).toMatchObject({ toolsEnabled: false, workspaceEnabled: true });
+    expect(blankScheduledTaskDraft(defaults, "Europe/London", now, {}, "installation_disabled")).toMatchObject({ workspaceEnabled: false });
+    expect(scheduledTaskStartingTools(defaults, { modelId: "model-c", provider: "provider-a" }))
+      .toEqual({ toolsEnabled: false, workspaceEnabled: false });
+  });
+
+  it("continues monitoring in one chat and restores the owner's choice when it leaves monitoring", () => {
+    expect(scheduledTaskForcedChatReason(base)).toBeNull();
+    expect(scheduledTaskForcedChatReason({ ...base, kind: "monitoring" })).toMatch(/always continues in one chat/u);
+    expect(scheduledTaskCreateRequest({ ...base, kind: "monitoring" })).toMatchObject({ chatMode: "same", kind: "monitoring" });
+    const daily = scheduledTaskFixture({ chatMode: "new", schedule: { kind: "daily", time: "09:00" } });
+    const edit = scheduledTaskDraftFromTask(daily, now);
+    expect(scheduledTaskUpdateRequest({ ...edit, kind: "monitoring" }, daily))
+      .toEqual({ expectedRevision: 1, chatMode: "same", kind: "monitoring" });
+    expect(scheduledTaskUpdateRequest({ ...edit, kind: "standard" }, daily)).toEqual({ expectedRevision: 1 });
+  });
+
+  it("explains and blocks what the model or installation cannot do, as the server refuses it", () => {
+    const noTools = { ...base, modelId: "model-c" };
+    expect(scheduledTaskCapabilityBlockers(catalog, base, "available")).toEqual({ monitoring: null, tools: null, workspace: null });
+    expect(scheduledTaskCapabilityBlockers(catalog, base, "runtime_unavailable").workspace).toBeNull();
+    expect(scheduledTaskCapabilityBlockers(catalog, base, "installation_disabled").workspace)
+      .toBe("Workspace is turned off by the administrator.");
+    expect(scheduledTaskCapabilityBlockers(catalog, noTools, "available"))
+      .toEqual({ monitoring: "Monitoring needs a model that can use tools. Choose another model.",
+        tools: "Not available with this model.", workspace: "Not available with this model." });
+    expect(validateScheduledTaskDraft({ ...noTools, toolsEnabled: false }, catalog, null, now)).toEqual({});
+    expect(validateScheduledTaskDraft({ ...noTools, kind: "monitoring", toolsEnabled: true, workspaceEnabled: true }, catalog, null, now))
+      .toEqual({
+        kind: "Monitoring needs a model that can use tools. Choose another model.",
+        tools: "This model cannot use tools. Turn tools off or choose another model.",
+        workspace: expect.stringMatching(/^Workspace is not available for this task/u)
+      });
+    expect(validateScheduledTaskDraft({ ...base, workspaceEnabled: true }, catalog, null, now, "installation_disabled").workspace)
+      .toMatch(/^Workspace is not available for this task/u);
+  });
+
+  it("reads the installation's Workspace availability apart from the composer model's", () => {
+    expect(scheduledTaskWorkspaceAvailability({ available: false, loading: true })).toBe("unknown");
+    expect(scheduledTaskWorkspaceAvailability({ available: true, loading: false })).toBe("available");
+    expect(scheduledTaskWorkspaceAvailability({ available: false, loading: false, unavailableReason: "model_tools_required" })).toBe("available");
+    expect(scheduledTaskWorkspaceAvailability({ available: false, loading: false, unavailableReason: "installation_disabled" }))
+      .toBe("installation_disabled");
   });
 });
