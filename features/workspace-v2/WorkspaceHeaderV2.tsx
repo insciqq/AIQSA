@@ -310,7 +310,7 @@ export function WorkspaceHeaderV2({
   onCopyThread(): void;
   /** Null hides "Delete…" entirely (no `permanentChatDeletionAvailable`). */
   onDelete?: (() => void) | null;
-  onExport(format: "json" | "markdown"): void;
+  onExport(format: "json" | "markdown" | "pdf"): void;
   onFavorite?: (() => void) | null;
   onMemoryMode?: ((mode: "EXCLUDED" | "NORMAL") => void) | null;
   /** Null hides Move to… when the current authority cannot move this chat. */

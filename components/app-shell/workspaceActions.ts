@@ -32,6 +32,7 @@ import {
   resolveModelControlDefaults,
   resolvePreferredSearchPlan
 } from "@/components/app-shell/powerAppShellData";
+import { chatPrintPath } from "@/lib/domain/chatPrintDocument";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import {
   EMPTY_KNOWLEDGE_SELECTION,
@@ -123,7 +124,7 @@ export type RemovedChatFallback = (
 
 export type OlderPageLoadOutcome = "failed" | "prepended" | "reset";
 
-export type ChatExportFormat = "json" | "markdown";
+export type ChatExportFormat = "json" | "markdown" | "pdf";
 
 /** The UTF-8 file name of an attachment response, when the server sent one. */
 function attachmentFileName(disposition: string | null): string | null {
@@ -1582,6 +1583,13 @@ export function useWorkspaceActions({
   }
 
   async function exportChat(chat: WorkspaceChatSummary, format: ChatExportFormat = "markdown") {
+    if (format === "pdf") {
+      // Synchronously within the menu click, so pop-up blockers allow the tab.
+      const tab = window.open(chatPrintPath(chat.id), "_blank");
+      if (tab) tab.opener = null;
+      else setNotice({ kind: "error", text: "The print page was blocked. Allow pop-ups for this site and try again." });
+      return;
+    }
     setNotice({ kind: "success", text: "Preparing the complete chat export…" });
     try {
       // The server builds the document; the browser only downloads it.

@@ -43,7 +43,8 @@ export type ChatMenuActionsInputV2 = Readonly<{
   onCopyThread?(): void;
   /** Absent hides "Delete…" entirely (no permanent-deletion capability). */
   onDelete?(): void;
-  onExport?(format: "json" | "markdown"): void;
+  /** "pdf" opens the print page in a new tab, so it must run within the click. */
+  onExport?(format: "json" | "markdown" | "pdf"): void;
   onFavorite?(): void;
   onMemoryMode?(mode: "EXCLUDED" | "NORMAL"): void;
   onMove?(folderId: string | null): void;
@@ -123,7 +124,8 @@ export function chatMenuActionsV2({
     ...(onExport
       ? [
           { label: "Markdown", onSelect: () => onExport("markdown") },
-          { label: "JSON", onSelect: () => onExport("json") }
+          { label: "JSON", onSelect: () => onExport("json") },
+          { label: "PDF", onSelect: () => onExport("pdf") }
         ] as const
       : []),
     ...(onCopyThread ? [{ label: "Copy entire thread", onSelect: onCopyThread }] as const : [])

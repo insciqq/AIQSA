@@ -101,7 +101,7 @@ export type ShellWorkspacePaneActions = {
    */
   deleteChatPermanently(chat: WorkspaceChatSummary): Promise<void> | void;
   deleteFolder(folder: FolderSummary): Promise<void> | void;
-  exportChat(chat: WorkspaceChatSummary, format?: "json" | "markdown"): void;
+  exportChat(chat: WorkspaceChatSummary, format?: "json" | "markdown" | "pdf"): void;
   moveChat(chatId: string, folderId: string | null): Promise<void> | void;
   moveFolder(folder: FolderSummary, folderId: string | null): Promise<void> | void;
   openChatMessage(chatId: string, messageId: string): Promise<boolean>;

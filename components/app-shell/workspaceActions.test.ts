@@ -2531,6 +2531,29 @@ describe("workspace actions", () => {
     }));
   });
 
+  it("opens the print page in a new tab within the click and reports a blocked pop-up", () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const tab = { opener: {} as unknown };
+    const open = vi.spyOn(window, "open").mockReturnValueOnce(tab as Window).mockReturnValueOnce(null);
+    const summary = { ...state.chatA, id: "chat a/1" };
+
+    // Nothing is awaited before the tab opens, so the user gesture still counts.
+    void state.actions.exportChat(summary, "pdf");
+    expect(open).toHaveBeenLastCalledWith("/print/c/chat%20a%2F1", "_blank");
+    expect(tab.opener).toBeNull();
+    expect(state.setNotice).not.toHaveBeenCalled();
+
+    void state.actions.exportChat(summary, "pdf");
+    expect(state.setNotice).toHaveBeenLastCalledWith({
+      kind: "error",
+      text: "The print page was blocked. Allow pop-ups for this site and try again."
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+
   it("loads older pages of the complete branch through operation-local memory without growing the thread cache", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     const summary = {
