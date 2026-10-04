@@ -66,29 +66,18 @@ function runTimeZone(request: ScheduledTaskToolRequest): Readonly<{ fallback: bo
 export function createScheduledTaskTool(timeZone: string): RunTool {
   return {
     capability: "session",
+    // Every ordinary chat request carries this text, so it stays short; the schema describes each field.
     description: [
-      "Create a scheduled task for the user: a saved instruction that runs automatically on its schedule with this " +
-        "chat's model, web search, tools and Workspace settings; its answers appear in the task's own chat, not here.",
-      "Use it only when the user's current message asks for something to happen later or repeatedly: a reminder, a " +
-        "regular report or digest, or watching something for a change. Never use it to answer the message itself, call " +
-        "it at most once per answer, and do not ask for confirmation: the task is created at once and your answer shows " +
-        "it with Edit and Delete. If this conversation shows the same task was already created, do not create it again.",
-      "kind: \"monitoring\" when the user wants to hear when something happens or changes (\"tell me when\", \"notify " +
-        "me if\", \"let me know as soon as\", \"watch for\"): each run checks, stays silent without news, and the task " +
-        "ends once the awaited event has happened. \"standard\" for reminders, reports and digests: every run's answer " +
-        "is shown.",
-      "prompt: the instruction every run carries out on its own, without this conversation: name the subject, the " +
-        "sources and what to report, in the user's language; for monitoring, also what counts as news. title: a short " +
-        "name in the user's language.",
-      `schedule: from the user's words, in the user's time zone ${timeZone}, with 24-hour "HH:MM" times and days ` +
-        "mon..sun (weekdays are mon..fri). once: date \"YYYY-MM-DD\" and time, at least a minute ahead. daily: time. " +
-        "weekly: days and time. monthly: dayOfMonth (1-31) and time. hourly: everyHours (1, 2, 3, 4, 6, 8 or 12), time " +
-        "as the window start (\"00:00\" for the whole day), until as the window end or null, and days. Set every field " +
-        "the schedule kind does not use to null.",
-      "chatMode: null for the default; \"new\" starts a chat for every run, \"same\" continues in one chat (always for " +
-        "hourly and monitoring tasks).",
-      "After it succeeds, confirm briefly in the user's language what was created and when it runs next. If it fails, " +
-        "explain the reason in plain words; do not retry with the same arguments."
+      "Create a scheduled task: a saved instruction that runs automatically with this chat's model and settings;",
+      "its answers appear in the task's own chat. Use it only when the user's current message asks for something",
+      "later or repeatedly (a reminder, a regular report, watching for a change), at most once per answer, and do not",
+      "ask for confirmation: your answer shows the task with Edit and Delete.",
+      "kind: \"monitoring\" when the user wants to hear when something happens or changes (silent without news, ends",
+      "once it happened); \"standard\" for reminders and reports.",
+      "prompt: a standalone instruction that works without this conversation, in the user's language; for monitoring",
+      `say what counts as news. Times are 24-hour HH:MM in the user's time zone ${timeZone}; set unused schedule`,
+      "fields to null. chatMode: null unless the user asks. Confirm briefly what was created; if it fails, explain",
+      "why and do not retry the same arguments."
     ].join(" "),
     inputSchema: {
       additionalProperties: false,
