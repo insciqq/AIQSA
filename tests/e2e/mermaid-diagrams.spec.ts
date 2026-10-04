@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
-import { expect, test, type Page, type Response } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Response, type TestInfo } from "@playwright/test";
 import type { ChatDetailWire, ChatMessageWire } from "../../lib/contracts/chats";
 import type { PublicShareSnapshot } from "../../lib/domain/shareSnapshot";
 import { runtimeSecurityHeaders } from "../../lib/server/security/headers";
@@ -128,13 +128,88 @@ async function expectCleanPolicy(page: Page, observation: Observation) {
   expect(await page.evaluate(() => (globalThis as { __aiqsaHostile?: unknown }).__aiqsaHostile)).toBeUndefined();
 }
 
-async function expectDiagrams(page: Page) {
+type DiagramGeometry = {
+  drawing: { bottom: number; left: number; right: number; top: number } | null;
+  svg: { bottom: number; left: number; right: number; top: number };
+};
+
+/**
+ * Attaches the rendered diagram's geometry and styles (synthetic content
+ * only) and returns the extent of its visible drawing against its own box.
+ */
+async function diagnoseDiagram(scroller: Locator, name: string, testInfo: TestInfo): Promise<DiagramGeometry> {
+  const report = await scroller.evaluate((host) => {
+    const svg = host.querySelector(":scope > svg") as SVGSVGElement;
+    const rect = (element: Element) => {
+      const box = element.getBoundingClientRect();
+      return { bottom: box.bottom, left: box.left, right: box.right, top: box.top };
+    };
+    const bbox = (element: SVGGraphicsElement | null) => {
+      if (!element) return null;
+      const box = element.getBBox();
+      return { height: box.height, width: box.width, x: box.x, y: box.y };
+    };
+    const style = (element: Element | null) => {
+      if (!element) return null;
+      const computed = getComputedStyle(element);
+      return Object.fromEntries(["display", "fontFamily", "fontSize", "letterSpacing", "lineHeight", "transform", "translate", "wordSpacing"]
+        .map((property) => [property, computed.getPropertyValue(property.replace(/[A-Z]/gu, (c) => `-${c.toLowerCase()}`))]));
+    };
+    const graphics = [...svg.querySelectorAll("rect, path, polygon, circle, ellipse, line, polyline, text")]
+      .filter((element) => !element.closest("defs, marker, clipPath, mask, pattern, symbol"))
+      .map(rect)
+      .filter((box) => box.right - box.left > 0 && box.bottom - box.top > 0);
+    const drawing = graphics.length ? {
+      bottom: Math.max(...graphics.map((box) => box.bottom)),
+      left: Math.min(...graphics.map((box) => box.left)),
+      right: Math.max(...graphics.map((box) => box.right)),
+      top: Math.min(...graphics.map((box) => box.top))
+    } : null;
+    return {
+      bodyFont: getComputedStyle(document.body).fontFamily,
+      drawing,
+      fontsStatus: document.fonts?.status ?? null,
+      host: { rect: rect(host), scrollWidth: host.scrollWidth, clientWidth: host.clientWidth, style: style(host) },
+      measurementLeftovers: document.querySelectorAll("[data-aiqsa-mermaid-measure]").length,
+      outerHTML: svg.outerHTML.slice(0, 200_000),
+      rootGroupBBox: bbox(svg.querySelector(":scope > g")),
+      sameIdCount: document.querySelectorAll(`[id="${svg.id}"]`).length,
+      svg: rect(svg),
+      svgAttributes: { height: svg.getAttribute("height"), viewBox: svg.getAttribute("viewBox"), width: svg.getAttribute("width") },
+      svgBBox: bbox(svg),
+      svgStyle: style(svg),
+      textStyle: style(svg.querySelector(".node text, text")),
+      rectStyle: style(svg.querySelector(".node rect, rect"))
+    };
+  });
+  await testInfo.attach(`mermaid-geometry-${name}.json`, { body: JSON.stringify(report, null, 2), contentType: "application/json" });
+  return { drawing: report.drawing, svg: report.svg };
+}
+
+/** Every visible part of the drawing lies inside the diagram's box, with only the fit padding around it. */
+function expectDrawingInsideBox({ drawing, svg }: DiagramGeometry) {
+  expect(drawing).not.toBeNull();
+  expect(drawing!.left).toBeGreaterThanOrEqual(svg.left - 1);
+  expect(drawing!.top).toBeGreaterThanOrEqual(svg.top - 1);
+  expect(drawing!.right).toBeLessThanOrEqual(svg.right + 1);
+  expect(drawing!.bottom).toBeLessThanOrEqual(svg.bottom + 1);
+  expect(drawing!.left - svg.left).toBeLessThanOrEqual(24);
+  expect(drawing!.top - svg.top).toBeLessThanOrEqual(24);
+  expect(svg.right - drawing!.right).toBeLessThanOrEqual(24);
+  expect(svg.bottom - drawing!.bottom).toBeLessThanOrEqual(24);
+}
+
+const DIAGRAM_NAMES = ["flowchart", "sequence", "class", "invalid", "hostile"] as const;
+
+async function expectDiagrams(page: Page, testInfo: TestInfo) {
   const blocks = page.getByTestId("mermaid-block");
   await expect(blocks).toHaveCount(5);
   await expect(page.locator('[data-mermaid-state="rendered"]')).toHaveCount(4, { timeout: 20_000 });
+  await page.evaluate(() => document.fonts?.ready);
   for (const index of [0, 1, 2, 4]) {
     const scroller = blocks.nth(index).getByTestId("mermaid-diagram-scroll");
-    await expect(scroller.locator("svg")).toBeVisible();
+    await expect(scroller.locator(":scope > svg")).toBeVisible();
+    expectDrawingInsideBox(await diagnoseDiagram(scroller, DIAGRAM_NAMES[index]!, testInfo));
     // The diagram stays inside its own box; only that box may scroll.
     const contained = await scroller.evaluate((element) => {
       const box = element.getBoundingClientRect();
@@ -148,7 +223,7 @@ async function expectDiagrams(page: Page) {
   const hostileBlock = blocks.nth(4);
   await expect(hostileBlock.getByTestId("mermaid-diagram-scroll")).toContainText("label");
   expect(await hostileBlock.locator("a, script, img, image, iframe, foreignObject").count()).toBe(0);
-  expect(await hostileBlock.evaluate((element) => [...element.querySelectorAll("svg *")]
+  expect(await hostileBlock.evaluate((element) => [...element.querySelectorAll("[data-testid=\"mermaid-diagram-scroll\"] > svg *")]
     .some((node) => [...node.attributes].some((attribute) => attribute.name.startsWith("on"))))).toBe(false);
   await expectNoHorizontalOverflow(page);
 }
@@ -196,7 +271,7 @@ for (const viewport of [
         ? route.fulfill({ status: 409, json: { error: "unexpected_fixture_run" } }) : route.fallback());
       const observation = await observe(page, `/c/${chatId}`, { productionPolicy: viewport.productionPolicy });
       await signInWithLocalToken(page, `/c/${chatId}`);
-      await expectDiagrams(page);
+      await expectDiagrams(page, testInfo);
       expect(await observation.mermaidChunks()).not.toEqual([]);
 
       const first = page.getByTestId("mermaid-block").first();
@@ -206,7 +281,7 @@ for (const viewport of [
       await expect(first.getByRole("region", { name: "Scrollable code block" })).toContainText("Draft[Draft answer]");
       await expect(first.getByTestId("mermaid-diagram-scroll")).toHaveCount(0);
       await first.getByRole("button", { name: "Diagram", exact: true }).click();
-      await expect(first.getByTestId("mermaid-diagram-scroll").locator("svg")).toBeVisible();
+      await expect(first.getByTestId("mermaid-diagram-scroll").locator(":scope > svg")).toBeVisible();
       const download = page.waitForEvent("download");
       await first.getByRole("button", { name: "Download SVG" }).click();
       expect((await download).suggestedFilename()).toBe("diagram.svg");
@@ -219,6 +294,7 @@ for (const viewport of [
         document.documentElement.dataset.colorScheme = value;
       }, other);
       await expect.poll(() => first.getByTestId("mermaid-diagram-scroll").innerHTML()).not.toBe(before);
+      expectDrawingInsideBox(await diagnoseDiagram(first.getByTestId("mermaid-diagram-scroll"), `flowchart-${other}`, testInfo));
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: testInfo.outputPath(`mermaid-chat-${viewport.name}-${other}.png`) });
       await expectCleanPolicy(page, observation);
@@ -260,12 +336,13 @@ test("a streamed fence stays text until it closes, then renders without a reload
   expect(await observation.mermaidChunks()).toEqual([]);
 
   await stream.emit(page, "token", { delta: "{Diagram valid?}\n```\n\nStill writing." });
-  await expect(answer.locator('[data-mermaid-state="rendered"] svg')).toBeVisible({ timeout: 20_000 });
+  await expect(answer.locator('[data-mermaid-state="rendered"] [data-testid="mermaid-diagram-scroll"] > svg')).toBeVisible({ timeout: 20_000 });
   const finalAnswer = "Here is the flow.\n\n```mermaid\nflowchart LR\n  Draft[Draft answer] --> Review{Diagram valid?}\n```\n\nStill writing.";
   await installMatrixCatalogFixture(page, { chats: [chatDetail(finalAnswer)], folders: [] });
   await stream.emit(page, "done", { runId, status: "complete" });
   await stream.close(page);
-  await expect(answer.locator('[data-mermaid-state="rendered"] svg')).toBeVisible();
+  await expect(answer.locator('[data-mermaid-state="rendered"] [data-testid="mermaid-diagram-scroll"] > svg')).toBeVisible();
+  expectDrawingInsideBox(await diagnoseDiagram(answer.getByTestId("mermaid-diagram-scroll"), "streamed", testInfo));
   await page.screenshot({ path: testInfo.outputPath("mermaid-streamed.png") });
   await expectCleanPolicy(page, observation);
 });
@@ -310,7 +387,7 @@ test.describe("public share", () => {
         const observation = await observe(page, `/s/${token}`, { productionPolicy: variant.productionPolicy });
         const response = await page.goto(`/s/${token}`);
         expect(response?.status()).toBe(200);
-        await expectDiagrams(page);
+        await expectDiagrams(page, testInfo);
         await page.getByTestId("mermaid-block").first().scrollIntoViewIfNeeded();
         await page.screenshot({ path: testInfo.outputPath(`mermaid-share-${variant.theme}-${variant.width}.png`) });
         await expectCleanPolicy(page, observation);

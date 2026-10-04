@@ -342,6 +342,66 @@ export function sanitizeMermaidSvg(svg: string): string | null {
   return new XMLSerializer().serializeToString(root);
 }
 
+/**
+ * Typography the diagram is measured and shown with. Mermaid lays text out
+ * from measurements taken while rendering; the final box inherits the same
+ * values so page or answer typography cannot change the drawing's size.
+ */
+export const MERMAID_DIAGRAM_TYPOGRAPHY = {
+  fontSize: "16px",
+  fontStyle: "normal",
+  fontWeight: "400",
+  letterSpacing: "normal",
+  lineHeight: "normal",
+  overflowWrap: "normal",
+  textTransform: "none",
+  whiteSpace: "normal",
+  wordSpacing: "normal"
+} as const satisfies Partial<CSSStyleDeclaration>;
+
+/** An off-screen, laid-out container with the diagram typography, so measurement never depends on the page shell. */
+function createMeasurementContainer(): HTMLDivElement | null {
+  if (typeof document === "undefined" || !document.body) return null;
+  const container = document.createElement("div");
+  container.setAttribute("aria-hidden", "true");
+  container.dataset.aiqsaMermaidMeasure = "";
+  Object.assign(container.style, MERMAID_DIAGRAM_TYPOGRAPHY, {
+    contain: "layout style",
+    left: "-100000px",
+    pointerEvents: "none",
+    position: "fixed",
+    top: "0",
+    visibility: "hidden",
+    width: "2000px"
+  });
+  document.body.append(container);
+  return container;
+}
+
+const FIT_PADDING = 8;
+
+/**
+ * Sets the viewBox and size from the drawing's own extent in its final
+ * context, so any difference between measurement and placement can never
+ * offset or clip the diagram. Returns false when the drawing has no box yet.
+ */
+export function fitSvgToDrawing(svg: SVGSVGElement): boolean {
+  if (typeof svg.getBBox !== "function") return false;
+  let box: DOMRect;
+  try {
+    box = svg.getBBox();
+  } catch {
+    return false;
+  }
+  if (!(box.width > 0 && box.height > 0) || ![box.x, box.y, box.width, box.height].every(Number.isFinite)) return false;
+  const width = box.width + FIT_PADDING * 2;
+  const height = box.height + FIT_PADDING * 2;
+  svg.setAttribute("viewBox", `${box.x - FIT_PADDING} ${box.y - FIT_PADDING} ${width} ${height}`);
+  svg.setAttribute("width", String(Math.ceil(width)));
+  svg.setAttribute("height", String(Math.ceil(height)));
+  return true;
+}
+
 function removeRenderLeftovers(id: string): void {
   if (typeof document === "undefined") return;
   for (const leftover of [`d${id}`, `i${id}`, id]) {
@@ -372,19 +432,21 @@ async function renderNow(source: string, scheme: MermaidColorScheme): Promise<{
 
   renderSequence += 1;
   const id = `aiqsa-mermaid-${renderSequence}`;
+  const measurement = createMeasurementContainer();
+  const cleanup = () => {
+    measurement?.remove();
+    removeRenderLeftovers(id);
+  };
   let rendering: Promise<{ svg: string }>;
   try {
     mermaid.initialize(mermaidConfig(scheme, appFontFamily()));
-    rendering = mermaid.render(id, source);
+    rendering = measurement ? mermaid.render(id, source, measurement) : mermaid.render(id, source);
   } catch {
-    removeRenderLeftovers(id);
+    cleanup();
     return { result: { ok: false, reason: "invalid" }, settled: Promise.resolve() };
   }
   // A late settlement after a timeout still removes Mermaid's temporary nodes.
-  const settled = rendering.then(
-    () => removeRenderLeftovers(id),
-    () => removeRenderLeftovers(id)
-  );
+  const settled = rendering.then(cleanup, cleanup);
 
   try {
     const rendered = await Promise.race([rendering, timeoutAfter(MERMAID_RENDER_TIMEOUT_MS)]);
@@ -396,7 +458,7 @@ async function renderNow(source: string, scheme: MermaidColorScheme): Promise<{
   } catch {
     return { result: { ok: false, reason: "invalid" }, settled };
   } finally {
-    removeRenderLeftovers(id);
+    cleanup();
   }
 }
 

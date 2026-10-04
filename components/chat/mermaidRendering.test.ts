@@ -5,13 +5,14 @@ import {
   MERMAID_SOURCE_MAX_CHARACTERS,
   MERMAID_SVG_MAX_CHARACTERS,
   renderMermaidDiagram,
+  fitSvgToDrawing,
   sanitizeMermaidSvg,
   scopeDiagramCss
 } from "./mermaidRendering";
 
 const mermaidMock = vi.hoisted(() => ({
   initialize: vi.fn(),
-  render: vi.fn<(id: string, source: string) => Promise<{ svg: string }>>()
+  render: vi.fn<(id: string, source: string, container?: HTMLElement) => Promise<{ svg: string }>>()
 }));
 
 vi.mock("mermaid", () => ({ default: mermaidMock }));
@@ -138,6 +139,27 @@ describe("sanitizeMermaidSvg", () => {
   });
 });
 
+describe("fitSvgToDrawing", () => {
+  it("sets the viewBox and size from the drawing's own extent", () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 100 50");
+    Object.defineProperty(svg, "getBBox", { value: () => ({ height: 60, width: 300, x: 110, y: 95 }) });
+    expect(fitSvgToDrawing(svg)).toBe(true);
+    expect(svg.getAttribute("viewBox")).toBe("102 87 316 76");
+    expect(svg.getAttribute("width")).toBe("316");
+    expect(svg.getAttribute("height")).toBe("76");
+  });
+
+  it("leaves a drawing without a box untouched", () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 100 50");
+    expect(fitSvgToDrawing(svg)).toBe(false);
+    Object.defineProperty(svg, "getBBox", { value: () => ({ height: 0, width: 0, x: 0, y: 0 }) });
+    expect(fitSvgToDrawing(svg)).toBe(false);
+    expect(svg.getAttribute("viewBox")).toBe("0 0 100 50");
+  });
+});
+
 describe("renderMermaidDiagram", () => {
   it("renders in strict mode with locked configuration and the app theme", async () => {
     mermaidMock.render.mockResolvedValue({ svg: SVG("<text>ok</text>") });
@@ -181,6 +203,22 @@ describe("renderMermaidDiagram", () => {
     mermaidMock.render.mockResolvedValue({ svg: SVG(`<text>${"x".repeat(MERMAID_SVG_MAX_CHARACTERS)}</text>`) });
     await expect(renderMermaidDiagram("flowchart TD\n  huge-output --> B", "light"))
       .resolves.toEqual({ ok: false, reason: "too_large" });
+  });
+
+  it("measures in an off-screen container with the diagram typography and removes it", async () => {
+    let measured: { fontSize: string; letterSpacing: string; parent: boolean; position: string } | null = null;
+    mermaidMock.render.mockImplementation(async (_id, _source, container?: HTMLElement) => {
+      measured = container ? {
+        fontSize: container.style.fontSize,
+        letterSpacing: container.style.letterSpacing,
+        parent: container.parentElement === document.body,
+        position: container.style.position
+      } : null;
+      return { svg: SVG() };
+    });
+    await renderMermaidDiagram("flowchart TD\n  measure --> B", "light");
+    expect(measured).toEqual({ fontSize: "16px", letterSpacing: "normal", parent: true, position: "fixed" });
+    expect(document.querySelector("[data-aiqsa-mermaid-measure]")).toBeNull();
   });
 
   it("falls back on a render error and removes the library's temporary nodes", async () => {
