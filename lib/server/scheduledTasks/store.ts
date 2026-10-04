@@ -282,6 +282,32 @@ function visibleTask(userId: string, taskId: string) {
   return { id: taskId, user: { status: "active" as const }, userId };
 }
 
+/**
+ * Creates an active task inside the caller's transaction, under the owner lock
+ * that serializes the limits: throws `scheduled_task_limit` or
+ * `scheduled_task_hourly_limit` at a limit and `scheduled_tasks_unavailable`
+ * for an inactive account. The owner API and the chat tool both create here.
+ */
+export async function insertScheduledTask(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  draft: ScheduledTaskDraft,
+  nextRunAt: Date
+): Promise<ScheduledTask> {
+  await lockOwner(tx, userId);
+  const total = await tx.scheduledTask.count({ where: { userId } });
+  const active = await tx.scheduledTask.count({ where: { status: "ACTIVE", userId } });
+  if (total >= SCHEDULED_TASK_MAX_TOTAL || active >= SCHEDULED_TASK_MAX_ACTIVE) throw new ScheduledTaskError("scheduled_task_limit");
+  if (draft.schedule.kind === "hourly" && await activeHourlyTasks(tx, userId) >= SCHEDULED_TASK_MAX_ACTIVE_HOURLY) {
+    throw new ScheduledTaskError("scheduled_task_hourly_limit");
+  }
+  const row = await tx.scheduledTask.create({
+    data: { ...draftColumns(draft), nextRunAt, status: "ACTIVE", userId },
+    select: scheduledTaskRowSelect
+  });
+  return toScheduledTask(row, { lastRun: null, running: false, unseen: false });
+}
+
 export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledTaskStore {
   async function project(client: ScheduledTaskClient, userId: string, row: ScheduledTaskRow): Promise<ScheduledTask> {
     const activity = await loadScheduledTaskActivity(client, userId, [row.id]);
@@ -324,20 +350,7 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient): ScheduledT
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
     async create(userId, draft, nextRunAt) {
-      return prisma.$transaction(async (tx) => {
-        await lockOwner(tx, userId);
-        const total = await tx.scheduledTask.count({ where: { userId } });
-        const active = await tx.scheduledTask.count({ where: { status: "ACTIVE", userId } });
-        if (total >= SCHEDULED_TASK_MAX_TOTAL || active >= SCHEDULED_TASK_MAX_ACTIVE) throw new ScheduledTaskError("scheduled_task_limit");
-        if (draft.schedule.kind === "hourly" && await activeHourlyTasks(tx, userId) >= SCHEDULED_TASK_MAX_ACTIVE_HOURLY) {
-          throw new ScheduledTaskError("scheduled_task_hourly_limit");
-        }
-        const row = await tx.scheduledTask.create({
-          data: { ...draftColumns(draft), nextRunAt, status: "ACTIVE", userId },
-          select: scheduledTaskRowSelect
-        });
-        return toScheduledTask(row, { lastRun: null, running: false, unseen: false });
-      });
+      return prisma.$transaction((tx) => insertScheduledTask(tx, userId, draft, nextRunAt));
     },
     async update(userId, taskId, write) {
       return prisma.$transaction(async (tx) => {

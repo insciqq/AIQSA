@@ -969,5 +969,27 @@
 .v2-generated-artifact-copy small { color: var(--v2-color-text3); font-size: 0.75rem; }
 .v2-generated-artifact-open > .v2-icon, .v2-generated-artifact-card > button:last-of-type { flex: 0 0 auto; }
 
+/* A scheduled task the answer created: what, when and its two verbs. */
+.v2-scheduled-task-cards { margin-top: 0.375rem; }
+.v2-scheduled-task-cards > ul { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.v2-scheduled-task-card { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; padding: 0.75rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); color: var(--v2-color-text); }
+.v2-scheduled-task-card-tile { display: grid; width: 2.5rem; height: 2.5rem; flex: 0 0 auto; place-items: center; border-radius: var(--v2-radius-m); color: var(--v2-color-accent); background: var(--v2-color-accent-dim); }
+.v2-scheduled-task-card[data-state="deleted"] .v2-scheduled-task-card-tile { color: var(--v2-color-text3); background: var(--v2-color-surface2); }
+.v2-scheduled-task-card-copy { display: grid; min-width: 0; flex: 1 1 14rem; gap: 0.125rem; }
+.v2-scheduled-task-card-heading { margin: 0; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; }
+.v2-scheduled-task-card-heading:focus { outline: none; }
+.v2-scheduled-task-card-copy strong { overflow: hidden; font-size: 0.875rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.v2-scheduled-task-card[data-state="deleted"] .v2-scheduled-task-card-copy strong { color: var(--v2-color-text2); font-weight: 500; }
+.v2-scheduled-task-card-copy small { color: var(--v2-color-text3); font-size: 0.75rem; overflow-wrap: anywhere; }
+.v2-scheduled-task-card-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 0.25rem; margin-left: auto; }
+.v2-scheduled-task-card-confirm { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; padding-top: 0.5rem; border-top: 1px solid var(--v2-color-border); }
+.v2-scheduled-task-card-confirm > p { flex: 1 1 14rem; margin: 0; font-size: 0.8125rem; line-height: 1.45; overflow-wrap: anywhere; }
+.v2-scheduled-task-card-confirm > span { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.v2-scheduled-task-card-error { flex: 1 1 100%; margin: 0; color: var(--v2-color-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
+@media (max-width: 30rem) {
+  /* The verbs move under the text, aligned with it, instead of squeezing it. */
+  .v2-scheduled-task-card-actions { margin-left: 3.25rem; }
+}
+
 .v2-answer-skill-pin { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.25rem; }
 .v2-answer-skill-pin [role="alert"] { color: var(--v2-color-danger); overflow-wrap: anywhere; }
