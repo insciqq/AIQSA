@@ -10,10 +10,23 @@ import { decodeAcceptedVisionAnalysisPlan, type AvailableVisionAnalysisPlan } fr
 export const KNOWLEDGE_IMAGE_OBSERVATION_LIMITS = Object.freeze({
   maxImages: 8,
   questionCharacters: 4_000,
+  /** System Vision's analysis allowance; an answer model gets its own admitted one, bounded. */
   maxOutputTokens: 4_096,
+  answerModelMaxOutputTokens: 16_384,
+  minOutputTokens: 256,
   textBytes: 8 * 1024,
   timeoutMs: 60_000
 });
+
+/**
+ * An answer model may reason before it describes: it gets its own admitted
+ * output allowance, bounded, and at most half its window so the images fit.
+ */
+export function knowledgeImageObservationAnswerOutputTokens(budget: Readonly<{ contextWindow: number | null; maxOutputTokens: number }>): number {
+  const halfWindow = budget.contextWindow === null ? Infinity : Math.floor(budget.contextWindow / 2);
+  return Math.max(KNOWLEDGE_IMAGE_OBSERVATION_LIMITS.minOutputTokens,
+    Math.min(KNOWLEDGE_IMAGE_OBSERVATION_LIMITS.answerModelMaxOutputTokens, budget.maxOutputTokens, halfWindow));
+}
 
 export const KNOWLEDGE_IMAGE_OBSERVATION_PROMPT_VERSION = 1 as const;
 

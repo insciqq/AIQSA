@@ -159,7 +159,8 @@ import type {
   KnowledgeEvidenceDispatchManifestDraft
 } from "../knowledge/evidenceDispatchManifest";
 import { KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT } from "../knowledge/fullContext";
-import { decodeKnowledgeImageObservationPlan, KNOWLEDGE_IMAGE_OBSERVATION_FAILURES, type KnowledgeImageObservationBlock } from "../knowledge/imageObservation";
+import { decodeKnowledgeImageObservationPlan, KNOWLEDGE_IMAGE_OBSERVATION_FAILURES, knowledgeImageObservationAnswerOutputTokens,
+  type KnowledgeImageObservationBlock } from "../knowledge/imageObservation";
 import { knowledgeImageObservationFromComposePrompt } from "../knowledge/evidenceAnswerReviewV2";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
 import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
@@ -615,7 +616,8 @@ async function recoveredKnowledgeImageObservation(deps: RunRecoveryDeps, input: 
     authorize: () => plan.route === "answer_model" ? currentDirectAnswerDispatchAllowed(deps, input.control, input.userId)
       : input.control.project ? currentProjectRecoveryAuthorityAllowed(deps, input.control.project, input.userId) : Promise.resolve(true),
     ...(plan.route === "answer_model" && input.request.knowledgeGenerationBudget
-      ? { timeoutMs: input.request.knowledgeGenerationBudget.timeoutMs } : {}),
+      ? { timeoutMs: input.request.knowledgeGenerationBudget.timeoutMs,
+        maxOutputTokens: knowledgeImageObservationAnswerOutputTokens(input.request.knowledgeGenerationBudget) } : {}),
     signal: input.signal
   });
   if (input.signal.aborted) throw new ToolLoopRecoveryStopped();

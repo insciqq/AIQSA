@@ -143,6 +143,8 @@ export type KnowledgeImageObservationInput = Readonly<{
   /** Optional dispatch journal around the one provider request. */
   onDispatch?(request: ProviderRunRequest, destination: Readonly<{ provider: string; modelId: string }>): Promise<((ok: boolean, code: string | null) => Promise<void>) | null>;
   timeoutMs?: number;
+  /** The output allowance, reasoning included; System Vision's analysis allowance by default. */
+  maxOutputTokens?: number;
   signal: AbortSignal;
 }>;
 
@@ -185,9 +187,11 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
           admittedImageIds: input.plan.imageIds, images: input.plan.imageIds.map(imageId => ({ imageId })) }, bounded);
         images = prepared.images;
         const question = knowledgeImageObservationQuestion(input.question);
-        const request = await options.boundedRequest({ snapshot: destination.snapshot, images, maxOutputTokens: LIMITS.maxOutputTokens,
+        const maxOutputTokens = Math.min(Math.max(input.maxOutputTokens ?? LIMITS.maxOutputTokens, LIMITS.minOutputTokens),
+          LIMITS.answerModelMaxOutputTokens);
+        const request = await options.boundedRequest({ snapshot: destination.snapshot, images, maxOutputTokens,
           build: attachments => options.providerRequest(destination, c.chatId, question ? `Question: ${question}` : "Describe the attached images.",
-            attachments, { system: KNOWLEDGE_IMAGE_OBSERVATION_SYSTEM_PROMPT, maxOutputTokens: LIMITS.maxOutputTokens }),
+            attachments, { system: KNOWLEDGE_IMAGE_OBSERVATION_SYSTEM_PROMPT, maxOutputTokens }),
           invalidImage: () => new ConversationImageError("chat_image_invalid"), signal: bounded });
         await prepared.assertAccess();
         bounded.throwIfAborted();
@@ -217,9 +221,10 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
       const unknown = sent && !completed;
       await finish?.(result.kind === "observed", result.kind === "failed" ? result.code : null).catch(() => undefined);
       // The settlement is keyed by the run and has one winner; retry only this identical local write.
-      try { return await store.settle(c, result, usage, unknown, bounded); }
+      // Only Stop withholds a completed description; a deadline passing during settlement does not.
+      try { return await store.settle(c, result, usage, unknown, input.signal); }
       catch {
-        try { return await store.settle(c, result, usage, unknown, bounded); }
+        try { return await store.settle(c, result, usage, unknown, input.signal); }
         catch { return { kind: "unknown" }; }
       }
     } finally {
