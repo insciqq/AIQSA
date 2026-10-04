@@ -41,7 +41,10 @@ async function subscribe(userId: string, sessionId: string, subscription = devic
 }
 
 async function run(userId: string, status: "cancelled" | "complete" | "error", chat?: { projectId?: null; memoryMode?: "TEMPORARY" }) {
-  const created = await prisma.chat.create({ data: { title: "Synthetic trip plan", userId, ...(chat ?? {}) } });
+  const created = await prisma.chat.create({ data: { title: "Synthetic trip plan", userId, ...(chat ?? {}),
+    ...(chat?.memoryMode === "TEMPORARY"
+      ? { temporaryRetentionDeadline: new Date(Date.now() + 86_400_000), temporaryRetentionPolicyVersion: "temporary-24h-v1" }
+      : {}) } });
   const message = await prisma.message.create({ data: { chatId: created.id, content: textMessageContent("synthetic"), role: "user" } });
   const modelRun = await prisma.modelRun.create({ data: {
     chatId: created.id, modelId: "fixture", normalizedRequest: {}, provider: "fake", status, userId, userMessageId: message.id,
