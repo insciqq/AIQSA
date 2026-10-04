@@ -29,6 +29,8 @@ export type McpRunPlanRecord = {
   inventory: unknown;
   inventoryUpdatedAt: Date | null;
   namespace: string;
+  /** The runner's own personal server (owner-only, never shared). */
+  personal?: true;
   readiness: McpReadiness;
   revisionId: string;
   serverId: string;
@@ -41,6 +43,26 @@ export type McpRunPlanRecord = {
    */
   userDisabledToolNames?: readonly string[];
 };
+
+/**
+ * One of the owner's enabled personal servers an Auto catalog could not
+ * offer: it lists no tools because the server lost its sign-in or is not in
+ * a state that can run. A ready or starting server whose tools the owner
+ * switched off is no omission.
+ */
+export type McpCatalogOmission = Readonly<{
+  reason: "mcp_reauthorization_required" | "mcp_server_unavailable";
+  serverId: string;
+  serverName: string;
+}>;
+
+const OMISSION_REASONS: ReadonlyMap<McpReadiness, McpCatalogOmission["reason"]> = new Map([
+  ["authorizing", "mcp_reauthorization_required"],
+  ["needs_authorization", "mcp_reauthorization_required"],
+  ["reauthorization_required", "mcp_reauthorization_required"],
+  ["needs_setup", "mcp_server_unavailable"],
+  ["unavailable", "mcp_server_unavailable"]
+]);
 
 export type McpRunPlanBinding = {
   fingerprint: string;
@@ -318,6 +340,20 @@ export function buildMcpCapabilityCatalog(
   const instructions = budgetMcpServerInstructions(catalog.servers.map((server) => server.instructions ?? ""));
   catalog.servers.forEach((server, index) => { server.instructions = instructions[index]!; });
   return catalog;
+}
+
+/**
+ * The personal servers `buildMcpCapabilityCatalog` leaves out of the same
+ * records for a reason the owner can fix, in catalog order. This is the
+ * omission fact of an Auto plan; it never names installation servers.
+ */
+export function mcpCatalogOmissions(records: readonly McpRunPlanRecord[]): McpCatalogOmission[] {
+  return records.flatMap((record) => {
+    const reason = OMISSION_REASONS.get(record.readiness);
+    return record.personal && record.enabled && reason && (record.catalogTools ?? []).length === 0
+      ? [{ reason, serverId: record.serverId, serverName: record.serverName }]
+      : [];
+  }).sort((left, right) => left.serverName.localeCompare(right.serverName) || left.serverId.localeCompare(right.serverId));
 }
 
 function issues(records: readonly McpRunPlanRecord[]) {

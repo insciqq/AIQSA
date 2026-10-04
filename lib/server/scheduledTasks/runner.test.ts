@@ -6,6 +6,7 @@ import type { ScheduledTaskSend } from "./admission";
 import type { ScheduledTaskRunCatalog } from "./catalog";
 import { createScheduledTaskRunner } from "./runner";
 import {
+  SCHEDULED_TASK_RUN_DEADLINE_MS,
   expiredPendingOutcome,
   linkedRunOutcome,
   planClaimOverlap,
@@ -18,19 +19,25 @@ import {
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
 import type { ScheduledTaskRunnerStore, ScheduledTaskSettlement } from "./runnerStore";
+import { occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
 
 type Task = {
   baseline: ScheduledTaskBaseline | null; chatId: string | null; chatMode: ScheduledTaskChatMode; consecutiveFailures: number;
-  emailNotify: boolean; generation: number; id: string; modelId: string; nextRunAt: Date | null; pauseReason: string | null;
-  prompt: string; provider: string; revision: number; schedule: ScheduledTaskSchedule; searchEnabled: boolean;
-  status: ScheduledTaskStatusColumn; timeZone: string; title: string; userId: string;
+  consecutiveIncompleteRuns: number; emailNotify: boolean; generation: number; id: string; modelId: string; nextRunAt: Date | null;
+  pauseReason: string | null; prompt: string; provider: string;
+  /** What the store derives from the previous shown result (null: every server). */
+  relevantMcpServerIds: readonly string[] | null;
+  revision: number; schedule: ScheduledTaskSchedule; searchEnabled: boolean;
+  status: ScheduledTaskStatusColumn; timeZone: string; title: string; toolsEnabled: boolean; userId: string; workspaceEnabled: boolean;
 };
 type Occurrence = {
   chatId: string | null; createdAt: number; finishedAt: Date | null; id: string; leaseExpiresAt: Date | null; notifiedAt: Date | null;
   reasonCode: string | null; runId: string | null; scheduledFor: Date; startedAt: Date | null; state: string; taskGeneration: number | null;
-  taskId: string; trigger: ScheduledTaskRunTrigger; unseenAt: Date | null; userId: string; userMessageId: string | null;
+  taskId: string; trigger: ScheduledTaskRunTrigger; unavailableSources: unknown; unseenAt: Date | null; userId: string;
+  userMessageId: string | null;
 };
-type Run = { assistantMessageId: string; errorPayload: unknown; status: string; userId: string };
+/** `createdAt` is the run's admission, which its deadline counts from. */
+type Run = { assistantMessageId: string; createdAt: Date; errorPayload: unknown; status: string; userId: string };
 
 function harness() {
   let clock = new Date("2026-10-05T06:00:05.000Z");
@@ -53,29 +60,41 @@ function harness() {
     searchStrategies: [{ displayName: "Web", executionModes: ["all_selected", "model_choice"], kind: "web_search", strategyId: "web" }]
   };
   let catalogFor: (userId: string) => ScheduledTaskRunCatalog | null = () => catalog;
-  /** What the ordinary send handler does for the next send: admit a run ending in `runStatus`, or refuse. */
-  let reply: (occurrence: Occurrence) => { error: string; status: number } | { runStatus: string; errorCode?: string; unlinked?: true } =
-    () => ({ runStatus: "complete" });
+  /**
+   * What the ordinary send handler does for the next send: admit a run ending
+   * in `runStatus` (its admission freezing `unavailableSources` on the
+   * occurrence), or refuse.
+   */
+  let reply: (occurrence: Occurrence) => { error: string; status: number } |
+    { runStatus: string; errorCode?: string; unavailableSources?: unknown; unlinked?: true } = () => ({ runStatus: "complete" });
+  const stops: Array<{ code: string; runId: string; userId: string }> = [];
   const nextId = (prefix: string) => `${prefix}-${++ids}`;
 
   function settle(occurrence: Occurrence, outcome: ScheduledTaskOutcome, observedRevision?: number): ScheduledTaskSettlement {
     const task = tasks.get(occurrence.taskId)!;
-    const plan = planTaskSettlement({ observedRevision, outcome, task, trigger: occurrence.trigger });
+    const sourcesIncomplete = outcome.state === "COMPLETED" && occurrenceSourcesIncomplete(occurrence.unavailableSources);
+    const plan = planTaskSettlement({ observedRevision, outcome, sourcesIncomplete, task, trigger: occurrence.trigger });
     const taskPaused = plan.pauseReason !== null;
     Object.assign(occurrence, { finishedAt: clock, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state,
-      unseenAt: settlementNotifiesOwner({ state: outcome.state, taskPaused }) ? clock : null });
+      unseenAt: settlementNotifiesOwner({ sourceAlert: plan.sourceAlert, state: outcome.state, taskPaused }) ? clock : null });
     const baseline = settlementBaseline({ assistantMessageId: occurrence.runId ? runs.get(occurrence.runId)?.assistantMessageId ?? null : null,
       occurrence, outcome, taskGeneration: task.generation });
-    Object.assign(task, { consecutiveFailures: plan.consecutiveFailures }, baseline ? { baseline } : {},
+    Object.assign(task, { consecutiveFailures: plan.consecutiveFailures, consecutiveIncompleteRuns: plan.consecutiveIncompleteRuns },
+      baseline ? { baseline } : {},
       taskPaused ? { nextRunAt: null, pauseReason: plan.pauseReason, revision: task.revision + 1, status: "PAUSED" } : {});
-    return { occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, state: outcome.state, taskPaused };
+    settled.push({ occurrenceId: occurrence.id, sourceAlert: plan.sourceAlert });
+    return { occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, sourceAlert: plan.sourceAlert,
+      sourcesIncomplete, state: outcome.state, taskPaused };
   }
+  /** Every settlement's health alert flag, in order. */
+  const settled: Array<{ occurrenceId: string; sourceAlert: boolean }> = [];
   const find = (id: string) => occurrences.find((occurrence) => occurrence.id === id && tasks.has(occurrence.taskId));
   const leased = (occurrence: Occurrence) =>
     occurrence.state === "PENDING" && occurrence.runId === null && occurrence.leaseExpiresAt !== null && occurrence.leaseExpiresAt > clock;
   const quietSkip = (occurrence: Occurrence, reasonCode: string): ScheduledTaskSettlement => {
     Object.assign(occurrence, { finishedAt: clock, leaseExpiresAt: null, reasonCode, state: "SKIPPED" });
-    return { occurrenceId: occurrence.id, reasonCode, runId: null, state: "SKIPPED", taskPaused: false };
+    return { occurrenceId: occurrence.id, reasonCode, runId: null, sourceAlert: false, sourcesIncomplete: false, state: "SKIPPED",
+      taskPaused: false };
   };
 
   const store: ScheduledTaskRunnerStore = {
@@ -95,11 +114,14 @@ function harness() {
           const occurrence: Occurrence = {
             chatId: null, createdAt: ids, finishedAt: reasonCode ? now : null, id: nextId("occurrence"), leaseExpiresAt: null,
             notifiedAt: null, reasonCode, runId: null, scheduledFor: planned.scheduledFor, startedAt: null,
-            state: reasonCode ? "SKIPPED" : "PENDING", taskGeneration: null, taskId: task.id, trigger: "schedule", unseenAt: null,
-            userId: task.userId, userMessageId: null
+            state: reasonCode ? "SKIPPED" : "PENDING", taskGeneration: null, taskId: task.id, trigger: "schedule",
+            unavailableSources: null, unseenAt: null, userId: task.userId, userMessageId: null
           };
           occurrences.push(occurrence);
-          if (reasonCode) settlements.push({ occurrenceId: occurrence.id, reasonCode, runId: null, state: "SKIPPED", taskPaused: false });
+          if (reasonCode) {
+            settlements.push({ occurrenceId: occurrence.id, reasonCode, runId: null, sourceAlert: false, sourcesIncomplete: false,
+              state: "SKIPPED", taskPaused: false });
+          }
         }
         Object.assign(task, { nextRunAt: plan.nextRunAt },
           plan.status === "ACTIVE" ? {} : { pauseReason: plan.pauseReason, revision: task.revision + 1, status: plan.status });
@@ -146,9 +168,11 @@ function harness() {
         chat: chat?.usable ? { activeLeafMessageId: chat.activeLeafMessageId, id: task.chatId! } : null,
         occurrence: { id: row.id, scheduledFor: row.scheduledFor, taskId: row.taskId, trigger: row.trigger, userId: row.userId },
         ownerActive: !inactiveUsers.has(row.userId),
+        relevantMcpServerIds: task.relevantMcpServerIds,
         task: { baseline: task.baseline, chatMode: task.chatMode, generation: task.generation, modelId: task.modelId,
           prompt: task.prompt, provider: task.provider, revision: task.revision, searchEnabled: task.searchEnabled,
-          status: task.status, timeZone: task.timeZone, title: task.title }
+          status: task.status, timeZone: task.timeZone, title: task.title, toolsEnabled: task.toolsEnabled,
+          workspaceEnabled: task.workspaceEnabled }
       };
     },
     async readOccurrence(id) {
@@ -175,7 +199,15 @@ function harness() {
       if (!row || !task || row.notifiedAt || !["COMPLETED", "FAILED", "SKIPPED"].includes(row.state) || !task.emailNotify) return null;
       row.notifiedAt = now;
       return { chatId: row.chatId ?? task.chatId, email: "owner@example.test", reasonCode: row.reasonCode,
-        state: row.state as "COMPLETED", taskPauseReason: task.pauseReason, title: task.title, trigger: row.trigger };
+        state: row.state as "COMPLETED", taskPauseReason: task.pauseReason, title: task.title, trigger: row.trigger,
+        unavailableSources: unavailableSourcesWire(row.unavailableSources) };
+    },
+    async overdueRuns(now) {
+      // By the origin on the run itself: a run of a deleted task is still found.
+      return [...runs.entries()]
+        .filter(([, run]) => !["complete", "cancelled", "error"].includes(run.status) &&
+          run.createdAt.getTime() <= now.getTime() - SCHEDULED_TASK_RUN_DEADLINE_MS)
+        .map(([runId, run]) => ({ runId, userId: run.userId }));
     }
   };
 
@@ -195,11 +227,11 @@ function harness() {
     const runId = nextId("run");
     const userMessageId = nextId("user-message");
     const assistantMessageId = nextId("assistant-message");
-    runs.set(runId, { assistantMessageId, errorPayload: decision.errorCode ? { code: decision.errorCode } : null,
+    runs.set(runId, { assistantMessageId, createdAt: clock, errorPayload: decision.errorCode ? { code: decision.errorCode } : null,
       status: decision.runStatus, userId: occurrence.userId });
     chats.set(chatId, { activeLeafMessageId: assistantMessageId, usable: true, userId: occurrence.userId });
     Object.assign(occurrence, { chatId, leaseExpiresAt: null, reasonCode: null, runId, state: "RUNNING",
-      taskGeneration: origin.taskGeneration, userMessageId });
+      taskGeneration: origin.taskGeneration, unavailableSources: decision.unavailableSources ?? null, userMessageId });
     task.chatId = chatId;
     return stream();
   };
@@ -215,15 +247,25 @@ function harness() {
     send,
     sendEmail: async (message) => { emails.push(message); },
     sendPush: (occurrenceId) => { pushes.push(occurrenceId); },
+    // The Stop path: an active run becomes cancelled with the given cause.
+    stopRun: async ({ code, runId, userId }) => {
+      stops.push({ code, runId, userId });
+      const run = runs.get(runId);
+      if (!run || run.userId !== userId) return "not_found";
+      if (["complete", "cancelled", "error"].includes(run.status)) return "not_cancelable";
+      Object.assign(run, { errorPayload: { code, message: "stopped" }, status: "cancelled" });
+      return "stopped";
+    },
     store
   });
 
   function addTask(overrides: Partial<Task> = {}): Task {
     const task: Task = {
-      baseline: null, chatId: null, chatMode: "same", consecutiveFailures: 0, emailNotify: false, generation: 1, id: nextId("task"),
-      modelId: "model-a", nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null,
-      prompt: "  Summarize the synthetic fixture  ", provider: "connection-a", revision: 1, schedule: { kind: "daily", time: "09:00" },
-      searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow", title: "Synthetic brief", userId: "owner-1", ...overrides
+      baseline: null, chatId: null, chatMode: "same", consecutiveFailures: 0, consecutiveIncompleteRuns: 0, emailNotify: false,
+      generation: 1, id: nextId("task"), modelId: "model-a", nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null,
+      prompt: "  Summarize the synthetic fixture  ", provider: "connection-a", relevantMcpServerIds: null, revision: 1,
+      schedule: { kind: "daily", time: "09:00" }, searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow",
+      title: "Synthetic brief", toolsEnabled: false, userId: "owner-1", workspaceEnabled: false, ...overrides
     };
     tasks.set(task.id, task);
     return task;
@@ -232,7 +274,7 @@ function harness() {
     const occurrence: Occurrence = {
       chatId: null, createdAt: ids, finishedAt: null, id: nextId("occurrence"), leaseExpiresAt: null, notifiedAt: null, reasonCode: null,
       runId: null, scheduledFor: clock, startedAt: null, state: "PENDING", taskGeneration: null, taskId: task.id, trigger: "manual",
-      unseenAt: null, userId: task.userId, userMessageId: null, ...overrides
+      unavailableSources: null, unseenAt: null, userId: task.userId, userMessageId: null, ...overrides
     };
     occurrences.push(occurrence);
     return occurrence;
@@ -242,7 +284,8 @@ function harness() {
     await runner.idle();
   }
   return {
-    addOccurrence, addTask, chats, emails, inactiveUsers, kick, occurrences, pushes, renamed, runs, sent, store, tasks, tick,
+    addOccurrence, addTask, chats, emails, inactiveUsers, kick, occurrences, pushes, renamed, runs, sent, settled, stops, store, tasks,
+    tick,
     advance(ms: number) { clock = new Date(clock.getTime() + ms); },
     setCatalog(load: typeof catalogFor) { catalogFor = load; },
     setReply(next: typeof reply) { reply = next; },
@@ -268,8 +311,8 @@ describe("scheduled task runner", () => {
       searchPlan: { mode: "all_selected", optionIds: [] }, skills: { mode: "off" }, timeZone: "Europe/Moscow", workspace: { enabled: false }
     });
     // The first run of a task has no earlier result to see.
-    expect(h.sent[0]!.occurrence).toEqual({ occurrenceId: h.forTask(task)[0]!.id, previousResult: null, taskGeneration: 1,
-      taskId: task.id, taskRevision: 1 });
+    expect(h.sent[0]!.occurrence).toEqual({ occurrenceId: h.forTask(task)[0]!.id, previousResult: null, relevantMcpServerIds: null,
+      taskGeneration: 1, taskId: task.id, taskRevision: 1 });
     expect(h.renamed).toEqual([{ chatId: h.sent[0]!.chatId, title: "Synthetic brief" }]);
     expect(h.emails).toHaveLength(1);
     expect(h.emails[0]).toMatchObject({ kind: "scheduled_task_result", subject: "Scheduled task finished", to: "owner@example.test" });
@@ -346,16 +389,19 @@ describe("scheduled task runner", () => {
   it("skips an instant that comes due while the previous run is still in progress, quietly", async () => {
     const h = harness();
     const hourly = { kind: "hourly", everyHours: 1, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] } satisfies ScheduledTaskSchedule;
-    const task = h.addTask({ emailNotify: true, schedule: hourly });
+    // A scheduled run ends within its deadline, well before the next hour: a
+    // Run now shortly before an instant is what can still be in progress.
+    const task = h.addTask({ emailNotify: true, nextRunAt: new Date("2026-10-05T07:00:00.000Z"), schedule: hourly });
+    h.advance(50 * MINUTE);
+    h.addOccurrence(task);
     h.setReply(() => ({ runStatus: "streaming" }));
     await h.tick();
     const [running] = h.forTask(task);
-    expect(running).toMatchObject({ state: "RUNNING" });
-    expect(task.nextRunAt).toEqual(new Date("2026-10-05T07:00:00.000Z"));
-    h.advance(HOUR);
+    expect(running).toMatchObject({ state: "RUNNING", trigger: "manual" });
+    h.advance(10 * MINUTE);
     await h.tick();
     expect(h.forTask(task).map((row) => [row.scheduledFor.toISOString(), row.state, row.reasonCode])).toEqual([
-      ["2026-10-05T06:00:00.000Z", "RUNNING", null],
+      ["2026-10-05T06:50:05.000Z", "RUNNING", null],
       ["2026-10-05T07:00:00.000Z", "SKIPPED", "previous_running"]
     ]);
     expect(h.sent).toHaveLength(1);
@@ -469,6 +515,7 @@ describe("scheduled task runner", () => {
       searchStrategies: [] }),
       now: () => new Date("2026-10-05T06:00:05.000Z"),
       renameChat: async () => undefined,
+      stopRun: async () => "not_found",
       // A permanent refusal pauses each task: news the owner hears about.
       send: async () => Response.json({ error: "model_not_available" }, { status: 403 }),
       // SMTP that hangs until released.
@@ -594,15 +641,16 @@ describe("scheduled task runner", () => {
       startedAt: new Date("2026-10-05T05:59:00.000Z"), trigger: "schedule" });
     // A crash after the link: its run is left active until run recovery settles it.
     const other = h.addTask({ nextRunAt: null, userId: "owner-2" });
-    h.runs.set("run-orphan", { assistantMessageId: "assistant-orphan", errorPayload: null, status: "streaming", userId: "owner-2" });
+    h.runs.set("run-orphan", { assistantMessageId: "assistant-orphan", createdAt: new Date("2026-10-05T06:00:00.000Z"), errorPayload: null,
+      status: "streaming", userId: "owner-2" });
     const linked = h.addOccurrence(other, { runId: "run-orphan", startedAt: new Date("2026-10-05T06:00:00.000Z"), state: "RUNNING",
       trigger: "schedule" });
     await h.tick();
     expect(h.sent).toHaveLength(1);
     expect(interrupted).toMatchObject({ state: "COMPLETED" });
     expect(linked.state).toBe("RUNNING");
-    h.runs.set("run-orphan", { assistantMessageId: "assistant-orphan", errorPayload: { code: "run_orphaned" }, status: "error",
-      userId: "owner-2" });
+    h.runs.set("run-orphan", { assistantMessageId: "assistant-orphan", createdAt: new Date("2026-10-05T06:00:00.000Z"),
+      errorPayload: { code: "run_orphaned" }, status: "error", userId: "owner-2" });
     await h.tick();
     expect(h.sent).toHaveLength(1);
     expect(linked).toMatchObject({ reasonCode: "run_orphaned", state: "FAILED" });
@@ -634,7 +682,8 @@ describe("scheduled task runner", () => {
         modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }], searchPlan: { mode: "all_selected", optionIds: [] },
         searchStrategies: [] };
       },
-      now: () => new Date("2026-10-05T06:00:05.000Z"), renameChat: async () => undefined, send, store: h.store
+      now: () => new Date("2026-10-05T06:00:05.000Z"), renameChat: async () => undefined, send, stopRun: async () => "not_found",
+      store: h.store
     });
     await runner.tick();
     await runner.idle();
@@ -707,5 +756,183 @@ describe("scheduled task runner", () => {
     await h.tick();
     expect(h.tasks.has(task.id)).toBe(false);
     expect(h.emails).toHaveLength(0);
+  });
+});
+
+describe("scheduled task runner with the owner's tools", () => {
+  it("sends the owner's MCP tools and Skills in Auto and the task's Workspace, like an ordinary message", async () => {
+    const h = harness();
+    const tooling = h.addTask({ toolsEnabled: true, workspaceEnabled: true });
+    const plain = h.addTask({ userId: "owner-2" });
+    await h.tick();
+    const [toolSend, plainSend] = [tooling, plain].map((task) => h.sent.find((send) => send.occurrence.taskId === task.id)!);
+    expect(toolSend.body).toMatchObject({ knowledgePlan: { mode: "none" }, mcp: { mode: "auto" }, skills: { mode: "auto" },
+      workspace: { enabled: true } });
+    // Never Load all, which fails a whole unattended run when one server is not ready, and never Agent.
+    expect(toolSend.body).not.toHaveProperty("tools");
+    expect(toolSend.body).not.toHaveProperty("agentEnabled");
+    expect(plainSend.body).toMatchObject({ mcp: { mode: "off" }, skills: { mode: "off" }, workspace: { enabled: false } });
+  });
+
+  it("passes the servers the previous result relied on to admission", async () => {
+    const h = harness();
+    const task = h.addTask({ relevantMcpServerIds: ["server-mail"], toolsEnabled: true });
+    await h.tick();
+    expect(h.sent[0]!.occurrence.relevantMcpServerIds).toEqual(["server-mail"]);
+  });
+
+  it("pauses before any send when tools or Workspace need tool calling the model lost", async () => {
+    const h = harness();
+    const noTools = (userId: string) => ({ models: [{ capabilities: { background: false, documentInputMode: "none" as const,
+      imageInput: false, nativeWebSearch: false, openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true as const,
+      toolCalling: userId === "owner-3" }, modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }],
+    searchPlan: { mode: "all_selected" as const, optionIds: [] }, searchStrategies: [] });
+    h.setCatalog(noTools);
+    const tools = h.addTask({ toolsEnabled: true });
+    const workspace = h.addTask({ userId: "owner-2", workspaceEnabled: true });
+    const fine = h.addTask({ toolsEnabled: true, userId: "owner-3", workspaceEnabled: true });
+    await h.tick();
+    expect(h.forTask(tools)).toMatchObject([{ reasonCode: "tools_unavailable", state: "FAILED" }]);
+    expect(tools).toMatchObject({ pauseReason: "tools_unavailable", status: "PAUSED" });
+    expect(h.forTask(workspace)).toMatchObject([{ reasonCode: "workspace_unavailable", state: "FAILED" }]);
+    expect(workspace).toMatchObject({ pauseReason: "workspace_unavailable", status: "PAUSED" });
+    expect(h.sent.map((send) => send.occurrence.taskId)).toEqual([fine.id]);
+  });
+
+  it("pauses on a permanent tool or Workspace refusal and retries a transient one, never failing in a loop", async () => {
+    const h = harness();
+    const refusing = h.addTask({ emailNotify: true, toolsEnabled: true, workspaceEnabled: true });
+    h.setReply(() => ({ error: "workspace_disabled", status: 409 }));
+    await h.tick();
+    expect(h.forTask(refusing)).toMatchObject([{ reasonCode: "workspace_unavailable", state: "FAILED" }]);
+    expect(refusing).toMatchObject({ nextRunAt: null, pauseReason: "workspace_unavailable", status: "PAUSED" });
+    expect(h.emails.map((email) => email.subject)).toEqual(["Scheduled task paused"]);
+    expect(h.emails[0]!.text).toContain("Workspace can no longer be used for this task.");
+    // Paused: no later instant fails and emails again.
+    h.advance(24 * HOUR);
+    await h.tick();
+    expect(h.forTask(refusing)).toHaveLength(1);
+
+    const transient = harness();
+    const waiting = transient.addTask({ toolsEnabled: true, workspaceEnabled: true });
+    transient.setReply(() => ({ error: "workspace_runtime_unavailable", status: 503 }));
+    await transient.tick();
+    expect(transient.forTask(waiting)).toMatchObject([{ reasonCode: null, runId: null, state: "PENDING" }]);
+    transient.setReply(() => ({ runStatus: "complete" }));
+    transient.advance(MINUTE);
+    await transient.tick();
+    expect(transient.forTask(waiting)).toMatchObject([{ state: "COMPLETED" }]);
+    expect(waiting).toMatchObject({ consecutiveFailures: 0, status: "ACTIVE" });
+
+    // A Workspace that stays busy through the window is a counted failure, never a quiet skip.
+    const stuck = harness();
+    const busy = stuck.addTask({ workspaceEnabled: true });
+    stuck.setReply(() => ({ error: "workspace_busy", status: 409 }));
+    await stuck.tick();
+    stuck.advance(31 * MINUTE);
+    await stuck.tick();
+    expect(stuck.forTask(busy)).toMatchObject([{ reasonCode: "admission_failed", state: "FAILED" }]);
+    expect(busy).toMatchObject({ consecutiveFailures: 1, status: "ACTIVE" });
+  });
+});
+
+describe("scheduled run deadline", () => {
+  it("stops a run through the Stop path thirty minutes after its admission and fails it as run_deadline", async () => {
+    const lines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((line) => { lines.push(String(line)); return true; });
+    const h = harness();
+    const task = h.addTask({ consecutiveFailures: 1 });
+    // The chat is busy at first: the occurrence's first attempt is long before the run's admission.
+    h.setReply(() => ({ error: "active_run_in_progress", status: 409 }));
+    await h.tick();
+    const [occurrence] = h.forTask(task);
+    h.advance(20 * MINUTE);
+    h.setReply(() => ({ runStatus: "streaming" }));
+    await h.tick();
+    expect(occurrence).toMatchObject({ startedAt: new Date("2026-10-05T06:00:05.000Z"), state: "RUNNING" });
+    const admittedAt = h.runs.get(occurrence!.runId!)!.createdAt;
+    expect(admittedAt).toEqual(new Date("2026-10-05T06:20:05.000Z"));
+    // Thirty minutes after the first attempt, but not after admission: the run goes on.
+    h.advance(15 * MINUTE);
+    await h.tick();
+    expect(h.stops).toEqual([]);
+    expect(occurrence!.state).toBe("RUNNING");
+    h.advance(SCHEDULED_TASK_RUN_DEADLINE_MS - 15 * MINUTE);
+    await h.tick();
+    expect(h.stops).toEqual([{ code: "run_deadline", runId: occurrence!.runId, userId: "owner-1" }]);
+    expect(h.runs.get(occurrence!.runId!)).toMatchObject({ errorPayload: { code: "run_deadline" }, status: "cancelled" });
+    // The occurrence settles from its run: failed run_deadline, counted toward the repeated-failure pause.
+    await h.tick();
+    expect(occurrence).toMatchObject({ reasonCode: "run_deadline", state: "FAILED" });
+    expect(task).toMatchObject({ consecutiveFailures: 2, status: "ACTIVE" });
+    expect(h.stops).toHaveLength(1);
+    // Content-free logs carry the registered code, never "unknown".
+    const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(records).toContainEqual(expect.objectContaining({ code: "run_deadline", event: "job_attempt", stage: "fail" }));
+    expect(records).toContainEqual(expect.objectContaining({ code: "run_deadline", event: "job_attempt", stage: "settle" }));
+    vi.restoreAllMocks();
+  });
+
+  it("stops an overdue run by its own origin even after its task was deleted", async () => {
+    const h = harness();
+    const task = h.addTask();
+    h.setReply(() => ({ runStatus: "streaming" }));
+    await h.tick();
+    const runId = h.forTask(task)[0]!.runId!;
+    h.tasks.delete(task.id);
+    h.advance(SCHEDULED_TASK_RUN_DEADLINE_MS);
+    await h.tick();
+    expect(h.stops).toEqual([{ code: "run_deadline", runId, userId: "owner-1" }]);
+    expect(h.runs.get(runId)!.status).toBe("cancelled");
+  });
+});
+
+describe("scheduled run source health", () => {
+  const mail = { name: "Mail", reason: "mcp_reauthorization_required", relied: true, serverId: "server-mail" } as const;
+
+  it("completes a run that missed a relevant source as incomplete, alerts once per streak and pauses at the third", async () => {
+    const lines: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((line) => { lines.push(String(line)); return true; });
+    const h = harness();
+    const task = h.addTask({ emailNotify: true, toolsEnabled: true });
+    h.setReply(() => ({ runStatus: "complete", unavailableSources: [mail] }));
+    await h.tick();
+    const [first] = h.forTask(task);
+    // The result completed; its health is incomplete and the owner hears which source needs sign-in.
+    expect(first).toMatchObject({ reasonCode: null, state: "COMPLETED" });
+    expect(task).toMatchObject({ consecutiveFailures: 0, consecutiveIncompleteRuns: 1, status: "ACTIVE" });
+    expect(h.emails.at(-1)).toMatchObject({ subject: "Scheduled task finished", text: expect.stringContaining("Mail needs sign-in.") });
+    for (let day = 0; day < 2; day += 1) {
+      h.advance(24 * HOUR);
+      await h.tick();
+    }
+    expect(h.forTask(task).map((row) => row.state)).toEqual(["COMPLETED", "COMPLETED", "COMPLETED"]);
+    expect(h.settled.map((settlement) => settlement.sourceAlert)).toEqual([true, false, false]);
+    expect(task).toMatchObject({ consecutiveIncompleteRuns: 3, nextRunAt: null, pauseReason: "source_unavailable", status: "PAUSED" });
+    expect(h.emails.at(-1)).toMatchObject({ subject: "Scheduled task paused", text: expect.stringContaining("Mail needs sign-in.") });
+    // The health is logged by its registered code, never by source name.
+    expect(lines.join("")).not.toContain("Mail");
+    expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>))
+      .toContainEqual(expect.objectContaining({ code: "source_unavailable", outcome: "completed", stage: "settle" }));
+    vi.restoreAllMocks();
+  });
+
+  it("ends the streak with a complete run and never pauses for manual runs", async () => {
+    const h = harness();
+    const task = h.addTask({ toolsEnabled: true });
+    h.setReply(() => ({ runStatus: "complete", unavailableSources: [mail] }));
+    await h.tick();
+    h.advance(24 * HOUR);
+    await h.tick();
+    expect(task.consecutiveIncompleteRuns).toBe(2);
+    // A manual incomplete run neither extends the streak nor alerts.
+    h.addOccurrence(task);
+    await h.tick();
+    expect(task).toMatchObject({ consecutiveIncompleteRuns: 2, status: "ACTIVE" });
+    h.setReply(() => ({ runStatus: "complete" }));
+    h.advance(24 * HOUR);
+    await h.tick();
+    expect(task).toMatchObject({ consecutiveIncompleteRuns: 0, status: "ACTIVE" });
+    expect(h.settled.map((settlement) => settlement.sourceAlert)).toEqual([true, false, false, false]);
   });
 });

@@ -13,10 +13,12 @@ import {
   SCHEDULED_TASK_LATENESS_MS,
   SCHEDULED_TASK_MAX_EXECUTING,
   SCHEDULED_TASK_MAX_EXECUTING_PER_USER,
+  SCHEDULED_TASK_RUN_DEADLINE_CODE,
   classifySendRefusal,
   pausingOutcome,
   settlementNotifiesOwner,
-  type ScheduledTaskOutcome
+  type ScheduledTaskOutcome,
+  type ScheduledTaskPauseReason
 } from "./runnerPolicy";
 import type { ScheduledTaskExecution, ScheduledTaskRunnerStore, ScheduledTaskSettlement } from "./runnerStore";
 
@@ -35,10 +37,28 @@ export type ScheduledTaskRunnerDeps = Readonly<{
   sendEmail?: (message: SmtpProductMessage) => Promise<unknown>;
   /** Queues the occurrence's browser push; the sender claims it at most once and never blocks the tick. */
   sendPush?: (occurrenceId: string) => void;
+  /**
+   * Stops an active run through the ordinary Stop path, keeping the given
+   * terminal cause; the run deadline uses it.
+   */
+  stopRun: (input: Readonly<{ code: string; message: string; runId: string; userId: string }>) =>
+    Promise<"stopped" | "not_cancelable" | "not_found">;
   store: ScheduledTaskRunnerStore;
 }>;
 
 const BATCH = 50;
+const RUN_DEADLINE_MESSAGE = "Scheduled run stopped at its time limit";
+/** The pause a failed save-time admission maps to when the same check fails before a run. */
+const RESOLUTION_PAUSES: Readonly<Record<
+  "scheduled_task_model_unavailable" | "scheduled_task_search_unavailable" | "scheduled_task_tools_unavailable" |
+  "scheduled_task_workspace_unavailable",
+  ScheduledTaskPauseReason
+>> = {
+  scheduled_task_model_unavailable: "model_unavailable",
+  scheduled_task_search_unavailable: "search_unavailable",
+  scheduled_task_tools_unavailable: "tools_unavailable",
+  scheduled_task_workspace_unavailable: "workspace_unavailable"
+};
 /**
  * Result emails waiting for the one sending slot. Beyond this a burst drops
  * its emails (they are best effort) instead of growing without bound.
@@ -49,7 +69,7 @@ const EMAIL_QUEUE_LIMIT = 200;
 function log(fields: Readonly<{
   action?: "fail" | "retry" | "skip";
   code?: string; count?: number; job_id?: string; outcome: "started" | "completed" | "failed" | "skipped" | "waiting";
-  prisma_code?: string; run_id?: string; stage: "claim" | "dispatch" | "settle" | "retry" | "release";
+  prisma_code?: string; run_id?: string; stage: "claim" | "dispatch" | "fail" | "settle" | "retry" | "release";
 }>): void {
   logEvent("job_attempt", { subsystem: "scheduled_tasks", ...fields });
 }
@@ -120,6 +140,8 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
   const newId = deps.newId ?? randomUUID;
   const background = deps.background ?? ((work) => work());
   const inFlight = new Map<string, Promise<void>>();
+  /** Deadline stops in progress, by run, so a later tick does not stop a run twice. */
+  const stopping = new Map<string, Promise<void>>();
   const emailQueue: string[] = [];
   let emailing: Promise<void> | null = null;
 
@@ -151,8 +173,10 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
 
   async function notify(settlements: readonly ScheduledTaskSettlement[]): Promise<void> {
     for (const settlement of settlements) {
+      // An incomplete completed run logs its source health as its code.
+      const code = settlement.reasonCode ?? (settlement.sourcesIncomplete ? "source_unavailable" : null);
       log({
-        ...(settlement.reasonCode ? { code: settlement.reasonCode } : {}), job_id: settlement.occurrenceId,
+        ...(code ? { code } : {}), job_id: settlement.occurrenceId,
         ...(settlement.runId ? { run_id: settlement.runId } : {}), stage: "settle",
         ...(settlement.state === "COMPLETED" ? { outcome: "completed" as const }
           : settlement.state === "SKIPPED" ? { outcome: "skipped" as const } : { action: "fail" as const, outcome: "failed" as const })
@@ -190,13 +214,13 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       return settlePending(execution, { reasonCode: "paused", state: "SKIPPED" });
     }
     if (!execution.ownerActive) return settlePending(execution, pausingOutcome("account_inactive"));
-    // Current catalog and entitlement, the exact saved model and no substitute.
+    // Current catalog and entitlement, the exact saved model and no substitute;
+    // tools and Workspace still need its tool calling.
     const catalog = await deps.loadCatalog(occurrence.userId);
     const resolution = resolveScheduledTaskModel(catalog, task);
     const model = catalog?.models.find((entry) => entry.modelId === task.modelId && entry.provider === task.provider);
     if (!resolution.ok || !catalog || !model) {
-      return settlePending(execution, pausingOutcome(
-        !resolution.ok && resolution.code === "scheduled_task_search_unavailable" ? "search_unavailable" : "model_unavailable"));
+      return settlePending(execution, pausingOutcome(resolution.ok ? "model_unavailable" : RESOLUTION_PAUSES[resolution.code]));
     }
     const searchPlan = scheduledTaskSearchPlan({ catalog, model, searchEnabled: task.searchEnabled });
     if (!searchPlan) return settlePending(execution, pausingOutcome("search_unavailable"));
@@ -204,13 +228,14 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     const response = await deps.send({
       body: scheduledTaskSendBody({
         admissionId: newId(), modelId: task.modelId, prompt: task.prompt, provider: task.provider, searchPlan, target,
-        timeZone: task.timeZone, toolCalling: model.capabilities.toolCalling
+        timeZone: task.timeZone, toolCalling: model.capabilities.toolCalling, toolsEnabled: task.toolsEnabled,
+        workspaceEnabled: task.workspaceEnabled
       }),
       chatId: target.chatId,
       // The revision read above fences preparation against a pause or edit made meanwhile.
       occurrence: {
-        occurrenceId: occurrence.id, previousResult, taskGeneration: task.generation, taskId: occurrence.taskId,
-        taskRevision: task.revision
+        occurrenceId: occurrence.id, previousResult, relevantMcpServerIds: execution.relevantMcpServerIds,
+        taskGeneration: task.generation, taskId: occurrence.taskId, taskRevision: task.revision
       },
       userId: occurrence.userId
     });
@@ -267,6 +292,27 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     if (outcome === "done") deps.kick?.();
   }
 
+  /**
+   * Stops every scheduled run past its deadline through the Stop path, in
+   * the background: its executor ends the run and its occurrence settles as
+   * failed `run_deadline`, by the run's own origin even when the task is gone.
+   */
+  async function stopOverdueRuns(now: Date): Promise<void> {
+    for (const overdue of await deps.store.overdueRuns(now, BATCH)) {
+      if (stopping.has(overdue.runId)) continue;
+      log({ action: "fail", code: SCHEDULED_TASK_RUN_DEADLINE_CODE, outcome: "started", run_id: overdue.runId, stage: "fail" });
+      const stop = background(async () => {
+        try {
+          await deps.stopRun({ code: SCHEDULED_TASK_RUN_DEADLINE_CODE, message: RUN_DEADLINE_MESSAGE, ...overdue });
+        } catch (error) {
+          log({ action: "retry", code: observedFailureCode(error), outcome: "failed", prisma_code: databaseFailureCode(error),
+            run_id: overdue.runId, stage: "fail" });
+        }
+      }).catch(() => undefined).finally(() => stopping.delete(overdue.runId));
+      stopping.set(overdue.runId, stop);
+    }
+  }
+
   async function dispatch(now: Date): Promise<void> {
     const { executing, pending } = await deps.store.loadDispatch(now, BATCH * 2);
     const perUser = new Map(executing);
@@ -286,6 +332,8 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
   return {
     async tick(): Promise<void> {
       const now = clock();
+      // No unattended run outlives its deadline, whatever else this tick does.
+      await stopOverdueRuns(now);
       // Settle first so finished runs free their slots before this tick dispatches.
       await notify(await deps.store.settleFinishedRuns(now, BATCH));
       await notify(await deps.store.expirePending(now, BATCH));
@@ -294,9 +342,11 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       await notify(claim.settlements);
       await dispatch(now);
     },
-    /** Resolves when the executions started so far and the queued emails have settled (tests and shutdown). */
+    /** Resolves when the executions and deadline stops started so far and the queued emails have settled (tests and shutdown). */
     async idle(): Promise<void> {
-      while (inFlight.size > 0 || emailing) await Promise.allSettled([...inFlight.values(), ...(emailing ? [emailing] : [])]);
+      while (inFlight.size > 0 || stopping.size > 0 || emailing) {
+        await Promise.allSettled([...inFlight.values(), ...stopping.values(), ...(emailing ? [emailing] : [])]);
+      }
     }
   };
 }

@@ -42,9 +42,12 @@ export function scheduledTaskSearchPlan(input: Readonly<{
 /**
  * The composer's personal send for the task prompt: one text block, the task's
  * model with its catalog control defaults (no saved controls or params), its
- * Search plan, MCP, Skills, Knowledge, Workspace and Agent off, and the task's
- * time zone for the date and time baseline. A new chat is a personal first
- * send with Memory excluded, so daily prompts never feed Memory learning.
+ * Search plan, the task's time zone for the date and time baseline, and with
+ * tools on the owner's MCP and Skills in Auto (never Load all, which fails a
+ * whole unattended run when one server is not ready) and with Workspace on
+ * the chat's Workspace. Knowledge and Agent stay off. A new chat is a
+ * personal first send with Memory excluded, so daily prompts never feed
+ * Memory learning.
  */
 export function scheduledTaskSendBody(input: Readonly<{
   admissionId: string;
@@ -55,22 +58,25 @@ export function scheduledTaskSendBody(input: Readonly<{
   target: ScheduledTaskSendTarget;
   timeZone: string;
   toolCalling: boolean;
+  toolsEnabled: boolean;
+  workspaceEnabled: boolean;
 }>): Record<string, unknown> {
+  const tools = input.toolsEnabled ? "auto" : "off";
   return {
     admissionId: input.admissionId,
     content: { blocks: [{ text: input.prompt.trim(), type: "text" }] },
     expectedActiveLeafId: input.target.kind === "existing" ? input.target.activeLeafMessageId : null,
     knowledgePlan: EMPTY_KNOWLEDGE_SELECTION,
-    mcp: { mode: "off" },
+    mcp: { mode: tools },
     modelId: input.modelId,
     ...(input.target.kind === "new" ? { personalDraft: { folderId: null, memoryMode: "EXCLUDED" } } : {}),
     provider: input.provider,
     searchPlan: { mode: input.searchPlan.mode, optionIds: [...input.searchPlan.optionIds] },
-    skills: { mode: "off" },
+    skills: { mode: tools },
     timeZone: input.timeZone,
     // Like the composer, a model without tool calling asks for no tools at all.
     ...(input.toolCalling ? {} : { tools: "none" }),
-    workspace: { enabled: false }
+    workspace: { enabled: input.workspaceEnabled }
   };
 }
 

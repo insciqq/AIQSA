@@ -5,6 +5,7 @@ import type { ScheduledTaskNotification } from "./notifications";
 import {
   SCHEDULED_TASK_LATENESS_MS,
   SCHEDULED_TASK_RETRY_WINDOW_MS,
+  SCHEDULED_TASK_RUN_DEADLINE_MS,
   expiredPendingOutcome,
   linkedRunOutcome,
   planClaimOverlap,
@@ -18,6 +19,7 @@ import {
   type ScheduledTaskSettledState,
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
+import { occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
 import {
   pruneScheduledTaskOccurrences,
   scheduledTaskChatModeFromColumn,
@@ -29,6 +31,14 @@ export type ScheduledTaskSettlement = Readonly<{
   occurrenceId: string;
   reasonCode: string | null;
   runId: string | null;
+  /** This settlement starts a streak of incomplete runs: the streak's one health alert. */
+  sourceAlert: boolean;
+  /**
+   * Source health of the settled run: it completed without a relevant source
+   * its admission recorded as missing. Monitoring treats such a result as
+   * "could not check" (see `occurrenceSourcesIncomplete`).
+   */
+  sourcesIncomplete: boolean;
   state: ScheduledTaskSettledState;
   /** This settlement paused its task. */
   taskPaused: boolean;
@@ -39,15 +49,25 @@ export type ScheduledTaskExecution = Readonly<{
   chat: Readonly<{ activeLeafMessageId: string | null; id: string }> | null;
   occurrence: Readonly<{ id: string; scheduledFor: Date; taskId: string; trigger: ScheduledTaskRunTrigger; userId: string }>;
   ownerActive: boolean;
+  /**
+   * The personal MCP servers the previous shown result of the current
+   * generation called, or relied on but already missed; null when there is no
+   * such result to judge by (a first run, or its run is gone), so every
+   * server counts. Read only while the task has tools on.
+   */
+  relevantMcpServerIds: readonly string[] | null;
   task: Readonly<{
     /** The newest shown completed result, as stored; admission checks it against the chat path. */
     baseline: ScheduledTaskBaseline | null;
     chatMode: ScheduledTaskChatMode;
     generation: number;
     modelId: string; prompt: string; provider: string; revision: number; searchEnabled: boolean;
-    status: ScheduledTaskStatusColumn; timeZone: string; title: string;
+    status: ScheduledTaskStatusColumn; timeZone: string; title: string; toolsEnabled: boolean; workspaceEnabled: boolean;
   }>;
 }>;
+
+/** An admitted scheduled run past its deadline, by the origin the run carries. */
+export type ScheduledTaskOverdueRun = Readonly<{ runId: string; userId: string }>;
 
 export type ScheduledTaskDispatch = Readonly<{
   /** Scheduled runs not yet terminal and admissions in flight, per owner, installation-wide. */
@@ -83,13 +103,22 @@ export interface ScheduledTaskRunnerStore {
   settleLinked(occurrenceId: string, now: Date): Promise<ScheduledTaskSettlement | null>;
   /** Claims the single result email of a settled occurrence when the owner can receive it. */
   claimNotification(occurrenceId: string, now: Date): Promise<ScheduledTaskNotification | null>;
+  /**
+   * Active scheduled runs admitted before `now` minus the run deadline, oldest
+   * first, found by the scheduled origin on the run itself, so a run outlives
+   * its task's deletion here too.
+   */
+  overdueRuns(now: Date, limit: number): Promise<readonly ScheduledTaskOverdueRun[]>;
 }
 
-type LockedTask = { consecutiveFailures: number; generation: number; revision: number; status: ScheduledTaskStatusColumn };
+type LockedTask = {
+  consecutiveFailures: number; consecutiveIncompleteRuns: number; generation: number; revision: number;
+  status: ScheduledTaskStatusColumn;
+};
 type LockedOccurrence = {
   id: string; leaseExpiresAt: Date | null; reasonCode: string | null; runId: string | null; scheduledFor: Date;
-  startedAt: Date | null; state: string; taskGeneration: number | null; taskId: string; trigger: string; userId: string;
-  userMessageId: string | null;
+  startedAt: Date | null; state: string; taskGeneration: number | null; taskId: string; trigger: string;
+  unavailableSources: Prisma.JsonValue | null; userId: string; userMessageId: string | null;
 };
 type Locked = Readonly<{ occurrence: LockedOccurrence; task: LockedTask }>;
 type ClaimRow = ScheduledTaskScheduleColumns & { id: string; nextRunAt: Date; timeZone: string; userId: string };
@@ -105,14 +134,14 @@ async function lockForSettlement(tx: Prisma.TransactionClient, occurrenceId: str
   `);
   if (!reference) return null;
   const [task] = await tx.$queryRaw<LockedTask[]>(Prisma.sql`
-    SELECT "status"::text AS "status", "consecutiveFailures", "revision", "generation"
+    SELECT "status"::text AS "status", "consecutiveFailures", "consecutiveIncompleteRuns", "revision", "generation"
     FROM "ScheduledTask" WHERE "id" = ${reference.taskId}
     FOR NO KEY UPDATE
   `);
   if (!task) return null;
   const [occurrence] = await tx.$queryRaw<LockedOccurrence[]>(Prisma.sql`
     SELECT "id", "taskId", "userId", "trigger", "state"::text AS "state", "runId", "scheduledFor", "startedAt",
-      "reasonCode", "leaseExpiresAt", "userMessageId", "taskGeneration"
+      "reasonCode", "leaseExpiresAt", "userMessageId", "taskGeneration", "unavailableSources"
     FROM "ScheduledTaskOccurrence" WHERE "id" = ${occurrenceId} AND "taskId" = ${reference.taskId}
     FOR UPDATE
   `);
@@ -121,9 +150,9 @@ async function lockForSettlement(tx: Prisma.TransactionClient, occurrenceId: str
 
 /**
  * Settles one locked occurrence and writes its task's bookkeeping: the failure
- * count, an automatic pause, the unread result (only news per the
- * notification matrix) and, for a shown result of the current generation, the
- * baseline the next same-chat run sees.
+ * count, the incomplete-run streak, an automatic pause, the unread result
+ * (only news per the notification matrix) and, for a shown result of the
+ * current generation, the baseline the next same-chat run sees.
  */
 async function applySettlement(
   tx: Prisma.TransactionClient,
@@ -132,12 +161,15 @@ async function applySettlement(
   now: Date,
   options: Readonly<{ assistantMessageId?: string | null; observedRevision?: number }> = {}
 ): Promise<ScheduledTaskSettlement> {
-  const plan = planTaskSettlement({ observedRevision: options.observedRevision, outcome, task, trigger: trigger(occurrence.trigger) });
+  const sourcesIncomplete = outcome.state === "COMPLETED" && occurrenceSourcesIncomplete(occurrence.unavailableSources);
+  const plan = planTaskSettlement({
+    observedRevision: options.observedRevision, outcome, sourcesIncomplete, task, trigger: trigger(occurrence.trigger)
+  });
   const taskPaused = plan.pauseReason !== null;
   await tx.scheduledTaskOccurrence.update({
     data: {
       finishedAt: now, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state,
-      unseenAt: settlementNotifiesOwner({ state: outcome.state, taskPaused }) ? now : null
+      unseenAt: settlementNotifiesOwner({ sourceAlert: plan.sourceAlert, state: outcome.state, taskPaused }) ? now : null
     },
     where: { id: occurrence.id }
   });
@@ -147,6 +179,7 @@ async function applySettlement(
   await tx.scheduledTask.update({
     data: {
       consecutiveFailures: plan.consecutiveFailures,
+      consecutiveIncompleteRuns: plan.consecutiveIncompleteRuns,
       ...(baseline ? {
         baselineAssistantMessageId: baseline.assistantMessageId, baselineGeneration: baseline.generation,
         baselineRunId: baseline.runId, baselineUserMessageId: baseline.userMessageId
@@ -158,7 +191,10 @@ async function applySettlement(
     },
     where: { id: occurrence.taskId }
   });
-  return { occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, state: outcome.state, taskPaused };
+  return {
+    occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, sourceAlert: plan.sourceAlert,
+    sourcesIncomplete, state: outcome.state, taskPaused
+  };
 }
 
 async function settleEach(
@@ -185,7 +221,10 @@ async function skipQuietly(
     WHERE "id" = ${input.id} AND "state" = 'PENDING'::"ScheduledTaskOccurrenceState" AND "runId" IS NULL
     RETURNING "id"
   `);
-  return skipped ? { occurrenceId: skipped.id, reasonCode: input.reasonCode, runId: null, state: "SKIPPED", taskPaused: false } : null;
+  return skipped ? {
+    occurrenceId: skipped.id, reasonCode: input.reasonCode, runId: null, sourceAlert: false, sourcesIncomplete: false,
+    state: "SKIPPED", taskPaused: false
+  } : null;
 }
 
 export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): ScheduledTaskRunnerStore {
@@ -255,8 +294,8 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
           });
           await pruneScheduledTaskOccurrences(tx, row.id);
           settlements.push(...inserted.filter((occurrence) => occurrence.state === "SKIPPED").map((occurrence) => ({
-            occurrenceId: occurrence.id, reasonCode: occurrence.reasonCode, runId: null, state: "SKIPPED" as const,
-            taskPaused: false
+            occurrenceId: occurrence.id, reasonCode: occurrence.reasonCode, runId: null, sourceAlert: false,
+            sourcesIncomplete: false, state: "SKIPPED" as const, taskPaused: false
           })));
         }
         return { claimed: rows.length, settlements };
@@ -340,7 +379,8 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
             select: {
               baselineAssistantMessageId: true, baselineGeneration: true, baselineRunId: true, baselineUserMessageId: true,
               chatMode: true, generation: true, modelId: true, prompt: true, provider: true, revision: true,
-              searchEnabled: true, status: true, timeZone: true, title: true, user: { select: { status: true } },
+              searchEnabled: true, status: true, timeZone: true, title: true, toolsEnabled: true, workspaceEnabled: true,
+              user: { select: { status: true } },
               chat: {
                 select: {
                   activeLeafMessageId: true, archived: true, assistantId: true, id: true, permanentDeletionAt: true, projectId: true
@@ -357,20 +397,20 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
       } = row.task;
       const usable = chat && !chat.archived && chat.permanentDeletionAt === null && chat.projectId === null &&
         chat.assistantId === null;
+      const baseline = baselineRunId && baselineUserMessageId && baselineAssistantMessageId && baselineGeneration
+        ? { assistantMessageId: baselineAssistantMessageId, generation: baselineGeneration, runId: baselineRunId,
+          userMessageId: baselineUserMessageId }
+        : null;
       return {
         chat: usable ? { activeLeafMessageId: chat.activeLeafMessageId, id: chat.id } : null,
         occurrence: {
           id: row.id, scheduledFor: row.scheduledFor, taskId: row.taskId, trigger: trigger(row.trigger), userId: row.userId
         },
         ownerActive: user.status === "active",
-        task: {
-          ...task,
-          baseline: baselineRunId && baselineUserMessageId && baselineAssistantMessageId && baselineGeneration
-            ? { assistantMessageId: baselineAssistantMessageId, generation: baselineGeneration, runId: baselineRunId,
-              userMessageId: baselineUserMessageId }
-            : null,
-          chatMode: scheduledTaskChatModeFromColumn(chatMode)
-        }
+        relevantMcpServerIds: task.toolsEnabled && baseline?.generation === task.generation
+          ? await previousResultMcpServerIds(prisma, { runId: baseline.runId, userId: row.userId })
+          : null,
+        task: { ...task, baseline, chatMode: scheduledTaskChatModeFromColumn(chatMode) }
       };
     },
 
@@ -398,7 +438,7 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
     async claimNotification(occurrenceId, now) {
       const [row] = await prisma.$queryRaw<Array<{
         chatId: string | null; email: string; reasonCode: string | null; state: ScheduledTaskSettledState;
-        taskPauseReason: string | null; title: string; trigger: string;
+        taskPauseReason: string | null; title: string; trigger: string; unavailableSources: Prisma.JsonValue | null;
       }>>(Prisma.sql`
         UPDATE "ScheduledTaskOccurrence" AS occurrence SET "notifiedAt" = ${now}
         FROM "ScheduledTask" AS task, "User" AS account
@@ -416,9 +456,57 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
             WHERE smtp."id" = ${SMTP_CONTROL_ID} AND smtp."enabled" AND smtp."activeConfig" IS NOT NULL)
         RETURNING occurrence."state"::text AS "state", occurrence."reasonCode", occurrence."trigger",
           COALESCE(occurrence."chatId", task."chatId") AS "chatId", task."title", task."pauseReason" AS "taskPauseReason",
-          account."email"
+          account."email", occurrence."unavailableSources"
       `);
-      return row ? { ...row, trigger: trigger(row.trigger) } : null;
+      if (!row) return null;
+      const { unavailableSources, ...notification } = row;
+      return { ...notification, trigger: trigger(row.trigger), unavailableSources: unavailableSourcesWire(unavailableSources) };
+    },
+
+    async overdueRuns(now, limit) {
+      return prisma.$queryRaw<ScheduledTaskOverdueRun[]>(Prisma.sql`
+        SELECT "id" AS "runId", "userId" FROM "ModelRun"
+        WHERE "scheduledTaskId" IS NOT NULL
+          AND "status" IN ('preparing'::"ModelRunStatus", 'queued'::"ModelRunStatus", 'streaming'::"ModelRunStatus",
+            'in_progress'::"ModelRunStatus")
+          AND "createdAt" <= ${new Date(now.getTime() - SCHEDULED_TASK_RUN_DEADLINE_MS)}
+        ORDER BY "createdAt" ASC, "id" ASC
+        LIMIT ${limit}
+      `);
     }
   };
+}
+
+/**
+ * The personal MCP servers the task relies on, judged by its previous shown
+ * result: those whose tools that run called (its accepted plan names each
+ * loaded tool's server) and those it relied on but already missed, so a
+ * server stays relevant while it keeps the task's results incomplete. Null
+ * when that run is gone (its chat was deleted): nothing to judge by.
+ */
+async function previousResultMcpServerIds(
+  prisma: PrismaClient,
+  input: Readonly<{ runId: string; userId: string }>
+): Promise<readonly string[] | null> {
+  const [row] = await prisma.$queryRaw<Array<{ found: boolean; serverIds: string[] }>>(Prisma.sql`
+    SELECT EXISTS (SELECT 1 FROM "ModelRun" WHERE "id" = ${input.runId} AND "userId" = ${input.userId}) AS "found",
+      ARRAY(
+        SELECT DISTINCT tool ->> 'serverId'
+        FROM "ModelRun" AS run
+        CROSS JOIN LATERAL jsonb_array_elements(CASE
+          WHEN jsonb_typeof(run."normalizedRequest" -> 'mcp' -> 'tools') = 'array' THEN run."normalizedRequest" -> 'mcp' -> 'tools'
+          ELSE '[]'::jsonb END) AS tool
+        WHERE run."id" = ${input.runId} AND run."userId" = ${input.userId} AND tool ->> 'serverId' IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM "ModelRunToolCall" AS call
+            WHERE call."modelRunId" = run."id" AND call."toolName" = tool ->> 'namespacedName')
+        UNION
+        SELECT source ->> 'serverId'
+        FROM "ScheduledTaskOccurrence" AS occurrence
+        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(occurrence."unavailableSources", '[]'::jsonb)) AS source
+        WHERE occurrence."runId" = ${input.runId} AND occurrence."userId" = ${input.userId}
+          AND source ->> 'serverId' IS NOT NULL AND source -> 'relied' = 'true'::jsonb
+      ) AS "serverIds"
+  `);
+  return row?.found ? row.serverIds : null;
 }

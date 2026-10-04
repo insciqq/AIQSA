@@ -26,6 +26,37 @@ type SessionCandidate = Readonly<{
   sandboxName: string;
 }>;
 
+/**
+ * The newest run admitted into the session is a scheduled task's run that
+ * has ended. Nobody waits on such a VM: it stops right away, keeping its
+ * disk, so idle VMs of unattended runs never accumulate. A later interactive
+ * run admitted into the same session makes its own run the newest.
+ */
+function newestRunIsSettledScheduledSql(sessionColumn: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`EXISTS (
+    SELECT 1 FROM (
+      SELECT run."scheduledTaskId", run."status"
+      FROM "WorkspaceRunBinding" binding
+      INNER JOIN "ModelRun" run ON run."id" = binding."modelRunId"
+      WHERE binding."workspaceSessionId" = ${sessionColumn}
+      ORDER BY binding."createdAt" DESC, binding."modelRunId" DESC
+      LIMIT 1
+    ) newest
+    WHERE newest."scheduledTaskId" IS NOT NULL
+      AND newest."status" IN ('complete'::"ModelRunStatus", 'cancelled'::"ModelRunStatus", 'error'::"ModelRunStatus")
+  )`;
+}
+
+type IdleCandidate = Readonly<{
+  chat: Readonly<{ archived: boolean }>;
+  chatId: string;
+  id: string;
+  runtimeSandboxId: string | null;
+  sandboxName: string;
+  /** Selected because its newest run was a settled scheduled run, not by idle time or archival. */
+  scheduled?: true;
+}>;
+
 type CleanupClaim = Readonly<{
   claimToken: string;
   id: string;
@@ -286,6 +317,12 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
     });
   }
 
+  // Disk-retention pin: while an active task that continues in this chat has
+  // Workspace on, the disk outlives its normal expiry until the task's next
+  // run plus the normal retention, so files reach the next run even of a
+  // weekly task. Pausing, deleting or switching the task off lifts the pin.
+  // The pin never keeps a VM running; idle stops below are separate.
+  const pinnedAfter = new Date(now.getTime() - input.config.retentionSeconds * 1_000);
   const expired = await input.prisma.$transaction(async (tx) => {
     const candidates = await tx.$queryRaw<SessionCandidate[]>(Prisma.sql`
       SELECT ws."id", ws."chatId", ws."sandboxName", ws."runtimeSandboxId"
@@ -303,6 +340,15 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
               'in_progress'::"ModelRunStatus",
               'streaming'::"ModelRunStatus"
             )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM "ScheduledTask" task
+          WHERE task."chatId" = ws."chatId"
+            AND task."status" = 'ACTIVE'::"ScheduledTaskStatus"
+            AND task."chatMode" = 'SAME'::"ScheduledTaskChatMode"
+            AND task."workspaceEnabled"
+            AND task."nextRunAt" > ${pinnedAfter}
         )
       ORDER BY ws."expiresAt" ASC, ws."id" ASC
       FOR UPDATE OF ws SKIP LOCKED
@@ -338,7 +384,7 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
   if (expired > 0) logEvent("job_persistence", { subsystem: "workspace", stage: "prepare", work_stage: "cleanup", outcome: "confirmed", count: expired });
 
   const idleBefore = new Date(now.getTime() - input.config.idleTtlSeconds * 1_000);
-  const idleCandidates = await input.prisma.workspaceSession.findMany({
+  const idleCandidates: IdleCandidate[] = await input.prisma.workspaceSession.findMany({
     orderBy: [{ lastActiveAt: "asc" }, { id: "asc" }],
     select: {
       chat: { select: { archived: true } },
@@ -359,6 +405,23 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
       state: { in: ["READY", "RUNNING"] }
     }
   }).catch(retainDatabaseFailure);
+  // VM residency: a VM whose newest run was a settled unattended one stops
+  // without waiting for the idle time, also past its own expiry while a
+  // retention pin keeps its disk.
+  const scheduledIdle = await input.prisma.$queryRaw<Array<Omit<IdleCandidate, "chat" | "scheduled">>>(Prisma.sql`
+    SELECT ws."id", ws."chatId", ws."sandboxName", ws."runtimeSandboxId"
+    FROM "WorkspaceSession" ws
+    WHERE ws."runtimeSandboxId" IS NOT NULL
+      AND ws."operationOwner" IS NULL
+      AND ws."state" IN ('READY'::"WorkspaceSessionState", 'RUNNING'::"WorkspaceSessionState")
+      AND ${newestRunIsSettledScheduledSql(Prisma.sql`ws."id"`)}
+    ORDER BY ws."lastActiveAt" ASC, ws."id" ASC
+    LIMIT ${limit}
+  `).catch(retainDatabaseFailure);
+  const listed = new Set(idleCandidates.map(({ id }) => id));
+  for (const candidate of scheduledIdle) {
+    if (!listed.has(candidate.id)) idleCandidates.push({ ...candidate, chat: { archived: false }, scheduled: true });
+  }
   let idleStopped = 0;
   let idleFailed = 0;
   for (const candidate of idleCandidates) {
@@ -372,6 +435,13 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
         }
       });
       if (activeRuns > 0) return null;
+      // Under the session lock: no interactive run has become the newest since selection.
+      if (candidate.scheduled) {
+        const [settled] = await tx.$queryRaw<Array<{ settled: boolean }>>(Prisma.sql`
+          SELECT ${newestRunIsSettledScheduledSql(Prisma.sql`${candidate.id}`)} AS "settled"
+        `);
+        if (!settled?.settled) return null;
+      }
       const operation = { generation: session.version + 1, owner: `idle:${randomUUID()}` };
       const updated = await tx.workspaceSession.updateMany({
         data: {
@@ -384,10 +454,12 @@ async function runWorkspaceMaintenanceOnce(input: Readonly<{
         where: {
           id: candidate.id,
           operationOwner: null,
-          expiresAt: { gt: now },
-          ...(candidate.chat.archived
-            ? { chat: { archived: true } }
-            : { lastActiveAt: { lte: idleBefore } }),
+          ...(candidate.scheduled
+            ? {}
+            : {
+              expiresAt: { gt: now },
+              ...(candidate.chat.archived ? { chat: { archived: true } } : { lastActiveAt: { lte: idleBefore } })
+            }),
           runtimeSandboxId: candidate.runtimeSandboxId,
           state: { in: ["READY", "RUNNING"] }
         }

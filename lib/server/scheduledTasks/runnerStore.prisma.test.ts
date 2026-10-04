@@ -45,12 +45,13 @@ async function personalChat(userId: string, memoryMode: "EXCLUDED" | "NORMAL" = 
 /** The scheduled origin the runner passes for an occurrence of `created`, as read before preparation. */
 function origin(occurrenceId: string, created: Readonly<{ generation: number; id: string; revision: number }>,
   overrides: Partial<ScheduledOccurrenceAdmission> = {}): ScheduledOccurrenceAdmission {
-  return { occurrenceId, previousResult: null, taskGeneration: created.generation, taskId: created.id, taskRevision: created.revision,
-    ...overrides };
+  return { occurrenceId, previousResult: null, relevantMcpServerIds: null, taskGeneration: created.generation, taskId: created.id,
+    taskRevision: created.revision, ...overrides };
 }
 
 /** A send into an existing chat, as the send handler hands it to run creation. */
-async function runInput(userId: string, chatId: string, scheduledOccurrence?: ScheduledOccurrenceAdmission): Promise<CreateRunInput> {
+async function runInput(userId: string, chatId: string, scheduledOccurrence?: ScheduledOccurrenceAdmission,
+  extra: Partial<CreateRunInput> = {}): Promise<CreateRunInput> {
   const content = textMessageContent("Synthetic scheduled prompt");
   const leaf = await prisma.chat.findUniqueOrThrow({ select: { activeLeafMessageId: true }, where: { id: chatId } });
   return {
@@ -64,7 +65,8 @@ async function runInput(userId: string, chatId: string, scheduledOccurrence?: Sc
       modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake",
       searchPlan: { mode: "all_selected", options: [] }, toolMode: "none" },
     ...(scheduledOccurrence ? { scheduledOccurrence } : {}),
-    userId
+    userId,
+    ...extra
   };
 }
 
@@ -193,7 +195,7 @@ describe("persisted scheduled task runner", () => {
     expect(await runner.settleFinishedRuns(now, 10)).toEqual([]);
     await prisma.modelRun.update({ data: { errorPayload: { code: "run_orphaned", message: "x" }, status: "error" }, where: { id: run.runId } });
     expect(await runner.settleFinishedRuns(now, 10)).toEqual([{ occurrenceId: occurrence.id, reasonCode: "run_orphaned",
-      runId: run.runId, state: "FAILED", taskPaused: true }]);
+      runId: run.runId, sourceAlert: false, sourcesIncomplete: false, state: "FAILED", taskPaused: true }]);
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
       baselineRunId: null, consecutiveFailures: 3, nextRunAt: null, pauseReason: "repeated_failures", revision: 2, status: "PAUSED"
     });
@@ -277,6 +279,112 @@ describe("persisted scheduled task runner", () => {
     await expect(owners.requestRun(await owner(), created.id, now)).rejects.toEqual(new ScheduledTaskError("scheduled_task_not_found"));
   });
 
+  it("freezes a run's missing sources on its occurrence and pauses after three incomplete results", async () => {
+    const userId = await owner();
+    const created = await task(userId, new Date(Date.now() + 3_600_000), { toolsEnabled: true });
+    const chat = await personalChat(userId);
+    const missing = [{ name: "Synthetic Mail", reason: "mcp_reauthorization_required" as const, relied: true, serverId: "server-mail" }];
+    const now = new Date();
+    const settlements = [];
+    for (let index = 0; index < 3; index += 1) {
+      const current = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } });
+      const occurrence = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(Date.now() + index),
+        startedAt: new Date(), taskId: created.id, trigger: "schedule", userId } });
+      const run = await runs.createRun(await runInput(userId, chat.id, origin(occurrence.id, current),
+        { scheduledUnavailableSources: missing }));
+      expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: occurrence.id } }))
+        .toMatchObject({ state: "RUNNING", unavailableSources: missing });
+      await prisma.modelRun.update({ data: { status: "complete" }, where: { id: run.runId } });
+      settlements.push(await runner.settleLinked(occurrence.id, now));
+    }
+    // Each result completed; the first of the streak is its one alert and the third pauses the task.
+    expect(settlements.map((settlement) => [settlement?.state, settlement?.sourcesIncomplete, settlement?.sourceAlert, settlement?.taskPaused]))
+      .toEqual([["COMPLETED", true, true, false], ["COMPLETED", true, false, false], ["COMPLETED", true, false, true]]);
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+      consecutiveFailures: 0, consecutiveIncompleteRuns: 3, nextRunAt: null, pauseReason: "source_unavailable", status: "PAUSED"
+    });
+    // Run history shows the source by name and reason, never its identifier.
+    const detail = await owners.detail(userId, created.id);
+    expect(detail?.recentRuns[0]?.unavailableSources).toEqual([{ name: "Synthetic Mail", reason: "mcp_reauthorization_required" }]);
+    // An owner edit (here resuming) ends the streak.
+    const { chatMode, emailNotify, modelId, prompt, provider, revision, schedule, searchEnabled, timeZone, title, toolsEnabled,
+      workspaceEnabled } = detail!.task;
+    await owners.update(userId, created.id, {
+      draft: { chatMode, emailNotify, modelId, prompt, provider, schedule, searchEnabled, timeZone, title, toolsEnabled, workspaceEnabled },
+      expectedRevision: revision, nextRunAt: new Date(Date.now() + 3_600_000), status: "active"
+    });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
+      .toMatchObject({ consecutiveIncompleteRuns: 0, pauseReason: null, status: "ACTIVE" });
+  });
+
+  it("judges a source relevant by the previous shown result's calls and the gaps it relied on", async () => {
+    const userId = await owner();
+    const chat = await personalChat(userId);
+    const created = await task(userId, null, { toolsEnabled: true });
+    const previous = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(), startedAt: new Date(),
+      taskId: created.id, trigger: "manual", userId } });
+    const run = await runs.createRun(await runInput(userId, chat.id, origin(previous.id, created), { scheduledUnavailableSources: [
+      { name: "Synthetic Mail", reason: "mcp_reauthorization_required", relied: true, serverId: "server-mail" },
+      // Counted only because a first run had nothing to judge by: never carried.
+      { name: "Synthetic Notes", reason: "mcp_server_unavailable", relied: false, serverId: "server-notes" }
+    ] }));
+    // The run loaded two servers' tools through Auto and called one of them.
+    const accepted = await prisma.modelRun.findUniqueOrThrow({ where: { id: run.runId } });
+    await prisma.modelRun.update({ data: { normalizedRequest: { ...(accepted.normalizedRequest as object), mcp: { version: 1, servers: [],
+      tools: [{ namespacedName: "mcp_tracker_read_1", originalName: "read", serverId: "server-tracker", serverName: "Tracker" },
+        { namespacedName: "mcp_wiki_read_1", originalName: "read", serverId: "server-wiki", serverName: "Wiki" }] } },
+    status: "complete" }, where: { id: run.runId } });
+    await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: run.runId, ordinal: 0, providerCallId: "call-1",
+      roundIndex: 0, state: "complete", toolName: "mcp_tracker_read_1" } });
+    await runner.settleLinked(previous.id, new Date());
+    const next = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(Date.now() + 1), taskId: created.id,
+      trigger: "manual", userId } });
+    expect([...(await runner.loadExecution(next.id))!.relevantMcpServerIds!].sort()).toEqual(["server-mail", "server-tracker"]);
+    // Tools off: no relevance is read. A previous result whose run is gone leaves nothing to judge by.
+    await prisma.scheduledTask.update({ data: { toolsEnabled: false }, where: { id: created.id } });
+    expect((await runner.loadExecution(next.id))!.relevantMcpServerIds).toBeNull();
+    await prisma.scheduledTask.update({ data: { toolsEnabled: true }, where: { id: created.id } });
+    await prisma.modelRun.delete({ where: { id: run.runId } });
+    expect((await runner.loadExecution(next.id))!.relevantMcpServerIds).toBeNull();
+  });
+
+  it("finds runs past their deadline by the run's own scheduled origin, counted from admission", async () => {
+    const userId = await owner();
+    const created = await task(userId, null);
+    const chat = await personalChat(userId);
+    const occurrence = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(), startedAt: new Date(),
+      taskId: created.id, trigger: "manual", userId } });
+    const run = await runs.createRun(await runInput(userId, chat.id, origin(occurrence.id, created)));
+    const ordinary = await runs.createRun(await runInput(userId, (await personalChat(userId)).id));
+    const now = new Date();
+    expect(await runner.overdueRuns(now, 10)).toEqual([]);
+    const admitted = new Date(now.getTime() - 31 * 60_000);
+    await prisma.modelRun.updateMany({ data: { createdAt: admitted }, where: { id: { in: [run.runId, ordinary.runId] } } });
+    expect(await runner.overdueRuns(now, 10)).toEqual([{ runId: run.runId, userId }]);
+    // The deadline outlives the task and its history.
+    await prisma.scheduledTask.delete({ where: { id: created.id } });
+    expect(await runner.overdueRuns(now, 10)).toEqual([{ runId: run.runId, userId }]);
+    await runs.cancelRun({ payload: { code: "run_deadline", message: "Scheduled run stopped at its time limit" }, runId: run.runId, userId });
+    expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: run.runId } })).toMatchObject({
+      errorPayload: { code: "run_deadline" }, status: "cancelled"
+    });
+    expect(await runner.overdueRuns(now, 10)).toEqual([]);
+  });
+
+  it("never lets a scheduled run change an existing chat's Workspace switch", async () => {
+    const userId = await owner();
+    const created = await task(userId, null);
+    const chat = await prisma.chat.update({ data: { workspaceEnabled: true }, where: { id: (await personalChat(userId)).id } });
+    const occurrence = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(), startedAt: new Date(),
+      taskId: created.id, trigger: "manual", userId } });
+    const run = await runs.createRun(await runInput(userId, chat.id, origin(occurrence.id, created), { workspaceEnabled: false }));
+    expect(await prisma.chat.findUniqueOrThrow({ where: { id: chat.id } })).toMatchObject({ workspaceEnabled: true });
+    await runs.cancelRun({ payload: { code: "model_run_cancelled", message: "Model run cancelled" }, runId: run.runId, userId });
+    // The owner's own message still sets the switch as before.
+    await runs.createRun(await runInput(userId, chat.id, undefined, { workspaceEnabled: false }));
+    expect(await prisma.chat.findUniqueOrThrow({ where: { id: chat.id } })).toMatchObject({ workspaceEnabled: false });
+  });
+
   it("claims a result email once and only for a verified address with SMTP active", async () => {
     const userId = await owner();
     const created = await task(userId, null, { emailNotify: true });
@@ -292,7 +400,7 @@ describe("persisted scheduled task runner", () => {
     await prisma.authIdentity.create({ data: { emailVerifiedAt: new Date(), normalizedEmail: user.email!.toLowerCase(),
       provider: "password", providerAccountId: user.email!.toLowerCase(), userId } });
     expect(await runner.claimNotification(settled.id, new Date())).toMatchObject({ email: user.email, state: "COMPLETED",
-      title: "Synthetic brief", trigger: "manual" });
+      title: "Synthetic brief", trigger: "manual", unavailableSources: [] });
     expect(await runner.claimNotification(settled.id, new Date())).toBeNull();
   });
 });

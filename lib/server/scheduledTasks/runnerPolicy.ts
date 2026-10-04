@@ -1,4 +1,9 @@
-import type { ScheduledTaskRunTrigger, ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
+import {
+  SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD,
+  SCHEDULED_TASK_RUN_DEADLINE_MINUTES,
+  type ScheduledTaskRunTrigger,
+  type ScheduledTaskSchedule
+} from "../../contracts/scheduledTasks";
 import { nextOccurrenceAfter } from "../../domain/scheduledTaskSchedule";
 
 /**
@@ -18,13 +23,21 @@ export const SCHEDULED_TASK_OCCURRENCE_RETENTION = 50;
 /** Scheduled runs executing installation-wide and per owner; a run counts until it is terminal. */
 export const SCHEDULED_TASK_MAX_EXECUTING = 5;
 export const SCHEDULED_TASK_MAX_EXECUTING_PER_USER = 1;
+/**
+ * An admitted scheduled run is stopped through the Stop path this long after
+ * its admission (the run's creation, not the occurrence's first attempt),
+ * whether or not its task and history still exist.
+ */
+export const SCHEDULED_TASK_RUN_DEADLINE_MS = SCHEDULED_TASK_RUN_DEADLINE_MINUTES * 60 * 1000;
+/** The terminal cause such a run keeps; its occurrence fails with it and counts as a failure. */
+export const SCHEDULED_TASK_RUN_DEADLINE_CODE = "run_deadline";
 
 export type ScheduledTaskStatusColumn = "ACTIVE" | "PAUSED" | "COMPLETED";
 export type ScheduledTaskSettledState = "COMPLETED" | "FAILED" | "SKIPPED";
 /** Stable codes of automatic pauses. */
 export type ScheduledTaskPauseReason =
   | "account_inactive" | "model_unavailable" | "provider_unavailable" | "repeated_failures" | "schedule_invalid"
-  | "search_unavailable";
+  | "search_unavailable" | "source_unavailable" | "tools_unavailable" | "workspace_secret_limit" | "workspace_unavailable";
 
 export type ScheduledTaskOutcome = Readonly<{
   state: ScheduledTaskSettledState;
@@ -89,44 +102,81 @@ export function planScheduledTaskClaim(
   }
 }
 
+export type ScheduledTaskSettlementPlan = Readonly<{
+  consecutiveFailures: number;
+  consecutiveIncompleteRuns: number;
+  pauseReason: ScheduledTaskPauseReason | null;
+  /** This settlement starts a streak of incomplete runs: the one health alert of that streak. */
+  sourceAlert: boolean;
+}>;
+
 /**
  * Task bookkeeping for a settled occurrence. Success resets the failure count;
  * a failed scheduled run counts and pauses an active task at the threshold or
  * on a permanent refusal decided under the current revision (a concurrent
  * owner edit wins). Manual runs never count failures or pause; skips change
  * nothing.
+ *
+ * Source health is separate from results: a completed run whose admission
+ * lacked a relevant source (`sourcesIncomplete`) still completes and resets
+ * the failure count, but a scheduled one extends the incomplete streak, whose
+ * first run is the health alert and whose third pauses an active task with
+ * `source_unavailable`. A complete run ends the streak; failures and skips
+ * leave it as it is, and a manual incomplete run neither extends nor alerts.
  */
 export function planTaskSettlement(input: Readonly<{
   trigger: ScheduledTaskRunTrigger;
   outcome: ScheduledTaskOutcome;
-  task: Readonly<{ status: ScheduledTaskStatusColumn; consecutiveFailures: number; revision: number }>;
+  sourcesIncomplete?: boolean;
+  task: Readonly<{
+    status: ScheduledTaskStatusColumn; consecutiveFailures: number; consecutiveIncompleteRuns: number; revision: number;
+  }>;
   observedRevision?: number;
-}>): Readonly<{ consecutiveFailures: number; pauseReason: ScheduledTaskPauseReason | null }> {
+}>): ScheduledTaskSettlementPlan {
   const { outcome, task } = input;
-  if (outcome.state === "COMPLETED") return { consecutiveFailures: 0, pauseReason: null };
+  const streak = task.consecutiveIncompleteRuns;
+  if (outcome.state === "COMPLETED") {
+    if (!input.sourcesIncomplete) return { consecutiveFailures: 0, consecutiveIncompleteRuns: 0, pauseReason: null, sourceAlert: false };
+    if (input.trigger === "manual") return { consecutiveFailures: 0, consecutiveIncompleteRuns: streak, pauseReason: null, sourceAlert: false };
+    const consecutiveIncompleteRuns = streak + 1;
+    return {
+      consecutiveFailures: 0,
+      consecutiveIncompleteRuns,
+      pauseReason: task.status === "ACTIVE" && consecutiveIncompleteRuns >= SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD
+        ? "source_unavailable" : null,
+      sourceAlert: consecutiveIncompleteRuns === 1
+    };
+  }
   if (outcome.state === "SKIPPED" || input.trigger === "manual") {
-    return { consecutiveFailures: task.consecutiveFailures, pauseReason: null };
+    return { consecutiveFailures: task.consecutiveFailures, consecutiveIncompleteRuns: streak, pauseReason: null, sourceAlert: false };
   }
   const consecutiveFailures = task.consecutiveFailures + 1;
-  if (task.status !== "ACTIVE") return { consecutiveFailures, pauseReason: null };
+  const failed = { consecutiveFailures, consecutiveIncompleteRuns: streak, sourceAlert: false };
+  if (task.status !== "ACTIVE") return { ...failed, pauseReason: null };
   if (outcome.pauseReason && (input.observedRevision === undefined || input.observedRevision === task.revision)) {
-    return { consecutiveFailures, pauseReason: outcome.pauseReason };
+    return { ...failed, pauseReason: outcome.pauseReason };
   }
   return {
-    consecutiveFailures,
+    ...failed,
     pauseReason: consecutiveFailures >= SCHEDULED_TASK_FAILURE_PAUSE_THRESHOLD ? "repeated_failures" : null
   };
 }
 
 /**
  * Whether a settlement is news for the owner: an unread result and a result
- * email (later a push). Only a shown result (every completed run until
- * monitoring outcomes exist) and a failure that paused the task are; routine
- * skips (missed, previous_running, superseded, chat_busy, paused) and other
- * failures stay in the run history only.
+ * email and push. Only a shown result (every completed run until monitoring
+ * outcomes exist), a settlement that paused the task (a failure, or the
+ * incomplete run that ends a streak) and the health alert that starts a
+ * streak of incomplete runs are; later incomplete runs of the same streak
+ * alert no more. Routine skips (missed, previous_running, superseded,
+ * chat_busy, paused) and other failures stay in the run history only.
  */
-export function settlementNotifiesOwner(outcome: Readonly<{ state: ScheduledTaskSettledState; taskPaused: boolean }>): boolean {
-  return outcome.state === "COMPLETED" || (outcome.state === "FAILED" && outcome.taskPaused);
+export function settlementNotifiesOwner(outcome: Readonly<{
+  sourceAlert?: boolean;
+  state: ScheduledTaskSettledState;
+  taskPaused: boolean;
+}>): boolean {
+  return outcome.state === "COMPLETED" || outcome.taskPaused || outcome.sourceAlert === true;
 }
 
 /** What the next same-chat run sees besides the prompt. */
@@ -224,10 +274,18 @@ export type ScheduledTaskRefusal =
   | Readonly<{ kind: "retry"; reasonCode: "chat_busy" | null }>
   | Readonly<{ kind: "fail"; outcome: ScheduledTaskOutcome }>;
 
+/** The chat is in use: retried, and once the window ends skipped as `chat_busy`. */
 const BUSY_CODES = new Set(["active_run_in_progress", "active_leaf_changed"]);
+/**
+ * Races and outages that may clear within the window; still failing at its
+ * end, the run fails once and counts toward the repeated-failure pause, so a
+ * Workspace stuck busy never skips quietly forever.
+ */
 const TRANSIENT_CODES = new Set([
   "chat_not_found", "memory_owner_unavailable", "personal_draft_conflict", "provider_admission_changed",
-  "scheduled_task_occurrence_unavailable"
+  "scheduled_task_occurrence_unavailable",
+  "mcp_not_ready", "workspace_busy", "workspace_followup_predecessor_failed", "workspace_followup_unavailable",
+  "workspace_runtime_unavailable", "workspace_secret_unavailable"
 ]);
 const PAUSE_CODES = new Map<string, ScheduledTaskPauseReason>([
   ["model_not_available", "model_unavailable"],
@@ -240,7 +298,14 @@ const PAUSE_CODES = new Map<string, ScheduledTaskPauseReason>([
   ["credential_default_missing", "provider_unavailable"],
   ["credential_disabled", "provider_unavailable"],
   ["credential_not_found", "provider_unavailable"],
-  ["credential_revoked", "provider_unavailable"]
+  ["credential_revoked", "provider_unavailable"],
+  ["mcp_plan_too_large", "tools_unavailable"],
+  ["mcp_tool_calling_not_supported", "tools_unavailable"],
+  ["skills_count_exceeded", "tools_unavailable"],
+  ["workspace_disabled", "workspace_unavailable"],
+  ["workspace_model_tools_required", "workspace_unavailable"],
+  ["workspace_runtime_incompatible", "workspace_unavailable"],
+  ["workspace_secret_limit", "workspace_secret_limit"]
 ]);
 
 /** A permanent refusal: the occurrence fails and a scheduled task pauses with this reason. */
@@ -249,11 +314,13 @@ export function pausingOutcome(reason: ScheduledTaskPauseReason): ScheduledTaskO
 }
 
 /**
- * How a send refusal that created no run affects its occurrence: busy chats,
- * transient races and server errors retry within the window (no run exists,
- * so nothing failed yet), catalog, entitlement and account refusals fail and
- * pause, anything else fails with its stable code. The runner rechecks the
- * owner itself for an unauthenticated refusal.
+ * How a send refusal that created no run affects its occurrence: busy chats
+ * and Workspaces, transient races, unavailable runtimes and storage, and
+ * server errors retry within the window (no run exists, so nothing failed
+ * yet); catalog, entitlement, account, tool and Workspace refusals that only
+ * the owner or an administrator can lift fail and pause with human copy;
+ * anything else fails with its stable code. The runner rechecks the owner
+ * itself for an unauthenticated refusal.
  */
 export function classifySendRefusal(status: number, errorCode: unknown): ScheduledTaskRefusal {
   const code = stableCode(errorCode);

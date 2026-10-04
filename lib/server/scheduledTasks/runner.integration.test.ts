@@ -7,7 +7,7 @@ import { scheduledTaskRunChatTitle } from "../../domain/scheduledTaskSchedule";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { prisma } from "../prisma";
 import { createDefaultSendMessageDeps } from "../runs/defaultSendMessageDeps";
-import { createSendMessageHandler } from "../runs/handlers";
+import { createSendMessageHandler, stopModelRun } from "../runs/handlers";
 import { createPrismaScheduledTaskOwnerLoader, createScheduledTaskSend, scheduledTaskOwnerAuth, scheduledTaskSendBody } from "./admission";
 import { createPrismaScheduledTaskRunCatalogLoader } from "./catalog";
 import { createScheduledTaskRunner } from "./runner";
@@ -19,12 +19,14 @@ const chats = createPrismaChatRepository();
 const sendDeps = () => ({ ...createDefaultSendMessageDeps(), allowFakeProvider: true });
 
 function runner() {
+  const deps = sendDeps();
   return createScheduledTaskRunner({
     appBaseUrl: "http://localhost:3000",
     loadCatalog: createPrismaScheduledTaskRunCatalogLoader(prisma),
     async renameChat(input) { await chats.updateChat(input); },
     // The ordinary send admission, with the fake provider of the disposable stand.
-    send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps: sendDeps() }),
+    send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps: deps }),
+    stopRun: ({ code, message, runId, userId }) => stopModelRun(deps, { payload: { code, message }, runId, userId }),
     store: createPrismaScheduledTaskRunnerStore(prisma)
   });
 }
@@ -56,7 +58,7 @@ async function ownerMessage(userId: string, taskId: string, chatId: string, text
     new Request(`http://localhost/api/chats/${chatId}/messages`, { body: JSON.stringify(scheduledTaskSendBody({
       admissionId: randomUUID(), modelId: providerTemplateIds.fakeModel, prompt: text, provider: providerTemplateIds.fakeConnection,
       searchPlan: { mode: "all_selected", optionIds: [] }, target: { activeLeafMessageId: chat.activeLeafMessageId, chatId, kind: "existing" },
-      timeZone: "Europe/Moscow", toolCalling: true
+      timeZone: "Europe/Moscow", toolCalling: true, toolsEnabled: false, workspaceEnabled: false
     })), method: "POST" }), { params: { chatId } });
   expect(response.status).toBe(200);
   await response.text();

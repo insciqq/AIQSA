@@ -106,3 +106,81 @@ describe("Workspace cleanup failure persistence", () => {
     expect(lines.join("")).not.toContain("foreign_run");
   });
 });
+
+describe("Workspace VM residency after unattended runs", () => {
+  /** A raw query's text, from a `Prisma.sql` value or a tagged template call. */
+  const sqlText = (query: Readonly<{ strings: readonly string[] }> | TemplateStringsArray) =>
+    ("strings" in query ? query.strings : query).join("?");
+
+  /**
+   * One session whose newest run is a settled scheduled run, selected by the
+   * scheduled query; `newestStillScheduled` is what the re-check under the
+   * session lock finds.
+   */
+  function scheduledFixture(newestStillScheduled: boolean) {
+    const candidate = { chatId: "fixture_chat", id: "fixture_session", runtimeSandboxId: "fixture_vm", sandboxName: "fixture_sandbox" };
+    const session = { ...candidate, operationOwner: null, state: "READY", version: 4 };
+    lockSession.mockImplementation(async () => session);
+    const sessionWrites: Array<{ data: Record<string, unknown>; where: Record<string, unknown> }> = [];
+    const transaction = {
+      $executeRaw: vi.fn(async () => 0),
+      $queryRaw: vi.fn(async (query: Readonly<{ strings: readonly string[] }> | TemplateStringsArray) => {
+        if (sqlText(query).includes(`AS "settled"`)) return [{ settled: newestStillScheduled }];
+        return [];
+      }),
+      modelRun: { count: vi.fn(async () => 0) },
+      workspaceCleanupJob: { findMany: vi.fn(async () => []) },
+      workspaceExecution: { updateMany: vi.fn(async () => ({ count: 0 })) },
+      workspaceSession: {
+        findFirst: vi.fn(async () => ({ id: candidate.id })),
+        updateMany: vi.fn(async (args: { data: Record<string, unknown>; where: Record<string, unknown> }) => {
+          sessionWrites.push(args);
+          return { count: 1 };
+        })
+      }
+    };
+    const scheduledQueries: string[] = [];
+    const prisma = {
+      $queryRaw: vi.fn(async (query: Readonly<{ strings: readonly string[] }> | TemplateStringsArray) => {
+        const sql = sqlText(query);
+        if (!sql.includes(`"WorkspaceRunBinding"`)) return [];
+        scheduledQueries.push(sql);
+        return [candidate];
+      }),
+      $transaction: vi.fn(async (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction)),
+      chatContinuationWorkspaceSeed: { findMany: vi.fn(async () => []) },
+      // Nothing is idle by time or archival.
+      workspaceSession: { findMany: vi.fn(async () => []) }
+    } as unknown as PrismaClient;
+    const runtime = {
+      claimSessionOperation: vi.fn(async () => undefined),
+      retireSessionOperation: vi.fn(async () => undefined)
+    } as unknown as WorkspaceRuntime;
+    return { input: { config, now, prisma, runtime }, runtime, scheduledQueries, sessionWrites };
+  }
+
+  it("stops the VM as soon as the session's newest run, a scheduled one, has settled, keeping its disk", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const value = scheduledFixture(true);
+    await expect(runWorkspaceMaintenance(value.input)).resolves.toMatchObject({ idleFailed: 0, idleStopped: 1 });
+    // Selected by the run's scheduled origin, newest binding first, without waiting for the idle time.
+    expect(value.scheduledQueries.join("")).toContain(`"scheduledTaskId" IS NOT NULL`);
+    expect(value.runtime.claimSessionOperation).toHaveBeenCalledOnce();
+    expect(value.runtime.retireSessionOperation).toHaveBeenCalledOnce();
+    const [claim, settle] = value.sessionWrites;
+    // Neither the idle time nor the session's own expiry holds it: a retention pin may keep an expired disk.
+    expect(claim!.where).not.toHaveProperty("lastActiveAt");
+    expect(claim!.where).not.toHaveProperty("expiresAt");
+    expect(claim!.data).toMatchObject({ state: "CREATING", lastErrorCode: "workspace_idle_stop_in_progress" });
+    // Stopped, not deleted: the disk stays for the next run.
+    expect(settle!.data).toMatchObject({ state: "STOPPED", stoppedAt: now });
+  });
+
+  it("leaves the VM to the idle timer once an interactive run became the newest under the lock", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const value = scheduledFixture(false);
+    await expect(runWorkspaceMaintenance(value.input)).resolves.toMatchObject({ idleFailed: 0, idleStopped: 0 });
+    expect(value.runtime.claimSessionOperation).not.toHaveBeenCalled();
+    expect(value.sessionWrites).toEqual([]);
+  });
+});
