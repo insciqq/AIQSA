@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { knowledgeAnswerHash } from "./answerGroundingV5";
 import { validateKnowledgeEvidenceAnswerDraftV1, validateKnowledgeEvidenceAnswerReviewV1 } from "./evidenceAnswerV1";
 import {
-  buildKnowledgeEvidenceAnswerPublicationV2, decodeKnowledgeEvidenceAnswerReviewV2,
-  knowledgeEvidenceAnswerReviewPromptV2, validateKnowledgeEvidenceAnswerReviewV2
+  buildKnowledgeEvidenceAnswerPublicationV2, decodeKnowledgeEvidenceAnswerReviewV2, knowledgeEvidenceAnswerDraftPromptV2,
+  knowledgeEvidenceAnswerReviewPromptV2, knowledgeImageObservationFromComposePrompt, validateKnowledgeEvidenceAnswerReviewV2
 } from "./evidenceAnswerReviewV2";
 
 const context = { availableHandles: ["K1", "K2"], availableSourceAliases: ["S1", "S2"],
@@ -155,5 +155,48 @@ describe("requirement coverage and actionable evidence review", () => {
     const prompt = knowledgeEvidenceAnswerReviewPromptV2({ request, evidenceManifest, draft: candidate, availableSourceAliases: context.availableSourceAliases });
     expect(JSON.parse(prompt.userPrompt)).toMatchObject({ request, evidenceManifest, draft: candidate });
     expect(prompt.userPrompt.split(evidenceManifest)).toHaveLength(2);
+  });
+});
+
+describe("attached-image observation block", () => {
+  const request = "Does the headline in my poster follow the style guide?";
+  const evidenceManifest = "Style guide: headlines use Helvetica Bold.";
+  const imageObservation = { text: "A poster whose headline is set in a script typeface.", truncated: false };
+
+  it("leaves every prompt without an observation unchanged", () => {
+    const compose = knowledgeEvidenceAnswerDraftPromptV2({ request, evidenceManifest });
+    const reviewPrompt = knowledgeEvidenceAnswerReviewPromptV2({ request, evidenceManifest, draft: draft(), availableSourceAliases: context.availableSourceAliases });
+    for (const prompt of [compose, reviewPrompt]) {
+      expect(prompt.systemPrompt).not.toContain("attachedImageObservation");
+      expect(JSON.parse(prompt.userPrompt)).not.toHaveProperty("attachedImageObservation");
+    }
+    expect(knowledgeImageObservationFromComposePrompt(compose.userPrompt)).toBeUndefined();
+  });
+
+  it("labels the observation as user-side context, separate from evidence, in compose and review", () => {
+    const compose = knowledgeEvidenceAnswerDraftPromptV2({ request, evidenceManifest, imageObservation });
+    const reviewPrompt = knowledgeEvidenceAnswerReviewPromptV2({ request, evidenceManifest, draft: draft(),
+      availableSourceAliases: context.availableSourceAliases, imageObservation });
+    expect(compose.systemPrompt).toContain("never Knowledge evidence");
+    expect(compose.systemPrompt).toContain("never cite evidence handles for them");
+    expect(reviewPrompt.systemPrompt).toContain("not delivered evidence");
+    expect(reviewPrompt.systemPrompt).toContain("valid premises without evidence handles");
+    for (const prompt of [compose, reviewPrompt]) {
+      const payload = JSON.parse(prompt.userPrompt);
+      expect(payload).toMatchObject({ request, evidenceManifest, attachedImageObservation: imageObservation });
+      // The observation never enters the evidence manifest or the request text.
+      expect(payload.evidenceManifest).not.toContain(imageObservation.text);
+      expect(payload.request).not.toContain(imageObservation.text);
+    }
+    expect(knowledgeImageObservationFromComposePrompt(compose.userPrompt)).toEqual(imageObservation);
+  });
+
+  it("refuses an invalid observation block instead of sending it", () => {
+    for (const invalid of [{ text: " ", truncated: false }, { text: "x", truncated: "no" }, { text: "x", truncated: false, source: "K1" }]) {
+      expect(() => knowledgeEvidenceAnswerDraftPromptV2({ request, evidenceManifest,
+        imageObservation: invalid as unknown as typeof imageObservation })).toThrow("knowledge_image_observation_block_invalid");
+    }
+    expect(knowledgeImageObservationFromComposePrompt(JSON.stringify({ request, attachedImageObservation: { text: "" } }))).toBeNull();
+    expect(knowledgeImageObservationFromComposePrompt("not json")).toBeNull();
   });
 });

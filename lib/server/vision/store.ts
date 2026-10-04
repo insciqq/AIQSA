@@ -31,7 +31,8 @@ export function visionFailure(call: ModelToolCall, code: string, unknown = code 
     ...detail
   } }] };
 }
-export async function authorizeVisionPlan(db: Pick<Prisma.TransactionClient, "providerModel" | "providerCredentialVersion">, plan: AvailableVisionAnalysisPlan) {
+export async function authorizeVisionPlan(db: Pick<Prisma.TransactionClient, "providerModel" | "providerCredentialVersion">,
+  plan: Readonly<{ authority: Pick<AvailableVisionAnalysisPlan["authority"], "connectionId" | "providerModelId" | "credentialId" | "credentialVersionId"> }>) {
   const [model, credential] = await Promise.all([
     db.providerModel.findFirst({ where: { id: plan.authority.providerModelId, connectionId: plan.authority.connectionId,
       enabled: true, connection: { enabled: true } }, select: { id: true } }),
@@ -41,23 +42,42 @@ export async function authorizeVisionPlan(db: Pick<Prisma.TransactionClient, "pr
   return Boolean(model && credential);
 }
 
+/** The run's current chat authority for an image dispatch: an active user who may still write to the chat. */
+export async function visionRunAccess(tx: Pick<Prisma.TransactionClient, "modelRun" | "chat" | "project" | "user">,
+  c: Readonly<{ runId: string; userId: string; chatId: string }>) {
+  const [run, user, grant] = await Promise.all([
+    tx.modelRun.findFirst({ where: { id: c.runId, userId: c.userId, chatId: c.chatId }, select: { status: true } }),
+    tx.user.findFirst({ where: { id: c.userId, status: "active" }, select: { id: true } }),
+    resolveChatAccess(tx, { chatId: c.chatId, userId: c.userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" })
+  ]);
+  if (!run || !user || !grant) throw new VisionAnalysisError("vision_analysis_access_denied");
+  return { active: ["streaming", "in_progress"].includes(run.status), projectId: grant.project?.projectId ?? null };
+}
+
+/** Serializes a run's image dispatch and settlement with its terminal writes. */
+export async function lockVisionRun(tx: Prisma.TransactionClient, runId: string): Promise<void> {
+  await lockRunSettlementScope(tx, runId);
+  await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${runId} FOR UPDATE`;
+}
+
+/** Provider-reported usage and its estimated cost, on the receipt created before dispatch. */
+export async function recordVisionUsage(tx: Prisma.TransactionClient, receipt: Readonly<{ id: string; providerModelId: string | null }>,
+  usage: TokenUsage): Promise<void> {
+  const normalized = normalizeTokenUsage(usage);
+  const pricing = receipt.providerModelId ? await tx.providerModel.findUnique({ where: { id: receipt.providerModelId },
+    select: { ...modelTokenPricingSelect } }) : null;
+  const cost = pricing && (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null) ? estimateCostMicros(normalized, modelTokenPricing(pricing)) : null;
+  await tx.usageEvent.update({ where: { id: receipt.id }, data: { ...storedTokenUsage(normalized), estimatedCostMicros: cost !== null && cost <= 2_147_483_647 ? cost : null } });
+}
+
 export function createVisionAnalysisStore(prisma: PrismaClient) {
-  async function access(tx: Pick<Prisma.TransactionClient, "modelRun" | "chat" | "project" | "user">, c: VisionAttemptContext) {
-    const [run, user, grant] = await Promise.all([
-      tx.modelRun.findFirst({ where: { id: c.runId, userId: c.userId, chatId: c.chatId }, select: { status: true } }),
-      tx.user.findFirst({ where: { id: c.userId, status: "active" }, select: { id: true } }),
-      resolveChatAccess(tx, { chatId: c.chatId, userId: c.userId, requireMutable: true, minimumProjectRole: "CONTRIBUTOR" })
-    ]);
-    if (!run || !user || !grant) throw new VisionAnalysisError("vision_analysis_access_denied");
-    return { active: ["streaming", "in_progress"].includes(run.status), projectId: grant.project?.projectId ?? null };
-  }
+  const access = visionRunAccess;
   function previous(c: VisionAttemptContext, row: { requestHash: string; result: Prisma.JsonValue | null }) {
     if (row.requestHash !== c.requestHash) throw new VisionAnalysisError("vision_analysis_input_invalid");
     return parsePersistedToolExecutionResult(c.call, row.result as ToolLoopJsonValue | null) ?? visionFailure(c.call, "vision_analysis_outcome_unknown");
   }
   async function lock(tx: Prisma.TransactionClient, c: VisionAttemptContext, hooks?: VisionExecutionHooks) {
-    await lockRunSettlementScope(tx, c.runId);
-    await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${c.runId} FOR UPDATE`;
+    await lockVisionRun(tx, c.runId);
     await hooks?.beforeSettlement?.(tx);
   }
   return {
@@ -106,13 +126,7 @@ export function createVisionAnalysisStore(prisma: PrismaClient) {
         const stored = snapshotToolExecutionResult(final, 64 * 1024);
         if (!stored) throw new VisionAnalysisError("vision_analysis_response_invalid");
         const receipt = await tx.usageEvent.findUnique({ where: { visionAnalysisAttemptId: c.toolCallId }, select: { id: true, providerModelId: true } });
-        if (receipt) {
-          const normalized = normalizeTokenUsage(usage);
-          const pricing = receipt.providerModelId ? await tx.providerModel.findUnique({ where: { id: receipt.providerModelId },
-            select: { ...modelTokenPricingSelect } }) : null;
-          const cost = pricing && (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null) ? estimateCostMicros(normalized, modelTokenPricing(pricing)) : null;
-          await tx.usageEvent.update({ where: { id: receipt.id }, data: { ...storedTokenUsage(normalized), estimatedCostMicros: cost !== null && cost <= 2_147_483_647 ? cost : null } });
-        }
+        if (receipt) await recordVisionUsage(tx, receipt, usage);
         await tx.visionAnalysisAttempt.update({ where: { toolCallId: c.toolCallId }, data: { state: unknown ? "ambiguous" : "settled",
           result: stored as Prisma.InputJsonValue, settledAt: new Date(), failureCode: final.status === "error" ? String((final.content[0] as { value: { error: string } }).value.error) : null } });
         if (publish) await hooks?.onResult?.(tx, final);
