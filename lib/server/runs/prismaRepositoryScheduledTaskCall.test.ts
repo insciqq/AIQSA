@@ -33,18 +33,25 @@ const providerCall = { id: "provider-call-1", name: CREATE_SCHEDULED_TASK_TOOL_N
 type FakeCall = { id: string; modelRunId: string; providerCallId: string; result: unknown; state: string; toolName: string };
 type FakeState = {
   calls: FakeCall[];
+  /** The owner's current task ids. */
+  existingTaskIds: string[];
   owner: boolean;
-  run: { errorPayload: null; scheduledTaskId: string | null; status: string } | null;
+  run: { errorPayload: null; scheduledTaskId: string | null; status: string; userMessageId: string } | null;
+  /** Other runs answering the same user message. */
+  siblingRuns: Array<{ id: string; scheduledTaskId: string | null }>;
 };
 
 function harness(overrides: Partial<FakeState> = {}) {
   const state: FakeState = {
     calls: [{ id: "persisted-1", modelRunId: "run-1", providerCallId: "provider-call-1", result: null, state: "running",
       toolName: CREATE_SCHEDULED_TASK_TOOL_NAME }],
+    existingTaskIds: [],
     owner: true,
-    run: { errorPayload: null, scheduledTaskId: null, status: "streaming" },
+    run: { errorPayload: null, scheduledTaskId: null, status: "streaming", userMessageId: "message-1" },
+    siblingRuns: [],
     ...overrides
   };
+  const runOfMessage = (runId: string) => runId === "run-1" || state.siblingRuns.some((sibling) => sibling.id === runId);
   const queries: string[] = [];
   const tx = {
     $queryRaw: vi.fn(async (query: Prisma.Sql) => {
@@ -60,6 +67,9 @@ function harness(overrides: Partial<FakeState> = {}) {
           call.state === where.state && call.toolName === where.toolName).length),
       findFirst: vi.fn(async ({ where }: { where: { id: string; modelRunId: string } }) =>
         state.calls.find((call) => call.id === where.id && call.modelRunId === where.modelRunId) ?? null),
+      findMany: vi.fn(async ({ where }: { where: { modelRunId: { not: string }; state: string; toolName: string } }) =>
+        state.calls.filter((call) => call.modelRunId !== where.modelRunId.not && runOfMessage(call.modelRunId) &&
+          call.state === where.state && call.toolName === where.toolName)),
       updateMany: vi.fn(async ({ data, where }: { data: { result: unknown; state: string };
         where: { id: string; modelRunId: string; state: string } }) => {
         const call = state.calls.find((entry) => entry.id === where.id && entry.modelRunId === where.modelRunId &&
@@ -70,6 +80,12 @@ function harness(overrides: Partial<FakeState> = {}) {
       })
     }
   };
+  Object.assign(tx, {
+    modelRun: { count: vi.fn(async () => [...state.siblingRuns, { scheduledTaskId: state.run?.scheduledTaskId ?? null }]
+      .filter((run) => run.scheduledTaskId !== null).length) },
+    scheduledTask: { count: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+      where.id.in.filter((id) => state.existingTaskIds.includes(id)).length) }
+  });
   const prisma = { $transaction: vi.fn(async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx)) };
   const kick = vi.fn();
   const deps = {
@@ -136,10 +152,28 @@ describe("scheduled task creation for a run's tool call", () => {
     expect(await retry.create()).toMatchObject({ kind: "created" });
   });
 
+  it("keeps one task per message while the owner has it, so a regenerated answer never duplicates it", async () => {
+    const stored = snapshotToolExecutionResult(scheduledTaskCreatedResult({ id: "provider-call-0",
+      name: CREATE_SCHEDULED_TASK_TOOL_NAME }, { ...created, id: "task-0" }, false), 64_000);
+    const earlier = (existingTaskIds: string[]) => {
+      const h = harness({ existingTaskIds, siblingRuns: [{ id: "run-0", scheduledTaskId: null }] });
+      h.state.calls.push({ id: "persisted-0", modelRunId: "run-0", providerCallId: "provider-call-0", result: stored,
+        state: "complete", toolName: CREATE_SCHEDULED_TASK_TOOL_NAME });
+      return h;
+    };
+    expect(await earlier(["task-0"]).create()).toEqual({ code: "scheduled_task_already_created", kind: "refused" });
+    expect(insertScheduledTask).not.toHaveBeenCalled();
+    // The owner deleted the earlier task: answering again may create it anew.
+    expect(await earlier([]).create()).toMatchObject({ kind: "created" });
+    // Another answer to a scheduled task's own turn never creates one.
+    const scheduledTurn = harness({ siblingRuns: [{ id: "run-0", scheduledTaskId: "task-0" }] });
+    expect(await scheduledTurn.create()).toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
+  });
+
   it("never creates from a scheduled, settled or missing run, or for a call that is not this run's running creation", async () => {
     for (const overrides of [
-      { run: { errorPayload: null, scheduledTaskId: "task-0", status: "streaming" } },
-      { run: { errorPayload: null, scheduledTaskId: null, status: "complete" } },
+      { run: { errorPayload: null, scheduledTaskId: "task-0", status: "streaming", userMessageId: "message-1" } },
+      { run: { errorPayload: null, scheduledTaskId: null, status: "complete", userMessageId: "message-1" } },
       { run: null },
       { calls: [{ id: "persisted-1", modelRunId: "run-1", providerCallId: "provider-call-1", result: null, state: "pending",
         toolName: CREATE_SCHEDULED_TASK_TOOL_NAME }] },

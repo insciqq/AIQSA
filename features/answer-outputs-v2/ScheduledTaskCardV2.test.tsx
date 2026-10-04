@@ -71,11 +71,12 @@ describe("ScheduledTaskCardsV2", () => {
     await waitFor(() => expect(onEdit).toHaveBeenCalledExactlyOnceWith("task-1"));
   });
 
+  // Deletions are remembered for the page, so every deleting case uses its own task.
   it("deletes only after the inline confirmation, then says so and offers nothing more", async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
-    useScheduledTasksStore.setState({ tasks: [listed] });
-    render(<ScheduledTaskCardsV2 cards={[card]} onEdit={vi.fn()} />);
+    useScheduledTasksStore.setState({ tasks: [{ ...listed, id: "task-delete" }] });
+    render(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-delete" }]} onEdit={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Delete scheduled task Check mail" }));
     const confirm = screen.getByRole("group", { name: "Delete Check mail" });
     expect(confirm).toHaveTextContent("Delete “Check mail”? Its chats and answers stay in your history.");
@@ -88,7 +89,7 @@ describe("ScheduledTaskCardsV2", () => {
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Delete task" }));
     });
-    expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/me/scheduled-tasks/task-1",
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith("/api/me/scheduled-tasks/task-delete",
       expect.objectContaining({ method: "DELETE" }));
     const item = screen.getByTestId("scheduled-task-card");
     await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent("Scheduled task deleted"));
@@ -98,7 +99,7 @@ describe("ScheduledTaskCardsV2", () => {
 
   it("treats a task already gone as deleted and keeps a failed delete recoverable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "scheduled_task_not_found" }, { status: 404 })));
-    render(<ScheduledTaskCardsV2 cards={[card]} />);
+    render(<ScheduledTaskCardsV2 cards={[{ ...card, taskId: "task-gone" }]} />);
     fireEvent.click(screen.getByRole("button", { name: "Delete scheduled task Check mail" }));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete task" })); });
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted"));
@@ -111,6 +112,19 @@ describe("ScheduledTaskCardsV2", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Scheduled tasks are unavailable right now. Try again.");
     expect(screen.getByRole("button", { name: "Delete task" })).toBeEnabled();
     expect(screen.getByRole("status")).toHaveTextContent("Scheduled task created");
+  });
+
+  it("keeps a deletion when the settling answer mounts the card again", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 204 })));
+    const created = { ...card, taskId: "task-remount" };
+    const { rerender } = render(<AnswerOutputsV2 artifact={summary([created])} live onEditScheduledTask={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Delete scheduled task Check mail" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete task" })); });
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted"));
+    // The settled answer's summary still names the task as created.
+    rerender(<AnswerOutputsV2 artifact={summary([created])} onEditScheduledTask={vi.fn()} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Scheduled task deleted");
+    expect(screen.queryAllByRole("button")).toEqual([]);
   });
 });
 

@@ -114,6 +114,33 @@ describe("a chat answer's scheduled task creation", () => {
     expect(await prisma.scheduledTask.count({ where: { userId: turn.userId } })).toBe(0);
   });
 
+  it("keeps one task per message while the owner has it: a regenerated answer creates again only after a deletion", async () => {
+    const turn = await answer();
+    const first = await turn.create(turn.callIds[0]!);
+    if (first.kind !== "created") throw new Error("expected a created task");
+    // The first answer settles; a regeneration answers the same message in a sibling run.
+    await prisma.modelRun.update({ data: { status: "complete" }, where: { id: turn.runId } });
+    const question = await prisma.modelRun.findUniqueOrThrow({ select: { userMessageId: true }, where: { id: turn.runId } });
+    const regenerationId = randomUUID();
+    const answerId = randomUUID();
+    await prisma.message.create({ data: { chatId: turn.chatId, content: textMessageContent(""), id: answerId,
+      parentMessageId: question.userMessageId, role: "assistant", status: "streaming" } });
+    await prisma.modelRun.create({ data: { assistantMessageId: answerId, chatId: turn.chatId, id: regenerationId,
+      modelId: "fake-qsa", provider: "fake", status: "streaming", userId: turn.userId, userMessageId: question.userMessageId } });
+    const regenerate = async () => {
+      const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: regenerationId,
+        ordinal: await prisma.modelRunToolCall.count({ where: { modelRunId: regenerationId } }), providerCallId: randomUUID(),
+        roundIndex: 1, startedAt: new Date(), state: "running", toolName: CREATE_SCHEDULED_TASK_TOOL_NAME } });
+      return createScheduledTaskForToolCall(prisma, deps, { body, callId: call.id, runId: regenerationId, userId: turn.userId,
+        result: (task) => scheduledTaskCreatedResult({ id: call.providerCallId, name: CREATE_SCHEDULED_TASK_TOOL_NAME }, task, false) });
+    };
+    expect(await regenerate()).toEqual({ code: "scheduled_task_already_created", kind: "refused" });
+    expect(await prisma.scheduledTask.count({ where: { userId: turn.userId } })).toBe(1);
+    await createPrismaScheduledTaskStore(prisma).delete(turn.userId, first.task.id);
+    expect(await regenerate()).toMatchObject({ kind: "created" });
+    expect(await prisma.scheduledTask.count({ where: { userId: turn.userId } })).toBe(1);
+  });
+
   it("shows the card as the task is now on reload, and as deleted once the owner deletes it", async () => {
     const turn = await answer();
     const outcome = await turn.create(turn.callIds[0]!);

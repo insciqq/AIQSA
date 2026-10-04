@@ -151,6 +151,7 @@ describe("create_scheduled_task tool", () => {
       ["scheduled_task_once_in_past", "at least a minute from now"],
       ["scheduled_task_chat_mode_invalid", "always continue in the same chat"],
       ["scheduled_task_answer_limit", "already created a scheduled task"],
+      ["scheduled_task_already_created", "An earlier answer to this message already created"],
       ["scheduled_task_call_unavailable", "cannot be created from this answer"]
     ] as const) {
       const create = vi.fn<ScheduledTaskCallCreator>(async () => ({ code, kind: "refused" }) as ScheduledTaskCallCreation);
