@@ -606,6 +606,24 @@ describe("summarizeMessageRunToolActivity", () => {
     expect(activity?.calls[0]).not.toHaveProperty("details");
   });
 
+  it("projects a page read as its host/path and outcome, never the URL query, arguments or page text", () => {
+    const pageCall = { toolName: "fetch_url", ordinal: 0, roundIndex: 1, state: "error", startedAt: null, completedAt: null,
+      arguments: { url: "https://news.example/today?token=private-token" },
+      result: { callId: "provider-call", name: "fetch_url", status: "error", content: [{ type: "json", value: {
+        error: "fetch_http_status", httpStatus: 404, message: "private message" } }],
+      rawPreview: { fetchUrl: { version: 1, outcome: "fetch_http_status", dispatched: true, httpStatus: 404,
+        url: "https://news.example/today?token=private-token" } } } };
+    const run = { userId: "initiator", errorPayload: null, status: "complete",
+      normalizedRequest: { fetchUrl: { version: 1, userUrlDigests: [] } } };
+    const activity = summarizeMessageRunToolActivity({ ...run, toolCalls: [pageCall] }, "initiator");
+    expect(activity?.calls[0]).toEqual({ fetchHttpStatus: 404, fetchOutcome: "fetch_http_status", fetchTarget: "news.example/today",
+      origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url" });
+    expect(JSON.stringify(activity)).not.toMatch(/private|token|https/u);
+    // A run without the page reader projects no page facts for a call of that name.
+    expect(summarizeMessageRunToolActivity({ ...run, normalizedRequest: {}, toolCalls: [pageCall] }, "initiator")?.calls[0])
+      .not.toHaveProperty("fetchTarget");
+  });
+
   it("requires exact persisted MCP provenance and excludes all native origins", () => {
     const run = { userId: "initiator", errorPayload: null, normalizedRequest: acceptedMcpRequest, status: "complete" };
     for (const call of [
