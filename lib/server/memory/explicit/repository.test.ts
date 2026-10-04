@@ -48,7 +48,6 @@ describe("Explicit Memory repository pagination", () => {
       expect(sql).toContain(`version."modality" <> 'PATTERN'::"MemoryFactModality"`);
       expect(sql).not.toContain("SYNTHESIZED_FROM");
       expect(sql).not.toContain("combined_relation");
-      expect(sql).not.toContain("synthesisEnabledAt");
     }
   });
 });

@@ -30,7 +30,6 @@ const legacyOutput = {
   confidenceBand: "HIGH",
   entityMentions: [],
   memoryUseful: false,
-  patternExclusionRequested: false,
   pastChatsUseful: false,
   profileRequested: false,
   queryDecompositions: [],
@@ -57,7 +56,6 @@ const controlDecision = {
   answerRequested: false,
   category: "preferences",
   confidenceBand: "HIGH",
-  patternExclusionRequested: false,
   reasonCode: "save_request",
   responsePreference: false,
   sensitivity: "NORMAL",
@@ -124,20 +122,18 @@ describe("Memory control without model read planning", () => {
       .toBe(currentUserMessage);
   });
 
-  it("retains ordinary reads and the explicit inferred-memory opt-out", async () => {
+  it("retains ordinary reads", async () => {
     const execute = vi.fn(async () => ({ decision: {
       action: "NONE",
-      patternExclusionRequested: true,
       reasonCode: "no_memory_request"
     } }));
     await expect(createMemoryActionIntentService({ execute }).decide({
       ...context,
-      currentUserMessage: "What do you remember? Exclude inferred patterns."
+      currentUserMessage: "What do you remember about my drinks?"
     })).resolves.toMatchObject({
       action: "NONE",
       memoryUseful: true,
-      pastChatsUseful: true,
-      patternExclusionRequested: true
+      pastChatsUseful: true
     });
   });
 

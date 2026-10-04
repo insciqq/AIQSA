@@ -125,6 +125,11 @@ export function createPrismaMemoryCommandHandler(
       if (!source) return terminal(job, "STALE");
       let checkpoint = decodeMemoryCommandIntent(existing.commandIntent);
       if (!checkpoint && existing.commandIntent !== null && existing.commandIntent !== undefined) {
+        // An undecodable checkpoint, such as a decision accepted under an
+        // earlier intent version, cannot authorize a mutation and its classifier
+        // call already settled, so it fails visibly without new provider work.
+        memoryAttempt(job, { action: "fail", code: "memory_command_checkpoint_invalid",
+          outcome: "failed", stage: "validate" });
         return terminal(job, "FAILED");
       }
       if (!checkpoint) {
@@ -178,9 +183,6 @@ export function createPrismaMemoryCommandHandler(
       }
       const { intent, bindingId } = checkpoint;
       if (intent.action !== "SAVE" && intent.action !== "UPDATE" && intent.action !== "FORGET") {
-        // `patternExclusionRequested` stays in the accepted intent schema one
-        // release so stored checkpoints decode; synthesized patterns are
-        // retired, so it no longer marks a Memory request.
         return terminal(job, "REJECTED", intent.action === "NONE" && !intent.thisChatOnly &&
           ["none", "no_memory_request", "past_chats_request", "response_preference"].includes(intent.reasonCode));
       }
