@@ -19,7 +19,10 @@ import {
   decodeMemoryExplicitRelationDecisions,
   memoryExplicitRelationInputHash
 } from "./explicitResolver";
-import { selectMemoryExplicitEquivalenceSweepTargets } from "./explicitSweep";
+import {
+  discoverMemoryExplicitEquivalenceSweepPairs,
+  selectMemoryExplicitEquivalenceSweepTargets
+} from "./explicitSweep";
 
 function fact(
   id: string,
@@ -197,5 +200,68 @@ describe("equivalence candidate selection", () => {
       row("empty", "AUTOMATIC", "…"),
       row("saved-twin", "EXPLICIT", "my name is ada")
     ])).toEqual(["twin"]);
+  });
+
+  it("sweeps in bounded keyset batches with the unbatched result, including pairs across batches", async () => {
+    type Row = Parameters<typeof selectMemoryExplicitEquivalenceSweepTargets>[0][number] & { factId: string };
+    let next = 0;
+    const rows: Row[] = [];
+    const add = (sourceMode: Row["sourceMode"], text: string, extra: Partial<Row> = {}) => {
+      const id = String(next++).padStart(3, "0");
+      rows.push({ checked: false, eligible: true, factId: `fact-${id}`, normalizedSearchText: text,
+        scopeId: "scope", sourceMode, versionId: `version-${id}`, ...extra });
+    };
+    // Automatic twins sit early and their saves late, and the reverse, so
+    // every pair crosses both the explicit windows and the automatic batches.
+    for (let index = 0; index < 6; index += 1) add("AUTOMATIC", `early fact ${index}.`);
+    add("AUTOMATIC", "pinned fact", { eligible: false });
+    add("AUTOMATIC", "checked fact", { checked: true });
+    add("AUTOMATIC", "other scope fact", { scopeId: "folder" });
+    add("AUTOMATIC", "unmatched fact");
+    for (let index = 0; index < 6; index += 1) add("EXPLICIT", `Early fact ${index}`);
+    for (const text of ["late fact 0", "pinned fact", "checked fact", "other scope fact", "…"]) add("EXPLICIT", text);
+    for (let index = 0; index < 3; index += 1) add("EXPLICIT", `saved filler ${index}`);
+    add("AUTOMATIC", "late fact 0!");
+    add("AUTOMATIC", "Late fact 0");
+    const oracle = selectMemoryExplicitEquivalenceSweepTargets(rows);
+    expect(oracle).toHaveLength(8);
+
+    const limits = { automaticBatch: 3, explicitWindow: 4, jobs: 3 };
+    const calls: Array<{ limit: number; size: number }> = [];
+    const swept: string[] = [];
+    const page =(filter: (row: Row) => boolean) => async (after: string | null, limit: number) => {
+      const result = rows.filter((row) => filter(row) && (after === null || row.factId > after)).slice(0, limit);
+      calls.push({ limit, size: result.length });
+      return result;
+    };
+    const reader = {
+      // A scheduled check makes the automatic version checked.
+      automatic: page((row) => row.sourceMode === "AUTOMATIC" && row.eligible && !row.checked &&
+        !swept.includes(row.versionId)),
+      explicit: page((row) => row.sourceMode === "EXPLICIT")
+    };
+    let passes = 0;
+    for (;;) {
+      passes += 1;
+      const discovery = await discoverMemoryExplicitEquivalenceSweepPairs(reader, limits);
+      expect(discovery.pairs.length).toBeLessThanOrEqual(limits.jobs);
+      for (const { automaticVersionId, explicitVersionId } of discovery.pairs) {
+        const automatic = rows.find(({ versionId }) => versionId === automaticVersionId)!;
+        const explicit = rows.find(({ versionId }) => versionId === explicitVersionId)!;
+        expect([automatic.sourceMode, explicit.sourceMode]).toEqual(["AUTOMATIC", "EXPLICIT"]);
+        expect(memoryEquivalenceTextKey(explicit.normalizedSearchText))
+          .toBe(memoryEquivalenceTextKey(automatic.normalizedSearchText));
+        swept.push(automaticVersionId);
+      }
+      if (discovery.complete) break;
+      expect(discovery.pairs).toHaveLength(limits.jobs);
+    }
+    expect([...swept].sort()).toEqual([...oracle].sort());
+    expect(new Set(swept).size).toBe(swept.length);
+    expect(passes).toBe(3);
+    expect(calls.every(({ limit, size }) => limit <= limits.explicitWindow && size <= limit)).toBe(true);
+    // The finished owner discovers nothing and stays complete.
+    await expect(discoverMemoryExplicitEquivalenceSweepPairs(reader, limits))
+      .resolves.toEqual({ complete: true, pairs: [] });
   });
 });
