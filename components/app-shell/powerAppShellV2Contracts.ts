@@ -197,6 +197,11 @@ export type ShellThreadView = {
    */
   refreshInterruptedRun(): Promise<boolean>;
   retryActiveChatDetail(): void;
+  /**
+   * The scheduled task whose later runs continue in the open chat (same-chat
+   * mode, its newest chat): replies here do not change it, its editor does.
+   */
+  scheduledTaskChat?: Readonly<{ onEdit?(): void; title: string }> | null;
   showJumpToLatest: boolean;
   submitMessageEdit(): Promise<void> | void;
   threadScrollRef: RefObject<HTMLDivElement | null>;

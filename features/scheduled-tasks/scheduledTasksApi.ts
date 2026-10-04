@@ -1,4 +1,5 @@
 import {
+  SCHEDULED_TASK_SEEN_RUNS_LIMIT,
   decodeScheduledTask,
   decodeScheduledTaskDetailResponse,
   decodeScheduledTaskListResponse,
@@ -6,6 +7,7 @@ import {
   type ScheduledTaskCreateRequest,
   type ScheduledTaskDetailResponse,
   type ScheduledTaskListResponse,
+  type ScheduledTaskSeenRequest,
   type ScheduledTaskUpdateRequest
 } from "@/lib/contracts/scheduledTasks";
 
@@ -72,8 +74,16 @@ export async function deleteScheduledTask(taskId: string): Promise<void> {
   await request(taskPath(taskId), { method: "DELETE" });
 }
 
-export async function markScheduledTaskSeen(taskId: string): Promise<void> {
-  await request(`${taskPath(taskId)}/seen`, { method: "POST" });
+/**
+ * Marks the named results seen, at most `SCHEDULED_TASK_SEEN_RUNS_LIMIT` per
+ * request; only results the viewer has rendered belong here.
+ */
+export async function markScheduledTaskSeen(taskId: string, runIds: readonly string[]): Promise<void> {
+  const unique = [...new Set(runIds)];
+  for (let start = 0; start < unique.length; start += SCHEDULED_TASK_SEEN_RUNS_LIMIT) {
+    const body: ScheduledTaskSeenRequest = { runIds: unique.slice(start, start + SCHEDULED_TASK_SEEN_RUNS_LIMIT) };
+    await request(`${taskPath(taskId)}/seen`, { method: "POST", json: body });
+  }
 }
 
 /** Starts one manual run now; the server answers 409 `scheduled_task_running` while a run is pending. */
