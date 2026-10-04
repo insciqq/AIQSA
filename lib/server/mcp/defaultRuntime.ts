@@ -14,6 +14,7 @@ import type { McpOAuthService } from "./oauthService";
 import { prepareMcpRunPlan } from "./runPlan";
 import {
   createPrismaMcpCapabilityCatalogLoader,
+  createPrismaMcpCapabilityCatalogWithOmissionsLoader,
   createPrismaMcpProjectRunPlanLoader,
   createPrismaMcpRunPlanLoader
 } from "./runPlanRepository";
@@ -98,6 +99,7 @@ export function kickDefaultMcpRuntime(userId?: string): void {
 const loadRunPlan = createPrismaMcpRunPlanLoader();
 const loadProjectRunPlan = createPrismaMcpProjectRunPlanLoader();
 const loadCapabilityCatalog = createPrismaMcpCapabilityCatalogLoader();
+const loadCapabilityCatalogWithOmissions = createPrismaMcpCapabilityCatalogWithOmissionsLoader();
 
 async function prepareExactMcpRunPlan(
   userId: string,
@@ -151,6 +153,9 @@ export const defaultMcpRunPlan = {
   filterTools: filterMcpToolsForUser,
   catalog(userId: string) {
     return loadCapabilityCatalog(userId);
+  },
+  catalogWithOmissions(userId: string) {
+    return loadCapabilityCatalogWithOmissions(userId);
   },
   async materialize(
     userId: string,

@@ -86,6 +86,7 @@ import {
 } from "../knowledge/runAdmission";
 import type {
   McpCapabilityCatalog,
+  McpCatalogOmission,
   McpRunPlanBinding,
   McpRunPlanResult
 } from "../mcp/runPlan";
@@ -108,6 +109,7 @@ import { withSelectedSkillContext } from "../skills/userContext";
 import { freezeSkillManifest } from "../skills/runManifest";
 import { skillCatalogAuthorization } from "../skills/catalogRelevanceAuthority";
 import { SkillCatalogAuthorityChangedError, type SkillCatalogRelevanceService } from "../skills/catalogRelevanceService";
+import { scheduledUnavailableSources, scheduledUnavailableSourcesNotice } from "../scheduledTasks/sourceHealth";
 import { skillWorkspacePath } from "../../domain/skillBundlePaths";
 import { CODEX_MANAGED_PROFILE_VERSION } from "../agents/codexProfile";
 import { skillToolsForRequest } from "../tools/skill";
@@ -150,7 +152,8 @@ import type {
   ProjectRunAdmission,
   RunModelConfiguration,
   RunRepository,
-  ScheduledOccurrenceAdmission
+  ScheduledOccurrenceAdmission,
+  ScheduledUnavailableSource
 } from "./runRepositoryContract";
 import {
   DEFAULT_TOOL_RUN_BUDGETS,
@@ -290,6 +293,11 @@ export type RunPreparationDeps = Readonly<{
   mcp?: Readonly<{
     filterTools: import("../mcp/toolAccess").McpToolAccessFilter;
     catalog?(userId: string): Promise<McpCapabilityCatalog>;
+    /** The Auto catalog and the personal servers it left out, from one read; scheduled runs use it. */
+    catalogWithOmissions?(userId: string): Promise<Readonly<{
+      catalog: McpCapabilityCatalog;
+      omitted: readonly McpCatalogOmission[];
+    }>>;
     materialize?(
       userId: string,
       tools: readonly Readonly<{
@@ -427,6 +435,8 @@ export type MaterializedPreparedRunData = {
   initialChatMode?: MemoryInitialChatMode;
   knowledgeAdmissionPlan?: KnowledgeRunAdmissionPlan;
   mcpBindings?: McpRunPlanBinding[];
+  /** A scheduled send: the relevant personal sources its Auto catalog could not offer. */
+  scheduledUnavailableSources?: ScheduledUnavailableSource[];
   skillBindings?: AcceptedSkillRun[];
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
   normalizedRequest: NormalizedRunRequest;
@@ -667,6 +677,9 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
       : {}),
     ...(prepared.mcpBindings
       ? { mcpBindings: mutablePreparedData<McpRunPlanBinding[]>(prepared.mcpBindings) }
+      : {}),
+    ...(prepared.scheduledUnavailableSources
+      ? { scheduledUnavailableSources: mutablePreparedData<ScheduledUnavailableSource[]>(prepared.scheduledUnavailableSources) }
       : {}),
     ...(prepared.skillBindings
       ? { skillBindings: mutablePreparedData<AcceptedSkillRun[]>(prepared.skillBindings) }
@@ -1636,10 +1649,17 @@ async function prepareRunWith(
     : ordinaryMcpSelection?.mode === "load_all" && deps.mcp
       ? await deps.mcp.prepare(input.userId)
       : null;
-  const mcpCatalog = ordinaryMcpSelection?.mode === "auto" &&
-    deps.mcp?.catalog
-    ? await deps.mcp.catalog(input.userId)
+  // A scheduled run reads the same catalog together with the personal servers
+  // it had to leave out: a relevant one makes the run incomplete, never silently.
+  const mcpCatalogRead = ordinaryMcpSelection?.mode === "auto"
+    ? scheduledOccurrence && deps.mcp?.catalogWithOmissions
+      ? await deps.mcp.catalogWithOmissions(input.userId)
+      : deps.mcp?.catalog ? { catalog: await deps.mcp.catalog(input.userId), omitted: [] } : null
     : null;
+  const mcpCatalog = mcpCatalogRead?.catalog ?? null;
+  const scheduledMissingSources = scheduledOccurrence && mcpCatalogRead
+    ? scheduledUnavailableSources(mcpCatalogRead.omitted, scheduledOccurrence.relevantMcpServerIds)
+    : [];
   if (project && projectMcpServerIds.length > 0 && !mcpPlan) {
     return failure(
       "project_mcp_not_configured",
@@ -2113,6 +2133,9 @@ async function prepareRunWith(
   // Auto discloses the frozen catalog's bounded tool index; the accepted prompt keeps it through recovery.
   const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpToolIndexGuidance(mcpCatalog) : null;
   if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
+  // The frozen prompt names a scheduled run's missing sources through recovery.
+  const missingSourcesNotice = scheduledUnavailableSourcesNotice(scheduledMissingSources);
+  if (missingSourcesNotice) prompt = { ...prompt, system: [prompt.system, missingSourcesNotice].filter(Boolean).join("\n\n") };
   if (artifactIntent) prompt = { ...prompt, system: `${prompt.system}\n\nThe user explicitly asked for an artifact: call create_artifact for this message.` };
   let artifactReferences: NormalizedRunRequest["artifactReferences"];
   let artifactFocus: NormalizedRunRequest["artifactFocus"];
@@ -2552,6 +2575,7 @@ async function prepareRunWith(
       : {}),
     ...(knowledgeAdmissionPlan ? { knowledgeAdmissionPlan } : {}),
     ...(mcpPlan?.ok ? { mcpBindings: [...mcpPlan.bindings] } : {}),
+    ...(scheduledMissingSources.length > 0 ? { scheduledUnavailableSources: scheduledMissingSources } : {}),
     ...(skillRuns.length > 0
       ? {
           skillBindings: skillRuns.map((skill) => ({

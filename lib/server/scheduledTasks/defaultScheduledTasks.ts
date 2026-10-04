@@ -1,5 +1,6 @@
 import { resolveRequestAuth } from "../auth/defaultAuth";
 import { prisma } from "../prisma";
+import { createPrismaWorkspacePolicyRepository } from "../workspace/policyRepository";
 import { createPrismaScheduledTaskCatalogLoader } from "./catalog";
 import { createScheduledTaskHandlers } from "./handlers";
 import { kickScheduledTaskRunner } from "./runnerKick";
@@ -11,5 +12,6 @@ export const defaultScheduledTaskHandlers = createScheduledTaskHandlers({
   kick: kickScheduledTaskRunner,
   loadCatalog: defaultScheduledTaskCatalogLoader,
   resolveAuth: resolveRequestAuth,
-  store: defaultScheduledTaskStore
+  store: defaultScheduledTaskStore,
+  workspacePolicy: createPrismaWorkspacePolicyRepository(prisma)
 });

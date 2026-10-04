@@ -45,8 +45,9 @@ export function firstScheduledTaskRunAt(
  * the next occurrence from now; an unchanged active schedule keeps its due time
  * so that an edit never skips a run that is already due. A changed once
  * schedule must lie ahead in any status. The model is readmitted whenever the
- * result is active or its identity or Search changed. An hourly result must
- * continue in one chat; the chat mode is never changed silently.
+ * result is active, its identity or Search changed, or tools or Workspace were
+ * turned on. An hourly result must continue in one chat; the chat mode is
+ * never changed silently.
  */
 export function planScheduledTaskUpdate(
   current: ScheduledTask,
@@ -62,12 +63,16 @@ export function planScheduledTaskUpdate(
     provider: patch.provider ?? current.provider,
     searchEnabled: patch.searchEnabled ?? current.searchEnabled,
     emailNotify: patch.emailNotify ?? current.emailNotify,
+    toolsEnabled: patch.toolsEnabled ?? current.toolsEnabled,
+    workspaceEnabled: patch.workspaceEnabled ?? current.workspaceEnabled,
     chatMode: patch.chatMode ?? current.chatMode
   };
   if (!scheduledTaskChatModeAllowed(draft.schedule, draft.chatMode)) return { ok: false, code: "scheduled_task_chat_mode_invalid" };
   const scheduleChanged = draft.timeZone !== current.timeZone || !sameScheduledTaskSchedule(draft.schedule, current.schedule);
+  // Turning tools or Workspace on needs the model's tool calling (and Workspace the installation's) again.
   const modelChanged = draft.modelId !== current.modelId || draft.provider !== current.provider ||
-    draft.searchEnabled !== current.searchEnabled;
+    draft.searchEnabled !== current.searchEnabled || (draft.toolsEnabled && !current.toolsEnabled) ||
+    (draft.workspaceEnabled && !current.workspaceEnabled);
   const status = patch.status ?? (current.status === "completed" && scheduleChanged ? "active" : current.status);
   // A claimed once task has no due time left to keep; a recurring one always needs one.
   const keepsDueTime = current.status === "active" && !scheduleChanged &&

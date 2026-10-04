@@ -308,6 +308,28 @@ export type ScheduledOccurrenceAdmission = Readonly<{
    * messages lie on the path the run appends to. Null: the prompt alone.
    */
   previousResult: Readonly<{ assistantMessageId: string; userMessageId: string }> | null;
+  /**
+   * The personal MCP servers whose absence makes this run incomplete: those
+   * the task's previous shown result called, or relied on but already missed.
+   * Null: every server (the task has no previous shown result to judge by).
+   */
+  relevantMcpServerIds: readonly string[] | null;
+}>;
+
+/**
+ * A relevant personal MCP server a scheduled run's Auto catalog could not
+ * offer, frozen at admission on the run's occurrence as its source health.
+ */
+export type ScheduledUnavailableSource = Readonly<{
+  name: string;
+  reason: "mcp_reauthorization_required" | "mcp_server_unavailable";
+  /**
+   * The task's previous result relied on this server, so it stays relevant
+   * for the next run while it is missing. False when the run had no previous
+   * result to judge by and counted every server: such a guess is not carried.
+   */
+  relied: boolean;
+  serverId: string;
 }>;
 
 /** The occurrence is gone, already has its run, or its task changed since preparation; the admission rolled back. */
@@ -437,8 +459,10 @@ export type CreateRunInput = {
   /** A scheduled task's personal send: the run links this occurrence in its
    * creating transaction or is not created, records its scheduled origin,
    * bypasses Personal Memory, and leaves the owner's saved composer controls
-   * unchanged. */
+   * and an existing chat's Workspace switch unchanged. */
   scheduledOccurrence?: ScheduledOccurrenceAdmission;
+  /** With `scheduledOccurrence`: the relevant sources its plan lacked, frozen on the occurrence. */
+  scheduledUnavailableSources?: readonly ScheduledUnavailableSource[];
   signal?: AbortSignal;
   userId: string;
   workspaceAdmissionPlan?: WorkspaceRunAdmissionPlan;
