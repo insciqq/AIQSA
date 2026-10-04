@@ -3,6 +3,7 @@ import sharp from "sharp";
 import type { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import { normalizeTokenUsage } from "../../domain/usage";
 import { prisma } from "../prisma";
 import { hashCanonicalMcpValue } from "../mcp/definitions";
 import type { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
@@ -108,6 +109,11 @@ async function createChatVisionRun() {
   const callArguments = { images: [{ image_id: attachmentId }], question: "What color is the square?" };
   await expect(repository.beginToolLoopProviderRound({ providerContinuation: INITIAL_PROVIDER_CONTINUATION, roundIndex: 1, runId, userId }))
     .resolves.toBe("started");
+  // The lost executor had settled its terminal round usage before persisting the batch.
+  const roundUsage = normalizeTokenUsage({ inputTokens: 5, outputTokens: 3, totalTokens: 8 });
+  await expect(repository.recordRunUsageEvents({ chatId: chat.id, runId, userId,
+    answerRoundUsage: { completeness: "terminal", roundIndex: 1, usage: roundUsage },
+    usageAttributions: [{ modelId: "chat-vision-text-model", provider: "openai", usage: roundUsage }] })).resolves.toBe(true);
   const batch = await repository.persistToolLoopCallBatch({
     calls: [{ arguments: callArguments, ordinal: 0, providerCallId: callId, toolName: "analyze_image" }],
     providerContinuation: { providerResponseId: "response-chat-vision-1", providerToolMessages: [{
