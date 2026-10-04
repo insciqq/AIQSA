@@ -153,7 +153,33 @@ export function scheduledTaskLastRunLine(task: ScheduledTask, now: Date = new Da
   return `Last run ${formatScheduledInstant(task.lastRun.scheduledFor, task.timeZone, now)} · ${outcomeText(task.lastRun.state, task.lastRun.reasonCode)}`;
 }
 
-export type ScheduledTaskRunRow = Readonly<{ time: string; trigger: string; outcome: string; tone: "neutral" | "attention" | "live" }>;
+/** A scheduled instant skipped because the owner paused the task: not news, so never unread or announced. */
+export function isOwnerPauseSkip(run: ScheduledTask["lastRun"]): boolean {
+  return run?.state === "skipped" && run.reasonCode === "paused";
+}
+
+export type ScheduledTaskResultNotice = Readonly<{
+  kind: "error" | "success";
+  /** Where the notice's action leads: the answer in the task's chat, or the task's runs in Studio › Scheduled. */
+  open: "chat" | "scheduled";
+  text: string;
+}>;
+
+/** The notice for a newly settled run, saying what happened; null when there is nothing to announce. */
+export function scheduledTaskResultNotice(task: ScheduledTask): ScheduledTaskResultNotice | null {
+  const run = task.lastRun;
+  if (!run || isOwnerPauseSkip(run)) return null;
+  switch (run.state) {
+    case "completed":
+      return { kind: "success", open: task.chatId ? "chat" : "scheduled", text: `“${task.title}” has a new result` };
+    case "failed":
+      return { kind: "error", open: "scheduled", text: `“${task.title}” could not run` };
+    case "skipped":
+      return { kind: "success", open: "scheduled", text: `“${task.title}” was skipped` };
+  }
+}
+
+export type ScheduledTaskRunRow =Readonly<{ time: string; trigger: string; outcome: string; tone: "neutral" | "attention" | "live" }>;
 
 export function scheduledTaskRunRow(run: ScheduledTaskRun, timeZone: string, now: Date = new Date()): ScheduledTaskRunRow {
   return {

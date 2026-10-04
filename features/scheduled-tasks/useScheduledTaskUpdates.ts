@@ -34,6 +34,16 @@ function setNavigationUnseen(chatId: string, taskId: string, unseen: boolean, up
 }
 
 /**
+ * Marks a task's result seen: locally first (the task list and its chat row),
+ * then on the server. A failed request leaves the server marker for the next read.
+ */
+export function markScheduledTaskResultSeen(taskId: string, chatId: string | null): Promise<void> {
+  markScheduledTaskSeenLocally(taskId);
+  if (chatId) setNavigationUnseen(chatId, taskId, false);
+  return markScheduledTaskSeen(taskId).catch(() => undefined);
+}
+
+/**
  * Background owner of scheduled results: reads the task list once per
  * account, polls it while the document is visible and the account has tasks,
  * marks the chat row of a new result as unread, announces it once, and marks
@@ -77,10 +87,7 @@ export function useScheduledTaskUpdates({
   const markSeen = useEventCallback((chatId: string, taskId: string) => {
     if (seenRequests.current.has(taskId)) return;
     seenRequests.current.add(taskId);
-    // Clear locally first; a failed request leaves the server marker for the next read.
-    markScheduledTaskSeenLocally(taskId);
-    setNavigationUnseen(chatId, taskId, false);
-    void markScheduledTaskSeen(taskId).catch(() => undefined).finally(() => seenRequests.current.delete(taskId));
+    void markScheduledTaskResultSeen(taskId, chatId).finally(() => seenRequests.current.delete(taskId));
   });
 
   useEffect(() => {
