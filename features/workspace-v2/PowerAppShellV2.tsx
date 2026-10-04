@@ -8,6 +8,7 @@ import { createChatSearchPreferences } from "@/components/app-shell/chatSearchPr
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
 import { scheduledTaskResultNotice } from "@/features/scheduled-tasks/scheduledTaskPresentation";
 import { useScheduledTaskUpdates } from "@/features/scheduled-tasks/useScheduledTaskUpdates";
+import { useBrowserNotifications } from "@/features/browser-notifications/useBrowserNotifications";
 
 import { removePermanentlyDeletedChat } from "@/components/app-shell/permanentChatDeletionReconciliation";
 import { useComposerContextConfigurationKey } from "@/components/app-shell/composerContextConfiguration";
@@ -1029,6 +1030,7 @@ export function PowerAppShellV2({
     setSendWithEnter,
     setAnswerSoundEnabled,
     setAnswerSoundId,
+    setBrowserNotificationsEnabled,
     toggleCitationsVisibility,
     toggleReasoningBlockVisibility,
     useOrganizationModelDefault,
@@ -1047,6 +1049,11 @@ export function PowerAppShellV2({
     setCatalog,
     setNotice,
     setSettingsNotice
+  });
+  const browserNotifications = useBrowserNotifications({
+    accountId,
+    enabled: catalog ? catalog.defaults.browserNotificationsEnabled ?? true : null,
+    setEnabled: setBrowserNotificationsEnabled
   });
   const flushPendingModelControlDefaultsEvent = useEventCallback(flushPendingModelControlDefaults);
 
@@ -2716,6 +2723,7 @@ export function PowerAppShellV2({
     notificationSoundReady: soundPreferences !== null,
     previewAnswerSound,
     selectAnswerSound: setAnswerSoundId,
+    browserNotifications,
     operationError: composerSession.operationError,
     operationErrorLive: composerSession.operationErrorLive,
     operationErrorRetryable: composerSession.operationErrorRetryable,

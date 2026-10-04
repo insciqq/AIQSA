@@ -79,6 +79,8 @@ export async function installMatrixCatalogFixture(
   }) ?? INSTALLATION_CHAT_DEFAULTS;
   const settings: UserSettingsWire = {
     ...(decodeAnswerSoundPreferences(fixtureDefaults) ?? DEFAULT_ANSWER_SOUND),
+    // Off unless a spec opts in, so the permission banner never shifts fixture layouts.
+    browserNotificationsEnabled: fixtureDefaults.browserNotificationsEnabled === true,
     defaultControlValues: structuredClone(fixtureCatalog.defaults.controlValues),
     defaultKnowledgePlan: chatDefaults.knowledgePlan,
     defaultMcpMode: chatDefaults.mcpMode,
@@ -104,6 +106,7 @@ export async function installMatrixCatalogFixture(
             ...fixtureCatalog.defaults,
             answerSoundEnabled: settings.answerSoundEnabled,
             answerSoundId: settings.answerSoundId,
+            browserNotificationsEnabled: settings.browserNotificationsEnabled,
             controlValues: settings.defaultControlValues,
             hasPersonalModelDefault: settings.hasPersonalModelDefault,
             modelId: effectiveModelDefault?.modelId ?? "",
@@ -186,6 +189,9 @@ export async function installMatrixCatalogFixture(
     }
     if (isAnswerSoundId(body.answerSoundId)) {
       settings.answerSoundId = body.answerSoundId;
+    }
+    if (typeof body.browserNotificationsEnabled === "boolean") {
+      settings.browserNotificationsEnabled = body.browserNotificationsEnabled;
     }
     if (typeof body.showCitations === "boolean") {
       settings.showCitations = body.showCitations;
