@@ -1,5 +1,10 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  composerDraftEpochKey,
+  createInitialComposerDraftEpoch,
+  signOutComposerDraftEpoch
+} from "@/components/app-shell/composerDraftStorage";
 import type { ChatImportResponse } from "@/lib/contracts/chatImport";
 import { ChatImportRowV2 } from "./ChatImportRowV2";
 import { dismissChatImport, startChatImport } from "./chatImportClient";
@@ -7,10 +12,18 @@ import type { ChatImportRunnerDeps } from "./chatImportRunner";
 import type { ImportBatch } from "./importPipeline";
 import type { ImportWorkerPort, ImportWorkerResponse } from "./importWorkerProtocol";
 
-function scriptedDeps(steps: readonly ImportBatch[], send: ChatImportRunnerDeps["sendBatch"]): ChatImportRunnerDeps {
+const accountId = "account-1";
+
+function scriptedDeps(
+  steps: readonly ImportBatch[],
+  send: ChatImportRunnerDeps["sendBatch"],
+  workers: Array<{ terminated: boolean }> = []
+): ChatImportRunnerDeps {
   return {
     createWorker(): ImportWorkerPort {
       let index = 0;
+      const record = { terminated: false };
+      workers.push(record);
       const port: ImportWorkerPort = {
         onerror: null,
         onmessage: null,
@@ -18,7 +31,9 @@ function scriptedDeps(steps: readonly ImportBatch[], send: ChatImportRunnerDeps[
           const step = steps[index++];
           if (step) queueMicrotask(() => port.onmessage?.({ data: { batch: step, type: "batch" } } as MessageEvent<ImportWorkerResponse>));
         },
-        terminate() {}
+        terminate() {
+          record.terminated = true;
+        }
       };
       return port;
     },
@@ -30,14 +45,21 @@ const step = (overrides: Partial<ImportBatch>): ImportBatch => ({
   body: null, done: false, failed: [], sent: [], skipped: {}, totalDelta: 0, ...overrides
 });
 
+/** Another tab signs this account out: the logout fence moves and this tab hears of it. */
+function signOutInAnotherTab(): void {
+  signOutComposerDraftEpoch(accountId);
+  window.dispatchEvent(new StorageEvent("storage", { key: composerDraftEpochKey(accountId) }));
+}
+
 afterEach(() => {
   dismissChatImport();
   cleanup();
+  window.localStorage.clear();
 });
 
 describe("ChatImportRowV2", () => {
   it("offers the import with the accepted export files", () => {
-    render(<ChatImportRowV2 />);
+    render(<ChatImportRowV2 accountId={accountId} />);
     expect(screen.getByText("Import chats")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Import…" })).toBeEnabled();
     const input = screen.getByTestId("settings-import-input");
@@ -48,9 +70,10 @@ describe("ChatImportRowV2", () => {
   it("shows progress by chats and then the report with skipped content and failures", async () => {
     let release!: (response: ChatImportResponse) => void;
     const onImported = vi.fn();
-    render(<ChatImportRowV2 />);
+    render(<ChatImportRowV2 accountId={accountId} />);
     act(() => {
       startChatImport([new File(["x"], "aiqsa-chats.tar.gz")], {
+        accountId,
         deps: scriptedDeps([
           step({
             body: "{\"chats\":[]}",
@@ -86,9 +109,10 @@ describe("ChatImportRowV2", () => {
 
   it("cancels: the chats being saved finish and the report says what stays", async () => {
     let release!: (response: ChatImportResponse) => void;
-    render(<ChatImportRowV2 />);
+    render(<ChatImportRowV2 accountId={accountId} />);
     act(() => {
       startChatImport([new File(["x"], "a.json")], {
+        accountId,
         deps: scriptedDeps([
           step({ body: "{\"chats\":[]}", sent: [{ messages: 2, title: "Saved" }], totalDelta: 3 }),
           step({ done: true })
@@ -105,5 +129,53 @@ describe("ChatImportRowV2", () => {
     expect(report).toHaveTextContent("Import cancelled");
     expect(report).toHaveTextContent("Imported 1 chat (2 messages).");
     expect(report).toHaveTextContent("Chats imported before you cancelled stay.");
+  });
+
+  it("stops a running import when its account signs out in another tab and drops its details", async () => {
+    createInitialComposerDraftEpoch(accountId);
+    const workers: Array<{ terminated: boolean }> = [];
+    let signal: AbortSignal | null = null;
+    render(<ChatImportRowV2 accountId={accountId} />);
+    act(() => {
+      startChatImport([new File(["x"], "a.json")], {
+        accountId,
+        deps: scriptedDeps([
+          step({ body: "{}", failed: [{ reason: "too_large", title: "Private chat title" }], sent: [{ messages: 2, title: "Sent title" }], totalDelta: 3 }),
+          step({ done: true })
+        ], (_body, _count, requestSignal) => new Promise((_resolve, reject) => {
+          signal = requestSignal;
+          requestSignal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }), workers)
+      });
+    });
+    await screen.findByText("Importing chats: 1 of 3");
+    act(() => signOutInAnotherTab());
+    const report = await screen.findByTestId("chat-import-report");
+    expect(report).toHaveTextContent("Import stopped");
+    expect(report).toHaveTextContent("You signed out or switched accounts, so the import stopped and its details were cleared.");
+    expect(report).not.toHaveTextContent("Private chat title");
+    expect(signal!.aborted).toBe(true);
+    expect(workers.every((worker) => worker.terminated)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByTestId("chat-import-report")).not.toBeInTheDocument();
+  });
+
+  it("clears a finished report on sign-out, and never shows another account's import", async () => {
+    createInitialComposerDraftEpoch(accountId);
+    const { rerender } = render(<ChatImportRowV2 accountId={accountId} />);
+    act(() => {
+      startChatImport([new File(["x"], "a.json")], {
+        accountId,
+        deps: scriptedDeps([step({ done: true, failed: [{ reason: "too_large", title: "Private chat title" }], totalDelta: 1 })], vi.fn())
+      });
+    });
+    expect(await screen.findByTestId("chat-import-failed")).toHaveTextContent("Private chat title");
+    rerender(<ChatImportRowV2 accountId="account-2" />);
+    expect(screen.queryByTestId("chat-import-report")).not.toBeInTheDocument();
+    rerender(<ChatImportRowV2 accountId={accountId} />);
+    act(() => signOutInAnotherTab());
+    const report = await screen.findByTestId("chat-import-report");
+    expect(report).toHaveTextContent("details were cleared");
+    expect(report).not.toHaveTextContent("Private chat title");
   });
 });

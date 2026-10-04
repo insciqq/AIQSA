@@ -2157,6 +2157,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 />
                 {projectContext ? null : (
                   <DataSettingsRowsV2
+                    accountId={session.accountId}
                     onDeleteAll={deleteAllPersonalChats}
                     onDeleted={() => {
                       void workspace.pane.actions.retry();

@@ -123,6 +123,14 @@ describe("chat import against PostgreSQL", () => {
     expect(await importChatForUser(prisma, userId, item)).toMatchObject({ status: "imported" });
   });
 
+  it("stores an empty or blank source title as the default chat title", async () => {
+    const userId = await owner();
+    await importChatForUser(prisma, userId, { document: document(""), source: "CHATGPT", sourceKey: "untitled-1" });
+    await importChatForUser(prisma, userId, { document: document(" ".repeat(300)), source: "CHATGPT", sourceKey: "untitled-2" });
+    const titles = (await prisma.chat.findMany({ select: { title: true }, where: { userId } })).map((chat) => chat.title);
+    expect(titles).toEqual(["New Chat", "New Chat"]);
+  });
+
   it("rolls a failing import back completely", async () => {
     const userId = await owner();
     await expect(importChatForUser(prisma, userId, { document: document("Broken\u0000title"), source: "AIQSA" })).rejects.toThrow();

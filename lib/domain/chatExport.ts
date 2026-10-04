@@ -52,18 +52,38 @@ export function chatExportMarkdown(
   return `# ${title}\n\n${turns.join("\n\n")}\n`;
 }
 
+const SLUG_MAX_CODE_POINTS = 64;
+/**
+ * A bulk-archive entry name is a ustar name of at most 100 UTF-8 bytes: the
+ * slug leaves room for the date (11), a collision suffix (up to 7) and the
+ * extension (up to 5).
+ */
+const SLUG_MAX_UTF8_BYTES = 72;
+
+function utf8Length(character: string): number {
+  const code = character.codePointAt(0) ?? 0;
+  return code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+}
+
 /**
  * Deterministic export base name: a unicode-aware slug of the chat title plus
  * the ISO date, e.g. `release-checklist-032-2026-08-13`. The extension is
- * appended by the caller per export format.
+ * appended by the caller per export format. The slug is cut on code points,
+ * within a UTF-8 byte budget: a half surrogate pair would break the download
+ * header, and a long non-ASCII name would not fit an archive entry.
  */
 export function chatExportFileBaseName(title: string, date: Date = new Date()): string {
-  const slug = title
+  const characters = Array.from(title
     .normalize("NFKC")
     .toLocaleLowerCase()
     .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64)
-    .replace(/-+$/g, "");
+    .replace(/^-+|-+$/g, "")).slice(0, SLUG_MAX_CODE_POINTS);
+  let bytes = 0;
+  let kept = 0;
+  while (kept < characters.length && bytes + utf8Length(characters[kept]!) <= SLUG_MAX_UTF8_BYTES) {
+    bytes += utf8Length(characters[kept]!);
+    kept += 1;
+  }
+  const slug = characters.slice(0, kept).join("").replace(/-+$/g, "");
   return `${slug || "chat"}-${date.toISOString().slice(0, 10)}`;
 }

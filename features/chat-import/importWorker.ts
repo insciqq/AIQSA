@@ -18,11 +18,11 @@ class UnreadableFilesError extends Error {}
 const scope = globalThis as unknown as ImportWorkerScope;
 let steps: AsyncGenerator<ImportBatch, void> | null = null;
 
-async function* run(files: readonly File[]): AsyncGenerator<ImportBatch, void> {
+async function* run(accountId: string, files: readonly File[]): AsyncGenerator<ImportBatch, void> {
   const opened = await Promise.all(files.map((file) => openImportFile(file))).catch(() => {
     throw new UnreadableFilesError();
   });
-  yield* importBatches(opened, { converters: createChatImportConverters() });
+  yield* importBatches(opened, { accountId, converters: createChatImportConverters() });
 }
 
 async function advance(): Promise<void> {
@@ -39,7 +39,7 @@ async function advance(): Promise<void> {
 scope.onmessage = (event) => {
   const message = event.data;
   if (message.type === "start" && !steps) {
-    steps = run(message.files);
+    steps = run(message.accountId, message.files);
     void advance();
     return;
   }

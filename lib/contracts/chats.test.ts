@@ -10,6 +10,9 @@ import {
   boundedChatBranchPreview,
   boundedChatTitle,
   CHAT_TITLE_MAX_LENGTH,
+  codePointLength,
+  DEFAULT_CHAT_TITLE,
+  importedChatTitle,
   decodeArchivedChatDetailResponse,
   decodeArchivedChatsResponse,
   decodeChatBranchesResponse,
@@ -350,6 +353,15 @@ describe("chat wire contracts", () => {
     for (const assistantId of ["", 42, { id: "assistant-1" }]) {
       expect(decodeChatSummaryResponse({ chat: { ...summary, assistantId } })).toBeNull();
     }
+  });
+
+  it("gives an imported chat a non-empty bounded title that every chat decoder accepts", () => {
+    for (const blank of ["", "   ", "\t\n", " ".repeat(300)]) expect(importedChatTitle(blank)).toBe(DEFAULT_CHAT_TITLE);
+    expect(importedChatTitle("  Release plan  ")).toBe("Release plan");
+    expect(codePointLength(importedChatTitle(`  ${"я".repeat(200)}`))).toBe(CHAT_TITLE_MAX_LENGTH);
+    expect(decodeChatSummaryResponse({ chat: { ...summary, title: importedChatTitle(" ".repeat(300)) } })?.title).toBe(DEFAULT_CHAT_TITLE);
+    // An empty title fails the whole response: the reason the import never stores one.
+    expect(decodeChatSummaryResponse({ chat: { ...summary, title: "" } })).toBeNull();
   });
 
   it("carries an imported chat's source on summaries, archived ones included, and rejects a malformed marker", () => {
