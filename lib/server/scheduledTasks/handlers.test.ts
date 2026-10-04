@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ScheduledTask, ScheduledTaskDraft } from "../../contracts/scheduledTasks";
+import type { ScheduledTask, ScheduledTaskDraft, ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import type { ScheduledTaskCatalog } from "./catalog";
 import { createScheduledTaskHandlers } from "./handlers";
 import { ScheduledTaskError, type ScheduledTaskUpdateWrite } from "./store";
@@ -16,7 +16,7 @@ const draft = {
   title: "Morning brief", prompt: "fixture-private-prompt", schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow",
   modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false, chatMode: "new"
 } as const;
-const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } as const;
+const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } satisfies ScheduledTaskSchedule;
 
 function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
