@@ -265,6 +265,20 @@ export type NormalizedRunRequest = {
     system: string | null;
   };
   provider: string;
+  /** Server-owned admission marker of an ordinary personal run (never a
+   * scheduled, temporary, Project, Assistant, Agent or Knowledge run) whose
+   * tool-calling model may create one scheduled task through
+   * `create_scheduled_task`: the settings such a task takes, frozen from this
+   * admission. `modelId` and `provider` are the catalog identity the run
+   * admitted (not the execution identity above); `toolsEnabled` is the run's
+   * MCP selection other than Off. Never set from a request field. */
+  scheduledTaskTool?: Readonly<{
+    modelId: string;
+    provider: string;
+    searchEnabled: boolean;
+    toolsEnabled: boolean;
+    workspaceEnabled: boolean;
+  }>;
   searchPlan: NormalizedSearchPlan;
   /** Server-owned admission marker; old runs retain their accepted tool set. */
   sessionStatusTool?: true;

@@ -93,6 +93,7 @@ import type {
 import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
+import { scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
 import { readToolCallTool } from "../tools/readToolCall";
 import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { insertToolHistory, type ToolHistoryProjection } from "./toolHistory";
@@ -190,6 +191,8 @@ type RunPreparationRepository = Pick<
   | "loadConversationContextForLeaf"
 > & Partial<Pick<
   RunRepository,
+  /** Present where a run can create a scheduled task: admission offers the tool only then. */
+  | "createScheduledTaskForCall"
   | "loadAssistantRowContext"
   | "loadBranchContextCheckpoints"
   | "loadKnowledgeFullContextPassages"
@@ -2263,6 +2266,22 @@ async function prepareRunWith(
         outcome: "degraded", action: "degrade", code: "memory_search_admission_skipped" });
     }
   }
+  // The owner's own message in an ordinary personal chat may create one
+  // scheduled task. Never a scheduled, temporary, Project, Assistant, Agent or
+  // Knowledge run, nor one without tool calling. Frozen here: the settings the
+  // task takes from this run, never mutable chat state read later.
+  const scheduledTaskTool: NormalizedRunRequest["scheduledTaskTool"] = !scheduledOccurrence && !project && !assistantRun &&
+    !agentEnabled && !knowledgeRequested && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
+    typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true
+    ? {
+        modelId: selectedModelId,
+        provider: selectedProvider,
+        searchEnabled: admissionPlan.searches.length > 0,
+        toolsEnabled: ordinaryMcpSelection !== null && ordinaryMcpSelection.mode !== "off",
+        workspaceEnabled: workspaceAdmissionPlan !== undefined
+      }
+    : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
@@ -2285,6 +2304,7 @@ async function prepareRunWith(
     }) === true ? { sessionStatusTool: true as const } : {}),
     ...(toolCallReader ? { toolCallReader: true as const } : {}),
     ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
+    ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
     toolHistory,
     attachmentIds,
     chatId: chat.id,
@@ -2373,6 +2393,7 @@ async function prepareRunWith(
     ...(baseNormalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
     ...(baseNormalizedRequest.toolCallReader ? [readToolCallTool] : []),
     ...(baseNormalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
+    ...scheduledTaskToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),

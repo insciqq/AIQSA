@@ -1,22 +1,19 @@
-import { decodeScheduledTaskSeenRequest, type ScheduledTaskDraft, type ScheduledTaskErrorCode } from "../../contracts/scheduledTasks";
+import { decodeScheduledTaskSeenRequest, type ScheduledTaskErrorCode } from "../../contracts/scheduledTasks";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
-import { resolveScheduledTaskModel, type ScheduledTaskCatalogLoader } from "./catalog";
-import { firstScheduledTaskRunAt, planScheduledTaskUpdate } from "./mutations";
-import { decodeScheduledTaskCreateRequest, decodeScheduledTaskUpdateRequest } from "./requests";
+import { admitScheduledTaskCreate, admitScheduledTaskModel, type ScheduledTaskDraftAdmissionDeps } from "./draftAdmission";
+import { planScheduledTaskUpdate } from "./mutations";
+import { decodeScheduledTaskUpdateRequest } from "./requests";
 import { ScheduledTaskError, type ScheduledTaskStore } from "./store";
 
-export type ScheduledTaskHandlerDeps = Readonly<{
+export type ScheduledTaskHandlerDeps = ScheduledTaskDraftAdmissionDeps & Readonly<{
   /** Wakes the runner after a change that may make an occurrence due. */
   kick?: () => void;
-  loadCatalog: ScheduledTaskCatalogLoader;
   now?: () => Date;
   resolveAuth: RequestAuthResolver;
   store: ScheduledTaskStore;
-  /** The installation Workspace switch; a task can turn Workspace on only while it is on. */
-  workspacePolicy: Readonly<{ read(): Promise<Readonly<{ enabled: boolean }>> }>;
 }>;
 
 const headers = { "cache-control": "private, no-store" };
@@ -69,20 +66,6 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
     }
   }
 
-  /**
-   * The composer's rules for the saved choices: the exact model with Search
-   * when asked, tool calling for tools and Workspace, and Workspace turned on
-   * for the installation. A Workspace runtime that is only down for now does
-   * not refuse a save; a run then retries.
-   */
-  async function admitModel(userId: string, draft: ScheduledTaskDraft): Promise<void> {
-    const admission = resolveScheduledTaskModel(await deps.loadCatalog(userId), draft);
-    if (!admission.ok) throw new ScheduledTaskError(admission.code);
-    if (draft.workspaceEnabled && !(await deps.workspacePolicy.read()).enabled) {
-      throw new ScheduledTaskError("scheduled_task_workspace_unavailable");
-    }
-  }
-
   return {
     list: (request: Request) => handle(request, "read", null, async (userId) =>
       Response.json(await deps.store.list(userId), { headers })),
@@ -91,12 +74,9 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
       const raw = await readJsonBodyOrNull(request);
       const bodyError = requestBodyErrorResponse(raw);
       if (bodyError) return bodyError;
-      const decoded = decodeScheduledTaskCreateRequest(raw);
-      if (!decoded.ok) return failure(decoded.code);
-      const first = firstScheduledTaskRunAt(decoded.value.schedule, decoded.value.timeZone, now());
-      if (!first.ok) return failure(first.code);
-      await admitModel(userId, decoded.value);
-      const task = await deps.store.create(userId, decoded.value, first.nextRunAt);
+      const admitted = await admitScheduledTaskCreate(deps, userId, raw, now());
+      if (!admitted.ok) return failure(admitted.code);
+      const task = await deps.store.create(userId, admitted.draft, admitted.nextRunAt);
       deps.kick?.();
       return Response.json({ task }, { status: 201, headers });
     }),
@@ -117,7 +97,7 @@ export function createScheduledTaskHandlers(deps: ScheduledTaskHandlerDeps) {
       if (current.revision !== decoded.value.expectedRevision) return failure("scheduled_task_stale");
       const plan = planScheduledTaskUpdate(current, decoded.value, now());
       if (!plan.ok) return failure(plan.code);
-      if (plan.checkModel) await admitModel(userId, plan.draft);
+      if (plan.checkModel) await admitScheduledTaskModel(deps, userId, plan.draft);
       const task = await deps.store.update(userId, taskId, {
         draft: plan.draft, expectedRevision: decoded.value.expectedRevision, nextRunAt: plan.nextRunAt, status: plan.status
       });
