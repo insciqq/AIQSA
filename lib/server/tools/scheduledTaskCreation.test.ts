@@ -21,7 +21,8 @@ vi.mock("../observability", async (importOriginal) => ({
 }));
 
 const settings: ScheduledTaskToolSettings = {
-  modelId: "deployment-1", provider: "connection-1", searchEnabled: true, toolsEnabled: true, workspaceEnabled: false
+  modelId: "deployment-1", provider: "connection-1", searchEnabled: true, toolsEnabled: true, workspaceEnabled: false,
+  memoryEnabled: true
 };
 const request = (zone: Readonly<{ timeZone: string; timeZoneSource: "client" | "utc_fallback" }> = {
   timeZone: "Europe/Moscow", timeZoneSource: "client"
@@ -39,8 +40,9 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.",
     schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
     modelId: "deployment-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true,
-    workspaceEnabled: false, chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
-    nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false, revision: 1,
+    workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", status: "active", pauseReason: null,
+    completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false,
+    revision: 1,
     createdAt: "2026-10-04T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z", ...overrides
   };
 }
@@ -75,8 +77,13 @@ describe("create_scheduled_task tool", () => {
 
   it("decodes only the exact frozen settings", () => {
     expect(isScheduledTaskToolSettings(settings)).toBe(true);
+    expect(isScheduledTaskToolSettings({ ...settings, memoryEnabled: false })).toBe(true);
+    // A run accepted before tasks had Memory froze no Memory switch.
+    const { memoryEnabled: _memoryEnabled, ...accepted } = settings;
+    expect(isScheduledTaskToolSettings(accepted)).toBe(true);
     for (const value of [null, {}, { ...settings, extra: true }, { ...settings, modelId: "" }, { ...settings, toolsEnabled: "yes" },
-      { ...settings, provider: "x".repeat(257) }]) {
+      { ...settings, provider: "x".repeat(257) }, { ...settings, memoryEnabled: "on" }, { ...settings, memoryEnabled: null },
+      { modelId: "deployment-1", provider: "connection-1", searchEnabled: true, toolsEnabled: true }]) {
       expect(isScheduledTaskToolSettings(value)).toBe(false);
     }
   });
@@ -88,12 +95,13 @@ describe("create_scheduled_task tool", () => {
     expect(create.mock.calls[0]![0]).toMatchObject({ callId: "persisted-call-1", runId: "run-1", userId: "user-1", body: {
       title: "Check mail", prompt: "Remind me to check my mail.", kind: "standard", chatMode: "new", emailNotify: false,
       schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
-      modelId: "deployment-1", provider: "connection-1", searchEnabled: true, toolsEnabled: true, workspaceEnabled: false
+      modelId: "deployment-1", provider: "connection-1", searchEnabled: true, toolsEnabled: true, workspaceEnabled: false,
+      memoryEnabled: true
     } });
     // Only the fields of the schedule's kind reach the owner contract.
     expect(Object.keys(create.mock.calls[0]![0].body as Record<string, Record<string, unknown>>).sort()).toEqual([
-      "chatMode", "emailNotify", "kind", "modelId", "prompt", "provider", "schedule", "searchEnabled", "timeZone", "title",
-      "toolsEnabled", "workspaceEnabled"
+      "chatMode", "emailNotify", "kind", "memoryEnabled", "modelId", "prompt", "provider", "schedule", "searchEnabled", "timeZone",
+      "title", "toolsEnabled", "workspaceEnabled"
     ]);
     expect(Object.keys((create.mock.calls[0]![0].body as { schedule: object }).schedule)).toEqual(["kind", "time", "days"]);
     expect(result).toEqual({
@@ -105,11 +113,23 @@ describe("create_scheduled_task tool", () => {
       callId: "provider-call-1",
       content: [{ type: "json", value: expect.objectContaining({ created: true, title: "Check mail",
         schedule: "Every weekday at 09:00", timeZone: "Europe/Moscow", nextRun: "Mon 2026-10-05 09:00",
-        chat: "every run starts a new chat", webSearch: true, tools: true, workspace: false }) }],
+        chat: "every run starts a new chat", webSearch: true, tools: true, workspace: false, memory: true }) }],
       name: CREATE_SCHEDULED_TASK_TOOL_NAME,
       status: "complete"
     });
     expect(JSON.stringify(result.content)).not.toContain("task-1");
+  });
+
+  it("gives the task Memory only when its creating run was admitted to read it", async () => {
+    for (const [frozen, expected] of [[true, true], [false, false], [undefined, false]] as const) {
+      const create = creator(task({ memoryEnabled: expected }));
+      const { memoryEnabled: _memoryEnabled, ...rest } = settings;
+      const scheduledTaskTool = frozen === undefined ? rest : { ...rest, memoryEnabled: frozen };
+      const result = await executeCreateScheduledTask(call(reminder),
+        context({ request: { ...request(), scheduledTaskTool } }), create);
+      expect(create.mock.calls[0]![0].body).toMatchObject({ memoryEnabled: expected });
+      expect(result.content).toEqual([{ type: "json", value: expect.objectContaining({ memory: expected }) }]);
+    }
   });
 
   it("keeps an hourly monitor in one chat by default and marks a UTC fallback zone on the card", async () => {

@@ -19,13 +19,14 @@ const now = new Date("2026-10-04T10:00:00.000Z");
 const body = {
   title: "Check mail", prompt: "Remind me to check my mail.", schedule: { kind: "weekly", time: "09:00",
     days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1",
-  searchEnabled: false, emailNotify: false, toolsEnabled: true, workspaceEnabled: false, chatMode: "new", kind: "standard"
+  searchEnabled: false, emailNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new",
+  kind: "standard"
 };
 const created: ScheduledTask = {
   id: "task-1", title: "Check mail", prompt: body.prompt, schedule: { kind: "weekly", time: "09:00",
     days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1",
-  searchEnabled: false, emailNotify: false, toolsEnabled: true, workspaceEnabled: false, chatMode: "new", kind: "standard",
-  status: "active", pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null,
+  searchEnabled: false, emailNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new",
+  kind: "standard", status: "active", pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null,
   running: false, chatId: null, unseenResult: false, revision: 1, createdAt: now.toISOString(), updatedAt: now.toISOString()
 };
 const providerCall = { id: "provider-call-1", name: CREATE_SCHEDULED_TASK_TOOL_NAME };

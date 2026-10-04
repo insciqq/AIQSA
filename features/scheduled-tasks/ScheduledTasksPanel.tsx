@@ -17,6 +17,7 @@ import {
   validateScheduledTaskDraft,
   type ScheduledTaskEditorDraft,
   type ScheduledTaskFieldErrors,
+  type ScheduledTaskMemoryAvailability,
   type ScheduledTaskWorkspaceAvailability
 } from "./scheduledTaskDraft";
 import {
@@ -125,12 +126,15 @@ function errorCode(error: unknown): string | null {
 export function ScheduledTasksPanel({
   accountId,
   catalog,
+  memory = "unknown",
   onBusyChange,
   onOpenChat,
   workspace = "unknown"
 }: Readonly<{
   accountId: string;
   catalog: Catalog | null;
+  /** Whether the owner's Memory lets runs read anything, from the shell's own Memory settings read. */
+  memory?: ScheduledTaskMemoryAvailability;
   onBusyChange?(busy: boolean): void;
   onOpenChat(chatId: string): Promise<void> | void;
   /** The installation's Workspace availability, from the shell's own read. */
@@ -409,6 +413,7 @@ export function ScheduledTasksPanel({
           emailAvailable={emailAvailable || Boolean(editor.original?.emailNotify)}
           errors={editor.errors}
           initialDraft={editor.initialDraft}
+          memory={memory}
           notice={editor.notice}
           original={editor.original}
           recentRuns={editor.recentRuns}

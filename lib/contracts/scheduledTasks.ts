@@ -119,6 +119,8 @@ export type ScheduledTask = {
   toolsEnabled: boolean;
   /** See `ScheduledTaskDraft.workspaceEnabled`. */
   workspaceEnabled: boolean;
+  /** See `ScheduledTaskDraft.memoryEnabled`. */
+  memoryEnabled: boolean;
   chatMode: ScheduledTaskChatMode;
   kind: ScheduledTaskKind;
   status: ScheduledTaskStatus;
@@ -244,6 +246,13 @@ export type ScheduledTaskDraft = {
    * tool calling and an installation with Workspace on.
    */
   workspaceEnabled: boolean;
+  /**
+   * Runs read what the owner's Memory holds (standing context and, with a
+   * tool-calling model, Memory search) and never add to it, whatever the
+   * task chat's Memory mode; the owner's Memory settings still decide what
+   * may be read. New tasks start with it on.
+   */
+  memoryEnabled: boolean;
   /** `new` is the default the editor offers; hourly schedules and monitoring tasks require `same`. */
   chatMode: ScheduledTaskChatMode;
   /** `monitoring` requires a model that can call tools. */
@@ -422,8 +431,8 @@ export function scheduledTaskChatModeAllowed(
 
 const TASK_KEYS = [
   "id", "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "toolsEnabled",
-  "workspaceEnabled", "chatMode", "kind", "status", "pauseReason", "completionReason", "nextRunAt", "lastRun", "running",
-  "chatId", "unseenResult", "revision", "createdAt", "updatedAt"
+  "workspaceEnabled", "memoryEnabled", "chatMode", "kind", "status", "pauseReason", "completionReason", "nextRunAt", "lastRun",
+  "running", "chatId", "unseenResult", "revision", "createdAt", "updatedAt"
 ] as const;
 const STATUSES: readonly unknown[] = ["active", "paused", "completed"] satisfies ScheduledTaskStatus[];
 const CHAT_MODES: readonly unknown[] = SCHEDULED_TASK_CHAT_MODES;
@@ -445,7 +454,8 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     !isScheduledTaskTimeZoneShape(value.timeZone) || !isScheduledTaskModelIdentity(value.modelId) ||
     !isScheduledTaskModelIdentity(value.provider) || typeof value.searchEnabled !== "boolean" ||
     typeof value.emailNotify !== "boolean" || typeof value.toolsEnabled !== "boolean" ||
-    typeof value.workspaceEnabled !== "boolean" || !CHAT_MODES.includes(value.chatMode) || !KINDS.includes(value.kind) ||
+    typeof value.workspaceEnabled !== "boolean" || typeof value.memoryEnabled !== "boolean" ||
+    !CHAT_MODES.includes(value.chatMode) || !KINDS.includes(value.kind) ||
     !scheduledTaskChatModeAllowed({ kind: value.kind as ScheduledTaskKind, schedule }, value.chatMode as ScheduledTaskChatMode) ||
     !STATUSES.includes(value.status) || !nullable(value.pauseReason, code) ||
     !nullable(value.completionReason, code) || (value.status !== "completed" && value.completionReason !== null) ||
@@ -457,7 +467,7 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
   return {
     id: value.id, title, prompt, schedule, timeZone: value.timeZone, modelId: value.modelId, provider: value.provider,
     searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, toolsEnabled: value.toolsEnabled,
-    workspaceEnabled: value.workspaceEnabled, chatMode: value.chatMode as ScheduledTaskChatMode,
+    workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled, chatMode: value.chatMode as ScheduledTaskChatMode,
     kind: value.kind as ScheduledTaskKind, status: value.status as ScheduledTaskStatus, pauseReason: value.pauseReason,
     completionReason: value.completionReason, nextRunAt: value.nextRunAt,
     lastRun: run && {

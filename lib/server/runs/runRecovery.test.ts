@@ -10515,7 +10515,8 @@ describe("scheduled task creation recovery", () => {
     id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.",
     schedule: { kind: "weekly" as const, time: "09:00", days: ["mon" as const, "tue" as const, "wed" as const, "thu" as const, "fri" as const] },
     timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
-    toolsEnabled: true, workspaceEnabled: false, chatMode: "new" as const, kind: "standard" as const, status: "active" as const,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new" as const, kind: "standard" as const,
+    status: "active" as const,
     pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null,
     unseenResult: false, revision: 1, createdAt: "2026-10-04T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
   };

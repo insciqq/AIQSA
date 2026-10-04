@@ -271,13 +271,16 @@ export type NormalizedRunRequest = {
    * `create_scheduled_task`: the settings such a task takes, frozen from this
    * admission. `modelId` and `provider` are the catalog identity the run
    * admitted (not the execution identity above); `toolsEnabled` is the run's
-   * MCP selection other than Off. Never set from a request field. */
+   * MCP selection other than Off; `memoryEnabled` is whether this run was
+   * admitted to read Memory, absent on runs accepted before tasks had Memory
+   * (their task reads none). Never set from a request field. */
   scheduledTaskTool?: Readonly<{
     modelId: string;
     provider: string;
     searchEnabled: boolean;
     toolsEnabled: boolean;
     workspaceEnabled: boolean;
+    memoryEnabled?: boolean;
   }>;
   searchPlan: NormalizedSearchPlan;
   /** Server-owned admission marker; old runs retain their accepted tool set. */

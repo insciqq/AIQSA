@@ -215,6 +215,26 @@ export function createPrismaRunRepository(
     }
     return MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS;
   }
+  /**
+   * A regenerated answer to a scheduled task's prompt reads Memory only while
+   * the task, found through the scheduled run that posted the prompt in this
+   * chat, still exists with Memory on. A branch copy has no such run.
+   */
+  async function scheduledTaskMemory(
+    prompt: Readonly<{ chatId: string; id: string; scheduledTaskPrompt: boolean }>,
+    userId: string
+  ): Promise<boolean> {
+    if (!prompt.scheduledTaskPrompt) return false;
+    const origin = await prismaClient.modelRun.findFirst({
+      select: { scheduledTaskId: true },
+      where: { chatId: prompt.chatId, scheduledTaskId: { not: null }, userId, userMessageId: prompt.id }
+    }).catch(retainRunPrismaCode);
+    const task = origin?.scheduledTaskId ? await prismaClient.scheduledTask.findFirst({
+      select: { memoryEnabled: true },
+      where: { id: origin.scheduledTaskId, userId }
+    }).catch(retainRunPrismaCode) : null;
+    return task?.memoryEnabled === true;
+  }
   async function loadConversationPath(
     chatId: string,
     userId: string,
@@ -1273,6 +1293,7 @@ export function createPrismaRunRepository(
         const normalizedRequest = sourceRun?.normalizedRequest;
         const artifactEdit = normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest)
           ? normalizedRequest.artifactEdit : undefined;
+        const memory = await scheduledTaskMemory(sourceMessage, userId);
         return {
           ...(artifactEdit !== undefined ? { artifactEdit } : {}),
           ...(normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest) && normalizedRequest.artifactIntent === "create" ? { artifactIntent: "create" } : {}),
@@ -1281,7 +1302,8 @@ export function createPrismaRunRepository(
           userMessage: {
             content: sourceMessage.content,
             id: sourceMessage.id,
-            scheduledTaskPrompt: sourceMessage.scheduledTaskPrompt
+            scheduledTaskPrompt: sourceMessage.scheduledTaskPrompt,
+            ...(memory ? { scheduledTaskMemory: true as const } : {})
           }
         };
       }
@@ -1314,6 +1336,7 @@ export function createPrismaRunRepository(
       const normalizedRequest = sourceRun?.normalizedRequest;
       const artifactEdit = normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest)
         ? normalizedRequest.artifactEdit : undefined;
+      const memory = await scheduledTaskMemory({ ...sourceMessage.parent, chatId: sourceMessage.chat.id }, userId);
 
       return {
         ...(regenerationFollowups?.entries.length ? { followups: { messageId: sourceMessage.id,
@@ -1329,7 +1352,8 @@ export function createPrismaRunRepository(
         userMessage: {
           content: sourceMessage.parent.content,
           id: sourceMessage.parent.id,
-          scheduledTaskPrompt: sourceMessage.parent.scheduledTaskPrompt
+          scheduledTaskPrompt: sourceMessage.parent.scheduledTaskPrompt,
+          ...(memory ? { scheduledTaskMemory: true as const } : {})
         }
       };
     },

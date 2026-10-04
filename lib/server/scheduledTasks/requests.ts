@@ -22,7 +22,7 @@ export type ScheduledTaskRequestResult<T> = { ok: true; value: T } | ScheduledTa
 
 const DRAFT_KEYS = [
   "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "toolsEnabled",
-  "workspaceEnabled", "chatMode", "kind"
+  "workspaceEnabled", "memoryEnabled", "chatMode", "kind"
 ];
 const UPDATE_KEYS = [...DRAFT_KEYS, "expectedRevision", "status"];
 const invalid: ScheduledTaskRequestFailure = { ok: false, code: "scheduled_task_invalid" };
@@ -52,7 +52,8 @@ export function decodeScheduledTaskCreateRequest(value: unknown): ScheduledTaskR
   if (!title || !isScheduledTaskPrompt(value.prompt) || !isScheduledTaskModelIdentity(value.modelId) ||
     !isScheduledTaskModelIdentity(value.provider) || typeof value.searchEnabled !== "boolean" ||
     typeof value.emailNotify !== "boolean" || typeof value.toolsEnabled !== "boolean" ||
-    typeof value.workspaceEnabled !== "boolean" || !chatMode(value.chatMode) || !taskKind(value.kind)) return invalid;
+    typeof value.workspaceEnabled !== "boolean" || typeof value.memoryEnabled !== "boolean" || !chatMode(value.chatMode) ||
+    !taskKind(value.kind)) return invalid;
   const schedule = validateScheduledTaskSchedule(value.schedule, value.timeZone);
   if (!schedule.ok) return schedule;
   if (!scheduledTaskChatModeAllowed({ kind: value.kind, schedule: schedule.schedule }, value.chatMode)) {
@@ -63,7 +64,8 @@ export function decodeScheduledTaskCreateRequest(value: unknown): ScheduledTaskR
     value: {
       title, prompt: value.prompt, schedule: schedule.schedule, timeZone: schedule.timeZone, modelId: value.modelId,
       provider: value.provider, searchEnabled: value.searchEnabled, emailNotify: value.emailNotify,
-      toolsEnabled: value.toolsEnabled, workspaceEnabled: value.workspaceEnabled, chatMode: value.chatMode, kind: value.kind
+      toolsEnabled: value.toolsEnabled, workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled,
+      chatMode: value.chatMode, kind: value.kind
     }
   };
 }
@@ -92,7 +94,7 @@ export function decodeScheduledTaskUpdateRequest(value: unknown): ScheduledTaskR
     patch.modelId = value.modelId;
     patch.provider = value.provider;
   }
-  for (const key of ["searchEnabled", "emailNotify", "toolsEnabled", "workspaceEnabled"] as const) {
+  for (const key of ["searchEnabled", "emailNotify", "toolsEnabled", "workspaceEnabled", "memoryEnabled"] as const) {
     if (!(key in value)) continue;
     const flag = value[key];
     if (typeof flag !== "boolean") return invalid;
