@@ -71,6 +71,25 @@ describe("page reader persistence reads", () => {
     expect(await operations.loadRunFetchUrlCalls({ runId: own.runId, userId: "someone-else" })).toEqual([]);
   });
 
+  it("lists every page-reader call of the run in order, however many refusals precede a sent read", async () => {
+    const own = await turn();
+    const refusal = { callId: "refused", content: [{ type: "json", value: { error: "fetch_url_not_in_conversation" } }],
+      name: "fetch_url", rawPreview: { fetchUrl: { dispatched: false, outcome: "fetch_url_not_in_conversation", version: 1 } },
+      status: "error" };
+    await prisma.modelRunToolCall.createMany({ data: [
+      ...Array.from({ length: 70 }, (_, ordinal) => ({ arguments: { url: "https://planted.example/" }, modelRunId: own.runId,
+        ordinal, providerCallId: `refused-${ordinal}`, result: refusal, roundIndex: 1, state: "error" as const, toolName: "fetch_url" })),
+      { arguments: { url: "https://news.example/today" }, modelRunId: own.runId, ordinal: 0, providerCallId: "sent-read",
+        result: { callId: "sent-read", content: [{ type: "json", value: {} }], name: "fetch_url",
+          rawPreview: { fetchUrl: { dispatched: true, outcome: "read", url: "https://news.example/today", version: 1 } },
+          status: "complete" },
+        roundIndex: 2, state: "complete", toolName: "fetch_url" }
+    ] });
+    const calls = await operations.loadRunFetchUrlCalls({ runId: own.runId, userId: own.userId });
+    expect(calls).toHaveLength(71);
+    expect(calls.at(-1)).toMatchObject({ state: "complete" });
+  });
+
   it("names the chat's scheduled prompts among the branch messages, failing closed beyond its bound", async () => {
     const prompt = await turn({ scheduledPrompt: true });
     const plain = await turn();

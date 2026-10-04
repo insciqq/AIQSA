@@ -1622,8 +1622,7 @@ async function executePersistedToolCallInContext(
       !(await currentProjectRecoveryAuthorityAllowed(context.deps, context.run.project, context.run.userId))) {
       throw new ToolLoopRecoveryError("project_access_changed", "Project access changed during the run");
     }
-    const scheduled = context.run.normalizedRequest.fetchUrl?.taskUrlDigests !== undefined;
-    const result = claim.kind === "ambiguous" ? fetchUrlInterruptedResult(call, scheduled)
+    const result = claim.kind === "ambiguous" ? fetchUrlInterruptedResult(call)
       : await context.fetchSession.execute(call, { persistedToolCallId: persisted.id, signal });
     const settleable = settleableToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
     const settled = settleable && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,

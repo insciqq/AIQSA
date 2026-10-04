@@ -47,6 +47,7 @@ import { createSkillToolService, type SkillToolRepository } from "../skills/tool
 import { isSkillToolName } from "../tools/skill";
 import { scheduledTaskCreatedResult } from "../tools/scheduledTaskCreation";
 import { createFetchUrlSession } from "../tools/fetchUrl";
+import { createPrismaFetchUrlOperations } from "./prismaRepositoryFetchUrl";
 import { extractPage as extractPageText } from "../webFetch/extract";
 import type { FetchedPageInput } from "../webFetch/pageText";
 import { fetchUrlDigest } from "../webFetch/urls";
@@ -10596,4 +10597,42 @@ describe("page reader recovery", () => {
       expect(harness.state.completed).not.toBeNull();
     }
   );
+
+  it("keeps the cache and cap of a sent read that follows more refusals than any fixed bound", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const plan = { version: 1 as const, userUrlDigests: [fetchUrlDigest(url)] };
+    const live = createFetchUrlSession({ extractPage, fetchPage: page(), plan, scheduled: false });
+    const signal = new AbortController().signal;
+    const stored = (id: string, result: Awaited<ReturnType<typeof live.execute>>, ordinal: number): PersistedToolLoopCall => ({
+      ...persistedRecoveryCall(result.status === "complete" ? "complete" : "error"), arguments: { url }, id, mcpBinding: null,
+      ordinal, providerCallId: `provider-${id}`, result: snapshotToolExecutionResult(result, 64_000), toolName: "fetch_url" });
+    // Round 1 refused 70 planted links and then sent one read; round 2 asks for the same page again.
+    const refusal = await live.execute({ arguments: { url: "https://planted.example/" }, id: "refused", name: "fetch_url" },
+      { persistedToolCallId: "refused", signal });
+    const earlier = Array.from({ length: 70 }, (_, index) => stored(`refused-${index}`, refusal, index));
+    const sent = stored("sent-read", await live.execute(readCall, { persistedToolCallId: "sent-read", signal }), 70);
+    const again: PersistedToolLoopCall = { ...persistedRecoveryCall("pending"), arguments: { url }, id: "read-again",
+      mcpBinding: null, providerCallId: "provider-call-again", roundIndex: 2, toolName: "fetch_url" };
+    const base = checkpointedRun({ calls: [...earlier, sent, again], phase: "tools_pending", providerToolMessages: [], roundIndex: 2 });
+    const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+    installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, fetchUrl: plan, toolMode: "auto",
+      searchPlan: { mode: "all_selected", options: [] },
+      toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: 80, maxToolRounds: 32 } } });
+    // The durable read over a store that honors a query bound, as PostgreSQL does.
+    const rows = [...earlier, sent, again];
+    const store = { modelRunToolCall: { findMany: async (query: { take?: number }) => rows
+      .slice(0, query.take ?? rows.length).map((row) => ({ id: row.id, result: row.result, state: row.state })) } };
+    harness.repository.loadRunFetchUrlCalls = createPrismaFetchUrlOperations(store as never).loadRunFetchUrlCalls;
+    const fetchPage = page();
+    await refreshProviderRunIfNeeded({ ...harness.deps, extractPage, fetchPage }, runId, userId);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    // The page the run already read is answered from its stored result, without a request.
+    expect(fetchPage).not.toHaveBeenCalled();
+    const transcript = JSON.stringify(requests[0]!.providerToolMessages);
+    expect(transcript).toContain("Fresh news for the reader.");
+    expect(transcript).toContain("\\\"cached\\\":true");
+    expect(harness.state.completed).not.toBeNull();
+  });
 });

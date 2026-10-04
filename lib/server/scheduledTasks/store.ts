@@ -34,7 +34,7 @@ import {
   scheduledTaskWeekdaysFromMask
 } from "../../domain/scheduledTaskSchedule";
 import { SMTP_CONTROL_ID } from "../email/repository";
-import type { ScheduledPromptUrlDigests } from "./promptUrls";
+import { scheduledPromptLinksPending, type ScheduledPromptUrlDigests } from "./promptUrls";
 import { SCHEDULED_TASK_OCCURRENCE_RETENTION } from "./runnerPolicy";
 import { unavailableSourcesWire } from "./sourceHealth";
 
@@ -120,7 +120,7 @@ export const scheduledTaskRowSelect = {
   onceLocalDate: true, everyHours: true, untilMinutes: true, timeZone: true, modelId: true, provider: true,
   searchEnabled: true, emailNotify: true, toolsEnabled: true, workspaceEnabled: true, chatMode: true, kind: true, status: true,
   pauseReason: true, completionReason: true, nextRunAt: true, chatId: true, revision: true, createdAt: true, updatedAt: true,
-  chat: { select: { permanentDeletionAt: true } }
+  promptUrlDigests: true, chat: { select: { permanentDeletionAt: true } }
 } satisfies Prisma.ScheduledTaskSelect;
 export type ScheduledTaskRow = Prisma.ScheduledTaskGetPayload<{ select: typeof scheduledTaskRowSelect }>;
 
@@ -179,8 +179,10 @@ export function toScheduledTask(row: ScheduledTaskRow, activity: ScheduledTaskAc
     chatMode: CHAT_MODE_WIRE[row.chatMode], kind: TASK_KIND_WIRE[row.kind], status: STATUS_WIRE[row.status],
     pauseReason: row.pauseReason, completionReason: row.completionReason,
     nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRun: activity.lastRun, running: activity.running,
-    chatId: usableChatId(row.chatId, row.chat), unseenResult: activity.unseen, revision: row.revision,
-    createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString()
+    chatId: usableChatId(row.chatId, row.chat), unseenResult: activity.unseen,
+    // A flag only: the snapshot's digests never leave the server.
+    ...(scheduledPromptLinksPending(row.prompt, row.promptUrlDigests) ? { promptLinksPending: true as const } : {}),
+    revision: row.revision, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString()
   };
 }
 
