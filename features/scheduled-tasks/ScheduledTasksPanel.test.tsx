@@ -7,11 +7,13 @@ import {
   deleteScheduledTask,
   getScheduledTask,
   listScheduledTasks,
+  markScheduledTaskSeen,
   runScheduledTaskNow,
   ScheduledTaskApiError,
   updateScheduledTask
 } from "./scheduledTasksApi";
 import { scheduledTaskCatalogFixture, scheduledTaskFixture } from "./scheduledTaskFixtures";
+import { useScheduledTasksStore } from "./scheduledTasksStore";
 
 vi.mock("./scheduledTasksApi", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./scheduledTasksApi")>();
@@ -172,6 +174,25 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(update).toHaveBeenLastCalledWith(task.id, { expectedRevision: 3, title: "My brief" });
+  });
+
+  it("marks an unread result seen when its editor opens, even for a task without a chat", async () => {
+    const failed = { scheduledFor: "2026-10-03T08:00:00.000Z", state: "failed", reasonCode: "model_unavailable",
+      finishedAt: "2026-10-03T08:00:02.000Z" } as const;
+    const task = scheduledTaskFixture({ chatId: null, unseenResult: true, lastRun: failed });
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValueOnce({ task, recentRuns: [] });
+    const seen = vi.mocked(markScheduledTaskSeen).mockReset().mockResolvedValue();
+    renderPanel();
+    expect(await screen.findByRole("heading", { name: "Weekday news briefNew result" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    expect(seen).toHaveBeenCalledWith(task.id);
+    expect(useScheduledTasksStore.getState().tasks[0]?.unseenResult).toBe(false);
+    await within(screen.getByRole("dialog", { name: "Edit scheduled task" })).findByText("No runs yet.");
+    // The detail read predates the server's clear: it is cleared again, never shown as unread.
+    expect(seen).toHaveBeenCalledTimes(2);
+    expect(useScheduledTasksStore.getState().tasks[0]?.unseenResult).toBe(false);
   });
 
   it("pauses, runs now with a conflict message, opens the chat and deletes after naming the consequence", async () => {

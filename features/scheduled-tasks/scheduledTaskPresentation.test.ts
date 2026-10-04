@@ -12,6 +12,7 @@ import {
   formatScheduledInstant,
   scheduledTaskFailureMessage,
   scheduledTaskLastRunLine,
+  scheduledTaskResultNotice,
   scheduledTaskScheduleText,
   scheduledTaskStatusLine,
   scheduledTaskTimeZoneOptions,
@@ -60,6 +61,18 @@ describe("scheduled task presentation", () => {
     expect(run("failed", "model_run_cancelled")).toBe("Last run Mon 5 Oct, 09:00 · Failed: it was stopped in the chat");
     expect(run("failed", "admission_failed")).toBe("Last run Mon 5 Oct, 09:00 · Failed: the run could not start");
     expect(run("skipped", "paused")).toBe("Last run Mon 5 Oct, 09:00 · Skipped: the task was paused");
+  });
+
+  it("announces what a settled run did and never the owner's own pause", () => {
+    const notice = (state: "completed" | "failed" | "skipped", reasonCode: string | null, chatId: string | null = "chat-1") =>
+      scheduledTaskResultNotice(scheduledTaskFixture({ chatId, unseenResult: true,
+        lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state, reasonCode, finishedAt: "2026-10-05T08:01:00.000Z" } }));
+    expect(notice("completed", null)).toEqual({ kind: "success", open: "chat", text: "“Weekday news brief” has a new result" });
+    expect(notice("completed", null, null)).toMatchObject({ open: "scheduled" });
+    expect(notice("failed", "admission_failed")).toEqual({ kind: "error", open: "scheduled", text: "“Weekday news brief” could not run" });
+    expect(notice("skipped", "missed")).toEqual({ kind: "success", open: "scheduled", text: "“Weekday news brief” was skipped" });
+    expect(notice("skipped", "paused")).toBeNull();
+    expect(scheduledTaskResultNotice(scheduledTaskFixture())).toBeNull();
   });
 
   it("gives every runner pause reason a recovery hint", () => {

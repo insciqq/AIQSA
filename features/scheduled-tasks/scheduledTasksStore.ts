@@ -5,6 +5,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskLimits
 } from "@/lib/contracts/scheduledTasks";
+import { isOwnerPauseSkip } from "./scheduledTaskPresentation";
 import { listScheduledTasks, ScheduledTaskApiError } from "./scheduledTasksApi";
 
 /**
@@ -53,7 +54,7 @@ export function activateScheduledTasksAccount(accountId: string | null): void {
 function newlyFinished(previous: readonly ScheduledTask[], next: readonly ScheduledTask[]): ScheduledTask[] {
   const before = new Map(previous.map((task) => [task.id, task]));
   return next.filter((task) => {
-    if (!task.unseenResult || !task.lastRun) return false;
+    if (!task.unseenResult || !task.lastRun || isOwnerPauseSkip(task.lastRun)) return false;
     const old = before.get(task.id);
     return !old || !old.unseenResult || old.lastRun?.finishedAt !== task.lastRun.finishedAt;
   });
