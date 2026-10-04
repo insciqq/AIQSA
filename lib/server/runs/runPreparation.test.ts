@@ -872,7 +872,8 @@ function regenerateInput(
       },
       userMessage: {
         content: textMessageContent("Shared question"),
-        id: "stored-user-message"
+        id: "stored-user-message",
+        scheduledTaskPrompt: false
       },
       ...sourceOverrides
     }
@@ -961,6 +962,27 @@ describe("standing Memory and optional search admission", () => {
       sendInput(successBody({ content: textMessageContent("/memory list") }))));
     expect(admit).not.toHaveBeenCalled();
     expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
+  });
+  it("admits neither for a regeneration of a scheduled task's prompt, even in a chat the owner switched to Memory", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const admit = vi.fn(async () => snapshot);
+    const deps = { ...harness.deps, memorySearchAdmission: { admit } };
+    const regenerate = (text: string, scheduledTaskPrompt: boolean) => regenerateInput(successBody(), {
+      chat: { defaultModelId: "fake-qsa", defaultProvider: "fake", id: "chat-1", memoryMode: "NORMAL", projectMemory: null },
+      userMessage: { content: textMessageContent(text), id: "stored-user-message", scheduledTaskPrompt }
+    });
+    // The prompt may have been written by the model, an explicit Memory command included.
+    for (const text of ["Summarize the news.", "/memory forget everything"]) {
+      const prepared = preparedFrom(await prepareRun(deps, regenerate(text, true)));
+      expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
+      expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+      expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search") ?? false).toBe(false);
+    }
+    expect(admit).not.toHaveBeenCalled();
+    // The owner's own message regenerated in the same chat keeps both.
+    const own = preparedFrom(await prepareRun(deps, regenerate("Summarize the news.", false)));
+    expect(own.normalizedRequest.memoryStandingVersion).toBe(1);
+    expect(own.normalizedRequest.memorySearch).toEqual(snapshot);
   });
 });
 
@@ -1296,7 +1318,8 @@ describe("run preparation", () => {
 
     const regenerated = preparedFrom(await prepareRun(deps, regenerateInput(body, {
       assistantMessage: { modelId: "gpt-fixture", provider: "openai" },
-      userMessage: { content: imageBlock("current-image") as ProviderConversationMessage["content"], id: "stored-user-message" }
+      userMessage: { content: imageBlock("current-image") as ProviderConversationMessage["content"], id: "stored-user-message",
+        scheduledTaskPrompt: false }
     }))).normalizedRequest;
     expect(regenerated.imageReferences?.map(({ attachmentId, messageId }) => [attachmentId, messageId])).toEqual([
       ["earlier-image", "prior-user-message"], ["current-image", "stored-user-message"]
@@ -2586,7 +2609,8 @@ describe("run preparation", () => {
           },
           userMessage: {
             content: textMessageContent("Stored regeneration content"),
-            id: "stored-user-message"
+            id: "stored-user-message",
+            scheduledTaskPrompt: false
           }
         })
       )
@@ -2623,7 +2647,7 @@ describe("run preparation", () => {
     const harness = createHarness({ attachments: [attachment], regenerateContext: [priorMessage, edited] });
 
     const prepared = preparedFrom(await prepareRun(harness.deps, regenerateInput(
-      successBody({ text: "Ignored client replacement" }), { userMessage: edited }
+      successBody({ text: "Ignored client replacement" }), { userMessage: { ...edited, scheduledTaskPrompt: false } }
     )));
 
     expect(prepared.normalizedRequest.content).toEqual(edited.content);
@@ -5281,7 +5305,7 @@ describe("cross-turn compaction reuse", () => {
     const body = successBody({ content: textMessageContent(input.text ?? "Next question."), modelId: "openai-tool-model", provider: "openai",
       ...(input.knowledge ? { knowledgePlan: knowledgeSelection(["knowledge-base-1"]) } : {}) });
     const result = await prepareRun(deps, input.regenerate
-      ? regenerateInput(body, { userMessage: { content: input.regenerate.content, id: input.regenerate.id } })
+      ? regenerateInput(body, { userMessage: { content: input.regenerate.content, id: input.regenerate.id, scheduledTaskPrompt: false } })
       : sendInput(body, { activeLeafMessageId: input.history.length > 0 ? "prior-user-message" : null }));
     return { loadBranchContextCheckpoints, result, stream };
   }
@@ -5870,5 +5894,19 @@ describe("scheduled task creation admission", () => {
       expect(result.prepared.normalizedRequest.scheduledTaskTool, label).toBeUndefined();
       expect(creationTool(result.prepared), label).toBeUndefined();
     }
+  });
+
+  it("never offers it to a regeneration of a scheduled task's prompt, in its chat or a branch copy", async () => {
+    const regenerate = (scheduledTaskPrompt: boolean) => regenerateInput(toolBody, {
+      userMessage: { content: textMessageContent("Remind me daily"), id: "stored-user-message", scheduledTaskPrompt }
+    });
+    // The owner's own message regenerated keeps its one creation.
+    const own = preparedFrom(await prepareRun(tooling(), regenerate(false)));
+    expect(own.normalizedRequest.scheduledTaskTool).toBeDefined();
+    expect(creationTool(own)).toBeDefined();
+    // The task's prompt, possibly model-written, never creates another task.
+    const answer = preparedFrom(await prepareRun(tooling(), regenerate(true)));
+    expect(answer.normalizedRequest.scheduledTaskTool).toBeUndefined();
+    expect(creationTool(answer)).toBeUndefined();
   });
 });

@@ -317,6 +317,7 @@ export function createPrismaMessageBranchRepository(
             provider: true,
             reasoningTokens: true,
             role: true,
+            scheduledTaskPrompt: true,
             status: true
           },
           where: {
@@ -516,6 +517,12 @@ export function createPrismaMessageBranchRepository(
               provider: sourceMessage.provider,
               reasoningTokens: sourceMessage.reasoningTokens,
               role: sourceMessage.role,
+              // A copied scheduled task's prompt stays one, at any branch depth:
+              // the copy has no runs to say so, and the prompt and every answer
+              // to it must stay out of Memory and never create a task.
+              ...(sourceMessage.role === "user" && sourceMessage.scheduledTaskPrompt
+                ? { scheduledTaskPrompt: true }
+                : {}),
               status: sourceMessage.status
             },
             select: {

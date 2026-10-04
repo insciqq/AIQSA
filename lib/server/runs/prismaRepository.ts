@@ -1218,7 +1218,8 @@ export function createPrismaRunRepository(
             select: {
               content: true,
               id: true,
-              role: true
+              role: true,
+              scheduledTaskPrompt: true
             }
           }
         },
@@ -1279,7 +1280,8 @@ export function createPrismaRunRepository(
           chat,
           userMessage: {
             content: sourceMessage.content,
-            id: sourceMessage.id
+            id: sourceMessage.id,
+            scheduledTaskPrompt: sourceMessage.scheduledTaskPrompt
           }
         };
       }
@@ -1326,7 +1328,8 @@ export function createPrismaRunRepository(
         chat,
         userMessage: {
           content: sourceMessage.parent.content,
-          id: sourceMessage.parent.id
+          id: sourceMessage.parent.id,
+          scheduledTaskPrompt: sourceMessage.parent.scheduledTaskPrompt
         }
       };
     },
