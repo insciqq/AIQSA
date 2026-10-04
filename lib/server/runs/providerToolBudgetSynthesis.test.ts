@@ -268,6 +268,36 @@ describe("reserved verdict outside the tool budgets", () => {
     expect(requests.map((entry) => entry.toolChoice)).toEqual(["auto", "none"]);
   });
 
+  it("ends within the budgets when the model reports every round", async () => {
+    executeTool.mockClear();
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(roundRequest) {
+      requests.push(roundRequest);
+      // The model reports whenever tools are offered (and stops after twenty
+      // requests, so a regression fails instead of hanging).
+      return roundRequest.toolChoice === "none" || requests.length > 20
+        ? result("Final answer")
+        : result("", [{ arguments: { status: "update" }, id: `call-${requests.length}`, name: "report" }]);
+    } };
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 5, maxToolRounds: 2 }, executeTool, initialRequest: request(),
+      parallelToolCalls: false, reservedCall: reserved, tools: reservedTools });
+    // The first report is reserved; the next two use both tool rounds; then the run answers without tools.
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 2, toolRounds: 2 });
+    expect(executeTool).toHaveBeenCalledTimes(3);
+    expect(requests.map((entry) => entry.toolChoice)).toEqual(["auto", "auto", "auto", "none"]);
+  });
+
+  it("counts a report repeated by a resumed run that already reported", async () => {
+    executeTool.mockClear();
+    const { adapter, requests } = scripted([["report"], []]);
+    const outcome = await runProviderToolLoop({ adapter, bridge: openAIResponsesToolBridge,
+      budgets: { maxConcurrency: 1, maxToolCalls: 5, maxToolRounds: 1 }, executeTool, initialRequest: request(),
+      parallelToolCalls: false, reservedCall: { ...reserved, called: true }, tools: reservedTools });
+    expect(outcome).toMatchObject({ status: "complete", toolCalls: 1, toolRounds: 1 });
+    expect(requests.map((entry) => entry.toolChoice)).toEqual(["auto", "none"]);
+  });
+
   it("synthesizes at once when the reserved call was already made or a batch was refused", async () => {
     executeTool.mockClear();
     const made = scripted([["search"], []]);

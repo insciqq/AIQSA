@@ -2261,7 +2261,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           // Every checkpoint of a v1 non-Agent run carries the rebuild record.
           allowContextRebuild: !normalizedRequest.agent && normalizedRequest.toolObservationVersion === 1,
           deferToolUntilBatchEnd: (call) => isSkillToolName(call.name),
-          // A monitoring check's verdict is reserved outside the business tool budgets.
+          // A monitoring check's first verdict is reserved outside the business
+          // tool budgets; a repeated one counts as an ordinary call.
           ...(normalizedRequest.monitoringVerdictTool ? { reservedCall: {
             called: false, instruction: monitoringVerdictReservedInstruction(), name: MONITORING_VERDICT_TOOL_NAME
           } } : {}),

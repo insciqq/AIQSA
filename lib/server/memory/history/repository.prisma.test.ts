@@ -3981,6 +3981,107 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
+  it("indexes only the owner's turns of a scheduled task's chat switched to Memory, never a regenerated scheduled turn", async () => {
+    const userId = await createOwner("memory-history-scheduled");
+    try {
+      const startedAt = Date.now();
+      // The owner switched the task's chat to Memory: an ordinary NORMAL chat.
+      const chat = await prisma.chat.create({ data: { title: "Scheduled task chat", userId } });
+      const settle = async (assistantMessageId: string, runId: string, mutation: "BRANCH_PATH_CHANGE" | "NORMAL_APPEND") => {
+        await mutateSource(userId, chat.id, { mutations: [mutation], patch: { activeLeafMessageId: assistantMessageId } });
+        await mutateSource(userId, chat.id, {
+          mutations: ["TERMINAL_SETTLEMENT"],
+          terminalSettlement: { assistantMessageId, runId, status: "complete" }
+        });
+        await processHistoryJob(userId);
+      };
+      const activeChunks = () => prisma.memoryRecallChunk.findMany({ where: { chatId: chat.id, state: "ACTIVE", userId } });
+      const scheduled = await createTurn({
+        assistantText: "Scheduled brief: Lisbon headlines.",
+        chatId: chat.id,
+        createdAt: new Date(startedAt + 60_000),
+        parentMessageId: null,
+        userId,
+        userText: "I live in Lisbon. Summarize the news."
+      });
+      // The run's scheduled origin: plain values that outlive its task.
+      await prisma.modelRun.update({
+        data: { scheduledOccurrenceId: randomUUID(), scheduledTaskGeneration: 1, scheduledTaskId: randomUUID() },
+        where: { id: scheduled.run.id }
+      });
+      await settle(scheduled.assistantMessage.id, scheduled.run.id, "NORMAL_APPEND");
+      await expect(activeChunks()).resolves.toEqual([]);
+      // The source is current, not stuck behind the excluded turn.
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({ activeLeafMessageId: scheduled.assistantMessage.id, status: "READY" });
+
+      const own = await createTurn({
+        assistantText: "Noted, quiet rooms.",
+        chatId: chat.id,
+        createdAt: new Date(startedAt + 120_000),
+        parentMessageId: scheduled.assistantMessage.id,
+        userId,
+        userText: "I prefer quiet rooms."
+      });
+      await settle(own.assistantMessage.id, own.run.id, "NORMAL_APPEND");
+      const chunks = await activeChunks();
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]!.safeProjectedText).toContain("quiet rooms");
+      expect(chunks[0]!.safeProjectedText).not.toContain("Lisbon");
+      const ownMessageIds = [own.assistantMessage.id, own.userMessage.id].sort();
+      await expect(prisma.memoryRecallChunkMessage.findMany({ where: { chunkId: chunks[0]!.id, userId } })
+        .then((joins) => joins.map(({ messageId }) => messageId).sort())).resolves.toEqual(ownMessageIds);
+      const rounds = await prisma.memoryRecallRound.findMany({
+        select: { id: true }, where: { chatId: chat.id, state: "ACTIVE", userId }
+      });
+      expect(rounds.length).toBeGreaterThan(0);
+      await expect(prisma.memoryRecallRoundMessage.findMany({
+        where: { roundId: { in: rounds.map(({ id }) => id) }, userId }
+      }).then((joins) => [...new Set(joins.map(({ messageId }) => messageId))].sort())).resolves.toEqual(ownMessageIds);
+
+      // A Regenerate of the scheduled answer runs without a scheduled origin;
+      // the prompt it answers still keeps the whole turn out.
+      const regeneratedAt = new Date(startedAt + 180_000);
+      const regenerated = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          content: textMessageContent("Regenerated brief: Lisbon headlines."),
+          createdAt: regeneratedAt,
+          modelId: "history-test-model",
+          parentMessageId: scheduled.userMessage.id,
+          provider: "history-test-provider",
+          role: "assistant",
+          status: "complete",
+          updatedAt: regeneratedAt
+        }
+      });
+      const regeneratedRun = await prisma.modelRun.create({
+        data: {
+          assistantMessageId: regenerated.id,
+          chatId: chat.id,
+          modelId: "history-test-model",
+          normalizedRequest: {
+            prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } }
+          },
+          provider: "history-test-provider",
+          status: "complete",
+          userId,
+          userMessageId: scheduled.userMessage.id
+        }
+      });
+      await settle(regenerated.id, regeneratedRun.id, "BRANCH_PATH_CHANGE");
+      await expect(activeChunks()).resolves.toEqual([]);
+      await expect(prisma.memoryRecallRound.count({ where: { chatId: chat.id, state: "ACTIVE", userId } }))
+        .resolves.toBe(0);
+      await expect(prisma.chatMemoryCheckpoint.findUniqueOrThrow({
+        where: { userId_chatId: { chatId: chat.id, userId } }
+      })).resolves.toMatchObject({ activeLeafMessageId: regenerated.id, status: "READY" });
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
   it("admits no history work for Excluded or Temporary sources", async () => {
     const userId = await createOwner("memory-history-ineligible");
     try {
