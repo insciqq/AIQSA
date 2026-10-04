@@ -6,8 +6,7 @@
 
 **The self-hosted AI workspace for small and medium teams.**
 
-GPT, Claude, Gemini, DeepSeek and your own models in one private workspace, on your own API keys.<br>
-Your team pays providers for the tokens it uses, not a monthly fee per person.
+GPT, Claude, Gemini, DeepSeek and your own models in one private workspace, on your own API keys.
 
 [![Latest release](https://img.shields.io/github/v/release/insciqq/AIQSA)](https://github.com/insciqq/AIQSA/releases/latest)
 [![CI](https://github.com/insciqq/AIQSA/actions/workflows/ci.yml/badge.svg)](https://github.com/insciqq/AIQSA/actions/workflows/ci.yml)
@@ -22,10 +21,10 @@ Your team pays providers for the tokens it uses, not a monthly fee per person.
 - **Every model in one place.** Connect OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, or any OpenAI-compatible server, including models running on your own network. Choose the model for each message; the whole team works in the same workspace.
 - **Ready in minutes.** Add an API key and AIQSA checks what each model can actually do (images, PDFs, tools, web search) and turns on exactly that. There is nothing to wire together before your team starts.
 - **A computer in every chat.** Each chat can get its own isolated Linux virtual machine. The model runs code, works with your files, and hands back reports, charts and archives to download. For larger jobs, give the task to a Codex agent working in the same machine.
-- **Answers you can check.** Ask questions over your documents with citations to the exact passage, and search the web with linked sources.
-- **Memory that learns how you work.** AIQSA remembers lasting facts and preferences from your chats. You see and control everything it keeps, and the same Memory works in Claude Code and Codex.
+- **Answers you can check.** A built-in Knowledge engine reads PDFs, scans and tables, finds the right passages with hybrid search and reranking, and checks the answer against the passages it cites before you see it. Web search answers come with linked sources.
+- **Memory that understands, not just stores.** AIQSA learns only from what you actually say, keeps track of who each fact is about and when it was true, replaces outdated facts, settles contradictions on its own, and searches your past chats when an answer needs more. You control everything it keeps, and the same Memory works in Claude Code and Codex.
 - **Work that runs on its own.** Scheduled tasks run a prompt daily, weekly or monthly and deliver the answer to its own chat, with an optional email.
-- **Built for teams.** Shared Projects and Assistants, invitations and access groups, API keys per installation, group or person, and usage per user.
+- **Built for teams.** Role-based access control, shared Projects and Assistants, invitations, API keys per installation, group or person, and usage per user.
 
 ## Features
 
@@ -36,8 +35,10 @@ Your team pays providers for the tokens it uses, not a monthly fee per person.
 - Image generation.
 
 **Knowledge**
-- Knowledge bases with hybrid search, reranking, OCR for scanned documents, and passage-level citations.
-- Attach Knowledge to a chat, a Project or an Assistant.
+- Document parsing with OCR for scans; vision models read PDF pages, tables and charts.
+- Hybrid lexical and vector search with reranking; small collections are read in full.
+- Answers are reviewed against the retrieved evidence, and each citation opens the exact passage or PDF page.
+- Versioned sources shared across chats, Projects and Assistants.
 
 **Tools and automation**
 - Web search with sources.
@@ -48,7 +49,10 @@ Your team pays providers for the tokens it uses, not a monthly fee per person.
 - Scheduled tasks: once, daily, weekly or monthly runs with optional email notifications.
 
 **Memory**
-- Personal Memory that learns from chats, plus facts you save explicitly.
+- Learns from what you say, never from model answers, quotes or documents; facts you save explicitly always take priority.
+- Each fact keeps its subject, source and time. Newer facts replace outdated ones; duplicates and contradictions are settled in the background.
+- Key facts reach every chat without extra model calls; search across facts and past chats covers the rest.
+- Secrets such as API keys and passwords are removed before anything is saved.
 - Review, edit, pause or reset it at any time.
 
 **For Claude Code and Codex**
@@ -57,7 +61,8 @@ Your team pays providers for the tokens it uses, not a monthly fee per person.
 **Team and administration**
 - Projects with shared chats, files, instructions and Knowledge.
 - Assistants with fixed instructions, models and Knowledge.
-- Invitations, access groups, and per-user or per-group model access.
+- Role-based access control: administrator and user roles, groups that decide who can use which providers, models and search, and Owner, Manager, Contributor and Viewer roles in Projects.
+- Email invitations.
 - Usage and cost per user.
 
 **Operations**
