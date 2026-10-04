@@ -41,6 +41,8 @@ v0.2.0 starts supported persistent upgrades; earlier development databases need 
 
 `20260815000000_baseline` is the immutable first migration anchor, including custom PostgreSQL DDL that Prisma cannot reconstruct. Changes are append-only migrations. Persistent installations use `prisma migrate deploy`, never `prisma db push`.
 
+An index on a large live table is built by `CREATE INDEX CONCURRENTLY` as the only statement of its migration file, so writers continue during an upgrade: Prisma sends a file as one simple query, and PostgreSQL refuses CONCURRENTLY inside the implicit transaction of a multi-statement query. A failed concurrent build leaves an invalid index and a failed migration; the operator drops that index and resolves the migration as rolled back before deploying again.
+
 Upgrade adopts Vision from page-image configuration once; later edits/clears stay independent.
 
 Keep custom checks and deferred triggers for row, tenant/source, history, deletion, and concurrent-writer invariants that relations cannot express, especially with raw SQL workers and destructive handlers. Simplify them only through behavior-proven forward migrations.
