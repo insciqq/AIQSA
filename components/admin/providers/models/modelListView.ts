@@ -1,5 +1,10 @@
 import type { ProviderUsageSources } from "@/components/admin/providers/providerListView";
-import { formatCheckedAt } from "@/components/admin/providers/providerListView";
+import {
+  formatCheckedAt,
+  IMAGE_GENERATION_OFF_TAG,
+  IMAGE_GENERATION_TAG,
+  imageGenerationTag
+} from "@/components/admin/providers/providerListView";
 import { modelChipsFromEvidence, modelUsageMissing, type ModelChip } from "@/components/admin/providers/models/modelChips";
 import type {
   AdminProviderActiveCheck,
@@ -8,6 +13,7 @@ import type {
   AdminProviderModel,
   AdminProviderModelClass
 } from "@/lib/contracts/adminProviders";
+import type { AdminProviderAssignedRole } from "@/lib/contracts/adminProviderRoleRouting";
 
 /**
  * Presentation rules for the Models table (PRD 5.4): grouping, the route
@@ -98,7 +104,7 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   add(roles?.chatTitleModel?.id, "Chat titles");
   add(roles?.chatPdfModel?.id, "Chat PDF");
   add(roles?.visionModel?.id, "Vision Model");
-  for (const model of roles?.imageModels ?? []) add(model.id, "Image generation");
+  for (const model of roles?.imageModels ?? []) add(model.id, imageGenerationTag(sources));
   add(roles?.decisionModel?.id, "Relevance checks");
   const route = roles?.rerankerRoute?.entries ?? [];
   if (route.length) {
@@ -114,6 +120,17 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
     add(integration.providerModel?.id, integration.displayName);
   }
   return tags;
+}
+
+/** Installation roles pinned to this deployment, as the server checks a routing change. */
+export function modelAssignedRoles(modelId: string, sources: ProviderUsageSources): AdminProviderAssignedRole[] {
+  const policy = sources.systemModelPolicy?.policy;
+  const pinned: ReadonlyArray<readonly [AdminProviderAssignedRole, string | undefined]> = [
+    ["memory", sources.systemModelPolicy?.memoryPolicy.model?.id], ["system_model", policy?.systemModel?.id],
+    ["chat_titles", policy?.chatTitleModel?.id], ["vision", policy?.visionModel?.id],
+    ["chat_pdf", policy?.chatPdfModel?.id], ["chat_pdf_native", policy?.chatPdfNativeModel?.id]
+  ];
+  return pinned.flatMap(([role, id]) => id === modelId ? [role] : []);
 }
 
 /**
@@ -148,7 +165,8 @@ export function turnOffConsequence(input: Readonly<{
   successor: string | null;
   tags: readonly string[];
 }>): TurnOffConsequence | null {
-  if (input.tags.length === 0) return null;
+  // A published image model without a default serves nobody.
+  if (input.tags.every((tag) => tag === IMAGE_GENERATION_OFF_TAG)) return null;
   if (input.tags.every((tag) => tag === "Relevance checks")) return {
     title: `Turn off ${input.model.displayName}?`,
     body: "Optional relevance checks will be skipped. Normal chat and retrieval remain available. You can turn this model back on at any time."
@@ -161,6 +179,7 @@ export function turnOffConsequence(input: Readonly<{
   if (input.tags.includes("Chat titles")) uses.push("the chat title model");
   if (input.tags.includes("Vision Model")) uses.push("the Vision Model");
   if (input.tags.includes("Chat PDF")) uses.push("the chat PDF model");
+  if (input.tags.includes(IMAGE_GENERATION_TAG)) uses.push("a published image model for image generation");
   if (input.tags.includes("Relevance checks")) uses.push("the optional relevance-check model");
   if (roles.length) {
     uses.push(roles.includes("Reranker · primary") || roles.includes("Reranker")
@@ -169,7 +188,8 @@ export function turnOffConsequence(input: Readonly<{
   }
   if (input.tags.includes("Knowledge docs")) uses.push("the Knowledge document model");
   if (input.tags.includes("Knowledge embeddings")) uses.push("the Knowledge embedding model");
-  const known = new Set(["Default chat", "System model", "Memory", "Chat titles", "Chat PDF", "Vision Model", "Knowledge docs", "Knowledge embeddings", "Relevance checks"]);
+  const known = new Set(["Default chat", "System model", "Memory", "Chat titles", "Chat PDF", "Vision Model", "Knowledge docs", "Knowledge embeddings",
+    "Relevance checks", IMAGE_GENERATION_TAG, IMAGE_GENERATION_OFF_TAG]);
   const searchSources = input.tags.filter((tag) => !known.has(tag) && !tag.startsWith("Reranker"));
   if (searchSources.length) {
     uses.push(`the model behind ${joinNames(searchSources.map((name) => `“${name}”`))} Search`);

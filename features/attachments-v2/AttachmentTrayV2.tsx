@@ -26,7 +26,18 @@ const initialAttachmentListLayoutV2: AttachmentListLayoutV2 = {
   scrollable: false
 };
 
-function measuredThreeRowHeight(list: HTMLUListElement): number | null {
+/**
+ * A screen no taller than 32rem (a phone on its side) keeps one complete row
+ * in view and scrolls the rest, so the composer toolbar stays above the fold;
+ * taller screens keep three. The query matches the short-screen CSS rules.
+ */
+const SHORT_VIEWPORT_QUERY = "(max-height: 32rem)";
+
+function visibleRowLimit(): number {
+  return typeof window.matchMedia === "function" && window.matchMedia(SHORT_VIEWPORT_QUERY).matches ? 1 : 3;
+}
+
+function measuredRowsHeight(list: HTMLUListElement, rowLimit: number): number | null {
   const listTop = list.getBoundingClientRect().top;
   const rows: Array<{ bottom: number; top: number }> = [];
 
@@ -42,7 +53,7 @@ function measuredThreeRowHeight(list: HTMLUListElement): number | null {
   }
 
   rows.sort((left, right) => left.top - right.top);
-  const lastVisibleRow = rows[Math.min(2, rows.length - 1)];
+  const lastVisibleRow = rows[Math.min(rowLimit - 1, rows.length - 1)];
   return lastVisibleRow ? Math.max(1, Math.ceil(lastVisibleRow.bottom)) : null;
 }
 
@@ -85,7 +96,7 @@ export function AttachmentTrayV2({
   const reconcileListLayout = useCallback(() => {
     const list = listRef.current;
     if (!list) return;
-    const maxHeightPx = measuredThreeRowHeight(list);
+    const maxHeightPx = measuredRowsHeight(list, visibleRowLimit());
     const visibleHeight = list.clientHeight;
     const scrollable = list.scrollHeight > visibleHeight + 1;
     const overflowBelow = scrollable &&
