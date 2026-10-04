@@ -26,7 +26,7 @@ type UpdatesProps = Parameters<typeof useScheduledTaskUpdates>[0];
 const list = vi.mocked(listScheduledTasks);
 const seen = vi.mocked(markScheduledTaskSeen);
 const answered = (finishedAt: string) =>
-  ({ scheduledFor: finishedAt, state: "completed", reasonCode: null, finishedAt }) as const;
+  ({ scheduledFor: finishedAt, state: "completed", reasonCode: null, finishedAt, unseen: true }) as const;
 let account = 0;
 let visibility: DocumentVisibilityState = "visible";
 
@@ -99,33 +99,36 @@ describe("scheduled chat projections", () => {
 });
 
 describe("newlyFinishedScheduledTasks", () => {
-  const settled = (state: "completed" | "failed", reasonCode: string | null, finishedAt: string) =>
-    ({ scheduledFor: finishedAt, state, reasonCode, finishedAt }) as const;
-  const check = (reasonCode: string, finishedAt: string, task: Partial<ScheduledTask> = {}) => scheduledTaskFixture({
-    kind: "monitoring", chatId: "chat-1", lastRun: settled("completed", reasonCode, finishedAt), ...task
+  // `unseen` is the server's verdict for the newest run; the aggregate follows any unread run.
+  const check = (reasonCode: string, finishedAt: string, unseen: boolean, task: Partial<ScheduledTask> = {}) => scheduledTaskFixture({
+    kind: "monitoring", chatId: "chat-1", unseenResult: unseen,
+    lastRun: { scheduledFor: finishedAt, state: "completed", reasonCode, finishedAt, unseen }, ...task
   });
 
-  it("follows the server's unread aggregate: a check with no update or a repeated source miss never counts", () => {
-    const previous = [check("update", "2026-10-04T08:01:00.000Z")];
-    // The server leaves both unread-free, so the aggregate stays off.
-    expect(newlyFinishedScheduledTasks(previous, [check("no_update", "2026-10-04T09:01:00.000Z")])).toEqual([]);
-    expect(newlyFinishedScheduledTasks(previous, [check("could_not_check", "2026-10-04T09:01:00.000Z")])).toEqual([]);
+  it("announces the newest run only when the server marked it unread", () => {
+    const previous = [check("update", "2026-10-04T08:01:00.000Z", false)];
+    // A check with no update and a repeated source miss are not news.
+    expect(newlyFinishedScheduledTasks(previous, [check("no_update", "2026-10-04T09:01:00.000Z", false)])).toEqual([]);
+    expect(newlyFinishedScheduledTasks(previous, [check("could_not_check", "2026-10-04T09:01:00.000Z", false)])).toEqual([]);
     // The first miss of a streak alerts: the server marks it unread.
-    const alert = check("could_not_check", "2026-10-04T09:01:00.000Z", { unseenResult: true });
+    const alert = check("could_not_check", "2026-10-04T09:01:00.000Z", true);
     expect(newlyFinishedScheduledTasks(previous, [alert])).toEqual([alert]);
-    const update = check("update", "2026-10-04T09:01:00.000Z", { unseenResult: true });
+    const update = check("update", "2026-10-04T09:01:00.000Z", true);
     expect(newlyFinishedScheduledTasks(previous, [update])).toEqual([update]);
+    // A task new to the list counts when its newest run is unread.
+    expect(newlyFinishedScheduledTasks([], [update])).toEqual([update]);
   });
 
-  it("decides by the run's own outcome while an older result is still unread", () => {
-    const previous = [check("update", "2026-10-04T08:01:00.000Z", { unseenResult: true })];
-    const next = (reasonCode: string, task: Partial<ScheduledTask> = {}) =>
-      newlyFinishedScheduledTasks(previous, [check(reasonCode, "2026-10-04T09:01:00.000Z", { unseenResult: true, ...task })]).length;
-    expect(next("no_update")).toBe(0);
-    expect(next("could_not_check")).toBe(0);
-    expect(next("could_not_check", { status: "paused", nextRunAt: null, pauseReason: "source_unavailable" })).toBe(1);
-    expect(next("update")).toBe(1);
-    expect(next("goal_reached", { status: "completed", nextRunAt: null, completionReason: "goal_reached" })).toBe(1);
+  it("follows the newest run's own unread flag while an older result is still unread", () => {
+    const previous = [check("update", "2026-10-04T08:01:00.000Z", true)];
+    const behindOlder = (reasonCode: string, unseen: boolean) =>
+      check(reasonCode, "2026-10-04T09:01:00.000Z", unseen, { unseenResult: true });
+    // A source alert is news even though the unread aggregate was already on.
+    const alert = behindOlder("could_not_check", true);
+    expect(newlyFinishedScheduledTasks(previous, [alert])).toEqual([alert]);
+    // A newer check with no update is not, although the task still has an unread result.
+    expect(newlyFinishedScheduledTasks(previous, [behindOlder("no_update", false)])).toEqual([]);
+    expect(newlyFinishedScheduledTasks(previous, [behindOlder("update", true)])).toHaveLength(1);
     // An unchanged run is never announced twice.
     expect(newlyFinishedScheduledTasks(previous, previous)).toEqual([]);
   });
@@ -185,12 +188,12 @@ describe("useScheduledTaskUpdates", () => {
     // An earlier answer is still unread, so the aggregate stays true across these runs.
     const before = scheduledTaskFixture({ chatId: "chat-1", running: true, unseenResult: true, lastRun: answered("2026-10-03T08:01:00.000Z") });
     const skipped = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
-      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "skipped", reasonCode: "previous_running", finishedAt: "2026-10-04T08:00:01.000Z" } });
+      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "skipped", reasonCode: "previous_running", finishedAt: "2026-10-04T08:00:01.000Z", unseen: false } });
     const failed = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true,
-      lastRun: { scheduledFor: "2026-10-04T09:00:00.000Z", state: "failed", reasonCode: "run_failed", finishedAt: "2026-10-04T09:01:00.000Z" } });
+      lastRun: { scheduledFor: "2026-10-04T09:00:00.000Z", state: "failed", reasonCode: "run_failed", finishedAt: "2026-10-04T09:01:00.000Z", unseen: false } });
     const paused = scheduledTaskFixture({ chatId: "chat-1", unseenResult: true, status: "paused", nextRunAt: null,
       pauseReason: "repeated_failures",
-      lastRun: { scheduledFor: "2026-10-04T10:00:00.000Z", state: "failed", reasonCode: "run_failed", finishedAt: "2026-10-04T10:01:00.000Z" } });
+      lastRun: { scheduledFor: "2026-10-04T10:00:00.000Z", state: "failed", reasonCode: "run_failed", finishedAt: "2026-10-04T10:01:00.000Z", unseen: true } });
     useWorkspaceStore.setState({ navigationChats: [navigationRow("chat-1")] });
     list.mockResolvedValueOnce(listed([before])).mockResolvedValueOnce(listed([skipped])).mockResolvedValueOnce(listed([failed]))
       .mockResolvedValue(listed([paused]));
@@ -290,7 +293,7 @@ describe("useScheduledTaskUpdates", () => {
   it("rereads the open task chat once when a check ends without news, and announces nothing", async () => {
     const running = scheduledTaskFixture({ chatId: "chat-1", kind: "monitoring", running: true });
     const quiet = scheduledTaskFixture({ chatId: "chat-1", kind: "monitoring",
-      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: "no_update", finishedAt: "2026-10-04T08:01:00.000Z" } });
+      lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: "no_update", finishedAt: "2026-10-04T08:01:00.000Z", unseen: false } });
     useWorkspaceStore.setState({ navigationChats: [navigationRow("chat-1")] });
     list.mockResolvedValueOnce(listed([running])).mockResolvedValue(listed([quiet]));
     const { onNewResult, refreshOpenChat } = renderUpdates({ activeChatId: "chat-1" });

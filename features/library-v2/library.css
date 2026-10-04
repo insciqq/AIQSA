@@ -1874,6 +1874,8 @@ select.v2-scheduled-field { padding-right: 2rem; text-overflow: ellipsis; }
   .v2-scheduled-run-outcome { grid-column: 1 / -1; }
   .v2-scheduled-runs li:has(.v2-scheduled-run-chat) .v2-scheduled-run-outcome { grid-column: 1; }
   .v2-scheduled-narrow { max-width: none; }
+  /* Two columns would cut "Every few hours" at the 16px phone field size. */
+  .v2-scheduled-pair { grid-template-columns: minmax(0, 1fr); }
 }
 @media (pointer: coarse) {
   .v2-scheduled-field, .v2-scheduled-day, .v2-scheduled-option { min-height: 2.75rem; }

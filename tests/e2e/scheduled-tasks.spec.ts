@@ -41,18 +41,18 @@ const listFixture: ScheduledTask[] = [
   task({
     id: "brief", title: "Weekday news brief", chatId, unseenResult: true,
     schedule: { kind: "weekly", time: "09:00", days: workdays },
-    lastRun: { scheduledFor: "2026-10-02T08:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T08:01:10.000Z" }
+    lastRun: { scheduledFor: "2026-10-02T08:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T08:01:10.000Z", unseen: true }
   }),
   task({ id: "market", title: "Market open notes", running: true, chatMode: "new", chatId: "scheduled-market-chat",
     schedule: { kind: "daily", time: "07:30" } }),
   task({
     id: "inbox", title: "Inbox check", chatId: "scheduled-inbox-chat",
     schedule: { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: workdays },
-    lastRun: { scheduledFor: "2026-10-02T15:00:00.000Z", state: "skipped", reasonCode: "previous_running", finishedAt: "2026-10-02T15:00:01.000Z" }
+    lastRun: { scheduledFor: "2026-10-02T15:00:00.000Z", state: "skipped", reasonCode: "previous_running", finishedAt: "2026-10-02T15:00:01.000Z", unseen: false }
   }),
   task({
     id: "model", title: "Model check-in", status: "paused", nextRunAt: null, pauseReason: "model_unavailable",
-    lastRun: { scheduledFor: "2026-10-03T07:00:00.000Z", state: "failed", reasonCode: "model_unavailable", finishedAt: "2026-10-03T07:00:02.000Z" }
+    lastRun: { scheduledFor: "2026-10-03T07:00:00.000Z", state: "failed", reasonCode: "model_unavailable", finishedAt: "2026-10-03T07:00:02.000Z", unseen: false }
   }),
   task({
     id: "friday", title: "Weekly summary for the New York team with a deliberately long title that wraps", status: "paused",
@@ -60,9 +60,9 @@ const listFixture: ScheduledTask[] = [
   }),
   task({ id: "launch", title: "Launch reminder", status: "completed", nextRunAt: null,
     schedule: { kind: "once", date: "2026-10-01", time: "10:00" },
-    lastRun: { scheduledFor: "2026-10-01T09:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-01T09:00:40.000Z" } }),
+    lastRun: { scheduledFor: "2026-10-01T09:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-01T09:00:40.000Z", unseen: false } }),
   task({ id: "monthly", title: "Monthly bills", schedule: { kind: "monthly", time: "10:00", dayOfMonth: 31 }, nextRunAt: "2026-10-31T10:00:00.000Z",
-    lastRun: { scheduledFor: "2026-09-30T09:00:00.000Z", state: "skipped", reasonCode: "missed", finishedAt: "2026-09-30T21:00:00.000Z" } })
+    lastRun: { scheduledFor: "2026-09-30T09:00:00.000Z", state: "skipped", reasonCode: "missed", finishedAt: "2026-09-30T21:00:00.000Z", unseen: false } })
 ];
 
 // Monitoring: one task watching in its chat, one that reached its goal; both use tools.
@@ -71,12 +71,12 @@ const monitoringFixture: ScheduledTask[] = [
     id: "watch", title: "Release watch", kind: "monitoring", chatId: watchChatId, toolsEnabled: true,
     schedule: { kind: "hourly", everyHours: 4, time: "00:00", until: null, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] },
     nextRunAt: "2026-10-04T12:00:00.000Z",
-    lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: "update", finishedAt: "2026-10-04T08:01:30.000Z" }
+    lastRun: { scheduledFor: "2026-10-04T08:00:00.000Z", state: "completed", reasonCode: "update", finishedAt: "2026-10-04T08:01:30.000Z", unseen: false }
   }),
   task({
     id: "tickets", title: "Concert ticket watch", kind: "monitoring", chatId: "scheduled-tickets-chat", toolsEnabled: true,
     workspaceEnabled: true, status: "completed", nextRunAt: null, completionReason: "goal_reached",
-    lastRun: { scheduledFor: "2026-10-03T08:00:00.000Z", state: "completed", reasonCode: "goal_reached", finishedAt: "2026-10-03T08:02:00.000Z" }
+    lastRun: { scheduledFor: "2026-10-03T08:00:00.000Z", state: "completed", reasonCode: "goal_reached", finishedAt: "2026-10-03T08:02:00.000Z", unseen: false }
   })
 ];
 

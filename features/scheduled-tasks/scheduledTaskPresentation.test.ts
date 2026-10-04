@@ -57,7 +57,7 @@ describe("scheduled task presentation", () => {
 
   it("describes the last run's outcome in words", () => {
     const run = (state: "completed" | "failed" | "skipped", reasonCode: string | null) => scheduledTaskLastRunLine(scheduledTaskFixture({
-      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state, reasonCode, finishedAt: "2026-10-05T08:01:00.000Z" }
+      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state, reasonCode, finishedAt: "2026-10-05T08:01:00.000Z", unseen: false }
     }), now);
     expect(scheduledTaskLastRunLine(scheduledTaskFixture(), now)).toBeNull();
     expect(run("completed", null)).toBe("Last run Mon 5 Oct, 09:00 · Answered");
@@ -74,7 +74,7 @@ describe("scheduled task presentation", () => {
     const notice = (state: "completed" | "failed" | "skipped", reasonCode: string | null, chatId: string | null = "chat-1",
       paused = false) => scheduledTaskResultNotice(scheduledTaskFixture({ chatId, unseenResult: true,
       ...(paused ? { status: "paused", nextRunAt: null, pauseReason: "repeated_failures" } : {}),
-      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state, reasonCode, finishedAt: "2026-10-05T08:01:00.000Z" } }));
+      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state, reasonCode, finishedAt: "2026-10-05T08:01:00.000Z", unseen: true } }));
     expect(notice("completed", null)).toEqual({ kind: "success", open: "chat", text: "“Weekday news brief” has a new result" });
     expect(notice("completed", null, null)).toMatchObject({ open: "scheduled" });
     expect(notice("failed", "run_failed", "chat-1", true)).toEqual({ kind: "error", open: "scheduled", text: "“Weekday news brief” could not run" });
@@ -245,7 +245,7 @@ describe("monitoring and tool copy", () => {
 
   it("names a monitoring check's outcome on the last-run line and a reached goal on the status line", () => {
     const last = (reasonCode: string) => scheduledTaskLastRunLine(scheduledTaskFixture({ kind: "monitoring",
-      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state: "completed", reasonCode, finishedAt: "2026-10-05T08:01:00.000Z" } }), now);
+      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state: "completed", reasonCode, finishedAt: "2026-10-05T08:01:00.000Z", unseen: false } }), now);
     expect(last("no_update")).toBe("Last run Mon 5 Oct, 09:00 · No update");
     expect(last("could_not_check")).toBe("Last run Mon 5 Oct, 09:00 · Could not check");
     expect(scheduledTaskStatusLine(scheduledTaskFixture({ status: "completed", nextRunAt: null, completionReason: "goal_reached" }), now))
@@ -266,7 +266,7 @@ describe("monitoring and tool copy", () => {
   it("announces a reached goal, a source alert and a pause by a completed check, never a check with no update", () => {
     const notice = (reasonCode: string | null, task: Partial<ScheduledTask> = {}) => scheduledTaskResultNotice(scheduledTaskFixture({
       chatId: "chat-1", unseenResult: true, kind: "monitoring", ...task,
-      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state: "completed", reasonCode, finishedAt: "2026-10-05T08:01:00.000Z" } }));
+      lastRun: { scheduledFor: "2026-10-05T08:00:00.000Z", state: "completed", reasonCode, finishedAt: "2026-10-05T08:01:00.000Z", unseen: true } }));
     expect(notice("goal_reached", { status: "completed", nextRunAt: null, completionReason: "goal_reached" }))
       .toEqual({ kind: "success", open: "chat", text: "“Weekday news brief” reached its goal" });
     expect(notice("update")).toEqual({ kind: "success", open: "chat", text: "“Weekday news brief” has a new result" });
