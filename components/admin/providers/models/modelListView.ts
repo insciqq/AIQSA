@@ -13,6 +13,7 @@ import type {
   AdminProviderModel,
   AdminProviderModelClass
 } from "@/lib/contracts/adminProviders";
+import type { AdminProviderAssignedRole } from "@/lib/contracts/adminProviderRoleRouting";
 
 /**
  * Presentation rules for the Models table (PRD 5.4): grouping, the route
@@ -119,6 +120,17 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
     add(integration.providerModel?.id, integration.displayName);
   }
   return tags;
+}
+
+/** Installation roles pinned to this deployment, as the server checks a routing change. */
+export function modelAssignedRoles(modelId: string, sources: ProviderUsageSources): AdminProviderAssignedRole[] {
+  const policy = sources.systemModelPolicy?.policy;
+  const pinned: ReadonlyArray<readonly [AdminProviderAssignedRole, string | undefined]> = [
+    ["memory", sources.systemModelPolicy?.memoryPolicy.model?.id], ["system_model", policy?.systemModel?.id],
+    ["chat_titles", policy?.chatTitleModel?.id], ["vision", policy?.visionModel?.id],
+    ["chat_pdf", policy?.chatPdfModel?.id], ["chat_pdf_native", policy?.chatPdfNativeModel?.id]
+  ];
+  return pinned.flatMap(([role, id]) => id === modelId ? [role] : []);
 }
 
 /**
