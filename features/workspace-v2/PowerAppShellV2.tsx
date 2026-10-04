@@ -25,8 +25,7 @@ import { decodeAnswerSoundPreferences, DEFAULT_ANSWER_SOUND } from "@/lib/contra
 import { toolActivityOriginV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import {
   attachmentPolicyForModel,
-  catalogWithImageEditing,
-  unsupportedAttachmentMessage
+  catalogWithImageEditing
 } from "@/components/app-shell/attachmentCapabilities";
 import { effectiveImageEditing } from "@/lib/contracts/imageModels";
 import { partitionAttachmentSelection } from "@/components/app-shell/attachmentSelection";
@@ -35,7 +34,7 @@ import {
   withAttachmentLimitFeedbackMessage,
   withoutAttachmentLimitFeedbackMessage
 } from "@/components/app-shell/attachmentLimitUsage";
-import { reconcileCurrentComposerAttachments } from "@/components/app-shell/attachmentReconciliation";
+import { reconcileCurrentComposerAttachments, reportRejectedAttachments } from "@/components/app-shell/attachmentReconciliation";
 import {
   initialComposerControlSnapshot,
   useComposerControlStore,
@@ -1891,10 +1890,9 @@ export function PowerAppShellV2({
       });
     },
     rejectAttachments(fileNames: readonly string[]) {
-      const store = useComposerSessionStore.getState();
-      // The composer refused these with its own (personal or Project) model.
-      store.updateSession(store.activeSessionKey, {
-        operationError: unsupportedAttachmentMessage(fileNames, effectiveCurrentModel, false, workspaceAvailable)
+      void reportRejectedAttachments(fileNames, effectiveCurrentModel, {
+        personalChat: !projectContext,
+        workspaceAvailable
       });
     },
     removeAttachment(attachmentId: string) {
