@@ -47,6 +47,7 @@ import {
   KNOWLEDGE_SOURCE_BINDING_STRATEGY_EAGER
 } from "../knowledge/retrievalTypes";
 import { decodeKnowledgeBudgetPolicy } from "../knowledge/knowledgeBudget";
+import { decodeKnowledgeImageObservationPlan } from "../knowledge/imageObservation";
 import type {
   KnowledgeRunAdmissionExclusion,
   KnowledgeRunAdmissionSourceAuthorization
@@ -593,6 +594,7 @@ const normalizedRequestKeys = new Set([
   "knowledgeAnswerWorkflowVersion",
   "knowledgeReviewRepairFeedbackVersion",
   "knowledgeGenerationBudget",
+  "knowledgeImageObservation",
   "generationBudget",
   "knowledgeEvidencePackingVersion",
   "knowledgeFocusedRequest",
@@ -957,6 +959,15 @@ function validMcpSnapshot(value: unknown): boolean {
   return true;
 }
 
+/** Workflow 11's frozen image description: the run's own current images, read
+ * by the answer model only when it reads images, otherwise by System Vision. */
+function validKnowledgeImageObservation(value: Record<string, unknown>): boolean {
+  const plan = decodeKnowledgeImageObservationPlan(value.knowledgeImageObservation);
+  const attachmentIds = Array.isArray(value.attachmentIds) ? value.attachmentIds : [];
+  return plan !== null && value.knowledgeAnswerWorkflowVersion === 11 && plan.imageIds.every(id => attachmentIds.includes(id)) &&
+    isRecord(value.modelCapabilities) && (plan.route === "answer_model") === (value.modelCapabilities.vision === true);
+}
+
 /** Chat System Vision outside a Workspace: only an available plan, only for an
  * answer model without vision. */
 function validChatVisionAnalysis(value: Record<string, unknown>): boolean {
@@ -988,6 +999,7 @@ function decodeProviderDispatchRecoveryRequest(
       (value.knowledgeReviewRepairFeedbackVersion !== 1 || value.knowledgeAnswerWorkflowVersion !== 11) ||
     value.knowledgeGenerationBudget !== undefined &&
       (!isModelGenerationBudget(value.knowledgeGenerationBudget) || value.knowledgeAnswerWorkflowVersion !== 11) ||
+    value.knowledgeImageObservation !== undefined && !validKnowledgeImageObservation(value) ||
     value.generationBudget !== undefined && !isModelGenerationBudget(value.generationBudget) ||
     value.knowledgeEvidencePackingVersion !== undefined &&
       value.knowledgeEvidencePackingVersion !== 2 && value.knowledgeEvidencePackingVersion !== 3 && value.knowledgeEvidencePackingVersion !== 4 && value.knowledgeEvidencePackingVersion !== 5 ||
