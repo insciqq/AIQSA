@@ -32,7 +32,8 @@ const HEADLINES = {
  * The outcome, its headline and the fixed reason line of a settled
  * occurrence, as the result email and the browser push state them. A
  * completed run that missed sources so often that it paused its task reads
- * as paused.
+ * as paused; any other completed run names its monitoring check outcome, if
+ * it has one.
  */
 export function scheduledTaskOutcomeCopy(input: Pick<ScheduledTaskNotification,
   "reasonCode" | "state" | "taskPauseReason" | "trigger" | "unavailableSources">): Readonly<{
@@ -44,7 +45,7 @@ export function scheduledTaskOutcomeCopy(input: Pick<ScheduledTaskNotification,
   const pausedBySources = input.state === "COMPLETED" && input.trigger === "schedule" &&
     input.taskPauseReason === "source_unavailable" && input.unavailableSources.length > 0;
   if (pausedBySources) return copy("was paused", scheduledTaskReasonMessage(input.taskPauseReason));
-  if (input.state === "COMPLETED") return copy("finished", null);
+  if (input.state === "COMPLETED") return copy("finished", scheduledTaskReasonMessage(input.reasonCode));
   if (input.state === "FAILED" && input.trigger === "schedule" && input.taskPauseReason !== null) {
     return copy("was paused", scheduledTaskReasonMessage(input.taskPauseReason));
   }
@@ -67,9 +68,9 @@ export function scheduledTaskSourceLines(sources: readonly ScheduledTaskUnavaila
 
 /**
  * Content-free result email: the task title, the outcome with fixed reason
- * copy, the names of sources the run could not reach and a link to the task's
- * chat. Never answer text, the prompt or any identifier other than the chat
- * link.
+ * copy (a monitoring check's outcome included), the names of sources the run
+ * could not reach and a link to the task's chat. Never answer text, the
+ * prompt or any identifier other than the chat link.
  */
 export function scheduledTaskResultEmail(input: ScheduledTaskNotification & Readonly<{ appBaseUrl: string }>): SmtpProductMessage {
   const title = input.title.replace(/[\u0000-\u001f\u007f]+/gu, " ").trim();

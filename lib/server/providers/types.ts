@@ -218,6 +218,10 @@ export type NormalizedRunRequest = {
   modelCapabilities: ProviderModelCapabilities;
   mcpDiscovery?: McpDiscoveryState;
   mcp?: McpRunPlanSnapshot;
+  /** Server-owned admission marker of a run that a monitoring task's
+   * scheduled occurrence admitted: it offers `report_monitoring_result`,
+   * reserved outside the tool budgets. Never set from a request field. */
+  monitoringVerdictTool?: true;
   modelId: string;
   personalContext?: Readonly<{
     approxTokens: number;

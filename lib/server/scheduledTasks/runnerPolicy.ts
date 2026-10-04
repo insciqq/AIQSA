@@ -1,6 +1,8 @@
 import {
   SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD,
   SCHEDULED_TASK_RUN_DEADLINE_MINUTES,
+  type ScheduledTaskCheckOutcome,
+  type ScheduledTaskKind,
   type ScheduledTaskRunTrigger,
   type ScheduledTaskSchedule
 } from "../../contracts/scheduledTasks";
@@ -18,6 +20,8 @@ export const SCHEDULED_TASK_RETRY_WINDOW_MS = 30 * 60 * 1000;
 /** One admission attempt owns its occurrence this long. */
 export const SCHEDULED_TASK_ADMISSION_LEASE_MS = 5 * 60 * 1000;
 export const SCHEDULED_TASK_FAILURE_PAUSE_THRESHOLD = 3;
+/** Scheduled monitoring checks in a row without a reported outcome that pause their task. */
+export const SCHEDULED_TASK_MISSING_VERDICT_PAUSE_THRESHOLD = 3;
 /** Newest occurrences kept per task. */
 export const SCHEDULED_TASK_OCCURRENCE_RETENTION = 50;
 /** Scheduled runs executing installation-wide and per owner; a run counts until it is terminal. */
@@ -36,8 +40,9 @@ export type ScheduledTaskStatusColumn = "ACTIVE" | "PAUSED" | "COMPLETED";
 export type ScheduledTaskSettledState = "COMPLETED" | "FAILED" | "SKIPPED";
 /** Stable codes of automatic pauses. */
 export type ScheduledTaskPauseReason =
-  | "account_inactive" | "model_unavailable" | "provider_unavailable" | "repeated_failures" | "schedule_invalid"
-  | "search_unavailable" | "source_unavailable" | "tools_unavailable" | "workspace_secret_limit" | "workspace_unavailable";
+  | "account_inactive" | "model_cannot_report" | "model_unavailable" | "provider_unavailable" | "repeated_failures"
+  | "schedule_invalid" | "search_unavailable" | "source_unavailable" | "tools_unavailable" | "verdict_missing"
+  | "workspace_secret_limit" | "workspace_unavailable";
 
 export type ScheduledTaskOutcome = Readonly<{
   state: ScheduledTaskSettledState;
@@ -45,6 +50,56 @@ export type ScheduledTaskOutcome = Readonly<{
   /** A permanent admission refusal that pauses a scheduled (not manual) task. */
   pauseReason?: ScheduledTaskPauseReason;
 }>;
+
+/** What a monitoring check's model reported through its built-in tool. */
+export type MonitoringVerdict = "update" | "no_update" | "goal_reached";
+export const MONITORING_VERDICTS = ["update", "no_update", "goal_reached"] as const satisfies readonly MonitoringVerdict[];
+
+export function isMonitoringVerdict(value: unknown): value is MonitoringVerdict {
+  return (MONITORING_VERDICTS as readonly unknown[]).includes(value);
+}
+
+/**
+ * How a completed monitoring check settles. Its `outcome` is the occurrence's
+ * `reasonCode`, the run's transcript marker and the history copy; whether it
+ * is news and whether it becomes the next check's previous result follow from
+ * it (`settlementNotifiesOwner`, `settlementBaseline`): only `no_update` is
+ * hidden, and neither `no_update` nor `could_not_check` is a comparison basis.
+ */
+export type MonitoringCheckSettlement = Readonly<{
+  outcome: ScheduledTaskCheckOutcome;
+  /** The guarded goal completion of the task applies. */
+  completesTask: boolean;
+  /** The model never reported: counts towards the `verdict_missing` pause. */
+  verdictMissing: boolean;
+}>;
+
+/**
+ * The verdict-to-settlement mapping of a completed monitoring check of the
+ * task's current generation, free of I/O. Health comes first: a check whose
+ * relevant source was unavailable (`healthIncomplete`) never settles as a
+ * healthy `no_update` or `goal_reached`; it is shown as `could_not_check`. A
+ * missing (or invalid, hence unrecorded) verdict is shown as `unreported`: an
+ * update is never hidden by mistake. The first check of a generation (no
+ * previous shown result) is always shown, as the `baseline`, unless it already
+ * reached the goal. A reached goal completes the task only while no owner
+ * transition happened since admission (`ownerUnchanged`); otherwise it is shown
+ * as an ordinary `update`.
+ */
+export function monitoringCheckSettlement(input: Readonly<{
+  firstCheck: boolean;
+  healthIncomplete: boolean;
+  ownerUnchanged: boolean;
+  verdict: MonitoringVerdict | null;
+}>): MonitoringCheckSettlement {
+  const settle = (outcome: ScheduledTaskCheckOutcome, completesTask = false): MonitoringCheckSettlement =>
+    ({ completesTask, outcome, verdictMissing: input.verdict === null });
+  if (input.healthIncomplete) return settle("could_not_check");
+  if (input.verdict === null) return settle("unreported");
+  if (input.verdict === "goal_reached") return input.ownerUnchanged ? settle("goal_reached", true) : settle("update");
+  if (input.firstCheck) return settle("baseline");
+  return settle(input.verdict);
+}
 
 export type ScheduledTaskClaimPlan = Readonly<{
   occurrences: readonly Readonly<{ scheduledFor: Date; missed: boolean }>[];
@@ -102,9 +157,11 @@ export function planScheduledTaskClaim(
   }
 }
 
-export type ScheduledTaskSettlementPlan = Readonly<{
+/** A settlement's task bookkeeping: the counters, an automatic pause and the health alert. */
+export type ScheduledTaskBookkeeping = Readonly<{
   consecutiveFailures: number;
   consecutiveIncompleteRuns: number;
+  consecutiveMissingVerdicts: number;
   pauseReason: ScheduledTaskPauseReason | null;
   /** This settlement starts a streak of incomplete runs: the one health alert of that streak. */
   sourceAlert: boolean;
@@ -114,8 +171,7 @@ export type ScheduledTaskSettlementPlan = Readonly<{
  * Task bookkeeping for a settled occurrence. Success resets the failure count;
  * a failed scheduled run counts and pauses an active task at the threshold or
  * on a permanent refusal decided under the current revision (a concurrent
- * owner edit wins). Manual runs never count failures or pause; skips change
- * nothing.
+ * owner edit wins). Manual runs never count or pause; skips change nothing.
  *
  * Source health is separate from results: a completed run whose admission
  * lacked a relevant source (`sourcesIncomplete`) still completes and resets
@@ -123,60 +179,78 @@ export type ScheduledTaskSettlementPlan = Readonly<{
  * first run is the health alert and whose third pauses an active task with
  * `source_unavailable`. A complete run ends the streak; failures and skips
  * leave it as it is, and a manual incomplete run neither extends nor alerts.
+ *
+ * A completed scheduled monitoring check without a reported outcome
+ * (`verdictMissing`) counts likewise towards a `verdict_missing` pause, and
+ * any reported outcome resets that count; the source pause comes first.
  */
 export function planTaskSettlement(input: Readonly<{
   trigger: ScheduledTaskRunTrigger;
   outcome: ScheduledTaskOutcome;
   sourcesIncomplete?: boolean;
   task: Readonly<{
-    status: ScheduledTaskStatusColumn; consecutiveFailures: number; consecutiveIncompleteRuns: number; revision: number;
+    status: ScheduledTaskStatusColumn; consecutiveFailures: number; consecutiveIncompleteRuns: number;
+    consecutiveMissingVerdicts: number; revision: number;
   }>;
   observedRevision?: number;
-}>): ScheduledTaskSettlementPlan {
+  /** A completed monitoring check: whether its model never reported an outcome. */
+  verdictMissing?: boolean;
+}>): ScheduledTaskBookkeeping {
   const { outcome, task } = input;
+  const manual = input.trigger === "manual";
   const streak = task.consecutiveIncompleteRuns;
+  const missing = task.consecutiveMissingVerdicts;
   if (outcome.state === "COMPLETED") {
-    if (!input.sourcesIncomplete) return { consecutiveFailures: 0, consecutiveIncompleteRuns: 0, pauseReason: null, sourceAlert: false };
-    if (input.trigger === "manual") return { consecutiveFailures: 0, consecutiveIncompleteRuns: streak, pauseReason: null, sourceAlert: false };
-    const consecutiveIncompleteRuns = streak + 1;
+    const incomplete = input.sourcesIncomplete === true;
+    const consecutiveIncompleteRuns = !incomplete ? 0 : manual ? streak : streak + 1;
+    const consecutiveMissingVerdicts = input.verdictMissing === undefined || manual ? missing
+      : input.verdictMissing ? missing + 1 : 0;
+    const pausing = !manual && task.status === "ACTIVE";
     return {
       consecutiveFailures: 0,
       consecutiveIncompleteRuns,
-      pauseReason: task.status === "ACTIVE" && consecutiveIncompleteRuns >= SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD
-        ? "source_unavailable" : null,
-      sourceAlert: consecutiveIncompleteRuns === 1
+      consecutiveMissingVerdicts,
+      pauseReason: !pausing ? null
+        : incomplete && consecutiveIncompleteRuns >= SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD ? "source_unavailable"
+          : input.verdictMissing === true && consecutiveMissingVerdicts >= SCHEDULED_TASK_MISSING_VERDICT_PAUSE_THRESHOLD
+            ? "verdict_missing" : null,
+      sourceAlert: incomplete && !manual && consecutiveIncompleteRuns === 1
     };
   }
-  if (outcome.state === "SKIPPED" || input.trigger === "manual") {
-    return { consecutiveFailures: task.consecutiveFailures, consecutiveIncompleteRuns: streak, pauseReason: null, sourceAlert: false };
+  const unchanged = { consecutiveIncompleteRuns: streak, consecutiveMissingVerdicts: missing, sourceAlert: false };
+  if (outcome.state === "SKIPPED" || manual) {
+    return { ...unchanged, consecutiveFailures: task.consecutiveFailures, pauseReason: null };
   }
   const consecutiveFailures = task.consecutiveFailures + 1;
-  const failed = { consecutiveFailures, consecutiveIncompleteRuns: streak, sourceAlert: false };
-  if (task.status !== "ACTIVE") return { ...failed, pauseReason: null };
+  if (task.status !== "ACTIVE") return { ...unchanged, consecutiveFailures, pauseReason: null };
   if (outcome.pauseReason && (input.observedRevision === undefined || input.observedRevision === task.revision)) {
-    return { ...failed, pauseReason: outcome.pauseReason };
+    return { ...unchanged, consecutiveFailures, pauseReason: outcome.pauseReason };
   }
   return {
-    ...failed,
+    ...unchanged,
+    consecutiveFailures,
     pauseReason: consecutiveFailures >= SCHEDULED_TASK_FAILURE_PAUSE_THRESHOLD ? "repeated_failures" : null
   };
 }
 
 /**
- * Whether a settlement is news for the owner: an unread result and a result
- * email and push. Only a shown result (every completed run until monitoring
- * outcomes exist), a settlement that paused the task (a failure, or the
- * incomplete run that ends a streak) and the health alert that starts a
- * streak of incomplete runs are; later incomplete runs of the same streak
- * alert no more. Routine skips (missed, previous_running, superseded,
- * chat_busy, paused) and other failures stay in the run history only.
+ * Whether a settlement is news for the owner: an unread result, a result
+ * email and a browser push. Only a shown result (every completed run except a
+ * monitoring check with no update), a settlement that paused the task (a
+ * failure, or the incomplete run that ends a streak) and the health alert
+ * that starts a streak of incomplete runs are; later incomplete runs of the
+ * same streak alert no more. Routine skips (missed, previous_running,
+ * superseded, chat_busy, paused), other failures and checks with no update
+ * stay in the run history only.
  */
 export function settlementNotifiesOwner(outcome: Readonly<{
+  reasonCode: string | null;
   sourceAlert?: boolean;
   state: ScheduledTaskSettledState;
   taskPaused: boolean;
 }>): boolean {
-  return outcome.state === "COMPLETED" || outcome.taskPaused || outcome.sourceAlert === true;
+  return (outcome.state === "COMPLETED" && outcome.reasonCode !== "no_update") || outcome.taskPaused ||
+    outcome.sourceAlert === true;
 }
 
 /** What the next same-chat run sees besides the prompt. */
@@ -187,23 +261,98 @@ export type ScheduledTaskBaseline = Readonly<{
   userMessageId: string;
 }>;
 
+/** Completed checks that never become the previous shown result: hidden ones and ones whose sources failed. */
+const NOT_A_BASELINE: ReadonlySet<string> = new Set(["could_not_check", "no_update"] satisfies ScheduledTaskCheckOutcome[]);
+
 /**
- * The baseline a settlement leaves: a completed (shown) result accepted under
+ * The baseline a settlement leaves: a completed shown result accepted under
  * the task's current generation; anything else, including a result of an
- * older generation, keeps the stored one.
+ * older generation, a monitoring check with no update and one whose sources
+ * were unavailable, keeps the stored one.
  */
 export function settlementBaseline(input: Readonly<{
   assistantMessageId: string | null;
   occurrence: Readonly<{ runId: string | null; taskGeneration: number | null; userMessageId: string | null }>;
-  outcome: Readonly<{ state: ScheduledTaskSettledState }>;
+  outcome: Readonly<{ reasonCode: string | null; state: ScheduledTaskSettledState }>;
   taskGeneration: number;
 }>): ScheduledTaskBaseline | null {
   const { occurrence } = input;
-  return input.outcome.state === "COMPLETED" && occurrence.taskGeneration === input.taskGeneration &&
+  return input.outcome.state === "COMPLETED" && !NOT_A_BASELINE.has(input.outcome.reasonCode ?? "") &&
+    occurrence.taskGeneration === input.taskGeneration &&
     occurrence.runId !== null && occurrence.userMessageId !== null && input.assistantMessageId !== null
     ? { assistantMessageId: input.assistantMessageId, generation: input.taskGeneration, runId: occurrence.runId,
       userMessageId: occurrence.userMessageId }
     : null;
+}
+
+/**
+ * The monitoring settlement of a completed linked run, from its locked task
+ * and occurrence; null for any other run. Only a run that a monitoring task
+ * accepted under its current generation is a check (a changed prompt or type
+ * bumps the generation, so the kind is still the admitted one); a result of an
+ * older generation stays an ordinary shown result. No baseline of the current
+ * generation means a first check; the revision the run was accepted under
+ * proves that no owner transition happened since.
+ */
+export function completedRunCheck(input: Readonly<{
+  /** A relevant source was unavailable during the check (source health of scheduled runs). */
+  healthIncomplete: boolean;
+  occurrence: Readonly<{ taskGeneration: number | null; taskRevision: number | null; verdict: string | null }>;
+  task: Readonly<{ baselineGeneration: number | null; generation: number; kind: ScheduledTaskKind; revision: number }>;
+}>): MonitoringCheckSettlement | null {
+  const { occurrence, task } = input;
+  if (task.kind !== "monitoring" || occurrence.taskGeneration !== task.generation) return null;
+  return monitoringCheckSettlement({
+    firstCheck: task.baselineGeneration !== task.generation,
+    healthIncomplete: input.healthIncomplete,
+    ownerUnchanged: occurrence.taskRevision === task.revision,
+    verdict: isMonitoringVerdict(occurrence.verdict) ? occurrence.verdict : null
+  });
+}
+
+/** Everything one settlement writes besides the occurrence's state and reason. */
+export type ScheduledTaskSettlementPlan = ScheduledTaskBookkeeping & Readonly<{
+  baseline: ScheduledTaskBaseline | null;
+  /** A reached goal completes the task: a runner status transition. */
+  goalCompletes: boolean;
+  /** The result is news: an unread result, an email and a push. */
+  notifies: boolean;
+}>;
+
+/**
+ * The settlement rules of one occurrence, decided from its locked rows: the
+ * task's counters, health alert and automatic pause, a monitoring goal's
+ * completion (only when nothing paused the task), the notification matrix and
+ * the baseline the next same-chat run sees. `sourcesIncomplete` is the source
+ * health its admission froze, the same fact a monitoring `check` was settled
+ * with.
+ */
+export function planOccurrenceSettlement(input: Readonly<{
+  assistantMessageId: string | null;
+  check: MonitoringCheckSettlement | null;
+  observedRevision?: number;
+  occurrence: Readonly<{
+    runId: string | null; taskGeneration: number | null; trigger: ScheduledTaskRunTrigger; userMessageId: string | null;
+  }>;
+  outcome: ScheduledTaskOutcome;
+  sourcesIncomplete: boolean;
+  task: Readonly<{
+    consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number; generation: number;
+    revision: number; status: ScheduledTaskStatusColumn;
+  }>;
+}>): ScheduledTaskSettlementPlan {
+  const { check, occurrence, outcome, task } = input;
+  const plan = planTaskSettlement({
+    observedRevision: input.observedRevision, outcome, sourcesIncomplete: input.sourcesIncomplete, task,
+    trigger: occurrence.trigger, ...(check ? { verdictMissing: check.verdictMissing } : {})
+  });
+  const taskPaused = plan.pauseReason !== null;
+  return {
+    ...plan,
+    baseline: settlementBaseline({ assistantMessageId: input.assistantMessageId, occurrence, outcome, taskGeneration: task.generation }),
+    goalCompletes: check?.completesTask === true && !taskPaused,
+    notifies: settlementNotifiesOwner({ reasonCode: outcome.reasonCode, sourceAlert: plan.sourceAlert, state: outcome.state, taskPaused })
+  };
 }
 
 /** An open (pending or running) occurrence of a task whose next instant is being claimed. */
@@ -288,6 +437,7 @@ const TRANSIENT_CODES = new Set([
   "workspace_runtime_unavailable", "workspace_secret_unavailable"
 ]);
 const PAUSE_CODES = new Map<string, ScheduledTaskPauseReason>([
+  ["model_cannot_report", "model_cannot_report"],
   ["model_not_available", "model_unavailable"],
   ["search_strategy_not_available", "search_unavailable"],
   ["user_not_available", "account_inactive"],

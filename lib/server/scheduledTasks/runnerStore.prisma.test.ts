@@ -307,10 +307,11 @@ describe("persisted scheduled task runner", () => {
     const detail = await owners.detail(userId, created.id);
     expect(detail?.recentRuns[0]?.unavailableSources).toEqual([{ name: "Synthetic Mail", reason: "mcp_reauthorization_required" }]);
     // An owner edit (here resuming) ends the streak.
-    const { chatMode, emailNotify, modelId, prompt, provider, revision, schedule, searchEnabled, timeZone, title, toolsEnabled,
+    const { chatMode, emailNotify, kind, modelId, prompt, provider, revision, schedule, searchEnabled, timeZone, title, toolsEnabled,
       workspaceEnabled } = detail!.task;
     await owners.update(userId, created.id, {
-      draft: { chatMode, emailNotify, modelId, prompt, provider, schedule, searchEnabled, timeZone, title, toolsEnabled, workspaceEnabled },
+      draft: { chatMode, emailNotify, kind, modelId, prompt, provider, schedule, searchEnabled, timeZone, title, toolsEnabled,
+        workspaceEnabled },
       expectedRevision: revision, nextRunAt: new Date(Date.now() + 3_600_000), status: "active"
     });
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
@@ -402,5 +403,108 @@ describe("persisted scheduled task runner", () => {
     expect(await runner.claimNotification(settled.id, new Date())).toMatchObject({ email: user.email, state: "COMPLETED",
       title: "Synthetic brief", trigger: "manual", unavailableSources: [] });
     expect(await runner.claimNotification(settled.id, new Date())).toBeNull();
+  });
+});
+
+describe("persisted monitoring checks", () => {
+  let instants = 0;
+  async function check(userId: string, chatId: string, trigger: "manual" | "schedule" = "manual") {
+    const current = await prisma.scheduledTask.findFirstOrThrow({ where: { userId } });
+    const occurrence = await prisma.scheduledTaskOccurrence.create({ data: {
+      scheduledFor: new Date(Date.now() + (instants += 1)), startedAt: new Date(), taskId: current.id, trigger, userId
+    } });
+    const run = await runs.createRun(await runInput(userId, chatId, origin(occurrence.id, current, { monitoring: true })));
+    return { occurrence, run };
+  }
+  async function finish(admitted: Awaited<ReturnType<typeof check>>, verdict: "goal_reached" | "no_update" | "update" | null, now: Date) {
+    if (verdict) expect(await runs.recordMonitoringVerdict!({ runId: admitted.run.runId, userId: admitted.occurrence.userId, verdict })).toBe(true);
+    await prisma.modelRun.update({ data: { status: "complete" }, where: { id: admitted.run.runId } });
+    return runner.settleLinked(admitted.occurrence.id, now);
+  }
+  const occurrenceOf = (id: string) => prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id } });
+  const outcomeOf = async (runId: string) => (await prisma.modelRun.findUniqueOrThrow({ where: { id: runId } })).scheduledOutcome;
+
+  it("records a report on its run's running occurrence only, the last report winning", async () => {
+    const userId = await owner();
+    await task(userId, null, { kind: "MONITORING" });
+    const chat = await personalChat(userId);
+    const first = await check(userId, chat.id);
+    expect(await occurrenceOf(first.occurrence.id)).toMatchObject({ taskRevision: 1, verdict: null });
+    expect(await runs.recordMonitoringVerdict!({ runId: first.run.runId, userId, verdict: "update" })).toBe(true);
+    // Recovery may record the same or a later report again: the last one wins.
+    expect(await runs.recordMonitoringVerdict!({ runId: first.run.runId, userId, verdict: "no_update" })).toBe(true);
+    expect((await occurrenceOf(first.occurrence.id)).verdict).toBe("no_update");
+    // No other owner's run, and nothing once the occurrence settled, can write a report.
+    expect(await runs.recordMonitoringVerdict!({ runId: first.run.runId, userId: await owner(), verdict: "goal_reached" })).toBe(false);
+    await finish(first, null, new Date());
+    expect(await runs.recordMonitoringVerdict!({ runId: first.run.runId, userId, verdict: "goal_reached" })).toBe(false);
+    expect((await occurrenceOf(first.occurrence.id)).verdict).toBe("no_update");
+    await expect(prisma.scheduledTaskOccurrence.update({ data: { verdict: "maybe" }, where: { id: first.occurrence.id } }))
+      .rejects.toThrow();
+  });
+
+  it("shows the first check, keeps later checks without news silent and out of the baseline, and keeps outcomes on the runs", async () => {
+    const userId = await owner();
+    const created = await task(userId, null, { kind: "MONITORING" });
+    const chat = await personalChat(userId);
+    const now = new Date();
+    const first = await check(userId, chat.id);
+    expect(await finish(first, "no_update", now)).toMatchObject({ reasonCode: "baseline", state: "COMPLETED", taskPaused: false });
+    expect(await occurrenceOf(first.occurrence.id)).toMatchObject({ reasonCode: "baseline", unseenAt: now });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ baselineRunId: first.run.runId });
+    expect(await outcomeOf(first.run.runId)).toBe("baseline");
+
+    const quiet = await check(userId, chat.id);
+    expect(await finish(quiet, "no_update", now)).toMatchObject({ reasonCode: "no_update", state: "COMPLETED" });
+    expect(await occurrenceOf(quiet.occurrence.id)).toMatchObject({ reasonCode: "no_update", unseenAt: null });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ baselineRunId: first.run.runId });
+    expect(await outcomeOf(quiet.run.runId)).toBe("no_update");
+
+    const news = await check(userId, chat.id);
+    expect(await finish(news, "update", now)).toMatchObject({ reasonCode: "update" });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ baselineRunId: news.run.runId });
+
+    // A standard task's run keeps no check outcome.
+    await prisma.scheduledTask.update({ data: { kind: "STANDARD" }, where: { id: created.id } });
+    const plain = await check(userId, chat.id);
+    expect(await finish(plain, null, now)).toMatchObject({ reasonCode: null, state: "COMPLETED" });
+    expect(await outcomeOf(plain.run.runId)).toBeNull();
+  });
+
+  it("pauses after three scheduled checks in a row that never reported", async () => {
+    const userId = await owner();
+    const created = await task(userId, new Date(Date.now() + 3_600_000), { kind: "MONITORING", consecutiveMissingVerdicts: 2 });
+    const chat = await personalChat(userId);
+    const unreported = await check(userId, chat.id, "schedule");
+    expect(await finish(unreported, null, new Date())).toMatchObject({ reasonCode: "unreported", state: "COMPLETED", taskPaused: true });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+      consecutiveMissingVerdicts: 3, nextRunAt: null, pauseReason: "verdict_missing", revision: 2, status: "PAUSED"
+    });
+    // Shown anyway: an update is never hidden by mistake.
+    expect((await occurrenceOf(unreported.occurrence.id)).unseenAt).not.toBeNull();
+  });
+
+  it("completes the task on a reached goal only under the revision its run was accepted under", async () => {
+    const userId = await owner();
+    const created = await task(userId, new Date(Date.now() + 3_600_000), { kind: "MONITORING" });
+    const chat = await personalChat(userId);
+    const edited = await check(userId, chat.id);
+    // An owner edit after admission wins: the goal is shown as an update and the task stays active.
+    await prisma.scheduledTask.update({ data: { revision: { increment: 1 }, title: "Renamed" }, where: { id: created.id } });
+    expect(await finish(edited, "goal_reached", new Date())).toMatchObject({ reasonCode: "update" });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
+      .toMatchObject({ completionReason: null, revision: 2, status: "ACTIVE" });
+
+    const reached = await check(userId, chat.id);
+    expect(await finish(reached, "goal_reached", new Date())).toMatchObject({ reasonCode: "goal_reached", state: "COMPLETED" });
+    expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+      completionReason: "goal_reached", nextRunAt: null, pauseReason: null, revision: 3, status: "COMPLETED"
+    });
+    expect((await occurrenceOf(reached.occurrence.id)).unseenAt).not.toBeNull();
+    // Resume continues from now and clears why it completed.
+    const completed = await owners.get(userId, created.id);
+    const resumed = await owners.update(userId, created.id, { draft: { ...completed!, kind: "monitoring" }, expectedRevision: 3,
+      nextRunAt: new Date(Date.now() + 3_600_000), status: "active" });
+    expect(resumed).toMatchObject({ completionReason: null, kind: "monitoring", status: "active" });
   });
 });

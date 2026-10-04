@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CHAT_TITLE_MAX_LENGTH } from "./chats";
 import {
+  SCHEDULED_TASK_CHECK_OUTCOMES,
   SCHEDULED_TASK_ERROR_CODES,
   SCHEDULED_TASK_PROMPT_MAX_LENGTH,
   SCHEDULED_TASK_SEEN_RUNS_LIMIT,
@@ -25,8 +26,8 @@ const task: ScheduledTask = {
   id: "task-1", title: "Morning brief", prompt: "Summarize overnight news.",
   schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
   modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true, workspaceEnabled: false,
-  chatMode: "new", status: "active",
-  pauseReason: null, nextRunAt: "2026-10-05T06:00:00.000Z",
+  chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
+  nextRunAt: "2026-10-05T06:00:00.000Z",
   lastRun: { scheduledFor: "2026-10-02T06:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T06:01:10.000Z" },
   running: false, chatId: "chat-1", unseenResult: true, revision: 3,
   createdAt: "2026-09-30T10:00:00.000Z", updatedAt: "2026-10-02T06:01:10.000Z"
@@ -50,23 +51,30 @@ describe("scheduled task wire contract", () => {
     expect(decodeScheduledTask({ ...task, status: "paused", nextRunAt: null, pauseReason: "model_unavailable" }))
       .toMatchObject({ status: "paused", pauseReason: "model_unavailable" });
     expect(decodeScheduledTask({ ...task, schedule: hourly, chatMode: "same" })).toMatchObject({ schedule: hourly, chatMode: "same" });
+    const reached = { ...task, chatMode: "same", completionReason: "goal_reached", kind: "monitoring", nextRunAt: null, status: "completed" };
+    expect(decodeScheduledTask(reached)).toEqual(reached);
     for (const candidate of [
       { ...task, extra: true }, { ...task, status: "paused" }, { ...task, title: " Morning brief" },
       { ...task, lastRun: { ...task.lastRun, state: "running" } }, { ...task, pauseReason: "Not a code" },
       { ...task, revision: 0 }, { ...task, schedule: { kind: "daily", time: "25:00" } }, { ...task, timeZone: "+03:00" },
       { ...task, chatMode: "other" }, { ...task, chatMode: undefined }, { ...task, schedule: hourly, chatMode: "new" },
-      { ...task, toolsEnabled: "auto" }, { ...task, workspaceEnabled: undefined }
+      { ...task, toolsEnabled: "auto" }, { ...task, workspaceEnabled: undefined },
+      { ...task, kind: "watch" }, { ...task, kind: undefined }, { ...task, kind: "monitoring" },
+      { ...task, completionReason: "goal_reached" }, { ...reached, completionReason: "Goal reached" }
     ]) {
       expect(decodeScheduledTask(candidate)).toBeNull();
     }
   });
 
-  it("keeps hourly tasks in one chat and lets other kinds start a chat per run", () => {
-    expect(scheduledTaskChatModeAllowed(hourly, "same")).toBe(true);
-    expect(scheduledTaskChatModeAllowed(hourly, "new")).toBe(false);
+  it("keeps hourly and monitoring tasks in one chat and lets other tasks start a chat per run", () => {
+    expect(scheduledTaskChatModeAllowed({ kind: "standard", schedule: hourly }, "same")).toBe(true);
+    expect(scheduledTaskChatModeAllowed({ kind: "standard", schedule: hourly }, "new")).toBe(false);
     for (const schedule of [{ kind: "daily", time: "09:00" }, { kind: "once", date: "2026-10-12", time: "09:00" }] as const) {
-      expect(scheduledTaskChatModeAllowed(schedule, "new")).toBe(true);
-      expect(scheduledTaskChatModeAllowed(schedule, "same")).toBe(true);
+      expect(scheduledTaskChatModeAllowed({ kind: "standard", schedule }, "new")).toBe(true);
+      expect(scheduledTaskChatModeAllowed({ kind: "standard", schedule }, "same")).toBe(true);
+      // A check compares with the previous shown result in the task's chat.
+      expect(scheduledTaskChatModeAllowed({ kind: "monitoring", schedule }, "new")).toBe(false);
+      expect(scheduledTaskChatModeAllowed({ kind: "monitoring", schedule }, "same")).toBe(true);
     }
   });
 
@@ -130,5 +138,13 @@ describe("scheduled task wire contract", () => {
     expect(tools).not.toContain("The run did not complete.");
     expect(scheduledTaskReasonMessage("run_deadline")).toBe("Stopped after running for 30 minutes.");
     expect(scheduledTaskReasonMessage("source_unavailable")).toContain("3 runs in a row");
+    // Every check outcome and monitoring pause has its own history copy.
+    const monitoring = [...SCHEDULED_TASK_CHECK_OUTCOMES, "model_cannot_report", "verdict_missing"].map(scheduledTaskReasonMessage);
+    expect(new Set(monitoring).size).toBe(monitoring.length);
+    expect(monitoring).not.toContain(scheduledTaskReasonMessage("some_future_code"));
+    expect(new Set([...tools, ...monitoring]).size).toBe(tools.length + monitoring.length);
+    expect(scheduledTaskReasonMessage("no_update")).toMatch(/^No update/u);
+    expect(scheduledTaskReasonMessage("update")).toMatch(/^Update/u);
+    expect(scheduledTaskReasonMessage("goal_reached")).toBe("Goal reached — task completed.");
   });
 });

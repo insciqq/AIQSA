@@ -27,6 +27,7 @@ const STATUS: Record<ScheduledTaskErrorCode, number> = {
   scheduled_task_once_in_past: 400,
   scheduled_task_chat_mode_invalid: 400,
   scheduled_task_model_unavailable: 400,
+  scheduled_task_model_cannot_report: 400,
   scheduled_task_search_unavailable: 400,
   scheduled_task_tools_unavailable: 400,
   scheduled_task_workspace_unavailable: 400,

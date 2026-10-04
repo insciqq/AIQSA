@@ -23,7 +23,8 @@ function task(overrides: Partial<ScheduledTask>): ScheduledTask {
     id: "task", title: "Task", prompt: "Synthetic scheduled instructions.",
     schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/London",
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: false,
-    workspaceEnabled: false, chatMode: "same", status: "active", pauseReason: null, nextRunAt: "2026-10-05T08:00:00.000Z", lastRun: null, running: false,
+    workspaceEnabled: false, chatMode: "same", kind: "standard", status: "active", pauseReason: null, completionReason: null,
+    nextRunAt: "2026-10-05T08:00:00.000Z", lastRun: null, running: false,
     chatId: null, unseenResult: false, revision: 1,
     createdAt: "2026-09-20T08:00:00.000Z", updatedAt: "2026-09-20T08:00:00.000Z",
     ...overrides
@@ -265,7 +266,7 @@ test("scheduled list, empty state, create, edit and delete fit every size in bot
     title: "Weekly planning", prompt: "List three priorities for the coming week.",
     schedule: { kind: "weekly", time: "17:00", days: ["mon", "thu"] }, timeZone: "Europe/London",
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: false,
-    workspaceEnabled: false, chatMode: "new"
+    workspaceEnabled: false, chatMode: "new", kind: "standard"
   } }]);
   await expect(panel.getByRole("heading", { name: "Weekly planning" })).toBeFocused();
   await expect(panel.getByText("“Weekly planning” is scheduled.")).toBeVisible();

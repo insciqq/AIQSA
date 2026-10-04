@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ScheduledTaskChatMode, ScheduledTaskRunTrigger, ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
+import type {
+  ScheduledTaskChatMode,
+  ScheduledTaskKind,
+  ScheduledTaskRunTrigger,
+  ScheduledTaskSchedule
+} from "../../contracts/scheduledTasks";
 import type { SmtpProductMessage } from "../email/definitions";
 import type { ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
 import type { ScheduledTaskSend } from "./admission";
@@ -7,13 +12,14 @@ import type { ScheduledTaskRunCatalog } from "./catalog";
 import { createScheduledTaskRunner } from "./runner";
 import {
   SCHEDULED_TASK_RUN_DEADLINE_MS,
+  completedRunCheck,
   expiredPendingOutcome,
   linkedRunOutcome,
   planClaimOverlap,
+  planOccurrenceSettlement,
   planScheduledTaskClaim,
-  planTaskSettlement,
-  settlementBaseline,
-  settlementNotifiesOwner,
+  type MonitoringCheckSettlement,
+  type MonitoringVerdict,
   type ScheduledTaskBaseline,
   type ScheduledTaskOutcome,
   type ScheduledTaskStatusColumn
@@ -22,9 +28,10 @@ import type { ScheduledTaskRunnerStore, ScheduledTaskSettlement } from "./runner
 import { occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
 
 type Task = {
-  baseline: ScheduledTaskBaseline | null; chatId: string | null; chatMode: ScheduledTaskChatMode; consecutiveFailures: number;
-  consecutiveIncompleteRuns: number; emailNotify: boolean; generation: number; id: string; modelId: string; nextRunAt: Date | null;
-  pauseReason: string | null; prompt: string; provider: string;
+  baseline: ScheduledTaskBaseline | null; chatId: string | null; chatMode: ScheduledTaskChatMode; completionReason: string | null;
+  consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number; emailNotify: boolean;
+  generation: number; id: string; kind: ScheduledTaskKind; modelId: string; nextRunAt: Date | null; pauseReason: string | null;
+  prompt: string; provider: string;
   /** What the store derives from the previous shown result (null: every server). */
   relevantMcpServerIds: readonly string[] | null;
   revision: number; schedule: ScheduledTaskSchedule; searchEnabled: boolean;
@@ -33,11 +40,13 @@ type Task = {
 type Occurrence = {
   chatId: string | null; createdAt: number; finishedAt: Date | null; id: string; leaseExpiresAt: Date | null; notifiedAt: Date | null;
   reasonCode: string | null; runId: string | null; scheduledFor: Date; startedAt: Date | null; state: string; taskGeneration: number | null;
-  taskId: string; trigger: ScheduledTaskRunTrigger; unavailableSources: unknown; unseenAt: Date | null; userId: string;
-  userMessageId: string | null;
+  taskId: string; taskRevision: number | null; trigger: ScheduledTaskRunTrigger; unavailableSources: unknown; unseenAt: Date | null;
+  userId: string; userMessageId: string | null; verdict: MonitoringVerdict | null;
 };
 /** `createdAt` is the run's admission, which its deadline counts from. */
-type Run = { assistantMessageId: string; createdAt: Date; errorPayload: unknown; status: string; userId: string };
+type Run = {
+  assistantMessageId: string; createdAt: Date; errorPayload: unknown; scheduledOutcome?: string; status: string; userId: string;
+};
 
 function harness() {
   let clock = new Date("2026-10-05T06:00:05.000Z");
@@ -63,28 +72,34 @@ function harness() {
   /**
    * What the ordinary send handler does for the next send: admit a run ending
    * in `runStatus` (its admission freezing `unavailableSources` on the
-   * occurrence), or refuse.
+   * occurrence; a monitoring check's run may report `verdict`), or refuse.
    */
-  let reply: (occurrence: Occurrence) => { error: string; status: number } |
-    { runStatus: string; errorCode?: string; unavailableSources?: unknown; unlinked?: true } = () => ({ runStatus: "complete" });
+  let reply: (occurrence: Occurrence) => { error: string; status: number } | {
+    runStatus: string; errorCode?: string; unavailableSources?: unknown; unlinked?: true; verdict?: MonitoringVerdict;
+  } = () => ({ runStatus: "complete" });
   const stops: Array<{ code: string; runId: string; userId: string }> = [];
   const nextId = (prefix: string) => `${prefix}-${++ids}`;
 
-  function settle(occurrence: Occurrence, outcome: ScheduledTaskOutcome, observedRevision?: number): ScheduledTaskSettlement {
+  /** As the Prisma store applies `planOccurrenceSettlement` under its row locks. */
+  function settle(occurrence: Occurrence, outcome: ScheduledTaskOutcome, observedRevision?: number,
+    check: MonitoringCheckSettlement | null = null): ScheduledTaskSettlement {
     const task = tasks.get(occurrence.taskId)!;
+    const run = occurrence.runId ? runs.get(occurrence.runId) : undefined;
     const sourcesIncomplete = outcome.state === "COMPLETED" && occurrenceSourcesIncomplete(occurrence.unavailableSources);
-    const plan = planTaskSettlement({ observedRevision, outcome, sourcesIncomplete, task, trigger: occurrence.trigger });
-    const taskPaused = plan.pauseReason !== null;
+    const plan = planOccurrenceSettlement({ assistantMessageId: run?.assistantMessageId ?? null, check, observedRevision, occurrence,
+      outcome, sourcesIncomplete, task });
     Object.assign(occurrence, { finishedAt: clock, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state,
-      unseenAt: settlementNotifiesOwner({ sourceAlert: plan.sourceAlert, state: outcome.state, taskPaused }) ? clock : null });
-    const baseline = settlementBaseline({ assistantMessageId: occurrence.runId ? runs.get(occurrence.runId)?.assistantMessageId ?? null : null,
-      occurrence, outcome, taskGeneration: task.generation });
-    Object.assign(task, { consecutiveFailures: plan.consecutiveFailures, consecutiveIncompleteRuns: plan.consecutiveIncompleteRuns },
-      baseline ? { baseline } : {},
-      taskPaused ? { nextRunAt: null, pauseReason: plan.pauseReason, revision: task.revision + 1, status: "PAUSED" } : {});
+      unseenAt: plan.notifies ? clock : null });
+    Object.assign(task, { consecutiveFailures: plan.consecutiveFailures, consecutiveIncompleteRuns: plan.consecutiveIncompleteRuns,
+      consecutiveMissingVerdicts: plan.consecutiveMissingVerdicts },
+      plan.baseline ? { baseline: plan.baseline } : {},
+      plan.pauseReason ? { nextRunAt: null, pauseReason: plan.pauseReason, revision: task.revision + 1, status: "PAUSED" } : {},
+      plan.goalCompletes ? { completionReason: "goal_reached", nextRunAt: null, pauseReason: null, revision: task.revision + 1,
+        status: "COMPLETED" } : {});
+    if (check && run) run.scheduledOutcome = check.outcome;
     settled.push({ occurrenceId: occurrence.id, sourceAlert: plan.sourceAlert });
     return { occurrenceId: occurrence.id, reasonCode: outcome.reasonCode, runId: occurrence.runId, sourceAlert: plan.sourceAlert,
-      sourcesIncomplete, state: outcome.state, taskPaused };
+      sourcesIncomplete, state: outcome.state, taskPaused: plan.pauseReason !== null };
   }
   /** Every settlement's health alert flag, in order. */
   const settled: Array<{ occurrenceId: string; sourceAlert: boolean }> = [];
@@ -114,8 +129,8 @@ function harness() {
           const occurrence: Occurrence = {
             chatId: null, createdAt: ids, finishedAt: reasonCode ? now : null, id: nextId("occurrence"), leaseExpiresAt: null,
             notifiedAt: null, reasonCode, runId: null, scheduledFor: planned.scheduledFor, startedAt: null,
-            state: reasonCode ? "SKIPPED" : "PENDING", taskGeneration: null, taskId: task.id, trigger: "schedule",
-            unavailableSources: null, unseenAt: null, userId: task.userId, userMessageId: null
+            state: reasonCode ? "SKIPPED" : "PENDING", taskGeneration: null, taskId: task.id, taskRevision: null, trigger: "schedule",
+            unavailableSources: null, unseenAt: null, userId: task.userId, userMessageId: null, verdict: null
           };
           occurrences.push(occurrence);
           if (reasonCode) {
@@ -169,10 +184,10 @@ function harness() {
         occurrence: { id: row.id, scheduledFor: row.scheduledFor, taskId: row.taskId, trigger: row.trigger, userId: row.userId },
         ownerActive: !inactiveUsers.has(row.userId),
         relevantMcpServerIds: task.relevantMcpServerIds,
-        task: { baseline: task.baseline, chatMode: task.chatMode, generation: task.generation, modelId: task.modelId,
-          prompt: task.prompt, provider: task.provider, revision: task.revision, searchEnabled: task.searchEnabled,
-          status: task.status, timeZone: task.timeZone, title: task.title, toolsEnabled: task.toolsEnabled,
-          workspaceEnabled: task.workspaceEnabled }
+        task: { baseline: task.baseline, chatMode: task.chatMode, generation: task.generation, kind: task.kind,
+          modelId: task.modelId, prompt: task.prompt, provider: task.provider, revision: task.revision,
+          searchEnabled: task.searchEnabled, status: task.status, timeZone: task.timeZone, title: task.title,
+          toolsEnabled: task.toolsEnabled, workspaceEnabled: task.workspaceEnabled }
       };
     },
     async readOccurrence(id) {
@@ -191,7 +206,11 @@ function harness() {
       const row = find(id);
       if (row?.state !== "RUNNING") return null;
       const outcome = linkedRunOutcome(row.runId ? runs.get(row.runId) ?? null : null);
-      return outcome ? settle(row, outcome) : null;
+      if (!outcome) return null;
+      const task = tasks.get(row.taskId)!;
+      const check = outcome.state === "COMPLETED" ? completedRunCheck({ healthIncomplete: false, occurrence: row,
+        task: { ...task, baselineGeneration: task.baseline?.generation ?? null } }) : null;
+      return settle(row, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, undefined, check);
     },
     async claimNotification(id, now) {
       const row = find(id);
@@ -231,7 +250,10 @@ function harness() {
       status: decision.runStatus, userId: occurrence.userId });
     chats.set(chatId, { activeLeafMessageId: assistantMessageId, usable: true, userId: occurrence.userId });
     Object.assign(occurrence, { chatId, leaseExpiresAt: null, reasonCode: null, runId, state: "RUNNING",
-      taskGeneration: origin.taskGeneration, unavailableSources: decision.unavailableSources ?? null, userMessageId });
+      taskGeneration: origin.taskGeneration, taskRevision: origin.taskRevision, unavailableSources: decision.unavailableSources ?? null,
+      userMessageId,
+      // Only a run admitted for a monitoring occurrence holds the reporting tool.
+      verdict: origin.monitoring === true ? decision.verdict ?? null : null });
     task.chatId = chatId;
     return stream();
   };
@@ -261,11 +283,12 @@ function harness() {
 
   function addTask(overrides: Partial<Task> = {}): Task {
     const task: Task = {
-      baseline: null, chatId: null, chatMode: "same", consecutiveFailures: 0, consecutiveIncompleteRuns: 0, emailNotify: false,
-      generation: 1, id: nextId("task"), modelId: "model-a", nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null,
-      prompt: "  Summarize the synthetic fixture  ", provider: "connection-a", relevantMcpServerIds: null, revision: 1,
-      schedule: { kind: "daily", time: "09:00" }, searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow",
-      title: "Synthetic brief", toolsEnabled: false, userId: "owner-1", workspaceEnabled: false, ...overrides
+      baseline: null, chatId: null, chatMode: "same", completionReason: null, consecutiveFailures: 0, consecutiveIncompleteRuns: 0,
+      consecutiveMissingVerdicts: 0, emailNotify: false, generation: 1, id: nextId("task"), kind: "standard", modelId: "model-a",
+      nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null, prompt: "  Summarize the synthetic fixture  ",
+      provider: "connection-a", relevantMcpServerIds: null, revision: 1, schedule: { kind: "daily", time: "09:00" },
+      searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow", title: "Synthetic brief", toolsEnabled: false,
+      userId: "owner-1", workspaceEnabled: false, ...overrides
     };
     tasks.set(task.id, task);
     return task;
@@ -273,8 +296,8 @@ function harness() {
   function addOccurrence(task: Task, overrides: Partial<Occurrence> = {}): Occurrence {
     const occurrence: Occurrence = {
       chatId: null, createdAt: ids, finishedAt: null, id: nextId("occurrence"), leaseExpiresAt: null, notifiedAt: null, reasonCode: null,
-      runId: null, scheduledFor: clock, startedAt: null, state: "PENDING", taskGeneration: null, taskId: task.id, trigger: "manual",
-      unavailableSources: null, unseenAt: null, userId: task.userId, userMessageId: null, ...overrides
+      runId: null, scheduledFor: clock, startedAt: null, state: "PENDING", taskGeneration: null, taskId: task.id, taskRevision: null,
+      trigger: "manual", unavailableSources: null, unseenAt: null, userId: task.userId, userMessageId: null, verdict: null, ...overrides
     };
     occurrences.push(occurrence);
     return occurrence;
@@ -934,5 +957,134 @@ describe("scheduled run source health", () => {
     await h.tick();
     expect(task).toMatchObject({ consecutiveIncompleteRuns: 0, status: "ACTIVE" });
     expect(h.settled.map((settlement) => settlement.sourceAlert)).toEqual([true, false, false, false]);
+  });
+});
+
+describe("scheduled monitoring checks", () => {
+  const DAY = 24 * HOUR;
+
+  it("shows the first check, keeps later checks without news hidden and silent, and compares with the last shown result", async () => {
+    const h = harness();
+    const task = h.addTask({ emailNotify: true, kind: "monitoring" });
+    // A first check is shown whatever it reports.
+    h.setReply(() => ({ runStatus: "complete", verdict: "no_update" }));
+    await h.tick();
+    const [first] = h.forTask(task);
+    expect(h.sent[0]!.occurrence).toMatchObject({ monitoring: true, previousResult: null });
+    expect(first).toMatchObject({ reasonCode: "baseline", state: "COMPLETED", verdict: "no_update" });
+    expect(first!.unseenAt).not.toBeNull();
+    expect([h.emails.length, h.pushes]).toEqual([1, [first!.id]]);
+    expect(h.emails[0]!.text).toContain("First check");
+    expect(h.runs.get(first!.runId!)?.scheduledOutcome).toBe("baseline");
+    const shown = task.baseline;
+    expect(shown).toMatchObject({ runId: first!.runId });
+
+    // No news: completed, but no unread result, email or push, and no new baseline.
+    h.advance(DAY);
+    await h.tick();
+    const quiet = h.forTask(task)[1]!;
+    expect(quiet).toMatchObject({ reasonCode: "no_update", state: "COMPLETED", unseenAt: null });
+    expect([h.emails.length, h.pushes.length]).toEqual([1, 1]);
+    expect(task.baseline).toEqual(shown);
+    expect(h.runs.get(quiet.runId!)?.scheduledOutcome).toBe("no_update");
+
+    // The next check still compares with the last shown result, never the hidden one.
+    h.setReply(() => ({ runStatus: "complete", verdict: "update" }));
+    h.advance(DAY);
+    await h.tick();
+    expect(h.sent[2]!.occurrence.previousResult).toEqual({ assistantMessageId: shown!.assistantMessageId,
+      userMessageId: shown!.userMessageId });
+    const news = h.forTask(task)[2]!;
+    expect(news).toMatchObject({ reasonCode: "update", state: "COMPLETED" });
+    expect(news.unseenAt).not.toBeNull();
+    expect([h.emails.length, h.pushes.at(-1)]).toEqual([2, news.id]);
+    expect(task.baseline).toMatchObject({ runId: news.runId });
+  });
+
+  it("gives a standard task's runs no reporting duty and keeps their results ordinary", async () => {
+    const h = harness();
+    const task = h.addTask();
+    h.setReply(() => ({ runStatus: "complete", verdict: "no_update" }));
+    await h.tick();
+    expect(h.sent[0]!.occurrence).not.toHaveProperty("monitoring");
+    expect(h.forTask(task)).toMatchObject([{ reasonCode: null, state: "COMPLETED", verdict: null }]);
+    expect(h.forTask(task)[0]!.unseenAt).not.toBeNull();
+    expect(h.runs.get(h.forTask(task)[0]!.runId!)?.scheduledOutcome).toBeUndefined();
+  });
+
+  it("shows a check whose model never reported and pauses after three scheduled ones in a row", async () => {
+    const h = harness();
+    const task = h.addTask({ kind: "monitoring" });
+    h.setReply(() => ({ runStatus: "complete" }));
+    await h.tick();
+    h.advance(DAY);
+    await h.tick();
+    // A manual check between scheduled ones neither counts nor pauses.
+    const manual = h.addOccurrence(task);
+    await h.tick();
+    expect(manual).toMatchObject({ reasonCode: "unreported", state: "COMPLETED" });
+    expect(task).toMatchObject({ consecutiveMissingVerdicts: 2, status: "ACTIVE" });
+    h.advance(DAY);
+    await h.tick();
+    const checks = h.forTask(task).filter((occurrence) => occurrence.trigger === "schedule");
+    expect(checks.map((occurrence) => occurrence.reasonCode)).toEqual(["unreported", "unreported", "unreported"]);
+    // Every unreported check is shown and notified (fail-open).
+    expect(checks.every((occurrence) => occurrence.unseenAt !== null)).toBe(true);
+    expect(task).toMatchObject({ consecutiveMissingVerdicts: 3, nextRunAt: null, pauseReason: "verdict_missing", revision: 2,
+      status: "PAUSED" });
+    // A reported outcome resets the count.
+    const reported = h.addTask({ consecutiveMissingVerdicts: 2, kind: "monitoring", userId: "owner-2" });
+    h.setReply(() => ({ runStatus: "complete", verdict: "no_update" }));
+    await h.tick();
+    expect(reported).toMatchObject({ consecutiveMissingVerdicts: 0, status: "ACTIVE" });
+  });
+
+  it("completes the task when its goal is reached and notifies, unless the owner changed it meanwhile", async () => {
+    const h = harness();
+    const task = h.addTask({ emailNotify: true, kind: "monitoring" });
+    h.setReply(() => ({ runStatus: "complete", verdict: "goal_reached" }));
+    await h.tick();
+    expect(h.forTask(task)).toMatchObject([{ reasonCode: "goal_reached", state: "COMPLETED" }]);
+    expect(task).toMatchObject({ completionReason: "goal_reached", nextRunAt: null, revision: 2, status: "COMPLETED" });
+    expect(h.emails.at(-1)!.text).toContain("Goal reached");
+    h.advance(DAY);
+    await h.tick();
+    expect(h.sent).toHaveLength(1);
+
+    // An owner edit after admission wins: the reached goal is shown as an update and the task goes on.
+    const edited = h.addTask({ kind: "monitoring", nextRunAt: new Date("2026-10-06T06:00:00.000Z"), userId: "owner-2" });
+    h.setReply(() => ({ runStatus: "streaming", verdict: "goal_reached" }));
+    await h.tick();
+    const running = h.forTask(edited)[0]!;
+    expect(running.state).toBe("RUNNING");
+    edited.revision += 1;
+    h.runs.get(running.runId!)!.status = "complete";
+    await h.tick();
+    expect(running).toMatchObject({ reasonCode: "update", state: "COMPLETED" });
+    expect(running.unseenAt).not.toBeNull();
+    expect(edited).toMatchObject({ completionReason: null, status: "ACTIVE" });
+  });
+
+  it("pauses a monitoring task whose model can no longer call its reporting tool", async () => {
+    const h = harness();
+    const task = h.addTask({ kind: "monitoring" });
+    h.setCatalog(() => ({
+      models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
+        openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: false },
+      modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }],
+      searchPlan: { mode: "all_selected", optionIds: [] },
+      searchStrategies: []
+    }));
+    await h.tick();
+    expect(h.sent).toHaveLength(0);
+    expect(h.forTask(task)).toMatchObject([{ reasonCode: "model_cannot_report", state: "FAILED" }]);
+    expect(task).toMatchObject({ pauseReason: "model_cannot_report", status: "PAUSED" });
+
+    // Admission refuses the same way when the provider cannot offer the tool.
+    const refused = harness();
+    const other = refused.addTask({ kind: "monitoring" });
+    refused.setReply(() => ({ error: "model_cannot_report", status: 409 }));
+    await refused.tick();
+    expect(other).toMatchObject({ pauseReason: "model_cannot_report", status: "PAUSED" });
   });
 });

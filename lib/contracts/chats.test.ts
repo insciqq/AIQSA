@@ -244,6 +244,14 @@ describe("chat wire contracts", () => {
     }
   });
 
+  it("keeps a monitoring check's settled outcome on both messages of its turn, with or without the task marker", () => {
+    const decode = (entry: Record<string, unknown>) => decodeChatDetailResponse({ chat: detailChat({ messages: [entry], usageStats }) });
+    expect(decode({ ...message, role: "user", scheduledOutcome: "no_update" })?.messages[0]?.scheduledOutcome).toBe("no_update");
+    expect(decode({ ...message, scheduledOutcome: "goal_reached" })?.messages[0]?.scheduledOutcome).toBe("goal_reached");
+    expect(decode(message)?.messages[0]).not.toHaveProperty("scheduledOutcome");
+    for (const scheduledOutcome of ["hidden", null, 1]) expect(decode({ ...message, scheduledOutcome })).toBeNull();
+  });
+
   it("decodes workspace summaries without allowing additive thread fields into the result", () => {
     const workspace = decodeWorkspaceChatsResponse({
       chats: [{ ...summary, messages: [message], usageStats }],
