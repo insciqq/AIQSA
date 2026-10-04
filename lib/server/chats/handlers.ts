@@ -1,4 +1,5 @@
 import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
+import type { ChatImportSource } from "../../contracts/chatImport";
 import type { ChatPdfPreparationWire } from "../../contracts/chatPdfPreparation";
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import {
@@ -79,6 +80,9 @@ export type ChatSummaryRecord = {
   defaultSearchPlan?: SearchPlan | null;
   titlePending?: boolean;
   hasContinuationSource?: boolean;
+  /** Imported chats and their copies; absent reads as not imported. */
+  importSource?: ChatImportSource;
+  importSourceModel?: string;
   activeLeafMessageId: string | null;
   /** The chat's bound Assistant; absent reads as none. */
   assistantId?: string | null;
@@ -328,6 +332,8 @@ function serializeMessage(message: ChatMessageRecord): ChatMessageWire {
 export function serializeChatSummary(chat: ChatSummaryRecord): WorkspaceChatSummaryWire {
   return {
     ...(chat.hasContinuationSource ? { hasContinuationSource: true } : {}),
+    ...(chat.importSource ? { importSource: chat.importSource } : {}),
+    ...(chat.importSource && chat.importSourceModel ? { importSourceModel: chat.importSourceModel } : {}),
     ...(chat.titlePending ? { titlePending: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
     assistantId: chat.assistantId ?? null,

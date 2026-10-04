@@ -4,6 +4,11 @@ import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "./imageGeneration";
 import { decodeSessionContextStatus, type SessionContextStatus } from "./sessionStatus";
 import { decodeChatPdfPreparations, type ChatPdfPreparationWire } from "./chatPdfPreparation";
+import {
+  CHAT_IMPORT_SOURCE_MODEL_MAX_LENGTH,
+  CHAT_IMPORT_SOURCES,
+  type ChatImportSource
+} from "./chatImport";
 import type {
   ErrorResponse,
   MutationOriginErrorCode,
@@ -328,6 +333,12 @@ export type ThreadCitation = {
 export type WorkspaceChatSummary = {
   titlePending?: boolean;
   hasContinuationSource?: boolean;
+  /**
+   * Present only on an imported chat and its continuations and branch copies,
+   * which never use Memory; `importSourceModel` is the source's model label.
+   */
+  importSource?: ChatImportSource;
+  importSourceModel?: string;
   activeLeafMessageId: string | null;
   /** The Assistant bound for the next messages; absent on unsaved local drafts. */
   assistantId?: string | null;
@@ -1320,10 +1331,27 @@ function decodeChatDefaultSelection(
     : null;
 }
 
+/** The import marker of a chat summary: absent, or a known source with an optional model label. */
+function decodeChatImportMarker(
+  value: Record<string, unknown>
+): Pick<WorkspaceChatSummaryWire, "importSource" | "importSourceModel"> | null {
+  if (value.importSource === undefined) return value.importSourceModel === undefined ? {} : null;
+  if (!CHAT_IMPORT_SOURCES.includes(value.importSource as ChatImportSource)) return null;
+  const model = value.importSourceModel;
+  if (model !== undefined && (typeof model !== "string" || !model ||
+    model.length > CHAT_IMPORT_SOURCE_MODEL_MAX_LENGTH)) return null;
+  return {
+    importSource: value.importSource as ChatImportSource,
+    ...(typeof model === "string" ? { importSourceModel: model } : {})
+  };
+}
+
 function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWire | null {
   if (!isRecord(value) || (value.titlePending !== undefined && typeof value.titlePending !== "boolean") || (value.hasContinuationSource !== undefined && typeof value.hasContinuationSource !== "boolean")) {
     return null;
   }
+  const importMarker = decodeChatImportMarker(value);
+  if (!importMarker) return null;
 
   const activeLeafMessageId = nullableId(value.activeLeafMessageId);
   const assistantId = value.assistantId === undefined ? undefined : nullableId(value.assistantId);
@@ -1367,6 +1395,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     ...(assistantId !== undefined ? { assistantId } : {}),
     createdAt,
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
+    ...importMarker,
     ...(value.titlePending === true ? { titlePending: true } : {}),
     defaultKnowledgePlan,
     ...(search?.ok ? { defaultSearchPlan: search.plan } : {}),
@@ -1745,6 +1774,9 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "updatedAt",
       ...(Object.hasOwn(value, "assistantId") ? ["assistantId"] : []),
       ...(Object.hasOwn(value, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
+      ...(Object.hasOwn(value, "hasContinuationSource") ? ["hasContinuationSource"] : []),
+      ...(Object.hasOwn(value, "importSource") ? ["importSource"] : []),
+      ...(Object.hasOwn(value, "importSourceModel") ? ["importSourceModel"] : []),
       ...(Object.hasOwn(value, "workspace") ? ["workspace"] : [])
     ])
   ) return null;
@@ -1817,6 +1849,8 @@ export function decodeArchivedChatDetailResponse(
     ...(Object.hasOwn(value.chat, "assistant") ? ["assistant"] : []),
     ...(Object.hasOwn(value.chat, "assistantId") ? ["assistantId"] : []),
     ...(Object.hasOwn(value.chat, "hasContinuationSource") ? ["hasContinuationSource"] : []),
+    ...(Object.hasOwn(value.chat, "importSource") ? ["importSource"] : []),
+    ...(Object.hasOwn(value.chat, "importSourceModel") ? ["importSourceModel"] : []),
     ...(Object.hasOwn(value.chat, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
     ...(Object.hasOwn(value.chat, "workspace") ? ["workspace"] : [])
   ])) return null;

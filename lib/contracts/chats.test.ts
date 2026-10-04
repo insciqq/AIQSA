@@ -288,6 +288,18 @@ describe("chat wire contracts", () => {
     }
   });
 
+  it("carries an imported chat's source on summaries, archived ones included, and rejects a malformed marker", () => {
+    const imported = { ...summary, importSource: "CHATGPT", importSourceModel: "gpt-4o" };
+    expect(decodeChatSummaryResponse({ chat: imported })).toEqual(imported);
+    expect(decodeChatSummaryResponse({ chat: { ...summary, importSource: "AIQSA" } })).toEqual({ ...summary, importSource: "AIQSA" });
+    const archived = { ...imported, archived: true, hasContinuationSource: true, lastMessageAt: null, memoryMode: "EXCLUDED", sourceRevision: 1 };
+    expect(decodeArchivedChatsResponse({ chats: [archived], nextCursor: null })?.chats).toEqual([archived]);
+    for (const marker of [{ importSource: "GEMINI" }, { importSourceModel: "orphan label" }, { importSource: "CLAUDE", importSourceModel: "" },
+      { importSource: "CLAUDE", importSourceModel: "m".repeat(129) }]) {
+      expect(decodeChatSummaryResponse({ chat: { ...summary, ...marker } })).toBeNull();
+    }
+  });
+
   it("keeps a paired absent chat default readable across every chat response", () => {
     expect(
       decodeWorkspaceChatsResponse({

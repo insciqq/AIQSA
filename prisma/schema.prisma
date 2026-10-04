@@ -646,6 +646,12 @@ enum MemoryChatMode {
   TEMPORARY
 }
 
+enum ChatImportSource {
+  AIQSA
+  CHATGPT
+  CLAUDE
+}
+
 enum MemoryRetrievalAttemptState {
   PENDING
   EXECUTING
@@ -3163,6 +3169,16 @@ model Chat {
   memoryMode                      MemoryChatMode       @default(NORMAL)
   memoryBranchGeneration          Int                  @default(0)
   memorySourceRevision            Int                  @default(0)
+  /// Set on an imported chat and copied to its continuations and branch copies.
+  /// A SQL check keeps every such chat Excluded from Memory.
+  importSource                    ChatImportSource?
+  /// SHA-256 of the source conversation identity (for AIQSA documents, of their
+  /// canonical content). A SQL partial unique index over (userId, importSource,
+  /// importSourceKey) for chats not pending deletion makes a re-import
+  /// "already imported"; copies never carry it.
+  importSourceKey                 String?              @db.Char(64)
+  /// The source's chat-level model label, for display only.
+  importSourceModel               String?              @db.VarChar(128)
   permanentDeletionAt             DateTime?
   permanentDeletionOperationId    String?              @unique
   temporaryRetentionPolicyVersion String?              @db.VarChar(64)
