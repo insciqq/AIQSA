@@ -209,4 +209,14 @@ describe("single-chat export route", () => {
       `attachment; filename="chat-2026-09-01.md"; filename*=UTF-8''${encodeURIComponent("план-релиза-2026-09-01.md")}`
     );
   });
+
+  it("downloads a long title of astral-plane letters instead of failing on a split surrogate pair", async () => {
+    const title = `a${"𠜎".repeat(100)}`;
+    const { GET } = handler(vi.fn<Load>(async () => loadChatExportSource(fakeReadClient() as never, { ...chatRow, title })));
+    const response = await GET(request("?format=json"), { params: { chatId: "db-chat" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toBe(
+      `attachment; filename="chat-2026-09-01.json"; filename*=UTF-8''${encodeURIComponent(`a${"𠜎".repeat(17)}-2026-09-01.json`)}`
+    );
+  });
 });
