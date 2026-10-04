@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import type { PrismaClient } from "@prisma/client";
+import { describe, expect, it, vi } from "vitest";
 import { decodeScheduledTask, type ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
 import {
+  loadScheduledTaskActivity,
   scheduledTaskScheduleColumns,
   scheduledTaskScheduleFromColumns,
   toScheduledTask,
@@ -62,5 +64,29 @@ describe("scheduled task storage mapping", () => {
       status: "COMPLETED" }), { lastRun: null, running: false, unseen: true });
     expect(decodeScheduledTask(reached)).toEqual(reached);
     expect(reached).toMatchObject({ completionReason: "goal_reached", kind: "monitoring", status: "completed" });
+  });
+
+  it("flags the newest run's own unread result beside the task's unread aggregate", async () => {
+    const at = (minute: number) => new Date(Date.UTC(2026, 9, 4, 8, minute));
+    // Both tasks still have an older unread answer. The newest run of "alert" is a
+    // source alert the runner marked unread; the newest run of "quiet" is a check with no update.
+    const settled = [
+      { taskId: "alert", scheduledFor: at(0), state: "COMPLETED", reasonCode: "could_not_check", finishedAt: at(1), unseenAt: at(1) },
+      { taskId: "quiet", scheduledFor: at(0), state: "COMPLETED", reasonCode: "no_update", finishedAt: at(2), unseenAt: null }
+    ];
+    const findMany = vi.fn(async ({ where }: { where: { unseenAt?: unknown } }) =>
+      where.unseenAt ? [{ taskId: "alert" }, { taskId: "quiet" }] : []);
+    const client = { $queryRaw: vi.fn(async () => settled), scheduledTaskOccurrence: { findMany } };
+    const activity = await loadScheduledTaskActivity(client as unknown as PrismaClient, "user-1", ["alert", "quiet", "idle"]);
+    expect(activity.get("alert")).toEqual({
+      lastRun: { scheduledFor: at(0).toISOString(), state: "completed", reasonCode: "could_not_check", finishedAt: at(1).toISOString(),
+        unseen: true },
+      running: false, unseen: true
+    });
+    expect(activity.get("quiet")).toMatchObject({ lastRun: { reasonCode: "no_update", unseen: false }, unseen: true });
+    expect(activity.get("idle")).toEqual({ lastRun: null, running: false, unseen: false });
+    const task = toScheduledTask(row(), activity.get("quiet")!);
+    expect(decodeScheduledTask(task)).toEqual(task);
+    expect(task).toMatchObject({ lastRun: { unseen: false }, unseenResult: true });
   });
 });

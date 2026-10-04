@@ -69,7 +69,7 @@ describe("ScheduledTasksPanel", () => {
       scheduledTaskFixture({ id: "auto", title: "Model check", status: "paused", nextRunAt: null, pauseReason: "model_unavailable",
         schedule: { kind: "daily", time: "08:30" } }),
       scheduledTaskFixture({ id: "live", title: "Market notes", running: true, chatId: "chat-live", unseenResult: true,
-        lastRun: { scheduledFor: "2026-10-03T08:00:00.000Z", state: "failed", reasonCode: "chat_busy", finishedAt: "2026-10-03T08:30:00.000Z" } }),
+        lastRun: { scheduledFor: "2026-10-03T08:00:00.000Z", state: "failed", reasonCode: "chat_busy", finishedAt: "2026-10-03T08:30:00.000Z", unseen: false } }),
       scheduledTaskFixture({ id: "brief" })
     ]));
     renderPanel();
@@ -181,7 +181,7 @@ describe("ScheduledTasksPanel", () => {
 
   it("marks seen only the unread runs its history renders and opens each run's own chat", async () => {
     const answered = { scheduledFor: "2026-10-03T08:00:00.000Z", state: "completed", reasonCode: null,
-      finishedAt: "2026-10-03T08:01:00.000Z" } as const;
+      finishedAt: "2026-10-03T08:01:00.000Z", unseen: true } as const;
     const task = scheduledTaskFixture({ chatMode: "new", chatId: "chat-3", unseenResult: true, lastRun: answered });
     list.mockResolvedValueOnce(listed([task])).mockResolvedValue(listed([{ ...task, unseenResult: false }]));
     detail.mockResolvedValueOnce({ task, recentRuns: [
@@ -391,7 +391,7 @@ describe("ScheduledTasksPanel", () => {
     const watching = scheduledTaskFixture({ id: "watch", title: "Release watch", kind: "monitoring", chatId: "chat-w" });
     const done = scheduledTaskFixture({ id: "done", title: "Ticket watch", kind: "monitoring", status: "completed", nextRunAt: null,
       completionReason: "goal_reached", schedule: { kind: "daily", time: "09:00" },
-      lastRun: { scheduledFor: "2026-10-03T08:00:00.000Z", state: "completed", reasonCode: "goal_reached", finishedAt: "2026-10-03T08:01:00.000Z" } });
+      lastRun: { scheduledFor: "2026-10-03T08:00:00.000Z", state: "completed", reasonCode: "goal_reached", finishedAt: "2026-10-03T08:01:00.000Z", unseen: false } });
     list.mockResolvedValue(listed([watching, done]));
     update.mockResolvedValueOnce({ ...done, status: "active", completionReason: null, nextRunAt: "2026-10-05T08:00:00.000Z", revision: 2 });
     const run = (id: string, reasonCode: string, extra: Partial<ScheduledTaskRun> = {}): ScheduledTaskRun => ({
