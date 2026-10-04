@@ -29,7 +29,8 @@ DO $$ BEGIN
         (f.policy - ARRAY['memoryAdmissionTimeoutSeconds', 'version', 'updatedAt']))
     THEN RAISE EXCEPTION 'memory_search_timeout_upgrade_changed_other_policy'; END IF;
   IF NOT EXISTS (SELECT 1 FROM "ModelRun" run CROSS JOIN "_MemorySearchTimeoutFixture" f
-    WHERE run.id = 'memory-timeout-run' AND to_jsonb(run) - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration'] = f.run)
+    WHERE run.id = 'memory-timeout-run'
+      AND to_jsonb(run) - ARRAY['scheduledTaskId', 'scheduledOccurrenceId', 'scheduledTaskGeneration', 'scheduledOutcome'] = f.run)
     THEN RAISE EXCEPTION 'memory_search_timeout_upgrade_changed_accepted_run'; END IF;
   IF (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public'
       AND table_name = 'ModelPolicy' AND column_name = 'memoryAdmissionTimeoutSeconds') <> 0
