@@ -31,7 +31,7 @@ import { createPrismaMemoryContextualKeyGenerator, MEMORY_CONTEXTUAL_KEY_VERSION
   type MemoryContextualKeyGenerator } from "./contextualKeys";
 import { inspectMemoryHistoryPurge, purgeMemoryHistorySelection } from "./purge";
 import { autoHealIncompleteMemoryHistory } from "./autoHeal";
-import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS, MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE,
+import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS, MEMORY_HISTORY_QUIET_WINDOW_MS, MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE,
   memoryHistoryAutoHealJobFingerprint } from "./contract";
 import { resolveCurrentMemoryUtilityPolicy } from "../execution/policy";
 import { applyMemorySourceMutations, lockMemorySourceChat } from "../sourceState";
@@ -990,12 +990,15 @@ async function fenceDuringClassification(f: HistoryRecoveryFixture, fence: Class
   f.run.mockImplementationOnce(produce).mockImplementationOnce(async (...args) => {
     const result = await produce(...args);
     await landFence(f, fence);
-    // Successor work is created by the database clock; keep it current for
-    // the fixed worker clock while the fenced job's lease remains valid.
-    if (fence === "settlement") f.advance(20_000);
     return result;
   });
   await f.drive();
+}
+
+/** Moves the fixed worker clock to the end of a settled turn's quiet window,
+ * which also makes work created by the database clock current for it. */
+function untilQuiet(f: HistoryRecoveryFixture, job: Readonly<{ nextAttemptAt: Date | null }>): void {
+  f.advance(Math.max(0, job.nextAttemptAt!.getTime() - f.now().getTime()));
 }
 
 describe("history work fenced during classification", () => {
@@ -1020,17 +1023,83 @@ describe("history work fenced during classification", () => {
     expect(await prisma.usageEvent.count({
       where: { userId: f.userId, memoryExecutionBindingId: { in: bindings.map(({ id }) => id) } }
     })).toBe(2);
-    if (fence !== "settlement") {
-      expect(f.run).toHaveBeenCalledTimes(2);
-      return;
-    }
-    // The settled turn indexes the latest source through its own job.
+    expect(f.run).toHaveBeenCalledTimes(2);
+    if (fence !== "settlement") return;
+    // The settled turn indexes the latest source through its own job once its
+    // chat has stayed quiet; the fenced job's pass did not claim it early.
+    const successor = await prisma.memoryJob.findFirstOrThrow({ where: { userId: f.userId, id: { not: f.job.id } } });
+    expect(successor).toMatchObject({ kind: "INDEX_HISTORY", state: "QUEUED" });
+    untilQuiet(f, successor);
+    await f.drive();
     const chat = await prisma.chat.findUniqueOrThrow({ where: { id: f.chat.id } });
-    expect(await prisma.memoryJob.findFirstOrThrow({ where: { userId: f.userId, id: { not: f.job.id } } }))
-      .toMatchObject({ kind: "INDEX_HISTORY", state: "SUCCEEDED", sourceRevision: chat.memorySourceRevision });
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: successor.id } }))
+      .toMatchObject({ state: "SUCCEEDED", sourceRevision: chat.memorySourceRevision });
     expect(await readMemoryHistoryIndexingProgress(prisma, f.userId, true)).toMatchObject({ state: "READY" });
     await assertRecall(f);
+  }, 30_000);
+});
+
+describe("history indexing quiet window", () => {
+  const historyJobs = (f: HistoryRecoveryFixture) => prisma.memoryJob.findMany({
+    orderBy: { sourceRevision: "asc" }, where: { userId: f.userId, kind: "INDEX_HISTORY" }
   });
+  const job = (id: string) => prisma.memoryJob.findUniqueOrThrow({ where: { id } });
+
+  it("indexes turns settled within the window in one paid run", async () => {
+    const f = await fixture();
+    const settledFrom = Date.now();
+    await landFence(f, "settlement");
+    await landFence(f, "settlement");
+    const settledTo = Date.now();
+    const [backfilled, older, newest] = await historyJobs(f);
+    expect(backfilled!.id).toBe(f.job.id);
+    for (const turn of [older!, newest!]) {
+      expect(turn.state).toBe("QUEUED");
+      expect(turn.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(settledFrom + MEMORY_HISTORY_QUIET_WINDOW_MS);
+      expect(turn.nextAttemptAt!.getTime()).toBeLessThanOrEqual(settledTo + MEMORY_HISTORY_QUIET_WINDOW_MS);
+    }
+    // Inside the window only the superseded backfill job is due. It settles at
+    // its claim gate, before any stage or call.
+    await f.drive();
+    expect(f.run).not.toHaveBeenCalled();
+    expect(await job(backfilled!.id)).toMatchObject({ state: "STALE", errorCode: "memory_source_stale", stage: null });
+    expect(await job(older!.id)).toMatchObject({ state: "QUEUED", attemptCount: 0 });
+    expect(await job(newest!.id)).toMatchObject({ state: "QUEUED", attemptCount: 0 });
+
+    untilQuiet(f, newest!);
+    await f.drive();
+    // The older turn's job is superseded without a binding; only the newest
+    // source is indexed, by a single paid run.
+    expect(await job(older!.id)).toMatchObject({ state: "STALE", errorCode: "memory_source_stale", stage: null });
+    expect(await job(newest!.id)).toMatchObject({ state: "SUCCEEDED" });
+    const bindings = await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId } });
+    expect(bindings.length).toBeGreaterThan(0);
+    expect(bindings.every(({ memoryJobId, state }) => memoryJobId === newest!.id && state === "SUCCEEDED")).toBe(true);
+    expect(f.run).toHaveBeenCalledTimes(bindings.length);
+    expect(await prisma.usageEvent.count({ where: { userId: f.userId } })).toBe(bindings.length);
+    expect(await readMemoryHistoryIndexingProgress(prisma, f.userId, true)).toMatchObject({ state: "READY" });
+    await assertRecall(f);
+  }, 30_000);
+
+  it("indexes a single settled turn once its window has passed", async () => {
+    const f = await fixture();
+    await landFence(f, "settlement");
+    const turn = (await historyJobs(f)).at(-1)!;
+    expect(turn.id).not.toBe(f.job.id);
+    // A second before the window ends the job is still not claimable.
+    f.advance(Math.max(0, turn.nextAttemptAt!.getTime() - f.now().getTime() - 1_000));
+    await f.drive();
+    expect(f.run).not.toHaveBeenCalled();
+    expect(await job(turn.id)).toMatchObject({ state: "QUEUED", attemptCount: 0 });
+    expect(await readMemoryHistoryIndexingProgress(prisma, f.userId, true)).toMatchObject({ state: "INDEXING" });
+
+    f.advance(1_000);
+    await f.drive();
+    expect(await job(turn.id)).toMatchObject({ state: "SUCCEEDED" });
+    expect(f.run).toHaveBeenCalled();
+    expect(await readMemoryHistoryIndexingProgress(prisma, f.userId, true)).toMatchObject({ state: "READY" });
+    await assertRecall(f);
+  }, 30_000);
 });
 
 describe("history fence casualties left by an earlier release", () => {
