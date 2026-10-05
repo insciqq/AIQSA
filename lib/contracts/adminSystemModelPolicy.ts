@@ -1,6 +1,7 @@
 import type { AdminModelDefaultCandidate } from "./adminModelPolicy";
 import { decodeDecisionFeatureOverrides, type DecisionFeatureOverrides } from "./semanticDecisions";
-import { normalizeImageModelConfiguration, normalizeImageGenerationParameters, type ImageModelConfiguration, type ImageGenerationParameters } from "./imageGeneration";
+import { IMAGE_PARAMETER_NAMES, normalizeImageModelConfiguration, normalizeImageGenerationParameters, type ImageModelConfiguration, type ImageGenerationParameters } from "./imageGeneration";
+import { isImageModelUnavailableReason, type ImageModelUnavailableReason } from "./imageModels";
 
 export type SystemModelVerificationRole = "chat_titles" | "memory" | "direct_pdf" | "vision" | "embedding" | "reranker" | "decision" | "image";
 export type ChatPdfProcessingMode = "prefer_chat_model" | "use_pdf_reader" | "read_page_images";
@@ -13,6 +14,23 @@ export type AdminImageModelCandidate = AdminModelDefaultCandidate & {
   generation: boolean;
   editing: boolean;
 };
+
+/** A published image model with the administrator's parameters for it. Saved
+ * parameters stay visible even when they no longer validate. */
+export type AdminPublishedImageModel = AdminModelDefaultCandidate & {
+  /** Null while the deployment's image configuration cannot be read. */
+  upstreamModelId: string | null;
+  image: ImageModelConfiguration | null;
+  defaultParameters: ImageGenerationParameters;
+  parameters: ImageGenerationParameters;
+  generation: boolean;
+  editing: boolean;
+  available: boolean;
+  unavailableReason: ImageModelUnavailableReason | null;
+};
+
+/** Bounds a request, not the product: the published set has no cap. */
+export const ADMIN_IMAGE_MODEL_LIST_LIMIT = 256;
 
 export type AdminSystemModelCandidate = AdminModelDefaultCandidate & {
   pdfInput?: "not_requested" | "not_verified" | "unsupported" | "verified";
@@ -98,8 +116,10 @@ export type AdminSystemModelPolicyCatalog = {
   policy: {
     decisionModel?: (AdminModelDefaultCandidate & { available: boolean }) | null;
     decisionFeatures?: DecisionFeatureOverrides;
-    imageModel?: (AdminImageModelCandidate & { available: boolean }) | null;
-    imageParameters?: ImageGenerationParameters;
+    /** The administrator default; always one of `imageModels`. Null turns image
+     * generation off, even with models a previous release left published. */
+    imageModel?: AdminPublishedImageModel | null;
+    imageModels?: AdminPublishedImageModel[];
     chatTitleModel: (AdminSystemModelCandidate & { available: boolean }) | null;
     chatTitleReasoningEffort: string | null;
     chatPdfNativeModel?: (AdminSystemModelCandidate & { available: boolean }) | null;
@@ -168,6 +188,25 @@ function imageCandidate(value: unknown): value is AdminImageModelCandidate {
   try {
     const image = normalizeImageModelConfiguration(value.image);
     normalizeImageGenerationParameters(value.defaultParameters, image, value.upstreamModelId);
+    return true;
+  } catch { return false; }
+}
+
+function imageParameterShape(value: unknown): value is ImageGenerationParameters {
+  return record(value) && Object.entries(value).every(([name, entry]) =>
+    (IMAGE_PARAMETER_NAMES as readonly string[]).includes(name) &&
+    (Number.isSafeInteger(entry) || boundedText(entry, 80)));
+}
+
+function publishedImageModel(value: unknown): value is AdminPublishedImageModel {
+  if (!record(value) || !baseCandidate(value) || typeof value.generation !== "boolean" || typeof value.editing !== "boolean" ||
+    typeof value.available !== "boolean" || value.available !== (value.unavailableReason === null) ||
+    value.unavailableReason !== null && !isImageModelUnavailableReason(value.unavailableReason) ||
+    !imageParameterShape(value.parameters) || !imageParameterShape(value.defaultParameters)) return false;
+  if (value.image === null) return value.upstreamModelId === null && Object.keys(value.defaultParameters).length === 0;
+  if (!boundedText(value.upstreamModelId, 256)) return false;
+  try {
+    normalizeImageGenerationParameters(value.defaultParameters, normalizeImageModelConfiguration(value.image), value.upstreamModelId);
     return true;
   } catch { return false; }
 }
@@ -250,14 +289,12 @@ export function decodeAdminSystemModelPolicyResponse(
     policy.decisionModel !== undefined && policy.decisionModel !== null && (!record(policy.decisionModel) ||
       !baseCandidate(policy.decisionModel) || typeof policy.decisionModel.available !== "boolean") ||
     policy.decisionFeatures !== undefined && !decodeDecisionFeatureOverrides(policy.decisionFeatures)) return null;
+  const imageModels = policy.imageModels ?? [];
+  const imageModel = policy.imageModel ?? null;
   if (catalog.imageCandidates !== undefined && (!Array.isArray(catalog.imageCandidates) || !catalog.imageCandidates.every(imageCandidate)) ||
-    policy.imageModel !== undefined && policy.imageModel !== null && (!imageCandidate(policy.imageModel) || typeof (policy.imageModel as Record<string, unknown>).available !== "boolean")) return null;
-  if (policy.imageParameters !== undefined) {
-    if (!record(policy.imageParameters)) return null;
-    if (policy.imageModel && imageCandidate(policy.imageModel)) {
-      try { normalizeImageGenerationParameters(policy.imageParameters, policy.imageModel.image, policy.imageModel.upstreamModelId); } catch { return null; }
-    } else if (Object.keys(policy.imageParameters).length) return null;
-  }
+    !Array.isArray(imageModels) || imageModels.length > ADMIN_IMAGE_MODEL_LIST_LIMIT || !imageModels.every(publishedImageModel) ||
+    new Set(imageModels.map((model) => model.id)).size !== imageModels.length ||
+    (imageModel !== null && (!publishedImageModel(imageModel) || !imageModels.some((model) => model.id === imageModel.id)))) return null;
   const reasoningEffort = policy.reasoningEffort;
   const systemModel = policy.systemModel;
   const rerankerModel = policy.rerankerModel;
@@ -326,8 +363,8 @@ export function decodeAdminSystemModelPolicyResponse(
       policy: {
         ...(policy.decisionModel === undefined ? {} : { decisionModel: policy.decisionModel as AdminSystemModelPolicyCatalog["policy"]["decisionModel"] }),
         ...(policy.decisionFeatures === undefined ? {} : { decisionFeatures: decodeDecisionFeatureOverrides(policy.decisionFeatures)! }),
-        imageModel: (policy.imageModel ?? null) as AdminSystemModelPolicyCatalog["policy"]["imageModel"],
-        imageParameters: (policy.imageParameters ?? {}) as ImageGenerationParameters,
+        imageModel: imageModel as AdminPublishedImageModel | null,
+        imageModels: imageModels as AdminPublishedImageModel[],
         chatTitleModel: policy.chatTitleModel as AdminSystemModelPolicyCatalog["policy"]["chatTitleModel"],
         chatTitleReasoningEffort: policy.chatTitleReasoningEffort as string | null,
         ...(Object.hasOwn(policy, "visionModel") ? {

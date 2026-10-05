@@ -8,11 +8,16 @@ import {
   type KnowledgeSelection
 } from "@/lib/contracts/knowledge";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
+import { userImageModelErrorMessage, type ImageModelUnavailableReason, type UserImageModelOption } from "@/lib/contracts/imageModels";
+import type { ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
+import { UiV2Button } from "@/components/ui-v2";
 import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
 import type { SearchPlan } from "@/lib/domain/search";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { SettingsSelectV2 } from "./SettingsSelectV2";
 import { SettingsRowV2 } from "./SettingsV2";
+
+export type ChatDefaultImageModelView = NonNullable<NonNullable<ShellComposerView["chatDefaults"]>["imageModel"]>;
 
 export type ChatDefaultMcpMode = McpRunSelection["mode"];
 
@@ -74,6 +79,76 @@ export function SettingsSegmentV2<T extends string>({
   );
 }
 
+const ORGANIZATION_IMAGE_MODEL = "";
+
+const IMAGE_MODEL_UNAVAILABLE: Record<ImageModelUnavailableReason, string> = {
+  model_unavailable: "its provider model is turned off or removed",
+  credential_unavailable: "its provider key is unavailable",
+  verification_required: "it needs a new check by an administrator",
+  parameters_invalid: "its organization settings need an update"
+};
+
+function imageModelCapability(model: UserImageModelOption): string {
+  if (model.unavailableReason) return "Unavailable";
+  return model.generation && model.editing ? "Creates and edits" : model.generation ? "Creates only" : "Edits only";
+}
+
+/**
+ * Chat defaults › Image model: one published model for personal chats, or the
+ * organization default. An unavailable model is never replaced; the row names
+ * why and leaves the next choice to the user.
+ */
+export function ImageModelRowV2({ view }: Readonly<{ view: ChatDefaultImageModelView }>) {
+  const { load, settings } = view;
+  const requested = useRef(false);
+  useEffect(() => {
+    if (requested.current) return;
+    requested.current = true;
+    load();
+  }, [load]);
+  const models = settings?.models ?? [];
+  const byId = (id: string | null) => models.find((model) => model.id === id) ?? null;
+  const organizationDefault = byId(settings?.organizationDefaultId ?? null);
+  const effective = byId(settings?.effective?.id ?? null);
+  const selectedId = settings?.selectedId ?? null;
+  const unpublished = settings !== null && models.length === 0;
+  return (
+    <SettingsRowV2
+      description="Creates and edits images in your personal chats. Projects use the organization default."
+      testId="settings-default-image-model"
+      title="Image model"
+    >
+      {view.loadState === "error" && !settings ? <>
+        <span className="v2-settings-row-description" role="status">Image models didn&apos;t load</span>
+        <UiV2Button aria-label="Retry image models" onClick={() => load()}>Retry</UiV2Button>
+      </> : unpublished ? (
+        <span className="v2-settings-row-description" role="status">Not set up by your organization</span>
+      ) : <div className="v2-image-model-control">
+        <SettingsSelectV2
+          disabled={!settings || view.saving}
+          label="Image model"
+          options={settings ? [
+            ...(organizationDefault ? [{ label: `Organization default · ${organizationDefault.displayName}`, value: ORGANIZATION_IMAGE_MODEL }] : []),
+            ...(selectedId && !byId(selectedId) ? [{ label: "Unavailable model", value: selectedId }] : []),
+            ...models.map((model) => ({ label: model.displayName, sub: `${model.providerName} · ${imageModelCapability(model)}`, value: model.id }))
+          ] : [{ label: "Loading…", value: ORGANIZATION_IMAGE_MODEL }]}
+          value={selectedId ?? ORGANIZATION_IMAGE_MODEL}
+          onChange={(next) => {
+            if (next !== (selectedId ?? ORGANIZATION_IMAGE_MODEL)) view.select(next || null);
+          }}
+        />
+        {effective?.unavailableReason ? <span className="v2-settings-row-description" role="status">
+          {effective.displayName} is unavailable: {IMAGE_MODEL_UNAVAILABLE[effective.unavailableReason]}. Choose another model{selectedId && organizationDefault && !organizationDefault.unavailableReason ? " or the organization default" : ""}.
+        </span> : null}
+        {selectedId && effective?.unavailableReason && organizationDefault && !organizationDefault.unavailableReason
+          ? <UiV2Button disabled={view.saving} onClick={() => view.select(null)}>Use organization default</UiV2Button>
+          : null}
+        {view.saveError ? <p className="v2-settings-error" role="alert">{userImageModelErrorMessage(view.saveError)}</p> : null}
+      </div>}
+    </SettingsRowV2>
+  );
+}
+
 function knowledgeValue(plan: KnowledgeSelection | null): string {
   if (!plan || plan.mode === "none" || plan.mode === "inherited") return NO_KNOWLEDGE;
   if (plan.mode === "all_my_knowledge") return ALL_MY_KNOWLEDGE;
@@ -81,11 +156,12 @@ function knowledgeValue(plan: KnowledgeSelection | null): string {
 }
 
 /**
- * Chat defaults rows below Default model (PRD §4.9): Web search, MCP tools and
- * Knowledge. Each change persists the personal default only; the open chat's
- * composer keeps its own selection.
+ * Chat defaults rows below Default model (PRD §4.9): Web search, MCP tools,
+ * Knowledge and Image model. Each change persists the personal default only;
+ * the open chat's composer keeps its own selection.
  */
 export function ChatDefaultsRowsV2({
+  imageModel,
   knowledgeBases,
   knowledgePlan,
   mcpMode,
@@ -101,6 +177,7 @@ export function ChatDefaultsRowsV2({
   searchPlan,
   searchStrategies
 }: Readonly<{
+  imageModel?: ChatDefaultImageModelView;
   knowledgeBases: readonly ComposerConfigKnowledgeBase[];
   knowledgePlan: KnowledgeSelection | null;
   mcpMode: ChatDefaultMcpMode;
@@ -165,6 +242,7 @@ export function ChatDefaultsRowsV2({
           }}
         />
       </SettingsRowV2>
+      {imageModel ? <ImageModelRowV2 view={imageModel} /> : null}
     </>
   );
 }

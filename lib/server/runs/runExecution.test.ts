@@ -28,6 +28,7 @@ import { freezeSkillManifest } from "../skills/runManifest";
 import { artifactTool } from "../tools/artifact";
 import { mixedToolsImagePlan, openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { imageGenerationTool } from "../tools/imageGeneration";
+import { analyzeImageTools } from "../tools/analyzeImage";
 import { ImageGenerationError } from "../providers/imageGeneration";
 import { imageFailureDiagnostic } from "../providers/imageFailure";
 import {
@@ -2363,6 +2364,50 @@ describe("run execution", () => {
     expect(events.filter(event => event.type === "error")).toEqual([
       { type: "error", data: { code: "image_generation_failed", message: IMAGE_RATE_LIMIT_MESSAGE } }]);
     expect(JSON.stringify([repository.failedRuns, stored.content, events])).not.toMatch(/PRIVATE_PROVIDER_TEXT|PRIVATE_PROMPT_TEXT/);
+  });
+  it("dispatches the chat analyze_image form through the frozen Vision destination for a model without vision", async () => {
+    const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });
+    const visionAnalysis: NonNullable<NormalizedRunRequest["visionAnalysis"]> = { version: 1, available: true, policyVersion: 1,
+      reasoningEffort: null, verifiedVisionInput: true,
+      authority: { connectionId: "vision", connectionVersion: 1, providerModelId: "vision", modelVersion: 1, credentialId: "key", credentialVersionId: "key-v1" },
+      snapshot: { version: 1, connectionId: "vision", connectionDisplayName: "Vision", providerModelId: "vision", modelDisplayName: "Vision",
+        credentialId: "key", credentialVersionId: "key-v1", providerFamily: "openai_compatible",
+        connection: { apiRoot: "https://vision.example.test/v1", allowPrivateNetwork: false, authenticationMode: "bearer", responseTimeoutMs: 60000 },
+        model: { adapterKind: "openai_responses_compatible", modelClass: "answer", upstreamModelId: "visual-model", answerSelectable: true,
+          defaultParams: {}, capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, streaming: true, vision: true } } } };
+    const imageReferences = [{ attachmentId: "image-one", messageId: "message-one", fileName: "photo.webp", origin: "upload" as const }];
+    const prepared = { ...base, normalizedRequest: { ...base.normalizedRequest, visionAnalysis, imageReferences },
+      providerRequest: { ...base.providerRequest, visionAnalysis, imageReferences, tools: analyzeImageTools({ visionAnalysis }) } };
+    const repository = createRepository();
+    const execute = vi.fn<NonNullable<RunExecutionInput["vision"]>["execute"]>(async (call, context) => {
+      expect(context.request.workspace).toBeUndefined();
+      expect(context.request.imageReferences).toEqual(imageReferences);
+      return { callId: call.id, name: call.name, status: "complete",
+        content: [{ type: "json", value: { analysis: "PRIVATE_VISION_TEXT", provenance: "System Vision Model" } }] };
+    });
+    const vision = { authorize: vi.fn(async () => true), restore: vi.fn(async () => null), execute };
+    const requests: ProviderRunRequest[] = [];
+    const adapter = createAdapter(async function* (request) {
+      requests.push(request);
+      if (requests.length === 1) return providerResult({ finalText: "", toolCalls: [{ id: "vision-call", name: "analyze_image",
+        arguments: { images: [{ image_id: "image-one" }], question: "What is shown?" } }] });
+      return providerResult({ finalText: "It shows a red square." });
+    });
+
+    const events = parseSse(await createRunExecutionResponse({ ...executionInput({ adapter, prepared, repository: repository.repository }),
+      vision: vision as unknown as NonNullable<RunExecutionInput["vision"]> }).text(), true);
+
+    expect(repository.failedRuns).toEqual([]);
+    expect(vision.authorize).toHaveBeenCalledWith(visionAnalysis);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(requests).toHaveLength(2);
+    expect(requests[0]!.tools).toContainEqual(expect.objectContaining({ name: "analyze_image", capability: "vision" }));
+    expect(JSON.stringify(requests[1]!.providerToolMessages)).toContain("PRIVATE_VISION_TEXT");
+    expect([...repository.toolCalls.values()]).toEqual([expect.objectContaining({ toolName: "analyze_image", state: "complete" })]);
+    expect(events).toContainEqual({ type: "artifact", data: { artifactType: "tool_call", payload: expect.objectContaining({
+      name: "analyze_image", origin: "vision", serverName: "System Vision" }) } });
+    expect(JSON.stringify(events)).not.toContain("PRIVATE_VISION_TEXT");
+    expect(repository.completeRuns).toHaveLength(1);
   });
   it("aborts an in-flight artifact resource operation on Stop without another provider dispatch", async () => {
     const base = preparedData({ modelId: "gpt-tool-model", provider: "openai" });

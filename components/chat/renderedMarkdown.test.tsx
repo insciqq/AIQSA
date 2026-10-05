@@ -101,19 +101,32 @@ describe("rendered Markdown selection", () => {
     expect(appendSelectionQuote("", selectText(container, "test", "now"))).toBe("> test now\n\n");
   });
 
-  it("keeps a partial code selection fenced with its language, before and after syntax highlighting", async () => {
+  it("quotes a fragment inside a code block as plain text and keeps the whole block fenced, before and after syntax highlighting", async () => {
     const { container } = render(<MarkdownMessage content={'Before\n\n```typescript\nconst answer = 42;\nconsole.log(answer);\n```\n\nAfter'} />);
     expect(select(container, "pre code")).toBe('```typescript\nconst answer = 42;\nconsole.log(answer);\n```');
+    expect(selectText(container, "answer = 42")).toBe("answer = 42");
+    expect(selectText(container, "Before", "const answer")).toBe('Before\n\n```typescript\nconst answer\n```');
+    expect(select(container, "[data-markdown-chrome]")).toBe("");
     await waitFor(() => expect(container.querySelector("pre.shiki")).not.toBeNull());
     const token = [...container.querySelectorAll("code span")].find(element => element.childNodes.length === 1 && element.firstChild?.nodeType === Node.TEXT_NODE && element.textContent?.includes("answer"))!.firstChild!;
     const offset = token.textContent!.indexOf("answer");
     const range = document.createRange(); range.setStart(token, offset); range.setEnd(token, offset + 6);
-    expect(serializeRenderedMarkdownSelection(range, container)).toBe('```typescript\nanswer\n```');
+    expect(serializeRenderedMarkdownSelection(range, container)).toBe("answer");
+    const fromLabel = document.createRange();
+    fromLabel.setStart(container.querySelector("[data-markdown-chrome]")!, 0); fromLabel.setEnd(token, offset + 6);
+    expect(serializeRenderedMarkdownSelection(fromLabel, container)).toBe("const answer");
     const full = select(container);
     expect(full).toContain('```typescript\nconst answer = 42;\nconsole.log(answer);\n```');
     expect(full).not.toContain("Copy");
     expect(full.match(/typescript/gu)).toHaveLength(1);
     expect(appendSelectionQuote("", select(container, "pre"))).toBe("> ```typescript\n> const answer = 42;\n> console.log(answer);\n> ```\n\n");
+  });
+
+  it("quotes lines selected inside a code block without its fence", () => {
+    const { container } = render(<MarkdownMessage content={'```text\nApples | 3\nPears | 5\nPlums | 7\nFigs | 2\n```'} />);
+    expect(appendSelectionQuote("", selectText(container, "Plums | 7"))).toBe("> Plums | 7\n\n");
+    expect(appendSelectionQuote("", selectText(container, "Pears | 5", "Plums | 7"))).toBe("> Pears | 5\n> Plums | 7\n\n");
+    expect(quoted(container)).toBe("> ```text\n> Apples | 3\n> Pears | 5\n> Plums | 7\n> Figs | 2\n> ```\n\n");
   });
 
   it("serializes formulas once from their TeX source, including partial glyph selections", async () => {

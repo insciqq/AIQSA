@@ -144,3 +144,88 @@ describe("Studio Chat defaults", () => {
     expect(view.set).toHaveBeenCalledWith(null);
   });
 });
+
+type ImageModelView = NonNullable<NonNullable<ShellComposerView["chatDefaults"]>["imageModel"]>;
+
+const imageModel = { id: "image-1", displayName: "GPT Image 2", providerName: "OpenAI", generation: true, editing: true, unavailableReason: null };
+const generationOnly = { id: "image-2", displayName: "Fast Image", providerName: "Gateway", generation: true, editing: false, unavailableReason: null };
+const imageSettings = { models: [imageModel, generationOnly], organizationDefaultId: "image-1", selectedId: null,
+  effective: { id: "image-1", source: "organization" as const } };
+
+function renderImageModel(patch: Partial<ImageModelView>) {
+  const view: ImageModelView = { settings: imageSettings, loadState: "ready", saving: false, loadError: null, saveError: null,
+    load: vi.fn(), select: vi.fn(), ...patch };
+  render(<ChatDefaultsPanelV2 onNavigate={vi.fn()} composer={{
+    catalog: composerGalleryConfig.catalog, knowledge: { bases: [] },
+    chatDefaults: { imageModel: view, knowledgePlan: null, mcpMode: "auto", skillsMode: "auto",
+      searchPlan: { mode: "all_selected", optionIds: [] }, setKnowledgePlan: vi.fn(), setSearchPlan: vi.fn(), setMcpMode: vi.fn() }
+  }} />);
+  return { view, row: screen.getByTestId("settings-default-image-model") };
+}
+
+describe("Studio Chat defaults image model", () => {
+  it("follows the organization default, lists every published model and saves only an explicit choice", () => {
+    const { view, row } = renderImageModel({});
+    expect(row).toHaveTextContent("Projects use the organization default.");
+    expect(view.load).toHaveBeenCalledOnce();
+    const select = within(row).getByRole("button", { name: "Image model" });
+    expect(select).toHaveTextContent("Organization default · GPT Image 2");
+    fireEvent.click(select);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Organization default · GPT Image 2", "GPT Image 2OpenAI · Creates and edits", "Fast ImageGateway · Creates only"
+    ]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Fast ImageGateway · Creates only" }));
+    expect(view.select).toHaveBeenCalledExactlyOnceWith("image-2");
+    cleanup();
+
+    const personal = renderImageModel({ settings: { ...imageSettings, selectedId: "image-2", effective: { id: "image-2", source: "personal" } } });
+    expect(within(personal.row).getByRole("button", { name: "Image model" })).toHaveTextContent("Fast Image");
+    fireEvent.click(within(personal.row).getByRole("button", { name: "Image model" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Organization default · GPT Image 2" }));
+    expect(personal.view.select).toHaveBeenCalledExactlyOnceWith(null);
+    expect(within(personal.row).queryByRole("status")).toBeNull();
+  });
+
+  it("names why the chosen model is unavailable and offers the organization default without replacing it", () => {
+    const broken = { ...generationOnly, generation: false, unavailableReason: "credential_unavailable" as const };
+    const { view, row } = renderImageModel({ settings: { ...imageSettings, models: [imageModel, broken], selectedId: "image-2",
+      effective: { id: "image-2", source: "personal" } } });
+    expect(within(row).getByRole("button", { name: "Image model" })).toHaveTextContent("Fast Image");
+    expect(within(row).getByRole("status")).toHaveTextContent(
+      "Fast Image is unavailable: its provider key is unavailable. Choose another model or the organization default.");
+    expect(view.select).not.toHaveBeenCalled();
+    fireEvent.click(within(row).getByRole("button", { name: "Use organization default" }));
+    expect(view.select).toHaveBeenCalledExactlyOnceWith(null);
+    cleanup();
+
+    const defaultBroken = renderImageModel({ settings: { ...imageSettings, models: [{ ...imageModel, unavailableReason: "verification_required" }, generationOnly] } });
+    expect(within(defaultBroken.row).getByRole("status")).toHaveTextContent(
+      "GPT Image 2 is unavailable: it needs a new check by an administrator. Choose another model.");
+    expect(within(defaultBroken.row).queryByRole("button", { name: "Use organization default" })).toBeNull();
+  });
+
+  it("keeps loading, failure, an unconfigured organization and a refused save distinct", () => {
+    const loading = renderImageModel({ settings: null, loadState: "loading" });
+    expect(within(loading.row).getByRole("button", { name: "Image model" })).toBeDisabled();
+    expect(within(loading.row).getByRole("button", { name: "Image model" })).toHaveTextContent("Loading…");
+    cleanup();
+
+    const failed = renderImageModel({ settings: null, loadState: "error", loadError: "image_models_unavailable" });
+    expect(within(failed.row).getByRole("status")).toHaveTextContent("Image models didn't load");
+    fireEvent.click(within(failed.row).getByRole("button", { name: "Retry image models" }));
+    expect(failed.view.load).toHaveBeenCalledTimes(2);
+    cleanup();
+
+    const unconfigured = renderImageModel({ settings: { models: [], organizationDefaultId: null, selectedId: null, effective: null } });
+    expect(within(unconfigured.row).getByRole("status")).toHaveTextContent("Not set up by your organization");
+    expect(within(unconfigured.row).queryByRole("button", { name: "Image model" })).toBeNull();
+    cleanup();
+
+    const refused = renderImageModel({ saveError: "image_model_not_published", saving: false });
+    expect(within(refused.row).getByRole("alert")).toHaveTextContent("This image model is no longer published.");
+    cleanup();
+
+    const saving = renderImageModel({ saving: true });
+    expect(within(saving.row).getByRole("button", { name: "Image model" })).toBeDisabled();
+  });
+});

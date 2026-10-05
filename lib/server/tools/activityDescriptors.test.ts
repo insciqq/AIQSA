@@ -21,6 +21,14 @@ describe("native Memory search activity", () => {
     });
   });
 
+  it("projects chat System Vision as image analysis and leaves Workspace analysis unchanged", () => {
+    const visionAnalysis = { version: 1, available: true };
+    expect(toolActivityDescriptors({ visionAnalysis }).get("analyze_image")).toEqual({
+      origin: "vision", serverName: "System Vision", toolName: "analyze_image" });
+    expect(toolActivityDescriptors({ visionAnalysis, workspace: { enabled: true } }).get("analyze_image")).toBeUndefined();
+    expect(toolActivityDescriptors({}).get("analyze_image")).toBeUndefined();
+  });
+
   it("does not invent successful recall for an unrecognized completed result", () => {
     expect(memorySearchActivityEvent({ ordinal: 0, round: 1, state: "complete", result: {
       content: [{ type: "json", value: { version: "legacy", outcome: "results" } }]

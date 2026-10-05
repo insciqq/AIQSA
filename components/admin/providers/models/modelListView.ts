@@ -98,7 +98,7 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   add(roles?.chatTitleModel?.id, "Chat titles");
   add(roles?.chatPdfModel?.id, "Chat PDF");
   add(roles?.visionModel?.id, "Vision Model");
-  add(roles?.imageModel?.id, "Image generation");
+  for (const model of roles?.imageModels ?? []) add(model.id, "Image generation");
   add(roles?.decisionModel?.id, "Relevance checks");
   const route = roles?.rerankerRoute?.entries ?? [];
   if (route.length) {

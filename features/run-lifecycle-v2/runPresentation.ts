@@ -358,6 +358,11 @@ export function describeToolCallV2(
     if (phase === "cancelled") return "Image generation stopped";
     return running ? "Creating image" : "Image ready";
   }
+  if (origin === "vision") {
+    if (phase === "failed") return "Image analysis failed";
+    if (phase === "cancelled") return "Image analysis stopped";
+    return running ? "Analyzing image" : "Analyzed image";
+  }
   if (origin === "discovery") {
     if (phase === "failed") return "Tool discovery failed";
     if (phase === "cancelled") return "Tool discovery stopped";

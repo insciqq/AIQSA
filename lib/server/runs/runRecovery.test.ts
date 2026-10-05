@@ -10018,6 +10018,85 @@ describe("Workspace image recovery", () => {
   });
 });
 
+describe("Chat image recovery", () => {
+  const chatVisionPlan: NonNullable<NormalizedRunRequest["visionAnalysis"]> = { version: 1, available: true, policyVersion: 1,
+    reasoningEffort: null, verifiedVisionInput: true,
+    authority: { connectionId: "vision", connectionVersion: 1, providerModelId: "vision", modelVersion: 1, credentialId: "key", credentialVersionId: "key-v1" },
+    snapshot: { version: 1, connectionId: "vision", connectionDisplayName: "Vision", providerModelId: "vision", modelDisplayName: "Vision",
+      credentialId: "key", credentialVersionId: "key-v1", providerFamily: "openai_compatible",
+      connection: { apiRoot: "https://vision.example.test/v1", allowPrivateNetwork: false, authenticationMode: "bearer", responseTimeoutMs: 60000 },
+      model: { adapterKind: "openai_responses_compatible", modelClass: "answer", upstreamModelId: "visual-model", answerSelectable: true,
+        defaultParams: {}, capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, streaming: true, vision: true } } } };
+  const imageReferences = [{ attachmentId: "image-one", messageId: "message-one", fileName: "photo.webp", origin: "upload" as const }];
+  const visionCall = (state: PersistedToolLoopCall["state"]): PersistedToolLoopCall => ({ ...persistedRecoveryCall(state), mcpBinding: null,
+    toolName: "analyze_image", arguments: { images: [{ image_id: "image-one" }], question: "What is visible?" } });
+  // A non-Workspace run: the chat form addresses conversation images by image_id.
+  function chatVisionRun(harness: ReturnType<typeof createHarness>, call: PersistedToolLoopCall) {
+    const initial = checkpointedRun({ phase: call.state === "pending" ? "tools_pending" : "tools_running", calls: [call],
+      providerToolMessages: [{ type: "function_call", name: call.toolName, call_id: call.providerCallId, arguments: JSON.stringify(call.arguments) }] });
+    return installCheckpointState(harness, { ...initial, normalizedRequest: { ...initial.normalizedRequest, mcp: undefined,
+      visionAnalysis: chatVisionPlan, imageReferences } });
+  }
+  const analysis = (callId: string, status: "complete" | "error"): ToolExecutionResult => ({ callId, name: "analyze_image", status,
+    content: [{ type: "json", value: status === "complete" ? { analysis: "PRIVATE_CHAT_VISION_RECEIPT", provenance: "System Vision Model" }
+      : { error: "vision_analysis_outcome_unknown", provider_outcome: "unknown" } }] });
+
+  it.each(["complete", "error"] as const)("settles a running chat Vision call from its %s receipt without repeating analysis", async status => {
+    const requests: ProviderRunRequest[] = [];
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream(request) { requests.push(request); return providerResult; } } } });
+    const call = visionCall("running");
+    const state = chatVisionRun(harness, call);
+    const restore = vi.fn(async () => analysis(call.providerCallId, status)), execute = vi.fn();
+    await refreshProviderRunIfNeeded({ ...harness.deps, vision: { restore, execute } as unknown as NonNullable<RunRecoveryDeps["vision"]> }, runId, userId);
+    expect(restore).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: "analyze_image" }),
+      expect.objectContaining({ persistedToolCallId: call.id, runId, userId,
+        request: expect.objectContaining({ visionAnalysis: chatVisionPlan, imageReferences }) }));
+    expect(execute).not.toHaveBeenCalled();
+    expect(state.calls()[0]).toMatchObject({ state: status });
+    expect(harness.state.recoveredErrors).toEqual([]);
+    expect(harness.state.completed).not.toBeNull();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.workspace).toBeUndefined();
+    expect(requests[0]!.tools?.find((tool) => tool.name === "analyze_image")).toMatchObject({ capability: "vision" });
+    expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain(status === "complete"
+      ? "PRIVATE_CHAT_VISION_RECEIPT" : "vision_analysis_outcome_unknown");
+    expect(JSON.stringify(harness.state.events)).not.toContain("PRIVATE_CHAT_VISION_RECEIPT");
+  });
+
+  it("keeps a running chat Vision call without a durable attempt unknown and never repeats it", async () => {
+    const stream = vi.fn<ProviderAdapter["stream"]>();
+    const harness = createHarness({ providers: { openai: { buildRequestPreview: () => ({}), stream } } });
+    chatVisionRun(harness, visionCall("running"));
+    const restore = vi.fn(async () => null), execute = vi.fn();
+    await refreshProviderRunIfNeeded({ ...harness.deps, vision: { restore, execute } as unknown as NonNullable<RunRecoveryDeps["vision"]> }, runId, userId);
+    expect(restore).toHaveBeenCalledOnce();
+    expect(execute).not.toHaveBeenCalled();
+    expect(stream).not.toHaveBeenCalled();
+    expect(harness.state.recoveredErrors).toEqual([expect.objectContaining({ error: expect.objectContaining({ code: "tool_call_outcome_unknown" }) })]);
+  });
+
+  it("resumes a pending chat Vision call once through the accepted service and destination", async () => {
+    const egress = createRecoveryMemoryEgressRecorder();
+    const harness = createHarness({ memoryEgress: egress.service, providers: { openai: { buildRequestPreview: () => ({}),
+      async *stream() { return providerResult; } } } });
+    const call = visionCall("pending");
+    const state = chatVisionRun(harness, call);
+    const vision = { authorize: vi.fn(async () => true), restore: vi.fn(),
+      execute: vi.fn(async () => analysis(call.providerCallId, "complete")) };
+    await refreshProviderRunIfNeeded({ ...harness.deps, vision: vision as unknown as NonNullable<RunRecoveryDeps["vision"]> }, runId, userId);
+    expect(vision.authorize).toHaveBeenCalledExactlyOnceWith(chatVisionPlan);
+    expect(vision.execute).toHaveBeenCalledOnce();
+    expect(vision.execute).toHaveBeenCalledWith(expect.objectContaining({ name: "analyze_image" }), expect.objectContaining({
+      persistedToolCallId: call.id, request: expect.objectContaining({ visionAnalysis: chatVisionPlan, imageReferences }) }), expect.anything());
+    expect(egress.blocked).toEqual([]);
+    expect(egress.began.filter(receipt => receipt.mode === "TOOL_CALL")).toEqual([
+      expect.objectContaining({ destinationKind: "vision_analysis", modelRunToolCallId: call.id })]);
+    expect(state.calls()[0]).toMatchObject({ state: "complete" });
+    expect(harness.state.completed).not.toBeNull();
+  });
+});
+
 describe("Recovered image and artifact tool services", () => {
   const imageCall = (state: PersistedToolLoopCall["state"]): PersistedToolLoopCall => ({ ...persistedRecoveryCall(state),
     mcpBinding: null, toolName: "generate_image", arguments: { prompt: "A green square", image_ids: [] } });

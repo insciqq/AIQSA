@@ -55,6 +55,53 @@ describe("administrator system model policy handlers", () => {
       expect(response.status).toBe(400); expect(service.update).not.toHaveBeenCalled();
     }
   );
+  it.each([
+    { imageProviderModelId: "image-1", imageModels: [{ providerModelId: "image-1", parameters: { quality: "low", output_compression: 80 } },
+      { providerModelId: "image-2", parameters: {} }] },
+    { imageProviderModelId: null, imageModels: [] }
+  ])("passes the complete published image set and its default to the service (%#)", async (patch) => {
+    const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: 4, ...patch })
+    }));
+    expect(response.status).toBe(200);
+    expect(service.update).toHaveBeenCalledExactlyOnceWith({ expectedVersion: 4, ...patch, userId: "user-1" });
+  });
+
+  it.each([
+    { imageProviderModelId: "image-1" },
+    { imageModels: [{ providerModelId: "image-1", parameters: {} }] },
+    { imageProviderModelId: "image-1", imageParameters: {} },
+    { imageProviderModelId: "image-1", imageModels: {} },
+    { imageProviderModelId: "image-1", imageModels: [{ providerModelId: "image-1" }] },
+    { imageProviderModelId: "image-1", imageModels: [{ providerModelId: " image-1", parameters: {} }] },
+    { imageProviderModelId: "image-1", imageModels: [{ providerModelId: "image-1", parameters: { model: "other" } }] },
+    { imageProviderModelId: "image-1", imageModels: [{ providerModelId: "image-1", parameters: { quality: ["high"] } }] },
+    { imageProviderModelId: "image-1", imageModels: [{ providerModelId: "image-1", parameters: {}, users: [] }] },
+    { imageProviderModelId: "image-1", imageModels: [{ providerModelId: "image-1", parameters: {} }, { providerModelId: "image-1", parameters: {} }] },
+    { imageProviderModelId: "image-1", imageModels: Array.from({ length: 257 }, (_, index) => ({ providerModelId: `image-${index}`, parameters: {} })) }
+  ])("rejects an incomplete, legacy or malformed image update before the service: %#", async (patch) => {
+    const service = { list: vi.fn(), update: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: 4, ...patch })
+    }));
+    expect(response.status).toBe(400);
+    expect(service.update).not.toHaveBeenCalled();
+  });
+
+  it("reports withdrawing the default as an image set error", async () => {
+    const service = { list: vi.fn(), update: vi.fn().mockRejectedValue(new AdminSystemModelPolicyServiceError("system_model_policy_image_models_invalid")) };
+    const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });
+    const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedVersion: 4, imageProviderModelId: "image-1", imageModels: [{ providerModelId: "image-2", parameters: {} }] })
+    }));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "system_model_policy_image_models_invalid" });
+  });
+
   it("saves Memory with its independent version without changing System roles", async () => {
     const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn(), updateMemory: vi.fn() };
     const handlers = createAdminSystemModelPolicyHandlers({

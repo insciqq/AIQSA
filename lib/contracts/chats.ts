@@ -288,14 +288,15 @@ export type ThreadToolActivityOrigin =
   | "session"
   | "skill"
   | "tool"
+  | "vision"
   | "web_fetch"
   | "web_search"
   | "workspace";
 
 export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolActivityOrigin {
   return value === "artifact" || value === "image" || value === "discovery" || value === "knowledge" || value === "mcp" ||
-    value === "memory" || value === "session" || value === "skill" || value === "tool" || value === "web_fetch" ||
-    value === "web_search" || value === "workspace";
+    value === "memory" || value === "session" || value === "skill" || value === "tool" || value === "vision" ||
+    value === "web_fetch" || value === "web_search" || value === "workspace";
 }
 
 export type ThreadToolActivityCall = {
