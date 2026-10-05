@@ -1,8 +1,23 @@
 import type { FetchUrlActivityOutcome, FetchUrlRefusalScope } from "../../contracts/fetchUrlActivity";
 import { isDocumentParserError } from "../parsing/errors";
-import { declaredPageContentKind, type ExtractedPage, type PageContentKind } from "../webFetch/pageKinds";
+import { isPdfExtractionError } from "../uploads/pdf";
+import {
+  declaredFetchedContentKind,
+  fetchedContentKind,
+  type ExtractedPage,
+  type FetchedContentKind,
+  type FetchedPage
+} from "../webFetch/pageKinds";
 import { extractFetchedPage, type FetchedPageInput } from "../webFetch/pageText";
-import { fetchWebPage, WebFetchError, webFetchUrlRefusal, type WebFetchOptions, type WebFetchResponse } from "../webFetch/transport";
+import { extractFetchedPdf, FETCHED_PDF_LIMITS, fetchedPdfMaxBytes } from "../webFetch/pdfText";
+import {
+  fetchWebPage,
+  WEB_FETCH_LIMITS,
+  WebFetchError,
+  webFetchUrlRefusal,
+  type WebFetchOptions,
+  type WebFetchResponse
+} from "../webFetch/transport";
 import { fetchUrlDigest, fetchUrlDigestsOf, normalizeFetchUrl } from "../webFetch/urls";
 import { FETCH_URL_LIMITS, persistedFetchUrlFacts, type FetchUrlPlan } from "./fetchUrlPlan";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecutionResult } from "./types";
@@ -26,7 +41,8 @@ export {
  * delivered follow-ups, or a source/citation URL the run's own Search
  * produced. Model text, fetched pages, MCP, Knowledge and attachments grant
  * nothing. Pages enter context as untrusted tool data. At most five page
- * requests per run; the same URL returns its earlier result.
+ * requests per run; the same URL returns its earlier result. A PDF body is
+ * read only by the isolated PDF extractor, under its own byte bound.
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -51,8 +67,15 @@ function notInConversationMessage(scope: FetchUrlRefusalScope | undefined): stri
   }
 }
 
+function megabytes(bytes: number): string {
+  return String(Number((bytes / (1024 * 1024)).toFixed(1)));
+}
+
+type FailureContext = Readonly<{ pdf: boolean; pdfMaxBytes: number; scope?: FetchUrlRefusalScope; httpStatus?: number }>;
+
 /** What the model is told for each refusal or failure. */
-function failureMessage(code: FailureCode, scope: FetchUrlRefusalScope | undefined, httpStatus?: number): string {
+function failureMessage(code: FailureCode, context: FailureContext): string {
+  const { httpStatus, scope } = context;
   switch (code) {
     case "fetch_url_not_in_conversation": return notInConversationMessage(scope);
     case "fetch_url_invalid": return "This is not a valid http(s) web address.";
@@ -63,13 +86,24 @@ function failureMessage(code: FailureCode, scope: FetchUrlRefusalScope | undefin
     case "fetch_redirect_invalid": return "The page redirected to an address that is not a valid http(s) web address.";
     case "fetch_redirect_limit": return "The page redirected more than 5 times and was not read.";
     case "fetch_timeout": return "The page did not load, or could not be processed, in time; it was not read.";
-    case "fetch_too_large": return "The page is too large to read (over 5 MB, or too complex to process).";
+    case "fetch_too_large":
+      return `The page is too large to read (over ${megabytes(WEB_FETCH_LIMITS.maxBytes)} MB, or ` +
+        `${megabytes(context.pdfMaxBytes)} MB for a PDF), or too complex to process.`;
     case "fetch_unsupported_content_type":
-      return "This link is not a web page or text (for example a PDF, an image or an archive). Ask the user to upload the file instead.";
+      return "This link is not a web page, text or PDF (for example an image or an archive). Ask the user to upload the file instead.";
     case "fetch_http_status": return `The site answered with HTTP status ${httpStatus ?? "error"}; the page was not read.`;
     case "fetch_network_error": return "The site could not be reached.";
     case "fetch_no_readable_text":
-      return "The page has no readable text; it may need JavaScript, which page reading does not run.";
+      return context.pdf
+        ? "The PDF has no text layer (it may be scanned), and page reading does not recognize text in images. Ask the " +
+          "user to upload the file if its content is needed."
+        : "The page has no readable text; it may need JavaScript, which page reading does not run.";
+    case "fetch_pdf_password_protected":
+      return "The PDF is password-protected, so its text was not read. Ask the user for an unprotected copy if it is needed.";
+    case "fetch_pdf_invalid": return "The PDF is damaged or could not be processed, so its text was not read.";
+    case "fetch_pdf_too_many_pages":
+      return `The PDF has more than ${FETCHED_PDF_LIMITS.maxPages} pages, more than page reading opens. Ask the user to ` +
+        "upload the file instead if it is needed.";
     case "fetch_reader_unavailable":
       return "Page reading is unavailable on this server right now, so the page was not read. Do not retry it in this answer.";
     case "fetch_url_limit_reached":
@@ -80,7 +114,7 @@ function failureMessage(code: FailureCode, scope: FetchUrlRefusalScope | undefin
 }
 
 type ReadValue = Readonly<{
-  contentType: PageContentKind;
+  contentType: FetchedContentKind;
   fetchedAt: string;
   finalUrl: string;
   text: string;
@@ -91,21 +125,26 @@ type ReadValue = Readonly<{
 
 type Outcome =
   | Readonly<{ kind: "read"; value: ReadValue }>
-  | Readonly<{ code: FailureCode; dispatched: boolean; httpStatus?: number; kind: "failed" }>;
+  | Readonly<{ code: FailureCode; dispatched: boolean; httpStatus?: number; kind: "failed"; pdf?: true }>;
+
+type FailedOptions = Readonly<{ pdfMaxBytes: number; refusalScope?: FetchUrlRefusalScope }>;
 
 function failed(call: Pick<ModelToolCall, "id" | "name">, outcome: Extract<Outcome, { kind: "failed" }>, url: string | null,
-  refusalScope?: FetchUrlRefusalScope): ToolExecutionResult {
-  const scope = outcome.code === "fetch_url_not_in_conversation" ? refusalScope : undefined;
+  options: FailedOptions): ToolExecutionResult {
+  const scope = outcome.code === "fetch_url_not_in_conversation" ? options.refusalScope : undefined;
+  const pdf = outcome.pdf === true;
   return {
     callId: call.id,
     content: [{ type: "json", value: {
       error: outcome.code,
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
-      message: failureMessage(outcome.code, scope, outcome.httpStatus)
+      message: failureMessage(outcome.code, { httpStatus: outcome.httpStatus, pdf, pdfMaxBytes: options.pdfMaxBytes, scope })
     } }],
     name: call.name,
     rawPreview: { fetchUrl: {
       version: 1, outcome: outcome.code, dispatched: outcome.dispatched,
+      // The body was a PDF: its outcome is the PDF's.
+      ...(pdf ? { contentKind: "pdf" } : {}),
       ...(outcome.httpStatus !== undefined ? { httpStatus: outcome.httpStatus } : {}),
       // Where the owner allows the link, when not by sending it in the chat.
       ...(scope ? { refusalScope: scope } : {}),
@@ -130,27 +169,33 @@ function read(call: Pick<ModelToolCall, "id" | "name">, value: ReadValue, cached
       text: value.text
     } }],
     name: call.name,
-    rawPreview: { fetchUrl: { version: 1, outcome: "read", dispatched: !cached, url: value.url } },
+    rawPreview: { fetchUrl: {
+      version: 1, outcome: "read", dispatched: !cached,
+      ...(value.contentType === "pdf" ? { contentKind: "pdf" } : {}),
+      url: value.url
+    } },
     status: "complete"
   };
 }
 
 /** A recovered call that may have been sent before the process stopped: settled, never sent again. */
 export function fetchUrlInterruptedResult(call: Pick<ModelToolCall, "arguments" | "id" | "name">): ToolExecutionResult {
-  return failed(call, { code: "fetch_url_interrupted", dispatched: true, kind: "failed" }, normalizeFetchUrl(call.arguments.url));
+  return failed(call, { code: "fetch_url_interrupted", dispatched: true, kind: "failed" }, normalizeFetchUrl(call.arguments.url),
+    { pdfMaxBytes: FETCHED_PDF_LIMITS.maxBytes });
 }
+
+const READ_CONTENT_KINDS: ReadonlySet<unknown> = new Set<FetchedContentKind>(["html", "json", "markdown", "pdf", "text"]);
 
 function persistedReadValue(result: unknown, url: string): ReadValue | null {
   const value = isRecord(result) && Array.isArray(result.content) && isRecord(result.content[0]) &&
     result.content[0].type === "json" && isRecord(result.content[0].value) ? result.content[0].value : null;
   if (!value || value.url !== url || typeof value.finalUrl !== "string" || typeof value.text !== "string" ||
     typeof value.fetchedAt !== "string" || typeof value.truncated !== "boolean" ||
-    (value.title !== null && typeof value.title !== "string") ||
-    (value.contentType !== "html" && value.contentType !== "json" && value.contentType !== "markdown" && value.contentType !== "text")) {
+    (value.title !== null && typeof value.title !== "string") || !READ_CONTENT_KINDS.has(value.contentType)) {
     return null;
   }
-  return { contentType: value.contentType, fetchedAt: value.fetchedAt, finalUrl: value.finalUrl, text: value.text,
-    title: value.title as string | null, truncated: value.truncated, url };
+  return { contentType: value.contentType as FetchedContentKind, fetchedAt: value.fetchedAt, finalUrl: value.finalUrl,
+    text: value.text, title: value.title as string | null, truncated: value.truncated, url };
 }
 
 /** A page that arrived but did not become text: the deadline, the parser's bounds, or the parser itself. */
@@ -163,6 +208,20 @@ function extractionFailureCode(error: unknown): FailureCode {
     // The parser refused this page's content; other pages still read.
     case "parser_rejected": return "fetch_no_readable_text";
     default: return "fetch_reader_unavailable";
+  }
+}
+
+/** A PDF that arrived but did not become text: the deadline, or the PDF extractor's refusal of this document. */
+function pdfExtractionFailureCode(error: unknown): FailureCode {
+  if (error instanceof DOMException && error.name === "TimeoutError") return "fetch_timeout";
+  if (!isPdfExtractionError(error)) return "fetch_reader_unavailable";
+  switch (error.code) {
+    case "pdf_password_required": return "fetch_pdf_password_protected";
+    case "pdf_page_limit_exceeded": return "fetch_pdf_too_many_pages";
+    case "pdf_extraction_timeout": return "fetch_timeout";
+    // Damaged input, or a document the worker's resource limits ended.
+    case "pdf_invalid":
+    case "pdf_extraction_failed": return "fetch_pdf_invalid";
   }
 }
 
@@ -182,6 +241,10 @@ export type FetchUrlSessionDeps = Readonly<{
   fetchPage?: (url: string, options: WebFetchOptions) => Promise<WebFetchResponse>;
   /** Fetched body to page text; production parses it in the disposable parser process. */
   extractPage?: (input: FetchedPageInput) => Promise<ExtractedPage | null>;
+  /** Fetched PDF to page text; production extracts it in the isolated PDF worker. */
+  extractPdf?: (input: FetchedPageInput) => Promise<FetchedPage>;
+  /** A PDF's byte bound; production uses `fetchedPdfMaxBytes()`. */
+  pdfMaxBytes?: number;
   now?: () => Date;
 }>;
 
@@ -197,6 +260,10 @@ export type FetchUrlSession = Readonly<{
 export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSession {
   const fetchPage = deps.fetchPage ?? fetchWebPage;
   const extractPageText = deps.extractPage ?? ((input: FetchedPageInput) => extractFetchedPage(input));
+  const extractPdfText = deps.extractPdf ?? ((input: FetchedPageInput) => extractFetchedPdf(input));
+  const pdfMaxBytes = deps.pdfMaxBytes ?? fetchedPdfMaxBytes();
+  /** A body of unknown kind is read up to the larger bound, then held to its kind's bound. */
+  const undecidedMaxBytes = Math.max(pdfMaxBytes, WEB_FETCH_LIMITS.maxBytes);
   const now = deps.now ?? (() => new Date());
   const frozen = new Set([...deps.plan.userUrlDigests, ...(deps.plan.taskUrlDigests ?? [])]);
   /** Links only scheduled task instructions on the branch hold: they authorize nothing. */
@@ -235,7 +302,15 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
   async function fetchAndExtract(url: string, signal: AbortSignal): Promise<Outcome> {
     let response: WebFetchResponse;
     try {
-      response = await fetchPage(url, { acceptsContentType: (type) => declaredPageContentKind(type) !== null, signal });
+      response = await fetchPage(url, {
+        acceptsContentType: (type) => declaredFetchedContentKind(type) !== null,
+        maxBytesFor: (type) => {
+          const declared = declaredFetchedContentKind(type);
+          return declared === "pdf" || declared === "pdf_sniff" ? pdfMaxBytes
+            : declared === "sniff" ? undecidedMaxBytes : WEB_FETCH_LIMITS.maxBytes;
+        },
+        signal
+      });
     } catch (error) {
       if (error instanceof WebFetchError) {
         return { code: error.code, dispatched: error.dispatched, kind: "failed",
@@ -243,15 +318,23 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       }
       throw error;
     }
-    let page: ExtractedPage | null;
+    const kind = fetchedContentKind(response.body, response.contentType);
+    if (!kind) return { code: "fetch_unsupported_content_type", dispatched: true, kind: "failed" };
+    const pdf = kind === "pdf";
+    if (response.body.byteLength > (pdf ? pdfMaxBytes : WEB_FETCH_LIMITS.maxBytes)) {
+      return { code: "fetch_too_large", dispatched: true, kind: "failed", ...(pdf ? { pdf } : {}) };
+    }
+    const input = { body: response.body, contentType: response.contentType, finalUrl: response.finalUrl, signal };
+    let page: FetchedPage | null;
     try {
-      page = await extractPageText({ body: response.body, contentType: response.contentType, finalUrl: response.finalUrl, signal });
+      page = pdf ? await extractPdfText(input) : await extractPageText(input);
     } catch (error) {
       if (signal.aborted) throw error;
-      return { code: extractionFailureCode(error), dispatched: true, kind: "failed" };
+      return pdf ? { code: pdfExtractionFailureCode(error), dispatched: true, kind: "failed", pdf }
+        : { code: extractionFailureCode(error), dispatched: true, kind: "failed" };
     }
     if (!page) return { code: "fetch_unsupported_content_type", dispatched: true, kind: "failed" };
-    if (!page.text.trim()) return { code: "fetch_no_readable_text", dispatched: true, kind: "failed" };
+    if (!page.text.trim()) return { code: "fetch_no_readable_text", dispatched: true, kind: "failed", ...(pdf ? { pdf } : {}) };
     return { kind: "read", value: {
       contentType: page.kind, fetchedAt: now().toISOString(), finalUrl: response.finalUrl, text: page.text,
       title: page.title, truncated: page.truncated, url
@@ -268,7 +351,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
         return result;
       };
       const refuse = (code: FailureCode, url: string | null) => unsent(failed(call, { code, dispatched: false, kind: "failed" },
-        url, url && code === "fetch_url_not_in_conversation" ? refusalScope(url) : undefined));
+        url, { pdfMaxBytes, ...(url && code === "fetch_url_not_in_conversation" ? { refusalScope: refusalScope(url) } : {}) }));
       if (hasInvalidProviderToolArguments(call.arguments) || Object.keys(call.arguments).some((key) => key !== "url")) {
         return refuse("fetch_url_invalid", null);
       }
@@ -284,7 +367,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       if (pending) {
         const outcome = await pending;
         return unsent(outcome.kind === "read" ? read(call, outcome.value, true)
-          : failed(call, { ...outcome, dispatched: false }, url));
+          : failed(call, { ...outcome, dispatched: false }, url, { pdfMaxBytes }));
       }
       const others = [...sent].filter((entry) => entry !== id).length;
       if (others >= FETCH_URL_LIMITS.callsPerRun) return refuse("fetch_url_limit_reached", url);
@@ -297,7 +380,7 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           cache.set(url, outcome.value);
           return read(call, outcome.value, false);
         }
-        const result = failed(call, outcome, url);
+        const result = failed(call, outcome, url, { pdfMaxBytes });
         return outcome.dispatched ? result : unsent(result);
       } finally {
         inFlight.delete(url);

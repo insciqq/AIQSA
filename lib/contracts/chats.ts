@@ -2,9 +2,11 @@ import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from 
 import {
   decodeFetchUrlTarget,
   isFetchUrlActivityOutcome,
+  isFetchUrlContentKind,
   isFetchUrlHttpStatus,
   isFetchUrlRefusalScope,
   type FetchUrlActivityOutcome,
+  type FetchUrlContentKind,
   type FetchUrlRefusalScope
 } from "./fetchUrlActivity";
 import { decodeSearchPlan, type SearchPlan } from "./search";
@@ -301,6 +303,8 @@ export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolA
 
 export type ThreadToolActivityCall = {
   details?: { roundIndex: number; ordinal: number };
+  /** `web_fetch` only: the settled body was read as a PDF. */
+  fetchContentKind?: FetchUrlContentKind;
   /** `web_fetch` only: the HTTP status of a `fetch_http_status` outcome. */
   fetchHttpStatus?: number;
   /** `web_fetch` only: the settled outcome (`read` or a refusal/failure code). */
@@ -1207,6 +1211,8 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
       ...(candidate.origin === "web_fetch" ? {
         ...(decodeFetchUrlTarget(candidate.fetchTarget) ? { fetchTarget: decodeFetchUrlTarget(candidate.fetchTarget)! } : {}),
         ...(isFetchUrlActivityOutcome(candidate.fetchOutcome) ? { fetchOutcome: candidate.fetchOutcome } : {}),
+        ...(isFetchUrlActivityOutcome(candidate.fetchOutcome) && isFetchUrlContentKind(candidate.fetchContentKind)
+          ? { fetchContentKind: candidate.fetchContentKind } : {}),
         ...(candidate.fetchOutcome === "fetch_url_not_in_conversation" && isFetchUrlRefusalScope(candidate.fetchRefusalScope)
           ? { fetchRefusalScope: candidate.fetchRefusalScope } : {}),
         ...(candidate.fetchOutcome === "fetch_http_status" && isFetchUrlHttpStatus(candidate.fetchHttpStatus)

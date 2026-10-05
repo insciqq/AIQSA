@@ -2,9 +2,11 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { Worker, WorkerOptions } from "node:worker_threads";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { syntheticPdf } from "../webFetch/pdf.testFixtures";
 import {
   DEFAULT_PDF_MAX_PAGES,
   extractPdfTextChunks,
+  PDF_TITLE_MAX_CHARS,
   PdfExtractionError,
   type PdfExtractionOptions,
   type PdfExtractionResult
@@ -499,6 +501,41 @@ describe("PDF extraction", () => {
     expect(fakeWorker.stdout.readableFlowing).toBe(true);
     expect(fakeWorker.stderr.readableFlowing).toBe(true);
     expect(fakeWorker.terminate).toHaveBeenCalledOnce();
+  });
+
+  it("reads the metadata title only on request, in the production worker", async () => {
+    const titled = syntheticPdf({ text: "Body text", title: "Quarterly   Report" });
+    await expect(extractPdfTextChunks(titled, { readTitle: true })).resolves.toMatchObject({ text: "Body text", title: "Quarterly Report" });
+    await expect(extractPdfTextChunks(syntheticPdf({ text: "Body text" }), { readTitle: true })).resolves.toMatchObject({ title: null });
+    await expect(extractPdfTextChunks(titled)).resolves.not.toHaveProperty("title");
+  });
+
+  it("reads the metadata title in direct extraction and never fails on unreadable metadata", async () => {
+    const document = createDocument([[{ str: "Body" }]]);
+    const options = (getMetadata: () => Promise<unknown>): PdfExtractionOptions => ({
+      getDocumentProxy: async () => ({ ...document.proxy, getMetadata }), readTitle: true });
+    await expect(extractPdfTextChunks(Buffer.from("pdf"), options(async () => ({ info: { Title: ` A\n${"t".repeat(400)}` } }))))
+      .resolves.toMatchObject({ title: `A ${"t".repeat(298)}` });
+    await expect(extractPdfTextChunks(Buffer.from("pdf"), options(async () => { throw new Error("broken metadata"); })))
+      .resolves.toMatchObject({ text: "Body", title: null });
+    await expect(extractPdfTextChunks(Buffer.from("pdf"), options(async () => ({ info: { Title: " \u0000 " } }))))
+      .resolves.toMatchObject({ title: null });
+  });
+
+  it("accepts a requested title from the worker only when bounded", async () => {
+    const valid = workerOptions({ ok: true, result: { ...validWorkerResult(), title: "Report" } }, (_source, options) => {
+      expect(options.workerData).toMatchObject({ readTitle: true, titleMaxChars: PDF_TITLE_MAX_CHARS });
+    });
+    await expect(extractPdfTextChunks(Buffer.from("pdf"), { createWorker: valid.createWorker, readTitle: true }))
+      .resolves.toMatchObject({ title: "Report" });
+    for (const title of ["", "t".repeat(PDF_TITLE_MAX_CHARS + 1), 7, undefined]) {
+      const { createWorker } = workerOptions({ ok: true, result: { ...validWorkerResult(), title } });
+      await expect(extractPdfTextChunks(Buffer.from("pdf"), { createWorker, readTitle: true }))
+        .rejects.toEqual(new PdfExtractionError("pdf_extraction_failed"));
+    }
+    const unrequested = workerOptions({ ok: true, result: { ...validWorkerResult(), title: "Report" } });
+    await expect(extractPdfTextChunks(Buffer.from("pdf"), { createWorker: unrequested.createWorker }))
+      .rejects.toEqual(new PdfExtractionError("pdf_extraction_failed"));
   });
 
   it.each([

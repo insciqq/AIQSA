@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { DocumentParserError } from "../parsing/errors";
 import { readOnlyRunTool } from "../runs/toolReadOnly";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { PdfExtractionError } from "../uploads/pdf";
 import { extractPage as extractPageText } from "../webFetch/extract";
 import type { FetchedPageInput } from "../webFetch/pageText";
-import { WebFetchError, type WebFetchOptions, type WebFetchResponse } from "../webFetch/transport";
+import { syntheticPdf } from "../webFetch/pdf.testFixtures";
+import { WEB_FETCH_LIMITS, WebFetchError, type WebFetchOptions, type WebFetchResponse } from "../webFetch/transport";
 import { fetchUrlDigest } from "../webFetch/urls";
 import {
   createFetchUrlSession,
@@ -288,6 +290,128 @@ describe("fetch_url per-run cap and cache", () => {
     expect(result.status).toBe("error");
     expect(json(result).error).toBe("fetch_url_interrupted");
     expect(result.rawPreview).toEqual({ fetchUrl: { version: 1, outcome: "fetch_url_interrupted", dispatched: true, url: USER_URL } });
+  });
+});
+
+describe("fetch_url PDFs", () => {
+  const PDF_URL = "https://papers.example/paper";
+  const pdfPlan = { userUrlDigests: [PDF_URL, USER_URL].map(fetchUrlDigest), version: 1 as const };
+  const pdfBody = () => syntheticPdf({ text: "Synthetic findings on page one", title: "A Synthetic Paper" });
+  const pdfResponse = (contentType: string | null, body: Uint8Array = pdfBody()): WebFetchResponse =>
+    ({ body, contentType, finalUrl: PDF_URL, status: 200 });
+  const pdfSession = (response: WebFetchResponse, options: Partial<Parameters<typeof createFetchUrlSession>[0]> = {}) => {
+    const extractPage = vi.fn(inProcess);
+    return { extractPage, ...session({ extractPage, fetchPage: vi.fn(async () => response), plan: pdfPlan, ...options }) };
+  };
+
+  it("reads a linked PDF's text layer in the PDF worker, never the page parser, and names it in activity", async () => {
+    const s = pdfSession(pdfResponse("application/pdf"));
+    const result = await s.execute(call(PDF_URL), { persistedToolCallId: "c1", signal });
+    expect(result.status).toBe("complete");
+    expect(json(result)).toMatchObject({ url: PDF_URL, contentType: "pdf", title: "A Synthetic Paper", truncated: false,
+      text: "Synthetic findings on page one" });
+    expect(result.rawPreview).toEqual({ fetchUrl: { version: 1, outcome: "read", dispatched: true, contentKind: "pdf", url: PDF_URL } });
+    expect(s.extractPage).not.toHaveBeenCalled();
+    expect(fetchUrlActivityFacts(FETCH_URL_TOOL_NAME, { url: PDF_URL }, result))
+      .toEqual({ fetchContentKind: "pdf", fetchOutcome: "read", fetchTarget: "papers.example/paper" });
+    expect(snapshotToolExecutionResult(result, 256 * 1024)).not.toBeNull();
+  });
+
+  it.each([null, "application/octet-stream"])("detects a PDF by its signature under the type %s", async (contentType) => {
+    const extractPdf = vi.fn(async () => ({ kind: "pdf" as const, text: "From the PDF", title: null, truncated: false }));
+    const s = pdfSession(pdfResponse(contentType, Buffer.from("%PDF-1.7\n%âã\n", "latin1")), { extractPdf });
+    expect(json(await s.execute(call(PDF_URL), { persistedToolCallId: "c1", signal }))).toMatchObject({ contentType: "pdf",
+      text: "From the PDF" });
+    expect(extractPdf).toHaveBeenCalledOnce();
+    expect(s.extractPage).not.toHaveBeenCalled();
+  });
+
+  it("still refuses other binaries and keeps reading untyped text as a page", async () => {
+    const extractPdf = vi.fn();
+    const zip = pdfSession(pdfResponse("application/octet-stream", Uint8Array.from([0x50, 0x4b, 3, 4, 0])), { extractPdf });
+    const refused = await zip.execute(call(PDF_URL), { persistedToolCallId: "c1", signal });
+    expect(json(refused).error).toBe("fetch_unsupported_content_type");
+    expect(String(json(refused).message)).toContain("not a web page, text or PDF");
+    const text = pdfSession(pdfResponse(null, new TextEncoder().encode("Plain notes without a type.")), { extractPdf });
+    expect(json(await text.execute(call(PDF_URL), { persistedToolCallId: "c1", signal }))).toMatchObject({ contentType: "text" });
+    expect(extractPdf).not.toHaveBeenCalled();
+  });
+
+  it("bounds PDFs by their own byte limit and pages by the page limit", async () => {
+    const s = pdfSession(pdfResponse("application/pdf"), { pdfMaxBytes: 32 * 1024 * 1024 });
+    await s.execute(call(PDF_URL), { persistedToolCallId: "c1", signal });
+    const { maxBytesFor } = vi.mocked(s.fetchPage).mock.calls[0]![1];
+    expect(["application/pdf", "application/octet-stream", null, "text/html"].map((type) => maxBytesFor?.(type)))
+      .toEqual([32 * 1024 * 1024, 32 * 1024 * 1024, 32 * 1024 * 1024, WEB_FETCH_LIMITS.maxBytes]);
+    // A small chat upload limit never shrinks the page bound of an untyped body.
+    const small = pdfSession(pdfResponse("application/pdf"), { pdfMaxBytes: 10 * 1024 * 1024 });
+    await small.execute(call(PDF_URL), { persistedToolCallId: "c1", signal });
+    expect(vi.mocked(small.fetchPage).mock.calls[0]![1].maxBytesFor?.(null)).toBe(10 * 1024 * 1024);
+    const smaller = pdfSession(pdfResponse("application/pdf"), { pdfMaxBytes: 1024 * 1024 });
+    await smaller.execute(call(PDF_URL), { persistedToolCallId: "c1", signal });
+    expect(vi.mocked(smaller.fetchPage).mock.calls[0]![1].maxBytesFor?.(null)).toBe(WEB_FETCH_LIMITS.maxBytes);
+    const refusing = pdfSession(pdfResponse("application/pdf"), { fetchPage: vi.fn(async () => {
+      throw new WebFetchError("fetch_too_large", { dispatched: true });
+    }), pdfMaxBytes: 15 * 1024 * 1024 });
+    const tooLarge = await refusing.execute(call(PDF_URL), { persistedToolCallId: "c1", signal });
+    expect(json(tooLarge)).toMatchObject({ error: "fetch_too_large" });
+    expect(String(json(tooLarge).message)).toContain("over 5 MB, or 15 MB for a PDF");
+    // An untyped body read up to the larger bound is held to its kind's bound.
+    const untypedPdf = pdfSession(pdfResponse(null), { pdfMaxBytes: 16 });
+    const refusedPdf = await untypedPdf.execute(call(PDF_URL), { persistedToolCallId: "c1", signal });
+    expect(json(refusedPdf).error).toBe("fetch_too_large");
+    expect(refusedPdf.rawPreview).toMatchObject({ fetchUrl: { contentKind: "pdf", dispatched: true, outcome: "fetch_too_large" } });
+    const bigPage = pdfSession(pdfResponse(null, new Uint8Array(WEB_FETCH_LIMITS.maxBytes + 1).fill(0x61)));
+    expect(json(await bigPage.execute(call(PDF_URL), { persistedToolCallId: "c1", signal })).error).toBe("fetch_too_large");
+    expect(bigPage.extractPage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [new PdfExtractionError("pdf_password_required"), "fetch_pdf_password_protected"],
+    [new PdfExtractionError("pdf_invalid"), "fetch_pdf_invalid"],
+    [new PdfExtractionError("pdf_extraction_failed"), "fetch_pdf_invalid"],
+    [new PdfExtractionError("pdf_page_limit_exceeded"), "fetch_pdf_too_many_pages"],
+    [new PdfExtractionError("pdf_extraction_timeout"), "fetch_timeout"],
+    [new DOMException("Page processing deadline exceeded", "TimeoutError"), "fetch_timeout"],
+    [new Error("unexpected"), "fetch_reader_unavailable"]
+  ] as const)("settles a PDF extraction that ended in %s as %s", async (error, code) => {
+    const s = pdfSession(pdfResponse("application/pdf"), { extractPdf: vi.fn(async () => { throw error; }) });
+    const result = await s.execute(call(PDF_URL), { persistedToolCallId: "c1", signal });
+    expect(json(result).error).toBe(code);
+    expect(result.rawPreview).toMatchObject({ fetchUrl: { contentKind: "pdf", dispatched: true, outcome: code } });
+    expect(fetchUrlActivityFacts(FETCH_URL_TOOL_NAME, undefined, result)).toMatchObject({ fetchContentKind: "pdf", fetchOutcome: code });
+  });
+
+  it("reports a PDF without a text layer and a damaged one through the real worker", async () => {
+    const scanned = pdfSession(pdfResponse("application/pdf", syntheticPdf({ text: "" })));
+    const textless = await scanned.execute(call(PDF_URL), { persistedToolCallId: "c1", signal });
+    expect(json(textless).error).toBe("fetch_no_readable_text");
+    expect(String(json(textless).message)).toContain("no text layer");
+    const damaged = pdfSession(pdfResponse("application/pdf", Buffer.from("%PDF-1.4\nnot really a document")));
+    expect(json(await damaged.execute(call(PDF_URL), { persistedToolCallId: "c1", signal })).error).toBe("fetch_pdf_invalid");
+  });
+
+  it("keeps the run's cancellation during PDF extraction instead of settling a failure", async () => {
+    const controller = new AbortController();
+    const s = pdfSession(pdfResponse("application/pdf"), { extractPdf: vi.fn(async (input) => {
+      controller.abort(new DOMException("stopped", "AbortError"));
+      expect(input.signal.aborted).toBe(true);
+      throw controller.signal.reason;
+    }) });
+    await expect(s.execute(call(PDF_URL), { persistedToolCallId: "c1", signal: controller.signal }))
+      .rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("reuses a recovered run's persisted PDF read without a second request", async () => {
+    const live = pdfSession(pdfResponse("application/pdf"));
+    const settled = await live.execute(call(PDF_URL), { persistedToolCallId: "p0", signal });
+    const recovered = pdfSession(pdfResponse("application/pdf"), {
+      loadCalls: async () => [{ id: "p0", result: JSON.parse(JSON.stringify(settled)), state: "complete" }]
+    });
+    const cached = await recovered.execute(call(PDF_URL), { persistedToolCallId: "n1", signal });
+    expect(json(cached)).toMatchObject({ cached: true, contentType: "pdf", title: "A Synthetic Paper", text: "Synthetic findings on page one" });
+    expect(cached.rawPreview).toEqual({ fetchUrl: { version: 1, outcome: "read", dispatched: false, contentKind: "pdf", url: PDF_URL } });
+    expect(recovered.fetchPage).not.toHaveBeenCalled();
   });
 });
 
