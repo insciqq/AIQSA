@@ -107,7 +107,7 @@ function ChatImportReportV2({ onDismiss, state }: Readonly<{
 }
 
 /**
- * Settings → Data: import AIQSA exports. The browser reads the picked files
+ * Settings → Data: import AIQSA and ChatGPT exports. The browser reads the picked files
  * in a worker and sends only normalized chats; progress counts settled chats
  * and the report names every chat that was not imported, with its reason.
  */
@@ -129,7 +129,7 @@ export function ChatImportRowV2({ accountId, onImported }: Readonly<{
   return (
     <>
       <SettingsRowV2
-        description="Add chats from an AIQSA export: a chat's .json file or the bulk .tar.gz archive. They keep their titles, dates and branches and never use Memory."
+        description="Add chats from an AIQSA export (a chat's .json file or the bulk .tar.gz archive), a ChatGPT export (.zip) or a Claude export (the conversations .zip or conversations.json). They keep their titles, dates and branches and never use Memory."
         testId="settings-import-chats"
         title="Import chats"
       >
