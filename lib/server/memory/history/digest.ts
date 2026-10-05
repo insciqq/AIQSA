@@ -60,11 +60,12 @@ export const MEMORY_CHAT_DIGEST_VERSIONS: MemoryExecutionVersions = Object.freez
   promptVersion: MEMORY_CHAT_DIGEST_PROMPT_VERSION,
   retrievalConfigFingerprint: memoryExecutionSha256({
     incrementalDepth: MAX_INCREMENTAL_DEPTH,
+    incrementalUpdate: "fold-delta-segments-then-merge-once",
     maxCharactersPerSegment: MAX_SOURCE_CHARACTERS_PER_SEGMENT,
     maxChunksPerSegment: MAX_SOURCE_CHUNKS_PER_SEGMENT,
     maxReductionSegments: MAX_REDUCTION_SEGMENTS,
     source: "classified-safe-history-chunks",
-    version: 4
+    version: 5
   }),
   schemaVersion: MEMORY_CHAT_DIGEST_SCHEMA_VERSION
 });
@@ -618,16 +619,9 @@ function exactPrefix(
     prefix.every((value, index) => values[index] === value);
 }
 
-function chunksFitOneSegment(
-  chunks: readonly MemoryHistoryPreparedChunk[]
-): boolean {
-  return chunks.length > 0 &&
-    chunks.length <= MAX_SOURCE_CHUNKS_PER_SEGMENT &&
-    chunks.every(validSourceChunk) &&
-    chunks.reduce((sum, chunk) => sum + chunk.safeProjectedText.length, 0) <=
-      MAX_SOURCE_CHARACTERS_PER_SEGMENT;
-}
-
+/** A proven prefix is folded, never rebuilt, whatever the delta's size: one
+ * update is one incremental depth. A full rebuild remains for a changed
+ * prefix, an invalid previous digest and an exhausted depth. */
 export function planMemoryChatDigestUpdate(input: Readonly<{
   chunks: readonly MemoryHistoryPreparedChunk[];
   previous: Readonly<{
@@ -677,7 +671,7 @@ export function planMemoryChatDigestUpdate(input: Readonly<{
   if (
     prefixProven &&
     previous.incrementalDepth < MAX_INCREMENTAL_DEPTH &&
-    chunksFitOneSegment(delta)
+    delta.every(validSourceChunk)
   ) {
     return Object.freeze({
       delta: Object.freeze(delta),
@@ -692,60 +686,145 @@ export function planMemoryChatDigestUpdate(input: Readonly<{
   });
 }
 
-export async function buildHierarchicalMemoryChatDigest(
-  chunks: readonly MemoryHistoryPreparedChunk[],
-  inputFingerprint: string,
-  timeZone: string,
-  execute: (
-    request: ProviderStructuredOutputRequest,
-    inputIdentity: unknown
-  ) => Promise<MemoryChatDigestContent>
-): Promise<Readonly<{
+/** `inputIdentity` keys a call's retained result. It is deterministic and
+ * distinct within the job, so reuse and a restarted attempt find exactly that
+ * call's answer. */
+type MemoryChatDigestExecute = (
+  request: ProviderStructuredOutputRequest,
+  inputIdentity: unknown
+) => Promise<MemoryChatDigestContent>;
+
+type MemoryChatDigestBuild = Readonly<{
   content: MemoryChatDigestContent;
   segmentsProcessed: number;
-}>> {
-  if (!sha256Pattern.test(inputFingerprint) || chunks.length === 0) {
-    throw new MemoryChatDigestError("memory_chat_digest_invalid");
-  }
-  let segmentsProcessed = 0;
-  let level: MemoryChatDigestContent[] = [];
-  for (const segment of partitionMemoryChatDigestSourceChunks(chunks)) {
+}>;
+
+async function digestSegments(
+  segments: readonly (readonly MemoryHistoryPreparedChunk[])[],
+  identity: Readonly<Record<string, unknown>>,
+  timeZone: string,
+  execute: MemoryChatDigestExecute
+): Promise<MemoryChatDigestContent[]> {
+  const level: MemoryChatDigestContent[] = [];
+  for (const segment of segments) {
     level.push(await execute(buildMemoryChatDigestRequest(segment, timeZone), {
+      ...identity,
       chunks: segment.map((chunk) => ({
         contentHash: chunk.contentHash,
         id: chunk.id
       })),
-      inputFingerprint,
-      level: 0,
-      timeZone
+      level: 0
     }));
-    segmentsProcessed += 1;
   }
-  let levelOrdinal = 1;
-  while (level.length > 1) {
+  return level;
+}
+
+/** Reduces chronological digests, at most MAX_REDUCTION_SEGMENTS per call,
+ * until no more than `target` remain; a trailing single digest passes up. A
+ * group's position is part of its identity: equal answers for two groups must
+ * not share one retained result. */
+async function reduceDigests(
+  digests: readonly MemoryChatDigestContent[],
+  target: number,
+  identity: Readonly<Record<string, unknown>>,
+  timeZone: string,
+  execute: MemoryChatDigestExecute
+): Promise<Readonly<{ calls: number; digests: readonly MemoryChatDigestContent[] }>> {
+  let level = digests;
+  let calls = 0;
+  for (let levelOrdinal = 1; level.length > target; levelOrdinal += 1) {
     const next: MemoryChatDigestContent[] = [];
     for (let index = 0; index < level.length; index += MAX_REDUCTION_SEGMENTS) {
       const group = level.slice(index, index + MAX_REDUCTION_SEGMENTS);
       if (group.length === 1) {
         next.push(group[0]!);
-      } else {
-        next.push(await execute(buildMemoryChatDigestReductionRequest(group, timeZone), {
-          group,
-          inputFingerprint,
-          level: levelOrdinal,
-          timeZone
-        }));
-        segmentsProcessed += 1;
+        continue;
       }
+      next.push(await execute(buildMemoryChatDigestReductionRequest(group, timeZone), {
+        ...identity,
+        group,
+        index,
+        level: levelOrdinal
+      }));
+      calls += 1;
     }
     level = next;
-    levelOrdinal += 1;
   }
-  const content = level[0];
+  return Object.freeze({ calls, digests: level });
+}
+
+export async function buildHierarchicalMemoryChatDigest(
+  chunks: readonly MemoryHistoryPreparedChunk[],
+  inputFingerprint: string,
+  timeZone: string,
+  execute: MemoryChatDigestExecute
+): Promise<MemoryChatDigestBuild> {
+  if (!sha256Pattern.test(inputFingerprint) || chunks.length === 0) {
+    throw new MemoryChatDigestError("memory_chat_digest_invalid");
+  }
+  const identity = { inputFingerprint, timeZone };
+  const segments = partitionMemoryChatDigestSourceChunks(chunks);
+  const reduced = await reduceDigests(
+    await digestSegments(segments, identity, timeZone, execute),
+    1,
+    identity,
+    timeZone,
+    execute
+  );
+  const content = reduced.digests[0];
   if (!content) {
     throw new MemoryChatDigestError("memory_chat_digest_invalid");
   }
-  return Object.freeze({ content, segmentsProcessed });
+  return Object.freeze({
+    content,
+    segmentsProcessed: segments.length + reduced.calls
+  });
+}
+
+/** Folds the delta behind a proven prefix into the previous digest. A delta
+ * that fits one segment is merged by one incremental call. A larger one is
+ * summarized per segment and reduced to at most two digests, which one final
+ * reduction merges after the previous digest: n delta segments cost n + about
+ * n/2 + 1 calls whatever the chat's length, and the previous digest is
+ * rewritten once, so the update costs one incremental depth. Chaining one
+ * incremental call per segment would save the reductions but spend n depths:
+ * a long chat would pay its full rebuild n times as often and its running
+ * digest would drift n times per update. */
+export async function foldMemoryChatDigestDelta(
+  previous: MemoryChatDigestContent,
+  delta: readonly MemoryHistoryPreparedChunk[],
+  inputFingerprint: string,
+  timeZone: string,
+  execute: MemoryChatDigestExecute
+): Promise<MemoryChatDigestBuild> {
+  if (!sha256Pattern.test(inputFingerprint) || delta.length === 0) {
+    throw new MemoryChatDigestError("memory_chat_digest_invalid");
+  }
+  const segments = partitionMemoryChatDigestSourceChunks(delta);
+  if (segments.length === 1) {
+    const content = await execute(
+      buildIncrementalMemoryChatDigestRequest(renderDigest(previous), delta, timeZone),
+      { inputFingerprint, mode: "INCREMENTAL" }
+    );
+    return Object.freeze({ content, segmentsProcessed: 1 });
+  }
+  const identity = { inputFingerprint, mode: "INCREMENTAL_FOLD", timeZone };
+  const reduced = await reduceDigests(
+    await digestSegments(segments, identity, timeZone, execute),
+    MAX_REDUCTION_SEGMENTS - 1,
+    identity,
+    timeZone,
+    execute
+  );
+  const merged = [previous, ...reduced.digests];
+  const content = await execute(
+    buildMemoryChatDigestReductionRequest(merged, timeZone),
+    { ...identity, group: merged, merge: true }
+  );
+  return Object.freeze({
+    content,
+    segmentsProcessed: segments.length + reduced.calls + 1
+  });
 }
 
 export function createPrismaMemoryChatDigestGenerator(
@@ -937,19 +1016,19 @@ export function createPrismaMemoryChatDigestGenerator(
             sourceFingerprint,
             timeZone
           });
-          const content = await execute(
-            buildIncrementalMemoryChatDigestRequest(
-              previous.safeDigestText,
-              delta,
-              timeZone
-            ),
-            { inputFingerprint, mode: "INCREMENTAL" }
+          // previousContent renders exactly previous.safeDigestText (checked above).
+          const folded = await foldMemoryChatDigestDelta(
+            previousContent,
+            delta,
+            inputFingerprint,
+            timeZone,
+            execute
           );
           return {
             classificationRequired: true,
             digest: materializeMemoryChatDigest({
               chunks: eligible,
-              content,
+              content: folded.content,
               incrementalDepth: previous.incrementalDepth + 1,
               inputFingerprint,
               source,
@@ -960,7 +1039,7 @@ export function createPrismaMemoryChatDigestGenerator(
             executions: Object.freeze(executions),
             policyVersion: MEMORY_CHAT_DIGEST_POLICY_VERSION,
             work: {
-              digestSegmentsProcessed: executions.length,
+              digestSegmentsProcessed: folded.segmentsProcessed,
               digestSourceChunksProcessed: delta.length
             }
           };

@@ -1,20 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderStructuredOutputRequest } from "../../providers/structuredOutput";
+import { MemoryJobFencedError } from "../coordinator/errors";
+import { memoryExecutionSha256 } from "../execution/canonical";
 import { MEMORY_OUTPUT_DECODE_REASONS } from "../execution/outputViolation";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
 import {
   MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
+  type MemoryHistoryDigestPlan,
   type MemoryHistoryIndexSourceIdentity,
   type MemoryHistoryPreparedChunk
 } from "./contract";
 import {
   type MemoryChatDigestContent,
+  MEMORY_CHAT_DIGEST_VERSIONS,
   MemoryChatDigestOutputError,
   buildHierarchicalMemoryChatDigest,
   buildIncrementalMemoryChatDigestRequest,
   buildMemoryChatDigestRequest,
   createPrismaMemoryChatDigestGenerator,
   decodeMemoryChatDigest,
+  foldMemoryChatDigestDelta,
   materializeMemoryChatDigest,
   memoryChatDigestSourceFingerprint,
   memoryChatDigestRetryFeedback,
@@ -28,6 +33,22 @@ const governed = vi.hoisted(() => vi.fn());
 vi.mock("../execution", async (importOriginal) => ({
   ...await importOriginal<typeof import("../execution")>(),
   executeGovernedMemoryStructuredOutput: governed
+}));
+// Restoring a retained result reauthorizes its binding in a locked
+// transaction. Here only the owner check runs; the binding store is faked.
+vi.mock("../execution/lifecycle", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../execution/lifecycle")>(),
+  createPrismaMemoryExecutionLifecycle: () => ({
+    withAuthorizedResultCommit: (
+      _userId: string,
+      result: Readonly<{ bindingId: string }>,
+      apply: (tx: unknown, evidence: unknown) => Promise<unknown>
+    ) => apply({}, {
+      bindingId: result.bindingId,
+      owner: { memoryJobId: "job-digest", type: "JOB" },
+      settings: {}
+    })
+  })
 }));
 
 function expectDigestOutputInvalid(
@@ -415,6 +436,101 @@ describe("Memory chat digests", () => {
     expect(memoryChatDigestSourceFingerprint(current, "UTC"))
       .not.toBe(memoryChatDigestSourceFingerprint(current, "Europe/Moscow"));
   });
+
+  it("folds a delta of several segments behind a proven prefix up to the depth limit", () => {
+    const current = Array.from({ length: 120 }, (_, ordinal) => chunk(ordinal));
+    const prefix = current.slice(0, 48);
+    const previous = {
+      chunkIds: prefix.map(({ id }) => id),
+      incrementalDepth: 30,
+      sourceFingerprint: memoryChatDigestSourceFingerprint(prefix, "UTC")
+    };
+
+    const folded = planMemoryChatDigestUpdate({ chunks: current, previous, timeZone: "UTC" });
+    expect(folded.mode).toBe("INCREMENTAL");
+    expect(folded.delta.map(({ id }) => id)).toEqual(current.slice(48).map(({ id }) => id));
+    expect(partitionMemoryChatDigestSourceChunks(folded.delta)).toHaveLength(3);
+    // One more update would exceed the depth limit.
+    expect(planMemoryChatDigestUpdate({
+      chunks: current, previous: { ...previous, incrementalDepth: 31 }, timeZone: "UTC"
+    }).mode).toBe("FULL_REBUILD");
+    // A prefix chunk whose content changed under the same id is not folded over.
+    expect(planMemoryChatDigestUpdate({
+      chunks: current.map((candidate, ordinal) =>
+        ordinal === 47 ? { ...candidate, contentHash: "e".repeat(64) } : candidate),
+      previous,
+      timeZone: "UTC"
+    }).mode).toBe("FULL_REBUILD");
+  });
+});
+
+describe("Memory chat digest incremental fold", () => {
+  const previous = decodeMemoryChatDigest({
+    decisions: ["Keep the earlier plan"],
+    open_loops: [],
+    summary: "The earlier chat set a plan.",
+    topics: ["Earlier plan"]
+  });
+  const previousText = materializeMemoryChatDigest({
+    chunks: [chunk(0)], content: previous, source, timeZone: "UTC"
+  }).safeDigestText;
+
+  function recordingExecute() {
+    const calls: Array<{ identity: string; input: Record<string, unknown> }> = [];
+    const execute = async (request: ProviderStructuredOutputRequest, identity: unknown) => {
+      calls.push({ identity: memoryExecutionSha256(identity), input: JSON.parse(request.userPrompt) });
+      return decodeMemoryChatDigest({
+        decisions: [], open_loops: [], summary: `Answer ${calls.length}.`, topics: []
+      });
+    };
+    return { calls, execute };
+  }
+
+  const segment = (count: number) => Array<string>(count).fill("segment");
+  it.each([
+    [1, ["incremental"]],
+    [2, [...segment(2), "reduce"]],
+    [3, [...segment(3), "reduce", "reduce"]],
+    [4, [...segment(4), "reduce", "reduce"]],
+    [7, [...segment(7), "reduce", "reduce", "reduce", "reduce"]]
+  ])("folds %i delta segments and rewrites the previous digest once", async (segments, operations) => {
+    // 24 short chunks fill one segment.
+    const delta = Array.from({ length: segments * 24 }, (_, ordinal) => chunk(100 + ordinal));
+    const first = recordingExecute();
+    const folded = await foldMemoryChatDigestDelta(previous, delta, "f".repeat(64), "UTC", first.execute);
+
+    expect(first.calls.map(({ input }) => input.operation)).toEqual(operations);
+    expect(folded).toEqual({ content: expect.objectContaining({ summary: `Answer ${operations.length}.` }),
+      segmentsProcessed: operations.length });
+    // Only the final call carries the previous digest, as its oldest input.
+    expect(first.calls.filter(({ input }) => JSON.stringify(input).includes("The earlier chat set a plan.")))
+      .toEqual([first.calls.at(-1)]);
+    const last = first.calls.at(-1)!.input;
+    expect(segments === 1
+      ? last.previous_digest
+      : (last.segment_digests as Array<{ text: string }>)[0]!.text).toBe(previousText);
+    // Each call has its own identity, and a restarted fold derives the same ones.
+    expect(new Set(first.calls.map(({ identity }) => identity)).size).toBe(operations.length);
+    const restarted = recordingExecute();
+    await foldMemoryChatDigestDelta(previous, delta, "f".repeat(64), "UTC", restarted.execute);
+    expect(restarted.calls.map(({ identity }) => identity))
+      .toEqual(first.calls.map(({ identity }) => identity));
+  });
+
+  it("gives every rebuild and fold call its own identity even when answers repeat", async () => {
+    const identities: string[] = [];
+    const repeat = async (_request: ProviderStructuredOutputRequest, identity: unknown) => {
+      identities.push(memoryExecutionSha256(identity));
+      return previous;
+    };
+    // Seven segments: two reduction groups of the same level get equal inputs.
+    const chunks = Array.from({ length: 7 * 24 }, (_, ordinal) => chunk(100 + ordinal));
+    const rebuilt = await buildHierarchicalMemoryChatDigest(chunks, "e".repeat(64), "UTC", repeat);
+    const folded = await foldMemoryChatDigestDelta(previous, chunks, "f".repeat(64), "UTC", repeat);
+
+    expect([rebuilt.segmentsProcessed, folded.segmentsProcessed]).toEqual([10, 11]);
+    expect(new Set(identities).size).toBe(21);
+  });
 });
 
 describe("Memory chat digest aggregate fit", () => {
@@ -593,5 +709,194 @@ describe("Memory chat digest dispatch", () => {
     expect(new MemoryChatDigestOutputError("aggregate_limit").decodeReason).toBe("digest_aggregate_limit");
     expect(new MemoryChatDigestOutputError("safety_rejected").decodeReason).toBe("digest_safety_rejected");
     expect(new MemoryChatDigestOutputError("contract").decodeReason).toBe("digest_contract");
+  });
+});
+
+describe("Memory chat digest fold dispatch", () => {
+  type Dispatch = Readonly<{
+    decode(value: unknown): MemoryChatDigestContent;
+    inputHash: string;
+    ordinal: number;
+    request: ProviderStructuredOutputRequest;
+  }>;
+  type Stored = Readonly<{ digest: MemoryHistoryDigestPlan; source: MemoryHistoryIndexSourceIdentity }>;
+
+  const sourceAt = (turn: number): MemoryHistoryIndexSourceIdentity =>
+    ({ ...source, activeLeafMessageId: `assistant-${turn}`, sourceRevision: 100 + turn });
+  const earlier = decodeMemoryChatDigest({
+    decisions: ["Keep the earlier plan"], open_loops: [], summary: "The earlier chat set a plan.", topics: []
+  });
+
+  /** Fakes the chat's stored digest, the job's currency check and its binding
+   * store: each settled call keeps its answer under its input hash. */
+  function digestJob(current: (check: number) => boolean = () => true) {
+    let stored: Stored | null = null;
+    let checks = 0;
+    let highestOrdinal: number | null = null;
+    const bindings = new Map<string, Readonly<Record<string, unknown>>>();
+    const retained = new Map<string, unknown>();
+    const dispatched: Array<Readonly<{ input: Record<string, unknown>; inputHash: string }>> = [];
+    const client = {
+      $queryRaw: vi.fn(async () => current(++checks) ? [{ id: "job-digest" }] : []),
+      chatMemoryDigest: {
+        findFirst: vi.fn(async () => stored && {
+          activeLeafMessageId: stored.source.activeLeafMessageId,
+          branchGeneration: stored.source.branchGeneration,
+          contentHash: stored.digest.contentHash,
+          decisions: [...stored.digest.decisions],
+          id: stored.digest.id,
+          incrementalDepth: stored.digest.incrementalDepth,
+          inputFingerprint: stored.digest.inputFingerprint,
+          openLoops: [...stored.digest.openLoops],
+          rebuildPolicyVersion: stored.digest.rebuildPolicyVersion,
+          redactionState: stored.digest.redactionState,
+          safeDigestText: stored.digest.safeDigestText,
+          safetyClass: "NORMAL",
+          safetyPolicyVersion: "digest-policy:classifier-policy",
+          sourceContentHash: stored.source.sourceHash,
+          sourceFingerprint: stored.digest.sourceFingerprint,
+          sourceRevisionAtCreation: stored.source.sourceRevision,
+          summary: stored.digest.summary,
+          topics: [...stored.digest.topics],
+          updateMode: stored.digest.updateMode
+        })
+      },
+      chatMemoryDigestChunk: {
+        findMany: vi.fn(async () => (stored?.digest.sourceChunkIds ?? []).map((chunkId) => ({ chunkId })))
+      },
+      memoryExecutionBinding: {
+        aggregate: vi.fn(async () => ({ _max: { ordinal: highestOrdinal } })),
+        findMany: vi.fn(async (query: { where: { inputHash: string } }) => {
+          const binding = bindings.get(query.where.inputHash);
+          return binding ? [binding] : [];
+        })
+      },
+      memoryHistoryExecution: {
+        findFirst: vi.fn(async (query: { where: { executionBindingId: string } }) =>
+          retained.has(query.where.executionBindingId)
+            ? { acceptedOutput: retained.get(query.where.executionBindingId) }
+            : null)
+      },
+      memoryJob: { findFirst: vi.fn(async () => null) }
+    };
+    governed.mockReset();
+    governed.mockImplementation(async (call: Dispatch) => {
+      dispatched.push({ input: JSON.parse(call.request.userPrompt), inputHash: call.inputHash });
+      const value = call.decode({
+        decisions: [], open_loops: [], summary: `Answer ${dispatched.length}.`, topics: []
+      });
+      const acceptedOutputHash = memoryExecutionSha256({
+        inputHash: call.inputHash, output: value, role: "MEMORY_HISTORY_CLASSIFY", version: 1
+      });
+      const bindingId = `binding-${call.ordinal}`;
+      highestOrdinal = call.ordinal;
+      bindings.set(call.inputHash, {
+        ...MEMORY_CHAT_DIGEST_VERSIONS, acceptedOutputHash, completedAt: new Date(),
+        errorCode: null, id: bindingId, state: "SUCCEEDED"
+      });
+      retained.set(bindingId, JSON.parse(JSON.stringify(value)));
+      return { acceptedOutputHash, bindingId, value };
+    });
+    const generator = createPrismaMemoryChatDigestGenerator(client as never, {
+      provider: { run: vi.fn() } as never
+    });
+    return {
+      client,
+      dispatched,
+      generate: (turn: number, chunks: readonly MemoryHistoryPreparedChunk[], recoveryOnly = false) =>
+        generator.generate(sourceAt(turn), chunks, {
+          jobId: "job-digest", recoveryOnly, signal: new AbortController().signal,
+          timeZone: "UTC", userId: source.userId
+        }),
+      operations: () => dispatched.map(({ input }) => input.operation),
+      seed: (digest: MemoryHistoryDigestPlan, turn: number) => {
+        stored = { digest, source: sourceAt(turn) };
+      }
+    };
+  }
+
+  /** A stored digest over 24 short chunks, and the chat grown by three segments. */
+  function grownChat(job: ReturnType<typeof digestJob>): MemoryHistoryPreparedChunk[] {
+    const prefix = Array.from({ length: 24 }, (_, ordinal) => chunk(ordinal));
+    job.seed(materializeMemoryChatDigest({
+      chunks: prefix, content: earlier, source: sourceAt(0), timeZone: "UTC"
+    }), 0);
+    return [...prefix, ...Array.from({ length: 72 }, (_, ordinal) => chunk(24 + ordinal))];
+  }
+
+  // Two of these fill one 9,000-character segment: three are two segments.
+  function turnChunks(turn: number): MemoryHistoryPreparedChunk[] {
+    return [0, 1, 2].map((part) => {
+      const text = `User: Turn ${turn} part ${part}. ${"detail ".repeat(490)}\n\nAssistant: noted.`;
+      return chunk(turn * 3 + part, {
+        normalizedSafeSearchText: text.toLocaleLowerCase("und"),
+        providerSafeText: text,
+        safeProjectedText: text
+      });
+    });
+  }
+
+  it("folds every turn of a growing chat at a cost set by its delta until the depth limit", async () => {
+    const job = digestJob();
+    let chunks = turnChunks(0);
+    let previous = (await job.generate(0, chunks)).digest!;
+    expect(previous).toMatchObject({ incrementalDepth: 0, updateMode: "FULL_REBUILD" });
+    job.seed(previous, 0);
+
+    for (let turn = 1; turn <= 31; turn += 1) {
+      job.dispatched.length = 0;
+      chunks = [...chunks, ...turnChunks(turn)];
+      const generated = await job.generate(turn, chunks);
+      expect(generated.digest).toMatchObject({ incrementalDepth: turn, updateMode: "INCREMENTAL" });
+      // However long the chat: its two new segments, then one merge that
+      // carries the previous digest. Earlier turns are never sent again.
+      expect(job.operations()).toEqual(["segment", "segment", "reduce"]);
+      expect(generated.work).toEqual({ digestSegmentsProcessed: 3, digestSourceChunksProcessed: 3 });
+      const excerpts = job.dispatched.flatMap(({ input }) =>
+        (input.excerpts as Array<{ text: string }> | undefined) ?? []);
+      expect(excerpts.map(({ text }) => text.startsWith(`User: Turn ${turn} `))).toEqual([true, true, true]);
+      expect((job.dispatched[2]!.input.segment_digests as Array<{ text: string }>)[0]!.text)
+        .toBe(previous.safeDigestText);
+      previous = generated.digest!;
+      job.seed(previous, turn);
+    }
+
+    job.dispatched.length = 0;
+    chunks = [...chunks, ...turnChunks(32)];
+    const rebuilt = await job.generate(32, chunks);
+    expect(rebuilt.digest).toMatchObject({ incrementalDepth: 0, updateMode: "FULL_REBUILD" });
+    expect(job.operations().filter((operation) => operation === "segment"))
+      .toHaveLength(partitionMemoryChatDigestSourceChunks(chunks).length);
+    expect(rebuilt.work.digestSegmentsProcessed).toBe(job.dispatched.length);
+  });
+
+  it("dispatches nothing more once the job is superseded between fold calls", async () => {
+    const job = digestJob((check) => check <= 2);
+    const failure = await job.generate(1, grownChat(job)).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(MemoryJobFencedError);
+    expect(failure).toMatchObject({ code: "memory_history_job_invalid", decision: { status: "STALE" } });
+    // Two of five fold calls ran; the third found the job no longer current.
+    expect(job.dispatched).toHaveLength(2);
+    expect(job.client.$queryRaw).toHaveBeenCalledTimes(3);
+  });
+
+  it("restores every fold call of a restarted job from its retained result", async () => {
+    const job = digestJob();
+    const chunks = grownChat(job);
+    const first = await job.generate(1, chunks);
+    const inputHashes = job.dispatched.map(({ inputHash }) => inputHash);
+    expect(job.operations()).toEqual(["segment", "segment", "segment", "reduce", "reduce"]);
+    expect(new Set(inputHashes).size).toBe(5);
+
+    governed.mockClear();
+    job.client.memoryExecutionBinding.findMany.mockClear();
+    const restarted = await job.generate(1, chunks, true);
+
+    expect(governed).not.toHaveBeenCalled();
+    expect(job.client.memoryExecutionBinding.findMany.mock.calls.map(([query]) => query.where.inputHash))
+      .toEqual(inputHashes);
+    expect(restarted).toEqual(first);
+    expect(first.digest).toMatchObject({ incrementalDepth: 1, updateMode: "INCREMENTAL" });
   });
 });
