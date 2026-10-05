@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   pruneRetention,
+  runObjectDeletionPass,
   type AttachmentDeletionClaim,
   type RetentionRepository
 } from "./prune";
@@ -325,4 +326,146 @@ describe("retention prune rules", () => {
     }]);
   });
 
+});
+
+function deletionClaim(id: string, multipartUploadId: string | null = null): AttachmentDeletionClaim {
+  return { claimToken: `token-${id}`, id, multipartUploadId, storageKey: `private/user/${id}` };
+}
+
+function passRepository(batches: AttachmentDeletionClaim[][]) {
+  const calls: string[] = [];
+  const claimInputs: Array<{ claimableBefore: Date; limit: number; now: Date }> = [];
+  const repository = {
+    async claimAttachmentDeletionJobs(input: { claimableBefore: Date; limit: number; now: Date }) {
+      claimInputs.push(input);
+      calls.push("claim");
+      return batches.shift() ?? [];
+    },
+    async completeAttachmentDeletionJob({ id }: { claimToken: string; id: string }) {
+      calls.push(`complete:${id}`);
+      return true;
+    },
+    async finalizeKnowledgeDeletionJobs() {
+      calls.push("finalize-knowledge-deletions");
+      return 1;
+    },
+    async releaseAttachmentDeletionJob({ errorCode, id }: {
+      claimToken: string;
+      errorCode: "object_delete_failed";
+      id: string;
+      now: Date;
+    }) {
+      calls.push(`release:${id}:${errorCode}`);
+      return true;
+    }
+  };
+  return { batches, calls, claimInputs, repository };
+}
+
+describe("background object deletion pass", () => {
+  const now = new Date("2026-10-05T12:00:00.000Z");
+
+  it("drains due jobs in small leased batches and settles waiting Knowledge deletions once", async () => {
+    const state = passRepository([
+      [deletionClaim("a"), deletionClaim("b")],
+      [deletionClaim("c"), deletionClaim("d")],
+      [deletionClaim("e")]
+    ]);
+    const deleted: string[] = [];
+
+    const summary = await runObjectDeletionPass({
+      batchSize: 2,
+      maxBatches: 5,
+      now: () => now,
+      repository: state.repository,
+      storage: { async deleteObject(storageKey) { deleted.push(storageKey); } }
+    });
+
+    expect(summary).toEqual({ batches: 3, claimed: 5, completed: 5, failed: 0, knowledgeJobsFinalized: 1 });
+    expect(deleted).toEqual(["a", "b", "c", "d", "e"].map((id) => `private/user/${id}`));
+    expect(state.claimInputs).toEqual(Array.from({ length: 3 }, () => ({
+      claimableBefore: new Date(now.getTime() - 15 * 60 * 1000),
+      limit: 2,
+      now
+    })));
+    expect(state.calls.filter((call) => call === "finalize-knowledge-deletions")).toHaveLength(1);
+    expect(state.calls.at(-1)).toBe("finalize-knowledge-deletions");
+  });
+
+  it("bounds one pass while due work remains for the next", async () => {
+    const state = passRepository([
+      [deletionClaim("a"), deletionClaim("b")],
+      [deletionClaim("c"), deletionClaim("d")],
+      [deletionClaim("e"), deletionClaim("f")]
+    ]);
+
+    const summary = await runObjectDeletionPass({
+      batchSize: 2,
+      maxBatches: 2,
+      repository: state.repository,
+      storage: { async deleteObject() {} }
+    });
+
+    expect(summary).toMatchObject({ batches: 2, claimed: 4, completed: 4 });
+    expect(state.batches).toEqual([[deletionClaim("e"), deletionClaim("f")]]);
+  });
+
+  it("releases a failed deletion, ends the pass and keeps the summary content-free", async () => {
+    const state = passRepository([
+      [deletionClaim("broken"), deletionClaim("multipart", "upload-1")],
+      [deletionClaim("later")]
+    ]);
+
+    const summary = await runObjectDeletionPass({
+      batchSize: 2,
+      repository: state.repository,
+      storage: {
+        async deleteObject(storageKey) {
+          if (storageKey.endsWith("broken")) throw new Error(`storage failed for ${storageKey}`);
+        }
+      }
+    });
+
+    expect(summary).toEqual({ batches: 1, claimed: 2, completed: 0, failed: 2, knowledgeJobsFinalized: 0 });
+    // Without an abort adapter a recorded multipart upload is never orphaned by deleting only its key.
+    expect(state.calls).toEqual([
+      "claim",
+      "release:broken:object_delete_failed",
+      "release:multipart:object_delete_failed"
+    ]);
+    expect(state.batches).toEqual([[deletionClaim("later")]]);
+    expect(JSON.stringify(summary)).not.toMatch(/private|storage failed/u);
+  });
+
+  it("aborts a recorded multipart upload before deleting its object", async () => {
+    const state = passRepository([[deletionClaim("multipart", "upload-1")]]);
+    const operations: string[] = [];
+
+    await expect(runObjectDeletionPass({
+      repository: state.repository,
+      storage: {
+        async deleteObject(storageKey) { operations.push(`delete:${storageKey}`); },
+        directMultipartUpload: {
+          async abortMultipartUpload({ storageKey, uploadId }) { operations.push(`abort:${storageKey}:${uploadId}`); },
+          async completeMultipartUpload() {},
+          async createMultipartUpload() { return { uploadId: "unused" }; },
+          async presignMultipartPart() { return "https://storage.example.test/unused"; }
+        }
+      }
+    })).resolves.toMatchObject({ claimed: 1, completed: 1, failed: 0 });
+    expect(operations).toEqual(["abort:private/user/multipart:upload-1", "delete:private/user/multipart"]);
+  });
+
+  it("claims nothing once its worker is stopping", async () => {
+    const state = passRepository([[deletionClaim("a")]]);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(runObjectDeletionPass({
+      repository: state.repository,
+      signal: controller.signal,
+      storage: { async deleteObject() {} }
+    })).resolves.toEqual({ batches: 0, claimed: 0, completed: 0, failed: 0, knowledgeJobsFinalized: 0 });
+    expect(state.calls).toEqual([]);
+  });
 });

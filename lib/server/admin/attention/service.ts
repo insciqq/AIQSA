@@ -293,6 +293,8 @@ function knowledgeAlertLine(
       return `${plural(operations.ingestion.failedArtifacts, "document")} need reprocessing`;
     case "knowledge_ingestion_queue_stalled":
       return "document processing is stalled";
+    case "knowledge_object_deletion_stalled":
+      return `${plural(operations.deletion.unclaimedObjects, "file")} waiting for deletion`;
     case "knowledge_retrieval_degraded":
       return "retrieval was degraded in the last 24 hours";
     case "knowledge_search_backend_unavailable":

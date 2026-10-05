@@ -298,8 +298,210 @@ function positiveInteger(value: number | undefined, fallback: number): number {
   return Number.isInteger(value) && value !== undefined && value > 0 ? value : fallback;
 }
 
-function deletionJobClaimableBefore(now: Date, leaseMinutes: number): Date {
+export function deletionJobClaimableBefore(
+  now: Date,
+  leaseMinutes = DEFAULT_DELETION_JOB_LEASE_MINUTES
+): Date {
   return new Date(now.getTime() - leaseMinutes * 60 * 1000);
+}
+
+/**
+ * Whether the `"AttachmentDeletionJob" AS job` row is due: no live claim and no
+ * reference that still protects its private object. Claims, the prune dry run
+ * and operational health share this one predicate.
+ */
+export function dueAttachmentDeletionJobSql(input: Readonly<{
+  claimableBefore: Date;
+  now: Date;
+}>): Prisma.Sql {
+  const { claimableBefore, now } = input;
+  const artifactWriteCutoff = new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS);
+  return Prisma.sql`((job."claimedAt" IS NULL OR job."claimedAt" < ${claimableBefore})
+    AND NOT EXISTS (
+      SELECT 1 FROM "Attachment" AS attachment
+      WHERE attachment."storageKey" = job."storageKey"
+      UNION ALL SELECT 1 FROM "ChatPdfArtifact" AS pdf_artifact
+      WHERE pdf_artifact."storageKey" = job."storageKey"
+      UNION ALL SELECT 1 FROM "SkillRevisionFile" AS skill_file
+      WHERE skill_file."storageKey" = job."storageKey"
+      UNION ALL SELECT 1 FROM "ToolObservation" AS observation
+      WHERE observation."storageKey" = job."storageKey" AND (
+        observation."state" = 'READY' OR
+        (observation."state" = 'STORING' AND observation."leaseExpiresAt" > ${now})
+      )
+      UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
+      WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
+      UNION ALL SELECT 1 FROM "WorkspaceCapturedFile" AS captured_file
+      JOIN "WorkspaceSelectedCapture" AS capture ON capture."id" = captured_file."captureId"
+      WHERE captured_file."storageKey" = job."storageKey" AND (
+        (captured_file."storageState" = 'STORING' AND captured_file."storageLeaseExpiresAt" > ${now})
+        OR (captured_file."storageState" = 'READY' AND capture."state" = 'CAPTURED' AND EXISTS (
+          SELECT 1 FROM "WorkspaceCaptureReference" reference
+          WHERE reference."captureId" = capture."id" AND reference."releasedAt" IS NULL
+        ))
+        OR EXISTS (SELECT 1 FROM "WorkspaceCaptureReadLease" lease
+          WHERE lease."captureId" = capture."id" AND lease."expiresAt" > ${now})
+      )
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM "KnowledgeDocumentVersion" AS version
+      WHERE version."originalStorageKey" = job."storageKey"
+        OR version."normalizedTextStorageKey" = job."storageKey"
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM "KnowledgeSourceVersion" AS version
+      WHERE version."originalStorageKey" = job."storageKey"
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM "KnowledgeSourceIndexArtifact" AS artifact
+      WHERE artifact."normalizedTextStorageKey" = job."storageKey"
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM "KnowledgeUploadItem" AS upload
+      WHERE upload."storageKey" = job."storageKey"
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM "ArtifactBlob" AS blob JOIN "ArtifactVersionBlob" AS reference ON reference."blobId" = blob."id"
+      JOIN "ArtifactVersion" AS blob_version ON blob_version."id" = reference."versionId"
+      WHERE blob."storageKey" = job."storageKey"
+        AND (blob_version."status" = 'READY' OR (blob_version."status" = 'PENDING' AND blob_version."createdAt" > ${artifactWriteCutoff}))
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM "ArtifactRender" AS render WHERE render."renderedStorageKey" = job."storageKey"
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM "ArtifactVersion" AS version
+      JOIN "Artifact" AS artifact ON artifact."id" = version."artifactId"
+      WHERE version."bundleStorageKey" = job."storageKey"
+        AND (version."status" = 'READY' OR (version."status" = 'PENDING' AND version."createdAt" > ${artifactWriteCutoff}))
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM "ArtifactPublication" AS publication
+      WHERE publication."bundleStorageKey" = job."storageKey"
+        AND (publication."status" = 'READY' OR (publication."status" = 'PENDING' AND publication."createdAt" > ${artifactWriteCutoff}))
+    ))`;
+}
+
+type AttachmentDeletionStorage = Pick<StorageAdapter, "deleteObject" | "directMultipartUpload">;
+
+export type AttachmentDeletionBatch = Readonly<{
+  claimed: number;
+  completed: number;
+  failedJobIds: readonly string[];
+  objectsDeleted: number;
+}>;
+
+/**
+ * The object-deletion step every drain shares: claim due jobs under a lease,
+ * abort a recorded multipart upload, delete the object and settle the job. A
+ * failure releases the job for a later attempt with a value-free code.
+ */
+export async function processAttachmentDeletionJobs(input: Readonly<{
+  claimableBefore: Date;
+  limit: number;
+  now: Date;
+  repository: Pick<
+    RetentionRepository,
+    "claimAttachmentDeletionJobs" | "completeAttachmentDeletionJob" | "releaseAttachmentDeletionJob"
+  >;
+  storage: AttachmentDeletionStorage;
+}>): Promise<AttachmentDeletionBatch> {
+  const claims = await input.repository.claimAttachmentDeletionJobs({
+    claimableBefore: input.claimableBefore,
+    limit: input.limit,
+    now: input.now
+  });
+  let completed = 0;
+  let objectsDeleted = 0;
+  const failedJobIds: string[] = [];
+  for (const claim of claims) {
+    try {
+      if (claim.multipartUploadId) {
+        if (!input.storage.directMultipartUpload) {
+          throw new Error("multipart_abort_unavailable");
+        }
+        await input.storage.directMultipartUpload.abortMultipartUpload({
+          storageKey: claim.storageKey,
+          uploadId: claim.multipartUploadId
+        });
+      }
+      await input.storage.deleteObject(claim.storageKey);
+      objectsDeleted += 1;
+      if (await input.repository.completeAttachmentDeletionJob({
+        claimToken: claim.claimToken,
+        id: claim.id
+      })) completed += 1;
+    } catch {
+      failedJobIds.push(claim.id);
+      await input.repository.releaseAttachmentDeletionJob({
+        claimToken: claim.claimToken,
+        errorCode: "object_delete_failed",
+        id: claim.id,
+        now: input.now
+      });
+    }
+  }
+  return { claimed: claims.length, completed, failedJobIds, objectsDeleted };
+}
+
+export const OBJECT_DELETION_PASS_BATCH_SIZE = 32;
+export const OBJECT_DELETION_PASS_MAX_BATCHES = 4;
+
+export type ObjectDeletionPassSummary = Readonly<{
+  batches: number;
+  claimed: number;
+  completed: number;
+  failed: number;
+  knowledgeJobsFinalized: number;
+}>;
+
+/**
+ * One bounded background pass over due object-deletion jobs: prune's claim,
+ * reference checks, storage deletion and settlement in small batches, without
+ * the retention staging that stays with `npm run prune`. Claim leases keep it
+ * safe beside a running prune. A batch with a failed deletion ends the pass.
+ */
+export async function runObjectDeletionPass(input: Readonly<{
+  batchSize?: number;
+  maxBatches?: number;
+  now?: () => Date;
+  repository: Pick<
+    RetentionRepository,
+    | "claimAttachmentDeletionJobs"
+    | "completeAttachmentDeletionJob"
+    | "finalizeKnowledgeDeletionJobs"
+    | "releaseAttachmentDeletionJob"
+  >;
+  signal?: AbortSignal;
+  storage: AttachmentDeletionStorage;
+}>): Promise<ObjectDeletionPassSummary> {
+  const batchSize = positiveInteger(input.batchSize, OBJECT_DELETION_PASS_BATCH_SIZE);
+  const maxBatches = positiveInteger(input.maxBatches, OBJECT_DELETION_PASS_MAX_BATCHES);
+  const clock = input.now ?? (() => new Date());
+  let batches = 0;
+  let claimed = 0;
+  let completed = 0;
+  let failed = 0;
+  while (batches < maxBatches && !input.signal?.aborted) {
+    const now = clock();
+    const batch = await processAttachmentDeletionJobs({
+      claimableBefore: deletionJobClaimableBefore(now),
+      limit: batchSize,
+      now,
+      repository: input.repository,
+      storage: input.storage
+    });
+    batches += 1;
+    claimed += batch.claimed;
+    completed += batch.completed;
+    failed += batch.failedJobIds.length;
+    if (batch.failedJobIds.length > 0 || batch.claimed < batchSize) break;
+  }
+  // Knowledge deletions that waited only for these objects settle as in prune.
+  const knowledgeJobsFinalized = completed > 0
+    ? await input.repository.finalizeKnowledgeDeletionJobs({ now: clock() })
+    : 0;
+  return { batches, claimed, completed, failed, knowledgeJobsFinalized };
 }
 
 export async function drainDeletionObligations(input: Readonly<{
@@ -307,7 +509,7 @@ export async function drainDeletionObligations(input: Readonly<{
   deletionJobLeaseMinutes?: number;
   maxPasses?: number;
   repository: RetentionRepository;
-  storage: Pick<StorageAdapter, "deleteObject" | "directMultipartUpload">;
+  storage: AttachmentDeletionStorage;
 }>): Promise<DeletionObligationDrainSummary> {
   const batchSize = positiveInteger(input.batchSize, DEFAULT_PRUNE_BATCH_SIZE);
   const deletionJobLeaseMinutes = positiveInteger(
@@ -336,44 +538,19 @@ export async function drainDeletionObligations(input: Readonly<{
       limit: batchSize,
       now
     });
-    const claims = await input.repository.claimAttachmentDeletionJobs({
+    const objects = await processAttachmentDeletionJobs({
       claimableBefore: deletionJobClaimableBefore(now, deletionJobLeaseMinutes),
       limit: batchSize,
-      now
+      now,
+      repository: input.repository,
+      storage: input.storage
     });
-    let completed = 0;
-    let failed = 0;
-    for (const claim of claims) {
-      try {
-        if (claim.multipartUploadId) {
-          if (!input.storage.directMultipartUpload) {
-            throw new Error("multipart_abort_unavailable");
-          }
-          await input.storage.directMultipartUpload.abortMultipartUpload({
-            storageKey: claim.storageKey,
-            uploadId: claim.multipartUploadId
-          });
-        }
-        await input.storage.deleteObject(claim.storageKey);
-        if (await input.repository.completeAttachmentDeletionJob({
-          claimToken: claim.claimToken,
-          id: claim.id
-        })) completed += 1;
-      } catch {
-        failed += 1;
-        await input.repository.releaseAttachmentDeletionJob({
-          claimToken: claim.claimToken,
-          errorCode: "object_delete_failed",
-          id: claim.id,
-          now
-        });
-      }
-    }
+    const failed = objects.failedJobIds.length;
     const finalized = await input.repository.finalizeKnowledgeDeletionJobs({ now });
     Object.assign(summary, {
       attachmentJobs: {
-        claimed: summary.attachmentJobs.claimed + claims.length,
-        completed: summary.attachmentJobs.completed + completed,
+        claimed: summary.attachmentJobs.claimed + objects.claimed,
+        completed: summary.attachmentJobs.completed + objects.completed,
         failed: summary.attachmentJobs.failed + failed
       },
       knowledgeJobs: {
@@ -389,7 +566,7 @@ export async function drainDeletionObligations(input: Readonly<{
       passes: pass
     });
     if (failed > 0 || knowledge.blocked > 0 || knowledge.failed > 0) return summary;
-    if (knowledge.claimed === 0 && claims.length === 0 && finalized === 0) return summary;
+    if (knowledge.claimed === 0 && objects.claimed === 0 && finalized === 0) return summary;
   }
 
   Object.assign(summary, { exhausted: true });
@@ -566,75 +743,12 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           id: string;
           multipartUploadId: string | null;
           storageKey: string;
-        }>>`
+        }>>(Prisma.sql`
           WITH candidates AS (
             SELECT job."id"
             FROM "AttachmentDeletionJob" AS job
-            WHERE (job."claimedAt" IS NULL OR job."claimedAt" < ${claimableBefore})
-              AND NOT EXISTS (
-                SELECT 1 FROM "Attachment" AS attachment
-                WHERE attachment."storageKey" = job."storageKey"
-                UNION ALL SELECT 1 FROM "ChatPdfArtifact" AS pdf_artifact
-                WHERE pdf_artifact."storageKey" = job."storageKey"
-                UNION ALL SELECT 1 FROM "SkillRevisionFile" AS skill_file
-                WHERE skill_file."storageKey" = job."storageKey"
-                UNION ALL SELECT 1 FROM "ToolObservation" AS observation
-                WHERE observation."storageKey" = job."storageKey" AND (
-                  observation."state" = 'READY' OR
-                  (observation."state" = 'STORING' AND observation."leaseExpiresAt" > ${now})
-                )
-                UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
-                WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
-                UNION ALL SELECT 1 FROM "WorkspaceCapturedFile" AS captured_file
-                JOIN "WorkspaceSelectedCapture" AS capture ON capture."id" = captured_file."captureId"
-                WHERE captured_file."storageKey" = job."storageKey" AND (
-                  (captured_file."storageState" = 'STORING' AND captured_file."storageLeaseExpiresAt" > ${now})
-                  OR (captured_file."storageState" = 'READY' AND capture."state" = 'CAPTURED' AND EXISTS (
-                    SELECT 1 FROM "WorkspaceCaptureReference" reference
-                    WHERE reference."captureId" = capture."id" AND reference."releasedAt" IS NULL
-                  ))
-                  OR EXISTS (SELECT 1 FROM "WorkspaceCaptureReadLease" lease
-                    WHERE lease."captureId" = capture."id" AND lease."expiresAt" > ${now})
-                )
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM "KnowledgeDocumentVersion" AS version
-                WHERE version."originalStorageKey" = job."storageKey"
-                  OR version."normalizedTextStorageKey" = job."storageKey"
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM "KnowledgeSourceVersion" AS version
-                WHERE version."originalStorageKey" = job."storageKey"
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM "KnowledgeSourceIndexArtifact" AS artifact
-                WHERE artifact."normalizedTextStorageKey" = job."storageKey"
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM "KnowledgeUploadItem" AS upload
-                WHERE upload."storageKey" = job."storageKey"
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM "ArtifactBlob" AS blob JOIN "ArtifactVersionBlob" AS reference ON reference."blobId" = blob."id"
-                JOIN "ArtifactVersion" AS blob_version ON blob_version."id" = reference."versionId"
-                WHERE blob."storageKey" = job."storageKey"
-                  AND (blob_version."status" = 'READY' OR (blob_version."status" = 'PENDING' AND blob_version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM "ArtifactRender" AS render WHERE render."renderedStorageKey" = job."storageKey"
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM "ArtifactVersion" AS version
-                JOIN "Artifact" AS artifact ON artifact."id" = version."artifactId"
-                WHERE version."bundleStorageKey" = job."storageKey"
-                  AND (version."status" = 'READY' OR (version."status" = 'PENDING' AND version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM "ArtifactPublication" AS publication
-                WHERE publication."bundleStorageKey" = job."storageKey"
-                  AND (publication."status" = 'READY' OR (publication."status" = 'PENDING' AND publication."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
-              )
-            ORDER BY job."createdAt", job."id"
+            WHERE ${dueAttachmentDeletionJobSql({ claimableBefore, now })}
+            ORDER BY job."attemptCount", job."createdAt", job."id"
             FOR UPDATE SKIP LOCKED
             LIMIT ${limit}
           )
@@ -649,7 +763,7 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
           FROM candidates
           WHERE job."id" = candidates."id"
           RETURNING job."id", job."multipartUploadId", job."storageKey"
-        `;
+        `);
         const allowed = [];
         for (const claim of claims) {
           // Serialize a deduplication reference against retirement. Deleting
@@ -786,76 +900,13 @@ export function createPrismaRetentionRepository(prisma: PrismaClient): Retention
       `);
     },
     async findClaimableAttachmentDeletionJobIds({ claimableBefore, limit, now = new Date() }) {
-      const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT job."id"
         FROM "AttachmentDeletionJob" AS job
-        WHERE (job."claimedAt" IS NULL OR job."claimedAt" < ${claimableBefore})
-          AND NOT EXISTS (
-            SELECT 1 FROM "Attachment" AS attachment
-            WHERE attachment."storageKey" = job."storageKey"
-            UNION ALL SELECT 1 FROM "ChatPdfArtifact" AS pdf_artifact
-            WHERE pdf_artifact."storageKey" = job."storageKey"
-            UNION ALL SELECT 1 FROM "SkillRevisionFile" AS skill_file
-            WHERE skill_file."storageKey" = job."storageKey"
-            UNION ALL SELECT 1 FROM "ToolObservation" AS observation
-            WHERE observation."storageKey" = job."storageKey" AND (
-              observation."state" = 'READY' OR
-              (observation."state" = 'STORING' AND observation."leaseExpiresAt" > ${now})
-            )
-            UNION ALL SELECT 1 FROM "ChatContinuationWorkspaceSeed" AS seed
-            WHERE seed."storageKey" = job."storageKey" AND seed."status" IN ('CAPTURING','READY','TRANSFERRED','RESTORING','RESTORED')
-            UNION ALL SELECT 1 FROM "WorkspaceCapturedFile" AS captured_file
-            JOIN "WorkspaceSelectedCapture" AS capture ON capture."id" = captured_file."captureId"
-            WHERE captured_file."storageKey" = job."storageKey" AND (
-              (captured_file."storageState" = 'STORING' AND captured_file."storageLeaseExpiresAt" > ${now})
-              OR (captured_file."storageState" = 'READY' AND capture."state" = 'CAPTURED' AND EXISTS (
-                SELECT 1 FROM "WorkspaceCaptureReference" reference
-                WHERE reference."captureId" = capture."id" AND reference."releasedAt" IS NULL
-              ))
-              OR EXISTS (SELECT 1 FROM "WorkspaceCaptureReadLease" lease
-                WHERE lease."captureId" = capture."id" AND lease."expiresAt" > ${now})
-            )
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "KnowledgeDocumentVersion" AS version
-            WHERE version."originalStorageKey" = job."storageKey"
-              OR version."normalizedTextStorageKey" = job."storageKey"
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "KnowledgeSourceVersion" AS version
-            WHERE version."originalStorageKey" = job."storageKey"
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "KnowledgeSourceIndexArtifact" AS artifact
-            WHERE artifact."normalizedTextStorageKey" = job."storageKey"
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "KnowledgeUploadItem" AS upload
-            WHERE upload."storageKey" = job."storageKey"
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "ArtifactBlob" AS blob JOIN "ArtifactVersionBlob" AS reference ON reference."blobId" = blob."id"
-            JOIN "ArtifactVersion" AS blob_version ON blob_version."id" = reference."versionId"
-            WHERE blob."storageKey" = job."storageKey"
-              AND (blob_version."status" = 'READY' OR (blob_version."status" = 'PENDING' AND blob_version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "ArtifactRender" AS render WHERE render."renderedStorageKey" = job."storageKey"
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "ArtifactVersion" AS version
-            JOIN "Artifact" AS artifact ON artifact."id" = version."artifactId"
-            WHERE version."bundleStorageKey" = job."storageKey"
-              AND (version."status" = 'READY' OR (version."status" = 'PENDING' AND version."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM "ArtifactPublication" AS publication
-            WHERE publication."bundleStorageKey" = job."storageKey"
-              AND (publication."status" = 'READY' OR (publication."status" = 'PENDING' AND publication."createdAt" > ${new Date(Date.now() - ARTIFACT_WRITE_LEASE_MS)}))
-          )
-        ORDER BY job."createdAt", job."id"
+        WHERE ${dueAttachmentDeletionJobSql({ claimableBefore, now })}
+        ORDER BY job."attemptCount", job."createdAt", job."id"
         LIMIT ${limit}
-      `;
+      `);
 
       return rows.map((row) => row.id);
     },
@@ -1714,10 +1765,12 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     claimableBefore,
     limit: batchSize
   });
-  const claims = await options.repository.claimAttachmentDeletionJobs({
+  const objectDeletion = await processAttachmentDeletionJobs({
     claimableBefore,
     limit: batchSize,
-    now
+    now,
+    repository: options.repository,
+    storage: options.storage
   });
 
   summary.modelRunEvents.deleted = deletedEvents;
@@ -1748,43 +1801,13 @@ export async function pruneRetention(options: PruneRetentionOptions): Promise<Pr
     rowsDeleted: stagedAttachments.rowsDeleted,
     shared: stagedAttachments.sharedRowsDeleted
   };
-  summary.attachmentDeletionJobs.matched = claimableDeletionJobIds.length;
-  summary.attachmentDeletionJobs.claimed = claims.length;
-
-  for (const claim of claims) {
-    try {
-      if (claim.multipartUploadId) {
-        if (!options.storage.directMultipartUpload) {
-          throw new Error("multipart_abort_unavailable");
-        }
-        await options.storage.directMultipartUpload.abortMultipartUpload({
-          storageKey: claim.storageKey,
-          uploadId: claim.multipartUploadId
-        });
-      }
-      await options.storage.deleteObject(claim.storageKey);
-      summary.attachmentDeletionJobs.objectsDeleted += 1;
-      if (
-        await options.repository.completeAttachmentDeletionJob({
-          claimToken: claim.claimToken,
-          id: claim.id
-        })
-      ) {
-        summary.attachmentDeletionJobs.completed += 1;
-      }
-    } catch {
-      summary.attachmentDeletionJobs.failedJobs.push({
-        code: "object_delete_failed",
-        id: claim.id
-      });
-      await options.repository.releaseAttachmentDeletionJob({
-        claimToken: claim.claimToken,
-        errorCode: "object_delete_failed",
-        id: claim.id,
-        now
-      });
-    }
-  }
+  summary.attachmentDeletionJobs = {
+    claimed: objectDeletion.claimed,
+    completed: objectDeletion.completed,
+    failedJobs: objectDeletion.failedJobIds.map((id) => ({ code: "object_delete_failed" as const, id })),
+    matched: claimableDeletionJobIds.length,
+    objectsDeleted: objectDeletion.objectsDeleted
+  };
 
   const finalizedKnowledgeJobs = await options.repository.finalizeKnowledgeDeletionJobs({ now });
   summary.knowledgeTrash = {

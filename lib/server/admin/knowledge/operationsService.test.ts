@@ -22,6 +22,63 @@ function reconciliation(overrides: Record<string, bigint> = {}) {
   };
 }
 
+function quietOperationsRow(overrides: Record<string, unknown> = {}) {
+  return {
+    activeUploads: 0,
+    blockedDeletionJobs: 0,
+    checkedAt: NOW,
+    degradedOperations24h: 0,
+    expiredUploads: 0,
+    failedArtifacts: 0,
+    items24h: 0,
+    needsAttentionUploads: 0,
+    noAnswerOperations24h: 0,
+    oldestDeletionSeconds: null,
+    oldestQueuedSeconds: null,
+    oldestUnclaimedObjectSeconds: null,
+    p50ReadyLatencyMs24h: null,
+    p50RetrievalDurationMs24h: null,
+    p95ReadyLatencyMs24h: null,
+    p95RetrievalDurationMs24h: null,
+    pendingArtifacts: 0,
+    pendingDeletionJobs: 0,
+    pendingDeletionObjects: 0,
+    processingArtifacts: 0,
+    readyArtifacts: 0,
+    retrievalOperations24h: 0,
+    settledUploads24h: 0,
+    unclaimedObjects: 0,
+    uploadedBytes24h: 0n,
+    warningArtifacts: 0,
+    ...overrides
+  };
+}
+
+function quietQueryRaw(row = quietOperationsRow()) {
+  return vi.fn()
+    .mockResolvedValueOnce([row])
+    .mockResolvedValueOnce([reconciliation({
+      mappedDocuments: 0n,
+      mappedGenerationCandidates: 0n,
+      mappedVersions: 0n,
+      memberships: 0n,
+      snapshots: 0n,
+      sources: 0n,
+      v1Documents: 0n,
+      v1GenerationCandidates: 0n,
+      v1Versions: 0n
+    })])
+    .mockResolvedValueOnce([{
+      expectedProjections: 0,
+      failedBases: 0,
+      failedProjections: 0,
+      failedSources: 0,
+      pendingProjections: 0,
+      readyProjections: 0,
+      workerLastSeenAt: NOW
+    }]);
+}
+
 describe("administrator Knowledge operations service", () => {
   it("projects content-free health metrics and stable alerts", async () => {
     const queryRaw = vi.fn()
@@ -37,6 +94,7 @@ describe("administrator Knowledge operations service", () => {
         noAnswerOperations24h: 3,
         oldestDeletionSeconds: 90,
         oldestQueuedSeconds: 4_000,
+        oldestUnclaimedObjectSeconds: 90_000.4,
         p50ReadyLatencyMs24h: 1_200.4,
         p50RetrievalDurationMs24h: 40.4,
         p95ReadyLatencyMs24h: 8_200.6,
@@ -48,6 +106,7 @@ describe("administrator Knowledge operations service", () => {
         readyArtifacts: 20,
         retrievalOperations24h: 20,
         settledUploads24h: 12,
+        unclaimedObjects: 7,
         uploadedBytes24h: 2_048n,
         warningArtifacts: 6
       }])
@@ -78,11 +137,13 @@ describe("administrator Knowledge operations service", () => {
     expect(operationsSqlText).not.toContain(retiredNoAnswerOutcome);
     expect(operationsSqlText).toMatch(/base_indexing|source_location_unavailable/u);
     expect(operationsSqlText).toContain("insufficient_evidence");
+    expect(operationsSqlText).toContain("\"AttachmentDeletionJob\" AS job");
 
     expect(result).toMatchObject({
       alerts: [
         { code: "knowledge_deletion_blocked", severity: "critical" },
         { code: "knowledge_ingestion_queue_stalled", severity: "critical" },
+        { code: "knowledge_object_deletion_stalled", severity: "critical" },
         { code: "knowledge_search_backend_unavailable", severity: "critical" },
         { code: "knowledge_search_projection_failures", severity: "critical" },
         { code: "knowledge_search_worker_unavailable", severity: "critical" },
@@ -94,7 +155,13 @@ describe("administrator Knowledge operations service", () => {
         { code: "knowledge_upload_sessions_expired", severity: "warning" }
       ],
       checkedAt: NOW.toISOString(),
-      deletion: { blockedJobs: 1, pendingJobs: 2, pendingObjects: 3 },
+      deletion: {
+        blockedJobs: 1,
+        oldestUnclaimedObjectSeconds: 90_000,
+        pendingJobs: 2,
+        pendingObjects: 3,
+        unclaimedObjects: 7
+      },
       ingestion: {
         p50ReadyLatencyMs24h: 1_200,
         p95ReadyLatencyMs24h: 8_201,
@@ -122,53 +189,7 @@ describe("administrator Knowledge operations service", () => {
   });
 
   it("keeps a quiet empty installation healthy", async () => {
-    const queryRaw = vi.fn()
-      .mockResolvedValueOnce([{
-        activeUploads: 0,
-        blockedDeletionJobs: 0,
-        checkedAt: NOW,
-        degradedOperations24h: 0,
-        expiredUploads: 0,
-        failedArtifacts: 0,
-        items24h: 0,
-        needsAttentionUploads: 0,
-        noAnswerOperations24h: 0,
-        oldestDeletionSeconds: null,
-        oldestQueuedSeconds: null,
-        p50ReadyLatencyMs24h: null,
-        p50RetrievalDurationMs24h: null,
-        p95ReadyLatencyMs24h: null,
-        p95RetrievalDurationMs24h: null,
-        pendingArtifacts: 0,
-        pendingDeletionJobs: 0,
-        pendingDeletionObjects: 0,
-        processingArtifacts: 0,
-        readyArtifacts: 0,
-        retrievalOperations24h: 0,
-        settledUploads24h: 0,
-        uploadedBytes24h: 0n,
-        warningArtifacts: 0
-      }])
-      .mockResolvedValueOnce([reconciliation({
-        mappedDocuments: 0n,
-        mappedGenerationCandidates: 0n,
-        mappedVersions: 0n,
-        memberships: 0n,
-        snapshots: 0n,
-        sources: 0n,
-        v1Documents: 0n,
-        v1GenerationCandidates: 0n,
-        v1Versions: 0n
-      })])
-      .mockResolvedValueOnce([{
-        expectedProjections: 0,
-        failedBases: 0,
-        failedProjections: 0,
-        failedSources: 0,
-        pendingProjections: 0,
-        readyProjections: 0,
-        workerLastSeenAt: NOW
-      }]);
+    const queryRaw = quietQueryRaw();
     const client = { $queryRaw: queryRaw } as unknown as PrismaClient;
     const search = { checkKnowledgeIndex: vi.fn().mockResolvedValue(undefined) };
 
@@ -177,6 +198,7 @@ describe("administrator Knowledge operations service", () => {
       search
     }).read()).resolves.toMatchObject({
       alerts: [],
+      deletion: { oldestUnclaimedObjectSeconds: null, unclaimedObjects: 0 },
       migration: { discrepancies: 0 },
       search: {
         backendState: "available",
@@ -192,5 +214,25 @@ describe("administrator Knowledge operations service", () => {
     });
     expect(queryRaw).toHaveBeenCalledTimes(3);
     expect(search.checkKnowledgeIndex).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [3_599, []],
+    [3_600, [{ code: "knowledge_object_deletion_stalled", severity: "warning" }]],
+    [86_400, [{ code: "knowledge_object_deletion_stalled", severity: "critical" }]]
+  ])("alerts on a due object deletion older than the drain allows (%is)", async (age, expected) => {
+    const client = {
+      $queryRaw: quietQueryRaw(quietOperationsRow({
+        oldestUnclaimedObjectSeconds: age,
+        unclaimedObjects: 2
+      }))
+    } as unknown as PrismaClient;
+    const search = { checkKnowledgeIndex: vi.fn().mockResolvedValue(undefined) };
+
+    await expect(createAdminKnowledgeOperationsService(client, { now: NOW, search }).read())
+      .resolves.toMatchObject({
+        alerts: expected,
+        deletion: { oldestUnclaimedObjectSeconds: age, unclaimedObjects: 2 }
+      });
   });
 });

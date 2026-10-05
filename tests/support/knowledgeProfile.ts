@@ -32,8 +32,10 @@ export function adminKnowledgeOperationsFixture(
     deletion: {
       blockedJobs: 0,
       oldestPendingSeconds: null,
+      oldestUnclaimedObjectSeconds: null,
       pendingJobs: 0,
-      pendingObjects: 0
+      pendingObjects: 0,
+      unclaimedObjects: 0
     },
     ingestion: {
       activeUploads: 0,
