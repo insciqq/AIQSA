@@ -18,6 +18,7 @@ import {
   resolveCurrentMemoryUtilityPolicy
 } from "../execution/policy";
 import { memoryExecutionSha256 } from "../execution/canonical";
+import { detachExpiredMemoryExecutionBindings } from "../execution/lifecycle";
 import { createPrismaMemoryLifecycleRepository } from "../lifecycle/repository";
 import { createMemoryLifecycleService } from "../lifecycle/service";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
@@ -1202,7 +1203,9 @@ describe("Prisma explicit Memory vector enrichment", () => {
     }
   }, 60_000);
 
-  it("retries an outcome-unknown batch with a fresh durable binding", async () => {
+  // A detached unknown call (its provider references released after its
+  // recovery window) still holds its ordinal and input for the batch.
+  it.each([false, true])("retries an outcome-unknown batch with a fresh durable binding (detached: %s)", async (detached) => {
     const fixture = await createFixture();
     const { explicit } = memoryServices(fixture.classifierAuthority);
     let clock = new Date(INITIAL_NOW);
@@ -1287,6 +1290,11 @@ describe("Prisma explicit Memory vector enrichment", () => {
         where: { memoryJobId: parent.id }
       });
       expect(firstBinding).toMatchObject({ ordinal: 0, state: "OUTCOME_UNKNOWN" });
+      if (detached) {
+        await expect(prisma.$transaction((tx) => detachExpiredMemoryExecutionBindings(
+          tx, { bindingId: firstBinding.id }, firstBinding.recoverableUntil!
+        ))).resolves.toBe(1);
+      }
 
       clock = new Date(clock.getTime() + 10);
       await coordinator.reconcileNow();
@@ -1310,9 +1318,10 @@ describe("Prisma explicit Memory vector enrichment", () => {
         }),
         state: "SUCCEEDED"
       });
-      expect(bindings.map(({ ordinal, state }) => ({ ordinal, state }))).toEqual([
-        { ordinal: 0, state: "OUTCOME_UNKNOWN" },
-        { ordinal: 1, state: "SUCCEEDED" }
+      expect(bindings.map(({ ordinal, relationsDetachedAt, state }) =>
+        ({ detached: relationsDetachedAt !== null, ordinal, state }))).toEqual([
+        { detached, ordinal: 0, state: "OUTCOME_UNKNOWN" },
+        { detached: false, ordinal: 1, state: "SUCCEEDED" }
       ]);
       expect(new Set(bindings.map(({ inputHash }) => inputHash)).size).toBe(1);
     } finally {

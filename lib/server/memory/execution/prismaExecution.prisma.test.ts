@@ -4,8 +4,12 @@ import { afterAll, describe, expect, it } from "vitest";
 import { prisma } from "../../prisma";
 import { createFakeEmbeddingAdapter } from "@/tests/support/embeddings";
 import { createPrismaMemoryJobRepository } from "@/tests/support/memoryPersistence";
+import { createPrismaAdminProviderRepository } from "../../admin/providers/prismaRepository";
+import { createPrismaMemoryEmbeddingBatchRepository } from "../embedding/batchRepository";
+import { createPrismaMemoryItemEmbeddingRepository } from "../embedding/repository";
 import { createPrismaMemoryExecutionService } from ".";
 import { MemoryExecutionError } from "./errors";
+import { MEMORY_EXECUTION_RECOVERY_HORIZON_MS } from "./lifecycle";
 import {
   MEMORY_UTILITY_EGRESS_POLICY_VERSION,
   resolveCurrentMemoryUtilityPolicy
@@ -494,6 +498,213 @@ describe("Prisma Memory execution", () => {
       await fixture.cleanup();
     }
   });
+
+  it("releases an unknown outcome's provider references after its recovery window without replay", async () => {
+    const fixture = await createEmbeddingFixture();
+    let clock = new Date(INITIAL_NOW);
+    try {
+      const service = createPrismaMemoryExecutionService({ now: () => new Date(clock) }, prisma);
+      const job = await createPrismaMemoryJobRepository(prisma).enqueue(fixture.userId, {
+        idempotencyFingerprint: `memory-unknown-detach-job-${randomUUID()}`,
+        kind: "EMBED_ITEMS",
+        pipelineVersion: VERSIONS.pipelineVersion
+      });
+      const request = (ordinal: number) => ({
+        inputHash: String(ordinal + 1).repeat(64), ordinal,
+        owner: { memoryJobId: job.id, type: "JOB" as const },
+        role: "MEMORY_DOCUMENT_EMBED" as const, versions: VERSIONS
+      });
+      const dispatched = async (ordinal: number) => {
+        const binding = await service.admission.bind(fixture.userId, request(ordinal));
+        await service.admission.start(fixture.userId, binding.id);
+        return binding.id;
+      };
+      const unknownSettlement = {
+        acceptedOutputHash: null, errorCode: "provider_outcome_unknown",
+        providerResponseId: null, state: "OUTCOME_UNKNOWN" as const, usage: unavailableUsage
+      };
+      const unknown = await dispatched(0);
+      await service.lifecycle.settle(fixture.userId, unknown, unknownSettlement);
+      // A call possibly still in flight, and an unknown outcome without its receipt.
+      const running = await dispatched(1);
+      const unaccounted = await dispatched(2);
+      await prisma.memoryExecutionBinding.update({
+        data: {
+          completedAt: clock, errorCode: "memory_temporary_retention_expired",
+          recoverableUntil: clock, state: "OUTCOME_UNKNOWN"
+        },
+        where: { id: unaccounted }
+      });
+      const failed = await dispatched(3);
+      await service.lifecycle.settle(fixture.userId, failed, {
+        ...unknownSettlement, errorCode: "provider_failed", state: "FAILED"
+      });
+      const before = await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: unknown } });
+      const receipt = await prisma.usageEvent.findFirstOrThrow({
+        where: { memoryExecutionBindingId: unknown }
+      });
+      const recoverableUntil = new Date(INITIAL_NOW.getTime() + MEMORY_EXECUTION_RECOVERY_HORIZON_MS);
+      expect(before).toMatchObject({ completedAt: INITIAL_NOW, recoverableUntil, relationsDetachedAt: null });
+
+      // Recovery may still resolve the outcome inside its window.
+      clock = new Date(recoverableUntil.getTime() - 1);
+      await expect(service.lifecycle.detachExpiredForUser(fixture.userId)).resolves.toBe(0);
+      clock = new Date(recoverableUntil);
+      await expect(service.lifecycle.detachExpiredForUser(fixture.userId)).resolves.toBe(2);
+
+      expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: unknown } })).toEqual({
+        ...before,
+        connectionId: null,
+        credentialId: null,
+        credentialVersionId: null,
+        providerModelId: null,
+        providerResponseId: null,
+        relationsDetachedAt: clock
+      });
+      expect(await prisma.usageEvent.findFirstOrThrow({
+        where: { memoryExecutionBindingId: unknown }
+      })).toEqual(receipt);
+      for (const id of [running, unaccounted]) {
+        expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id } })).toMatchObject({
+          connectionId: fixture.connectionId,
+          credentialId: fixture.credentialId,
+          credentialVersionId: fixture.credentialVersionId,
+          providerModelId: fixture.modelId,
+          relationsDetachedAt: null
+        });
+      }
+
+      // The outcome stays final: a repeated settlement replays it, recovery is
+      // refused, and neither a rebind nor a restart can dispatch it again.
+      await expect(service.lifecycle.settle(fixture.userId, unknown, unknownSettlement))
+        .resolves.toMatchObject({ replayed: true, state: "OUTCOME_UNKNOWN" });
+      await expect(service.lifecycle.recoverOutcome(fixture.userId, unknown, {
+        acceptedOutputHash: "a".repeat(64), errorCode: null, state: "SUCCEEDED", usage: completeUsage(3)
+      })).rejects.toMatchObject({ code: "memory_execution_recovery_expired" });
+      await expect(service.admission.bind(fixture.userId, request(0)))
+        .resolves.toMatchObject({ id: unknown, replayed: true, state: "OUTCOME_UNKNOWN" });
+      await expect(service.admission.start(fixture.userId, unknown))
+        .rejects.toMatchObject({ code: "memory_execution_state_conflict" });
+      await expect(prisma.memoryExecutionBinding.count({ where: { memoryJobId: job.id } }))
+        .resolves.toBe(4);
+      // The embedding handlers that own the job still see the ambiguous call;
+      // detached settled evidence leaves their view.
+      const view = (bindings: readonly Readonly<{ id: string; state: string }>[]) =>
+        bindings.map(({ id, state }) => ({ id, state }));
+      const handlerView = [
+        { id: unknown, state: "OUTCOME_UNKNOWN" },
+        { id: running, state: "RUNNING" },
+        { id: unaccounted, state: "OUTCOME_UNKNOWN" }
+      ];
+      expect(view(await createPrismaMemoryItemEmbeddingRepository(prisma).bindings(fixture.userId, job.id)))
+        .toEqual(handlerView);
+      expect(view(await createPrismaMemoryEmbeddingBatchRepository(prisma).bindings(fixture.userId, job.id)))
+        .toEqual(handlerView);
+      // PostgreSQL still refuses to detach a call that may be in flight.
+      await expect(prisma.$executeRaw`UPDATE "MemoryExecutionBinding" SET "connectionId" = NULL,
+        "providerModelId" = NULL, "credentialId" = NULL, "credentialVersionId" = NULL,
+        "recoverableUntil" = ${clock}, "relationsDetachedAt" = ${clock} WHERE id = ${running}`)
+        .rejects.toMatchObject({ code: "P2010", meta: { code: "23514" } });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it.each(["model", "credential", "connection"] as const)(
+    "lets an administrator delete the %s once only expired unknown Memory calls reference it",
+    async (target) => {
+      const fixture = await createEmbeddingFixture();
+      try {
+        // Settled long ago: the recovery window has passed in real time.
+        const service = createPrismaMemoryExecutionService({ now: () => INITIAL_NOW }, prisma);
+        const job = await createPrismaMemoryJobRepository(prisma).enqueue(fixture.userId, {
+          idempotencyFingerprint: `memory-provider-deletion-job-${randomUUID()}`,
+          kind: "EMBED_ITEMS",
+          pipelineVersion: VERSIONS.pipelineVersion
+        });
+        const dispatched = async (ordinal: number) => {
+          const binding = await service.admission.bind(fixture.userId, {
+            inputHash: String(ordinal + 1).repeat(64), ordinal,
+            owner: { memoryJobId: job.id, type: "JOB" },
+            role: "MEMORY_DOCUMENT_EMBED", versions: VERSIONS
+          });
+          await service.admission.start(fixture.userId, binding.id);
+          return binding.id;
+        };
+        const settleUnknown = (id: string) => service.lifecycle.settle(fixture.userId, id, {
+          acceptedOutputHash: null, errorCode: "provider_outcome_unknown",
+          providerResponseId: null, state: "OUTCOME_UNKNOWN", usage: unavailableUsage
+        });
+        const expired = await dispatched(0);
+        await settleUnknown(expired);
+        const live = await dispatched(1);
+        // Every other reference is already gone, as an administrator would leave it.
+        await prisma.userMemorySettings.update({
+          data: { embeddingProviderModelId: null }, where: { userId: fixture.userId }
+        });
+        await prisma.accessGrant.deleteMany({ where: { providerModelId: fixture.modelId } });
+        await prisma.providerModel.update({ data: { enabled: false }, where: { id: fixture.modelId } });
+        await prisma.providerCredential.update({ data: { enabled: false }, where: { id: fixture.credentialId } });
+        await prisma.providerConnection.update({
+          data: { defaultCredentialId: null, enabled: false }, where: { id: fixture.connectionId }
+        });
+        const providers = createPrismaAdminProviderRepository(prisma);
+        const remove = () => target === "model"
+          ? providers.deleteModel(fixture.modelId)
+          : target === "credential"
+            ? providers.deleteCredential(fixture.credentialId)
+            : providers.deleteConnection(fixture.connectionId);
+        const evidence = () => Promise.all([
+          prisma.memoryExecutionBinding.findMany({ orderBy: { ordinal: "asc" }, where: { userId: fixture.userId } }),
+          prisma.usageEvent.findMany({ orderBy: { id: "asc" }, where: { userId: fixture.userId } })
+        ]);
+
+        // A call that may still be in flight keeps the target; the expired
+        // unknown outcome releases it.
+        await expect(remove()).resolves.toEqual({
+          blockers: [{ count: 1, kind: "memory_bindings" }], status: "conflict"
+        });
+        const [blocked] = await evidence();
+        expect(blocked.map(({ id, relationsDetachedAt, state }) =>
+          ({ detached: relationsDetachedAt !== null, id, state }))).toEqual([
+          { detached: true, id: expired, state: "OUTCOME_UNKNOWN" },
+          { detached: false, id: live, state: "RUNNING" }
+        ]);
+
+        // Once that call also ends as unknown and its window passes, the
+        // deletion completes without touching outcomes, receipts or dispatch.
+        await settleUnknown(live);
+        const [bindings, receipts] = await evidence();
+        await expect(remove()).resolves.toEqual({ status: "deleted" });
+        const [after, afterReceipts] = await evidence();
+        expect(after).toEqual(bindings.map((binding) => ({
+          ...binding,
+          connectionId: null,
+          credentialId: null,
+          credentialVersionId: null,
+          providerModelId: null,
+          providerResponseId: null,
+          relationsDetachedAt: binding.relationsDetachedAt ?? expect.any(Date)
+        })));
+        expect(after.map(({ errorCode, state }) => ({ errorCode, state }))).toEqual([
+          { errorCode: "provider_outcome_unknown", state: "OUTCOME_UNKNOWN" },
+          { errorCode: "provider_outcome_unknown", state: "OUTCOME_UNKNOWN" }
+        ]);
+        expect(afterReceipts).toEqual(receipts);
+        expect(afterReceipts).toHaveLength(2);
+        expect(afterReceipts.every((receipt) => receipt.providerModelId === fixture.modelId &&
+          receipt.usageCompleteness === "UNAVAILABLE")).toBe(true);
+        const remaining = target === "model"
+          ? await prisma.providerModel.count({ where: { id: fixture.modelId } })
+          : target === "credential"
+            ? await prisma.providerCredential.count({ where: { id: fixture.credentialId } })
+            : await prisma.providerConnection.count({ where: { id: fixture.connectionId } });
+        expect(remaining).toBe(0);
+      } finally {
+        await fixture.cleanup();
+      }
+    }
+  );
 
   it("governs a content-free inbound MCP request without a synthetic run owner", async () => {
     const fixture = await createEmbeddingFixture();
