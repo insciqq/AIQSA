@@ -11,6 +11,7 @@ import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnaly
 import { observedFailureCode } from "../providers/providerObservability";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../providers/types";
+import { visionAnalysisTimeoutMs } from "../tools/analyzeImage";
 import { ConversationImageError, type ConversationImageSource, type ConversationVisionImage } from "./conversationImages";
 import { authorizeVisionPlan, lockVisionRun, recordVisionUsage, VisionAnalysisError, visionRunAccess } from "./store";
 
@@ -167,7 +168,9 @@ export function createKnowledgeImageObservation(prisma: PrismaClient, options: R
       requestHash: knowledgeImageObservationRequestHash(input.plan, input.question) };
     const existing = await store.load(c);
     if (existing) return existing;
-    const timeoutMs = Math.min(Math.max(input.timeoutMs ?? LIMITS.timeoutMs, 1_000), 600_000);
+    // System Vision waits by its frozen reasoning effort, like analyze_image.
+    const timeoutMs = Math.min(Math.max(input.timeoutMs ?? (input.plan.route === "system_vision"
+      ? visionAnalysisTimeoutMs(input.plan.vision) : LIMITS.timeoutMs), 1_000), 600_000);
     const bounded = AbortSignal.any([input.signal, AbortSignal.timeout(timeoutMs)]);
     let images: readonly ConversationVisionImage[] = [];
     // Claimed: the row exists and must settle. Sent: the provider may have it.
