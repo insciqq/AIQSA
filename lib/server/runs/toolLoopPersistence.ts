@@ -218,6 +218,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const RUN_ENDED_TOOL_CALL_CODE = "run_ended_before_tool_settled";
+
+/** Content-free result of a call that was still running when its run became
+ * final. Its outcome stays unknown (it may have had effects), and only the
+ * call's own late settlement may replace it. */
+export function runEndedToolCallResult(): { code: string; outcome: "unknown" } {
+  return { code: RUN_ENDED_TOOL_CALL_CODE, outcome: "unknown" };
+}
+
+export function isRunEndedToolCallResult(value: unknown): boolean {
+  return isRecord(value) && Object.keys(value).length === 2 &&
+    value.code === RUN_ENDED_TOOL_CALL_CODE && value.outcome === "unknown";
+}
+
+/** What history shows for a call: once its run has ended, a call left open or
+ * closed only by that ending is a stopped step, never a live one. */
+export function displayedToolCallState(
+  call: Readonly<{ result?: unknown; state: string }>,
+  runStatus: string | undefined
+): string {
+  const ended = runStatus === "complete" || runStatus === "cancelled" || runStatus === "error";
+  if (ended && (call.state === "pending" || call.state === "running")) return "cancelled";
+  if (call.state === "error" && isRunEndedToolCallResult(call.result)) return "cancelled";
+  return call.state;
+}
+
 function jsonSnapshot(value: unknown, maxBytes: number): ToolLoopJsonValue | null {
   try {
     const serialized = JSON.stringify(value);

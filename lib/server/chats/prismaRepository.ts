@@ -17,6 +17,7 @@ import {
 import { isMonitoringVerdictCall } from "../tools/monitoringVerdict";
 import { scheduledTaskRowSelect, toScheduledTask } from "../scheduledTasks/store";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
+import { displayedToolCallState } from "../runs/toolLoopPersistence";
 import { decodeSessionContextStatus } from "../../contracts/sessionStatus";
 import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import { Prisma } from "@prisma/client";
@@ -1115,10 +1116,10 @@ export function summarizeMessageRunToolActivity(
       ? call.completedAt.getTime() - call.startedAt.getTime()
       : null;
     const memorySearch = memorySearchActivityFacts(call.toolName, call.result, call.ordinal);
+    const state = displayedToolCallState(call, run.status);
     const status = memorySearch.memorySearchOutcome === "cancelled" ? "cancelled"
-      : call.state === "complete" || call.state === "error" ||
-      call.state === "cancelled"
-      ? call.state
+      : state === "complete" || state === "error" || state === "cancelled"
+      ? state
       : "running";
     const fingerprint = call.mcpRunBinding?.runtimeGenerationFingerprint;
     const details = viewerUserId && viewerUserId === run.userId && descriptor.origin === "mcp" &&

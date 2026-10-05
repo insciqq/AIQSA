@@ -79,6 +79,7 @@ import {
 import {
   appendRunOutputEvents,
   cancelPendingToolLoopCallsInTransaction,
+  closeRunningToolLoopCallsInTransaction,
   createPrismaRunToolLoopOperations,
   isRecoveredRunTerminalPayload,
   recoveredRunErrorPayload
@@ -673,6 +674,7 @@ export function createPrismaRunRepository(
         }
 
         await cancelPendingToolLoopCallsInTransaction(tx, input.runId);
+        await closeRunningToolLoopCallsInTransaction(tx, input.runId);
         await tx.workspaceFollowup.updateMany({ where: { modelRunId: input.runId, state: { in: ["waiting", "preparing"] } },
           data: { state: "cancelled", snapshot: Prisma.DbNull, admissionResult: Prisma.DbNull, claimToken: null, leaseExpiresAt: null } });
 
@@ -792,6 +794,8 @@ export function createPrismaRunRepository(
             id: input.runId
           }
         });
+
+        await closeRunningToolLoopCallsInTransaction(tx, input.runId);
 
         if (!existingRun.answerCompletedAt && input.knowledgeGrounding) {
           await settleKnowledgeGrounding(tx, input.knowledgeGrounding);
@@ -975,6 +979,9 @@ export function createPrismaRunRepository(
         }
 
         await cancelPendingToolLoopCallsInTransaction(tx, runId);
+        // Without the recovery marker the error run stays recoverable, and
+        // recovery owns its running calls.
+        if (options?.recoveryTerminal) await closeRunningToolLoopCallsInTransaction(tx, runId);
         await tx.workspaceFollowup.updateMany({ where: { modelRunId: runId, state: { in: ["waiting", "preparing"] } },
           data: { state: "failed", snapshot: Prisma.DbNull, admissionResult: Prisma.DbNull, claimToken: null, leaseExpiresAt: null } });
 

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { resolveChatAccess } from "../projects/access";
 import { decodeToolObservationSourceBinding } from "../toolObservations/contract";
+import { displayedToolCallState } from "../runs/toolLoopPersistence";
 import { acceptedMcpCallIdentity, canReadAcceptedMcpCall, mcpDetailRecord as record } from "./callDetailsAuthority";
 import { mcpCallDisplayRedaction } from "./callDetailsRedaction";
 import type { McpCallDetailsRepository } from "./callDetails";
@@ -16,7 +17,7 @@ export function createPrismaMcpCallDetailsRepository(prisma: PrismaClient): McpC
         const user = await tx.user.findFirst({ where: { id: key.userId, status: "active" }, select: { id: true } });
         if (!user) return null;
         const run = await tx.modelRun.findFirst({ where: { id: key.runId, userId: key.userId },
-          select: { id: true, chatId: true, normalizedRequest: true, workspaceRunBinding: { select: { agent: { select: { modelRunId: true } } } },
+          select: { id: true, chatId: true, normalizedRequest: true, status: true, workspaceRunBinding: { select: { agent: { select: { modelRunId: true } } } },
             chat: { select: { projectId: true, memoryMode: true, temporaryRetentionDeadline: true } } } });
         if (!run || run.workspaceRunBinding?.agent || record(run.normalizedRequest) && run.normalizedRequest.agent ||
           !await resolveChatAccess(tx, { chatId: run.chatId, userId: key.userId })) return null;
@@ -41,10 +42,10 @@ export function createPrismaMcpCallDetailsRepository(prisma: PrismaClient): McpC
         // Data removal, mutable call settlement and changes to redaction context
         // during storage I/O invalidate delivery without exposing internal ids.
         const revision = createHash("sha256").update(JSON.stringify([
-          call.id, call.updatedAt, call.state, call.arguments, call.result,
+          call.id, call.updatedAt, call.state, run.status, call.arguments, call.result,
           original?.id, original?.updatedAt, original?.checksum, original?.byteSize, redaction, unavailable
         ])).digest("hex");
-        return { id: call.id, toolName: call.toolName, providerCallId: call.providerCallId, state: call.state,
+        return { id: call.id, toolName: call.toolName, providerCallId: call.providerCallId, state: displayedToolCallState(call, run.status),
           arguments: call.arguments, result: call.result, ...redaction, observation: original, unavailable, revision };
       });
     }

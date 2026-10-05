@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import { MCP_CALL_DISPLAY_BYTES } from "../../contracts/mcpCallDetails";
@@ -159,6 +160,15 @@ async function fixture(options: { project?: boolean; sensitive?: boolean } = {})
 }
 
 describe("Prisma MCP call details authority and historical display", () => {
+  it("shows a call left running by an ended run as stopped, never as awaiting a response", async () => {
+    const f = await fixture();
+    await prisma.modelRunToolCall.update({ where: { id: f.call.id }, data: { state: "running", result: Prisma.DbNull, completedAt: null } });
+    expect(await f.repository.read(f.key)).toMatchObject({ state: "cancelled" });
+    expect(await f.read(f.key)).toMatchObject({ responseState: "cancelled" });
+    await prisma.modelRun.update({ where: { id: f.key.runId }, data: { status: "streaming" } });
+    expect(await f.read(f.key)).toMatchObject({ responseState: "pending" });
+  });
+
   it("reads completed historical inline calls for the initiator and denies other users, administrators and missing calls", async () => {
     const f = await fixture();
     expect(await f.repository.read(f.key)).toMatchObject({ state: "complete", values: [], observation: null });

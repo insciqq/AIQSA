@@ -3,11 +3,14 @@ import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt
 import {
   checkpointAdoptingSummaryReceipts,
   checkpointWithContextSummaryReceipt,
+  displayedToolCallState,
   INITIAL_PROVIDER_CONTINUATION,
+  isRunEndedToolCallResult,
   isNotesOnlyCheckpoint,
   mergeContextCompactionReceipts,
   mergeAnswerRoundUsage,
   parseToolLoopCheckpoint,
+  runEndedToolCallResult,
   snapshotToolLoopJson,
   toolLoopCheckpoint,
   toolLoopPersistenceLimits,
@@ -433,5 +436,29 @@ describe("context summary receipts", () => {
     expect(merged.summaryAttempts).toHaveLength(24);
     expect(toolLoopCheckpoint({ contextCompaction: { ...compaction, summaryAttempts: [attempt(1, "settled"), attempt(1, "settled")] },
       phase: "provider_running", providerContinuation: null, roundIndex: 1 })).toBeNull();
+  });
+});
+
+describe("tool calls of an ended run", () => {
+  it("recognizes only the exact content-free closure result", () => {
+    expect(runEndedToolCallResult()).toEqual({ code: "run_ended_before_tool_settled", outcome: "unknown" });
+    expect(isRunEndedToolCallResult(runEndedToolCallResult())).toBe(true);
+    for (const value of [null, { code: "run_ended_before_tool_settled" }, { ...runEndedToolCallResult(), content: [] },
+      { code: "agent_execution_interrupted", outcome: "unknown" }, [runEndedToolCallResult()]]) {
+      expect(isRunEndedToolCallResult(value)).toBe(false);
+    }
+  });
+
+  it("displays open calls of an ended run as stopped and leaves live runs alone", () => {
+    for (const runStatus of ["complete", "cancelled", "error"]) {
+      expect(displayedToolCallState({ state: "running" }, runStatus)).toBe("cancelled");
+      expect(displayedToolCallState({ state: "pending" }, runStatus)).toBe("cancelled");
+    }
+    for (const runStatus of ["queued", "streaming", "in_progress", "preparing", undefined]) {
+      expect(displayedToolCallState({ state: "running" }, runStatus)).toBe("running");
+    }
+    expect(displayedToolCallState({ result: runEndedToolCallResult(), state: "error" }, "streaming")).toBe("cancelled");
+    expect(displayedToolCallState({ result: { code: "tool_failed" }, state: "error" }, "cancelled")).toBe("error");
+    expect(displayedToolCallState({ state: "complete" }, "error")).toBe("complete");
   });
 });
