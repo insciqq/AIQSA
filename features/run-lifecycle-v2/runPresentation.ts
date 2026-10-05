@@ -259,6 +259,7 @@ type ToolActivityIdentity = Readonly<{
   fetchOutcome?: unknown;
   fetchHttpStatus?: unknown;
   fetchRefusalScope?: unknown;
+  fetchContentKind?: unknown;
 }>;
 
 /** Why a page link was refused, worded by how the owner allows it. */
@@ -273,9 +274,12 @@ function notInConversationCopy(target: string, scope: unknown): string {
 /** A page read's row: "Reading <host/path>", then its outcome in plain words. */
 function describeFetchCallV2(call: ToolActivityIdentity, phase: "cancelled" | "failed" | "running" | "settled"): string {
   const target = decodeFetchUrlTarget(call.fetchTarget) ?? "web page";
+  const pdf = call.fetchContentKind === "pdf";
   if (phase === "running") return `Reading ${target}`;
   if (phase === "cancelled") return `Reading ${target} stopped`;
-  if (phase === "settled" && (call.fetchOutcome === undefined || call.fetchOutcome === "read")) return `Read ${target}`;
+  if (phase === "settled" && (call.fetchOutcome === undefined || call.fetchOutcome === "read")) {
+    return pdf ? `Read PDF ${target}` : `Read ${target}`;
+  }
   switch (call.fetchOutcome) {
     case "fetch_url_not_in_conversation": return notInConversationCopy(target, call.fetchRefusalScope);
     case "fetch_blocked_address":
@@ -284,15 +288,18 @@ function describeFetchCallV2(call: ToolActivityIdentity, phase: "cancelled" | "f
     case "fetch_url_invalid":
     case "fetch_redirect_invalid": return `Blocked ${target}: this address is not allowed`;
     case "fetch_redirect_limit": return `Couldn't read ${target}: too many redirects`;
-    case "fetch_timeout": return `Couldn't read ${target}: the page took too long`;
-    case "fetch_too_large": return `Couldn't read ${target}: the page is too large`;
-    case "fetch_unsupported_content_type": return `Couldn't read ${target}: not a web page, upload the file instead`;
+    case "fetch_timeout": return `Couldn't read ${target}: the ${pdf ? "PDF" : "page"} took too long`;
+    case "fetch_too_large": return `Couldn't read ${target}: the ${pdf ? "PDF" : "page"} is too large`;
+    case "fetch_unsupported_content_type": return `Couldn't read ${target}: not a web page or PDF, upload the file instead`;
     case "fetch_http_status": {
       const status = typeof call.fetchHttpStatus === "number" ? ` ${call.fetchHttpStatus}` : " an error";
       return `Couldn't read ${target}: the site returned${status}`;
     }
     case "fetch_network_error": return `Couldn't read ${target}: the site is unreachable`;
-    case "fetch_no_readable_text": return `No readable text on ${target}`;
+    case "fetch_no_readable_text": return pdf ? `No readable text in PDF ${target}, it may be scanned` : `No readable text on ${target}`;
+    case "fetch_pdf_password_protected": return `Couldn't read ${target}: the PDF is password-protected`;
+    case "fetch_pdf_invalid": return `Couldn't read ${target}: the PDF is damaged or unreadable`;
+    case "fetch_pdf_too_many_pages": return `Couldn't read ${target}: the PDF has too many pages`;
     case "fetch_reader_unavailable": return `Couldn't read ${target}: page reading is unavailable`;
     case "fetch_url_limit_reached": return `Skipped ${target}: page limit for this answer reached`;
     case "fetch_url_interrupted": return `Reading ${target} was interrupted`;

@@ -34,8 +34,13 @@ export type PdfExtractionResult = {
   pagesProcessed: number;
   status: "complete" | "partial" | "no_text";
   text: string;
+  /** Only when `readTitle` was requested: the metadata title, whitespace-collapsed and bounded, or null. */
+  title?: string | null;
   truncationReason?: "text_limit";
 };
+
+/** Upper bound of a metadata title (`readTitle`), in UTF-16 units. */
+export const PDF_TITLE_MAX_CHARS = 300;
 
 export type PdfExtractionErrorCode =
   | "pdf_page_limit_exceeded"
@@ -79,6 +84,7 @@ type PdfPage = {
 type PdfDocument = {
   cleanup?: () => unknown | Promise<unknown>;
   destroy?: () => unknown | Promise<unknown>;
+  getMetadata?: () => Promise<unknown>;
   getPage(pageNumber: number): Promise<PdfPage>;
   numPages: number;
 };
@@ -89,6 +95,8 @@ export type PdfExtractionOptions = {
   /** Test-only injection point for deterministic page proxies. */
   getDocumentProxy?: (data: Uint8Array, options: { signal: AbortSignal }) => Promise<PdfDocument>;
   config?: Partial<PdfExtractionConfig>;
+  /** Also return the document's metadata title (`title`); a missing or unreadable one is null. */
+  readTitle?: boolean;
   signal?: AbortSignal;
 };
 
@@ -96,6 +104,7 @@ type NormalizedPdfExtractionOptions = {
   config: PdfExtractionConfig;
   createWorker: (source: string, options: WorkerOptions) => Worker;
   getDocumentProxy?: PdfExtractionOptions["getDocumentProxy"];
+  readTitle: boolean;
   signal?: AbortSignal;
 };
 
@@ -133,6 +142,7 @@ function normalizeOptions(options: PdfExtractionOptions): NormalizedPdfExtractio
     },
     createWorker: options.createWorker ?? ((source, workerOptions) => new Worker(source, workerOptions)),
     getDocumentProxy: options.getDocumentProxy,
+    readTitle: options.readTitle === true,
     signal: options.signal
   };
 }
@@ -235,6 +245,24 @@ function appendChunkText(chunks: PdfTextChunk[], page: number, value: string, ch
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The Info dictionary's `Title` on one line and bounded, or null; metadata never fails an extraction. */
+async function metadataTitle(pdf: PdfDocument): Promise<string | null> {
+  let value: unknown;
+  try {
+    const metadata = await pdf.getMetadata?.();
+    value = isRecord(metadata) && isRecord(metadata.info) ? metadata.info.Title : undefined;
+  } catch {
+    return null;
+  }
+  if (typeof value !== "string") return null;
+  const title = takeUnicodePrefix(value.replace(/[\s\u0000-\u001f\u007f]+/gu, " ").trim(), PDF_TITLE_MAX_CHARS).trim();
+  return title || null;
+}
+
 async function releasePage(page: PdfPage | undefined): Promise<void> {
   try {
     await page?.cleanup?.();
@@ -261,7 +289,8 @@ async function extractSequentially(
   buffer: Buffer,
   getDocumentProxy: NonNullable<PdfExtractionOptions["getDocumentProxy"]>,
   config: PdfExtractionConfig,
-  signal: AbortSignal
+  signal: AbortSignal,
+  readTitle: boolean
 ): Promise<PdfExtractionResult> {
   let pdf: PdfDocument | undefined;
   const chunks: PdfTextChunk[] = [];
@@ -279,6 +308,7 @@ async function extractSequentially(
     if (pdf.numPages > config.maxPages) {
       throw new PdfExtractionError("pdf_page_limit_exceeded");
     }
+    const title = readTitle ? { title: await metadataTitle(pdf) } : {};
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       if (signal.aborted) throw abortReason(signal);
@@ -304,6 +334,7 @@ async function extractSequentially(
               pagesProcessed,
               status: "partial",
               text,
+              ...title,
               truncationReason: "text_limit"
             };
           }
@@ -324,7 +355,8 @@ async function extractSequentially(
       pageCount: pdf.numPages,
       pagesProcessed,
       status: text.length === 0 ? "no_text" : "complete",
-      text
+      text,
+      ...title
     };
   } catch (error) {
     if (signal.aborted) throw abortReason(signal);
@@ -338,6 +370,7 @@ function runDirectExtraction(
   buffer: Buffer,
   getDocumentProxy: NonNullable<PdfExtractionOptions["getDocumentProxy"]>,
   config: PdfExtractionConfig,
+  readTitle: boolean,
   callerSignal?: AbortSignal
 ): Promise<PdfExtractionResult> {
   if (callerSignal?.aborted) return Promise.reject(abortReason(callerSignal));
@@ -365,7 +398,7 @@ function runDirectExtraction(
     }, config.timeoutMs);
 
     callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
-    void extractSequentially(buffer, getDocumentProxy, config, controller.signal).then(
+    void extractSequentially(buffer, getDocumentProxy, config, controller.signal, readTitle).then(
       (value) => finish({ value }),
       (error) => finish({ error })
     );
@@ -451,6 +484,20 @@ function workerSource(): string {
       try { await page?.cleanup?.(); } catch {}
     }
 
+    async function metadataTitle(pdf) {
+      let value;
+      try {
+        const metadata = await pdf.getMetadata();
+        value = metadata && typeof metadata === "object" && metadata.info && typeof metadata.info === "object"
+          ? metadata.info.Title : undefined;
+      } catch {
+        return null;
+      }
+      if (typeof value !== "string") return null;
+      const title = takeUnicodePrefix(value.replace(/[\s\u0000-\u001f\u007f]+/gu, " ").trim(), workerData.titleMaxChars).trim();
+      return title || null;
+    }
+
     async function releaseDocument(pdf) {
       try { await pdf?.cleanup?.(); } catch {}
       try { await pdf?.destroy?.(); } catch {}
@@ -476,6 +523,7 @@ function workerSource(): string {
           error.code = "pdf_page_limit_exceeded";
           throw error;
         }
+        const title = workerData.readTitle ? { title: await metadataTitle(pdf) } : {};
 
         for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
           let page;
@@ -496,6 +544,7 @@ function workerSource(): string {
                   pagesProcessed,
                   status: "partial",
                   text,
+                  ...title,
                   truncationReason: "text_limit"
                 };
               }
@@ -515,7 +564,8 @@ function workerSource(): string {
           pageCount: pdf.numPages,
           pagesProcessed,
           status: text.length === 0 ? "no_text" : "complete",
-          text
+          text,
+          ...title
         };
       } finally {
         await releaseDocument(pdf);
@@ -527,10 +577,6 @@ function workerSource(): string {
   `;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const keys = Object.keys(value);
   return keys.length === allowed.length && keys.every((key) => allowed.includes(key));
@@ -540,7 +586,7 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
-function parseWorkerMessage(message: unknown, config: PdfExtractionConfig): PdfExtractionResult {
+function parseWorkerMessage(message: unknown, config: PdfExtractionConfig, readTitle: boolean): PdfExtractionResult {
   if (!isRecord(message) || typeof message.ok !== "boolean") {
     throw new PdfExtractionError("pdf_extraction_failed");
   }
@@ -562,9 +608,11 @@ function parseWorkerMessage(message: unknown, config: PdfExtractionConfig): PdfE
 
   const result = message.result;
   const status = result.status;
-  const expectedKeys = status === "partial"
-    ? ["chunks", "extractedCharacterCount", "pageCount", "pagesProcessed", "status", "text", "truncationReason"]
-    : ["chunks", "extractedCharacterCount", "pageCount", "pagesProcessed", "status", "text"];
+  const expectedKeys = [
+    "chunks", "extractedCharacterCount", "pageCount", "pagesProcessed", "status", "text",
+    ...(status === "partial" ? ["truncationReason"] : []),
+    ...(readTitle ? ["title"] : [])
+  ];
 
   if (
     !hasOnlyKeys(result, expectedKeys) ||
@@ -578,7 +626,9 @@ function parseWorkerMessage(message: unknown, config: PdfExtractionConfig): PdfE
     !isNonNegativeSafeInteger(result.pagesProcessed) ||
     result.pagesProcessed > result.pageCount ||
     !Array.isArray(result.chunks) ||
-    result.chunks.length > config.extractedTextMaxChars
+    result.chunks.length > config.extractedTextMaxChars ||
+    (readTitle && result.title !== null &&
+      (typeof result.title !== "string" || result.title.length === 0 || result.title.length > PDF_TITLE_MAX_CHARS))
   ) {
     throw new PdfExtractionError("pdf_extraction_failed");
   }
@@ -653,6 +703,8 @@ function runWorkerExtraction(buffer: Buffer, options: NormalizedPdfExtractionOpt
             extractedTextMaxChars: options.config.extractedTextMaxChars,
             maxPages: options.config.maxPages
           },
+          readTitle: options.readTitle,
+          titleMaxChars: PDF_TITLE_MAX_CHARS,
           unpdfModulePath: UNPDF_MODULE_PATH
         }
       });
@@ -698,7 +750,7 @@ function runWorkerExtraction(buffer: Buffer, options: NormalizedPdfExtractionOpt
     };
     const onMessage = (message: unknown) => {
       try {
-        void finish({ value: parseWorkerMessage(message, options.config) });
+        void finish({ value: parseWorkerMessage(message, options.config, options.readTitle) });
       } catch (error) {
         void finish({ error: classifyPdfError(error) });
       }
@@ -721,7 +773,7 @@ export function extractPdfTextChunks(
 ): Promise<PdfExtractionResult> {
   const normalized = normalizeOptions(options);
   if (normalized.getDocumentProxy) {
-    return runDirectExtraction(buffer, normalized.getDocumentProxy, normalized.config, normalized.signal);
+    return runDirectExtraction(buffer, normalized.getDocumentProxy, normalized.config, normalized.readTitle, normalized.signal);
   }
   return runWorkerExtraction(buffer, normalized);
 }

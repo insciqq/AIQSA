@@ -18,12 +18,27 @@ export const FETCH_URL_ACTIVITY_OUTCOMES = [
   "fetch_http_status",
   "fetch_network_error",
   "fetch_no_readable_text",
+  "fetch_pdf_password_protected",
+  "fetch_pdf_invalid",
+  "fetch_pdf_too_many_pages",
   "fetch_reader_unavailable",
   "fetch_url_limit_reached",
   "fetch_url_interrupted"
 ] as const;
 
 export type FetchUrlActivityOutcome = (typeof FETCH_URL_ACTIVITY_OUTCOMES)[number];
+
+/**
+ * A body kind an activity row names: `pdf` when the link's body was read as
+ * a PDF (its outcome then is the PDF's read or failure). Pages carry none.
+ */
+export const FETCH_URL_CONTENT_KINDS = ["pdf"] as const;
+
+export type FetchUrlContentKind = (typeof FETCH_URL_CONTENT_KINDS)[number];
+
+export function isFetchUrlContentKind(value: unknown): value is FetchUrlContentKind {
+  return typeof value === "string" && (FETCH_URL_CONTENT_KINDS as readonly string[]).includes(value);
+}
 
 /** Upper bound of an activity row's "host/path" target, in UTF-16 units. */
 export const FETCH_URL_TARGET_MAX_LENGTH = 96;
