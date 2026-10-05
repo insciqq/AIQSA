@@ -199,7 +199,8 @@ test.afterEach(async ({ page }) => {
 test("a sharded ChatGPT export imports with branches, citation links and counted images, once", async ({ page }) => {
   const report = await importZip(page);
   await expect(report).toContainText("Import finished");
-  await expect(report).toContainText("Imported 2 chats (6 messages).");
+  // Branches: question, two sibling answers (a branch, never merged), edited question, its answer; image chat: 2.
+  await expect(report).toContainText("Imported 2 chats (7 messages).");
   await expect(report).toContainText("Not imported, marked in the messages: 1 image, 1 empty chat.");
   await page.getByRole("button", { name: "Close settings" }).click();
 
