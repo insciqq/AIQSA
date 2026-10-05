@@ -9,7 +9,8 @@ CREATE TABLE "_VisionAnalysisUpgradeFixture" AS SELECT to_jsonb(u) AS usage FROM
 export const visionAnalysisProofSql = `
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM "_VisionAnalysisUpgradeFixture" f JOIN "UsageEvent" u ON u.id = 'vision-analysis-adoption-usage'
-    WHERE f.usage = to_jsonb(u) - 'visionAnalysis' - 'visionAnalysisAttemptId' AND NOT u."visionAnalysis" AND u."visionAnalysisAttemptId" IS NULL)
+    WHERE f.usage = to_jsonb(u) - 'visionAnalysis' - 'visionAnalysisAttemptId' - 'knowledgeImageObservationRunId'
+      AND NOT u."visionAnalysis" AND u."visionAnalysisAttemptId" IS NULL AND u."knowledgeImageObservationRunId" IS NULL)
     THEN RAISE EXCEPTION 'vision_analysis_changed_existing_accounting'; END IF;
   IF EXISTS (SELECT 1 FROM "VisionAnalysisAttempt") THEN RAISE EXCEPTION 'vision_analysis_invented_dispatch'; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_enum WHERE enumtypid = '"ProviderRunRole"'::regtype AND enumlabel = 'vision_analysis')
