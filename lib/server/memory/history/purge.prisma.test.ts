@@ -838,6 +838,87 @@ describe("Prisma Memory history purge", () => {
       });
     }
   }, 600_000);
+
+  it("keeps ACTIVE history mapped only to messages on the chat's active branch", async () => {
+    const userId = `memory-history-branch-guard-${randomUUID()}`;
+    let passed = false;
+    try {
+      await prisma.user.create({
+        data: {
+          displayName: "Memory history branch guard fixture",
+          email: `${userId}@example.test`,
+          id: userId,
+          status: "active"
+        }
+      });
+      // Accept: the fixture commits ACTIVE chunks mapped to the active branch.
+      const chat = await createHistoryChat(userId, "Branch guard", {
+        branchMessages: 2,
+        prefixMessages: 8,
+        staleTailMessages: 4
+      });
+      const offBranch = await prisma.message.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { id: true, role: true, updatedAt: true },
+        where: { id: { in: [...chat.staleMessageIds] } }
+      });
+      expect(offBranch).toHaveLength(4);
+      // Reject: the same exact, unchanged messages off the active branch.
+      // Every other source condition holds, so only branch membership fails.
+      const text = "user:\nSynthetic off-branch turn.";
+      const chunkId = randomUUID();
+      await expect(prisma.$transaction(async (tx) => {
+        await tx.memoryRecallChunk.create({
+          data: {
+            branchGeneration: 0,
+            chatId: chat.chatId,
+            chunkOrdinal: 1_000,
+            chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+            contentHash: memorySha256(text),
+            id: chunkId,
+            languageCode: "en",
+            normalizedSafeSearchText: normalizeMemorySearchText(text),
+            occurredFrom: new Date(Date.UTC(2026, 7, 1)),
+            occurredTo: new Date(Date.UTC(2026, 7, 1)),
+            redactionState: "NOT_NEEDED",
+            safeProjectedText: text,
+            safetyClass: "NORMAL",
+            sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+            sourceRevisionAtCreation: 0,
+            state: "ACTIVE",
+            userId
+          }
+        });
+        await tx.memoryRecallChunkMessage.createMany({
+          data: offBranch.map((message, ordinal) => ({
+            chatId: chat.chatId,
+            chunkId,
+            messageId: message.id,
+            ordinal,
+            role: message.role,
+            safeTextHash: memorySha256(`${text}:${ordinal}`),
+            sourceMessageContentHash: memorySha256(`synthetic-content:${message.id}`),
+            sourceMessageUpdatedAt: message.updatedAt,
+            userId
+          }))
+        });
+        await tx.$executeRaw`SET CONSTRAINTS ALL IMMEDIATE`;
+      })).rejects.toMatchObject({
+        code: "P2010",
+        message: expect.stringMatching(/must match the current eligible chat source/u),
+        meta: { code: "23514" }
+      });
+      await expect(prisma.memoryRecallChunk.count({ where: { id: chunkId } })).resolves.toBe(0);
+      await expect(prisma.memoryRecallChunk.count({
+        where: { id: { in: [...chat.activeChunkIds] }, state: "ACTIVE" }
+      })).resolves.toBe(chat.activeChunkIds.length);
+      passed = true;
+    } finally {
+      await prisma.user.deleteMany({ where: { id: userId } }).catch((error: unknown) => {
+        if (passed) throw error;
+      });
+    }
+  });
 });
 
 const CHUNK_MESSAGES = 4;
@@ -856,6 +937,7 @@ type HistoryChatFixture = Readonly<{
   activeChunkIds: readonly string[];
   chatId: string;
   staleChunkIds: readonly string[];
+  staleMessageIds: readonly string[];
 }>;
 
 type FixtureMessage = Readonly<{ id: string; role: string; updatedAt: Date }>;
@@ -977,7 +1059,8 @@ async function createHistoryChat(
   return {
     activeChunkIds: active.chunkRows.map(({ id }) => id!),
     chatId: chat.id,
-    staleChunkIds: staleChunks.chunkRows.map(({ id }) => id!)
+    staleChunkIds: staleChunks.chunkRows.map(({ id }) => id!),
+    staleMessageIds: stale
   };
 }
 
