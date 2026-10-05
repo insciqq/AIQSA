@@ -28,6 +28,12 @@ export const MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION = "v3";
 const MEMORY_HISTORY_AUTO_HEAL_CLAIMABLE_POLICY_VERSIONS: ReadonlySet<string> =
   new Set(["v2", MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION]);
 export const MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS = Object.freeze([60_000, 5 * 60_000, 15 * 60_000]);
+/** A settled turn's history job is claimable only after its chat has stayed
+ * quiet this long. The next turn of an active chat usually lands seconds later
+ * and nearly always within two minutes; it makes the job non-current, so the
+ * claim gate settles it STALE before any paid stage binds and only the newest
+ * source is indexed. Recovery, repair, backfill and deletion keep their timing. */
+export const MEMORY_HISTORY_QUIET_WINDOW_MS = 120_000;
 export const MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS = 512;
 export const MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES = 8_192;
 

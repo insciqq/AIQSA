@@ -5,7 +5,10 @@ import type {
   MemorySourceSnapshot
 } from "../sourceState";
 import type { MemoryTransaction } from "../persistence/transaction";
-import { MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION } from "./contract";
+import {
+  MEMORY_HISTORY_QUIET_WINDOW_MS,
+  MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION
+} from "./contract";
 import {
   applyMemoryHistorySourceMutation,
   inheritMemoryHistoryBranchResumeCutoff
@@ -105,7 +108,86 @@ function projectEvent(): MemoryRetainedSourceMutationEvent {
   };
 }
 
+function settledTurnEvent(): MemoryRetainedSourceMutationEvent {
+  const snapshot: MemorySourceSnapshot = {
+    activeLeafMessageId: "assistant-2",
+    archived: false,
+    folderId: null,
+    id: "chat-1",
+    memoryBranchGeneration: 0,
+    memoryMode: "NORMAL",
+    memorySourceRevision: 4,
+    messages: [],
+    projectId: null,
+    sourceHash: "c".repeat(64),
+    temporaryRetentionDeadline: null,
+    temporaryRetentionPolicyVersion: null,
+    userId: "owner-1"
+  };
+  const { messages: _messages, sourceHash: _sourceHash, ...chat } = snapshot;
+  return {
+    mutations: ["TERMINAL_SETTLEMENT"],
+    previous: { ...chat, memorySourceRevision: 3 },
+    settlement: { assistantMessageId: "assistant-2", runId: "run-2", status: "complete" },
+    snapshot
+  };
+}
+
+function sqlText(query: unknown): string {
+  return Array.isArray(query)
+    ? query.join("")
+    : String((query as { sql?: unknown }).sql ?? "");
+}
+
+/** A settled turn on a chat whose indexed history stays on the active path. */
+function settlementTransaction() {
+  const create = vi.fn(async (_input: { data: Record<string, unknown> }) => ({
+    id: "job-1",
+    memoryGenerationSnapshot: 0,
+    memoryRevisionSnapshot: 0,
+    state: "QUEUED"
+  }));
+  const tx = {
+    $queryRaw: vi.fn(async (query: unknown) => sqlText(query).includes("\"UserMemorySettings\"")
+      ? [{
+          memoryGeneration: 0,
+          memoryRevision: 0,
+          ownerStatus: "active",
+          referenceChatHistory: true,
+          useMemoryFacts: true,
+          userId: "owner-1"
+        }]
+      : []),
+    chatMemoryCheckpoint: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      upsert: vi.fn(async () => ({}))
+    },
+    chatMemoryDigest: { findFirst: vi.fn(async () => null) },
+    memoryJob: { create, findUnique: vi.fn(async () => null) }
+  } as unknown as MemoryTransaction;
+  return { create, tx };
+}
+
 describe("memory history source lifecycle", () => {
+  it("queues a settled turn's index job only after the quiet window", async () => {
+    const { create, tx } = settlementTransaction();
+    const before = Date.now();
+    await applyMemoryHistorySourceMutation(tx, settledTurnEvent());
+    const after = Date.now();
+
+    expect(create).toHaveBeenCalledOnce();
+    const data = create.mock.calls[0]![0].data;
+    expect(data).toMatchObject({
+      activeLeafMessageId: "assistant-2",
+      chatId: "chat-1",
+      kind: "INDEX_HISTORY",
+      sourceRevision: 4
+    });
+    const notBefore = (data.nextAttemptAt as Date).getTime();
+    expect(notBefore).toBeGreaterThanOrEqual(before + MEMORY_HISTORY_QUIET_WINDOW_MS);
+    expect(notBefore).toBeLessThanOrEqual(after + MEMORY_HISTORY_QUIET_WINDOW_MS);
+  });
+
   it("does not read, write, or enqueue artifacts for project chats", async () => {
     const tx = new Proxy({}, {
       get() {
