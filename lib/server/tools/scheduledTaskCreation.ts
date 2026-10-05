@@ -38,7 +38,7 @@ type ScheduledTaskToolRequest = Readonly<{
 }>;
 export type ScheduledTaskCallCreator = NonNullable<RunRepository["createScheduledTaskForCall"]>;
 
-const SETTINGS_KEYS = ["modelId", "provider", "searchEnabled", "toolsEnabled", "workspaceEnabled"];
+const SETTINGS_KEYS = ["modelId", "provider", "searchEnabled", "toolsEnabled", "workspaceEnabled", "memoryEnabled"];
 const ARGUMENT_KEYS = ["title", "prompt", "kind", "chatMode", "schedule"];
 const SCHEDULE_FIELDS = {
   once: ["date"], daily: [], weekly: ["days"], monthly: ["dayOfMonth"], hourly: ["everyHours", "until", "days"]
@@ -49,14 +49,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The frozen marker's exact shape, as recovery decodes an accepted request. */
+/**
+ * The frozen marker's exact shape, as recovery decodes an accepted request.
+ * A run accepted before tasks had Memory froze no `memoryEnabled`.
+ */
 export function isScheduledTaskToolSettings(value: unknown): value is ScheduledTaskToolSettings {
-  return isRecord(value) && Object.keys(value).length === SETTINGS_KEYS.length &&
-    SETTINGS_KEYS.every((key) => key in value) &&
+  return isRecord(value) && Object.keys(value).every((key) => SETTINGS_KEYS.includes(key)) &&
     typeof value.modelId === "string" && value.modelId.length > 0 && value.modelId.length <= 256 &&
     typeof value.provider === "string" && value.provider.length > 0 && value.provider.length <= 256 &&
     typeof value.searchEnabled === "boolean" && typeof value.toolsEnabled === "boolean" &&
-    typeof value.workspaceEnabled === "boolean";
+    typeof value.workspaceEnabled === "boolean" &&
+    (value.memoryEnabled === undefined || typeof value.memoryEnabled === "boolean");
 }
 
 /** The run's frozen zone: the browser's, or UTC when admission had none (`utc_fallback`). */
@@ -172,7 +175,7 @@ function defaultChatMode(input: ToolArguments): "new" | "same" {
 }
 
 /** "Mon 2026-10-05 09:00" in the task's zone: unambiguous for the model to restate. */
-function localInstant(value: string | null, timeZone: string): string | null {
+export function localInstant(value: string | null, timeZone: string): string | null {
   if (value === null) return null;
   const parts: Record<string, string> = {};
   for (const part of new Intl.DateTimeFormat("en-GB", {
@@ -199,6 +202,7 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
       webSearch: task.searchEnabled,
       tools: task.toolsEnabled,
       workspace: task.workspaceEnabled,
+      memory: task.memoryEnabled,
       note: "The answer shows this task with Edit and Delete; the user manages tasks in Studio > Scheduled."
     } }],
     name: call.name,
@@ -238,8 +242,9 @@ function refused(call: Pick<ModelToolCall, "id" | "name">, code: ScheduledTaskCa
 }
 
 /**
- * Creates the task one call asks for, with the run's frozen settings and time
- * zone and the owner's email notifications off (the editor's default). A
+ * Creates the task one call asks for, with the run's frozen settings (Memory
+ * only when the run itself was admitted to read it) and time zone and the
+ * owner's email notifications off (the editor's default). A
  * refusal is a tool error the model explains; nothing is created then. A
  * recovered call returns the result it settled with when it had created its
  * task, and creates it only when it had not.
@@ -263,6 +268,7 @@ export async function executeCreateScheduledTask(
         title: decoded.title, prompt: decoded.prompt, schedule: decoded.schedule, timeZone: zone.timeZone,
         modelId: settings.modelId, provider: settings.provider, searchEnabled: settings.searchEnabled, emailNotify: false,
         toolsEnabled: settings.toolsEnabled, workspaceEnabled: settings.workspaceEnabled,
+        memoryEnabled: settings.memoryEnabled === true,
         chatMode: decoded.chatMode ?? defaultChatMode(decoded), kind: decoded.kind
       },
       callId: context.persistedToolCallId,

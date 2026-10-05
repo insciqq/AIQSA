@@ -4,6 +4,7 @@ import {
   SCHEDULED_TASK_CARDS_LIMIT,
   SCHEDULED_TASK_CHECK_OUTCOMES,
   SCHEDULED_TASK_ERROR_CODES,
+  SCHEDULED_TASK_MANAGED_PER_ANSWER,
   decodeScheduledTaskCard,
   foldScheduledTaskCards,
   scheduledTaskCard,
@@ -30,7 +31,7 @@ const task: ScheduledTask = {
   id: "task-1", title: "Morning brief", prompt: "Summarize overnight news.",
   schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
   modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true, workspaceEnabled: false,
-  chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
+  memoryEnabled: true, chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
   nextRunAt: "2026-10-05T06:00:00.000Z",
   lastRun: { scheduledFor: "2026-10-02T06:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T06:01:10.000Z",
     unseen: true },
@@ -56,6 +57,7 @@ describe("scheduled task wire contract", () => {
     expect(decodeScheduledTask({ ...task, status: "paused", nextRunAt: null, pauseReason: "model_unavailable" }))
       .toMatchObject({ status: "paused", pauseReason: "model_unavailable" });
     expect(decodeScheduledTask({ ...task, schedule: hourly, chatMode: "same" })).toMatchObject({ schedule: hourly, chatMode: "same" });
+    expect(decodeScheduledTask({ ...task, memoryEnabled: false })).toMatchObject({ memoryEnabled: false });
     const reached = { ...task, chatMode: "same", completionReason: "goal_reached", kind: "monitoring", nextRunAt: null, status: "completed" };
     expect(decodeScheduledTask(reached)).toEqual(reached);
     // Instructions whose links runs cannot read yet carry only a flag.
@@ -68,6 +70,7 @@ describe("scheduled task wire contract", () => {
       { ...task, revision: 0 }, { ...task, schedule: { kind: "daily", time: "25:00" } }, { ...task, timeZone: "+03:00" },
       { ...task, chatMode: "other" }, { ...task, chatMode: undefined }, { ...task, schedule: hourly, chatMode: "new" },
       { ...task, toolsEnabled: "auto" }, { ...task, workspaceEnabled: undefined },
+      { ...task, memoryEnabled: undefined }, { ...task, memoryEnabled: "on" },
       { ...task, kind: "watch" }, { ...task, kind: undefined }, { ...task, kind: "monitoring" },
       { ...task, completionReason: "goal_reached" }, { ...reached, completionReason: "Goal reached" }
     ]) {
@@ -178,5 +181,32 @@ describe("scheduled task wire contract", () => {
     const folded = foldScheduledTaskCards([card, { malformed: true }, renamed, ...others]);
     expect(folded[0]).toEqual(renamed);
     expect(folded).toHaveLength(SCHEDULED_TASK_CARDS_LIMIT);
+  });
+
+  it("carries what an answer last did to a task, with room for five managed tasks and one created", () => {
+    expect(SCHEDULED_TASK_MANAGED_PER_ANSWER).toBe(5);
+    expect(SCHEDULED_TASK_CARDS_LIMIT).toBe(6);
+    const paused = scheduledTaskCard({ ...task, status: "paused", nextRunAt: null }, false, "paused");
+    expect(paused).toMatchObject({ action: "paused", status: "paused" });
+    for (const action of ["changed", "paused", "resumed", "delete_proposed"] as const) {
+      expect(decodeScheduledTaskCard({ ...scheduledTaskCard(task, false), action })).toMatchObject({ action });
+    }
+    // A created task's card has no action; an unknown one is malformed.
+    expect(scheduledTaskCard(task, false)).not.toHaveProperty("action");
+    expect(decodeScheduledTaskCard({ ...scheduledTaskCard(task, false), action: "deleted" })).toBeNull();
+    expect(decodeScheduledTaskCard({ ...scheduledTaskCard(task, false), action: null })).toBeNull();
+    expect(decodeScheduledTaskCard({ ...scheduledTaskCard(task, false, "delete_proposed"), deleted: true }))
+      .toMatchObject({ action: "delete_proposed", deleted: true });
+
+    // One created and five managed tasks keep their cards; the latest action on a task wins in its first place.
+    const created = scheduledTaskCard({ ...task, id: "created" }, false);
+    const managed = Array.from({ length: 5 }, (_value, index) =>
+      scheduledTaskCard({ ...task, id: `managed-${index}`, status: "paused", nextRunAt: null }, false, "paused"));
+    const resumed = scheduledTaskCard({ ...task, id: "managed-0" }, false, "resumed");
+    const folded = foldScheduledTaskCards([created, ...managed, resumed]);
+    expect(folded.map((entry) => [entry.taskId, entry.action ?? "created"])).toEqual([
+      ["created", "created"], ["managed-0", "resumed"], ["managed-1", "paused"], ["managed-2", "paused"], ["managed-3", "paused"],
+      ["managed-4", "paused"]
+    ]);
   });
 });

@@ -6,6 +6,7 @@ import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { isSkillToolName, LOAD_SKILL_TOOL_NAME } from "../tools/skill";
 import { isScheduledTaskToolSettings } from "../tools/scheduledTaskCreation";
 import { isFetchUrlPlan } from "../tools/fetchUrlPlan";
+import { isScheduledTaskManagementSettings } from "../tools/scheduledTaskManagement";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { validArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 import { isModelGenerationBudget } from "../providers/modelOutputAllowance";
@@ -103,10 +104,16 @@ import {
 } from "./prismaRepositoryShared";
 export { isRecoveredRunTerminalPayload } from "./prismaRepositoryShared";
 
+/**
+ * `settlement`: the events are a tool call's own result, appended in the
+ * transaction that settles it; a scheduled task card then records the call's
+ * action unless it equals the task's latest card.
+ */
 export async function appendRunOutputEvents(
   tx: Prisma.TransactionClient,
   runId: string,
-  events: readonly RunOutputArtifactEvent[]
+  events: readonly RunOutputArtifactEvent[],
+  options: Readonly<{ settlement?: boolean }> = {}
 ): Promise<RunOutputArtifactEvent[]> {
   if (events.length === 0) return [];
   if (events.some((event) => !isRunOutputArtifactEvent(event))) {
@@ -147,16 +154,22 @@ export async function appendRunOutputEvents(
       }
       updates.set(key, event);
     }
-    // A created scheduled task's card is kept once: its creation appends it,
-    // and a live or recovered replay of the settled call publishes it again.
+    // A scheduled task's card is kept once per settled call: the call's
+    // settlement appends it, and a live or recovered replay of the settled
+    // call publishes it again. Another call on the same task appends its own
+    // card, whose action and state the answer then shows.
     if (event.type === "artifact" && event.data.artifactType === "scheduled_task") {
       const key = `scheduled_task:${event.data.payload.taskId}`;
-      if (updates.has(key) || await tx.modelRunEvent.findFirst({ select: { id: true }, where: {
+      const buffered = updates.get(key);
+      const latest = buffered ?? await tx.modelRunEvent.findFirst({ orderBy: { sequence: "desc" }, select: { payload: true }, where: {
         modelRunId: runId, eventType: "artifact", AND: [
           { payload: { path: ["artifactType"], equals: "scheduled_task" } },
           { payload: { path: ["payload", "taskId"], equals: event.data.payload.taskId } }
         ]
-      } })) {
+      } });
+      const latestData = latest && ("data" in latest ? latest.data : latest.payload);
+      if (latest && (!options.settlement ||
+        canonicalJson(latestData as ToolLoopJsonValue) === canonicalJson(event.data as unknown as ToolLoopJsonValue))) {
         published.push(event);
         continue;
       }
@@ -623,6 +636,7 @@ const normalizedRequestKeys = new Set([
   "provider",
   "reasoningEffort",
   "scheduledTaskTool",
+  "scheduledTaskManagementTool",
   "searchPlan",
   "sessionStatusTool",
   "toolCallReader",
@@ -1018,6 +1032,8 @@ function decodeProviderDispatchRecoveryRequest(
     (value.sessionStatusTool !== undefined && value.sessionStatusTool !== true) ||
     (value.monitoringVerdictTool !== undefined && value.monitoringVerdictTool !== true) ||
     (value.scheduledTaskTool !== undefined && !isScheduledTaskToolSettings(value.scheduledTaskTool)) ||
+    (value.scheduledTaskManagementTool !== undefined && (value.scheduledTaskTool === undefined ||
+      !isScheduledTaskManagementSettings(value.scheduledTaskManagementTool))) ||
     (value.fetchUrl !== undefined && !isFetchUrlPlan(value.fetchUrl)) ||
     (value.toolCallReader !== undefined && value.toolCallReader !== true) ||
     (value.toolHistory !== undefined && !decodeToolHistorySnapshot(value.toolHistory)) ||

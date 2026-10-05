@@ -248,7 +248,7 @@ export type ThreadArtifactSummary = {
   reasoningText: string[];
   /** Part of the thinking was too long to keep or show. */
   reasoningTruncated?: true;
-  /** Scheduled tasks the answer created; see `ScheduledTaskCard`. */
+  /** Scheduled tasks the answer created or managed; see `ScheduledTaskCard`. */
   scheduledTasks?: ScheduledTaskCard[];
   sources: ThreadSearchSource[];
   /** Search results beyond THREAD_SEARCH_SOURCE_MAX_ITEMS were left out. */

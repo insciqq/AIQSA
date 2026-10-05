@@ -11,6 +11,7 @@ import { memorySha256 } from "../persistence/lexical";
 import { abortableMemoryRead } from "../retrieval/deadline";
 import { estimateApproxTokens } from "../../../domain/contextBudget";
 import { memoryReadBudgetFailureCode } from "../retrieval/readBudget";
+import { memoryReadableChatMode } from "../scheduledPrompt";
 
 const diagnosticCodes = new Set([
   "memory_read_admission_timeout", "memory_read_connection_timeout", "memory_read_deadline_exhausted",
@@ -91,6 +92,8 @@ export function createMemorySearchRetrieval(client: PrismaClient, dependencies: 
   const utilities = dependencies.utilities ?? createPrismaMemoryRunUtilityService({}, client);
   return async (input: Readonly<{ userId: string; chatId: string; assistantId: string | null;
     runId: string; toolCallId: string; query: string; comparison: boolean;
+    /** The run answers a scheduled task's prompt: it also reads in its excluded chat. */
+    scheduledPrompt?: boolean;
     accepted: MemorySearchSnapshot; signal: AbortSignal }>): Promise<MemorySearchRetrieved> => {
     input.signal.throwIfAborted();
     const now = new Date();
@@ -107,10 +110,13 @@ export function createMemorySearchRetrieval(client: PrismaClient, dependencies: 
     };
     const factPlan = planMemoryRetrieval({ currentUserText: input.query, now, applyResponsePreferences: false,
       filters: { sourceKinds: ["FACT", "EVENT"] }, mode: "TARGETED_CURRENT", temporalIntent: "CURRENT" });
+    const scheduledPrompt = input.scheduledPrompt === true;
     const base = { assistantId: input.assistantId, chatId: input.chatId, now, userId: input.userId,
-      settleSignal: input.signal, plan: factPlan, excludeToolEvents: true as const };
+      settleSignal: input.signal, plan: factPlan, excludeToolEvents: true as const,
+      ...(scheduledPrompt ? { scheduledPrompt: true as const } : {}) };
     const snapshot = await repository.snapshot(base);
-    if (snapshot.status !== "READY" || !snapshot.useMemoryFacts || snapshot.chatMemoryMode !== "NORMAL" ||
+    if (snapshot.status !== "READY" || !snapshot.useMemoryFacts ||
+      !memoryReadableChatMode(snapshot.chatMemoryMode, scheduledPrompt) ||
       input.assistantId !== snapshot.assistantId ||
       snapshot.memoryGeneration !== input.accepted.memoryGeneration) throw new Error("memory_search_authority_changed");
     const history = input.accepted.referenceChatHistory && snapshot.referenceChatHistory;

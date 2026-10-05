@@ -16,7 +16,7 @@ const catalog: ScheduledTaskCatalog = {
 const draft = {
   title: "Morning brief", prompt: "fixture-private-prompt", schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow",
   modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false, toolsEnabled: true,
-  workspaceEnabled: false, chatMode: "new", kind: "standard"
+  workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard"
 } as const;
 const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } satisfies ScheduledTaskSchedule;
 
@@ -93,6 +93,8 @@ describe("scheduled tasks owner API", () => {
       [{ ...draft, chatMode: undefined }, "scheduled_task_invalid"],
       [{ ...draft, toolsEnabled: "auto" }, "scheduled_task_invalid"],
       [{ ...draft, workspaceEnabled: undefined }, "scheduled_task_invalid"],
+      [{ ...draft, memoryEnabled: undefined }, "scheduled_task_invalid"],
+      [{ ...draft, memoryEnabled: "on" }, "scheduled_task_invalid"],
       // The composer's rule: tools and Workspace need a model that calls tools.
       [{ ...draft, modelId: "model-plain", searchEnabled: false }, "scheduled_task_tools_unavailable"],
       [{ ...draft, modelId: "model-plain", searchEnabled: false, toolsEnabled: false, workspaceEnabled: true },
@@ -320,6 +322,23 @@ describe("scheduled tasks owner API", () => {
     await tools.handlers.update(patch({ expectedRevision: 2, workspaceEnabled: true }), "task-1");
     expect(lastWrite(tools)).toMatchObject({ draft: { toolsEnabled: true, workspaceEnabled: true } });
     expect(tools.workspacePolicy.read).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores the Memory switch as sent and changes it without a model check", async () => {
+    const f = fixture();
+    await f.handlers.create(json("POST", { ...draft, memoryEnabled: false }));
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, memoryEnabled: false }, expect.any(Date), []);
+    // Memory needs no tool calling: a paused task with a plain model turns it on as it is.
+    const plain = fixture(task({ memoryEnabled: false, modelId: "model-plain", nextRunAt: null, searchEnabled: false,
+      status: "paused", toolsEnabled: false }));
+    expect((await plain.handlers.update(patch({ expectedRevision: 2, memoryEnabled: true }), "task-1")).status).toBe(200);
+    expect(lastWrite(plain)).toMatchObject({ draft: { memoryEnabled: true, toolsEnabled: false }, status: "paused" });
+    expect(plain.loadCatalog).not.toHaveBeenCalled();
+    // Other edits keep the stored switch.
+    await plain.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1");
+    expect(lastWrite(plain)).toMatchObject({ draft: { memoryEnabled: false, title: "Renamed" } });
+    const malformed = await plain.handlers.update(patch({ expectedRevision: 2, memoryEnabled: "off" }), "task-1");
+    expect([malformed.status, await malformed.json()]).toEqual([400, { error: "scheduled_task_invalid" }]);
   });
 
   it("wakes the runner after create and update", async () => {

@@ -14,7 +14,7 @@ const noUrls = scheduledPromptUrlDigests("", { kind: "owner" });
 const draft: ScheduledTaskDraft = {
   title: "Synthetic brief", prompt: "Synthetic scheduled prompt", schedule: { kind: "daily", time: "09:00" },
   timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false, emailNotify: false, toolsEnabled: false,
-  workspaceEnabled: false, chatMode: "new", kind: "standard"
+  workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard"
 };
 const hourlyDraft: ScheduledTaskDraft = {
   ...draft, chatMode: "same",
@@ -129,6 +129,20 @@ describe("persisted scheduled tasks", () => {
       await expect(prisma.scheduledTaskOccurrence.update({ data: { unavailableSources }, where: { id: occurrence.id } }))
         .rejects.toThrow("ScheduledTaskOccurrence_unavailable_sources_check");
     }
+  });
+
+  it("stores the Memory switch as written and leaves a row saved without it off", async () => {
+    const userId = await owner();
+    const task = await store.create(userId, draft, due, noUrls);
+    expect(task).toMatchObject({ memoryEnabled: true });
+    const updated = await store.update(userId, task.id, { draft: { ...draft, memoryEnabled: false }, expectedRevision: 1,
+      nextRunAt: undefined, promptUrls: "keep", status: "active" });
+    expect(updated).toMatchObject({ memoryEnabled: false, revision: 2 });
+    // A row written without the column (an older writer or one predating it) runs without Memory.
+    const [older] = rows(userId, 1, "ACTIVE");
+    const row = await prisma.scheduledTask.create({ data: older! });
+    expect(row.memoryEnabled).toBe(false);
+    expect(await store.get(userId, row.id)).toMatchObject({ memoryEnabled: false });
   });
 
   it("starts a new generation without a baseline only when the prompt or schedule kind changes", async () => {
