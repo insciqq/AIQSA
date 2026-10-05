@@ -1,8 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { logEvent } from "../../observability";
+import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { MemoryCoordinatorError, MemoryJobFencedError } from "../coordinator/errors";
 import { currentMemoryJobsSql } from "../coordinator/currentJobs";
-import { memoryRecoverableFailureSql } from "../coordinator/recoveryPolicy";
+import { memoryHistoryObsoleteOrphanSql, memoryRecoverableFailureSql } from "../coordinator/recoveryPolicy";
 import type { MemoryJobClaim } from "../coordinator/types";
 import {
   executeGovernedMemoryStructuredOutput,
@@ -10,11 +11,16 @@ import {
 } from "../execution";
 import { memoryExecutionNow } from "../execution/authority";
 import { memoryExecutionSha256 } from "../execution/canonical";
-import { createPrismaMemoryExecutionLifecycle } from "../execution/lifecycle";
+import { MemoryExecutionError } from "../execution/errors";
+import {
+  createPrismaMemoryExecutionLifecycle,
+  type MemoryExecutionSettlementInput
+} from "../execution/lifecycle";
 import {
   MEMORY_STRUCTURED_OUTPUT_VALIDATION_MAX_ATTEMPTS,
   unavailableMemoryReportedUsage
 } from "../execution/structuredClassifier";
+import { MemoryPersistenceError } from "../persistence/errors";
 import type { MemoryTransaction } from "../persistence/transaction";
 import { MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE } from "./contract";
 
@@ -23,6 +29,16 @@ export class MemoryHistoryResultUnavailable extends Error {
     super("memory_history_retained_result_unavailable");
   }
 }
+
+/** An orphaned classification's only settlement. Every recoverer writes the
+ * same one, so a concurrent recoverer replays it instead of conflicting. */
+const recoveredUncertainSettlement: MemoryExecutionSettlementInput = Object.freeze({
+  acceptedOutputHash: null,
+  errorCode: MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE,
+  providerResponseId: null,
+  state: "OUTCOME_UNKNOWN",
+  usage: unavailableMemoryReportedUsage
+});
 
 /** Freeze this once before any stage dispatches. A restarted job may finish
  * from retained results or safe raw history, never buy its previous work again.
@@ -84,13 +100,7 @@ export async function prepareMemoryHistoryExecutionRecovery(
     } });
     if (owned !== 1) throw new MemoryCoordinatorError("memory_job_lease_lost", false);
     for (const bindingId of orphaned) {
-      await lifecycle.settle(userId, bindingId, {
-        acceptedOutputHash: null,
-        errorCode: MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE,
-        providerResponseId: null,
-        state: "OUTCOME_UNKNOWN",
-        usage: unavailableMemoryReportedUsage
-      });
+      await lifecycle.settle(userId, bindingId, recoveredUncertainSettlement);
     }
     logEvent("service_operation", { subsystem: "memory", stage: "recovery", outcome: "degraded",
       action: "degrade", job_id: jobId, code: MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE,
@@ -109,6 +119,48 @@ export async function prepareMemoryHistoryExecutionRecovery(
   // A new pipeline can rebuild old failed work locally. Legacy outputs belong
   // to their immutable owner and are not rebound to this successor's dispatch.
   return bindings.length > 0 || related.length > 0;
+}
+
+/** Bounded part of the periodic recovery pass. An orphaned classification
+ * whose job ended before its recovery could settle it and whose chat has moved
+ * past the job's source (memoryHistoryObsoleteOrphanSql) would otherwise stay
+ * RUNNING forever: it settles as an unknown outcome with unavailable usage,
+ * exactly as in-job recovery would, and is never dispatched again. Returns the
+ * number of new settlements. */
+export async function settleObsoleteMemoryHistoryOrphans(
+  client: PrismaClient,
+  input: Readonly<{ limit: number; now: Date }>
+): Promise<number> {
+  const orphans = await client.$queryRaw<Array<{ id: string; userId: string }>>(Prisma.sql`
+    SELECT execution.id, execution."userId"
+    FROM "MemoryExecutionBinding" AS execution
+    JOIN "MemoryJob" AS job ON job.id = execution."memoryJobId" AND job."userId" = execution."userId"
+    JOIN "User" AS owner ON owner.id = job."userId" AND owner.status = 'active'::"UserStatus"
+    WHERE ${memoryHistoryObsoleteOrphanSql(input.now)}
+    ORDER BY execution."startedAt", execution.id LIMIT ${input.limit}
+  `).catch(retainDatabaseFailure);
+  const lifecycle = createPrismaMemoryExecutionLifecycle({ now: () => input.now }, client);
+  let settled = 0;
+  let failed = 0;
+  for (const orphan of orphans) {
+    try {
+      const view = await lifecycle.settle(orphan.userId, orphan.id, recoveredUncertainSettlement);
+      if (!view.replayed) settled += 1;
+    } catch (error) {
+      // A late settlement by the lost attempt, chat deletion or account
+      // disable may win after selection. Anything else retries next pass.
+      if (!(error instanceof MemoryExecutionError && (error.code === "memory_execution_state_conflict" ||
+        error.code === "memory_execution_binding_not_found")) &&
+        !(error instanceof MemoryPersistenceError && error.code === "memory_owner_unavailable")) failed += 1;
+    }
+  }
+  if (settled > 0 || failed > 0) {
+    logEvent("service_operation", { subsystem: "memory", stage: "recovery",
+      outcome: failed > 0 ? "failed" : "degraded", action: failed > 0 ? "retry" : "degrade",
+      code: MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE, count: settled,
+      ...(failed > 0 ? { failed_count: failed } : {}) });
+  }
+  return settled;
 }
 
 export async function clearMemoryHistoryExecutionResults(
