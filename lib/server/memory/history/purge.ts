@@ -639,8 +639,15 @@ async function receiptSelectionPredicates(
 ): Promise<Readonly<{ history: Prisma.Sql; result: Prisma.Sql; running: Prisma.Sql }>> {
   if (selection.kind === "SOURCE") {
     return {
-      history: Prisma.sql`TRUE`,
-      result: Prisma.sql`result ->> 'sourceChatId' = ${selection.chatId}`,
+      // A receipt cites the chat when one of its results names it. Matching
+      // the cited chats as a whole receipt lets the expression index
+      // "MemoryHistoryRun_cited_source_chat_idx" find them, instead of
+      // expanding every retained owner receipt's results, which this purge
+      // and its audit otherwise read in full on each attempt.
+      history: Prisma.sql`jsonb_path_query_array(
+        history."results", '$.results[*].sourceChatId'::jsonpath
+      ) ? ${selection.chatId}::text`,
+      result: Prisma.sql`TRUE`,
       running: Prisma.sql`(
         history."state" = 'RUNNING'::"MemoryHistoryRunState"
         AND history."privateRequest" ->> 'version' IS DISTINCT FROM 'memory-search-v1'
