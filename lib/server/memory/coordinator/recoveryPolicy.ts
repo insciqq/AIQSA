@@ -1,10 +1,48 @@
 import { Prisma } from "@prisma/client";
 import { MEMORY_COORDINATOR_JOB_KINDS } from "./registry";
-import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
+import {
+  MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+  MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE
+} from "../history/contract";
 
 export const MEMORY_RECOVERY_BATCH_SIZE = 8;
 export const MEMORY_RECOVERY_INTERVAL_MS = 60_000;
 export const MEMORY_RECOVERY_DELAYS_MS = Object.freeze([5 * 60_000, 30 * 60_000, 6 * 60 * 60_000]);
+
+/** A history classification left RUNNING by an attempt that lost its job. The
+ * job failed terminally, as an earlier release's recovery guard did with such
+ * a call, so no live attempt owns it; it holds no settlement evidence (output,
+ * provider response or usage receipt). Its recovery settles it as an unknown
+ * outcome and never dispatches it again. Uses `job` (a current_jobs or
+ * "MemoryJob" row) and `execution`. */
+function memoryHistoryOrphanedExecutionSql(): Prisma.Sql {
+  return Prisma.sql`COALESCE((job.kind = 'INDEX_HISTORY'::"MemoryJobKind"
+    AND job.state = 'TERMINAL_FAILED'::"MemoryJobState"
+    AND job."errorCode" = 'memory_history_execution_protected'
+    AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+    AND execution."ownerType" = 'JOB' AND execution."logicalRole" = 'MEMORY_HISTORY_CLASSIFY'
+    AND execution.state = 'RUNNING' AND execution."completedAt" IS NULL
+    AND execution."acceptedOutputHash" IS NULL AND execution."providerResponseId" IS NULL
+    AND NOT EXISTS (SELECT 1 FROM "UsageEvent" usage
+      WHERE usage."userId" = execution."userId" AND usage."memoryExecutionBindingId" = execution.id)
+  ), FALSE)`;
+}
+
+/** Such an orphan once its job's recovery settled it: an unknown outcome with
+ * its unavailable usage receipt. History recovery never dispatches when a job
+ * holds bindings, so it cannot buy this call again; automatic history repair
+ * still treats the chat as ambiguous. Uses `job` and `execution`. */
+function memoryHistoryRecoveredUncertainExecutionSql(): Prisma.Sql {
+  return Prisma.sql`COALESCE((job.kind = 'INDEX_HISTORY'::"MemoryJobKind"
+    AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+    AND execution."ownerType" = 'JOB' AND execution."logicalRole" = 'MEMORY_HISTORY_CLASSIFY'
+    AND execution.state = 'OUTCOME_UNKNOWN'
+    AND execution."errorCode" = ${MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE}
+    AND execution."acceptedOutputHash" IS NULL
+    AND EXISTS (SELECT 1 FROM "UsageEvent" usage
+      WHERE usage."userId" = execution."userId" AND usage."memoryExecutionBindingId" = execution.id)
+  ), FALSE)`;
+}
 
 /** Only failures with known safe recovery, including pre-dispatch history
  * chunking and the legacy history apply failure repaired by the current writer.
@@ -35,6 +73,12 @@ export function memoryRecoverableFailureSql(): Prisma.Sql {
       AND job."errorCode" = 'memory_history_chunk_limit_exceeded'
       AND NOT EXISTS (SELECT 1 FROM "MemoryExecutionBinding" execution
         WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id))
+    -- Failed before dispatch by the guard of its next attempt. Any other
+    -- protected binding still keeps the job protected below.
+    OR (job.kind = 'INDEX_HISTORY'::"MemoryJobKind" AND job."workStage" = 'source_snapshot'
+      AND EXISTS (SELECT 1 FROM "MemoryExecutionBinding" execution
+        WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id
+          AND ${memoryHistoryOrphanedExecutionSql()}))
   ), FALSE))`;
 }
 
@@ -47,11 +91,14 @@ export function memoryRecoveryDueAtSql(): Prisma.Sql {
 }
 
 /** History recovery only reuses exact retained outputs or local raw history.
- * All other bound work and any ambiguous dispatch remain protected. */
+ * All other bound work and any ambiguous dispatch remain protected, except a
+ * history job's own orphaned call, which its recovery settles as unknown. */
 export function memoryRecoveryProtectedSql(): Prisma.Sql {
   return Prisma.sql`EXISTS (
     SELECT 1 FROM "MemoryExecutionBinding" AS execution
     WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id
+      AND NOT ${memoryHistoryOrphanedExecutionSql()}
+      AND NOT ${memoryHistoryRecoveredUncertainExecutionSql()}
       AND (job.kind <> 'INDEX_HISTORY' OR execution."ownerType" <> 'JOB'
         OR execution."logicalRole" <> 'MEMORY_HISTORY_CLASSIFY'
         OR execution.state IN ('RUNNING', 'OUTCOME_UNKNOWN')

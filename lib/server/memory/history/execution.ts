@@ -1,7 +1,9 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { logEvent } from "../../observability";
 import { MemoryCoordinatorError, MemoryJobFencedError } from "../coordinator/errors";
 import { currentMemoryJobsSql } from "../coordinator/currentJobs";
 import { memoryRecoverableFailureSql } from "../coordinator/recoveryPolicy";
+import type { MemoryJobClaim } from "../coordinator/types";
 import {
   executeGovernedMemoryStructuredOutput,
   type MemoryExecutionAuthorityDependencies
@@ -14,6 +16,7 @@ import {
   unavailableMemoryReportedUsage
 } from "../execution/structuredClassifier";
 import type { MemoryTransaction } from "../persistence/transaction";
+import { MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE } from "./contract";
 
 export class MemoryHistoryResultUnavailable extends Error {
   constructor() {
@@ -22,15 +25,21 @@ export class MemoryHistoryResultUnavailable extends Error {
 }
 
 /** Freeze this once before any stage dispatches. A restarted job may finish
- * from retained results or safe raw history, never buy its previous work again. */
+ * from retained results or safe raw history, never buy its previous work again.
+ * A classification of this job still RUNNING here was orphaned: this attempt
+ * holds the job's live lease and has not dispatched yet, so the attempt that
+ * started it is gone. Its provider outcome is unknown, so it settles as such
+ * with unavailable usage; its input then falls back to raw history. Any other
+ * unsettled, ambiguous or unaccounted call keeps the job protected. */
 export async function prepareMemoryHistoryExecutionRecovery(
   client: PrismaClient,
   authority: MemoryExecutionAuthorityDependencies,
-  userId: string,
-  jobId: string
+  claim: Pick<MemoryJobClaim, "claimToken" | "id" | "userId">
 ): Promise<boolean> {
+  const { id: jobId, userId } = claim;
+  const now = memoryExecutionNow(authority);
   const related = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    WITH ${currentMemoryJobsSql(memoryExecutionNow(authority))}
+    WITH ${currentMemoryJobsSql(now)}
     SELECT job.id FROM current_jobs job JOIN current_jobs current_job
       ON current_job.id = ${jobId} AND current_job."userId" = ${userId}
     WHERE job."userId" = current_job."userId" AND job.kind = 'INDEX_HISTORY'
@@ -42,19 +51,51 @@ export async function prepareMemoryHistoryExecutionRecovery(
       AND job.state = 'TERMINAL_FAILED' AND ${memoryRecoverableFailureSql()}
   `);
   const bindings = await client.memoryExecutionBinding.findMany({
-    select: { id: true, logicalRole: true, ownerType: true, state: true, startedAt: true },
+    select: {
+      acceptedOutputHash: true, errorCode: true, id: true, logicalRole: true, memoryJobId: true,
+      ownerType: true, providerResponseId: true, startedAt: true, state: true
+    },
     where: { memoryJobId: { in: [jobId, ...related.map(({ id }) => id)] }, userId }
   });
+  // Only this job's own calls can be orphans: another job's dispatch belongs
+  // to its owner. An unknown outcome is accepted only as such a settled orphan.
   if (bindings.some((binding) => binding.logicalRole !== "MEMORY_HISTORY_CLASSIFY" ||
-    binding.ownerType !== "JOB" || binding.state === "RUNNING" ||
-    binding.state === "OUTCOME_UNKNOWN" || binding.state === "PENDING" && binding.startedAt)) {
+    binding.ownerType !== "JOB" || binding.state === "PENDING" && binding.startedAt ||
+    binding.state === "RUNNING" && (binding.memoryJobId !== jobId ||
+      binding.acceptedOutputHash !== null || binding.providerResponseId !== null) ||
+    binding.state === "OUTCOME_UNKNOWN" && (binding.memoryJobId !== jobId ||
+      binding.errorCode !== MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE))) {
     throw new MemoryCoordinatorError("memory_history_execution_protected", false);
   }
-  const settled = bindings.filter(({ state }) => state !== "PENDING").map(({ id }) => id);
-  if (settled.length > 0 && await client.usageEvent.count({
-    where: { userId, memoryExecutionBindingId: { in: settled } }
-  }) !== settled.length) throw new MemoryCoordinatorError("memory_history_execution_protected", false);
+  const orphaned = bindings.filter(({ state }) => state === "RUNNING").map(({ id }) => id);
+  const settled = bindings.filter(({ state }) => state !== "PENDING" && state !== "RUNNING")
+    .map(({ id }) => id);
+  const receipts = async (ids: readonly string[]) => ids.length === 0 ? 0 : client.usageEvent.count({
+    where: { userId, memoryExecutionBindingId: { in: [...ids] } }
+  });
+  // Every settled call holds its usage receipt; an orphan has none yet.
+  if (await receipts(settled) !== settled.length || await receipts(orphaned) !== 0) {
+    throw new MemoryCoordinatorError("memory_history_execution_protected", false);
+  }
   const lifecycle = createPrismaMemoryExecutionLifecycle(authority, client);
+  if (orphaned.length > 0) {
+    const owned = await client.memoryJob.count({ where: {
+      id: jobId, userId, state: "CLAIMED", leaseToken: claim.claimToken, leaseExpiresAt: { gt: now }
+    } });
+    if (owned !== 1) throw new MemoryCoordinatorError("memory_job_lease_lost", false);
+    for (const bindingId of orphaned) {
+      await lifecycle.settle(userId, bindingId, {
+        acceptedOutputHash: null,
+        errorCode: MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE,
+        providerResponseId: null,
+        state: "OUTCOME_UNKNOWN",
+        usage: unavailableMemoryReportedUsage
+      });
+    }
+    logEvent("service_operation", { subsystem: "memory", stage: "recovery", outcome: "degraded",
+      action: "degrade", job_id: jobId, code: MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE,
+      count: orphaned.length });
+  }
   for (const binding of bindings) {
     if (binding.state !== "PENDING") continue;
     await lifecycle.settle(userId, binding.id, {
@@ -76,8 +117,14 @@ export async function clearMemoryHistoryExecutionResults(
   jobId: string,
   now: Date
 ): Promise<void> {
+  // An orphan settled by recovery is final: its input is never dispatched again.
   const unsettled = await tx.memoryExecutionBinding.count({
-    where: { userId, memoryJobId: jobId, state: { in: ["PENDING", "RUNNING", "OUTCOME_UNKNOWN"] } }
+    where: { userId, memoryJobId: jobId, OR: [
+      { state: { in: ["PENDING", "RUNNING"] } },
+      { state: "OUTCOME_UNKNOWN", OR: [
+        { errorCode: null }, { errorCode: { not: MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE } }
+      ] }
+    ] }
   });
   if (unsettled > 0) throw new MemoryCoordinatorError("memory_history_execution_protected", false);
   await tx.$executeRaw(Prisma.sql`
@@ -101,13 +148,16 @@ export async function executeRecoverableMemoryHistoryOutput<Value>(input: Omit<
   const prior = await input.client.memoryExecutionBinding.findMany({
     orderBy: { ordinal: "desc" },
     select: {
-      id: true, state: true, acceptedOutputHash: true, completedAt: true,
+      id: true, state: true, acceptedOutputHash: true, completedAt: true, errorCode: true,
       pipelineVersion: true, policyVersion: true, promptVersion: true, schemaVersion: true
     },
     where: { inputHash: input.inputHash, logicalRole: role, memoryJobId: input.jobId,
       ownerType: "JOB", userId: input.userId }
   });
-  if (prior.some(({ state }) => state === "RUNNING" || state === "OUTCOME_UNKNOWN")) {
+  // A dispatch still in flight is never raced. An orphan settled by recovery
+  // has no retained result: its input falls back to raw history below.
+  if (prior.some(({ errorCode, state }) => state === "RUNNING" ||
+    state === "OUTCOME_UNKNOWN" && errorCode !== MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE)) {
     throw new MemoryCoordinatorError("memory_history_execution_protected", false);
   }
   for (const binding of prior) {
