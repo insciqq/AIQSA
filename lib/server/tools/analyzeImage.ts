@@ -1,9 +1,29 @@
-import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
+import type { AcceptedVisionAnalysisPlan, AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { RunTool } from "./types";
 
 export const ANALYZE_IMAGE_TOOL_NAME = "analyze_image";
 export const VISION_ANALYSIS_LIMITS = Object.freeze({ maxImages: 8, questionCharacters: 4000,
   resultBytes: 16 * 1024, maxOutputTokens: 4096, timeoutMs: 60_000, callsPerRun: 8 });
+
+/** Higher reasoning efforts think longer before answering; any other effort keeps the base bound. */
+const VISION_ANALYSIS_EFFORT_TIMEOUT_MS: Readonly<Record<string, number>> = Object.freeze({
+  medium: 120_000, high: 180_000, xhigh: 180_000, max: 180_000 });
+
+function paramEffort(value: unknown): string | undefined {
+  return typeof value === "object" && value !== null && typeof (value as { effort?: unknown }).effort === "string"
+    ? (value as { effort: string }).effort : undefined;
+}
+
+/** The deadline of one System Vision dispatch, from the effort it actually
+ * runs with: the plan's frozen effort, else the model's configured default.
+ * Callers combine it with their run signal, which still ends it earlier. */
+export function visionAnalysisTimeoutMs(plan: Pick<AvailableVisionAnalysisPlan, "snapshot" | "reasoningEffort">): number {
+  const model = plan.snapshot.model;
+  const effort = plan.reasoningEffort ?? paramEffort(model.defaultParams.reasoning) ?? paramEffort(model.defaultParams.outputConfig) ??
+    model.capabilities.defaultReasoningEffort;
+  return effort !== undefined && Object.hasOwn(VISION_ANALYSIS_EFFORT_TIMEOUT_MS, effort)
+    ? VISION_ANALYSIS_EFFORT_TIMEOUT_MS[effort] : VISION_ANALYSIS_LIMITS.timeoutMs;
+}
 
 /** One fresh schema per tool: both forms share the crop/resize/question bounds. */
 function visionInputSchema(identity: Record<string, unknown>) {

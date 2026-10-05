@@ -8,7 +8,7 @@ import { createAcceptedProviderRequestExecutor } from "../providerRuntime/accept
 import type { ProviderAttachment, ProviderRunRequest } from "../providers/types";
 import { observedFailureCode } from "../providers/providerObservability";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
-import { ANALYZE_IMAGE_TOOL_NAME, VISION_ANALYSIS_LIMITS as LIMITS } from "../tools/analyzeImage";
+import { ANALYZE_IMAGE_TOOL_NAME, VISION_ANALYSIS_LIMITS as LIMITS, visionAnalysisTimeoutMs } from "../tools/analyzeImage";
 import { prepareWorkspaceImages, WorkspaceImageError, type WorkspaceCapturedImage } from "../workspace/imageCapture";
 import { workspaceImageInput, workspaceImageInputForRun } from "../workspace/imageInputs";
 import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
@@ -167,8 +167,11 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
       let dispatched = false;
       let providerCompleted = false;
       let usage = normalizeTokenUsage({});
-      // One deadline covers capture, decoding and the provider. A timeout never authorizes a new dispatch.
-      const bounded = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(LIMITS.timeoutMs)]);
+      // One deadline, by the plan's effective reasoning effort, covers capture, decoding and the provider;
+      // the run's own signal (Stop, Workspace or Agent turn deadline) still ends it earlier.
+      // A timeout never authorizes a new dispatch.
+      const timeoutMs = visionAnalysisTimeoutMs(plan);
+      const bounded = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(timeoutMs)]);
       try {
         let result: ToolExecutionResult;
         let unknown = false;
@@ -214,7 +217,7 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
           if (claim.result) return claim.result;
           dispatched = true;
           bounded.throwIfAborted();
-          const response = await provider(plan.snapshot, request, { signal: bounded, timeoutMs: LIMITS.timeoutMs,
+          const response = await provider(plan.snapshot, request, { signal: bounded, timeoutMs,
             onUsage: update => { usage = mergeTokenUsage(usage, update); } });
           providerCompleted = true;
           usage = mergeTokenUsage(usage, response.usage);
