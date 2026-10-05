@@ -1289,9 +1289,10 @@ function sourceValuesFromSearchPayload(payload: unknown): unknown[] {
 }
 
 /**
- * The cards of the tasks an answer created. With the reader's current tasks
- * each card shows its task as it is now, or deleted once it is gone; without
- * them (a run's own chat update) the tasks show as created.
+ * The cards of the tasks an answer created or managed. With the reader's
+ * current tasks each card shows its task as it is now, with the answer's last
+ * action on it, or deleted once it is gone; without them (a run's own chat
+ * update) the tasks show as the answer left them.
  */
 function answerScheduledTaskCards(
   payloads: readonly unknown[],
@@ -1301,7 +1302,7 @@ function answerScheduledTaskCards(
     .map(artifactInnerPayload)).map((card) => {
     if (!current) return card;
     const task = current.get(card.taskId);
-    return task ? scheduledTaskCard(task, card.timeZoneFallback) : { ...card, deleted: true as const };
+    return task ? scheduledTaskCard(task, card.timeZoneFallback, card.action) : { ...card, deleted: true as const };
   });
 }
 

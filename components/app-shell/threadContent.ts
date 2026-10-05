@@ -100,7 +100,7 @@ export function summarizeThreadArtifacts(
     const decoded = decodeThreadGeneratedArtifact(artifactPayload(event));
     return decoded ? [decoded] : [];
   }));
-  // The same fold as a reload: one card per created task.
+  // The same fold as a reload: one card per task the answer created or managed.
   const scheduledTasks = foldScheduledTaskCards(events
     .filter((event) => artifactTypeFromEvent(event) === "scheduled_task").map(artifactPayload));
   // The same projections and folds as a reload, so a finished live answer

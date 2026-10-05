@@ -119,6 +119,8 @@ export type ScheduledTask = {
   toolsEnabled: boolean;
   /** See `ScheduledTaskDraft.workspaceEnabled`. */
   workspaceEnabled: boolean;
+  /** See `ScheduledTaskDraft.memoryEnabled`. */
+  memoryEnabled: boolean;
   chatMode: ScheduledTaskChatMode;
   kind: ScheduledTaskKind;
   status: ScheduledTaskStatus;
@@ -244,6 +246,13 @@ export type ScheduledTaskDraft = {
    * tool calling and an installation with Workspace on.
    */
   workspaceEnabled: boolean;
+  /**
+   * Runs read what the owner's Memory holds (standing context and, with a
+   * tool-calling model, Memory search) and never add to it, whatever the
+   * task chat's Memory mode; the owner's Memory settings still decide what
+   * may be read. New tasks start with it on.
+   */
+  memoryEnabled: boolean;
   /** `new` is the default the editor offers; hourly schedules and monitoring tasks require `same`. */
   chatMode: ScheduledTaskChatMode;
   /** `monitoring` requires a model that can call tools. */
@@ -422,8 +431,8 @@ export function scheduledTaskChatModeAllowed(
 
 const TASK_KEYS = [
   "id", "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "toolsEnabled",
-  "workspaceEnabled", "chatMode", "kind", "status", "pauseReason", "completionReason", "nextRunAt", "lastRun", "running",
-  "chatId", "unseenResult", "revision", "createdAt", "updatedAt"
+  "workspaceEnabled", "memoryEnabled", "chatMode", "kind", "status", "pauseReason", "completionReason", "nextRunAt", "lastRun",
+  "running", "chatId", "unseenResult", "revision", "createdAt", "updatedAt"
 ] as const;
 const STATUSES: readonly unknown[] = ["active", "paused", "completed"] satisfies ScheduledTaskStatus[];
 const CHAT_MODES: readonly unknown[] = SCHEDULED_TASK_CHAT_MODES;
@@ -445,7 +454,8 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     !isScheduledTaskTimeZoneShape(value.timeZone) || !isScheduledTaskModelIdentity(value.modelId) ||
     !isScheduledTaskModelIdentity(value.provider) || typeof value.searchEnabled !== "boolean" ||
     typeof value.emailNotify !== "boolean" || typeof value.toolsEnabled !== "boolean" ||
-    typeof value.workspaceEnabled !== "boolean" || !CHAT_MODES.includes(value.chatMode) || !KINDS.includes(value.kind) ||
+    typeof value.workspaceEnabled !== "boolean" || typeof value.memoryEnabled !== "boolean" ||
+    !CHAT_MODES.includes(value.chatMode) || !KINDS.includes(value.kind) ||
     !scheduledTaskChatModeAllowed({ kind: value.kind as ScheduledTaskKind, schedule }, value.chatMode as ScheduledTaskChatMode) ||
     !STATUSES.includes(value.status) || !nullable(value.pauseReason, code) ||
     !nullable(value.completionReason, code) || (value.status !== "completed" && value.completionReason !== null) ||
@@ -457,7 +467,7 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
   return {
     id: value.id, title, prompt, schedule, timeZone: value.timeZone, modelId: value.modelId, provider: value.provider,
     searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, toolsEnabled: value.toolsEnabled,
-    workspaceEnabled: value.workspaceEnabled, chatMode: value.chatMode as ScheduledTaskChatMode,
+    workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled, chatMode: value.chatMode as ScheduledTaskChatMode,
     kind: value.kind as ScheduledTaskKind, status: value.status as ScheduledTaskStatus, pauseReason: value.pauseReason,
     completionReason: value.completionReason, nextRunAt: value.nextRunAt,
     lastRun: run && {
@@ -600,12 +610,23 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
 }
 
 /**
- * A scheduled task a chat answer created through its `create_scheduled_task`
- * call (`ThreadArtifactSummary.scheduledTasks`). The answer's durable output
- * keeps the task as created; a transcript read shows the owner's current task
- * over it, or marks it `deleted` once it is gone. `timeZoneFallback`: the
- * answer's run had no browser time zone, so the task took UTC and the card
- * names its zone.
+ * What an answer's `manage_scheduled_task` call last did to a task: changed,
+ * paused or resumed it, or proposed deleting it, which deletes nothing until
+ * the owner confirms on the card. A card without one shows a task the
+ * answer's `create_scheduled_task` call created.
+ */
+export type ScheduledTaskCardAction = "changed" | "paused" | "resumed" | "delete_proposed";
+export const SCHEDULED_TASK_CARD_ACTIONS = [
+  "changed", "paused", "resumed", "delete_proposed"
+] as const satisfies readonly ScheduledTaskCardAction[];
+
+/**
+ * A scheduled task a chat answer created or managed through its tool calls
+ * (`ThreadArtifactSummary.scheduledTasks`), with the answer's last `action` on
+ * it. The answer's durable output keeps the task as that call left it; a
+ * transcript read shows the owner's current task over it, or marks it
+ * `deleted` once it is gone. `timeZoneFallback`: the answer's run had no
+ * browser time zone, so a created task took UTC and the card names its zone.
  */
 export type ScheduledTaskCard = Readonly<{
   taskId: string;
@@ -619,48 +640,58 @@ export type ScheduledTaskCard = Readonly<{
   status: ScheduledTaskStatus;
   /** Null unless active. */
   nextRunAt: string | null;
+  action?: ScheduledTaskCardAction;
   deleted?: true;
 }>;
-/** Cards one answer may carry; the chat tool creates at most one task per answer. */
-export const SCHEDULED_TASK_CARDS_LIMIT = 4;
+/** Distinct tasks one chat answer may change, pause, resume or propose deleting. */
+export const SCHEDULED_TASK_MANAGED_PER_ANSWER = 5;
+/** Cards one answer may carry: the tasks it may manage and the one it may create. */
+export const SCHEDULED_TASK_CARDS_LIMIT = SCHEDULED_TASK_MANAGED_PER_ANSWER + 1;
 
 const CARD_KEYS = [
   "taskId", "title", "kind", "schedule", "timeZone", "timeZoneFallback", "toolsEnabled", "workspaceEnabled", "status",
   "nextRunAt"
 ] as const;
+const CARD_ACTIONS: readonly unknown[] = SCHEDULED_TASK_CARD_ACTIONS;
 
 export function decodeScheduledTaskCard(value: unknown): ScheduledTaskCard | null {
-  if (!record(value) || !CARD_KEYS.every((key) => key in value) ||
-    !Object.keys(value).every((key) => key === "deleted" || (CARD_KEYS as readonly string[]).includes(key))) return null;
+  if (!record(value) || !CARD_KEYS.every((key) => key in value) || !Object.keys(value).every((key) =>
+    key === "action" || key === "deleted" || (CARD_KEYS as readonly string[]).includes(key))) return null;
   const schedule = decodeScheduledTaskSchedule(value.schedule);
   const title = normalizeScheduledTaskTitle(value.title);
   if (!schedule || !id(value.taskId) || !title || title !== value.title || !KINDS.includes(value.kind) ||
     !isScheduledTaskTimeZoneShape(value.timeZone) || typeof value.timeZoneFallback !== "boolean" ||
     typeof value.toolsEnabled !== "boolean" || typeof value.workspaceEnabled !== "boolean" ||
     !STATUSES.includes(value.status) || !nullable(value.nextRunAt, instant) ||
-    (value.status !== "active" && value.nextRunAt !== null) || (value.deleted !== undefined && value.deleted !== true)) return null;
+    (value.status !== "active" && value.nextRunAt !== null) || (value.action !== undefined && !CARD_ACTIONS.includes(value.action)) ||
+    (value.deleted !== undefined && value.deleted !== true)) return null;
   return {
     taskId: value.taskId, title, kind: value.kind as ScheduledTaskKind, schedule, timeZone: value.timeZone,
     timeZoneFallback: value.timeZoneFallback, toolsEnabled: value.toolsEnabled, workspaceEnabled: value.workspaceEnabled,
-    status: value.status as ScheduledTaskStatus, nextRunAt: value.nextRunAt, ...(value.deleted ? { deleted: true as const } : {})
+    status: value.status as ScheduledTaskStatus, nextRunAt: value.nextRunAt,
+    ...(value.action !== undefined ? { action: value.action as ScheduledTaskCardAction } : {}),
+    ...(value.deleted ? { deleted: true as const } : {})
   };
 }
 
-/** The card of a task as the owner's store projects it now. */
+/** The card of a task as the owner's store projects it now, with the answer's last action on it. */
 export function scheduledTaskCard(
   task: Pick<ScheduledTask, "id" | "kind" | "nextRunAt" | "schedule" | "status" | "timeZone" | "title" | "toolsEnabled" |
     "workspaceEnabled">,
-  timeZoneFallback: boolean
+  timeZoneFallback: boolean,
+  action?: ScheduledTaskCardAction
 ): ScheduledTaskCard {
   return {
     taskId: task.id, title: task.title, kind: task.kind, schedule: task.schedule, timeZone: task.timeZone, timeZoneFallback,
-    toolsEnabled: task.toolsEnabled, workspaceEnabled: task.workspaceEnabled, status: task.status, nextRunAt: task.nextRunAt
+    toolsEnabled: task.toolsEnabled, workspaceEnabled: task.workspaceEnabled, status: task.status, nextRunAt: task.nextRunAt,
+    ...(action ? { action } : {})
   };
 }
 
 /**
  * One card per task, in first-appearance order, the latest value winning: a
- * recovered answer may publish the same created task again.
+ * recovered answer may publish the same card again, and a later call on the
+ * same task shows its newer state and action.
  */
 export function foldScheduledTaskCards(values: readonly unknown[]): ScheduledTaskCard[] {
   const cards = new Map<string, ScheduledTaskCard>();
