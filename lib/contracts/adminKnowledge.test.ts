@@ -148,6 +148,29 @@ describe("administrator Knowledge contract", () => {
     expect(JSON.stringify(unavailable)).not.toMatch(/endpoint|indexName|instanceId|errorMessage/u);
   });
 
+  it("accepts a stalled object deletion backlog and rejects an inconsistent one", () => {
+    const fixture = adminKnowledgeOperationsFixture();
+    const withDeletion = (deletion: Record<string, unknown>, alerts = fixture.alerts) => ({
+      knowledge: {
+        ...response.knowledge,
+        operations: { ...fixture, alerts, deletion: { ...fixture.deletion, ...deletion } }
+      }
+    });
+    const stalled = withDeletion(
+      { oldestUnclaimedObjectSeconds: 7_200, unclaimedObjects: 3 },
+      [{ code: "knowledge_object_deletion_stalled", severity: "warning" }]
+    );
+
+    expect(decodeAdminKnowledgeResponse(stalled)).toEqual(stalled);
+    for (const deletion of [
+      { oldestUnclaimedObjectSeconds: 60, unclaimedObjects: 0 },
+      { oldestUnclaimedObjectSeconds: null, unclaimedObjects: 2 },
+      { oldestUnclaimedObjectSeconds: -1, unclaimedObjects: 1 },
+      { oldestUnclaimedObjectSeconds: undefined, unclaimedObjects: 0 },
+      { oldestUnclaimedObjectSeconds: null, unclaimedObjects: undefined }
+    ]) expect(decodeAdminKnowledgeResponse(withDeletion(deletion))).toBeNull();
+  });
+
   it("rejects malformed or internally inconsistent Knowledge search health", () => {
     const withSearch = (search: Record<string, unknown> | undefined) => ({
       knowledge: {

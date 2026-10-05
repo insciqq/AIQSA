@@ -5,6 +5,7 @@ import type {
 } from "../../../contracts/adminKnowledge";
 import { reconcileKnowledgeSourcePersistence } from "../../knowledge/sourcePersistence";
 import { readKnowledgeSearchHealth } from "../../knowledge/searchHealth";
+import { deletionJobClaimableBefore, dueAttachmentDeletionJobSql } from "../../retention/prune";
 import type { AiqsaOpenSearchTransport } from "../../search/opensearch/transport";
 
 type OperationsClient = Pick<PrismaClient, "$queryRaw">;
@@ -21,6 +22,7 @@ type OperationsRow = Readonly<{
   noAnswerOperations24h: number;
   oldestDeletionSeconds: number | null;
   oldestQueuedSeconds: number | null;
+  oldestUnclaimedObjectSeconds: number | null;
   p50ReadyLatencyMs24h: number | null;
   p50RetrievalDurationMs24h: number | null;
   p95ReadyLatencyMs24h: number | null;
@@ -32,12 +34,17 @@ type OperationsRow = Readonly<{
   readyArtifacts: number;
   retrievalOperations24h: number;
   settledUploads24h: number;
+  unclaimedObjects: number;
   uploadedBytes24h: bigint;
   warningArtifacts: number;
 }>;
 
 const QUEUE_STALLED_WARNING_SECONDS = 15 * 60;
 const QUEUE_STALLED_CRITICAL_SECONDS = 60 * 60;
+// The application drains due object deletions every minute; an hour-old one
+// means the drain is failing or not running.
+const OBJECT_DELETION_STALLED_WARNING_SECONDS = 60 * 60;
+const OBJECT_DELETION_STALLED_CRITICAL_SECONDS = 24 * 60 * 60;
 const RETRIEVAL_DEGRADED_MINIMUM_OPERATIONS = 10;
 const RETRIEVAL_DEGRADED_WARNING_RATIO = 0.2;
 
@@ -61,6 +68,7 @@ function alerts(input: Readonly<{
   expiredUploads: number;
   failedArtifacts: number;
   oldestQueuedSeconds: number | null;
+  oldestUnclaimedObjectSeconds: number | null;
   pendingDeletionJobs: number;
   retrievalOperations24h: number;
   searchBackendState: "available" | "unavailable";
@@ -83,6 +91,15 @@ function alerts(input: Readonly<{
     result.push({
       code: "knowledge_ingestion_queue_stalled",
       severity: input.oldestQueuedSeconds >= QUEUE_STALLED_CRITICAL_SECONDS
+        ? "critical"
+        : "warning"
+    });
+  }
+  if (input.oldestUnclaimedObjectSeconds !== null &&
+    input.oldestUnclaimedObjectSeconds >= OBJECT_DELETION_STALLED_WARNING_SECONDS) {
+    result.push({
+      code: "knowledge_object_deletion_stalled",
+      severity: input.oldestUnclaimedObjectSeconds >= OBJECT_DELETION_STALLED_CRITICAL_SECONDS
         ? "critical"
         : "warning"
     });
@@ -125,6 +142,7 @@ export function createAdminKnowledgeOperationsService(
 ) {
   return {
     async read(): Promise<AdminKnowledgeOperations> {
+      const now = input.now ?? new Date();
       const [rows, reconciliation, search] = await Promise.all([
         client.$queryRaw<OperationsRow[]>(Prisma.sql`
           WITH artifact_stats AS (
@@ -203,6 +221,20 @@ export function createAdminKnowledgeOperationsService(
             SELECT count(*) FILTER (WHERE "disposition" = 'PENDING')::integer
               AS "pendingDeletionObjects"
             FROM "KnowledgeDeletionObject"
+          ), object_deletion_stats AS (
+            SELECT
+              count(*)::integer AS "unclaimedObjects",
+              CASE
+                WHEN min(job."createdAt") IS NULL THEN NULL
+                ELSE GREATEST(0, EXTRACT(EPOCH FROM (
+                  CURRENT_TIMESTAMP - min(job."createdAt")
+                )))::double precision
+              END AS "oldestUnclaimedObjectSeconds"
+            FROM "AttachmentDeletionJob" AS job
+            WHERE ${dueAttachmentDeletionJobSql({
+              claimableBefore: deletionJobClaimableBefore(now),
+              now
+            })}
           ), retrieval_stats AS (
             SELECT
               count(*)::integer AS "retrievalOperations24h",
@@ -236,12 +268,14 @@ export function createAdminKnowledgeOperationsService(
             upload_stats.*,
             deletion_stats.*,
             deletion_object_stats.*,
+            object_deletion_stats.*,
             retrieval_stats.*,
             grounding_stats.*
           FROM artifact_stats
           CROSS JOIN upload_stats
           CROSS JOIN deletion_stats
           CROSS JOIN deletion_object_stats
+          CROSS JOIN object_deletion_stats
           CROSS JOIN retrieval_stats
           CROSS JOIN grounding_stats
         `),
@@ -277,6 +311,10 @@ export function createAdminKnowledgeOperationsService(
         ),
         oldestQueuedSeconds: nullableRounded(
           row.oldestQueuedSeconds,
+          "knowledge_operations_duration_invalid"
+        ),
+        oldestUnclaimedObjectSeconds: nullableRounded(
+          row.oldestUnclaimedObjectSeconds,
           "knowledge_operations_duration_invalid"
         ),
         p50ReadyLatencyMs24h: nullableRounded(
@@ -317,6 +355,7 @@ export function createAdminKnowledgeOperationsService(
           row.settledUploads24h,
           "knowledge_operations_count_invalid"
         ),
+        unclaimedObjects: integer(row.unclaimedObjects, "knowledge_operations_count_invalid"),
         uploadedBytes24h: integer(
           row.uploadedBytes24h,
           "knowledge_operations_count_invalid"
@@ -331,6 +370,7 @@ export function createAdminKnowledgeOperationsService(
           expiredUploads: normalized.expiredUploads,
           failedArtifacts: normalized.failedArtifacts,
           oldestQueuedSeconds: normalized.oldestQueuedSeconds,
+          oldestUnclaimedObjectSeconds: normalized.oldestUnclaimedObjectSeconds,
           pendingDeletionJobs: normalized.pendingDeletionJobs,
           retrievalOperations24h: normalized.retrievalOperations24h,
           searchBackendState: search.backendState,
@@ -342,8 +382,10 @@ export function createAdminKnowledgeOperationsService(
         deletion: {
           blockedJobs: normalized.blockedDeletionJobs,
           oldestPendingSeconds: normalized.oldestDeletionSeconds,
+          oldestUnclaimedObjectSeconds: normalized.oldestUnclaimedObjectSeconds,
           pendingJobs: normalized.pendingDeletionJobs,
-          pendingObjects: normalized.pendingDeletionObjects
+          pendingObjects: normalized.pendingDeletionObjects,
+          unclaimedObjects: normalized.unclaimedObjects
         },
         ingestion: {
           activeUploads: normalized.activeUploads,
