@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../../contracts/runs";
 import { textMessageContent } from "../../../domain/content";
@@ -634,24 +634,15 @@ describe("Prisma Memory history purge", () => {
     }
   });
 
-  // Content-free regression for the history source purge that ran past
-  // Prisma's former 5s default: thousands of retained owner receipts across
-  // several sources, a long chat whose stable prefix stays ACTIVE and whose
-  // edited tail is purged. It records phase timings and plan summaries
-  // (counts, node types, schema names, milliseconds) for the operator.
+  // Regression for the history source purge that ran past Prisma's former 5s
+  // default: thousands of retained owner receipts across several sources and
+  // a long chat whose stable prefix stays ACTIVE while its edited tail is
+  // purged, committed through the production repository under its bound.
   it("purges one source of a large owner history inside the bounded deletion commit", async () => {
     const suffix = randomUUID();
     const userId = `memory-history-large-purge-${suffix}`;
-    const probe = new PrismaClient({ log: [{ emit: "event", level: "query" }] });
-    const statements: ProbeStatement[] = [];
-    let recording = false;
-    probe.$on("query", (event) => {
-      if (recording) {
-        statements.push({ durationMs: event.duration, params: event.params, query: event.query });
-      }
-    });
+    let passed = false;
     try {
-      const fixtureStarted = performance.now();
       await prisma.user.create({
         data: {
           displayName: "Memory large source purge fixture",
@@ -682,7 +673,10 @@ describe("Prisma Memory history purge", () => {
         targetChatId: target.chatId,
         userId
       });
-      const fixtureMs = performance.now() - fixtureStarted;
+      // An installation has planner statistics for these tables; fresh bulk
+      // fixture rows do not until ANALYZE samples them.
+      await prisma.$executeRaw`ANALYZE "Message", "MemoryRecallChunk",
+        "MemoryRecallChunkMessage", "ModelRun", "ModelRunToolCall", "MemoryHistoryRun"`;
 
       const leaseToken = randomUUID();
       const outbox = await prisma.memoryDeletionOutbox.create({
@@ -723,27 +717,6 @@ describe("Prisma Memory history purge", () => {
         return result.apply!;
       };
 
-      // Diagnostic probe: the exact handler work plus the deferred source
-      // guards (SET CONSTRAINTS ALL IMMEDIATE), rolled back afterwards.
-      recording = true;
-      const probeStarted = performance.now();
-      let deferredConstraintMs = -1;
-      await probe.$transaction(async (tx) => {
-        await (await purgeApply())(tx, claim);
-        const constraintsStarted = performance.now();
-        await tx.$executeRawUnsafe("SET CONSTRAINTS ALL IMMEDIATE");
-        deferredConstraintMs = performance.now() - constraintsStarted;
-        throw new ProbeRollback();
-      }, { maxWait: 10_000, timeout: 300_000 }).catch((error: unknown) => {
-        if (!(error instanceof ProbeRollback)) throw error;
-      });
-      const probeMs = performance.now() - probeStarted;
-      recording = false;
-      const plans = await explainSlowestStatements(probe, statements, 4);
-      await expect(prisma.memoryRecallChunk.count({
-        where: { id: { in: [...target.staleChunkIds] } }
-      })).resolves.toBe(target.staleChunkIds.length);
-
       // A competing claim token or an expired lease writes nothing.
       const repository = createPrismaMemoryCoordinatorRepository(prisma);
       await expect(repository.commitDeletionSuccess({
@@ -761,6 +734,9 @@ describe("Prisma Memory history purge", () => {
       await expect(prisma.memoryHistoryRun.count({
         where: { retentionState: "RETAINED", userId }
       })).resolves.toBe(receipts.total);
+      await expect(prisma.memoryRecallChunk.count({
+        where: { id: { in: [...target.staleChunkIds] } }
+      })).resolves.toBe(target.staleChunkIds.length);
 
       // The owner's heartbeat renews the lease, then the production commit
       // runs under its explicit bound.
@@ -843,22 +819,23 @@ describe("Prisma Memory history purge", () => {
         event: "memory_history_source_purge_regression",
         commitBoundMs: 18_000,
         commitMs: Math.round(commitMs),
-        deferredConstraintMs: Math.round(deferredConstraintMs),
-        fixtureMs: Math.round(fixtureMs),
-        plans,
-        probeMs: Math.round(probeMs),
         shape: {
           ...LARGE_PURGE_SHAPE,
           activeTargetChunks: target.activeChunkIds.length,
           receiptsCitingTarget: receipts.citingTargetIds.length,
           staleTargetChunks: target.staleChunkIds.length
-        },
-        statements: statementGroups(statements, 12)
+        }
       }));
+      passed = true;
     } finally {
-      recording = false;
-      await probe.$disconnect();
-      await prisma.user.deleteMany({ where: { id: userId } });
+      // The deletion outbox restricts its owner's deletion. A cleanup failure
+      // never replaces an earlier assertion failure.
+      await (async () => {
+        await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
+        await prisma.user.deleteMany({ where: { id: userId } });
+      })().catch((error: unknown) => {
+        if (passed) throw error;
+      });
     }
   }, 600_000);
 });
@@ -874,14 +851,6 @@ const LARGE_PURGE_SHAPE = Object.freeze({
   targetPrefixMessages: 400,
   targetStaleTailMessages: 200
 });
-
-class ProbeRollback extends Error {
-  constructor() {
-    super("memory_purge_probe_rollback");
-  }
-}
-
-type ProbeStatement = Readonly<{ durationMs: number; params: string; query: string }>;
 
 type HistoryChatFixture = Readonly<{
   activeChunkIds: readonly string[];
@@ -988,15 +957,21 @@ async function createHistoryChat(
   const active = chunks(prefix, 0, true);
   const staleChunks = chunks(stale, active.chunkRows.length, false);
   // ACTIVE chunks and their source maps satisfy the deferred source guard
-  // only together, so they commit in one transaction.
+  // only together, so they commit in one transaction. At COMMIT every row
+  // fires that guard, which re-validates the chat's ACTIVE chunks; ANALYZE
+  // inside the batch gives those guard plans the statistics an installation
+  // already has for its tables.
   await prisma.$transaction([
+    prisma.$executeRaw`ANALYZE "Message"`,
     prisma.memoryRecallChunk.createMany({ data: active.chunkRows }),
-    prisma.memoryRecallChunkMessage.createMany({ data: active.mapRows })
+    prisma.memoryRecallChunkMessage.createMany({ data: active.mapRows }),
+    prisma.$executeRaw`ANALYZE "MemoryRecallChunk", "MemoryRecallChunkMessage"`
   ]);
   if (staleChunks.chunkRows.length > 0) {
     await prisma.$transaction([
       prisma.memoryRecallChunk.createMany({ data: staleChunks.chunkRows }),
-      prisma.memoryRecallChunkMessage.createMany({ data: staleChunks.mapRows })
+      prisma.memoryRecallChunkMessage.createMany({ data: staleChunks.mapRows }),
+      prisma.$executeRaw`ANALYZE "MemoryRecallChunk", "MemoryRecallChunkMessage"`
     ]);
   }
   return {
@@ -1132,115 +1107,4 @@ async function createSearchReceipts(input: Readonly<{
     await prisma.memoryHistoryRun.createMany({ data: batch.map(({ receipt }) => receipt) });
   }
   return { citingTargetIds, citingTargetToolCallIds, total: input.count };
-}
-
-function statementLabel(query: string): string {
-  const keyword = /^\s*(\w+)/u.exec(query)?.[1]?.toUpperCase() ?? "?";
-  const table = /(?:FROM|UPDATE|INTO)\s+(?:"public"\.)?"([A-Za-z]+)"/u.exec(query)?.[1] ?? "-";
-  return `${keyword} ${table} #${memorySha256(query).slice(0, 8)}`;
-}
-
-function statementGroups(statements: readonly ProbeStatement[], limit: number) {
-  const groups = new Map<string, { calls: number; maxMs: number; totalMs: number }>();
-  for (const statement of statements) {
-    const label = statementLabel(statement.query);
-    const group = groups.get(label) ?? { calls: 0, maxMs: 0, totalMs: 0 };
-    group.calls += 1;
-    group.maxMs = Math.max(group.maxMs, statement.durationMs);
-    group.totalMs += statement.durationMs;
-    groups.set(label, group);
-  }
-  return [...groups.entries()]
-    .sort((left, right) => right[1].totalMs - left[1].totalMs)
-    .slice(0, limit)
-    .map(([label, group]) => ({ label, ...group }));
-}
-
-type PlanNode = Readonly<{
-  "Actual Loops"?: number;
-  "Actual Rows"?: number;
-  "Actual Total Time"?: number;
-  "Index Name"?: string;
-  "Node Type"?: string;
-  Plans?: readonly PlanNode[];
-  "Relation Name"?: string;
-}>;
-
-type PlanRoot = Readonly<{
-  "Execution Time"?: number;
-  Plan?: PlanNode;
-  "Planning Time"?: number;
-  Triggers?: ReadonlyArray<Readonly<{ Calls?: number; "Trigger Name"?: string; Time?: number }>>;
-}>;
-
-function summarizePlan(value: unknown) {
-  const root = (Array.isArray(value) ? value[0] : value) as PlanRoot | null | undefined;
-  const nodes: Array<Record<string, number | string>> = [];
-  const visit = (node: PlanNode | undefined) => {
-    if (!node) return;
-    const loops = node["Actual Loops"] ?? 0;
-    const totalMs = (node["Actual Total Time"] ?? 0) * loops;
-    if (node["Relation Name"] || totalMs >= 1) {
-      nodes.push({
-        loops,
-        node: node["Node Type"] ?? "?",
-        rows: node["Actual Rows"] ?? 0,
-        totalMs: Math.round(totalMs),
-        ...(node["Relation Name"] ? { relation: node["Relation Name"] } : {}),
-        ...(node["Index Name"] ? { index: node["Index Name"] } : {})
-      });
-    }
-    node.Plans?.forEach(visit);
-  };
-  visit(root?.Plan);
-  return {
-    executionMs: Math.round(root?.["Execution Time"] ?? -1),
-    nodes: nodes.slice(0, 16),
-    planningMs: Math.round(root?.["Planning Time"] ?? -1),
-    triggers: (root?.Triggers ?? []).map((trigger) => ({
-      calls: trigger.Calls ?? 0,
-      ms: Math.round(trigger.Time ?? 0),
-      name: trigger["Trigger Name"] ?? "?"
-    }))
-  };
-}
-
-async function explainSlowestStatements(
-  client: PrismaClient,
-  statements: readonly ProbeStatement[],
-  limit: number
-) {
-  const candidates = [...statements]
-    .filter(({ query }) => /^\s*(WITH|SELECT|UPDATE|DELETE)\b/iu.test(query))
-    .sort((left, right) => right.durationMs - left.durationMs)
-    .slice(0, limit);
-  const plans: Array<Record<string, unknown>> = [];
-  for (const statement of candidates) {
-    const label = statementLabel(statement.query);
-    try {
-      const params = JSON.parse(statement.params) as unknown[];
-      let plan: unknown = null;
-      // EXPLAIN ANALYZE executes the statement; every replay rolls back.
-      await client.$transaction(async (tx) => {
-        const rows = await tx.$queryRawUnsafe<Array<Record<string, unknown>>>(
-          `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement.query}`,
-          ...params
-        );
-        plan = rows[0]?.["QUERY PLAN"];
-        throw new ProbeRollback();
-      }, { maxWait: 10_000, timeout: 120_000 }).catch((error: unknown) => {
-        if (!(error instanceof ProbeRollback)) throw error;
-      });
-      plans.push({ label, probeMs: statement.durationMs, ...summarizePlan(plan) });
-    } catch (error) {
-      plans.push({
-        error: error instanceof Prisma.PrismaClientKnownRequestError
-          ? error.code
-          : "explain_failed",
-        label,
-        probeMs: statement.durationMs
-      });
-    }
-  }
-  return plans;
 }
