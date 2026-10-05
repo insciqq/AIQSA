@@ -46,6 +46,7 @@ import type { FrozenSkillManifest } from "../skills/runManifest";
 import { createSkillToolService, type SkillToolRepository } from "../skills/toolService";
 import { isSkillToolName } from "../tools/skill";
 import { scheduledTaskCreatedResult } from "../tools/scheduledTaskCreation";
+import { scheduledTaskManagementResult } from "../tools/scheduledTaskManagement";
 import { createFetchUrlSession } from "../tools/fetchUrl";
 import { createPrismaFetchUrlOperations } from "./prismaRepositoryFetchUrl";
 import { extractPage as extractPageText } from "../webFetch/extract";
@@ -10599,7 +10600,8 @@ describe("scheduled task creation recovery", () => {
     id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.",
     schedule: { kind: "weekly" as const, time: "09:00", days: ["mon" as const, "tue" as const, "wed" as const, "thu" as const, "fri" as const] },
     timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
-    toolsEnabled: true, workspaceEnabled: false, chatMode: "new" as const, kind: "standard" as const, status: "active" as const,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new" as const, kind: "standard" as const,
+    status: "active" as const,
     pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null,
     unseenResult: false, revision: 1, createdAt: "2026-10-04T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
   };
@@ -10714,4 +10716,51 @@ describe("page reader recovery", () => {
     expect(transcript).toContain("\\\"cached\\\":true");
     expect(harness.state.completed).not.toBeNull();
   });
+});
+
+describe("scheduled task management recovery", () => {
+  const settings = { modelId: "deployment-1", provider: "connection-1", searchEnabled: false, toolsEnabled: true,
+    workspaceEnabled: false };
+  const args = { action: "pause", taskId: "task-1" };
+  const task = {
+    id: "task-1", title: "Price monitor", prompt: "Watch the price.", schedule: { kind: "daily" as const, time: "09:00" },
+    timeZone: "UTC", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: false, chatMode: "same" as const, kind: "monitoring" as const,
+    status: "paused" as const, pauseReason: null, completionReason: null, nextRunAt: null, lastRun: null, running: false,
+    chatId: null, unseenResult: false, revision: 3, createdAt: "2026-10-01T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
+  };
+
+  it.each(["running", "complete"] as const)(
+    "applies an interrupted call only through its atomic settlement and replays a settled one (%s)",
+    async (state) => {
+      const requests: ProviderRunRequest[] = [];
+      const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+      const harness = createHarness({ providers: { openai: adapter } });
+      const manageCall = { arguments: args, id: "provider-call-1", name: "manage_scheduled_task" };
+      const settled = snapshotToolExecutionResult(scheduledTaskManagementResult(manageCall,
+        { action: "pause", changed: true, task }), 64_000);
+      const call: PersistedToolLoopCall = { ...persistedRecoveryCall(state), arguments: args, mcpBinding: null,
+        toolName: "manage_scheduled_task", ...(state === "complete" ? { result: settled } : {}) };
+      const base = checkpointedRun({ calls: [call], phase: state === "running" ? "tools_running" : "tools_pending",
+        providerToolMessages: [] });
+      const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+      installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, scheduledTaskTool: settings,
+        scheduledTaskManagementTool: { chatTask: null }, toolMode: "auto", searchPlan: { mode: "all_selected", options: [] } } });
+      const manageScheduledTaskForCall = vi.fn<NonNullable<RunRecoveryRepository["manageScheduledTaskForCall"]>>(
+        async (input) => ({ kind: "managed", result: input.result({ action: "pause", changed: true, task }) }));
+      harness.repository.manageScheduledTaskForCall = manageScheduledTaskForCall;
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([]);
+      // A running call may have applied nothing yet: the settlement that applies it runs it, once. A settled one replays.
+      expect(manageScheduledTaskForCall.mock.calls).toEqual(state === "running"
+        ? [[expect.objectContaining({ action: "pause", callId: "stored-call-1", runId, taskId: "task-1", userId })]] : []);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["create_scheduled_task",
+        "manage_scheduled_task"]));
+      expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("changed");
+      expect(harness.state.events.map((entry) => entry.event)).toContainEqual(expect.objectContaining({ type: "artifact",
+        data: expect.objectContaining({ artifactType: "scheduled_task", payload: expect.objectContaining({ action: "paused" }) }) }));
+      expect(harness.state.completed).not.toBeNull();
+    }
+  );
 });

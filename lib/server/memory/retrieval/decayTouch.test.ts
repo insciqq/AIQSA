@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { MEMORY_DECAY_POLICY_VERSION } from "../../../domain/memory/retrieval";
 import {
   runMemoryDecayTouchWithRetry,
   touchDirectMemoryFactAccess,
@@ -47,6 +48,41 @@ describe("frozen Memory decay touch", () => {
       userId: "user-1"
     })).resolves.toEqual({ eligibleItems: 0, touchedItems: 0 });
     expect(findMany).not.toHaveBeenCalled();
+  });
+
+  it("touches nothing a scheduled task's turn was given, nor for a run it cannot read", async () => {
+    const touched = vi.fn(async () => ({ count: 1 }));
+    const pack = (run: Readonly<{ userMessage: Readonly<{ scheduledTaskPrompt: boolean }> }> | null) => ({
+      $transaction: vi.fn(async (operation: (tx: unknown) => Promise<unknown>) => operation({
+        $executeRaw: vi.fn(async () => 1), modelRunMemoryItem: { updateMany: touched }
+      })),
+      modelRun: { findFirst: vi.fn(async () => run) },
+      modelRunMemoryBinding: {
+        findFirst: vi.fn(async () => ({
+          id: "binding-1",
+          modelRunId: "run-1",
+          settingsSnapshot: {
+            acceptedUtilityEgressFingerprint: null, acceptedUtilityPolicyVersion: null, activeIndexGenerationId: null,
+            decayEnabled: true, decayPolicyVersion: MEMORY_DECAY_POLICY_VERSION, learnAutomatically: false,
+            memoryConsentRevision: 0, referenceChatHistory: false, schemaVersion: 2, settingsRevision: 0, useMemoryFacts: true
+          }
+        }))
+      },
+      modelRunMemoryItem: { findMany: vi.fn(async () => [{ factVersionId: "version-1", id: "item-1" }]) }
+    }) as unknown as PrismaClient & { modelRun: { findFirst: ReturnType<typeof vi.fn> } };
+
+    for (const run of [{ userMessage: { scheduledTaskPrompt: true } }, null]) {
+      const client = pack(run);
+      await expect(touchFrozenMemoryPack(client, { modelRunId: "run-1", userId: "user-1" }))
+        .resolves.toEqual({ eligibleItems: 0, touchedItems: 0 });
+      expect(client.modelRun.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "run-1", userId: "user-1" } }));
+    }
+    expect(touched).not.toHaveBeenCalled();
+    // The owner's own turn keeps its independently found facts' access signal.
+    await expect(touchFrozenMemoryPack(pack({ userMessage: { scheduledTaskPrompt: false } }), {
+      modelRunId: "run-1", userId: "user-1"
+    })).resolves.toEqual({ eligibleItems: 1, touchedItems: 1 });
+    expect(touched).toHaveBeenCalledOnce();
   });
 
   it("bounds post-answer retry and isolates a permanent touch failure", async () => {

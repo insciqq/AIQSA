@@ -34,6 +34,7 @@ import {
   type ScheduledTaskEditorDraft,
   type ScheduledTaskFieldErrors,
   type ScheduledTaskHourlyWindow,
+  type ScheduledTaskMemoryAvailability,
   type ScheduledTaskRepeat,
   type ScheduledTaskWorkspaceAvailability
 } from "./scheduledTaskDraft";
@@ -79,6 +80,8 @@ export type ScheduledTaskSheetProps = Readonly<{
   viewerTimeZone: string;
   /** The installation's Workspace availability; the task's model decides the rest. */
   workspace?: ScheduledTaskWorkspaceAvailability;
+  /** Whether the owner's Memory lets runs read anything; the task keeps its own switch. */
+  memory?: ScheduledTaskMemoryAvailability;
 }>;
 
 function FieldError({ id, children, live = true }: Readonly<{ id: string; children: ReactNode; live?: boolean }>) {
@@ -114,8 +117,8 @@ function toggled(days: readonly ScheduledTaskWeekday[], day: ScheduledTaskWeekda
 
 /** Create and edit sheet: one form, a live next-run preview and the task's recent runs. */
 export function ScheduledTaskSheet({
-  busy, catalog, draft, emailAvailable, errors, initialDraft, notice, onChange, onClose, onOpenRunChat, onRunsShown, onSubmit,
-  original, recentRuns, viewerTimeZone, workspace = "unknown"
+  busy, catalog, draft, emailAvailable, errors, initialDraft, memory = "unknown", notice, onChange, onClose, onOpenRunChat,
+  onRunsShown, onSubmit, original, recentRuns, viewerTimeZone, workspace = "unknown"
 }: ScheduledTaskSheetProps) {
   const formId = useId();
   const ids = {
@@ -124,7 +127,7 @@ export function ScheduledTaskSheet({
     searchHelp: useId(), email: useId(), emailHelp: useId(), form: useId(), monthHint: useId(),
     scheduleHeading: useId(), answerHeading: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
     chatMode: useId(), chatModeHint: useId(), kind: useId(), kindHint: useId(), tools: useId(), toolsHelp: useId(),
-    workspace: useId(), workspaceHelp: useId()
+    workspace: useId(), workspaceHelp: useId(), memory: useId(), memoryHelp: useId()
   };
   const titleInput = useRef<HTMLInputElement>(null);
   /** The navigation waiting for a discard answer: closing, or leaving for a run's chat. */
@@ -163,6 +166,10 @@ export function ScheduledTaskSheet({
     ? "Workspace is unavailable right now. Runs that need it try again later."
     : chatMode === "same" ? "Runs share this task's Workspace, so its files stay from run to run."
       : "Each run starts with an empty Workspace in its new chat.");
+  // The owner's own Memory state decides what any task may read; the switch stays the task's.
+  const memoryReason = memory === "paused" ? "Memory is paused, so runs read nothing. Turn it on in Studio › Memory."
+    : memory === "needs_setup" ? "Memory needs administrator setup, so runs read nothing yet."
+      : "Reads what Memory knows about you. Tasks never add to Memory.";
   const leave = (proceed: () => void) => {
     if (busy) return;
     if (dirty) setPendingLeave(() => proceed);
@@ -499,6 +506,19 @@ export function ScheduledTaskSheet({
                 onChange={(workspaceEnabled) => onChange({ workspaceEnabled })}
               />
               {errors.workspace ? <FieldError id={`${ids.workspace}-error`}>{errors.workspace}</FieldError> : null}
+            </div>
+            <div className="v2-scheduled-toggle">
+              <span className="v2-scheduled-toggle-copy">
+                <span id={ids.memory} className="v2-scheduled-label">Use Memory</span>
+                <span id={ids.memoryHelp} className="v2-scheduled-hint">{memoryReason}</span>
+              </span>
+              <UiV2Switch
+                checked={draft.memoryEnabled}
+                disabled={busy}
+                label="Use Memory"
+                aria-describedby={ids.memoryHelp}
+                onChange={(memoryEnabled) => onChange({ memoryEnabled })}
+              />
             </div>
             {emailAvailable ? (
               <div className="v2-scheduled-toggle">

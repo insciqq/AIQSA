@@ -23,7 +23,8 @@ function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
   return {
     ...scheduledTaskScheduleColumns({ kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }),
     id: "task-1", title: "Morning brief", prompt: "Synthetic prompt", timeZone: "Europe/Moscow", modelId: "model-1",
-    provider: "connection-1", searchEnabled: false, emailNotify: true, toolsEnabled: true, workspaceEnabled: false, chatMode: "NEW",
+    provider: "connection-1", searchEnabled: false, emailNotify: true, toolsEnabled: true, workspaceEnabled: false,
+    memoryEnabled: true, chatMode: "NEW",
     kind: "STANDARD", status: "ACTIVE", pauseReason: null, completionReason: null,
     nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: "chat-1", revision: 4,
     createdAt: new Date("2026-10-01T00:00:00.000Z"), updatedAt: new Date("2026-10-02T06:01:00.000Z"),
@@ -50,8 +51,10 @@ describe("scheduled task storage mapping", () => {
     expect(decodeScheduledTask(task)).toEqual(task);
     expect(task).toMatchObject({
       chatId: "chat-1", chatMode: "new", nextRunAt: "2026-10-05T06:00:00.000Z", running: true, status: "active", unseenResult: true,
-      schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, toolsEnabled: true, workspaceEnabled: false
+      schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, toolsEnabled: true, workspaceEnabled: false,
+      memoryEnabled: true
     });
+    expect(toScheduledTask(row({ memoryEnabled: false }), { lastRun: null, running: false, unseen: false }).memoryEnabled).toBe(false);
     expect(toScheduledTask(row({ chat: { permanentDeletionAt: new Date() } }), { lastRun: null, running: false, unseen: false }).chatId)
       .toBeNull();
     expect(toScheduledTask(row({ chat: null, chatId: null, nextRunAt: null, status: "PAUSED" }),

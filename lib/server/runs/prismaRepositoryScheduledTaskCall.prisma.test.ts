@@ -22,7 +22,8 @@ const deps = {
 const body = {
   title: "Synthetic reminder", prompt: "Synthetic scheduled prompt", schedule: { kind: "weekly", time: "09:00",
     days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake",
-  searchEnabled: false, emailNotify: false, toolsEnabled: false, workspaceEnabled: false, chatMode: "new", kind: "standard"
+  searchEnabled: false, emailNotify: false, toolsEnabled: false, workspaceEnabled: false, memoryEnabled: true, chatMode: "new",
+  kind: "standard"
 };
 
 /**

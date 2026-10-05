@@ -219,6 +219,11 @@ import {
   scheduledTaskToolsForRequest
 } from "../tools/scheduledTaskCreation";
 import {
+  executeManageScheduledTask,
+  isScheduledTaskManageCall,
+  scheduledTaskManagementToolsForRequest
+} from "../tools/scheduledTaskManagement";
+import {
   createFetchUrlSession,
   fetchUrlInterruptedResult,
   fetchUrlToolsForRequest,
@@ -364,6 +369,7 @@ export type RunRecoveryRepository = Pick<
   | "readToolCall"
   | "recordMonitoringVerdict"
   | "createScheduledTaskForCall"
+  | "manageScheduledTaskForCall"
   | "loadRunFetchUrlCalls"
   | "loadRunSearchSourceUrls"
   | "toolCallsAvailable"
@@ -1001,9 +1007,10 @@ function isRecoveredMonitoringCall(context: RecoveryToolContext, name: string): 
   return isMonitoringVerdictCall(context.run.normalizedRequest, name);
 }
 
-/** The run's scheduled task creation as admitted; its creation settles the call atomically. */
+/** The run's scheduled task creation or management as admitted; each settles its call atomically. */
 function isRecoveredScheduledTaskCall(context: RecoveryToolContext, name: string): boolean {
-  return isScheduledTaskCreateCall(context.run.normalizedRequest, name);
+  return isScheduledTaskCreateCall(context.run.normalizedRequest, name) ||
+    isScheduledTaskManageCall(context.run.normalizedRequest, name);
 }
 
 function recoveredVerdictRecorder(deps: RunRecoveryDeps): MonitoringVerdictRecorder | undefined {
@@ -1603,15 +1610,18 @@ async function executePersistedToolCallInContext(
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: blocked }, round: persisted.roundIndex };
   }
   if (isRecoveredScheduledTaskCall(context, call.name) && (claim.kind === "claimed" || claim.kind === "ambiguous")) {
-    // Created and settled in one transaction: an interrupted call finds that
-    // settlement or nothing created, so it never creates a second task.
-    const result = await executeCreateScheduledTask(call, { persistedToolCallId: persisted.id,
-      request: context.run.normalizedRequest, runId: context.run.id, userId: context.run.userId },
-    context.deps.repository.createScheduledTaskForCall?.bind(context.deps.repository));
+    // Applied and settled in one transaction: an interrupted call finds that
+    // settlement or nothing applied, so it never creates or changes twice.
+    const owner = { persistedToolCallId: persisted.id, request: context.run.normalizedRequest, runId: context.run.id,
+      userId: context.run.userId };
+    const repository = context.deps.repository;
+    const result = isScheduledTaskManageCall(context.run.normalizedRequest, call.name)
+      ? await executeManageScheduledTask(call, owner, repository.manageScheduledTaskForCall?.bind(repository))
+      : await executeCreateScheduledTask(call, owner, repository.createScheduledTaskForCall?.bind(repository));
     const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
     const settled = snapshot && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,
       result: snapshot, runId: context.run.id, state: result.status, userId: context.run.userId });
-    if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "A recovered scheduled task creation could not be settled.");
+    if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "A recovered scheduled task call could not be settled.");
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
   }
   if (context.fetchSession && isFetchUrlCall(context.run.normalizedRequest, call.name) &&
@@ -2590,6 +2600,7 @@ async function recoverCheckpointedToolLoop(
       ...(run.normalizedRequest.sessionStatusTool ? [sessionStatusTool] : []),
       ...(run.normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
       ...scheduledTaskToolsForRequest(run.normalizedRequest),
+      ...scheduledTaskManagementToolsForRequest(run.normalizedRequest),
       ...fetchUrlToolsForRequest(run.normalizedRequest),
       ...(run.normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
       ...(run.normalizedRequest.toolCallReader ? [readToolCallTool] : []),
@@ -3194,7 +3205,7 @@ async function recoverCheckpointedToolLoop(
             !isRecoveredCallRead(context, call.name) &&
             !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME) &&
             !isMonitoringVerdictCall(run.normalizedRequest, call.name) &&
-            !isScheduledTaskCreateCall(run.normalizedRequest, call.name) &&
+            !isRecoveredScheduledTaskCall(context, call.name) &&
             !isFetchUrlCall(run.normalizedRequest, call.name)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",

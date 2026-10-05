@@ -240,7 +240,8 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
         taskGeneration: task.generation, taskId: occurrence.taskId, taskRevision: task.revision,
         // Read with the revision above, so the link fence keeps the snapshot current.
         promptUrlDigests: task.promptUrlDigests,
-        ...(task.kind === "monitoring" ? { monitoring: true as const } : {})
+        ...(task.kind === "monitoring" ? { monitoring: true as const } : {}),
+        ...(task.memoryEnabled ? { memory: true as const } : {})
       },
       userId: occurrence.userId
     });

@@ -1,4 +1,5 @@
 import type { Catalog, CatalogModel } from "@/lib/contracts/catalog";
+import type { MemoryConsumerSettingsResponse } from "@/lib/contracts/memoryConsumer";
 import type { WorkspaceUnavailableReason } from "@/lib/contracts/workspace";
 import {
   SCHEDULED_TASK_EVERY_HOURS,
@@ -71,6 +72,21 @@ export function scheduledTaskWorkspaceAvailability(workspace: Readonly<{
   return workspace.unavailableReason ?? "unknown";
 }
 
+/**
+ * Whether the owner's Memory lets a task's runs read anything, as the shell's
+ * Memory settings read reports it: `paused` when the owner turned Memory off,
+ * `needs_setup` before the administrator set it up, `unknown` while it loads.
+ * The task keeps its own switch either way.
+ */
+export type ScheduledTaskMemoryAvailability = "available" | "paused" | "needs_setup" | "unknown";
+
+export function scheduledTaskMemoryAvailability(
+  memory: Pick<MemoryConsumerSettingsResponse, "status"> | null
+): ScheduledTaskMemoryAvailability {
+  if (!memory) return "unknown";
+  return memory.status === "PAUSED" ? "paused" : memory.status === "NEEDS_ADMIN_SETUP" ? "needs_setup" : "available";
+}
+
 /** An hourly schedule runs all day, or from a start time until an optional end time. */
 export type ScheduledTaskHourlyWindow = "all_day" | "hours";
 
@@ -97,6 +113,8 @@ export type ScheduledTaskEditorDraft = Readonly<{
   /** MCP tools and Skills; a new task starts from the composer defaults. */
   toolsEnabled: boolean;
   workspaceEnabled: boolean;
+  /** Runs read the owner's Memory and never add to it; a new task starts with it on. */
+  memoryEnabled: boolean;
   /** The owner's choice for other schedules; hourly and monitoring tasks always continue in one chat. */
   chatMode: ScheduledTaskChatMode;
   kind: ScheduledTaskKind;
@@ -180,6 +198,7 @@ export function blankScheduledTaskDraft(
     searchEnabled: false,
     emailNotify: false,
     ...scheduledTaskStartingTools(catalog, model, workspace),
+    memoryEnabled: true,
     chatMode: "new",
     kind: "standard",
     ...preset
@@ -215,6 +234,7 @@ export function scheduledTaskDraftFromTask(task: ScheduledTask, now: Date = new 
     emailNotify: task.emailNotify,
     toolsEnabled: task.toolsEnabled,
     workspaceEnabled: task.workspaceEnabled,
+    memoryEnabled: task.memoryEnabled,
     chatMode: task.chatMode,
     kind: task.kind
   };
@@ -377,6 +397,7 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
     emailNotify: draft.emailNotify,
     toolsEnabled: draft.toolsEnabled,
     workspaceEnabled: draft.workspaceEnabled,
+    memoryEnabled: draft.memoryEnabled,
     chatMode: scheduledTaskDraftChatMode(draft),
     kind: draft.kind
   } : null;
@@ -404,6 +425,7 @@ export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, orig
   if (next.emailNotify !== original.emailNotify) patch.emailNotify = next.emailNotify;
   if (next.toolsEnabled !== original.toolsEnabled) patch.toolsEnabled = next.toolsEnabled;
   if (next.workspaceEnabled !== original.workspaceEnabled) patch.workspaceEnabled = next.workspaceEnabled;
+  if (next.memoryEnabled !== original.memoryEnabled) patch.memoryEnabled = next.memoryEnabled;
   if (next.chatMode !== original.chatMode) patch.chatMode = next.chatMode;
   if (next.kind !== original.kind) patch.kind = next.kind;
   return patch;
@@ -415,7 +437,8 @@ export function sameScheduledTaskDraft(left: ScheduledTaskEditorDraft, right: Sc
     left.timeZone === right.timeZone && left.modelId === right.modelId && left.provider === right.provider &&
     left.searchEnabled === right.searchEnabled && left.emailNotify === right.emailNotify && left.chatMode === right.chatMode &&
     left.everyHours === right.everyHours && left.hourlyWindow === right.hourlyWindow && left.until === right.until &&
-    left.toolsEnabled === right.toolsEnabled && left.workspaceEnabled === right.workspaceEnabled && left.kind === right.kind &&
+    left.toolsEnabled === right.toolsEnabled && left.workspaceEnabled === right.workspaceEnabled &&
+    left.memoryEnabled === right.memoryEnabled && left.kind === right.kind &&
     scheduledTaskWeekdayMask(left.days) === scheduledTaskWeekdayMask(right.days) &&
     scheduledTaskWeekdayMask(left.hourlyDays) === scheduledTaskWeekdayMask(right.hourlyDays);
 }
