@@ -249,6 +249,27 @@ function accountedProviderRequests(
     binding.state === "RUNNING").length;
 }
 
+/** A batch settles only after retiring every child it did not send. A target
+ * can lose authority after the request was planned, for example when its chat
+ * moved ahead of the history checkpoint; a PENDING child left under a settled
+ * job has no owner. The repair sweep re-admits the entry once it is current. */
+async function retireUnsentChildren(
+  deps: MemoryEmbeddingBatchHandlerDependencies,
+  job: MemoryJobDescriptor
+): Promise<readonly MemoryEmbeddingBatchStoredItem[]> {
+  const items = await deps.repository.load(job.userId, job.id);
+  const unsent = items.filter((item) => item.state === "PENDING");
+  if (unsent.length === 0) return items;
+  await deps.repository.mark(
+    job.userId,
+    unsent.map(({ id }) => id),
+    "STALE",
+    "memory_embedding_batch_target_stale",
+    deps.now()
+  );
+  return deps.repository.load(job.userId, job.id);
+}
+
 async function markTargetsFailed(
   deps: MemoryEmbeddingBatchHandlerDependencies,
   items: readonly MemoryEmbeddingBatchStoredItem[]
@@ -475,6 +496,7 @@ export function createMemoryEmbeddingBatchHandler(
       let requestItems = items.filter((item) =>
         item.state === "PENDING" && item.target !== null);
       if (requestItems.length === 0) {
+        items = await retireUnsentChildren(deps, job);
         return {
           acceptedResultHash: terminalHash(job, items, "no_pending_targets"),
           operationalCounters: operationalCounters(items, 0),
@@ -506,6 +528,7 @@ export function createMemoryEmbeddingBatchHandler(
           item.state === "PENDING" && item.target !== null);
       }
       if (requestItems.length === 0) {
+        items = await retireUnsentChildren(deps, job);
         return {
           acceptedResultHash: terminalHash(job, items, "generation_changed"),
           operationalCounters: operationalCounters(items, 0),
@@ -573,7 +596,7 @@ export function createMemoryEmbeddingBatchHandler(
         return {
           acceptedResultHash: terminalHash(job, items, "accepted_pin_changed"),
           operationalCounters: operationalCounters(
-            await deps.repository.load(job.userId, job.id),
+            await retireUnsentChildren(deps, job),
             0
           ),
           stage: "local_terminal"
@@ -706,7 +729,7 @@ export function createMemoryEmbeddingBatchHandler(
       items = await deps.repository.load(job.userId, job.id);
       bindings = await deps.repository.bindings(job.userId, job.id);
       await applyDurableResults(deps, job, items, bindings, context.now());
-      items = await deps.repository.load(job.userId, job.id);
+      items = await retireUnsentChildren(deps, job);
       return {
         acceptedResultHash: outputHash,
         operationalCounters: operationalCounters(

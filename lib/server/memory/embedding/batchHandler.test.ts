@@ -372,6 +372,43 @@ describe("Memory durable embedding batch handler", () => {
     });
   });
 
+  it("retires a child whose target lost authority after the batch was planned", async () => {
+    const f = fixture();
+    // The first two loads plan the batch. From the third on, the second
+    // child's source is no longer current (its chat moved ahead of the
+    // history checkpoint), so its target no longer rejoins.
+    let loads = 0;
+    f.repository.load.mockImplementation(async () => {
+      loads += 1;
+      return f.rows.map((row) => ({
+        ...row,
+        target: loads >= 3 && row.id === "child-1" ? null : row.target
+      }));
+    });
+    f.embed.mockResolvedValueOnce({
+      model: "embedding-v2",
+      requestId: "request-1",
+      usage: { inputTokens: 4, totalTokens: 4 },
+      vectors: [[0.6, 0.8]]
+    });
+
+    const result = await createMemoryEmbeddingBatchHandler(f.dependencies)
+      .execute(f.job, context());
+
+    expect(f.embed).toHaveBeenCalledOnce();
+    expect(f.embed).toHaveBeenCalledWith(expect.objectContaining({
+      texts: [renderMemoryDocumentEmbeddingText(f.rows[0]!.target!)]
+    }));
+    expect(f.rows.map(({ errorCode, state }) => ({ errorCode, state }))).toEqual([
+      { errorCode: null, state: "SETTLED" },
+      { errorCode: "memory_embedding_batch_target_stale", state: "STALE" }
+    ]);
+    expect(result.operationalCounters).toMatchObject({
+      embeddingSettledItems: 1,
+      embeddingStaleItems: 1
+    });
+  });
+
   it("resumes durable child apply without another paid call", async () => {
     const f = fixture();
     const outputHash = "f".repeat(64);
