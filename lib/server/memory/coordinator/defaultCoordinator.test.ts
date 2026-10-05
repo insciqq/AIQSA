@@ -69,4 +69,20 @@ describe("default Memory coordinator composition", () => {
       "retired-synthesis:end"
     ]);
   });
+
+  it("finishes the step in flight but admits no later step once shutdown begins", async () => {
+    const shutdown = new AbortController();
+    const order: string[] = [];
+    await reconcileDefaultMemoryWork({
+      embeddingSetup: async () => { order.push("embedding"); },
+      cutover: async () => {
+        shutdown.abort();
+        await Promise.resolve();
+        order.push("cutover");
+      },
+      historyBackfill: async () => { order.push("history"); },
+      maintenance: async () => { order.push("maintenance"); }
+    }, shutdown.signal);
+    expect(order).toEqual(["embedding", "cutover"]);
+  });
 });

@@ -443,4 +443,88 @@ describe("Memory terminal recovery persistence", () => {
       await deleteTestProviderExecutionAuthority(prisma, authority);
     }
   });
+
+  it("admits only the exact orphaned-classification shape of a protected history failure", async () => {
+    const f = await fixture();
+    const authority = await createTestProviderExecutionAuthority(prisma, "history-orphan-recovery");
+    type BindingState = "RUNNING" | "SUCCEEDED" | "OUTCOME_UNKNOWN";
+    const binding = async (job: { id: string; createdAt: Date }, ordinal: number, state: BindingState,
+      options: Readonly<{ errorCode?: string; receipt?: boolean; role?: "MEMORY_HISTORY_CLASSIFY" | "MEMORY_CLASSIFIER" }> = {}) => {
+      const created = await prisma.memoryExecutionBinding.create({ data: {
+        ...authority, userId: f.userId, memoryJobId: job.id, ownerType: "JOB", state, ordinal,
+        logicalRole: options.role ?? "MEMORY_HISTORY_CLASSIFY", destinationFingerprint: "d".repeat(64),
+        inputHash: ordinal.toString(16).padStart(64, "0"), errorCode: options.errorCode ?? null,
+        acceptedOutputHash: state === "SUCCEEDED" ? "b".repeat(64) : null,
+        policyVersion: "fixture-v1", promptVersion: "fixture-v1", schemaVersion: "fixture-v1",
+        pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION, secretFreeExecutionSnapshot: {},
+        providerId: "openai_compatible", createdAt: job.createdAt, startedAt: job.createdAt,
+        completedAt: state === "RUNNING" ? null : job.createdAt,
+        recoverableUntil: state === "RUNNING" ? null : new Date(f.now.getTime() + 86400_000)
+      } });
+      if (options.receipt ?? state !== "RUNNING") await prisma.usageEvent.create({ data: {
+        memoryExecutionBindingId: created.id, modelId: authority.providerModelId,
+        provider: "openai_compatible", providerModelId: authority.providerModelId, userId: f.userId
+      } });
+    };
+    // The previous release failed the next attempt at its recovery snapshot.
+    const protectedFailure = { errorCode: "memory_history_execution_protected", attemptCount: 2 };
+    const orphanedJob = async (settled: number, overrides: Partial<Prisma.MemoryJobUncheckedCreateInput> = {}) => {
+      const job = await (await currentHistorySource(f)).job({ ...protectedFailure, ...overrides });
+      for (let ordinal = 0; ordinal < settled; ordinal += 1) await binding(job, ordinal, "SUCCEEDED");
+      await binding(job, settled, "RUNNING");
+      return job;
+    };
+    try {
+      const eligible = await Promise.all([0, 2].map((settled) => orphanedJob(settled)));
+      // A later attempt settled its orphan, then failed to commit: the settled
+      // unknown outcome can never be bought again by local recovery.
+      const settledOrphan = await (await currentHistorySource(f)).job({
+        errorCode: "memory_job_commit_timeout", stage: "lexical_apply", attemptCount: 3 });
+      await binding(settledOrphan, 0, "SUCCEEDED");
+      await binding(settledOrphan, 1, "OUTCOME_UNKNOWN", { errorCode: "memory_history_recovered_uncertain" });
+      const missingReceipt = await orphanedJob(0);
+      await binding(missingReceipt, 1, "SUCCEEDED", { receipt: false });
+      const ambiguous = await orphanedJob(1);
+      await binding(ambiguous, 2, "OUTCOME_UNKNOWN");
+      const foreignRole = await orphanedJob(1);
+      await binding(foreignRole, 2, "SUCCEEDED", { role: "MEMORY_CLASSIFIER" });
+      const accounted = await (await currentHistorySource(f)).job(protectedFailure);
+      await binding(accounted, 0, "RUNNING", { receipt: true });
+      const otherRole = await (await currentHistorySource(f)).job(protectedFailure);
+      await binding(otherRole, 0, "RUNNING", { role: "MEMORY_CLASSIFIER" });
+      const laterStage = await orphanedJob(1, { stage: "contextual_key_generation" });
+      const legacy = await orphanedJob(1, { pipelineVersion: "memory-history-incremental-v9" });
+      const withoutOrphan = await (await currentHistorySource(f)).job(protectedFailure);
+      await binding(withoutOrphan, 0, "SUCCEEDED", { receipt: false });
+      const changed = await orphanedJob(1);
+      await prisma.chat.update({ where: { id: changed.chatId! }, data: { memoryBranchGeneration: { increment: 1 } } });
+
+      expect(await readMemoryRecoveryStatus(prisma, f.now)).toMatchObject({
+        eligible: 3, protected: 3, permanent: 5, obsolete: 1
+      });
+      // Fence repair evaluates the same protection against raw job rows.
+      expect(await repairFencedMemoryHistoryJobs(prisma, { now: f.now })).toBe(0);
+      expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now })).toBe(3);
+      for (const job of eligible) {
+        expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } })).toMatchObject({
+          state: "QUEUED", recoveryCount: 1, recoveryErrorCode: "memory_history_execution_protected",
+          attemptCount: 2, completedAt: null
+        });
+      }
+      expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: settledOrphan.id } })).toMatchObject({
+        state: "QUEUED", recoveryCount: 1, recoveryErrorCode: "memory_job_commit_timeout"
+      });
+      // Admission changes no execution evidence; the handler settles the orphan.
+      expect(await prisma.memoryExecutionBinding.count({ where: { userId: f.userId, state: "RUNNING" } })).toBe(10);
+      for (const kept of [missingReceipt, ambiguous, foreignRole, accounted, otherRole, laterStage, legacy, withoutOrphan, changed]) {
+        expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: kept.id } }))
+          .toMatchObject({ state: "TERMINAL_FAILED", recoveryCount: 0 });
+      }
+      expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now })).toBe(0);
+      expect(await readMemoryRecoveryStatus(prisma, f.now)).toMatchObject({ eligible: 0, protected: 3, permanent: 5 });
+    } finally {
+      await f.cleanup();
+      await deleteTestProviderExecutionAuthority(prisma, authority);
+    }
+  });
 });

@@ -35,6 +35,20 @@ import { MEMORY_RECOVERY_BATCH_SIZE, MEMORY_RECOVERY_INTERVAL_MS } from "./recov
 
 const sha256 = /^[a-f0-9]{64}$/u;
 const WORKER_HEARTBEAT_INTERVAL_MS = 30_000;
+/** Compose stops the worker 30 s after SIGTERM. Stop waits at most this long
+ * for claimed work to settle its executions, leaving the entrypoint time to
+ * clear liveness and close the database. Work still running stays claimed
+ * until its lease expires and recovers after restart. */
+export const MEMORY_COORDINATOR_SHUTDOWN_DRAIN_MS = 20_000;
+const MAX_SHUTDOWN_DRAIN_MS = 25_000;
+
+export type MemoryCoordinatorStopResult = Readonly<{
+  /** False when the bound elapsed before this coordinator's work settled. */
+  drained: boolean;
+  /** Claimed jobs and deletions still running when stop returned. */
+  pendingCount: number;
+}>;
+
 function reportFailure(stage: LifecycleStage, error: unknown): void {
   reportSubsystemFailure({ subsystem: "memory", stage, action: "retry",
     code: error instanceof MemoryCoordinatorError ? error.code : "memory_coordinator_failed",
@@ -73,13 +87,16 @@ function validJobResult(value: MemoryJobExecutionResult): boolean {
 export class MemoryCoordinator {
   readonly #activeControllers = new Set<AbortController>();
   readonly #failedHeartbeats = new Set<AbortController>();
+  readonly #leaseWrites = new Set<Promise<void>>();
   readonly #now: () => Date;
   readonly #onWorkerHeartbeat: (() => Promise<void>) | null;
   readonly #policy: MemoryCoordinatorPolicy;
   readonly #registry: MemoryCoordinatorRegistry;
   readonly #repository: MemoryCoordinatorRepository;
-  readonly #reconcileWork: (() => Promise<void>) | null;
+  readonly #reconcileWork: ((signal: AbortSignal) => Promise<void>) | null;
   readonly #scheduler: MemoryScheduler;
+  /** Aborted when stop begins; discovery admits no further work after it. */
+  #admission = new AbortController();
   #busyDiscoveryPhase: object | null = null;
   #discoveryPending: Promise<void> | null = null;
   #discoveryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -89,6 +106,7 @@ export class MemoryCoordinator {
   #rerun = false;
   #running = false;
   #stopped = false;
+  #stopping: Promise<MemoryCoordinatorStopResult> | null = null;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #workerHeartbeatPending: Promise<void> | null = null;
   #workerHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -98,7 +116,9 @@ export class MemoryCoordinator {
     now?: () => Date;
     onWorkerHeartbeat?: () => Promise<void>;
     policy?: Partial<MemoryCoordinatorPolicy>;
-    reconcileWork?: () => Promise<void>;
+    /** Durable work discovery. The signal aborts when stop begins; a pass
+     * stops admitting work at its next step. */
+    reconcileWork?: (signal: AbortSignal) => Promise<void>;
     registry: MemoryCoordinatorRegistry;
     repository: MemoryCoordinatorRepository;
     scheduler?: MemoryScheduler;
@@ -118,6 +138,8 @@ export class MemoryCoordinator {
     if (this.#running) return;
     this.#running = true;
     this.#stopped = false;
+    this.#stopping = null;
+    if (this.#admission.signal.aborted) this.#admission = new AbortController();
     if (this.#onWorkerHeartbeat) {
       runInBackground(() => {
         this.#workerHeartbeatTimer = setInterval(
@@ -130,7 +152,19 @@ export class MemoryCoordinator {
     this.kick();
   }
 
-  async stop(): Promise<void> {
+  /** Ends admission at once: no claim, reconciliation or discovery starts
+   * after this call, and a claim already in flight never starts its work.
+   * Active jobs and deletions are aborted, then stop waits, bounded, until
+   * they have settled their executions and no database write of this
+   * coordinator is in flight. Repeated calls share one stop; it never rejects. */
+  stop(options: Readonly<{ drainTimeoutMs?: number }> = {}): Promise<MemoryCoordinatorStopResult> {
+    const bound = options.drainTimeoutMs ?? MEMORY_COORDINATOR_SHUTDOWN_DRAIN_MS;
+    this.#stopping ??= this.#shutdown(Number.isSafeInteger(bound) && bound >= 0 &&
+      bound <= MAX_SHUTDOWN_DRAIN_MS ? bound : MEMORY_COORDINATOR_SHUTDOWN_DRAIN_MS);
+    return this.#stopping;
+  }
+
+  async #shutdown(drainTimeoutMs: number): Promise<MemoryCoordinatorStopResult> {
     if (this.#timer) clearTimeout(this.#timer);
     this.#stopBusyDiscovery();
     if (this.#workerHeartbeatTimer) clearInterval(this.#workerHeartbeatTimer);
@@ -139,13 +173,48 @@ export class MemoryCoordinator {
     this.#rerun = false;
     this.#running = false;
     this.#stopped = true;
+    this.#admission.abort(new Error("memory_coordinator_stopped"));
     this.#wakeIdleJobSlots();
+    const active = this.#activeControllers.size;
     for (const controller of this.#activeControllers) {
       controller.abort(new Error("memory_coordinator_stopped"));
     }
-    // A database write already in flight cannot be cancelled. Finish it before
-    // reporting a completed stop, and never schedule another beat from it.
-    await this.#workerHeartbeatPending;
+    const startedAt = Date.now();
+    // Aborted work still settles its executions; a database write already in
+    // flight cannot be cancelled. The entrypoint disconnects only after this.
+    const drained = await this.#quiesce(drainTimeoutMs);
+    const pendingCount = drained ? 0 : this.#activeControllers.size;
+    if (!drained || active > 0) {
+      logEvent("runtime_lifecycle", { subsystem: "memory", stage: "shutdown", action: "stop",
+        outcome: drained ? "completed" : "failed",
+        code: drained ? undefined : "memory_coordinator_drain_timeout",
+        count: active, pending_count: pendingCount, duration_ms: Date.now() - startedAt });
+    }
+    return Object.freeze({ drained, pendingCount });
+  }
+
+  /** Waits for the current pass with its claimed jobs and deletions,
+   * discovery, worker liveness and lease writes. False when the bound wins. */
+  async #quiesce(timeoutMs: number): Promise<boolean> {
+    const inFlight = () => [
+      this.#pending, this.#discoveryPending, this.#workerHeartbeatPending, ...this.#leaseWrites
+    ].filter((work): work is Promise<void> => work !== null);
+    let pending = inFlight();
+    if (pending.length === 0) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      while (pending.length > 0) {
+        if (!await Promise.race([Promise.allSettled(pending).then(() => true), deadline])) return false;
+        pending = inFlight();
+      }
+      return true;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   kick(): void {
@@ -208,6 +277,7 @@ export class MemoryCoordinator {
     do {
       this.#rerun = false;
       await this.#reconcileJobs();
+      if (this.#stopped) return;
       let claimFailed = false;
       let claimObserved = false;
       const observeClaim = (success: boolean) => {
@@ -232,7 +302,10 @@ export class MemoryCoordinator {
       } finally {
         this.#stopBusyDiscovery();
       }
-      if (claimObserved && !claimFailed && !this.#stopped) reportSubsystemHealthy("memory", "claim");
+      // A stopped pass ends with its claimed work: nothing is reconciled,
+      // requeued or discovered after stop began.
+      if (this.#stopped) return;
+      if (claimObserved && !claimFailed) reportSubsystemHealthy("memory", "claim");
       await this.#reconcileJobs();
       // The pass still ends with discovery that starts after its claims and
       // reconciliation; it waits for a busy-phase pass instead of overlapping.
@@ -244,11 +317,12 @@ export class MemoryCoordinator {
   /** Single-flight per process: callers start a pass only when none is pending. */
   #discover(): Promise<void> {
     const reconcileWork = this.#reconcileWork;
-    if (!reconcileWork) return Promise.resolve();
+    if (!reconcileWork || this.#stopped) return Promise.resolve();
     if (this.#discoveryPending) return this.#discoveryPending;
+    const signal = this.#admission.signal;
     const pass = runInBackground(async () => {
       try {
-        await reconcileWork();
+        await reconcileWork(signal);
         reportSubsystemHealthy("memory", "discover");
       } catch (error) {
         reportFailure("discover", error);
@@ -301,6 +375,9 @@ export class MemoryCoordinator {
         reportSubsystemHealthy("memory", "reconcile");
         return;
       }
+      // Stop ends reconciliation between its writes: nothing is requeued,
+      // recovered or released from waiting after stop began.
+      if (this.#stopped) return;
       const [cancelled, requeued] = await Promise.all([
         this.#repository.cancelUnavailableJobOwners({ kinds, now }),
         this.#repository.requeueDueJobs({
@@ -314,6 +391,7 @@ export class MemoryCoordinator {
         outcome: "cancelled", count: cancelled });
       if (requeued > 0) logEvent("runtime_lifecycle", { subsystem: "memory", stage: "retry",
         outcome: "completed", action: "retry", count: requeued });
+      if (this.#stopped) return;
       if (now.getTime() >= this.#nextRecoveryAt) {
         this.#nextRecoveryAt = now.getTime() + MEMORY_RECOVERY_INTERVAL_MS;
         const recovered = await this.#repository.recoverEligibleJobs({
@@ -325,12 +403,14 @@ export class MemoryCoordinator {
             outcome: "completed", action: "retry", count: recovered });
         }
       }
+      if (this.#stopped) return;
       const waiting = await this.#repository.listWaitingJobs({
         kinds,
         limit: this.#policy.reconciliationBatchSize
       });
       let preflightFailed = false;
       for (const job of waiting) {
+        if (this.#stopped) return;
         const handler = this.#registry.jobHandler(job.kind);
         if (!handler) {
           // A repository implementation must not be able to hide a kind that
@@ -403,6 +483,12 @@ export class MemoryCoordinator {
         if (this.#runningJobs === 0) return;
         continue;
       }
+      if (this.#stopped) {
+        // The claim committed while stop began. Its work never starts here;
+        // the lease returns the job to the queue for the next worker.
+        memoryAttempt(claim, { stage: "claim", outcome: "cancelled", action: "stop" });
+        return;
+      }
       claims += 1;
       const claimedJob = claim;
       this.#runningJobs += 1;
@@ -457,6 +543,10 @@ export class MemoryCoordinator {
         return;
       }
       if (!claim) return;
+      if (this.#stopped) {
+        memoryAttempt(claim, { stage: "claim", outcome: "cancelled", action: "stop" });
+        return;
+      }
       claims += 1;
       await runInBackground(() => runWithContext(
         { job_id: claim.id },
@@ -485,7 +575,7 @@ export class MemoryCoordinator {
         pending = false;
         return;
       }
-      void memoryPersistence(input.work, "heartbeat", () =>
+      this.#trackLeaseWrite(memoryPersistence(input.work, "heartbeat", () =>
         input.heartbeat(now, addMilliseconds(now, this.#policy.leaseMs)), {}, true)
         .then((accepted) => {
           if (this.#activeControllers.has(input.controller)) {
@@ -506,10 +596,17 @@ export class MemoryCoordinator {
         })
         .finally(() => {
           pending = false;
-        });
+        }));
     }, this.#policy.heartbeatMs);
     timer.unref?.();
     return timer;
+  }
+
+  /** A lease write outlives its job's interval; stop waits for it. */
+  #trackLeaseWrite(write: Promise<void>): void {
+    this.#leaseWrites.add(write);
+    const settled = () => { this.#leaseWrites.delete(write); };
+    void write.then(settled, settled);
   }
 
   async #processJob(claim: MemoryJobClaim): Promise<void> {
