@@ -1,4 +1,5 @@
 import { createAiqsaConverter } from "./aiqsaConverter";
+import { createClaudeConverter } from "./claudeConverter";
 import type { ChatImportConverter } from "./converterTypes";
 
 /**
@@ -7,5 +8,5 @@ import type { ChatImportConverter } from "./converterTypes";
  * hold what detection learned about the files.
  */
 export function createChatImportConverters(): readonly ChatImportConverter[] {
-  return [createAiqsaConverter()];
+  return [createAiqsaConverter(), createClaudeConverter()];
 }
