@@ -49,6 +49,9 @@ function globalSuppressionFence(userId: string | Prisma.Sql): Prisma.Sql {
  * supplied for nested queries. SUPERSEDED and MERGED semantic versions remain
  * valid support when their exact source, dependencies, safety and retention
  * authority still hold. Pending/conflicting and terminal versions do not.
+ * Evidence support follows the row authority of its fact: a branch change
+ * that keeps the source message on the active path (a regenerated answer, a
+ * later edit) keeps the alias, whatever branch generation stamped the row.
  */
 export function memoryAdmissibleEntityAliasPredicate(
   userId: string | Prisma.Sql,
@@ -157,8 +160,6 @@ export function memoryAdmissibleEntityAliasPredicate(
                     sourceMode: Prisma.sql`version."sourceMode"`,
                     version: Prisma.sql`version`
                   })}
-                  AND support."branchGeneration" =
-                    evidence_chat."memoryBranchGeneration"
                   AND ${memoryPersonalEvidenceRowPredicate(
                     userId,
                     Prisma.sql`version."id"`,

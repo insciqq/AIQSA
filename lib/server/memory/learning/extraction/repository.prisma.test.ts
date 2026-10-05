@@ -24,6 +24,7 @@ import {
   loadPersonalEligibleFactVersionIds,
   loadPersonalMemoryEvidenceSnapshots
 } from "../../persistence/eligibility";
+import { loadMemoryReusableFactVersionIds } from "../../persistence/reusableFactAuthority";
 import { projectMemoryHistorySourceText } from "../../history/safety";
 import {
   lockMemorySettings,
@@ -4223,6 +4224,16 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       const learnedVersion = await prisma.memoryFactVersion.findFirstOrThrow({
         where: { userId }
       });
+      const { subjectEntityId } = await prisma.memoryFact.findUniqueOrThrow({
+        select: { subjectEntityId: true },
+        where: { id: learnedVersion.factId }
+      });
+      expect(subjectEntityId).toEqual(expect.any(String));
+      await expect(loadMemoryReusableFactVersionIds(
+        prisma,
+        userId,
+        [learnedVersion.id]
+      )).resolves.toEqual(new Set([learnedVersion.id]));
       await prisma.modelRun.create({
         data: {
           assistantMessageId: original.assistantMessage.id,
@@ -4343,6 +4354,18 @@ describe("Prisma Memory vNext source-message ingestion", () => {
           currentVersionId: learnedVersion.id,
           state: "ACTIVE"
         });
+      // The regenerated answer keeps the source message on the active path,
+      // so the product's subject entity keeps its exact alias support and the
+      // fact stays reusable for standing context and search.
+      await expect(prisma.memoryEntity.findUniqueOrThrow({
+        select: { state: true },
+        where: { id: subjectEntityId! }
+      })).resolves.toEqual({ state: "ACTIVE" });
+      await expect(loadMemoryReusableFactVersionIds(
+        prisma,
+        userId,
+        [learnedVersion.id]
+      )).resolves.toEqual(new Set([learnedVersion.id]));
     } finally {
       await cleanupOwner(userId);
     }
