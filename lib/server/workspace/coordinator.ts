@@ -45,6 +45,7 @@ import {
   type WorkspaceExecutionRegistry
 } from "./executionRegistry";
 import { quiesceWorkspaceExecutions, type WorkspaceQuiescence } from "./quiescence";
+import { createWorkspaceAttachmentAcquisition } from "./attachmentAcquisition";
 import { workspaceOperationFailureMessage, type WorkspaceOperationFailureCode } from "@/lib/contracts/workspaceFailure";
 import {
   projectWorkspaceActivity,
@@ -1341,37 +1342,20 @@ export function createWorkspaceCoordinator(input: Readonly<{
     if (missing.reduce((sum, entry) => sum + entry.byteSize, 0) + 16 * 1024 * 1024 > input.config.diskMiB * 1024 * 1024) {
       throw new WorkspaceRuntimeError("workspace_storage_full");
     }
-    const streams: WorkspaceAttachmentStream[] = [];
-    const cancelStreams = async () => { await Promise.allSettled(streams.map(stream => stream.body.cancel())); };
-    for (const entry of missing) {
-      let object;
-      try {
-        object = await getStoredObjectStream(input.storage, entry.storageKey, {
-          maxBytes: entry.byteSize,
-          requireStreaming: true,
-          signal
-        });
-      } catch {
-        await cancelStreams();
-        throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
-      }
-      if (object.byteSize !== entry.byteSize) {
-        await object.body.cancel().catch(() => undefined);
-        await cancelStreams();
-        throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
-      }
-      streams.push({
-        attachmentId: entry.attachmentId,
-        body: object.body,
-        byteSize: entry.byteSize,
-        checksum: entry.checksum,
-        kind: entry.kind,
-        messageId: entry.messageId,
-        mimeType: entry.mimeType,
-        originalName: entry.originalName,
-        sandboxPath: entry.sandboxPath
-      });
-    }
+    // Originals open lazily, one storage connection at a time, as the runtime
+    // consumes them; opening every body up front exhausted the shared pool.
+    const acquisition = createWorkspaceAttachmentAcquisition({ signal, storage: input.storage });
+    const streams: WorkspaceAttachmentStream[] = missing.map((entry) => ({
+      attachmentId: entry.attachmentId,
+      body: acquisition.body(entry),
+      byteSize: entry.byteSize,
+      checksum: entry.checksum,
+      kind: entry.kind,
+      messageId: entry.messageId,
+      mimeType: entry.mimeType,
+      originalName: entry.originalName,
+      sandboxPath: entry.sandboxPath
+    }));
     // Only originals that actually transfer are "prepared"; an unchanged
     // inbox produces no row at all.
     if (streams.length > 0) {
@@ -1404,25 +1388,47 @@ export function createWorkspaceCoordinator(input: Readonly<{
     });
     // The index, every message manifest, and the current run's output
     // directory are always rewritten so the guest view stays complete.
-    await input.runtime.stageAttachments({
-      attachments: streams,
-      inboxIndex: {
-        attachments: entries.map(project),
-        manifests: [...byMessage.keys()].sort().map((messageId) => ({
-          messageId,
-          path: workspaceMessageManifestPath(messageId)
+    try {
+      await input.runtime.stageAttachments({
+        attachments: streams,
+        inboxIndex: {
+          attachments: entries.map(project),
+          manifests: [...byMessage.keys()].sort().map((messageId) => ({
+            messageId,
+            path: workspaceMessageManifestPath(messageId)
+          })),
+          version: 1
+        },
+        manifests: [...byMessage.entries()].map(([messageId, values]) => ({
+          body: { attachments: values.map(project), messageId, version: 1 },
+          messageId
         })),
-        version: 1
-      },
-      manifests: [...byMessage.entries()].map(([messageId, values]) => ({
-        body: { attachments: values.map(project), messageId, version: 1 },
-        messageId
-      })),
-      outputDirectory: binding.outputDirectory,
-      runtimeSandboxId: binding.runtimeSandboxId,
-      operation: ownedOperation(binding), sessionId: binding.sessionId,
-      signal
-    }).finally(cancelStreams);
+        outputDirectory: binding.outputDirectory,
+        runtimeSandboxId: binding.runtimeSandboxId,
+        operation: ownedOperation(binding), sessionId: binding.sessionId,
+        signal
+      });
+      if (signal?.aborted) throw new WorkspaceRuntimeError("workspace_tool_cancelled");
+    } catch (error) {
+      // A runtime reports a failed body as its own transport error; the
+      // acquisition knows whether storage was missing, stalled or cancelled.
+      const failure = acquisition.failure() ?? error;
+      if (streams.length > 0) {
+        await lifecycle({
+          ...(signal?.aborted ? {} : { errorCode: activityErrorCode(runtimeCode(failure)) }),
+          count: streams.length,
+          durationMs: Date.now() - prepareStartedAt.getTime(),
+          kind: "attachments_prepare",
+          ordinal: prepareOrdinal,
+          phase: signal?.aborted ? "cancelled" : "failed",
+          runId: binding.runId,
+          startedAt: prepareStartedAt
+        });
+      }
+      throw failure;
+    } finally {
+      await acquisition.close();
+    }
     inboxNamesByRun.set(
       binding.runId,
       new Map(entries.map((entry) => [entry.sandboxPath, entry.originalName]))
