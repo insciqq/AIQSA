@@ -11,13 +11,12 @@ import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
 const prisma = new PrismaClient();
 let restoreFakeContext: (() => Promise<void>) | null = null;
 
-// The fixture changes the shared fake model, so both tests run in one worker, in order.
-test.describe.configure({ mode: "serial" });
-
 // The long synthetic prompt keeps the fake answer running while Follow-ups
 // arrive. Beside the default tool schemas it exceeds Fake QSA's 8k seed
 // window, so admission refuses it as too large. Like the Workspace specs,
-// this spec uses the 64k fake context.
+// this spec uses the 64k fake context. The fixture changes the shared fake
+// model; the suite's single worker keeps it unshared, and the tests stay
+// independent, so one failure keeps the other's evidence.
 test.beforeAll(async () => {
   restoreFakeContext = await prepareWorkspaceFakeContext(prisma);
 });
