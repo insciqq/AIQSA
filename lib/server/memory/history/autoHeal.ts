@@ -55,6 +55,10 @@ export function memoryHistoryActiveWorkSql(): Prisma.Sql {
       AND active.state IN ('QUEUED', 'CLAIMED', 'RETRYABLE_FAILED', 'WAITING_FOR_CONFIGURATION', 'WAITING_FOR_EGRESS_CONSENT'))`;
 }
 
+/** Any unsettled or unknown-outcome classification of the chat keeps repair
+ * away, even an orphan settled by recovery on an obsolete job: a call's input
+ * is derived only from round content and versions, so a repair of a later
+ * source can rebuild exactly that request and would buy it again. */
 export function memoryHistoryAutoHealProtectedSql(): Prisma.Sql {
   return Prisma.sql`(${memoryRecoveryProtectedSql()} OR EXISTS (
     SELECT 1 FROM "MemoryExecutionBinding" execution

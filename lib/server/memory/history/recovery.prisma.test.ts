@@ -1304,7 +1304,10 @@ describe("history classifications orphaned by a lost worker", () => {
     await assertRecall(f);
   }, 120_000);
 
-  it.each(["branch", "excluded"] as const)("never recovers or dispatches an orphaned job of a %s source", async (fence) => {
+  // A moved branch retires the job's source for good, so the obsolete-orphan
+  // sweep settles its call; an exclusion flipped in place keeps the source
+  // counters, so the job may become current again and its recovery keeps it.
+  it.each([["branch", "OUTCOME_UNKNOWN"], ["excluded", "RUNNING"]] as const)("never recovers or dispatches an orphaned job of a %s source", async (fence, orphanState) => {
     const f = await fixture(3);
     const lost = await loseWorkerAt(f, 2);
     await previousReleaseFailure(f);
@@ -1317,8 +1320,89 @@ describe("history classifications orphaned by a lost worker", () => {
     expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } }))
       .toMatchObject({ state: "TERMINAL_FAILED", errorCode: "memory_history_execution_protected", recoveryCount: 0 });
     expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: lost.orphan.id } }))
-      .toMatchObject({ state: "RUNNING" });
+      .toMatchObject({ state: orphanState });
     expect(await prisma.memoryRecallRound.count({ where: { userId: f.userId } })).toBe(0);
+    await lost.release();
+  }, 30_000);
+
+  it.each(["previous_release_failure", "stale_restart"] as const)("settles the orphan of a %s job once its chat moved on, exactly once and without dispatch", async (end) => {
+    const f = await fixture(3);
+    const lost = await loseWorkerAt(f, 2);
+    if (end === "previous_release_failure") await previousReleaseFailure(f);
+    await landFence(f, "append");
+    if (end === "stale_restart") {
+      // The restarted worker reclaims the expired lease and finds the source moved on.
+      f.advance(30_001);
+      await f.drive();
+    }
+    const ended = await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } });
+    expect(ended).toMatchObject(end === "stale_restart"
+      ? { state: "STALE", errorCode: "memory_source_stale", leaseToken: null }
+      : { state: "TERMINAL_FAILED", errorCode: "memory_history_execution_protected", leaseToken: null });
+    expect(await readMemoryRecoveryStatus(prisma, f.now())).toMatchObject({ eligible: 0, protected: 0, obsolete: 1 });
+    const orphanEvidence = () => Promise.all([
+      prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: lost.orphan.id } }),
+      prisma.usageEvent.findMany({ where: { userId: f.userId, memoryExecutionBindingId: lost.orphan.id } })
+    ]);
+
+    // Within the job's recovery delay the lost attempt may still be ending its call.
+    expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now() })).toBe(0);
+    expect(await orphanEvidence()).toEqual([lost.orphan, []]);
+    f.advance();
+    expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now() })).toBe(0);
+    const [orphan, receipts] = await orphanEvidence();
+    expect(orphan).toEqual({ ...lost.orphan, state: "OUTCOME_UNKNOWN", errorCode: MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE,
+      completedAt: f.now(), recoverableUntil: new Date(f.now().getTime() + MEMORY_EXECUTION_RECOVERY_HORIZON_MS) });
+    expect(orphan).toMatchObject({ acceptedOutputHash: null, providerResponseId: null, usageCompleteness: "UNAVAILABLE", totalTokens: null });
+    expect(receipts).toEqual([expect.objectContaining({ usageCompleteness: "UNAVAILABLE", inputTokens: null, totalTokens: null })]);
+    // Every settled call and receipt stays exact; the job is neither revived nor recovered.
+    expect(await prisma.memoryExecutionBinding.findMany({
+      where: { userId: f.userId, id: { not: lost.orphan.id } }, orderBy: { ordinal: "asc" }
+    })).toEqual(lost.settled);
+    expect(await prisma.usageEvent.findMany({
+      where: { userId: f.userId, memoryExecutionBindingId: { not: lost.orphan.id } }, orderBy: { id: "asc" }
+    })).toEqual(lost.usage);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toEqual(ended);
+
+    // Later sweeps, worker passes and the lost attempt's own late end change nothing.
+    const bindings = await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
+    const usage = await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
+    f.advance(MEMORY_RECOVERY_DELAYS_MS[2]);
+    expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now() })).toBe(0);
+    await f.drive();
+    await lost.release();
+    expect(f.run).toHaveBeenCalledTimes(3);
+    expect(await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(bindings);
+    expect(await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(usage);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toEqual(ended);
+    expect(await prisma.memoryRecallRound.count({ where: { userId: f.userId } })).toBe(0);
+  }, 60_000);
+
+  it.each(["current", "leased", "receipt", "response", "output"] as const)("leaves a %s orphaned classification to its owner", async (guard) => {
+    const f = await fixture(3);
+    const lost = await loseWorkerAt(f, 2);
+    if (guard !== "leased") await previousReleaseFailure(f);
+    if (guard !== "current") await landFence(f, "append");
+    if (guard === "receipt") await prisma.usageEvent.create({ data: {
+      memoryExecutionBindingId: lost.orphan.id, modelId: providerAuthority.providerModelId,
+      provider: "openai_compatible", providerModelId: providerAuthority.providerModelId, userId: f.userId
+    } });
+    if (guard === "response" || guard === "output") await prisma.memoryExecutionBinding.update({
+      where: { id: lost.orphan.id },
+      data: guard === "response" ? { providerResponseId: "resp_orphan_fixture" } : { acceptedOutputHash: "b".repeat(64) }
+    });
+    const before = await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: lost.orphan.id } });
+    const receipts = await prisma.usageEvent.count({ where: { userId: f.userId } });
+    // The lost attempt still holds its live lease; every terminal job is due.
+    if (guard !== "leased") f.advance();
+    // A current job is recovered instead; its handler settles the orphan in-job.
+    expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now() })).toBe(guard === "current" ? 1 : 0);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject(
+      guard === "current" ? { state: "QUEUED", recoveryCount: 1 }
+        : guard === "leased" ? { state: "CLAIMED" } : { state: "TERMINAL_FAILED", recoveryCount: 0 });
+    expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: lost.orphan.id } })).toEqual(before);
+    expect(await prisma.usageEvent.count({ where: { userId: f.userId } })).toBe(receipts);
+    expect(f.run).toHaveBeenCalledTimes(3);
     await lost.release();
   }, 30_000);
 
