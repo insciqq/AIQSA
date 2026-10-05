@@ -678,30 +678,45 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
   const [newFolderName, setNewFolderName] = useState("");
   // "Filter chats…" is a sidebar-scoped lookup over the user's own chats on
   // the existing server search (the list is paginated, so a client-side
-  // filter of loaded rows would miss chats). Typing is debounced; the owner's
-  // `searchQuery` stays the source of truth and clears the field when it is
-  // reset elsewhere (e.g. after a result is opened).
+  // filter of loaded rows would miss chats). Typing is debounced from the
+  // input event itself, never from an effect: the owner passes a new
+  // `onSearch` on every render, and React may flush an earlier render's
+  // effects after the event, which would judge this keystroke by that
+  // render's empty field and drop the query. The owner's `searchQuery` stays
+  // the source of truth and clears the field when it is reset elsewhere (e.g.
+  // after a result is opened), unless a typed query is still pending.
   const [filterValue, setFilterValue] = useState(props.searchQuery);
-  const filterDirtyRef = useRef(false);
   const { onSearch, searchQuery } = props;
+  const filterTimerRef = useRef<number | null>(null);
+  const latestSearchRef = useRef({ onSearch, searchQuery });
   useEffect(() => {
-    if (!filterDirtyRef.current) return;
-    const next = filterValue.trim();
-    if (next === searchQuery) {
-      filterDirtyRef.current = false;
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      filterDirtyRef.current = false;
-      onSearch(next);
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [filterValue, onSearch, searchQuery]);
+    latestSearchRef.current = { onSearch, searchQuery };
+  });
   useEffect(() => {
-    if (!searchQuery && !filterDirtyRef.current) setFilterValue("");
+    const timers = filterTimerRef;
+    return () => {
+      if (timers.current !== null) window.clearTimeout(timers.current);
+    };
+  }, []);
+  useEffect(() => {
+    if (!searchQuery && filterTimerRef.current === null) setFilterValue("");
   }, [searchQuery]);
+  const cancelPendingFilter = () => {
+    if (filterTimerRef.current !== null) window.clearTimeout(filterTimerRef.current);
+    filterTimerRef.current = null;
+  };
+  const typeFilter = (value: string) => {
+    setFilterValue(value);
+    cancelPendingFilter();
+    filterTimerRef.current = window.setTimeout(() => {
+      filterTimerRef.current = null;
+      const next = value.trim();
+      const latest = latestSearchRef.current;
+      if (next !== latest.searchQuery) latest.onSearch(next);
+    }, 250);
+  };
   const clearFilter = () => {
-    filterDirtyRef.current = false;
+    cancelPendingFilter();
     setFilterValue("");
     if (searchQuery) onSearch("");
   };
@@ -931,10 +946,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
               placeholder="Filter chats…"
               type="search"
               value={filterValue}
-              onChange={(event) => {
-                filterDirtyRef.current = true;
-                setFilterValue(event.target.value);
-              }}
+              onChange={(event) => typeFilter(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key !== "Escape") return;
                 event.preventDefault();
