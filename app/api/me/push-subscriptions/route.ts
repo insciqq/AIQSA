@@ -10,6 +10,7 @@ export const runtime = "nodejs";
 const handlers = createBrowserPushHandlers({
   keys: () => getDefaultBrowserPush().keys(),
   resolveAuth: resolveRequestAuth,
+  runShown: (runId, sessionId) => getDefaultBrowserPush().sender.runShown(runId, sessionId),
   store: createPrismaBrowserPushStore(prisma)
 });
 

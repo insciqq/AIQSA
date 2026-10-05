@@ -1,7 +1,9 @@
 import {
   BROWSER_PUSH_SERVICE_WORKER_PATH,
+  BROWSER_PUSH_SHOWN_RUNS_PATH,
   BROWSER_PUSH_SUBSCRIPTIONS_PATH,
-  decodeBrowserPushKeyResponse
+  decodeBrowserPushKeyResponse,
+  type BrowserPushShownRunRequest
 } from "@/lib/contracts/browserPush";
 
 export type BrowserNotificationPermission = "default" | "denied" | "granted" | "unsupported";
@@ -105,4 +107,18 @@ export async function removeBrowserPushSubscription(environment: BrowserPushEnvi
   } catch {
     // Nothing is delivered to it any more: the server holds no subscription.
   }
+}
+
+/**
+ * Tells the server this device showed the run's end, so the run's push skips
+ * it. Best effort: a lost report only means the notification still arrives.
+ */
+export function reportShownRun(environment: BrowserPushEnvironment, runId: string): void {
+  void environment.fetch(BROWSER_PUSH_SHOWN_RUNS_PATH, {
+    body: JSON.stringify({ runId } satisfies BrowserPushShownRunRequest),
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    keepalive: true,
+    method: "POST"
+  }).catch(() => undefined);
 }

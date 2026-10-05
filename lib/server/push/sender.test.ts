@@ -1,7 +1,7 @@
 import { createDecipheriv, createECDH, createPublicKey, hkdfSync, randomBytes, verify } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { PushTransportError, type PushPost, type PushPostRequest } from "./pushTransport";
-import { createBrowserPushSender } from "./sender";
+import { createBrowserPushSender, RUN_PUSH_GRACE_MS } from "./sender";
 import type { BrowserPushEvent, BrowserPushStore, BrowserPushTarget } from "./store";
 import { generateVapidKeyPair } from "./webPushCrypto";
 
@@ -10,7 +10,8 @@ function device(id: string) {
   ecdh.generateKeys();
   const auth = randomBytes(16);
   const target: BrowserPushTarget = {
-    auth: auth.toString("base64url"), endpoint: `https://push.example/${id}`, id, p256dh: ecdh.getPublicKey().toString("base64url")
+    auth: auth.toString("base64url"), endpoint: `https://push.example/${id}`, id, p256dh: ecdh.getPublicKey().toString("base64url"),
+    sessionId: `session-${id}`
   };
   return {
     target,
@@ -33,7 +34,9 @@ function device(id: string) {
 
 const runEvent: BrowserPushEvent = { chatId: "chat-1", kind: "run", status: "complete", title: "Trip plan", userId: "owner-1" };
 
-function harness(options: Readonly<{ events?: Map<string, BrowserPushEvent>; post?: PushPost; targets?: BrowserPushTarget[] }> = {}) {
+function harness(options: Readonly<{
+  events?: Map<string, BrowserPushEvent>; post?: PushPost; sleep?: (ms: number) => Promise<void>; targets?: BrowserPushTarget[];
+}> = {}) {
   const claimed = new Set<string>();
   const events = options.events ?? new Map<string, BrowserPushEvent>([["run-1", runEvent]]);
   const recorded: Array<[string, string]> = [];
@@ -62,10 +65,14 @@ function harness(options: Readonly<{ events?: Map<string, BrowserPushEvent>; pos
   });
   const keys = generateVapidKeyPair();
   const loadKeys = vi.fn(async () => keys);
+  const clock = { now: new Date("2026-10-04T12:00:00.000Z") };
+  const sleeps: number[] = [];
   const sender = createBrowserPushSender({
-    keys: loadKeys, now: () => new Date("2026-10-04T12:00:00.000Z"), post, store, subject: "https://aiqsa.example"
+    keys: loadKeys, now: () => clock.now, post,
+    sleep: options.sleep ?? (async (ms) => { sleeps.push(ms); }),
+    store, subject: "https://aiqsa.example"
   });
-  return { keys, loadKeys, recorded, requests, sender, store };
+  return { clock, keys, loadKeys, recorded, requests, sender, sleeps, store };
 }
 
 describe("browser push sender", () => {
@@ -149,6 +156,55 @@ describe("browser push sender", () => {
     expect(h.store.claimRun).not.toHaveBeenCalled();
     h.sender.notifyRun("run-1");
     await h.sender.idle();
+    expect(h.requests).toHaveLength(1);
+  });
+
+  it("waits out the run grace, then skips only the devices of the session that showed that run", async () => {
+    const phone = device("phone");
+    const laptop = device("laptop");
+    const sleeps: number[] = [];
+    let wake: () => void = () => undefined;
+    const h = harness({
+      sleep: (ms) => new Promise((resolve) => { sleeps.push(ms); wake = resolve; }),
+      targets: [phone.target, laptop.target]
+    });
+    h.sender.notifyRun("run-1");
+    await vi.waitFor(() => expect(sleeps).toEqual([RUN_PUSH_GRACE_MS]));
+    expect(h.store.claimRun).not.toHaveBeenCalled();
+    h.sender.runShown("run-1", phone.target.sessionId);
+    h.sender.runShown("run-2", laptop.target.sessionId);
+    h.sender.runShown("run-1", "session-of-another-account");
+    wake();
+    await h.sender.idle();
+    expect(h.requests.map((request) => request.endpoint.toString())).toEqual([laptop.target.endpoint]);
+  });
+
+  it("skips a device for a shown run only while the report is fresh", async () => {
+    const phone = device("phone");
+    const events = new Map<string, BrowserPushEvent>([["run-1", runEvent], ["run-2", runEvent]]);
+    const h = harness({ events, targets: [phone.target] });
+    h.sender.runShown("run-1", phone.target.sessionId);
+    h.sender.runShown("run-2", phone.target.sessionId);
+    h.sender.notifyRun("run-1");
+    await h.sender.idle();
+    expect(h.requests).toHaveLength(0);
+    h.clock.now = new Date(h.clock.now.getTime() + 15 * 60_000);
+    h.sender.notifyRun("run-2");
+    await h.sender.idle();
+    expect(h.requests).toHaveLength(1);
+  });
+
+  it("sends scheduled settlements without the grace, whatever this device showed", async () => {
+    const occurrence: BrowserPushEvent = {
+      chatId: "chat-1", kind: "occurrence", reasonCode: null, state: "COMPLETED", taskPauseReason: null, title: "Brief", trigger: "schedule",
+      unavailableSources: [], userId: "owner-1"
+    };
+    const phone = device("phone");
+    const h = harness({ events: new Map([["occurrence-1", occurrence]]), targets: [phone.target] });
+    h.sender.runShown("occurrence-1", phone.target.sessionId);
+    h.sender.notifyOccurrence("occurrence-1");
+    await h.sender.idle();
+    expect(h.sleeps).toEqual([]);
     expect(h.requests).toHaveLength(1);
   });
 

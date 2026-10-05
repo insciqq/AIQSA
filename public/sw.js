@@ -2,9 +2,12 @@
  * AIQSA service worker: shows browser push notifications and opens their chat.
  * It caches nothing and handles no fetches. Messages are content-free
  * ({ v, title, body, tag, url }) and `url` is always a same-origin path.
+ *
+ * Every push shows its notification. Safari revokes a subscription after a
+ * few pushes that show none, and installed web apps on iPhone report their
+ * windows unreliably, so the server instead skips the device whose page
+ * reported showing the answer.
  */
-
-const CHAT_PATH = /^\/c\/[^/]+$/u;
 
 function pushMessage(event) {
   try {
@@ -27,17 +30,6 @@ function pathOf(client) {
   }
 }
 
-/*
- * A focused window already showing this chat needs no notification. Chat ids
- * are unique across accounts and a signed-out session has no subscription
- * left, so a window of another account can never match.
- */
-async function chatOnScreen(url) {
-  if (!CHAT_PATH.test(url.pathname)) return false;
-  const windows = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
-  return windows.some((client) => client.focused && client.visibilityState === "visible" && pathOf(client) === url.pathname);
-}
-
 async function showPush(event) {
   const message = pushMessage(event);
   if (!message) {
@@ -45,7 +37,6 @@ async function showPush(event) {
     await self.registration.showNotification("AIQSA", { body: "Something finished in AIQSA.", tag: "aiqsa" });
     return;
   }
-  if (await chatOnScreen(message.url)) return;
   await self.registration.showNotification(message.title, {
     badge: "/icon-192.png",
     body: message.body,

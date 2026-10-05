@@ -1038,6 +1038,7 @@ export function PowerAppShellV2({
   });
   const browserNotifications = useBrowserNotifications({
     accountId,
+    activeChatId,
     enabled: catalog ? catalog.defaults.browserNotificationsEnabled ?? true : null,
     setEnabled: setBrowserNotificationsEnabled
   });
