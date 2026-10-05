@@ -864,4 +864,92 @@ describe("Prisma Memory execution", () => {
     }
   });
 
+  it("records the catalog cost frozen at admission on the binding and its usage event", async () => {
+    const fixture = await createEmbeddingFixture();
+    const setPrices = (input: number | null, output: number | null) => prisma.providerModel.update({
+      data: { inputTokenPriceUsdPerMillion: input, outputTokenPriceUsdPerMillion: output },
+      where: { id: fixture.modelId }
+    });
+    try {
+      const service = createPrismaMemoryExecutionService({ now: () => INITIAL_NOW }, prisma);
+      const job = await createPrismaMemoryJobRepository(prisma).enqueue(fixture.userId, {
+        idempotencyFingerprint: `memory-priced-job-${randomUUID()}`,
+        kind: "EMBED_ITEMS",
+        pipelineVersion: VERSIONS.pipelineVersion
+      });
+      const bind = (ordinal: number) => service.admission.bind(fixture.userId, {
+        inputHash: String(ordinal + 1).repeat(64), ordinal,
+        owner: { memoryJobId: job.id, type: "JOB" },
+        role: "MEMORY_DOCUMENT_EMBED", versions: VERSIONS
+      });
+      await setPrices(2.5, 10);
+      const priced = await bind(0);
+      const reported = await bind(1);
+      const recovered = await bind(2);
+      expect((await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: priced.id } }))
+        .secretFreeExecutionSnapshot).toMatchObject({ catalogTokenPricing: {
+        cachedInputTokenPriceUsdPerMillion: null, cacheWriteInputTokenPriceUsdPerMillion: null,
+        inputTokenPriceUsdPerMillion: 2.5, outputTokenPriceUsdPerMillion: 10
+      } });
+      // A later catalog edit neither conflicts with a bind replay nor reprices it.
+      await setPrices(40, 80);
+      await expect(bind(0)).resolves.toMatchObject({ id: priced.id, replayed: true });
+      await setPrices(null, null);
+      const unpriced = await bind(3);
+      for (const { id } of [priced, reported, recovered, unpriced]) {
+        await service.admission.start(fixture.userId, id);
+      }
+
+      const succeeded = (hash: string, estimatedCostMicros: number | null = null) => ({
+        acceptedOutputHash: hash, errorCode: null, providerResponseId: `priced-response-${hash[0]}`,
+        state: "SUCCEEDED" as const, usage: { ...completeUsage(1_000), estimatedCostMicros }
+      });
+      // 1,000 input tokens at the admitted $2.50 per million: 2,500 micros,
+      // although the catalog has been edited and is now unpriced.
+      await expect(service.lifecycle.settle(fixture.userId, priced.id, succeeded("1".repeat(64))))
+        .resolves.toMatchObject({ replayed: false, state: "SUCCEEDED" });
+      await expect(service.lifecycle.settle(fixture.userId, priced.id, succeeded("1".repeat(64))))
+        .resolves.toMatchObject({ replayed: true, state: "SUCCEEDED" });
+      await expect(service.lifecycle.withAuthorizedResultCommit(fixture.userId,
+        { acceptedOutputHash: "1".repeat(64), bindingId: priced.id }, async () => "applied"))
+        .resolves.toBe("applied");
+      // A provider-reported cost wins over the catalog estimate.
+      await service.lifecycle.settle(fixture.userId, reported.id, succeeded("2".repeat(64), 7));
+      await service.lifecycle.settle(fixture.userId, unpriced.id, succeeded("4".repeat(64)));
+
+      // Recovery prices the recovered usage from the same frozen price.
+      await service.lifecycle.settle(fixture.userId, recovered.id, {
+        acceptedOutputHash: null, errorCode: "provider_outcome_unknown", providerResponseId: null,
+        state: "OUTCOME_UNKNOWN", usage: unavailableUsage
+      });
+      const recovery = {
+        acceptedOutputHash: "3".repeat(64), errorCode: null, state: "SUCCEEDED" as const,
+        usage: completeUsage(400)
+      };
+      await expect(service.lifecycle.recoverOutcome(fixture.userId, recovered.id, recovery))
+        .resolves.toMatchObject({ replayed: false, state: "SUCCEEDED" });
+      await expect(service.lifecycle.recoverOutcome(fixture.userId, recovered.id, recovery))
+        .resolves.toMatchObject({ replayed: true, state: "SUCCEEDED" });
+      await expect(service.lifecycle.assertResultAuthorized(fixture.userId, { bindingId: recovered.id }))
+        .resolves.toBeUndefined();
+
+      const ids = [priced.id, reported.id, recovered.id, unpriced.id];
+      const expected = {
+        [priced.id]: 2_500, [recovered.id]: 1_000, [reported.id]: 7, [unpriced.id]: null
+      };
+      const bindings = await prisma.memoryExecutionBinding.findMany({
+        select: { estimatedCostMicros: true, id: true }, where: { id: { in: ids } }
+      });
+      const events = await prisma.usageEvent.findMany({
+        select: { estimatedCostMicros: true, memoryExecutionBindingId: true },
+        where: { memoryExecutionBindingId: { in: ids } }
+      });
+      expect(Object.fromEntries(bindings.map(({ estimatedCostMicros, id }) =>
+        [id, estimatedCostMicros]))).toEqual(expected);
+      expect(Object.fromEntries(events.map(({ estimatedCostMicros, memoryExecutionBindingId }) =>
+        [memoryExecutionBindingId, estimatedCostMicros]))).toEqual(expected);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 });

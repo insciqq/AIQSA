@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { MemoryExecutionError } from "./errors";
 import type { ResolvedMemoryExecutionTarget } from "./policy";
 import { resolveMemoryExecutionCompatibility } from "./compatibility";
-import { createMemoryExecutionSnapshot, parseMemoryExecutionSnapshot } from "./snapshot";
+import {
+  createMemoryExecutionSnapshot,
+  freezeMemoryCatalogTokenPricing,
+  memoryExecutionCatalogTokenPricing,
+  memoryExecutionSnapshotIdentity,
+  parseMemoryExecutionSnapshot,
+  storedMemoryExecutionSnapshot
+} from "./snapshot";
 import { memoryFactProviderEvidence } from "../learning/extraction/runtime";
 import { memoryFactDecisionProviderEvidence } from "../learning/consolidation/runtime";
 import { jevModelConfiguration, JEV_SERVED_MODEL_ID } from "../../../domain/decisionModels";
@@ -138,6 +145,47 @@ describe("Memory execution compatibility", () => {
       role: "MEMORY_FACT_EXTRACT", target: autoTarget, utilityPolicyVersion: "test-v1"
     });
     expect(autoSnapshot.requiredToolModes).toEqual(["validated_auto"]);
+  });
+  it("keeps the frozen catalog price beside, never inside, the execution identity", () => {
+    const acceptedTarget = target(true);
+    const compatibility = resolveMemoryExecutionCompatibility({
+      role: "MEMORY_FACT_EXTRACT", target: acceptedTarget, versions
+    });
+    const snapshot = createMemoryExecutionSnapshot({
+      acceptedUtilityEgressFingerprint: "7".repeat(64),
+      compatibilityId: compatibility.compatibilityId,
+      compatibilityRequirement: compatibility.requirement,
+      requiresStrictStructuredOutput: true,
+      role: "MEMORY_FACT_EXTRACT", target: acceptedTarget, utilityPolicyVersion: "test-v1"
+    });
+    const pricing = {
+      cachedInputTokenPriceUsdPerMillion: 0.01, cacheWriteInputTokenPriceUsdPerMillion: null,
+      inputTokenPriceUsdPerMillion: 0.1, outputTokenPriceUsdPerMillion: 0.5
+    };
+    expect(freezeMemoryCatalogTokenPricing({
+      cachedInputTokenPriceUsdPerMillion: 0.01, inputTokenPriceUsdPerMillion: 0.1,
+      outputTokenPriceUsdPerMillion: 0.5
+    })).toEqual(pricing);
+    // As persisted: the snapshot and its frozen price after a JSON round trip.
+    const stored = JSON.parse(JSON.stringify(storedMemoryExecutionSnapshot(snapshot, pricing)));
+    expect(memoryExecutionCatalogTokenPricing(stored)).toEqual(pricing);
+    expect(parseMemoryExecutionSnapshot(stored)).toEqual(snapshot);
+    expect(memoryExecutionSnapshotIdentity(stored)).toEqual(JSON.parse(JSON.stringify(snapshot)));
+    // Bindings admitted before freezing, and models without both prices, have none.
+    expect(memoryExecutionCatalogTokenPricing(JSON.parse(JSON.stringify(snapshot)))).toBeNull();
+    expect(memoryExecutionCatalogTokenPricing(storedMemoryExecutionSnapshot(snapshot, null))).toBeNull();
+    expect(freezeMemoryCatalogTokenPricing({
+      inputTokenPriceUsdPerMillion: 0.1, outputTokenPriceUsdPerMillion: null
+    })).toBeNull();
+    for (const invalid of [
+      { ...pricing, inputTokenPriceUsdPerMillion: -1 },
+      { ...pricing, outputTokenPriceUsdPerMillion: null },
+      { ...pricing, reasoningTokenPriceUsdPerMillion: 1 },
+      "0.1"
+    ]) {
+      expect(() => parseMemoryExecutionSnapshot({ ...stored, catalogTokenPricing: invalid }))
+        .toThrow("memory_execution_snapshot_invalid");
+    }
   });
   it("keeps the bounded role and strict-output declarations", () => {
     expect(MEMORY_EXECUTION_ROLES).toContain("MEMORY_FACT_EXTRACT");
