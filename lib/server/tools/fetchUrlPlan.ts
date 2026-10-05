@@ -46,15 +46,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function digestList(value: unknown): value is readonly string[] {
+/** One frozen authority list, as recovery decodes it: bounded link digests. */
+export function isFetchUrlDigestList(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.length <= FETCH_URL_LIMITS.authorizedUrls && value.every(isFetchUrlDigest);
 }
 
 /** The frozen marker's exact shape, as recovery decodes an accepted request. */
 export function isFetchUrlPlan(value: unknown): value is FetchUrlPlan {
-  return isRecord(value) && value.version === 1 && digestList(value.userUrlDigests) &&
-    (value.taskUrlDigests === undefined || digestList(value.taskUrlDigests)) &&
-    (value.instructionUrlDigests === undefined || digestList(value.instructionUrlDigests)) &&
+  return isRecord(value) && value.version === 1 && isFetchUrlDigestList(value.userUrlDigests) &&
+    (value.taskUrlDigests === undefined || isFetchUrlDigestList(value.taskUrlDigests)) &&
+    (value.instructionUrlDigests === undefined || isFetchUrlDigestList(value.instructionUrlDigests)) &&
     Object.keys(value).every((key) => PLAN_KEYS.has(key));
 }
 

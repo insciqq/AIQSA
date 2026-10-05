@@ -10752,8 +10752,10 @@ describe("scheduled task management recovery", () => {
       await refreshProviderRunIfNeeded(harness.deps, runId, userId);
       expect(harness.state.recoveredErrors).toEqual([]);
       // A running call may have applied nothing yet: the settlement that applies it runs it, once. A settled one replays.
+      // A plan persisted before the marker froze user links authorizes none.
       expect(manageScheduledTaskForCall.mock.calls).toEqual(state === "running"
-        ? [[expect.objectContaining({ action: "pause", callId: "stored-call-1", runId, taskId: "task-1", userId })]] : []);
+        ? [[expect.objectContaining({ action: "pause", callId: "stored-call-1", runId, taskId: "task-1", userId,
+          userUrlDigests: [] })]] : []);
       expect(requests).toHaveLength(1);
       expect(requests[0]!.tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["create_scheduled_task",
         "manage_scheduled_task"]));

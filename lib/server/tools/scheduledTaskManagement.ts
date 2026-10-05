@@ -24,6 +24,7 @@ import type {
   ScheduledTaskManagementAction,
   ScheduledTaskManagementOutcome
 } from "../runs/runRepositoryContract";
+import { isFetchUrlDigestList } from "./fetchUrlPlan";
 import { localInstant } from "./scheduledTaskCreation";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
 
@@ -37,9 +38,11 @@ import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type
  * `create_scheduled_task` once the owner has a saved task
  * (`NormalizedRunRequest.scheduledTaskManagementTool`). A change goes through
  * the owner's edit rules against the task's current revision and settles the
- * call in its own transaction, so an interrupted call never applies twice. Its
- * writes are server-owned, hence the `session` class; it is never read-only
- * (`toolReadOnly.ts`).
+ * call in its own transaction, so an interrupted call never applies twice. A
+ * prompt it rewrites is the tool's, never the owner's: its scheduled runs read
+ * only links the run's user text or the task's stored snapshot authorized
+ * (`scheduledTasks/promptUrls.ts`). Its writes are server-owned, hence the
+ * `session` class; it is never read-only (`toolReadOnly.ts`).
  */
 export const MANAGE_SCHEDULED_TASK_TOOL_NAME = "manage_scheduled_task";
 
@@ -67,6 +70,7 @@ const SCHEDULE_KEYS: readonly string[] = ["kind", "time", ...OPTIONAL_SCHEDULE_F
 /** The hourly window end that clears it: the task then runs through the end of the day. */
 const END_OF_DAY = "24:00";
 const TASK_ID_MAX_LENGTH = 128;
+const SETTINGS_KEYS: readonly string[] = ["chatTask", "userUrlDigests"];
 const CARD_ACTIONS = { update: "changed", pause: "paused", resume: "resumed" } as const satisfies
   Record<"update" | "pause" | "resume", ScheduledTaskCardAction>;
 
@@ -79,9 +83,14 @@ function given(value: unknown): boolean {
   return value !== undefined && value !== null;
 }
 
-/** The frozen marker's exact shape, as recovery decodes an accepted request. */
+/**
+ * The frozen marker's exact shape, as recovery decodes an accepted request.
+ * A run accepted before the marker froze its user links has none, so a
+ * prompt it rewrites keeps only the links the task already held.
+ */
 export function isScheduledTaskManagementSettings(value: unknown): value is ScheduledTaskManagementSettings {
-  if (!isRecord(value) || Object.keys(value).length !== 1 || !("chatTask" in value)) return false;
+  if (!isRecord(value) || !("chatTask" in value) || Object.keys(value).some((key) => !SETTINGS_KEYS.includes(key))) return false;
+  if (value.userUrlDigests !== undefined && !isFetchUrlDigestList(value.userUrlDigests)) return false;
   const task = value.chatTask;
   return task === null || isRecord(task) && Object.keys(task).length === 2 && typeof task.taskId === "string" &&
     task.taskId.length > 0 && task.taskId.length <= TASK_ID_MAX_LENGTH && normalizeScheduledTaskTitle(task.title) === task.title;
@@ -149,20 +158,22 @@ export function isScheduledTaskManageCall(request: Readonly<{ scheduledTaskManag
 
 /**
  * The marker a run freezes beside the creation marker, read once at
- * admission: present only while the owner has a saved task. A failed read
+ * admission: present only while the owner has a saved task. It carries the
+ * run's user-authored link digests (`FetchUrlPlan.userUrlDigests`), never
+ * Search results or page text, for a prompt the tool rewrites. A failed read
  * leaves the run without the tool instead of failing it.
  */
 export async function admitScheduledTaskManagement(
   repository: Pick<RunRepository, "loadScheduledTaskManagement">,
-  input: Readonly<{ chatId: string; userId: string }>
+  input: Readonly<{ chatId: string; userId: string; userUrlDigests: readonly string[] }>
 ): Promise<ScheduledTaskManagementSettings | undefined> {
   if (!repository.loadScheduledTaskManagement) return undefined;
   try {
-    const admitted = await repository.loadScheduledTaskManagement(input);
+    const admitted = await repository.loadScheduledTaskManagement({ chatId: input.chatId, userId: input.userId });
     if (!admitted) return undefined;
     const chatTask = admitted.chatTask && isScheduledTaskManagementSettings({ chatTask: admitted.chatTask })
       ? { taskId: admitted.chatTask.taskId, title: admitted.chatTask.title } : null;
-    return { chatTask };
+    return { chatTask, userUrlDigests: [...input.userUrlDigests] };
   } catch (error) {
     logEvent("service_operation", {
       subsystem: "configuration", stage: "read", outcome: "degraded", action: "degrade", code: "scheduled_tasks_unavailable",
@@ -348,8 +359,10 @@ export async function executeManageScheduledTask(
   context: Readonly<{ persistedToolCallId?: string; request: ScheduledTaskManagementRequest; runId?: string; userId?: string }>,
   manage: ScheduledTaskCallManager | undefined
 ): Promise<ToolExecutionResult> {
-  if (!context.request.scheduledTaskManagementTool || !manage || !context.persistedToolCallId || !context.runId ||
-    !context.userId) return refused(call, "scheduled_task_call_unavailable");
+  const settings = context.request.scheduledTaskManagementTool;
+  if (!settings || !manage || !context.persistedToolCallId || !context.runId || !context.userId) {
+    return refused(call, "scheduled_task_call_unavailable");
+  }
   if (hasInvalidProviderToolArguments(call.arguments)) return refused(call, "scheduled_task_arguments_invalid", "they are not a JSON object.");
   const decoded = decodeArguments(call.arguments);
   if (typeof decoded === "string") return refused(call, "scheduled_task_arguments_invalid", decoded);
@@ -361,6 +374,8 @@ export async function executeManageScheduledTask(
       result: (done) => scheduledTaskManagementResult(call, done),
       runId: context.runId,
       taskId: decoded.taskId,
+      // A run accepted before its marker froze these authorized no links.
+      userUrlDigests: settings.userUrlDigests ?? [],
       userId: context.userId
     });
     if (outcome.kind === "managed") return outcome.result;

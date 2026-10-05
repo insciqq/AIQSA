@@ -113,8 +113,12 @@ async function planChange(
     current, newPrompt, unchanged,
     write: {
       draft: plan.draft, expectedRevision: current.revision, nextRunAt: plan.nextRunAt, status: plan.status,
-      // A model-written prompt never takes the owner's authorship of its links.
-      promptUrls: newPrompt ? scheduledPromptUrlDigests(plan.draft.prompt, { kind: "tool", userUrlDigests: [] }) : "keep"
+      // A model-written prompt never takes the owner's authorship: it keeps the
+      // links this run's user text authorized and those the task's snapshot,
+      // read with this revision, already held; a page's or Search's never.
+      promptUrls: newPrompt ? scheduledPromptUrlDigests(plan.draft.prompt, {
+        kind: "tool", userUrlDigests: [...input.userUrlDigests, ...row.promptUrlDigests]
+      }) : "keep"
     }
   };
 }

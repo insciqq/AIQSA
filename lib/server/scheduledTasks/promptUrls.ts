@@ -4,9 +4,10 @@ import { extractFetchUrls, fetchUrlDigest } from "../webFetch/urls";
  * Which links in a scheduled task's prompt its runs may read with
  * `fetch_url`. A prompt's text authorizes nothing by itself: the model can
  * write one without confirmation (`create_scheduled_task`), so an injected
- * page could plant an attacker URL for the next unattended run. Every write
- * of a prompt therefore stores this snapshot with it, computed here and
- * nowhere else, and a scheduled run freezes it at admission.
+ * page could plant an attacker URL for the next unattended run, and edit one
+ * the same way (`manage_scheduled_task`). Every write of a prompt therefore
+ * stores this snapshot with it, computed here and nowhere else, and a
+ * scheduled run freezes it at admission.
  */
 export const SCHEDULED_PROMPT_URL_LIMIT = 100;
 
@@ -14,9 +15,9 @@ export const SCHEDULED_PROMPT_URL_LIMIT = 100;
  * Who wrote the prompt text of one write. `owner`: the owner API (create, or
  * an edit that sends the prompt) — every link in it is the owner's. `tool`: a
  * chat tool writing for the owner — only links already authorized by
- * user-authored text of the creating run (`FetchUrlPlan.userUrlDigests`),
- * never Search results. Any future tool that writes or edits a prompt must
- * pass `tool` with its run's user digests.
+ * user-authored text of the writing run (`FetchUrlPlan.userUrlDigests`) and,
+ * for an edit, by the task's stored snapshot, never Search results or page
+ * text. Every tool that writes or edits a prompt passes `tool`.
  */
 export type ScheduledPromptAuthorship =
   | Readonly<{ kind: "owner" }>
@@ -42,7 +43,7 @@ export function scheduledPromptUrlDigests(prompt: string, authorship: ScheduledP
  * Whether the prompt holds links its stored snapshot does not allow: exactly
  * what an owner save of the same text would add, so saving always clears it.
  * Tasks saved before page reading have an empty snapshot; a tool-written
- * prompt may hold links the creating run's user text did not authorize.
+ * prompt may hold links its writing run's user text did not authorize.
  */
 export function scheduledPromptLinksPending(prompt: string, storedDigests: readonly string[]): boolean {
   const stored = new Set(storedDigests);
