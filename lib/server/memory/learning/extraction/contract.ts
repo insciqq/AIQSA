@@ -13,7 +13,7 @@ import {
 export const MEMORY_FACT_EXTRACTION_PIPELINE_VERSION =
   "memory-fact-extraction-vnext-v8";
 export const MEMORY_FACT_EXTRACTION_POLICY_VERSION =
-  "memory-fact-extraction-policy-v38";
+  "memory-fact-extraction-policy-v39";
 export const MEMORY_FACT_EXTRACTION_PROMPT_VERSION =
   "memory-fact-extraction-prompt-v53";
 export const MEMORY_FACT_EXTRACTION_SCHEMA_VERSION =
@@ -263,11 +263,13 @@ export const MEMORY_FACT_EXTRACTION_VERSIONS: MemoryExecutionVersions =
   });
 
 /** Only settled outputs and ambiguous calls may retain this exact previous
- * contract. New dispatches always use the current prompt; a retained staged
- * plan applies with its recorded semantics. */
+ * contract. New dispatches always use the current prompt and admission; a
+ * retained staged plan applies with its recorded semantics, including a
+ * MEDIUM candidate the v38 decoder admitted. */
 export const MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS: MemoryExecutionVersions =
   Object.freeze({
     ...MEMORY_FACT_EXTRACTION_VERSIONS,
+    policyVersion: "memory-fact-extraction-policy-v38",
     promptVersion: "memory-fact-extraction-prompt-v52"
   });
 

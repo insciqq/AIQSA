@@ -1750,6 +1750,7 @@ describe("Memory fact extraction invalid-output budget", () => {
       storedFactBinding(0, "FAILED", "memory_fact_output_invalid", "e".repeat(64)),
       storedFactBinding(1, "FAILED", "memory_fact_output_invalid", "f".repeat(64)),
       { ...storedFactBinding(2, "FAILED", "memory_fact_output_invalid", input.inputHash),
+        policyVersion: MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS.policyVersion,
         promptVersion: MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS.promptVersion },
       storedFactBinding(3, "FAILED", "memory_fact_provider_transient", input.inputHash),
       storedFactBinding(4, "FAILED", "memory_fact_execution_abandoned", input.inputHash)
