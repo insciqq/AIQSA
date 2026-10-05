@@ -21,7 +21,7 @@
 // the stand's own Memory worker stopped. The Memory utility binding must
 // already be configured through Admin; credentials stay in the database.
 //
-// Output (report version 2): the parent prints, and the report file holds,
+// Output (report version 3): the parent prints, and the report file holds,
 // only content-free aggregates per scenario group (saved/not saved, false
 // saves, misses, receipt outcome or rejection codes, job stages, degraded
 // codes, provider calls by stage (extraction or adjudication) and state,
@@ -33,7 +33,8 @@
 // succeeded with an adjudication, is reported as RETRIED; any other failure,
 // including adjudication that degraded to an unadjudicated apply, as degraded.
 // status=passed requires zero false saves,
-// every strict group (MIXED, PROTECTED, CHANGE and all "no" groups) passing,
+// every strict group (MIXED, PROTECTED, CHANGE and all "no" groups, including
+// TASK_LOCAL work-at-hand detail and an UNCERTAIN report) passing,
 // at most one miss in DURABLE and in ONGOING, and zero degradation. The miss
 // budget of the acceptance criteria spans both runs and is summed by hand.
 import { spawn } from "node:child_process";
