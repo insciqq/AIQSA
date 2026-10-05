@@ -74,6 +74,27 @@ function parseHistoryDeletionTarget(
   return null;
 }
 
+// The purged chat's current branch, walked once per statement. A walk
+// correlated with each mapped message re-runs the recursion from the leaf for
+// every row, which is quadratic in the chat length inside the deletion
+// transaction. UNION also stops a corrupt parent cycle instead of looping.
+function activePathCte(userId: string, chatId: string): Prisma.Sql {
+  return Prisma.sql`active_path AS (
+    SELECT message."id", message."parentMessageId"
+    FROM "Chat" AS active_chat
+    INNER JOIN "Message" AS message
+      ON message."chatId" = active_chat."id"
+      AND message."id" = active_chat."activeLeafMessageId"
+    WHERE active_chat."userId" = ${userId} AND active_chat."id" = ${chatId}
+    UNION
+    SELECT parent."id", parent."parentMessageId"
+    FROM active_path AS child
+    INNER JOIN "Message" AS parent
+      ON parent."chatId" = ${chatId}
+      AND parent."id" = child."parentMessageId"
+  )`;
+}
+
 async function targetIds(
   tx: MemoryTransaction,
   userId: string,
@@ -159,7 +180,9 @@ async function targetIds(
     };
   }
   if (selection.kind === "SOURCE") {
+    const activePath = activePathCte(userId, selection.chatId);
     const chunks = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      WITH RECURSIVE ${activePath}
       SELECT chunk."id"
       FROM "MemoryRecallChunk" AS chunk
       LEFT JOIN "Chat" AS chat
@@ -201,21 +224,8 @@ async function targetIds(
                     source_message."id" IS NULL
                     OR source_message."updatedAt" <>
                       source_map."sourceMessageUpdatedAt"
-                    OR NOT EXISTS (
-                      WITH RECURSIVE active_path AS (
-                        SELECT message."id", message."parentMessageId"
-                        FROM "Message" AS message
-                        WHERE message."chatId" = chat."id"
-                          AND message."id" = chat."activeLeafMessageId"
-                        UNION ALL
-                        SELECT parent."id", parent."parentMessageId"
-                        FROM active_path AS child
-                        INNER JOIN "Message" AS parent
-                          ON parent."chatId" = chat."id"
-                          AND parent."id" = child."parentMessageId"
-                      )
-                      SELECT 1 FROM active_path
-                      WHERE active_path."id" = source_map."messageId"
+                    OR source_map."messageId" NOT IN (
+                      SELECT active_path."id" FROM active_path
                     )
                   )
               )
@@ -228,6 +238,7 @@ async function targetIds(
       ? Prisma.sql`round."parentChunkId" IN (${Prisma.join(chunks.map(({ id }) => id))}) OR`
       : Prisma.empty;
     const rounds = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      WITH RECURSIVE ${activePath}
       SELECT round."id"
       FROM "MemoryRecallRound" AS round
       LEFT JOIN "Chat" AS chat
@@ -264,21 +275,8 @@ async function targetIds(
               AND (
                 source_message."id" IS NULL
                 OR source_message."updatedAt" <> source_map."sourceMessageUpdatedAt"
-                OR NOT EXISTS (
-                  WITH RECURSIVE active_path AS (
-                    SELECT message."id", message."parentMessageId"
-                    FROM "Message" AS message
-                    WHERE message."chatId" = chat."id"
-                      AND message."id" = chat."activeLeafMessageId"
-                    UNION ALL
-                    SELECT ancestor."id", ancestor."parentMessageId"
-                    FROM active_path AS child
-                    INNER JOIN "Message" AS ancestor
-                      ON ancestor."chatId" = chat."id"
-                      AND ancestor."id" = child."parentMessageId"
-                  )
-                  SELECT 1 FROM active_path
-                  WHERE active_path."id" = source_map."messageId"
+                OR source_map."messageId" NOT IN (
+                  SELECT active_path."id" FROM active_path
                 )
               )
           )
@@ -325,6 +323,7 @@ async function targetIds(
     // it. Current reads exclude it; deleting it here would erase the rebuild
     // signal before the unchanged chat is selected by the backfill scheduler.
     const toolEvents = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      WITH RECURSIVE ${activePath}
       SELECT tool_event."id"
       FROM "MemoryToolEvent" AS tool_event
       LEFT JOIN "Chat" AS chat
@@ -360,21 +359,8 @@ async function targetIds(
           OR source_call."completedAt" IS DISTINCT FROM tool_event."occurredAt"
           OR source_call."updatedAt" IS DISTINCT FROM
             tool_event."sourceCallUpdatedAtAtCreation"
-          OR NOT EXISTS (
-            WITH RECURSIVE active_path AS (
-              SELECT message."id", message."parentMessageId"
-              FROM "Message" AS message
-              WHERE message."chatId" = chat."id"
-                AND message."id" = chat."activeLeafMessageId"
-              UNION ALL
-              SELECT parent."id", parent."parentMessageId"
-              FROM active_path AS child
-              INNER JOIN "Message" AS parent
-                ON parent."chatId" = chat."id"
-                AND parent."id" = child."parentMessageId"
-            )
-            SELECT 1 FROM active_path
-            WHERE active_path."id" = tool_event."assistantMessageId"
+          OR tool_event."assistantMessageId" NOT IN (
+            SELECT active_path."id" FROM active_path
           )
         )
       ORDER BY tool_event."id"
@@ -653,8 +639,15 @@ async function receiptSelectionPredicates(
 ): Promise<Readonly<{ history: Prisma.Sql; result: Prisma.Sql; running: Prisma.Sql }>> {
   if (selection.kind === "SOURCE") {
     return {
-      history: Prisma.sql`TRUE`,
-      result: Prisma.sql`result ->> 'sourceChatId' = ${selection.chatId}`,
+      // A receipt cites the chat when one of its results names it. Matching
+      // the cited chats as a whole receipt lets the expression index
+      // "MemoryHistoryRun_cited_source_chat_idx" find them, instead of
+      // expanding every retained owner receipt's results, which this purge
+      // and its audit otherwise read in full on each attempt.
+      history: Prisma.sql`jsonb_path_query_array(
+        history."results", '$.results[*].sourceChatId'::jsonpath
+      ) ? ${selection.chatId}::text`,
+      result: Prisma.sql`TRUE`,
       running: Prisma.sql`(
         history."state" = 'RUNNING'::"MemoryHistoryRunState"
         AND history."privateRequest" ->> 'version' IS DISTINCT FROM 'memory-search-v1'

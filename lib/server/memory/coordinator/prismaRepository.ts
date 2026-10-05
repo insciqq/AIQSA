@@ -57,6 +57,16 @@ const REBUILD_JOB_COMMIT_TIMEOUT_MS = 20_000;
 // projections before the short atomic write section begins.
 const HISTORY_JOB_COMMIT_MAX_WAIT_MS = 5_000;
 const HISTORY_JOB_COMMIT_TIMEOUT_MS = 20_000;
+// A deletion commit runs the complete purge and its audit atomically before
+// SUCCEEDED; a history source purge legitimately exceeds Prisma's 5s default
+// on a loaded database and must not roll back forever. The deletion row stays
+// locked FOR UPDATE throughout, so the lease heartbeat waits and cannot renew
+// while it runs; claimers skip the locked row. With the default policy the
+// lease has more than leaseMs - heartbeatMs (20s) left when the commit's `now`
+// is read, so wait plus execution must fit inside that window to finish while
+// the lease checked against `now` is still unexpired.
+const DELETION_COMMIT_MAX_WAIT_MS = 2_000;
+const DELETION_COMMIT_TIMEOUT_MS = 18_000;
 const sha256 = /^[a-f0-9]{64}$/u;
 const safeStage = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 const safeInternalFailure = /^memory_[a-z0-9_]{1,56}$/u;
@@ -1424,6 +1434,9 @@ export function createPrismaMemoryCoordinatorRepository(
           }
         });
         return updated.count === 1;
+      }, {
+        maxWait: DELETION_COMMIT_MAX_WAIT_MS,
+        timeout: DELETION_COMMIT_TIMEOUT_MS
       }).catch(retainDatabaseFailure);
     }
   });
