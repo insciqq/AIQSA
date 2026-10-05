@@ -2400,9 +2400,11 @@ async function prepareRunWith(
     fetchUrlPlan = { version: 1, userUrlDigests, ...(instructionUrlDigests.length > 0 ? { instructionUrlDigests } : {}) };
   }
   // Where it may create one, it may also manage the owner's saved tasks, once
-  // there is one; in a task's own chat the tool names that task. Frozen here.
+  // there is one; in a task's own chat the tool names that task. Frozen here,
+  // with the links this run's user text authorized for a prompt it rewrites.
   const scheduledTaskManagementTool = scheduledTaskTool && deps.repository.manageScheduledTaskForCall
-    ? await admitScheduledTaskManagement(deps.repository, { chatId: chat.id, userId: input.userId }) : undefined;
+    ? await admitScheduledTaskManagement(deps.repository, { chatId: chat.id, userId: input.userId,
+      userUrlDigests: fetchUrlPlan?.userUrlDigests ?? [] }) : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),

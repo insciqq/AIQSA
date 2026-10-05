@@ -288,9 +288,13 @@ export type NormalizedRunRequest = {
   /** Server-owned admission marker beside `scheduledTaskTool` when the owner
    * had a saved task: the run may manage the owner's tasks through
    * `manage_scheduled_task`. `chatTask` is the task whose own chat this is, as
-   * admission read it; the tool text names it as data. */
+   * admission read it; the tool text names it as data. `userUrlDigests` is the
+   * run's frozen `FetchUrlPlan.userUrlDigests`: besides the task's stored
+   * snapshot, the only links a prompt the tool rewrites may keep for its
+   * scheduled runs. Runs accepted without it authorize none. */
   scheduledTaskManagementTool?: Readonly<{
     chatTask: Readonly<{ taskId: string; title: string }> | null;
+    userUrlDigests?: readonly string[];
   }>;
   searchPlan: NormalizedSearchPlan;
   /** Server-owned admission marker of a tool-calling run that may read pages

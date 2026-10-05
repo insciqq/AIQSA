@@ -1034,6 +1034,12 @@ export type RunRepository = {
     runId: string;
     /** Null only for `list`. */
     taskId: string | null;
+    /**
+     * The run's frozen user-authored link digests
+     * (`scheduledTaskManagementTool.userUrlDigests`): with the task's stored
+     * snapshot, the only links a changed prompt keeps for its scheduled runs.
+     */
+    userUrlDigests: readonly string[];
     userId: string;
   }>): Promise<ScheduledTaskCallManagement>;
   /** The authorized record `read_tool_call` returns, or null when unavailable. */
