@@ -883,14 +883,14 @@ describe("Memory fact extraction handler", () => {
   });
 
   it.each([
-    ["retained v51", {
+    ["retained v52", {
       policyVersion: "memory-fact-extraction-policy-v38",
-      promptVersion: "memory-fact-extraction-prompt-v51",
+      promptVersion: "memory-fact-extraction-prompt-v52",
       schemaVersion: "memory-fact-extraction-schema-v7"
     }, true],
-    ["retired v50", {
+    ["retired v51", {
       policyVersion: "memory-fact-extraction-policy-v38",
-      promptVersion: "memory-fact-extraction-prompt-v50",
+      promptVersion: "memory-fact-extraction-prompt-v51",
       schemaVersion: "memory-fact-extraction-schema-v7"
     }, false]
   ] as const)("recovers a %s staged output only by its recorded semantics", async (_label, versions, retained) => {

@@ -27,7 +27,7 @@ describe("versioned maintenance provenance", () => {
   it("reviews every automatic fact once more under v4, whose request and decoder settle contradictions", () => {
     // Coverage and plan identity follow the policy version; the related-memory request and contradiction decoder have their own versions.
     expect(MEMORY_MAINTENANCE_VERSIONS).toMatchObject({ policyVersion: "memory-maintenance-policy-v4",
-      promptVersion: "memory-maintenance-prompt-v5", schemaVersion: "memory-maintenance-schema-v7",
+      promptVersion: "memory-maintenance-prompt-v6", schemaVersion: "memory-maintenance-schema-v7",
       retrievalConfigFingerprint: "memory-maintenance-exact-sources-related-v3" });
     expect(memoryMaintenancePlan([]).sourceSnapshotHash)
       .toBe(memorySha256({ policyVersion: "memory-maintenance-policy-v4", sources: [] }));
