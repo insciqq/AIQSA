@@ -1,7 +1,7 @@
 import { logEvent, type LifecycleStage } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
-import type { ImageGenerationParameters } from "../../../contracts/imageGeneration";
-import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
+import { IMAGE_PARAMETER_NAMES, type ImageGenerationParameters } from "../../../contracts/imageGeneration";
+import { ADMIN_IMAGE_MODEL_LIST_LIMIT, type SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import { decodeDecisionFeatureOverrides } from "../../../contracts/semanticDecisions";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../../http/requestBody";
@@ -14,6 +14,22 @@ type Service = ReturnType<typeof createAdminSystemModelPolicyService>;
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The complete published image set as bounded entries. The service owns the
+ * default-is-published rule and model-specific parameter validation. */
+function decodeImageModels(value: unknown): Array<{ providerModelId: string; parameters: ImageGenerationParameters }> | null {
+  if (!Array.isArray(value) || value.length > ADMIN_IMAGE_MODEL_LIST_LIMIT) return null;
+  const entries: Array<{ providerModelId: string; parameters: ImageGenerationParameters }> = [];
+  for (const entry of value) {
+    if (!record(entry) || Object.keys(entry).length !== 2 || typeof entry.providerModelId !== "string" ||
+      entry.providerModelId.trim() !== entry.providerModelId || entry.providerModelId.length < 1 ||
+      entry.providerModelId.length > 256 || /[\u0000-\u001f\u007f]/u.test(entry.providerModelId) || !record(entry.parameters) ||
+      Object.entries(entry.parameters).some(([name, parameter]) => !(IMAGE_PARAMETER_NAMES as readonly string[]).includes(name) ||
+        !(Number.isSafeInteger(parameter) || typeof parameter === "string" && parameter.length > 0 && parameter.length <= 80))) return null;
+    entries.push({ providerModelId: entry.providerModelId, parameters: entry.parameters as ImageGenerationParameters });
+  }
+  return new Set(entries.map((entry) => entry.providerModelId)).size === entries.length ? entries : null;
 }
 
 async function requireAdmin(request: Request, resolveAuth: RequestAuthResolver) {
@@ -80,7 +96,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       if (bodyError) return bodyError;
       const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId", "decisionProviderModelId", "decisionFeatures",
         "visionProviderModelId", "visionReasoningEffort", "chatTitleProviderModelId", "chatTitleReasoningEffort", "chatPdfProviderModelId", "chatPdfReasoningEffort",
-        "chatPdfProcessingMode", "chatPdfFallbackMethod", "chatPdfNativeProviderModelId", "chatPdfNativeReasoningEffort", "imageProviderModelId", "imageParameters"];
+        "chatPdfProcessingMode", "chatPdfFallbackMethod", "chatPdfNativeProviderModelId", "chatPdfNativeReasoningEffort", "imageProviderModelId", "imageModels"];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
         typeof entry === "string" && entry.trim() === entry && entry.length > 0 && entry.length <= limit &&
         !/[\u0000-\u001f\u007f]/u.test(entry);
@@ -111,6 +127,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const hasDecisionFeaturesUpdate = record(value) && Object.hasOwn(value, "decisionFeatures");
       const decisionFeatures = hasDecisionFeaturesUpdate && record(value) ? decodeDecisionFeatureOverrides(value.decisionFeatures) : null;
       const hasImageUpdate = record(value) && Object.hasOwn(value, "imageProviderModelId");
+      const imageModels = hasImageUpdate && record(value) ? decodeImageModels(value.imageModels) : null;
       const hasTitleModelUpdate = record(value) && Object.hasOwn(value, "chatTitleProviderModelId");
       const hasVisionUpdate = record(value) && Object.hasOwn(value, "visionProviderModelId");
       const hasPdfModelUpdate = record(value) && Object.hasOwn(value, "chatPdfProviderModelId");
@@ -121,8 +138,8 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         !hasUtilityUpdate && !hasRerankerUpdate && !hasDecisionModelUpdate && !hasDecisionFeaturesUpdate && !hasTitleModelUpdate && !hasVisionUpdate && !hasPdfModelUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate ||
         hasDecisionModelUpdate && !textOrNull(value.decisionProviderModelId, 256) ||
         hasDecisionFeaturesUpdate && !decisionFeatures ||
-        hasImageUpdate !== Object.hasOwn(value, "imageParameters") ||
-        hasImageUpdate && (!textOrNull(value.imageProviderModelId, 256) || !record(value.imageParameters)) ||
+        hasImageUpdate !== Object.hasOwn(value, "imageModels") ||
+        hasImageUpdate && (!textOrNull(value.imageProviderModelId, 256) || !imageModels) ||
         hasUtilityUpdate !== Object.hasOwn(value, "reasoningEffort") ||
         hasTitleModelUpdate !== Object.hasOwn(value, "chatTitleReasoningEffort") ||
         hasTitleModelUpdate && (!textOrNull(value.chatTitleProviderModelId, 256) || !textOrNull(value.chatTitleReasoningEffort, 32)) ||
@@ -147,7 +164,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         await input.service.update({
           ...(hasDecisionModelUpdate ? { decisionProviderModelId: value.decisionProviderModelId as string | null } : {}),
           ...(decisionFeatures ? { decisionFeatures } : {}),
-          ...(hasImageUpdate ? { imageProviderModelId: value.imageProviderModelId as string | null, imageParameters: value.imageParameters as ImageGenerationParameters } : {}),
+          ...(hasImageUpdate && imageModels ? { imageProviderModelId: value.imageProviderModelId as string | null, imageModels } : {}),
           ...(hasTitleModelUpdate ? {
             chatTitleProviderModelId: value.chatTitleProviderModelId as string | null,
             chatTitleReasoningEffort: value.chatTitleReasoningEffort as string | null

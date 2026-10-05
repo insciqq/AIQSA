@@ -2401,6 +2401,7 @@ export function createPrismaAdminProviderRepository(
           installationDefaults,
           systemModelRoles,
           memoryUtilityRoles,
+          publishedImageModels,
           userDefaults,
           chatDefaults,
           searchReferences,
@@ -2424,6 +2425,8 @@ export function createPrismaAdminProviderRepository(
             }
           }),
           tx.memoryUtilityModelPolicy.count({ where: { providerModelId: modelId } }),
+          // Withdrawal in Defaults & roles resets user choices; deletion never does.
+          tx.publishedImageModel.count({ where: { providerModelId: modelId } }),
           tx.userSettings.count({ where: { defaultProviderModelId: modelId } }),
           tx.chat.count({ where: { defaultProviderModelId: modelId } }),
           tx.searchStrategy.count({ where: { providerModelId: modelId } }),
@@ -2439,8 +2442,8 @@ export function createPrismaAdminProviderRepository(
           installationDefaults
             ? { count: installationDefaults, kind: "installation_default" }
             : null,
-          systemModelRoles + memoryUtilityRoles
-            ? { count: systemModelRoles + memoryUtilityRoles, kind: "system_model" }
+          systemModelRoles + memoryUtilityRoles + publishedImageModels
+            ? { count: systemModelRoles + memoryUtilityRoles + publishedImageModels, kind: "system_model" }
             : null,
           userDefaults ? { count: userDefaults, kind: "user_defaults" } : null,
           chatDefaults ? { count: chatDefaults, kind: "chat_defaults" } : null,
@@ -2534,7 +2537,7 @@ export function createPrismaAdminProviderRepository(
           ]);
           const modelIds = models.map(({ id }) => id);
           const credentialIds = credentials.map(({ id }) => id);
-          const [searchReferences, searchRevisionReferences, assistants] = await Promise.all([
+          const [searchReferences, searchRevisionReferences, assistants, publishedImageModels] = await Promise.all([
             tx.searchStrategy.count({
               where: { providerModelId: { in: modelIds } }
             }),
@@ -2542,6 +2545,11 @@ export function createPrismaAdminProviderRepository(
               where: { providerModelId: { in: modelIds } }
             }),
             tx.assistantDefinition.count({
+              where: { providerModelId: { in: modelIds } }
+            }),
+            // Published image models are withdrawn explicitly, resetting the
+            // user choices; deleting their connection never does that.
+            tx.publishedImageModel.count({
               where: { providerModelId: { in: modelIds } }
             })
           ]);
@@ -2556,6 +2564,7 @@ export function createPrismaAdminProviderRepository(
             assistants
               ? { count: assistants, kind: "assistants" }
               : null,
+            publishedImageModels ? { count: publishedImageModels, kind: "system_model" } : null,
             runBindings ? { count: runBindings, kind: "run_bindings" } : null,
             memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null
           ]);

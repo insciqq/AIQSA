@@ -78,9 +78,28 @@ function serialize(node: Node): string {
   return text;
 }
 
-/** A partial Range omits its shared ancestors; retain their formatting, never their unselected text. */
+/** The selected text of one code block, or null when the selection is not inside one block or covers all of its code. */
+function partialCodeText(range: Range, root: HTMLElement): string | null {
+  const common = range.commonAncestorContainer instanceof Element ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+  const block = common?.closest("[data-markdown-code-language], pre");
+  if (!block || !root.contains(block)) return null;
+  const code = block.querySelector("pre code") ?? block.querySelector("code") ?? (block.tagName === "PRE" ? block : null);
+  if (!code || !range.intersectsNode(code)) return null;
+  const selected = range.cloneRange();
+  if (!code.contains(range.startContainer)) selected.setStart(code, 0);
+  if (!code.contains(range.endContainer)) selected.setEnd(code, code.childNodes.length);
+  const text = selected.toString().replace(/\r\n?/gu, "\n");
+  return text.trim() === (code.textContent ?? "").replace(/\r\n?/gu, "\n").trim() ? null : text;
+}
+
+/**
+ * A partial Range omits its shared ancestors; retain their formatting, never their unselected text.
+ * A fragment inside one code block quotes as plain text; only the whole block or a selection leaving it keeps the fence.
+ */
 export function serializeRenderedMarkdownSelection(range: Range, root: HTMLElement): string {
   if (!root.contains(range.startContainer) || !root.contains(range.endContainer) || range.collapsed) return "";
+  const code = partialCodeText(range, root);
+  if (code !== null) return trimEmptyLines(code);
   let selected: Node = range.cloneContents();
   let ancestor = range.commonAncestorContainer instanceof Element ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
   while (ancestor && ancestor !== root) {

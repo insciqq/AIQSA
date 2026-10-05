@@ -151,6 +151,9 @@ export type NormalizedRunRequest = {
   workspaceCheckpoints?: true;
   /** Exact server-owned tool text; absent accepted rows use the legacy text. */
   workspaceCheckpointToolDescription?: string;
+  /** System Vision frozen at admission: Workspace files with a Workspace;
+   * otherwise conversation images for an answer model without vision, admitted
+   * only as an available plan (the chat form of `analyze_image`). */
   visionAnalysis?: import("../providerRuntime/visionAnalysis").AcceptedVisionAnalysisPlan;
   imagePlan?: import("../providerRuntime/imageModelRole").AcceptedImageGenerationPlan;
   imageReferences?: import("../../contracts/imageGeneration").ConversationImageReference[];

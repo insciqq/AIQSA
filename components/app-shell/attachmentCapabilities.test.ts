@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { attachmentAcceptForPolicy } from "./attachmentSelection";
-import type { CatalogModel } from "./types";
+import type { Catalog, CatalogModel } from "./types";
 import {
   attachmentBlocksSend,
   attachmentPolicyForModel,
   attachmentWarningsForModel,
+  catalogWithImageEditing,
   firstBlockingAttachmentWarning,
+  imageRouteAvailable,
+  imageRouteUnavailableMessage,
   partitionAttachmentsForModel,
-  pdfProcessingForAttachment
+  pdfProcessingForAttachment,
+  unsupportedAttachmentMessage
 } from "./attachmentCapabilities";
 
 function model(
@@ -427,6 +431,60 @@ describe("attachment capabilities", () => {
       expect(attachmentWarningsForModel([noText], selected, false, null))
         .toEqual([expect.objectContaining({ blocking: true, label: "No text" })]);
       expect(attachmentWarningsForModel([noText], selected, true, null)).toEqual([]);
+    });
+  });
+
+  describe("server image-route projection", () => {
+    const withRoutes = (imageInput: boolean, toolCalling: boolean, imageRoutes?: CatalogModel["capabilities"]["imageRoutes"]): CatalogModel => {
+      const base = model("pdf_text_extraction", imageInput);
+      return { ...base, displayName: "Text model", capabilities: { ...base.capabilities, toolCalling, ...(imageRoutes ? { imageRoutes } : {}) } };
+    };
+    const image = { fileName: "photo.webp", id: "photo", kind: "image" as const };
+
+    it.each([
+      ["the model's own image input", withRoutes(true, false), true],
+      ["chat System Vision", withRoutes(false, true, { systemVision: true, imageEditing: false }), true],
+      ["image-model editing", withRoutes(false, true, { systemVision: false, imageEditing: true }), true],
+      ["no route", withRoutes(false, true, { systemVision: false, imageEditing: false }), false],
+      ["an unknown projection", withRoutes(false, true), false]
+    ])("admits images exactly when run admission would: %s", (_label, selected, admitted) => {
+      expect(imageRouteAvailable(selected)).toBe(admitted);
+      expect(attachmentPolicyForModel(selected).images).toBe(admitted);
+      expect(attachmentAcceptForPolicy(attachmentPolicyForModel(selected)).includes(".webp")).toBe(admitted);
+      expect(partitionAttachmentsForModel([image], selected).supported).toEqual(admitted ? [image] : []);
+      // Workspace still takes every image.
+      expect(attachmentPolicyForModel(selected, true).images).toBe(true);
+    });
+
+    it("explains a refused image and names the recovery that applies", () => {
+      const toolModel = withRoutes(false, true, { systemVision: false, imageEditing: false });
+      expect(unsupportedAttachmentMessage(["photo.webp"], toolModel)).toBe(
+        "Text model does not support this attachment: photo.webp. Text model can't read images, and no Vision Model is available to analyze them. " +
+        "To use images, choose a model that supports images or ask an administrator to assign the Vision Model.");
+      expect(imageRouteUnavailableMessage(toolModel, true)).toBe("Text model can't read images, and no Vision Model is available to analyze them. " +
+        "To use images, choose a model that supports images, turn on Workspace or ask an administrator to assign the Vision Model.");
+      expect(unsupportedAttachmentMessage(["photo.png"], withRoutes(false, false), true)).toBe(
+        "Removed an attachment unsupported by Text model: photo.png. Text model can't read images. To use images, choose a model that supports images.");
+      // Other refusals and images a route accepts keep the plain message.
+      expect(unsupportedAttachmentMessage(["data.bin"], toolModel)).toBe("Text model does not support this attachment: data.bin");
+      expect(unsupportedAttachmentMessage(["photo.webp"], withRoutes(false, true, { systemVision: true, imageEditing: false })))
+        .toBe("Text model does not support this attachment: photo.webp");
+    });
+
+    it("follows a changed personal image model only in the editing route the server projected", () => {
+      const editingOnly = withRoutes(false, true, { systemVision: false, imageEditing: true });
+      const visionRoute = { ...withRoutes(false, true, { systemVision: true, imageEditing: true }), modelId: "vision-route" };
+      const noTools = { ...withRoutes(false, false), modelId: "no-tools" };
+      const catalog = { defaults: {} as Catalog["defaults"], models: [editingOnly, visionRoute, noTools], providers: [], searchStrategies: [] };
+      // A generation-only (or unusable) choice: the composer refuses an image no other route takes.
+      const generationOnly = catalogWithImageEditing(catalog, false);
+      expect(generationOnly.models.map((entry) => imageRouteAvailable(entry))).toEqual([false, true, false]);
+      expect(partitionAttachmentsForModel([image], generationOnly.models[0]).unsupported).toEqual([image]);
+      expect(generationOnly.models[1]!.capabilities.imageRoutes).toEqual({ systemVision: true, imageEditing: false });
+      // Models without tools carry no routes and none are invented.
+      expect(generationOnly.models[2]!.capabilities.imageRoutes).toBeUndefined();
+      expect(catalogWithImageEditing(generationOnly, true).models.map((entry) => imageRouteAvailable(entry))).toEqual([true, true, false]);
+      expect(catalog.models[0]!.capabilities.imageRoutes).toEqual({ systemVision: false, imageEditing: true });
     });
   });
 });

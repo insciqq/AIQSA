@@ -101,6 +101,10 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
     descriptors.set("create_scheduled_task", { origin: "session", serverName: "Scheduled tasks", toolName: "create_scheduled_task" });
   }
   if (normalizedRequest.fetchUrl) descriptors.set("fetch_url", { origin: "web_fetch", serverName: "Web", toolName: "fetch_url" });
+  // The chat form of System Vision; Workspace analysis keeps its existing activity.
+  if (normalizedRequest.visionAnalysis && normalizedRequest.workspace === undefined) {
+    descriptors.set("analyze_image", { origin: "vision", serverName: "System Vision", toolName: "analyze_image" });
+  }
   descriptors.set("search_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   descriptors.set("retrieve_knowledge", { origin: "knowledge", serverName: "Knowledge", toolName: "search_knowledge" });
   for (const name of [

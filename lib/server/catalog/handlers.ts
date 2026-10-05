@@ -6,12 +6,14 @@ import {
   type RunAttachmentLimits
 } from "../runs/attachmentLimits";
 import { buildCurrentUserCatalog, type CatalogData } from "./currentUserCatalog";
+import { withImageRoutes, type ImageRouteFacts } from "./imageRoutes";
 
 export { buildCurrentUserCatalog } from "./currentUserCatalog";
 export type { CatalogData } from "./currentUserCatalog";
 
 export type CatalogHandlerDeps = {
-  resolveImageCapabilities?(): Promise<{ generation: boolean; editing: boolean } | null>;
+  /** The image routes this user's chats can use; absent leaves only each model's own image input. */
+  resolveImageRoutes?(userId: string): Promise<ImageRouteFacts>;
   loadCatalogData(userId: string): Promise<CatalogData | null>;
   resolveAuth: RequestAuthResolver;
   resolveRunAttachmentLimits?(): RunAttachmentLimits;
@@ -38,10 +40,9 @@ export function createCatalogHandler(deps: CatalogHandlerDeps) {
       return catalogErrorJson({ error: "user_not_found" }, { status: 404 });
     }
 
-    const imageTool = await deps.resolveImageCapabilities?.();
+    const imageRoutes = await deps.resolveImageRoutes?.(auth.userId);
     const catalog = buildCurrentUserCatalog(data);
-    if (imageTool) catalog.models = catalog.models.map((model) => model.capabilities.toolCalling
-      ? { ...model, capabilities: { ...model.capabilities, imageTool } } : model);
+    if (imageRoutes) catalog.models = catalog.models.map((model) => withImageRoutes(model, imageRoutes));
     const response = {
       catalog: {
         ...catalog,
