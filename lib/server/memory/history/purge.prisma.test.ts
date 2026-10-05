@@ -1,8 +1,13 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
 import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../../contracts/runs";
 import { textMessageContent } from "../../../domain/content";
 import { prisma } from "../../prisma";
+import { DEFAULT_MEMORY_COORDINATOR_POLICY } from "../coordinator/policy";
+import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRepository";
+import type { MemoryDeletionClaim } from "../coordinator/types";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
 import {
@@ -10,7 +15,12 @@ import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION
 } from "./contract";
 import { MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION } from "./digest";
-import { purgeMemoryHistorySelection } from "./purge";
+import {
+  inspectMemoryHistoryPurge,
+  MEMORY_HISTORY_SOURCE_TARGET_TYPE,
+  memoryHistorySourceDeletionHandler,
+  purgeMemoryHistorySelection
+} from "./purge";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 
 describe("Prisma Memory history purge", () => {
@@ -623,4 +633,614 @@ describe("Prisma Memory history purge", () => {
       await prisma.user.deleteMany({ where: { id: userId } });
     }
   });
+
+  // Content-free regression for the history source purge that ran past
+  // Prisma's former 5s default: thousands of retained owner receipts across
+  // several sources, a long chat whose stable prefix stays ACTIVE and whose
+  // edited tail is purged. It records phase timings and plan summaries
+  // (counts, node types, schema names, milliseconds) for the operator.
+  it("purges one source of a large owner history inside the bounded deletion commit", async () => {
+    const suffix = randomUUID();
+    const userId = `memory-history-large-purge-${suffix}`;
+    const probe = new PrismaClient({ log: [{ emit: "event", level: "query" }] });
+    const statements: ProbeStatement[] = [];
+    let recording = false;
+    probe.$on("query", (event) => {
+      if (recording) {
+        statements.push({ durationMs: event.duration, params: event.params, query: event.query });
+      }
+    });
+    try {
+      const fixtureStarted = performance.now();
+      await prisma.user.create({
+        data: {
+          displayName: "Memory large source purge fixture",
+          email: `${userId}@example.test`,
+          id: userId,
+          status: "active"
+        }
+      });
+      const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
+      const target = await createHistoryChat(userId, "Large purge target", {
+        branchMessages: LARGE_PURGE_SHAPE.targetBranchMessages,
+        prefixMessages: LARGE_PURGE_SHAPE.targetPrefixMessages,
+        staleTailMessages: LARGE_PURGE_SHAPE.targetStaleTailMessages
+      });
+      const others: HistoryChatFixture[] = [];
+      for (let index = 0; index < LARGE_PURGE_SHAPE.otherSources; index += 1) {
+        others.push(await createHistoryChat(userId, `Large purge source ${index}`, {
+          branchMessages: 0,
+          prefixMessages: LARGE_PURGE_SHAPE.otherSourceMessages,
+          staleTailMessages: 0
+        }));
+      }
+      const receipts = await createSearchReceipts({
+        citeTargetEvery: LARGE_PURGE_SHAPE.receiptsCitingTargetEvery,
+        count: LARGE_PURGE_SHAPE.receipts,
+        memoryGeneration: settings.memoryGeneration,
+        otherChatIds: others.map(({ chatId }) => chatId),
+        targetChatId: target.chatId,
+        userId
+      });
+      const fixtureMs = performance.now() - fixtureStarted;
+
+      const leaseToken = randomUUID();
+      const outbox = await prisma.memoryDeletionOutbox.create({
+        data: {
+          attemptCount: 1,
+          leaseExpiresAt: new Date(Date.now() + DEFAULT_MEMORY_COORDINATOR_POLICY.leaseMs),
+          leaseToken,
+          memoryGeneration: settings.memoryGeneration,
+          operation: "SOURCE_PURGE",
+          progressAt: new Date(),
+          state: "RUNNING",
+          targetId: target.chatId,
+          targetType: MEMORY_HISTORY_SOURCE_TARGET_TYPE,
+          userId
+        }
+      });
+      const claim: MemoryDeletionClaim = {
+        admissionAuthorizationId: null,
+        admittedActiveLeafMessageId: null,
+        admittedChatSourceRevision: null,
+        alsoForgetOriginMemories: null,
+        attemptCount: 1,
+        claimToken: leaseToken,
+        id: outbox.id,
+        leaseExpiresAt: outbox.leaseExpiresAt!,
+        memoryGeneration: settings.memoryGeneration,
+        operation: "SOURCE_PURGE",
+        recoveredLease: false,
+        resumedFromBlocked: true,
+        targetId: target.chatId,
+        targetType: MEMORY_HISTORY_SOURCE_TARGET_TYPE,
+        userId
+      };
+      const context = { now: () => new Date(), signal: new AbortController().signal };
+      const purgeApply = async () => {
+        const result = await memoryHistorySourceDeletionHandler.execute(claim, context);
+        expect(result.apply).toBeTypeOf("function");
+        return result.apply!;
+      };
+
+      // Diagnostic probe: the exact handler work plus the deferred source
+      // guards (SET CONSTRAINTS ALL IMMEDIATE), rolled back afterwards.
+      recording = true;
+      const probeStarted = performance.now();
+      let deferredConstraintMs = -1;
+      await probe.$transaction(async (tx) => {
+        await (await purgeApply())(tx, claim);
+        const constraintsStarted = performance.now();
+        await tx.$executeRawUnsafe("SET CONSTRAINTS ALL IMMEDIATE");
+        deferredConstraintMs = performance.now() - constraintsStarted;
+        throw new ProbeRollback();
+      }, { maxWait: 10_000, timeout: 300_000 }).catch((error: unknown) => {
+        if (!(error instanceof ProbeRollback)) throw error;
+      });
+      const probeMs = performance.now() - probeStarted;
+      recording = false;
+      const plans = await explainSlowestStatements(probe, statements, 4);
+      await expect(prisma.memoryRecallChunk.count({
+        where: { id: { in: [...target.staleChunkIds] } }
+      })).resolves.toBe(target.staleChunkIds.length);
+
+      // A competing claim token or an expired lease writes nothing.
+      const repository = createPrismaMemoryCoordinatorRepository(prisma);
+      await expect(repository.commitDeletionSuccess({
+        apply: await purgeApply(),
+        claim: { ...claim, claimToken: randomUUID() },
+        now: new Date()
+      })).resolves.toBe(false);
+      await expect(repository.commitDeletionSuccess({
+        apply: await purgeApply(),
+        claim,
+        now: new Date(claim.leaseExpiresAt.getTime() + 1_000)
+      })).resolves.toBe(false);
+      await expect(prisma.memoryDeletionOutbox.findUniqueOrThrow({ where: { id: outbox.id } }))
+        .resolves.toMatchObject({ leaseToken, state: "RUNNING" });
+      await expect(prisma.memoryHistoryRun.count({
+        where: { retentionState: "RETAINED", userId }
+      })).resolves.toBe(receipts.total);
+
+      // The owner's heartbeat renews the lease, then the production commit
+      // runs under its explicit bound.
+      await expect(repository.heartbeatDeletion({
+        claim,
+        leaseExpiresAt: new Date(Date.now() + DEFAULT_MEMORY_COORDINATOR_POLICY.leaseMs),
+        now: new Date()
+      })).resolves.toBe(true);
+      const apply = await purgeApply();
+      const commitStarted = performance.now();
+      await expect(repository.commitDeletionSuccess({ apply, claim, now: new Date() }))
+        .resolves.toBe(true);
+      const commitMs = performance.now() - commitStarted;
+      expect(commitMs).toBeLessThan(18_000);
+
+      // The settled lease cannot be renewed or committed again.
+      await expect(repository.heartbeatDeletion({
+        claim,
+        leaseExpiresAt: new Date(Date.now() + DEFAULT_MEMORY_COORDINATOR_POLICY.leaseMs),
+        now: new Date()
+      })).resolves.toBe(false);
+      await expect(repository.commitDeletionSuccess({
+        apply: await purgeApply(),
+        claim,
+        now: new Date()
+      })).resolves.toBe(false);
+
+      const settled = await prisma.memoryDeletionOutbox.findUniqueOrThrow({
+        where: { id: outbox.id }
+      });
+      expect(settled).toMatchObject({
+        errorCode: null,
+        leaseExpiresAt: null,
+        leaseToken: null,
+        state: "SUCCEEDED"
+      });
+      expect(settled.completedAt).toBeInstanceOf(Date);
+      expect(settled.lastAuditAt).toBeInstanceOf(Date);
+      await expect(prisma.memoryRecallChunk.count({
+        where: { id: { in: [...target.staleChunkIds] } }
+      })).resolves.toBe(0);
+      await expect(prisma.memoryRecallChunk.count({
+        where: { id: { in: [...target.activeChunkIds] }, state: "ACTIVE" }
+      })).resolves.toBe(target.activeChunkIds.length);
+      await expect(prisma.memoryRecallChunkMessage.count({
+        where: { chunkId: { in: [...target.activeChunkIds] } }
+      })).resolves.toBe(target.activeChunkIds.length * CHUNK_MESSAGES);
+      const otherChunkIds = others.flatMap(({ activeChunkIds }) => activeChunkIds);
+      await expect(prisma.memoryRecallChunk.count({
+        where: { id: { in: otherChunkIds }, state: "ACTIVE" }
+      })).resolves.toBe(otherChunkIds.length);
+      await expect(prisma.memoryHistoryRun.count({
+        where: {
+          id: { in: [...receipts.citingTargetIds] },
+          plaintextPurgedAt: { not: null },
+          results: { equals: Prisma.DbNull },
+          retentionState: "SCRUBBED"
+        }
+      })).resolves.toBe(receipts.citingTargetIds.length);
+      await expect(prisma.memoryHistoryRun.count({
+        where: {
+          id: { notIn: [...receipts.citingTargetIds] },
+          retentionState: "RETAINED",
+          userId
+        }
+      })).resolves.toBe(receipts.total - receipts.citingTargetIds.length);
+      await expect(prisma.modelRunToolCall.count({
+        where: {
+          arguments: { equals: {} },
+          id: { in: [...receipts.citingTargetToolCallIds] },
+          state: "complete"
+        }
+      })).resolves.toBe(receipts.citingTargetToolCallIds.length);
+      await expect(prisma.$transaction((tx) => inspectMemoryHistoryPurge(tx, userId, {
+        chatId: target.chatId,
+        kind: "SOURCE"
+      }), { timeout: 60_000 })).resolves.toMatchObject({ complete: true });
+
+      console.log(JSON.stringify({
+        event: "memory_history_source_purge_regression",
+        commitBoundMs: 18_000,
+        commitMs: Math.round(commitMs),
+        deferredConstraintMs: Math.round(deferredConstraintMs),
+        fixtureMs: Math.round(fixtureMs),
+        plans,
+        probeMs: Math.round(probeMs),
+        shape: {
+          ...LARGE_PURGE_SHAPE,
+          activeTargetChunks: target.activeChunkIds.length,
+          receiptsCitingTarget: receipts.citingTargetIds.length,
+          staleTargetChunks: target.staleChunkIds.length
+        },
+        statements: statementGroups(statements, 12)
+      }));
+    } finally {
+      recording = false;
+      await probe.$disconnect();
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  }, 600_000);
 });
+
+const CHUNK_MESSAGES = 4;
+const RECEIPT_RESULTS = 8;
+const LARGE_PURGE_SHAPE = Object.freeze({
+  otherSourceMessages: 80,
+  otherSources: 3,
+  receipts: 2_400,
+  receiptsCitingTargetEvery: 6,
+  targetBranchMessages: 8,
+  targetPrefixMessages: 400,
+  targetStaleTailMessages: 200
+});
+
+class ProbeRollback extends Error {
+  constructor() {
+    super("memory_purge_probe_rollback");
+  }
+}
+
+type ProbeStatement = Readonly<{ durationMs: number; params: string; query: string }>;
+
+type HistoryChatFixture = Readonly<{
+  activeChunkIds: readonly string[];
+  chatId: string;
+  staleChunkIds: readonly string[];
+}>;
+
+type FixtureMessage = Readonly<{ id: string; role: string; updatedAt: Date }>;
+
+function synthetic(seed: string, length: number): string {
+  let value = "";
+  for (let index = 0; value.length < length; index += 1) {
+    value += createHash("sha256").update(`${seed}:${index}`).digest("hex");
+  }
+  return value.slice(0, length);
+}
+
+async function createHistoryChat(
+  userId: string,
+  title: string,
+  shape: Readonly<{ branchMessages: number; prefixMessages: number; staleTailMessages: number }>
+): Promise<HistoryChatFixture> {
+  const chat = await prisma.chat.create({ data: { title, userId } });
+  const baseMs = Date.UTC(2026, 7, 1);
+  const rows: Prisma.MessageCreateManyInput[] = [];
+  const chain = (count: number, parentId: string | null): string[] => {
+    const ids: string[] = [];
+    let parent = parentId;
+    for (let index = 0; index < count; index += 1) {
+      const id = randomUUID();
+      const at = new Date(baseMs + rows.length * 1_000);
+      rows.push({
+        chatId: chat.id,
+        content: textMessageContent(`Synthetic turn ${rows.length}.`),
+        createdAt: at,
+        id,
+        parentMessageId: parent,
+        role: index % 2 === 0 ? "user" : "assistant",
+        status: "complete",
+        updatedAt: at
+      });
+      ids.push(id);
+      parent = id;
+    }
+    return ids;
+  };
+  const prefix = chain(shape.prefixMessages, null);
+  const stale = chain(shape.staleTailMessages, prefix.at(-1) ?? null);
+  const branch = chain(shape.branchMessages, prefix.at(-1) ?? null);
+  await prisma.message.createMany({ data: rows });
+  await prisma.chat.update({
+    data: { activeLeafMessageId: branch.at(-1) ?? prefix.at(-1)! },
+    where: { id: chat.id }
+  });
+  const stored = new Map<string, FixtureMessage>((await prisma.message.findMany({
+    select: { id: true, role: true, updatedAt: true },
+    where: { chatId: chat.id }
+  })).map((message) => [message.id, message]));
+  const chunks = (messageIds: readonly string[], firstOrdinal: number, active: boolean) => {
+    const chunkRows: Prisma.MemoryRecallChunkCreateManyInput[] = [];
+    const mapRows: Prisma.MemoryRecallChunkMessageCreateManyInput[] = [];
+    for (let start = 0; start < messageIds.length; start += CHUNK_MESSAGES) {
+      const members = messageIds.slice(start, start + CHUNK_MESSAGES)
+        .map((id) => stored.get(id)!);
+      const ordinal = firstOrdinal + chunkRows.length;
+      const lines = members.map((message, index) =>
+        `${message.role}:\nSynthetic turn ${ordinal}.${index}.`);
+      const text = lines.join("\n");
+      const id = randomUUID();
+      chunkRows.push({
+        branchGeneration: 0,
+        chatId: chat.id,
+        chunkOrdinal: ordinal,
+        chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+        contentHash: memorySha256(text),
+        id,
+        ...(active ? {} : { invalidatedAt: new Date(baseMs) }),
+        languageCode: "en",
+        normalizedSafeSearchText: normalizeMemorySearchText(text),
+        occurredFrom: new Date(baseMs),
+        occurredTo: new Date(baseMs),
+        redactionState: "NOT_NEEDED",
+        safeProjectedText: text,
+        safetyClass: "NORMAL",
+        sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+        sourceRevisionAtCreation: 0,
+        state: active ? "ACTIVE" : "INVALIDATED",
+        userId
+      });
+      members.forEach((message, index) => mapRows.push({
+        chatId: chat.id,
+        chunkId: id,
+        messageId: message.id,
+        ordinal: index,
+        role: message.role,
+        safeTextHash: memorySha256(lines[index]!),
+        sourceMessageContentHash: memorySha256(`synthetic-content:${message.id}`),
+        sourceMessageUpdatedAt: message.updatedAt,
+        userId
+      }));
+    }
+    return { chunkRows, mapRows };
+  };
+  const active = chunks(prefix, 0, true);
+  const staleChunks = chunks(stale, active.chunkRows.length, false);
+  // ACTIVE chunks and their source maps satisfy the deferred source guard
+  // only together, so they commit in one transaction.
+  await prisma.$transaction([
+    prisma.memoryRecallChunk.createMany({ data: active.chunkRows }),
+    prisma.memoryRecallChunkMessage.createMany({ data: active.mapRows })
+  ]);
+  if (staleChunks.chunkRows.length > 0) {
+    await prisma.$transaction([
+      prisma.memoryRecallChunk.createMany({ data: staleChunks.chunkRows }),
+      prisma.memoryRecallChunkMessage.createMany({ data: staleChunks.mapRows })
+    ]);
+  }
+  return {
+    activeChunkIds: active.chunkRows.map(({ id }) => id!),
+    chatId: chat.id,
+    staleChunkIds: staleChunks.chunkRows.map(({ id }) => id!)
+  };
+}
+
+async function createSearchReceipts(input: Readonly<{
+  citeTargetEvery: number;
+  count: number;
+  memoryGeneration: number;
+  otherChatIds: readonly string[];
+  targetChatId: string;
+  userId: string;
+}>): Promise<Readonly<{
+  citingTargetIds: readonly string[];
+  citingTargetToolCallIds: readonly string[];
+  total: number;
+}>> {
+  const chat = await prisma.chat.create({
+    data: { title: "Large purge searches", userId: input.userId }
+  });
+  const userMessageId = randomUUID();
+  const assistantMessageId = randomUUID();
+  await prisma.message.createMany({
+    data: [
+      {
+        chatId: chat.id,
+        content: textMessageContent("Synthetic search turn."),
+        id: userMessageId,
+        role: "user"
+      },
+      {
+        chatId: chat.id,
+        content: textMessageContent("Synthetic search answer."),
+        id: assistantMessageId,
+        parentMessageId: userMessageId,
+        role: "assistant"
+      }
+    ]
+  });
+  await prisma.chat.update({
+    data: { activeLeafMessageId: assistantMessageId },
+    where: { id: chat.id }
+  });
+  // A native search receipt allows at most three invocations per run.
+  const runIds = Array.from({ length: Math.ceil(input.count / 3) }, () => randomUUID());
+  await prisma.modelRun.createMany({
+    data: runIds.map((id) => ({
+      assistantMessageId,
+      chatId: chat.id,
+      id,
+      modelId: "memory-history-large-purge-model",
+      normalizedRequest: {},
+      provider: "memory-history-large-purge-provider",
+      status: "complete" as const,
+      userId: input.userId,
+      userMessageId
+    }))
+  });
+  const citingTargetIds: string[] = [];
+  const citingTargetToolCallIds: string[] = [];
+  const completedAt = new Date(Date.UTC(2026, 7, 2));
+  for (let offset = 0; offset < input.count; offset += 200) {
+    const batch = Array.from({ length: Math.min(200, input.count - offset) }, (_, index) => {
+      const ordinal = offset + index;
+      const citesTarget = ordinal % input.citeTargetEvery === 0;
+      const results = Array.from({ length: RECEIPT_RESULTS }, (__, position) => ({
+        exactItemId: `synthetic-${ordinal}-${position}`,
+        includedText: synthetic(`included:${ordinal}:${position}`, 480),
+        itemType: "RECALL_CHUNK",
+        sourceChatId: citesTarget && position === 0
+          ? input.targetChatId
+          : input.otherChatIds[(ordinal + position) % input.otherChatIds.length]!,
+        sourceMessageIds: []
+      }));
+      const receiptId = randomUUID();
+      const toolCallId = randomUUID();
+      if (citesTarget) {
+        citingTargetIds.push(receiptId);
+        citingTargetToolCallIds.push(toolCallId);
+      }
+      const query = `Synthetic history query ${ordinal}`;
+      const modelRunId = runIds[Math.floor(ordinal / 3)]!;
+      const call: Prisma.ModelRunToolCallCreateManyInput = {
+        arguments: { query },
+        completedAt,
+        id: toolCallId,
+        modelRunId,
+        ordinal: ordinal % 3,
+        providerCallId: `synthetic-call-${ordinal}`,
+        result: { status: "complete" },
+        roundIndex: 0,
+        state: "complete",
+        toolName: "memory_search"
+      };
+      const receipt: Prisma.MemoryHistoryRunCreateManyInput = {
+        completedAt,
+        durationMs: 10,
+        id: receiptId,
+        indexingEvidence: { delivered: true },
+        invocationOrdinal: (ordinal % 3) + 1,
+        modelRunId,
+        modelRunToolCallId: toolCallId,
+        outcome: "RESULTS",
+        privateRequest: {
+          accepted: { memoryGeneration: input.memoryGeneration },
+          version: "memory-search-v1"
+        },
+        providerResult: { content: [] },
+        query,
+        queryHash: memorySha256(query),
+        receiptVersion: "memory-search-v1",
+        resultCount: RECEIPT_RESULTS,
+        resultHash: memorySha256({ ordinal, results: "synthetic" }),
+        results: {
+          items: results.map(({ exactItemId, itemType }) => ({ exactItemId, itemType })),
+          resolved: results.map(({ exactItemId }) => ({
+            exactItemId,
+            exactSafeText: synthetic(`resolved:${exactItemId}`, 480)
+          })),
+          results,
+          version: "memory-search-v1"
+        },
+        state: "COMPLETE",
+        userId: input.userId
+      };
+      return { call, receipt };
+    });
+    await prisma.modelRunToolCall.createMany({ data: batch.map(({ call }) => call) });
+    await prisma.memoryHistoryRun.createMany({ data: batch.map(({ receipt }) => receipt) });
+  }
+  return { citingTargetIds, citingTargetToolCallIds, total: input.count };
+}
+
+function statementLabel(query: string): string {
+  const keyword = /^\s*(\w+)/u.exec(query)?.[1]?.toUpperCase() ?? "?";
+  const table = /(?:FROM|UPDATE|INTO)\s+(?:"public"\.)?"([A-Za-z]+)"/u.exec(query)?.[1] ?? "-";
+  return `${keyword} ${table} #${memorySha256(query).slice(0, 8)}`;
+}
+
+function statementGroups(statements: readonly ProbeStatement[], limit: number) {
+  const groups = new Map<string, { calls: number; maxMs: number; totalMs: number }>();
+  for (const statement of statements) {
+    const label = statementLabel(statement.query);
+    const group = groups.get(label) ?? { calls: 0, maxMs: 0, totalMs: 0 };
+    group.calls += 1;
+    group.maxMs = Math.max(group.maxMs, statement.durationMs);
+    group.totalMs += statement.durationMs;
+    groups.set(label, group);
+  }
+  return [...groups.entries()]
+    .sort((left, right) => right[1].totalMs - left[1].totalMs)
+    .slice(0, limit)
+    .map(([label, group]) => ({ label, ...group }));
+}
+
+type PlanNode = Readonly<{
+  "Actual Loops"?: number;
+  "Actual Rows"?: number;
+  "Actual Total Time"?: number;
+  "Index Name"?: string;
+  "Node Type"?: string;
+  Plans?: readonly PlanNode[];
+  "Relation Name"?: string;
+}>;
+
+type PlanRoot = Readonly<{
+  "Execution Time"?: number;
+  Plan?: PlanNode;
+  "Planning Time"?: number;
+  Triggers?: ReadonlyArray<Readonly<{ Calls?: number; "Trigger Name"?: string; Time?: number }>>;
+}>;
+
+function summarizePlan(value: unknown) {
+  const root = (Array.isArray(value) ? value[0] : value) as PlanRoot | null | undefined;
+  const nodes: Array<Record<string, number | string>> = [];
+  const visit = (node: PlanNode | undefined) => {
+    if (!node) return;
+    const loops = node["Actual Loops"] ?? 0;
+    const totalMs = (node["Actual Total Time"] ?? 0) * loops;
+    if (node["Relation Name"] || totalMs >= 1) {
+      nodes.push({
+        loops,
+        node: node["Node Type"] ?? "?",
+        rows: node["Actual Rows"] ?? 0,
+        totalMs: Math.round(totalMs),
+        ...(node["Relation Name"] ? { relation: node["Relation Name"] } : {}),
+        ...(node["Index Name"] ? { index: node["Index Name"] } : {})
+      });
+    }
+    node.Plans?.forEach(visit);
+  };
+  visit(root?.Plan);
+  return {
+    executionMs: Math.round(root?.["Execution Time"] ?? -1),
+    nodes: nodes.slice(0, 16),
+    planningMs: Math.round(root?.["Planning Time"] ?? -1),
+    triggers: (root?.Triggers ?? []).map((trigger) => ({
+      calls: trigger.Calls ?? 0,
+      ms: Math.round(trigger.Time ?? 0),
+      name: trigger["Trigger Name"] ?? "?"
+    }))
+  };
+}
+
+async function explainSlowestStatements(
+  client: PrismaClient,
+  statements: readonly ProbeStatement[],
+  limit: number
+) {
+  const candidates = [...statements]
+    .filter(({ query }) => /^\s*(WITH|SELECT|UPDATE|DELETE)\b/iu.test(query))
+    .sort((left, right) => right.durationMs - left.durationMs)
+    .slice(0, limit);
+  const plans: Array<Record<string, unknown>> = [];
+  for (const statement of candidates) {
+    const label = statementLabel(statement.query);
+    try {
+      const params = JSON.parse(statement.params) as unknown[];
+      let plan: unknown = null;
+      // EXPLAIN ANALYZE executes the statement; every replay rolls back.
+      await client.$transaction(async (tx) => {
+        const rows = await tx.$queryRawUnsafe<Array<Record<string, unknown>>>(
+          `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement.query}`,
+          ...params
+        );
+        plan = rows[0]?.["QUERY PLAN"];
+        throw new ProbeRollback();
+      }, { maxWait: 10_000, timeout: 120_000 }).catch((error: unknown) => {
+        if (!(error instanceof ProbeRollback)) throw error;
+      });
+      plans.push({ label, probeMs: statement.durationMs, ...summarizePlan(plan) });
+    } catch (error) {
+      plans.push({
+        error: error instanceof Prisma.PrismaClientKnownRequestError
+          ? error.code
+          : "explain_failed",
+        label,
+        probeMs: statement.durationMs
+      });
+    }
+  }
+  return plans;
+}
