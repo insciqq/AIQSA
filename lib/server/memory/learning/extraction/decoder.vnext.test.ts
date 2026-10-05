@@ -775,18 +775,23 @@ describe("Memory v7 long-term semantic-frame decoder", () => {
     })).toBe(true);
   });
 
-  it("retains the user's attributed report as supporting personal context", () => {
+  it("retains the user's attributed report only at high confidence", () => {
     const quote = "My brother Milo told me he works night shifts.";
-    const plan = decode(quote, [personalContextObservation(quote, {
-      confidenceBand: "MEDIUM",
+    const report = (confidenceBand: "HIGH" | "MEDIUM") => decode(quote, [personalContextObservation(quote, {
+      confidenceBand,
       entityType: "PERSON",
       name: "Milo",
       statement: "The current user reports that their brother Milo told them he works night shifts."
     })]);
-    const retained = plan.candidates[0]!;
+    // An uncertain report is no longer stored as supporting context.
+    expect(report("MEDIUM")).toMatchObject({
+      candidates: [],
+      rejections: [{ candidateOrdinal: 0, reasonCode: "REJECT_LOW_CONFIDENCE" }]
+    });
+    const retained = report("HIGH").candidates[0]!;
     expect(retained).toMatchObject({
-      confidence: MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE,
-      confidenceBand: "MEDIUM",
+      confidence: 1,
+      confidenceBand: "HIGH",
       identityKind: "PROPOSITION",
       statement: expect.stringContaining("Milo told them")
     });
@@ -899,11 +904,12 @@ describe("Memory v7 long-term semantic-frame decoder", () => {
     });
   });
 
-  it("keeps MEDIUM output as a disjoint supporting proposition", () => {
+  it("stores no MEDIUM observation, while the same HIGH or remember-requested one is kept as before", () => {
     const quote = "I usually choose cedar for document layouts.";
     const statement = "The current user usually chooses cedar for document layouts.";
-    const plan = decode(quote, [observation(quote, {
-      confidence_band: "MEDIUM",
+    const preference = (overrides: Record<string, unknown> = {}) =>
+      observation(quote, { memory_type: "PREFERENCE", statement, ...overrides });
+    const slot = {
       identity: {
         dimension_key: "format:document layout",
         mode: "SLOT",
@@ -914,31 +920,38 @@ describe("Memory v7 long-term semantic-frame decoder", () => {
           qualifiers: { brand: null, model: null }
         }
       },
-      memory_type: "PREFERENCE",
-      statement,
       value: { ...nullValue, value: "cedar" }
-    })]);
+    };
+    const remember = { semantic_frame: { ...frame, memory_directive: "EXPLICIT_REMEMBER", speech_act: "COMMAND" } };
+    // Former supporting observations, a proposition or a downgraded SLOT, are
+    // rejected before storage; MEDIUM never carried a remember directive and
+    // still cannot.
+    const medium = decode(quote, [
+      preference({ candidate_ref: "C1", confidence_band: "MEDIUM" }),
+      preference({ candidate_ref: "C2", confidence_band: "MEDIUM", ...slot }),
+      preference({ candidate_ref: "C3", confidence_band: "MEDIUM", ...remember })
+    ]);
+    expect(medium.candidates).toEqual([]);
+    expect(medium.rejections).toEqual([0, 1, 2].map((candidateOrdinal) =>
+      ({ candidateOrdinal, reasonCode: "REJECT_LOW_CONFIDENCE" })));
 
-    expect(plan.rejections).toEqual([]);
-    expect(plan.candidates[0]).toMatchObject({
-      confidence: 0.6,
-      confidenceBand: "MEDIUM",
-      coreEligible: false,
-      coreSalience: "NONE",
+    const high = decode(quote, [preference()]);
+    expect(high.rejections).toEqual([]);
+    expect(high.candidates[0]).toMatchObject({
+      canonicalKey: memoryPropositionCanonicalKey(statement),
+      confidence: 1,
+      confidenceBand: "HIGH",
       identityKind: "PROPOSITION",
-      predicateKey: null,
-      proposedValue: {
-        authority: "supporting",
-        schema: "supporting-observation-v1"
-      },
-      subjectKey: null
+      importance: 0.65,
+      proposedValue: { schema: "generic-fact-v1" }
     });
-    expect(plan.candidates[0]?.canonicalKey)
-      .not.toBe(memoryPropositionCanonicalKey(statement));
-    expect(memoryCandidateRequiresSemanticAdjudication(plan.candidates[0]!))
-      .toBe(false);
-    expect(memorySemanticAuthorityAdmitsCandidate(plan.candidates[0]!, null))
-      .toBe(true);
+    const remembered = decode(quote, [preference({ ...remember, usefulness: "TRANSIENT" })]);
+    expect(remembered.rejections).toEqual([]);
+    expect(remembered.candidates[0]).toMatchObject({
+      confidenceBand: "HIGH",
+      semanticFrame: { memoryDirective: "EXPLICIT_REMEMBER", speechAct: "COMMAND" }
+    });
+    expect(remembered.candidates[0]).not.toHaveProperty("usefulness");
   });
 
   describe("packets and pages", () => {
@@ -1197,7 +1210,7 @@ describe("Memory v7 long-term semantic-frame decoder", () => {
     });
   });
 
-  it("rejects LOW output and MEDIUM correction semantics", () => {
+  it("rejects LOW and MEDIUM output before its correction semantics", () => {
     const quote = "I usually choose cedar.";
     const result = decode(quote, [
       observation(quote, { candidate_ref: "C1", confidence_band: "LOW" }),
@@ -1214,7 +1227,7 @@ describe("Memory v7 long-term semantic-frame decoder", () => {
     expect(result.candidates).toEqual([]);
     expect(result.rejections).toEqual([
       { candidateOrdinal: 0, reasonCode: "REJECT_LOW_CONFIDENCE" },
-      { candidateOrdinal: 1, reasonCode: "REJECT_FRAME_INELIGIBLE" }
+      { candidateOrdinal: 1, reasonCode: "REJECT_LOW_CONFIDENCE" }
     ]);
   });
 
@@ -1392,7 +1405,6 @@ describe("Memory v7 long-term semantic-frame decoder", () => {
       text: assistantText
     };
     const accepted = decode(target, [observation(target, {
-      confidence_band: "MEDIUM",
       dependency_refs: ["M1"],
       memory_type: "PREFERENCE",
       statement: "The current user prefers cedar as a layout option."

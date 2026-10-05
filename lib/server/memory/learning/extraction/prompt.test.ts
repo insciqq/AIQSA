@@ -25,7 +25,7 @@ import { memorySha256 } from "../../persistence/lexical";
 describe("Memory semantic-frame extraction prompt", () => {
   it("locks the v7 long-term forced-strict wire shape under the current prompt policy", () => {
     expect(MEMORY_FACT_EXTRACTION_PROMPT_VERSION)
-      .toBe("memory-fact-extraction-prompt-v52");
+      .toBe("memory-fact-extraction-prompt-v53");
     expect(MEMORY_FACT_EXTRACTION_SCHEMA_VERSION)
       .toBe("memory-fact-extraction-schema-v7");
     expect(memoryFactExtractionTool).toMatchObject({
@@ -83,6 +83,38 @@ describe("Memory semantic-frame extraction prompt", () => {
       .length).toBe(2);
     expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
       .not.toContain("A named PRODUCT, DEVICE, or SERVICE is ");
+  });
+
+  // Paraphrased classes the production audit found admitted as long-term facts.
+  it.each([
+    ["the user's own product specification",
+      "the specification of a product, document, code or other artifact the user is making"],
+    ["an artifact status", "its status or progress"],
+    ["current-task implementation details", "implementation details of the current task"],
+    ["a deliberation", "the user's deliberation between options"],
+    ["a momentary feeling", "a momentary feeling"],
+    ["a current symptom brought for advice", "a current symptom or problem the user brings for advice"]
+  ])("extracts %s only as task-local information unless the user says it lasts", (_label, rule) => {
+    expect(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE).toContain(
+      "Information that serves only the work or problem at hand is task-local or short-term " +
+      "unless the user says it lasts: ");
+    expect(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE).toContain(rule);
+    expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE);
+    for (const extractionRule of [
+      "and the task-local information the long-term criterion names, even when the user states it " +
+        "as a present fact about their own product or project",
+      "TRANSIENT for a momentary wish, reaction, feeling, symptom, conversational detail, or " +
+        "task-local information",
+      "the features, requirements, status, and implementation details of what they are building " +
+        "stay task-local"
+    ]) expect(MEMORY_FACT_EXTRACTION_SYSTEM_PROMPT).toContain(extractionRule);
+    // The user's own lasting work context stays eligible beside these classes.
+    expect(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE).toContain(
+      "The user's own role and skills, and the tools, platforms and workflows the user or their " +
+      "team regularly work with, remain lasting personal work context.");
+    // Semantic adjudication keeps its own prompt and version.
+    expect(MEMORY_SEMANTIC_ADJUDICATION_SYSTEM_PROMPT)
+      .not.toContain(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE);
   });
 
   it("states the long-term criterion once and keeps the adjudication plan wording", () => {

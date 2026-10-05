@@ -2,11 +2,14 @@ import type { MemoryExecutionVersions } from "../execution";
 import { memorySha256 } from "../persistence/lexical";
 
 export const MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS = Object.freeze([
-  "memory-maintenance-policy-v1", "memory-maintenance-policy-v2", "memory-maintenance-policy-v3", "memory-maintenance-policy-v4"
+  "memory-maintenance-policy-v1", "memory-maintenance-policy-v2", "memory-maintenance-policy-v3", "memory-maintenance-policy-v4",
+  "memory-maintenance-policy-v5"
 ] as const);
-/** v4 reviews every automatic fact once more and then again on its re-review
- * cadence; earlier rows stay as history and never cover a v4 review. */
-export const MEMORY_MAINTENANCE_POLICY_VERSION = "memory-maintenance-policy-v4";
+/** v5 reviews every unprotected automatic fact once more under the task-local
+ * rules of prompt v6 and then again on its re-review cadence; earlier rows
+ * stay as history and never cover a v5 review. An owner's first v5 pass also
+ * retires the facts an earlier release left under a retracted subject root. */
+export const MEMORY_MAINTENANCE_POLICY_VERSION = "memory-maintenance-policy-v5";
 export function isSupportedMemoryMaintenancePolicy(value: unknown): value is typeof MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS[number] {
   return MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS.some((version) => version === value);
 }
@@ -66,7 +69,7 @@ export const MEMORY_MAINTENANCE_SCHEDULE_TRANSACTION_BOUNDS = Object.freeze({
 export const MEMORY_MAINTENANCE_VERSIONS: MemoryExecutionVersions = Object.freeze({
   pipelineVersion: MEMORY_MAINTENANCE_PIPELINE_VERSION,
   policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION,
-  promptVersion: "memory-maintenance-prompt-v5",
+  promptVersion: "memory-maintenance-prompt-v6",
   schemaVersion: "memory-maintenance-schema-v7",
   retrievalConfigFingerprint: "memory-maintenance-exact-sources-related-v3"
 });
