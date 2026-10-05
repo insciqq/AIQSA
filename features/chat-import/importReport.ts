@@ -48,6 +48,7 @@ const SKIP_LABELS: Readonly<Record<ImportSkipKind, readonly [string, string]>> =
   audio: ["audio recording", "audio recordings"],
   empty_chat: ["empty chat", "empty chats"],
   image: ["image", "images"],
+  missing_message: ["missing earlier message", "missing earlier messages"],
   tool: ["tool activity", "tool activities"]
 });
 
