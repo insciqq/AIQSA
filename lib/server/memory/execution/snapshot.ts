@@ -8,10 +8,14 @@ import type { ResolvedMemoryExecutionTarget } from "./policy";
 import type { MemoryExecutionCompatibilityRequirement } from "./compatibility";
 import { isMemoryExecutionRole, memoryRoleRequiresStrictOutput, type MemoryExecutionRole } from "./roles";
 import { admitModelGenerationBudget, isModelGenerationBudget, type ModelGenerationBudget } from "../../providers/modelOutputAllowance";
+import type { ModelTokenPricing } from "../../../domain/usage";
 
 const MAX_EXECUTION_SNAPSHOT_BYTES = 128 * 1024;
 const sha256 = /^[a-f0-9]{64}$/u;
 const safeToken = /^[A-Za-z0-9][A-Za-z0-9._:+@/=-]{0,299}$/u;
+const CATALOG_PRICING_KEY = "catalogTokenPricing";
+// Exclusive bound of the catalog's Decimal(18,8) price columns.
+const MAX_CATALOG_TOKEN_PRICE = 10_000_000_000;
 
 type SnapshotBase = Readonly<{
   acceptedUtilityEgressFingerprint: string;
@@ -32,6 +36,18 @@ export type MemorySecretFreeExecutionSnapshot = SnapshotBase & Readonly<{
   compatibilityRequirement: MemoryExecutionCompatibilityRequirement;
 }> & (Readonly<{ version: 2 | 3 }> | Readonly<{ version: 4; generationBudget: ModelGenerationBudget | null }>);
 
+/** Catalog token prices (USD per million tokens) frozen when a binding is
+ * admitted. They are accounting evidence stored beside the execution snapshot,
+ * never part of its identity: the parsed snapshot, its hashes and binding
+ * replay exclude them, so a later catalog edit neither fences accepted work nor
+ * changes the cost its settlement, replay or recovery derives. */
+export type MemoryCatalogTokenPricing = Readonly<{
+  cachedInputTokenPriceUsdPerMillion: number | null;
+  cacheWriteInputTokenPriceUsdPerMillion: number | null;
+  inputTokenPriceUsdPerMillion: number;
+  outputTokenPriceUsdPerMillion: number;
+}>;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -48,6 +64,67 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
   const keys = Object.keys(value).sort();
   const sorted = [...expected].sort();
   return keys.length === sorted.length && keys.every((key, index) => key === sorted[index]);
+}
+
+function validCatalogPrice(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 &&
+    value < MAX_CATALOG_TOKEN_PRICE;
+}
+
+function validCatalogTokenPricing(value: unknown): value is MemoryCatalogTokenPricing {
+  return isRecord(value) && exactKeys(value, [
+    "cacheWriteInputTokenPriceUsdPerMillion", "cachedInputTokenPriceUsdPerMillion",
+    "inputTokenPriceUsdPerMillion", "outputTokenPriceUsdPerMillion"
+  ]) && validCatalogPrice(value.inputTokenPriceUsdPerMillion) &&
+    validCatalogPrice(value.outputTokenPriceUsdPerMillion) &&
+    (value.cachedInputTokenPriceUsdPerMillion === null ||
+      validCatalogPrice(value.cachedInputTokenPriceUsdPerMillion)) &&
+    (value.cacheWriteInputTokenPriceUsdPerMillion === null ||
+      validCatalogPrice(value.cacheWriteInputTokenPriceUsdPerMillion));
+}
+
+/** Like answer runs, only a model with both an input and an output price is
+ * priced; anything else leaves the cost unknown. */
+export function freezeMemoryCatalogTokenPricing(
+  pricing: ModelTokenPricing | null
+): MemoryCatalogTokenPricing | null {
+  if (!pricing) return null;
+  const frozen = {
+    cachedInputTokenPriceUsdPerMillion: pricing.cachedInputTokenPriceUsdPerMillion ?? null,
+    cacheWriteInputTokenPriceUsdPerMillion: pricing.cacheWriteInputTokenPriceUsdPerMillion ?? null,
+    inputTokenPriceUsdPerMillion: pricing.inputTokenPriceUsdPerMillion,
+    outputTokenPriceUsdPerMillion: pricing.outputTokenPriceUsdPerMillion
+  };
+  return validCatalogTokenPricing(frozen) ? Object.freeze(frozen) : null;
+}
+
+/** The persisted binding snapshot: the execution snapshot and its frozen price. */
+export function storedMemoryExecutionSnapshot(
+  snapshot: MemorySecretFreeExecutionSnapshot,
+  pricing: MemoryCatalogTokenPricing | null
+): Readonly<Record<string, unknown>> {
+  return { ...snapshot, [CATALOG_PRICING_KEY]: pricing };
+}
+
+/** A persisted snapshot without its accounting annex. */
+export function memoryExecutionSnapshotIdentity(value: unknown): unknown {
+  if (!isRecord(value) || !Object.hasOwn(value, CATALOG_PRICING_KEY)) return value;
+  const identity = { ...value };
+  delete identity[CATALOG_PRICING_KEY];
+  return identity;
+}
+
+/** Bindings admitted before prices were frozen carry none; their cost stays
+ * provider-reported only. */
+export function memoryExecutionCatalogTokenPricing(
+  value: unknown
+): MemoryCatalogTokenPricing | null {
+  const pricing = isRecord(value) && Object.hasOwn(value, CATALOG_PRICING_KEY)
+    ? value[CATALOG_PRICING_KEY] : null;
+  if (pricing === null) return null;
+  return validCatalogTokenPricing(pricing)
+    ? Object.freeze({ ...pricing })
+    : memoryExecutionFailure("memory_execution_snapshot_invalid");
 }
 
 function validFingerprintFields(value: Record<string, unknown>): boolean {
@@ -155,6 +232,8 @@ export function parseMemoryExecutionSnapshot(value: unknown): MemorySecretFreeEx
   try {
     providerExecutionSnapshot = normalizeProviderExecutionSnapshot(value.providerExecutionSnapshot);
     canonicalMemoryExecutionJson(value.compatibilityRequirement);
+    // Validated here, but the frozen price stays outside the parsed identity.
+    memoryExecutionCatalogTokenPricing(value);
   } catch {
     return memoryExecutionFailure("memory_execution_snapshot_invalid");
   }
