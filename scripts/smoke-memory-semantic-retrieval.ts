@@ -33,13 +33,16 @@ import { prisma } from "../lib/server/prisma";
 import { getSecretEncryptionKey } from "../lib/server/secrets/envelope";
 import { resolveCurrentMemoryUtilityPolicy } from
   "../lib/server/memory/execution/policy";
-import { approvedRerankerDeployments } from
-  "../lib/server/admin/providers/approvedRerankers";
+import {
+  approvedRerankerDeployments,
+  type ApprovedRerankerDeployment
+} from "../lib/server/admin/providers/approvedRerankers";
 import { RERANKER_ROUTE_POLICY_VERSION } from
   "../lib/domain/rerankerModels";
 import {
   MemorySemanticSmokePreflightError,
   assessMemorySemanticSmokeHistorySearch,
+  assessMemorySemanticSmokeRerankerRoute,
   assessMemorySemanticSmokeSecretCommand,
   createMemorySemanticSmokeScenarioLedger,
   createPrismaMemorySemanticSmokeVerifier,
@@ -68,6 +71,7 @@ type SmokeStage =
   | "bootstrap_auth"
   | "capability_preflight"
   | "chat_run"
+  | "cleanup"
   | "history_index"
   | "memory_readiness"
   | "memory_settings"
@@ -143,6 +147,26 @@ async function poll<T>(stage: SmokeStage, probe: () => Promise<T | null>): Promi
   }
   return fail(stage, "memory_smoke_poll_timeout");
 }
+
+/** A twelve-letter synthetic marker that owns every smoke chat and memory. */
+function smokeMarker(): string {
+  return [...digest(randomUUID(), String(Date.now())).slice(0, 12)]
+    .map((character) => String.fromCharCode(97 + Number.parseInt(character, 16)))
+    .join("");
+}
+
+/** One-off project logs that share the marker: only the first answers the
+ * recall turn, which asks the model to search past chats explicitly because
+ * standing-v1 ordinary turns admit no dynamic history. */
+function historyRecallFixture(marker: string) {
+  return {
+    irrelevant: `A project log also reads: “For the one-off ${marker} aquarium launch, a temporary water-temperature trial used 24 degrees.”`,
+    recall: `Search your memory of our past conversations before answering. Для ${marker} aquarium launch, what codename did I choose?`,
+    relevant: `A project log reads: “For the one-off ${marker} aquarium launch, the temporary codename was Silver Mangrove.”`
+  };
+}
+
+const HISTORY_RECALL_ANSWER = /(silver|mangrove|серебр|мангр)/iu;
 
 function textFromContent(content: unknown): string {
   if (typeof content === "string") return content;
@@ -394,8 +418,7 @@ async function loadChat(chatId: string): Promise<ChatDetailWire> {
 async function sourceRun(
   title: string,
   messageText: string,
-  answer: MemorySemanticSmokeTarget,
-  options: Readonly<{ excludeFromMemory?: boolean }> = {}
+  answer: MemorySemanticSmokeTarget
 ): Promise<SourceRun> {
   if (chatRunCount >= MAX_CHAT_RUNS) {
     fail("chat_run", "memory_smoke_run_bound_exhausted");
@@ -403,7 +426,6 @@ async function sourceRun(
   chatRunCount += 1;
   const chat = await createChat(title);
   createdSmokeChats.push(chat);
-  if (options.excludeFromMemory) await excludeChatFromMemory(chat.id);
   await sendMessage("chat_run", chat, messageText, answer);
   const settled = await poll("chat_run", async () => {
     const current = await loadChat(chat.id);
@@ -720,21 +742,19 @@ async function waitForNoAutomaticFact(source: SourceRun, notBefore: Date): Promi
   });
 }
 
+/** Only the synchronous `/memory` boundary still answers with an in-chat
+ * action artifact. */
 function memoryAction(source: SourceRun): MemoryActionFeedback {
   return source.assistant.artifactSummary?.memoryAction ??
     fail("answer_recall", "memory_smoke_action_feedback_missing");
 }
 
-function requiredMemoryAction(
-  source: SourceRun,
-  operation: "FORGET" | "SAVE" | "UPDATE",
-  status: "AMBIGUOUS" | "COMMITTED"
-): MemoryActionFeedback {
-  const action = memoryAction(source);
-  if (action.operation !== operation || action.status !== status) {
-    fail("answer_recall", "memory_smoke_action_result_invalid");
+/** A natural-language turn never waits for its command: the accepted run
+ * carries no action artifact, whatever the command later settles as. */
+function assertNoActionArtifact(source: SourceRun): void {
+  if (source.assistant.artifactSummary?.memoryAction !== undefined) {
+    fail("answer_recall", "memory_smoke_action_artifact_unexpected");
   }
-  return action;
 }
 
 function requiredManagementAction(
@@ -761,17 +781,28 @@ async function assertStrictControlSucceeded(source: SourceRun): Promise<void> {
 /** Ordinary natural-language saves, updates and forgets are durable background
  * commands: the answer never waits for them and the accepted run carries no
  * action artifact. Their content-free feedback is polled per source message. */
-async function settledMemoryCommand(source: SourceRun): Promise<MemoryCommandFeedback> {
+async function memoryCommandFor(source: SourceRun): Promise<MemoryCommandFeedback | null> {
   const path = `/api/me/chats/${encodeURIComponent(source.chat.id)}/memory-commands`;
+  const decoded = decodeMemoryCommandListResponse(await requestJson("answer_recall", path));
+  if (!decoded) return fail("answer_recall", "memory_smoke_command_response_invalid");
+  return decoded.commands.find(({ messageId }) =>
+    messageId === source.userMessage.id)?.feedback ?? null;
+}
+
+async function settledMemoryCommand(source: SourceRun): Promise<MemoryCommandFeedback> {
   return poll("answer_recall", async () => {
-    const decoded = decodeMemoryCommandListResponse(await requestJson("answer_recall", path));
-    if (!decoded) return fail("answer_recall", "memory_smoke_command_response_invalid");
-    const command = decoded.commands.find(({ messageId }) =>
-      messageId === source.userMessage.id)?.feedback;
+    const command = await memoryCommandFor(source);
     // Message acceptance enqueues the command in the same transaction.
     if (!command) return fail("answer_recall", "memory_smoke_command_missing");
     return memoryCommandIsPending(command) ? null : command;
   });
+}
+
+/** The explicit `/memory` boundary is synchronous and enqueues no command. */
+async function assertNoMemoryCommand(source: SourceRun): Promise<void> {
+  if (await memoryCommandFor(source)) {
+    fail("answer_recall", "memory_smoke_command_unexpected");
+  }
 }
 
 async function assertCommandControlSucceeded(source: SourceRun): Promise<void> {
@@ -785,8 +816,8 @@ async function assertCommandControlSucceeded(source: SourceRun): Promise<void> {
 
 async function requiredMemoryCommand(
   source: SourceRun,
-  operation: "FORGET" | "SAVE" | "UPDATE",
-  status: "AMBIGUOUS" | "COMMITTED"
+  operation: MemoryCommandFeedback["operation"],
+  status: MemoryCommandFeedback["status"]
 ): Promise<void> {
   const command = await settledMemoryCommand(source);
   if (command.operation !== operation || command.status !== status) {
@@ -943,9 +974,7 @@ async function waitForSourceFacts(
 async function runLiveDefectRegressions(
   answer: MemorySemanticSmokeTarget
 ): Promise<void> {
-  const marker = [...digest(randomUUID(), String(Date.now())).slice(0, 12)]
-    .map((character) => String.fromCharCode(97 + Number.parseInt(character, 16)))
-    .join("");
+  const marker = smokeMarker();
   const sources: AutomaticFactSource[] = [];
   let primaryError: unknown = null;
   let cleanupError: unknown = null;
@@ -1046,112 +1075,172 @@ async function runLiveDefectRegressions(
   }, null, 2));
 }
 
-async function runLiveRerankerRouteRegression(
-  answer: MemorySemanticSmokeTarget
-): Promise<void> {
+/** Standing-v1 reranks only inside the answer model's `memory_search` calls.
+ * The installation must select the primary approved deployment, so a healthy
+ * route never needs a fallback model. */
+async function primaryRerankerRoute(): Promise<ApprovedRerankerDeployment> {
   const primary = approvedRerankerDeployments.find(({ preset }) => preset.default);
-  if (!primary) fail("capability_preflight", "memory_smoke_reranker_route_invalid");
-  const run = await sourceRun(
-    "Memory reranker route regression",
-    "Что я говорил о своей любви к кофе?",
-    answer,
-    { excludeFromMemory: true }
-  );
-  const attempt = await prisma.memoryRetrievalAttempt.findFirst({
-    orderBy: { attemptOrdinal: "desc" },
-    select: {
-      budgetSnapshot: true,
-      degradationCode: true,
-      id: true,
-      outcome: true,
-      state: true
-    },
-    where: {
-      modelRunId: run.modelRunId,
-      state: "CONSUMED",
-      userId: authenticatedUserId
-    }
+  const policy = await prisma.systemModelPolicy.findUnique({
+    select: { rerankerProviderModelId: true },
+    where: { id: "installation" }
   });
-  if (!attempt || attempt.outcome !== "USED" || attempt.degradationCode !== null) {
-    fail("vector_recall", "memory_smoke_reranker_route_unhealthy");
+  if (!primary || policy?.rerankerProviderModelId !== primary.providerModelId) {
+    return fail("capability_preflight", "memory_smoke_reranker_route_invalid");
   }
-  const budget = record(attempt.budgetSnapshot) ? attempt.budgetSnapshot : {};
-  const component = record(budget.componentMetrics) ? budget.componentMetrics : {};
-  const [items, rerankerBindings] = await Promise.all([
-    prisma.memoryRetrievalAttemptItem.findMany({
-      select: { exactSafeText: true },
-      where: { attemptId: attempt.id, userId: authenticatedUserId }
-    }),
-    prisma.memoryExecutionBinding.findMany({
-      orderBy: { ordinal: "asc" },
-      select: { providerModelId: true, state: true },
-      where: {
-        logicalRole: "MEMORY_RERANK",
-        retrievalAttemptId: attempt.id,
+  return primary;
+}
+
+/**
+ * Deletion scrubs a search receipt's private query and evidence, never the
+ * settled outcome of the call that produced it. Wait for the cleanup's purge
+ * to scrub a receipt of the recall run, then require every call to still read
+ * complete.
+ */
+async function assertSettledSearchSurvivesCleanup(recallModelRunId: string): Promise<number> {
+  const settlement = await poll("cleanup", async () => {
+    const current = await verifier.searchCallSettlement({
+      recallModelRunId,
+      userId: authenticatedUserId
+    });
+    return current.scrubbedReceipts > 0 ? current : null;
+  }).catch((error: unknown) => {
+    throw error instanceof SmokeFailure && error.code === "memory_smoke_poll_timeout"
+      ? new SmokeFailure("cleanup", "memory_smoke_receipt_scrub_missing")
+      : error;
+  });
+  if (settlement.calls < 1 || settlement.rewrittenCalls > 0) {
+    console.error(JSON.stringify({
+      diagnostic: "search_call_settlement",
+      ...settlement,
+      sanitizedAggregatesOnly: true
+    }));
+    fail("cleanup", "memory_smoke_settled_search_rewritten");
+  }
+  return settlement.scrubbedReceipts;
+}
+
+async function runLiveRerankerRouteRegression(
+  answer: MemorySemanticSmokeTarget,
+  primary: ApprovedRerankerDeployment
+): Promise<void> {
+  const marker = smokeMarker();
+  const fixture = historyRecallFixture(marker);
+  let primaryError: unknown = null;
+  let cleanupError: unknown = null;
+  let recallModelRunId: string | null = null;
+  let report: Record<string, unknown> | null = null;
+
+  try {
+    const relevantStartedAt = new Date();
+    const relevant = await sourceRun(
+      `Memory smoke vector source ${marker}`,
+      fixture.relevant,
+      answer
+    );
+    await waitForIndexedHistorySource(relevant);
+    await waitForConservativeExtraction(relevant, relevantStartedAt);
+    const irrelevantStartedAt = new Date();
+    const irrelevant = await sourceRun(
+      `Memory smoke irrelevant vector source ${marker}`,
+      fixture.irrelevant,
+      answer
+    );
+    await waitForIndexedHistorySource(irrelevant);
+    await waitForConservativeExtraction(irrelevant, irrelevantStartedAt);
+
+    const recall = await sourceRun(
+      `Memory smoke reranker route recall ${marker}`,
+      fixture.recall,
+      answer
+    );
+    recallModelRunId = recall.modelRunId;
+    const answerRecalled = HISTORY_RECALL_ANSWER.test(textFromContent(recall.assistant.content));
+    const [historySearch, route] = await Promise.all([
+      verifier.historySearchEvidence({
+        irrelevant: { chatId: irrelevant.chat.id, messageId: irrelevant.userMessage.id },
+        recallModelRunId: recall.modelRunId,
+        relevant: { chatId: relevant.chat.id, messageId: relevant.userMessage.id },
         userId: authenticatedUserId
-      }
-    })
-  ]);
-  const medical = /(?:медицин|давлен|холест|пациент|аллерг|medical|blood\s+pressure|cholesterol)/iu;
-  const coffee = /(?:коф|coffee)/iu;
-  const answerText = textFromContent(run.assistant.content);
-  const successfulBindings = rerankerBindings.filter(({ state }) => state === "SUCCEEDED");
-  const memoryPrepareMs = typeof budget.memoryPrepareMs === "number"
-    ? budget.memoryPrepareMs
-    : null;
-  const rerankMs = typeof budget.rerankMs === "number" ? budget.rerankMs : null;
-  const modelAttemptCount = typeof component.rerankModelAttemptCount === "number"
-    ? component.rerankModelAttemptCount
-    : null;
-  const fallbackDepth = typeof component.rerankModelFallbackDepth === "number"
-    ? component.rerankModelFallbackDepth
-    : null;
-  const rerankProviderCalls = typeof budget.rerankProviderCalls === "number"
-    ? budget.rerankProviderCalls
-    : null;
-  const routePolicyVersion = typeof component.rerankRoutePolicyVersion === "string"
-    ? component.rerankRoutePolicyVersion
-    : null;
-  const medicalSourceCount = items.filter(({ exactSafeText }) =>
-    medical.test(exactSafeText)).length;
-  const coffeeSourceCount = items.filter(({ exactSafeText }) =>
-    coffee.test(exactSafeText)).length;
-  if (successfulBindings.length !== 1 ||
-    successfulBindings[0]?.providerModelId !== primary.providerModelId ||
-    modelAttemptCount !== 1 || fallbackDepth !== 0 || rerankProviderCalls !== 1 ||
-    routePolicyVersion !== RERANKER_ROUTE_POLICY_VERSION ||
-    component.rerankScoreFloor !== null ||
-    component.rerankFullFallbackUsed !== false ||
-    memoryPrepareMs === null || memoryPrepareMs > 12_000 || rerankMs === null ||
-    medicalSourceCount !== 0 || medical.test(answerText) ||
-    coffeeSourceCount < 1 || !coffee.test(answerText)) {
-    fail("vector_recall", "memory_smoke_reranker_route_regression_failed");
+      }),
+      verifier.rerankRouteEvidence({
+        primaryProviderModelId: primary.providerModelId,
+        recallModelRunId: recall.modelRunId,
+        userId: authenticatedUserId
+      })
+    ]);
+    const routeAssessment = assessMemorySemanticSmokeRerankerRoute(route);
+    const historyAssessment = assessMemorySemanticSmokeHistorySearch(historySearch);
+    if (!routeAssessment.ok || !historyAssessment.ok || !answerRecalled) {
+      console.error(JSON.stringify({
+        answerRecalled,
+        diagnostic: "reranker_route",
+        historySearch,
+        route,
+        sanitizedAggregatesOnly: true
+      }));
+      fail("vector_recall", !routeAssessment.ok
+        ? routeAssessment.code
+        : !historyAssessment.ok
+          ? historyAssessment.code
+          : "memory_smoke_history_recall_failed");
+    }
+    report = {
+      answerRecalled,
+      historySearch,
+      reranker: primary.preset.upstreamModelId,
+      route,
+      routePolicyVersion: RERANKER_ROUTE_POLICY_VERSION
+    };
+  } catch (error) {
+    primaryError = error;
   }
+
+  let cleanedMemoryItems = 0;
+  try {
+    await authenticate();
+    cleanedMemoryItems = await cleanupSmokeState(marker, new Set(), []);
+  } catch (error) {
+    cleanupError = error;
+  }
+  if (cleanupError) fail("automatic_learning", "memory_smoke_cleanup_failed");
+  if (primaryError) throw primaryError;
+  if (!report || !recallModelRunId) return fail("vector_recall", "memory_smoke_history_recall_failed");
+  const scrubbedReceipts = await assertSettledSearchSurvivesCleanup(recallModelRunId);
   console.log(JSON.stringify({
-    answerCoffeeReference: true,
-    answerMedicalReferences: 0,
-    fallbackDepth,
-    memoryOutcome: attempt.outcome,
-    memoryPrepareMs,
-    modelAttemptCount,
-    packedCoffeeSources: coffeeSourceCount,
-    packedMedicalSources: medicalSourceCount,
-    rerankMs,
-    rerankProviderCalls,
-    reranker: primary.preset.upstreamModelId,
-    routePolicyVersion,
+    ...report,
+    cleanedMemoryItems,
+    excludedSmokeChats: createdSmokeChats.length,
     sanitizedAggregatesOnly: true,
+    scrubbedReceiptsKeepCallOutcome: scrubbedReceipts,
     status: "complete"
   }, null, 2));
 }
 
+/** Saved Memory survives any reset request that the owner did not confirm. */
+async function assertMemoryNotReset(marker: string): Promise<void> {
+  const [settings, saved] = await Promise.all([
+    consumerSettings(),
+    savedMarkerMemories(marker)
+  ]);
+  if (settings.resetState !== "IDLE" || saved.length < 1) {
+    fail("answer_recall", "memory_smoke_reset_without_confirmation");
+  }
+}
+
+/**
+ * Natural-language Memory commands are durable background work: they settle
+ * as the source message's MEMORY_COMMAND job, with content-free feedback and
+ * no in-chat artifact. List and reset are not background commands; only the
+ * explicit `/memory` boundary performs them synchronously, and reset still
+ * needs the owner's confirmation.
+ */
 async function runLiveActionSmoke(answer: MemorySemanticSmokeTarget): Promise<void> {
-  const marker = [...digest(randomUUID(), String(Date.now())).slice(0, 12)]
-    .map((character) => String.fromCharCode(97 + Number.parseInt(character, 16)))
-    .join("");
+  const marker = smokeMarker();
   const explicitStatements = new Set<string>();
   let primaryError: unknown = null;
   let cleanupError: unknown = null;
+  let commandControlCalls = 0;
+  let strictControlCalls = 0;
   let verifiedActions = 0;
 
   try {
@@ -1160,39 +1249,53 @@ async function runLiveActionSmoke(answer: MemorySemanticSmokeTarget): Promise<vo
       `Please carry this preference into future conversations: my ${marker} reporting format is concise.`,
       answer
     );
-    const saveAction = requiredMemoryAction(save, "SAVE", "COMMITTED");
-    await assertStrictControlSucceeded(save);
-    if (!saveAction.statement?.includes(marker)) {
-      fail("answer_recall", "memory_smoke_implicit_intent_failed");
-    }
-    explicitStatements.add(saveAction.statement);
-    await poll("automatic_learning", async () =>
-      (await allConsumerMemories()).some((item) =>
-        item.provenance === "SAVED" && item.statement.includes(marker))
-        ? true
-        : null);
+    assertNoActionArtifact(save);
+    await requiredMemoryCommand(save, "SAVE", "COMMITTED");
+    commandControlCalls += 1;
+    // A committed receipt is written with its mutation.
+    const saved = await savedMarkerMemories(marker);
+    for (const item of saved) explicitStatements.add(item.statement);
+    if (saved.length < 1) fail("answer_recall", "memory_smoke_implicit_intent_failed");
     verifiedActions += 1;
 
     const list = await sourceRun(
       `Memory action smoke list ${marker}`,
-      "List my saved memories.",
+      "/memory list",
       answer
     );
+    await assertNoMemoryCommand(list);
     const listAction = requiredManagementAction(list, "LIST", "COMPLETE");
     await assertStrictControlSucceeded(list);
+    strictControlCalls += 1;
     if (!(listAction.items ?? []).some((item) =>
       item.provenance === "SAVED" && item.statement.includes(marker))) {
       fail("answer_recall", "memory_smoke_action_result_invalid");
     }
     verifiedActions += 1;
 
-    const reset = await sourceRun(
-      `Memory action smoke reset ${marker}`,
+    // Reset is not a background command: the classified request settles as a
+    // silent rejection and changes nothing.
+    const naturalReset = await sourceRun(
+      `Memory action smoke natural reset ${marker}`,
       "Reset my memory.",
       answer
     );
+    assertNoActionArtifact(naturalReset);
+    await requiredMemoryCommand(naturalReset, "UNKNOWN", "REJECTED");
+    commandControlCalls += 1;
+    await assertMemoryNotReset(marker);
+    verifiedActions += 1;
+
+    const reset = await sourceRun(
+      `Memory action smoke reset ${marker}`,
+      "/memory reset",
+      answer
+    );
+    await assertNoMemoryCommand(reset);
     requiredManagementAction(reset, "RESET", "CONFIRMATION_REQUIRED");
     await assertStrictControlSucceeded(reset);
+    strictControlCalls += 1;
+    await assertMemoryNotReset(marker);
     verifiedActions += 1;
   } catch (error) {
     primaryError = error;
@@ -1213,10 +1316,11 @@ async function runLiveActionSmoke(answer: MemorySemanticSmokeTarget): Promise<vo
   if (primaryError) throw primaryError;
   console.log(JSON.stringify({
     cleanedMemoryItems,
+    commandControlCalls,
     excludedSmokeChats: createdSmokeChats.length,
     sanitizedAggregatesOnly: true,
     status: "complete",
-    strictControlCalls: verifiedActions,
+    strictControlCalls,
     verifiedActions
   }, null, 2));
 }
@@ -1360,7 +1464,7 @@ async function main(): Promise<void> {
   }
   let answer: MemorySemanticSmokeTarget;
   try {
-    answer = DEFECT_REGRESSIONS || RERANKER_ROUTE_REGRESSION
+    answer = DEFECT_REGRESSIONS
       ? await defectRegressionTarget()
       : await preflightPrismaMemorySemanticSmoke(
           prisma,
@@ -1373,6 +1477,7 @@ async function main(): Promise<void> {
     }
     return fail("capability_preflight", "memory_smoke_preflight_failed");
   }
+  const rerankerRoute = RERANKER_ROUTE_REGRESSION ? await primaryRerankerRoute() : null;
 
   const rebuildActions = await ensureAdminMemoryReady(initialStatus, settings);
   assertConsumerSettingsReady(await consumerSettings());
@@ -1384,13 +1489,12 @@ async function main(): Promise<void> {
     await runLiveDefectRegressions(answer);
     return;
   }
-  if (RERANKER_ROUTE_REGRESSION) {
-    await runLiveRerankerRouteRegression(answer);
+  if (rerankerRoute) {
+    await runLiveRerankerRouteRegression(answer, rerankerRoute);
     return;
   }
-  const marker = [...digest(randomUUID(), String(Date.now())).slice(0, 12)]
-    .map((character) => String.fromCharCode(97 + Number.parseInt(character, 16)))
-    .join("");
+  const marker = smokeMarker();
+  const historyFixture = historyRecallFixture(marker);
   const scenarios = createMemorySemanticSmokeScenarioLedger();
   const explicitStatements = new Set<string>();
   const automaticFactSources: AutomaticFactSource[] = [];
@@ -1409,7 +1513,7 @@ async function main(): Promise<void> {
     const historyStartedAt = new Date();
     const historySource = await sourceRun(
       `Memory smoke vector source ${marker}`,
-      `A project log reads: “For the one-off ${marker} aquarium launch, the temporary codename was Silver Mangrove.”`,
+      historyFixture.relevant,
       answer
     );
     await waitForIndexedHistorySource(historySource);
@@ -1418,7 +1522,7 @@ async function main(): Promise<void> {
     const irrelevantStartedAt = new Date();
     const irrelevantHistorySource = await sourceRun(
       `Memory smoke irrelevant vector source ${marker}`,
-      `A project log also reads: “For the one-off ${marker} aquarium launch, a temporary water-temperature trial used 24 degrees.”`,
+      historyFixture.irrelevant,
       answer
     );
     await waitForIndexedHistorySource(irrelevantHistorySource);
@@ -1497,10 +1601,10 @@ async function main(): Promise<void> {
     // tool, so the turn asks for that search explicitly.
     const vectorRecall = await sourceRun(
       `Memory smoke vector recall ${marker}`,
-      `Search your memory of our past conversations before answering. Для ${marker} aquarium launch, what codename did I choose?`,
+      historyFixture.recall,
       answer
     );
-    const historyRecalled = /(silver|mangrove|серебр|мангр)/iu.test(
+    const historyRecalled = HISTORY_RECALL_ANSWER.test(
       textFromContent(vectorRecall.assistant.content)
     );
     const historySearch = await verifier.historySearchEvidence({

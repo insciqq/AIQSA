@@ -23,7 +23,6 @@ function intent(overrides: Record<string, unknown> = {}) {
     confidenceBand: "HIGH",
     entityMentions: [],
     memoryUseful: false,
-    patternExclusionRequested: false,
     pastChatsUseful: false,
     profileRequested: false,
     queryDecompositions: [],
@@ -53,7 +52,6 @@ function command(overrides: Record<string, unknown> = {}) {
     answerRequested: false,
     category: "preferences",
     confidenceBand: "HIGH",
-    patternExclusionRequested: false,
     reasonCode: "save_request",
     responsePreference: false,
     sensitivity: "NORMAL",
@@ -92,9 +90,9 @@ describe("Fresh Memory action control contract", () => {
     { decision: { action: "SEARCH", reasonCode: "search_request", targetQuery: null } },
     { decision: { action: "LIST", reasonCode: "list_request", answerRequested: true } },
     { decision: { action: "RESET", reasonCode: "reset_request", answerRequested: false,
-      patternExclusionRequested: false, statement: "I prefer tea." } },
-    { decision: { action: "NONE", reasonCode: "none", patternExclusionRequested: false,
-      confidenceBand: "HIGH", statement: "I prefer tea." } }
+      statement: "I prefer tea." } },
+    { decision: { action: "NONE", reasonCode: "none", confidenceBand: "HIGH",
+      statement: "I prefer tea." } }
   ])("retains action payload validation for %j", (invalid) => {
     expect(decodeMemoryActionControlDecision(invalid, "A current user turn."))
       .toMatchObject({ ok: false });
@@ -139,7 +137,7 @@ describe("Fresh Memory action control contract", () => {
   it.each([
     { action: "LIST", reasonCode: "list_request" },
     { action: "SEARCH", reasonCode: "search_request", targetQuery: "drink" },
-    { action: "RESET", reasonCode: "reset_request", answerRequested: false, patternExclusionRequested: false }
+    { action: "RESET", reasonCode: "reset_request", answerRequested: false }
   ])("keeps $action inert for mutation and answer retrieval", (decision) => {
     expect(decodeMemoryActionControlDecision({ decision }, "Manage saved entries."))
       .toMatchObject({ ok: true, value: {
@@ -197,7 +195,7 @@ describe("Fresh Memory action control contract", () => {
   it("keeps ordinary retrieval eligible and bounds only its compatibility query", () => {
     const source = "x" + "😀".repeat(300);
     const decoded = decodeMemoryActionControlDecision({ decision: {
-      action: "NONE", reasonCode: "no_memory_request", patternExclusionRequested: true
+      action: "NONE", reasonCode: "no_memory_request"
     } }, source);
     expect(decoded).toMatchObject({
       ok: true,
@@ -205,7 +203,6 @@ describe("Fresh Memory action control contract", () => {
         memoryUseful: true,
         pastChatsUseful: true,
         applyResponsePreferences: true,
-        patternExclusionRequested: true,
         confidenceBand: "LOW",
         statement: null,
         queryText: "x" + "😀".repeat(249)
@@ -251,9 +248,6 @@ describe("MemoryActionIntent strict contract", () => {
     const missingProfileDecision = intent() as Record<string, unknown>;
     delete missingProfileDecision.profileRequested;
     expect(decodeMemoryActionIntent(missingProfileDecision)).toMatchObject({ ok: false });
-    const missingPatternExclusion = intent() as Record<string, unknown>;
-    delete missingPatternExclusion.patternExclusionRequested;
-    expect(decodeMemoryActionIntent(missingPatternExclusion)).toMatchObject({ ok: false });
     expect(decodeMemoryActionIntent({ ...intent(), includePatterns: true }))
       .toMatchObject({ ok: false });
     expect(decodeMemoryActionIntent(intent({
@@ -558,49 +552,45 @@ describe("MemoryActionIntent strict contract", () => {
     }))).toMatchObject({ ok: false });
   });
 
-  it("keeps planner hints and pattern exclusion only on an admitted targeted read", () => {
+  it("keeps planner hints only on an admitted read", () => {
     const mention = { occurrenceIndex: 0, resolvedRef: "opaque-ref", text: "Acme" };
     expect(decodeMemoryActionIntent(intent({
       action: "NONE",
       entityMentions: [mention],
       memoryUseful: true,
-      patternExclusionRequested: true,
       queryText: "Acme workflow"
     }))).toMatchObject({
       ok: true,
-      value: { entityMentions: [mention], patternExclusionRequested: true }
+      value: { entityMentions: [mention] }
     });
     expect(decodeMemoryActionIntent(intent({
       action: "NONE",
       entityMentions: [mention],
       memoryUseful: true,
-      patternExclusionRequested: true,
       profileRequested: true,
       queryText: "current profile",
       retrievalMode: "CURRENT_PROFILE"
     }))).toMatchObject({
       ok: true,
-      value: { entityMentions: [mention], patternExclusionRequested: false }
+      value: { entityMentions: [mention] }
     });
     expect(decodeMemoryActionIntent(intent({
       action: "SAVE",
       entityMentions: [mention],
-      patternExclusionRequested: true,
       statement: "I use Acme."
     }))).toMatchObject({
       ok: true,
-      value: { entityMentions: [], patternExclusionRequested: false }
+      value: { entityMentions: [] }
     });
     expect(decodeMemoryActionIntent(intent({
       action: "SAVE",
       entityMentions: [mention],
       memoryUseful: true,
-      patternExclusionRequested: true,
       queryText: "Acme workflow",
       statement: "I use Acme."
     }))).toMatchObject({
       ok: true,
-      value: { entityMentions: [mention], patternExclusionRequested: true }
+      value: { entityMentions: [mention] }
     });
   });
 

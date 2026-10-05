@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { createPrismaRetentionRepository } from "../retention/prune";
 import { createPrismaKnowledgeDeletionProcessor } from "./deletionProcessor";
@@ -374,17 +374,33 @@ async function createFixture(): Promise<Fixture> {
   };
 }
 
+async function backfillFixture(fixture: Fixture): Promise<void> {
+  await expect(backfillV1KnowledgeSources({
+    knowledgeBaseId: fixture.baseId,
+    limit: 10
+  }, prisma)).resolves.toEqual({
+    processedDocuments: 2,
+    remainingDocuments: 0,
+    skippedProfilelessCandidates: 0
+  });
+}
+
 describe("Knowledge Source V1 persistence and snapshots", () => {
+  // Each test owns a fresh fixture: no test may depend on another test's
+  // backfill, trash, membership removal or purge, whatever the run order.
   let fixture: Fixture;
   let reconciliationBeforeFixture: ReconciliationReport;
 
-  beforeAll(async () => {
+  beforeEach(async () => {
     reconciliationBeforeFixture = await reconcileKnowledgeSourcePersistence(prisma);
     fixture = await createFixture();
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     if (fixture) await cleanupFixture(fixture);
+  });
+
+  afterAll(async () => {
     await prisma.$disconnect();
   });
 
@@ -556,6 +572,7 @@ describe("Knowledge Source V1 persistence and snapshots", () => {
   });
 
   it("excludes trashed Sources from new snapshots while preserving membership for Restore", async () => {
+    await backfillFixture(fixture);
     const mapping = await prisma.knowledgeV1DocumentSourceMap.findUniqueOrThrow({
       select: { sourceId: true },
       where: {
@@ -619,6 +636,7 @@ describe("Knowledge Source V1 persistence and snapshots", () => {
   });
 
   it("keeps accepted evidence immutable while removals affect only future snapshots", async () => {
+    await backfillFixture(fixture);
     const first = await prisma.$transaction((tx) =>
       materializeKnowledgeBaseSnapshot(tx, {
         indexGenerationId: fixture.generationId,
@@ -744,6 +762,7 @@ describe("Knowledge Source V1 persistence and snapshots", () => {
   });
 
   it("removes a purged Source from accepted snapshot evidence without deleting the Base", async () => {
+    await backfillFixture(fixture);
     const mapping = await prisma.knowledgeV1DocumentSourceMap.findUniqueOrThrow({
       select: { sourceId: true },
       where: {

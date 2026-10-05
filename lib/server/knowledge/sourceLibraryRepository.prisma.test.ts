@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "../prisma";
 import { createPrismaKnowledgeSourceLibraryRepository } from "./sourceLibraryRepository";
 
@@ -296,12 +296,17 @@ describe("Prisma Knowledge Source Library", () => {
   let fixture: Fixture;
   const repository = createPrismaKnowledgeSourceLibraryRepository(prisma);
 
-  beforeAll(async () => {
+  // Each test owns a fresh fixture: membership moves and renames in one test
+  // must not change what another test lists, whatever the run order.
+  beforeEach(async () => {
     fixture = await createFixture();
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     if (fixture) await cleanupFixture(fixture);
+  });
+
+  afterAll(async () => {
     await prisma.$disconnect();
   });
 
@@ -467,6 +472,14 @@ describe("Prisma Knowledge Source Library", () => {
   it("creates and retries a Source-scoped replacement without legacy document rows", async () => {
     const missingStorageVersionId = `source-library-missing-storage-${randomUUID()}`;
     const sourceVersionId = `source-library-replacement-${randomUUID()}`;
+    // The replacement and archive checks run against a Source whose only
+    // membership is the Operations Base.
+    await expect(repository.moveMembership(
+      fixture.ownerUserId,
+      fixture.sourceId,
+      fixture.baseAId,
+      fixture.baseCId
+    )).resolves.toEqual({ kind: "ok" });
     const beforeRevision = await prisma.knowledgeBase.findUniqueOrThrow({
       select: { sourceRevision: true },
       where: { id: fixture.baseCId }

@@ -65,6 +65,7 @@ import {
 } from "../mcp/durableDiscovery";
 import { mcpRunTools, mcpToolExecutionResult, resolveMcpRunTool } from "../mcp/toolExecutor";
 import type {
+  NormalizedRunRequest,
   ProviderAdapter,
   ProviderRunRefreshResult,
   ProviderRunRequest,
@@ -158,6 +159,9 @@ import type {
   KnowledgeEvidenceDispatchManifestDraft
 } from "../knowledge/evidenceDispatchManifest";
 import { KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT } from "../knowledge/fullContext";
+import { decodeKnowledgeImageObservationPlan, KNOWLEDGE_IMAGE_OBSERVATION_FAILURES, knowledgeImageObservationAnswerOutputTokens,
+  type KnowledgeImageObservationBlock } from "../knowledge/imageObservation";
+import { knowledgeImageObservationFromComposePrompt } from "../knowledge/evidenceAnswerReviewV2";
 import { decodeKnowledgeFocusedRequest } from "../knowledge/focusedRequest";
 import { knowledgeRetrievalToolsForRequest } from "../knowledge/knowledgeTools";
 import {
@@ -531,7 +535,9 @@ type FocusedKnowledgeFailureCode =
   | "knowledge_retrieval_failed"
   | "knowledge_answer_failed"
   | "knowledge_answer_contract_failed"
-  | "knowledge_citation_contract_failed";
+  | "knowledge_citation_contract_failed"
+  | typeof KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.failed.code
+  | typeof KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.unknown.code;
 
 function focusedKnowledgeFailure(
   code: FocusedKnowledgeFailureCode
@@ -545,7 +551,9 @@ function focusedKnowledgeFailure(
       "The Knowledge answer cited evidence outside the final manifest.",
     no_retrieval_candidates:
       "No retrieval candidates were found in the ready Knowledge documents.",
-    sources_processing: "The selected Knowledge documents are still processing."
+    sources_processing: "The selected Knowledge documents are still processing.",
+    [KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.failed.code]: KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.failed.message,
+    [KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.unknown.code]: KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.unknown.message
   };
   return { code, message: messages[code] };
 }
@@ -575,10 +583,47 @@ function focusedRetrievalFailure(error: unknown): ReturnType<typeof focusedKnowl
 function focusedAnswerFailure(error: unknown): ReturnType<typeof focusedKnowledgeFailure> {
   const code = recoveryErrorCode(error);
   if (code === "knowledge_answer_contract_failed" ||
-    code === "knowledge_citation_contract_failed") {
+    code === "knowledge_citation_contract_failed" ||
+    code === KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.failed.code ||
+    code === KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.unknown.code) {
     return focusedKnowledgeFailure(code);
   }
   return focusedKnowledgeFailure("knowledge_answer_failed");
+}
+
+/**
+ * The run's one image description for a recovered grounded answer: a settled
+ * description is reused, a dispatched or ambiguous one is never sent again,
+ * and an undispatched one is made now under the run's current authority.
+ */
+async function recoveredKnowledgeImageObservation(deps: RunRecoveryDeps, input: Readonly<{
+  request: Pick<NormalizedRunRequest, "chatId" | "content" | "knowledgeAnswerWorkflowVersion" | "knowledgeGenerationBudget" | "knowledgeImageObservation">;
+  control: Readonly<{ modelId: string; provider: string; project?: ProjectRunRecoveryAuthority }>;
+  runId: string;
+  signal: AbortSignal;
+  userId: string;
+}>): Promise<KnowledgeImageObservationBlock | undefined> {
+  if (input.request.knowledgeImageObservation === undefined) return undefined;
+  // Validated, then used as accepted: its System Vision snapshot is the bound one byte for byte.
+  const plan = input.request.knowledgeImageObservation;
+  if (!decodeKnowledgeImageObservationPlan(plan) || input.request.knowledgeAnswerWorkflowVersion !== 11) {
+    throw new ToolLoopRecoveryError("knowledge_answer_contract_failed", "The accepted image description route is invalid.");
+  }
+  const failures = KNOWLEDGE_IMAGE_OBSERVATION_FAILURES;
+  if (!deps.vision) throw new ToolLoopRecoveryError(failures.failed.code, failures.failed.message);
+  const outcome = await deps.vision.observeKnowledgeImages({
+    plan, question: textFromContentBlocks(input.request.content), chatId: input.request.chatId, runId: input.runId, userId: input.userId,
+    authorize: () => plan.route === "answer_model" ? currentDirectAnswerDispatchAllowed(deps, input.control, input.userId)
+      : input.control.project ? currentProjectRecoveryAuthorityAllowed(deps, input.control.project, input.userId) : Promise.resolve(true),
+    ...(plan.route === "answer_model" && input.request.knowledgeGenerationBudget
+      ? { timeoutMs: input.request.knowledgeGenerationBudget.timeoutMs,
+        maxOutputTokens: knowledgeImageObservationAnswerOutputTokens(input.request.knowledgeGenerationBudget) } : {}),
+    signal: input.signal
+  });
+  if (input.signal.aborted) throw new ToolLoopRecoveryStopped();
+  if (outcome.kind === "observed") return outcome.observation;
+  const visible = outcome.kind === "unknown" ? failures.unknown : failures.failed;
+  throw new ToolLoopRecoveryError(visible.code, visible.message);
 }
 
 function modelToolCall(call: PersistedToolLoopCall): ModelToolCall {
@@ -3091,11 +3136,15 @@ async function recoverCheckpointedToolLoop(
           "The accepted Knowledge request is empty."
         );
       }
+      const imageObservation = await recoveredKnowledgeImageObservation(deps, {
+        control: latest, request: run.normalizedRequest, runId: run.id, signal, userId: run.userId
+      });
       await recoverKnowledgeAnswerGrounding(deps, {
         control: latest,
         runId: run.id,
         seed: {
           draft: dispatchDraft,
+          ...(imageObservation ? { imageObservation } : {}),
           ...(run.normalizedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: run.normalizedRequest.knowledgeAnswerWorkflowVersion } : {}),
           repairFeedbackVersion: run.normalizedRequest.knowledgeReviewRepairFeedbackVersion,
           generationBudget: run.normalizedRequest.knowledgeGenerationBudget,
@@ -4258,6 +4307,8 @@ type KnowledgeAnswerGroundingRecoverySeed = Readonly<{
   evidenceBindings?: readonly KnowledgeEvidenceDispatchBinding[];
   executionPolicy?: KnowledgeGroundingEffectiveExecutionPolicyV1;
   forbiddenIdentityFragments?: readonly string[];
+  /** Workflow 11: the run's frozen description of its current images. */
+  imageObservation?: KnowledgeImageObservationBlock;
   modelCapabilities?: ProviderRunRequest["modelCapabilities"];
   reasoningEffort?: string | null;
   request: string;
@@ -4292,12 +4343,15 @@ async function recoverKnowledgeAnswerGrounding(
       const snapshot = decodeKnowledgeEvidenceAnswerSnapshot(input.draftDispatch.attempt.acceptedRequest);
       let request: unknown;
       try { request = snapshot ? JSON.parse(snapshot.userPrompt).request : null; } catch { request = null; }
+      // The first accepted compose operation froze the run's image description.
+      const imageObservation = snapshot ? knowledgeImageObservationFromComposePrompt(snapshot.userPrompt) : null;
       if (!snapshot || (snapshot.operation !== "knowledge_evidence_compose_v1" && snapshot.operation !== "knowledge_evidence_compose_v2") || input.draftDispatch.attempt.ordinal !== 1 ||
-        input.draftDispatch.attempt.providerBindingKey !== "answer" || typeof request !== "string" || !request.trim()) {
+        input.draftDispatch.attempt.providerBindingKey !== "answer" || typeof request !== "string" || !request.trim() || imageObservation === null) {
         throw new ToolLoopRecoveryError("knowledge_answer_contract_failed", "The saved Knowledge answer contract is invalid.");
       }
       pipeline = "evidence_answer_v1";
       seed = Object.freeze({ workflowVersion: snapshot.workflowVersion ?? 8,
+        ...(imageObservation ? { imageObservation } : {}),
         ...(snapshot.answerInstructions ? { answerInstructions: snapshot.answerInstructions } : {}), draft: input.draftDispatch.draft,
         repairFeedbackVersion: "repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined,
         generationBudget: "generationBudget" in snapshot ? snapshot.generationBudget : undefined,
@@ -4667,6 +4721,7 @@ async function recoverKnowledgeAnswerGrounding(
     try {
       return seed.workflowVersion === 9 || seed.workflowVersion === 10 || seed.workflowVersion === 11
     ? await executeKnowledgeEvidenceAnswerWithRefinementV1({ ...groundingInput, executionPolicy: seed.executionPolicy!,
+        ...(seed.imageObservation ? { imageObservation: seed.imageObservation } : {}),
         repairFeedbackVersion: seed.repairFeedbackVersion,
         generationBudget: seed.generationBudget,
         workflowVersion: seed.workflowVersion === 10 || seed.workflowVersion === 11 ? seed.workflowVersion : undefined,
@@ -4685,7 +4740,8 @@ async function recoverKnowledgeAnswerGrounding(
           });
         } })
     : pipeline === "evidence_answer_v1"
-    ? await executeKnowledgeEvidenceAnswerV1({ ...groundingInput, executionPolicy: seed.executionPolicy! })
+    ? await executeKnowledgeEvidenceAnswerV1({ ...groundingInput, executionPolicy: seed.executionPolicy!,
+        ...(seed.imageObservation ? { imageObservation: seed.imageObservation } : {}) })
     : pipeline === "v21_scope_v6"
     ? await executeKnowledgeAnswerGroundingV21({
         ...groundingInput,
@@ -5104,11 +5160,15 @@ async function refreshProviderRunOnceRegistered(
           "The accepted Knowledge request is empty."
         );
       }
+      const imageObservation = await recoveredKnowledgeImageObservation(deps, {
+        control, request: acceptedRequest, runId, signal, userId
+      });
       await recoverKnowledgeAnswerGrounding(deps, {
         control,
         runId,
         seed: {
           draft: recovered.draft,
+          ...(imageObservation ? { imageObservation } : {}),
           ...(acceptedRequest.knowledgeAnswerWorkflowVersion !== undefined ? { workflowVersion: acceptedRequest.knowledgeAnswerWorkflowVersion } : {}),
           repairFeedbackVersion: acceptedRequest.knowledgeReviewRepairFeedbackVersion,
           generationBudget: acceptedRequest.knowledgeGenerationBudget,

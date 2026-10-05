@@ -644,7 +644,6 @@ describe("local Memory retrieval repository", () => {
     // Retired synthesized patterns have no retrieval authority.
     expect(sql).toContain('version."modality" <> \'PATTERN\'');
     expect(sql).not.toContain("SYNTHESIZED_FROM");
-    expect(sql).not.toContain("synthesisEnabledAt");
     expect(sql).not.toContain("'SYNTHESIS'");
   });
 

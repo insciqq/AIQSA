@@ -1,6 +1,7 @@
 import { knowledgeAnswerCanonicalJson, knowledgeAnswerHash } from "./answerGroundingV5";
 import { decodeKnowledgeEvidenceAnswerFailureV1, executeKnowledgeEvidenceAnswerV1, executeKnowledgeEvidenceAnswerWithRefinementV1,
   KnowledgeAnswerProviderError, type KnowledgeEvidenceAnswerExecutionV1Result } from "./evidenceAnswerExecutionV1";
+import { knowledgeImageObservationFromComposePrompt } from "./evidenceAnswerReviewV2";
 import { decodeKnowledgeEvidenceAnswerSnapshot, isKnowledgeEvidenceComposeOperation } from "./evidenceAnswerSnapshot";
 import type { StoredKnowledgeEvidenceDispatch } from "./evidenceDispatchRepository";
 import type { KnowledgeProviderDispatchLifecycle } from "./providerDispatchLifecycle";
@@ -24,6 +25,9 @@ export async function replayKnowledgeEvidenceAnswerV1(input: Readonly<{
   try { request = JSON.parse(snapshot.userPrompt).request; }
   catch { throw Error("knowledge_evidence_answer_replay_invalid"); }
   if (typeof request !== "string" || !request.trim()) throw Error("knowledge_evidence_answer_replay_invalid");
+  // The first accepted compose operation froze the attached-image observation.
+  const imageObservation = knowledgeImageObservationFromComposePrompt(snapshot.userPrompt);
+  if (imageObservation === null) throw Error("knowledge_evidence_answer_replay_invalid");
   for (const [index, dispatch] of input.dispatches.entries()) {
     const accepted = decodeKnowledgeEvidenceAnswerSnapshot(dispatch.attempt.acceptedRequest);
     if (!accepted || dispatch.attempt.modelRunId !== input.modelRunId || dispatch.attempt.ordinal !== index + 1 ||
@@ -51,6 +55,7 @@ export async function replayKnowledgeEvidenceAnswerV1(input: Readonly<{
   const executionInput = { authorize: unavailable, draft: first.draft, execute: unavailable,
     ...(snapshot.answerInstructions ? { answerInstructions: snapshot.answerInstructions } : {}),
     executionPolicy: snapshot.executionPolicy, forbiddenIdentityFragments: input.forbiddenIdentityFragments,
+    ...(imageObservation ? { imageObservation } : {}),
     lifecycle, modelRunId: input.modelRunId, request, shouldAbort: () => true, transport: snapshot.transport,
     generationBudget: "generationBudget" in snapshot ? snapshot.generationBudget : undefined,
     repairFeedbackVersion: "repairFeedbackVersion" in snapshot ? snapshot.repairFeedbackVersion : undefined };

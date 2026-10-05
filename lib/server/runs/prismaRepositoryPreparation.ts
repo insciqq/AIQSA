@@ -1,3 +1,4 @@
+import { knowledgeImageObservationVision } from "../knowledge/imageObservation";
 import { assertInstructionPresetSelection } from "../instructions/store";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
@@ -1181,7 +1182,7 @@ export async function admitProjectRunWithClient(
       await insertAcceptedProviderRunBindings(tx, {
         imagePlan: input.normalizedRequest.imagePlan,
         imageScope: "project",
-        visionAnalysis: input.normalizedRequest.visionAnalysis,
+        visionAnalysis: input.normalizedRequest.visionAnalysis ?? knowledgeImageObservationVision(input.normalizedRequest),
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
         runId: run.id,
@@ -1742,7 +1743,7 @@ export async function admitPreparingRunWithClient(
       await insertAcceptedProviderRunBindings(tx, {
         imagePlan: input.normalizedRequest.imagePlan,
         imageScope: input.project ? "project" : "personal",
-        visionAnalysis: input.normalizedRequest.visionAnalysis,
+        visionAnalysis: input.normalizedRequest.visionAnalysis ?? knowledgeImageObservationVision(input.normalizedRequest),
         nativeBackgroundRequested: input.normalizedRequest.params.background === true,
         plan: input.providerAdmissionPlan,
         runId: run.id,

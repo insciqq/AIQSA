@@ -6,8 +6,8 @@ import {
 
 /** Retained normalized intent representation, including earlier read-planning
  * fields. Accepted outputs keep this shape and their original hashes. */
-export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v11" as const;
-export const MEMORY_ACTION_CONTROL_SCHEMA_VERSION = "memory-action-intent-v13" as const;
+export const MEMORY_ACTION_INTENT_SCHEMA_VERSION = "memory-action-intent-v12" as const;
+export const MEMORY_ACTION_CONTROL_SCHEMA_VERSION = "memory-action-intent-v14" as const;
 export const MEMORY_ACTION_INTENT_NAME = "MemoryActionIntent" as const;
 export const MEMORY_ACTION_INTENT_MAX_SYSTEM_MODEL_CALLS = 1 as const;
 export const MEMORY_ACTION_INTENT_MAX_TARGET_SELECTION_CALLS = 1 as const;
@@ -139,7 +139,6 @@ const memoryActionIntentWireSchema = z.strictObject({
   confidenceBand: z.enum(MEMORY_ACTION_INTENT_CONFIDENCE_BANDS),
   entityMentions: z.array(entityMentionSchema).max(MEMORY_ACTION_INTENT_MAX_ENTITY_MENTIONS),
   memoryUseful: z.boolean(),
-  patternExclusionRequested: z.boolean(),
   pastChatsUseful: z.boolean(),
   profileRequested: z.boolean(),
   queryDecompositions: z.array(strictText(MEMORY_ACTION_INTENT_MAX_QUERY_LENGTH))
@@ -312,9 +311,6 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
       type: "array"
     },
     memoryUseful: { type: "boolean" },
-    patternExclusionRequested: {
-      type: "boolean"
-    },
     pastChatsUseful: { type: "boolean" },
     profileRequested: {
       type: "boolean"
@@ -378,7 +374,6 @@ export const MEMORY_ACTION_INTENT_JSON_SCHEMA = Object.freeze({
     "confidenceBand",
     "entityMentions",
     "memoryUseful",
-    "patternExclusionRequested",
     "pastChatsUseful",
     "profileRequested",
     "queryDecompositions",
@@ -406,7 +401,6 @@ const memoryActionControlFields = memoryActionIntentWireSchema.pick({
   action: true,
   category: true,
   confidenceBand: true,
-  patternExclusionRequested: true,
   reasonCode: true,
   referencedMemoryRef: true,
   replacementStatement: true,
@@ -421,7 +415,6 @@ const controlExplanation = memoryActionControlFields.pick({ reasonCode: true });
 const controlMutation = memoryActionControlFields.pick({
   answerRequested: true,
   confidenceBand: true,
-  patternExclusionRequested: true,
   reasonCode: true,
   thisChatOnly: true
 });
@@ -432,9 +425,7 @@ const controlTarget = memoryActionControlFields.pick({
   referencedMemoryRef: true, targetQuery: true
 });
 const controlBranches = {
-  NONE: controlExplanation.extend({
-    action: z.literal("NONE"), patternExclusionRequested: z.boolean()
-  }),
+  NONE: controlExplanation.extend({ action: z.literal("NONE") }),
   SAVE: controlMutation.extend({
     action: z.literal("SAVE"), ...controlStatement.shape,
     statement: memoryActionControlFields.shape.statement
@@ -449,7 +440,7 @@ const controlBranches = {
     action: z.literal("SEARCH"), targetQuery: memoryActionControlFields.shape.targetQuery
   }),
   RESET: controlExplanation.extend({
-    action: z.literal("RESET"), answerRequested: z.boolean(), patternExclusionRequested: z.boolean()
+    action: z.literal("RESET"), answerRequested: z.boolean()
   })
 };
 const memoryActionControlWireSchema = z.strictObject({
@@ -641,10 +632,6 @@ function normalizeSafePlannerHints(value: MemoryActionIntentWire): MemoryActionI
       ? value.aggregationRequested
       : false,
     entityMentions: hintsAllowed ? value.entityMentions : [],
-    patternExclusionRequested: hintsAllowed && value.memoryUseful && !value.profileRequested &&
-      value.retrievalMode === "TARGETED_CURRENT" && value.temporalIntent === "CURRENT"
-      ? value.patternExclusionRequested
-      : false,
     queryDecompositions: hintsAllowed ? value.queryDecompositions : []
   };
 }
@@ -719,7 +706,6 @@ export function decodeMemoryActionControlDecision(
     answerRequested: false,
     category: null,
     confidenceBand: "LOW",
-    patternExclusionRequested: false,
     referencedMemoryRef: null,
     replacementStatement: null,
     responsePreference: false,
