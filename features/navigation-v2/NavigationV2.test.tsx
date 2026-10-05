@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useLayoutEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
@@ -395,6 +396,33 @@ describe("Navigation v2", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("searches a query typed right after a background render, before that render's effects ran", async () => {
+    // The store-connected owner passes a new `onSearch` on every render, and a
+    // loading workspace commits renders all the time. An input event that
+    // arrives between such a commit and its effects makes React run those
+    // effects first, with the field as that render saw it: typed while the
+    // workspace loaded, the query was dropped and never searched.
+    const onSearch = vi.fn();
+    let renderInBackground!: () => void;
+    function Owner() {
+      const [renders, setRenders] = useState(0);
+      renderInBackground = () => setRenders((count) => count + 1);
+      useLayoutEffect(() => {
+        if (renders !== 1) return;
+        // Typed inside the background commit, whose effects have not run yet.
+        const field = screen.getByRole("searchbox", { name: "Filter chats" });
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, "blocks");
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      }, [renders]);
+      return <NavigationSidebar {...sidebarProps({ onSearch: (value) => onSearch(value) })} />;
+    }
+    render(<Owner />);
+    await act(async () => renderInBackground());
+
+    expect(screen.getByRole("searchbox", { name: "Filter chats" })).toHaveValue("blocks");
+    await waitFor(() => expect(onSearch).toHaveBeenCalledExactlyOnceWith("blocks"));
   });
 
   it("toggles the sidebar with Ctrl/⌘+Shift+S", () => {
