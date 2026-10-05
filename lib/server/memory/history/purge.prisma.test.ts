@@ -857,58 +857,76 @@ describe("Prisma Memory history purge", () => {
         prefixMessages: 8,
         staleTailMessages: 4
       });
-      const offBranch = await prisma.message.findMany({
-        orderBy: { createdAt: "asc" },
-        select: { id: true, role: true, updatedAt: true },
-        where: { id: { in: [...chat.staleMessageIds] } }
-      });
-      expect(offBranch).toHaveLength(4);
       // Reject: the same exact, unchanged messages off the active branch.
       // Every other source condition holds, so only branch membership fails.
-      const text = "user:\nSynthetic off-branch turn.";
-      const chunkId = randomUUID();
+      const offBranch = await offBranchChunk(userId, chat);
       await expect(prisma.$transaction(async (tx) => {
-        await tx.memoryRecallChunk.create({
-          data: {
-            branchGeneration: 0,
-            chatId: chat.chatId,
-            chunkOrdinal: 1_000,
-            chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
-            contentHash: memorySha256(text),
-            id: chunkId,
-            languageCode: "en",
-            normalizedSafeSearchText: normalizeMemorySearchText(text),
-            occurredFrom: new Date(Date.UTC(2026, 7, 1)),
-            occurredTo: new Date(Date.UTC(2026, 7, 1)),
-            redactionState: "NOT_NEEDED",
-            safeProjectedText: text,
-            safetyClass: "NORMAL",
-            sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-            sourceRevisionAtCreation: 0,
-            state: "ACTIVE",
-            userId
-          }
-        });
-        await tx.memoryRecallChunkMessage.createMany({
-          data: offBranch.map((message, ordinal) => ({
-            chatId: chat.chatId,
-            chunkId,
-            messageId: message.id,
-            ordinal,
-            role: message.role,
-            safeTextHash: memorySha256(`${text}:${ordinal}`),
-            sourceMessageContentHash: memorySha256(`synthetic-content:${message.id}`),
-            sourceMessageUpdatedAt: message.updatedAt,
-            userId
-          }))
-        });
+        await tx.memoryRecallChunk.create({ data: offBranch.chunk });
+        await tx.memoryRecallChunkMessage.createMany({ data: offBranch.maps });
         await tx.$executeRaw`SET CONSTRAINTS ALL IMMEDIATE`;
-      })).rejects.toMatchObject({
-        code: "P2010",
-        message: expect.stringMatching(/must match the current eligible chat source/u),
-        meta: { code: "23514" }
+      })).rejects.toMatchObject(HISTORY_SOURCE_REJECTION);
+      await expect(prisma.memoryRecallChunk.count({ where: { id: offBranch.chunk.id! } }))
+        .resolves.toBe(0);
+      await expect(prisma.memoryRecallChunk.count({
+        where: { id: { in: [...chat.activeChunkIds] }, state: "ACTIVE" }
+      })).resolves.toBe(chat.activeChunkIds.length);
+      passed = true;
+    } finally {
+      await prisma.user.deleteMany({ where: { id: userId } }).catch((error: unknown) => {
+        if (passed) throw error;
       });
-      await expect(prisma.memoryRecallChunk.count({ where: { id: chunkId } })).resolves.toBe(0);
+    }
+  });
+
+  // Guards validate a chat once per batch of deferred events. A chat that
+  // already passed earlier in the transaction must be checked again once a
+  // later statement changes its history, at COMMIT and at an explicit check.
+  it("re-checks a chat that passed earlier in the transaction after a later change", async () => {
+    const userId = `memory-history-guard-batch-${randomUUID()}`;
+    let passed = false;
+    try {
+      await prisma.user.create({
+        data: {
+          displayName: "Memory history guard batch fixture",
+          email: `${userId}@example.test`,
+          id: userId,
+          status: "active"
+        }
+      });
+      const chat = await createHistoryChat(userId, "Guard batch", {
+        branchMessages: 2,
+        prefixMessages: 8,
+        staleTailMessages: 4
+      });
+      const offBranch = await offBranchChunk(userId, chat);
+      const validateChat = async (tx: Prisma.TransactionClient) => {
+        await tx.chat.update({ data: { title: "Guard batch validated" }, where: { id: chat.chatId } });
+        // The chat's deferred guards run now and pass.
+        await tx.$executeRaw`SET CONSTRAINTS ALL IMMEDIATE`;
+        await tx.$executeRaw`SET CONSTRAINTS ALL DEFERRED`;
+      };
+      const breakChat = async (tx: Prisma.TransactionClient) => {
+        await tx.memoryRecallChunk.create({ data: offBranch.chunk });
+        await tx.memoryRecallChunkMessage.createMany({ data: offBranch.maps });
+      };
+
+      // Control: the validated chat alone commits.
+      await expect(prisma.$transaction(async (tx) => {
+        await validateChat(tx);
+      })).resolves.toBeUndefined();
+      // The COMMIT batch re-checks the chat after the breaking statements.
+      await expect(prisma.$transaction(async (tx) => {
+        await validateChat(tx);
+        await breakChat(tx);
+      })).rejects.toThrow();
+      // So does a later explicit check inside the same transaction.
+      await expect(prisma.$transaction(async (tx) => {
+        await validateChat(tx);
+        await breakChat(tx);
+        await tx.$executeRaw`SET CONSTRAINTS ALL IMMEDIATE`;
+      })).rejects.toMatchObject(HISTORY_SOURCE_REJECTION);
+      await expect(prisma.memoryRecallChunk.count({ where: { id: offBranch.chunk.id! } }))
+        .resolves.toBe(0);
       await expect(prisma.memoryRecallChunk.count({
         where: { id: { in: [...chat.activeChunkIds] }, state: "ACTIVE" }
       })).resolves.toBe(chat.activeChunkIds.length);
@@ -920,6 +938,60 @@ describe("Prisma Memory history purge", () => {
     }
   });
 });
+
+const HISTORY_SOURCE_REJECTION = Object.freeze({
+  code: "P2010",
+  message: expect.stringMatching(/must match the current eligible chat source/u),
+  meta: { code: "23514" }
+});
+
+// An ACTIVE chunk mapped to exact, unchanged messages of the chat's stale
+// tail: every source condition holds except active-branch membership.
+async function offBranchChunk(userId: string, chat: HistoryChatFixture): Promise<Readonly<{
+  chunk: Prisma.MemoryRecallChunkUncheckedCreateInput;
+  maps: Prisma.MemoryRecallChunkMessageCreateManyInput[];
+}>> {
+  const messages = await prisma.message.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { id: true, role: true, updatedAt: true },
+    where: { id: { in: [...chat.staleMessageIds] } }
+  });
+  expect(messages.length).toBeGreaterThan(0);
+  const text = "user:\nSynthetic off-branch turn.";
+  const chunkId = randomUUID();
+  return {
+    chunk: {
+      branchGeneration: 0,
+      chatId: chat.chatId,
+      chunkOrdinal: 1_000,
+      chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+      contentHash: memorySha256(text),
+      id: chunkId,
+      languageCode: "en",
+      normalizedSafeSearchText: normalizeMemorySearchText(text),
+      occurredFrom: new Date(Date.UTC(2026, 7, 1)),
+      occurredTo: new Date(Date.UTC(2026, 7, 1)),
+      redactionState: "NOT_NEEDED",
+      safeProjectedText: text,
+      safetyClass: "NORMAL",
+      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+      sourceRevisionAtCreation: 0,
+      state: "ACTIVE",
+      userId
+    },
+    maps: messages.map((message, ordinal) => ({
+      chatId: chat.chatId,
+      chunkId,
+      messageId: message.id,
+      ordinal,
+      role: message.role,
+      safeTextHash: memorySha256(`${text}:${ordinal}`),
+      sourceMessageContentHash: memorySha256(`synthetic-content:${message.id}`),
+      sourceMessageUpdatedAt: message.updatedAt,
+      userId
+    }))
+  };
+}
 
 const CHUNK_MESSAGES = 4;
 const RECEIPT_RESULTS = 8;
