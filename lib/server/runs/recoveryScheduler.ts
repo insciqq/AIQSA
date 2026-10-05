@@ -21,7 +21,7 @@ export class RunRecoveryScheduler {
     reconcile(signal: AbortSignal): Promise<void>;
     recoverWorkspaceExports?(signal: AbortSignal): Promise<void>;
     recoverChatTitles?(signal: AbortSignal): Promise<void>;
-    subsystem?: "run_recovery" | "workspace" | "chat_title" | "scheduled_tasks";
+    subsystem?: "run_recovery" | "workspace" | "chat_title" | "scheduled_tasks" | "object_storage";
   }>) {
     this.#intervalMs = input.intervalMs ?? DEFAULT_RECOVERY_INTERVAL_MS;
     this.#reconcile = input.reconcile;

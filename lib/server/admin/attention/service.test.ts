@@ -493,6 +493,25 @@ describe("deriveAdminAttentionItems", () => {
     ]);
   });
 
+  it("names stalled object deletion by its due backlog count", () => {
+    const fixture = adminKnowledgeOperationsFixture();
+    const result = items({
+      knowledge: adminKnowledgeSettingsFixture({
+        operations: adminKnowledgeOperationsFixture({
+          alerts: [{ code: "knowledge_object_deletion_stalled", severity: "warning" }],
+          deletion: { ...fixture.deletion, oldestUnclaimedObjectSeconds: 7_200, unclaimedObjects: 3 }
+        })
+      })
+    });
+    expect(result).toEqual([expect.objectContaining({
+      code: "knowledge_needs_attention",
+      count: 1,
+      detail: "3 files waiting for deletion",
+      severity: "warn",
+      target: { section: "retrieval" }
+    })]);
+  });
+
   it("reports a stopped Memory worker and a required index rebuild", () => {
     const result = items({
       memory: {

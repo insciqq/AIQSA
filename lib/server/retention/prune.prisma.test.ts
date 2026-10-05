@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { makeContextCompactionStatus } from "../../contracts/contextCompaction";
 import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
@@ -11,7 +11,12 @@ import { projectRunOutputArtifactEvent, type RunOutputArtifactEvent } from "../r
 import { WORKSPACE_ACTIVITY_RECEIPT, WORKSPACE_ACTIVITY_SNAPSHOT } from "../runs/workspaceActivityPersistence";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
-import { createPrismaRetentionRepository, pruneRetention } from "./prune";
+import {
+  createPrismaRetentionRepository,
+  deletionJobClaimableBefore,
+  pruneRetention,
+  runObjectDeletionPass
+} from "./prune";
 
 const oldDate = new Date("2000-01-01T00:00:00.000Z");
 const retentionNow = new Date("2000-02-15T00:00:00.000Z");
@@ -771,6 +776,143 @@ describe("Prisma attachment retention outbox", () => {
     } finally {
       releaseDeletion.resolve();
       await cleanupUser(user.id, [attachment.storageKey]);
+    }
+  });
+
+  it("drains due object deletions in small background batches and keeps referenced objects", async () => {
+    const user = await createUser();
+    const storage = createMemoryStorageAdapter();
+    // Older than any other fixture so the bounded pass reaches these first.
+    const dueAt = new Date("1999-01-01T00:00:00.000Z");
+    const dueKeys = [1, 2, 3].map((index) => `retention/background-${index}-${randomUUID()}`);
+    const referenced = await createOldAttachment(user.id, `retention/background-kept-${randomUUID()}`);
+    for (const storageKey of [...dueKeys, referenced.storageKey]) {
+      await storage.putObject({ body: Buffer.from("data"), contentType: "text/plain", storageKey });
+    }
+    await prisma.attachmentDeletionJob.createMany({
+      data: [...dueKeys, referenced.storageKey].map((storageKey) => ({ createdAt: dueAt, storageKey }))
+    });
+    const repository = createPrismaRetentionRepository(prisma);
+    const claims = vi.spyOn(repository, "claimAttachmentDeletionJobs");
+
+    try {
+      const summary = await runObjectDeletionPass({ batchSize: 2, maxBatches: 10, repository, storage });
+
+      expect(summary.batches).toBeGreaterThanOrEqual(2);
+      expect(summary.claimed).toBeGreaterThanOrEqual(3);
+      expect(summary.failed).toBe(0);
+      expect(claims.mock.calls.map(([input]) => input.limit)).toEqual(claims.mock.calls.map(() => 2));
+      for (const storageKey of dueKeys) expect(storage.objects.has(storageKey)).toBe(false);
+      await expect(prisma.attachmentDeletionJob.count({ where: { storageKey: { in: dueKeys } } })).resolves.toBe(0);
+      expect(storage.objects.has(referenced.storageKey)).toBe(true);
+      await expect(prisma.attachmentDeletionJob.findUniqueOrThrow({
+        where: { storageKey: referenced.storageKey }
+      })).resolves.toMatchObject({ attemptCount: 0, claimToken: null, claimedAt: null });
+
+      // A repeated pass is idempotent and still never claims the referenced job.
+      await expect(runObjectDeletionPass({ batchSize: 2, repository, storage }))
+        .resolves.toMatchObject({ failed: 0 });
+      await expect(prisma.attachmentDeletionJob.findUniqueOrThrow({
+        where: { storageKey: referenced.storageKey }
+      })).resolves.toMatchObject({ attemptCount: 0, claimedAt: null });
+      expect(storage.objects.has(referenced.storageKey)).toBe(true);
+    } finally {
+      claims.mockRestore();
+      await cleanupUser(user.id, [...dueKeys, referenced.storageKey]);
+    }
+  });
+
+  it("keeps a background pass and a concurrent manual prune from deleting one object twice", async () => {
+    const storageKey = `retention/background-concurrent-${randomUUID()}`;
+    const job = await prisma.attachmentDeletionJob.create({
+      data: { createdAt: new Date("1999-01-01T00:00:00.000Z"), storageKey }
+    });
+    const repository = createPrismaRetentionRepository(prisma);
+    const deletionStarted = deferred();
+    const releaseDeletion = deferred();
+    const deleted: string[] = [];
+    const storage = {
+      async deleteObject(key: string) {
+        deleted.push(key);
+        if (key !== storageKey) return;
+        deletionStarted.resolve();
+        await releaseDeletion.promise;
+      }
+    };
+
+    try {
+      const background = runObjectDeletionPass({ repository, storage });
+      await deletionStarted.promise;
+      // The pass holds the leased claim: an operator prune skips the job.
+      const prune = await pruneRetention({ dryRun: false, now: retentionNow, repository, storage });
+      expect(prune.attachmentDeletionJobs.failedJobs).toEqual([]);
+      releaseDeletion.resolve();
+      await expect(background).resolves.toMatchObject({ failed: 0 });
+      expect(deleted.filter((key) => key === storageKey)).toEqual([storageKey]);
+      await expect(prisma.attachmentDeletionJob.findUnique({ where: { id: job.id } })).resolves.toBeNull();
+    } finally {
+      releaseDeletion.resolve();
+      await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey } });
+    }
+  });
+
+  it("reclaims an expired prune claim in the background while the stale holder cannot settle it", async () => {
+    const storage = createMemoryStorageAdapter();
+    const storageKey = `retention/background-stale-${randomUUID()}`;
+    await storage.putObject({ body: Buffer.from("data"), contentType: "text/plain", storageKey });
+    const job = await prisma.attachmentDeletionJob.create({
+      data: { createdAt: new Date("1999-01-01T00:00:00.000Z"), storageKey }
+    });
+    const repository = createPrismaRetentionRepository(prisma);
+    const crashedAt = new Date(Date.now() - 20 * 60 * 1000);
+
+    try {
+      const stale = (await repository.claimAttachmentDeletionJobs({
+        claimableBefore: deletionJobClaimableBefore(crashedAt),
+        limit: 1_000,
+        now: crashedAt
+      })).find((claim) => claim.id === job.id);
+      expect(stale).toBeDefined();
+
+      await expect(runObjectDeletionPass({ repository, storage })).resolves.toMatchObject({ failed: 0 });
+      expect(storage.objects.has(storageKey)).toBe(false);
+      await expect(prisma.attachmentDeletionJob.findUnique({ where: { id: job.id } })).resolves.toBeNull();
+      await expect(repository.completeAttachmentDeletionJob(stale!)).resolves.toBe(false);
+    } finally {
+      await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey } });
+    }
+  });
+
+  it("releases a failed background deletion for the next pass", async () => {
+    const storageKey = `retention/background-retry-${randomUUID()}`;
+    const job = await prisma.attachmentDeletionJob.create({
+      data: { createdAt: new Date("1999-01-01T00:00:00.000Z"), storageKey }
+    });
+    const repository = createPrismaRetentionRepository(prisma);
+
+    try {
+      const failed = await runObjectDeletionPass({
+        repository,
+        storage: {
+          async deleteObject(key) {
+            if (key === storageKey) throw new Error("private storage detail");
+          }
+        }
+      });
+      expect(failed.failed).toBe(1);
+      expect(JSON.stringify(failed)).not.toMatch(/retention\/|private storage detail/u);
+      await expect(prisma.attachmentDeletionJob.findUniqueOrThrow({ where: { id: job.id } })).resolves.toMatchObject({
+        attemptCount: 1,
+        claimToken: null,
+        claimedAt: null,
+        lastErrorCode: "object_delete_failed"
+      });
+
+      await expect(runObjectDeletionPass({ repository, storage: createMemoryStorageAdapter() }))
+        .resolves.toMatchObject({ failed: 0 });
+      await expect(prisma.attachmentDeletionJob.findUnique({ where: { id: job.id } })).resolves.toBeNull();
+    } finally {
+      await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey } });
     }
   });
 

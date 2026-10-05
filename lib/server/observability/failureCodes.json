@@ -733,6 +733,8 @@
   "normalized_text_unavailable",
   "not_configured",
   "not_tested",
+  "object_delete_failed",
+  "object_deletion_startup_failed",
   "object_storage_unavailable",
   "ok",
   "openai_response_cancelled",
