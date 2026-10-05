@@ -12,30 +12,31 @@ const source: MemoryMaintenanceSource = {
 };
 
 describe("versioned maintenance provenance", () => {
-  it("retains accepted v1-v3 removal authority without accepting arbitrary historical labels", () => {
+  it("retains accepted v1-v4 removal authority without accepting arbitrary historical labels", () => {
     expect(MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS).toEqual([
-      "memory-maintenance-policy-v1", "memory-maintenance-policy-v2", "memory-maintenance-policy-v3", "memory-maintenance-policy-v4"
+      "memory-maintenance-policy-v1", "memory-maintenance-policy-v2", "memory-maintenance-policy-v3", "memory-maintenance-policy-v4",
+      "memory-maintenance-policy-v5"
     ]);
-    expect(MEMORY_MAINTENANCE_POLICY_VERSION).toBe("memory-maintenance-policy-v4");
+    expect(MEMORY_MAINTENANCE_POLICY_VERSION).toBe("memory-maintenance-policy-v5");
     for (const supported of MEMORY_MAINTENANCE_SUPPORTED_POLICY_VERSIONS) {
       expect(isSupportedMemoryMaintenancePolicy(supported)).toBe(true);
     }
-    for (const unsupported of [null, "memory-maintenance-policy-v0", "memory-maintenance-policy-v5", ["memory-maintenance-policy-v1"]]) {
+    for (const unsupported of [null, "memory-maintenance-policy-v0", "memory-maintenance-policy-v6", ["memory-maintenance-policy-v1"]]) {
       expect(isSupportedMemoryMaintenancePolicy(unsupported)).toBe(false);
     }
   });
-  it("reviews every automatic fact once more under v4, whose request and decoder settle contradictions", () => {
-    // Coverage and plan identity follow the policy version; the related-memory request and contradiction decoder have their own versions.
-    expect(MEMORY_MAINTENANCE_VERSIONS).toMatchObject({ policyVersion: "memory-maintenance-policy-v4",
-      promptVersion: "memory-maintenance-prompt-v5", schemaVersion: "memory-maintenance-schema-v7",
+  it("reviews every automatic fact once more under v5, whose prompt carries the task-local rules", () => {
+    // Coverage and plan identity follow the policy version alone; the request and decoder keep their own versions.
+    expect(MEMORY_MAINTENANCE_VERSIONS).toMatchObject({ policyVersion: "memory-maintenance-policy-v5",
+      promptVersion: "memory-maintenance-prompt-v6", schemaVersion: "memory-maintenance-schema-v7",
       retrievalConfigFingerprint: "memory-maintenance-exact-sources-related-v3" });
     expect(memoryMaintenancePlan([]).sourceSnapshotHash)
-      .toBe(memorySha256({ policyVersion: "memory-maintenance-policy-v4", sources: [] }));
+      .toBe(memorySha256({ policyVersion: "memory-maintenance-policy-v5", sources: [] }));
   });
-  it("uses a new plan identity for v4 that is derivable from reviewed refs, versions and hashes alone", () => {
+  it("uses a new plan identity for v5 that is derivable from reviewed refs, versions and hashes alone", () => {
     const plan = memoryMaintenancePlan([]);
-    const v3 = memorySha256({ policyVersion: "memory-maintenance-policy-v3", sources: [] });
-    expect(plan.sourceSnapshotHash).not.toBe(v3);
+    const v4 = memorySha256({ policyVersion: "memory-maintenance-policy-v4", sources: [] });
+    expect(plan.sourceSnapshotHash).not.toBe(v4);
     expect(memoryMaintenancePlan([]).sourceSnapshotHash).toBe(plan.sourceSnapshotHash);
     expect(memoryMaintenancePlanHash([{ ref: source.ref, versionId: source.versionId, sourceSnapshotHash: source.sourceSnapshotHash }]))
       .toBe(memoryMaintenancePlan([source]).sourceSnapshotHash);

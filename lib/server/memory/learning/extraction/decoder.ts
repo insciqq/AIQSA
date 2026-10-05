@@ -1,6 +1,4 @@
 import type { ModelToolCall } from "../../../tools/types";
-import { MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE } from
-  "../../../../contracts/memory";
 import {
   memoryExplicitStatementContainsSecret,
   memoryValueContainsRecognizedSecret
@@ -52,11 +50,7 @@ import {
   memoryEntityType,
   memoryEntityTypeFamily
 } from "../entities/normalization";
-import {
-  assertMemoryIdentityWritable,
-  memorySupportingPropositionCanonicalKey,
-  normalizeMemoryProposition
-} from "../identity/normalization";
+import { assertMemoryIdentityWritable } from "../identity/normalization";
 import {
   decodeMemoryExactTextRef,
   projectMemoryExactTextRef
@@ -765,9 +759,10 @@ function decodeObservation(
   const confidenceBand = enumValue<NonNullable<
     MemoryExtractedCandidate["confidenceBand"]
   >>(value.confidence_band, confidenceBands, 16);
-  if (confidenceBand === "LOW") fail("memory_fact_confidence_low");
-  if (frame.speechAct === "COMMAND" && frame.memoryDirective === "NONE" &&
-    confidenceBand !== "HIGH") fail("memory_fact_confidence_low");
+  // Automatic learning stores HIGH observations only. MEDIUM supporting
+  // observations were mostly transient; a remember request is extracted as a
+  // HIGH command, since a MEDIUM observation never carries a directive.
+  if (confidenceBand !== "HIGH") fail("memory_fact_confidence_low");
   const sensitivity = enumValue(value.sensitivity, sensitivities, 16);
   if (sensitivity === "SECRET") fail("memory_fact_secret");
   // Direct personal testimony remains eligible independently of topic
@@ -788,22 +783,10 @@ function decodeObservation(
     quote,
     frame,
     rawIdentity,
-    confidenceBand === "HIGH" && rawIdentity.mode === "PROPOSITION"
+    rawIdentity.mode === "PROPOSITION"
   );
-  const effectiveIdentity: MemoryIdentityProposal = confidenceBand === "MEDIUM"
-    ? {
-        dimensionKey: null,
-        mode: "PROPOSITION",
-        predicateKey: null,
-        subject: {
-          canonicalLabel: null,
-          entityType: "NONE",
-          qualifiers: { brand: null, model: null }
-        }
-      }
-    : rawIdentity;
   const identityProposal = groundIdentity(
-    effectiveIdentity,
+    rawIdentity,
     valueProposal,
     parsedEntities.supportsByType,
     input,
@@ -842,15 +825,6 @@ function decodeObservation(
   }
   const correction = frame.polarity === "CORRECTION" ||
     frame.changeIntent === "CORRECTION";
-  if (confidenceBand === "MEDIUM" && (
-    frame.speechAct !== "ASSERTION" || frame.assertionStatus !== "ASSERTED" ||
-    (frame.subjectScope !== "CURRENT_USER" &&
-      frame.subjectScope !== "USER_RELATIONSHIP_CONTEXT") ||
-    frame.polarity !== "AFFIRMED" ||
-    frame.changeIntent !== "NONE" || frame.memoryDirective !== "NONE" ||
-    frame.temporalPerspective === "UNKNOWN" || correction ||
-    resolvedIdentity.identityKind !== "PROPOSITION"
-  )) fail("memory_fact_unsupported");
   if (parsedEntities.entities.some(({ entityType }) => entityType === "PERSON") &&
     resolvedIdentity.identityKind !== "PROPOSITION") {
     fail("memory_fact_entity_unsupported");
@@ -860,36 +834,12 @@ function decodeObservation(
     resolvedIdentity.identityKind !== "PROPOSITION" ||
     !groundedRelationshipSubject(parsedEntities.entities)
   )) fail("memory_fact_entity_unsupported");
-  const supportingInput = {
-    expectedAt: temporal.expectedAt,
-    occurredAt: temporal.occurredAt,
-    statement,
-    validFrom: temporal.validFrom,
-    validTo: temporal.validTo
-  } as const;
-  const unicodeSupportingCanonicalKey = confidenceBand === "MEDIUM"
-    ? memorySupportingPropositionCanonicalKey({
-        ...supportingInput
-      }, "UNICODE_V2") ?? fail()
-    : null;
-  const unicodeSupportingStatement = confidenceBand === "MEDIUM"
-    ? normalizeMemoryProposition(statement, "UNICODE_V2") ?? fail()
-    : null;
-  const supportingValue = (normalizedStatement: string) => ({
-    authority: "supporting",
-    normalizedStatement,
-    schema: "supporting-observation-v1"
-  });
-  const unicodeProposedValue = unicodeSupportingStatement === null
-    ? unicodeIdentity.structuredValue
-    : supportingValue(unicodeSupportingStatement);
+  const unicodeProposedValue = unicodeIdentity.structuredValue;
   const withoutId: Omit<MemoryExtractedCandidate, "id"> = {
     candidateRef,
-    canonicalKey: unicodeSupportingCanonicalKey ?? unicodeIdentity.canonicalKey,
+    canonicalKey: unicodeIdentity.canonicalKey,
     category: resolvedIdentity.category,
-    confidence: confidenceBand === "MEDIUM"
-      ? MEMORY_SUPPORTING_OBSERVATION_CONFIDENCE
-      : 1,
+    confidence: 1,
     confidenceBand,
     correction,
     coreEligible: false,
@@ -909,7 +859,7 @@ function decodeObservation(
     identityProfile: input.identityProfile,
     identityKind: resolvedIdentity.identityKind,
     identityVersion: resolvedIdentity.identityVersion,
-    importance: confidenceBand === "MEDIUM" ? 0.4 : 0.65,
+    importance: 0.65,
     languageCode: source.languageCode,
     modality: modality(memoryType),
     negated: false,
@@ -930,8 +880,7 @@ function decodeObservation(
     temporary,
     temporalNormalization: temporalProposal.normalization,
     temporalResolutionEvidence: temporal.resolutionEvidence,
-    unicodeCanonicalKey:
-      unicodeSupportingCanonicalKey ?? unicodeIdentity.canonicalKey,
+    unicodeCanonicalKey: unicodeIdentity.canonicalKey,
     unicodeProposedValue,
     validFrom: temporal.validFrom,
     validTo: temporal.validTo

@@ -883,14 +883,14 @@ describe("Memory fact extraction handler", () => {
   });
 
   it.each([
-    ["retained v51", {
+    ["retained v52", {
       policyVersion: "memory-fact-extraction-policy-v38",
-      promptVersion: "memory-fact-extraction-prompt-v51",
+      promptVersion: "memory-fact-extraction-prompt-v52",
       schemaVersion: "memory-fact-extraction-schema-v7"
     }, true],
-    ["retired v50", {
+    ["retired v51", {
       policyVersion: "memory-fact-extraction-policy-v38",
-      promptVersion: "memory-fact-extraction-prompt-v50",
+      promptVersion: "memory-fact-extraction-prompt-v51",
       schemaVersion: "memory-fact-extraction-schema-v7"
     }, false]
   ] as const)("recovers a %s staged output only by its recorded semantics", async (_label, versions, retained) => {
@@ -1750,6 +1750,7 @@ describe("Memory fact extraction invalid-output budget", () => {
       storedFactBinding(0, "FAILED", "memory_fact_output_invalid", "e".repeat(64)),
       storedFactBinding(1, "FAILED", "memory_fact_output_invalid", "f".repeat(64)),
       { ...storedFactBinding(2, "FAILED", "memory_fact_output_invalid", input.inputHash),
+        policyVersion: MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS.policyVersion,
         promptVersion: MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS.promptVersion },
       storedFactBinding(3, "FAILED", "memory_fact_provider_transient", input.inputHash),
       storedFactBinding(4, "FAILED", "memory_fact_execution_abandoned", input.inputHash)

@@ -279,7 +279,8 @@ export const MEMORY_CLEANUP_SYNTHETIC_CORPUS = Object.freeze([
     expected: "RETAIN", sourceMode: "AUTOMATIC", pinned: false }
 ] as const);
 
-/** Long-term cleanup scenarios from the v3 acceptance corpus. Each scenario is
+/** Long-term cleanup scenarios from the v3 acceptance corpus and the v6
+ * task-local classes. Each scenario is
  * one chat; a version cites `quote` inside its message (the whole message by
  * default) and the last version of a fact is current. */
 export type MemoryCleanupLifecycleFact = Readonly<{
@@ -348,7 +349,22 @@ export const MEMORY_CLEANUP_LIFECYCLE_CORPUS: readonly MemoryCleanupLifecycleSce
   single("ru", "ru_v3_remembered", "Запомни: сегодня я поставил машину на третьем уровне парковки.", "RETAIN",
     { usefulness: "EPISODIC", remembered: true }),
   single("en", "en_v3_remembered", "Remember that today I parked on level three of the garage.", "RETAIN",
-    { usefulness: "EPISODIC", remembered: true })
+    { usefulness: "EPISODIC", remembered: true }),
+  // Task-local classes of maintenance prompt v6, retired whatever their stored
+  // label claims, beside lasting work context that stays.
+  single("en", "en_v5_product_spec", "My Telegram bot replies in Russian and English and stores every order in a spreadsheet.",
+    "RETIRE", { usefulness: "DURABLE" }),
+  single("ru", "ru_v5_artifact_status", "Лендинг готов, а раздел с ценами сделан наполовину.", "RETIRE", { usefulness: "ONGOING" }),
+  single("en", "en_v5_implementation", "In the parser I replaced the regular expressions with a state machine, and the tests pass now.",
+    "RETIRE", { usefulness: "DURABLE" }),
+  single("ru", "ru_v5_deliberation", "Не могу решить, красить кухню в белый или в светло-серый.", "RETIRE", { usefulness: "ONGOING" }),
+  single("en", "en_v5_feeling", "I'm really annoyed with this bug today.", "RETIRE"),
+  single("ru", "ru_v5_symptom_advice", "Со вчерашнего дня болит горло и небольшая температура, что мне принять?", "RETIRE",
+    { usefulness: "ONGOING" }),
+  single("ru", "ru_v5_work_context", "Я шесть лет работаю бэкенд-разработчиком и пишу почти все сервисы на Go.", "RETAIN",
+    { usefulness: "DURABLE" }),
+  single("en", "en_v5_work_context", "I have worked as a backend developer for six years and write most services in Go.", "RETAIN",
+    { usefulness: "DURABLE" })
 ]);
 
 /** Exact span of a lifecycle version inside its scenario message. */

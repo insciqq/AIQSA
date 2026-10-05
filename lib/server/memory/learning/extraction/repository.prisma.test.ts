@@ -14,6 +14,10 @@ import type { MemoryJobClaim } from "../../coordinator/types";
 import { enqueueMemoryCommand } from "../../commands/repository";
 import { detachExpiredMemoryExecutionBindings } from "../../execution/lifecycle";
 import {
+  reconcileMemoryMaintenanceWork,
+  scheduleOwnerMemoryMaintenance
+} from "../../maintenance/reconcile";
+import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_ANALYSIS_PROFILE,
   MEMORY_LEXICAL_NORMALIZATION_VERSION,
@@ -3088,11 +3092,11 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     }
   });
 
-  it("persists assistant-resolved MEDIUM context as a fenced supporting fact", async () => {
-    const userId = await createOwner("supporting-assistant-context");
+  it("stores no MEDIUM observation, while a HIGH remember request is stored as before", async () => {
+    const userId = await createOwner("medium-admission");
     try {
       const chat = await prisma.chat.create({
-        data: { title: "Supporting context", userId }
+        data: { title: "Medium admission", userId }
       });
       const first = await createTurn({
         assistantText: "Cedar is the layout option we just discussed.",
@@ -3116,87 +3120,74 @@ describe("Prisma Memory vNext source-message ingestion", () => {
 
       const claim = await claimFactJob(userId, second.userMessage.id);
       const input = await prepare(claim);
-      expect(input.messages.map(({ evidenceEligible, id, role }) => ({
-        evidenceEligible,
-        id,
-        role
-      }))).toEqual([
-        { evidenceEligible: false, id: first.userMessage.id, role: "user" },
-        { evidenceEligible: false, id: first.assistantMessage.id, role: "assistant" },
-        { evidenceEligible: true, id: second.userMessage.id, role: "user" }
-      ]);
       const assistantRef = input.contextRefs.find(({ source }) =>
         source.messageId === first.assistantMessage.id);
       expect(assistantRef).toMatchObject({ kind: "MESSAGE", ref: "M2" });
-
+      // The observation an earlier release kept as a fenced supporting fact.
       const plan = supportingContextPlan(input, targetText, assistantRef!.ref);
+      expect(plan.candidates).toEqual([]);
+      expect(plan.rejections).toEqual([
+        { candidateOrdinal: 0, reasonCode: "REJECT_LOW_CONFIDENCE" }
+      ]);
       const bindingId = await createSucceededBinding(
         userId,
         claim,
         input.inputHash,
         plan.outputHash
       );
-      await expect(applyPlan(userId, claim, plan, bindingId)).resolves.toBe("APPLIED");
+      await expect(applyPlan(userId, claim, plan, bindingId)).resolves.toBe("EMPTY");
+      // No fact, evidence or search entry exists, so nothing can reach
+      // standing context or search.
+      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryFactVersion.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryEvidence.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memorySearchEntry.count({ where: { userId } })).resolves.toBe(0);
+      await expect(prisma.memoryFactExtractionCandidateReceipt.findMany({
+        select: { outcome: true, reasonCode: true },
+        where: { userId }
+      })).resolves.toEqual([{ outcome: "REJECTED", reasonCode: "REJECT_LOW_CONFIDENCE" }]);
 
+      const rememberText = "Remember that I usually prefer cedar layouts.";
+      const third = await createTurn({
+        assistantText: "Saved.",
+        chatId: chat.id,
+        createdAt: new Date("2026-08-25T10:05:00.000Z"),
+        parentMessageId: second.assistantMessage.id,
+        userId,
+        userText: rememberText
+      });
+      await settleChat(userId, chat.id, third);
+      const rememberClaim = await claimFactJob(userId, third.userMessage.id);
+      const rememberInput = await prepare(rememberClaim);
+      const remembered = preferencePlan(
+        rememberInput,
+        rememberText,
+        "The user usually prefers cedar layouts.",
+        true
+      );
+      expect(remembered.rejections).toEqual([]);
+      const rememberBinding = await createSucceededBinding(
+        userId,
+        rememberClaim,
+        rememberInput.inputHash,
+        remembered.outputHash
+      );
+      await expect(applyPlan(userId, rememberClaim, remembered, rememberBinding))
+        .resolves.toBe("APPLIED");
       const version = await prisma.memoryFactVersion.findFirstOrThrow({
-        select: {
-          confidence: true,
-          coreEligible: true,
-          coreSalience: true,
-          createdByEventId: true,
-          factId: true,
-          id: true,
-          sourceMode: true,
-          structuredValue: true
-        },
+        select: { confidence: true, id: true, semanticFrame: true, sourceMode: true },
         where: { userId }
       });
       expect(version).toMatchObject({
-        confidence: 0.6,
-        coreEligible: false,
-        coreSalience: "NONE",
-        sourceMode: "AUTOMATIC",
-        structuredValue: {
-          authority: "supporting",
-          schema: "supporting-observation-v1"
-        }
-      });
-      await expect(prisma.memoryEvent.findUniqueOrThrow({
-        select: { operation: true },
-        where: { id: version.createdByEventId }
-      })).resolves.toEqual({ operation: "AUTO_PROPOSE" });
-      await expect(prisma.memoryEvidence.findFirstOrThrow({
-        select: { messageId: true, sourceRole: true },
-        where: { factVersionId: version.id, userId }
-      })).resolves.toEqual({
-        messageId: second.userMessage.id,
-        sourceRole: "user"
-      });
-      await expect(prisma.memoryFactVersionSourceDependency.findFirstOrThrow({
-        select: { sourceMessageId: true, targetFactVersionId: true },
-        where: { targetFactVersionId: version.id, userId }
-      })).resolves.toEqual({
-        sourceMessageId: first.assistantMessage.id,
-        targetFactVersionId: version.id
+        confidence: 1,
+        semanticFrame: { memoryDirective: "EXPLICIT_REMEMBER" },
+        sourceMode: "AUTOMATIC"
       });
       await expect(loadPersonalEligibleFactVersionIds(
         prisma,
         userId,
         [version.id]
       )).resolves.toEqual(new Set([version.id]));
-
-      await prisma.message.update({
-        data: {
-          content: textMessageContent("Changed assistant context."),
-          updatedAt: new Date("2026-08-25T10:30:00.000Z")
-        },
-        where: { id: first.assistantMessage.id }
-      });
-      await expect(loadPersonalEligibleFactVersionIds(
-        prisma,
-        userId,
-        [version.id]
-      )).resolves.toEqual(new Set());
     } finally {
       await cleanupOwner(userId);
     }
@@ -5101,9 +5092,7 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       const secondPlan = preferencePlan(
         secondInput,
         "Coffee is something I like.",
-        "The user likes coffee.",
-        false,
-        "MEDIUM"
+        "The user likes coffee."
       );
       expect(secondPlan.candidates[0]?.canonicalKey)
         .not.toBe(firstPlan.candidates[0]?.canonicalKey);
@@ -5533,6 +5522,237 @@ describe("Prisma Memory vNext source-message ingestion", () => {
       })).resolves.toBe(1);
       await expect(prisma.memoryEvidence.count({
         where: { factVersionId: original.id, userId }
+      })).resolves.toBe(0);
+    } finally {
+      await cleanupOwner(userId);
+    }
+  });
+
+  /** One applied automatic product fact with its subject entity and search
+   * entries, then the state an earlier release could leave behind: the
+   * subject root retracted while the fact stayed ACTIVE, fenced from standing
+   * context, search and review but never retired. */
+  async function factUnderRetractedSubjectRoot(
+    userId: string,
+    protect: (version: Readonly<{ factId: string; id: string; semanticFrame: Prisma.JsonValue }>) => Promise<void> =
+      async () => undefined
+  ) {
+    const chat = await prisma.chat.create({
+      data: { title: "Subject root retraction", userId }
+    });
+    const first = await createTurn({
+      assistantText: "Noted.",
+      chatId: chat.id,
+      createdAt: new Date("2026-08-24T10:00:00.000Z"),
+      parentMessageId: null,
+      userId,
+      userText: "I bought a MacBook Air."
+    });
+    await settleChat(userId, chat.id, first);
+    const claim = await claimFactJob(userId, first.userMessage.id);
+    const input = await prepare(claim);
+    const plan = extractionPlan(input, "I bought a MacBook Air.");
+    const binding = await createSucceededBinding(userId, claim, input.inputHash, plan.outputHash);
+    await expect(applyPlan(userId, claim, plan, binding)).resolves.toBe("APPLIED");
+    const version = await prisma.memoryFactVersion.findFirstOrThrow({ where: { userId } });
+    const { subjectEntityId } = await prisma.memoryFact.findUniqueOrThrow({
+      select: { subjectEntityId: true },
+      where: { id: version.factId }
+    });
+    expect(subjectEntityId).toEqual(expect.any(String));
+    await expect(loadMemoryReusableFactVersionIds(prisma, userId, [version.id]))
+      .resolves.toEqual(new Set([version.id]));
+    await protect(version);
+    await prisma.memoryEntity.update({
+      data: { state: "RETRACTED" },
+      where: { id: subjectEntityId! }
+    });
+    await expect(loadMemoryReusableFactVersionIds(prisma, userId, [version.id]))
+      .resolves.toEqual(new Set());
+    return { subjectEntityId: subjectEntityId!, version };
+  }
+
+  /** One coordinator maintenance pass with quiet evidence, in which only
+   * this owner has Memory model authority; whether the owner was offered. */
+  async function maintenancePass(userId: string): Promise<boolean> {
+    const offered: string[] = [];
+    await reconcileMemoryMaintenanceWork(prisma, new Date(Date.now() + 2 * 60 * 60_000), async (candidate) => {
+      offered.push(candidate);
+      return candidate === userId;
+    });
+    return offered.includes(userId);
+  }
+
+  it.each(["unprotected", "pinned", "owner-touched", "remember-requested"] as const)(
+    "retires a fact left under a retracted subject root once, in the owner's first maintenance pass, only when unprotected (%s)",
+    async (protection) => {
+      const userId = await createOwner(`subject-root-${protection}`);
+      try {
+        const { subjectEntityId, version } = await factUnderRetractedSubjectRoot(userId, async (current) => {
+          if (protection === "pinned") {
+            await prisma.memoryFact.update({ data: { pinned: true }, where: { id: current.factId } });
+          } else if (protection === "owner-touched") {
+            await prisma.memoryEvent.create({
+              data: {
+                actorType: "USER",
+                actorUserId: userId,
+                factId: current.factId,
+                factVersionId: current.id,
+                operation: "UNPIN",
+                userId
+              }
+            });
+          } else if (protection === "remember-requested") {
+            await prisma.memoryFactVersion.update({
+              data: {
+                semanticFrame: {
+                  ...(current.semanticFrame as Prisma.JsonObject),
+                  memoryDirective: "EXPLICIT_REMEMBER"
+                }
+              },
+              where: { id: current.id }
+            });
+          }
+        });
+        const searchEntries = () => prisma.memorySearchEntry.count({
+          where: { factVersionId: version.id, userId }
+        });
+        const retirements = () => prisma.memoryEvent.findMany({
+          select: { actorType: true, factVersionId: true, metadata: true },
+          where: { factId: version.factId, operation: "SOURCE_INVALIDATE", userId }
+        });
+        const revision = async () => (await prisma.userMemorySettings.findUniqueOrThrow({
+          select: { memoryRevision: true },
+          where: { userId }
+        })).memoryRevision;
+        expect(await searchEntries()).toBeGreaterThan(0);
+        const before = await revision();
+
+        if (protection !== "unprotected") {
+          // A protected lineage is no owner work, and its first pass keeps it.
+          await expect(maintenancePass(userId)).resolves.toBe(false);
+          await expect(scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).resolves.toBe(0);
+          await expect(prisma.memoryFact.findUniqueOrThrow({
+            select: { currentVersionId: true, pinned: true, state: true },
+            where: { id: version.factId }
+          })).resolves.toEqual({
+            currentVersionId: version.id,
+            pinned: protection === "pinned",
+            state: "ACTIVE"
+          });
+          await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+            select: { state: true, systemTo: true },
+            where: { id: version.id }
+          })).resolves.toEqual({ state: "ACTIVE", systemTo: null });
+          await expect(retirements()).resolves.toEqual([]);
+          expect(await searchEntries()).toBeGreaterThan(0);
+          expect(await revision()).toBe(before);
+          return;
+        }
+
+        // The retirement is this owner's only maintenance work; its first pass
+        // under the policy does it without a model call or review row.
+        await expect(maintenancePass(userId)).resolves.toBe(true);
+        await expect(prisma.memoryFact.findUniqueOrThrow({
+          select: { currentVersionId: true, state: true, subjectEntityId: true },
+          where: { id: version.factId }
+        })).resolves.toEqual({
+          currentVersionId: null,
+          state: "RETRACTED",
+          subjectEntityId
+        });
+        await expect(prisma.memoryFactVersion.findUniqueOrThrow({
+          select: { state: true, systemTo: true },
+          where: { id: version.id }
+        })).resolves.toEqual({ state: "RETRACTED", systemTo: expect.any(Date) });
+        await expect(retirements()).resolves.toEqual([{
+          actorType: "SYSTEM",
+          factVersionId: version.id,
+          metadata: expect.objectContaining({
+            outcome: "FACT_RETRACTED",
+            reason: "subject_entity_retracted"
+          })
+        }]);
+        await expect(searchEntries()).resolves.toBe(0);
+        expect(await revision()).toBe(before + 1);
+        await expect(prisma.memoryJob.count({ where: { kind: "SYNTHESIZE_MEMORIES", userId } })).resolves.toBe(0);
+        await expect(prisma.memoryMaintenanceReview.count({ where: { userId } })).resolves.toBe(0);
+
+        // Nothing is left to retire: the owner is not offered again and a
+        // repeated pass changes nothing.
+        await expect(maintenancePass(userId)).resolves.toBe(false);
+        await expect(scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).resolves.toBe(0);
+        await expect(retirements()).resolves.toHaveLength(1);
+        expect(await revision()).toBe(before + 1);
+
+        // Re-observing the product learns it under a fresh entity; neither the
+        // retired fact nor its retracted root comes back.
+        const laterChat = await prisma.chat.create({
+          data: { title: "Later conversation", userId }
+        });
+        const again = await createTurn({
+          assistantText: "Noted again.",
+          chatId: laterChat.id,
+          createdAt: new Date("2026-08-24T10:07:00.000Z"),
+          parentMessageId: null,
+          userId,
+          userText: "I bought a MacBook Air."
+        });
+        await settleChat(userId, laterChat.id, again);
+        const againClaim = await claimFactJob(userId, again.userMessage.id);
+        const againInput = await prepare(againClaim);
+        const againPlan = extractionPlan(againInput, "I bought a MacBook Air.");
+        const againBinding = await createSucceededBinding(
+          userId,
+          againClaim,
+          againInput.inputHash,
+          againPlan.outputHash
+        );
+        await expect(applyPlan(userId, againClaim, againPlan, againBinding))
+          .resolves.toBe("APPLIED");
+        const relearned = await prisma.memoryFact.findFirstOrThrow({
+          select: { id: true, subjectEntityId: true },
+          where: { state: "ACTIVE", userId }
+        });
+        expect(relearned.id).not.toBe(version.factId);
+        expect(relearned.subjectEntityId).not.toBe(subjectEntityId);
+        await expect(prisma.memoryEntity.findUniqueOrThrow({
+          select: { state: true },
+          where: { id: subjectEntityId }
+        })).resolves.toEqual({ state: "RETRACTED" });
+        await expect(retirements()).resolves.toHaveLength(1);
+      } finally {
+        await cleanupOwner(userId);
+      }
+    }
+  );
+
+  it("leaves a fact under a retracted subject root to a later policy once the owner's first pass ran", async () => {
+    const userId = await createOwner("subject-root-later-pass");
+    try {
+      const { version } = await factUnderRetractedSubjectRoot(userId, async (current) => {
+        // The owner's first pass under the current policy already recorded a row.
+        await prisma.memoryMaintenanceReview.create({
+          data: {
+            disposition: "UNREVIEWABLE",
+            evidenceThrough: new Date(),
+            factVersionId: current.id,
+            memoryJobId: null,
+            policyVersion: MEMORY_MAINTENANCE_POLICY_VERSION,
+            reasonCode: "statement_too_long",
+            reviewedAt: new Date(),
+            sourceSnapshotHash: "a".repeat(64),
+            userId
+          }
+        });
+      });
+      await expect(scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).resolves.toBe(0);
+      await expect(prisma.memoryFact.findUniqueOrThrow({
+        select: { currentVersionId: true, state: true },
+        where: { id: version.factId }
+      })).resolves.toEqual({ currentVersionId: version.id, state: "ACTIVE" });
+      await expect(prisma.memoryEvent.count({
+        where: { factId: version.factId, operation: "SOURCE_INVALIDATE", userId }
       })).resolves.toBe(0);
     } finally {
       await cleanupOwner(userId);

@@ -387,6 +387,50 @@ describe("maintenance cleanup pass", () => {
     expect(await pendingVersions(userId)).toEqual([kept.currentVersionId]);
   });
 
+  it("reviews every unprotected automatic fact once more under the current policy, whatever v4 decided, and protected ones never", async () => {
+    const userId = await owner();
+    const v4Job = await prisma.memoryJob.create({ data: { userId, kind: "SYNTHESIZE_MEMORIES", pipelineVersion: "memory-maintenance-v1",
+      idempotencyFingerprint: randomUUID(), memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0, state: "SUCCEEDED", completedAt: new Date() } });
+    const fact = async (text: string, options: Readonly<{ frame?: { memoryDirective: "EXPLICIT_REMEMBER" }; pinned?: boolean }> = {}) =>
+      createAutomaticMaintenanceFact(userId, [{ statement: text, source: await createMaintenanceMessage(userId, text), frame: options.frame }],
+        { pinned: options.pinned });
+    /** A fresh v4 decision: under v4 it would cover the version for its whole cadence. */
+    const decidedUnderV4 = async (versionId: string, decision: Readonly<{ disposition: "KEEP" | "REJECTED";
+      usefulness?: "DURABLE"; reasonCode?: "short_term" }>) => {
+      const review = await prisma.memoryMaintenanceReview.create({ data: { userId, factVersionId: versionId, memoryJobId: v4Job.id,
+        policyVersion: "memory-maintenance-policy-v4", sourceSnapshotHash: "a".repeat(64), evidenceThrough: new Date() } });
+      await prisma.memoryMaintenanceReview.update({ where: { id: review.id }, data: { ...decision, reviewedAt: new Date() } });
+    };
+    const kept = await fact("I have kept a vegetarian diet for ten years.");
+    await decidedUnderV4(kept.currentVersionId, { disposition: "KEEP", usefulness: "DURABLE" });
+    const rejected = await fact("Our checkout page now shows three payment options.");
+    await decidedUnderV4(rejected.currentVersionId, { disposition: "REJECTED", reasonCode: "short_term" });
+    const unreviewed = await fact("I am renovating my flat this year.");
+    const pinned = await fact("The landing page is finished.", { pinned: true });
+    const remembered = await fact("Remember that my staging server runs on port 8080.", { frame: { memoryDirective: "EXPLICIT_REMEMBER" } });
+    const edited = await fact("I feel tired of this bug today.");
+    await prisma.memoryEvent.create({ data: { userId, factId: edited.factId, factVersionId: edited.currentVersionId,
+      operation: "EDIT", actorType: "USER", actorUserId: userId } });
+    const decidedAt = new Date();
+    expect(await plan(userId, decidedAt)).toBe(1);
+    expect(await pendingVersions(userId)).toEqual([kept.currentVersionId, rejected.currentVersionId, unreviewed.currentVersionId].sort());
+    await settleMaintenanceJob(userId, () => "KEEP", decidedAt);
+    // One re-review: the settled current-policy decisions cover every version again.
+    expect(await plan(userId, hours(decidedAt, 1))).toBe(0);
+    const current = await reviews(userId);
+    expect(current.map(({ disposition }) => disposition)).toEqual(["KEEP", "KEEP", "KEEP"]);
+    expect(current.map(({ factVersionId }) => factVersionId).sort())
+      .toEqual([kept.currentVersionId, rejected.currentVersionId, unreviewed.currentVersionId].sort());
+    for (const protectedFact of [pinned, remembered, edited]) {
+      expect(await prisma.memoryMaintenanceReview.count({ where: { userId, factVersionId: protectedFact.currentVersionId } })).toBe(0);
+      expect(await prisma.memoryFact.findUnique({ where: { id: protectedFact.factId } }))
+        .toMatchObject({ state: "ACTIVE", currentVersionId: protectedFact.currentVersionId });
+    }
+    // The v4 decisions stay as history.
+    expect(await prisma.memoryMaintenanceReview.findMany({ where: { userId, policyVersion: "memory-maintenance-policy-v4" },
+      orderBy: { disposition: "asc" }, select: { disposition: true } })).toEqual([{ disposition: "KEEP" }, { disposition: "REJECTED" }]);
+  });
+
   it("never reviews explicit, pinned, owner-touched or remembered-on-request lineages, even when labelled episodic", async () => {
     const userId = await owner();
     const remembered = await createMaintenanceMessage(userId, "Remember that my locker number is 27.");
@@ -460,7 +504,7 @@ describe("maintenance cleanup pass", () => {
     expect(offered.filter((userId) => mine.has(userId))).toEqual([]);
   });
 
-  it("accepts previous-release v3 writes during replacement and stales an old v3 job", async () => {
+  it("accepts previous-release v4 writes during replacement and stales an old v4 job", async () => {
     const userId = await owner();
     const source = await createMaintenanceMessage(userId, "The delivery arrives at noon.");
     const fact = await createAutomaticMaintenanceFact(userId, [{ statement: source.text, source }]);
@@ -468,7 +512,7 @@ describe("maintenance cleanup pass", () => {
       idempotencyFingerprint: randomUUID(), memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0 } });
     const base = { userId, factVersionId: fact.currentVersionId, evidenceThrough: maintenanceFixtureTime() };
     const legacy = await prisma.memoryMaintenanceReview.create({ data: { ...base, memoryJobId: job.id,
-      policyVersion: "memory-maintenance-policy-v3", sourceSnapshotHash: "a".repeat(64) } });
+      policyVersion: "memory-maintenance-policy-v4", sourceSnapshotHash: "a".repeat(64) } });
     await prisma.memoryMaintenanceReview.update({ where: { id: legacy.id }, data: { disposition: "KEEP", usefulness: "DURABLE", reviewedAt: new Date() } });
     const handler = createPrismaMemoryMaintenanceHandler(prisma);
     await expect(handler.preflight({ ...job, claimToken: "", recoveredLease: false } as MemoryJobClaim))

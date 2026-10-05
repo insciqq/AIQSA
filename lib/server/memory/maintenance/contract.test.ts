@@ -208,6 +208,39 @@ describe("governed automatic Memory maintenance", () => {
     expect(verification.systemPrompt).not.toMatch(/independent useful personal assertion|active plans, significant historical events/u);
     expect(verification.systemPrompt).toContain("not a reason to reject");
   });
+  // Paraphrased classes the production audit found kept or rescued as long-term facts.
+  it.each([
+    ["the user's own product specification",
+      "the specification of a product, document, code or other artifact the user is making", "current_task_only",
+      "the specification, status, progress and implementation details of a product, document, code or other artifact the user is making"],
+    ["an artifact status", "its status or progress", "current_task_only",
+      "the specification, status, progress and implementation details of a product, document, code or other artifact the user is making"],
+    ["current-task implementation details", "implementation details of the current task", "current_task_only",
+      "the specification, status, progress and implementation details of a product, document, code or other artifact the user is making"],
+    ["a deliberation", "the user's deliberation between options", "current_task_only",
+      "and the user's deliberation between options. None of these establishes residence, a general buying rule, an enduring preference " +
+        "or a lasting personal property unless the user directly states that broader personal scope or says it lasts."],
+    ["a momentary feeling", "a momentary feeling", "generic_desideratum", "generic_desideratum covers a momentary feeling"],
+    ["a current symptom brought for advice", "a current symptom or problem the user brings for advice", "short_term_matter",
+      "a current symptom, problem or measurement the user brings for advice"]
+  ])("reviews and verifies %s as task-local unless the user says it lasts", (_label, rule, basis, basisRule) => {
+    expect(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE).toContain(rule);
+    const request = buildMemoryMaintenanceRequest(plan);
+    expect(request.systemPrompt).toContain(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE);
+    expect(request.systemPrompt).toContain(basisRule);
+    expect(request.systemPrompt).toContain(`${basis} covers`);
+    expect(request.systemPrompt).toContain(
+      "A lasting-looking property of a product, document, code or other artifact the user is making is not a personal property.");
+    const verification = buildMemoryMaintenanceVerificationRequest(plan, decodeMemoryMaintenanceOutput({ decisions: [remove] }, plan));
+    expect(verification.systemPrompt).toContain(MEMORY_LONG_TERM_USEFULNESS_GUIDANCE);
+    for (const verifierRule of [
+      "task-local information, a momentary reaction or feeling",
+      "Reject such a removal only for information about the user personally, or about the user's close person or pet",
+      "The specification, status or implementation details of a product, document, code or other artifact the user is making are " +
+        "not personal information, however lasting they look."
+    ]) expect(verification.systemPrompt).toContain(verifierRule);
+    expect(verification.systemPrompt).not.toContain("or when you genuinely doubt its scope");
+  });
   it("records a closed reason for every rejected review and verification answer", () => {
     const pair = memoryMaintenancePlan([source, { ...source, ref: "S2", factId: "fact-2", versionId: "version-2" }]);
     const review = [

@@ -162,9 +162,9 @@ describe("long-term extraction qualification fixture and oracle", () => {
       providerCalls: { "adjudication:SUCCEEDED": 1, "extraction:SUCCEEDED": 1 },
       reportedCostCalls: 1, reportedTokenCalls: 1, sanitizedAggregatesOnly: true,
       scenarios: MEMORY_EXTRACTION_QUALIFICATION_SCENARIOS.length, status: "passed", totalTokens: 1_200,
-      version: 2
+      version: 3
     });
-    expect(MEMORY_EXTRACTION_QUALIFICATION_VERSION).toBe(2);
+    expect(MEMORY_EXTRACTION_QUALIFICATION_VERSION).toBe(3);
     expect(report.groups.SHORT_TERM).toMatchObject({
       expectation: "NONE", falseSaves: 0, notSaved: 12, receipts: { REJECT_NOT_USEFUL: 12 }, saved: 0
     });
@@ -182,6 +182,20 @@ describe("long-term extraction qualification fixture and oracle", () => {
     expect(summarizeExtractionQualification({
       degradedCodes: [], jobStages: [], results: withMiss(["en_doctor_on_call"]), usage
     }).status).toBe("failed");
+    // Task-local detail and an uncertain report must stay unsaved, like every "no" group.
+    expect(report.groups.TASK_LOCAL).toMatchObject({ expectation: "NONE", notSaved: 12, passed: 12, scenarios: 12 });
+    expect(report.groups.UNCERTAIN).toMatchObject({ expectation: "NONE", notSaved: 2, passed: 2, scenarios: 2 });
+    for (const id of ["ru_product_spec", "en_uncertain_report"]) {
+      const saved = passing.map((result) => result.scenario.id === id
+        ? { ...result, verdict: judgeExtractionScenario(result.scenario, {
+          saved: [{ ...result.scenario.allowed[0]!, explicitRemember: false }]
+        }) }
+        : result);
+      expect(summarizeExtractionQualification({ degradedCodes: [], jobStages: [], results: saved, usage }).status).toBe("failed");
+    }
+    // A remember request keeps a task-local detail, and a role survives beside one.
+    expect(scenario("en_remember_spec")).toMatchObject({ expectation: "SAVE", group: "PROTECTED" });
+    expect(scenario("ru_role_with_spec")).toMatchObject({ expectation: "SAVE", group: "MIXED", maxSaves: 1 });
     const falseSave = passing.map((result) => result.scenario.id === "en_coffee_now"
       ? { ...result, verdict: judgeExtractionScenario(result.scenario, {
         saved: [{ end: 3, explicitRemember: false, start: 0 }]
