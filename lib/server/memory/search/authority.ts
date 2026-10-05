@@ -1,12 +1,17 @@
 import { Prisma } from "@prisma/client";
 import type { MemoryTransaction } from "../persistence/transaction";
 
-/** Settings lock is held by the caller. Both accepted messages must remain on the active branch. */
+/**
+ * Settings lock is held by the caller. Both accepted messages must remain on the active branch, in an
+ * ordinary chat or, for an answer to a scheduled task's prompt, also in its excluded chat.
+ */
 export async function requireMemorySearchActiveBranch(tx: MemoryTransaction, userId: string, runId: string): Promise<void> {
   const rows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT run.id FROM "ModelRun" run JOIN "Chat" chat ON chat.id = run."chatId"
+      JOIN "Message" prompt ON prompt.id = run."userMessageId" AND prompt."chatId" = chat.id
     WHERE run.id = ${runId} AND run."userId" = ${userId} AND chat."userId" = ${userId}
-      AND chat."projectId" IS NULL AND chat."memoryMode" = 'NORMAL'
+      AND chat."projectId" IS NULL
+      AND (chat."memoryMode" = 'NORMAL' OR (chat."memoryMode" = 'EXCLUDED' AND prompt."scheduledTaskPrompt"))
       AND chat."permanentDeletionAt" IS NULL
       AND run."status" IN ('queued', 'streaming', 'in_progress')
       AND COALESCE(run."normalizedRequest" -> 'agent', 'null'::jsonb) = 'null'::jsonb

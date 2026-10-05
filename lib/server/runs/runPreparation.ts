@@ -96,6 +96,16 @@ import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { isScheduledTaskToolSettings, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
+import { admitScheduledTaskManagement, scheduledTaskManagementToolsForRequest } from "../tools/scheduledTaskManagement";
+import {
+  FETCH_URL_LIMITS,
+  fetchUrlAuthoringMessages,
+  fetchUrlToolsForRequest,
+  taskInstructionFetchUrlDigests,
+  userAuthoredFetchUrlDigests,
+  type FetchUrlPlan
+} from "../tools/fetchUrlPlan";
+import { isFetchUrlDigest } from "../webFetch/urls";
 import { readToolCallTool } from "../tools/readToolCall";
 import { isToolHistoryMessageId, TOOL_HISTORY_VERSION, type ToolHistorySnapshot } from "./toolHistoryContract";
 import { insertToolHistory, type ToolHistoryProjection } from "./toolHistory";
@@ -200,10 +210,15 @@ type RunPreparationRepository = Pick<
   RunRepository,
   /** Present where a run can create a scheduled task: admission offers the tool only then. */
   | "createScheduledTaskForCall"
+  /** Present where a run can manage scheduled tasks: admission offers that tool only then. */
+  | "loadScheduledTaskManagement"
+  | "manageScheduledTaskForCall"
   | "loadAssistantRowContext"
   | "loadBranchContextCheckpoints"
   | "loadKnowledgeFullContextPassages"
   | "loadProjectAssistantRowContext"
+  /** Without it only the current message's links are authorized for `fetch_url`. */
+  | "loadScheduledPromptMessageIds"
   | "loadToolHistory"
   | "projectToolHistory"
 >>;
@@ -403,6 +418,8 @@ export type RegenerateRunPreparationSource = Readonly<{
       id: string;
       /** Server-only: the stored message is a scheduled task's prompt, in its chat or a branch copy. */
       scheduledTaskPrompt: boolean;
+      /** Server-only: the prompt's task still exists with Memory on (never for a branch copy). */
+      scheduledTaskMemory?: true;
     }>;
   }>;
 }>;
@@ -1256,13 +1273,17 @@ async function prepareRunWith(
     : DEFAULT_TOOL_RUN_BUDGETS;
   const observationPolicy = normalizeToolObservationPolicy(toolBudgets.toolObservationPolicy);
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
-  // A scheduled task's send: a flat selected context and no Personal Memory, whatever the chat's mode.
+  // A scheduled task's send: a flat selected context, whatever the chat's mode.
   const scheduledOccurrence = input.source.kind === "send" ? input.source.scheduledOccurrence : undefined;
   // Any answer to a scheduled task's prompt, which the model may have written: the scheduled run
-  // itself or a regeneration, in its chat or a branch copy. It gets no Personal Memory and never
-  // the scheduled task creation tool.
+  // itself or a regeneration, in its chat or a branch copy. It never learns into Personal Memory
+  // and never gets the scheduled task creation tool.
   const scheduledPromptAnswer = scheduledOccurrence !== undefined ||
     (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt === true);
+  // Such an answer reads Memory only while its task has Memory on: the scheduled run by its
+  // occurrence, a regeneration by the task that posted the prompt (never in a branch copy).
+  const scheduledMemoryRead = scheduledOccurrence ? scheduledOccurrence.memory === true
+    : input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskMemory === true;
   if (body?.agentEnabled !== undefined && typeof body.agentEnabled !== "boolean") return failure("agent_selection_invalid", 400);
   const agentEnabled = body?.agentEnabled === true;
   const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
@@ -2318,8 +2339,12 @@ async function prepareRunWith(
   }) ?? { version: TOOL_HISTORY_VERSION, turns: [] };
   const toolHistory = scheduledOccurrence ? scheduledRunToolHistory(branchToolHistory, sendContext ?? []) : branchToolHistory;
   const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
-  const memoryStandingEligible = !project && !agent && !scheduledPromptAnswer && resolvedChatMode.mode === "NORMAL" &&
-    !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content));
+  // A task turn with Memory reads it like an ordinary personal turn whatever its chat's mode (an
+  // excluded chat keeps it out of learning, not its own reads), and never as a `/memory` command:
+  // its admission reads standing facts only, so such a prompt is answered as text.
+  const memoryStandingEligible = !project && !agent && resolvedChatMode.mode !== "TEMPORARY" && (scheduledPromptAnswer
+    ? scheduledMemoryRead
+    : resolvedChatMode.mode === "NORMAL" && !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content)));
   const memorySearchAdmission = memoryStandingEligible && body?.tools !== "none" &&
     modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
       modelId: executionModelId, provider: executionProvider
@@ -2339,7 +2364,10 @@ async function prepareRunWith(
   // scheduled task. Never an answer to a scheduled task's prompt, a temporary,
   // Project, Assistant, Agent or Knowledge run, nor one without tool calling.
   // Frozen here: the settings the task takes from this run, never mutable chat
-  // state read later, and only in the shape recovery decodes.
+  // state read later, and only in the shape recovery decodes. The task reads
+  // Memory only when this run itself was admitted to read it: an eligible
+  // chat, and the owner's Memory on (search admission, which every run that
+  // may create a task attempts, reads exactly that).
   const scheduledTaskSettings = !scheduledPromptAnswer && !project && !assistantRun &&
     !agentEnabled && !knowledgeRequested && resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
@@ -2349,10 +2377,51 @@ async function prepareRunWith(
         provider: selectedProvider,
         searchEnabled: admissionPlan.searches.length > 0,
         toolsEnabled: ordinaryMcpSelection !== null && ordinaryMcpSelection.mode !== "off",
-        workspaceEnabled: workspaceAdmissionPlan !== undefined
+        workspaceEnabled: workspaceAdmissionPlan !== undefined,
+        memoryEnabled: memoryStandingEligible && memorySearch !== null
       }
     : undefined;
   const scheduledTaskTool = isScheduledTaskToolSettings(scheduledTaskSettings) ? scheduledTaskSettings : undefined;
+  // One page reader for every tool-calling model, never an Agent run or a
+  // Project with external tools off. Frozen here: the links user-authored text
+  // on this branch authorizes (never a scheduled prompt's), or a scheduled
+  // run's task snapshot, read with the task revision the link fences.
+  const fetchUrlOffered = !agentEnabled && body?.tools !== "none" && (!project || project.policy.externalToolsEnabled) &&
+    modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  let fetchUrlPlan: FetchUrlPlan | undefined;
+  if (fetchUrlOffered && scheduledOccurrence) {
+    fetchUrlPlan = { version: 1, userUrlDigests: [], taskUrlDigests: (scheduledOccurrence.promptUrlDigests ?? [])
+      .filter(isFetchUrlDigest).slice(0, FETCH_URL_LIMITS.authorizedUrls) };
+  } else if (fetchUrlOffered) {
+    const storedIds = fetchUrlAuthoringMessages(conversationMessages).map((message) => message.id)
+      .filter((id) => id !== currentSendMessageId);
+    let promptIds: ReadonlySet<string> | null = null;
+    try {
+      // Without the marks, only the current message (never a stored prompt) authorizes links.
+      promptIds = deps.repository.loadScheduledPromptMessageIds
+        ? await deps.repository.loadScheduledPromptMessageIds({ chatId: chat.id, messageIds: storedIds, userId: input.userId })
+        : null;
+    } catch (error) {
+      logEvent("service_operation", { subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
+        code: "fetch_url_authority_unavailable", prisma_code: databaseFailureCode(error) });
+    }
+    // Known prompts only: messages refused for lack of marks are not called instructions.
+    const instructionIds = new Set(promptIds ?? []);
+    if (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt) {
+      instructionIds.add(input.source.source.userMessage.id);
+    }
+    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds]);
+    const userUrlDigests = userAuthoredFetchUrlDigests(conversationMessages, excludedIds);
+    const instructionUrlDigests = taskInstructionFetchUrlDigests(conversationMessages, instructionIds, userUrlDigests);
+    fetchUrlPlan = { version: 1, userUrlDigests, ...(instructionUrlDigests.length > 0 ? { instructionUrlDigests } : {}) };
+  }
+  // Where it may create one, it may also manage the owner's saved tasks, once
+  // there is one; in a task's own chat the tool names that task. Frozen here,
+  // with the links this run's user text authorized for a prompt it rewrites.
+  const scheduledTaskManagementTool = scheduledTaskTool && deps.repository.manageScheduledTaskForCall
+    ? await admitScheduledTaskManagement(deps.repository, { chatId: chat.id, userId: input.userId,
+      userUrlDigests: fetchUrlPlan?.userUrlDigests ?? [] }) : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
     ...(memorySearch ? { memorySearch } : {}),
@@ -2377,6 +2446,8 @@ async function prepareRunWith(
     ...(toolCallReader ? { toolCallReader: true as const } : {}),
     ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
     ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
+    ...(scheduledTaskManagementTool ? { scheduledTaskManagementTool } : {}),
+    ...(fetchUrlPlan ? { fetchUrl: fetchUrlPlan } : {}),
     toolHistory,
     attachmentIds,
     chatId: chat.id,
@@ -2466,6 +2537,8 @@ async function prepareRunWith(
     ...(baseNormalizedRequest.toolCallReader ? [readToolCallTool] : []),
     ...(baseNormalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
     ...scheduledTaskToolsForRequest(baseNormalizedRequest),
+    ...scheduledTaskManagementToolsForRequest(baseNormalizedRequest),
+    ...fetchUrlToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),

@@ -69,6 +69,34 @@ export function activeBranchPathV2(
   return graph.activeLeafMessageId ? nodePath(graph, graph.activeLeafMessageId) : [];
 }
 
+/**
+ * The leaf to check out so that `messageId` shows in the conversation: null
+ * when it already lies on the active path or is unknown, otherwise the
+ * newest leaf below it (itself when it has no children). Nodes arrive in
+ * creation order, so the newest leaf is the last one reached.
+ */
+export function branchLeafRevealingMessageV2(
+  graph: ChatBranchGraphWire,
+  messageId: string
+): string | null {
+  if (!graph.nodes.some((node) => node.id === messageId)) return null;
+  if (activeBranchPathV2(graph).some((node) => node.id === messageId)) return null;
+  const children = childrenByParent(graph);
+  const order = new Map(graph.nodes.map((node, index) => [node.id, index]));
+  const seen = new Set<string>();
+  const pending = [messageId];
+  let newest: string | null = null;
+  while (pending.length > 0) {
+    const id = pending.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const below = children.get(id) ?? [];
+    if (below.length === 0 && (newest === null || order.get(id)! > order.get(newest)!)) newest = id;
+    pending.push(...below.map((child) => child.id));
+  }
+  return newest;
+}
+
 export function branchVersionsV2(
   graph: ChatBranchGraphWire
 ): BranchVersionV2[] {

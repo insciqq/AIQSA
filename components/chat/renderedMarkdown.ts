@@ -49,7 +49,7 @@ function serialize(node: Node): string {
   }
   if (node.hasAttribute("data-markdown-code-language") || node.tagName === "PRE") {
     const code = node.querySelector("pre code") ?? node.querySelector("code");
-    const text = code?.textContent ?? (node.tagName === "PRE" ? node.textContent : "");
+    const text = code?.textContent ?? node.getAttribute("data-markdown-code-source") ?? (node.tagName === "PRE" ? node.textContent : "");
     if (!text) return "";
     const fence = fenceFor(text);
     return `${fence}${node.getAttribute("data-markdown-code-language") ?? ""}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}\n\n`;

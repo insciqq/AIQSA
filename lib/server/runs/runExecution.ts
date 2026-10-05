@@ -177,6 +177,18 @@ import {
   isScheduledTaskCreateCall,
   scheduledTaskToolsForRequest
 } from "../tools/scheduledTaskCreation";
+import {
+  executeManageScheduledTask,
+  isScheduledTaskManageCall,
+  scheduledTaskManagementToolsForRequest
+} from "../tools/scheduledTaskManagement";
+import {
+  createFetchUrlSession,
+  fetchUrlActivityFacts,
+  fetchUrlInterruptedResult,
+  fetchUrlToolsForRequest,
+  isFetchUrlCall
+} from "../tools/fetchUrl";
 import { executeReadToolCall, readToolCallReceipt, readToolCallTool, type ToolCallReader } from "../tools/readToolCall";
 import { insertToolHistory, refreshToolHistory, requestHasToolHistory, type ToolHistoryProjection } from "./toolHistory";
 import { READ_TOOL_CALL_NAME, toolCallRefEntry, type ToolCallRefEntry, type ToolHistoryCache } from "./toolHistoryContract";
@@ -304,6 +316,9 @@ export type RunExecutionRepository = Pick<
   | "toolCallsAvailable"
   | "recordMonitoringVerdict"
   | "createScheduledTaskForCall"
+  | "manageScheduledTaskForCall"
+  | "loadRunFetchUrlCalls"
+  | "loadRunSearchSourceUrls"
   | "recordRunUsageEvents"
   | "resetToolLoopAssistantDraft"
   | "settleToolLoopCall"
@@ -317,6 +332,10 @@ export type RunExecutionInput = Readonly<{
   artifacts?: Pick<import("../artifacts/service").ArtifactService, "execute" | "restore">;
   vision?: import("../vision/service").VisionAnalysisService;
   images?: import("../images/service").ImageGenerationService;
+  /** Test seam of the page reader's transport; production uses the pinned SSRF-safe one. */
+  fetchPage?: import("../tools/fetchUrl").FetchUrlSessionDeps["fetchPage"];
+  /** Test seam of the page reader's text extraction; production parses in the disposable parser process. */
+  extractPage?: import("../tools/fetchUrl").FetchUrlSessionDeps["extractPage"];
   adapter: ProviderAdapter;
   /** Names a personal chat after its first answer; absent on recovery paths. */
   chatTitleGenerator?: ChatTitleGenerator;
@@ -2211,6 +2230,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...(normalizedRequest.toolCallReader ? [readToolCallTool] : []),
           ...(normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
           ...scheduledTaskToolsForRequest(normalizedRequest),
+          ...scheduledTaskManagementToolsForRequest(normalizedRequest),
+          ...fetchUrlToolsForRequest(normalizedRequest),
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
           ...(activeMcpDiscovery ? [mcpFindToolsTool] : []),
@@ -2227,10 +2248,28 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         // write is fenced again by the run's link to that running occurrence.
         const isMonitoringCall = (name: string) => isMonitoringVerdictCall(normalizedRequest, name);
         const recordVerdict = input.repository.recordMonitoringVerdict?.bind(input.repository);
-        // Only a run admitted with the frozen marker creates a scheduled task;
-        // the creation fences the run's scheduled origin and its call again.
-        const isScheduledTaskCall = (name: string) => isScheduledTaskCreateCall(normalizedRequest, name);
+        // Only a run admitted with the frozen markers creates or manages
+        // scheduled tasks; the repository fences the run's scheduled origin
+        // and its call again.
+        const isScheduledTaskCall = (name: string) => isScheduledTaskCreateCall(normalizedRequest, name) ||
+          isScheduledTaskManageCall(normalizedRequest, name);
         const createScheduledTask = input.repository.createScheduledTaskForCall?.bind(input.repository);
+        const manageScheduledTask = input.repository.manageScheduledTaskForCall?.bind(input.repository);
+        // The page reader decides provenance from the run's frozen authority,
+        // its delivered follow-ups and its own persisted Search evidence.
+        const isFetchCall = (name: string) => isFetchUrlCall(normalizedRequest, name);
+        const fetchPlan = normalizedRequest.fetchUrl;
+        const loadSearchUrls = input.repository.loadRunSearchSourceUrls?.bind(input.repository);
+        const loadFetchCalls = input.repository.loadRunFetchUrlCalls?.bind(input.repository);
+        const fetchSession = fetchPlan ? createFetchUrlSession({
+          plan: fetchPlan,
+          scheduled: fetchPlan.taskUrlDigests !== undefined,
+          followupTexts: () => followups?.entries.map((entry) => entry.text) ?? [],
+          ...(input.fetchPage ? { fetchPage: input.fetchPage } : {}),
+          ...(input.extractPage ? { extractPage: input.extractPage } : {}),
+          ...(loadSearchUrls ? { loadSearchUrls: () => loadSearchUrls({ runId, userId: input.userId }) } : {}),
+          ...(loadFetchCalls ? { loadCalls: () => loadFetchCalls({ runId, userId: input.userId }) } : {})
+        }) : null;
         const callReadOptions = { resultReader: normalizedRequest.toolObservationVersion === 1 } as const;
         /** A call read settles its content-free receipt; the model receives the read. */
         const settleCallRead = async (persistedId: string, call: ModelToolCall, read: ToolExecutionResult) => {
@@ -2486,17 +2525,35 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 };
               }
               if (isScheduledTaskCall(call.name) && (claim.kind === "claimed" || claim.kind === "ambiguous")) {
-                // The creation settles its call with the task in one transaction:
-                // an interrupted (ambiguous) call finds that settlement or nothing
-                // created, so running it again never creates a second task. A
-                // refusal created nothing and settles here.
-                const result = await executeCreateScheduledTask(call, { persistedToolCallId: persisted.id,
-                  request: normalizedRequest, runId, userId: input.userId }, createScheduledTask);
+                // A creation or a change settles its call with the task in one
+                // transaction: an interrupted (ambiguous) call finds that
+                // settlement or nothing applied, so running it again never
+                // applies twice. A refusal applied nothing and settles here.
+                const owner = { persistedToolCallId: persisted.id, request: normalizedRequest, runId, userId: input.userId };
+                const result = isScheduledTaskManageCall(normalizedRequest, call.name)
+                  ? await executeManageScheduledTask(call, owner, manageScheduledTask)
+                  : await executeCreateScheduledTask(call, owner, createScheduledTask);
                 const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
                 const settled = snapshot && await input.repository.settleToolLoopCall({ callId: persisted.id,
                   result: snapshot, runId, state: result.status, userId: input.userId });
-                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Scheduled task creation could not be settled.");
+                if (settled !== "settled" && settled !== "reused") throw new RunPipelineError("tool_call_settle_conflict", "Scheduled task call could not be settled.");
                 return { status: "complete", value: result };
+              }
+              if (fetchSession && isFetchCall(call.name) && (claim.kind === "claimed" || claim.kind === "ambiguous")) {
+                // A page request that may have left is never sent again: an
+                // interrupted call settles as interrupted. A new one rechecks
+                // the run's authority before it leaves.
+                if (claim.kind === "claimed") await assertProjectRunAccessCurrent(true);
+                const result = claim.kind === "ambiguous"
+                  ? fetchUrlInterruptedResult(call)
+                  : await fetchSession.execute(call, { persistedToolCallId: persisted.id, signal: context.signal });
+                const settleable = settleableToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+                const settled = settleable && await input.repository.settleToolLoopCall({ callId: persisted.id,
+                  result: settleable.snapshot, runId, state: settleable.result.status, userId: input.userId });
+                if (!settleable || (settled !== "settled" && settled !== "reused")) {
+                  throw new RunPipelineError("tool_call_settle_conflict", "Page reading could not be settled.");
+                }
+                return { status: "complete", value: settleable.result };
               }
               if (isMemoryCall(call.name)) {
                 memoryCallsForDispatch.set(call.id, persisted);
@@ -3187,7 +3244,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
                 if (!route && !isMemoryCall(call.name) && !isKnowledgeCall(call.name) &&
                   !isSearchCall(call.name) && !isMcpDiscoveryCall(call.name) &&
-                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isScheduledTaskCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isSkillCall(call.name)) {
+                  !isCheckpointCall(call.name) && !isVisionCall(call.name) && !isViewImageCall(call.name) && !isImageCall(call.name) && !isArtifactCall(call.name) && !isWorkspaceCall(call.name) && !isSessionCall(call.name) && !isMonitoringCall(call.name) && !isScheduledTaskCall(call.name) && !isFetchCall(call.name) && !isObservationRead(call.name) && !isCallRead(call.name) && !isSkillCall(call.name)) {
                   throw new RunPipelineError("unsupported_tool_call", `Unsupported tool ${call.name}`);
                 }
                 const callArguments = toolLoopJson(
@@ -3262,7 +3319,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             for (const call of calls) {
               const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
               const registeredTool = tools.find((tool) => tool.name === call.name);
-              const builtInServer = isVisionCall(call.name) ? "System Vision" : isViewImageCall(call.name) || isCheckpointCall(call.name) ? "Workspace" : isArtifactCall(call.name) ? "Artifacts" : isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : isMonitoringCall(call.name) ? "Monitoring" : isScheduledTaskCall(call.name) ? "Scheduled tasks" : call.name === "find_tools"
+              const builtInServer = isVisionCall(call.name) ? "System Vision" : isViewImageCall(call.name) || isCheckpointCall(call.name) ? "Workspace" : isArtifactCall(call.name) ? "Artifacts" : isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : isMonitoringCall(call.name) ? "Monitoring" : isScheduledTaskCall(call.name) ? "Scheduled tasks" : isFetchCall(call.name) ? "Web" : call.name === "find_tools"
                 ? "Auto tools"
                 : isKnowledgeCall(call.name)
                   ? "Knowledge"
@@ -3283,6 +3340,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 runId,
                 liveToolCallStatus(modelToolCall(call), {
                   ...skillToolActivityFacts(normalizedRequest, call.name, call.arguments),
+                  ...(isFetchCall(call.name) ? fetchUrlActivityFacts(call.name, call.arguments) : {}),
                   origin: route ? "mcp" : registeredTool
                     ? call.name === "find_tools" ? "discovery" : registeredTool.capability
                     : "tool",
@@ -3454,7 +3512,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.visionAnalysis !== undefined || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || normalizedRequest.monitoringVerdictTool === true || normalizedRequest.scheduledTaskTool !== undefined || hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.visionAnalysis !== undefined || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || normalizedRequest.monitoringVerdictTool === true || normalizedRequest.scheduledTaskTool !== undefined || normalizedRequest.fetchUrl !== undefined || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;

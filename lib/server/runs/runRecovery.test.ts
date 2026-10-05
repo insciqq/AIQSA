@@ -47,6 +47,12 @@ import type { FrozenSkillManifest } from "../skills/runManifest";
 import { createSkillToolService, type SkillToolRepository } from "../skills/toolService";
 import { isSkillToolName } from "../tools/skill";
 import { scheduledTaskCreatedResult } from "../tools/scheduledTaskCreation";
+import { scheduledTaskManagementResult } from "../tools/scheduledTaskManagement";
+import { createFetchUrlSession } from "../tools/fetchUrl";
+import { createPrismaFetchUrlOperations } from "./prismaRepositoryFetchUrl";
+import { extractPage as extractPageText } from "../webFetch/extract";
+import type { FetchedPageInput } from "../webFetch/pageText";
+import { fetchUrlDigest } from "../webFetch/urls";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type {
   FocusedKnowledgeRecoveryScope,
@@ -10698,7 +10704,8 @@ describe("scheduled task creation recovery", () => {
     id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.",
     schedule: { kind: "weekly" as const, time: "09:00", days: ["mon" as const, "tue" as const, "wed" as const, "thu" as const, "fri" as const] },
     timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
-    toolsEnabled: true, workspaceEnabled: false, chatMode: "new" as const, kind: "standard" as const, status: "active" as const,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new" as const, kind: "standard" as const,
+    status: "active" as const,
     pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null,
     unseenResult: false, revision: 1, createdAt: "2026-10-04T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
   };
@@ -10733,6 +10740,132 @@ describe("scheduled task creation recovery", () => {
       // The card is published again from the settled result; the durable append keeps it once per task.
       expect(harness.state.events.map((entry) => entry.event)).toContainEqual(expect.objectContaining({ type: "artifact",
         data: expect.objectContaining({ artifactType: "scheduled_task" }) }));
+      expect(harness.state.completed).not.toBeNull();
+    }
+  );
+});
+
+describe("page reader recovery", () => {
+  const url = "https://news.example/today";
+  const readCall = { arguments: { url }, id: "provider-call-1", name: "fetch_url" };
+  const page = () => vi.fn(async () => ({ body: new TextEncoder().encode("<p>Fresh news for the reader.</p>"),
+    contentType: "text/html", finalUrl: url, status: 200 }));
+  // The same extraction as the parser process, run here.
+  const extractPage = async (input: FetchedPageInput) => extractPageText(input);
+
+  it.each(["running", "complete", "pending"] as const)(
+    "reuses a settled read, settles an interrupted one without sending it again, and sends a never-claimed one once (%s)",
+    async (state) => {
+      const requests: ProviderRunRequest[] = [];
+      const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+      const harness = createHarness({ providers: { openai: adapter } });
+      const plan = { version: 1 as const, userUrlDigests: [fetchUrlDigest(url)] };
+      // The settled result exactly as the live run stored it.
+      const settled = snapshotToolExecutionResult(await createFetchUrlSession({ extractPage, fetchPage: page(), plan, scheduled: false })
+        .execute(readCall, { persistedToolCallId: "stored-call-1", signal: new AbortController().signal }), 64_000);
+      const call: PersistedToolLoopCall = { ...persistedRecoveryCall(state), arguments: { url }, mcpBinding: null,
+        toolName: "fetch_url", ...(state === "complete" ? { result: settled } : {}) };
+      const base = checkpointedRun({ calls: [call], phase: state === "pending" ? "tools_pending" : state === "running"
+        ? "tools_running" : "tools_pending", providerToolMessages: [] });
+      const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+      installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, fetchUrl: plan, toolMode: "auto",
+        searchPlan: { mode: "all_selected", options: [] } } });
+      const fetchPage = page();
+      await refreshProviderRunIfNeeded({ ...harness.deps, extractPage, fetchPage }, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([]);
+      // Only a call that never left is sent, once; settled and interrupted calls never reach the network again.
+      expect(fetchPage).toHaveBeenCalledTimes(state === "pending" ? 1 : 0);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.tools?.map((tool) => tool.name)).toContain("fetch_url");
+      expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain(state === "running"
+        ? "fetch_url_interrupted" : "Fresh news for the reader.");
+      expect(harness.state.completed).not.toBeNull();
+    }
+  );
+
+  it("keeps the cache and cap of a sent read that follows more refusals than any fixed bound", async () => {
+    const requests: ProviderRunRequest[] = [];
+    const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+    const harness = createHarness({ providers: { openai: adapter } });
+    const plan = { version: 1 as const, userUrlDigests: [fetchUrlDigest(url)] };
+    const live = createFetchUrlSession({ extractPage, fetchPage: page(), plan, scheduled: false });
+    const signal = new AbortController().signal;
+    const stored = (id: string, result: Awaited<ReturnType<typeof live.execute>>, ordinal: number): PersistedToolLoopCall => ({
+      ...persistedRecoveryCall(result.status === "complete" ? "complete" : "error"), arguments: { url }, id, mcpBinding: null,
+      ordinal, providerCallId: `provider-${id}`, result: snapshotToolExecutionResult(result, 64_000), toolName: "fetch_url" });
+    // Round 1 refused 70 planted links and then sent one read; round 2 asks for the same page again.
+    const refusal = await live.execute({ arguments: { url: "https://planted.example/" }, id: "refused", name: "fetch_url" },
+      { persistedToolCallId: "refused", signal });
+    const earlier = Array.from({ length: 70 }, (_, index) => stored(`refused-${index}`, refusal, index));
+    const sent = stored("sent-read", await live.execute(readCall, { persistedToolCallId: "sent-read", signal }), 70);
+    const again: PersistedToolLoopCall = { ...persistedRecoveryCall("pending"), arguments: { url }, id: "read-again",
+      mcpBinding: null, providerCallId: "provider-call-again", roundIndex: 2, toolName: "fetch_url" };
+    const base = checkpointedRun({ calls: [...earlier, sent, again], phase: "tools_pending", providerToolMessages: [], roundIndex: 2 });
+    const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+    installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, fetchUrl: plan, toolMode: "auto",
+      searchPlan: { mode: "all_selected", options: [] },
+      toolBudgets: { maxMcpToolsPerDiscovery: 10, maxToolCalls: 80, maxToolRounds: 32 } } });
+    // The durable read over a store that honors a query bound, as PostgreSQL does.
+    const rows = [...earlier, sent, again];
+    const store = { modelRunToolCall: { findMany: async (query: { take?: number }) => rows
+      .slice(0, query.take ?? rows.length).map((row) => ({ id: row.id, result: row.result, state: row.state })) } };
+    harness.repository.loadRunFetchUrlCalls = createPrismaFetchUrlOperations(store as never).loadRunFetchUrlCalls;
+    const fetchPage = page();
+    await refreshProviderRunIfNeeded({ ...harness.deps, extractPage, fetchPage }, runId, userId);
+    expect(harness.state.recoveredErrors).toEqual([]);
+    // The page the run already read is answered from its stored result, without a request.
+    expect(fetchPage).not.toHaveBeenCalled();
+    const transcript = JSON.stringify(requests[0]!.providerToolMessages);
+    expect(transcript).toContain("Fresh news for the reader.");
+    expect(transcript).toContain("\\\"cached\\\":true");
+    expect(harness.state.completed).not.toBeNull();
+  });
+});
+
+describe("scheduled task management recovery", () => {
+  const settings = { modelId: "deployment-1", provider: "connection-1", searchEnabled: false, toolsEnabled: true,
+    workspaceEnabled: false };
+  const args = { action: "pause", taskId: "task-1" };
+  const task = {
+    id: "task-1", title: "Price monitor", prompt: "Watch the price.", schedule: { kind: "daily" as const, time: "09:00" },
+    timeZone: "UTC", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: false, chatMode: "same" as const, kind: "monitoring" as const,
+    status: "paused" as const, pauseReason: null, completionReason: null, nextRunAt: null, lastRun: null, running: false,
+    chatId: null, unseenResult: false, revision: 3, createdAt: "2026-10-01T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z"
+  };
+
+  it.each(["running", "complete"] as const)(
+    "applies an interrupted call only through its atomic settlement and replays a settled one (%s)",
+    async (state) => {
+      const requests: ProviderRunRequest[] = [];
+      const adapter: ProviderAdapter = { buildRequestPreview: () => ({}), async *stream(request) { requests.push(request); return providerResult; } };
+      const harness = createHarness({ providers: { openai: adapter } });
+      const manageCall = { arguments: args, id: "provider-call-1", name: "manage_scheduled_task" };
+      const settled = snapshotToolExecutionResult(scheduledTaskManagementResult(manageCall,
+        { action: "pause", changed: true, task }), 64_000);
+      const call: PersistedToolLoopCall = { ...persistedRecoveryCall(state), arguments: args, mcpBinding: null,
+        toolName: "manage_scheduled_task", ...(state === "complete" ? { result: settled } : {}) };
+      const base = checkpointedRun({ calls: [call], phase: state === "running" ? "tools_running" : "tools_pending",
+        providerToolMessages: [] });
+      const { mcp: _mcp, ...normalized } = base.normalizedRequest;
+      installCheckpointState(harness, { ...base, normalizedRequest: { ...normalized, scheduledTaskTool: settings,
+        scheduledTaskManagementTool: { chatTask: null }, toolMode: "auto", searchPlan: { mode: "all_selected", options: [] } } });
+      const manageScheduledTaskForCall = vi.fn<NonNullable<RunRecoveryRepository["manageScheduledTaskForCall"]>>(
+        async (input) => ({ kind: "managed", result: input.result({ action: "pause", changed: true, task }) }));
+      harness.repository.manageScheduledTaskForCall = manageScheduledTaskForCall;
+      await refreshProviderRunIfNeeded(harness.deps, runId, userId);
+      expect(harness.state.recoveredErrors).toEqual([]);
+      // A running call may have applied nothing yet: the settlement that applies it runs it, once. A settled one replays.
+      // A plan persisted before the marker froze user links authorizes none.
+      expect(manageScheduledTaskForCall.mock.calls).toEqual(state === "running"
+        ? [[expect.objectContaining({ action: "pause", callId: "stored-call-1", runId, taskId: "task-1", userId,
+          userUrlDigests: [] })]] : []);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["create_scheduled_task",
+        "manage_scheduled_task"]));
+      expect(JSON.stringify(requests[0]!.providerToolMessages)).toContain("changed");
+      expect(harness.state.events.map((entry) => entry.event)).toContainEqual(expect.objectContaining({ type: "artifact",
+        data: expect.objectContaining({ artifactType: "scheduled_task", payload: expect.objectContaining({ action: "paused" }) }) }));
       expect(harness.state.completed).not.toBeNull();
     }
   );

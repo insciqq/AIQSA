@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { ScheduledTask, ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
 import {
   blankScheduledTaskDraft,
+  sameScheduledTaskDraft,
   scheduledTaskCapabilityBlockers,
   scheduledTaskCreateRequest,
   scheduledTaskDraftFromTask,
   scheduledTaskDraftSchedule,
   scheduledTaskForcedChatReason,
+  scheduledTaskMemoryAvailability,
   scheduledTaskPreview,
   scheduledTaskStartingTools,
   scheduledTaskUpdateRequest,
@@ -158,6 +160,14 @@ describe("scheduled task drafts", () => {
     expect(scheduledTaskUpdateRequest(draft, task)).toEqual({ expectedRevision: 4 });
     expect(scheduledTaskUpdateRequest({ ...draft, title: " New name ", repeat: "daily" }, task))
       .toEqual({ expectedRevision: 4, title: "New name", schedule: { kind: "daily", time: "09:00" } });
+  });
+
+  it("sends unchanged instructions whose links runs cannot read yet, so saving allows them", () => {
+    const task = scheduledTaskFixture({ revision: 4, prompt: "Summarize https://news.example/today", promptLinksPending: true });
+    const draft = scheduledTaskDraftFromTask(task, now);
+    expect(scheduledTaskUpdateRequest(draft, task)).toEqual({ expectedRevision: 4, prompt: task.prompt });
+    expect(scheduledTaskUpdateRequest({ ...draft, title: "Renamed" }, task))
+      .toEqual({ expectedRevision: 4, title: "Renamed", prompt: task.prompt });
   });
 
   it("previews the next run, keeping an active task's due run when the schedule is unchanged", () => {
@@ -326,5 +336,32 @@ describe("scheduled task type and tools in drafts", () => {
     expect(scheduledTaskWorkspaceAvailability({ available: false, loading: false, unavailableReason: "model_tools_required" })).toBe("available");
     expect(scheduledTaskWorkspaceAvailability({ available: false, loading: false, unavailableReason: "installation_disabled" }))
       .toBe("installation_disabled");
+  });
+});
+
+describe("scheduled task Memory in drafts", () => {
+  it("starts a new task reading Memory, keeps a stored task's choice and sends only a change", () => {
+    const blank = blankScheduledTaskDraft(catalog, "Europe/London", now, { title: "Brief", prompt: "Summarize." });
+    expect(blank.memoryEnabled).toBe(true);
+    expect(scheduledTaskCreateRequest(blank)).toMatchObject({ memoryEnabled: true });
+    expect(blankScheduledTaskDraft(null, "Europe/London", now).memoryEnabled).toBe(true);
+    const stored = scheduledTaskFixture({ memoryEnabled: false });
+    const edit = scheduledTaskDraftFromTask(stored, now);
+    expect(edit.memoryEnabled).toBe(false);
+    expect(sameScheduledTaskDraft(edit, { ...edit, memoryEnabled: true })).toBe(false);
+    expect(scheduledTaskUpdateRequest(edit, stored)).toEqual({ expectedRevision: 1 });
+    expect(scheduledTaskUpdateRequest({ ...edit, memoryEnabled: true }, stored)).toEqual({ expectedRevision: 1, memoryEnabled: true });
+    // Memory needs no tool calling: a model without tools keeps the switch and saves.
+    expect(validateScheduledTaskDraft({ ...blank, modelId: "model-c", toolsEnabled: false, workspaceEnabled: false }, catalog, null, now))
+      .toEqual({});
+  });
+
+  it("reads the owner's Memory state from the shell's settings", () => {
+    expect(scheduledTaskMemoryAvailability(null)).toBe("unknown");
+    expect(scheduledTaskMemoryAvailability({ status: "PAUSED" })).toBe("paused");
+    expect(scheduledTaskMemoryAvailability({ status: "NEEDS_ADMIN_SETUP" })).toBe("needs_setup");
+    for (const status of ["ON", "PREPARING", "UNAVAILABLE"] as const) {
+      expect(scheduledTaskMemoryAvailability({ status })).toBe("available");
+    }
   });
 });

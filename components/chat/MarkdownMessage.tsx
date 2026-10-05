@@ -1,12 +1,13 @@
 "use client";
 
-import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
 import { safeExternalHref } from "@/lib/domain/links";
-import { Check, Copy } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { CodeCopyButton } from "./CodeCopyButton";
 import { highlightCodeBlock, resolveCodeLanguage } from "./codeHighlighting";
 import { parseMarkdown, type MarkdownBlock, type MarkdownInline } from "./markdownParser";
 import { renderMathExpression } from "./mathRendering";
+import { MermaidBlock } from "./MermaidBlock";
+import { isMermaidLanguage } from "./mermaidRendering";
 
 // Deep structures retain their semantics without consuming the whole phone viewport.
 const MAX_INDENT_DEPTH = 8;
@@ -21,6 +22,8 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
   const [rendered, setRendered] = useState<{ html: string | null; key: string } | null>(null);
   const renderKey = `${displayMode ? "display" : "inline"}\0${source}`;
   const renderedHtml = rendered?.key === renderKey ? rendered.html : null;
+  // Until rendering settles (as HTML or as the raw fallback); the print page waits for it.
+  const pending = rendered?.key !== renderKey ? "" : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -45,7 +48,7 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
         dangerouslySetInnerHTML={{ __html: renderedHtml }}
       />
     ) : (
-      <span data-math-display="false" data-math-source={source}>{raw}</span>
+      <span data-math-display="false" data-math-source={source} data-render-pending={pending}>{raw}</span>
     );
   }
 
@@ -54,6 +57,7 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
       className="max-w-full overflow-x-auto overflow-y-hidden py-1 text-ink outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus [&_.katex-display]:!my-0"
       data-math-display="true"
       data-math-source={source}
+      data-render-pending={pending}
       role="region"
       aria-label="Scrollable mathematical formula"
       tabIndex={0}
@@ -286,10 +290,16 @@ function renderBlock(block: MarkdownBlock, key: string, context: RenderContext, 
     }
     case "code":
       // While streaming, an unclosed fence stays partial text with no highlighting.
-      return context.streaming && !block.closed ? (
-        <p className={PARAGRAPH_CLASS} key={key}>
-          {block.code ? `${block.opening}\n${block.code.replace(/\n$/u, "")}` : block.opening}
-        </p>
+      if (context.streaming && !block.closed) {
+        return (
+          <p className={PARAGRAPH_CLASS} key={key}>
+            {block.code ? `${block.opening}\n${block.code.replace(/\n$/u, "")}` : block.opening}
+          </p>
+        );
+      }
+      // Only a closed fence becomes a diagram; its source can no longer change.
+      return block.closed && isMermaidLanguage(block.language) ? (
+        <MermaidBlock code={block.code} key={key} language={block.language} />
       ) : (
         <CodeBlock code={block.code} key={key} language={block.language} streaming={context.streaming} />
       );
@@ -310,12 +320,12 @@ type MarkdownMessageProps = {
 };
 
 function CodeBlock({ code, language, streaming }: { code: string; language: string; streaming: boolean }) {
-  const [copied, setCopied] = useState(false);
-  const [highlighted, setHighlighted] = useState<{ html: string; key: string } | null>(null);
-  const copiedResetRef = useRef<number | null>(null);
+  const [highlighted, setHighlighted] = useState<{ html: string | null; key: string } | null>(null);
   const displayLanguage = resolveCodeLanguage(language);
   const highlightKey = displayLanguage ? `${displayLanguage}\0${code}` : null;
   const highlightedHtml = !streaming && highlighted?.key === highlightKey ? highlighted.html : null;
+  // A highlightable block stays pending until highlighting succeeds or gives up.
+  const pending = !streaming && highlightKey !== null && highlighted?.key !== highlightKey;
 
   useEffect(() => {
     let cancelled = false;
@@ -327,8 +337,8 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
     }
 
     void highlightCodeBlock(code, language).then((result) => {
-      if (!cancelled && result) {
-        setHighlighted({ html: result.html, key: highlightKey });
+      if (!cancelled) {
+        setHighlighted({ html: result?.html ?? null, key: highlightKey });
       }
     });
 
@@ -337,49 +347,19 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
     };
   }, [code, displayLanguage, highlightKey, language, streaming]);
 
-  useEffect(
-    () => () => {
-      if (copiedResetRef.current !== null) {
-        window.clearTimeout(copiedResetRef.current);
-      }
-    },
-    []
-  );
-
-  async function copyCode() {
-    try {
-      await writeClipboardText(code);
-      setCopied(true);
-      if (copiedResetRef.current !== null) {
-        window.clearTimeout(copiedResetRef.current);
-      }
-      copiedResetRef.current = window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  }
-
   return (
-    <div className="group/code min-w-0 max-w-full overflow-hidden rounded-panel border border-trace-subtle bg-answer-paper" data-markdown-code-language={language}>
+    <div
+      className="group/code min-w-0 max-w-full overflow-hidden rounded-panel border border-trace-subtle bg-answer-paper"
+      data-markdown-code-language={language}
+      data-render-pending={pending ? "" : undefined}
+    >
       <div className="flex min-h-control items-center justify-between gap-3 border-b border-trace-subtle px-3" data-markdown-chrome="">
         {displayLanguage ? (
           <span className="truncate font-mono text-metadata text-ink-secondary">{displayLanguage}</span>
         ) : (
           <span aria-hidden="true" />
         )}
-        <button
-          className="inline-flex h-touch items-center gap-1.5 rounded-control px-2 text-metadata text-ink-secondary outline-none hover:bg-control-hover hover:text-ink focus-visible:ring-2 focus-visible:ring-focus [@media(hover:none)]:!h-touch [@media(pointer:coarse)]:!h-touch sm:h-control-sm"
-          type="button"
-          aria-label="Copy code"
-          onClick={() => void copyCode()}
-        >
-          {copied ? (
-            <Check className="size-3 text-positive" aria-hidden="true" />
-          ) : (
-            <Copy className="size-3" aria-hidden="true" />
-          )}
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <CodeCopyButton label="Copy code" text={code} />
       </div>
       {highlightedHtml ? (
         <div
@@ -401,9 +381,6 @@ function CodeBlock({ code, language, streaming }: { code: string; language: stri
           <code>{code}</code>
         </pre>
       )}
-      <span className="sr-only" role="status">
-        {copied ? "Copied" : ""}
-      </span>
     </div>
   );
 }

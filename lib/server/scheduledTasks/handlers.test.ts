@@ -3,6 +3,7 @@ import type { ScheduledTask, ScheduledTaskDraft, ScheduledTaskSchedule } from ".
 import type { ScheduledTaskCatalog } from "./catalog";
 import { createScheduledTaskHandlers } from "./handlers";
 import { ScheduledTaskError, type ScheduledTaskUpdateWrite } from "./store";
+import { fetchUrlDigest } from "../webFetch/urls";
 
 const NOW = new Date("2026-10-04T08:00:00.000Z"); // 11:00 in Moscow
 const catalog: ScheduledTaskCatalog = {
@@ -15,7 +16,7 @@ const catalog: ScheduledTaskCatalog = {
 const draft = {
   title: "Morning brief", prompt: "fixture-private-prompt", schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow",
   modelId: "model-search", provider: "connection-a", searchEnabled: true, emailNotify: false, toolsEnabled: true,
-  workspaceEnabled: false, chatMode: "new", kind: "standard"
+  workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard"
 } as const;
 const hourly = { kind: "hourly", everyHours: 2, time: "09:00", until: "18:00", days: ["mon", "tue", "wed", "thu", "fri"] } satisfies ScheduledTaskSchedule;
 
@@ -33,7 +34,7 @@ function fixture(current: ScheduledTask | null = task()) {
     list: vi.fn().mockResolvedValue({ tasks: [current], limits: { maxActive: 10, maxTotal: 50 }, emailAvailable: false }),
     get: vi.fn().mockResolvedValue(current),
     detail: vi.fn().mockResolvedValue(current ? { task: current, recentRuns: [] } : null),
-    create: vi.fn(async (_userId: string, value: ScheduledTaskDraft, nextRunAt: Date) =>
+    create: vi.fn(async (_userId: string, value: ScheduledTaskDraft, nextRunAt: Date, _promptUrls: readonly string[]) =>
       task({ ...value, nextRunAt: nextRunAt.toISOString(), revision: 1 })),
     update: vi.fn(async (_userId: string, _taskId: string, write: ScheduledTaskUpdateWrite) =>
       task({ ...write.draft, status: write.status, revision: write.expectedRevision + 1 })),
@@ -72,7 +73,7 @@ describe("scheduled tasks owner API", () => {
     const response = await f.handlers.create(json("POST", { ...draft, title: "  Morning brief  " }));
     expect(response.status).toBe(201);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
-    expect(f.store.create).toHaveBeenCalledWith("owner", draft, new Date("2026-10-05T06:00:00.000Z"));
+    expect(f.store.create).toHaveBeenCalledWith("owner", draft, new Date("2026-10-05T06:00:00.000Z"), []);
     expect(f.loadCatalog).toHaveBeenCalledWith("owner");
     expect((await response.json()).task).toMatchObject({ title: "Morning brief", nextRunAt: "2026-10-05T06:00:00.000Z" });
   });
@@ -92,6 +93,8 @@ describe("scheduled tasks owner API", () => {
       [{ ...draft, chatMode: undefined }, "scheduled_task_invalid"],
       [{ ...draft, toolsEnabled: "auto" }, "scheduled_task_invalid"],
       [{ ...draft, workspaceEnabled: undefined }, "scheduled_task_invalid"],
+      [{ ...draft, memoryEnabled: undefined }, "scheduled_task_invalid"],
+      [{ ...draft, memoryEnabled: "on" }, "scheduled_task_invalid"],
       // The composer's rule: tools and Workspace need a model that calls tools.
       [{ ...draft, modelId: "model-plain", searchEnabled: false }, "scheduled_task_tools_unavailable"],
       [{ ...draft, modelId: "model-plain", searchEnabled: false, toolsEnabled: false, workspaceEnabled: true },
@@ -121,7 +124,7 @@ describe("scheduled tasks owner API", () => {
     const hourlyTask = await f.handlers.create(json("POST", { ...draft, schedule: hourly, chatMode: "same" }));
     expect(hourlyTask.status).toBe(201);
     expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, schedule: hourly, chatMode: "same" },
-      new Date("2026-10-05T06:00:00.000Z"));
+      new Date("2026-10-05T06:00:00.000Z"), []);
   });
 
   it("maps store limits and hides unexpected failures", async () => {
@@ -305,7 +308,7 @@ describe("scheduled tasks owner API", () => {
     const disabled = await f.handlers.create(json("POST", { ...draft, workspaceEnabled: true }));
     expect([disabled.status, await disabled.json()]).toEqual([400, { error: "scheduled_task_workspace_unavailable" }]);
     expect((await f.handlers.create(json("POST", { ...draft, workspaceEnabled: true }))).status).toBe(201);
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, workspaceEnabled: true }, expect.any(Date));
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, workspaceEnabled: true }, expect.any(Date), []);
 
     // Turning tools on for a model without tool calling is refused, even for a paused task.
     const plain = fixture(task({ modelId: "model-plain", nextRunAt: null, searchEnabled: false, status: "paused", toolsEnabled: false }));
@@ -321,6 +324,23 @@ describe("scheduled tasks owner API", () => {
     expect(tools.workspacePolicy.read).toHaveBeenCalledTimes(1);
   });
 
+  it("stores the Memory switch as sent and changes it without a model check", async () => {
+    const f = fixture();
+    await f.handlers.create(json("POST", { ...draft, memoryEnabled: false }));
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, memoryEnabled: false }, expect.any(Date), []);
+    // Memory needs no tool calling: a paused task with a plain model turns it on as it is.
+    const plain = fixture(task({ memoryEnabled: false, modelId: "model-plain", nextRunAt: null, searchEnabled: false,
+      status: "paused", toolsEnabled: false }));
+    expect((await plain.handlers.update(patch({ expectedRevision: 2, memoryEnabled: true }), "task-1")).status).toBe(200);
+    expect(lastWrite(plain)).toMatchObject({ draft: { memoryEnabled: true, toolsEnabled: false }, status: "paused" });
+    expect(plain.loadCatalog).not.toHaveBeenCalled();
+    // Other edits keep the stored switch.
+    await plain.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1");
+    expect(lastWrite(plain)).toMatchObject({ draft: { memoryEnabled: false, title: "Renamed" } });
+    const malformed = await plain.handlers.update(patch({ expectedRevision: 2, memoryEnabled: "off" }), "task-1");
+    expect([malformed.status, await malformed.json()]).toEqual([400, { error: "scheduled_task_invalid" }]);
+  });
+
   it("wakes the runner after create and update", async () => {
     const f = fixture();
     await f.handlers.create(json("POST", draft));
@@ -329,5 +349,20 @@ describe("scheduled tasks owner API", () => {
     f.store.create.mockRejectedValueOnce(new ScheduledTaskError("scheduled_task_limit"));
     await f.handlers.create(json("POST", draft));
     expect(f.kick).toHaveBeenCalledTimes(2);
+  });
+
+  it("authorizes the links of a prompt the owner writes and keeps the snapshot otherwise", async () => {
+    const f = fixture();
+    const prompt = "Summarize https://news.example/today every morning.";
+    await f.handlers.create(json("POST", { ...draft, prompt }));
+    expect(f.store.create.mock.calls.at(-1)?.[3]).toEqual([fetchUrlDigest("https://news.example/today")]);
+    // An edit that sends the prompt replaces the snapshot with the owner's links.
+    await f.handlers.update(patch({ expectedRevision: 2, prompt: "Read https://other.example/a instead." }), "task-1");
+    expect(lastWrite(f)?.promptUrls).toEqual([fetchUrlDigest("https://other.example/a")]);
+    // Pausing or editing other fields never authorizes links the owner did not write.
+    await f.handlers.update(patch({ expectedRevision: 2, status: "paused" }), "task-1");
+    expect(lastWrite(f)?.promptUrls).toBe("keep");
+    await f.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1");
+    expect(lastWrite(f)?.promptUrls).toBe("keep");
   });
 });

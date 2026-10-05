@@ -30,8 +30,8 @@ import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, unavailable
 type Task = {
   baseline: ScheduledTaskBaseline | null; chatId: string | null; chatMode: ScheduledTaskChatMode; completionReason: string | null;
   consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number; emailNotify: boolean;
-  generation: number; id: string; kind: ScheduledTaskKind; modelId: string; nextRunAt: Date | null; pauseReason: string | null;
-  prompt: string; provider: string;
+  generation: number; id: string; kind: ScheduledTaskKind; memoryEnabled: boolean; modelId: string; nextRunAt: Date | null;
+  pauseReason: string | null; prompt: string; promptUrlDigests: readonly string[]; provider: string;
   /** What the store derives from the previous shown result (null: every server). */
   relevantMcpServerIds: readonly string[] | null;
   revision: number; schedule: ScheduledTaskSchedule; searchEnabled: boolean;
@@ -185,7 +185,8 @@ function harness() {
         ownerActive: !inactiveUsers.has(row.userId),
         relevantMcpServerIds: task.relevantMcpServerIds,
         task: { baseline: task.baseline, chatMode: task.chatMode, generation: task.generation, kind: task.kind,
-          modelId: task.modelId, prompt: task.prompt, provider: task.provider, revision: task.revision,
+          memoryEnabled: task.memoryEnabled, modelId: task.modelId, prompt: task.prompt, promptUrlDigests: task.promptUrlDigests,
+          provider: task.provider, revision: task.revision,
           searchEnabled: task.searchEnabled, status: task.status, timeZone: task.timeZone, title: task.title,
           toolsEnabled: task.toolsEnabled, workspaceEnabled: task.workspaceEnabled }
       };
@@ -286,9 +287,10 @@ function harness() {
   function addTask(overrides: Partial<Task> = {}): Task {
     const task: Task = {
       baseline: null, chatId: null, chatMode: "same", completionReason: null, consecutiveFailures: 0, consecutiveIncompleteRuns: 0,
-      consecutiveMissingVerdicts: 0, emailNotify: false, generation: 1, id: nextId("task"), kind: "standard", modelId: "model-a",
+      consecutiveMissingVerdicts: 0, emailNotify: false, generation: 1, id: nextId("task"), kind: "standard", memoryEnabled: false,
+      modelId: "model-a",
       nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null, prompt: "  Summarize the synthetic fixture  ",
-      provider: "connection-a", relevantMcpServerIds: null, revision: 1, schedule: { kind: "daily", time: "09:00" },
+      promptUrlDigests: [], provider: "connection-a", relevantMcpServerIds: null, revision: 1, schedule: { kind: "daily", time: "09:00" },
       searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow", title: "Synthetic brief", toolsEnabled: false,
       userId: "owner-1", workspaceEnabled: false, ...overrides
     };
@@ -336,7 +338,7 @@ describe("scheduled task runner", () => {
       searchPlan: { mode: "all_selected", optionIds: [] }, skills: { mode: "off" }, timeZone: "Europe/Moscow", workspace: { enabled: false }
     });
     // The first run of a task has no earlier result to see.
-    expect(h.sent[0]!.occurrence).toEqual({ occurrenceId: h.forTask(task)[0]!.id, previousResult: null, relevantMcpServerIds: null,
+    expect(h.sent[0]!.occurrence).toEqual({ occurrenceId: h.forTask(task)[0]!.id, previousResult: null, promptUrlDigests: [], relevantMcpServerIds: null,
       taskGeneration: 1, taskId: task.id, taskRevision: 1 });
     expect(h.renamed).toEqual([{ chatId: h.sent[0]!.chatId, title: "Synthetic brief" }]);
     expect(h.emails).toHaveLength(1);
@@ -806,6 +808,14 @@ describe("scheduled task runner with the owner's tools", () => {
     expect(h.sent[0]!.occurrence.relevantMcpServerIds).toEqual(["server-mail"]);
   });
 
+  it("freezes the prompt's page-reading snapshot, read with the revision, into the admission", async () => {
+    const h = harness();
+    const digest = "a".repeat(64);
+    h.addTask({ promptUrlDigests: [digest], revision: 3 });
+    await h.tick();
+    expect(h.sent[0]!.occurrence).toMatchObject({ promptUrlDigests: [digest], taskRevision: 3 });
+  });
+
   it("pauses before any send when tools or Workspace need tool calling the model lost", async () => {
     const h = harness();
     const noTools = (userId: string) => ({ models: [{ capabilities: { background: false, documentInputMode: "none" as const,
@@ -1001,6 +1011,22 @@ describe("scheduled monitoring checks", () => {
     expect(news.unseenAt).not.toBeNull();
     expect([h.emails.length, h.pushes.at(-1)]).toEqual([2, news.id]);
     expect(task.baseline).toMatchObject({ runId: news.runId });
+  });
+
+  it("lets a run read Memory only while its task has Memory on, by the revision its admission is fenced on", async () => {
+    const h = harness();
+    const task = h.addTask({ memoryEnabled: true });
+    await h.tick();
+    // The switch travels server-only with the occurrence, never in the composer-shaped body.
+    expect(h.sent[0]!.occurrence).toMatchObject({ memory: true, taskRevision: 1 });
+    expect(Object.keys(h.sent[0]!.body).some((key) => key.toLowerCase().includes("memory"))).toBe(false);
+    // The owner turns it off: the next run is admitted under the new revision without it.
+    Object.assign(task, { memoryEnabled: false, revision: 2 });
+    h.advance(24 * HOUR);
+    await h.tick();
+    expect(h.sent[1]!.occurrence).toMatchObject({ taskRevision: 2 });
+    expect(h.sent[1]!.occurrence).not.toHaveProperty("memory");
+    expect(h.forTask(task).map((row) => row.state)).toEqual(["COMPLETED", "COMPLETED"]);
   });
 
   it("gives a standard task's runs no reporting duty and keeps their results ordinary", async () => {

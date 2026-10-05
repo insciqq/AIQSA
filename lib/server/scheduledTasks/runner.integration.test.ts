@@ -168,7 +168,7 @@ describe("scheduled task end to end", () => {
         const plan = planScheduledTaskUpdate(current, { expectedRevision: current.revision, status: "paused" }, new Date());
         if (!plan.ok) throw new Error(plan.code);
         await owners.update(userId, task.id, {
-          draft: plan.draft, expectedRevision: current.revision, nextRunAt: plan.nextRunAt, status: plan.status
+          draft: plan.draft, expectedRevision: current.revision, nextRunAt: plan.nextRunAt, promptUrls: "keep", status: plan.status
         });
       }
       return deps.repository.createRun(input);

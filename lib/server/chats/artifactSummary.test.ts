@@ -606,6 +606,24 @@ describe("summarizeMessageRunToolActivity", () => {
     expect(activity?.calls[0]).not.toHaveProperty("details");
   });
 
+  it("projects a page read as its host/path and outcome, never the URL query, arguments or page text", () => {
+    const pageCall = { toolName: "fetch_url", ordinal: 0, roundIndex: 1, state: "error", startedAt: null, completedAt: null,
+      arguments: { url: "https://news.example/today?token=private-token" },
+      result: { callId: "provider-call", name: "fetch_url", status: "error", content: [{ type: "json", value: {
+        error: "fetch_http_status", httpStatus: 404, message: "private message" } }],
+      rawPreview: { fetchUrl: { version: 1, outcome: "fetch_http_status", dispatched: true, httpStatus: 404,
+        url: "https://news.example/today?token=private-token" } } } };
+    const run = { userId: "initiator", errorPayload: null, status: "complete",
+      normalizedRequest: { fetchUrl: { version: 1, userUrlDigests: [] } } };
+    const activity = summarizeMessageRunToolActivity({ ...run, toolCalls: [pageCall] }, "initiator");
+    expect(activity?.calls[0]).toEqual({ fetchHttpStatus: 404, fetchOutcome: "fetch_http_status", fetchTarget: "news.example/today",
+      origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url" });
+    expect(JSON.stringify(activity)).not.toMatch(/private|token|https/u);
+    // A run without the page reader projects no page facts for a call of that name.
+    expect(summarizeMessageRunToolActivity({ ...run, normalizedRequest: {}, toolCalls: [pageCall] }, "initiator")?.calls[0])
+      .not.toHaveProperty("fetchTarget");
+  });
+
   it("requires exact persisted MCP provenance and excludes all native origins", () => {
     const run = { userId: "initiator", errorPayload: null, normalizedRequest: acceptedMcpRequest, status: "complete" };
     for (const call of [
@@ -976,8 +994,8 @@ describe("scheduled task cards", () => {
   const created = { data: { artifactType: "scheduled_task" as const, payload: card }, type: "artifact" as const };
   const task: ScheduledTask = {
     ...card, id: "task-1", prompt: "Remind me to check my mail.", modelId: "deployment-1", provider: "connection-1",
-    searchEnabled: false, emailNotify: false, chatMode: "new", pauseReason: null, completionReason: null, lastRun: null,
-    running: false, chatId: null, unseenResult: false, revision: 2, createdAt: "2026-10-04T10:00:00.000Z",
+    searchEnabled: false, emailNotify: false, memoryEnabled: false, chatMode: "new", pauseReason: null, completionReason: null,
+    lastRun: null, running: false, chatId: null, unseenResult: false, revision: 2, createdAt: "2026-10-04T10:00:00.000Z",
     updatedAt: "2026-10-04T11:00:00.000Z"
   };
 

@@ -363,12 +363,12 @@ describe("persisted scheduled task runner", () => {
     const detail = await owners.detail(userId, created.id);
     expect(detail?.recentRuns[0]?.unavailableSources).toEqual([{ name: "Synthetic Mail", reason: "mcp_reauthorization_required" }]);
     // An owner edit (here resuming) ends the streak.
-    const { chatMode, emailNotify, kind, modelId, prompt, provider, revision, schedule, searchEnabled, timeZone, title, toolsEnabled,
-      workspaceEnabled } = detail!.task;
+    const { chatMode, emailNotify, kind, memoryEnabled, modelId, prompt, provider, revision, schedule, searchEnabled, timeZone, title,
+      toolsEnabled, workspaceEnabled } = detail!.task;
     await owners.update(userId, created.id, {
-      draft: { chatMode, emailNotify, kind, modelId, prompt, provider, schedule, searchEnabled, timeZone, title, toolsEnabled,
-        workspaceEnabled },
-      expectedRevision: revision, nextRunAt: new Date(Date.now() + 3_600_000), status: "active"
+      draft: { chatMode, emailNotify, kind, memoryEnabled, modelId, prompt, provider, schedule, searchEnabled, timeZone, title,
+        toolsEnabled, workspaceEnabled },
+      expectedRevision: revision, nextRunAt: new Date(Date.now() + 3_600_000), promptUrls: "keep", status: "active"
     });
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
       .toMatchObject({ consecutiveIncompleteRuns: 0, pauseReason: null, status: "ACTIVE" });
@@ -403,6 +403,10 @@ describe("persisted scheduled task runner", () => {
     await prisma.scheduledTask.update({ data: { toolsEnabled: true }, where: { id: created.id } });
     await prisma.modelRun.delete({ where: { id: run.runId } });
     expect((await runner.loadExecution(next.id))!.relevantMcpServerIds).toBeNull();
+    // The prompt's page-reading snapshot is read with the task's revision.
+    const digest = "c".repeat(64);
+    await prisma.scheduledTask.update({ data: { promptUrlDigests: [digest] }, where: { id: created.id } });
+    expect((await runner.loadExecution(next.id))!.task).toMatchObject({ promptUrlDigests: [digest], revision: created.revision });
   });
 
   it("finds runs past their deadline by the run's own scheduled origin, counted from admission", async () => {
@@ -560,7 +564,7 @@ describe("persisted monitoring checks", () => {
     // Resume continues from now and clears why it completed.
     const completed = await owners.get(userId, created.id);
     const resumed = await owners.update(userId, created.id, { draft: { ...completed!, kind: "monitoring" }, expectedRevision: 3,
-      nextRunAt: new Date(Date.now() + 3_600_000), status: "active" });
+      nextRunAt: new Date(Date.now() + 3_600_000), promptUrls: "keep", status: "active" });
     expect(resumed).toMatchObject({ completionReason: null, kind: "monitoring", status: "active" });
   });
 });

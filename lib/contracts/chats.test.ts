@@ -10,6 +10,9 @@ import {
   boundedChatBranchPreview,
   boundedChatTitle,
   CHAT_TITLE_MAX_LENGTH,
+  codePointLength,
+  DEFAULT_CHAT_TITLE,
+  importedChatTitle,
   decodeArchivedChatDetailResponse,
   decodeArchivedChatsResponse,
   decodeChatBranchesResponse,
@@ -17,8 +20,12 @@ import {
   decodeChatLifecycleRequest,
   decodeChatLifecycleResponse,
   decodeChatMemoryStateResponse,
+  CHAT_MESSAGE_MATCH_SNIPPET_MAX_LENGTH,
+  chatMessageSearchApplies,
+  decodeChatMessageMatchPage,
   decodeChatNavigationPage,
   decodeChatMessagesPageResponse,
+  normalizeChatNavigationQuery,
   decodeChatSourceResolutionResponse,
   decodeChatSummaryResponse,
   decodeChatUpdateData,
@@ -157,6 +164,28 @@ describe("chat wire contracts", () => {
     }
   });
 
+  it("keeps a page read's bounded target and outcome only on its own origin", () => {
+    const call = { origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url",
+      fetchTarget: "news.example/today", fetchOutcome: "fetch_http_status", fetchHttpStatus: 503 };
+    const decode = (row: Record<string, unknown>) => decodeChatDetailResponse({
+      chat: detailChat({ messages: [{ ...message, toolActivity: { calls: [row] } }], usageStats })
+    })?.messages[0]?.toolActivity?.calls[0];
+    expect(decode(call)).toEqual(call);
+    // Unknown outcomes, a scheme in the target and facts on another origin are dropped.
+    expect(decode({ ...call, fetchOutcome: "fetch_secret", fetchTarget: "https://news.example/today" }))
+      .toEqual({ origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url" });
+    expect(decode({ ...call, origin: "mcp" })).not.toHaveProperty("fetchTarget");
+    expect(decode({ ...call, fetchOutcome: "read" })).not.toHaveProperty("fetchHttpStatus");
+    // Where a refused link is allowed belongs only to a not-in-conversation refusal, with a known scope.
+    for (const scope of ["scheduled_run", "task_instructions"]) {
+      expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: scope }))
+        .toMatchObject({ fetchRefusalScope: scope });
+    }
+    expect(decode({ ...call, fetchRefusalScope: "scheduled_run" })).not.toHaveProperty("fetchRefusalScope");
+    expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: "everywhere" }))
+      .not.toHaveProperty("fetchRefusalScope");
+  });
+
   it("preserves bounded MCP call references and refuses references on other origins", () => {
     const call = { origin: "mcp", round: 2, status: "running", toolName: "search" };
     const decode = (details: unknown, origin: unknown = "mcp") => decodeChatDetailResponse({
@@ -213,6 +242,50 @@ describe("chat wire contracts", () => {
     })).toBeNull();
   });
 
+  it("decodes a message match page on its own and keeps it out of title pages", () => {
+    const match = {
+      chatId: "chat-1",
+      createdAt: "2026-08-12T10:00:00.000Z",
+      matchCount: 3,
+      messageId: "message-7",
+      snippet: "…the quarterly budget moved to…",
+      title: "Planning"
+    };
+    const messageMatches = { matches: [match], nextCursor: "opaque_cursor" };
+
+    expect(decodeChatMessageMatchPage(messageMatches)).toEqual(messageMatches);
+    expect(decodeChatMessageMatchPage({ matches: [], nextCursor: null })).toEqual({ matches: [], nextCursor: null });
+    // The title search response carries no message matches.
+    expect(decodeChatNavigationPage({ chats: [], folders: [], messageMatches, nextCursor: null })).toBeNull();
+    for (const malformed of [
+      { ...match, matchCount: 0 },
+      { ...match, matchCount: 1.5 },
+      { ...match, createdAt: "yesterday" },
+      { ...match, messageId: "" },
+      { ...match, title: "" },
+      { ...match, snippet: null },
+      { ...match, snippet: "x".repeat(CHAT_MESSAGE_MATCH_SNIPPET_MAX_LENGTH + 1) },
+      { ...match, snippetHtml: "<mark>budget</mark>" },
+      { ...match, content: { blocks: [] } }
+    ]) {
+      expect(decodeChatMessageMatchPage({ matches: [malformed], nextCursor: null })).toBeNull();
+    }
+    expect(decodeChatMessageMatchPage({ matches: [match, { ...match, messageId: "message-8" }], nextCursor: null })).toBeNull();
+    expect(decodeChatMessageMatchPage({ ...messageMatches, nextCursor: "bad!" })).toBeNull();
+    expect(decodeChatMessageMatchPage({ ...messageMatches, chats: [] })).toBeNull();
+  });
+
+  it("applies message matching from three characters of the normalized query", () => {
+    expect(normalizeChatNavigationQuery("  ＢＵＤＧＥＴ  ")).toBe("budget");
+    expect(chatMessageSearchApplies("ab")).toBe(false);
+    expect(chatMessageSearchApplies(" ab ")).toBe(false);
+    expect(chatMessageSearchApplies("abc")).toBe(true);
+    // Characters, not UTF-16 units: two astral characters stay too short.
+    expect(chatMessageSearchApplies("😀😀")).toBe(false);
+    // Compatibility characters count as they are matched: ㍍ is メートル.
+    expect(chatMessageSearchApplies("㍍")).toBe(true);
+  });
+
   it("decodes a scheduled task chat's unread marker and rejects extra or malformed fields", () => {
     const chat = {
       activeRun: false, assistant: null, folderId: null, id: "chat-1", title: "Morning brief",
@@ -244,6 +317,19 @@ describe("chat wire contracts", () => {
     }
   });
 
+  it("keeps the cards of one created and five managed tasks with their actions, once per task", () => {
+    const card = (taskId: string, action?: string) => ({ taskId, title: "Report reminder", kind: "standard",
+      schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/Moscow", timeZoneFallback: false, toolsEnabled: false,
+      workspaceEnabled: false, status: "active", nextRunAt: "2026-10-05T06:00:00.000Z", ...(action ? { action } : {}) });
+    const cards = [card("created"), card("task-1", "changed"), card("task-2", "paused"), card("task-3", "resumed"),
+      card("task-4", "delete_proposed"), card("task-5", "changed")];
+    const decode = (scheduledTasks: unknown[]) => decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...message,
+      artifactSummary: { citations: [], reasoningText: [], sources: [], scheduledTasks } }], usageStats }) })
+      ?.messages[0]?.artifactSummary?.scheduledTasks;
+    expect(decode([...cards, card("task-1", "paused"), card("task-6", "paused")])).toEqual(cards);
+    expect(decode([card("task-1", "archived"), card("task-2", "paused")])).toEqual([card("task-2", "paused")]);
+  });
+
   it("keeps a monitoring check's settled outcome on both messages of its turn, with or without the task marker", () => {
     const decode = (entry: Record<string, unknown>) => decodeChatDetailResponse({ chat: detailChat({ messages: [entry], usageStats }) });
     expect(decode({ ...message, role: "user", scheduledOutcome: "no_update" })?.messages[0]?.scheduledOutcome).toBe("no_update");
@@ -255,7 +341,6 @@ describe("chat wire contracts", () => {
   it("decodes workspace summaries without allowing additive thread fields into the result", () => {
     const workspace = decodeWorkspaceChatsResponse({
       chats: [{ ...summary, messages: [message], usageStats }],
-      contentMatches: [{ chatId: summary.id, snippet: null }],
       folders: []
     });
     const mutation = decodeChatSummaryResponse({
@@ -264,7 +349,6 @@ describe("chat wire contracts", () => {
 
     expect(workspace).toEqual({
       chats: [summary],
-      contentMatches: [{ chatId: summary.id, snippet: null }],
       folders: []
     });
     expect(mutation).toEqual(summary);
@@ -276,7 +360,7 @@ describe("chat wire contracts", () => {
     for (const assistantId of ["assistant-1", null]) {
       const bound = { ...summary, assistantId };
       expect(decodeChatSummaryResponse({ chat: bound })).toEqual(bound);
-      expect(decodeWorkspaceChatsResponse({ chats: [bound], contentMatches: [], folders: [] })?.chats)
+      expect(decodeWorkspaceChatsResponse({ chats: [bound], folders: [] })?.chats)
         .toEqual([bound]);
       const archived = { ...bound, archived: true, lastMessageAt: null, memoryMode: "NORMAL", sourceRevision: 1 };
       expect(decodeArchivedChatsResponse({ chats: [archived], nextCursor: null })?.chats).toEqual([archived]);
@@ -288,16 +372,35 @@ describe("chat wire contracts", () => {
     }
   });
 
+  it("gives an imported chat a non-empty bounded title that every chat decoder accepts", () => {
+    for (const blank of ["", "   ", "\t\n", " ".repeat(300)]) expect(importedChatTitle(blank)).toBe(DEFAULT_CHAT_TITLE);
+    expect(importedChatTitle("  Release plan  ")).toBe("Release plan");
+    expect(codePointLength(importedChatTitle(`  ${"я".repeat(200)}`))).toBe(CHAT_TITLE_MAX_LENGTH);
+    expect(decodeChatSummaryResponse({ chat: { ...summary, title: importedChatTitle(" ".repeat(300)) } })?.title).toBe(DEFAULT_CHAT_TITLE);
+    // An empty title fails the whole response: the reason the import never stores one.
+    expect(decodeChatSummaryResponse({ chat: { ...summary, title: "" } })).toBeNull();
+  });
+
+  it("carries an imported chat's source on summaries, archived ones included, and rejects a malformed marker", () => {
+    const imported = { ...summary, importSource: "CHATGPT", importSourceModel: "gpt-4o" };
+    expect(decodeChatSummaryResponse({ chat: imported })).toEqual(imported);
+    expect(decodeChatSummaryResponse({ chat: { ...summary, importSource: "AIQSA" } })).toEqual({ ...summary, importSource: "AIQSA" });
+    const archived = { ...imported, archived: true, hasContinuationSource: true, lastMessageAt: null, memoryMode: "EXCLUDED", sourceRevision: 1 };
+    expect(decodeArchivedChatsResponse({ chats: [archived], nextCursor: null })?.chats).toEqual([archived]);
+    for (const marker of [{ importSource: "GEMINI" }, { importSourceModel: "orphan label" }, { importSource: "CLAUDE", importSourceModel: "" },
+      { importSource: "CLAUDE", importSourceModel: "m".repeat(129) }]) {
+      expect(decodeChatSummaryResponse({ chat: { ...summary, ...marker } })).toBeNull();
+    }
+  });
+
   it("keeps a paired absent chat default readable across every chat response", () => {
     expect(
       decodeWorkspaceChatsResponse({
         chats: [summary, nullDefaultSummary],
-        contentMatches: [],
         folders: []
       })
     ).toEqual({
       chats: [summary, nullDefaultSummary],
-      contentMatches: [],
       folders: []
     });
     expect(decodeChatSummaryResponse({ chat: nullDefaultSummary })).toEqual(
@@ -352,21 +455,17 @@ describe("chat wire contracts", () => {
     };
     expect(decodeWorkspaceChatsResponse({
       chats: [{ ...summary, defaultKnowledgePlan: knowledgePlan }],
-      contentMatches: [],
       folders: [folder]
     })).toEqual({
       chats: [{ ...summary, defaultKnowledgePlan: canonicalKnowledgePlan }],
-      contentMatches: [],
       folders: [{ ...folder, defaultKnowledgePlan: canonicalKnowledgePlan }]
     });
     expect(decodeWorkspaceChatsResponse({
       chats: [{ ...summary, defaultKnowledgePlan: { baseIds: ["same", "same"] } }],
-      contentMatches: [],
       folders: []
     })).toBeNull();
     expect(decodeWorkspaceChatsResponse({
       chats: [summary],
-      contentMatches: [],
       folders: [{
         ...folder,
         defaultKnowledgePlan: {
@@ -389,7 +488,7 @@ describe("chat wire contracts", () => {
       expect(decodeChatSummaryResponse({ chat: malformed })).toBeNull();
     }
     expect(
-      decodeWorkspaceChatsResponse({ chats: [summary], folders: [] })
+      decodeWorkspaceChatsResponse({ chats: [summary] })
     ).toBeNull();
   });
 

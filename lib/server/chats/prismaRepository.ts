@@ -141,6 +141,7 @@ import type {
 } from "../workspace/availability";
 import { workspaceModelSupportsTools } from "../workspace/availability";
 import { activityName, toolActivityDescriptors, skillToolActivityFacts, memorySearchActivityFacts } from "../tools/activityDescriptors";
+import { fetchUrlActivityFacts } from "../tools/fetchUrlPlan";
 import { acceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
@@ -337,6 +338,8 @@ const lightweightMessageSelect = {
 const chatSummarySelect = {
   ...chatTitleMetadataSelect,
   continuationSource: { select: { id: true } },
+  importSource: true,
+  importSourceModel: true,
   receivedWorkspaceSeeds: { select: { status: true, failureCode: true }, take: 1 },
   _count: {
     select: {
@@ -900,6 +903,7 @@ function serializeChatDetail(input: {
     id: chat.id,
     contextStats: input.contextStats,
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
+    ...importProjection(chat),
     messageCount: chat._count.messages,
     messages: input.messages.messages.map((message) =>
       serializeHydratedMessage(
@@ -953,6 +957,13 @@ function storedSearchPlan(value: unknown) {
   return decoded.ok ? decoded.plan : null;
 }
 
+/** An imported chat (or a copy of one) names its source; others carry nothing. */
+function importProjection(chat: Pick<ChatSummaryRow, "importSource" | "importSourceModel">) {
+  return chat.importSource
+    ? { importSource: chat.importSource, ...(chat.importSourceModel ? { importSourceModel: chat.importSourceModel } : {}) }
+    : {};
+}
+
 function serializeChatSummary(
   chat: ChatSummaryRow,
   availability: WorkspaceAvailabilityService,
@@ -960,6 +971,7 @@ function serializeChatSummary(
 ): ChatSummaryRecord {
   return {
     ...(chat.continuationSource ? { hasContinuationSource: true } : {}),
+    ...importProjection(chat),
     activeLeafMessageId: chat.activeLeafMessageId,
     assistantId: chat.assistantId,
     createdAt: chat.createdAt,
@@ -1118,6 +1130,7 @@ export function summarizeMessageRunToolActivity(
     return {
       ...(details ? { details } : {}),
       ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
+      ...(descriptor.origin === "web_fetch" ? fetchUrlActivityFacts(call.toolName, call.arguments, call.result) : {}),
       ...memorySearch,
       ...(duration !== null && duration >= 0 ? { durationMs: duration } : {}),
       origin: descriptor.origin,
@@ -1289,9 +1302,10 @@ function sourceValuesFromSearchPayload(payload: unknown): unknown[] {
 }
 
 /**
- * The cards of the tasks an answer created. With the reader's current tasks
- * each card shows its task as it is now, or deleted once it is gone; without
- * them (a run's own chat update) the tasks show as created.
+ * The cards of the tasks an answer created or managed. With the reader's
+ * current tasks each card shows its task as it is now, with the answer's last
+ * action on it, or deleted once it is gone; without them (a run's own chat
+ * update) the tasks show as the answer left them.
  */
 function answerScheduledTaskCards(
   payloads: readonly unknown[],
@@ -1301,7 +1315,7 @@ function answerScheduledTaskCards(
     .map(artifactInnerPayload)).map((card) => {
     if (!current) return card;
     const task = current.get(card.taskId);
-    return task ? scheduledTaskCard(task, card.timeZoneFallback) : { ...card, deleted: true as const };
+    return task ? scheduledTaskCard(task, card.timeZoneFallback, card.action) : { ...card, deleted: true as const };
   });
 }
 
@@ -2032,6 +2046,7 @@ export function createPrismaChatRepository(
         select: {
           archived: true,
           id: true,
+          importSource: true,
           memoryMode: true,
           memorySourceRevision: true,
           temporaryRetentionDeadline: true,
@@ -2051,6 +2066,7 @@ export function createPrismaChatRepository(
       return {
         archived: chat.archived,
         chatId: chat.id,
+        ...(chat.importSource ? { importSource: chat.importSource } : {}),
         mode: chat.memoryMode,
         sourceRevision: chat.memorySourceRevision,
         temporaryRetentionDeadline: chat.memoryMode === "TEMPORARY"
@@ -2173,37 +2189,6 @@ export function createPrismaChatRepository(
         };
         return graph;
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
-    },
-    searchChatContent: async ({ limit, query, userId }) => {
-      const trimmed = query.trim();
-      if (!trimmed) {
-        return [];
-      }
-
-      const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : 50;
-      const boundedLimit = Math.min(Math.max(normalizedLimit, 1), 50);
-      const pattern = `%${trimmed}%`;
-      const rows = await prismaClient.$queryRaw<{ chatId: string; snippet: string | null }[]>`
-        SELECT
-          m."chatId" AS "chatId",
-          MIN(substring(m."content"::text FROM 1 FOR 180)) AS "snippet"
-        FROM "Message" m
-        INNER JOIN "Chat" c ON c."id" = m."chatId"
-        WHERE c."userId" = ${userId}
-          AND c."archived" = false
-          AND c."memoryMode" <> 'TEMPORARY'::"MemoryChatMode"
-          AND c."permanentDeletionAt" IS NULL
-          AND c."projectId" IS NULL
-          AND m."content"::text ILIKE ${pattern}
-        GROUP BY m."chatId", c."updatedAt"
-        ORDER BY c."updatedAt" DESC
-        LIMIT ${boundedLimit}
-      `;
-
-      return rows.map((row) => ({
-        chatId: row.chatId,
-        snippet: row.snippet
-      }));
     },
     updateFolder: async ({ defaultKnowledgePlan, folderId, name, parentId, projectMemory, userId }) => {
       const trimmed = typeof name === "string" ? name.trim() : undefined;
@@ -2441,11 +2426,12 @@ export function createPrismaChatRepository(
         (mode === "EXCLUDED" && resumeDisclosureCopyVersion !== undefined)
       ) return { kind: "contract_invalid" as const };
       return prismaClient.$transaction(async (tx) => {
-        const chats = await tx.$queryRaw<LockedMemorySourceChat[]>`
+        const chats = await tx.$queryRaw<Array<LockedMemorySourceChat & { importSource: string | null }>>`
           SELECT
             "id", "userId", "activeLeafMessageId", "archived", "folderId",
             "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
-            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
+            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline",
+            "importSource"::text AS "importSource"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
@@ -2456,6 +2442,9 @@ export function createPrismaChatRepository(
         const chat = chats[0];
         if (!chat) return { kind: "not_found" as const };
         if (chat.memoryMode === "TEMPORARY") return { kind: "temporary" as const };
+        // An imported chat, or a copy of one, stays Excluded (a database check
+        // backs this for every other writer).
+        if (chat.importSource !== null && mode === "NORMAL") return { kind: "imported" as const };
         if (
           (hasChatFence && chat.memorySourceRevision !== expectedChatRevision) ||
           chat.memoryMode === mode

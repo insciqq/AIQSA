@@ -65,6 +65,7 @@ export function planScheduledTaskUpdate(
     emailNotify: patch.emailNotify ?? current.emailNotify,
     toolsEnabled: patch.toolsEnabled ?? current.toolsEnabled,
     workspaceEnabled: patch.workspaceEnabled ?? current.workspaceEnabled,
+    memoryEnabled: patch.memoryEnabled ?? current.memoryEnabled,
     chatMode: patch.chatMode ?? current.chatMode,
     kind: patch.kind ?? current.kind
   };

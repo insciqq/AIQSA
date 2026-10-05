@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
+import { decodeChatSummaryResponse } from "../../contracts/chats";
 import { textMessageContent } from "../../domain/content";
 import { getAuthConfig } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
@@ -379,6 +380,22 @@ describe("message branch route handlers", () => {
     });
     expect(body.chat).not.toHaveProperty("messages");
     expect(body.chat).not.toHaveProperty("usageStats");
+    expect(body.chat).not.toHaveProperty("importSource");
+  });
+
+  it("names the import source of a branch copied from an imported chat", async () => {
+    const { repository } = createMemoryRepository();
+    const branch = repository.createChatBranchFromMessage;
+    repository.createChatBranchFromMessage = async (input) => {
+      const record = await branch(input);
+      return record && { ...record, importSource: "CHATGPT", importSourceModel: "gpt-4o" };
+    };
+    const response = await createBranchChatFromMessageHandler({ repository, resolveAuth: auth.resolveAuth })(
+      new Request("http://app.local/api/messages/assistant-1/branch-chat", { headers: { cookie: authCookie() }, method: "POST" }),
+      { params: { messageId: "assistant-1" } }
+    );
+    expect(response.status).toBe(201);
+    expect(decodeChatSummaryResponse(await response.json())).toMatchObject({ importSource: "CHATGPT", importSourceModel: "gpt-4o" });
   });
 
   it("returns a conflict when branching while the source chat has an active run", async () => {

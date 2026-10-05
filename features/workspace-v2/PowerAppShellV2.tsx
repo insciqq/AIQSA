@@ -194,6 +194,8 @@ import {
   type SavedControlDraft
 } from "@/components/app-shell/powerAppShellData";
 import { useBranchGraphController } from "./useBranchGraphController";
+import { decodeChatBranchesResponse, type ChatBranchGraphWire } from "@/lib/contracts/chats";
+import { highlightRevealedMessage, openMessageSearchMatch } from "./messageSearchMatch";
 import {
   openPersonalChatMessage,
   revealPersonalChatDeepLinkMessage,
@@ -762,6 +764,13 @@ export function PowerAppShellV2({
     chatId: string;
     messageId: string;
   }> | null>(null);
+  // The message a sidebar search result opened: it stays expanded in its
+  // chat and is highlighted once the reading anchor lands on it.
+  const [searchRevealedMessage, setSearchRevealedMessage] = useState<Readonly<{
+    chatId: string;
+    messageId: string;
+  }> | null>(null);
+  const pendingSearchHighlightRef = useRef<Readonly<{ chatId: string; messageId: string }> | null>(null);
   const activeChatStream = useRunLifecycleStore((state) =>
     activeChatId ? state.activeStreams[activeChatId] : undefined
   );
@@ -872,7 +881,16 @@ export function PowerAppShellV2({
     []
   );
 
-  const consumePersonalReadingAnchor = useEventCallback((anchorKey: string) => {
+  const consumePersonalReadingAnchor = useEventCallback((anchorKey: string, target: HTMLElement) => {
+    // Read at the anchor's frame, which may precede this callback's refresh.
+    const highlight = pendingSearchHighlightRef.current;
+    if (
+      highlight?.messageId === anchorKey &&
+      highlight.chatId === useWorkspaceStore.getState().activeChatId
+    ) {
+      pendingSearchHighlightRef.current = null;
+      highlightRevealedMessage(target);
+    }
     setPersonalReadingAnchor((current) =>
       current?.chatId === activeChatId && current.messageId === anchorKey ? null : current
     );
@@ -968,6 +986,8 @@ export function PowerAppShellV2({
     followKey: threadFollowKey,
     hasContent: visibleMessages.length > 0,
     onReadingAnchorApplied: consumePersonalReadingAnchor,
+    // A message link or search result scrolls even after the reader moved away.
+    readingAnchorExplicit: personalReadingAnchor?.chatId === activeChatId,
     readingAnchorKey,
     resetKey: activeChatId ?? "blank"
   });
@@ -1213,6 +1233,18 @@ export function PowerAppShellV2({
       setSettingsNotice({ kind: "error", text: "This file's source message is no longer available." });
     }
     return opened;
+  });
+  const anchorSearchMatch = useEventCallback((chatId: string, messageId: string) => {
+    pendingSearchHighlightRef.current = { chatId, messageId };
+    setSearchRevealedMessage({ chatId, messageId });
+    setPersonalReadingAnchor({ chatId, messageId });
+  });
+  const loadSearchMatchBranchGraph = useEventCallback(async (
+    chatId: string
+  ): Promise<ChatBranchGraphWire | null> => {
+    const response = await shellFetch(`/api/chats/${encodeURIComponent(chatId)}/branches`);
+    if (!response.ok) return null;
+    return decodeChatBranchesResponse(await response.json())?.branchGraph ?? null;
   });
   const showUnavailableDeepLink = useEventCallback((target: PersonalChatDeepLinkTarget) => {
     // An unavailable Memory source simply opens the chat; only a plain
@@ -1807,6 +1839,51 @@ export function PowerAppShellV2({
     activeChatStreaming
   });
 
+  // The existing branch checkout, addressed by chat: persist the leaf, then
+  // reload the open chat on it.
+  const showSearchMatchBranch = useEventCallback(async (
+    chatId: string,
+    leafId: string,
+    currentLeafId: string | null
+  ): Promise<boolean> => {
+    try {
+      await persistActiveLeaf(chatId, leafId, currentLeafId);
+    } catch {
+      return false;
+    }
+    return Boolean(await refreshActiveChat(chatId, {
+      forceDetail: true,
+      preserveControls: true,
+      resumeRuns: false
+    }));
+  });
+  const openSearchMatchEvent = useEventCallback((chatId: string, messageId: string): void => {
+    // Opening the chat is one history entry, like choosing it in the list.
+    navigateChatRoute(() => {
+      void openMessageSearchMatch({
+        activateChat: activatePersonalChatDeepLink,
+        chatId,
+        isCurrent: (candidate) => useWorkspaceStore.getState().activeChatId === candidate,
+        loadBranchGraph: loadSearchMatchBranchGraph,
+        messageId,
+        onAnchor: anchorSearchMatch,
+        revealMessage: revealPersonalChatMessage,
+        showBranch: showSearchMatchBranch
+      }).then((outcome) => {
+        if (outcome === "message_unavailable") {
+          setNotice({ kind: "error", text: "This message is no longer available." });
+        } else if (outcome === "branch_unavailable") {
+          setNotice({
+            kind: "error",
+            text: "This message is in another version of the chat, which could not be opened. Try again once the current answer finishes."
+          });
+        } else if (outcome === "chat_unavailable") {
+          setNotice({ kind: "error", text: "This chat is no longer available." });
+        }
+      });
+    });
+  });
+
   const {
     refreshInterruptedRun,
     regenerateMessage,
@@ -2054,6 +2131,7 @@ export function PowerAppShellV2({
       moveChat: updateChatFolder,
       moveFolder: updateFolderParent,
       openChatMessage: openPersonalChatMessageEvent,
+      openSearchMatch: openSearchMatchEvent,
       openChat: activatePersonalChatDeepLink,
       openChatAddress: (chatId: string) => navigateToChatAddress(
         { chatId, projectId: null },
@@ -2165,6 +2243,7 @@ export function PowerAppShellV2({
     loadingOlderMessages: activeThreadHistory.loading,
     olderMessagesError: activeThreadHistory.error,
     retryActiveChatDetail,
+    revealedMessageId: searchRevealedMessage?.chatId === activeChatId ? searchRevealedMessage.messageId : null,
     scheduledTaskChat,
     showJumpToLatest,
     submitMessageEdit,

@@ -2413,6 +2413,46 @@ describe("local Memory retrieval repository", () => {
     expect(standingQueries.at(-1)?.[0]?.values).toContain(51);
   });
 
+  it("reads a scheduled task's own standing facts in its excluded chat, only while it stays excluded", async () => {
+    const standingRow = {
+      ...floorMetadata("saved", "FACT"), displayText: "Saved fact", entryId: null, itemId: "saved", itemType: "FACT_VERSION",
+      matchedSegmentId: null, matchedSegmentPosition: null, parentChunkId: null, rawScore: 0, safeContentHash: null,
+      safeText: "Saved fact", sourceAuthority: "EXPLICIT", sourceMode: "EXPLICIT", structuredValue: { statement: "Saved fact" }
+    };
+    const plan = planMemoryRetrieval({ currentUserText: "Summarize the news.", now });
+    const input = { assistantId: null, chatId: "chat-1", now, plan, userId: "user-1" };
+    const mocked = mockClient(snapshotRow({ chatMemoryMode: "EXCLUDED" }), { standingRows: [standingRow] });
+    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
+    // Any other turn in an excluded chat reads nothing.
+    const ordinary = await repository.snapshot(input);
+    expect(ordinary).toMatchObject({ chatMemoryMode: "EXCLUDED", reason: "chat_memory_off", status: "DISABLED" });
+    await expect(repository.loadStandingFacts(ordinary)).resolves.toEqual([]);
+    expect(mocked.laneSql).toEqual([]);
+    // The task's own turn reads there; the snapshot keeps the chat's real mode, which the read rechecks.
+    const task = await repository.snapshot({ ...input, scheduledPrompt: true });
+    expect(task).toMatchObject({ chatMemoryMode: "EXCLUDED", status: "READY" });
+    const standing = await repository.loadStandingFacts(task, { standingVersion: 1 });
+    expect(standing.map(({ candidate }) => [candidate.itemId, candidate.selectionReason])).toEqual([["saved", "standing.explicit"]]);
+    const sql = mocked.laneSql.find((value) => value.includes("standing_fact_floor"))!;
+    expect(sql).toContain('standing_chat."memoryMode" = \'EXCLUDED\'');
+    expect(sql).not.toContain('standing_chat."memoryMode" = \'NORMAL\'');
+    // An ordinary chat's read keeps requiring the chat to stay ordinary.
+    const normalMocked = mockClient(snapshotRow(), { standingRows: [standingRow] });
+    const normal = createPrismaLocalMemoryRetrievalRepository(normalMocked.client);
+    await normal.loadStandingFacts(await normal.snapshot({ ...input, scheduledPrompt: true }), { standingVersion: 1 });
+    expect(normalMocked.laneSql.find((value) => value.includes("standing_fact_floor")))
+      .toContain('standing_chat."memoryMode" = \'NORMAL\'');
+    // A temporary chat or the master pause never reads, a task's turn included.
+    for (const row of [snapshotRow({ chatMemoryMode: "TEMPORARY" }), snapshotRow({ chatMemoryMode: "EXCLUDED", useMemoryFacts: false })]) {
+      const closedMocked = mockClient(row, { standingRows: [standingRow] });
+      const closed = createPrismaLocalMemoryRetrievalRepository(closedMocked.client);
+      const snapshot = await closed.snapshot({ ...input, scheduledPrompt: true });
+      expect(snapshot.status).toBe("DISABLED");
+      await expect(closed.loadStandingFacts(snapshot, { standingVersion: 1 })).resolves.toEqual([]);
+      expect(closedMocked.laneSql).toEqual([]);
+    }
+  });
+
   it("requires an issued personal snapshot before reading standing facts", async () => {
     const mocked = mockClient();
     const first = createPrismaLocalMemoryRetrievalRepository(mocked.client);

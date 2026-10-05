@@ -70,6 +70,8 @@ export function toolHistoryKind(input: Readonly<{
     case "mcp": return { kind: "mcp", label: `MCP ${plain(descriptor.serverName, "MCP server")} › ${plain(descriptor.toolName, "tool")} (tool ${toolName})` };
     case "workspace": return { kind: "workspace", label: `Workspace ${plain(descriptor.toolName, "tool")}` };
     case "web_search": return { kind: "web_search", label: `Web search ${plain(descriptor.serverName, "source")}` };
+    // Page text stays with its call; a record names the call, never the page.
+    case "web_fetch": return { kind: "tool", label: "Page reading" };
     case "knowledge": return { kind: "knowledge", label: "Knowledge search" };
     case "memory": return { kind: "memory", label: `Memory ${plain(descriptor.toolName, "tool")}` };
     case "skill": return { kind: "skill", label: `Skill ${plain(descriptor.toolName, "tool")}` };

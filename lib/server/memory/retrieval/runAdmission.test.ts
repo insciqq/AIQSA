@@ -659,6 +659,42 @@ describe("Personal Memory v1 run admission", () => {
     expect(local.loadStandingFacts).not.toHaveBeenCalled();
   });
 
+  it("reads a scheduled task's own standing facts in its excluded chat, and nothing for another turn there", async () => {
+    const local = repository({ standing: [standingFact("saved")] });
+    vi.mocked(local.value.snapshot).mockResolvedValue({ ...local.state, chatMemoryMode: "EXCLUDED" });
+    const input = runInput("Summarize the news.");
+    const excluded = { ...input, expected: { ...input.expected, chatMemoryMode: "EXCLUDED" as const },
+      readMode: "STANDING_V1" as const };
+    const service = createMemoryRunRetrievalService(local.value);
+    await expect(service.retrieve(excluded)).resolves.toMatchObject({
+      budgetSnapshot: { reason: "chat_memory_off" }, outcome: "DISABLED", preparedContext: null });
+    expect(local.value.snapshot).not.toHaveBeenCalled();
+    const task = await service.retrieve({ ...excluded, scheduledPrompt: true });
+    expect(task.outcome).toBe("USED");
+    expect(task.items).toHaveLength(1);
+    expect(task.preparedContext?.text).toContain("Standing fact saved");
+    expect(task.budgetSnapshot).toMatchObject({
+      memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT, utilityEgressMode: "LOCAL_ONLY", utilityExecutions: [] });
+    expect(local.value.snapshot).toHaveBeenCalledWith(expect.objectContaining({ chatId: "chat-current", scheduledPrompt: true }));
+    expect(local.retrieve).not.toHaveBeenCalled();
+    // A temporary chat never reads, a task turn included.
+    await expect(service.retrieve({ ...excluded, expected: { ...input.expected, chatMemoryMode: "TEMPORARY" },
+      scheduledPrompt: true })).resolves.toMatchObject({ budgetSnapshot: { reason: "temporary_chat" }, outcome: "DISABLED" });
+    expect(local.value.snapshot).toHaveBeenCalledOnce();
+  });
+
+  it("never takes a task turn through the command-capable read", async () => {
+    const local = repository({ standing: [standingFact("saved")] });
+    const options = retrievalOptions([]);
+    const result = await createMemoryRunRetrievalService(local.value, options).retrieve({
+      ...runInput("/memory remember that I prefer tea"), scheduledPrompt: true });
+    expect(result).toMatchObject({ budgetSnapshot: { memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
+      reason: "scheduled_task_turn" }, items: [], outcome: "DISABLED", preparedContext: null });
+    expect(options.control.decide).not.toHaveBeenCalled();
+    expect(local.value.snapshot).not.toHaveBeenCalled();
+    expect(local.retrieve).not.toHaveBeenCalled();
+  });
+
   it("does not disclose standing facts after Stop or through the disabled master switch", async () => {
     const local = repository({ standing: [standingFact("saved")] });
     const input = runInput("An ordinary question");

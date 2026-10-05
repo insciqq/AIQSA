@@ -245,6 +245,8 @@ export function messageFromApi(message: ChatMessageWire): ThreadMessage {
 export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceChatSummary {
   return {
     ...(chat.hasContinuationSource ? { hasContinuationSource: true } : {}),
+    ...(chat.importSource ? { importSource: chat.importSource } : {}),
+    ...(chat.importSourceModel ? { importSourceModel: chat.importSourceModel } : {}),
     ...(chat.titlePending ? { titlePending: true } : {}),
     activeLeafMessageId: chat.activeLeafMessageId,
     ...(chat.assistantId !== undefined ? { assistantId: chat.assistantId } : {}),

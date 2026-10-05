@@ -158,6 +158,19 @@ describe("native search retrieval composition", () => {
     ]);
     expect(JSON.stringify(output.diagnosticEvidence)).not.toContain("private");
   });
+  it("searches a scheduled task's own excluded chat, and refuses any other turn there", async () => {
+    const f = fixture();
+    const excluded = { ...await f.repository.snapshot(), chatMemoryMode: "EXCLUDED" as const };
+    f.repository.snapshot.mockResolvedValue(excluded);
+    await expect(f.retrieve(f.input)).rejects.toThrow("memory_search_authority_changed");
+    expect(f.repository.retrieve).not.toHaveBeenCalled();
+    const output = await f.retrieve({ ...f.input, scheduledPrompt: true });
+    expect(output.pack.items.map(item => item.itemType)).toEqual(expect.arrayContaining(["FACT_VERSION", "RECALL_CHUNK"]));
+    expect(f.repository.snapshot).toHaveBeenLastCalledWith(expect.objectContaining({ chatId: "chat", scheduledPrompt: true }));
+    for (const [input] of f.repository.retrieve.mock.calls) expect(input).toMatchObject({ scheduledPrompt: true });
+    f.repository.snapshot.mockResolvedValue({ ...excluded, chatMemoryMode: "TEMPORARY" });
+    await expect(f.retrieve({ ...f.input, scheduledPrompt: true })).rejects.toThrow("memory_search_authority_changed");
+  });
   it("excludes tool events only from its own vector reads and passes the search signal", async () => {
     const f = fixture();
     await f.retrieve(f.input);
