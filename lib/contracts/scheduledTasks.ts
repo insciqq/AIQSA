@@ -143,6 +143,12 @@ export type ScheduledTask = {
   chatId: string | null;
   /** Some run's result has not been seen yet (see `ScheduledTaskRun.unseen`). */
   unseenResult: boolean;
+  /**
+   * The instructions hold links runs cannot read yet: they were saved before
+   * page reading, or a chat tool wrote them without the user's own links.
+   * Saving the instructions allows them. Absent otherwise; never the links.
+   */
+  promptLinksPending?: true;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -447,7 +453,9 @@ function lastRun(value: unknown): value is ScheduledTaskLastRun {
 }
 
 export function decodeScheduledTask(value: unknown): ScheduledTask | null {
-  if (!record(value) || !keys(value, TASK_KEYS)) return null;
+  if (!record(value)) return null;
+  const { promptLinksPending, ...fields } = value;
+  if (!keys(fields, TASK_KEYS) || (promptLinksPending !== undefined && promptLinksPending !== true)) return null;
   const schedule = decodeScheduledTaskSchedule(value.schedule);
   const title = normalizeScheduledTaskTitle(value.title), prompt = value.prompt;
   if (!schedule || !id(value.id) || !title || title !== value.title || !isScheduledTaskPrompt(prompt) ||
@@ -473,7 +481,8 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     lastRun: run && {
       scheduledFor: run.scheduledFor, state: run.state, reasonCode: run.reasonCode, finishedAt: run.finishedAt, unseen: run.unseen
     },
-    running: value.running, chatId: value.chatId, unseenResult: value.unseenResult, revision: value.revision,
+    running: value.running, chatId: value.chatId, unseenResult: value.unseenResult,
+    ...(promptLinksPending ? { promptLinksPending: true as const } : {}), revision: value.revision,
     createdAt: value.createdAt, updatedAt: value.updatedAt
   };
 }

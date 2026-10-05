@@ -21,6 +21,7 @@ import { DEFAULT_KNOWLEDGE_BUDGET_POLICY } from "../knowledge/knowledgeBudget";
 import { KNOWLEDGE_SEARCH_TOOL_NAME } from "../knowledge/retrievalTypes";
 import type { ProviderAdmissionPlan } from "../providerRuntime/admission";
 import type { ProviderAdapter, ProviderModelCapabilities } from "../providers/types";
+import { FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
 import { SESSION_STATUS_TOOL_NAME } from "../tools/sessionStatus";
 import { READ_TOOL_CALL_NAME } from "./toolHistoryContract";
 import { materializePreparedRunData, prepareRun, type RunPreparationDeps } from "./runPreparation";
@@ -341,10 +342,12 @@ describe("ordinary Knowledge plan resolution", () => {
       );
       expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
       expect(result.prepared.normalizedRequest.toolMode).toBe("auto");
+      // The page reader is built in for every tool-calling run that keeps its tools on.
       expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         KNOWLEDGE_SEARCH_TOOL_NAME,
         SESSION_STATUS_TOOL_NAME,
-        READ_TOOL_CALL_NAME
+        READ_TOOL_CALL_NAME,
+        FETCH_URL_TOOL_NAME
       ]);
     }
   });
@@ -472,7 +475,8 @@ describe("ordinary Knowledge plan resolution", () => {
       expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         KNOWLEDGE_SEARCH_TOOL_NAME,
         SESSION_STATUS_TOOL_NAME,
-        READ_TOOL_CALL_NAME
+        READ_TOOL_CALL_NAME,
+        FETCH_URL_TOOL_NAME
       ]);
     }
   });
@@ -590,10 +594,12 @@ describe("assistant run admission", () => {
         knowledgeSelection(["base-a", "base-b"])
       );
       expect(result.prepared.normalizedRequest.knowledgeFocusedRequest).toBeUndefined();
+      // An Assistant's tools row selects MCP servers; the built-in page reader stays.
       expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         KNOWLEDGE_SEARCH_TOOL_NAME,
         SESSION_STATUS_TOOL_NAME,
-        READ_TOOL_CALL_NAME
+        READ_TOOL_CALL_NAME,
+        FETCH_URL_TOOL_NAME
       ]);
     }
   });
@@ -683,7 +689,8 @@ describe("assistant run admission", () => {
       expect(result.prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual([
         KNOWLEDGE_SEARCH_TOOL_NAME,
         SESSION_STATUS_TOOL_NAME,
-        READ_TOOL_CALL_NAME
+        READ_TOOL_CALL_NAME,
+        FETCH_URL_TOOL_NAME
       ]);
     }
   });

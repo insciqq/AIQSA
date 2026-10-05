@@ -102,10 +102,15 @@ export type ShellWorkspacePaneActions = {
    */
   deleteChatPermanently(chat: WorkspaceChatSummary): Promise<void> | void;
   deleteFolder(folder: FolderSummary): Promise<void> | void;
-  exportChat(chat: WorkspaceChatSummary, format?: "json" | "markdown"): void;
+  exportChat(chat: WorkspaceChatSummary, format?: "json" | "markdown" | "pdf"): void;
   moveChat(chatId: string, folderId: string | null): Promise<void> | void;
   moveFolder(folder: FolderSummary, folderId: string | null): Promise<void> | void;
   openChatMessage(chatId: string, messageId: string): Promise<boolean>;
+  /**
+   * Opens a sidebar message match at its message: on the version of the chat
+   * that contains it, with earlier pages loaded until it shows.
+   */
+  openSearchMatch(chatId: string, messageId: string): void;
   openProjectSettings(folder: FolderSummary): void;
   retry(): Promise<unknown> | void;
   saveChatTitle(chat: WorkspaceChatSummary): Promise<NameSaveResult>;
@@ -198,6 +203,8 @@ export type ShellThreadView = {
    */
   refreshInterruptedRun(): Promise<boolean>;
   retryActiveChatDetail(): void;
+  /** The message a search result opened in this chat; a long question shows in full. */
+  revealedMessageId?: string | null;
   /**
    * The scheduled task whose later runs continue in the open chat (same-chat
    * mode, its newest chat): replies here do not change it, its editor does.

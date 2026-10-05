@@ -28,8 +28,8 @@ import { loadProjectChatDefaultAuthority } from "../projects/chatDefaults";
 const sourceSelect = {
   activeLeafMessageId: true, archived: true, assistantId: true, assistantOverrides: true,
   defaultProviderModelId: true, defaultKnowledgePlan: true, defaultSearchPlan: true, folderId: true,
-  id: true, memoryMode: true, permanentDeletionAt: true, projectFolderId: true, projectId: true,
-  title: true, updatedAt: true, userId: true, workspaceEnabled: true
+  id: true, importSource: true, importSourceModel: true, memoryMode: true, permanentDeletionAt: true,
+  projectFolderId: true, projectId: true, title: true, updatedAt: true, userId: true, workspaceEnabled: true
 } satisfies Prisma.ChatSelect;
 
 async function lockedSource(tx: Prisma.TransactionClient, input: {
@@ -433,6 +433,8 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         await tx.chat.create({ data: {
           id: newChatId, title: boundedChatTitle(`Continued: ${chat.title}`),
           defaultProviderModelId: operation.requestedProviderModelId ?? chat.defaultProviderModelId, memoryMode: chat.memoryMode,
+          // The import marker (never its key) keeps a continued imported chat out of Memory.
+          ...(chat.importSource ? { importSource: chat.importSource, importSourceModel: chat.importSourceModel } : {}),
           defaultKnowledgePlan: chat.defaultKnowledgePlan ?? Prisma.DbNull,
           defaultSearchPlan: chat.defaultSearchPlan ?? Prisma.DbNull,
           ...continuedAssistantBinding(chat),

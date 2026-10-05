@@ -646,6 +646,12 @@ enum MemoryChatMode {
   TEMPORARY
 }
 
+enum ChatImportSource {
+  AIQSA
+  CHATGPT
+  CLAUDE
+}
+
 enum MemoryRetrievalAttemptState {
   PENDING
   EXECUTING
@@ -3185,6 +3191,16 @@ model Chat {
   memoryMode                      MemoryChatMode       @default(NORMAL)
   memoryBranchGeneration          Int                  @default(0)
   memorySourceRevision            Int                  @default(0)
+  /// Set on an imported chat and copied to its continuations and branch copies.
+  /// A SQL check keeps every such chat Excluded from Memory.
+  importSource                    ChatImportSource?
+  /// SHA-256 of the source conversation identity (for AIQSA documents, of their
+  /// canonical content). A SQL partial unique index over (userId, importSource,
+  /// importSourceKey) for chats not pending deletion makes a re-import
+  /// "already imported"; copies never carry it.
+  importSourceKey                 String?              @db.Char(64)
+  /// The source's chat-level model label, for display only.
+  importSourceModel               String?              @db.VarChar(128)
   permanentDeletionAt             DateTime?
   permanentDeletionOperationId    String?              @unique
   temporaryRetentionPolicyVersion String?              @db.VarChar(64)
@@ -7216,6 +7232,11 @@ model ScheduledTask {
   userId                     String
   title                      String                    @db.VarChar(120)
   prompt                     String
+  /// SHA-256 digests of the prompt's normalized http(s) links its runs may read
+  /// with `fetch_url`: every link of an owner-written prompt, only already
+  /// user-authorized ones of a tool-written prompt (`scheduledPromptUrlDigests`).
+  /// Replaced with every write of the prompt; at most 100.
+  promptUrlDigests           String[]                  @default([])
   scheduleKind               ScheduledTaskScheduleKind
   /// Local wall-clock minute of the day, 0..1439; HOURLY: the window start (0 for the whole day).
   timeOfDayMinutes           Int

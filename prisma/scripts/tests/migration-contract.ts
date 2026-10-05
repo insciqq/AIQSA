@@ -24,6 +24,7 @@ import { REMOVE_LOCAL_MCP_SOURCES_MIGRATION, removeLocalMcpSourcesFixtureSql, re
 import { RETIRE_LOCAL_MCP_ACTIVATION_STAGES_MIGRATION, retireLocalMcpActivationStagesFixtureSql, retireLocalMcpActivationStagesProofSql, retireLocalMcpActivationStagesRepeatProofSql } from "./retire-local-mcp-activation-stages-adoption";
 import { SCHEDULED_TASK_PROMPT_MARKER_MIGRATION, scheduledTaskPromptMarkerFixtureSql, scheduledTaskPromptMarkerProofSql } from "./scheduled-task-prompt-marker-adoption";
 import { SCHEDULED_TASK_MEMORY_MIGRATION, scheduledTaskMemoryFixtureSql, scheduledTaskMemoryProofSql } from "./scheduled-task-memory-adoption";
+import { CHAT_IMPORT_SOURCE_MIGRATION, chatImportSourceFixtureSql, chatImportSourceProofSql } from "./chat-import-source-adoption";
 import { UTILITY_RUNTIME_BUDGET_MIGRATION, utilityRuntimeBudgetFixtures } from "./utility-runtime-budgets";
 import { SEMANTIC_DECISIONS_MIGRATION, semanticDecisionsFixtureSql, semanticDecisionsProofSql } from "./semantic-decisions-adoption";
 import { DECISION_UPGRADE_MIGRATION, decisionUpgradeFixtureSql, decisionUpgradeProofSql } from "./decision-upgrade-adoption";
@@ -7666,6 +7667,8 @@ function main(
   }
   runForwardAdoptionProof(shadowDatabase, migrations, SCHEDULED_TASK_MEMORY_MIGRATION,
     scheduledTaskMemoryFixtureSql, scheduledTaskMemoryProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, CHAT_IMPORT_SOURCE_MIGRATION,
+    chatImportSourceFixtureSql, chatImportSourceProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

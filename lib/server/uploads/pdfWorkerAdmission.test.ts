@@ -4,6 +4,38 @@ import { describe, expect, it, vi } from "vitest";
 import { inspectPdfForModelProcessing } from "../parsing/pdfPreparation";
 import { extractNativePdfGeometry } from "../parsing/nativePdf";
 import { extractPdfTextChunks } from "./pdf";
+import { withPageParserAdmission, withPdfWorkerAdmission } from "./pdfWorkerAdmission";
+
+describe("page parser admission", () => {
+  it("never waits behind the document slot, runs page parses one at a time and cancels queued ones", async () => {
+    const flush = async () => { for (let count = 0; count < 10; count++) await Promise.resolve(); };
+    let releaseDocument = () => {};
+    const document = withPdfWorkerAdmission(() => new Promise<void>((resolve) => { releaseDocument = resolve; }));
+    const order: string[] = [];
+    let releaseFirst = () => {};
+    const first = withPageParserAdmission(() => new Promise<void>((resolve) => {
+      order.push("first");
+      releaseFirst = resolve;
+    }));
+    const controller = new AbortController();
+    const cancelled = withPageParserAdmission(async () => { order.push("cancelled"); }, controller.signal);
+    const second = withPageParserAdmission(async () => { order.push("second"); });
+    try {
+      await flush();
+      // The first page parse runs while a document holds its slot; the others queue.
+      expect(order).toEqual(["first"]);
+      controller.abort(new Error("queued_cancelled"));
+      await expect(cancelled).rejects.toThrow("queued_cancelled");
+      releaseFirst();
+      await Promise.all([first, second]);
+      expect(order).toEqual(["first", "second"]);
+    } finally {
+      releaseFirst();
+      releaseDocument();
+      await document;
+    }
+  });
+});
 
 describe("process PDF worker admission", () => {
   it("shares memory admission across PDF consumers until termination and cancels queued work", async () => {

@@ -101,6 +101,7 @@ export function useChatTitleReconciliation(input: Readonly<{
                 ...(updatedAt ? { updatedAt: laterRevision(chat.updatedAt, updatedAt) } : {})
               } : chat),
               navigationChats: state.navigationChats.map((chat) => chat.id === chatId ? { ...chat, title } : chat),
+              navigationMessageMatches: state.navigationMessageMatches.map((match) => match.chatId === chatId ? { ...match, title } : match),
               navigationSearchChats: state.navigationSearchChats.map((chat) => chat.id === chatId ? { ...chat, title } : chat)
             }));
             if (!titlePending && !usagePending.has(chatId)) pending.delete(chatId);

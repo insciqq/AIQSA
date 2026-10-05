@@ -3,6 +3,7 @@ import type {
   ChatSummaryResponseWire,
   WorkspaceChatSummaryWire
 } from "../../contracts/chats";
+import type { ChatImportSource } from "../../contracts/chatImport";
 import type { KnowledgePlan } from "../../contracts/knowledge";
 import {
   UNAVAILABLE_CHAT_WORKSPACE_STATE,
@@ -35,6 +36,9 @@ export type BranchChatRecord = {
   defaultProvider: string | null;
   folderId: string | null;
   id: string;
+  /** A copy of an imported chat keeps the import marker, so it stays out of Memory. */
+  importSource?: ChatImportSource | null;
+  importSourceModel?: string | null;
   messageCount: number;
   pinned: boolean;
   projectId?: string | null;
@@ -136,6 +140,8 @@ function serializeChatSummary(chat: BranchChatRecord): WorkspaceChatSummaryWire 
     defaultProvider: chat.defaultProvider,
     folderId: chat.folderId,
     id: chat.id,
+    ...(chat.importSource ? { importSource: chat.importSource } : {}),
+    ...(chat.importSource && chat.importSourceModel ? { importSourceModel: chat.importSourceModel } : {}),
     messageCount: chat.messageCount,
     pinned: chat.pinned,
     ...(chat.projectId !== undefined ? { projectId: chat.projectId } : {}),

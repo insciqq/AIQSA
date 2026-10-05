@@ -1,4 +1,5 @@
 import { decodeMemorySearchActivity } from "@/lib/contracts/memorySearchActivity";
+import { decodeFetchUrlTarget } from "@/lib/contracts/fetchUrlActivity";
 import type { ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import {
   isToolSynthesisFailure,
@@ -86,6 +87,7 @@ type ActivitySignal = Readonly<{
   index: number;
   kind: Exclude<RunActivityKindV2, "preparing" | "queued">;
   budget?: ThreadToolBudgetWarning;
+  fetchTarget?: string;
   origin?: ThreadToolActivityOrigin;
   serverName?: string;
   toolName?: string;
@@ -127,8 +129,10 @@ function skillActivityMetadata(payload: Record<string, unknown>) {
 function toolActivityMetadata(payload: Record<string, unknown>) {
   const toolName = safeToolName(payload.name ?? payload.toolName);
   const serverName = safeServerName(payload.serverName);
+  const fetchTarget = payload.origin === "web_fetch" ? decodeFetchUrlTarget(payload.fetchTarget) : null;
   return {
     ...skillActivityMetadata(payload),
+    ...(fetchTarget ? { fetchTarget } : {}),
     ...(isThreadToolActivityOrigin(payload.origin) ? { origin: payload.origin } : {}),
     ...(serverName ? { serverName } : {}),
     ...(toolName ? { toolName } : {})
@@ -251,7 +255,50 @@ type ToolActivityIdentity = Readonly<{
   serverName?: unknown;
   toolName?: unknown;
   memorySearchOutcome?: unknown;
+  fetchTarget?: unknown;
+  fetchOutcome?: unknown;
+  fetchHttpStatus?: unknown;
+  fetchRefusalScope?: unknown;
 }>;
+
+/** Why a page link was refused, worded by how the owner allows it. */
+function notInConversationCopy(target: string, scope: unknown): string {
+  switch (scope) {
+    case "scheduled_run": return `Didn't read ${target}: open the task and save its instructions to allow this link`;
+    case "task_instructions": return `Didn't read ${target}: links in a task's instructions are read only by its scheduled runs`;
+    default: return `Didn't read ${target}: the link wasn't shared in this chat`;
+  }
+}
+
+/** A page read's row: "Reading <host/path>", then its outcome in plain words. */
+function describeFetchCallV2(call: ToolActivityIdentity, phase: "cancelled" | "failed" | "running" | "settled"): string {
+  const target = decodeFetchUrlTarget(call.fetchTarget) ?? "web page";
+  if (phase === "running") return `Reading ${target}`;
+  if (phase === "cancelled") return `Reading ${target} stopped`;
+  if (phase === "settled" && (call.fetchOutcome === undefined || call.fetchOutcome === "read")) return `Read ${target}`;
+  switch (call.fetchOutcome) {
+    case "fetch_url_not_in_conversation": return notInConversationCopy(target, call.fetchRefusalScope);
+    case "fetch_blocked_address":
+    case "fetch_port_not_allowed":
+    case "fetch_url_credentials":
+    case "fetch_url_invalid":
+    case "fetch_redirect_invalid": return `Blocked ${target}: this address is not allowed`;
+    case "fetch_redirect_limit": return `Couldn't read ${target}: too many redirects`;
+    case "fetch_timeout": return `Couldn't read ${target}: the page took too long`;
+    case "fetch_too_large": return `Couldn't read ${target}: the page is too large`;
+    case "fetch_unsupported_content_type": return `Couldn't read ${target}: not a web page, upload the file instead`;
+    case "fetch_http_status": {
+      const status = typeof call.fetchHttpStatus === "number" ? ` ${call.fetchHttpStatus}` : " an error";
+      return `Couldn't read ${target}: the site returned${status}`;
+    }
+    case "fetch_network_error": return `Couldn't read ${target}: the site is unreachable`;
+    case "fetch_no_readable_text": return `No readable text on ${target}`;
+    case "fetch_reader_unavailable": return `Couldn't read ${target}: page reading is unavailable`;
+    case "fetch_url_limit_reached": return `Skipped ${target}: page limit for this answer reached`;
+    case "fetch_url_interrupted": return `Reading ${target} was interrupted`;
+    default: return `Couldn't read ${target}`;
+  }
+}
 
 /** Accepted tool origin wins over names, including reserved display names.
  * Name fallbacks keep activities without explicit origin readable. */
@@ -334,6 +381,7 @@ export function describeToolCallV2(
     if (call.memorySearchOutcome === "no_results") return "No matching memories found";
     return "Searched memory";
   }
+  if (origin === "web_fetch") return describeFetchCallV2(call, phase);
   if (origin === "web_search") {
     if (phase === "failed") return "Web search failed";
     if (phase === "cancelled") return "Web search stopped";

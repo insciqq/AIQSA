@@ -236,7 +236,10 @@ export function WorkspaceHeaderV2({
   editingTitle = null,
   favorite = false,
   folders = [],
+  importLabel = null,
+  importTitle,
   leadingSlot = null,
+  memoryLockedReason = null,
   memoryUsed = null,
   modelSelector = null,
   modelTriggerRef,
@@ -286,6 +289,14 @@ export function WorkspaceHeaderV2({
   /** Current Favorite state; shown as a checked menu item when `onFavorite` exists. */
   favorite?: boolean;
   folders?: readonly WorkspaceHeaderFolderV2[];
+  /**
+   * "Imported from <source>" after the title of an imported chat (or a copy
+   * of one); `importTitle` is its tooltip. Phones show no title, so neither.
+   */
+  importLabel?: string | null;
+  importTitle?: string;
+  /** Why the Memory item is disabled (an imported chat); null keeps it live. */
+  memoryLockedReason?: string | null;
   /** Whether Memory reads this chat; null hides the Memory item. */
   memoryUsed?: boolean | null;
   /**
@@ -310,7 +321,7 @@ export function WorkspaceHeaderV2({
   onCopyThread(): void;
   /** Null hides "Delete…" entirely (no `permanentChatDeletionAvailable`). */
   onDelete?: (() => void) | null;
-  onExport(format: "json" | "markdown"): void;
+  onExport(format: "json" | "markdown" | "pdf"): void;
   onFavorite?: (() => void) | null;
   onMemoryMode?: ((mode: "EXCLUDED" | "NORMAL") => void) | null;
   /** Null hides Move to… when the current authority cannot move this chat. */
@@ -340,6 +351,7 @@ export function WorkspaceHeaderV2({
     deleteDisabled,
     favorite,
     folders,
+    memoryLockedReason,
     memoryUsed: onMemoryMode ? memoryUsed : null,
     moveDisabled,
     moveRootLabel,
@@ -410,6 +422,11 @@ export function WorkspaceHeaderV2({
                 {renameDisabled ? null : <UiV2Icon name="edit" />}
               </button>
               {renameDisabled ? null : <span hidden id={renameHintId}>Rename chat</span>}
+              {importLabel ? (
+                <span className="v2-live-import-source" data-testid="header-import-source" title={importTitle ?? importLabel}>
+                  {importLabel}
+                </span>
+              ) : null}
             </h1>
           )
         ) : null}

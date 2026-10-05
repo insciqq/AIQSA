@@ -13,6 +13,7 @@ import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { RunRepository, ScheduledTaskCallRefusal } from "../runs/runRepositoryContract";
+import { isFetchUrlPlan } from "./fetchUrlPlan";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
 
 /**
@@ -30,6 +31,8 @@ export const CREATE_SCHEDULED_TASK_TOOL_NAME = "create_scheduled_task";
 
 export type ScheduledTaskToolSettings = NonNullable<NormalizedRunRequest["scheduledTaskTool"]>;
 type ScheduledTaskToolRequest = Readonly<{
+  /** The run's frozen page-reading authority; its user digests bound the created prompt's links. */
+  fetchUrl?: unknown;
   prompt: Readonly<{ baseline?: Readonly<{ timeZone: string; timeZoneSource: "client" | "utc_fallback" }> }>;
   scheduledTaskTool?: ScheduledTaskToolSettings;
 }>;
@@ -271,6 +274,8 @@ export async function executeCreateScheduledTask(
       callId: context.persistedToolCallId,
       result: (task) => scheduledTaskCreatedResult(call, task, zone.fallback),
       runId: context.runId,
+      // A run without the page reader authorized no links: the prompt's runs read none.
+      userUrlDigests: isFetchUrlPlan(context.request.fetchUrl) ? context.request.fetchUrl.userUrlDigests : [],
       userId: context.userId
     });
     if (outcome.kind === "created") return outcome.result;
