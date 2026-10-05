@@ -56,8 +56,17 @@ import {
 import { createPrismaMemoryItemEmbeddingHandler } from "./handler";
 import { createPrismaMemoryEmbeddingHandler } from "./compositeHandler";
 import { createPrismaMemoryEmbeddingBatchRepository } from "./batchRepository";
-import { enqueueMemoryEmbeddingBatchItems } from "./enqueue";
+import {
+  enqueueMemoryEmbeddingBatchItem,
+  enqueueMemoryEmbeddingBatchItems
+} from "./enqueue";
 import { createPrismaMemoryItemEmbeddingRepository } from "./repository";
+import {
+  MEMORY_EMBEDDING_SWEEP_FAILURE_DELAY_MS,
+  MEMORY_EMBEDDING_SWEEP_GRACE_MS,
+  sweepStrandedMemoryEmbeddings
+} from "./sweep";
+import { ACCOUNT_MEMORY_DELETION_TARGET_TYPE } from "../accountDeletion/contract";
 import { createPrismaMemoryJobRepository } from "@/tests/support/memoryPersistence";
 
 const INITIAL_NOW = new Date("2026-08-10T12:00:00.000Z");
@@ -596,6 +605,85 @@ async function embeddingJobForEntry(userId: string, searchEntryId: string) {
   return prisma.memoryJob.findUniqueOrThrow({
     where: { id: child.memoryJobId }
   });
+}
+
+function batchVectors(request: { texts: readonly string[] }) {
+  const vector = Array.from({ length: DIMENSION }, (_, index) => index === 0 ? 1 : 0);
+  return {
+    model: embeddingConfiguration.upstreamModelId,
+    requestId: `embedding-sweep-request-${randomUUID()}`,
+    usage: {
+      inputTokens: request.texts.length * 7,
+      totalTokens: request.texts.length * 7
+    },
+    vectors: request.texts.map(() => vector)
+  };
+}
+
+function batchCoordinator(
+  clock: () => Date,
+  embed: (request: { texts: readonly string[] }) => Promise<ReturnType<typeof batchVectors>>,
+  policy: Readonly<{ maxJobAttempts?: number }> = {}
+) {
+  const runtime = {
+    resolve: vi.fn(async () => ({ adapter: { embed } }))
+  } as never;
+  const registry = new MemoryCoordinatorRegistry();
+  registry.registerJob(createPrismaMemoryEmbeddingHandler(
+    { now: clock },
+    prisma,
+    { batch: { runtime }, legacy: { runtime } }
+  ));
+  return new MemoryCoordinator({
+    now: clock,
+    policy: {
+      heartbeatMs: 1_000,
+      jobRetryDelaysMs: [1],
+      leaseMs: 5_000,
+      maxJobParallel: 1,
+      ...policy
+    },
+    registry,
+    repository: createPrismaMemoryCoordinatorRepository(prisma)
+  });
+}
+
+async function activeFactEntry(
+  generationId: string,
+  saved: Awaited<ReturnType<typeof saveExplicit>>
+) {
+  return prisma.memorySearchEntry.findFirstOrThrow({
+    where: { factVersionId: saved.memory.currentVersionId!, indexGenerationId: generationId }
+  });
+}
+
+/** The production shape of a target retired while it was briefly not current:
+ * a STALE child under a settled batch, and no successor. */
+async function strandEmbeddingChild(userId: string, searchEntryId: string, at: Date) {
+  const child = await prisma.memoryEmbeddingBatchItem.findFirstOrThrow({
+    where: { searchEntryId, userId }
+  });
+  await prisma.memoryEmbeddingBatchItem.update({
+    data: {
+      completedAt: at,
+      errorCode: "memory_embedding_batch_target_stale",
+      state: "STALE"
+    },
+    where: { id: child.id }
+  });
+  await prisma.memoryJob.update({
+    data: {
+      acceptedResultHash: "e".repeat(64),
+      completedAt: at,
+      stage: "local_terminal",
+      state: "SUCCEEDED"
+    },
+    where: { id: child.memoryJobId }
+  });
+}
+
+async function embeddingChildren(userId: string, searchEntryId: string) {
+  return prisma.memoryEmbeddingBatchItem.count({ where: { searchEntryId, userId } });
 }
 
 describe("Prisma explicit Memory vector enrichment", () => {
@@ -1968,4 +2056,356 @@ describe("Prisma explicit Memory vector enrichment", () => {
       await fixture.cleanup();
     }
   }, 30_000);
+
+  it("re-embeds a chunk once after a chat turn retired its batch child", async () => {
+    const fixture = await createFixture();
+    const start = new Date();
+    let clock = new Date(start);
+    const embed = vi.fn(async (request: { texts: readonly string[] }) =>
+      batchVectors(request));
+    const coordinator = batchCoordinator(() => new Date(clock), embed);
+    const chunkText = "The deployment rehearsal runs every Thursday morning.";
+    const chunkId = memorySha256({ domain: "memory-sweep-chunk", userId: fixture.userId });
+    const entryId = randomUUID();
+    try {
+      await prisma.userMemorySettings.update({
+        data: { referenceChatHistory: true },
+        where: { userId: fixture.userId }
+      });
+      const chat = await prisma.chat.create({
+        data: { memorySourceRevision: 1, title: "Memory embedding sweep", userId: fixture.userId }
+      });
+      const first = await prisma.message.create({ data: {
+        chatId: chat.id, content: textMessageContent("Record the deployment rehearsal."),
+        role: "user"
+      } });
+      await prisma.chat.update({
+        data: { activeLeafMessageId: first.id }, where: { id: chat.id }
+      });
+      await prisma.$transaction(async (tx) => {
+        await tx.chatMemoryCheckpoint.create({ data: {
+          activeLeafMessageId: first.id, branchGeneration: 0, chatId: chat.id,
+          lastIndexedMessageId: first.id, lastSucceededAt: start,
+          pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+          sourceContentHash: "8".repeat(64), sourceRevision: 1, status: "READY",
+          userId: fixture.userId
+        } });
+        await tx.chatMemoryCheckpointMessage.create({ data: {
+          chatId: chat.id, messageId: first.id, ordinal: 0,
+          sourceMessageCreatedAt: first.createdAt,
+          sourceMessageUpdatedAt: first.updatedAt, userId: fixture.userId
+        } });
+        await tx.memoryRecallChunk.create({ data: {
+          branchGeneration: 0, chatId: chat.id, chunkOrdinal: 0,
+          chunkingVersion: MEMORY_HISTORY_CHUNKING_VERSION,
+          contentHash: memorySha256(chunkText), id: chunkId, languageCode: "en",
+          normalizedSafeSearchText: normalizeMemorySearchText(chunkText),
+          occurredFrom: start, occurredTo: start, redactionState: "NOT_NEEDED",
+          safeProjectedText: chunkText, safetyClass: "NORMAL",
+          sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
+          sourceRevisionAtCreation: 1, userId: fixture.userId
+        } });
+        await tx.memoryRecallChunkMessage.create({ data: {
+          chatId: chat.id, chunkId, messageId: first.id, ordinal: 0, role: "user",
+          safeTextHash: memorySha256(chunkText),
+          sourceMessageContentHash: memorySha256(first.content),
+          sourceMessageUpdatedAt: first.updatedAt, userId: fixture.userId
+        } });
+        await tx.memorySearchEntry.create({ data: {
+          embeddingState: "PENDING", id: entryId, indexGenerationId: fixture.generationId,
+          itemType: "RECALL_CHUNK", languageCode: "en", recallChunkId: chunkId,
+          normalizedSearchText: normalizeMemorySearchText(chunkText),
+          safeContentHash: memorySha256(chunkText),
+          safetyIdentitySnapshot: "4".repeat(64), sourceIdentitySnapshot: "3".repeat(64),
+          suppressionIdentitySnapshot: "2".repeat(64), userId: fixture.userId
+        } });
+      });
+      await withLockedMemoryTransaction(prisma, fixture.userId, (tx, settings) =>
+        enqueueMemoryEmbeddingBatchItem(tx, settings, {
+          entryId,
+          triggerIdentity: "memory-sweep-history-index"
+        }));
+      const indexed = await embeddingJobForEntry(fixture.userId, entryId);
+
+      // The next turn moves the chat ahead of its checkpoint, which stays
+      // PENDING until history reindexes it: the queued batch cannot rejoin
+      // the chunk and retires its child with no successor.
+      const second = await prisma.message.create({ data: {
+        chatId: chat.id, content: textMessageContent("Add the rollback drill too."),
+        parentMessageId: first.id, role: "user"
+      } });
+      await prisma.$transaction([
+        prisma.chat.update({
+          data: { activeLeafMessageId: second.id, memorySourceRevision: 2 },
+          where: { id: chat.id }
+        }),
+        prisma.chatMemoryCheckpoint.update({
+          data: { activeLeafMessageId: second.id, sourceRevision: 2, status: "PENDING" },
+          where: { userId_chatId: { chatId: chat.id, userId: fixture.userId } }
+        })
+      ]);
+      await coordinator.reconcileNow();
+      expect(embed).not.toHaveBeenCalled();
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: indexed.id } }))
+        .resolves.toMatchObject({ state: "SUCCEEDED" });
+      await expect(prisma.memoryEmbeddingBatchItem.findFirstOrThrow({
+        where: { memoryJobId: indexed.id }
+      })).resolves.toMatchObject({
+        errorCode: "memory_embedding_batch_target_stale",
+        state: "STALE"
+      });
+      await expect(prisma.memorySearchEntry.findUniqueOrThrow({ where: { id: entryId } }))
+        .resolves.toMatchObject({ embeddingState: "PENDING" });
+
+      const sweepAt = new Date(start.getTime() + MEMORY_EMBEDDING_SWEEP_GRACE_MS + 5 * 60_000);
+      // While its chat is ahead of the checkpoint the chunk is not current.
+      await expect(sweepStrandedMemoryEmbeddings(prisma, { now: sweepAt }))
+        .resolves.toEqual({ admitted: 0, failedOwners: 0 });
+
+      // History reindexes the turn; the retained chunk is current again.
+      await prisma.$transaction([
+        prisma.chatMemoryCheckpoint.update({
+          data: { lastIndexedMessageId: second.id, lastSucceededAt: new Date(), status: "READY" },
+          where: { userId_chatId: { chatId: chat.id, userId: fixture.userId } }
+        }),
+        prisma.chatMemoryCheckpointMessage.create({ data: {
+          chatId: chat.id, messageId: second.id, ordinal: 1,
+          sourceMessageCreatedAt: second.createdAt,
+          sourceMessageUpdatedAt: second.updatedAt, userId: fixture.userId
+        } })
+      ]);
+      // Within the grace, live writers and batches still own the entry.
+      await expect(sweepStrandedMemoryEmbeddings(prisma, { now: new Date() }))
+        .resolves.toEqual({ admitted: 0, failedOwners: 0 });
+      await expect(sweepStrandedMemoryEmbeddings(prisma, { now: sweepAt }))
+        .resolves.toEqual({ admitted: 1, failedOwners: 0 });
+      await expect(sweepStrandedMemoryEmbeddings(prisma, { now: sweepAt }))
+        .resolves.toEqual({ admitted: 0, failedOwners: 0 });
+      await expect(embeddingChildren(fixture.userId, entryId)).resolves.toBe(2);
+
+      clock = new Date(sweepAt);
+      await coordinator.reconcileNow();
+      expect(embed).toHaveBeenCalledOnce();
+      expect(embed.mock.calls[0]![0].texts).toHaveLength(1);
+      await expect(prisma.memorySearchEntry.findUniqueOrThrow({ where: { id: entryId } }))
+        .resolves.toMatchObject({ embeddingDimension: DIMENSION, embeddingState: "READY" });
+      await expect(sweepStrandedMemoryEmbeddings(prisma, { now: sweepAt }))
+        .resolves.toEqual({ admitted: 0, failedOwners: 0 });
+      await expect(embeddingChildren(fixture.userId, entryId)).resolves.toBe(2);
+    } finally {
+      coordinator.stop();
+      await prisma.memorySearchEntry.deleteMany({ where: { userId: fixture.userId } });
+      await prisma.memoryRecallChunk.deleteMany({ where: { userId: fixture.userId } });
+      await fixture.cleanup();
+    }
+  }, 60_000);
+
+  it("keeps live, superseded, paused and deleted work out of the sweep and backs off failures", async () => {
+    const owner = await createFixture();
+    const paused = await createFixture();
+    const deleted = await createFixture();
+    const start = new Date();
+    let clock = new Date(start);
+    let failing = true;
+    const embed = vi.fn(async (request: { texts: readonly string[] }) => {
+      if (failing) throw new EmbeddingAdapterError("embedding_provider_http_error");
+      return batchVectors(request);
+    });
+    const coordinator = batchCoordinator(() => new Date(clock), embed, { maxJobAttempts: 1 });
+    try {
+      const { explicit } = memoryServices(owner.classifierAuthority);
+      // A provider outage fails two batches terminally: one long ago, one now.
+      const earlier = await saveExplicit(
+        explicit, owner.userId, "I prefer window seats on night trains.", "sweep-earlier-outage"
+      );
+      await coordinator.reconcileNow();
+      const earlierEntry = await activeFactEntry(owner.generationId, earlier);
+      const earlierJob = await embeddingJobForEntry(owner.userId, earlierEntry.id);
+      expect(earlierJob.state).toBe("TERMINAL_FAILED");
+      await prisma.memoryJob.update({
+        data: { completedAt: new Date(start.getTime() - MEMORY_EMBEDDING_SWEEP_FAILURE_DELAY_MS) },
+        where: { id: earlierJob.id }
+      });
+      const recent = await saveExplicit(
+        explicit, owner.userId, "I prefer quiet carriages on long trips.", "sweep-recent-outage"
+      );
+      await coordinator.reconcileNow();
+      const recentEntry = await activeFactEntry(owner.generationId, recent);
+      await expect(embeddingJobForEntry(owner.userId, recentEntry.id))
+        .resolves.toMatchObject({ state: "TERMINAL_FAILED" });
+      expect(embed).toHaveBeenCalledTimes(2);
+
+      // Live work: a batch that no worker has claimed yet.
+      const live = await saveExplicit(
+        explicit, owner.userId, "I prefer printed tickets as a backup.", "sweep-live-batch"
+      );
+      const liveEntry = await activeFactEntry(owner.generationId, live);
+
+      // A superseded generation no longer serves; its vector work is dead.
+      const active = await prisma.memoryIndexGeneration.findUniqueOrThrow({
+        where: { id: owner.generationId }
+      });
+      const superseded = await prisma.memoryIndexGeneration.create({ data: {
+        activatedAt: start, chunkingVersion: active.chunkingVersion,
+        embeddingConfigurationFingerprint: active.embeddingConfigurationFingerprint,
+        embeddingConnectionId: active.embeddingConnectionId,
+        embeddingDimension: active.embeddingDimension,
+        embeddingProviderModelId: active.embeddingProviderModelId,
+        generation: active.generation + 1, indexMode: "HYBRID",
+        indexedThroughMemoryRevision: 0, languageProfile: active.languageProfile,
+        normalizationVersion: active.normalizationVersion, readyAt: start,
+        retrievalPipelineVersion: active.retrievalPipelineVersion, state: "SUPERSEDED",
+        supersededAt: start, targetMemoryRevision: 0, userId: owner.userId,
+        vectorSpaceFingerprint: active.vectorSpaceFingerprint
+      } });
+      const supersededEntry = await prisma.memorySearchEntry.create({ data: {
+        embeddingState: "PENDING", factVersionId: liveEntry.factVersionId,
+        indexGenerationId: superseded.id, itemType: "FACT_VERSION",
+        languageCode: liveEntry.languageCode,
+        normalizedSearchText: liveEntry.normalizedSearchText,
+        safeContentHash: liveEntry.safeContentHash,
+        safetyIdentitySnapshot: liveEntry.safetyIdentitySnapshot,
+        sourceIdentitySnapshot: liveEntry.sourceIdentitySnapshot,
+        suppressionIdentitySnapshot: liveEntry.suppressionIdentitySnapshot,
+        userId: owner.userId
+      } });
+
+      // A paused owner and a deleted owner each hold a stranded entry.
+      const fenced: Array<Readonly<{ entryId: string; userId: string }>> = [];
+      for (const [fixture, label] of [[paused, "paused"], [deleted, "deleted"]] as const) {
+        const saved = await saveExplicit(
+          memoryServices(fixture.classifierAuthority).explicit,
+          fixture.userId,
+          `I prefer ${label} owners to keep their own pace.`,
+          `sweep-${label}-owner`
+        );
+        const entry = await activeFactEntry(fixture.generationId, saved);
+        await strandEmbeddingChild(fixture.userId, entry.id, start);
+        fenced.push({ entryId: entry.id, userId: fixture.userId });
+      }
+      await prisma.userMemorySettings.update({
+        data: { useMemoryFacts: false }, where: { userId: paused.userId }
+      });
+      await prisma.user.update({ data: { status: "disabled" }, where: { id: deleted.userId } });
+      await prisma.memoryDeletionOutbox.create({ data: {
+        memoryGeneration: 0, operation: "ACCOUNT_MEMORY_DELETE", targetId: deleted.userId,
+        targetType: ACCOUNT_MEMORY_DELETION_TARGET_TYPE, userId: deleted.userId
+      } });
+
+      const children = () => Promise.all([
+        embeddingChildren(owner.userId, earlierEntry.id),
+        embeddingChildren(owner.userId, recentEntry.id),
+        embeddingChildren(owner.userId, liveEntry.id),
+        embeddingChildren(owner.userId, supersededEntry.id),
+        ...fenced.map(({ entryId, userId }) => embeddingChildren(userId, entryId))
+      ]);
+      await expect(children()).resolves.toEqual([1, 1, 1, 0, 1, 1]);
+
+      // Only the failure past its backoff is admitted; a repeat is a no-op.
+      const sweepAt = new Date(start.getTime() + MEMORY_EMBEDDING_SWEEP_GRACE_MS + 5 * 60_000);
+      await expect(sweepStrandedMemoryEmbeddings(prisma, { now: sweepAt }))
+        .resolves.toEqual({ admitted: 1, failedOwners: 0 });
+      await expect(sweepStrandedMemoryEmbeddings(prisma, { now: sweepAt }))
+        .resolves.toEqual({ admitted: 0, failedOwners: 0 });
+      await expect(children()).resolves.toEqual([2, 1, 1, 0, 1, 1]);
+
+      // Rotating the failed call's credential releases the recent failure early.
+      const rotatedVersionId = `memory-explicit-embedding-version-2-${randomUUID()}`;
+      await prisma.providerCredentialVersion.create({ data: {
+        activatedAt: start, credentialId: owner.credentialId, id: rotatedVersionId,
+        secretEnvelope: "test-only-rotated-envelope", testedAt: start,
+        testEvidence: { authenticationMode: "bearer" }, version: 2
+      } });
+      await prisma.providerCredential.update({
+        data: { activeVersionId: rotatedVersionId }, where: { id: owner.credentialId }
+      });
+      await prisma.providerModelCredentialCheck.create({ data: {
+        checkedAt: start, connectionId: owner.connectionId, connectionVersion: 1,
+        credentialId: owner.credentialId, credentialVersionId: rotatedVersionId,
+        evidence: embeddingCredentialEvidence, modelVersion: 1,
+        providerModelId: owner.modelId, status: "available"
+      } });
+      await expect(sweepStrandedMemoryEmbeddings(prisma, { now: sweepAt }))
+        .resolves.toEqual({ admitted: 1, failedOwners: 0 });
+      await expect(children()).resolves.toEqual([2, 2, 1, 0, 1, 1]);
+      // The sweep only queues work; it never calls a provider itself.
+      expect(embed).toHaveBeenCalledTimes(2);
+
+      failing = false;
+      clock = new Date(sweepAt);
+      await coordinator.reconcileNow();
+      for (const entry of [earlierEntry, recentEntry, liveEntry]) {
+        await expect(prisma.memorySearchEntry.findUniqueOrThrow({ where: { id: entry.id } }))
+          .resolves.toMatchObject({ embeddingState: "READY" });
+      }
+      for (const entryId of [supersededEntry.id, ...fenced.map(({ entryId: id }) => id)]) {
+        await expect(prisma.memorySearchEntry.findUniqueOrThrow({ where: { id: entryId } }))
+          .resolves.toMatchObject({ embeddingState: "PENDING" });
+      }
+      await expect(children()).resolves.toEqual([2, 2, 1, 0, 1, 1]);
+    } finally {
+      coordinator.stop();
+      await owner.cleanup();
+      await paused.cleanup();
+      await deleted.cleanup();
+    }
+  }, 90_000);
+
+  it("packs a new child only into an unclaimed batch that does not hold its entry", async () => {
+    const fixture = await createFixture();
+    const { explicit } = memoryServices(fixture.classifierAuthority);
+    let clock = new Date();
+    let failing = true;
+    const embed = vi.fn(async (request: { texts: readonly string[] }) => {
+      if (failing) throw new EmbeddingAdapterError("embedding_provider_http_error");
+      return batchVectors(request);
+    });
+    const coordinator = batchCoordinator(() => new Date(clock), embed);
+    try {
+      const first = await saveExplicit(
+        explicit, fixture.userId, "I prefer morning standups.", "packing-first"
+      );
+      const firstEntry = await activeFactEntry(fixture.generationId, first);
+      const attempted = await embeddingJobForEntry(fixture.userId, firstEntry.id);
+      await coordinator.reconcileNow();
+      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: attempted.id } }))
+        .resolves.toMatchObject({ attemptCount: 1, state: "RETRYABLE_FAILED" });
+      // Requeued for its retry, the batch already fixed its input in a binding.
+      await prisma.memoryJob.update({
+        data: { nextAttemptAt: null, state: "QUEUED" }, where: { id: attempted.id }
+      });
+      const second = await saveExplicit(
+        explicit, fixture.userId, "I prefer written agendas.", "packing-second"
+      );
+      const secondEntry = await activeFactEntry(fixture.generationId, second);
+      const fresh = await embeddingJobForEntry(fixture.userId, secondEntry.id);
+      expect(fresh.id).not.toBe(attempted.id);
+      // Another trigger for an entry its open batch already holds opens a new
+      // batch instead of colliding with the held child.
+      const repeated = await withLockedMemoryTransaction(prisma, fixture.userId, (tx, settings) =>
+        enqueueMemoryEmbeddingBatchItem(tx, settings, {
+          entryId: secondEntry.id,
+          triggerIdentity: "packing-second-trigger"
+        }));
+      expect(repeated).toMatchObject({ childCreated: true, created: true });
+      expect([attempted.id, fresh.id]).not.toContain(repeated.id);
+
+      failing = false;
+      clock = new Date(clock.getTime() + 10);
+      await coordinator.reconcileNow();
+      expect(embed).toHaveBeenCalledTimes(3);
+      await expect(prisma.memorySearchEntry.count({
+        where: { embeddingState: "READY", userId: fixture.userId }
+      })).resolves.toBe(2);
+      await expect(prisma.memoryEmbeddingBatchItem.count({
+        where: { state: "FAILED", userId: fixture.userId }
+      })).resolves.toBe(0);
+      await expect(prisma.memoryJob.count({
+        where: { errorCode: "memory_embedding_batch_binding_stale", userId: fixture.userId }
+      })).resolves.toBe(0);
+    } finally {
+      coordinator.stop();
+      await fixture.cleanup();
+    }
+  }, 60_000);
 });
