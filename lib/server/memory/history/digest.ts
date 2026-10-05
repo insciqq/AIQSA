@@ -29,7 +29,7 @@ import {
 
 export const MEMORY_CHAT_DIGEST_POLICY_VERSION = "memory-chat-digest-policy-v5";
 export const MEMORY_CHAT_DIGEST_PROMPT_VERSION = "memory-chat-digest-prompt-v7";
-export const MEMORY_CHAT_DIGEST_SCHEMA_VERSION = "memory-chat-digest-schema-v3";
+export const MEMORY_CHAT_DIGEST_SCHEMA_VERSION = "memory-chat-digest-schema-v2";
 export const MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION =
   "memory-chat-digest-rebuild-v4";
 export const MEMORY_CHAT_DIGEST_NAME = "memory_chat_digest_v5";
@@ -37,7 +37,8 @@ export const MEMORY_CHAT_DIGEST_NAME = "memory_chat_digest_v5";
 const MAX_SOURCE_CHUNKS_PER_SEGMENT = 24;
 const MAX_SOURCE_CHARACTERS_PER_SEGMENT = 9_000;
 // Strict decoder limits, which every persisted digest already meets. The
-// schema repeats the length limits; its item count is the requested one.
+// schema repeats them: adapters that validate it locally (Anthropic) must not
+// reject a 7–12 item answer that the decoder can still fit.
 const MAX_SUMMARY_CHARACTERS = 2_000;
 const MAX_LIST_ITEMS = 12;
 const MAX_LIST_ITEM_CHARACTERS = 256;
@@ -284,7 +285,7 @@ export function decodeMemoryChatDigest(value: unknown): MemoryChatDigestContent 
 function digestSchema() {
   const boundedItems = {
     items: { maxLength: MAX_LIST_ITEM_CHARACTERS, minLength: 1, type: "string" },
-    maxItems: REQUESTED_LIST_ITEMS,
+    maxItems: MAX_LIST_ITEMS,
     type: "array"
   } as const;
   return {
