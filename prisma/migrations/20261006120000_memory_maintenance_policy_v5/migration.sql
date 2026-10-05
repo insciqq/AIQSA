@@ -3,7 +3,10 @@
 -- re-review cadence. Earlier rows stay as history and never cover a v5
 -- review. Expand only: previous-release writers keep writing v4 rows during
 -- Compose replacement, and this check still admits them with the closed
--- reasons of 20261004093000.
+-- reasons of 20261004093000. Only this table is locked here: the cursor reset
+-- runs in 20261006120001, its own transaction, because a previous-release
+-- planner holds an owner's settings row lock while it scans reviews, and one
+-- transaction taking both locks could deadlock against it.
 ALTER TABLE "MemoryMaintenanceReview" DROP CONSTRAINT "MemoryMaintenanceReview_shape_check";
 ALTER TABLE "MemoryMaintenanceReview" ADD CONSTRAINT "MemoryMaintenanceReview_shape_check" CHECK (
   "sourceSnapshotHash" ~ '^[a-f0-9]{64}$'
@@ -21,5 +24,3 @@ ALTER TABLE "MemoryMaintenanceReview" ADD CONSTRAINT "MemoryMaintenanceReview_sh
   AND ("reasonCode" IS NOT NULL OR "disposition" NOT IN ('BLOCKED', 'UNREVIEWABLE'))
   AND ("memoryJobId" IS NOT NULL OR "disposition" IN ('BLOCKED', 'UNREVIEWABLE'))
 );
--- Every owner's first v5 pass starts from its first version, owners in order.
-UPDATE "UserMemorySettings" SET "maintenanceCursor" = NULL, "maintenanceScannedAt" = NULL;
