@@ -16,6 +16,7 @@ import type { ContextCompactionCheckpoint, ContextSummary, ContextSummaryAttempt
 import { INITIAL_PROVIDER_CONTINUATION, parseToolLoopCheckpoint, toolLoopCheckpoint } from "./toolLoopPersistence";
 import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
 import { WORKSPACE_MCP_VERSION, WORKSPACE_RUNTIME_VERSION } from "../workspace/config";
+import { analyzeImageTools } from "../tools/analyzeImage";
 
 function activityStore() {
   const rows: { eventType: string; payload: unknown; sequence: number }[] = [];
@@ -501,6 +502,48 @@ describe("provider dispatch recovery request loading", () => {
     })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS);
     await expect(operations.loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" }))
       .rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
+  const visionPlan: NonNullable<NormalizedRunRequest["visionAnalysis"]> = { version: 1, available: true, policyVersion: 1,
+    reasoningEffort: null, verifiedVisionInput: true,
+    authority: { connectionId: "vision", connectionVersion: 1, providerModelId: "vision", modelVersion: 1, credentialId: "key", credentialVersionId: "key-v1" },
+    snapshot: { version: 1, connectionId: "vision", connectionDisplayName: "Vision", providerModelId: "vision", modelDisplayName: "Vision",
+      credentialId: "key", credentialVersionId: "key-v1", providerFamily: "openai_compatible",
+      connection: { apiRoot: "https://vision.example.test/v1", allowPrivateNetwork: false, authenticationMode: "bearer", responseTimeoutMs: 60000 },
+      model: { adapterKind: "openai_responses_compatible", modelClass: "answer", upstreamModelId: "visual-model", answerSelectable: true,
+        defaultParams: {}, capabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, streaming: true, vision: true } } } };
+  const chatVision = { ...normalizedRequest, toolMode: "auto" as const, visionAnalysis: visionPlan,
+    imageReferences: [{ attachmentId: "image-one", messageId: "message-one", fileName: "synthetic.webp", origin: "upload" as const }] };
+  const loadStored = (stored: unknown) => createPrismaRunToolLoopOperations({ modelRun: { findUnique: vi.fn(async () => ({
+    chat: { projectId: null, userId: "owner-one" }, chatId: "chat-one", modelId: "model-one",
+    normalizedRequest: JSON.parse(JSON.stringify(stored)) as unknown, provider: "provider-one"
+  })) } } as unknown as PrismaClient, NOOP_MEMORY_SOURCE_MUTATION_HOOKS).loadProviderDispatchRecoveryRequest!({ runId: "run-one", userId: "owner-one" });
+
+  it("recovers chat System Vision without a Workspace and rebuilds its chat tool", async () => {
+    const loaded = await loadStored(chatVision);
+    expect(loaded).toEqual(chatVision);
+    expect(analyzeImageTools(loaded!).map(({ capability, name }) => ({ capability, name }))).toEqual([{ capability: "vision", name: "analyze_image" }]);
+    // Only the image tool may justify references without chat System Vision.
+    await expect(loadStored({ ...chatVision, visionAnalysis: undefined })).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
+  it.each([
+    { visionAnalysis: { version: 1, available: false, code: "vision_model_absent" } },
+    { visionAnalysis: { version: 1, available: false, code: "vision_model_unavailable" } },
+    { modelCapabilities: { ...normalizedRequest.modelCapabilities, vision: true } },
+    { visionAnalysis: { ...visionPlan, snapshot: { ...visionPlan.snapshot, providerModelId: "other" } } }
+  ])("rejects chat System Vision that admission never accepts (%#)", async (patch) => {
+    await expect(loadStored({ ...chatVision, ...patch })).rejects.toThrow("provider_dispatch_recovery_request_invalid_in_storage");
+  });
+
+  it("keeps Workspace Vision decoding unchanged, including an unavailable plan", async () => {
+    for (const visionAnalysis of [visionPlan, { version: 1 as const, available: false as const, code: "vision_model_absent" as const }]) {
+      const accepted: NormalizedRunRequest = { ...normalizedRequest, toolMode: "auto", workspace, visionAnalysis,
+        modelCapabilities: { ...normalizedRequest.modelCapabilities, vision: true } };
+      const loaded = await loadStored(accepted);
+      expect(loaded).toEqual(accepted);
+      expect(analyzeImageTools(loaded!).map(({ capability }) => capability)).toEqual(["workspace"]);
+    }
   });
 
   it("loads an Agent request accepted under an earlier guest Codex only so recovery can settle it", async () => {
