@@ -1,4 +1,6 @@
-export const defaultChatTitle = "New Chat";
+import { DEFAULT_CHAT_TITLE } from "../../contracts/chats";
+
+export const defaultChatTitle = DEFAULT_CHAT_TITLE;
 const maxGeneratedTitleLength = 48;
 
 function textBlocksFromContent(content: unknown): string[] {

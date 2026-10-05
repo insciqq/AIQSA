@@ -7,10 +7,13 @@ import type { AddressInfo } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { utils, write, type BookType } from "xlsx";
+import { withPdfWorkerAdmission } from "../uploads/pdfWorkerAdmission";
 import { extractTextDocument } from "../uploads/textDocuments";
+import { extractPage } from "../webFetch/extract";
 import { createDocumentParserBoundary } from "./boundary";
 import {
   extractHtmlTextInIsolation,
+  extractWebPageInIsolation,
   parseSpreadsheetInIsolation,
   type SpawnIsolatedParser
 } from "./isolatedParser";
@@ -145,6 +148,59 @@ describe("isolated document parser process", () => {
     }
   }, 30_000);
 
+  it("extracts a fetched page exactly as in process", async () => {
+    const cyrillic = Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]); // "Привет" in windows-1251
+    const pages = [
+      { body: Buffer.concat([Buffer.from("<html><head><meta charset=\"windows-1251\"><title>T</title></head><body><article><h1>"),
+        cyrillic, Buffer.from("</h1><p>See <a href=\"/next\">next</a>.</p></article></body></html>")]),
+      contentType: "text/html" },
+      { body: Buffer.from("plain   text\n\n\n\nsecond"), contentType: "text/plain; charset=utf-8" },
+      { body: Buffer.from("{\"a\":[1,2]}"), contentType: null }
+    ];
+    // A document parse holds its slot throughout: page reads never wait behind it.
+    let releaseDocumentSlot = () => {};
+    const documentSlot = withPdfWorkerAdmission(() => new Promise<void>((resolve) => { releaseDocumentSlot = resolve; }));
+    try {
+      for (const page of pages) {
+        const request = { ...page, finalUrl: "https://news.example/today", maxCharacters: 1_000 };
+        await expect(extractWebPageInIsolation(request)).resolves.toEqual(extractPage(request));
+      }
+      await expect(extractWebPageInIsolation({ body: Buffer.from([0, 1, 2]), contentType: null,
+        finalUrl: "https://news.example/", maxCharacters: 1_000 })).resolves.toBeNull();
+    } finally {
+      releaseDocumentSlot();
+      await documentSlot;
+    }
+  }, 60_000);
+
+  it("makes every parser process, page or document, the first out-of-memory victim", async () => {
+    // Page and document parses hold separate slots, so both children can run beside the application.
+    const pids: number[] = [];
+    const page = extractWebPageInIsolation({ body: Buffer.from("<div></x>".repeat(200_000)), contentType: "text/html",
+      finalUrl: "https://hostile.example/", maxCharacters: 1_000 }, { spawn: recordingSpawn(pids), timeoutMs: 4_000 })
+      .catch((error: { code?: string }) => error.code);
+    const document = parseSpreadsheetInIsolation({ bytes: slowCsv(), format: "csv", mediaType: mimeByType.csv },
+      { spawn: recordingSpawn(pids), timeoutMs: 4_000 }).catch((error: { code?: string }) => error.code);
+    const adjustment = (pid: number) => {
+      try {
+        return readFileSync(`/proc/${pid}/oom_score_adj`, "utf8").trim();
+      } catch {
+        return "exited";
+      }
+    };
+    const observed = new Map<number, string>();
+    for (let attempt = 0; attempt < 200 && (pids.length < 2 || pids.some((pid) => observed.get(pid) !== "1000")); attempt += 1) {
+      for (const pid of pids) if (observed.get(pid) !== "1000") observed.set(pid, adjustment(pid));
+      await delay(20);
+    }
+    expect(pids).toHaveLength(2);
+    expect(pids.map((pid) => observed.get(pid))).toEqual(["1000", "1000"]);
+    // The application's own score stays as it was.
+    expect(adjustment(process.pid)).not.toBe("1000");
+    await expect(page).resolves.toBe("parser_timeout");
+    await document;
+  }, 30_000);
+
   it("stops an overdue parser together with its process group", async () => {
     const pids: number[] = [];
     await expect(parseSpreadsheetInIsolation({
@@ -256,6 +312,13 @@ describe("isolated document parser process", () => {
         bytes: Buffer.from("<a".repeat(512 * 1_024)),
         maxChars: 1_000
       }).then((result) => result.truncated);
+      // Stray end tags keep parse5 scanning an ever deeper stack: quadratic work, ended by the deadline.
+      outcomes.quadraticPage = await extractWebPageInIsolation({
+        body: Buffer.from("<div></x>".repeat(200_000)),
+        contentType: "text/html",
+        finalUrl: "https://hostile.example/",
+        maxCharacters: 1_000
+      }, { timeoutMs: 2_000 }).then(() => "read", (error: { code?: string }) => error.code);
     } finally {
       probing = false;
       await probe;
@@ -265,6 +328,7 @@ describe("isolated document parser process", () => {
       declaredZero: "parser_rejected",
       forgedTrailingDirectory: 10,
       localMismatch: "parser_rejected",
+      quadraticPage: "parser_timeout",
       unclosedTags: true,
       zip64Extra: "parser_rejected"
     });

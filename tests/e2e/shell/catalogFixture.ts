@@ -54,7 +54,6 @@ function normalizeFixtureWorkspace(value: unknown): unknown {
   }
 
   return {
-    contentMatches: [],
     ...value,
     ...(Array.isArray(value.chats)
       ? { chats: value.chats.map(normalizeFixtureChat) }
@@ -69,7 +68,7 @@ export async function installMatrixCatalogFixture(
 ): Promise<void> {
   const fixtureCatalog = options.catalog ?? matrixCatalog;
   const fixtureWorkspace = normalizeFixtureWorkspace(
-    workspace ?? { chats: [], contentMatches: [], folders: [] }
+    workspace ?? { chats: [], folders: [] }
   );
   const fixtureDefaults = fixtureCatalog.defaults as Record<string, unknown>;
   const chatDefaults = decodeOptionalChatDefaults({

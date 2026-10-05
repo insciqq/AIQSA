@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { currentSearchToolFixture } from "@/tests/support/tools";
 import { checkpointOutputsTool } from "../tools/checkpointOutputs";
+import { fetchUrlTool } from "../tools/fetchUrlPlan";
 import { viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import {
   buildOpenAIResponsesRequest,
@@ -394,6 +395,15 @@ describe("OpenAI Responses request builder", () => {
     });
     expect(customToolBody.input.slice(1)).toEqual([functionCall, functionOutput]);
     expect(customToolBody).not.toHaveProperty("include");
+  });
+
+  it("combines hosted web search with the page reader in one request, keeping its sources", () => {
+    const body = buildOpenAIResponsesRequest(request({ tools: [fetchUrlTool] }));
+    expect(body.tools).toEqual([
+      { type: "web_search" },
+      expect.objectContaining({ name: "fetch_url", strict: true, type: "function" })
+    ]);
+    expect(body.include).toEqual(["web_search_call.action.sources"]);
   });
 
   it("preserves parallel custom calls when hosted web search is present", () => {

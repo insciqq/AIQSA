@@ -680,6 +680,7 @@ describe("Workspace header v2", () => {
       .map((item) => item.textContent)).toEqual([
       "Markdown",
       "JSON",
+      "PDF",
       "Copy entire thread"
     ]);
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Markdown" }));
@@ -690,6 +691,11 @@ describe("Workspace header v2", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Export" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "JSON" }));
     expect(props.onExport).toHaveBeenLastCalledWith("json");
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "PDF" }));
+    expect(props.onExport).toHaveBeenLastCalledWith("pdf");
 
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("menuitem", { name: "Export" }));
@@ -704,6 +710,25 @@ describe("Workspace header v2", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
     expect(props.onArchive).toHaveBeenCalledTimes(1);
     expect(trigger).toHaveFocus();
+  });
+
+  it("names an imported chat's source and keeps its Memory item visible but disabled with the reason", () => {
+    const props = headerProps({
+      importLabel: "Imported from ChatGPT",
+      importTitle: "Imported from ChatGPT (gpt-4o)",
+      memoryLockedReason: "Imported chats don't use Memory",
+      memoryUsed: false,
+      onMemoryMode: vi.fn()
+    });
+    render(<WorkspaceHeaderV2 {...props} />);
+    expect(screen.getByTestId("header-import-source")).toHaveTextContent("Imported from ChatGPT");
+    expect(screen.getByTestId("header-import-source")).toHaveAttribute("title", "Imported from ChatGPT (gpt-4o)");
+    fireEvent.click(screen.getByTestId("header-more-trigger"));
+    const memory = within(screen.getByTestId("header-more-menu")).getByRole("menuitem", { name: /Resume Memory for this chat/u });
+    expect(memory).toBeDisabled();
+    expect(memory).toHaveTextContent("Imported chats don't use Memory");
+    fireEvent.click(memory);
+    expect(props.onMemoryMode).not.toHaveBeenCalled();
   });
 
   it("chooses the model from the header selector and opens a locked one in its fixed state", () => {

@@ -1,11 +1,14 @@
 import {
   listChatNavigation,
+  searchChatMessageMatches,
   searchChatNavigation
 } from "@/components/app-shell/chatNavigationApi";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
+import { chatMessageSearchApplies } from "@/lib/contracts/chats";
 
 let listGeneration = 0;
 let searchGeneration = 0;
+let messageMatchGeneration = 0;
 
 function readableError(error: unknown): string {
   return error instanceof Error && error.message ? error.message : "chat_navigation_failed";
@@ -40,6 +43,7 @@ export async function loadChatNavigation(options: {
   }
 }
 
+/** The first page of title results for a query, or with `append` the next one. */
 export async function loadChatNavigationSearch(options: {
   append?: boolean;
   query: string;
@@ -50,7 +54,9 @@ export async function loadChatNavigationSearch(options: {
   const state = useWorkspaceStore.getState();
   if (!query || (append && !state.navigationSearchNextCursor)) return false;
   const generation = ++searchGeneration;
-  if (!append) state.setNavigationSearchQuery(query);
+  // A new query starts from empty lists; the same query keeps the message
+  // matches that load beside its titles.
+  if (!append && state.navigationSearchQuery !== query) state.setNavigationSearchQuery(query);
   state.setNavigationSearchLoading(true);
   state.setNavigationSearchError(null);
   try {
@@ -75,7 +81,52 @@ export async function loadChatNavigationSearch(options: {
   }
 }
 
+/**
+ * Chats whose message text matches the current query, requested beside the
+ * title search so a slow or failed message query never holds the titles back:
+ * the first page, or with `append` the next one. A response for an earlier
+ * query, a superseded request or an aborted one never lands.
+ */
+export async function loadChatMessageMatches(options: {
+  append?: boolean;
+  query: string;
+  signal?: AbortSignal;
+}): Promise<boolean> {
+  const query = options.query.trim();
+  const append = options.append ?? false;
+  const state = useWorkspaceStore.getState();
+  const cursor = append ? state.navigationMessageMatchesNextCursor : null;
+  if (
+    !chatMessageSearchApplies(query) ||
+    state.navigationSearchQuery !== query ||
+    (append && (!cursor || state.navigationMessageMatchesLoading))
+  ) {
+    return false;
+  }
+  const generation = ++messageMatchGeneration;
+  state.setNavigationMessageMatchesLoading(true);
+  state.setNavigationMessageMatchesError(null);
+  try {
+    const page = await searchChatMessageMatches({ cursor, query, signal: options.signal });
+    const current = useWorkspaceStore.getState();
+    if (generation !== messageMatchGeneration || current.navigationSearchQuery !== query) return false;
+    current.applyNavigationMessageMatchPage(page, append);
+    return true;
+  } catch (error) {
+    const current = useWorkspaceStore.getState();
+    if (
+      generation !== messageMatchGeneration ||
+      options.signal?.aborted ||
+      current.navigationSearchQuery !== query
+    ) return false;
+    current.setNavigationMessageMatchesLoading(false);
+    current.setNavigationMessageMatchesError(readableError(error));
+    return false;
+  }
+}
+
 export function clearChatNavigationSearch(): void {
   searchGeneration += 1;
+  messageMatchGeneration += 1;
   useWorkspaceStore.getState().setNavigationSearchQuery("");
 }

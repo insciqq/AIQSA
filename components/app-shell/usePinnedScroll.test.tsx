@@ -353,7 +353,7 @@ describe("usePinnedScroll", () => {
     expect(result.current.isPinned).toBe(false);
     expect(result.current.showJumpToLatest).toBe(false);
     expect(onReadingAnchorApplied).toHaveBeenCalledOnce();
-    expect(onReadingAnchorApplied).toHaveBeenCalledWith("user-1");
+    expect(onReadingAnchorApplied).toHaveBeenCalledWith("user-1", question);
 
     answerHeight = 500;
     scrollHeight = 1400;
@@ -379,6 +379,55 @@ describe("usePinnedScroll", () => {
     });
     await waitForAnimationFrame();
     expect(element.scrollTop).toBe(1600);
+  });
+
+  it("scrolls to the reader's own anchor after they moved away, never to a live anchor", async () => {
+    const onReadingAnchorApplied = vi.fn();
+    const element = scrollElement({ clientHeight: 300, scrollHeight: 1000, scrollTop: 700 });
+    element.getBoundingClientRect = () => ({ bottom: 300, height: 300, top: 0 } as DOMRect);
+    const older = document.createElement("article");
+    older.dataset.messageId = "older-match";
+    older.getBoundingClientRect = () => ({ bottom: 200, height: 120, top: 80 } as DOMRect);
+    const latest = document.createElement("article");
+    latest.dataset.messageId = "latest";
+    latest.getBoundingClientRect = () => ({ bottom: 900, height: 60, top: 840 } as DOMRect);
+    const spacer = document.createElement("div");
+    spacer.dataset.threadReadingSpacer = "true";
+    element.append(older, latest, spacer);
+
+    const { rerender, result } = renderHook(
+      ({ readingAnchorExplicit, readingAnchorKey }) =>
+        usePinnedScroll<HTMLDivElement>({
+          followKey: "settled",
+          onReadingAnchorApplied,
+          readingAnchorExplicit,
+          readingAnchorKey,
+          resetKey: "chat-1"
+        }),
+      { initialProps: { readingAnchorExplicit: false, readingAnchorKey: null as string | null } }
+    );
+    act(() => {
+      result.current.containerRef.current = element;
+    });
+    await waitForAnimationFrame();
+    // The reader scrolls up, away from the latest answer.
+    act(() => {
+      element.scrollTop = 100;
+      result.current.handleScroll();
+    });
+    expect(result.current.isPinned).toBe(false);
+
+    rerender({ readingAnchorExplicit: false, readingAnchorKey: "older-match" });
+    await waitForAnimationFrame();
+    expect(element.scrollTop).toBe(100);
+    expect(onReadingAnchorApplied).not.toHaveBeenCalled();
+
+    rerender({ readingAnchorExplicit: false, readingAnchorKey: null });
+    rerender({ readingAnchorExplicit: true, readingAnchorKey: "older-match" });
+    await waitForAnimationFrame();
+    // The match sits below the preferred reading context (126px of 300px).
+    expect(element.scrollTop).toBe(54);
+    expect(onReadingAnchorApplied).toHaveBeenCalledWith("older-match", older);
   });
 
   it("reveals an oversized submitted question tail and answer preview before deliberate tail following", async () => {
@@ -560,7 +609,7 @@ describe("usePinnedScroll", () => {
     expect(question.getBoundingClientRect()).toMatchObject({ bottom: 252, top: -168 });
     expect(answer.getBoundingClientRect()).toMatchObject({ bottom: 300, top: 252 });
     expect(onReadingAnchorApplied).toHaveBeenCalledOnce();
-    expect(onReadingAnchorApplied).toHaveBeenCalledWith("user-persisted");
+    expect(onReadingAnchorApplied).toHaveBeenCalledWith("user-persisted", expect.any(HTMLElement));
   });
 
   it("keeps an oversized fallback anchor top-aligned when it is also the live tail", async () => {

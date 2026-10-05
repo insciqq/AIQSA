@@ -104,6 +104,8 @@ describe("create_scheduled_task tool", () => {
       "title", "toolsEnabled", "workspaceEnabled"
     ]);
     expect(Object.keys((create.mock.calls[0]![0].body as { schedule: object }).schedule)).toEqual(["kind", "time", "days"]);
+    // A run without the page reader authorized no links for the prompt it writes.
+    expect(create.mock.calls[0]![0].userUrlDigests).toEqual([]);
     expect(result).toEqual({
       artifacts: [{ type: "artifact", data: { artifactType: "scheduled_task", payload: {
         taskId: "task-1", title: "Check mail", kind: "standard", schedule: { kind: "weekly", time: "09:00",
@@ -143,6 +145,20 @@ describe("create_scheduled_task tool", () => {
     expect(create.mock.calls[0]![0].body).toMatchObject({ chatMode: "same", kind: "monitoring", timeZone: "UTC",
       schedule: { kind: "hourly", everyHours: 1, time: "00:00", until: null } });
     expect(result.artifacts?.[0]).toMatchObject({ data: { payload: { timeZoneFallback: true, kind: "monitoring" } } });
+  });
+
+  it("hands the creation only the run's frozen user-authored link digests, never Search authority", async () => {
+    const create = creator();
+    const userUrlDigests = ["b".repeat(64)];
+    await executeCreateScheduledTask(call(reminder), context({
+      request: { ...request(), fetchUrl: { version: 1, userUrlDigests } }
+    }), create);
+    expect(create.mock.calls[0]![0].userUrlDigests).toEqual(userUrlDigests);
+    // A malformed marker authorizes nothing.
+    await executeCreateScheduledTask(call(reminder), context({
+      request: { ...request(), fetchUrl: { version: 2, userUrlDigests } }
+    }), create);
+    expect(create.mock.calls[1]![0].userUrlDigests).toEqual([]);
   });
 
   it("refuses misplaced, unknown or unreadable arguments before anything is created", async () => {

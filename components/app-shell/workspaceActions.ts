@@ -32,6 +32,7 @@ import {
   resolveModelControlDefaults,
   resolvePreferredSearchPlan
 } from "@/components/app-shell/powerAppShellData";
+import { chatPrintPath } from "@/lib/domain/chatPrintDocument";
 import type { SearchPlanMode } from "@/lib/domain/search";
 import {
   EMPTY_KNOWLEDGE_SELECTION,
@@ -39,7 +40,6 @@ import {
   type KnowledgePlan,
   type KnowledgeSelection
 } from "@/lib/contracts/knowledge";
-import { chatExportMarkdown } from "@/lib/domain/chatExport";
 import { useKnowledgeLibraryStore } from "@/components/app-shell/knowledgeLibraryStore";
 import {
   decodeChatMessagesPageResponse,
@@ -124,10 +124,19 @@ export type RemovedChatFallback = (
 
 export type OlderPageLoadOutcome = "failed" | "prepended" | "reset";
 
-export type ChatExportFormat = "json" | "markdown";
+export type ChatExportFormat = "json" | "markdown" | "pdf";
 
-/** The per-chat Markdown export document is shared with the server-side archive export. */
-export { chatExportMarkdown };
+/** The UTF-8 file name of an attachment response, when the server sent one. */
+function attachmentFileName(disposition: string | null): string | null {
+  const encoded = disposition?.match(/filename\*=UTF-8''([^;]+)/iu)?.[1];
+  if (!encoded) return null;
+  try {
+    const name = decodeURIComponent(encoded.trim());
+    return name && !/[\\/\u0000-\u001f\u007f]/u.test(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
 
 /** A read cannot undo a successful local mutation that settled after dispatch. */
 function preserveChangesDuringRead<T extends { id: string }>(
@@ -233,6 +242,8 @@ export function useWorkspaceActions({
   function summaryFromDetail(detail: ChatDetail): WorkspaceChatSummary {
     return {
       ...(detail.hasContinuationSource ? { hasContinuationSource: true } : {}),
+      ...(detail.importSource ? { importSource: detail.importSource } : {}),
+      ...(detail.importSourceModel ? { importSourceModel: detail.importSourceModel } : {}),
       activeLeafMessageId: detail.activeLeafMessageId,
       createdAt: detail.createdAt,
       defaultKnowledgePlan: detail.defaultKnowledgePlan ?? null,
@@ -1574,39 +1585,27 @@ export function useWorkspaceActions({
   }
 
   async function exportChat(chat: WorkspaceChatSummary, format: ChatExportFormat = "markdown") {
+    if (format === "pdf") {
+      // Synchronously within the menu click, so pop-up blockers allow the tab.
+      const tab = window.open(chatPrintPath(chat.id), "_blank");
+      if (tab) tab.opener = null;
+      else setNotice({ kind: "error", text: "The print page was blocked. Allow pop-ups for this site and try again." });
+      return;
+    }
     setNotice({ kind: "success", text: "Preparing the complete chat export…" });
     try {
-      const visible = await loadCompleteActiveBranch(chat.id);
+      // The server builds the document; the browser only downloads it.
+      const response = await shellFetch(
+        `/api/chats/${encodeURIComponent(chat.id)}/export?${new URLSearchParams({ format }).toString()}`
+      );
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response, `chat_export_failed_${response.status}`));
+      }
+      const blob = await response.blob();
       const summary =
         useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chat.id) ?? chat;
-      const baseName = exportFileBaseName(summary.title);
-      let blob: Blob;
-      let fileName: string;
-      if (format === "json") {
-        const payload = {
-          defaultModelId: summary.defaultModelId,
-          defaultProvider: summary.defaultProvider,
-          exportedAt: new Date().toISOString(),
-          messages: visible.map((message) => ({
-            ...(message.followups?.entries.length ? { followups: message.followups.entries } : {}),
-            content: message.content,
-            modelId: message.modelId ?? null,
-            provider: message.provider ?? null,
-            role: message.role,
-            status: message.status
-          })),
-          title: summary.title
-        };
-        blob = new Blob([JSON.stringify(payload, null, 2)], {
-          type: "application/json"
-        });
-        fileName = `${baseName}.json`;
-      } else {
-        blob = new Blob([chatExportMarkdown(summary.title, visible)], {
-          type: "text/markdown"
-        });
-        fileName = `${baseName}.md`;
-      }
+      const fileName = attachmentFileName(response.headers.get("content-disposition")) ??
+        `${exportFileBaseName(summary.title)}.${format === "json" ? "json" : "md"}`;
       const href = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = href;

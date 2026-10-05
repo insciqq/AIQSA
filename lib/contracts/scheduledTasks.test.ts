@@ -60,7 +60,10 @@ describe("scheduled task wire contract", () => {
     expect(decodeScheduledTask({ ...task, memoryEnabled: false })).toMatchObject({ memoryEnabled: false });
     const reached = { ...task, chatMode: "same", completionReason: "goal_reached", kind: "monitoring", nextRunAt: null, status: "completed" };
     expect(decodeScheduledTask(reached)).toEqual(reached);
+    // Instructions whose links runs cannot read yet carry only a flag.
+    expect(decodeScheduledTask({ ...task, promptLinksPending: true })).toEqual({ ...task, promptLinksPending: true });
     for (const candidate of [
+      { ...task, promptLinksPending: false }, { ...task, promptLinksPending: ["a".repeat(64)] },
       { ...task, extra: true }, { ...task, status: "paused" }, { ...task, title: " Morning brief" },
       { ...task, lastRun: { ...task.lastRun, state: "running" } }, { ...task, lastRun: { ...task.lastRun, unseen: undefined } },
       { ...task, pauseReason: "Not a code" },

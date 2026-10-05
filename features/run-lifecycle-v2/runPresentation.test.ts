@@ -688,6 +688,38 @@ describe("answer process label", () => {
     expect(describeToolCallV2(call, "cancelled")).toBe(cancelled);
   });
 
+  it("reads a page as Reading host/path and names each refusal or failure in plain words", () => {
+    const call = (fetchOutcome?: string, fetchHttpStatus?: number) => ({ origin: "web_fetch", serverName: "Web", toolName: "fetch_url",
+      fetchTarget: "news.example/today", ...(fetchOutcome ? { fetchOutcome } : {}), ...(fetchHttpStatus ? { fetchHttpStatus } : {}) });
+    expect(describeToolCallV2(call(), "running")).toBe("Reading news.example/today");
+    expect(describeToolCallV2(call("read"), "settled")).toBe("Read news.example/today");
+    expect(describeToolCallV2(call(), "cancelled")).toBe("Reading news.example/today stopped");
+    expect(describeToolCallV2(call("fetch_url_not_in_conversation"), "failed"))
+      .toBe("Didn't read news.example/today: the link wasn't shared in this chat");
+    expect(describeToolCallV2({ ...call("fetch_url_not_in_conversation"), fetchRefusalScope: "scheduled_run" }, "failed"))
+      .toBe("Didn't read news.example/today: open the task and save its instructions to allow this link");
+    expect(describeToolCallV2({ ...call("fetch_url_not_in_conversation"), fetchRefusalScope: "task_instructions" }, "failed"))
+      .toBe("Didn't read news.example/today: links in a task's instructions are read only by its scheduled runs");
+    for (const blocked of ["fetch_blocked_address", "fetch_port_not_allowed", "fetch_url_credentials"]) {
+      expect(describeToolCallV2(call(blocked), "failed")).toBe("Blocked news.example/today: this address is not allowed");
+    }
+    expect(describeToolCallV2(call("fetch_timeout"), "failed")).toBe("Couldn't read news.example/today: the page took too long");
+    expect(describeToolCallV2(call("fetch_too_large"), "failed")).toBe("Couldn't read news.example/today: the page is too large");
+    expect(describeToolCallV2(call("fetch_unsupported_content_type"), "failed"))
+      .toBe("Couldn't read news.example/today: not a web page, upload the file instead");
+    expect(describeToolCallV2(call("fetch_http_status", 404), "failed")).toBe("Couldn't read news.example/today: the site returned 404");
+    expect(describeToolCallV2({ origin: "web_fetch", toolName: "fetch_url" }, "failed")).toBe("Couldn't read web page");
+    // The live requested event carries only the bounded target, never a scheme.
+    const requested: RunEventView = { type: "artifact", data: { artifactType: "tool_call", payload: { name: "fetch_url",
+      origin: "web_fetch", round: 1, serverName: "Web", status: "requested", fetchTarget: "news.example/today" } } };
+    expect(presentRunLifecycleV2(state({ events: [requested], runId: "run" })).activity?.label).toBe("Reading news.example/today…");
+    expect(presentToolActivityV2([requested])?.calls).toEqual([expect.objectContaining({ fetchTarget: "news.example/today",
+      origin: "web_fetch", status: "running" })]);
+    const unsafe: RunEventView = { type: "artifact", data: { artifactType: "tool_call", payload: { name: "fetch_url",
+      origin: "web_fetch", round: 1, status: "requested", fetchTarget: "https://news.example/today" } } };
+    expect(presentToolActivityV2([unsafe])?.calls[0]).not.toHaveProperty("fetchTarget");
+  });
+
   it("does not infer a built-in from a tool with explicitly generic origin", () => {
     expect(describeToolCallV2({ origin: "tool", toolName: "search" }, "settled")).toBe("Ran search");
   });

@@ -54,7 +54,7 @@ async function prepare(page: Page, content = answerText, options: { temporary?: 
     // Temporary chats are recovered from their URL and Memory classification;
     // the real personal-history endpoint never lists them.
     await page.route("**/api/chats", route => route.request().method() === "GET"
-      ? route.fulfill({ json: { chats: [], folders: [], contentMatches: [] } }) : route.fallback());
+      ? route.fulfill({ json: { chats: [], folders: [] } }) : route.fallback());
   }
   await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
   await page.route("**/api/me/chats/*/memory-mode", route => route.fulfill({ json: {

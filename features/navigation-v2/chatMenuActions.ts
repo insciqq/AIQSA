@@ -32,6 +32,11 @@ export type ChatMenuActionsInputV2 = Readonly<{
   deleteDisabled?: boolean;
   favorite?: boolean;
   folders: readonly Readonly<{ id: string; name: string; parentId: string | null }>[];
+  /**
+   * Why this chat's Memory mode is fixed (an imported chat): the Memory item
+   * stays visible, disabled, with this reason under it.
+   */
+  memoryLockedReason?: string | null;
   /** Whether Memory reads this chat; null hides the Memory item. */
   memoryUsed?: boolean | null;
   moveDisabled?: boolean;
@@ -43,7 +48,8 @@ export type ChatMenuActionsInputV2 = Readonly<{
   onCopyThread?(): void;
   /** Absent hides "Delete…" entirely (no permanent-deletion capability). */
   onDelete?(): void;
-  onExport?(format: "json" | "markdown"): void;
+  /** "pdf" opens the print page in a new tab, so it must run within the click. */
+  onExport?(format: "json" | "markdown" | "pdf"): void;
   onFavorite?(): void;
   onMemoryMode?(mode: "EXCLUDED" | "NORMAL"): void;
   onMove?(folderId: string | null): void;
@@ -70,6 +76,7 @@ export function chatMenuActionsV2({
   deleteDisabled = false,
   favorite = false,
   folders,
+  memoryLockedReason = null,
   memoryUsed = null,
   moveDisabled = false,
   moveRootLabel = "No folder",
@@ -111,7 +118,14 @@ export function chatMenuActionsV2({
         }] as const
       : []),
     ...(onFavorite ? [{ icon: "star", label: "Favorite", onSelect: onFavorite, selected: favorite }] as const : []),
-    ...(surface === "header" && onMemoryMode && memoryUsed !== null
+    ...(surface === "header" && onMemoryMode && memoryLockedReason
+      ? [{
+          disabled: true,
+          icon: "memory",
+          label: resolveMemoryCopy("resume.action"),
+          sub: memoryLockedReason
+        }] as const
+      : surface === "header" && onMemoryMode && memoryUsed !== null
       ? [{
           icon: "memory",
           label: resolveMemoryCopy(memoryUsed ? "exclude.action" : "resume.action"),
@@ -123,7 +137,8 @@ export function chatMenuActionsV2({
     ...(onExport
       ? [
           { label: "Markdown", onSelect: () => onExport("markdown") },
-          { label: "JSON", onSelect: () => onExport("json") }
+          { label: "JSON", onSelect: () => onExport("json") },
+          { label: "PDF", onSelect: () => onExport("pdf") }
         ] as const
       : []),
     ...(onCopyThread ? [{ label: "Copy entire thread", onSelect: onCopyThread }] as const : [])

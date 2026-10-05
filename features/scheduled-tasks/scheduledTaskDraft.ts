@@ -406,14 +406,15 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
 /**
  * Only the changed fields, so an unchanged schedule keeps an active task's due
  * run. A switch to an hourly schedule or to monitoring carries
- * `chatMode: "same"` with it.
+ * `chatMode: "same"` with it. Instructions whose links runs cannot read yet
+ * are sent even unchanged: the owner saving them allows those links.
  */
 export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, original: ScheduledTask): ScheduledTaskUpdateRequest | null {
   const next = scheduledTaskCreateRequest(draft);
   if (!next) return null;
   const patch: ScheduledTaskUpdateRequest = { expectedRevision: original.revision };
   if (next.title !== original.title) patch.title = next.title;
-  if (next.prompt !== original.prompt) patch.prompt = next.prompt;
+  if (next.prompt !== original.prompt || original.promptLinksPending) patch.prompt = next.prompt;
   if (!sameScheduledTaskSchedule(next.schedule, original.schedule)) patch.schedule = next.schedule;
   if (next.timeZone !== original.timeZone) patch.timeZone = next.timeZone;
   if (next.modelId !== original.modelId || next.provider !== original.provider) {

@@ -321,6 +321,12 @@ export type ScheduledOccurrenceAdmission = Readonly<{
    */
   monitoring?: true;
   /**
+   * The prompt's page-reading snapshot (`ScheduledTask.promptUrlDigests`),
+   * read with `taskRevision`: the only prompt links the run may read with
+   * `fetch_url`, frozen at admission. Absent: none.
+   */
+  promptUrlDigests?: readonly string[];
+  /**
    * The task has Memory on: the run reads the owner's Memory like an
    * ordinary personal turn (standing context and, with a tool-calling
    * model, Memory search) in whatever Memory mode its chat has, and never
@@ -971,8 +977,35 @@ export type RunRepository = {
     callId: string;
     result(task: import("../../contracts/scheduledTasks").ScheduledTask): import("../tools/types").ToolExecutionResult;
     runId: string;
+    /**
+     * The creating run's frozen user-authored link digests
+     * (`FetchUrlPlan.userUrlDigests`): the only links of the tool-written
+     * prompt its scheduled runs may read.
+     */
+    userUrlDigests: readonly string[];
     userId: string;
   }>): Promise<ScheduledTaskCallCreation>;
+  /**
+   * `fetch_url` provenance: the source and citation URLs the run's own Search
+   * persisted so far (its Search executions and its hosted Search output
+   * events), unnormalized, bounded. Another run's Search never counts.
+   */
+  loadRunSearchSourceUrls?(input: Readonly<{ runId: string; userId: string }>): Promise<readonly string[]>;
+  /**
+   * Every persisted `fetch_url` call of the run, in round and call order, so a
+   * recovered run keeps its page cap and cache. No bound below the run's
+   * accepted tool-call budget: a hidden sent call could be sent again.
+   */
+  loadRunFetchUrlCalls?(input: Readonly<{ runId: string; userId: string }>): Promise<readonly Readonly<{
+    id: string; result: unknown; state: string;
+  }>[]>;
+  /**
+   * Which of these messages of the chat are scheduled task prompts
+   * (`Message.scheduledTaskPrompt`): their text authorizes no `fetch_url` link.
+   */
+  loadScheduledPromptMessageIds?(input: Readonly<{
+    chatId: string; messageIds: readonly string[]; userId: string;
+  }>): Promise<ReadonlySet<string>>;
   /**
    * Whether the owner has a saved scheduled task a chat answer may manage
    * (null: none), and the task whose own chat `chatId` is: the one that posts
@@ -1001,6 +1034,12 @@ export type RunRepository = {
     runId: string;
     /** Null only for `list`. */
     taskId: string | null;
+    /**
+     * The run's frozen user-authored link digests
+     * (`scheduledTaskManagementTool.userUrlDigests`): with the task's stored
+     * snapshot, the only links a changed prompt keeps for its scheduled runs.
+     */
+    userUrlDigests: readonly string[];
     userId: string;
   }>): Promise<ScheduledTaskCallManagement>;
   /** The authorized record `read_tool_call` returns, or null when unavailable. */

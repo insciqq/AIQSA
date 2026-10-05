@@ -5,6 +5,7 @@ import { isMcpRuntimeTimeouts } from "../../contracts/mcp";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { isSkillToolName, LOAD_SKILL_TOOL_NAME } from "../tools/skill";
 import { isScheduledTaskToolSettings } from "../tools/scheduledTaskCreation";
+import { isFetchUrlPlan } from "../tools/fetchUrlPlan";
 import { isScheduledTaskManagementSettings } from "../tools/scheduledTaskManagement";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { validArtifactResourcePolicy } from "../artifacts/resourcePolicy";
@@ -602,6 +603,7 @@ const normalizedRequestKeys = new Set([
   "content",
   "context",
   "contextCompactionPolicy",
+  "fetchUrl",
   "knowledgeAnswering",
   "knowledgeAnswerWorkflowVersion",
   "knowledgeReviewRepairFeedbackVersion",
@@ -1032,6 +1034,7 @@ function decodeProviderDispatchRecoveryRequest(
     (value.scheduledTaskTool !== undefined && !isScheduledTaskToolSettings(value.scheduledTaskTool)) ||
     (value.scheduledTaskManagementTool !== undefined && (value.scheduledTaskTool === undefined ||
       !isScheduledTaskManagementSettings(value.scheduledTaskManagementTool))) ||
+    (value.fetchUrl !== undefined && !isFetchUrlPlan(value.fetchUrl)) ||
     (value.toolCallReader !== undefined && value.toolCallReader !== true) ||
     (value.toolHistory !== undefined && !decodeToolHistorySnapshot(value.toolHistory)) ||
     (value.toolObservationVersion !== undefined && value.toolObservationVersion !== 0 && value.toolObservationVersion !== 1) ||

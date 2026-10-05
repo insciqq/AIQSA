@@ -31,7 +31,7 @@ type Task = {
   baseline: ScheduledTaskBaseline | null; chatId: string | null; chatMode: ScheduledTaskChatMode; completionReason: string | null;
   consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number; emailNotify: boolean;
   generation: number; id: string; kind: ScheduledTaskKind; memoryEnabled: boolean; modelId: string; nextRunAt: Date | null;
-  pauseReason: string | null; prompt: string; provider: string;
+  pauseReason: string | null; prompt: string; promptUrlDigests: readonly string[]; provider: string;
   /** What the store derives from the previous shown result (null: every server). */
   relevantMcpServerIds: readonly string[] | null;
   revision: number; schedule: ScheduledTaskSchedule; searchEnabled: boolean;
@@ -185,8 +185,8 @@ function harness() {
         ownerActive: !inactiveUsers.has(row.userId),
         relevantMcpServerIds: task.relevantMcpServerIds,
         task: { baseline: task.baseline, chatMode: task.chatMode, generation: task.generation, kind: task.kind,
-          memoryEnabled: task.memoryEnabled, modelId: task.modelId, prompt: task.prompt, provider: task.provider,
-          revision: task.revision,
+          memoryEnabled: task.memoryEnabled, modelId: task.modelId, prompt: task.prompt, promptUrlDigests: task.promptUrlDigests,
+          provider: task.provider, revision: task.revision,
           searchEnabled: task.searchEnabled, status: task.status, timeZone: task.timeZone, title: task.title,
           toolsEnabled: task.toolsEnabled, workspaceEnabled: task.workspaceEnabled }
       };
@@ -290,7 +290,7 @@ function harness() {
       consecutiveMissingVerdicts: 0, emailNotify: false, generation: 1, id: nextId("task"), kind: "standard", memoryEnabled: false,
       modelId: "model-a",
       nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null, prompt: "  Summarize the synthetic fixture  ",
-      provider: "connection-a", relevantMcpServerIds: null, revision: 1, schedule: { kind: "daily", time: "09:00" },
+      promptUrlDigests: [], provider: "connection-a", relevantMcpServerIds: null, revision: 1, schedule: { kind: "daily", time: "09:00" },
       searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow", title: "Synthetic brief", toolsEnabled: false,
       userId: "owner-1", workspaceEnabled: false, ...overrides
     };
@@ -338,7 +338,7 @@ describe("scheduled task runner", () => {
       searchPlan: { mode: "all_selected", optionIds: [] }, skills: { mode: "off" }, timeZone: "Europe/Moscow", workspace: { enabled: false }
     });
     // The first run of a task has no earlier result to see.
-    expect(h.sent[0]!.occurrence).toEqual({ occurrenceId: h.forTask(task)[0]!.id, previousResult: null, relevantMcpServerIds: null,
+    expect(h.sent[0]!.occurrence).toEqual({ occurrenceId: h.forTask(task)[0]!.id, previousResult: null, promptUrlDigests: [], relevantMcpServerIds: null,
       taskGeneration: 1, taskId: task.id, taskRevision: 1 });
     expect(h.renamed).toEqual([{ chatId: h.sent[0]!.chatId, title: "Synthetic brief" }]);
     expect(h.emails).toHaveLength(1);
@@ -806,6 +806,14 @@ describe("scheduled task runner with the owner's tools", () => {
     const task = h.addTask({ relevantMcpServerIds: ["server-mail"], toolsEnabled: true });
     await h.tick();
     expect(h.sent[0]!.occurrence.relevantMcpServerIds).toEqual(["server-mail"]);
+  });
+
+  it("freezes the prompt's page-reading snapshot, read with the revision, into the admission", async () => {
+    const h = harness();
+    const digest = "a".repeat(64);
+    h.addTask({ promptUrlDigests: [digest], revision: 3 });
+    await h.tick();
+    expect(h.sent[0]!.occurrence).toMatchObject({ promptUrlDigests: [digest], taskRevision: 3 });
   });
 
   it("pauses before any send when tools or Workspace need tool calling the model lost", async () => {

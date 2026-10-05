@@ -223,6 +223,13 @@ import {
   isScheduledTaskManageCall,
   scheduledTaskManagementToolsForRequest
 } from "../tools/scheduledTaskManagement";
+import {
+  createFetchUrlSession,
+  fetchUrlInterruptedResult,
+  fetchUrlToolsForRequest,
+  isFetchUrlCall,
+  type FetchUrlSession
+} from "../tools/fetchUrl";
 import type { ProviderToolBridge } from "../tools/types";
 import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { memorySearchTool, MEMORY_SEARCH_TOOL_NAME } from "../memory/search/contract";
@@ -363,6 +370,8 @@ export type RunRecoveryRepository = Pick<
   | "recordMonitoringVerdict"
   | "createScheduledTaskForCall"
   | "manageScheduledTaskForCall"
+  | "loadRunFetchUrlCalls"
+  | "loadRunSearchSourceUrls"
   | "toolCallsAvailable"
 >>;
 
@@ -385,6 +394,10 @@ export type RunRecoveryDeps = Readonly<{
   artifacts?: import("../artifacts/service").ArtifactService;
   vision?: import("../vision/service").VisionAnalysisService;
   images?: import("../images/service").ImageGenerationService;
+  /** Test seam of the page reader's transport; production uses the pinned SSRF-safe one. */
+  fetchPage?: import("../tools/fetchUrl").FetchUrlSessionDeps["fetchPage"];
+  /** Test seam of the page reader's text extraction; production parses in the disposable parser process. */
+  extractPage?: import("../tools/fetchUrl").FetchUrlSessionDeps["extractPage"];
   getAttachmentLimits?: () => RunAttachmentLimits;
   knowledgeExecutor?: KnowledgeToolExecutor;
   knowledgeProviderDispatch?: KnowledgeProviderDispatchLifecycle;
@@ -935,6 +948,8 @@ type RecoveryToolContext = {
   activeMcpDiscovery: McpDiscoveryState | undefined;
   activeMcpSnapshot: McpRunPlanSnapshot | undefined;
   deps: RunRecoveryDeps;
+  /** The run's page reader, seeded from its persisted calls; null without the frozen marker. */
+  fetchSession: FetchUrlSession | null;
   knowledgeResults: Map<string, ToolExecutionResult>;
   mcpDiscoveryQueue: Promise<void>;
   /** Server-minted observations of the run's settled calls, by provider call
@@ -1609,6 +1624,24 @@ async function executePersistedToolCallInContext(
     if (settled !== "settled" && settled !== "reused") throw new ToolLoopRecoveryError("tool_call_settle_conflict", "A recovered scheduled task call could not be settled.");
     return { call, ordinal: persisted.ordinal, result: { status: "complete", value: result }, round: persisted.roundIndex };
   }
+  if (context.fetchSession && isFetchUrlCall(context.run.normalizedRequest, call.name) &&
+    (claim.kind === "claimed" || claim.kind === "ambiguous")) {
+    // A page request that may have left before the process stopped is never
+    // sent again; a new one rechecks Project authority before it leaves.
+    if (claim.kind === "claimed" && context.run.project &&
+      !(await currentProjectRecoveryAuthorityAllowed(context.deps, context.run.project, context.run.userId))) {
+      throw new ToolLoopRecoveryError("project_access_changed", "Project access changed during the run");
+    }
+    const result = claim.kind === "ambiguous" ? fetchUrlInterruptedResult(call)
+      : await context.fetchSession.execute(call, { persistedToolCallId: persisted.id, signal });
+    const settleable = settleableToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    const settled = settleable && await context.deps.repository.settleToolLoopCall({ callId: persisted.id,
+      result: settleable.snapshot, runId: context.run.id, state: settleable.result.status, userId: context.run.userId });
+    if (!settleable || (settled !== "settled" && settled !== "reused")) {
+      throw new ToolLoopRecoveryError("tool_call_settle_conflict", "A recovered page read could not be settled.");
+    }
+    return { call, ordinal: persisted.ordinal, result: { status: "complete", value: settleable.result }, round: persisted.roundIndex };
+  }
   const memoryActivity = async (state: "running" | "complete" | "error" | "cancelled", result?: ToolExecutionResult) => {
     const event = memorySearchActivityEvent({ ordinal: persisted.ordinal, round: persisted.roundIndex, state, result });
     const projected = projectRunOutputArtifactEvent(event);
@@ -2241,6 +2274,8 @@ async function executePersistedToolBatch(
     !isRecoveredCallRead(context, call.toolName) &&
     !isRecoveredMonitoringCall(context, call.toolName) &&
     !isRecoveredScheduledTaskCall(context, call.toolName) &&
+    // An interrupted page read settles as interrupted, never sent again.
+    !(context.fetchSession && isFetchUrlCall(context.run.normalizedRequest, call.toolName)) &&
     !(context.run.normalizedRequest.toolObservationVersion === 1 &&
       (isRecoveredWorkspaceCall(context, call.toolName) || isRecoveredSearchCall(context, call.toolName) ||
         resolveMcpRunTool(context.activeMcpSnapshot, call.toolName))) &&
@@ -2566,6 +2601,7 @@ async function recoverCheckpointedToolLoop(
       ...(run.normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
       ...scheduledTaskToolsForRequest(run.normalizedRequest),
       ...scheduledTaskManagementToolsForRequest(run.normalizedRequest),
+      ...fetchUrlToolsForRequest(run.normalizedRequest),
       ...(run.normalizedRequest.toolObservationVersion === 1 ? [readToolResultTool] : []),
       ...(run.normalizedRequest.toolCallReader ? [readToolCallTool] : []),
       ...(recoveredKnowledgeEnabled
@@ -2618,11 +2654,23 @@ async function recoverCheckpointedToolLoop(
       async (callId) => executeReadToolCall(recoveredToolCallReader(deps), { id: callId, name: READ_TOOL_CALL_NAME,
         arguments: rereadCalls.get(callId)?.arguments ?? {} }, { runId: run.id, userId: run.userId }, signal,
       replayBudget(rereadCalls.get(callId)?.roundIndex ?? 0), { resultReader: run.normalizedRequest.toolObservationVersion === 1 }));
+    const fetchPlan = run.normalizedRequest.fetchUrl;
+    const loadSearchUrls = deps.repository.loadRunSearchSourceUrls?.bind(deps.repository);
+    const loadFetchCalls = deps.repository.loadRunFetchUrlCalls?.bind(deps.repository);
     const context: RecoveryToolContext = {
       skillResultBudget: createSkillToolResultBudget(),
       activeMcpDiscovery,
       activeMcpSnapshot: run.normalizedRequest.mcp,
       deps,
+      // Recovery keeps no follow-ups (an executor loss ends a clarified run).
+      fetchSession: fetchPlan ? createFetchUrlSession({
+        plan: fetchPlan,
+        scheduled: fetchPlan.taskUrlDigests !== undefined,
+        ...(deps.fetchPage ? { fetchPage: deps.fetchPage } : {}),
+        ...(deps.extractPage ? { extractPage: deps.extractPage } : {}),
+        ...(loadSearchUrls ? { loadSearchUrls: () => loadSearchUrls({ runId: run.id, userId: run.userId }) } : {}),
+        ...(loadFetchCalls ? { loadCalls: () => loadFetchCalls({ runId: run.id, userId: run.userId }) } : {})
+      }) : null,
       knowledgeResults: new Map(),
       mcpDiscoveryQueue: Promise.resolve(),
       observations: persistedContextObservations(run.calls),
@@ -3157,7 +3205,8 @@ async function recoverCheckpointedToolLoop(
             !isRecoveredCallRead(context, call.name) &&
             !(run.normalizedRequest.sessionStatusTool === true && call.name === SESSION_STATUS_TOOL_NAME) &&
             !isMonitoringVerdictCall(run.normalizedRequest, call.name) &&
-            !isRecoveredScheduledTaskCall(context, call.name)) {
+            !isRecoveredScheduledTaskCall(context, call.name) &&
+            !isFetchUrlCall(run.normalizedRequest, call.name)) {
             throw new ToolLoopRecoveryError(
               "unsupported_tool_call",
               `The provider requested unsupported tool ${call.name}.`

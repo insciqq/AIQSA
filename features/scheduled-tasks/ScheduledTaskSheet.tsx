@@ -122,7 +122,7 @@ export function ScheduledTaskSheet({
 }: ScheduledTaskSheetProps) {
   const formId = useId();
   const ids = {
-    title: useId(), prompt: useId(), promptCount: useId(), repeat: useId(), time: useId(), schedule: useId(),
+    title: useId(), prompt: useId(), promptCount: useId(), promptLinks: useId(), repeat: useId(), time: useId(), schedule: useId(),
     days: useId(), dayOfMonth: useId(), date: useId(), timeZone: useId(), model: useId(), search: useId(),
     searchHelp: useId(), email: useId(), emailHelp: useId(), form: useId(), monthHint: useId(),
     scheduleHeading: useId(), answerHeading: useId(), everyHours: useId(), until: useId(), untilHint: useId(),
@@ -152,6 +152,8 @@ export function ScheduledTaskSheet({
   const searchAvailable = modelHasSearch(catalog, selectedModel);
   const preview = scheduledTaskPreview(draft, original, now);
   const promptLength = Array.from(draft.prompt).length;
+  // Saving sends the instructions even unchanged, which allows their links.
+  const promptLinksPending = original?.promptLinksPending === true;
   const hourly = draft.repeat === "hourly";
   const monitoring = draft.kind === "monitoring";
   const chatMode = scheduledTaskDraftChatMode(draft);
@@ -278,9 +280,15 @@ export function ScheduledTaskSheet({
                 : "Summarize the most important technology news from the last day in five bullet points."}
               value={draft.prompt}
               aria-invalid={Boolean(errors.prompt) || undefined}
-              aria-describedby={describedBy(promptLength >= PROMPT_COUNTER_FROM && ids.promptCount, errors.prompt && `${ids.prompt}-error`)}
+              aria-describedby={describedBy(promptLinksPending && ids.promptLinks, promptLength >= PROMPT_COUNTER_FROM && ids.promptCount,
+                errors.prompt && `${ids.prompt}-error`)}
               onChange={(event) => onChange({ prompt: event.target.value })}
             />
+            {promptLinksPending ? (
+              <p className="v2-scheduled-hint" id={ids.promptLinks} data-testid="scheduled-task-prompt-links">
+                Runs can&apos;t read the links in these instructions yet. Save the instructions to allow them.
+              </p>
+            ) : null}
             {promptLength >= PROMPT_COUNTER_FROM ? (
               <p className="v2-scheduled-hint" id={ids.promptCount} data-over={promptLength > SCHEDULED_TASK_PROMPT_MAX_LENGTH || undefined}>
                 {promptLength.toLocaleString("en-US")} of {SCHEDULED_TASK_PROMPT_MAX_LENGTH.toLocaleString("en-US")} characters
