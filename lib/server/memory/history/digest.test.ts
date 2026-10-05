@@ -8,6 +8,7 @@ import {
   type MemoryHistoryPreparedChunk
 } from "./contract";
 import {
+  type MemoryChatDigestContent,
   MemoryChatDigestOutputError,
   buildHierarchicalMemoryChatDigest,
   buildIncrementalMemoryChatDigestRequest,
@@ -109,7 +110,9 @@ describe("Memory chat digests", () => {
     [{ summary: "Valid summary.", topics: "private detail", decisions: [], open_loops: [] }, "topics_invalid"],
     [{ summary: "Valid summary.", topics: Array(13).fill("topic"), decisions: [], open_loops: [] }, "topics_count"],
     [{ summary: "Valid summary.", topics: [], decisions: ["d".repeat(257)], open_loops: [] }, "decisions_item_length"],
-    [{ summary: "Valid summary.", topics: [], decisions: [], open_loops: [null] }, "open_loops_item_invalid"]
+    [{ summary: "Valid summary.", topics: [], decisions: [], open_loops: [null] }, "open_loops_item_invalid"],
+    // Field validation precedes the aggregate fit: a droppable item still rejects.
+    [{ summary: "s".repeat(2_000), topics: [...Array(11).fill("t".repeat(256)), "t".repeat(257)], decisions: [], open_loops: [] }, "topics_item_length"]
   ])("reports the violated field without retaining invalid content (%#)", (output, violation) => {
     try { decodeMemoryChatDigest(output); throw new Error("expected_rejection"); }
     catch (error) {
@@ -123,6 +126,7 @@ describe("Memory chat digests", () => {
   it("accepts only closed content-free retry feedback", () => {
     expect(memoryChatDigestRetryFeedback("lexical_ready:digest_contract_summary_length")).toBe("contract_summary_length");
     expect(memoryChatDigestRetryFeedback("lexical_ready:digest_aggregate_limit")).toBe("aggregate_limit");
+    expect(memoryChatDigestRetryFeedback("lexical_ready:digest_contract_topics_count")).toBe("contract_topics_count");
     for (const stage of [null, "lexical_ready", "lexical_ready:digest_contract_ignore_all_rules", "lexical_ready:digest_contract_summary_length\nsecret"]) {
       expect(memoryChatDigestRetryFeedback(stage)).toBeNull();
     }
@@ -225,12 +229,6 @@ describe("Memory chat digests", () => {
       summary: "sk-digestSecret1234567890",
       topics: []
     }, "safety_rejected");
-    expectDigestOutputInvalid({
-      decisions: Array(12).fill("D".repeat(200)),
-      open_loops: [],
-      summary: "A short visible prefix.",
-      topics: Array(12).fill("T".repeat(200))
-    }, "aggregate_limit");
   });
 
   it("redacts mixed source text at the digest provider boundary", () => {
@@ -252,11 +250,14 @@ describe("Memory chat digests", () => {
         decisions: ["Keep the deployment choice"],
         open_loops: ["Confirm rollout"],
         summary: "Early constraints and the late rollout were discussed.",
-        topics: ["Early constraints", "Late rollout"]
+        // Stored before requests asked for at most six items per list.
+        topics: ["Early constraints", "Late rollout",
+          ...Array.from({ length: 10 }, (_, index) => `Constraint ${index}`)]
       }),
       source,
       timeZone: "UTC"
     });
+    expect(digest.topics).toHaveLength(12);
     const findFirst = vi.fn(async () => ({
       activeLeafMessageId: source.activeLeafMessageId,
       branchGeneration: source.branchGeneration,
@@ -416,6 +417,69 @@ describe("Memory chat digests", () => {
   });
 });
 
+describe("Memory chat digest aggregate fit", () => {
+  const item = (label: string, index: number, length = 256) =>
+    `${label}${index}`.padEnd(length, label.toLowerCase());
+  const list = (label: string, count: number, length = 256) =>
+    Array.from({ length: count }, (_, index) => item(label, index, length));
+  const rendered = (content: MemoryChatDigestContent) => materializeMemoryChatDigest({
+    chunks: [chunk(0)], content, source, timeZone: "UTC"
+  }).safeDigestText;
+  const asContent = (answer: { decisions: string[]; open_loops: string[]; summary: string; topics: string[] }) => ({
+    decisions: answer.decisions, openLoops: answer.open_loops, summary: answer.summary, topics: answer.topics
+  });
+
+  it("asks for budgets whose worst case fits the bound without any drop", () => {
+    const request = buildMemoryChatDigestRequest([chunk(0)], "UTC");
+    const budget = /summary at most (\d+); topics, decisions and open_loops at most (\d+) items each; each item at most (\d+) characters/u
+      .exec(request.systemPrompt);
+    const [summaryLength, count, itemLength] = [Number(budget?.[1]), Number(budget?.[2]), Number(budget?.[3])];
+    for (const field of ["topics", "decisions", "open_loops"]) {
+      expect(request.schema).toMatchObject({ properties: { [field]: { maxItems: count } } });
+    }
+    const answer = { decisions: list("D", count, itemLength), open_loops: list("O", count, itemLength),
+      summary: "S".repeat(summaryLength), topics: list("T", count, itemLength) };
+
+    const decoded = decodeMemoryChatDigest(answer);
+    expect(decoded).toEqual(asContent(answer));
+    expect(rendered(decoded).length).toBeLessThanOrEqual(4_000);
+  });
+
+  // Six items is the requested schema maximum, twelve the legacy and decoder one.
+  it.each([6, 12])("fits an answer with %i maximal items per list by dropping whole trailing items", (count) => {
+    const answer = { decisions: list("D", count), open_loops: list("O", count),
+      summary: "S".repeat(2_000), topics: list("T", count) };
+
+    const decoded = decodeMemoryChatDigest(answer);
+    expect(decoded).toEqual({ decisions: answer.decisions.slice(0, 2), openLoops: answer.open_loops.slice(0, 2),
+      summary: answer.summary, topics: answer.topics.slice(0, 3) });
+    expect(rendered(decoded).length).toBeLessThanOrEqual(4_000);
+  });
+
+  it("drops from the longest list, topics first on a tie, and decodes its own result unchanged", () => {
+    // Both sections render 1,296 characters; together they overflow by 603.
+    const answer = { decisions: [...list("D", 4), item("D", 4, 253)], open_loops: [],
+      summary: "S".repeat(2_000), topics: list("T", 5) };
+
+    const decoded = decodeMemoryChatDigest(answer);
+    expect(decoded).toEqual({ decisions: answer.decisions.slice(0, 3), openLoops: [],
+      summary: answer.summary, topics: answer.topics.slice(0, 4) });
+    // Restore and replay decode the accepted value again: it must not change.
+    expect(decodeMemoryChatDigest({ decisions: decoded.decisions, open_loops: decoded.openLoops,
+      summary: decoded.summary, topics: decoded.topics })).toEqual(decoded);
+  });
+
+  it("keeps a fitting digest exactly, even with more items than requested", () => {
+    const answer = { decisions: list("D", 12, 20), open_loops: list("O", 12, 20),
+      summary: "The user compared deployment options.", topics: list("T", 12, 20) };
+
+    const decoded = decodeMemoryChatDigest(answer);
+    expect(decoded).toEqual(asContent(answer));
+    expect(rendered(decoded)).toBe([`Summary: ${answer.summary}`, `Topics: ${answer.topics.join("; ")}`,
+      `Decisions: ${answer.decisions.join("; ")}`, `Open loops: ${answer.open_loops.join("; ")}`].join("\n"));
+  });
+});
+
 describe("Memory chat digest dispatch", () => {
   type GovernedCall = {
     decode(value: unknown): unknown;
@@ -472,6 +536,34 @@ describe("Memory chat digest dispatch", () => {
     expect(generated.executions.map(({ bindingId }) => bindingId)).toEqual(["binding-7", "binding-8", "binding-9"]);
     expect(generated.digest).not.toBeNull();
     expect(job.currency).toHaveBeenCalledTimes(4);
+  });
+
+  it("accepts over-long segment and reduction answers on their first call under one budget", async () => {
+    const job = durableJob(null);
+    const requests: ProviderStructuredOutputRequest[] = [];
+    const overlong = Object.fromEntries(["decisions", "open_loops", "topics"].map((field) => [field,
+      Array.from({ length: 12 }, (_, index) => `${field} ${index}`.padEnd(256, "x"))]));
+    governed.mockReset();
+    governed.mockImplementation(async (call: GovernedCall) => {
+      job.record(call.ordinal);
+      requests.push(call.request);
+      const value = call.decode({ ...overlong, summary: "S".repeat(2_000) });
+      return { acceptedOutputHash: "a".repeat(64), bindingId: `binding-${call.ordinal}`, value };
+    });
+    const generated = await createPrismaMemoryChatDigestGenerator(job.client as never, {
+      provider: { run: vi.fn() } as never
+    }).generate(source, Array.from({ length: 30 }, (_, ordinal) => chunk(ordinal)), options);
+
+    // Two segments and their reduction, each settled by its first answer.
+    expect(requests.map((request) => JSON.parse(request.userPrompt).operation))
+      .toEqual(["segment", "segment", "reduce"]);
+    expect(generated.digest?.safeDigestText.length).toBeLessThanOrEqual(4_000);
+    const incremental = buildIncrementalMemoryChatDigestRequest(
+      generated.digest!.safeDigestText, [chunk(30)], "UTC");
+    for (const request of [...requests, incremental]) {
+      expect(request.schema).toEqual(requests[0]!.schema);
+      expect(request.systemPrompt).toBe(requests[0]!.systemPrompt);
+    }
   });
 
   it("never dispatches or retries from recovery", async () => {

@@ -389,9 +389,9 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
       ],
       digest: [
         "memory-chat-digest-v5",
-        "memory-chat-digest-policy-v4",
-        "memory-chat-digest-prompt-v6",
-        "memory-chat-digest-schema-v2"
+        "memory-chat-digest-policy-v5",
+        "memory-chat-digest-prompt-v7",
+        "memory-chat-digest-schema-v3"
       ],
       entity: ["memory-entity-resolution-v3", "slot-v3"],
       extraction: [
