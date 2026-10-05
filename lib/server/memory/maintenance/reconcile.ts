@@ -4,11 +4,23 @@ import { memorySha256 } from "../persistence/lexical";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
 import { MEMORY_MAINTENANCE_MAX_OWNERS, MEMORY_MAINTENANCE_PIPELINE_VERSION, MEMORY_MAINTENANCE_POLICY_VERSION,
   MEMORY_MAINTENANCE_QUIET_MS, MEMORY_MAINTENANCE_SCHEDULE_TRANSACTION_BOUNDS } from "./policy";
+import { memoryRetractedSubjectFactPredicate, retireMemoryFactsWithRetractedSubjects } from "./retractedSubjects";
 import { memoryMaintenanceSourcePredicate, memoryMaintenanceUncoveredPredicate, scanMemoryMaintenanceSources } from "./source";
+
+/** No review row of the owner exists under the current policy yet. */
+function firstPolicyPass(userId: string | Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`NOT EXISTS (SELECT 1 FROM "MemoryMaintenanceReview" AS first_pass
+    WHERE first_pass."userId" = ${userId} AND first_pass."policyVersion" = ${MEMORY_MAINTENANCE_POLICY_VERSION})`;
+}
 
 export async function scheduleOwnerMemoryMaintenance(client: PrismaClient, userId: string, now: Date): Promise<number> {
   return withLockedMemoryTransaction(client, userId, async (tx, settings) => {
     if (!settings.useMemoryFacts || !settings.learnAutomatically) return 0;
+    // The owner's first pass under a policy retires, once, the facts left
+    // under a retracted subject root, which no review or source mutation
+    // reaches; it commits with the pass's first rows, so later passes skip it.
+    const [pass] = await tx.$queryRaw<Array<{ firstPass: boolean }>>(Prisma.sql`SELECT ${firstPolicyPass(userId)} AS "firstPass"`);
+    if (pass?.firstPass) await retireMemoryFactsWithRetractedSubjects(tx, settings);
     if (await tx.memoryJob.count({ where: { userId, kind: "SYNTHESIZE_MEMORIES", state: { in: ["QUEUED", "CLAIMED", "RETRYABLE_FAILED", "WAITING_FOR_CONFIGURATION"] } } })) return 0;
     const cursor = await tx.userMemorySettings.findUniqueOrThrow({ where: { userId }, select: { maintenanceCursor: true } });
     const scan = await scanMemoryMaintenanceSources(tx, userId, now, cursor.maintenanceCursor);
@@ -76,7 +88,8 @@ export async function reconcileMemoryMaintenanceWork(client: PrismaClient, now: 
   `);
   // Cheap ownership, gating and coverage filters first; the full authority
   // predicate then runs only on those rows. An owner whose remaining facts are
-  // all covered, quiet or ineligible is not selected again.
+  // all covered, quiet or ineligible is not selected again; one whose only
+  // work is its first pass's one-time retirement is selected for that pass.
   const owners = await client.$queryRaw<Array<{ userId: string }>>(Prisma.sql`
     WITH candidate AS MATERIALIZED (
       SELECT version."userId", version."id" AS "versionId"
@@ -101,7 +114,9 @@ export async function reconcileMemoryMaintenanceWork(client: PrismaClient, now: 
       JOIN "MemoryScope" AS scope ON scope."userId" = fact."userId" AND scope."id" = fact."scopeId"
       JOIN "UserMemorySettings" AS settings ON settings."userId" = fact."userId"
       WHERE candidate."userId" = owner_settings."userId"
-        AND ${memoryMaintenanceSourcePredicate(Prisma.sql`candidate."userId"`)})
+        AND (${memoryMaintenanceSourcePredicate(Prisma.sql`candidate."userId"`)}
+          OR (${memoryRetractedSubjectFactPredicate(Prisma.sql`candidate."userId"`)}
+            AND ${firstPolicyPass(Prisma.sql`candidate."userId"`)})))
     ORDER BY owner_settings."maintenanceScannedAt" ASC NULLS FIRST, owner_settings."userId" LIMIT ${MEMORY_MAINTENANCE_MAX_OWNERS}
   `);
   let scheduled = 0;
