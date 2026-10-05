@@ -133,6 +133,31 @@ describe("shared System Vision boundary", () => {
     expect(result.status).toBe("error"); expect(JSON.stringify(result)).toContain("vision_analysis_cancelled");
     expect(f.store.settle.mock.calls[0]?.[2]).toMatchObject({ inputTokens: 5, outputTokens: 2 });
   });
+  it("waits by the plan's reasoning effort and settles its expiry as an ambiguous timeout", async () => {
+    const f = fixture(); f.context.request.visionAnalysis = { ...plan, reasoningEffort: "high" };
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+    try {
+      f.execute.mockImplementation(async (_snapshot, _request, options) => {
+        expect(options?.timeoutMs).toBe(180_000); expect(options?.signal?.aborted).toBe(false);
+        deadline.abort(); options!.signal!.throwIfAborted(); throw new Error("unreachable");
+      });
+      const result = await f.service.execute(f.call, f.context, new AbortController().signal);
+      expect(timeout).toHaveBeenCalledWith(180_000);
+      expect(result.content[0]).toMatchObject({ value: { error: "vision_analysis_timeout", provider_outcome: "unknown" } });
+      expect(f.store.settle.mock.calls[0]?.[3]).toBe(true);
+    } finally { timeout.mockRestore(); }
+  });
+  it("keeps the base bound without an effort and lets an earlier run deadline end the call as cancelled", async () => {
+    const f = fixture(); const run = new AbortController();
+    f.execute.mockImplementation(async (_snapshot, _request, options) => {
+      expect(options?.timeoutMs).toBe(60_000);
+      run.abort(); options!.signal!.throwIfAborted(); throw new Error("unreachable");
+    });
+    const result = await f.service.execute(f.call, f.context, run.signal);
+    expect(result.content[0]).toMatchObject({ value: { error: "vision_analysis_cancelled", provider_outcome: "unknown" } });
+    expect(f.execute).toHaveBeenCalledOnce();
+  });
   it("bounds geometry/payload before paid dispatch", async () => {
     const f = fixture(); f.context.request.visionAnalysis = { ...plan, snapshot: { ...plan.snapshot, model: { ...plan.snapshot.model,
       capabilities: { ...plan.snapshot.model.capabilities, imageInputLimits: { imageCount: 1, imageBytes: 100, imagePixels: 100, payloadBytes: 10000 } } } } };
