@@ -2687,6 +2687,10 @@ describe("Memory lexical history index persistence", () => {
       for (let offset = 0; offset < rows.length; offset += 1_000) {
         await prisma.message.createMany({ data: rows.slice(offset, offset + 1_000) });
       }
+      // A disposable database has no planner statistics for this bulk insert
+      // until autovacuum runs; without them the bounded path walk can exceed
+      // the prepare transaction timeout under host load.
+      await prisma.$executeRaw(Prisma.sql`ANALYZE "Message"`);
       await prisma.chat.update({
         data: { activeLeafMessageId: messageIds.at(-1)! },
         where: { id: chat.id }
