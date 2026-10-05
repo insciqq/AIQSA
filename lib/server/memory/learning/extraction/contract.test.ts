@@ -80,12 +80,13 @@ describe("Memory fact extraction pages", () => {
   it("keeps pipeline v8 job identity and retains exactly the previous v52 contract", () => {
     expect(MEMORY_FACT_EXTRACTION_VERSIONS).toMatchObject({
       pipelineVersion: "memory-fact-extraction-vnext-v8",
-      policyVersion: "memory-fact-extraction-policy-v38",
+      policyVersion: "memory-fact-extraction-policy-v39",
       promptVersion: "memory-fact-extraction-prompt-v53",
       schemaVersion: "memory-fact-extraction-schema-v7"
     });
     expect(MEMORY_FACT_EXTRACTION_RETAINED_VERSIONS).toEqual({
       ...MEMORY_FACT_EXTRACTION_VERSIONS,
+      policyVersion: "memory-fact-extraction-policy-v38",
       promptVersion: "memory-fact-extraction-prompt-v52"
     });
   });
