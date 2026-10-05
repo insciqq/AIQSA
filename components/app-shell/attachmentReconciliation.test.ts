@@ -106,7 +106,7 @@ describe("attachment reconciliation", () => {
 
     expect(reconcileCurrentComposerAttachments(sessionA, textOnlyModel)).toBe(true);
     expect(selectComposerSession(useComposerSessionStore.getState(), sessionA).operationError)
-      .toBe("Removed an attachment unsupported by Text model: scan.png");
+      .toBe("Removed an attachment unsupported by Text model: scan.png. Text model can't read images. To use images, choose a model that supports images.");
   });
 
   it("clears resolved binary-limit feedback only after a model-limit context change", () => {

@@ -82,7 +82,8 @@ test("image tool keeps generated versions and ordinary uploaded edits through re
           ...(id === imageId ? { imageGeneration: proof, imageEditing: proof } : { compatibility: { toolCalling: "supported", streaming: "supported" } }) } } });
     }
     await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: answerId, reasoningEffort: null, version: { increment: 1 } } });
-    await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { imageProviderModelId: imageId, imageParamsJson: { quality: "low" }, version: { increment: 1 } } });
+    await prisma.publishedImageModel.create({ data: { providerModelId: imageId, paramsJson: { quality: "low" } } });
+    await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { imageProviderModelId: imageId, version: { increment: 1 } } });
     await signInWithLocalToken(page);
     const created = await page.request.post("/api/chats", { data: { memoryMode: "EXCLUDED", workspaceEnabled: false } });
     expect(created.ok()).toBe(true);
@@ -184,7 +185,9 @@ test("image tool keeps generated versions and ordinary uploaded edits through re
       await tx.chat.deleteMany({ where: { id: { in: chatIds } } });
     });
     await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: priorChat.defaultProviderModelId, reasoningEffort: priorChat.reasoningEffort, version: { increment: 1 } } });
-    await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { imageProviderModelId: priorRoles.imageProviderModelId, imageParamsJson: json(priorRoles.imageParamsJson), version: { increment: 1 } } });
+    await prisma.systemModelPolicy.update({ where: { id: "installation" }, data: { imageProviderModelId: priorRoles.imageProviderModelId, version: { increment: 1 } } });
+    await prisma.userSettings.updateMany({ where: { imageProviderModelId: imageId }, data: { imageProviderModelId: null } });
+    await prisma.publishedImageModel.deleteMany({ where: { providerModelId: imageId } });
     await prisma.providerConnection.updateMany({ where: { id: connectionId }, data: { defaultCredentialId: null } });
     await prisma.providerModel.deleteMany({ where: { connectionId } });
     await prisma.providerCredential.updateMany({ where: { connectionId }, data: { activeVersionId: null } });

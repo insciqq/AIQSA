@@ -8,7 +8,7 @@ import { CHECKPOINT_OUTPUTS_TOOL_NAME, checkpointOutputsToolForRequest } from ".
 import { executionFailure } from "./executionFailure";
 import { RunSettlementError, isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
 import { isWorkspaceOperationFailureCode, workspaceOperationFailureMessage } from "@/lib/contracts/workspaceFailure";
-import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTool } from "../tools/analyzeImage";
+import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTools } from "../tools/analyzeImage";
 import { defaultWorkspaceImageViewer } from "../workspace/directImageView";
 import { VIEW_WORKSPACE_IMAGE, viewWorkspaceImageTool } from "../tools/viewWorkspaceImage";
 import { createArtifactGeneration } from "../artifacts/generation";
@@ -2156,7 +2156,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...(clientToolsEnabled && normalizedRequest.memorySearch ? [memorySearchTool(normalizedRequest.memorySearch)] : []),
           ...skillToolsForRequest(normalizedRequest),
           ...(normalizedRequest.workspaceCheckpoints ? [checkpointOutputsToolForRequest(normalizedRequest)] : []),
-          ...(normalizedRequest.visionAnalysis ? [analyzeImageTool(normalizedRequest.visionAnalysis)] : []),
+          ...analyzeImageTools(normalizedRequest),
           ...(normalizedRequest.workspaceImageView ? [viewWorkspaceImageTool] : []),
           ...(clientToolsEnabled && normalizedRequest.imagePlan ? [imageGenerationTool(normalizedRequest.imagePlan)] : []),
           ...(clientToolsEnabled && normalizedRequest.artifactTool ? [artifactTool(normalizedRequest.artifactToolDescription), ...(normalizedRequest.artifactReferences?.length ? [readArtifactTool()] : [])] : []),
@@ -3414,7 +3414,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const hasClientKnowledge = !groundedKnowledgeAnswer && clientToolsEnabled &&
           admittedKnowledgeReady &&
           normalizedRequest.knowledgePlan.mode !== "none";
-        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || normalizedRequest.monitoringVerdictTool === true || normalizedRequest.scheduledTaskTool !== undefined || hasClientKnowledge || hasClientSearch ||
+        const hasClientTools = Boolean(clientToolsEnabled && normalizedRequest.memorySearch) || skillToolsForRequest(normalizedRequest).length > 0 || (clientToolsEnabled && (normalizedRequest.imagePlan !== undefined || normalizedRequest.artifactTool === true)) || normalizedRequest.visionAnalysis !== undefined || normalizedRequest.sessionStatusTool === true || normalizedRequest.toolCallReader === true || normalizedRequest.monitoringVerdictTool === true || normalizedRequest.scheduledTaskTool !== undefined || hasClientKnowledge || hasClientSearch ||
           (clientToolsEnabled && (normalizedRequest.mcp?.tools.length ?? 0) > 0) ||
           normalizedRequest.mcpDiscovery !== undefined ||
           normalizedRequest.workspace !== undefined;

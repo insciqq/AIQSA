@@ -12,14 +12,24 @@ import { ANALYZE_IMAGE_TOOL_NAME, VISION_ANALYSIS_LIMITS as LIMITS } from "../to
 import { prepareWorkspaceImages, WorkspaceImageError, type WorkspaceCapturedImage } from "../workspace/imageCapture";
 import { workspaceImageInput, workspaceImageInputForRun } from "../workspace/imageInputs";
 import type { createWorkspaceSelectedCaptures } from "../workspace/selectedCapture";
+import { ConversationImageError, conversationImageInput, type ConversationImageSource, type ConversationVisionImage } from "./conversationImages";
 import { authorizeVisionPlan, createVisionAnalysisStore, VisionAnalysisError, visionFailure, type VisionExecutionHooks } from "./store";
 
 const VISION_ERRORS = new Set([
   "vision_model_absent", "vision_model_unavailable", "vision_analysis_input_invalid", "vision_analysis_access_denied",
   "vision_analysis_limit_exceeded", "vision_analysis_cancelled", "vision_analysis_response_invalid",
   "workspace_image_invalid", "workspace_image_unsupported", "workspace_image_limit_exceeded", "workspace_image_unavailable", "workspace_image_cancelled",
-  "workspace_capture_busy", "workspace_capture_invalid", "workspace_capture_limit_exceeded", "workspace_capture_stale", "workspace_capture_unavailable"
+  "workspace_capture_busy", "workspace_capture_invalid", "workspace_capture_limit_exceeded", "workspace_capture_stale", "workspace_capture_unavailable",
+  "chat_image_unavailable", "chat_image_unsupported", "chat_image_invalid", "chat_image_limit_exceeded"
 ]);
+
+/** Actionable next steps for the chat form's refusals before dispatch. */
+const CHAT_IMAGE_HINTS: Readonly<Record<string, string>> = {
+  chat_image_unavailable: "Use an exact image_id from this conversation's image references or an image generated in this answer. The image may have been removed.",
+  chat_image_unsupported: "Only PNG, JPEG, WebP and static GIF images can be analyzed. Ask the user for a PNG or JPEG copy of the image.",
+  chat_image_invalid: "Keep crop and resize within the image's width and height. If the image itself cannot be read, ask the user to upload it again.",
+  chat_image_limit_exceeded: "The image exceeds the analysis size or pixel limits. Use fewer images, or ask the user for a smaller copy."
+};
 
 /** A context-window refusal carries its measured estimate to the model. */
 class VisionContextLimitError extends VisionAnalysisError {
@@ -34,11 +44,23 @@ function utf8Prefix(bytes: Buffer, maxBytes: number): string {
   return new TextDecoder("utf-8").decode(bytes.subarray(0, maxBytes), { stream: true });
 }
 
-export function parseVisionAnalysisInput(value: Record<string, unknown>, outputDirectory?: string) {
+/** The bounds both tool forms share: ordered images and one focused question. */
+function visionArguments(value: Record<string, unknown>): { images: unknown[]; question: string } {
   if (Object.keys(value).some(key => !["images", "question"].includes(key)) || !Array.isArray(value.images) ||
     value.images.length < 1 || value.images.length > LIMITS.maxImages || typeof value.question !== "string" ||
     !value.question.trim() || value.question.length > LIMITS.questionCharacters) throw new VisionAnalysisError("vision_analysis_input_invalid");
-  return { images: value.images.map(image => outputDirectory ? workspaceImageInputForRun(image, outputDirectory) : workspaceImageInput(image)), question: value.question.trim() };
+  return { images: value.images, question: value.question.trim() };
+}
+
+export function parseVisionAnalysisInput(value: Record<string, unknown>, outputDirectory?: string) {
+  const { images, question } = visionArguments(value);
+  return { images: images.map(image => outputDirectory ? workspaceImageInputForRun(image, outputDirectory) : workspaceImageInput(image)), question };
+}
+
+/** The chat form: conversation images by `image_id`. */
+export function parseConversationVisionInput(value: Record<string, unknown>) {
+  const { images, question } = visionArguments(value);
+  return { images: images.map(image => conversationImageInput(image)), question };
 }
 
 /** No conversation/history, tool grants, memory, output attachments or host paths cross this boundary. */
@@ -63,6 +85,8 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
   store?: ReturnType<typeof createVisionAnalysisStore>;
   execute?: ReturnType<typeof createAcceptedProviderRequestExecutor>;
   prepareImages?: typeof prepareWorkspaceImages;
+  /** The chat form's image source; a process without it refuses chat analysis. */
+  conversationImages?: ConversationImageSource;
   authorize?: (plan: AvailableVisionAnalysisPlan) => Promise<boolean>;
   resolve?: () => Promise<AcceptedVisionAnalysisPlan>;
 } = {}) {
@@ -74,19 +98,23 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
   return {
     resolve: options.resolve ?? createVisionAnalysisPlanResolver(prisma), authorize,
     async restore(call: ModelToolCall, context: ToolExecutionContext): Promise<ToolExecutionResult | null> {
-      if (call.name !== ANALYZE_IMAGE_TOOL_NAME || !context.request.workspace || !context.runId || !context.userId || !context.persistedToolCallId)
+      if (call.name !== ANALYZE_IMAGE_TOOL_NAME || !context.request.visionAnalysis || !context.runId || !context.userId || !context.persistedToolCallId)
         throw new VisionAnalysisError("vision_analysis_access_denied");
       return store.restore({ runId: context.runId, userId: context.userId, toolCallId: context.persistedToolCallId,
         chatId: context.request.chatId, call, requestHash: hashCanonicalMcpValue(call.arguments) });
     },
+    /** A Workspace run analyzes captured Workspace files; any other admitted run,
+     * conversation images by `image_id` (the chat form). */
     async execute(call: ModelToolCall, context: ToolExecutionContext, signal?: AbortSignal, hooks?: VisionExecutionHooks): Promise<ToolExecutionResult> {
       const plan = context.request.visionAnalysis;
-      if (call.name !== ANALYZE_IMAGE_TOOL_NAME || !context.request.workspace || !context.runId || !context.userId || !context.persistedToolCallId)
+      const workspace = context.request.workspace;
+      if (call.name !== ANALYZE_IMAGE_TOOL_NAME || !context.runId || !context.userId || !context.persistedToolCallId)
         return visionFailure(call, "vision_analysis_access_denied");
       if (!plan?.available) return visionFailure(call, plan?.code ?? "vision_model_unavailable");
       const c = { runId: context.runId, userId: context.userId, toolCallId: context.persistedToolCallId,
         chatId: context.request.chatId, call, requestHash: hashCanonicalMcpValue(call.arguments) };
-      let images: readonly WorkspaceCapturedImage[] = [];
+      let images: readonly (WorkspaceCapturedImage | ConversationVisionImage)[] = [];
+      let assertAccess = async () => {};
       let reference: { runId: string; userId: string; consumerKey: string; captureId: string } | undefined;
       let dispatched = false;
       let providerCompleted = false;
@@ -100,17 +128,32 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
           bounded.throwIfAborted();
           const restored = await store.restore(c);
           if (restored) return restored;
-          const input = parseVisionAnalysisInput(call.arguments, context.request.workspace.outputDirectory);
-          if (!await authorize(plan)) throw new VisionAnalysisError("vision_model_unavailable");
-          const consumer = { runId: c.runId, userId: c.userId, consumerKey: c.toolCallId };
-          const files = [...new Map(input.images.map(image => [`${image.file.root}/${image.file.relativePath}`, image.file])).values()];
-          const capture = await captures.create({ ...consumer, requestKey: c.toolCallId, files, signal: bounded });
-          reference = { ...consumer, captureId: capture.id };
-          // Capture canonical sorting must not reorder the analyst's comparisons.
-          const sources = await Promise.all(input.images.map(async image => ({
-            source: await captures.imageSource({ ...reference!, relativePath: `${image.file.root}/${image.file.relativePath}` }), transform: image.transform
-          })));
-          images = await prepare(sources, bounded);
+          let question: string;
+          if (workspace) {
+            const input = parseVisionAnalysisInput(call.arguments, workspace.outputDirectory);
+            question = input.question;
+            if (!await authorize(plan)) throw new VisionAnalysisError("vision_model_unavailable");
+            const consumer = { runId: c.runId, userId: c.userId, consumerKey: c.toolCallId };
+            const files = [...new Map(input.images.map(image => [`${image.file.root}/${image.file.relativePath}`, image.file])).values()];
+            const capture = await captures.create({ ...consumer, requestKey: c.toolCallId, files, signal: bounded });
+            reference = { ...consumer, captureId: capture.id };
+            // Capture canonical sorting must not reorder the analyst's comparisons.
+            const sources = await Promise.all(input.images.map(async image => ({
+              source: await captures.imageSource({ ...reference!, relativePath: `${image.file.root}/${image.file.relativePath}` }), transform: image.transform
+            })));
+            images = await prepare(sources, bounded);
+            assertAccess = async () => { for (const source of sources) await source.source.assertAccess(); };
+          } else {
+            const input = parseConversationVisionInput(call.arguments);
+            question = input.question;
+            if (!await authorize(plan)) throw new VisionAnalysisError("vision_model_unavailable");
+            if (!options.conversationImages) throw new Error("conversation_images_unconfigured");
+            // Only references admitted with the run, or images this run generated.
+            const prepared = await options.conversationImages.prepare({ runId: c.runId, userId: c.userId, chatId: c.chatId,
+              admittedImageIds: (context.request.imageReferences ?? []).map(reference => reference.attachmentId), images: input.images }, bounded);
+            images = prepared.images;
+            assertAccess = () => prepared.assertAccess();
+          }
           const limits = plan.snapshot.model.capabilities.imageInputLimits;
           if (images.length > Math.min(LIMITS.maxImages, limits?.imageCount ?? LIMITS.maxImages)) throw new VisionAnalysisError("vision_analysis_limit_exceeded");
           let encodedBytes = 0; let imageTokens = 0;
@@ -124,12 +167,12 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
               d.width * d.height > Math.min(16_777_216, limits?.imagePixels ?? Infinity) ||
               encodedBytes > Math.min(64 * 1024 * 1024, limits?.payloadBytes ?? Infinity)) throw new VisionAnalysisError("vision_analysis_limit_exceeded");
             const bytes = Buffer.from(await new Response(await image.open(bounded)).arrayBuffer());
-            if (bytes.byteLength !== d.byteSize) throw new WorkspaceImageError("workspace_image_invalid");
+            if (bytes.byteLength !== d.byteSize) throw workspace ? new WorkspaceImageError("workspace_image_invalid") : new ConversationImageError("chat_image_invalid");
             attachments.push({ id: `image_${index + 1}`, kind: "image", status: "ready", byteSize: d.byteSize,
               fileName: `image-${index + 1}.${d.mimeType === "image/png" ? "png" : "jpg"}`, mimeType: d.mimeType,
               metadata: {}, extractedText: null, dataUrl: `data:${d.mimeType};base64,${bytes.toString("base64")}` });
           }
-          const request = visionProviderRequest(plan, c.chatId, input.question, attachments);
+          const request = visionProviderRequest(plan, c.chatId, question, attachments);
           const metadata = JSON.stringify({ ...request, attachments: attachments.map(({ base64Data: _bytes, dataUrl: _url, ...a }) => a) });
           if (encodedBytes + Buffer.byteLength(metadata) > Math.min(64 * 1024 * 1024, limits?.payloadBytes ?? Infinity))
             throw new VisionAnalysisError("vision_analysis_limit_exceeded");
@@ -140,7 +183,7 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
           if (Number.isFinite(contextWindow) && Number(contextWindow) > 0 && inputTokens + LIMITS.maxOutputTokens > Number(contextWindow))
             throw new VisionContextLimitError({ limit: "context_window", contextWindow: Number(contextWindow),
               estimatedInputTokens: inputTokens, maxOutputTokens: LIMITS.maxOutputTokens });
-          for (const source of sources) await source.source.assertAccess();
+          await assertAccess();
           bounded.throwIfAborted();
           await hooks?.beforeDispatch?.();
           bounded.throwIfAborted();
@@ -167,7 +210,8 @@ export function createVisionAnalysisService(prisma: PrismaClient, captures: Retu
             VISION_ERRORS.has(observed) ? observed : dispatched ? "vision_analysis_provider_failed" : "vision_analysis_internal_failed";
           unknown = dispatched && !providerCompleted;
           result = visionFailure(call, code, unknown, error instanceof VisionContextLimitError && code === error.code ? { ...error.detail,
-            hint: "The estimated input exceeds the Vision model context window. Use fewer images, or crop or resize them, before retrying." } : undefined);
+            hint: "The estimated input exceeds the Vision model context window. Use fewer images, or crop or resize them, before retrying." }
+            : CHAT_IMAGE_HINTS[code] ? { hint: CHAT_IMAGE_HINTS[code] } : undefined);
         }
         if (!dispatched) return result;
         // This transaction is keyed by the durable attempt and has one winner.

@@ -47,8 +47,9 @@ export function getAdminSystemModelPolicy(fetcher: Fetcher = fetch) {
 }
 
 export function updateAdminSystemModelPolicy(input: Readonly<{
+  /** The default, sent with the complete published set. */
   imageProviderModelId?: string | null;
-  imageParameters?: ImageGenerationParameters;
+  imageModels?: ReadonlyArray<Readonly<{ providerModelId: string; parameters: ImageGenerationParameters }>>;
   chatTitleProviderModelId?: string | null;
   chatTitleReasoningEffort?: string | null;
   chatPdfNativeProviderModelId?: string | null;
@@ -97,6 +98,7 @@ export function adminSystemModelPolicyErrorMessage(code: string): string {
     system_model_policy_admin_action_failed: "The model role could not be updated.",
     system_model_policy_response_invalid: "The model role response was invalid.",
     system_model_policy_image_parameters_invalid: "Choose image settings supported by this model and provider.",
+    system_model_policy_image_models_invalid: "Keep the default image model published. Choose another default first, or clear the role.",
     system_model_policy_reasoning_unavailable: "Choose a reasoning effort advertised by the selected deployment.",
     system_model_policy_stale: "The role assignments changed elsewhere. Reload and apply your choice again.",
     system_model_policy_structured_output_unsupported: "Strict utility verification is not supported for this adapter.",
