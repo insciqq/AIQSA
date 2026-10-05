@@ -9,22 +9,27 @@ export const MEMORY_RECOVERY_BATCH_SIZE = 8;
 export const MEMORY_RECOVERY_INTERVAL_MS = 60_000;
 export const MEMORY_RECOVERY_DELAYS_MS = Object.freeze([5 * 60_000, 30 * 60_000, 6 * 60 * 60_000]);
 
-/** A history classification left RUNNING by an attempt that lost its job. The
- * job failed terminally, as an earlier release's recovery guard did with such
- * a call, so no live attempt owns it; it holds no settlement evidence (output,
- * provider response or usage receipt). Its recovery settles it as an unknown
- * outcome and never dispatches it again. Uses `job` (a current_jobs or
- * "MemoryJob" row) and `execution`. */
-function memoryHistoryOrphanedExecutionSql(): Prisma.Sql {
-  return Prisma.sql`COALESCE((job.kind = 'INDEX_HISTORY'::"MemoryJobKind"
-    AND job.state = 'TERMINAL_FAILED'::"MemoryJobState"
-    AND job."errorCode" = 'memory_history_execution_protected'
+/** A history classification of `job` left RUNNING without settlement evidence:
+ * no accepted output, provider response or usage receipt. Uses `job` (a
+ * current_jobs or "MemoryJob" row) and `execution`. */
+function memoryHistoryUnsettledClassificationSql(): Prisma.Sql {
+  return Prisma.sql`job.kind = 'INDEX_HISTORY'::"MemoryJobKind"
     AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
     AND execution."ownerType" = 'JOB' AND execution."logicalRole" = 'MEMORY_HISTORY_CLASSIFY'
     AND execution.state = 'RUNNING' AND execution."completedAt" IS NULL
     AND execution."acceptedOutputHash" IS NULL AND execution."providerResponseId" IS NULL
     AND NOT EXISTS (SELECT 1 FROM "UsageEvent" usage
-      WHERE usage."userId" = execution."userId" AND usage."memoryExecutionBindingId" = execution.id)
+      WHERE usage."userId" = execution."userId" AND usage."memoryExecutionBindingId" = execution.id)`;
+}
+
+/** Such a classification left by an attempt that lost its job. The job failed
+ * terminally, as an earlier release's recovery guard did with such a call, so
+ * no live attempt owns it. Its recovery settles it as an unknown outcome and
+ * never dispatches it again. Uses `job` and `execution`. */
+function memoryHistoryOrphanedExecutionSql(): Prisma.Sql {
+  return Prisma.sql`COALESCE((job.state = 'TERMINAL_FAILED'::"MemoryJobState"
+    AND job."errorCode" = 'memory_history_execution_protected'
+    AND ${memoryHistoryUnsettledClassificationSql()}
   ), FALSE)`;
 }
 
@@ -41,6 +46,25 @@ function memoryHistoryRecoveredUncertainExecutionSql(): Prisma.Sql {
     AND execution."acceptedOutputHash" IS NULL
     AND EXISTS (SELECT 1 FROM "UsageEvent" usage
       WHERE usage."userId" = execution."userId" AND usage."memoryExecutionBindingId" = execution.id)
+  ), FALSE)`;
+}
+
+/** An unsettled classification of a job that ended before any recovery settled
+ * it, once its chat has moved past the job's source. A chat's branch generation
+ * and source revision only advance, its leaf moves only with them, and a job is
+ * revived only for its exact source: the job is never current again and nothing
+ * else will settle the call. A terminal job holds no lease; after its recovery
+ * delay, the provider call of an attempt that lost it has long ended. Uses
+ * "MemoryJob" `job` and `execution`. */
+export function memoryHistoryObsoleteOrphanSql(now: Date): Prisma.Sql {
+  return Prisma.sql`COALESCE((job.state IN ('TERMINAL_FAILED', 'STALE', 'CANCELLED')
+    AND job."leaseToken" IS NULL AND (${memoryRecoveryDueAtSql()}) <= ${now}
+    AND ${memoryHistoryUnsettledClassificationSql()}
+    AND NOT EXISTS (SELECT 1 FROM "Chat" chat
+      WHERE chat.id = job."chatId" AND chat."userId" = job."userId"
+        AND chat."memoryBranchGeneration" = job."branchGeneration"
+        AND chat."memorySourceRevision" = job."sourceRevision"
+        AND chat."activeLeafMessageId" = job."activeLeafMessageId")
   ), FALSE)`;
 }
 

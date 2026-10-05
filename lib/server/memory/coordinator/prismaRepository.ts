@@ -22,6 +22,7 @@ import { lockMemorySettings } from "../persistence/transaction";
 import { enqueueMemoryJob } from "../persistence/jobs";
 import { memorySha256 } from "../persistence/lexical";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION, memoryHistoryIndexJobFingerprint } from "../history/contract";
+import { settleObsoleteMemoryHistoryOrphans } from "../history/execution";
 import { MemoryPersistenceError } from "../persistence/errors";
 import { MEMORY_EXPLICIT_RELATION_PIPELINE_VERSIONS } from "../learning/relations/explicitPolicy";
 import {
@@ -376,6 +377,9 @@ async function recoverEligibleMemoryJobs(
     });
     if (accepted) recovered += 1;
   }
+  // Classifications orphaned on jobs that no recovery will claim again still
+  // settle, once and without dispatch; job recovery has already committed.
+  await settleObsoleteMemoryHistoryOrphans(client, input);
   return recovered;
 }
 
