@@ -477,6 +477,7 @@
   "memory_command_invalid",
   "memory_contextual_key_invalid",
   "memory_contract_invalid",
+  "memory_coordinator_drain_timeout",
   "memory_coordinator_failed",
   "memory_coordinator_preflight_failed",
   "memory_coordinator_registry_incomplete",

@@ -1,7 +1,7 @@
 import { memoryRecoveryStatusFixture } from "@/tests/support/memoryStatus";
 import { rememberDatabaseFailure } from "../../observability/databaseFailure";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryCoordinator } from "./coordinator";
+import { MEMORY_COORDINATOR_SHUTDOWN_DRAIN_MS, MemoryCoordinator } from "./coordinator";
 import { MemoryCoordinatorError, MemoryJobFencedError } from "./errors";
 import type { MemoryCoordinatorRepository } from "./prismaRepository";
 import { MemoryCoordinatorRegistry } from "./registry";
@@ -829,11 +829,12 @@ describe("Memory coordinator worker liveness", () => {
       expect(onWorkerHeartbeat).toHaveBeenCalledOnce();
       const stopped = vi.fn();
       const stopping = service.stop().then(stopped);
-      await vi.advanceTimersByTimeAsync(180_000);
+      await vi.advanceTimersByTimeAsync(MEMORY_COORDINATOR_SHUTDOWN_DRAIN_MS - 1);
       expect(stopped).not.toHaveBeenCalled();
       expect(onWorkerHeartbeat).toHaveBeenCalledOnce();
       release();
       await stopping;
+      expect(stopped).toHaveBeenCalledWith({ drained: true, pendingCount: 0 });
       await vi.advanceTimersByTimeAsync(180_000);
       expect(onWorkerHeartbeat).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(0);
@@ -1386,21 +1387,28 @@ describe("Memory coordinator while one job runs long", () => {
   it("stops the discovery cadence at shutdown even while a job is still running", async () => {
     const job = gated();
     const reconcileWork = vi.fn(async () => undefined);
-    const { service } = busyCoordinator({ job: job.wait, reconcileWork });
+    const { commitJobSuccess, service } = busyCoordinator({ job: job.wait, reconcileWork });
     service.start();
     await vi.advanceTimersByTimeAsync(100);
     expect(reconcileWork).toHaveBeenCalledTimes(1);
-    await service.stop();
+    const stopped = vi.fn();
+    const stopping = service.stop().then(stopped);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(reconcileWork).toHaveBeenCalledTimes(1);
+    // Stop drains the running job instead of returning around it.
+    expect(stopped).not.toHaveBeenCalled();
 
-    // A stopped coordinator arms neither cadence once the running job settles.
+    // A stopped coordinator arms neither cadence once the running job settles,
+    // and its pass ends without reconciliation or discovery.
     job.release(0);
     await vi.advanceTimersByTimeAsync(0);
-    const settled = reconcileWork.mock.calls.length;
+    await stopping;
+    expect(stopped).toHaveBeenCalledWith({ drained: true, pendingCount: 0 });
+    expect(commitJobSuccess).not.toHaveBeenCalled();
+    expect(reconcileWork).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(reconcileWork).toHaveBeenCalledTimes(settled);
+    expect(reconcileWork).toHaveBeenCalledTimes(1);
   });
 
   function idleSlotCoordinator() {
@@ -1457,11 +1465,12 @@ describe("Memory coordinator while one job runs long", () => {
     service.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(claimJob).toHaveBeenCalledTimes(2);
-    await service.stop();
+    const stopping = service.stop();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(claimJob).toHaveBeenCalledTimes(2);
 
     release();
+    await expect(stopping).resolves.toEqual({ drained: true, pendingCount: 0 });
     await service.reconcileNow();
     expect(claimJob).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(0);
@@ -1486,6 +1495,278 @@ describe("Memory coordinator while one job runs long", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(claimJob).toHaveBeenCalledTimes(7);
     } finally {
+      await service.stop();
+    }
+  });
+});
+
+describe("Memory coordinator shutdown", () => {
+  beforeEach(() => {
+    for (const stage of ["claim", "discover", "reconcile", "preflight", "heartbeat", "health"] as const) {
+      reportSubsystemHealthy("memory", stage);
+    }
+  });
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  function capture() {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    return () => writer.mock.calls.map(([chunk]) => JSON.parse(String(chunk)) as Record<string, unknown>);
+  }
+
+  function gate() {
+    let release!: () => void;
+    const opened = new Promise<void>((resolve) => { release = resolve; });
+    return { opened, release };
+  }
+
+  /** A provider call that is dispatched and ends only through cancellation,
+   * then performs its own settlement write before the error propagates. */
+  function cancellableDispatch(settle: () => Promise<void>) {
+    const dispatched = gate();
+    const events: string[] = [];
+    const execute = vi.fn<MemoryJobHandler["execute"]>(async (_claim, { signal }) => {
+      try {
+        await new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          dispatched.release();
+        });
+      } catch (error) {
+        events.push("aborted");
+        await settle();
+        events.push("settled");
+        throw error;
+      }
+      throw new Error("unreachable");
+    });
+    return { dispatched: dispatched.opened, events, execute };
+  }
+
+  function stoppable(input: Readonly<{
+    claimDeletion?: MemoryCoordinatorRepository["claimDeletion"];
+    claimJob?: MemoryCoordinatorRepository["claimJob"];
+    execute?: MemoryJobHandler["execute"];
+    reconcileWork?: (signal: AbortSignal) => Promise<void>;
+  }>) {
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob({ kind: "INDEX_HISTORY", preflight: async () => ({ status: "READY" }),
+      execute: input.execute ?? (async () => ({ acceptedResultHash: RESULT_HASH })) });
+    const deletionExecute = vi.fn(async () => ({}));
+    registry.registerDeletion({ operation: "TEMPORARY_DELETE", execute: deletionExecute });
+    const repo = repository({
+      claimJob: input.claimJob ??
+        vi.fn().mockResolvedValueOnce(jobClaim({ kind: "INDEX_HISTORY" })).mockResolvedValue(null),
+      ...(input.claimDeletion ? { claimDeletion: input.claimDeletion } : {})
+    });
+    const service = new MemoryCoordinator({
+      now: () => new Date(NOW),
+      policy: { heartbeatMs: 10, intervalMs: 10_000, leaseMs: 100, maxDeletionParallel: 1, maxJobParallel: 1 },
+      ...(input.reconcileWork ? { reconcileWork: input.reconcileWork } : {}),
+      registry,
+      repository: repo
+    });
+    return { deletionExecute, repo, service };
+  }
+
+  const settledTurn = () => new Promise((resolve) => setTimeout(resolve, 25));
+
+  it("reports a completed stop only after an aborted dispatch persisted its settlement", async () => {
+    const records = capture();
+    const settlement = gate();
+    const dispatch = cancellableDispatch(() => settlement.opened);
+    const { repo, service } = stoppable({ execute: dispatch.execute });
+    const pass = service.reconcileNow();
+    await dispatch.dispatched;
+    const stopped = vi.fn();
+    const stopping = service.stop().then((result) => { stopped(); return result; });
+    await vi.waitFor(() => expect(dispatch.events).toEqual(["aborted"]));
+    await settledTurn();
+    expect(stopped).not.toHaveBeenCalled();
+
+    settlement.release();
+    await expect(stopping).resolves.toEqual({ drained: true, pendingCount: 0 });
+    expect(dispatch.events).toEqual(["aborted", "settled"]);
+    await pass;
+    // Aborted work never commits, retries or fails its job: the claim stays
+    // with its lease for recovery after restart.
+    expect(repo.commitJobSuccess).not.toHaveBeenCalled();
+    expect(repo.retryJob).not.toHaveBeenCalled();
+    expect(repo.terminalJob).not.toHaveBeenCalled();
+    expect(records().filter((record) => record.stage === "shutdown")).toEqual([
+      expect.objectContaining({ event: "runtime_lifecycle", outcome: "completed", action: "stop", count: 1,
+        pending_count: 0, level: "info" })
+    ]);
+  });
+
+  it("completes the drain when the aborted dispatch cannot persist its settlement", async () => {
+    capture();
+    const dispatch = cancellableDispatch(async () => { throw new Error("PRIVATE_SETTLEMENT_FAILURE"); });
+    const { repo, service } = stoppable({ execute: dispatch.execute });
+    const pass = service.reconcileNow();
+    await dispatch.dispatched;
+    await expect(service.stop()).resolves.toEqual({ drained: true, pendingCount: 0 });
+    await pass;
+    expect(dispatch.events).toEqual(["aborted"]);
+    expect(repo.commitJobSuccess).not.toHaveBeenCalled();
+    expect(repo.retryJob).not.toHaveBeenCalled();
+    expect(repo.terminalJob).not.toHaveBeenCalled();
+  });
+
+  it.each(["job", "deletion"] as const)("never starts a %s whose claim commits after stop began", async (lane) => {
+    const records = capture();
+    const claimed = gate();
+    let resolveClaim!: (value: MemoryJobClaim | MemoryDeletionClaim) => void;
+    const pendingClaim = () => {
+      claimed.release();
+      return new Promise((resolve) => { resolveClaim = resolve; });
+    };
+    const execute = vi.fn<MemoryJobHandler["execute"]>();
+    const reconcileWork = vi.fn(async () => undefined);
+    const { deletionExecute, repo, service } = stoppable({
+      execute, reconcileWork,
+      ...(lane === "job"
+        ? { claimJob: vi.fn().mockImplementationOnce(pendingClaim).mockResolvedValue(null) }
+        : { claimJob: vi.fn(async () => null),
+          claimDeletion: vi.fn().mockImplementationOnce(pendingClaim).mockResolvedValue(null) })
+    });
+    const pass = service.reconcileNow();
+    await claimed.opened;
+    const stopping = service.stop();
+    resolveClaim(lane === "job" ? jobClaim({ kind: "INDEX_HISTORY" }) : deletionClaim());
+    await expect(stopping).resolves.toEqual({ drained: true, pendingCount: 0 });
+    await pass;
+    expect(execute).not.toHaveBeenCalled();
+    expect(deletionExecute).not.toHaveBeenCalled();
+    expect(repo.heartbeatJob).not.toHaveBeenCalled();
+    expect(repo.heartbeatDeletion).not.toHaveBeenCalled();
+    expect(repo.claimJob).toHaveBeenCalledOnce();
+    expect(repo.claimDeletion).toHaveBeenCalledOnce();
+    // Nothing is reconciled, requeued or discovered after stop began.
+    expect(repo.requeueDueJobs).toHaveBeenCalledOnce();
+    expect(reconcileWork).not.toHaveBeenCalled();
+    expect(records()).toContainEqual(expect.objectContaining({ event: "job_attempt",
+      job_id: lane === "job" ? "job-1" : "deletion-1", stage: "claim", outcome: "cancelled", action: "stop" }));
+  });
+
+  it("shares one bounded drain between repeated stops", async () => {
+    const records = capture();
+    const settlement = gate();
+    const dispatch = cancellableDispatch(() => settlement.opened);
+    const { service } = stoppable({ execute: dispatch.execute });
+    const pass = service.reconcileNow();
+    await dispatch.dispatched;
+    const first = service.stop();
+    const second = service.stop({ drainTimeoutMs: 1 });
+    expect(second).toBe(first);
+    await settledTurn();
+    settlement.release();
+    await expect(first).resolves.toEqual({ drained: true, pendingCount: 0 });
+    await expect(service.stop()).resolves.toEqual({ drained: true, pendingCount: 0 });
+    await pass;
+    expect(records().filter((record) => record.stage === "shutdown")).toHaveLength(1);
+  });
+
+  it("reports a timed-out drain content-free and leaves work that ignores cancellation claimed", async () => {
+    const records = capture();
+    const ignored = gate();
+    const execute = vi.fn<MemoryJobHandler["execute"]>(async () => {
+      await ignored.opened;
+      return { acceptedResultHash: RESULT_HASH };
+    });
+    const { repo, service } = stoppable({ execute });
+    const pass = service.reconcileNow();
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    await expect(service.stop({ drainTimeoutMs: 30 })).resolves.toEqual({ drained: false, pendingCount: 1 });
+    expect(records().filter((record) => record.stage === "shutdown")).toEqual([
+      expect.objectContaining({ event: "runtime_lifecycle", subsystem: "memory", outcome: "failed", action: "stop",
+        code: "memory_coordinator_drain_timeout", count: 1, pending_count: 1, level: "error" })
+    ]);
+    ignored.release();
+    await pass;
+    expect(repo.commitJobSuccess).not.toHaveBeenCalled();
+    expect(repo.retryJob).not.toHaveBeenCalled();
+    expect(repo.terminalJob).not.toHaveBeenCalled();
+  });
+
+  it("ends a discovery pass at stop and waits for its step in flight", async () => {
+    const discovery = gate();
+    const step = gate();
+    const signals: AbortSignal[] = [];
+    const reconcileWork = vi.fn(async (signal: AbortSignal) => {
+      signals.push(signal);
+      step.release();
+      await discovery.opened;
+    });
+    const { service } = stoppable({ claimJob: vi.fn(async () => null), reconcileWork });
+    const pass = service.reconcileNow();
+    await step.opened;
+    expect(signals[0]?.aborted).toBe(false);
+    const stopped = vi.fn();
+    const stopping = service.stop().then(stopped);
+    expect(signals[0]?.aborted).toBe(true);
+    await settledTurn();
+    expect(stopped).not.toHaveBeenCalled();
+    discovery.release();
+    await stopping;
+    expect(stopped).toHaveBeenCalledWith({ drained: true, pendingCount: 0 });
+    await pass;
+    expect(reconcileWork).toHaveBeenCalledOnce();
+  });
+
+  it("waits for a lease write still in flight after its job settled", async () => {
+    const write = gate();
+    const heartbeat = gate();
+    const dispatch = cancellableDispatch(async () => undefined);
+    const { repo, service } = stoppable({ execute: dispatch.execute });
+    vi.mocked(repo.heartbeatJob).mockImplementation(async () => {
+      heartbeat.release();
+      await write.opened;
+      return true;
+    });
+    const pass = service.reconcileNow();
+    await heartbeat.opened;
+    const stopped = vi.fn();
+    const stopping = service.stop().then(stopped);
+    await pass;
+    await settledTurn();
+    expect(dispatch.events).toEqual(["aborted", "settled"]);
+    expect(stopped).not.toHaveBeenCalled();
+    write.release();
+    await stopping;
+    expect(stopped).toHaveBeenCalledWith({ drained: true, pendingCount: 0 });
+  });
+
+  it("bounds a hung liveness write and accepts a later start", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const records = capture();
+    const hung = gate();
+    const onWorkerHeartbeat = vi.fn().mockImplementationOnce(() => hung.opened).mockResolvedValue(undefined);
+    const service = new MemoryCoordinator({
+      onWorkerHeartbeat, registry: new MemoryCoordinatorRegistry(), repository: repository()
+    });
+    try {
+      service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      const stopped = vi.fn();
+      const stopping = service.stop().then(stopped);
+      await vi.advanceTimersByTimeAsync(MEMORY_COORDINATOR_SHUTDOWN_DRAIN_MS - 1);
+      expect(stopped).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await stopping;
+      expect(stopped).toHaveBeenCalledWith({ drained: false, pendingCount: 0 });
+      expect(records().filter((record) => record.stage === "shutdown")).toEqual([
+        expect.objectContaining({ outcome: "failed", code: "memory_coordinator_drain_timeout", count: 0,
+          pending_count: 0, duration_ms: MEMORY_COORDINATOR_SHUTDOWN_DRAIN_MS })
+      ]);
+      expect(vi.getTimerCount()).toBe(0);
+      hung.release();
+      await vi.advanceTimersByTimeAsync(0);
+      service.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onWorkerHeartbeat).toHaveBeenCalledTimes(2);
+      await expect(service.stop()).resolves.toEqual({ drained: true, pendingCount: 0 });
+    } finally {
+      hung.release();
       await service.stop();
     }
   });

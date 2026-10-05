@@ -6,7 +6,7 @@ import { createPrismaMemoryEmbeddingHandler } from
 import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
 import { autoHealIncompleteMemoryHistory } from "../history/autoHeal";
 import { ensureDefaultMemoryPurgeHandlerRegistered } from "../purge/defaultPurge";
-import { MemoryCoordinator } from "./coordinator";
+import { MemoryCoordinator, type MemoryCoordinatorStopResult } from "./coordinator";
 import {
   loadMemoryCoordinatorPolicy,
   type MemoryCoordinatorPolicy
@@ -104,23 +104,31 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   });
 
 export async function reconcileDefaultMemoryWork(
-  work: DefaultMemoryReconciliationWork = defaultMemoryReconciliationWork
+  work: DefaultMemoryReconciliationWork = defaultMemoryReconciliationWork,
+  signal?: AbortSignal
 ): Promise<void> {
-  await work.embeddingSetup?.();
-  // Cutover reconciliation inventories content-free identities and admits a
-  // durable shadow rebuild. It must never replay source content from this
-  // periodic maintenance pass.
-  await work.cutover?.();
-  // Released fence casualties are indexed by the same pass's backfill.
-  await work.historyFenceRepair?.();
-  await work.historyBackfill?.();
-  await work.historyAutoHeal?.();
-  // Bounded per pass and owner; each source holds one key per policy version.
-  await work.extractionHeal?.();
-  await work.reclassification?.();
-  await work.relations?.();
-  await work.maintenance?.();
-  await work.retiredSynthesis?.();
+  const steps = [
+    work.embeddingSetup,
+    // Cutover reconciliation inventories content-free identities and admits a
+    // durable shadow rebuild. It must never replay source content from this
+    // periodic maintenance pass.
+    work.cutover,
+    // Released fence casualties are indexed by the same pass's backfill.
+    work.historyFenceRepair,
+    work.historyBackfill,
+    work.historyAutoHeal,
+    // Bounded per pass and owner; each source holds one key per policy version.
+    work.extractionHeal,
+    work.reclassification,
+    work.relations,
+    work.maintenance,
+    work.retiredSynthesis
+  ];
+  for (const step of steps) {
+    // Worker shutdown admits nothing more; every step commits on its own.
+    if (signal?.aborted) return;
+    await step?.();
+  }
 }
 
 // Provider-backed work validates current destination, credential, transport,
@@ -270,7 +278,7 @@ function createDefaultMemoryCoordinator(): MemoryCoordinator {
   return new MemoryCoordinator({
     onWorkerHeartbeat: () => defaultMemoryWorkerHeartbeat.beat(),
     policy: runtime.policy,
-    reconcileWork: reconcileDefaultMemoryWork,
+    reconcileWork: (signal) => reconcileDefaultMemoryWork(defaultMemoryReconciliationWork, signal),
     registry: defaultMemoryCoordinatorRegistry,
     repository: defaultMemoryCoordinatorRepository,
     scheduler: runtime.scheduler
@@ -296,6 +304,6 @@ export function kickDefaultMemoryCoordinator(): void {
   // request must never create a second claimant that bypasses worker preflight.
 }
 
-export function stopDefaultMemoryCoordinator(): Promise<void> {
+export function stopDefaultMemoryCoordinator(): Promise<MemoryCoordinatorStopResult> {
   return getDefaultMemoryCoordinator().stop();
 }
