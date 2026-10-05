@@ -11,6 +11,9 @@ import type { MemoryQualificationLanguageBucket } from "./language";
 import type { MemoryToolEventProjection } from "./toolEvents";
 
 export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v10";
+/** Binding errorCode of a classification whose dispatching attempt was lost;
+ * recovery settled it as an unknown outcome with unavailable usage. */
+export const MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE = "memory_history_recovered_uncertain";
 export const MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION =
   "memory-history-rebuild-required-v5";
 export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v5";

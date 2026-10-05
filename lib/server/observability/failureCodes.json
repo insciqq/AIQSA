@@ -556,6 +556,7 @@
   "memory_history_job_invalid",
   "memory_history_plan_invalid",
   "memory_history_plan_stale",
+  "memory_history_recovered_uncertain",
   "memory_history_result_invalid",
   "memory_history_round_limit_exceeded",
   "memory_history_search_entry_stale",
