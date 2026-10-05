@@ -435,7 +435,7 @@ describe("Memory chat digest aggregate fit", () => {
       .exec(request.systemPrompt);
     const [summaryLength, count, itemLength] = [Number(budget?.[1]), Number(budget?.[2]), Number(budget?.[3])];
     for (const field of ["topics", "decisions", "open_loops"]) {
-      expect(request.schema).toMatchObject({ properties: { [field]: { maxItems: count } } });
+      expect(request.schema).toMatchObject({ properties: { [field]: { maxItems: 12 } } });
     }
     const answer = { decisions: list("D", count, itemLength), open_loops: list("O", count, itemLength),
       summary: "S".repeat(summaryLength), topics: list("T", count, itemLength) };
@@ -445,7 +445,7 @@ describe("Memory chat digest aggregate fit", () => {
     expect(rendered(decoded).length).toBeLessThanOrEqual(4_000);
   });
 
-  // Six items is the requested schema maximum, twelve the legacy and decoder one.
+  // Six items is the requested budget, twelve the schema and decoder maximum.
   it.each([6, 12])("fits an answer with %i maximal items per list by dropping whole trailing items", (count) => {
     const answer = { decisions: list("D", count), open_loops: list("O", count),
       summary: "S".repeat(2_000), topics: list("T", count) };
