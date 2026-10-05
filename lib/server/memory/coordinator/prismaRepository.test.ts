@@ -2,11 +2,32 @@ import { databaseFailureCode } from "../../observability/databaseFailure";
 import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryCoordinatorError } from "./errors";
-import type { MemoryJobClaim } from "./types";
+import { DEFAULT_MEMORY_COORDINATOR_POLICY } from "./policy";
+import type { MemoryDeletionClaim, MemoryJobClaim } from "./types";
 import {
   createPrismaMemoryCoordinatorRepository,
   preflightPrismaMemoryJobLifecycle
 } from "./prismaRepository";
+
+function deletionClaim(): MemoryDeletionClaim {
+  return {
+    admissionAuthorizationId: null,
+    admittedActiveLeafMessageId: null,
+    admittedChatSourceRevision: null,
+    alsoForgetOriginMemories: null,
+    attemptCount: 1,
+    claimToken: "deletion-claim",
+    id: "deletion-commit",
+    leaseExpiresAt: new Date("2026-08-21T10:00:30.000Z"),
+    memoryGeneration: 3,
+    operation: "SOURCE_PURGE",
+    recoveredLease: false,
+    resumedFromBlocked: false,
+    targetId: "chat-1",
+    targetType: "HISTORY_SOURCE@memory-history-source-v1",
+    userId: "user-1"
+  };
+}
 
 function jobClaim(): MemoryJobClaim {
   return {
@@ -321,6 +342,78 @@ describe("Prisma memory coordinator repository preflight", () => {
       stage: "consolidation_applied"
     })).resolves.toBe(true);
     expect(transaction.mock.calls[0]).toHaveLength(1);
+  });
+
+  it("bounds the deletion success transaction inside the lease left at commit", async () => {
+    const tx = {
+      $queryRaw: vi.fn(async () => [{ id: "deletion-commit" }]),
+      memoryDeletionOutbox: { updateMany: vi.fn(async () => ({ count: 1 })) }
+    };
+    const transaction = vi.fn(async (
+      consume: (value: typeof tx) => Promise<boolean>,
+      _options?: Readonly<{ maxWait?: number; timeout?: number }>
+    ) => consume(tx));
+    const repository = createPrismaMemoryCoordinatorRepository({
+      $transaction: transaction
+    } as never);
+    const apply = vi.fn(async () => undefined);
+
+    await expect(repository.commitDeletionSuccess({
+      apply,
+      claim: deletionClaim(),
+      now: new Date("2026-08-21T10:00:00.000Z")
+    })).resolves.toBe(true);
+    const options = transaction.mock.calls[0]?.[1];
+    expect(options).toEqual({ maxWait: 2_000, timeout: 18_000 });
+    // The heartbeat cannot renew the locked row during the commit, so wait
+    // plus execution must stay inside the lease left after one missed beat.
+    expect((options?.maxWait ?? 0) + (options?.timeout ?? 0)).toBeLessThanOrEqual(
+      DEFAULT_MEMORY_COORDINATOR_POLICY.leaseMs -
+        DEFAULT_MEMORY_COORDINATOR_POLICY.heartbeatMs
+    );
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(tx.memoryDeletionOutbox.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ state: "SUCCEEDED" }),
+      where: expect.objectContaining({ leaseToken: "deletion-claim", state: "RUNNING" })
+    }));
+  });
+
+  it("writes no deletion success without the live lease and surfaces a rolled-back timeout", async () => {
+    const apply = vi.fn(async () => undefined);
+    const lost = {
+      $queryRaw: vi.fn(async () => []),
+      memoryDeletionOutbox: { updateMany: vi.fn(async () => ({ count: 1 })) }
+    };
+    const lostRepository = createPrismaMemoryCoordinatorRepository({
+      $transaction: async (consume: (value: typeof lost) => Promise<boolean>) => consume(lost)
+    } as never);
+    await expect(lostRepository.commitDeletionSuccess({
+      apply,
+      claim: deletionClaim(),
+      now: new Date("2026-08-21T10:00:00.000Z")
+    })).resolves.toBe(false);
+    expect(apply).not.toHaveBeenCalled();
+    expect(lost.memoryDeletionOutbox.updateMany).not.toHaveBeenCalled();
+
+    const failure = new Prisma.PrismaClientKnownRequestError(
+      "private transaction detail",
+      { clientVersion: "6.19.3", code: "P2028" }
+    );
+    const timedOut = vi.fn(async () => {
+      throw failure;
+    });
+    const timedOutRepository = createPrismaMemoryCoordinatorRepository({
+      $transaction: timedOut
+    } as never);
+    await expect(timedOutRepository.commitDeletionSuccess({
+      apply,
+      claim: deletionClaim(),
+      now: new Date("2026-08-21T10:00:00.000Z")
+    })).rejects.toBe(failure);
+    // One attempt per claim: the coordinator owns the retry of a rolled-back
+    // purge, so the transaction is never replayed under the same lease here.
+    expect(timedOut).toHaveBeenCalledTimes(1);
+    expect(databaseFailureCode(failure)).toBe("P2028");
   });
 
   it("exhausts rolled-back commit timeouts as retryable without retaining details", async () => {
