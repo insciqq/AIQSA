@@ -143,6 +143,18 @@ describe("Knowledge image observation", () => {
     expect(capped.execute.mock.calls[0]![1].params).toMatchObject({ maxOutputTokens: KNOWLEDGE_IMAGE_OBSERVATION_LIMITS.answerModelMaxOutputTokens });
   });
 
+  it("waits for System Vision by its frozen reasoning effort unless the caller admitted its own budget", async () => {
+    const base = fixture();
+    await base.observe(base.input);
+    expect(base.execute.mock.calls[0]![2]).toMatchObject({ timeoutMs: 60_000 });
+    const high = fixture();
+    await high.observe({ ...high.input, plan: { ...plan, vision: { ...vision, reasoningEffort: "high" } } });
+    expect(high.execute.mock.calls[0]![2]).toMatchObject({ timeoutMs: 180_000 });
+    const answer = fixture();
+    await answer.observe({ ...answer.input, plan: { ...plan, vision: { ...vision, reasoningEffort: "high" } }, timeoutMs: 90_000 });
+    expect(answer.execute.mock.calls[0]![2]).toMatchObject({ timeoutMs: 90_000 });
+  });
+
   it("settles a claim that never reached the provider as a definite failure", async () => {
     const f = fixture();
     const onDispatch = vi.fn(async () => { throw new Error("journal_unavailable"); });
