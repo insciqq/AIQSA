@@ -30,7 +30,7 @@ export type ConverterDetection = Readonly<{
 }>;
 
 /** Content kinds a converter left out, and whole chats it skipped; the report counts each. */
-export const IMPORT_SKIP_KINDS = ["attachment", "image", "audio", "tool", "artifact", "empty_chat"] as const;
+export const IMPORT_SKIP_KINDS = ["attachment", "image", "audio", "tool", "artifact", "missing_message", "empty_chat"] as const;
 export type ImportSkipKind = (typeof IMPORT_SKIP_KINDS)[number];
 /** Skip kinds that stand for whole chats: they advance the import progress. */
 export const IMPORT_SKIPPED_CHAT_KINDS: ReadonlySet<ImportSkipKind> = new Set(["empty_chat"]);
@@ -70,7 +70,8 @@ export type ImportConverterEvent =
 
 const NOTE_NAME_MAX_LENGTH = 200;
 
-function markdownLiteral(value: string): string {
+/** A name as an escaped Markdown literal on one bounded line, for notes. */
+export function markdownLiteral(value: string): string {
   const oneLine = value.replace(/[\u0000-\u001f\u007f]+/gu, " ").trim();
   const bounded = Array.from(oneLine).length > NOTE_NAME_MAX_LENGTH
     ? `${Array.from(oneLine).slice(0, NOTE_NAME_MAX_LENGTH - 1).join("")}…`
