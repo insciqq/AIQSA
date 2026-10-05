@@ -63,6 +63,14 @@ export async function register(): Promise<void> {
       reportSubsystemFailure({ subsystem: "attachments", stage: "startup", code: "workspace_upload_startup_failed", action: "degrade" });
     }
     try {
+      const { startDefaultObjectDeletionWorker } = await import("./lib/server/retention/defaultObjectDeletion");
+      startDefaultObjectDeletionWorker();
+      reportSubsystemHealthy("object_storage", "startup");
+    } catch {
+      // Deletion jobs stay durable in PostgreSQL; `npm run prune` still drains them.
+      reportSubsystemFailure({ subsystem: "object_storage", stage: "startup", code: "object_deletion_startup_failed", action: "degrade" });
+    }
+    try {
       const { getDefaultKnowledgeIngestionCoordinator } = await import(
         "./lib/server/knowledge/defaultIngestion"
       );

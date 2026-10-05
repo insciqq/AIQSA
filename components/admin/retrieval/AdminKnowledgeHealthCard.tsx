@@ -23,6 +23,7 @@ const alertCopy: Record<AdminKnowledgeOperationsAlert["code"], string> = {
   knowledge_deletion_blocked: "A private-data deletion obligation needs administrator action.",
   knowledge_ingestion_failures: "One or more documents need processing attention.",
   knowledge_ingestion_queue_stalled: "The oldest document has waited unusually long for processing.",
+  knowledge_object_deletion_stalled: "Files queued for deletion have waited unusually long to leave storage.",
   knowledge_retrieval_degraded: "Recent Knowledge retrieval is frequently using degraded paths.",
   knowledge_search_backend_unavailable: "The Knowledge search index is unavailable.",
   knowledge_search_projection_backlog: "Knowledge search projections are waiting to be indexed.",

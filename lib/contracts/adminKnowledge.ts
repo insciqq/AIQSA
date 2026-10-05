@@ -75,6 +75,7 @@ export type AdminKnowledgeOperationsAlert = Readonly<{
     | "knowledge_deletion_blocked"
     | "knowledge_ingestion_failures"
     | "knowledge_ingestion_queue_stalled"
+    | "knowledge_object_deletion_stalled"
     | "knowledge_retrieval_degraded"
     | "knowledge_search_backend_unavailable"
     | "knowledge_search_projection_backlog"
@@ -91,8 +92,12 @@ export type AdminKnowledgeOperations = Readonly<{
   deletion: Readonly<{
     blockedJobs: number;
     oldestPendingSeconds: number | null;
+    /** Age of the oldest installation-wide object deletion that is due and unclaimed. */
+    oldestUnclaimedObjectSeconds: number | null;
     pendingJobs: number;
     pendingObjects: number;
+    /** Object deletions due now (unreferenced, no live claim) that no worker holds. */
+    unclaimedObjects: number;
   }>;
   ingestion: Readonly<{
     activeUploads: number;
@@ -372,6 +377,7 @@ function decodeOperations(value: unknown): AdminKnowledgeOperations | null {
     "knowledge_deletion_blocked",
     "knowledge_ingestion_failures",
     "knowledge_ingestion_queue_stalled",
+    "knowledge_object_deletion_stalled",
     "knowledge_retrieval_degraded",
     "knowledge_search_backend_unavailable",
     "knowledge_search_projection_backlog",
@@ -390,7 +396,7 @@ function decodeOperations(value: unknown): AdminKnowledgeOperations | null {
       : null);
   const nullableInteger = (entry: unknown): entry is number | null =>
     entry === null || nonNegativeInteger(entry);
-  const deletionKeys = ["blockedJobs", "pendingJobs", "pendingObjects"] as const;
+  const deletionKeys = ["blockedJobs", "pendingJobs", "pendingObjects", "unclaimedObjects"] as const;
   const ingestionKeys = [
     "activeUploads",
     "expiredUploads",
@@ -430,6 +436,8 @@ function decodeOperations(value: unknown): AdminKnowledgeOperations | null {
     new Set(alerts.map((entry) => entry?.code)).size !== alerts.length ||
     deletionKeys.some((key) => !nonNegativeInteger(deletion[key])) ||
     !nullableInteger(deletion.oldestPendingSeconds) ||
+    !nullableInteger(deletion.oldestUnclaimedObjectSeconds) ||
+    (Number(deletion.unclaimedObjects) === 0) !== (deletion.oldestUnclaimedObjectSeconds === null) ||
     ingestionKeys.some((key) => !nonNegativeInteger(ingestion[key])) ||
     !nullableInteger(ingestion.oldestQueuedSeconds) ||
     !nullableInteger(ingestion.p50ReadyLatencyMs24h) ||
