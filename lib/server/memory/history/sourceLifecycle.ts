@@ -12,6 +12,7 @@ import {
 import type { MemoryRetainedSourceMutationEvent } from "../sourceState";
 import {
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
+  MEMORY_HISTORY_QUIET_WINDOW_MS,
   MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION,
   memoryHistoryIndexJobFingerprint
 } from "./contract";
@@ -544,6 +545,8 @@ export async function applyMemoryHistorySourceMutation(
   await enqueueMemoryJob(tx, settings, {
     idempotencyFingerprint: memoryHistoryIndexJobFingerprint(event.snapshot),
     kind: "INDEX_HISTORY",
+    // A newer turn within the window supersedes this job before it buys a call.
+    nextAttemptAt: new Date(Date.now() + MEMORY_HISTORY_QUIET_WINDOW_MS),
     pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
     source: {
       activeLeafMessageId: event.snapshot.activeLeafMessageId!,
