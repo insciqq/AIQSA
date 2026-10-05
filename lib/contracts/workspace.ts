@@ -23,6 +23,7 @@ export const WORKSPACE_ERROR_CODES = Object.freeze([
   "workspace_busy",
   "workspace_session_create_failed",
   "workspace_runtime_incompatible",
+  "workspace_attachment_timeout",
   "workspace_attachment_unavailable",
   "workspace_storage_full",
   "workspace_secrets_prepare_failed",

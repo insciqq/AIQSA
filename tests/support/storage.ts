@@ -115,3 +115,82 @@ export function createMemoryStorageAdapter(): StorageAdapter & {
     }
   };
 }
+
+/**
+ * Memory storage behind an explicit connection pool, like the S3 client's
+ * bounded socket pool: an open body holds its slot until it is read to the
+ * end or cancelled, and further opens wait unless their signal aborts. A
+ * missing key answers at once and returns its slot. `stalls` holds a key's
+ * body after its first chunk until the promise settles.
+ */
+export function createPooledStorageAdapter(capacity: number) {
+  const memory = createMemoryStorageAdapter();
+  const stats = { maxOpen: 0, open: 0, opened: 0, waiting: 0 };
+  const waiters: Array<() => void> = [];
+  const stalls = new Map<string, Promise<void>>();
+  const releaseSlot = () => {
+    stats.open -= 1;
+    waiters.shift()?.();
+  };
+  async function acquire(signal?: AbortSignal) {
+    while (stats.open >= capacity) {
+      await new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(signal.reason);
+        stats.waiting += 1;
+        const wake = () => {
+          stats.waiting -= 1;
+          signal?.removeEventListener("abort", aborted);
+          resolve();
+        };
+        const aborted = () => {
+          const index = waiters.indexOf(wake);
+          if (index >= 0) waiters.splice(index, 1);
+          stats.waiting -= 1;
+          reject(signal!.reason);
+        };
+        signal?.addEventListener("abort", aborted, { once: true });
+        waiters.push(wake);
+      });
+    }
+    stats.open += 1;
+    stats.opened += 1;
+    stats.maxOpen = Math.max(stats.maxOpen, stats.open);
+  }
+  const storage: StorageAdapter = {
+    ...memory,
+    async getObjectStream(storageKey, options) {
+      await acquire(options?.signal);
+      const object = memory.objects.get(storageKey);
+      if (!object) {
+        releaseSlot();
+        throw Object.assign(new Error("stored_object_not_found"), { name: "NoSuchKey" });
+      }
+      let offset = 0;
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        releaseSlot();
+      };
+      return {
+        body: new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (offset > 0) await stalls.get(storageKey);
+            if (offset >= object.body.byteLength) {
+              release();
+              controller.close();
+              return;
+            }
+            controller.enqueue(new Uint8Array(object.body.subarray(offset, offset + 7)));
+            offset += 7;
+          },
+          cancel() { release(); }
+        }),
+        byteSize: object.body.byteLength,
+        contentType: object.contentType,
+        storageKey
+      };
+    }
+  };
+  return { memory, stalls, stats, storage };
+}

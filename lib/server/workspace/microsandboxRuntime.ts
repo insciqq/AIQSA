@@ -1133,6 +1133,8 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
           await fs.remove(temporaryPath).catch(() => undefined);
         }
       }
+      // A Stop that won during the last transfer leaves the guest index unchanged.
+      input.signal?.throwIfAborted();
       for (const manifest of input.manifests) {
         const encoded = JSON.stringify(manifest.body);
         if (new TextEncoder().encode(encoded).byteLength > 256 * 1_024) {

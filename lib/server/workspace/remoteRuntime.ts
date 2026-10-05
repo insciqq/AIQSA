@@ -72,6 +72,33 @@ function workspaceError(value: unknown): WorkspaceRuntimeError {
   }
 }
 
+/**
+ * Reads the first chunk before dispatch. A streamed request sends its headers
+ * with its first body bytes, so a lazily opened original that waits on
+ * storage would otherwise hold a silent runner connection open past the
+ * runner's keep-alive and header timeouts. A body that fails before its first
+ * byte never reaches the runner.
+ */
+async function primedBody(body: ReadableStream<Uint8Array>): Promise<ReadableStream<Uint8Array>> {
+  const reader = body.getReader();
+  let first: ReadableStreamReadResult<Uint8Array> | null = await reader.read();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = first ?? await reader.read();
+        first = null;
+        if (next.done) controller.close();
+        else controller.enqueue(next.value);
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    }
+  }, { highWaterMark: 0 });
+}
+
 type ResponseLimit = Readonly<{ maxBytes: number; oversize: WorkspaceRuntimeError["code"] }>;
 const PROTOCOL_RESPONSE_LIMIT: ResponseLimit = { maxBytes: RESPONSE_MAX_BYTES, oversize: "workspace_runtime_incompatible" };
 
@@ -331,8 +358,9 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
 
   async stageAttachments(input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]): Promise<void> {
     for (const attachment of input.attachments) {
+      const body = await primedBody(attachment.body);
       const response = await this.request(`/v1/sessions/${encodeURIComponent(input.sessionId)}/stage`, {
-        body: attachment.body,
+        body,
         duplex: "half",
         headers: {
           "content-type": "application/octet-stream",

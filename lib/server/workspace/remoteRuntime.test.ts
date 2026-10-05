@@ -6,6 +6,8 @@ import {
   workspaceRunOutputDirectory,
   workspaceSandboxName
 } from "@/lib/domain/workspace";
+import { createPooledStorageAdapter } from "@/tests/support/storage";
+import { createWorkspaceAttachmentAcquisition } from "./attachmentAcquisition";
 import { getWorkspaceConfig, workspaceToolTransportMaxBytes, type WorkspaceConfig } from "./config";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
 import { RemoteWorkspaceRuntime } from "./remoteRuntime";
@@ -567,6 +569,54 @@ describe("remote Workspace runner protocol", () => {
       sandboxName: workspaceSandboxName(sessionId),
       operation: nextOperation, sessionId
     })).rejects.toThrow("workspace_session_lost");
+  }, 30_000);
+
+  it("streams more lazily opened originals than the storage pool holds and never dispatches a body that fails before its first byte", async () => {
+    const server = createWorkspaceRunnerServer({ runtime: new DeterministicWorkspaceRuntime(deterministicConfig), token });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runnerUrl = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const runtime = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerUrl, runnerToken: token, runtimeMode: "remote" });
+    const sessionId = "lazy_stage_fixture";
+    const session = await runtime.ensureSession({ sessionId, runtimeSandboxId: null, operation,
+      sandboxName: workspaceSandboxName(sessionId), imageRef: deterministicConfig.imageRef, cpus: 1,
+      diskMiB: 1024, memoryMiB: 512, internetEnabled: false });
+    const pool = createPooledStorageAdapter(2);
+    const files = await Promise.all(Array.from({ length: 55 }, async (_, index) => {
+      const bytes = Buffer.from(`lazy synthetic original ${index}\0`.repeat(1 + (index % 5)));
+      const attachmentId = `att_lazy_${index}`;
+      const messageId = `msg_lazy_${index % 4}`;
+      const originalName = `file-${index}.bin`;
+      const storageKey = `user_lazy/${attachmentId}`;
+      await pool.memory.putObject({ body: bytes, contentType: "application/octet-stream", storageKey });
+      return { attachmentId, byteSize: bytes.byteLength, checksum: createHash("sha256").update(bytes).digest("hex"),
+        kind: "file" as const, messageId, mimeType: "application/octet-stream", originalName,
+        sandboxPath: workspaceAttachmentPath({ attachmentId, messageId, originalName }), storageKey };
+    }));
+    const identity = (file: (typeof files)[number]) => ({ attachmentId: file.attachmentId, byteSize: file.byteSize,
+      checksum: file.checksum, sandboxPath: file.sandboxPath });
+    const stage = (entries: typeof files) => {
+      const acquisition = createWorkspaceAttachmentAcquisition({ storage: pool.storage });
+      return runtime.stageAttachments({
+        attachments: entries.map(({ storageKey, ...entry }) => ({ ...entry, body: acquisition.body({ byteSize: entry.byteSize, storageKey }) })),
+        inboxIndex: { attachments: entries.map(identity), manifests: [], version: 1 },
+        manifests: [], runtimeSandboxId: session.runtimeSandboxId, operation, sessionId
+      }).finally(() => acquisition.close());
+    };
+
+    await stage(files);
+    expect(pool.stats).toMatchObject({ maxOpen: 1, open: 0, opened: 55, waiting: 0 });
+    await expect(runtime.listStagedAttachments({ attachments: files.map(identity),
+      runtimeSandboxId: session.runtimeSandboxId, operation, sessionId })).resolves.toEqual(files.map(identity));
+
+    const requests = vi.spyOn(globalThis, "fetch");
+    requests.mockClear();
+    pool.memory.objects.delete(files[1]!.storageKey);
+    await expect(stage(files.slice(0, 3))).rejects.toMatchObject({ code: "workspace_attachment_unavailable" });
+    expect(requests.mock.calls.filter(([url]) => String(url).endsWith("/stage"))).toHaveLength(1);
+    expect(requests.mock.calls.some(([url]) => String(url).endsWith("/stage/finalize"))).toBe(false);
+    expect(pool.stats).toMatchObject({ open: 0, waiting: 0 });
+    requests.mockRestore();
   }, 30_000);
 });
 
