@@ -137,7 +137,8 @@ export function createPrismaMemoryEmbeddingBatchRepository(
           logicalRole: "MEMORY_DOCUMENT_EMBED",
           memoryJobId,
           ownerType: "JOB",
-          relationsDetachedAt: null,
+          // A detached unknown outcome still marks an ambiguous dispatch.
+          OR: [{ relationsDetachedAt: null }, { state: "OUTCOME_UNKNOWN" }],
           userId
         }
       });

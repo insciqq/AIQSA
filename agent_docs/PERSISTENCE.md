@@ -17,7 +17,7 @@ The protected `Full access` group's explicit members receive all current/future 
 
 ### Recovery And Derived State
 
-External side effects need durable dispatch identity before I/O. Unknown outcomes are never replayed; usage settles once and unknown usage stays unknown. Compatible checksum-verified settled PDF work may be reused by an admitted retry; restore preserves ambiguity. Transient decoded/transcribed content is cleared atomically once its durable result is recoverable or by cleanup. Infrastructure failure cannot produce false success or provider replay.
+External side effects need durable dispatch identity before I/O. Unknown outcomes are never replayed; usage settles once and unknown usage stays unknown. Past its recovery window an unknown outcome is final; like settled evidence it may release its provider references, never its state, receipt or replay fence. Compatible checksum-verified settled PDF work may be reused by an admitted retry; restore preserves ambiguity. Transient decoded/transcribed content is cleared atomically once its durable result is recoverable or by cleanup. Infrastructure failure cannot produce false success or provider replay.
 
 Claims and terminal writers require status/version/lease guards. Release database locks before guest/file I/O. Memory/history/Knowledge derivatives reprove owner, source, lifecycle, safety and generation authority at use, including during purge. Rebuilds cannot repair canonical state from derived indexes. Rejected replacement preflight leaves serving indexes intact; readiness/alias activation follows full integrity proof. Projection/deletion obligations survive source deletion so stale retries cannot resurrect content.
 
