@@ -39,9 +39,10 @@ describe("System Vision tool contract", () => {
     expect(analyzeImageTools({ visionAnalysis: plan, workspace: { enabled: true } }).map((tool) => tool.capability)).toEqual(["workspace"]);
   });
   it("waits by the effective reasoning effort, keeping the base bound for low and unknown efforts", () => {
-    const timeout = (reasoningEffort: string | null, model: { defaultParams?: Record<string, unknown>; defaultReasoningEffort?: string } = {}) =>
+    const timeout = (reasoningEffort: string | null,
+      model: { defaultParams?: Record<string, unknown>; defaultReasoningEffort?: string; reasoning?: boolean } = {}) =>
       visionAnalysisTimeoutMs({ reasoningEffort, snapshot: { model: { defaultParams: model.defaultParams ?? {},
-        capabilities: { defaultReasoningEffort: model.defaultReasoningEffort } } } } as unknown as AvailableVisionAnalysisPlan);
+        capabilities: { defaultReasoningEffort: model.defaultReasoningEffort, reasoning: model.reasoning } } } } as unknown as AvailableVisionAnalysisPlan);
     expect(["none", "minimal", "low"].map(effort => timeout(effort))).toEqual([60_000, 60_000, 60_000]);
     expect(timeout("medium")).toBe(120_000);
     expect(["high", "xhigh", "max"].map(effort => timeout(effort))).toEqual([180_000, 180_000, 180_000]);
@@ -49,7 +50,9 @@ describe("System Vision tool contract", () => {
     expect(["turbo", "constructor", "__proto__"].map(effort => timeout(effort))).toEqual([60_000, 60_000, 60_000]);
     // Unset: the frozen effort wins over defaults; otherwise configured params, then the declared model default.
     expect(timeout("low", { defaultReasoningEffort: "high" })).toBe(60_000);
-    expect(timeout(null)).toBe(60_000);
+    // No effort anywhere: the provider's own default applies, unless the model does not reason.
+    expect(timeout(null)).toBe(120_000);
+    expect(timeout(null, { reasoning: false })).toBe(60_000);
     expect(timeout(null, { defaultReasoningEffort: "medium" })).toBe(120_000);
     expect(timeout(null, { defaultParams: { reasoning: { effort: "high" } }, defaultReasoningEffort: "low" })).toBe(180_000);
     expect(timeout(null, { defaultParams: { outputConfig: { effort: "xhigh" } } })).toBe(180_000);
