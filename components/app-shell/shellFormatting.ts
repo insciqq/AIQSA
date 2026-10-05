@@ -168,6 +168,7 @@ export function humanizeErrorCode(code: string): string {
     upload_malformed: "Upload response was malformed",
     workspace_archive_in_progress: "A Workspace archive is already being prepared. Try again shortly",
     workspace_archive_limit_exceeded: "This Workspace is too large to archive. Remove files and try again",
+    workspace_attachment_timeout: "Workspace files could not be read from storage in time. Try again shortly",
     workspace_attachment_unavailable: "A Workspace attachment is unavailable. Re-upload it and try again",
     workspace_storage_full: "Workspace does not have enough disk space for these files. Remove unused files or reset Workspace",
     workspace_secrets_prepare_failed: "Workspace could not prepare your saved secrets. Check Secrets and try again",
