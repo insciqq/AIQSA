@@ -5,7 +5,9 @@ export const ANALYZE_IMAGE_TOOL_NAME = "analyze_image";
 export const VISION_ANALYSIS_LIMITS = Object.freeze({ maxImages: 8, questionCharacters: 4000,
   resultBytes: 16 * 1024, maxOutputTokens: 4096, timeoutMs: 60_000, callsPerRun: 8 });
 
-/** Higher reasoning efforts think longer before answering; any other effort keeps the base bound. */
+/** Higher reasoning efforts think longer before answering; any other named effort keeps the base bound.
+ * A reasoning model with no effort anywhere runs at its provider's default, which is not always low. */
+const VISION_ANALYSIS_DEFAULT_EFFORT_TIMEOUT_MS = 120_000;
 const VISION_ANALYSIS_EFFORT_TIMEOUT_MS: Readonly<Record<string, number>> = Object.freeze({
   medium: 120_000, high: 180_000, xhigh: 180_000, max: 180_000 });
 
@@ -21,7 +23,10 @@ export function visionAnalysisTimeoutMs(plan: Pick<AvailableVisionAnalysisPlan, 
   const model = plan.snapshot.model;
   const effort = plan.reasoningEffort ?? paramEffort(model.defaultParams.reasoning) ?? paramEffort(model.defaultParams.outputConfig) ??
     model.capabilities.defaultReasoningEffort;
-  return effort !== undefined && Object.hasOwn(VISION_ANALYSIS_EFFORT_TIMEOUT_MS, effort)
+  if (effort === undefined) {
+    return model.capabilities.reasoning === false ? VISION_ANALYSIS_LIMITS.timeoutMs : VISION_ANALYSIS_DEFAULT_EFFORT_TIMEOUT_MS;
+  }
+  return Object.hasOwn(VISION_ANALYSIS_EFFORT_TIMEOUT_MS, effort)
     ? VISION_ANALYSIS_EFFORT_TIMEOUT_MS[effort] : VISION_ANALYSIS_LIMITS.timeoutMs;
 }
 
