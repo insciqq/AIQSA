@@ -263,6 +263,23 @@ describe("Memory worker shutdown", () => {
     expect(JSON.stringify(records())).not.toContain("PRIVATE_");
   });
 
+  it("still clears liveness and closes when the coordinator cannot be stopped", async () => {
+    const signals = new EventEmitter();
+    const events: string[] = [];
+    const exit = runMemoryCoordinatorWorker({
+      disconnect: async () => { events.push("disconnect"); },
+      signals,
+      start: async () => ({ status: "ready" }),
+      stopCoordinator: () => { throw new Error("PRIVATE_COORDINATOR_FAILURE"); },
+      stopHeartbeat: async () => { events.push("liveness"); }
+    });
+    await vi.waitFor(() => expect(signals.listenerCount("SIGTERM")).toBe(1));
+    signals.emit("SIGTERM");
+    await expect(exit).resolves.toBe(0);
+    expect(events).toEqual(["liveness", "disconnect"]);
+    expect(JSON.stringify(records())).not.toContain("PRIVATE_");
+  });
+
   it("stops right after startup when the signal arrived while it was starting", async () => {
     const signals = new EventEmitter();
     const started = gate();

@@ -68,7 +68,7 @@ export async function runMemoryCoordinatorWorker(
       }
     }
     // A failed startup may have started the coordinator before it failed.
-    await dependencies.stopCoordinator().catch(() => undefined);
+    await Promise.resolve().then(dependencies.stopCoordinator).catch(() => undefined);
     await within(MEMORY_WORKER_SHUTDOWN_STEP_MS, dependencies.stopHeartbeat);
     await within(MEMORY_WORKER_SHUTDOWN_STEP_MS, dependencies.disconnect);
     return started ? 0 : 1;
