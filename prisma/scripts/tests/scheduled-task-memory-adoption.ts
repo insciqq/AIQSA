@@ -1,4 +1,4 @@
-export const SCHEDULED_TASK_MEMORY_MIGRATION = "20261004160000_scheduled_task_memory";
+export const SCHEDULED_TASK_MEMORY_MIGRATION = "20261004190000_scheduled_task_memory";
 
 // A task saved before the Memory switch existed. Explicit columns keep the
 // fixture valid when later migrations add columns.
