@@ -328,9 +328,11 @@ function targetPredicate(target: MemoryExecutionDetachTarget): Prisma.Sql {
   return Prisma.sql`binding."userId" = ${target.userId}`;
 }
 
-/** Detach only settled, usage-backed evidence after its recovery horizon.
- * OUTCOME_UNKNOWN deliberately remains attached until provider-specific
- * recovery reaches an honest terminal state. */
+/** Detach only settled, usage-backed evidence after its recovery horizon. An
+ * unknown outcome is final once that horizon passes (recoverOutcome refuses
+ * it), so it detaches too, keeping its state, error code, usage and receipt:
+ * readers still treat it as an ambiguous dispatch that is never sent again.
+ * PENDING, RUNNING and unaccounted calls stay attached. */
 export async function detachExpiredMemoryExecutionBindings(
   tx: MemoryTransaction,
   target: MemoryExecutionDetachTarget,
@@ -388,7 +390,7 @@ export async function detachExpiredMemoryExecutionBindings(
       "relationsDetachedAt" = ${now}
     WHERE ${targetPredicate(target)}
       AND binding."relationsDetachedAt" IS NULL
-      AND binding."state" IN ('SUCCEEDED', 'FAILED', 'CANCELLED')
+      AND binding."state" IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'OUTCOME_UNKNOWN')
       AND binding."recoverableUntil" IS NOT NULL
       AND binding."recoverableUntil" <= ${now}
       AND EXISTS (

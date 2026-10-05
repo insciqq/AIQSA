@@ -1445,6 +1445,23 @@ describe("history classifications orphaned by a lost worker", () => {
     expect(await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(usage);
     expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toEqual(ended);
     expect(await prisma.memoryRecallRound.count({ where: { userId: f.userId } })).toBe(0);
+
+    // Past its recovery window, provider cleanup may release the orphan's
+    // provider references; its unknown outcome, receipt and job stay final.
+    f.advance(MEMORY_EXECUTION_RECOVERY_HORIZON_MS);
+    const status = await readMemoryRecoveryStatus(prisma, f.now());
+    expect(await prisma.$transaction((tx) =>
+      detachExpiredMemoryExecutionBindings(tx, { bindingId: lost.orphan.id }, f.now()))).toBe(1);
+    expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now() })).toBe(0);
+    await f.drive();
+    expect(f.run).toHaveBeenCalledTimes(3);
+    expect(await readMemoryRecoveryStatus(prisma, f.now())).toEqual(status);
+    expect(await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } }))
+      .toEqual(bindings.map((binding) => binding.id !== lost.orphan.id ? binding : { ...binding,
+        connectionId: null, credentialId: null, credentialVersionId: null, providerModelId: null,
+        relationsDetachedAt: f.now() }));
+    expect(await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(usage);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toEqual(ended);
   }, 60_000);
 
   it.each(["current", "leased", "receipt", "response", "output"] as const)("leaves a %s orphaned classification to its owner", async (guard) => {
