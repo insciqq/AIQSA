@@ -76,6 +76,10 @@ export type WorkspaceToolResult = Readonly<{
 
 export type WorkspaceAttachmentStream = Readonly<{
   attachmentId: string;
+  /**
+   * May open its storage object lazily on the first read, and reading the
+   * next attachment closes this one: consume bodies in order, each to its end.
+   */
   body: ReadableStream<Uint8Array>;
   byteSize: number;
   checksum: string;
@@ -320,6 +324,7 @@ export class WorkspaceRuntimeError extends Error {
     | "workspace_capture_source_invalid"
     | "workspace_capture_unsupported"
     | "workspace_agent_output_invalid"
+    | "workspace_attachment_timeout"
     | "workspace_attachment_unavailable"
     | "workspace_storage_full"
     | "workspace_secrets_prepare_failed"

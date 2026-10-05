@@ -1050,6 +1050,7 @@
   "vision_model_absent",
   "vision_model_unavailable",
   "workspace_archive_limit_exceeded",
+  "workspace_attachment_timeout",
   "workspace_attachment_unavailable",
   "workspace_browser_session_save_failed",
   "workspace_capture_busy",

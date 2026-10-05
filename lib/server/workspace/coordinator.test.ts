@@ -8,7 +8,8 @@ import {
   workspaceRunOutputDirectory
 } from "@/lib/domain/workspace";
 import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
-import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import { createMemoryStorageAdapter, createPooledStorageAdapter } from "@/tests/support/storage";
+import { WORKSPACE_ATTACHMENT_STORAGE_WAIT_MS } from "./attachmentAcquisition";
 import { getWorkspaceConfig } from "./config";
 import {
   createWorkspaceCoordinator,
@@ -288,7 +289,10 @@ function fixture() {
       tools
     })),
     removeSession: vi.fn(async () => undefined),
-    stageAttachments: vi.fn(async () => undefined),
+    // Like every runtime, consume each original in order before the next.
+    stageAttachments: vi.fn(async (input: Parameters<WorkspaceRuntime["stageAttachments"]>[0]) => {
+      for (const attachment of input.attachments) await new Response(attachment.body).arrayBuffer();
+    }),
     syncPersonalSecrets: vi.fn(async () => undefined),
     stopSession: vi.fn(async () => undefined),
     terminateExecutions: vi.fn(async (input: Parameters<WorkspaceRuntime["terminateExecutions"]>[0]) =>
@@ -1967,4 +1971,224 @@ it("retains confirmed VM stop when retiring its operation cannot be confirmed", 
     .resolves.toEqual({ quiesced: false, sessionSettled: false, stoppedVm: true });
   expect(value.runtime.stopSession).toHaveBeenCalledOnce();
   expect(value.settledSessions).toEqual([]);
+});
+
+function sha256(value: Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function storedAttachments(memory: ReturnType<typeof createMemoryStorageAdapter>, count: number, prefix: string) {
+  return Promise.all(Array.from({ length: count }, async (_, index) => {
+    const bytes = Buffer.from(`${prefix} synthetic original ${index} `.repeat(1 + (index % 4)), "utf8");
+    const storageKey = `user_1/${prefix}_${index}`;
+    await memory.putObject({ body: bytes, contentType: "text/plain", storageKey });
+    return {
+      attachmentId: `${prefix}_attachment_${index}`,
+      byteSize: bytes.byteLength,
+      bytes,
+      checksum: sha256(bytes),
+      fileName: `${prefix}-${index}.txt`,
+      kind: "document" as const,
+      messageId: `${prefix}_message_${index % 3}`,
+      mimeType: "text/plain",
+      storageKey
+    };
+  }));
+}
+
+/** Guest stand-in: consumes each original in order and verifies it before its single write. */
+function consumingStage(value: ReturnType<typeof fixture>, hooks: Readonly<{ afterFirstChunk?: (attachmentId: string) => Promise<void> }> = {}) {
+  const written = new Map<string, Buffer>();
+  const state = { indexWrites: 0, writesAfterAbort: 0 };
+  vi.mocked(value.runtime.stageAttachments).mockImplementation(async (input) => {
+    for (const attachment of input.attachments) {
+      const reader = attachment.body.getReader();
+      const chunks: Buffer[] = [];
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        chunks.push(Buffer.from(next.value));
+        if (chunks.length === 1) await hooks.afterFirstChunk?.(attachment.attachmentId);
+      }
+      const bytes = Buffer.concat(chunks);
+      if (bytes.byteLength !== attachment.byteSize || sha256(bytes) !== attachment.checksum) {
+        throw new WorkspaceRuntimeError("workspace_attachment_unavailable");
+      }
+      if (input.signal?.aborted) state.writesAfterAbort += 1;
+      written.set(attachment.sandboxPath, bytes);
+    }
+    if (input.signal?.aborted) state.writesAfterAbort += 1;
+    state.indexWrites += 1;
+  });
+  return { state, written };
+}
+
+function runWithin<T>(promise: Promise<T>, ms = 2_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([promise, new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("workspace_staging_stalled")), ms);
+  })]).finally(() => clearTimeout(timer));
+}
+
+function shellCall(value: ReturnType<typeof fixture>, coordinator: ReturnType<typeof createWorkspaceCoordinator>, signal?: AbortSignal) {
+  return coordinator.execute({
+    call: { arguments: { command: "pwd" }, id: "call_pool", name: value.shellToolName },
+    modelRunToolCallId: "stored_pool", runId: value.runId, userId: "user_1", workspace: value.workspace,
+    ...(signal ? { signal } : {})
+  });
+}
+
+describe("Workspace coordinator bounded attachment acquisition", () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it("stages more originals than the storage pool holds, one open body at a time, with exact bytes and metadata", async () => {
+    const pool = createPooledStorageAdapter(4);
+    const value = fixture();
+    const files = await storedAttachments(pool.memory, 55, "large");
+    vi.spyOn(value.repository, "attachments").mockResolvedValue(files);
+    const guest = consumingStage(value);
+    const coordinator = createWorkspaceCoordinator({ ...value, storage: pool.storage });
+
+    await expect(runWithin(shellCall(value, coordinator))).resolves.toMatchObject({ status: "complete" });
+
+    expect(pool.stats).toMatchObject({ maxOpen: 1, open: 0, opened: 55, waiting: 0 });
+    expect(guest.written.size).toBe(55);
+    for (const file of files) {
+      const path = workspaceAttachmentPath({ attachmentId: file.attachmentId, messageId: file.messageId, originalName: file.fileName });
+      expect(guest.written.get(path)).toEqual(file.bytes);
+    }
+    const staged = vi.mocked(value.runtime.stageAttachments).mock.calls[0]![0];
+    expect(staged.attachments.map((entry) => [entry.attachmentId, entry.byteSize, entry.checksum, entry.mimeType, entry.originalName]))
+      .toEqual(files.map((file) => [file.attachmentId, file.byteSize, file.checksum, file.mimeType, file.fileName]));
+    expect(staged.inboxIndex).toMatchObject({ attachments: files.map((file) => expect.objectContaining({ attachmentId: file.attachmentId })) });
+    expect(staged.manifests.map((manifest) => manifest.messageId).sort()).toEqual(["large_message_0", "large_message_1", "large_message_2"]);
+    expect(guest.state.indexWrites).toBe(1);
+  });
+
+  it("lets a small run sharing the storage client finish while a large run is mid-transfer", async () => {
+    const pool = createPooledStorageAdapter(2);
+    const large = fixture();
+    const small = fixture();
+    const largeFiles = await storedAttachments(pool.memory, 55, "large");
+    const smallFiles = await storedAttachments(pool.memory, 1, "small");
+    vi.spyOn(large.repository, "attachments").mockResolvedValue(largeFiles);
+    vi.spyOn(small.repository, "attachments").mockResolvedValue(smallFiles);
+    let paused!: () => void;
+    const reached = new Promise<void>((resolve) => { paused = resolve; });
+    let resume!: () => void;
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const largeGuest = consumingStage(large, {
+      async afterFirstChunk(attachmentId) {
+        if (attachmentId !== "large_attachment_30") return;
+        paused();
+        await gate;
+      }
+    });
+    const smallGuest = consumingStage(small);
+    const largeRun = shellCall(large, createWorkspaceCoordinator({ ...large, storage: pool.storage }));
+    await runWithin(reached);
+    expect(largeGuest.written.size).toBe(30);
+
+    await expect(runWithin(shellCall(small, createWorkspaceCoordinator({ ...small, storage: pool.storage }))))
+      .resolves.toMatchObject({ status: "complete" });
+    expect(smallGuest.written.size).toBe(1);
+    expect(largeGuest.written.size).toBe(30);
+
+    resume();
+    await expect(runWithin(largeRun)).resolves.toMatchObject({ status: "complete" });
+    expect(largeGuest.written.size).toBe(55);
+    expect(pool.stats).toMatchObject({ maxOpen: 2, open: 0, waiting: 0 });
+  });
+
+  it.each(["missing", "size_mismatch"] as const)("releases the pool after a %s original and lets the next run stage", async (fault) => {
+    const pool = createPooledStorageAdapter(1);
+    const failed = fixture();
+    const files = await storedAttachments(pool.memory, 6, "fault");
+    if (fault === "missing") pool.memory.objects.delete(files[3]!.storageKey);
+    else pool.memory.objects.set(files[3]!.storageKey, { body: Buffer.from("different length"), contentType: "text/plain", storageKey: files[3]!.storageKey });
+    vi.spyOn(failed.repository, "attachments").mockResolvedValue(files);
+    const markSessionFailed = vi.spyOn(failed.repository, "markSessionFailed");
+    const onActivity = vi.fn(async () => undefined);
+    const failedGuest = consumingStage(failed);
+    await expect(runWithin(createWorkspaceCoordinator({ ...failed, storage: pool.storage }).execute({
+      call: { arguments: { command: "pwd" }, id: "call_fault", name: failed.shellToolName },
+      modelRunToolCallId: "stored_fault", onActivity, runId: failed.runId, userId: "user_1", workspace: failed.workspace
+    }))).rejects.toMatchObject({ code: "workspace_attachment_unavailable" });
+    expect(markSessionFailed).toHaveBeenCalledWith(expect.objectContaining({ code: "workspace_attachment_unavailable" }));
+    expect(onActivity).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "attachments_prepare", phase: "failed", errorCode: "workspace_attachment_unavailable"
+    }));
+    expect(failedGuest.written.size).toBe(3);
+    expect(failedGuest.state.indexWrites).toBe(0);
+    expect(failed.runtime.callBoundTool).not.toHaveBeenCalled();
+    expect(pool.stats).toMatchObject({ open: 0, waiting: 0 });
+
+    const next = fixture();
+    const nextFiles = await storedAttachments(pool.memory, 6, "next");
+    vi.spyOn(next.repository, "attachments").mockResolvedValue(nextFiles);
+    const nextGuest = consumingStage(next);
+    await expect(runWithin(shellCall(next, createWorkspaceCoordinator({ ...next, storage: pool.storage }))))
+      .resolves.toMatchObject({ status: "complete" });
+    expect(nextGuest.written.size).toBe(6);
+    expect(pool.stats).toMatchObject({ open: 0, waiting: 0 });
+  });
+
+  it("stops mid-transfer without later guest writes or tool dispatch and releases the held body", async () => {
+    const pool = createPooledStorageAdapter(1);
+    const value = fixture();
+    const files = await storedAttachments(pool.memory, 5, "stop");
+    pool.stalls.set(files[2]!.storageKey, new Promise<void>(() => undefined));
+    vi.spyOn(value.repository, "attachments").mockResolvedValue(files);
+    const markSessionFailed = vi.spyOn(value.repository, "markSessionFailed");
+    let transferring!: () => void;
+    const reached = new Promise<void>((resolve) => { transferring = resolve; });
+    const guest = consumingStage(value, {
+      async afterFirstChunk(attachmentId) { if (attachmentId === files[2]!.attachmentId) transferring(); }
+    });
+    const controller = new AbortController();
+    const run = shellCall(value, createWorkspaceCoordinator({ ...value, storage: pool.storage }), controller.signal);
+    await runWithin(reached);
+    controller.abort(new Error("synthetic_stop"));
+    await expect(runWithin(run)).rejects.toMatchObject({ code: "workspace_tool_cancelled" });
+    expect(guest.written.size).toBe(2);
+    expect(guest.state).toEqual({ indexWrites: 0, writesAfterAbort: 0 });
+    expect(markSessionFailed).not.toHaveBeenCalled();
+    expect(value.runtime.loadBoundTools).not.toHaveBeenCalled();
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+    expect(pool.stats).toMatchObject({ open: 0, waiting: 0 });
+
+    pool.stalls.clear();
+    const next = fixture();
+    vi.spyOn(next.repository, "attachments").mockResolvedValue(files);
+    const nextGuest = consumingStage(next);
+    await expect(runWithin(shellCall(next, createWorkspaceCoordinator({ ...next, storage: pool.storage }))))
+      .resolves.toMatchObject({ status: "complete" });
+    expect(nextGuest.written.size).toBe(5);
+  });
+
+  it("fails a storage wait that makes no progress with a bounded, observable code", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pool = createPooledStorageAdapter(0);
+    const value = fixture();
+    const files = await storedAttachments(pool.memory, 2, "stalled");
+    vi.spyOn(value.repository, "attachments").mockResolvedValue(files);
+    const markSessionFailed = vi.spyOn(value.repository, "markSessionFailed");
+    const onActivity = vi.fn(async () => undefined);
+    const guest = consumingStage(value);
+    const run = createWorkspaceCoordinator({ ...value, storage: pool.storage }).execute({
+      call: { arguments: { command: "pwd" }, id: "call_stalled", name: value.shellToolName },
+      modelRunToolCallId: "stored_stalled", onActivity, runId: value.runId, userId: "user_1", workspace: value.workspace
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(WORKSPACE_ATTACHMENT_STORAGE_WAIT_MS - 1);
+    expect(pool.stats.waiting).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await run).toMatchObject({ code: "workspace_attachment_timeout" });
+    expect(markSessionFailed).toHaveBeenCalledWith(expect.objectContaining({ code: "workspace_attachment_timeout" }));
+    expect(onActivity).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "workspace_start", phase: "failed", errorCode: "workspace_attachment_timeout"
+    }));
+    expect(guest.written.size).toBe(0);
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+    expect(pool.stats).toMatchObject({ open: 0, opened: 0, waiting: 0 });
+  });
 });
