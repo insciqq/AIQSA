@@ -72,9 +72,11 @@ import {
   checkpointAdoptingSummaryReceipts,
   checkpointWithContextSummaryReceipt,
   decodeContextCompactionCheckpoint,
+  isRunEndedToolCallResult,
   mergeContextCompactionReceipts,
   parseToolLoopCheckpoint,
   AUTOMATIC_KNOWLEDGE_CALL_PREFIX,
+  runEndedToolCallResult,
   snapshotToolLoopJson,
   toolLoopCheckpoint,
   toolLoopPersistenceLimits,
@@ -562,6 +564,27 @@ export async function cancelPendingToolLoopCallsInTransaction(
     throw new Error("pending_tool_call_cancellation_conflict");
   }
   return cancelled.count;
+}
+
+/**
+ * Closes the calls still running when their run has just become final, in
+ * that terminal transaction. A running call may already have had effects, so
+ * it keeps an unknown outcome rather than "cancelled" (never executed). Its
+ * own operation may still settle it afterwards (`settleToolLoopCall`), which
+ * keeps late evidence such as search usage. Only final runs qualify: a
+ * recoverable error run leaves its running calls to recovery. The caller holds
+ * the owning ModelRun row lock.
+ */
+export async function closeRunningToolLoopCallsInTransaction(
+  tx: Prisma.TransactionClient,
+  runId: string,
+  now = new Date()
+): Promise<number> {
+  const closed = await tx.modelRunToolCall.updateMany({
+    data: { completedAt: now, result: json(runEndedToolCallResult()), state: "error" },
+    where: { modelRunId: runId, state: "running" }
+  });
+  return closed.count;
 }
 
 export type PrismaRunToolLoopOperations = Pick<
@@ -2185,7 +2208,7 @@ export function createPrismaRunToolLoopOperations(
         if (!run) return false;
         if (usageAccountedToolCallIds.length > 0) {
           const calls = await tx.modelRunToolCall.findMany({
-            select: { id: true },
+            select: { id: true, state: true },
             where: {
               id: { in: usageAccountedToolCallIds },
               modelRunId: input.runId,
@@ -2193,6 +2216,12 @@ export function createPrismaRunToolLoopOperations(
             }
           });
           if (calls.length !== usageAccountedToolCallIds.length) return false;
+          // A call closed only by its run's ending has not settled yet.
+          const failedIds = calls.filter((call) => call.state === "error").map((call) => call.id);
+          if (failedIds.length > 0 && (await tx.modelRunToolCall.findMany({
+            select: { result: true },
+            where: { id: { in: failedIds } }
+          })).some((call) => isRunEndedToolCallResult(call.result))) return false;
         }
         let nextCheckpoint: ToolLoopCheckpoint | null | undefined;
         if (input.answerRoundUsage || input.contextSummaryReceipt) {
@@ -2389,6 +2418,7 @@ export function createPrismaRunToolLoopOperations(
             id: input.runId
           }
         });
+        await closeRunningToolLoopCallsInTransaction(tx, input.runId);
 
         if (run.assistantMessageId) {
           await tx.message.updateMany({
@@ -2456,7 +2486,10 @@ export function createPrismaRunToolLoopOperations(
           where: { id: input.callId, modelRunId: input.runId }
         });
         if (!call) return "not_found" as const;
-        if (call.state === "complete" || call.state === "error") {
+        // The run's ending closed this call with an unknown outcome; the
+        // call's own result, arriving after that, replaces that placeholder.
+        const closedByRunEnd = call.state === "error" && isRunEndedToolCallResult(call.result) && !activeToolLoopRun(run);
+        if (!closedByRunEnd && (call.state === "complete" || call.state === "error")) {
           const existing = call.result === null
             ? null
             : snapshotToolLoopJson(call.result, toolLoopPersistenceLimits.resultBytes);
@@ -2466,7 +2499,7 @@ export function createPrismaRunToolLoopOperations(
             ? "reused" as const
             : "conflict" as const;
         }
-        if (call.state !== "running") return "conflict" as const;
+        if (!closedByRunEnd && call.state !== "running") return "conflict" as const;
         if (call.toolName === LOAD_SKILL_TOOL_NAME && input.state === "complete") {
           const accepted = await tx.modelRun.findUnique({ select: { normalizedRequest: true }, where: { id: input.runId } });
           const request = accepted?.normalizedRequest;

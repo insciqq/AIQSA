@@ -1900,10 +1900,11 @@ describe("Prisma-backed run repository", () => {
     });
   });
 
-  it("atomically cancels pending checkpointed calls while preserving ambiguous running calls", async () => {
+  it.each(["cancel", "terminal failure", "recovered failure", "completion"] as const)(
+    "closes running calls with an unknown outcome on %s and keeps their late result", async (ending) => {
     await withRunUser(async ({ userId }) => {
       const repository = createPrismaRunRepository(prisma);
-      const created = await createActiveRun(repository, userId, "Cancel checkpointed calls");
+      const created = await createActiveRun(repository, userId, `Close running calls on ${ending}`);
       await repository.beginToolLoopProviderRound({
         providerContinuation: null,
         roundIndex: 0,
@@ -1913,7 +1914,8 @@ describe("Prisma-backed run repository", () => {
       const persisted = await repository.persistToolLoopCallBatch({
         calls: [
           { arguments: {}, ordinal: 0, providerCallId: "running", toolName: "first" },
-          { arguments: {}, ordinal: 1, providerCallId: "pending", toolName: "second" }
+          { arguments: {}, ordinal: 1, providerCallId: "pending", toolName: "second" },
+          { arguments: {}, ordinal: 2, providerCallId: "late", toolName: "third" }
         ],
         providerContinuation: null,
         roundIndex: 0,
@@ -1921,27 +1923,51 @@ describe("Prisma-backed run repository", () => {
         userId
       });
       if (persisted.kind !== "persisted") throw new Error("expected persisted tool batch");
-      await repository.claimToolLoopCall({
-        callId: persisted.calls[0]!.id,
-        runId: created.runId,
-        userId
-      });
+      for (const ordinal of [0, 2]) {
+        await repository.claimToolLoopCall({ callId: persisted.calls[ordinal]!.id, runId: created.runId, userId });
+      }
 
-      await expect(repository.cancelRun({
-        payload: cancelPayload,
-        runId: created.runId,
-        userId
-      })).resolves.toMatchObject({ kind: "cancelled" });
+      if (ending === "cancel") {
+        await expect(repository.cancelRun({ payload: cancelPayload, runId: created.runId, userId }))
+          .resolves.toMatchObject({ kind: "cancelled" });
+      } else if (ending === "terminal failure") {
+        await expect(repository.failRun(created.runId, created.assistantMessageId,
+          { code: "provider_stream_too_large", message: "The provider stream exceeded a safety limit." },
+          { recoveryTerminal: true })).resolves.toBe(true);
+      } else if (ending === "recovered failure") {
+        await expect(repository.settleRecoveredRunError({ runId: created.runId, userId,
+          error: { code: "provider_failed", message: "Provider unavailable" }, outputEvents: [], usageAttributions: [] }))
+          .resolves.toBe(true);
+      } else {
+        await expect(repository.completeRun(completionInput(created))).resolves.toBe(true);
+      }
+      const closed = { completedAt: expect.any(Date), result: { code: "run_ended_before_tool_settled", outcome: "unknown" },
+        startedAt: expect.any(Date), state: "error" };
       await expect(prisma.modelRunToolCall.findMany({
         orderBy: { ordinal: "asc" },
-        select: { state: true },
+        select: { completedAt: true, result: true, startedAt: true, state: true },
         where: { modelRunId: created.runId }
-      })).resolves.toEqual([{ state: "running" }, { state: "cancelled" }]);
-      await expect(repository.claimToolLoopCall({
-        callId: persisted.calls[0]!.id,
-        runId: created.runId,
-        userId
-      })).resolves.toMatchObject({ kind: "ambiguous" });
+      })).resolves.toEqual([
+        closed,
+        // Only cancellation and failure settle never-dispatched calls.
+        ending === "completion" || ending === "recovered failure"
+          ? { completedAt: null, result: null, startedAt: null, state: "pending" }
+          : { completedAt: expect.any(Date), result: null, startedAt: null, state: "cancelled" },
+        closed
+      ]);
+      await expect(repository.claimToolLoopCall({ callId: persisted.calls[0]!.id, runId: created.runId, userId }))
+        .resolves.toMatchObject({ kind: "settled" });
+      // The detached operation's own result replaces the placeholder once; a
+      // different result afterwards is still a conflict.
+      const late = { callId: "late", content: [{ text: "late evidence", type: "text" }], name: "third", status: "complete" };
+      await expect(repository.settleToolLoopCall({ callId: persisted.calls[2]!.id, result: late,
+        runId: created.runId, state: "complete", userId })).resolves.toBe("settled");
+      await expect(repository.settleToolLoopCall({ callId: persisted.calls[2]!.id, result: late,
+        runId: created.runId, state: "complete", userId })).resolves.toBe("reused");
+      await expect(repository.settleToolLoopCall({ callId: persisted.calls[2]!.id, result: { ...late, status: "error" },
+        runId: created.runId, state: "error", userId })).resolves.toBe("conflict");
+      await expect(prisma.modelRunToolCall.findUniqueOrThrow({ select: { result: true, state: true },
+        where: { id: persisted.calls[2]!.id } })).resolves.toEqual({ result: late, state: "complete" });
     });
   });
 

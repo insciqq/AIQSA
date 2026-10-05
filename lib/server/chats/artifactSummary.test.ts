@@ -600,6 +600,18 @@ describe("summarizeMessageRunToolActivity", () => {
     expect(JSON.stringify(activity)).not.toMatch(/private|fingerprint|revision|server-fixture|mcp_search/);
   });
 
+  it.each(["complete", "cancelled", "error"])("shows calls left open by a %s run as stopped steps", runStatus => {
+    const call = (state: string, result: unknown = null) => ({ toolName: "lookup_records", ordinal: 0, roundIndex: 1, state,
+      startedAt: null, completedAt: null, arguments: {}, result });
+    const project = (status: string, toolCalls: ReturnType<typeof call>[]) => summarizeMessageRunToolActivity({
+      userId: "initiator", errorPayload: null, normalizedRequest: {}, status, toolCalls }, "initiator")?.calls.map(entry => entry.status);
+    const closedByRunEnd = { code: "run_ended_before_tool_settled", outcome: "unknown" };
+    expect(project(runStatus, [call("running"), call("pending"), call("error", closedByRunEnd), call("error", { code: "x" }),
+      call("complete")])).toEqual(["cancelled", "cancelled", "cancelled", "error", "complete"]);
+    // A live run still shows its open calls as running.
+    expect(project("streaming", [call("running"), call("pending")])).toEqual(["running", "running"]);
+  });
+
   it.each([undefined, "other-member", "administrator"])("keeps references unavailable to viewer %s", viewer => {
     const activity = summarizeMessageRunToolActivity({ userId: "initiator", errorPayload: null,
       normalizedRequest: acceptedMcpRequest, status: "complete", toolCalls: [referenceCall] }, viewer);
@@ -819,7 +831,8 @@ describe("summarizeMessageRunToolActivity", () => {
     });
 
     expect(activity?.calls).toEqual([
-      ...["running", "complete", "error", "cancelled"].map((status, index) => ({
+      // The failed run left its running call as a stopped step.
+      ...["cancelled", "complete", "error", "cancelled"].map((status, index) => ({
         origin: "mcp", round: index + 1, serverName: "Repository Tools", status, toolName: "search"
       })),
       { origin: "mcp", round: 5, serverName: "Workspace", status: "error", toolName: "find_tools" },
