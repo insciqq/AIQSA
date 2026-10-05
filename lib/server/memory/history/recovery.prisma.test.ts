@@ -31,7 +31,8 @@ import { createPrismaMemoryContextualKeyGenerator, MEMORY_CONTEXTUAL_KEY_VERSION
   type MemoryContextualKeyGenerator } from "./contextualKeys";
 import { inspectMemoryHistoryPurge, purgeMemoryHistorySelection } from "./purge";
 import { autoHealIncompleteMemoryHistory } from "./autoHeal";
-import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS, memoryHistoryAutoHealJobFingerprint } from "./contract";
+import { MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS, MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE,
+  memoryHistoryAutoHealJobFingerprint } from "./contract";
 import { resolveCurrentMemoryUtilityPolicy } from "../execution/policy";
 import { applyMemorySourceMutations, lockMemorySourceChat } from "../sourceState";
 import { defaultMemorySourceMutationHooks } from "../sourceHooks";
@@ -1151,4 +1152,191 @@ describe("history validation retries across fences", () => {
     ]);
     expect(await prisma.usageEvent.count({ where: { userId: f.userId } })).toBe(1);
   });
+});
+
+describe("history classifications orphaned by a lost worker", () => {
+  function gate() {
+    let release!: () => void;
+    const opened = new Promise<void>((resolve) => { release = resolve; });
+    return { opened, release };
+  }
+
+  /** Runs the job until its call at `ordinal` is in flight, then loses the
+   * worker: the call ignores cancellation, so the bounded shutdown drain ends
+   * with the binding still RUNNING and the job claimed, as after SIGKILL. */
+  async function loseWorkerAt(f: HistoryRecoveryFixture, ordinal: number) {
+    const produce = f.run.getMockImplementation()!;
+    const dispatched = gate();
+    const lost = gate();
+    let calls = 0;
+    f.run.mockImplementation(async (...args) => {
+      if (calls++ !== ordinal) return produce(...args);
+      dispatched.release();
+      await lost.opened;
+      throw new Error("worker_process_lost");
+    });
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerJob(f.handler());
+    const worker = new MemoryCoordinator({ now: f.now, registry, repository: f.repository,
+      policy: { maxJobParallel: 1, maxJobParallelPerUser: 1, maxDeletionParallel: 1 } });
+    const pass = worker.reconcileNow();
+    await dispatched.opened;
+    await expect(worker.stop({ drainTimeoutMs: 50 })).resolves.toEqual({ drained: false, pendingCount: 1 });
+    f.run.mockImplementation(produce);
+    const bindings = await prisma.memoryExecutionBinding.findMany({
+      where: { userId: f.userId }, orderBy: { ordinal: "asc" }
+    });
+    expect(bindings.map(({ ordinal: index, state }) => ({ index, state }))).toEqual([
+      ...Array.from({ length: ordinal }, (_, index) => ({ index, state: "SUCCEEDED" })),
+      { index: ordinal, state: "RUNNING" }
+    ]);
+    expect(bindings.at(-1)).toMatchObject({ logicalRole: "MEMORY_HISTORY_CLASSIFY", ownerType: "JOB",
+      completedAt: null, acceptedOutputHash: null, providerResponseId: null, usageCompleteness: "UNAVAILABLE" });
+    const usage = await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
+    expect(usage).toHaveLength(ordinal);
+    expect(await prisma.memoryHistoryExecution.count({ where: { userId: f.userId, clearedAt: null } })).toBe(ordinal);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ state: "CLAIMED" });
+    return {
+      orphan: bindings.at(-1)!,
+      settled: bindings.slice(0, -1),
+      usage,
+      /** The lost call ends; the stopped attempt never commits or settles over recovery. */
+      async release() {
+        lost.release();
+        await pass;
+      }
+    };
+  }
+
+  /** Infrastructure maintenance after the stop: the claim becomes retryable
+   * with its execution bindings untouched, as the coordinator's own retry. */
+  const maintenanceRequeue = (f: HistoryRecoveryFixture) => prisma.memoryJob.update({
+    where: { id: f.job.id },
+    data: { state: "RETRYABLE_FAILED", errorCode: "memory_job_lease_lost", leaseToken: null,
+      leaseExpiresAt: null, nextAttemptAt: f.now(), progressAt: f.now() }
+  });
+
+  /** The previous release's outcome of that restart, written as fixture
+   * construction: its recovery guard failed the job before any dispatch. */
+  const previousReleaseFailure = (f: HistoryRecoveryFixture) => prisma.memoryJob.update({
+    where: { id: f.job.id },
+    data: { state: "TERMINAL_FAILED", errorCode: "memory_history_execution_protected", stage: "source_snapshot",
+      attemptCount: 2, completedAt: f.now(), leaseToken: null, leaseExpiresAt: null, nextAttemptAt: null,
+      progressAt: f.now() }
+  });
+
+  // The lost call is the first one, follows partial progress, or follows a
+  // long run of retained results.
+  const shapes = [
+    { name: "first call", rounds: 2, settled: 0 },
+    { name: "partial progress", rounds: 3, settled: 2 },
+    { name: "long retained run", rounds: 47, settled: 92 }
+  ] as const;
+  const restarts = ["maintenance_requeue", "previous_release_failure", "lease_expiry"] as const;
+  const cases = shapes.flatMap((shape) => restarts
+    .filter((restart) => restart !== "lease_expiry" || shape.settled === 2)
+    .map((restart) => ({ ...shape, restart })));
+
+  it.each(cases)("recovers a $name orphan ($settled settled calls) after $restart without dispatching again", async ({
+    rounds, settled, restart
+  }) => {
+    const f = await fixture(rounds);
+    const lost = await loseWorkerAt(f, settled);
+    if (restart === "maintenance_requeue") await maintenanceRequeue(f);
+    if (restart === "lease_expiry") f.advance(30_001);
+    if (restart === "previous_release_failure") {
+      await previousReleaseFailure(f);
+      expect((await readAdminMemoryProcessing(prisma, f.now())).issues).toContainEqual(
+        expect.objectContaining({ stage: "HISTORY", reason: "PROCESSING_FAILED" }));
+      expect(await readMemoryRecoveryStatus(prisma, f.now())).toMatchObject({ scheduled: 1, protected: 0 });
+      f.advance();
+      expect(await readMemoryRecoveryStatus(prisma, f.now())).toMatchObject({ eligible: 1, protected: 0 });
+    }
+    await f.drive();
+
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({
+      state: "SUCCEEDED", stage: "lexical_ready:recovery_raw_fallback",
+      recoveryCount: restart === "previous_release_failure" ? 1 : 0,
+      operationalCounters: expect.objectContaining({ contextualProviderRequests: 0,
+        contextualRoundsGenerated: settled / 2, contextualRoundsFallback: rounds - settled / 2 })
+    });
+    // Nothing was dispatched again: neither the orphan nor any later input.
+    expect(f.run).toHaveBeenCalledTimes(settled + 1);
+    expect(await prisma.memoryExecutionBinding.findMany({
+      where: { userId: f.userId, id: { not: lost.orphan.id } }, orderBy: { ordinal: "asc" }
+    })).toEqual(lost.settled);
+    const orphan = await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: lost.orphan.id } });
+    expect(orphan).toMatchObject({ state: "OUTCOME_UNKNOWN", errorCode: MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE,
+      acceptedOutputHash: null, providerResponseId: null, usageCompleteness: "UNAVAILABLE", totalTokens: null,
+      startedAt: lost.orphan.startedAt, completedAt: expect.any(Date) });
+    // Settled receipts stay exact; the orphan gains only an unavailable one.
+    expect(await prisma.usageEvent.findMany({
+      where: { userId: f.userId, memoryExecutionBindingId: { not: lost.orphan.id } }, orderBy: { id: "asc" }
+    })).toEqual(lost.usage);
+    expect(await prisma.usageEvent.findMany({ where: { userId: f.userId, memoryExecutionBindingId: lost.orphan.id } }))
+      .toEqual([expect.objectContaining({ usageCompleteness: "UNAVAILABLE", totalTokens: null, inputTokens: null })]);
+    expect(await prisma.memoryHistoryExecution.count({ where: { userId: f.userId } })).toBe(settled);
+    expect(await prisma.memoryHistoryExecution.count({ where: { userId: f.userId, clearedAt: null } })).toBe(0);
+    const recallRounds = await prisma.memoryRecallRound.findMany({
+      where: { userId: f.userId, state: "ACTIVE" }, select: { contextualKeyState: true }
+    });
+    expect(recallRounds).toHaveLength(rounds);
+    expect(recallRounds.filter(({ contextualKeyState }) => contextualKeyState === "GENERATED")).toHaveLength(settled / 2);
+    expect(await prisma.chatMemoryDigest.count({ where: { userId: f.userId } })).toBe(0);
+    expect((await readAdminMemoryProcessing(prisma, f.now())).issues.filter(({ stage }) => stage === "HISTORY")).toEqual([]);
+    expect(await readMemoryRecoveryStatus(prisma, f.now()))
+      .toMatchObject({ eligible: 0, scheduled: 0, protected: 0, permanent: 0 });
+
+    // A repeated restart and recovery pass change nothing.
+    const bindings = await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
+    const usage = await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } });
+    f.advance(MEMORY_RECOVERY_DELAYS_MS[1]);
+    expect(await f.repository.recoverEligibleJobs({ limit: 8, now: f.now() })).toBe(0);
+    await f.drive();
+    expect(f.run).toHaveBeenCalledTimes(settled + 1);
+    expect(await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(bindings);
+    expect(await prisma.usageEvent.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(usage);
+
+    // The lost attempt's late failure cannot overwrite the recovered evidence.
+    await lost.release();
+    expect(await prisma.memoryExecutionBinding.findMany({ where: { userId: f.userId }, orderBy: { id: "asc" } })).toEqual(bindings);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } })).toMatchObject({ state: "SUCCEEDED" });
+    await assertRecall(f);
+  }, 120_000);
+
+  it.each(["branch", "excluded"] as const)("never recovers or dispatches an orphaned job of a %s source", async (fence) => {
+    const f = await fixture(3);
+    const lost = await loseWorkerAt(f, 2);
+    await previousReleaseFailure(f);
+    if (fence === "branch") await prisma.chat.update({ data: { memoryBranchGeneration: { increment: 1 } }, where: { id: f.chat.id } });
+    if (fence === "excluded") await prisma.chat.update({ data: { memoryMode: "EXCLUDED" }, where: { id: f.chat.id } });
+    f.advance();
+    expect(await readMemoryRecoveryStatus(prisma, f.now())).toMatchObject({ eligible: 0, protected: 0, obsolete: 1 });
+    await f.drive();
+    expect(f.run).toHaveBeenCalledTimes(3);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } }))
+      .toMatchObject({ state: "TERMINAL_FAILED", errorCode: "memory_history_execution_protected", recoveryCount: 0 });
+    expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: lost.orphan.id } }))
+      .toMatchObject({ state: "RUNNING" });
+    expect(await prisma.memoryRecallRound.count({ where: { userId: f.userId } })).toBe(0);
+    await lost.release();
+  }, 30_000);
+
+  it("keeps an orphaned job protected while a settled call lacks its usage receipt", async () => {
+    const f = await fixture(3);
+    const lost = await loseWorkerAt(f, 2);
+    await previousReleaseFailure(f);
+    await prisma.usageEvent.deleteMany({ where: { userId: f.userId, memoryExecutionBindingId: lost.settled[0]!.id } });
+    f.advance();
+    expect(await readMemoryRecoveryStatus(prisma, f.now())).toMatchObject({ eligible: 0, protected: 1 });
+    await f.drive();
+    expect(f.run).toHaveBeenCalledTimes(3);
+    expect(await prisma.memoryJob.findUniqueOrThrow({ where: { id: f.job.id } }))
+      .toMatchObject({ state: "TERMINAL_FAILED", errorCode: "memory_history_execution_protected", recoveryCount: 0 });
+    expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: lost.orphan.id } }))
+      .toMatchObject({ state: "RUNNING" });
+    expect((await readAdminMemoryProcessing(prisma, f.now())).issues).toContainEqual(
+      expect.objectContaining({ stage: "HISTORY", reason: "PROCESSING_FAILED" }));
+    await lost.release();
+  }, 30_000);
 });

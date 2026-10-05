@@ -3,6 +3,7 @@ import { prisma } from "../../prisma";
 import { logEvent } from "../../observability";
 import { MemoryCoordinatorError } from "../coordinator/errors";
 import type {
+  MemoryJobClaim,
   MemoryJobExecutionResult,
   MemoryJobHandler
 } from "../coordinator/types";
@@ -73,7 +74,8 @@ import {
 } from "./repository";
 
 export type MemoryHistoryIndexHandlerDependencies = Readonly<{
-  prepareRecovery?: (userId: string, jobId: string) => Promise<boolean>;
+  /** Runs under the claim's live lease before this attempt dispatches. */
+  prepareRecovery?: (claim: MemoryJobClaim) => Promise<boolean>;
   clearResults?: (tx: Prisma.TransactionClient, userId: string, jobId: string, now: Date) => Promise<void>;
   authorizeResults?: (
     tx: Prisma.TransactionClient,
@@ -506,7 +508,7 @@ export function createMemoryHistoryIndexHandler(
         return staleExecutionResult(claim.id, prepared.decision.errorCode);
       }
       if (context.signal.aborted) throw context.signal.reason;
-      const recoveryOnly = await dependencies.prepareRecovery?.(claim.userId, claim.id) ?? false;
+      const recoveryOnly = await dependencies.prepareRecovery?.(claim) ?? false;
       await context.setStage("safety_classification");
       let plan: MemoryHistoryIndexPlan;
       let completionStage = "lexical_ready";
@@ -713,8 +715,8 @@ export function createPrismaMemoryHistoryIndexHandler(
   const governed = _classifier === undefined;
   return createMemoryHistoryIndexHandler({
     ...(governed ? {
-      prepareRecovery: (userId: string, jobId: string) =>
-        prepareMemoryHistoryExecutionRecovery(client, authority, userId, jobId),
+      prepareRecovery: (claim: MemoryJobClaim) =>
+        prepareMemoryHistoryExecutionRecovery(client, authority, claim),
       clearResults: clearMemoryHistoryExecutionResults,
       authorizeResults: async (
         tx: Prisma.TransactionClient,
