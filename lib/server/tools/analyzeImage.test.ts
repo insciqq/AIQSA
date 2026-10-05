@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
-import { analyzeConversationImageTool, analyzeImageTool, analyzeImageTools, visionAnalysisGuidance } from "./analyzeImage";
+import { analyzeConversationImageTool, analyzeImageTool, analyzeImageTools, visionAnalysisGuidance, visionAnalysisTimeoutMs } from "./analyzeImage";
 
 describe("System Vision tool contract", () => {
   it("advertises bounded ordered comparisons and exact missing capability", () => {
@@ -37,5 +37,22 @@ describe("System Vision tool contract", () => {
     expect(analyzeImageTools({})).toEqual([]);
     expect(analyzeImageTools({ visionAnalysis: plan }).map((tool) => tool.capability)).toEqual(["vision"]);
     expect(analyzeImageTools({ visionAnalysis: plan, workspace: { enabled: true } }).map((tool) => tool.capability)).toEqual(["workspace"]);
+  });
+  it("waits by the effective reasoning effort, keeping the base bound for low and unknown efforts", () => {
+    const timeout = (reasoningEffort: string | null, model: { defaultParams?: Record<string, unknown>; defaultReasoningEffort?: string } = {}) =>
+      visionAnalysisTimeoutMs({ reasoningEffort, snapshot: { model: { defaultParams: model.defaultParams ?? {},
+        capabilities: { defaultReasoningEffort: model.defaultReasoningEffort } } } } as unknown as AvailableVisionAnalysisPlan);
+    expect(["none", "minimal", "low"].map(effort => timeout(effort))).toEqual([60_000, 60_000, 60_000]);
+    expect(timeout("medium")).toBe(120_000);
+    expect(["high", "xhigh", "max"].map(effort => timeout(effort))).toEqual([180_000, 180_000, 180_000]);
+    // Unknown names, including inherited object keys, never stretch the bound.
+    expect(["turbo", "constructor", "__proto__"].map(effort => timeout(effort))).toEqual([60_000, 60_000, 60_000]);
+    // Unset: the frozen effort wins over defaults; otherwise configured params, then the declared model default.
+    expect(timeout("low", { defaultReasoningEffort: "high" })).toBe(60_000);
+    expect(timeout(null)).toBe(60_000);
+    expect(timeout(null, { defaultReasoningEffort: "medium" })).toBe(120_000);
+    expect(timeout(null, { defaultParams: { reasoning: { effort: "high" } }, defaultReasoningEffort: "low" })).toBe(180_000);
+    expect(timeout(null, { defaultParams: { outputConfig: { effort: "xhigh" } } })).toBe(180_000);
+    expect(timeout(null, { defaultParams: { reasoning: { enabled: true } }, defaultReasoningEffort: "medium" })).toBe(120_000);
   });
 });

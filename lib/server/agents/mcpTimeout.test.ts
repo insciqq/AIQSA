@@ -3,6 +3,7 @@ import type { NormalizedRunRequest } from "../providers/types";
 import { agentMcpEnvelopeTimeoutSeconds } from "./mcpTimeout";
 import { renderCodexManagedProfile } from "./codexProfile";
 import { syntheticImagePlan } from "@/tests/support/imagePlan";
+import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 
 describe("Agent MCP envelope", () => {
   it("accommodates the accepted image deadline and durable upload without extending the run deadline", () => {
@@ -23,5 +24,15 @@ describe("Agent MCP envelope", () => {
       mcpDiscovery: { catalog: { servers: [{ runtimeTimeouts: { startupTimeoutMs: 60000, callTimeoutMs: 1000 } }] } }
     } as unknown as NormalizedRunRequest;
     expect(agentMcpEnvelopeTimeoutSeconds(request)).toBe(120);
+  });
+  it("lets a Workspace analyze_image run to its reasoning-effort deadline", () => {
+    const visionAnalysis = { version: 1, available: true, reasoningEffort: "high",
+      snapshot: { model: { defaultParams: {}, capabilities: {} } } } as unknown as AvailableVisionAnalysisPlan;
+    const base = { searchPlan: { options: [] }, workspace: {} };
+    expect(agentMcpEnvelopeTimeoutSeconds({ ...base, visionAnalysis } as unknown as NormalizedRunRequest)).toBe(210);
+    expect(agentMcpEnvelopeTimeoutSeconds({ ...base, visionAnalysis: { ...visionAnalysis, reasoningEffort: "low" } } as unknown as NormalizedRunRequest)).toBe(90);
+    // No admitted analysis keeps the discovery allowance.
+    expect(agentMcpEnvelopeTimeoutSeconds({ ...base, visionAnalysis: { version: 1, available: false, code: "vision_model_absent" } } as unknown as NormalizedRunRequest)).toBe(60);
+    expect(agentMcpEnvelopeTimeoutSeconds({ searchPlan: { options: [] }, visionAnalysis } as unknown as NormalizedRunRequest)).toBe(60);
   });
 });
