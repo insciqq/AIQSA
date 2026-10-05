@@ -426,12 +426,13 @@ describe("background object deletion pass", () => {
       }
     });
 
-    expect(summary).toEqual({ batches: 1, claimed: 2, completed: 0, failed: 2, knowledgeJobsFinalized: 0 });
+    expect(summary).toEqual({ batches: 1, claimed: 2, completed: 0, failed: 2, knowledgeJobsFinalized: 1 });
     // Without an abort adapter a recorded multipart upload is never orphaned by deleting only its key.
     expect(state.calls).toEqual([
       "claim",
       "release:broken:object_delete_failed",
-      "release:multipart:object_delete_failed"
+      "release:multipart:object_delete_failed",
+      "finalize-knowledge-deletions"
     ]);
     expect(state.batches).toEqual([[deletionClaim("later")]]);
     expect(JSON.stringify(summary)).not.toMatch(/private|storage failed/u);
@@ -454,6 +455,23 @@ describe("background object deletion pass", () => {
       }
     })).resolves.toMatchObject({ claimed: 1, completed: 1, failed: 0 });
     expect(operations).toEqual(["abort:private/user/multipart:upload-1", "delete:private/user/multipart"]);
+  });
+
+  it("retries a Knowledge finalization lost after the last object was deleted", async () => {
+    const state = passRepository([[deletionClaim("last")]]);
+    let attempts = 0;
+    const repository = { ...state.repository, async finalizeKnowledgeDeletionJobs() {
+      attempts += 1;
+      if (attempts === 1) throw new Error("serialization failure");
+      return 1;
+    } };
+
+    await expect(runObjectDeletionPass({ repository, storage: { async deleteObject() {} } }))
+      .rejects.toThrow("serialization failure");
+    // The next pass claims nothing but still settles the waiting Knowledge deletion.
+    await expect(runObjectDeletionPass({ repository, storage: { async deleteObject() {} } }))
+      .resolves.toEqual({ batches: 1, claimed: 0, completed: 0, failed: 0, knowledgeJobsFinalized: 1 });
+    expect(attempts).toBe(2);
   });
 
   it("claims nothing once its worker is stopping", async () => {

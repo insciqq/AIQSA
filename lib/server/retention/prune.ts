@@ -497,10 +497,11 @@ export async function runObjectDeletionPass(input: Readonly<{
     failed += batch.failedJobIds.length;
     if (batch.failedJobIds.length > 0 || batch.claimed < batchSize) break;
   }
-  // Knowledge deletions that waited only for these objects settle as in prune.
-  const knowledgeJobsFinalized = completed > 0
-    ? await input.repository.finalizeKnowledgeDeletionJobs({ now: clock() })
-    : 0;
+  // Knowledge deletions that waited only for objects settle as in prune. A pass
+  // that deleted nothing still retries a finalization an earlier pass lost.
+  const knowledgeJobsFinalized = input.signal?.aborted
+    ? 0
+    : await input.repository.finalizeKnowledgeDeletionJobs({ now: clock() });
   return { batches, claimed, completed, failed, knowledgeJobsFinalized };
 }
 
