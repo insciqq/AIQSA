@@ -14,6 +14,4 @@ const handlers = createBrowserPushHandlers({
   store: createPrismaBrowserPushStore(prisma)
 });
 
-export const GET = handlers.key;
-export const POST = handlers.subscribe;
-export const DELETE = handlers.unsubscribe;
+export const POST = handlers.runShown;

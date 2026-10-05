@@ -11,15 +11,26 @@ export type BrowserPushSenderDeps = Readonly<{
   keys: () => Promise<VapidKeyPair>;
   now?: () => Date;
   post: PushPost;
+  /** Waits out a run's grace; defaults to a timer that does not hold the process open. */
+  sleep?: (ms: number) => Promise<void>;
   store: BrowserPushStore;
   /** VAPID subject: the installation's public URL. */
   subject: string;
 }>;
 
-type QueuedEvent = Readonly<{ id: string; kind: "occurrence" | "run" }>;
+type QueuedEvent = Readonly<{ dueAt: number; id: string; kind: "occurrence" | "run" }>;
 
 /** Events waiting for the one delivery slot; beyond this a burst drops its pushes (they are best effort). */
 const QUEUE_LIMIT = 500;
+/**
+ * How long a finished run's push waits for the device that showed its end
+ * to say so. The page reports it as soon as the answer settles on screen.
+ */
+export const RUN_PUSH_GRACE_MS = 5_000;
+/** A report may precede the run's terminal by a long Workspace settling. */
+const SHOWN_RUN_TTL_MS = 15 * 60_000;
+/** Runs remembered as shown; the oldest report is forgotten first. */
+const SHOWN_RUNS_LIMIT = 1_000;
 /** How long a push service keeps an undelivered message for an offline device. */
 const MESSAGE_TTL_SECONDS = 24 * 60 * 60;
 
@@ -36,17 +47,44 @@ function outcomeOf(status: number): BrowserPushDeliveryOutcome {
   return status === 404 || status === 410 ? "gone" : "failed";
 }
 
+function timer(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms).unref?.();
+  });
+}
+
 /**
  * Browser push delivery. Each event is claimed once in PostgreSQL before any
  * I/O, so a run or occurrence notifies at most once even when several paths
  * report it; delivery is best effort and never retried. Events are sent one
  * at a time outside their callers, so a slow push service delays nothing.
+ *
+ * A run's push skips every device whose page reported showing that run's end
+ * while visible. The decision belongs here, not in the service worker:
+ * Safari revokes a subscription after a few pushes that show no notification.
  */
 export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
   const clock = deps.now ?? (() => new Date());
   const background = deps.background ?? ((work) => work());
+  const sleep = deps.sleep ?? timer;
   const queue: QueuedEvent[] = [];
+  /** Run id → the sessions that showed its end, with when the report expires. */
+  const shownRuns = new Map<string, { expiresAt: number; sessions: Set<string> }>();
   let sending: Promise<void> | null = null;
+
+  function forgetExpired(now: number): void {
+    for (const [runId, shown] of shownRuns) {
+      if (shown.expiresAt > now) break;
+      shownRuns.delete(runId);
+    }
+  }
+
+  /** Session ids are the run owner's own: a report from another account's session matches none of its devices. */
+  function takeShownSessions(runId: string): ReadonlySet<string> {
+    const shown = shownRuns.get(runId);
+    shownRuns.delete(runId);
+    return shown && shown.expiresAt > clock().getTime() ? shown.sessions : new Set();
+  }
 
   async function deliver(event: BrowserPushEvent, target: BrowserPushTarget, keys: VapidKeyPair, jobId: string): Promise<void> {
     let status: number | undefined;
@@ -93,12 +131,20 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
       return;
     }
     try {
+      const wait = queued.dueAt - clock().getTime();
+      if (wait > 0) await sleep(wait);
       const now = clock();
       const event = queued.kind === "run"
         ? await deps.store.claimRun(queued.id, now)
         : await deps.store.claimOccurrence(queued.id, now);
       if (!event) return;
-      const targets = await deps.store.listTargets(event.userId, clock());
+      const listed = await deps.store.listTargets(event.userId, clock());
+      const shown = event.kind === "run" ? takeShownSessions(queued.id) : new Set<string>();
+      const targets = listed.filter((target) => !shown.has(target.sessionId));
+      if (targets.length < listed.length) {
+        log({ action: "skip", code: "push_run_shown_on_device", count: listed.length - targets.length,
+          job_id: queued.id, outcome: "skipped", stage: "dispatch" });
+      }
       log({ count: targets.length, job_id: queued.id, outcome: "completed", stage: "claim" });
       for (const target of targets) await deliver(event, target, keys, queued.id);
     } catch (error) {
@@ -127,13 +173,28 @@ export function createBrowserPushSender(deps: BrowserPushSenderDeps) {
   }
 
   return {
-    /** A finished chat run; ignored unless it is an ordinary, not user-cancelled run whose owner receives pushes. */
+    /**
+     * A finished chat run; ignored unless it is an ordinary, not user-cancelled
+     * run whose owner receives pushes. Sent after `RUN_PUSH_GRACE_MS`.
+     */
     notifyRun(runId: string): void {
-      enqueue({ id: runId, kind: "run" });
+      enqueue({ dueAt: clock().getTime() + RUN_PUSH_GRACE_MS, id: runId, kind: "run" });
     },
     /** A settled scheduled occurrence that notifies its owner. */
     notifyOccurrence(occurrenceId: string): void {
-      enqueue({ id: occurrenceId, kind: "occurrence" });
+      enqueue({ dueAt: 0, id: occurrenceId, kind: "occurrence" });
+    },
+    /** The page of this session showed the run's end while visible; its push skips the session's devices. */
+    runShown(runId: string, sessionId: string): void {
+      const now = clock().getTime();
+      forgetExpired(now);
+      const shown = shownRuns.get(runId);
+      if (shown) {
+        shown.sessions.add(sessionId);
+        return;
+      }
+      if (shownRuns.size >= SHOWN_RUNS_LIMIT) shownRuns.delete(shownRuns.keys().next().value!);
+      shownRuns.set(runId, { expiresAt: now + SHOWN_RUN_TTL_MS, sessions: new Set([sessionId]) });
     },
     /** Resolves when every queued event has been handled (tests and shutdown). */
     async idle(): Promise<void> {

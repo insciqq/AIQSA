@@ -34,7 +34,7 @@ export type OccurrencePushEvent = Readonly<{
 
 export type BrowserPushEvent = RunPushEvent | OccurrencePushEvent;
 
-export type BrowserPushTarget = Readonly<{ auth: string; endpoint: string; id: string; p256dh: string }>;
+export type BrowserPushTarget = Readonly<{ auth: string; endpoint: string; id: string; p256dh: string; sessionId: string }>;
 
 export type BrowserPushDeliveryOutcome = "delivered" | "failed" | "gone";
 
@@ -196,7 +196,7 @@ export function createPrismaBrowserPushStore(prisma: PrismaClient): BrowserPushS
 
     async listTargets(userId, now) {
       return prisma.$queryRaw<BrowserPushTarget[]>(Prisma.sql`
-        SELECT subscription."id", subscription."endpoint", subscription."p256dh", subscription."auth"
+        SELECT subscription."id", subscription."endpoint", subscription."p256dh", subscription."auth", subscription."sessionId"
         FROM "BrowserPushSubscription" AS subscription
         INNER JOIN "AuthSession" AS session
           ON session."id" = subscription."sessionId" AND session."userId" = subscription."userId"

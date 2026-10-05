@@ -1,6 +1,8 @@
 /** Wire contract of `/api/me/push-subscriptions`. */
 
 export const BROWSER_PUSH_SUBSCRIPTIONS_PATH = "/api/me/push-subscriptions";
+/** POST `{ runId }`: this device showed that run's end on screen, so its push skips the device. */
+export const BROWSER_PUSH_SHOWN_RUNS_PATH = "/api/me/push-subscriptions/shown-runs";
 /** The service worker that shows browser push notifications; served anonymously at the root scope. */
 export const BROWSER_PUSH_SERVICE_WORKER_PATH = "/sw.js";
 
@@ -18,6 +20,10 @@ export type BrowserPushKeyResponse = Readonly<{
 export type BrowserPushSubscriptionRequest = Readonly<{
   endpoint: string;
   keys: Readonly<{ auth: string; p256dh: string }>;
+}>;
+
+export type BrowserPushShownRunRequest = Readonly<{
+  runId: string;
 }>;
 
 /**

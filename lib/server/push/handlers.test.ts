@@ -25,13 +25,15 @@ function harness(options: Readonly<{ auth?: AuthenticatedSession | null; saved?:
     deleteSubscription: vi.fn(async () => undefined),
     saveSubscription: vi.fn(async () => options.saved ?? "saved" as const)
   };
+  const runShown = vi.fn();
   const handlers = createBrowserPushHandlers({
     keys: async () => keys,
     now: () => new Date("2026-10-04T12:00:00.000Z"),
     resolveAuth: async () => options.auth === undefined ? session : options.auth,
+    runShown,
     store
   });
-  return { handlers, keys, store };
+  return { handlers, keys, runShown, store };
 }
 
 function request(method: string, body?: unknown): Request {
@@ -86,6 +88,21 @@ describe("browser push owner API", () => {
     expect((await h.handlers.unsubscribe(request("DELETE", { endpoint: "javascript:alert(1)" }))).status).toBe(400);
   });
 
+  it("records a shown run for the caller's session only, from a bare run id", async () => {
+    const h = harness();
+    const runId = "0b7c3a4e-5d6f-4a8b-9c0d-1e2f3a4b5c6d";
+    expect((await h.handlers.runShown(request("POST", { runId }))).status).toBe(204);
+    expect(h.runShown).toHaveBeenCalledWith(runId, "session-1");
+    for (const body of [{ runId: "run-1" }, { runId, sessionId: "session-2" }, { runId: 1 }, [runId]]) {
+      expect((await h.handlers.runShown(request("POST", body))).status).toBe(400);
+    }
+    expect((await harness({ auth: null }).handlers.runShown(request("POST", { runId }))).status).toBe(401);
+    const inactive = harness({ auth: { ...session, user: { ...session.user, status: "disabled" } } });
+    expect((await inactive.handlers.runShown(request("POST", { runId }))).status).toBe(403);
+    expect(h.runShown).toHaveBeenCalledTimes(1);
+    expect(inactive.runShown).not.toHaveBeenCalled();
+  });
+
   it("answers a stable unavailable code when keys or storage fail", async () => {
     const h = harness();
     h.store.saveSubscription.mockRejectedValueOnce(new Error("database down"));
@@ -95,6 +112,7 @@ describe("browser push owner API", () => {
     const keyless = createBrowserPushHandlers({
       keys: async () => { throw new Error("secret_encryption_invalid_key"); },
       resolveAuth: async () => session,
+      runShown: h.runShown,
       store: h.store
     });
     expect((await keyless.key(request("GET"))).status).toBe(503);

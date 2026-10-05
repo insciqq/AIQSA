@@ -70,6 +70,9 @@ describe("persisted browser push", () => {
     const laptopDevice = await subscribe(userId, laptop.id);
     const phoneDevice = await subscribe(userId, phone.id);
     expect((await targets(userId)).sort()).toEqual([laptopDevice.endpoint, phoneDevice.endpoint].sort());
+    // The sender skips a device by the session that reported showing a run.
+    expect(Object.fromEntries((await store.listTargets(userId, new Date())).map((target) => [target.endpoint, target.sessionId])))
+      .toEqual({ [laptopDevice.endpoint]: laptop.id, [phoneDevice.endpoint]: phone.id });
 
     // Explicit logout revokes only this device's session.
     await sessions.revokeSessionByTokenHash({ revokedAt: new Date(), revokedReason: "logout", tokenHash: laptop.tokenHash });

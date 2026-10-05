@@ -60,3 +60,12 @@ export function decodePushUnsubscribeRequest(value: unknown): string | null {
   if (!isRecord(value) || typeof value.endpoint !== "string") return null;
   return validatePushEndpoint(value.endpoint);
 }
+
+const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/** The shown-run report names only the run id. */
+export function decodeShownRunRequest(value: unknown): string | null {
+  if (!isRecord(value) || Object.keys(value).length !== 1 || typeof value.runId !== "string") return null;
+  const runId = value.runId.toLowerCase();
+  return RUN_ID.test(runId) ? runId : null;
+}

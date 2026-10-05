@@ -4,13 +4,15 @@ import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBod
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import type { BrowserPushStore } from "./store";
-import { decodePushSubscriptionRequest, decodePushUnsubscribeRequest } from "./subscriptionRequest";
+import { decodePushSubscriptionRequest, decodePushUnsubscribeRequest, decodeShownRunRequest } from "./subscriptionRequest";
 import type { VapidKeyPair } from "./webPushCrypto";
 
 export type BrowserPushHandlerDeps = Readonly<{
   keys: () => Promise<VapidKeyPair>;
   now?: () => Date;
   resolveAuth: RequestAuthResolver;
+  /** The sender's record of a run whose end this session showed on screen. */
+  runShown: (runId: string, sessionId: string) => void;
   store: Pick<BrowserPushStore, "deleteSubscription" | "saveSubscription">;
 }>;
 
@@ -26,9 +28,10 @@ function failure(code: BrowserPushErrorCode): Response {
 }
 
 /**
- * Owner API for `/api/me/push-subscriptions`: the VAPID public key, and
- * registering or removing this device's subscription. The proxy enforces the
- * same-origin check on mutations; endpoints and keys never reach logs.
+ * Owner API for `/api/me/push-subscriptions`: the VAPID public key,
+ * registering or removing this device's subscription, and reporting a run
+ * this device showed. The proxy enforces the same-origin check on mutations;
+ * endpoints and keys never reach logs.
  */
 export function createBrowserPushHandlers(deps: BrowserPushHandlerDeps) {
   const now = deps.now ?? (() => new Date());
@@ -79,6 +82,19 @@ export function createBrowserPushHandlers(deps: BrowserPushHandlerDeps) {
       const endpoint = decodePushUnsubscribeRequest(raw);
       if (!endpoint) return failure("push_subscription_invalid");
       await deps.store.deleteSubscription(userId, endpoint);
+      return new Response(null, { headers, status: 204 });
+    }),
+
+    /**
+     * The report only spares this session's own devices, so it needs no run
+     * lookup: an unknown or foreign run id matches none of their pushes.
+     */
+    runShown: (request: Request) => handle(request, "write", async ({ sessionId }) => {
+      const [raw, bodyError] = await readBody(request);
+      if (bodyError) return bodyError;
+      const runId = decodeShownRunRequest(raw);
+      if (!runId) return failure("push_subscription_invalid");
+      deps.runShown(runId, sessionId);
       return new Response(null, { headers, status: 204 });
     })
   };

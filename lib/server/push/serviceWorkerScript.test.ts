@@ -54,20 +54,13 @@ describe("push service worker", () => {
     }]);
   });
 
-  it("stays silent only while a focused, visible window shows that chat", async () => {
-    const onScreen = worker([window("https://aiqsa.example/c/chat-1")]);
-    await onScreen.push(message);
-    expect(onScreen.shown).toHaveLength(0);
-
-    for (const background of [window("https://aiqsa.example/c/chat-1", false), window("https://aiqsa.example/c/chat-1", true, "hidden")]) {
-      const sw = worker([background]);
+  it("shows every push, even while a focused window shows that chat", async () => {
+    // Safari revokes subscriptions whose pushes show nothing; the server skips the device instead.
+    for (const client of [window("https://aiqsa.example/c/chat-1"), window("https://aiqsa.example/c/chat-1", false)]) {
+      const sw = worker([client]);
       await sw.push(message);
       expect(sw.shown).toHaveLength(1);
     }
-    // Scheduled-task pushes without a chat are always shown.
-    const scheduled = worker([window("https://aiqsa.example/scheduled")]);
-    await scheduled.push({ ...message, tag: "aiqsa-scheduled", url: "/scheduled" });
-    expect(scheduled.shown).toHaveLength(1);
   });
 
   it("shows a generic notice for an unreadable message and never links off-site", async () => {

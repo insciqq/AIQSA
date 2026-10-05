@@ -1,6 +1,6 @@
 import { createECDH, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { decodePushSubscriptionRequest, decodePushUnsubscribeRequest, validatePushEndpoint } from "./subscriptionRequest";
+import { decodePushSubscriptionRequest, decodePushUnsubscribeRequest, decodeShownRunRequest, validatePushEndpoint } from "./subscriptionRequest";
 
 function browserKeys() {
   const ecdh = createECDH("prime256v1");
@@ -75,5 +75,15 @@ describe("push subscription requests", () => {
     expect(decodePushUnsubscribeRequest({ endpoint: "https://push.example/e" })).toBe("https://push.example/e");
     expect(decodePushUnsubscribeRequest({ endpoint: "http://push.example/e" })).toBeNull();
     expect(decodePushUnsubscribeRequest({})).toBeNull();
+  });
+});
+
+describe("shown-run report", () => {
+  it("accepts exactly one run id in UUID form", () => {
+    expect(decodeShownRunRequest({ runId: "0B7C3A4E-5D6F-4A8B-9C0D-1E2F3A4B5C6D" })).toBe("0b7c3a4e-5d6f-4a8b-9c0d-1e2f3a4b5c6d");
+    for (const value of [null, "0b7c3a4e-5d6f-4a8b-9c0d-1e2f3a4b5c6d", {}, { runId: "run-1" }, { runId: 1 },
+      { runId: "0b7c3a4e-5d6f-4a8b-9c0d-1e2f3a4b5c6d", extra: true }]) {
+      expect(decodeShownRunRequest(value)).toBeNull();
+    }
   });
 });

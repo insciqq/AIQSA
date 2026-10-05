@@ -11,6 +11,7 @@ import {
   type BrowserNotificationPermission,
   type BrowserPushEnvironment
 } from "./browserNotificationsClient";
+import { useShownRunReports } from "./useShownRunReports";
 
 const BANNER_DISMISSED_KEY = "aiqsa.browserNotifications.bannerDismissed";
 /**
@@ -82,6 +83,8 @@ function subscribePermission(environment: BrowserPushEnvironment | null, onChang
  */
 export function useBrowserNotifications(input: Readonly<{
   accountId: string | null;
+  /** The chat on screen, whose answers seen completing here skip this device's push. */
+  activeChatId?: string | null;
   /** The account setting; null while it loads. */
   enabled: boolean | null;
   /** Injected in tests; defaults to the real browser. */
@@ -148,6 +151,12 @@ export function useBrowserNotifications(input: Readonly<{
       window.removeEventListener("focus", rebind);
     };
   }, [accountId, enabled, environment, permission]);
+
+  useShownRunReports({
+    active: Boolean(accountId) && enabled === true && permission === "granted",
+    chatId: input.activeChatId ?? null,
+    environment
+  });
 
   const dismissed = !accountId || dismissedAccounts.has(accountId) || readDismissed(accountId);
   return {
