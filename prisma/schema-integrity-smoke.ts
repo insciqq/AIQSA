@@ -476,6 +476,33 @@ async function assertConstraintCatalog(): Promise<void> {
   ])) {
     throw new Error("Expected a valid trigram index over the immutable message search text.");
   }
+  // History source purge finds receipts by their cited chats and in-flight
+  // state; both indexes are built concurrently and must have finished valid.
+  const historyReceiptIndexes = await prisma.$queryRaw<Array<{
+    name: string;
+    valid: boolean;
+  }>>`
+    SELECT index_relation.relname AS name, index_catalog.indisvalid AS valid
+    FROM pg_index AS index_catalog
+    INNER JOIN pg_class AS index_relation ON index_relation.oid = index_catalog.indexrelid
+    INNER JOIN pg_namespace AS namespace ON namespace.oid = index_relation.relnamespace
+    WHERE namespace.nspname = current_schema()
+      AND (
+        (index_relation.relname = 'MemoryHistoryRun_cited_source_chat_idx'
+          AND pg_get_indexdef(index_catalog.indexrelid)
+            LIKE '%USING gin (jsonb_path_query_array(results, %sourceChatId%')
+        OR (index_relation.relname = 'MemoryHistoryRun_userId_state_idx'
+          AND pg_get_indexdef(index_catalog.indexrelid)
+            LIKE '%USING btree ("userId", state)%')
+      )
+    ORDER BY index_relation.relname
+  `;
+  if (JSON.stringify(historyReceiptIndexes) !== JSON.stringify([
+    { name: "MemoryHistoryRun_cited_source_chat_idx", valid: true },
+    { name: "MemoryHistoryRun_userId_state_idx", valid: true }
+  ])) {
+    throw new Error("Expected valid cited-chat and state indexes over Memory history receipts.");
+  }
 }
 
 async function assertMemoryActiveGenerationGuard(): Promise<void> {

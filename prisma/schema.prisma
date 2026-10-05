@@ -7023,6 +7023,7 @@ model MemoryHistoryRun {
   @@unique([modelRunId, modelRunToolCallId])
   @@index([userId, createdAt])
   @@index([userId, retentionState, createdAt])
+  @@index([userId, state])
   @@index([modelRunId, state])
 }
 
