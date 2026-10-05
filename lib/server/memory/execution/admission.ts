@@ -3,6 +3,7 @@ import { decodeMemorySearchSnapshot, MEMORY_SEARCH_TOOL_NAME } from "../search/c
 import { requireMemorySearchActiveBranch } from "../search/authority";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
+import { modelTokenPricing, modelTokenPricingSelect } from "../../providers/modelTokenPricing";
 import {
   withLockedMemoryTransaction,
   type MemoryTransaction
@@ -26,7 +27,10 @@ import type { MemoryExecutionVersions } from "./compatibility";
 import { isMemoryExecutionRole, type MemoryExecutionRole } from "./roles";
 import {
   createMemoryExecutionSnapshot,
+  freezeMemoryCatalogTokenPricing,
+  memoryExecutionSnapshotIdentity,
   parseMemoryExecutionSnapshot,
+  storedMemoryExecutionSnapshot,
   type MemorySecretFreeExecutionSnapshot
 } from "./snapshot";
 
@@ -266,7 +270,8 @@ function samePendingBinding(
     binding.promptVersion === input.versions.promptVersion &&
     binding.schemaVersion === input.versions.schemaVersion &&
     binding.pipelineVersion === input.versions.pipelineVersion &&
-    canonicalMemoryExecutionJson(binding.secretFreeExecutionSnapshot) ===
+    // The price frozen with the stored binding is accounting, not identity.
+    canonicalMemoryExecutionJson(memoryExecutionSnapshotIdentity(binding.secretFreeExecutionSnapshot)) ===
       canonicalMemoryExecutionJson({ ...expectedSnapshot, version: stored.version,
         acceptedUtilityEgressFingerprint: stored.acceptedUtilityEgressFingerprint });
 }
@@ -360,6 +365,12 @@ export function createPrismaMemoryExecutionAdmission(
         if (!provider.credentialId || !provider.credentialVersionId) {
           return memoryExecutionFailure("memory_execution_target_unavailable");
         }
+        // Freeze the model's catalog price with the binding: settlement, its
+        // replays and recovery then derive one cost however the catalog changes.
+        const pricing = await tx.providerModel.findUnique({
+          select: modelTokenPricingSelect,
+          where: { id: provider.providerModelId }
+        });
         const created = await tx.memoryExecutionBinding.create({
           data: {
             ...ownerData,
@@ -377,7 +388,10 @@ export function createPrismaMemoryExecutionAdmission(
             providerId: provider.providerFamily,
             providerModelId: provider.providerModelId,
             schemaVersion: input.versions.schemaVersion,
-            secretFreeExecutionSnapshot: snapshot as unknown as Prisma.InputJsonValue,
+            secretFreeExecutionSnapshot: storedMemoryExecutionSnapshot(
+              snapshot,
+              freezeMemoryCatalogTokenPricing(pricing ? modelTokenPricing(pricing) : null)
+            ) as unknown as Prisma.InputJsonValue,
             userId
           },
           select: memoryExecutionBindingSelect
