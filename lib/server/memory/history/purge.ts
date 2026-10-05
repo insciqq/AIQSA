@@ -844,10 +844,19 @@ async function scrubMemoryHistoryReceipts(
       WHERE history."id" = affected."id"
       RETURNING history."modelRunToolCallId"
     )
+    -- Deletion scrubs the private query and evidence, never a settled outcome:
+    -- a completed call stays complete (its receipt keeps COMPLETE too), so
+    -- activity and later tool history do not report a failure that never
+    -- happened. Only a call still in flight is fenced as an error.
     UPDATE "ModelRunToolCall" AS call
     SET
       "arguments" = '{}'::jsonb,
-      "state" = 'error'::"ModelRunToolCallState",
+      "state" = CASE
+        WHEN call."state" IN (
+          'pending'::"ModelRunToolCallState", 'running'::"ModelRunToolCallState"
+        ) THEN 'error'::"ModelRunToolCallState"
+        ELSE call."state"
+      END,
       "completedAt" = COALESCE(call."completedAt", CURRENT_TIMESTAMP),
       "result" = jsonb_build_object(
         'callId', call."providerCallId",
@@ -860,7 +869,10 @@ async function scrubMemoryHistoryReceipts(
           'error', 'memory_history_receipt_scrubbed',
           'resultType', 'private_history'
         ),
-        'status', 'error'
+        'status', CASE
+          WHEN call."state" = 'complete'::"ModelRunToolCallState" THEN 'complete'
+          ELSE 'error'
+        END
       ),
       "updatedAt" = CURRENT_TIMESTAMP
     FROM scrubbed_history

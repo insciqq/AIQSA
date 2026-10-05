@@ -57,7 +57,12 @@ it.each([
   }
 });
 
-async function fixture(run: (data: { userId: string; chatId: string; leafId: string; projectId: string | null }) => Promise<void>, mode: "NORMAL" | "TEMPORARY" | "PROJECT" = "NORMAL") {
+async function fixture(
+  run: (data: { userId: string; chatId: string; leafId: string; projectId: string | null }) => Promise<void>,
+  mode: "NORMAL" | "TEMPORARY" | "PROJECT" = "NORMAL",
+  // A test that asserts the seed cleanup its owner's deletion enqueues removes it itself.
+  options: Readonly<{ retainSeedCleanup?: boolean }> = {}
+) {
   const userId = randomUUID();
   const leafId = randomUUID();
   let projectId: string | null = null;
@@ -86,7 +91,13 @@ async function fixture(run: (data: { userId: string; chatId: string; leafId: str
     await prisma.chat.update({ where: { id: chat.id }, data: { activeLeafMessageId: leafId } });
     await run({ userId, chatId: chat.id, leafId, projectId });
   } finally {
-    await prisma.workspaceSession.deleteMany({ where: { chat: { OR: [{ userId }, ...(projectId ? [{ projectId }] : [])] } } });
+    // Seeds outlive a deleted source chat and their archives are keyed by seed,
+    // not by user, so the cleanup jobs they leave are removed by exact key.
+    const ownedChats = [{ userId }, ...(projectId ? [{ projectId }] : [])];
+    const seeds = await prisma.chatContinuationWorkspaceSeed.findMany({ select: { id: true, storageKey: true }, where: {
+      OR: [{ sourceChat: { OR: ownedChats } }, { newChat: { OR: ownedChats } }]
+    } });
+    await prisma.workspaceSession.deleteMany({ where: { chat: { OR: ownedChats } } });
     if (mode === "NORMAL") await prisma.chat.deleteMany({ where: { userId } });
     if (projectId) await prisma.project.deleteMany({ where: { id: projectId } });
     // Disposable fixtures obey the temporary deletion authority used by its normal lifecycle lane.
@@ -101,7 +112,12 @@ async function fixture(run: (data: { userId: string; chatId: string; leafId: str
       await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     }
     await prisma.user.deleteMany({ where: { id: userId } });
-    await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { contains: userId } } });
+    const seedKeys = options.retainSeedCleanup ? [] : seeds.flatMap((seed) =>
+      [`workspace-continuation/${seed.id}.tar.gz`, ...(seed.storageKey ? [seed.storageKey] : [])]);
+    if (!options.retainSeedCleanup) {
+      await prisma.chatContinuationWorkspaceSeed.deleteMany({ where: { id: { in: seeds.map((seed) => seed.id) } } });
+    }
+    await prisma.attachmentDeletionJob.deleteMany({ where: { OR: [{ storageKey: { contains: userId } }, { storageKey: { in: seedKeys } }] } });
   }
 }
 
@@ -318,7 +334,7 @@ it.each(["PROJECT", "TEMPORARY"] as const)("cleans a transferred seed with its %
       projectId, workspaceEnabled: true, memoryMode: mode === "TEMPORARY" ? "TEMPORARY" : "EXCLUDED"
     });
     captured = await prisma.chatContinuationWorkspaceSeed.findUniqueOrThrow({ where: { newChatId: result.chatId }, select: { id: true, storageKey: true } });
-  }, mode);
+  }, mode, { retainSeedCleanup: true });
   expect(captured).not.toBeNull();
   const seed = captured as unknown as { id: string; storageKey: string };
   expect(await prisma.chatContinuationWorkspaceSeed.findUnique({ where: { id: seed.id } })).toBeNull();

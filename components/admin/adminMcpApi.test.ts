@@ -263,9 +263,9 @@ describe("adminMcpApi", () => {
     await expect(createAdminMcpServer({ activate: true, draft: server.draft, name: "Memory" }, fetcher))
       .resolves.toEqual({ data: activating, ok: true });
 
-    // The retired local stages are no longer part of the wire contract.
-    const retired = { ...activating, activation: { ...activating.activation!, stage: "preparing_runtime" } };
-    await expect(requestAdminMcpCatalog(vi.fn().mockResolvedValue(response({ servers: [retired] }))))
+    // A stage outside the wire contract is rejected.
+    const unknown = { ...activating, activation: { ...activating.activation!, stage: "unknown_stage" } };
+    await expect(requestAdminMcpCatalog(vi.fn().mockResolvedValue(response({ servers: [unknown] }))))
       .resolves.toEqual({ error: { code: "mcp_admin_response_invalid", issues: [] }, ok: false });
   });
 });

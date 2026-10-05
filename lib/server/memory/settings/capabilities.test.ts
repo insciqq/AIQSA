@@ -246,7 +246,6 @@ describe("Memory capability projection", () => {
     expect(derive()).toMatchObject({
       administratorSetupRequired: false
     });
-    expect(derive()).not.toHaveProperty("synthesisAvailable");
     expect(derive({ omitted: ["MEMORY_SYNTHESIZE"] })).toMatchObject({
       administratorSetupRequired: true,
       automaticLearningAvailable: true

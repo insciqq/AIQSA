@@ -36,6 +36,17 @@ export type ProviderUsageSources = Readonly<{
   systemModelPolicy: AdminSystemModelPolicyCatalog | null;
 }>;
 
+/**
+ * Image generation runs only with a default image model; models a previous
+ * release left published without one are listed as off, never as in use.
+ */
+export const IMAGE_GENERATION_TAG = "Image generation";
+export const IMAGE_GENERATION_OFF_TAG = "Image generation · off";
+
+export function imageGenerationTag(sources: ProviderUsageSources): string {
+  return sources.systemModelPolicy?.policy.imageModel ? IMAGE_GENERATION_TAG : IMAGE_GENERATION_OFF_TAG;
+}
+
 /** `Used as` tags per connection id, in display order. */
 export type ProviderUsageIndex = ReadonlyMap<string, readonly string[]>;
 
@@ -286,7 +297,11 @@ const ROLE_TAGS = new Set([
   "Default chat",
   "System model",
   "Memory",
+  "Chat titles",
   "Chat PDF",
+  "Vision Model",
+  IMAGE_GENERATION_TAG,
+  IMAGE_GENERATION_OFF_TAG,
   "Reranker",
   "Knowledge docs",
   "Knowledge embeddings"
@@ -329,7 +344,7 @@ export function deriveProviderUsage(
   add(roles?.chatPdfModel?.connectionId, "Chat PDF");
   add(roles?.visionModel?.connectionId, "Vision Model");
   add(roles?.rerankerModel?.connectionId, "Reranker");
-  for (const model of roles?.imageModels ?? []) add(model.connectionId, "Image generation");
+  for (const model of roles?.imageModels ?? []) add(model.connectionId, imageGenerationTag(sources));
   for (const entry of roles?.rerankerRoute?.entries ?? []) add(entry.connectionId, "Reranker");
   const revision = sources.knowledge?.profile.activeRevision;
   add(modelOwner.get(revision?.pdfProcessing.destination?.deploymentId ?? ""), "Knowledge docs");

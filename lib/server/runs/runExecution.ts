@@ -122,6 +122,8 @@ import { knowledgeSearchFailureCode, knowledgeSearchFailureMessage, knowledgeSea
   knowledgeSearchFailureFromToolResult, knowledgeSearchUnavailableMessage, knowledgeScopeLimitedMessage, isKnowledgeSearchFailureCode } from "../knowledge/searchFailure";
 import type { KnowledgeEvidenceDispatchBinding } from "../knowledge/evidenceDispatchRepository";
 import { KNOWLEDGE_ANSWER_ROUTE_FULL_CONTEXT } from "../knowledge/fullContext";
+import { KNOWLEDGE_IMAGE_OBSERVATION_FAILURES, knowledgeImageObservationAnswerOutputTokens,
+  type KnowledgeImageObservationBlock } from "../knowledge/imageObservation";
 import type {
   KnowledgeProviderDispatchLifecycle
 } from "../knowledge/providerDispatchLifecycle";
@@ -623,6 +625,10 @@ function safeKnowledgeFailureMessage(code: string): string {
     case "knowledge_citation_contract_failed":
     case "knowledge_answer_contract_failed":
       return "The Knowledge answer did not satisfy the required citation contract.";
+    case KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.failed.code:
+      return KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.failed.message;
+    case KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.unknown.code:
+      return KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.unknown.message;
     default:
       return "The Knowledge request failed.";
   }
@@ -649,6 +655,8 @@ function focusedKnowledgeFailureCode(error: unknown): string {
     case "knowledge_answer_failed":
     case "knowledge_answer_contract_failed":
     case "knowledge_citation_contract_failed":
+    case KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.failed.code:
+    case KNOWLEDGE_IMAGE_OBSERVATION_FAILURES.unknown.code:
       return code;
     case "knowledge_focused_request_invalid":
     case "knowledge_focused_checkpoint_conflict":
@@ -1614,6 +1622,48 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         }
       }
 
+      // The admitted description of the current message's images, made once
+      // per run before the grounded answer and reused by every answer cycle.
+      let admittedImageObservation: Promise<KnowledgeImageObservationBlock | undefined> | undefined;
+      async function observeAdmittedKnowledgeImages(): Promise<KnowledgeImageObservationBlock | undefined> {
+        const plan = normalizedRequest.knowledgeImageObservation;
+        if (!plan) return undefined;
+        const failure = KNOWLEDGE_IMAGE_OBSERVATION_FAILURES;
+        if (!input.vision) throw new RunPipelineError(failure.failed.code, failure.failed.message);
+        // Lost Project access fails with its own reason, before any image is read.
+        await assertProjectRunAccessCurrent(true);
+        const budget = normalizedRequest.knowledgeGenerationBudget;
+        const outcome = await input.vision.observeKnowledgeImages({
+          plan, question: textFromContentBlocks(normalizedRequest.content), chatId: normalizedRequest.chatId, runId, userId: input.userId,
+          async authorize() {
+            await assertProjectRunAccessCurrent(true);
+            return plan.route === "system_vision" || await currentAnswerDispatchAllowed();
+          },
+          ...(plan.route === "answer_model" && budget
+            ? { timeoutMs: budget.timeoutMs, maxOutputTokens: knowledgeImageObservationAnswerOutputTokens(budget) } : {}),
+          ...(egressReceiptRequired && input.memoryEgress ? { async onDispatch(request: ProviderRunRequest, destination: Readonly<{ provider: string; modelId: string }>) {
+            const receipt = await input.memoryEgress!.beginDispatch({
+              destinationKind: plan.route === "system_vision" ? "vision_analysis" : "answer_provider",
+              destinationSnapshot: { modelId: destination.modelId, operation: "knowledge_image_observation", provider: destination.provider, version: 1 },
+              mode: "PROVIDER_REQUEST",
+              requestEvidence: memoryEgressRequestEvidence(request),
+              requestPreview: { operation: "knowledge_image_observation", requestHash: memorySha256(request.content) },
+              runId,
+              userId: input.userId
+            });
+            return async (ok: boolean, code: string | null) => {
+              if (ok) await input.memoryEgress!.completeDispatch(receipt.id);
+              else await input.memoryEgress!.failDispatch(receipt.id, code ?? "provider_dispatch_failed");
+            };
+          } } : {}),
+          signal
+        });
+        throwIfAborted(signal);
+        if (outcome.kind === "observed") return outcome.observation;
+        const visible = outcome.kind === "unknown" ? failure.unknown : failure.failed;
+        throw new RunPipelineError(visible.code, visible.message);
+      }
+
       async function runAutomaticKnowledgeAnswer(inputRequest: Parameters<typeof executeAutomaticKnowledgeAnswer>[0]) {
         for (;;) {
           if (followups) await followups.prepare(followupBaseRequest);
@@ -1658,6 +1708,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             "The effective Knowledge request is empty"
           );
         }
+        const imageObservation = evidenceAnswer ? await (admittedImageObservation ??= observeAdmittedKnowledgeImages()) : undefined;
         const reasoningEffort = knowledgeGroundingInheritedReasoningEffortV1({
           acceptedReasoningEffort: normalizedRequest.reasoningEffort,
           params: normalizedRequest.params
@@ -1710,6 +1761,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         } as const;
         if (evidenceAnswer) {
           const evidenceInput = { ...executionInput, ...(normalizedRequest.prompt.responseReminder !== undefined ? { answerInstructions: knowledgeAnswerInstructions(normalizedRequest.prompt) } : {}), executionPolicy: groundingExecutionPolicy!,
+            ...(imageObservation ? { imageObservation } : {}),
             repairFeedbackVersion: normalizedRequest.knowledgeReviewRepairFeedbackVersion,
             generationBudget: normalizedRequest.knowledgeGenerationBudget };
           const operationResult = normalizedRequest.knowledgeAnswerWorkflowVersion === 9 || normalizedRequest.knowledgeAnswerWorkflowVersion === 10 || normalizedRequest.knowledgeAnswerWorkflowVersion === 11

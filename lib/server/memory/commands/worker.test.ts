@@ -22,7 +22,7 @@ vi.mock("../../observability", async (importOriginal) => ({
 
 const intent: MemoryActionIntent = { action: "NONE", aggregationRequested: false,
   applyResponsePreferences: false, category: null, categoryHint: null, confidenceBand: "HIGH",
-  entityMentions: [], memoryUseful: false, patternExclusionRequested: false, pastChatsUseful: false,
+  entityMentions: [], memoryUseful: false, pastChatsUseful: false,
   profileRequested: false, queryDecompositions: [], queryText: null, reasonCode: "none",
   recencyRequested: false, retrievalMode: "TARGETED_CURRENT", referencedMemoryRef: null,
   replacementStatement: null, responsePreference: false, sensitiveDomainHint: null,
@@ -230,9 +230,9 @@ describe("durable Memory command worker", () => {
     }) }));
   });
 
-  it("releases automatic learning for a real v13 NONE decision without a confidence field", async () => {
+  it("releases automatic learning for a real NONE decision without a confidence field", async () => {
     const decoded = decodeMemoryActionControlDecision({ decision: {
-      action: "NONE", patternExclusionRequested: false, reasonCode: "no_memory_request"
+      action: "NONE", reasonCode: "no_memory_request"
     } }, "I prefer green notebooks.");
     expect(decoded.ok).toBe(true);
     if (!decoded.ok) throw new Error(decoded.code);
@@ -247,50 +247,38 @@ describe("durable Memory command worker", () => {
     expect(mocks.execute).not.toHaveBeenCalled();
   });
 
-  it("ignores a retained pattern exclusion when releasing learning for a v13 NONE", async () => {
-    const decoded = decodeMemoryActionControlDecision({ decision: {
-      action: "NONE", patternExclusionRequested: true, reasonCode: "no_memory_request"
-    } }, "Synthetic request");
-    if (!decoded.ok) throw new Error(decoded.code);
-    const f = fixture();
-    f.control.decide.mockResolvedValueOnce({ bindingId: "binding", status: "READY", intent: decoded.value });
-    await f.handler.execute(job, f.context);
-    expect(f.client.memoryJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ commandResult: { classification: "NONE" } })
-    }));
-    expect(mocks.execute).not.toHaveBeenCalled();
-  });
-
-  it("executes a stored checkpoint carrying the retired pattern exclusion", async () => {
-    // A checkpoint accepted before the retirement: the decoder keeps the
-    // field only beside a current targeted Memory read.
-    const excluded = { ...intent, memoryUseful: true, patternExclusionRequested: true,
-      queryText: "green notebooks" };
-    const saved = { ...excluded, action: "SAVE" as const, reasonCode: "save_request" as const,
-      statement: "I prefer green" };
-    const checkpoint = { bindingId: "binding", intent: saved };
-    expect(decodeMemoryCommandIntent(checkpoint)).toEqual(checkpoint);
+  it.each([
+    { action: "SAVE" as const, reasonCode: "save_request" as const, statement: "I prefer green" },
+    { action: "NONE" as const, reasonCode: "no_memory_request" as const }
+  ])("settles a $action checkpoint of an earlier intent version visibly without new work", async (fields) => {
+    // An older stored decision keeps a field this intent version dropped. Its
+    // classifier proof binds that shape, so it can never authorize again.
+    const current = { ...intent, ...fields };
+    expect(decodeMemoryCommandIntent({ bindingId: "binding", intent: current })).not.toBeNull();
+    const checkpoint = { bindingId: "binding", intent: { ...current, retiredHint: false } };
+    expect(decodeMemoryCommandIntent(checkpoint)).toBeNull();
     const f = fixture("RUNNING", checkpoint);
-    mocks.execute.mockResolvedValueOnce({ operation: "SAVE", status: "COMMITTED" });
-    expect(await f.handler.execute(job, f.context)).toMatchObject({ stage: "command_committed" });
+    expect(await f.handler.execute(job, f.context)).toMatchObject({ stage: "command_failed" });
     expect(f.control.decide).not.toHaveBeenCalled();
-    expect(mocks.execute).toHaveBeenCalledWith(expect.objectContaining({ intent: saved }));
-
-    const declined = { bindingId: "binding", intent: { ...excluded,
-      reasonCode: "no_memory_request" as const } };
-    expect(decodeMemoryCommandIntent(declined)).toEqual(declined);
-    const g = fixture("RUNNING", declined);
-    expect(await g.handler.execute(job, g.context)).toMatchObject({ stage: "command_rejected" });
-    expect(g.client.memoryJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ commandResult: { classification: "NONE" } })
+    expect(f.client.memoryExecutionBinding.findFirst).not.toHaveBeenCalled();
+    expect(mocks.execute).not.toHaveBeenCalled();
+    expect(mocks.attempt).toHaveBeenCalledExactlyOnceWith(job, {
+      action: "fail", code: "memory_command_checkpoint_invalid", outcome: "failed", stage: "validate"
+    });
+    // The reason survives the content-free log boundary instead of "unknown".
+    const [, logged] = mocks.attempt.mock.calls[0]!;
+    expect(JSON.parse(serializeEvent("job_attempt", { ...logged, job_id: job.id, subsystem: "memory" })!))
+      .toMatchObject({ code: "memory_command_checkpoint_invalid", outcome: "failed" });
+    expect(f.client.memoryJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { commandIntent: Prisma.DbNull, commandResult: Prisma.DbNull, commandStatus: "FAILED" }
     }));
   });
 
   it.each([
-    { reasonCode: "uncertain", patternExclusionRequested: false },
-    { reasonCode: "unsupported", patternExclusionRequested: false },
-    { reasonCode: "low_confidence", patternExclusionRequested: false }
-  ])("does not release learning for excluded v13 NONE $reasonCode/$patternExclusionRequested", async (decision) => {
+    { reasonCode: "uncertain" },
+    { reasonCode: "unsupported" },
+    { reasonCode: "low_confidence" }
+  ])("does not release learning for excluded NONE $reasonCode", async (decision) => {
     const decoded = decodeMemoryActionControlDecision({ decision: { action: "NONE", ...decision } }, "Synthetic request");
     if (!decoded.ok) throw new Error(decoded.code);
     const f = fixture();

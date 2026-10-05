@@ -435,11 +435,10 @@ describe("retired Dream synthesis", () => {
     }
   });
 
-  it("runs maintenance for an owner whose Dream toggle was off and cancels it with automatic learning", async () => {
+  it("runs maintenance for an owner and cancels it with automatic learning", async () => {
     const userId = await owner("maintenance");
     try {
       await source(userId, "Please make this invitation square.");
-      await prisma.userMemorySettings.update({ where: { userId }, data: { synthesisEnabled: false } });
       expect(await scheduleOwnerMemoryMaintenance(prisma, userId, new Date())).toBe(1);
       const job = await prisma.memoryJob.findFirstOrThrow({ where: { userId, kind: "SYNTHESIZE_MEMORIES" } });
       expect(job).toMatchObject({ pipelineVersion: "memory-maintenance-v1", state: "QUEUED" });

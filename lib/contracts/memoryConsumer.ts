@@ -83,9 +83,6 @@ const memoryConsumerSettingsResponseSchema = z.strictObject({
     permanentChatDeletion: z.boolean(),
     pastChatIndexingAvailable: z.boolean(),
     retrievalAvailable: z.boolean(),
-    // Retired Dream fields: no longer sent, but still accepted and ignored so
-    // this client decodes a previous-release server during replacement.
-    synthesisAvailable: z.boolean().optional(),
     temporaryChats: z.boolean()
   }),
   resetState: z.enum(MEMORY_CONSUMER_RESET_STATES),
@@ -93,7 +90,6 @@ const memoryConsumerSettingsResponseSchema = z.strictObject({
     decayEnabled: z.boolean(),
     learnAutomatically: z.boolean(),
     referenceChatHistory: z.boolean(),
-    synthesisEnabled: z.boolean().optional(),
     useMemoryFacts: z.boolean()
   }),
   status: z.enum(MEMORY_CONSUMER_STATUSES)

@@ -9,10 +9,16 @@ import {
   type ResolvedMemoryExecutionTarget
 } from "../lib/server/memory/execution";
 import {
+  MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
+  MEMORY_RERANK_AGGREGATION_MAX_BATCHES
+} from "../lib/server/memory/retrieval/runUtilities";
+import {
   MEMORY_SEMANTIC_SMOKE_HISTORY_SEARCH_CODES,
+  MEMORY_SEMANTIC_SMOKE_RERANKER_ROUTE_CODES,
   MEMORY_SEMANTIC_SMOKE_SCENARIOS,
   MemorySemanticSmokePreflightError,
   assessMemorySemanticSmokeHistorySearch,
+  assessMemorySemanticSmokeRerankerRoute,
   assessMemorySemanticSmokeSecretCommand,
   createMemorySemanticSmokeScenarioLedger,
   createPrismaMemorySemanticSmokeVerifier,
@@ -739,6 +745,167 @@ describe("Memory semantic smoke support", () => {
     expect(MEMORY_SEMANTIC_SMOKE_HISTORY_SEARCH_CODES).toHaveLength(5);
   });
 
+  it("proves the approved reranker route only through the recall run's memory_search bindings", async () => {
+    const started = new Date("2026-10-05T10:00:00.000Z");
+    const primaryBinding = (overrides: Record<string, unknown> = {}) => ({
+      completedAt: new Date(started.getTime() + 420),
+      ordinal: 2,
+      pipelineVersion: MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
+      providerModelId: "primary-reranker",
+      startedAt: started,
+      state: "SUCCEEDED",
+      ...overrides
+    });
+    const diagnostics = (rerankCandidateCount: number, reasons: unknown[] = []) => ({
+      results: {
+        diagnosticEvidence: { reasons, rerankCandidateCount, version: 1 },
+        version: "memory-search-v1"
+      }
+    });
+    const routeClient = (
+      bindings: readonly Record<string, unknown>[],
+      receipts: readonly Record<string, unknown>[]
+    ) => ({
+      memoryExecutionBinding: { findMany: vi.fn().mockResolvedValue(bindings) },
+      memoryHistoryRun: { findMany: vi.fn().mockResolvedValue(receipts) },
+      modelRunToolCall: {
+        findMany: vi.fn().mockResolvedValue([{ id: "search-1" }, { id: "search-2" }])
+      }
+    } as unknown as PrismaClient & Readonly<{
+      memoryExecutionBinding: { findMany: ReturnType<typeof vi.fn> };
+      memoryHistoryRun: { findMany: ReturnType<typeof vi.fn> };
+    }>);
+    const input = {
+      primaryProviderModelId: "primary-reranker",
+      recallModelRunId: "private-recall-run",
+      userId: "private-owner"
+    };
+
+    const healthy = routeClient(
+      [primaryBinding(), primaryBinding({ ordinal: 3 })],
+      [diagnostics(12), diagnostics(0), { results: null }]
+    );
+    const evidence = await createPrismaMemorySemanticSmokeVerifier(healthy)
+      .rerankRouteEvidence(input);
+    expect(evidence).toEqual({
+      bindings: 2,
+      maxRerankMs: 420,
+      primaryRouteBindings: 2,
+      rerankedSearches: 1,
+      rerankStageReasons: 0
+    });
+    expect(assessMemorySemanticSmokeRerankerRoute(evidence)).toEqual({ ok: true });
+    expect(healthy.memoryExecutionBinding.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        logicalRole: "MEMORY_RERANK",
+        modelRunId: "private-recall-run",
+        modelRunToolCallId: { in: ["search-1", "search-2"] },
+        ownerType: "MODEL_RUN_TOOL_CALL",
+        userId: "private-owner"
+      }
+    }));
+
+    // A fallback model, a failed or unknown primary attempt, an off-route
+    // pipeline or a skipped rerank stage each break the approved route.
+    for (const bindings of [
+      [primaryBinding({ state: "FAILED" }), primaryBinding({
+        ordinal: 2 + MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
+        providerModelId: "fallback-reranker"
+      })],
+      [primaryBinding({ ordinal: 2 + MEMORY_RERANK_AGGREGATION_MAX_BATCHES })],
+      [primaryBinding({ pipelineVersion: "memory-multilingual-relevance-v31" })],
+      [primaryBinding({ state: "OUTCOME_UNKNOWN" })]
+    ]) {
+      const broken = await createPrismaMemorySemanticSmokeVerifier(
+        routeClient(bindings, [diagnostics(12)])
+      ).rerankRouteEvidence(input);
+      expect(assessMemorySemanticSmokeRerankerRoute(broken)).toEqual({
+        code: "memory_smoke_reranker_route_regression_failed", ok: false
+      });
+    }
+    const skipped = await createPrismaMemorySemanticSmokeVerifier(routeClient(
+      [primaryBinding()],
+      [diagnostics(12, [{ code: "optional_window_exhausted", stage: "rerank" }])]
+    )).rerankRouteEvidence(input);
+    expect(skipped.rerankStageReasons).toBe(1);
+    expect(assessMemorySemanticSmokeRerankerRoute(skipped)).toEqual({
+      code: "memory_smoke_reranker_route_regression_failed", ok: false
+    });
+    const unbound = await createPrismaMemorySemanticSmokeVerifier(routeClient(
+      [primaryBinding()],
+      [diagnostics(12), diagnostics(4)]
+    )).rerankRouteEvidence(input);
+    expect(assessMemorySemanticSmokeRerankerRoute(unbound)).toEqual({
+      code: "memory_smoke_reranker_route_regression_failed", ok: false
+    });
+    const unexercised = await createPrismaMemorySemanticSmokeVerifier(
+      routeClient([], [diagnostics(0)])
+    ).rerankRouteEvidence(input);
+    expect(assessMemorySemanticSmokeRerankerRoute(unexercised)).toEqual({
+      code: "memory_smoke_reranker_route_not_exercised", ok: false
+    });
+    expect(MEMORY_SEMANTIC_SMOKE_RERANKER_ROUTE_CODES).toHaveLength(2);
+  });
+
+  it("does not query bindings when the recall run made no memory_search call", async () => {
+    const client = {
+      memoryExecutionBinding: { findMany: vi.fn() },
+      memoryHistoryRun: { findMany: vi.fn() },
+      modelRunToolCall: { findMany: vi.fn().mockResolvedValue([]) }
+    } as unknown as PrismaClient & Readonly<{
+      memoryExecutionBinding: { findMany: ReturnType<typeof vi.fn> };
+    }>;
+    const evidence = await createPrismaMemorySemanticSmokeVerifier(client).rerankRouteEvidence({
+      primaryProviderModelId: "primary-reranker",
+      recallModelRunId: "private-recall-run",
+      userId: "private-owner"
+    });
+    expect(evidence).toMatchObject({ bindings: 0, rerankedSearches: 0 });
+    expect(client.memoryExecutionBinding.findMany).not.toHaveBeenCalled();
+    expect(assessMemorySemanticSmokeRerankerRoute(evidence)).toEqual({
+      code: "memory_smoke_reranker_route_not_exercised", ok: false
+    });
+  });
+
+  it("reports memory_search calls whose settled outcome a receipt scrub rewrote", async () => {
+    const scrubbed = {
+      content: [{ type: "json", value: { error: "memory_history_receipt_scrubbed" } }],
+      status: "complete"
+    };
+    const client = {
+      memoryHistoryRun: { count: vi.fn().mockResolvedValue(2) },
+      modelRunToolCall: {
+        findMany: vi.fn().mockResolvedValue([
+          { result: scrubbed, state: "complete" },
+          { result: { ...scrubbed, status: "error" }, state: "complete" },
+          { result: scrubbed, state: "error" }
+        ])
+      }
+    } as unknown as PrismaClient & Readonly<{
+      memoryHistoryRun: { count: ReturnType<typeof vi.fn> };
+      modelRunToolCall: { findMany: ReturnType<typeof vi.fn> };
+    }>;
+    await expect(createPrismaMemorySemanticSmokeVerifier(client).searchCallSettlement({
+      recallModelRunId: "private-recall-run",
+      userId: "private-owner"
+    })).resolves.toEqual({ calls: 3, rewrittenCalls: 2, scrubbedReceipts: 2 });
+    expect(client.modelRunToolCall.findMany).toHaveBeenCalledWith({
+      select: { result: true, state: true },
+      where: {
+        modelRun: { userId: "private-owner" },
+        modelRunId: "private-recall-run",
+        toolName: "memory_search"
+      }
+    });
+    expect(client.memoryHistoryRun.count).toHaveBeenCalledWith({
+      where: {
+        modelRunId: "private-recall-run",
+        retentionState: "SCRUBBED",
+        userId: "private-owner"
+      }
+    });
+  });
+
   it("accepts a rejected secret save or a token-free safe remainder only", () => {
     const evidence = {
       mutationRows: 0,
@@ -881,12 +1048,9 @@ describe("Memory semantic smoke support", () => {
 
   it("accepts strict retry-ancestor evidence only beside a consumed attempt", async () => {
     const strictControl = strictExecutionSnapshot("MEMORY_CONTROL");
-    const rerank = strictExecutionSnapshot("MEMORY_RERANK");
     const client = {
       memoryExecutionBinding: {
-        findMany: vi.fn()
-          .mockResolvedValueOnce([{ secretFreeExecutionSnapshot: strictControl }])
-          .mockResolvedValueOnce([{ secretFreeExecutionSnapshot: rerank }])
+        findMany: vi.fn().mockResolvedValueOnce([{ secretFreeExecutionSnapshot: strictControl }])
       },
       memoryMutationAuthorization: { count: vi.fn().mockResolvedValue(0) },
       memoryOperationReceipt: { count: vi.fn().mockResolvedValue(0) },
@@ -909,11 +1073,6 @@ describe("Memory semantic smoke support", () => {
       role: "MEMORY_CONTROL",
       userId: "private-owner"
     })).resolves.toBe(1);
-    await expect(verifier.successfulRetrievalExecutionCount({
-      modelRunId: "private-run",
-      role: "MEMORY_RERANK",
-      userId: "private-owner"
-    })).resolves.toBe(1);
     await expect(verifier.mutationPersistenceCount({
       modelRunId: "private-run",
       userId: "private-owner"
@@ -928,15 +1087,7 @@ describe("Memory semantic smoke support", () => {
         userId: "private-owner"
       }
     });
-    expect(client.memoryExecutionBinding.findMany).toHaveBeenNthCalledWith(2, {
-      select: { secretFreeExecutionSnapshot: true },
-      where: {
-        logicalRole: "MEMORY_RERANK",
-        retrievalAttemptId: { in: ["private-attempt", "private-retry-ancestor"] },
-        state: "SUCCEEDED",
-        userId: "private-owner"
-      }
-    });
+    expect(client.memoryExecutionBinding.findMany).toHaveBeenCalledOnce();
     expect(client.memoryMutationAuthorization.count).toHaveBeenCalledWith({
       where: { modelRunId: "private-run", userId: "private-owner" }
     });
@@ -1069,7 +1220,7 @@ describe("Memory semantic smoke support", () => {
     // from content-free command feedback, ambiguity is resolved in the Library.
     expect(source).toContain("/api/me/chats/${encodeURIComponent(source.chat.id)}/memory-commands");
     expect(source).not.toContain("/api/me/memory/source-actions");
-    expect(source.match(/await requiredMemoryCommand\(/gu)).toHaveLength(5);
+    expect(source.match(/await requiredMemoryCommand\(/gu)).toHaveLength(7);
     expect(source.match(/await editConsumerMemory\(/gu)).toHaveLength(1);
     expect(source).toContain("assessMemorySemanticSmokeSecretCommand({");
     const noFactWait = source.slice(
@@ -1091,10 +1242,40 @@ describe("Memory semantic smoke support", () => {
     expect(source).toContain("memory_smoke_expected_fact_missing");
     expect(source).toContain('mcp: { mode: "off" }');
     expect(source).toContain('process.argv.includes("--actions-only")');
-    expect(source).toContain('requiredManagementAction(list, "LIST", "COMPLETE")');
-    expect(source).toContain(
+    // Natural-language commands settle as their source message's command job
+    // with no in-chat artifact; list and reset stay on the synchronous
+    // `/memory` boundary, and reset still needs confirmation.
+    const actions = source.slice(
+      source.indexOf("async function runLiveActionSmoke("),
+      source.indexOf("async function defectRegressionTarget(")
+    );
+    expect(actions).not.toContain("requiredMemoryAction");
+    expect(actions).toContain('await requiredMemoryCommand(save, "SAVE", "COMMITTED");');
+    expect(actions).toContain(
+      'await requiredMemoryCommand(naturalReset, "UNKNOWN", "REJECTED");'
+    );
+    expect(actions.match(/assertNoActionArtifact\(/gu)).toHaveLength(2);
+    expect(actions).toContain('"/memory list"');
+    expect(actions).toContain('requiredManagementAction(list, "LIST", "COMPLETE")');
+    expect(actions).toContain('"/memory reset"');
+    expect(actions).toContain(
       'requiredManagementAction(reset, "RESET", "CONFIRMATION_REQUIRED")'
     );
+    expect(actions.match(/await assertNoMemoryCommand\(/gu)).toHaveLength(2);
+    expect(actions.match(/await assertMemoryNotReset\(marker\)/gu)).toHaveLength(2);
+    // Standing-v1 reranks only inside memory_search calls; the regression
+    // proves the route there and checks the calls survive the cleanup purge.
+    const route = source.slice(
+      source.indexOf("async function runLiveRerankerRouteRegression("),
+      source.indexOf("async function runLiveActionSmoke(")
+    );
+    expect(route).not.toMatch(/memoryRetrievalAttempt|budgetSnapshot/u);
+    expect(route).toContain("verifier.rerankRouteEvidence({");
+    expect(route).toContain("assessMemorySemanticSmokeRerankerRoute(route)");
+    expect(route).toContain("assessMemorySemanticSmokeHistorySearch(historySearch)");
+    expect(route).toContain("fixture.recall");
+    expect(route.indexOf("await assertSettledSearchSurvivesCleanup(recallModelRunId)"))
+      .toBeGreaterThan(route.indexOf("await cleanupSmokeState("));
     expect(source).toContain("`Меня зовут Алина-${marker}");
     expect(source).toContain("identityAnswer.toLocaleLowerCase().includes(marker)");
     expect(source).toContain(

@@ -111,7 +111,7 @@ beforeEach(() => {
     const body = JSON.parse(String(init?.body));
     const args = JSON.stringify({
       action: "NONE", answerRequested: true, category: null, confidenceBand: "HIGH",
-      patternExclusionRequested: false, reasonCode: "no_memory_request",
+      reasonCode: "no_memory_request",
       referencedMemoryRef: null, replacementStatement: null, responsePreference: false,
       sensitivity: "NORMAL", statement: null, targetQuery: null, thisChatOnly: false
     });

@@ -385,6 +385,29 @@ async function cleanupOwner(userId: string): Promise<void> {
   await prisma.user.deleteMany({ where: { id: userId } });
 }
 
+/** Runs the real installation-wide candidate SQL but lets a reconciler act
+ * only on fixture owners: the disposable database also holds seeded accounts
+ * whose settings, generations and jobs belong to other tests. */
+function ownerScopedClient(owners: readonly string[]): typeof prisma {
+  const scope = new Set(owners);
+  return new Proxy(prisma, {
+    get(target, property) {
+      if (property === "$queryRaw") {
+        return async (query: Prisma.Sql | TemplateStringsArray, ...values: unknown[]) => {
+          const rows = await target.$queryRaw<Array<{ userId?: string }>>(
+            query as Prisma.Sql, ...values
+          );
+          const text = Array.isArray(query) ? query.join("") : (query as Prisma.Sql).strings.join("");
+          return text.includes('SELECT settings."userId"')
+            ? rows.filter((row) => row.userId !== undefined && scope.has(row.userId))
+            : rows;
+        };
+      }
+      return Reflect.get(target, property);
+    }
+  });
+}
+
 async function configureEmbeddingProvider(
   userId: string,
   label: string
@@ -1324,9 +1347,10 @@ async function expectHistoryReceiptScrubbedWithAcceptedEvidenceRetained(
     where: { id: receipt.toolCallId }
   });
   expect(scrubbedCall.arguments).toEqual({});
+  expect(scrubbedCall.state).toBe("complete");
   expect(scrubbedCall.result).toMatchObject({
     content: [{ value: { error: "memory_history_receipt_scrubbed" } }],
-    status: "error"
+    status: "complete"
   });
   expect(JSON.stringify(scrubbedCall)).not.toContain(receipt.marker);
   await expect(prisma.memoryToolEgressReceipt.findUniqueOrThrow({
@@ -1538,7 +1562,12 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         preflightStatus: "ready", preflightCheckedAt: new Date(), activatedAt: new Date()
       } });
       await prisma.knowledgeIndexProfile.update({ where: { id: "installation" }, data: { activeRevisionId: revisionId } });
-      const setup = createPrismaMemoryEmbeddingSetup(prisma);
+      // reconcile() scans every active owner. Unscoped, it would select this
+      // installation default for the seeded administrator (entitled through
+      // Full access) and leave its settings, shadow and REBUILD_INDEX job.
+      const setup = createPrismaMemoryEmbeddingSetup(
+        ownerScopedClient([userId, deniedId, pausedId, discoveredId])
+      );
       const outcomes = await Promise.all([setup.ensure(userId), setup.ensure(userId)]);
       expect(outcomes).toContain("queued");
       expect(await setup.ensure(userId)).toBe("pending");
@@ -2885,6 +2914,13 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       }));
       const contentHash = memorySha256(text);
       // Both inserts use precomputed IDs; a batch avoids an interactive fixture timeout.
+      // At COMMIT every inserted chunk and source-map row fires a deferred
+      // source guard that re-validates all ACTIVE chunks of the chat, so the
+      // batch costs rows x chunks guard evaluations. A disposable database has
+      // no planner statistics for this one-chat bulk set, and guard plans made
+      // without them have added tens of seconds to this fixture. ANALYZE inside
+      // the batch samples the batch's own rows and replans the guards before
+      // COMMIT, as autovacuum statistics would on a real installation.
       await prisma.$transaction([
         prisma.memoryRecallChunk.createMany({
           data: chunks.map((chunk) => ({
@@ -2921,7 +2957,8 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
             startOffset: 0,
             userId
           }))
-        })
+        }),
+        prisma.$executeRaw`ANALYZE "MemoryRecallChunk", "MemoryRecallChunkMessage"`
       ]);
 
       provider = await configureEmbeddingProvider(userId, "hybrid-large-set");

@@ -258,25 +258,30 @@ describe("Memory response contracts", () => {
     })).toMatchObject({ ok: false });
   });
 
-  it("rejects the retired Dream fields in settings responses and patches", () => {
+  it("rejects unknown fields in settings responses and patches", () => {
     expect(decodeMemorySettingsResponse({
       ...settingsResponse(),
-      settings: { ...settingsResponse().settings, synthesisEnabled: false }
+      settings: { ...settingsResponse().settings, unknownSetting: false }
     })).toMatchObject({ ok: false });
     expect(decodeMemorySettingsResponse({
       ...settingsResponse(),
-      capabilities: { ...settingsResponse().capabilities, synthesisAvailable: true }
+      capabilities: { ...settingsResponse().capabilities, unknownCapability: true }
     })).toMatchObject({ ok: false });
     expect(decodeMemorySettingsMutation({
       expectedMemoryRevision: 1,
       expectedSettingsRevision: 2,
-      synthesisEnabled: true
+      learnAutomatically: false
+    })).toMatchObject({ ok: true });
+    expect(decodeMemorySettingsMutation({
+      expectedMemoryRevision: 1,
+      expectedSettingsRevision: 2,
+      unknownSetting: true
     })).toMatchObject({ ok: false });
     expect(decodeMemorySettingsMutation({
       expectedMemoryRevision: 1,
       expectedSettingsRevision: 2,
       learnAutomatically: false,
-      synthesisEnabled: false
+      unknownSetting: false
     })).toMatchObject({ ok: false });
   });
 

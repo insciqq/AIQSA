@@ -513,7 +513,6 @@ function retrievalOptions(
           confidenceBand: "HIGH" as const,
           entityMentions: [],
           memoryUseful: true,
-          patternExclusionRequested: false,
           pastChatsUseful: true,
           profileRequested: false,
           queryDecompositions: [],
@@ -561,7 +560,6 @@ function intentOptions(overrides: Record<string, unknown>) {
           confidenceBand: "HIGH" as const,
           entityMentions: [],
           memoryUseful: false,
-          patternExclusionRequested: false,
           pastChatsUseful: false,
           profileRequested: false,
           queryDecompositions: [],
@@ -899,7 +897,6 @@ describe("Personal Memory v1 run admission", () => {
       "alpha\tone\n".repeat(70).trim();
     const decoded = decodeMemoryActionControlDecision({ decision: {
       action: "NONE",
-      patternExclusionRequested: false,
       reasonCode: "no_memory_request"
     } }, source);
     if (!decoded.ok) throw new Error("control_fixture_invalid");
@@ -923,37 +920,6 @@ describe("Personal Memory v1 run admission", () => {
       query: source.normalize("NFKC")
     }));
     expect(queryResolver.resolve).not.toHaveBeenCalled();
-  });
-
-  it("ignores a retained pattern exclusion through the production action entry point", async () => {
-    const direct = factLaneCandidate("direct-fact", 0.9);
-    const read = async (patternExclusionRequested: boolean) => {
-      const local = repository({
-        candidates: [{ ...direct, lane: "FACT_LEXICAL_UNICODE" }],
-        hybridCandidates: [direct],
-        speculativeBaseline: true, speculativeDense: true
-      });
-      const { readUtilityPolicy: _legacy, ...options } = intentOptions({
-        memoryUseful: true, patternExclusionRequested
-      });
-      const result = await createMemoryRunRetrievalService(local.value, options)
-        .retrieve(runInput("/memory search only directly stated workshop details, then answer."));
-      expect(options.control.decide).toHaveBeenCalledOnce();
-      return result;
-    };
-    const excluded = await read(true);
-    const ordinary = await read(false);
-    expect(excluded.items).toMatchObject([{ exactItemId: "direct-fact" }]);
-    expect(excluded.items).toEqual(ordinary.items);
-    expect(excluded.preparedContext).toEqual(ordinary.preparedContext);
-    expect(excluded.budgetSnapshot.plan).toEqual(ordinary.budgetSnapshot.plan);
-    expect(excluded.budgetSnapshot.plan).not.toHaveProperty("includePatterns");
-    expect(excluded.items![0]!.featureSnapshot).not.toHaveProperty("includePatterns");
-    expect(excluded.budgetSnapshot).toMatchObject({
-      memoryReadUtilityPolicy: "DETERMINISTIC_READ_V1",
-      speculativeBaselineUsed: ordinary.budgetSnapshot.speculativeBaselineUsed,
-      speculativeHybridUsed: ordinary.budgetSnapshot.speculativeHybridUsed
-    });
   });
 
   it.each([false, true].flatMap((history) => [false, true].flatMap((speculative) =>
@@ -3911,7 +3877,7 @@ describe("Personal Memory v1 run admission", () => {
     const local = repository({});
     const control = { decide: vi.fn(async () => ({ bindingId: "binding-control", intent: {
       ...currentControlContract, action: "NONE" as const, applyResponsePreferences: false, category: null, categoryHint: null,
-      confidenceBand: "HIGH" as const, entityMentions: [], memoryUseful: false, patternExclusionRequested: false,
+      confidenceBand: "HIGH" as const, entityMentions: [], memoryUseful: false,
       pastChatsUseful: false, profileRequested: false, queryText: null, reasonCode: "none" as const, recencyRequested: false,
       referencedMemoryRef: null, replacementStatement: null, responsePreference: false, sensitiveDomainHint: null,
       sensitivity: "NORMAL" as const, statement: null, targetQuery: null, thisChatOnly: false
@@ -3948,7 +3914,6 @@ describe("Personal Memory v1 run admission", () => {
           confidenceBand: "HIGH" as const,
           entityMentions: [],
           memoryUseful: false,
-          patternExclusionRequested: false,
           pastChatsUseful: false,
           profileRequested: false,
           queryText: null,
@@ -4069,7 +4034,6 @@ describe("Personal Memory v1 run admission", () => {
           confidenceBand: "HIGH" as const,
           entityMentions: [],
           memoryUseful: false,
-          patternExclusionRequested: false,
           pastChatsUseful: false,
           profileRequested: false,
           queryText: null,
@@ -4124,7 +4088,6 @@ describe("Personal Memory v1 run admission", () => {
           confidenceBand: "HIGH" as const,
           entityMentions: [],
           memoryUseful: false,
-          patternExclusionRequested: false,
           pastChatsUseful: false,
           profileRequested: false,
           queryText: null,
@@ -4172,7 +4135,6 @@ describe("Personal Memory v1 run admission", () => {
           confidenceBand: "HIGH" as const,
           entityMentions: [],
           memoryUseful: false,
-          patternExclusionRequested: false,
           pastChatsUseful: false,
           profileRequested: false,
           queryText: null,
@@ -6192,7 +6154,6 @@ describe("Personal Memory v1 run admission", () => {
       ...intentOptions({
         entityMentions: [{ occurrenceIndex: 0, resolvedRef: opaqueRef, text: "Acme" }],
         memoryUseful: true,
-        patternExclusionRequested: false,
         pastChatsUseful: false,
         queryText: "Acme workflow"
       }),

@@ -59,7 +59,7 @@ Both routes require Source-bound evidence and independent review of the original
 
 Search-driven revision requires new delivered evidence; factual correction requires an explicit bound critique. Further retrieval preserves previously supported content and the delivered premises of a requested correction. Unchanged drafts/evidence get no repeated paid review; failed optional correction keeps the latest verified partial answer and incurred usage. Structural repair uses unchanged authority inputs and a bounded rejection hint, never rejected provider content. Accepted prompts, schemas, reasoning policies and bindings remain frozen. Recovery decodes the accepted protocol, reuses settled operations and never applies current defaults to historical runs; focused protocols remain recovery-only.
 
-Publication is deterministic and provider-free, revalidating exact excerpts and citation handles against the accepted manifest. Tool-result citations require completed persisted results and proof of delivery before synthesis. Pending, unknown, failed or undispatched evidence cannot support citations. Grounded token deltas stay private until settlement; internal wrappers and status lines never become answer prose. Source deletion preserves generated text but scrubs private evidence and later citation resolution.
+Publication is deterministic and provider-free, revalidating exact excerpts and citation handles against the accepted manifest. Pending, unknown, failed or undispatched evidence cannot support citations. Grounded token deltas stay private until settlement; internal wrappers and status lines never become answer prose. Source deletion preserves generated text but scrubs private evidence and later citation resolution.
 
 ## MCP And Workspace
 
@@ -77,7 +77,7 @@ Workspace admission freezes ready runtime/image, official catalog, network, path
 
 Mid-run capture requires coherent bytes and current authority; unsupported coherence fails closed. Preserve the running executor and final-export quiescence. Shared image validation is model-independent; transformations retain source identity/geometry. Consumers own publication/provider delivery.
 
-Vision-capable models read images natively. Workspace files, and chat images for tool-calling non-vision models, reach models only through admitted System Vision: ordered selected images, a focused question, untrusted results. Knowledge answers get no images, so outside Workspace non-vision models are refused them.
+Vision-capable models read images natively. Workspace files, and chat images for tool-calling non-vision models, reach models only via admitted System Vision: ordered images, a focused question, untrusted results. Knowledge answers get current images as one frozen prior description, by vision-capable answer models, else System Vision: untrusted request context, never evidence; lacking both, refused outside Workspace.
 
 Exact image edits preserve pixels; generative edits synthesize requested changes. Source/reference/version provenance determines identity. Saving, visual inspection and application validation stay separate claims.
 
@@ -97,4 +97,4 @@ Artifact edits never rebase; reads/hints stay private. Agent bundles grant no ho
 
 Accounting uses provider-reported categories and exact stage/model attribution; missing usage/prices stay null. Recovery enriches without double counting. Shares use [Backend](BACKEND.md)'s positive schema. Gemini answer text survives settlement/sharing; Suggestions, citations and structured artifacts stay private. Never reconstruct discarded legacy answers; fence unfinished work before removing replay provenance.
 
-Optional titles never delay answers. Freeze excerpt/destination; never replay ambiguous dispatch. Renames/lifecycle fence results; retain usage when unapplied.
+Optional titles never delay answers. Freeze excerpt/destination. Renames/lifecycle fence results; retain usage when unapplied.

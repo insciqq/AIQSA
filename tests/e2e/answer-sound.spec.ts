@@ -192,9 +192,11 @@ test("ordinary accounts persist mute and choice, explicitly audition native audi
     await context.close().catch((error: unknown) => { cleanupErrors.push(error); });
     // Delete only this test's accounts and runs. The User cascade removes its
     // mandatory Memory row, so the deferred ownership guard sees no live owner.
+    // Workspace sessions restrict their chat's deletion, so they go first.
     await prisma.$transaction(async (tx) => {
       await tx.providerRunBinding.deleteMany({ where: { modelRun: { userId: { in: userIds } } } });
       await tx.modelRun.deleteMany({ where: { userId: { in: userIds } } });
+      await tx.workspaceSession.deleteMany({ where: { chat: { userId: { in: userIds } } } });
       await tx.user.deleteMany({ where: { id: { in: userIds } } });
     }).catch((error: unknown) => { cleanupErrors.push(error); });
     if (cleanupErrors.length > 0) {

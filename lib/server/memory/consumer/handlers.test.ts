@@ -63,7 +63,7 @@ describe("Memory consumer handlers", () => {
   });
 });
 
-describe("Memory consumer settings with the retired Dream toggle", () => {
+describe("Memory consumer settings handlers", () => {
   const NOW = new Date("2026-10-02T10:00:00.000Z");
   const snapshot: MemorySettingsPersistenceSnapshot = {
     acceptedUtilityEgressAt: null, acceptedUtilityEgressFingerprint: null, acceptedUtilityPolicyVersion: null,
@@ -93,20 +93,17 @@ describe("Memory consumer settings with the retired Dream toggle", () => {
     return { deps: { resolveAuth: vi.fn(async () => ({ userId: "user-1" })), service } as never, repository };
   }
 
-  it("omits the retired Dream fields and rejects a Dream toggle PATCH without a write", async () => {
+  it("reads the settings projection and rejects an unknown PATCH field without a write", async () => {
     const { deps, repository } = compose();
     const read = await createGetMemoryConsumerSettingsHandler(deps)(
       new Request("http://test/api/me/memory/settings")
     );
     expect(read.status).toBe(200);
-    const current = await read.json();
-    expect(current.status).toBe("ON");
-    expect(current.capabilities).not.toHaveProperty("synthesisAvailable");
-    expect(current.settings).not.toHaveProperty("synthesisEnabled");
+    await expect(read.json()).resolves.toMatchObject({ status: "ON" });
 
     const patched = await createPatchMemoryConsumerSettingsHandler(deps)(
       new Request("http://test/api/me/memory/settings", {
-        body: JSON.stringify({ synthesisEnabled: true }),
+        body: JSON.stringify({ unknownSetting: true }),
         headers: { "content-type": "application/json" },
         method: "PATCH"
       })

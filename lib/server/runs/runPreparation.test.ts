@@ -6040,30 +6040,61 @@ describe("chat System Vision admission", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it("refuses a current image for a model without vision when Knowledge is in scope, before any Vision lookup", async () => {
+  it("freezes a System Vision description of a Knowledge image for a model without vision, never the chat tool", async () => {
     const h = createHarness({ attachments: [image], capabilities: textOnly });
     const resolve = vi.fn(async () => availablePlan());
     const deps = { ...h.deps, vision: { resolve }, images: imageModels(),
       knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "e") } };
     const knowledge = { knowledgePlan: knowledgeSelection(["knowledge-base-1"]) };
-    await expect(prepareRun(deps, send({ ...knowledge, content: imageContent(image.id) }))).resolves.toMatchObject({
-      ok: false, code: "knowledge_image_not_supported", status: 400, message: expect.stringContaining("Remove the image") });
-    expect(resolve).not.toHaveBeenCalled();
+    const prepared = preparedFrom(await prepareRun(deps, send({ ...knowledge, content: imageContent(image.id) })));
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(prepared.normalizedRequest.knowledgeImageObservation).toEqual({ version: 1, route: "system_vision",
+      imageIds: [image.id], vision: availablePlan() });
+    // The description is a pre-answer step: no chat analyze_image tool and no chat Vision plan.
+    expect(prepared.normalizedRequest.visionAnalysis).toBeUndefined();
+    expect(tools(prepared)).not.toContain("analyze_image");
     const text = preparedFrom(await prepareRun(deps, send(knowledge)));
-    expect(text.normalizedRequest.visionAnalysis).toBeUndefined();
-    expect(tools(text)).not.toContain("analyze_image");
+    expect(text.normalizedRequest.knowledgeImageObservation).toBeUndefined();
+    expect(resolve).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { version: 1, available: false, code: "vision_model_absent" },
+    { version: 1, available: false, code: "vision_model_unavailable" }
+  ] as const)("refuses a Knowledge image visibly when no route can describe it ($code)", async (plan) => {
+    const h = createHarness({ attachments: [image], capabilities: textOnly });
+    const deps = { ...h.deps, vision: { resolve: async () => plan }, images: imageModels(),
+      knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "e") } };
+    await expect(prepareRun(deps, send({ knowledgePlan: knowledgeSelection(["knowledge-base-1"]), content: imageContent(image.id) })))
+      .resolves.toMatchObject({ ok: false, code: "knowledge_image_not_supported", status: 400,
+        message: expect.stringContaining("no Vision Model is available to describe them") });
+  });
+
+  it("refuses more Knowledge images than one description reads", async () => {
+    const many = Array.from({ length: 9 }, (_, index) => runAttachment({ id: `knowledge-image-${index}`, kind: "image",
+      mimeType: "image/png", storageKey: `private/knowledge-image-${index}` }));
+    const h = createHarness({ attachments: many, capabilities: textOnly });
+    const resolve = vi.fn(async () => availablePlan());
+    await expect(prepareRun({ ...h.deps, vision: { resolve },
+      knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "e") } },
+    send({ knowledgePlan: knowledgeSelection(["knowledge-base-1"]), content: { blocks: [{ type: "text", text: "Compare them" },
+      ...many.map((attachment) => ({ type: "image", attachmentId: attachment.id }))] } })))
+      .resolves.toMatchObject({ ok: false, code: "knowledge_image_limit_exceeded", status: 400 });
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it("keeps a vision-capable model's Knowledge image admission unchanged", async () => {
+  it("has a vision-capable answer model describe its own Knowledge image without a Vision lookup", async () => {
     const bytes = Buffer.from("synthetic knowledge image");
     const visible = runAttachment({ id: "knowledge-image", kind: "image", mimeType: "image/png", byteSize: bytes.length,
       storageKey: "private/knowledge-image", checksum: sha256(bytes) });
     const h = createHarness({ attachments: [visible], capabilities: { ...baseCapabilities, toolCalling: true, vision: true },
       storageObjects: { [visible.storageKey]: { body: bytes, contentType: "image/png" } } });
-    const prepared = preparedFrom(await prepareRun({ ...h.deps, vision: { resolve: async () => availablePlan() },
+    const resolve = vi.fn(async () => availablePlan());
+    const prepared = preparedFrom(await prepareRun({ ...h.deps, vision: { resolve },
       knowledgeAdmission: { load: async (input: KnowledgeAdmissionInput) => admittedKnowledge(input, "f") } },
     send({ knowledgePlan: knowledgeSelection(["knowledge-base-1"]), content: imageContent(visible.id) })));
+    expect(resolve).not.toHaveBeenCalled();
+    expect(prepared.normalizedRequest.knowledgeImageObservation).toEqual({ version: 1, route: "answer_model", imageIds: [visible.id] });
     expect(prepared.normalizedRequest.visionAnalysis).toBeUndefined();
     expect(prepared.providerRequest.attachments[0]?.dataUrl).toContain("base64,");
   });

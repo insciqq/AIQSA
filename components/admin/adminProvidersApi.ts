@@ -585,6 +585,15 @@ function listText(values: readonly string[]): string {
   return values.length < 2 ? values.join("") : `${values.slice(0, -1).join(", ")} and ${values.at(-1)}`;
 }
 
+/** `System model and Memory use this model and need structured output`. */
+export function roleRoutingConflictSummary(conflicts: readonly AdminProviderRoleRoutingConflict[]): string {
+  const names = listText(conflicts.map(({ role }) => assignedRoleLabels[role]));
+  const plural = conflicts.length > 1;
+  const needs = listText([...new Set(conflicts.flatMap(({ missingParameters }) =>
+    missingParameters.map((parameter) => routingParameterLabels[parameter] ?? parameter)))]);
+  return `${names} ${plural ? "use" : "uses"} this model and ${plural ? "need" : "needs"} ${needs}`;
+}
+
 /** Names the installation roles a refused routing change or failed check affects. */
 function assignedRoleMessage(error: AdminProviderClientError): string | null {
   const roles = error.roles ?? [];
@@ -592,9 +601,7 @@ function assignedRoleMessage(error: AdminProviderClientError): string | null {
   const names = listText(roles.map(({ role }) => assignedRoleLabels[role]));
   const plural = roles.length > 1;
   if (error.code === "provider_routing_role_incompatible") {
-    const needs = listText([...new Set(roles.flatMap(({ missingParameters }) =>
-      missingParameters.map((parameter) => routingParameterLabels[parameter] ?? parameter)))]);
-    return `${names} ${plural ? "use" : "uses"} this model and ${plural ? "need" : "needs"} ${needs}, which the selected providers do not support. ` +
+    return `${roleRoutingConflictSummary(roles)}, which the selected providers do not support. ` +
       `Choose Automatic or providers that support it, or assign ${names} to another model first.`;
   }
   if (error.code === "provider_routing_role_unverified") {
