@@ -76,6 +76,7 @@ import {
 import { defaultMemoryIntentActionExecutor } from "../actions/defaultAction";
 import type { MemoryIntentActionExecutor } from "../actions/intentExecutor";
 import { loadMemoryRunSources } from "../sources/runProjection";
+import { memoryReadableChatMode } from "../scheduledPrompt";
 import {
   createPrismaLocalMemoryRetrievalRepository,
   selectMemoryTargetedSessionRepresentatives,
@@ -216,6 +217,12 @@ export type MemoryRunRetrievalInput = Readonly<{
   normalizedRequest: NormalizedRunRequest;
   /** Frozen accepted read policy. Absence retains the legacy prefetched path. */
   readMode?: "STANDING_V1";
+  /**
+   * The run answers a scheduled task's prompt (as its admission read it): it
+   * reads standing facts only, also in its excluded chat, and never runs a
+   * Memory command.
+   */
+  scheduledPrompt?: true;
   now: Date;
   signal?: AbortSignal;
   userId: string;
@@ -2501,7 +2508,7 @@ async function retrieveStandingContext(
   };
   const empty = (outcome: MemoryPreparingAttemptResult["outcome"], reason: string) =>
     emptyAttempt(input.expected, outcome, reason, null, evidence);
-  if (input.expected.chatMemoryMode !== "NORMAL") {
+  if (!memoryReadableChatMode(input.expected.chatMemoryMode, input.scheduledPrompt === true)) {
     return empty("DISABLED", input.expected.chatMemoryMode === "TEMPORARY"
       ? "temporary_chat" : "chat_memory_off");
   }
@@ -2533,6 +2540,7 @@ async function retrieveStandingContext(
           chatId: input.chatId,
           now: input.now,
           plan,
+          ...(input.scheduledPrompt ? { scheduledPrompt: true as const } : {}),
           userId: input.userId
         }), signal)
       ));
@@ -2607,6 +2615,8 @@ export function createMemoryRunRetrievalService(
         const result = await retrieveStandingContext(input, repository, options, timings);
         return withMemoryPreparationEvidence(result, timings);
       }
+      // A task turn never takes the command-capable read.
+      if (input.scheduledPrompt) return emptyAttempt(input.expected, "DISABLED", "scheduled_task_turn");
       const queryResolverState: { execution: MemoryQueryResolverExecution | null } = {
         execution: null
       };

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScheduledTask, ScheduledTaskListResponse, ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
 import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
-import type { ScheduledTaskWorkspaceAvailability } from "./scheduledTaskDraft";
+import type { ScheduledTaskMemoryAvailability, ScheduledTaskWorkspaceAvailability } from "./scheduledTaskDraft";
 import {
   createScheduledTask,
   deleteScheduledTask,
@@ -43,9 +43,11 @@ function listed(tasks: ScheduledTask[], emailAvailable = false): ScheduledTaskLi
   return { tasks, limits: { maxActive: 10, maxActiveHourly: 3, maxTotal: 50 }, emailAvailable };
 }
 
-function renderPanel(onOpenChat = vi.fn(), workspace: ScheduledTaskWorkspaceAvailability = "available") {
+function renderPanel(onOpenChat = vi.fn(), workspace: ScheduledTaskWorkspaceAvailability = "available",
+  memory: ScheduledTaskMemoryAvailability = "available") {
   account += 1;
-  render(<ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} onOpenChat={onOpenChat} workspace={workspace} />);
+  render(<ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} memory={memory} onOpenChat={onOpenChat}
+    workspace={workspace} />);
   return { onOpenChat };
 }
 
@@ -122,7 +124,7 @@ describe("ScheduledTasksPanel", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
       title: "Weekly summary", schedule: { kind: "weekly", time: "17:00", days: ["fri"] }, modelId: "model-a", provider: "provider-a",
-      searchEnabled: false, emailNotify: false, chatMode: "new"
+      searchEnabled: false, emailNotify: false, memoryEnabled: true, chatMode: "new"
     }));
     expect(screen.getByRole("status")).toHaveTextContent("“Weekly summary” is scheduled.");
     expect(screen.getByRole("heading", { name: "Weekly summary" })).toBeInTheDocument();
@@ -385,6 +387,45 @@ describe("ScheduledTasksPanel", () => {
     const error = await within(sheet).findByText("This model cannot use tools. Turn tools off or choose another model.");
     expect(tools.getAttribute("aria-describedby")).toContain(error.id);
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ toolsEnabled: true, workspaceEnabled: false }));
+  });
+
+  it("starts a new task reading Memory, says it never adds to it and saves the owner's choice", async () => {
+    list.mockResolvedValue(listed([]));
+    create.mockResolvedValue(scheduledTaskFixture({ id: "new", title: "Brief" }));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "New task" }));
+    const sheet = screen.getByRole("dialog", { name: "New scheduled task" });
+    const memory = within(sheet).getByRole("switch", { name: "Use Memory" });
+    expect(memory).toHaveAttribute("aria-checked", "true");
+    expect(memory).toBeEnabled();
+    expect(memory).toHaveAccessibleDescription("Reads what Memory knows about you. Tasks never add to Memory.");
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Brief" } });
+    fireEvent.change(within(sheet).getByLabelText("Instructions"), { target: { value: "Summarize" } });
+    fireEvent.click(memory);
+    expect(memory).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Create task" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ memoryEnabled: false, title: "Brief" })));
+  });
+
+  it.each([
+    ["paused", "Memory is paused, so runs read nothing. Turn it on in Studio › Memory."],
+    ["needs_setup", "Memory needs administrator setup, so runs read nothing yet."]
+  ] as const)("shows the owner's %s Memory on the task's switch and keeps the task's own choice editable", async (memory, hint) => {
+    const task = scheduledTaskFixture({ memoryEnabled: false });
+    list.mockResolvedValue(listed([task]));
+    detail.mockResolvedValue({ task, recentRuns: [] });
+    update.mockResolvedValueOnce({ ...task, memoryEnabled: true, revision: 2 });
+    renderPanel(vi.fn(), "available", memory);
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit scheduled task" });
+    const control = within(sheet).getByRole("switch", { name: "Use Memory" });
+    expect(control).toHaveAttribute("aria-checked", "false");
+    expect(control).toHaveAccessibleDescription(hint);
+    expect(control).toBeEnabled();
+    fireEvent.click(control);
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(update).toHaveBeenCalledWith(task.id, { expectedRevision: 1, memoryEnabled: true }));
   });
 
   it("labels monitoring tasks, keeps Resume for a reached goal and shows check outcomes and missing sources in the history", async () => {

@@ -7238,6 +7238,9 @@ model ScheduledTask {
   toolsEnabled               Boolean                   @default(false)
   /// The task chat's Workspace; needs a tool-calling model. A run never changes an existing chat's switch.
   workspaceEnabled           Boolean                   @default(false)
+  /// Runs read the owner's Memory without ever adding to it. New tasks are
+  /// created with it on; rows older than the switch stay off.
+  memoryEnabled              Boolean                   @default(false)
   /// NEW starts a chat for every run; SAME continues the task's chat (always for HOURLY and MONITORING).
   chatMode                  ScheduledTaskChatMode     @default(NEW)
   /// MONITORING runs are checks that report through a built-in tool whether
