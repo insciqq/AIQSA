@@ -2914,6 +2914,13 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       }));
       const contentHash = memorySha256(text);
       // Both inserts use precomputed IDs; a batch avoids an interactive fixture timeout.
+      // At COMMIT every inserted chunk and source-map row fires a deferred
+      // source guard that re-validates all ACTIVE chunks of the chat, so the
+      // batch costs rows x chunks guard evaluations. A disposable database has
+      // no planner statistics for this one-chat bulk set, and guard plans made
+      // without them have added tens of seconds to this fixture. ANALYZE inside
+      // the batch samples the batch's own rows and replans the guards before
+      // COMMIT, as autovacuum statistics would on a real installation.
       await prisma.$transaction([
         prisma.memoryRecallChunk.createMany({
           data: chunks.map((chunk) => ({
@@ -2950,7 +2957,8 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
             startOffset: 0,
             userId
           }))
-        })
+        }),
+        prisma.$executeRaw`ANALYZE "MemoryRecallChunk", "MemoryRecallChunkMessage"`
       ]);
 
       provider = await configureEmbeddingProvider(userId, "hybrid-large-set");
