@@ -48,6 +48,7 @@ import {
 import { repairFencedMemoryHistoryJobs } from "../history/fenceRepair";
 import { workspaceRuntime } from "../../workspace/defaultServices";
 import { createPrismaMemoryEmbeddingSetup } from "../embedding/setup";
+import { createPrismaMemoryEmbeddingSweep } from "../embedding/sweep";
 
 type MemoryCoordinatorGlobal = typeof globalThis & {
   __aiqsaMemoryCoordinator?: MemoryCoordinator;
@@ -66,6 +67,7 @@ type DefaultMemoryReconciliationWork = Readonly<{
   historyFenceRepair?: () => Promise<unknown>;
   historyBackfill?: () => Promise<unknown>;
   historyAutoHeal?: () => Promise<unknown>;
+  embeddingSweep?: () => Promise<unknown>;
   extractionHeal?: () => Promise<unknown>;
   reclassification?: () => Promise<unknown>;
   relations?: () => Promise<unknown>;
@@ -74,6 +76,7 @@ type DefaultMemoryReconciliationWork = Readonly<{
 }>;
 
 const defaultMemoryEmbeddingSetup = createPrismaMemoryEmbeddingSetup(prisma);
+const defaultMemoryEmbeddingSweep = createPrismaMemoryEmbeddingSweep(prisma);
 
 const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
   Object.freeze({
@@ -87,6 +90,7 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
       )
     ),
     historyAutoHeal: () => autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: new Date() }),
+    embeddingSweep: () => defaultMemoryEmbeddingSweep.reconcile(new Date()),
     extractionHeal: () => healFailedMemoryFactExtractions(prisma, { now: new Date() }),
     reclassification: () => reconcileMemoryFactReclassificationJobs(prisma),
     relations: async () => {
@@ -117,6 +121,8 @@ export async function reconcileDefaultMemoryWork(
     work.historyFenceRepair,
     work.historyBackfill,
     work.historyAutoHeal,
+    // Bounded once per interval: vectors stranded without live batch work.
+    work.embeddingSweep,
     // Bounded per pass and owner; each source holds one key per policy version.
     work.extractionHeal,
     work.reclassification,
