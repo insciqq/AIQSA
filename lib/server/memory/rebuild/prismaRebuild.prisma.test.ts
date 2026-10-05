@@ -385,6 +385,29 @@ async function cleanupOwner(userId: string): Promise<void> {
   await prisma.user.deleteMany({ where: { id: userId } });
 }
 
+/** Runs the real installation-wide candidate SQL but lets a reconciler act
+ * only on fixture owners: the disposable database also holds seeded accounts
+ * whose settings, generations and jobs belong to other tests. */
+function ownerScopedClient(owners: readonly string[]): typeof prisma {
+  const scope = new Set(owners);
+  return new Proxy(prisma, {
+    get(target, property) {
+      if (property === "$queryRaw") {
+        return async (query: Prisma.Sql | TemplateStringsArray, ...values: unknown[]) => {
+          const rows = await target.$queryRaw<Array<{ userId?: string }>>(
+            query as Prisma.Sql, ...values
+          );
+          const text = Array.isArray(query) ? query.join("") : (query as Prisma.Sql).strings.join("");
+          return text.includes('SELECT settings."userId"')
+            ? rows.filter((row) => row.userId !== undefined && scope.has(row.userId))
+            : rows;
+        };
+      }
+      return Reflect.get(target, property);
+    }
+  });
+}
+
 async function configureEmbeddingProvider(
   userId: string,
   label: string
@@ -1539,7 +1562,12 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
         preflightStatus: "ready", preflightCheckedAt: new Date(), activatedAt: new Date()
       } });
       await prisma.knowledgeIndexProfile.update({ where: { id: "installation" }, data: { activeRevisionId: revisionId } });
-      const setup = createPrismaMemoryEmbeddingSetup(prisma);
+      // reconcile() scans every active owner. Unscoped, it would select this
+      // installation default for the seeded administrator (entitled through
+      // Full access) and leave its settings, shadow and REBUILD_INDEX job.
+      const setup = createPrismaMemoryEmbeddingSetup(
+        ownerScopedClient([userId, deniedId, pausedId, discoveredId])
+      );
       const outcomes = await Promise.all([setup.ensure(userId), setup.ensure(userId)]);
       expect(outcomes).toContain("queued");
       expect(await setup.ensure(userId)).toBe("pending");
