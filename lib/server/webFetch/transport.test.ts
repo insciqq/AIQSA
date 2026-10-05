@@ -140,6 +140,29 @@ describe("bounds", () => {
     expect(pulled).toBeLessThan(20);
   });
 
+  it("bounds a body by its media type's limit when the caller sets one, declared, streamed and decoded", async () => {
+    const maxBytesFor = (type: string | null) => (type === "application/pdf" ? 8 * 1024 : 1024);
+    const declared = harness({ "https://example.com/a.pdf": () => new Response("%PDF-", {
+      headers: { "content-length": String(9 * 1024), "content-type": "application/pdf" } }) });
+    expect((await failure(fetchWebPage("https://example.com/a.pdf", { ...acceptsAll, ...declared, maxBytesFor }))).code)
+      .toBe("fetch_too_large");
+    const larger = harness({ "https://example.com/b.pdf": () => new Response(new Uint8Array(4 * 1024),
+      { headers: { "content-type": "application/pdf" } }) });
+    expect((await fetchWebPage("https://example.com/b.pdf", { ...acceptsAll, ...larger, maxBytesFor })).body.byteLength).toBe(4096);
+    const page = harness({ "https://example.com/c": () => new Response(new Uint8Array(4 * 1024), { headers: { "content-type": "text/html" } }) });
+    expect((await failure(fetchWebPage("https://example.com/c", { ...acceptsAll, ...page, maxBytesFor }))).code).toBe("fetch_too_large");
+    const bomb = harness({ "https://example.com/d.pdf": () => new Response(gzipSync(Buffer.alloc(64 * 1024)),
+      { headers: { "content-encoding": "gzip", "content-type": "application/pdf" } }) });
+    expect((await failure(fetchWebPage("https://example.com/d.pdf", { ...acceptsAll, ...bomb, maxBytesFor }))).code)
+      .toBe("fetch_too_large");
+  });
+
+  it("asks for PDFs as well as pages", async () => {
+    const { dispatch, lookupHostname, requests } = harness({ "https://example.com/page": () => html() });
+    await fetchWebPage("https://example.com/page", { ...acceptsAll, dispatch, lookupHostname });
+    expect(requests[0]!.headers.get("accept")).toContain("application/pdf");
+  });
+
   it("decodes gzip within the same bound and refuses a decompression bomb", async () => {
     const gzip = harness({ "https://example.com/": () => new Response(gzipSync(Buffer.from("<p>compressed</p>")),
       { headers: { "content-encoding": "gzip", "content-type": "text/html" } }) });

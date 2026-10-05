@@ -18,7 +18,8 @@ export const WEB_FETCH_LIMITS = Object.freeze({
 });
 
 export const WEB_FETCH_USER_AGENT = "AIQSA-PageReader/1.0 (+https://github.com/insciqq/AIQSA)";
-const ACCEPT = "text/html,application/xhtml+xml,text/plain;q=0.9,text/markdown;q=0.9,application/json;q=0.8,*/*;q=0.1";
+const ACCEPT = "text/html,application/xhtml+xml,text/plain;q=0.9,text/markdown;q=0.9,application/json;q=0.8," +
+  "application/pdf;q=0.8,*/*;q=0.1";
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const ALLOWED_PORTS = new Set(["", "80", "443"]);
 
@@ -61,6 +62,11 @@ export type WebFetchResponse = Readonly<{
 export type WebFetchOptions = Readonly<{
   /** Refuses a response by its media type before its body is read. */
   acceptsContentType(contentType: string | null): boolean;
+  /**
+   * The raw and decoded body bound of an accepted media type (a PDF may be
+   * larger than a page); `limits.maxBytes` without it.
+   */
+  maxBytesFor?(contentType: string | null): number;
   signal?: AbortSignal;
   /** Test seams of the pinned transport; never a policy override. */
   dispatch?: McpSafeFetchOptions["dispatch"];
@@ -223,11 +229,12 @@ export async function fetchWebPage(url: string, options: WebFetchOptions): Promi
       throw new WebFetchError("fetch_unsupported_content_type", { dispatched });
     }
     const declared = response.headers.get("content-length");
-    if (declared !== null && /^\d+$/u.test(declared.trim()) && Number(declared.trim()) > limits.maxBytes) {
+    const maxBytes = options.maxBytesFor?.(contentType) ?? limits.maxBytes;
+    if (declared !== null && /^\d+$/u.test(declared.trim()) && Number(declared.trim()) > maxBytes) {
       throw new WebFetchError("fetch_too_large", { dispatched });
     }
-    const raw = await readBounded(response, signal, limits.maxBytes);
-    const body = decodeContent(raw, response.headers.get("content-encoding"), limits.maxBytes);
+    const raw = await readBounded(response, signal, maxBytes);
+    const body = decodeContent(raw, response.headers.get("content-encoding"), maxBytes);
     return { body, contentType, finalUrl: current.href, status: response.status };
   } catch (error) {
     if (response) await discard(response);

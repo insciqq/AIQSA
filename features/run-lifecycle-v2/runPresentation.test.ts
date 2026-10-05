@@ -706,7 +706,7 @@ describe("answer process label", () => {
     expect(describeToolCallV2(call("fetch_timeout"), "failed")).toBe("Couldn't read news.example/today: the page took too long");
     expect(describeToolCallV2(call("fetch_too_large"), "failed")).toBe("Couldn't read news.example/today: the page is too large");
     expect(describeToolCallV2(call("fetch_unsupported_content_type"), "failed"))
-      .toBe("Couldn't read news.example/today: not a web page, upload the file instead");
+      .toBe("Couldn't read news.example/today: not a web page or PDF, upload the file instead");
     expect(describeToolCallV2(call("fetch_http_status", 404), "failed")).toBe("Couldn't read news.example/today: the site returned 404");
     expect(describeToolCallV2({ origin: "web_fetch", toolName: "fetch_url" }, "failed")).toBe("Couldn't read web page");
     // The live requested event carries only the bounded target, never a scheme.
@@ -718,6 +718,23 @@ describe("answer process label", () => {
     const unsafe: RunEventView = { type: "artifact", data: { artifactType: "tool_call", payload: { name: "fetch_url",
       origin: "web_fetch", round: 1, status: "requested", fetchTarget: "https://news.example/today" } } };
     expect(presentToolActivityV2([unsafe])?.calls[0]).not.toHaveProperty("fetchTarget");
+  });
+
+  it("names a link read as a PDF and each PDF failure", () => {
+    const call = (fetchOutcome: string, pdf = true) => ({ origin: "web_fetch", toolName: "fetch_url",
+      fetchTarget: "arxiv.org/pdf/2401.00001", fetchOutcome, ...(pdf ? { fetchContentKind: "pdf" } : {}) });
+    expect(describeToolCallV2(call("read"), "settled")).toBe("Read PDF arxiv.org/pdf/2401.00001");
+    expect(describeToolCallV2(call("read", false), "settled")).toBe("Read arxiv.org/pdf/2401.00001");
+    expect(describeToolCallV2(call("fetch_no_readable_text"), "failed"))
+      .toBe("No readable text in PDF arxiv.org/pdf/2401.00001, it may be scanned");
+    expect(describeToolCallV2(call("fetch_timeout"), "failed")).toBe("Couldn't read arxiv.org/pdf/2401.00001: the PDF took too long");
+    expect(describeToolCallV2(call("fetch_too_large"), "failed")).toBe("Couldn't read arxiv.org/pdf/2401.00001: the PDF is too large");
+    expect(describeToolCallV2(call("fetch_pdf_password_protected"), "failed"))
+      .toBe("Couldn't read arxiv.org/pdf/2401.00001: the PDF is password-protected");
+    expect(describeToolCallV2(call("fetch_pdf_invalid"), "failed"))
+      .toBe("Couldn't read arxiv.org/pdf/2401.00001: the PDF is damaged or unreadable");
+    expect(describeToolCallV2(call("fetch_pdf_too_many_pages"), "failed"))
+      .toBe("Couldn't read arxiv.org/pdf/2401.00001: the PDF has too many pages");
   });
 
   it("does not infer a built-in from a tool with explicitly generic origin", () => {

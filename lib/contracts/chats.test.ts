@@ -176,6 +176,10 @@ describe("chat wire contracts", () => {
       .toEqual({ origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url" });
     expect(decode({ ...call, origin: "mcp" })).not.toHaveProperty("fetchTarget");
     expect(decode({ ...call, fetchOutcome: "read" })).not.toHaveProperty("fetchHttpStatus");
+    // A PDF read keeps its known kind; an unknown kind or one without an outcome is dropped.
+    expect(decode({ ...call, fetchOutcome: "read", fetchContentKind: "pdf" })).toMatchObject({ fetchContentKind: "pdf" });
+    expect(decode({ ...call, fetchOutcome: "read", fetchContentKind: "docx" })).not.toHaveProperty("fetchContentKind");
+    expect(decode({ ...call, fetchOutcome: undefined, fetchContentKind: "pdf" })).not.toHaveProperty("fetchContentKind");
     // Where a refused link is allowed belongs only to a not-in-conversation refusal, with a known scope.
     for (const scope of ["scheduled_run", "task_instructions"]) {
       expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: scope }))
