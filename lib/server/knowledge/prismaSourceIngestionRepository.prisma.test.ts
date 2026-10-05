@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, onTestFinished } from "vitest";
 import { prisma } from "../prisma";
 import type { ProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import {
@@ -225,18 +225,16 @@ describe("Prisma Knowledge Source ingestion claims", () => {
   // disposable database. The repository under test receives this explicit
   // clock, so only the test workers can make the artifact due.
   const now = new Date("2097-03-01T00:00:00.000Z");
-  let fixture: Fixture;
-
-  beforeAll(async () => {
-    fixture = await createFixture(now);
-  });
 
   afterAll(async () => {
-    await cleanupFixture(fixture);
     await prisma.$disconnect();
   });
 
   it("releases every successful stage for an immediate stage-local claim and fences stale workers", async () => {
+    // A test-owned fixture: a suite-level artifact due at this clock would be
+    // claimed and settled failed by the later-clock retry test when it runs first.
+    const fixture = await createFixture(now);
+    onTestFinished(() => cleanupFixture(fixture));
     const repository = createPrismaKnowledgeSourceIngestionRepository(prisma);
     const initialStaleBefore = new Date(now.getTime() - 60_000);
     const claims = await Promise.all([
