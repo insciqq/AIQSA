@@ -45,7 +45,7 @@ An index on a large live table is built by `CREATE INDEX CONCURRENTLY` as the on
 
 Upgrade adopts Vision from page-image configuration once; later edits/clears stay independent.
 
-Keep custom checks and deferred triggers for row, tenant/source, history, deletion, and concurrent-writer invariants that relations cannot express, especially with raw SQL workers and destructive handlers. Simplify them only through behavior-proven forward migrations.
+Keep custom checks and deferred triggers for row, tenant/source, history, deletion, and concurrent-writer invariants that relations cannot express, especially with raw SQL workers and destructive handlers. Simplify them only through behavior-proven forward migrations. Memory history, round and digest source guards validate each chat or digest once per batch of deferred events; every table their asserts read must carry the statement-level trigger that forgets passed keys, or a later write escapes validation.
 
 Bootstrap accepts an empty schema or the exact adopted administrator identity under serializable/advisory-lock protection. It refuses other nonempty targets before mutation and creates minimal foundations without demo content or real provider deployments. Adopted reruns may repair code-owned foundations, preserving operator identity, credentials, settings, grants, policy, and content.
 
