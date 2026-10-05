@@ -777,7 +777,7 @@ describe("Workspace switch write-back at admission", () => {
   };
 
   /** A transaction that admits the session, binding and secrets, recording chat switch writes. */
-  function transaction() {
+  function transaction(existingSession: Readonly<Record<string, unknown>> | null = null) {
     const chatUpdates: unknown[] = [];
     const tx = {
       $queryRaw: vi.fn(async () => [{ id: "user-1" }]),
@@ -787,11 +787,17 @@ describe("Workspace switch write-back at admission", () => {
         update: vi.fn(async (args: unknown) => { chatUpdates.push(args); return {}; })
       },
       modelRun: { count: vi.fn(async () => 0) },
+      modelRunToolCall: { count: vi.fn(async () => 0) },
       user: { update: vi.fn(async () => ({ workspaceBrowserSequence: BigInt(1) })) },
+      workspaceExecution: { count: vi.fn(async () => 0) },
       workspacePolicy: { findUnique: vi.fn(async () => ({ enabled: true, version: 3 })) },
-      workspaceRunBinding: { create: vi.fn(async () => ({})) },
+      workspaceRunBinding: { count: vi.fn(async () => 0), create: vi.fn(async (_args: unknown) => ({})) },
       workspaceSecret: { findMany: vi.fn(async () => []) },
-      workspaceSession: { create: vi.fn(async () => ({})), findUnique: vi.fn(async () => null) }
+      workspaceSession: {
+        create: vi.fn(async () => ({})),
+        findUnique: vi.fn(async () => existingSession),
+        update: vi.fn(async (_args: unknown) => ({}))
+      }
     };
     return { chatUpdates, tx };
   }
@@ -821,5 +827,57 @@ describe("Workspace switch write-back at admission", () => {
       // The run itself still gets its Workspace binding.
       expect(tx.workspaceRunBinding.create).toHaveBeenCalledTimes(workspace ? 1 : 0);
     }
+  });
+
+  describe("session image", () => {
+    const session = {
+      id: "ws-1", imageRef: "older-fixture", internetEnabled: true, operationOwner: null,
+      runtimeSandboxId: null, sandboxName: "sandbox-1", state: "PENDING"
+    };
+
+    it("lets a session without a guest disk adopt the admitted image with the run's claim", async () => {
+      // A settled operation that never created a guest leaves READY or STOPPED without a disk too.
+      for (const state of ["PENDING", "READY", "STOPPED"]) {
+        const { tx } = transaction({ ...session, state });
+        await insertAcceptedWorkspaceRunBinding(tx as never, admission({ scheduled: false, workspace: true }), ids);
+        expect(tx.workspaceSession.update).toHaveBeenCalledExactlyOnceWith({
+          data: { imageRef: "fixture", operationExpiresAt: null, operationOwner: expect.any(String), version: { increment: 1 } },
+          where: { id: "ws-1" }
+        });
+        expect(tx.workspaceRunBinding.create).toHaveBeenCalledWith(expect.objectContaining({
+          data: expect.objectContaining({ imageRef: "fixture", workspaceSessionId: "ws-1" })
+        }));
+      }
+    });
+
+    it("still refuses a busy or failed session without a guest disk", async () => {
+      for (const busy of [{ state: "FAILED" }, { state: "DELETING" }, { state: "CREATING" }, { operationOwner: "run:other" }]) {
+        const { tx } = transaction({ ...session, ...busy });
+        await expect(insertAcceptedWorkspaceRunBinding(tx as never, admission({ scheduled: false, workspace: true }), ids))
+          .rejects.toMatchObject({ code: "workspace_busy" });
+        expect(tx.workspaceSession.update).not.toHaveBeenCalled();
+      }
+    });
+
+    it("keeps a guest disk on the image it was created from", async () => {
+      for (const disk of [
+        { runtimeSandboxId: "runtime-1", state: "STOPPED" },
+        { runtimeSandboxId: "runtime-1", state: "READY" },
+        { runtimeSandboxId: "runtime-1", state: "PENDING" }
+      ]) {
+        const { tx } = transaction({ ...session, ...disk });
+        await expect(insertAcceptedWorkspaceRunBinding(tx as never, admission({ scheduled: false, workspace: true }), ids))
+          .rejects.toMatchObject({ code: "workspace_busy" });
+        expect(tx.workspaceSession.update).not.toHaveBeenCalled();
+        expect(tx.workspaceRunBinding.create).not.toHaveBeenCalled();
+      }
+
+      const { tx } = transaction({ ...session, imageRef: "fixture", runtimeSandboxId: "runtime-1", state: "STOPPED" });
+      await insertAcceptedWorkspaceRunBinding(tx as never, admission({ scheduled: false, workspace: true }), ids);
+      expect(tx.workspaceSession.update.mock.calls[0]?.[0]).toEqual({
+        data: { operationExpiresAt: null, operationOwner: expect.any(String), version: { increment: 1 } },
+        where: { id: "ws-1" }
+      });
+    });
   });
 });
