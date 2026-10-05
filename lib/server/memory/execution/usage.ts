@@ -1,4 +1,4 @@
-import { normalizeTokenUsage } from "../../../domain/usage";
+import { estimateCostMicros, normalizeTokenUsage, type ModelTokenPricing } from "../../../domain/usage";
 import type { MemoryReportedUsage } from "./lifecycle";
 
 export function memoryReportedUsage(
@@ -18,4 +18,26 @@ export function memoryReportedUsage(
     reasoningTokens: usage.reasoningTokens,
     totalTokens: usage.totalTokens
   };
+}
+
+/** Prices complete usage with the catalog estimate answer runs use. A
+ * provider-reported cost wins; partial or unavailable usage and an unpriced
+ * model keep an unknown cost. */
+export function memoryUsageWithCatalogCost(
+  usage: MemoryReportedUsage,
+  pricing: ModelTokenPricing | null
+): MemoryReportedUsage {
+  if (!pricing || usage.estimatedCostMicros !== null || usage.completeness !== "COMPLETE") {
+    return usage;
+  }
+  const estimatedCostMicros = estimateCostMicros({
+    cachedInputTokens: usage.cachedInputTokens,
+    cacheWriteInputTokens: usage.cacheWriteInputTokens ?? null,
+    completeness: "complete",
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    reasoningTokens: usage.reasoningTokens,
+    totalTokens: usage.totalTokens
+  }, pricing);
+  return estimatedCostMicros === null ? usage : { ...usage, estimatedCostMicros };
 }

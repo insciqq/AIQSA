@@ -24,7 +24,8 @@ import {
 } from "./owner";
 import { isMemoryOutputDecodeReason, type MemoryOutputDecodeReason } from "./outputViolation";
 import { isMemoryExecutionRole, type MemoryExecutionRole } from "./roles";
-import { parseMemoryExecutionSnapshot } from "./snapshot";
+import { memoryExecutionCatalogTokenPricing, parseMemoryExecutionSnapshot } from "./snapshot";
+import { memoryUsageWithCatalogCost } from "./usage";
 
 export const MEMORY_EXECUTION_RECOVERY_HORIZON_MS = 24 * 60 * 60 * 1_000;
 export const MEMORY_EXECUTION_COMMIT_BATCH_SIZE = 32;
@@ -141,6 +142,20 @@ function validateSettlement(input: MemoryExecutionSettlementInput): void {
   ) {
     return memoryExecutionFailure("memory_execution_output_invalid");
   }
+}
+
+/** The usage a settlement records. Without a provider-reported cost, complete
+ * usage is priced from the catalog price frozen when the binding was admitted,
+ * so every settlement, replay and recovery of the binding derives the same
+ * value for the binding and its UsageEvent. */
+function settlementUsage(
+  binding: MemoryExecutionBindingRecord,
+  usage: MemoryReportedUsage
+): MemoryReportedUsage {
+  return memoryUsageWithCatalogCost(
+    usage,
+    memoryExecutionCatalogTokenPricing(binding.secretFreeExecutionSnapshot)
+  );
 }
 
 function usageFromBinding(binding: MemoryExecutionBindingRecord): MemoryReportedUsage {
@@ -488,8 +503,9 @@ export function createPrismaMemoryExecutionLifecycle(
     return withLockedMemoryTransaction(client, userId, async (tx) => {
       const now = memoryExecutionNow(dependencies);
       const binding = await loadMemoryExecutionBinding(tx, userId, bindingId);
-      if (sameSettlement(binding, input)) {
-        await assertDurableUsage(tx, binding, input.usage);
+      const usage = settlementUsage(binding, input.usage);
+      if (sameSettlement(binding, { ...input, usage })) {
+        await assertDurableUsage(tx, binding, usage);
         return settlementView(binding, true);
       }
       const allowed = binding.state === "RUNNING" ||
@@ -522,7 +538,7 @@ export function createPrismaMemoryExecutionLifecycle(
           providerResponseId: input.providerResponseId,
           recoverableUntil,
           state: input.state,
-          ...usageData(input.usage)
+          ...usageData(usage)
         },
         where: {
           id: binding.id,
@@ -534,7 +550,7 @@ export function createPrismaMemoryExecutionLifecycle(
       if (updated.count !== 1) {
         return memoryExecutionFailure("memory_execution_state_conflict");
       }
-      await createUsageEvent(tx, binding, input.usage);
+      await createUsageEvent(tx, binding, usage);
       const settled = await loadMemoryExecutionBinding(tx, userId, bindingId);
       return settlementView(settled, false);
     });
@@ -567,7 +583,8 @@ export function createPrismaMemoryExecutionLifecycle(
     return withLockedMemoryTransaction(client, userId, async (tx) => {
       const now = memoryExecutionNow(dependencies);
       const binding = await loadMemoryExecutionBinding(tx, userId, bindingId);
-      if (sameSettlement(binding, input)) {
+      const usage = settlementUsage(binding, input.usage);
+      if (sameSettlement(binding, { ...input, usage })) {
         if (!binding.completedAt || !binding.recoverableUntil) {
           return memoryExecutionFailure("memory_execution_snapshot_invalid");
         }
@@ -577,7 +594,7 @@ export function createPrismaMemoryExecutionLifecycle(
           recoverableUntil: binding.recoverableUntil,
           replayed: true
         });
-        await assertDurableUsage(tx, binding, input.usage);
+        await assertDurableUsage(tx, binding, usage);
         return settlementView(binding, true);
       }
       if (binding.state !== "RUNNING" || binding.relationsDetachedAt) {
@@ -606,7 +623,7 @@ export function createPrismaMemoryExecutionLifecycle(
           providerResponseId: input.providerResponseId,
           recoverableUntil,
           state: "SUCCEEDED",
-          ...usageData(input.usage)
+          ...usageData(usage)
         },
         where: {
           id: binding.id,
@@ -618,7 +635,7 @@ export function createPrismaMemoryExecutionLifecycle(
       if (updated.count !== 1) {
         return memoryExecutionFailure("memory_execution_state_conflict");
       }
-      await createUsageEvent(tx, binding, input.usage);
+      await createUsageEvent(tx, binding, usage);
       const settled = await loadMemoryExecutionBinding(tx, userId, bindingId);
       return settlementView(settled, false);
     });
@@ -725,12 +742,14 @@ export function createPrismaMemoryExecutionLifecycle(
       return withLockedMemoryTransaction(client, userId, async (tx) => {
         const now = memoryExecutionNow(dependencies);
         const binding = await loadMemoryExecutionBinding(tx, userId, bindingId);
+        const usage = settlementUsage(binding, input.usage);
         const replayInput: MemoryExecutionSettlementInput = {
           ...input,
-          providerResponseId: binding.providerResponseId
+          providerResponseId: binding.providerResponseId,
+          usage
         };
         if (sameSettlement(binding, replayInput)) {
-          await assertDurableUsage(tx, binding, input.usage);
+          await assertDurableUsage(tx, binding, usage);
           return settlementView(binding, true);
         }
         if (
@@ -747,7 +766,7 @@ export function createPrismaMemoryExecutionLifecycle(
         }
         const snapshot = parseMemoryExecutionSnapshot(binding.secretFreeExecutionSnapshot);
         assertMemoryExecutionBindingLineage(binding, snapshot);
-        if (!usageCanRecover(usageFromBinding(binding), input.usage)) {
+        if (!usageCanRecover(usageFromBinding(binding), usage)) {
           return memoryExecutionFailure("memory_execution_usage_invalid");
         }
         await assertDurableUsage(tx, binding, usageFromBinding(binding));
@@ -761,7 +780,7 @@ export function createPrismaMemoryExecutionLifecycle(
             completedAt,
             errorCode: input.errorCode,
             state: input.state,
-            ...usageData(input.usage)
+            ...usageData(usage)
           },
           where: {
             id: binding.id,
@@ -775,14 +794,14 @@ export function createPrismaMemoryExecutionLifecycle(
         }
         await tx.usageEvent.update({
           data: {
-            cachedInputTokens: input.usage.cachedInputTokens,
-            cacheWriteInputTokens: input.usage.cacheWriteInputTokens ?? null,
-            usageCompleteness: input.usage.completeness,
-            estimatedCostMicros: input.usage.estimatedCostMicros,
-            inputTokens: input.usage.inputTokens,
-            outputTokens: input.usage.outputTokens,
-            reasoningTokens: input.usage.reasoningTokens,
-            totalTokens: input.usage.totalTokens
+            cachedInputTokens: usage.cachedInputTokens,
+            cacheWriteInputTokens: usage.cacheWriteInputTokens ?? null,
+            usageCompleteness: usage.completeness,
+            estimatedCostMicros: usage.estimatedCostMicros,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            reasoningTokens: usage.reasoningTokens,
+            totalTokens: usage.totalTokens
           },
           where: { memoryExecutionBindingId: binding.id }
         });
