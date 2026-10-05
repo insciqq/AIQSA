@@ -13,7 +13,6 @@ import { createPrismaMessageBranchRepository } from "../../../messages/prismaRep
 import type { MemoryJobClaim } from "../../coordinator/types";
 import { enqueueMemoryCommand } from "../../commands/repository";
 import { detachExpiredMemoryExecutionBindings } from "../../execution/lifecycle";
-import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../../maintenance/policy";
 import {
   reconcileMemoryMaintenanceWork,
   scheduleOwnerMemoryMaintenance
