@@ -17,9 +17,10 @@ export function executeSessionStatus(
   request: ProviderRunRequest,
   bridge?: ProviderToolBridge
 ): ToolExecutionResult {
-  if (Object.keys(call.arguments).length > 0) {
-    return { callId: call.id, content: [{ type: "text", text: "get_session_status takes no arguments." }], name: call.name, status: "error" };
-  }
+  // Some models (DeepSeek without strict schemas) send keys to this no-input
+  // tool. No key can widen its scope, so they are ignored; only their count is
+  // kept as a server-side, content-free diagnostic.
+  const ignoredArgumentKeys = Object.keys(call.arguments).length;
   const status = measureSessionContext({ bridge, request });
   const capacity = sessionContextCapacity(status);
   return {
@@ -36,6 +37,7 @@ export function executeSessionStatus(
       note: "Estimate for the current request, with room reserved for the answer. A new chat with a summary can help with long conversation history."
     } }],
     name: call.name,
+    ...(ignoredArgumentKeys > 0 ? { rawPreview: { ignoredArgumentKeys } } : {}),
     status: "complete"
   };
 }

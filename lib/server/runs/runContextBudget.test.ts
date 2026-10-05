@@ -160,7 +160,12 @@ describe("provider request context budget", () => {
       contextTokens: status.approximateInputTokens, contextPercent: sessionContextCapacity(status).percent, loadedTools: 1
     } }] });
     expect(input).toEqual(before);
-    expect(executeSessionStatus({ arguments: { chatId: "other-owner" }, id: "bad", name: sessionStatusTool.name }, input).status).toBe("error");
+    expect(result).not.toHaveProperty("rawPreview");
+    // Unexpected keys cannot redirect the read; they are ignored and only counted.
+    const extra = executeSessionStatus({ arguments: { chatId: "other-owner", request: "status" }, id: "extra", name: sessionStatusTool.name },
+      input, openAIResponsesToolBridge);
+    expect(extra).toEqual({ ...result, callId: "extra", rawPreview: { ignoredArgumentKeys: 2 } });
+    expect(JSON.stringify(extra)).not.toContain("other-owner");
     const finished = measureSessionContext({ answerText: "finished answer", request: input, bridge: openAIResponsesToolBridge });
     expect(finished.approximateInputTokens - status.approximateInputTokens).toBe(contextTokenEstimator(input)("finished answer"));
     expect(sessionContextCapacity({ ...status, contextWindow: null }).percent).toBeNull();
