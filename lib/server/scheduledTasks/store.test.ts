@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { decodeScheduledTask, type ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
+import { scheduledPromptUrlDigests } from "./promptUrls";
 import {
   loadScheduledTaskActivity,
   scheduledTaskScheduleColumns,
@@ -22,11 +23,12 @@ function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
   return {
     ...scheduledTaskScheduleColumns({ kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }),
     id: "task-1", title: "Morning brief", prompt: "Synthetic prompt", timeZone: "Europe/Moscow", modelId: "model-1",
-    provider: "connection-1", searchEnabled: false, emailNotify: true, toolsEnabled: true, workspaceEnabled: false, chatMode: "NEW",
+    provider: "connection-1", searchEnabled: false, emailNotify: true, toolsEnabled: true, workspaceEnabled: false,
+    memoryEnabled: true, chatMode: "NEW",
     kind: "STANDARD", status: "ACTIVE", pauseReason: null, completionReason: null,
     nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: "chat-1", revision: 4,
     createdAt: new Date("2026-10-01T00:00:00.000Z"), updatedAt: new Date("2026-10-02T06:01:00.000Z"),
-    chat: { permanentDeletionAt: null }, ...overrides
+    promptUrlDigests: [], chat: { permanentDeletionAt: null }, ...overrides
   };
 }
 
@@ -49,8 +51,10 @@ describe("scheduled task storage mapping", () => {
     expect(decodeScheduledTask(task)).toEqual(task);
     expect(task).toMatchObject({
       chatId: "chat-1", chatMode: "new", nextRunAt: "2026-10-05T06:00:00.000Z", running: true, status: "active", unseenResult: true,
-      schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, toolsEnabled: true, workspaceEnabled: false
+      schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, toolsEnabled: true, workspaceEnabled: false,
+      memoryEnabled: true
     });
+    expect(toScheduledTask(row({ memoryEnabled: false }), { lastRun: null, running: false, unseen: false }).memoryEnabled).toBe(false);
     expect(toScheduledTask(row({ chat: { permanentDeletionAt: new Date() } }), { lastRun: null, running: false, unseen: false }).chatId)
       .toBeNull();
     expect(toScheduledTask(row({ chat: null, chatId: null, nextRunAt: null, status: "PAUSED" }),
@@ -64,6 +68,17 @@ describe("scheduled task storage mapping", () => {
       status: "COMPLETED" }), { lastRun: null, running: false, unseen: true });
     expect(decodeScheduledTask(reached)).toEqual(reached);
     expect(reached).toMatchObject({ completionReason: "goal_reached", kind: "monitoring", status: "completed" });
+  });
+
+  it("flags instructions whose links runs cannot read yet, without exposing the snapshot", () => {
+    const prompt = "Summarize https://news.example/today";
+    const pending = toScheduledTask(row({ prompt }), { lastRun: null, running: false, unseen: false });
+    expect(pending.promptLinksPending).toBe(true);
+    expect(decodeScheduledTask(pending)).toEqual(pending);
+    expect(JSON.stringify(pending)).not.toMatch(/[0-9a-f]{64}/u);
+    const allowed = toScheduledTask(row({ prompt, promptUrlDigests: [...scheduledPromptUrlDigests(prompt, { kind: "owner" })] }),
+      { lastRun: null, running: false, unseen: false });
+    expect(allowed).not.toHaveProperty("promptLinksPending");
   });
 
   it("flags the newest run's own unread result beside the task's unread aggregate", async () => {

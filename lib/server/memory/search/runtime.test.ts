@@ -7,11 +7,13 @@ vi.mock("../persistence/transaction", () => ({ withLockedMemoryTransaction: (_cl
   action: (tx: unknown, settings: unknown) => unknown) => action(_client, state.settings) }));
 vi.mock("./retrieval", () => ({ createMemorySearchRetrieval: () => vi.fn() }));
 vi.mock("../../runs/preparingMemoryItems", () => ({ resolvePreparingMemoryItem: vi.fn(), samePreparingMemoryItemSnapshot: vi.fn(() => true) }));
+vi.mock("../retrieval/decayTouch", () => ({ scheduleDirectMemoryFactAccessTouch: vi.fn() }));
 import { createPrismaMemorySearchService } from "./runtime";
+import { scheduleDirectMemoryFactAccessTouch } from "../retrieval/decayTouch";
 import { MEMORY_READ_BUDGET_ERROR_CODES, MemoryReadBudgetError } from "../retrieval/readBudget";
 import { resolvePreparingMemoryItem } from "../../runs/preparingMemoryItems";
 
-function fixture() {
+function fixture(chat: Readonly<{ memoryMode?: string; scheduledTaskPrompt?: boolean }> = {}) {
   state.settings = { useMemoryFacts: true, memoryGeneration: 1, referenceChatHistory: true, activeIndexGenerationId: null };
   const snapshot = { version: "memory-search-v1", maxCalls: 3, resultTokens: 6000, comparisonResultTokens: 12000,
     timeoutSeconds: 30, memoryGeneration: 1, referenceChatHistory: true, destinations: [] } as const;
@@ -22,7 +24,9 @@ function fixture() {
     userMemorySettings: { findUnique: vi.fn(async () => state.settings) },
     $queryRaw: vi.fn(async () => [{ id: "run" }]),
     modelRun: { findFirst: vi.fn(async () => ({ status: "streaming", normalizedRequest: { memorySearch: snapshot, toolMode: "auto" },
-      chatId: "chat", assistantId: null, chat: { userId: "user", projectId: null, memoryMode: "NORMAL", permanentDeletionAt: null, folderId: null, memoryBranchGeneration: 1 } })) },
+      chatId: "chat", assistantId: null, userMessage: { scheduledTaskPrompt: chat.scheduledTaskPrompt ?? false },
+      chat: { userId: "user", projectId: null, memoryMode: chat.memoryMode ?? "NORMAL", permanentDeletionAt: null, folderId: null,
+        memoryBranchGeneration: 1 } })) },
     modelRunToolCall: { findFirst: vi.fn(async () => ({ state: "running", toolName: "memory_search", ordinal: 0 })),
       count: vi.fn(async () => 1) },
     memoryExecutionBinding: { findMany: vi.fn(async () => []) },
@@ -203,6 +207,45 @@ describe("native Memory search execution", () => {
     expect(await f.service.revalidate(f.call, f.context)).toMatchObject({ status: "error" });
     expect(f.retrieve).toHaveBeenCalledTimes(1);
   });
+  it("lets a scheduled task's own turn search in its excluded chat, and no other turn there", async () => {
+    const ordinary = fixture({ memoryMode: "EXCLUDED" });
+    expect(await ordinary.service.execute(ordinary.call, ordinary.context)).toMatchObject({ status: "error" });
+    expect(ordinary.retrieve).not.toHaveBeenCalled();
+    const task = fixture({ memoryMode: "EXCLUDED", scheduledTaskPrompt: true });
+    expect(await task.service.execute(task.call, task.context)).toMatchObject({ status: "complete" });
+    expect(task.retrieve).toHaveBeenCalledWith(expect.objectContaining({ chatId: "chat", scheduledPrompt: true }));
+    // Replay reauthorizes the same way.
+    expect(await task.service.revalidate(task.call, task.context)).toMatchObject({ status: "complete" });
+    for (const memoryMode of ["TEMPORARY", "NORMAL"]) {
+      const other = fixture({ memoryMode, scheduledTaskPrompt: true });
+      const outcome = await other.service.execute(other.call, other.context);
+      expect(outcome.status).toBe(memoryMode === "NORMAL" ? "complete" : "error");
+    }
+  });
+
+  it("marks delivered evidence for its sources but touches nothing a scheduled task's turn found", async () => {
+    const evidence = { version: "memory-search-v1", results: [{ exactItemId: "version-1", factVersionId: "version-1",
+      featureSnapshot: {}, includedText: "Synthetic fact", itemType: "FACT_VERSION", recallChunkId: null, recallRoundId: null,
+      selectionReason: "search", sourceBranchGenerationSnapshot: null, sourceChatId: null, sourceContentHashSnapshot: null,
+      sourceMessageIds: [], sourceRevisionSnapshot: null }] };
+    const deliver = async (scheduledTaskPrompt: boolean) => {
+      const f = fixture({ memoryMode: scheduledTaskPrompt ? "EXCLUDED" : "NORMAL", scheduledTaskPrompt });
+      const marked = vi.fn(async () => ({ count: 1 }));
+      const client = { ...f.client, memoryHistoryRun: { ...f.client.memoryHistoryRun,
+        findMany: vi.fn(async () => [{ id: "receipt", results: evidence }]), updateMany: marked },
+      memoryFactVersion: { findMany: vi.fn(async () => [{ factId: "fact-1", id: "version-1" }]) } };
+      await createPrismaMemorySearchService(client as unknown as PrismaClient, { retrieve: f.retrieve })
+        .markDelivered({ runId: "run", toolCallIds: ["call"], userId: "user" });
+      expect(marked).toHaveBeenCalledWith(expect.objectContaining({ data: { indexingEvidence: { delivered: true } } }));
+    };
+    vi.mocked(scheduleDirectMemoryFactAccessTouch).mockClear();
+    await deliver(true);
+    expect(scheduleDirectMemoryFactAccessTouch).not.toHaveBeenCalled();
+    await deliver(false);
+    expect(scheduleDirectMemoryFactAccessTouch).toHaveBeenCalledExactlyOnceWith(expect.anything(), expect.objectContaining({
+      facts: [{ factId: "fact-1", factVersionId: "version-1" }], userId: "user" }));
+  });
+
   it("rejects active branch loss before retrieval and on replay", async () => {
     const f = fixture();
     f.client.$queryRaw.mockResolvedValueOnce([]);

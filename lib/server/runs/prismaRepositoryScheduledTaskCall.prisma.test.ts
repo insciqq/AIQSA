@@ -22,7 +22,8 @@ const deps = {
 const body = {
   title: "Synthetic reminder", prompt: "Synthetic scheduled prompt", schedule: { kind: "weekly", time: "09:00",
     days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake",
-  searchEnabled: false, emailNotify: false, toolsEnabled: false, workspaceEnabled: false, chatMode: "new", kind: "standard"
+  searchEnabled: false, emailNotify: false, toolsEnabled: false, workspaceEnabled: false, memoryEnabled: true, chatMode: "new",
+  kind: "standard"
 };
 
 /**
@@ -56,7 +57,8 @@ async function answer(input: Readonly<{ calls?: number; scheduledTaskId?: string
     callIds.push(call.id);
   }
   const create = (callId: string, ordinal = 0) => createScheduledTaskForToolCall(prisma, deps, { body, callId, runId, userId,
-    result: (task) => scheduledTaskCreatedResult({ id: `provider-call-${ordinal}`, name: CREATE_SCHEDULED_TASK_TOOL_NAME }, task, false) });
+    result: (task) => scheduledTaskCreatedResult({ id: `provider-call-${ordinal}`, name: CREATE_SCHEDULED_TASK_TOOL_NAME }, task, false),
+    userUrlDigests: [] });
   return { answerId, callIds, chatId, create, runId, userId };
 }
 
@@ -140,7 +142,8 @@ describe("a chat answer's scheduled task creation", () => {
         providerCallId: "provider-call-0", roundIndex: 1, startedAt: new Date(), state: "running",
         toolName: CREATE_SCHEDULED_TASK_TOOL_NAME } });
       const outcome = await createScheduledTaskForToolCall(prisma, deps, { body, callId: call.id, runId, userId: turn.userId,
-        result: (task) => scheduledTaskCreatedResult({ id: "provider-call-0", name: CREATE_SCHEDULED_TASK_TOOL_NAME }, task, false) });
+        result: (task) => scheduledTaskCreatedResult({ id: "provider-call-0", name: CREATE_SCHEDULED_TASK_TOOL_NAME }, task, false),
+        userUrlDigests: [] });
       // The refused answer settles, so its chat can branch again.
       await prisma.modelRun.update({ data: { status: "complete" }, where: { id: runId } });
       await prisma.message.update({ data: { status: "complete" }, where: { id: answerId } });
@@ -186,7 +189,8 @@ describe("a chat answer's scheduled task creation", () => {
         ordinal: await prisma.modelRunToolCall.count({ where: { modelRunId: regenerationId } }), providerCallId: randomUUID(),
         roundIndex: 1, startedAt: new Date(), state: "running", toolName: CREATE_SCHEDULED_TASK_TOOL_NAME } });
       return createScheduledTaskForToolCall(prisma, deps, { body, callId: call.id, runId: regenerationId, userId: turn.userId,
-        result: (task) => scheduledTaskCreatedResult({ id: call.providerCallId, name: CREATE_SCHEDULED_TASK_TOOL_NAME }, task, false) });
+        result: (task) => scheduledTaskCreatedResult({ id: call.providerCallId, name: CREATE_SCHEDULED_TASK_TOOL_NAME }, task, false),
+        userUrlDigests: [] });
     };
     expect(await regenerate()).toEqual({ code: "scheduled_task_already_created", kind: "refused" });
     expect(await prisma.scheduledTask.count({ where: { userId: turn.userId } })).toBe(1);

@@ -27,4 +27,16 @@ describe("chat export documents", () => {
     expect(chatExportFileBaseName("Release checklist · 032", date)).toBe("release-checklist-032-2026-09-01");
     expect(chatExportFileBaseName("   ", date)).toBe("chat-2026-09-01");
   });
+
+  it("cuts a slug on code points within a UTF-8 budget, never inside a surrogate pair", () => {
+    const date = new Date("2026-09-01T10:00:00.000Z");
+    // One BMP letter first puts a UTF-16 cut inside a pair; 4-byte letters fill the 72-byte budget.
+    const astral = chatExportFileBaseName(`a${"𠜎".repeat(100)}`, date);
+    expect(astral).toBe(`a${"𠜎".repeat(17)}-2026-09-01`);
+    expect(() => encodeURIComponent(astral)).not.toThrow();
+    expect(chatExportFileBaseName("д".repeat(80), date)).toBe(`${"д".repeat(36)}-2026-09-01`);
+    expect(chatExportFileBaseName("x".repeat(80), date)).toBe(`${"x".repeat(64)}-2026-09-01`);
+    // The longest bulk entry name still fits a 100-byte ustar name.
+    expect(new TextEncoder().encode(`${chatExportFileBaseName("я".repeat(80), date)}-100000.json`).length).toBeLessThanOrEqual(100);
+  });
 });

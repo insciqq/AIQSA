@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatBranchGraphWire } from "@/lib/contracts/chats";
 import {
   activeBranchPathV2,
+  branchLeafRevealingMessageV2,
   branchPagerForMessageV2,
   branchVersionsV2
 } from "./branchModel";
@@ -118,6 +119,33 @@ describe("branch v2 presentation model", () => {
     });
     expect(branchPagerForMessageV2(graph, "edited-answer")).toBeNull();
     expect(branchPagerForMessageV2(graph, "missing")).toBeNull();
+  });
+
+  it("finds the newest leaf below a message off the active path, and none on it", () => {
+    for (const onPath of ["root-question", "regenerated-answer", "edited-answer"]) {
+      expect(branchLeafRevealingMessageV2(graph, onPath)).toBeNull();
+    }
+    expect(branchLeafRevealingMessageV2(graph, "missing")).toBeNull();
+    // A leaf reveals itself; an inner message, the newest leaf of its subtree.
+    expect(branchLeafRevealingMessageV2(graph, "original-answer")).toBe("original-answer");
+    expect(branchLeafRevealingMessageV2(graph, "original-follow-up")).toBe("original-follow-up-answer");
+
+    // Newest by creation, not by following the newest child at each fork.
+    const node = (id: string, parentMessageId: string | null, role: "assistant" | "user" = "user") =>
+      ({ id, parentMessageId, preview: id, role, status: "complete" as const });
+    const forked: ChatBranchGraphWire = {
+      activeLeafMessageId: "active-leaf",
+      nodes: [
+        node("root", null),
+        node("active-leaf", "root", "assistant"),
+        node("match", "root", "assistant"),
+        node("older-child", "match"),
+        node("newer-child", "match"),
+        node("late-grandchild", "older-child", "assistant")
+      ],
+      snapshotUpdatedAt: "2026-08-13T10:00:00.000Z"
+    };
+    expect(branchLeafRevealingMessageV2(forked, "match")).toBe("late-grandchild");
   });
 
   it("fails closed for a missing or cyclic active leaf", () => {

@@ -695,17 +695,21 @@ type TemporaryPreparingRunAdmissionInput = Readonly<{
   memoryRevision: number;
   normalizedRequest: PreparingRunAdmissionInput["normalizedRequest"];
   runId: string;
-  /** An answer to a scheduled task's prompt (its scheduled run or a later one), whatever its chat's Memory mode. */
+  /**
+   * An answer to a scheduled task's prompt (its scheduled run or a later one)
+   * that reads no Memory, whatever its chat's Memory mode.
+   */
   scheduledPrompt?: true;
   settingsSnapshot: MemoryPreparingSettingsSnapshot;
   userMessageId: string;
 }>;
 
 /**
- * Temporary Chat, Agent and scheduled task turns (every answer to a task's
- * prompt) bypass Personal Memory preparation entirely. The ordinary run is
- * made dispatchable in the admission transaction, while no Memory
- * attempt/binding receives the content-bearing base request.
+ * Temporary Chat, Agent and scheduled task turns without Memory (an answer
+ * to a task's prompt whose admission froze no standing read) bypass Personal
+ * Memory preparation entirely. The ordinary run is made dispatchable in the
+ * admission transaction, while no Memory attempt/binding receives the
+ * content-bearing base request.
  */
 export async function finalizeTemporaryPreparingRunAdmission(
   tx: Pick<Prisma.TransactionClient, "modelRun">,
@@ -1676,12 +1680,16 @@ export async function admitPreparingRunWithClient(
         });
       }
 
-      // A scheduled task's run and every other answer to its prompt never use
-      // Personal Memory, whatever the chat's mode: no standing context, Memory
-      // search or synchronous `/memory` command from a possibly model-written prompt.
+      // A scheduled task's run and every other answer to its prompt never change
+      // Personal Memory, whatever the chat's mode: no synchronous `/memory`
+      // command or queued one from a possibly model-written prompt, and no
+      // learning (its prompt mark). It reads Memory only through the standing
+      // read its preparation froze while the task had Memory on; otherwise it
+      // bypasses Personal Memory.
       const scheduledOccurrence = input.admissionKind === "NORMAL_SEND" ? input.scheduledOccurrence : undefined;
+      const scheduledWithoutMemory = scheduledPrompt && input.normalizedRequest.memoryStandingVersion !== 1;
       const settings = lockedChat.memoryMode === "TEMPORARY" || input.normalizedRequest.agent ||
-          scheduledPrompt || options.memoryUnavailableFallback
+          scheduledWithoutMemory || options.memoryUnavailableFallback
         ? TEMPORARY_PREPARING_SETTINGS
         : await loadPreparingSettings(tx, input.userId, true);
 
@@ -1782,7 +1790,7 @@ export async function admitPreparingRunWithClient(
         memoryRevision: settings.memoryRevision,
         normalizedRequest: input.normalizedRequest,
         runId: run.id,
-        ...(scheduledPrompt ? { scheduledPrompt: true as const } : {}),
+        ...(scheduledWithoutMemory ? { scheduledPrompt: true as const } : {}),
         settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
         userMessageId
       });
@@ -1826,7 +1834,8 @@ export async function admitPreparingRunWithClient(
         userMessageId
       });
 
-      const memoryCommandQueued = await enqueuePreparingMemoryCommand(tx, input, settings, {
+      // A task turn reads only: its prompt never queues a Memory command.
+      const memoryCommandQueued = !scheduledPrompt && await enqueuePreparingMemoryCommand(tx, input, settings, {
         assistantMessageId,
         chatMemoryMode: lockedChat.memoryMode,
         memoryBranchGeneration: admittedSourceSnapshot.memoryBranchGeneration,
@@ -1843,6 +1852,7 @@ export async function admitPreparingRunWithClient(
         ...(memoryCommandQueued ? { memoryCommandQueued: true } : {}),
         memoryRevision: settings.memoryRevision,
         runId: run.id,
+        ...(scheduledPrompt ? { scheduledPrompt: true as const } : {}),
         settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
         userMessageId
       };
@@ -4111,10 +4121,11 @@ export async function createDormantPreparingRun(
       preparation: fallback.deferredPdf ? "pdf" : "ready" });
     return fallback;
   }
-  // Temporary, Agent and scheduled task turns (any answer to a task's prompt,
-  // as admission read it) were made dispatchable without Personal Memory.
+  // Temporary, Agent and scheduled task turns without a standing read (any
+  // answer to a task's prompt, as admission read it) were made dispatchable
+  // without Personal Memory.
   const withoutMemory = created.chatMemoryMode === "TEMPORARY" || Boolean(admission.normalizedRequest.agent) ||
-    created.scheduledPrompt === true;
+    (created.scheduledPrompt === true && admission.normalizedRequest.memoryStandingVersion !== 1);
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
     preparation: created.deferredPdf ? "pdf" : withoutMemory ? "ready" : "memory" });
@@ -4359,6 +4370,7 @@ async function continuePreparingRunWithClient(
                 normalizedRequest: admission.normalizedRequest,
                 ...(admission.normalizedRequest.memoryStandingVersion === 1
                   ? { readMode: "STANDING_V1" as const } : {}),
+                ...(created.scheduledPrompt ? { scheduledPrompt: true as const } : {}),
                 modelRunId: created.runId,
                 memoryCommandQueued: created.memoryCommandQueued,
                 now: new Date(),

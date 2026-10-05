@@ -246,6 +246,9 @@ export type MemoryLocalRetrievalInput = Readonly<{
   excludeToolEvents?: true;
   now: Date;
   plan: MemoryRetrievalPlan;
+  /** The reading run answers a scheduled task's prompt: its excluded chat
+   * reads like an ordinary one, and the snapshot keeps the chat's real mode. */
+  scheduledPrompt?: true;
   /** Settlement signal. It also withdraws reads still waiting for read
    * admission; started SQL remains bounded only by its server budget. */
   settleSignal?: AbortSignal;
@@ -1039,7 +1042,8 @@ async function loadSnapshot(
   if (!directFactRead && row.chatMemoryMode === "TEMPORARY") {
     return { ...base, reason: "temporary_chat", status: "DISABLED" };
   }
-  if (!directFactRead && row.chatMemoryMode === "EXCLUDED") {
+  // A READY excluded snapshot is therefore always a scheduled task's own read.
+  if (!directFactRead && row.chatMemoryMode === "EXCLUDED" && input.scheduledPrompt !== true) {
     return { ...base, reason: "chat_memory_off", status: "DISABLED" };
   }
   if (!useMemoryFacts) {
@@ -1588,7 +1592,10 @@ function standingFactsSql(snapshot: MemoryLocalRetrievalSnapshot, limit: number)
         WHERE standing_chat."id" = ${snapshot.chatId}
           AND standing_chat."userId" = ${snapshot.userId}
           AND standing_chat."projectId" IS NULL
-          AND standing_chat."memoryMode" = 'NORMAL'::"MemoryChatMode"
+          -- Still read as the snapshot read it: an ordinary chat, or the
+          -- excluded chat of a scheduled task's own read.
+          AND standing_chat."memoryMode" = ${snapshot.chatMemoryMode === "EXCLUDED"
+            ? Prisma.sql`'EXCLUDED'::"MemoryChatMode"` : Prisma.sql`'NORMAL'::"MemoryChatMode"`}
           AND standing_chat."permanentDeletionAt" IS NULL
       )
       AND ${memoryFactScopePredicate(snapshot)}
@@ -1647,8 +1654,9 @@ async function loadStandingFacts(
   snapshot: MemoryLocalRetrievalSnapshot,
   options: Readonly<{ standingVersion?: 1 }> = {}
 ): Promise<readonly MemoryCoreCandidate[]> {
+  // A READY excluded snapshot is a scheduled task's own read (`loadSnapshot`).
   if (snapshot.status !== "READY" || !snapshot.useMemoryFacts ||
-    snapshot.chatId === null || snapshot.chatMemoryMode !== "NORMAL") return [];
+    snapshot.chatId === null || snapshot.chatMemoryMode === "TEMPORARY") return [];
   const rows = await withMemoryReadBudget(
     client,
     MEMORY_READ_BUDGET_MS.SNAPSHOT_CORE,

@@ -1,0 +1,80 @@
+/* Settings → Data: chat import progress and report under the Import row. */
+.v2-chat-import {
+  display: grid;
+  min-width: 0;
+  gap: 0.5rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--v2-color-border);
+}
+
+.v2-chat-import h3 {
+  margin: 0;
+  color: var(--v2-color-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.v2-chat-import p,
+.v2-chat-import li {
+  margin: 0;
+  color: var(--v2-color-text2);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.v2-chat-import-summary {
+  display: grid;
+  gap: 0.125rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Progress counts settled chats only; it never moves on its own. */
+.v2-chat-import-bar {
+  height: 0.25rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--v2-color-surface2);
+}
+
+.v2-chat-import-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--v2-color-accent);
+  transition: width 160ms ease-out;
+}
+
+/* A long list of failures scrolls locally instead of stretching Settings. */
+.v2-chat-import-failed {
+  display: grid;
+  max-height: 12rem;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0 0 0 1.125rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.v2-chat-import-failed li {
+  overflow-wrap: anywhere;
+}
+
+.v2-chat-import-failed strong {
+  color: var(--v2-color-text);
+  font-weight: 500;
+}
+
+.v2-chat-import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2-chat-import-bar > span {
+    transition: none;
+  }
+}

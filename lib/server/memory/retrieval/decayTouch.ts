@@ -6,6 +6,7 @@ import {
 } from "../../../domain/memory/retrieval";
 import { decodeMemoryPreparingSettingsSnapshot } from "../../runs/preparingRun";
 import { memoryReusableFactAuthorityPredicate } from "../persistence/reusableFactAuthority";
+import { memoryRunAnswersScheduledPrompt } from "../scheduledPrompt";
 
 export type MemoryDecayTouchIdentity = Readonly<{
   bindingId?: string;
@@ -114,7 +115,8 @@ async function touchOne(
 }
 
 /** Reads only the exact durable frozen pack. Candidate, RRF and reranker rows
- * are intentionally unreachable from this owner. */
+ * are intentionally unreachable from this owner. A scheduled task's turn reads
+ * without touching anything it was given. */
 export async function touchFrozenMemoryPack(
   client: PrismaClient,
   input: MemoryDecayTouchIdentity,
@@ -124,7 +126,7 @@ export async function touchFrozenMemoryPack(
     throw new Error("memory_decay_touch_input_invalid");
   }
   const binding = await client.modelRunMemoryBinding.findFirst({
-    select: { id: true, settingsSnapshot: true },
+    select: { id: true, modelRunId: true, settingsSnapshot: true },
     where: {
       ...(input.bindingId ? { id: input.bindingId } : {}),
       ...(input.modelRunId ? { modelRunId: input.modelRunId } : {}),
@@ -138,7 +140,8 @@ export async function touchFrozenMemoryPack(
     ? decodeMemoryPreparingSettingsSnapshot(binding.settingsSnapshot)
     : null;
   if (!binding || !settings?.decayEnabled ||
-    settings.decayPolicyVersion !== MEMORY_DECAY_POLICY_VERSION) {
+    settings.decayPolicyVersion !== MEMORY_DECAY_POLICY_VERSION ||
+    await memoryRunAnswersScheduledPrompt(client, { runId: binding.modelRunId, userId: input.userId })) {
     return { eligibleItems: 0, touchedItems: 0 };
   }
   const items = await client.modelRunMemoryItem.findMany({

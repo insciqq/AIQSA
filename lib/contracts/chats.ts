@@ -1,9 +1,22 @@
 import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from "./memorySearchActivity";
+import {
+  decodeFetchUrlTarget,
+  isFetchUrlActivityOutcome,
+  isFetchUrlHttpStatus,
+  isFetchUrlRefusalScope,
+  type FetchUrlActivityOutcome,
+  type FetchUrlRefusalScope
+} from "./fetchUrlActivity";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "./imageGeneration";
 import { decodeSessionContextStatus, type SessionContextStatus } from "./sessionStatus";
 import { decodeChatPdfPreparations, type ChatPdfPreparationWire } from "./chatPdfPreparation";
+import {
+  CHAT_IMPORT_SOURCE_MODEL_MAX_LENGTH,
+  CHAT_IMPORT_SOURCES,
+  type ChatImportSource
+} from "./chatImport";
 import type {
   ErrorResponse,
   MutationOriginErrorCode,
@@ -87,6 +100,12 @@ export const CHAT_NAVIGATION_CURSOR_MAX_LENGTH = 2_048;
 export const CHAT_NAVIGATION_DEFAULT_PAGE_SIZE = 30;
 export const CHAT_NAVIGATION_MAX_PAGE_SIZE = 50;
 export const CHAT_NAVIGATION_QUERY_MAX_LENGTH = 120;
+/** Message text matching starts at this many characters of the normalized query; title search has no minimum. */
+export const CHAT_MESSAGE_SEARCH_MIN_QUERY_LENGTH = 3;
+/** Characters of readable text a message snippet keeps on each side of the first match. */
+export const CHAT_MESSAGE_MATCH_SNIPPET_CONTEXT = 80;
+/** Decoder bound on a snippet: both contexts around a longest query, astral characters and ellipses included. */
+export const CHAT_MESSAGE_MATCH_SNIPPET_MAX_LENGTH = 600;
 /**
  * Reader portions of one answer's outputs. The server summary stays within
  * them and marks what it leaves out; the decoder applies the same bounds and
@@ -107,6 +126,8 @@ export const THREAD_SEARCH_SOURCE_MAX_ITEMS = 4_000;
  * code units, so any input the field accepts also fits here.
  */
 export const CHAT_TITLE_MAX_LENGTH = 120;
+/** The title of a chat created without one; never empty, which every chat decoder requires. */
+export const DEFAULT_CHAT_TITLE = "New Chat";
 export const PERSONAL_FOLDER_NAME_MAX_LENGTH = 80;
 export function codePointLength(value: string): number {
   return Array.from(value).length;
@@ -116,6 +137,15 @@ export function boundedChatTitle(value: string): string {
   return codePointLength(value) <= CHAT_TITLE_MAX_LENGTH
     ? value
     : Array.from(value).slice(0, CHAT_TITLE_MAX_LENGTH).join("").trimEnd();
+}
+/**
+ * The stored title of an imported chat: trimmed, cut to the title bound, and
+ * the default chat title when nothing is left. Export formats allow an empty
+ * title (ChatGPT writes none for some conversations), but every chat list and
+ * search decoder refuses one.
+ */
+export function importedChatTitle(value: string): string {
+  return boundedChatTitle(value.trim()) || DEFAULT_CHAT_TITLE;
 }
 export function boundedChatBranchPreview(value: string): string {
   if (value.length <= CHAT_BRANCH_PREVIEW_MAX_LENGTH) return value;
@@ -218,7 +248,7 @@ export type ThreadArtifactSummary = {
   reasoningText: string[];
   /** Part of the thinking was too long to keep or show. */
   reasoningTruncated?: true;
-  /** Scheduled tasks the answer created; see `ScheduledTaskCard`. */
+  /** Scheduled tasks the answer created or managed; see `ScheduledTaskCard`. */
   scheduledTasks?: ScheduledTaskCard[];
   sources: ThreadSearchSource[];
   /** Search results beyond THREAD_SEARCH_SOURCE_MAX_ITEMS were left out. */
@@ -259,17 +289,26 @@ export type ThreadToolActivityOrigin =
   | "skill"
   | "tool"
   | "vision"
+  | "web_fetch"
   | "web_search"
   | "workspace";
 
 export function isThreadToolActivityOrigin(value: unknown): value is ThreadToolActivityOrigin {
   return value === "artifact" || value === "image" || value === "discovery" || value === "knowledge" || value === "mcp" ||
     value === "memory" || value === "session" || value === "skill" || value === "tool" || value === "vision" ||
-    value === "web_search" || value === "workspace";
+    value === "web_fetch" || value === "web_search" || value === "workspace";
 }
 
 export type ThreadToolActivityCall = {
   details?: { roundIndex: number; ordinal: number };
+  /** `web_fetch` only: the HTTP status of a `fetch_http_status` outcome. */
+  fetchHttpStatus?: number;
+  /** `web_fetch` only: the settled outcome (`read` or a refusal/failure code). */
+  fetchOutcome?: FetchUrlActivityOutcome;
+  /** `web_fetch` only: where a `fetch_url_not_in_conversation` link is allowed, when not by sending it in the chat. */
+  fetchRefusalScope?: FetchUrlRefusalScope;
+  /** `web_fetch` only: the page's "host/path", never its scheme, query or content. */
+  fetchTarget?: string;
   memorySearchCall?: number;
   memorySearchOutcome?: MemorySearchActivityOutcome;
   skillId?: string;
@@ -329,6 +368,12 @@ export type ThreadCitation = {
 export type WorkspaceChatSummary = {
   titlePending?: boolean;
   hasContinuationSource?: boolean;
+  /**
+   * Present only on an imported chat and its continuations and branch copies,
+   * which never use Memory; `importSourceModel` is the source's model label.
+   */
+  importSource?: ChatImportSource;
+  importSourceModel?: string;
   activeLeafMessageId: string | null;
   /** The Assistant bound for the next messages; absent on unsaved local drafts. */
   assistantId?: string | null;
@@ -621,11 +666,6 @@ export type ChatRouteServerErrorCode =
 
 export type ChatRouteErrorResponse = ErrorResponse<ChatRouteServerErrorCode>;
 
-export type ChatContentMatchWire = {
-  chatId: string;
-  snippet: string | null;
-};
-
 export type FolderWire = {
   defaultKnowledgePlan?: KnowledgePlan | null;
   id: string;
@@ -644,7 +684,6 @@ export type UpdateFolderRequestWire = {
 
 export type WorkspaceChatsResponseWire = {
   chats: WorkspaceChatSummaryWire[];
-  contentMatches: ChatContentMatchWire[];
   folders: FolderWire[];
 };
 
@@ -687,16 +726,42 @@ export type ChatNavigationPageWire = {
   nextCursor: string | null;
 };
 
+/**
+ * A chat in the sidebar scope whose message text contains the query: its
+ * newest matching message on any branch, how many of its messages match, and
+ * plain readable text around the first match in that message. The browser
+ * highlights the query; the server sends no markup.
+ */
+export type ChatMessageMatchWire = {
+  chatId: string;
+  /** When the matching message was written. */
+  createdAt: string;
+  matchCount: number;
+  messageId: string;
+  snippet: string;
+  title: string;
+};
+
+/**
+ * A page of `/api/chats/search/messages`, requested beside the title search
+ * so a broad message query never delays or fails the title results. Matches
+ * are ordered and paged like the title results: newest chat first.
+ */
+export type ChatMessageMatchPageWire = {
+  matches: ChatMessageMatchWire[];
+  nextCursor: string | null;
+};
+
 export type DecodedWorkspaceChatsResponse = {
   chats: WorkspaceChatSummaryWire[];
-  contentMatches: ChatContentMatchWire[];
   folders: FolderWire[];
 };
 
 export type ChatNavigationErrorCode =
   | SessionErrorCode
   | "chat_navigation_cursor_invalid"
-  | "chat_navigation_query_invalid";
+  | "chat_navigation_query_invalid"
+  | "chat_navigation_search_timeout";
 
 export type ChatNavigationErrorResponse = ErrorResponse<ChatNavigationErrorCode>;
 
@@ -1139,6 +1204,14 @@ function decodeThreadToolActivity(value: unknown): ThreadToolActivity | null {
       ...(candidate.origin === "skill" && typeof candidate.skillName === "string" && candidate.skillName.length <= 160 ? { skillName: candidate.skillName } : {}),
       ...(candidate.origin === "skill" && typeof candidate.skillPath === "string" && candidate.skillPath.length <= 256 ? { skillPath: candidate.skillPath } : {}),
       ...(typeof durationMs === "number" ? { durationMs } : {}),
+      ...(candidate.origin === "web_fetch" ? {
+        ...(decodeFetchUrlTarget(candidate.fetchTarget) ? { fetchTarget: decodeFetchUrlTarget(candidate.fetchTarget)! } : {}),
+        ...(isFetchUrlActivityOutcome(candidate.fetchOutcome) ? { fetchOutcome: candidate.fetchOutcome } : {}),
+        ...(candidate.fetchOutcome === "fetch_url_not_in_conversation" && isFetchUrlRefusalScope(candidate.fetchRefusalScope)
+          ? { fetchRefusalScope: candidate.fetchRefusalScope } : {}),
+        ...(candidate.fetchOutcome === "fetch_http_status" && isFetchUrlHttpStatus(candidate.fetchHttpStatus)
+          ? { fetchHttpStatus: candidate.fetchHttpStatus } : {})
+      } : {}),
       ...(candidate.origin !== undefined ? { origin: candidate.origin } : {}),
       round,
       ...(serverName ? { serverName } : {}),
@@ -1321,10 +1394,27 @@ function decodeChatDefaultSelection(
     : null;
 }
 
+/** The import marker of a chat summary: absent, or a known source with an optional model label. */
+function decodeChatImportMarker(
+  value: Record<string, unknown>
+): Pick<WorkspaceChatSummaryWire, "importSource" | "importSourceModel"> | null {
+  if (value.importSource === undefined) return value.importSourceModel === undefined ? {} : null;
+  if (!CHAT_IMPORT_SOURCES.includes(value.importSource as ChatImportSource)) return null;
+  const model = value.importSourceModel;
+  if (model !== undefined && (typeof model !== "string" || !model ||
+    model.length > CHAT_IMPORT_SOURCE_MODEL_MAX_LENGTH)) return null;
+  return {
+    importSource: value.importSource as ChatImportSource,
+    ...(typeof model === "string" ? { importSourceModel: model } : {})
+  };
+}
+
 function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWire | null {
   if (!isRecord(value) || (value.titlePending !== undefined && typeof value.titlePending !== "boolean") || (value.hasContinuationSource !== undefined && typeof value.hasContinuationSource !== "boolean")) {
     return null;
   }
+  const importMarker = decodeChatImportMarker(value);
+  if (!importMarker) return null;
 
   const activeLeafMessageId = nullableId(value.activeLeafMessageId);
   const assistantId = value.assistantId === undefined ? undefined : nullableId(value.assistantId);
@@ -1368,6 +1458,7 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     ...(assistantId !== undefined ? { assistantId } : {}),
     createdAt,
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
+    ...importMarker,
     ...(value.titlePending === true ? { titlePending: true } : {}),
     defaultKnowledgePlan,
     ...(search?.ok ? { defaultSearchPlan: search.plan } : {}),
@@ -1485,6 +1576,32 @@ function decodeChatNavigationFolderWire(
   return id && name && parentId !== undefined ? { id, name, parentId } : null;
 }
 
+/**
+ * The form a sidebar query is matched in: compatibility characters folded,
+ * trimmed and lowercased.
+ */
+export function normalizeChatNavigationQuery(value: string): string {
+  return value.normalize("NFKC").trim().toLowerCase();
+}
+
+/**
+ * Whether message text matching applies to a query: at least
+ * CHAT_MESSAGE_SEARCH_MIN_QUERY_LENGTH characters of its normalized form.
+ */
+export function chatMessageSearchApplies(query: string): boolean {
+  return Array.from(normalizeChatNavigationQuery(query)).length >= CHAT_MESSAGE_SEARCH_MIN_QUERY_LENGTH;
+}
+
+function decodeNavigationCursor(value: unknown): string | null | undefined {
+  const cursor = nullableId(value);
+  return cursor === undefined || (cursor !== null && (
+    cursor.length > CHAT_NAVIGATION_CURSOR_MAX_LENGTH ||
+    !/^[A-Za-z0-9_-]+$/u.test(cursor)
+  ))
+    ? undefined
+    : cursor;
+}
+
 export function decodeChatNavigationPage(
   value: unknown
 ): ChatNavigationPageWire | null {
@@ -1497,16 +1614,8 @@ export function decodeChatNavigationPage(
   ) {
     return null;
   }
-  const nextCursor = nullableId(value.nextCursor);
-  if (
-    nextCursor === undefined ||
-    (nextCursor !== null && (
-      nextCursor.length > CHAT_NAVIGATION_CURSOR_MAX_LENGTH ||
-      !/^[A-Za-z0-9_-]+$/u.test(nextCursor)
-    ))
-  ) {
-    return null;
-  }
+  const nextCursor = decodeNavigationCursor(value.nextCursor);
+  if (nextCursor === undefined) return null;
   const chats = value.chats.map(decodeChatNavigationSummaryWire);
   const folders = value.folders.map(decodeChatNavigationFolderWire);
   if (
@@ -1530,21 +1639,47 @@ export function decodeChatNavigationPage(
   return { chats: decodedChats, folders: decodedFolders, nextCursor };
 }
 
-function decodeChatContentMatchWire(value: unknown): ChatContentMatchWire | null {
-  if (!isRecord(value)) {
+function decodeChatMessageMatchWire(value: unknown): ChatMessageMatchWire | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["chatId", "createdAt", "matchCount", "messageId", "snippet", "title"])
+  ) {
     return null;
   }
-
   const chatId = requiredString(value.chatId);
-  const snippet = nullableString(value.snippet);
-  if (!chatId || snippet === undefined) {
+  const createdAt = isoTimestamp(value.createdAt);
+  const matchCount = nonNegativeInteger(value.matchCount);
+  const messageId = requiredString(value.messageId);
+  const title = requiredString(value.title);
+  const snippet = typeof value.snippet === "string" &&
+    value.snippet.length <= CHAT_MESSAGE_MATCH_SNIPPET_MAX_LENGTH
+    ? value.snippet
+    : null;
+  return chatId && createdAt && messageId && title && snippet !== null &&
+    matchCount !== null && matchCount > 0 && Number.isSafeInteger(matchCount)
+    ? { chatId, createdAt, matchCount, messageId, snippet, title }
+    : null;
+}
+
+export function decodeChatMessageMatchPage(
+  value: unknown
+): ChatMessageMatchPageWire | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["matches", "nextCursor"]) ||
+    !Array.isArray(value.matches) ||
+    value.matches.length > CHAT_NAVIGATION_MAX_PAGE_SIZE
+  ) {
     return null;
   }
-
-  return {
-    chatId,
-    snippet
-  };
+  const nextCursor = decodeNavigationCursor(value.nextCursor);
+  const matches = value.matches.map(decodeChatMessageMatchWire);
+  const decoded = matches.filter((match): match is ChatMessageMatchWire => match !== null);
+  // One match per chat: a repeated chat means a malformed page, not two results.
+  return nextCursor !== undefined && decoded.length === matches.length &&
+    new Set(decoded.map((match) => match.chatId)).size === decoded.length
+    ? { matches: decoded, nextCursor }
+    : null;
 }
 
 export function decodeWorkspaceChatsResponse(
@@ -1553,7 +1688,6 @@ export function decodeWorkspaceChatsResponse(
   if (
     !isRecord(value) ||
     !Array.isArray(value.chats) ||
-    !Array.isArray(value.contentMatches) ||
     !Array.isArray(value.folders)
   ) {
     return null;
@@ -1561,20 +1695,15 @@ export function decodeWorkspaceChatsResponse(
 
   const chats = value.chats.map(decodeWorkspaceChatSummaryWire);
   const folders = value.folders.map(decodeFolderWire);
-  const contentMatches = value.contentMatches.map(decodeChatContentMatchWire);
   if (
     chats.some((chat) => !chat) ||
-    folders.some((folder) => !folder) ||
-    contentMatches.some((match) => !match)
+    folders.some((folder) => !folder)
   ) {
     return null;
   }
 
   return {
     chats: chats.filter((chat): chat is WorkspaceChatSummaryWire => Boolean(chat)),
-    contentMatches: contentMatches.filter(
-      (match): match is ChatContentMatchWire => Boolean(match)
-    ),
     folders: folders.filter((folder): folder is FolderWire => Boolean(folder))
   };
 }
@@ -1746,6 +1875,9 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "updatedAt",
       ...(Object.hasOwn(value, "assistantId") ? ["assistantId"] : []),
       ...(Object.hasOwn(value, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
+      ...(Object.hasOwn(value, "hasContinuationSource") ? ["hasContinuationSource"] : []),
+      ...(Object.hasOwn(value, "importSource") ? ["importSource"] : []),
+      ...(Object.hasOwn(value, "importSourceModel") ? ["importSourceModel"] : []),
       ...(Object.hasOwn(value, "workspace") ? ["workspace"] : [])
     ])
   ) return null;
@@ -1818,6 +1950,8 @@ export function decodeArchivedChatDetailResponse(
     ...(Object.hasOwn(value.chat, "assistant") ? ["assistant"] : []),
     ...(Object.hasOwn(value.chat, "assistantId") ? ["assistantId"] : []),
     ...(Object.hasOwn(value.chat, "hasContinuationSource") ? ["hasContinuationSource"] : []),
+    ...(Object.hasOwn(value.chat, "importSource") ? ["importSource"] : []),
+    ...(Object.hasOwn(value.chat, "importSourceModel") ? ["importSourceModel"] : []),
     ...(Object.hasOwn(value.chat, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
     ...(Object.hasOwn(value.chat, "workspace") ? ["workspace"] : [])
   ])) return null;

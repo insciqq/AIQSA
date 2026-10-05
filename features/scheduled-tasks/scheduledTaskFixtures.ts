@@ -15,6 +15,7 @@ export function scheduledTaskFixture(overrides: Partial<ScheduledTask> = {}): Sc
     emailNotify: false,
     toolsEnabled: false,
     workspaceEnabled: false,
+    memoryEnabled: false,
     chatMode: "same",
     kind: "standard",
     status: "active",

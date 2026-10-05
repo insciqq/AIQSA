@@ -172,6 +172,19 @@ describe("thread answer outputs", () => {
     ])).toBeNull();
   });
 
+  it("folds a live answer's scheduled task cards like a reload: six tasks, each with its latest action", () => {
+    const card = (taskId: string, action?: string, status = "active") => ({ data: { artifactType: "scheduled_task", payload: {
+      taskId, title: "Report reminder", kind: "standard", schedule: { kind: "daily", time: "09:00" }, timeZone: "UTC",
+      timeZoneFallback: false, toolsEnabled: false, workspaceEnabled: false, status,
+      nextRunAt: status === "active" ? "2026-10-05T09:00:00.000Z" : null, ...(action ? { action } : {}) } }, type: "artifact" as const });
+    const events = [card("created"), ...["task-1", "task-2", "task-3", "task-4", "task-5"].map((id) => card(id, "paused", "paused")),
+      card("task-1", "resumed"), card("task-6", "paused", "paused")];
+    expect(summarizeThreadArtifacts(events)?.scheduledTasks?.map((entry) => [entry.taskId, entry.action ?? "created"])).toEqual([
+      ["created", "created"], ["task-1", "resumed"], ["task-2", "paused"], ["task-3", "paused"], ["task-4", "paused"],
+      ["task-5", "paused"]
+    ]);
+  });
+
   it("keeps the persisted compaction outcome after late progress", () => {
     const status = (state: "running" | "complete", outcome: "pending" | "summary_applied") => ({
       data: {

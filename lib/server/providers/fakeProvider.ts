@@ -25,6 +25,36 @@ function fakeToolResults(request: ProviderRunRequest): FakeToolResultMessage[] {
     (value.status === "complete" || value.status === "error") && Array.isArray(value.content));
 }
 
+/** Test-only page-reader scenario: `first_link` reads the question's first link, `unlisted` a link it never had. */
+const FETCH_URL_TEST_DIRECTIVE = /\[AIQSA_FETCH_URL_E2E:(first_link|unlisted)\]/u;
+
+function fakeUsage(question: string, output: string) {
+  const inputTokens = tokenEstimate(question);
+  const outputTokens = tokenEstimate(output || "tool call");
+  return { cachedInputTokens: 0, cacheWriteInputTokens: 0, inputTokens, outputTokens, reasoningTokens: 0,
+    totalTokens: inputTokens + outputTokens };
+}
+
+/**
+ * One page read, then an answer naming its outcome (`read` or the refusal
+ * code). The server decides provenance; this scenario only asks.
+ */
+function scriptedFetchUrlResult(request: ProviderRunRequest, question: string): ProviderRunResult | null {
+  const match = FETCH_URL_TEST_DIRECTIVE.exec(question);
+  if (!match || !request.tools?.some((tool) => tool.name === "fetch_url")) return null;
+  const results = fakeToolResults(request);
+  if (results.length === 0) {
+    const url = match[1] === "first_link"
+      ? /https?:\/\/\S+/u.exec(question.replace(match[0], ""))?.[0] ?? ""
+      : "https://unlisted.example/private";
+    return { finalProviderResponsePreview: { finishReason: "tool_calls", provider: "fake" }, finalText: "",
+      toolCalls: [{ arguments: { url }, id: "fake-fetch-url-1", name: "fetch_url" }], usage: fakeUsage(question, "") };
+  }
+  const value = results[0]?.content.find((part) => part.type === "json")?.value;
+  const finalText = `Page reading finished: ${isRecord(value) && typeof value.error === "string" ? value.error : "read"}.`;
+  return { finalProviderResponsePreview: { finishReason: "stop", provider: "fake" }, finalText, usage: fakeUsage(question, finalText) };
+}
+
 function workspaceTool(request: ProviderRunRequest, originalName: string): RunTool | null {
   return request.tools?.find((tool) =>
     tool.capability === "workspace" && tool.name.includes(`_${originalName.slice(0, 24)}_`)) ?? null;
@@ -506,7 +536,7 @@ export function createFakeProviderAdapter(): ProviderAdapter {
     },
     async *stream(request, options = {}): AsyncGenerator<ModelRunSseEvent, ProviderRunResult> {
       const question = textFromContentBlocks(request.content) || "empty question";
-      const scripted = scriptedWorkspaceResult(request, question);
+      const scripted = scriptedWorkspaceResult(request, question) ?? scriptedFetchUrlResult(request, question);
       if (scripted) {
         throwIfAborted(options.signal);
         if ((scripted.toolCalls?.length ?? 0) === 0) {

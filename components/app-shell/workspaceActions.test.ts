@@ -27,7 +27,8 @@ import {
 import type { ChatAssistantProjection } from "@/lib/contracts/chats";
 import { useKnowledgeLibraryStore } from "./knowledgeLibraryStore";
 import { useRunSurfaceStore } from "./runSurfaceStore";
-import { chatExportMarkdown, useWorkspaceActions, type BlankDefaultAssistant } from "./workspaceActions";
+import { chatExportMarkdown } from "@/lib/domain/chatExport";
+import { useWorkspaceActions, type BlankDefaultAssistant } from "./workspaceActions";
 import {
   useThreadStore,
   type ThreadHistoryState
@@ -1347,7 +1348,7 @@ describe("workspace actions", () => {
   it("reports an unlisted refresh target and drops a superseded refresh", async () => {
     const state = useWorkspaceActionsForTest({ activeChatId: null, attachments: [], draft: "" });
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/chats"
-      ? Response.json({ chats: [apiChatSummary(state.chatA)], contentMatches: [], folders: [] })
+      ? Response.json({ chats: [apiChatSummary(state.chatA)], folders: [] })
       : Response.json({ error: "not_found" }, { status: 404 })));
     const onTargetUnavailable = vi.fn();
     await state.actions.refreshWorkspace("missing-chat", { onTargetUnavailable });
@@ -1381,7 +1382,6 @@ describe("workspace actions", () => {
       if (path === "/api/chats") {
         return Response.json({
           chats: [{ ...apiChatSummary(state.chatA), projectId: null, workspace }],
-          contentMatches: [],
           folders: []
         });
       }
@@ -2480,111 +2480,80 @@ describe("workspace actions", () => {
     });
   });
 
-  it("exports the active branch from keyed detail without fetching", async () => {
-    const state = useWorkspaceActionsForTest({
-      attachments: [],
-      draft: ""
-    });
-    const summary = {
-      ...state.chatA,
-      activeLeafMessageId: "assistant-b",
-      messageCount: 3
-    };
-    useWorkspaceStore.getState().updateChats((current) =>
-      current.map((candidate) => (candidate.id === summary.id ? summary : candidate))
-    );
-    useThreadStore.getState().replaceThread(summary.id, {
-      activeLeafId: "assistant-b",
-      history: threadHistory(summary),
-      messages: [
-        message({ content: "Question", id: "user-1" }),
-        message({ content: "Branch A", id: "assistant-a", parentMessageId: "user-1", role: "assistant" }),
-        message({ content: "Branch B", id: "assistant-b", parentMessageId: "user-1", role: "assistant" })
-      ],
-      sourceUpdatedAt: summary.updatedAt,
-      usageStats: null
-    });
-    const fetchMock = vi.fn();
-    let exportedText = "";
-    class CapturedBlob {
-      constructor(parts: BlobPart[]) {
-        exportedText = parts.map((part) => (typeof part === "string" ? part : "")).join("");
-      }
-    }
-    vi.stubGlobal("Blob", CapturedBlob);
-    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:export");
-    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
-    vi.stubGlobal("fetch", fetchMock);
-
-    await state.actions.exportChat(summary, "json");
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    const payload = JSON.parse(exportedText) as {
-      messages: { content: unknown }[];
-      title: string;
-    };
-    expect(payload.title).toBe("Chat A");
-    expect(payload.messages.map((candidate) => candidate.content)).toEqual([
-      "Question",
-      "Branch B"
-    ]);
-  });
-
-  it("defaults export to a Markdown document named by title slug and ISO date", async () => {
+  it("downloads the server-built export under the server file name, Markdown by default", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
-    const summary = {
-      ...state.chatA,
-      activeLeafMessageId: "assistant-a",
-      messageCount: 2,
-      title: "Release checklist · 032"
-    };
-    useWorkspaceStore.getState().updateChats((current) =>
-      current.map((candidate) => (candidate.id === summary.id ? summary : candidate))
-    );
-    useThreadStore.getState().replaceThread(summary.id, {
-      activeLeafId: "assistant-a",
-      history: threadHistory(summary),
-      messages: [
-        message({ content: "Вопрос", id: "user-1" }),
-        message({ content: "Ответ", id: "assistant-a", parentMessageId: "user-1", role: "assistant" })
-      ],
-      sourceUpdatedAt: summary.updatedAt,
-      usageStats: null
-    });
-    let exportedText = "";
-    class CapturedBlob {
-      constructor(parts: BlobPart[]) {
-        exportedText = parts.map((part) => (typeof part === "string" ? part : "")).join("");
-      }
-    }
+    const summary = { ...state.chatA, title: "Release checklist · 032" };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => new Response(
+      String(input).includes("format=json") ? "{\"format\":\"aiqsa.chat\"}" : "# Release checklist · 032\n",
+      { headers: { "content-disposition": String(input).includes("format=json")
+        ? "attachment; filename=\"chat-2026-09-01.json\"; filename*=UTF-8''%D1%80%D0%B5%D0%BB%D0%B8%D0%B7-2026-09-01.json"
+        : "attachment; filename=\"release-checklist-032-2026-09-01.md\"; filename*=UTF-8''release-checklist-032-2026-09-01.md" } }
+    ));
+    const blobs: Blob[] = [];
     const downloads: string[] = [];
-    vi.stubGlobal("Blob", CapturedBlob);
-    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:export");
+    vi.spyOn(URL, "createObjectURL").mockImplementation((blob) => {
+      blobs.push(blob as Blob);
+      return "blob:export";
+    });
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
       this: HTMLAnchorElement
     ) {
       downloads.push(this.download);
     });
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", fetchMock);
 
     await state.actions.exportChat(summary);
-    expect(exportedText).toBe(
-      "# Release checklist · 032\n\n## User\n\nВопрос\n\n## Assistant\n\nОтвет\n"
-    );
-
     await state.actions.exportChat(summary, "json");
-    expect(JSON.parse(exportedText)).toMatchObject({ title: "Release checklist · 032" });
 
-    const isoDate = new Date().toISOString().slice(0, 10);
-    expect(downloads).toEqual([
-      `release-checklist-032-${isoDate}.md`,
-      `release-checklist-032-${isoDate}.json`
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      "/api/chats/chat-a/export?format=markdown",
+      "/api/chats/chat-a/export?format=json"
     ]);
+    expect(downloads).toEqual(["release-checklist-032-2026-09-01.md", "релиз-2026-09-01.json"]);
+    expect(await blobs[0]?.text()).toBe("# Release checklist · 032\n");
+    expect(state.setNotice).toHaveBeenLastCalledWith({ kind: "success", text: "Chat exported" });
+    expect(useThreadStore.getState().threadsByChatId[summary.id]).toBeUndefined();
   });
 
-  it("exports older pages through operation-local memory without growing the thread cache", async () => {
+  it("reports a refused export without downloading anything", async () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: "chat_not_found" }, { status: 404 })));
+
+    await state.actions.exportChat(state.chatA, "json");
+
+    expect(click).not.toHaveBeenCalled();
+    expect(state.setNotice).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: "error",
+      text: expect.stringContaining("The complete chat could not be exported")
+    }));
+  });
+
+  it("opens the print page in a new tab within the click and reports a blocked pop-up", () => {
+    const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const tab = { opener: {} as unknown };
+    const open = vi.spyOn(window, "open").mockReturnValueOnce(tab as Window).mockReturnValueOnce(null);
+    const summary = { ...state.chatA, id: "chat a/1" };
+
+    // Nothing is awaited before the tab opens, so the user gesture still counts.
+    void state.actions.exportChat(summary, "pdf");
+    expect(open).toHaveBeenLastCalledWith("/print/c/chat%20a%2F1", "_blank");
+    expect(tab.opener).toBeNull();
+    expect(state.setNotice).not.toHaveBeenCalled();
+
+    void state.actions.exportChat(summary, "pdf");
+    expect(state.setNotice).toHaveBeenLastCalledWith({
+      kind: "error",
+      text: "The print page was blocked. Allow pop-ups for this site and try again."
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    open.mockRestore();
+  });
+
+  it("loads older pages of the complete branch through operation-local memory without growing the thread cache", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     const summary = {
       ...state.chatA,
@@ -2628,28 +2597,14 @@ describe("workspace actions", () => {
         )
       )
     );
-    let exportedText = "";
-    class CapturedBlob {
-      constructor(parts: BlobPart[]) {
-        exportedText = parts.map((part) => (typeof part === "string" ? part : "")).join("");
-      }
-    }
-    vi.stubGlobal("Blob", CapturedBlob);
-    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:export");
-    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", fetchMock);
 
-    await state.actions.exportChat(summary, "json");
+    const branch = await state.actions.loadCompleteActiveBranch(summary.id);
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/chats/chat-a/messages?before=cursor-tail"
     );
-    expect(
-      (JSON.parse(exportedText) as { messages: Array<{ content: string }> }).messages.map(
-        (candidate) => candidate.content
-      )
-    ).toEqual(["First", "Second", "Third", "Fourth"]);
+    expect(branch.map((candidate) => candidate.content)).toEqual(["First", "Second", "Third", "Fourth"]);
     expect(
       useThreadStore.getState().threadsByChatId[summary.id]?.messages.map(
         (candidate) => candidate.id
@@ -2657,7 +2612,7 @@ describe("workspace actions", () => {
     ).toEqual(["message-3", "message-4"]);
   });
 
-  it("refreshes a same-count stale thread before exporting it", async () => {
+  it("refreshes a same-count stale thread before loading the complete branch", async () => {
     const state = useWorkspaceActionsForTest({
       attachments: [],
       draft: ""
@@ -2685,30 +2640,18 @@ describe("workspace actions", () => {
         chat: apiChatDetail(summary, [message({ content: "current export", id: "message-a" })])
       })
     );
-    let exportedText = "";
-    class CapturedBlob {
-      constructor(parts: BlobPart[]) {
-        exportedText = parts.map((part) => (typeof part === "string" ? part : "")).join("");
-      }
-    }
-    vi.stubGlobal("Blob", CapturedBlob);
-    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:export");
-    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", fetchMock);
 
-    await state.actions.exportChat(summary, "json");
+    const branch = await state.actions.loadCompleteActiveBranch(summary.id);
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(JSON.parse(exportedText)).toMatchObject({
-      messages: [{ content: "current export" }]
-    });
+    expect(branch.map((candidate) => candidate.content)).toEqual(["current export"]);
     expect(useThreadStore.getState().threadsByChatId[summary.id]?.sourceUpdatedAt).toBe(
       summary.updatedAt
     );
   });
 
-  it("hydrates an incomplete thread once before export and reuses it", async () => {
+  it("hydrates an incomplete thread once for the complete branch and reuses it", async () => {
     const state = useWorkspaceActionsForTest({
       attachments: [],
       draft: ""
@@ -2730,13 +2673,10 @@ describe("workspace actions", () => {
         chat: apiChatDetail(summary, messages)
       })
     );
-    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:export");
-    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", fetchMock);
 
-    await state.actions.exportChat(summary);
-    await state.actions.exportChat(summary);
+    await state.actions.loadCompleteActiveBranch(summary.id);
+    await state.actions.loadCompleteActiveBranch(summary.id);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith("/api/chats/chat-a", expect.objectContaining({ signal: expect.any(AbortSignal) }));
@@ -2855,7 +2795,6 @@ describe("workspace actions", () => {
               defaultProvider: null
             }
           ],
-          contentMatches: [],
           folders: []
         })
       )
@@ -2900,7 +2839,7 @@ describe("workspace actions", () => {
     expect(second).toBe(first);
     expect(fetchMock).toHaveBeenCalledOnce();
     resolveWorkspace?.(
-      new Response(JSON.stringify({ chats: [], contentMatches: [], folders: [] }), {
+      new Response(JSON.stringify({ chats: [], folders: [] }), {
         headers: { "content-type": "application/json" },
         status: 200
       })
@@ -2927,7 +2866,7 @@ describe("workspace actions", () => {
     const refresh = state.actions.refreshWorkspace();
     await state.actions.activateChat(state.chatB);
     useComposerSessionStore.getState().setDraft("Draft in B");
-    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], contentMatches: [], folders: [] }));
+    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], folders: [] }));
     await refresh;
 
     expect(useWorkspaceStore.getState().activeChatId).toBe(state.chatB.id);
@@ -2945,7 +2884,7 @@ describe("workspace actions", () => {
     const refresh = state.actions.refreshWorkspace();
     await state.actions.createChat();
     useComposerSessionStore.getState().setDraft("New unsent work");
-    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], contentMatches: [], folders: [] }));
+    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], folders: [] }));
     await refresh;
 
     expect(useWorkspaceStore.getState().activeChatId).toBe(created.id);
@@ -2962,7 +2901,7 @@ describe("workspace actions", () => {
     useWorkspaceStore.getState().updateChats((chats) => chats
       .filter((chat) => chat.id !== state.chatB.id)
       .map((chat) => chat.id === state.chatA.id ? { ...chat, title: "Saved new title" } : chat));
-    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], contentMatches: [], folders: [] }));
+    settle(Response.json({ chats: [apiChatSummary(state.chatA), apiChatSummary(state.chatB)], folders: [] }));
     await refresh;
 
     expect(state.chats()).toEqual([expect.objectContaining({ id: state.chatA.id, title: "Saved new title" })]);
@@ -2972,7 +2911,7 @@ describe("workspace actions", () => {
   it("still removes a chat absent from a fresh authoritative list", async () => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     vi.stubGlobal("fetch", vi.fn(async (input) => String(input) === "/api/chats"
-      ? Response.json({ chats: [], contentMatches: [], folders: [] })
+      ? Response.json({ chats: [], folders: [] })
       : Response.json({ error: "not_found" }, { status: 404 })));
     await state.actions.refreshWorkspace();
 
@@ -3002,7 +2941,6 @@ describe("workspace actions", () => {
       if (path === "/api/chats") {
         return Response.json({
           chats: [apiChatSummary(state.chatB)],
-          contentMatches: [],
           folders: []
         });
       }
@@ -3065,7 +3003,6 @@ describe("workspace actions", () => {
       vi.fn().mockImplementation(async () =>
         Response.json({
           chats: [apiChatSummary(state.chatB)],
-          contentMatches: [],
           folders: []
         })
       )
@@ -3155,7 +3092,6 @@ describe("workspace actions", () => {
               ]
             }
           ],
-          contentMatches: [],
           folders: []
         })
       )
@@ -3291,7 +3227,7 @@ describe("chat scope across personal and Project workspaces", () => {
     const requests: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       requests.push(String(input));
-      return Response.json({ chats: [apiChatSummary(state.chatA)], contentMatches: [], folders: [] });
+      return Response.json({ chats: [apiChatSummary(state.chatA)], folders: [] });
     }));
 
     // A retry keeps the open saved Project chat and the controls its Project applied.
@@ -3320,7 +3256,7 @@ describe("chat scope across personal and Project workspaces", () => {
     const state = useMixedScopeForTest(null);
     useComposerSessionStore.getState().activateSession(projectComposerSessionKey("project-1"));
     vi.stubGlobal("fetch", vi.fn(async () =>
-      Response.json({ chats: [apiChatSummary(state.chatA)], contentMatches: [], folders: [] })));
+      Response.json({ chats: [apiChatSummary(state.chatA)], folders: [] })));
 
     await state.actions.refreshWorkspace(null);
     expect(useComposerSessionStore.getState().activeSessionKey).toBe(projectComposerSessionKey("project-1"));
@@ -3335,7 +3271,7 @@ describe("chat scope across personal and Project workspaces", () => {
     const send = useComposerSessionStore.getState().beginSend(key)!;
     useComposerSessionStore.getState().setDraft("Typed while waiting");
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/api/chats"
-      ? Response.json({ chats: [apiChatSummary(state.chatB)], contentMatches: [], folders: [] })
+      ? Response.json({ chats: [apiChatSummary(state.chatB)], folders: [] })
       : Response.json({ error: "chat_not_found" }, { status: 404 })));
 
     await state.actions.refreshWorkspace("chat-b");

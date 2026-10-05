@@ -7,6 +7,8 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync, writeSync } from "node:fs";
 import { extractTextDocument } from "../uploads/textDocuments";
+import { extractPage } from "../webFetch/extract";
+import { FETCH_URL_MAX_LENGTH } from "../webFetch/urls";
 import { isDocumentParserError } from "./errors";
 import { parseSpreadsheetDocument } from "./spreadsheet";
 
@@ -15,11 +17,14 @@ const PROTOCOL_FAILURE_EXIT_CODE = 65;
 const RESULT_FD = 3;
 const MAX_HEADER_BYTES = 4_096;
 const MAX_MEDIA_TYPE_LENGTH = 255;
+/** A fetched page's Content-Type header value, charset parameter included. */
+const MAX_PAGE_CONTENT_TYPE_LENGTH = 512;
 const SPREADSHEET_FORMATS: ReadonlySet<string> = new Set(["csv", "ods", "xls", "xlsx"]);
 
 type ChildRequest =
   | Readonly<{ format: string; maxCharacters: number; mediaType: string; op: "spreadsheet" }>
-  | Readonly<{ maxChars: number; op: "html" }>;
+  | Readonly<{ maxChars: number; op: "html" }>
+  | Readonly<{ contentType: string; finalUrl: string; maxCharacters: number; op: "page" }>;
 
 type DecodedRequest = Readonly<{ bytes: Buffer; request: ChildRequest }>;
 
@@ -108,6 +113,21 @@ function decodeRequest(input: Buffer): DecodedRequest {
   if (header.op === "html" && positiveInteger(header.maxChars)) {
     return { bytes, request: { maxChars: header.maxChars, op: "html" } };
   }
+  if (
+    header.op === "page" && positiveInteger(header.maxCharacters) &&
+    typeof header.contentType === "string" && header.contentType.length <= MAX_PAGE_CONTENT_TYPE_LENGTH &&
+    typeof header.finalUrl === "string" && header.finalUrl.length <= FETCH_URL_MAX_LENGTH
+  ) {
+    return {
+      bytes,
+      request: {
+        contentType: header.contentType,
+        finalUrl: header.finalUrl,
+        maxCharacters: header.maxCharacters,
+        op: "page"
+      }
+    };
+  }
   throw new Error("isolated_parser_protocol_invalid");
 }
 
@@ -119,6 +139,17 @@ function execute({ bytes, request }: DecodedRequest): unknown {
       fileName: `document.${request.format}`,
       mimeType: request.mediaType
     }, { maxCharacters: request.maxCharacters });
+  }
+  if (request.op === "page") {
+    // An empty Content-Type stands for a missing header: the body is sniffed.
+    return {
+      page: extractPage({
+        body: bytes,
+        contentType: request.contentType || null,
+        finalUrl: request.finalUrl,
+        maxCharacters: request.maxCharacters
+      })
+    };
   }
   return extractTextDocument(bytes, {
     fileName: "document.html",
