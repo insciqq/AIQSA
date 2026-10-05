@@ -333,6 +333,17 @@ describe("Memory cleanup qualification authority", () => {
     }
   });
 
+  it("adds each task-local class of maintenance prompt v6 as a retirement beside lasting work context", () => {
+    const added = MEMORY_CLEANUP_LIFECYCLE_CORPUS.flatMap((scenario) => scenario.facts.map((fact) => ({ scenario, fact })))
+      .filter(({ fact }) => fact.id.includes("_v5_"));
+    expect(added.map(({ fact }) => fact.id.replace(/^(ru|en)_v5_/u, "")).sort()).toEqual([
+      "artifact_status", "deliberation", "feeling", "implementation", "product_spec", "symptom_advice", "work_context", "work_context"]);
+    expect(added.filter(({ fact }) => fact.expected === "RETAIN").map(({ scenario }) => scenario.language).sort()).toEqual(["en", "ru"]);
+    // Stored labels that claim lasting value never protect task-local detail.
+    expect(added.filter(({ fact }) => fact.expected === "RETIRE" && fact.versions[0]!.usefulness !== undefined)).toHaveLength(5);
+    expect(added.every(({ fact }) => fact.versions.length === 1 && fact.versions[0]!.remembered === undefined)).toBe(true);
+  });
+
   it("checks every preview output before permitting paid or mutating work", async () => {
     const directory = await mkdtemp(join(tmpdir(), "memory-cleanup-preview-reserve-"));
     directories.push(directory);

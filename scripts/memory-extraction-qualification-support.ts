@@ -3,7 +3,7 @@ import { cleanupQualificationDatabase } from "./memory-cleanup-qualification-sup
 
 /** Deterministic part of the paid long-term extraction qualification. */
 export const MEMORY_EXTRACTION_QUALIFICATION_ACK = "DISPOSABLE_PAID_MEMORY_EXTRACTION";
-export const MEMORY_EXTRACTION_QUALIFICATION_VERSION = 2;
+export const MEMORY_EXTRACTION_QUALIFICATION_VERSION = 3;
 
 export type ExtractionQualificationOptions = Readonly<{ output: string; runId: string }>;
 
@@ -55,7 +55,7 @@ export function extractionQualificationDatabase(
 
 export const EXTRACTION_QUALIFICATION_GROUPS = Object.freeze([
   "DURABLE", "ONGOING", "MIXED", "PROTECTED", "CHANGE",
-  "SHORT_TERM", "MOMENTARY", "COMMON", "CHANGE_WITHOUT_PRIOR"
+  "SHORT_TERM", "MOMENTARY", "COMMON", "CHANGE_WITHOUT_PRIOR", "TASK_LOCAL", "UNCERTAIN"
 ] as const);
 export type ExtractionQualificationGroup = (typeof EXTRACTION_QUALIFICATION_GROUPS)[number];
 export type ExtractionQualificationExpectation = "SAVE" | "NONE" | "CHANGE";
@@ -69,7 +69,9 @@ const expectationByGroup: Readonly<Record<ExtractionQualificationGroup, Extracti
   MOMENTARY: "NONE",
   ONGOING: "SAVE",
   PROTECTED: "SAVE",
-  SHORT_TERM: "NONE"
+  SHORT_TERM: "NONE",
+  TASK_LOCAL: "NONE",
+  UNCERTAIN: "NONE"
 };
 
 export function extractionQualificationExpectation(
@@ -82,7 +84,7 @@ export function extractionQualificationExpectation(
  * per group across both qualification runs, judged by the integrator. */
 const strictGroups = new Set<ExtractionQualificationGroup>([
   "MIXED", "PROTECTED", "CHANGE", "SHORT_TERM", "MOMENTARY", "COMMON",
-  "CHANGE_WITHOUT_PRIOR"
+  "CHANGE_WITHOUT_PRIOR", "TASK_LOCAL", "UNCERTAIN"
 ]);
 
 type ScenarioSource = Readonly<{
@@ -152,10 +154,24 @@ const SCENARIO_SOURCES: readonly ScenarioSource[] = [
     allowed: ["Я врач"], maxSaves: 1 },
   { id: "en_doctor_on_call", language: "en", group: "MIXED", text: "I am a doctor, and I am on call tomorrow.",
     allowed: ["I am a doctor"], maxSaves: 1 },
+  // A lasting work fact stays admitted beside task-local detail.
+  { id: "ru_role_with_spec", language: "ru", group: "MIXED",
+    text: "Я бэкенд-разработчик, а в форме регистрации моего приложения должно быть три поля.",
+    allowed: ["Я бэкенд-разработчик"], maxSaves: 1 },
+  { id: "en_role_with_spec", language: "en", group: "MIXED",
+    text: "I'm a backend developer, and the signup form in my app should have three fields.",
+    allowed: ["I'm a backend developer"], maxSaves: 1 },
   { id: "ru_remember_debt", language: "ru", group: "PROTECTED", text: "Запомни: я должен Ивану 38 рублей.",
     allowed: ["я должен Ивану 38 рублей"] },
   { id: "en_remember_debt", language: "en", group: "PROTECTED", text: "Remember this: I owe Ivan 38 rubles.",
     allowed: ["I owe Ivan 38 rubles"] },
+  // The user's remember request keeps even a task-local detail.
+  { id: "ru_remember_spec", language: "ru", group: "PROTECTED",
+    text: "Запомни: тестовый сервер моего приложения работает на порту 8080.",
+    allowed: ["тестовый сервер моего приложения работает на порту 8080"] },
+  { id: "en_remember_spec", language: "en", group: "PROTECTED",
+    text: "Remember this: my app's staging server runs on port 8080.",
+    allowed: ["my app's staging server runs on port 8080"] },
   { id: "ru_gluten_change", language: "ru", group: "CHANGE", prior: "Я не ем глютен.",
     text: "Пять лет не ел глютен, а теперь снова ем хлеб." },
   { id: "en_gluten_change", language: "en", group: "CHANGE", prior: "I don't eat gluten.",
@@ -183,7 +199,35 @@ const SCENARIO_SOURCES: readonly ScenarioSource[] = [
   { id: "ru_morning_coffee", language: "ru", group: "COMMON", text: "Я пью кофе по утрам." },
   { id: "en_morning_coffee", language: "en", group: "COMMON", text: "I drink coffee in the morning." },
   { id: "ru_started_bread", language: "ru", group: "CHANGE_WITHOUT_PRIOR", text: "Я начал есть хлеб." },
-  { id: "en_started_bread", language: "en", group: "CHANGE_WITHOUT_PRIOR", text: "I started eating bread." }
+  { id: "en_started_bread", language: "en", group: "CHANGE_WITHOUT_PRIOR", text: "I started eating bread." },
+  // Paraphrased task-local classes the production audit found admitted.
+  { id: "ru_product_spec", language: "ru", group: "TASK_LOCAL",
+    text: "Мой телеграм-бот отвечает на русском и английском и сохраняет каждый заказ в таблицу." },
+  { id: "en_product_spec", language: "en", group: "TASK_LOCAL",
+    text: "My Telegram bot replies in Russian and English and stores every order in a spreadsheet." },
+  { id: "ru_artifact_status", language: "ru", group: "TASK_LOCAL",
+    text: "Лендинг готов, а раздел с ценами сделан наполовину." },
+  { id: "en_artifact_status", language: "en", group: "TASK_LOCAL",
+    text: "The landing page is finished and the pricing section is half done." },
+  { id: "ru_implementation", language: "ru", group: "TASK_LOCAL",
+    text: "В парсере я заменил регулярные выражения на конечный автомат, и теперь тесты проходят." },
+  { id: "en_implementation", language: "en", group: "TASK_LOCAL",
+    text: "In the parser I replaced the regular expressions with a state machine, and the tests pass now." },
+  { id: "ru_deliberation", language: "ru", group: "TASK_LOCAL",
+    text: "Не могу решить, красить кухню в белый или в светло-серый." },
+  { id: "en_deliberation", language: "en", group: "TASK_LOCAL",
+    text: "I can't decide whether to paint the kitchen white or light grey." },
+  { id: "ru_feeling", language: "ru", group: "TASK_LOCAL", text: "Меня сегодня очень раздражает этот баг." },
+  { id: "en_feeling", language: "en", group: "TASK_LOCAL", text: "I'm really annoyed with this bug today." },
+  { id: "ru_symptom_advice", language: "ru", group: "TASK_LOCAL",
+    text: "Со вчерашнего дня болит горло и небольшая температура, что мне принять?" },
+  { id: "en_symptom_advice", language: "en", group: "TASK_LOCAL",
+    text: "I've had a sore throat and a slight fever since yesterday; what should I take?" },
+  // An uncertain, short-lived report: at most MEDIUM, which is never stored.
+  { id: "ru_uncertain_report", language: "ru", group: "UNCERTAIN",
+    text: "Сестра сказала, что, возможно, приедет в следующем месяце, но это не точно." },
+  { id: "en_uncertain_report", language: "en", group: "UNCERTAIN",
+    text: "My sister said she might visit sometime next month, but it's not certain." }
 ];
 
 export const MEMORY_EXTRACTION_QUALIFICATION_SCENARIOS: readonly ExtractionQualificationScenario[] =
