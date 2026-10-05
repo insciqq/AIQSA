@@ -1117,6 +1117,7 @@
   "workspace_guides_unavailable",
   "workspace_idle_stop_failed",
   "workspace_image_cancelled",
+  "workspace_image_eviction_failed",
   "workspace_image_invalid",
   "workspace_image_limit_exceeded",
   "workspace_image_unavailable",

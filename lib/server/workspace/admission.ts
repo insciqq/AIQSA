@@ -65,6 +65,7 @@ type SessionSnapshot = Readonly<{
   id: string;
   imageRef: string;
   internetEnabled: boolean;
+  runtimeSandboxId: string | null;
   sandboxName: string;
 }>;
 
@@ -107,6 +108,7 @@ export function createPrismaWorkspaceAdmissionRepository(
           id: true,
           imageRef: true,
           internetEnabled: true,
+          runtimeSandboxId: true,
           sandboxName: true
         },
         where: { chatId }
@@ -161,7 +163,9 @@ export function createWorkspaceAdmissionService(input: Readonly<{
 
       const sessionId = existing?.id ?? deterministicSessionId(request.chatId);
       const sandboxName = existing?.sandboxName ?? workspaceSandboxName(sessionId);
-      const imageRef = existing?.imageRef ?? input.config.imageRef;
+      // Only a guest disk pins a session's image: without one the next guest
+      // starts from the current image, so older cached versions can be evicted.
+      const imageRef = existing && existing.runtimeSandboxId !== null ? existing.imageRef : input.config.imageRef;
       const internetEnabled = existing?.internetEnabled ?? policy.internetEnabled;
       // Guest code reaches MCP only through the runner relay, which only an
       // Internet-On guest of a runner with the gateway enabled can reach.

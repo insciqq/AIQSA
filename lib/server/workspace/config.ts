@@ -1,5 +1,7 @@
 export const WORKSPACE_RUNTIME_VERSION = "0.6.16";
 export const WORKSPACE_MCP_VERSION = "0.6.16";
+/** The guest version bundled with the runner image (its archive's own reference). */
+export const WORKSPACE_DEFAULT_IMAGE_REF = "aiqsa-workspace:0.1.32";
 
 /**
  * One Workspace tool result crosses two JSON transports: the pinned MCP stdio
@@ -261,7 +263,7 @@ export function getWorkspaceConfig(
     cpus: integerValue(env, integerSettings.cpus),
     diskMiB: integerValue(env, integerSettings.diskMiB),
     idleTtlSeconds: integerValue(env, integerSettings.idleTtlSeconds),
-    imageRef: boundedText(env.AIQSA_WORKSPACE_IMAGE, "aiqsa-workspace:0.1.32", 512),
+    imageRef: boundedText(env.AIQSA_WORKSPACE_IMAGE, WORKSPACE_DEFAULT_IMAGE_REF, 512),
     maxToolCalls,
     maxToolRounds,
     mcpVersion: boundedText(env.AIQSA_WORKSPACE_MCP_VERSION, WORKSPACE_MCP_VERSION, 64),
