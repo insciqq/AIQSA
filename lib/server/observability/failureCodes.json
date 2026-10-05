@@ -173,6 +173,7 @@
   "email_invalid",
   "email_queue_full",
   "email_repository_failed",
+  "embedding-sweep-v1",
   "embedding_batch_invalid",
   "embedding_failed",
   "embedding_input_invalid",

@@ -178,7 +178,8 @@ export async function enqueueMemoryEmbeddingBatchItems(
   // Preserve incremental packing across rebuild catch-up passes when an
   // earlier parent is still QUEUED. The row locks share the same claim
   // boundary as the one-item path: a worker either owns the parent or this
-  // transaction appends a closed child set, never both.
+  // transaction appends a closed child set, never both. Only a parent no
+  // worker has attempted grows: a retry must resend its bound batch input.
   const openParents = await tx.$queryRaw<OpenBatchRow[]>(Prisma.sql`
     SELECT
       job."id",
@@ -192,6 +193,7 @@ export async function enqueueMemoryEmbeddingBatchItems(
     WHERE job."userId" = ${settings.userId}
       AND job."kind" = 'EMBED_ITEMS'::"MemoryJobKind"
       AND job."state" = 'QUEUED'::"MemoryJobState"
+      AND job."attemptCount" = 0
       AND job."pipelineVersion" = ${MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION}
       AND EXISTS (
         SELECT 1
@@ -405,7 +407,9 @@ export async function enqueueMemoryEmbeddingBatchItem(
   // Every caller already holds the owner settings lock. Locking the selected
   // QUEUED parent as well makes the child ordinal and the claim boundary
   // explicit: a worker can claim the parent or this transaction can append,
-  // never both from different snapshots.
+  // never both from different snapshots. Only a parent no worker has
+  // attempted grows (a retry must resend its bound batch input), and a parent
+  // holds each entry at most once.
   const candidates = await tx.$queryRaw<OpenBatchRow[]>(Prisma.sql`
     SELECT
       job."id",
@@ -419,7 +423,15 @@ export async function enqueueMemoryEmbeddingBatchItem(
     WHERE job."userId" = ${settings.userId}
       AND job."kind" = 'EMBED_ITEMS'::"MemoryJobKind"
       AND job."state" = 'QUEUED'::"MemoryJobState"
+      AND job."attemptCount" = 0
       AND job."pipelineVersion" = ${MEMORY_EMBEDDING_BATCH_PIPELINE_VERSION}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "MemoryEmbeddingBatchItem" AS held
+        WHERE held."userId" = job."userId"
+          AND held."memoryJobId" = job."id"
+          AND held."searchEntryId" = ${input.entryId}
+      )
       AND EXISTS (
         SELECT 1
         FROM "MemoryEmbeddingBatchItem" AS member
