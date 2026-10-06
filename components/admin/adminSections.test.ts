@@ -21,6 +21,7 @@ describe("adminSections", () => {
       { group: "models", id: "retrieval", label: "Knowledge & Memory" },
       { group: "people", id: "users", label: "Users" },
       { group: "people", id: "groups", label: "Groups" },
+      { group: "people", id: "limits", label: "Budgets & limits" },
       { group: "people", id: "access-rules", label: "Sign-up rules" },
       { group: "people", id: "announcements", label: "Announcements" },
       { group: "platform", id: "mcp", label: "MCP servers" },
@@ -39,6 +40,7 @@ describe("adminSections", () => {
     expect(parseAdminSection("?section=groups")).toBe("groups");
     expect(parseAdminSection("?section=unknown-section")).toBe("overview");
     expect(parseAdminSection("?section=assistants")).toBe("assistants");
+    expect(parseAdminSection("?section=limits")).toBe("limits");
     expect(resolveAdminSectionId("system-models")).toBe("roles");
     expect(resolveAdminSectionId("access")).toBe("groups");
     expect(resolveAdminSectionId("invites")).toBe("users");

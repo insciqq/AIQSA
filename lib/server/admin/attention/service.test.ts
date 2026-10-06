@@ -9,6 +9,7 @@ import type { AdminSearchCatalog, AdminSearchIntegration } from "../../../contra
 import type { AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
 import type { AdminEmailState } from "../../../contracts/email";
 import type { AdminMcpServer } from "../../../contracts/mcp";
+import type { AdminUsageLimitUserRow, EffectiveUsageLimits } from "../../../contracts/usageLimits";
 import {
   adminKnowledgeOperationsFixture,
   adminKnowledgeProfileFixture,
@@ -18,7 +19,8 @@ import {
   createAdminAttentionService,
   deriveAdminAttentionItems,
   type AdminAttentionInputs,
-  type AdminAttentionSources
+  type AdminAttentionSources,
+  type AdminAttentionUsageLimitsInput
 } from "./service";
 
 const at = "2026-09-07T12:00:00.000Z";
@@ -271,6 +273,37 @@ const quiet: AdminAttentionInputs = {
 
 function items(overrides: Partial<AdminAttentionInputs>) {
   return deriveAdminAttentionItems({ ...quiet, ...overrides });
+}
+
+const unlimited: EffectiveUsageLimits = {
+  exempt: false,
+  messagesPerDay: { source: null, value: null },
+  messagesPerHour: { source: null, value: null },
+  monthlyBudgetMicros: { source: null, value: null }
+};
+
+function limitUser(name: string, budget: number | null, spent: number, status = "active"): AdminUsageLimitUserRow {
+  return {
+    displayName: name,
+    effective: budget === null ? unlimited
+      : { ...unlimited, monthlyBudgetMicros: { source: { kind: "installation" }, value: budget } },
+    email: `${name.toLowerCase()}@example.test`,
+    messagesLastDay: 0,
+    messagesLastHour: 0,
+    monthSpentMicros: spent,
+    override: null,
+    status,
+    userId: `user-${name}`
+  };
+}
+
+function usageLimits(cap: number | null, spent: number, users: AdminUsageLimitUserRow[] = []): AdminAttentionUsageLimitsInput {
+  return {
+    installation: { messagesPerDay: null, messagesPerHour: null, monthlyBudgetMicros: null, monthlyCapMicros: cap, version: 1 },
+    installationSpentMicros: spent,
+    resetsAt: "2026-10-01T00:00:00.000Z",
+    users
+  };
 }
 
 describe("deriveAdminAttentionItems", () => {
@@ -648,6 +681,51 @@ describe("deriveAdminAttentionItems", () => {
     expect(JSON.stringify(result)).not.toContain("delete_repo");
   });
 
+  it("warns at 80% of the pooled cap and turns bad once it is reached, quiet without a cap", () => {
+    expect(items({ usageLimits: usageLimits(null, 9_000_000_000) })).toEqual([]);
+    expect(items({ usageLimits: usageLimits(100_000_000, 79_999_999) })).toEqual([]);
+    expect(items({ usageLimits: usageLimits(100_000_000, 84_500_000) })).toEqual([{
+      action: "Open budgets",
+      code: "usage_budget_cap_near",
+      count: null,
+      detail: "84% used · ≈ $84.50 of the $100.00 cap · resets on Oct 1 (UTC)",
+      id: "usage_budget_cap_near",
+      severity: "warn",
+      target: { section: "limits" },
+      title: "The monthly cap for everyone is almost used"
+    }]);
+    const reached = items({ usageLimits: usageLimits(100_000_000, 100_000_000) });
+    expect(reached).toEqual([expect.objectContaining({
+      code: "usage_budget_cap_reached",
+      detail: "≈ $100.00 of the $100.00 cap · new messages are refused for everyone until it resets on Oct 1 (UTC) or you raise the cap",
+      severity: "bad",
+      target: { section: "limits" }
+    })]);
+    expect(adminAttentionItemSource(reached[0]!)).toBe("usage_limits");
+  });
+
+  it("counts active users whose positive budget ran out, not deliberate zero budgets", () => {
+    const result = items({ usageLimits: usageLimits(null, 0, [
+      limitUser("Ada", 5_000_000, 5_000_000),
+      limitUser("Bo", 5_000_000, 7_250_000),
+      limitUser("Cy", 5_000_000, 4_999_999),
+      limitUser("Di", 0, 0),
+      limitUser("Ed", null, 90_000_000),
+      limitUser("Flo", 1_000_000, 3_000_000, "disabled"),
+      limitUser("Gus", 1_000_000, 1_000_000)
+    ]) });
+    expect(result).toEqual([{
+      action: "Review budgets",
+      code: "usage_users_budget_reached",
+      count: 3,
+      detail: "Ada, Bo and 1 more · no new messages until Oct 1 (UTC) unless you raise their budget",
+      id: "usage_users_budget_reached",
+      severity: "warn",
+      target: { section: "limits" },
+      title: "Users reached their monthly budget"
+    }]);
+  });
+
   it("distinguishes unconfigured email from failing delivery and stays quiet when disabled on purpose", () => {
     expect(items({ email: email() })).toEqual([
       expect.objectContaining({
@@ -728,6 +806,17 @@ describe("createAdminAttentionService", () => {
       target: { section: "skills", filter: "pending" } })]);
     skills.mockRejectedValueOnce(new Error("unavailable"));
     expect(await service.list("admin-1")).toMatchObject({ items: [], unavailable: ["skills"] });
+  });
+
+  it("marks only usage limits unavailable when their loader fails", async () => {
+    const usageLimitsSource = vi.fn().mockResolvedValue(usageLimits(10_000_000, 9_000_000));
+    const service = createAdminAttentionService({ now: () => new Date(at), sources: sources({ usageLimits: usageLimitsSource }) });
+    expect(await service.list("admin-1")).toMatchObject({
+      items: [expect.objectContaining({ code: "usage_budget_cap_near", target: { section: "limits" } })],
+      unavailable: []
+    });
+    usageLimitsSource.mockRejectedValueOnce(new Error("relation does not exist"));
+    expect(await service.list("admin-1")).toEqual({ checkedAt: at, items: [], unavailable: ["usage_limits"] });
   });
 
   it("links reviewable Assistant listing requests to the Assistants request filter", async () => {

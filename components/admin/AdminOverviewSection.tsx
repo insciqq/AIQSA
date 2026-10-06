@@ -27,7 +27,8 @@ const sourceLabel: Record<AdminAttentionSource, string> = {
   providers: "providers",
   search: "Search",
   skills: "Skills",
-  system_roles: "system roles"
+  system_roles: "system roles",
+  usage_limits: "budgets"
 };
 
 function unavailableCopy(sources: readonly AdminAttentionSource[]): string {
