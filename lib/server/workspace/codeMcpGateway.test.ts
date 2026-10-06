@@ -141,7 +141,7 @@ describe("Workspace code MCP gateway", () => {
     expect(body.result).toEqual({ content: [{ text: "result text c-secret-result-1", type: "text" }],
       structuredContent: { commits: ["c-secret-result-1"] } });
     expect(deps.callRuntimeTool).toHaveBeenCalledOnce();
-    expect(deps.callRuntimeTool.mock.calls[0]![0]).toMatchObject({ arguments: { project: "group/c-secret-argument" },
+    expect(vi.mocked(deps.callRuntimeTool).mock.calls[0]![0]).toMatchObject({ arguments: { project: "group/c-secret-argument" },
       definitionHash, generationId: "server-gitlab-generation", name: "list_commits" });
     expect(memory.receipts).toEqual([{ argumentHash: expect.stringMatching(/^[a-f0-9]{64}$/u), durationMs: expect.any(Number),
       errorCode: null, id: "receipt-0", invocationId, resultBytes: expect.any(Number), sequence: 0, serverId: "server-gitlab",
