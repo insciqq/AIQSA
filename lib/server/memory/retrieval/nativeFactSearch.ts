@@ -68,9 +68,6 @@ import {
 } from "./vector";
 import { sanitizeMemoryUtilityText } from "./querySafety";
 
-export const MEMORY_NATIVE_FACT_SEARCH_VERSION =
-  "memory-native-fact-search-v3";
-
 export type MemoryNativeFactSearchInput = Readonly<{
   limit: number;
   query: string;

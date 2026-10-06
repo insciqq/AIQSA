@@ -9,7 +9,6 @@ import {
   assertMemoryLexicalSearchRequest,
   assertMemoryLexicalSearchResult,
   memoryLexicalReadSignal,
-  type MemoryLexicalCandidateProvider,
   type MemoryLexicalMatchMode,
   type MemoryLexicalRawCandidate,
   type MemoryLexicalSearchRequest,
@@ -172,5 +171,3 @@ export async function executePostgresMemoryLexicalQuery(input: Readonly<{
   assertMemoryLexicalSearchResult(input.request, result, "POSTGRES");
   return result;
 }
-
-export type PostgresMemoryLexicalProvider = MemoryLexicalCandidateProvider;
