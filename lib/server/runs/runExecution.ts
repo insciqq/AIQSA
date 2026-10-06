@@ -549,12 +549,15 @@ class RunPipelineError extends Error {
   code: string;
   readonly report?: ProviderStreamSafetyReport;
   readonly imageFailure?: ImageFailureEvidence;
+  readonly httpStatus?: number;
 
-  constructor(code: string, message: string, report?: ProviderStreamSafetyReport, imageFailure?: ImageFailureEvidence) {
+  constructor(code: string, message: string, report?: ProviderStreamSafetyReport, imageFailure?: ImageFailureEvidence,
+    httpStatus?: number) {
     super(message);
     this.code = code;
     if (report) this.report = report;
     if (imageFailure) this.imageFailure = imageFailure;
+    if (httpStatus !== undefined) this.httpStatus = httpStatus;
   }
 }
 
@@ -3397,7 +3400,8 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             streamSafetyReport?.message ??
               (safetyCode ? providerStreamSafeMessage(safetyCode) : outcome.failure.message),
             streamSafetyReport,
-            outcome.failure.imageFailure
+            outcome.failure.imageFailure,
+            outcome.failure.httpStatus
           );
         }
         let knowledgeDispatchDraft: KnowledgeEvidenceDispatchManifestDraft | undefined;
@@ -3756,9 +3760,14 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           abortController.signal);
         // Record the original cause before Workspace/usage/token settlement can
         // itself fail. HTTP 200 and a provider return are not terminal proof.
+        // The admitted answer identity names what failed in the same line.
+        const failedAnswer = input.prepared.providerAdmissionPlan?.answer?.snapshot;
         logEvent("run_execution", {
           run_id: runId, stage: executionStage, outcome: cancelled ? "cancelled" : "failed",
           duration_ms: Math.max(0, Date.now() - executionStartedAt),
+          connectionId: failedAnswer?.connectionId, providerModelId: failedAnswer?.providerModelId,
+          providerFamily: failedAnswer?.providerFamily, adapterKind: failedAnswer?.model?.adapterKind,
+          httpStatus: originalFailure.httpStatus,
           code: originalFailure.code, reason: cancelled ? "cancelled" : originalFailure.reason,
           provider_code: error instanceof KnowledgeAnswerProviderError ? error.providerCode : undefined,
           abort_source: abortController.signal.aborted ? "stop" : workspaceTurnTimedOut ? "workspace_deadline"
