@@ -387,7 +387,7 @@ describe("relative-rank Memory fusion", () => {
     };
     const endedAtStart = {
       ...historyCandidate("ended-at-start", 10),
-      lane: "HISTORY_DIGEST_FTS_SIMPLE" as const
+      lane: "HISTORY_BASELINE_ORIGINAL" as const
     };
     const ranked = fuseMemoryRetrievalCandidates(temporalPlan, [{
       candidates: [{
@@ -418,7 +418,7 @@ describe("relative-rank Memory fusion", () => {
           occurredTo: new Date("2026-08-12T00:00:00.000Z")
         }
       }],
-      lane: "HISTORY_DIGEST_FTS_SIMPLE"
+      lane: "HISTORY_BASELINE_ORIGINAL"
     }], now);
 
     expect(ranked.map(({ itemId }) => itemId)).toEqual([

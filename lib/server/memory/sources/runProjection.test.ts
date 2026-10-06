@@ -2,10 +2,7 @@ import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createMemoryClientRefService } from "../actions/clientRef";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
-import {
-  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
-} from "../history/contract";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
@@ -24,8 +21,6 @@ function client(input: Readonly<{
     chat: { findMany: vi.fn(async () => []) },
     chatMemoryCheckpoint: { findMany: vi.fn(async () => []) },
     chatMemoryCheckpointMessage: { findMany: vi.fn(async () => []) },
-    chatMemoryDigest: { findMany: vi.fn(async () => []) },
-    chatMemoryDigestMessage: { findMany: vi.fn(async () => []) },
     memoryHistoryRun: { findMany: vi.fn(async (): Promise<unknown[]> => []) },
     memoryFact: { findMany: vi.fn(async () => [{
       currentVersionId: "private-version-1",
@@ -112,8 +107,6 @@ function historyClient(overrides: Readonly<{
       messageId: `source-message-${source}`,
       sourceMessageUpdatedAt: new Date("2026-08-21T04:00:00.000Z")
     }]) },
-    chatMemoryDigest: { findMany: vi.fn(async () => []) },
-    chatMemoryDigestMessage: { findMany: vi.fn(async () => []) },
     memoryHistoryRun: { findMany: vi.fn(async (): Promise<unknown[]> => []) },
     memoryFact: { findMany: vi.fn(async () => []) },
     memoryFactVersion: { findMany: vi.fn(async () => []) },
@@ -436,7 +429,7 @@ describe("answer Memory source projection", () => {
     expect(mint).not.toHaveBeenCalled();
   });
 
-  it("projects an overview digest through its exact current anchor source", async () => {
+  it("hides a retired digest item that no longer matches its anchor chunk", async () => {
     const database = historyClient();
     const updatedAt = new Date("2026-08-21T04:00:00.000Z");
     database.modelRunMemoryItem.findMany.mockResolvedValueOnce([{
@@ -463,59 +456,13 @@ describe("answer Memory source projection", () => {
       { chatId: "source-chat-1", messageId: "source-message-0", sourceMessageUpdatedAt: updatedAt },
       { chatId: "source-chat-1", messageId: "source-message-1", sourceMessageUpdatedAt: updatedAt }
     ] as never);
-    database.chatMemoryDigest.findMany.mockResolvedValueOnce([{
-      activeLeafMessageId: "source-message-1",
-      anchorChunkId: "private-chunk-1",
-      branchGeneration: 4,
-      chatId: "source-chat-1",
-      contentHash: "d".repeat(64),
-      id: "digest-1",
-      occurredTo: new Date("2026-08-21T04:05:00.000Z"),
-      pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-      redactionState: "NOT_NEEDED",
-      safetyClass: "NORMAL",
-      sourceContentHash: "s".repeat(64),
-      sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-      sourceRevisionAtCreation: 3,
-      state: "ACTIVE"
-    }] as never);
-    database.chatMemoryDigestMessage.findMany.mockResolvedValueOnce([
-      {
-        chatId: "source-chat-1",
-        digestId: "digest-1",
-        messageId: "source-message-0",
-        sourceMessageUpdatedAt: updatedAt
-      },
-      {
-        chatId: "source-chat-1",
-        digestId: "digest-1",
-        messageId: "source-message-1",
-        sourceMessageUpdatedAt: updatedAt
-      }
-    ] as never);
-    const key = randomBytes(32);
-    const refs = createMemoryClientRefService({ encryptionKey: () => key });
 
     const sources = await loadMemoryRunSources(database as never, {
-      clientRefs: refs,
+      clientRefs: createMemoryClientRefService({ encryptionKey: () => randomBytes(32) }),
       runIds: ["run-1"],
       userId: "user-1"
     });
-    const projected = sources.get("run-1")?.[0];
-    expect(projected).toMatchObject({
-      date: "2026-08-21T04:05:00.000Z",
-      sourceType: "PAST_CHAT",
-      text: "Summary: The chat selected cedar deployment."
-    });
-    if (!projected?.memoryRef) throw new Error("missing digest source fixture");
-    expect(refs.resolve("user-1", projected.memoryRef, "OPEN_SOURCE", new Date()))
-      .toMatchObject({
-        target: {
-          exactItemId: "private-chunk-1",
-          sourceChatId: "source-chat-1",
-          sourceMessageIds: ["source-message-1"]
-        }
-      });
+    expect(sources.get("run-1") ?? []).toEqual([]);
   });
 
   it("never returns receipt text after the exact fact version is no longer current", async () => {

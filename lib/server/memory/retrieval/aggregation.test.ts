@@ -12,12 +12,11 @@ import {
 
 function item(index: number): MemoryPackedItem {
   return {
-    derived: true,
     documentTime: `2026-08-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
     eventTimeEnd: null,
     eventTimeStart: null,
     evidenceHandle: `M${index + 1}`,
-    evidenceType: "derived_session_synopsis",
+    evidenceType: "raw_chunk",
     exactSafeText: `release-${index}`,
     finalScore: 0.9,
     itemId: `item-${index}`,
@@ -25,7 +24,7 @@ function item(index: number): MemoryPackedItem {
     lastConfirmedAt: null,
     modality: null,
     observedAt: null,
-    projectionKind: "CHAT_DIGEST_SAFE_TEXT",
+    projectionKind: "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
     rawSafeText: `release-${index}`,
     retrievalReason: "fused",
     section: "HISTORY",
@@ -34,7 +33,7 @@ function item(index: number): MemoryPackedItem {
     sourceSessionHandle: `S${index + 1}`,
     speakerScope: "mixed_conversation",
     recordStatus: "current",
-    supportingItemId: `digest-${index}`,
+    supportingItemId: null,
     temporalReason: "any",
     tier: "DYNAMIC",
     validFrom: null,

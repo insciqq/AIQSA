@@ -19,11 +19,9 @@ import {
   applyMemorySourceFamilyRecallFloor,
   classifyMemoryLexicalCanonicalRejections,
   memorySemanticLexicalTerms,
-  projectMemoryAggregationDigestRepresentative,
   rankMemoryTargetedSessionCompletionRoundIds,
   selectMemoryAggregationSessionRepresentatives,
   selectMemoryTargetedSessionRepresentatives,
-  selectMemoryIntraChatRawCandidates,
   selectMemorySourceDiverseLaneCandidates,
   shouldRunMemoryNgramFallback,
   type MemoryLexicalProviderForLane,
@@ -286,15 +284,15 @@ function mockClient(
 
 describe("local Memory retrieval repository", () => {
   it("runs bounded lexical fallback unless a complete canonical variant matched", () => {
-    const digest = floorCandidate(
-      "digest-primary",
-      "HISTORY_DIGEST_FTS_SIMPLE",
+    const exact = floorCandidate(
+      "exact-primary",
+      "HISTORY_RECALL_EXACT",
       "HISTORY",
       1
     );
     expect(shouldRunMemoryNgramFallback("HISTORY_RECALL_LEXICAL_NGRAM", [{
-      candidates: [digest],
-      lane: "HISTORY_DIGEST_FTS_SIMPLE"
+      candidates: [exact],
+      lane: "HISTORY_RECALL_EXACT"
     }], new Set())).toBe(true);
     const partial = floorCandidate(
       "history-primary",
@@ -347,10 +345,8 @@ describe("local Memory retrieval repository", () => {
         occurredFrom: now,
         occurredTo: new Date(now.getTime() + 60_000),
         projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
-        retrievalHint: null,
         safeText: "User: The fourth trip covered a total of 1,200 miles.\n\nAssistant: Noted.",
         sourceChatId: "chat-selected",
-        supportingEvidence: [],
         supportingItemId: "parent-1"
       }]
     });
@@ -485,10 +481,8 @@ describe("local Memory retrieval repository", () => {
       occurredFrom: now,
       occurredTo: new Date(now.getTime() + 60_000),
       projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
-      retrievalHint: null,
       safeText: rawSafeText,
       sourceChatId: "chat-selected",
-      supportingEvidence: [],
       supportingItemId: "parent-user-2",
       userSpans: [{ end: start + userText.length, ordinal: 0, start }]
     }]);
@@ -496,10 +490,8 @@ describe("local Memory retrieval repository", () => {
       expect.objectContaining({
         itemId: "round-user-2",
         directUserTexts: [userText],
-        retrievalHint: null,
         safeText: `User: ${userText}`,
-        sourceChatId: "chat-selected",
-        supportingEvidence: []
+        sourceChatId: "chat-selected"
       })
     ]);
     const completionSql = mocked.laneSql.find((query) =>
@@ -635,8 +627,7 @@ describe("local Memory retrieval repository", () => {
 
     expect(result.lexicalState).toBe("READY");
     expect(result.laneResults.map(({ lane }) => lane)).toEqual(expect.arrayContaining([
-      "HISTORY_RECALL_EXACT",
-      "HISTORY_DIGEST_FTS_SIMPLE"
+      "HISTORY_RECALL_EXACT"
     ]));
     const sql = mocked.laneSql.join("\n");
     expect(sql).toContain('FROM "MemoryFactVersion" AS version');
@@ -844,35 +835,6 @@ describe("local Memory retrieval repository", () => {
     ]);
   });
 
-  it("replaces a round representative with the complete digest-anchor chunk identity", () => {
-    const representative = {
-      ...sessionCandidate("round-1", "source-a", 0.8, {
-        HISTORY_RECALL_VECTOR: 1
-      }),
-      itemType: "RECALL_ROUND" as const,
-      matchedSegmentId: "round-1-middle",
-      matchedSegmentPosition: "MIDDLE" as const
-    };
-    const digestMetadata = {
-      ...representative.metadata,
-      evidenceRootHash: "digest-anchor-root"
-    };
-
-    expect(projectMemoryAggregationDigestRepresentative(representative, {
-      itemId: "chunk-anchor-1",
-      itemType: "RECALL_CHUNK",
-      metadata: digestMetadata
-    })).toMatchObject({
-      entryId: null,
-      itemId: "chunk-anchor-1",
-      itemType: "RECALL_CHUNK",
-      matchedSegmentId: null,
-      matchedSegmentPosition: null,
-      metadata: digestMetadata,
-      selectionReason: expect.stringContaining("aggregation_session_digest")
-    });
-  });
-
   it("collapses broad chunk signals to one scored representative per aggregation session", () => {
     const selected = selectMemoryAggregationSessionRepresentatives([
       sessionCandidate("a-1", "source-a", 0.4, { HISTORY_RECALL_VECTOR: 1 }),
@@ -928,38 +890,6 @@ describe("local Memory retrieval repository", () => {
         { itemId: "chunk-ignored", itemType: "RECALL_CHUNK" }
       ]
     })).toEqual(["round-b", "round-a", "round-c"]);
-  });
-
-  it("pushes selected aggregation sessions into digest authority reads", async () => {
-    const mocked = mockClient();
-    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
-    const plan = planMemoryRetrieval({
-      aggregationRequested: true,
-      currentUserText: "How long did the move take?",
-      filters: { sourceKinds: ["HISTORY"] },
-      mode: "PAST_CHAT_SEARCH",
-      now,
-      temporalIntent: "ANY"
-    });
-    const retrieved = await repository.retrieve({
-      assistantId: null,
-      chatId: "chat-1",
-      now,
-      plan,
-      userId: "user-1"
-    });
-    mocked.laneSql.length = 0;
-
-    await repository.projectAggregationSessions(retrieved.snapshot, plan, [
-      sessionCandidate("round-selected", "source-selected", 0.9, {
-        HISTORY_RECALL_VECTOR: 1
-      })
-    ]);
-
-    expect(mocked.laneSql).toHaveLength(1);
-    expect(mocked.laneSql[0]).toContain('AND (digest."chatId" IN (?))');
-    expect(mocked.laneSql[0]!.indexOf('digest."chatId" IN (?)'))
-      .toBeLessThan(mocked.laneSql[0]!.indexOf('digest."state" ='));
   });
 
   it("emits tenant-first authoritative Unicode SQL without legacy analyzers or raw content", async () => {
@@ -1554,130 +1484,6 @@ describe("local Memory retrieval repository", () => {
     });
   });
 
-  it("uses targeted digests as navigation before query-aware authoritative raw selection", async () => {
-    const mocked = mockClient();
-    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
-    const result = await repository.retrieve({
-      assistantId: null,
-      chatId: "chat-1",
-      now,
-      plan: planMemoryRetrieval({
-        currentUserText: "Where did we discuss the PostgreSQL migration?",
-        filters: { sourceKinds: ["HISTORY"] },
-        mode: "PAST_CHAT_SEARCH",
-        now,
-        temporalIntent: "ANY"
-      }),
-      userId: "user-1"
-    });
-
-    expect(result.laneResults.map(({ lane }) => lane))
-      .toContain("HISTORY_DIGEST_FTS_SIMPLE");
-    const sql = mocked.laneSql.join("\n");
-    expect(sql).toContain("all_digest_navigation");
-    expect(sql).toContain("matched_navigation");
-    expect(sql).toContain("FROM ranked_navigation AS navigation");
-    expect(sql).toContain('SELECT DISTINCT ON (navigation."sourceChatId")');
-    expect(sql).toContain('navigation."searchVectorSimple"');
-    expect(sql).toContain('PARTITION BY matched_navigation."variantOrdinal"');
-    expect(sql).toContain('FROM digest_navigation AS eligible');
-    expect(sql).toContain('eligible."rankWithinVariant"');
-    expect(sql).toContain('eligible."rankScore"::double precision AS "rawScore"');
-    expect(sql).not.toContain("source_anchors AS MATERIALIZED");
-    expect(sql).not.toContain('navigation."sourceChatId" = eligible."sourceChatId"');
-    expect(sql).not.toContain('(raw_match."matchedTermCount" > 0) DESC');
-    expect(sql).not.toContain(
-      'query_terms."variantOrdinal" = navigation."variantOrdinal"'
-    );
-    expect(sql.indexOf("matched_navigation AS MATERIALIZED")).toBeLessThan(
-      sql.indexOf("\n    digest_navigation AS MATERIALIZED")
-    );
-    expect(sql).not.toContain('digest."safeDigestText" AS "safeText"');
-  });
-
-  it("settles digest expansion at the reader deadline without discarding ready navigation", async () => {
-    const mocked = mockClient();
-    const digestMetadata = floorMetadata("digest-ready", "HISTORY");
-    const digestRow = {
-      ...digestMetadata,
-      deterministicMatch: null,
-      displayText: null,
-      entryId: "entry-digest-ready",
-      itemId: "digest-ready",
-      itemType: "RECALL_CHUNK",
-      matchedSegmentId: null,
-      matchedSegmentPosition: null,
-      parentChunkId: null,
-      rawScore: 1,
-      safeContentHash: null,
-      sourceChatId: "source-chat-ready",
-      structuredValue: null
-    };
-    let digestReady = false;
-    let digestExpansionStarted = false;
-    let snapshotReads = 0;
-    // Detached reads must still end, or they would keep their read admission
-    // permits for the remainder of this file.
-    const detachedReads: Array<(error: Error) => void> = [];
-    const detachedRead = () => new Promise<never>((_resolve, reject) => {
-      detachedReads.push(reject);
-    });
-    mocked.$queryRaw.mockImplementation(async (query: { strings?: readonly string[] }) => {
-      const sql = query.strings?.join("?") ?? "";
-      if (sql.includes('owner."status"')) {
-        snapshotReads += 1;
-        return snapshotReads === 1 ? [snapshotRow()] : detachedRead();
-      }
-      if (sql.includes("digest_navigation")) {
-        digestReady = true;
-        return [digestRow];
-      }
-      if (sql.includes("source_filtered_history")) {
-        digestExpansionStarted = true;
-        return detachedRead();
-      }
-      if (digestReady) return [];
-      return [];
-    });
-    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
-    const controller = new AbortController();
-    const plan = planMemoryRetrieval({
-      currentUserText: "Where did we discuss the migration?",
-      filters: { sourceKinds: ["HISTORY"] },
-      mode: "PAST_CHAT_SEARCH",
-      now,
-      temporalIntent: "ANY"
-    });
-    const input = {
-      assistantId: null,
-      chatId: "chat-1",
-      now,
-      plan,
-      userId: "user-1"
-    } as const;
-    const sourceSnapshot = await repository.snapshot(input);
-    const pending = repository.retrieveSpeculativeBaseline({
-      ...input,
-      sourceSnapshot
-    }, controller.signal);
-
-    await vi.waitFor(() => expect(digestExpansionStarted).toBe(true));
-    controller.abort({ code: "test_reader_deadline" });
-    const result = await Promise.race([
-      pending,
-      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 250))
-    ]);
-
-    expect(result).not.toBe("timeout");
-    if (result === "timeout") throw new Error("memory_reader_settlement_timed_out");
-    expect(result.laneResults).toEqual(expect.arrayContaining([{
-      candidates: [expect.objectContaining({ itemId: "digest-ready" })],
-      lane: "HISTORY_DIGEST_FTS_SIMPLE"
-    }]));
-    expect(snapshotReads).toBe(1);
-    for (const release of detachedReads.splice(0)) release(new Error("test_detached_read_ended"));
-  });
-
   it("routes tool observations through the episodic history family only", async () => {
     const historyMock = mockClient();
     const historyResult = await createPrismaLocalMemoryRetrievalRepository(
@@ -1727,53 +1533,7 @@ describe("local Memory retrieval repository", () => {
       .not.toContain('"MemoryToolEvent" AS tool_event');
   });
 
-  it("fuses intra-chat raw lanes once per evidence root and enforces chat quotas", () => {
-    const candidate = (
-      id: string,
-      lane: MemoryLaneCandidate["lane"],
-      sourceChatId: string
-    ): MemoryLaneCandidate => ({
-      ...floorCandidate(id, lane, "HISTORY", 1),
-      metadata: {
-        ...floorMetadata(id, "HISTORY"),
-        sourceChatId
-      }
-    });
-    const sharedFts = candidate("shared", "HISTORY_RECALL_LEXICAL_UNICODE", "chat-a");
-    const sharedExact = candidate("shared", "HISTORY_RECALL_EXACT", "chat-a");
-    const result = selectMemoryIntraChatRawCandidates({
-      excludedEvidenceRoots: ["history:chat-a:excluded"],
-      laneResults: [{
-        candidates: [
-          sharedExact,
-          candidate("a-2", "HISTORY_RECALL_EXACT", "chat-a"),
-          candidate("b-1", "HISTORY_RECALL_EXACT", "chat-b")
-        ],
-        lane: "HISTORY_RECALL_EXACT"
-      }, {
-        candidates: [
-          sharedFts,
-          candidate("excluded", "HISTORY_RECALL_LEXICAL_UNICODE", "chat-a"),
-          candidate("a-3", "HISTORY_RECALL_LEXICAL_UNICODE", "chat-a"),
-          candidate("a-4", "HISTORY_RECALL_LEXICAL_UNICODE", "chat-a"),
-          candidate("b-2", "HISTORY_RECALL_LEXICAL_UNICODE", "chat-b")
-        ],
-        lane: "HISTORY_RECALL_LEXICAL_UNICODE"
-      }],
-      perChatLimit: 3,
-      selectedSourceChatIds: ["chat-a", "chat-b"]
-    });
-
-    expect(result.rawCandidateCount).toBe(7);
-    expect(result.candidates.filter(({ metadata }) =>
-      metadata.sourceChatId === "chat-a")).toHaveLength(3);
-    expect(result.candidates.filter(({ itemId }) => itemId === "shared")).toHaveLength(1);
-    expect(result.candidates.map(({ itemId }) => itemId)).not.toContain("excluded");
-    expect(result.candidates.every(({ lane }) =>
-      lane === "HISTORY_INTRA_CHAT_RAW")).toBe(true);
-  });
-
-  it("expands a contextual round hit only to bounded authoritative raw evidence", async () => {
+  it("expands a round hit only to bounded authoritative raw evidence", async () => {
     const mocked = mockClient(snapshotRow({
       generationRoundSegmentProjectionVersion: null
     }));
@@ -1804,10 +1564,8 @@ describe("local Memory retrieval repository", () => {
       occurredFrom: new Date("2026-08-09T10:00:00.000Z"),
       occurredTo: new Date("2026-08-09T10:01:00.000Z"),
       projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
-      retrievalHint: null,
       safeText: "User: We selected cedar.\n\nAssistant: Acknowledged.",
       sourceChatId: "source-chat-1",
-      supportingEvidence: [],
       supportingItemId: "parent-chunk-1"
     }]);
 
@@ -1820,10 +1578,8 @@ describe("local Memory retrieval repository", () => {
       occurredFrom: new Date("2026-08-09T10:00:00.000Z"),
       occurredTo: new Date("2026-08-09T10:01:00.000Z"),
       projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
-      retrievalHint: null,
       safeText: "User: We selected cedar.\n\nAssistant: Acknowledged.",
       sourceChatId: "source-chat-1",
-      supportingEvidence: [],
       supportingItemId: "parent-chunk-1"
     }]);
     const expansionSql = mocked.$queryRaw.mock.calls.at(-1)?.[0]
@@ -1865,16 +1621,15 @@ describe("local Memory retrieval repository", () => {
       occurredFrom: null,
       occurredTo: null,
       projectionKind: "FACT_DISPLAY_TEXT",
-      retrievalHint: null,
       safeText: "The user follows a written release checklist.",
       sourceChatId: null,
-      supportingEvidence: [],
       supportingItemId: null
     }]);
 
     const [expanded] = await repository.expand(retrieved.snapshot, plan, [candidate]);
-    expect(expanded).toMatchObject({ itemId: "fact-1", supportingEvidence: [] });
+    expect(expanded).toMatchObject({ itemId: "fact-1" });
     expect(expanded).not.toHaveProperty("patternSupportingEvidence");
+    expect(expanded).not.toHaveProperty("supportingEvidence");
     const expansionSql = mocked.$queryRaw.mock.calls.at(-1)?.[0]
       .strings?.join("?") ?? "";
     expect(expansionSql).toContain('version."displayText" AS "safeText"');
@@ -1912,10 +1667,8 @@ describe("local Memory retrieval repository", () => {
       occurredFrom: new Date("2026-08-09T10:00:00.000Z"),
       occurredTo: new Date("2026-08-09T10:01:00.000Z"),
       projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
-      retrievalHint: null,
       safeText: "Assistant: The middle-only fact is cedar-47.",
       sourceChatId: "source-chat-1",
-      supportingEvidence: [],
       supportingItemId: "parent-chunk-1"
     } as const;
     mocked.setNextExpansionRows([expansion]);
@@ -2063,39 +1816,6 @@ describe("local Memory retrieval repository", () => {
     expect(sql).toContain('eligible."confidence" DESC');
   });
 
-  it("uses only bounded source-bound digests for a broad history overview", async () => {
-    const mocked = mockClient();
-    const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
-    const result = await repository.retrieve({
-      assistantId: null,
-      chatId: "chat-1",
-      now,
-      plan: planMemoryRetrieval({
-        currentUserText: "Give me an overview of our past deployment chats.",
-        filters: { sourceKinds: ["HISTORY"] },
-        mode: "HISTORY_OVERVIEW",
-        now,
-        temporalIntent: "ANY"
-      }),
-      userId: "user-1"
-    });
-
-    expect(result.laneResults.map(({ lane }) => lane)).toEqual([
-      "HISTORY_RECALL_LEXICAL_UNICODE",
-      "HISTORY_RECALL_RECENT"
-    ]);
-    expect(mocked.laneSql).toHaveLength(2);
-    const sql = mocked.laneSql.join("\n");
-    expect(sql).toContain('FROM "ChatMemoryDigest" AS digest');
-    expect(sql).toContain('FROM "ChatMemoryDigestChunk" AS digest_anchor');
-    expect(sql).toContain('FROM "ChatMemoryDigestMessage" AS digest_source_message');
-    expect(sql).toContain('digest."normalizedSafeSearchText"');
-    expect(sql).not.toContain('digest."safeDigestText"');
-    expect(sql).not.toContain('entry."normalizedSearchText"');
-    expect(sql).not.toContain('chunk."safeProjectedText"');
-    expect(sql).not.toContain('message."content"');
-  });
-
   it("uses exact attributable chunks for explicit multi-chat aggregation", async () => {
     const mocked = mockClient();
     const repository = createPrismaLocalMemoryRetrievalRepository(mocked.client);
@@ -2116,17 +1836,14 @@ describe("local Memory retrieval repository", () => {
 
     expect(result.laneResults.map(({ lane }) => lane)).toEqual([
       "HISTORY_RECALL_EXACT",
-      "HISTORY_DIGEST_FTS_SIMPLE",
       "HISTORY_RECALL_LEXICAL_UNICODE",
       "HISTORY_RECALL_LEXICAL_NGRAM"
     ]);
-    expect(mocked.laneSql).toHaveLength(4);
+    expect(mocked.laneSql).toHaveLength(3);
     const sql = mocked.laneSql.join("\n");
     expect(sql).toContain('FROM "MemorySearchEntry" AS entry');
     expect(sql).toContain('entry."normalizedSearchText"');
     expect(sql).toContain('INNER JOIN "MemoryRecallChunk" AS chunk');
-    expect(sql).toContain('FROM "ChatMemoryDigest" AS digest');
-    expect(sql).not.toContain('digest."safeDigestText"');
     expect(sql).not.toContain('chunk."safeProjectedText"');
     expect(sql).not.toContain('message."content"');
     const exactSql = mocked.laneSql.find((query) => query.includes("'EXACT_TEXT'::text"));
@@ -2184,7 +1901,6 @@ describe("local Memory retrieval repository", () => {
 
     expect(result.laneResults.map(({ lane }) => lane)).toEqual([
       "HISTORY_RECALL_EXACT",
-      "HISTORY_DIGEST_FTS_SIMPLE",
       "HISTORY_RECALL_LEXICAL_UNICODE",
       "HISTORY_RECALL_LEXICAL_NGRAM",
       "HISTORY_RECALL_VECTOR"
