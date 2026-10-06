@@ -4,8 +4,9 @@ import { OpenSearchTransportError } from "../lib/server/search/opensearch/coreTr
 
 const fixture = vi.hoisted(() => ({
   disconnect: vi.fn(), memoryPass: vi.fn(), knowledgePass: vi.fn(), heartbeat: vi.fn(),
-  signals: new Map<string, () => void>()
+  telemetry: vi.fn(), telemetryStop: vi.fn(), signals: new Map<string, () => void>()
 }));
+vi.mock("../lib/server/telemetry/recorder", () => ({ startTelemetryRecorder: fixture.telemetry }));
 vi.mock("./worker-bootstrap.cjs", () => ({}));
 vi.mock("@prisma/client", () => ({ PrismaClient: class { $disconnect = fixture.disconnect; } }));
 vi.mock("../lib/server/memory/searchProjection/repository", () => ({ createPrismaMemoryLexicalProjectionStore: () => ({}) }));
@@ -42,6 +43,8 @@ beforeEach(() => {
   process.argv = [originalArgv[0], "/synthetic/search-worker.ts"];
   fixture.disconnect.mockResolvedValue(undefined);
   fixture.heartbeat.mockResolvedValue(undefined);
+  fixture.telemetryStop.mockResolvedValue(undefined);
+  fixture.telemetry.mockReturnValue({ flush: vi.fn(), stop: fixture.telemetryStop });
   fixture.memoryPass.mockReset();
   fixture.knowledgePass.mockReset();
   const once = process.once;
@@ -73,6 +76,7 @@ describe("standalone projection diagnostics", () => {
     await vi.waitFor(() => expect(fixture.disconnect).toHaveBeenCalledOnce());
     expect(records()).toEqual([]);
     expect(process.exitCode).toBeUndefined();
+    expect(fixture.telemetry).not.toHaveBeenCalled();
   });
 
   it("bounds repeated transport failure and reports one actual Memory recovery", async () => {
@@ -88,6 +92,9 @@ describe("standalone projection diagnostics", () => {
       { event: "runtime_lifecycle", subsystem: "memory_search", stage: "projection", outcome: "failed", action: "retry" },
       { event: "subsystem.recovered", subsystem: "memory_search", stage: "projection", repeat_count: 1 }
     ]);
+    // The long-running loop records telemetry and writes it before the database closes.
+    expect(fixture.telemetry).toHaveBeenCalledOnce();
+    expect(fixture.telemetryStop.mock.invocationCallOrder[0]).toBeLessThan(fixture.disconnect.mock.invocationCallOrder[0]!);
     expect(JSON.stringify(records())).not.toContain("PRIVATE_CANARY");
   });
 
@@ -111,6 +118,8 @@ describe("standalone projection diagnostics", () => {
     expect(records()).toMatchObject([
       { subsystem: "knowledge_search", stage: "projection", outcome: "failed", code: "knowledge_search_worker_failed", action: "stop" }
     ]);
+    expect(fixture.telemetry).toHaveBeenCalledOnce();
+    expect(fixture.telemetryStop.mock.invocationCallOrder[0]).toBeLessThan(fixture.disconnect.mock.invocationCallOrder[0]!);
     expect(JSON.stringify(records())).not.toContain("PRIVATE_DATABASE_URL");
   });
 });

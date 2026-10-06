@@ -3,6 +3,7 @@ export {
   runInBackground, runWithContext, setProcessRole, writeEmergencyFailure,
   announceProcess, reportSubsystemFailure, reportSubsystemHealthy, reportReadiness
 } from "./runtime.cjs";
+export { setRecordObserver, type ObservedRecord } from "./runtime.cjs";
 export type {
   EventFields, ObservabilityContext, ProcessRole, Subsystem, SubsystemState,
   LifecycleStage, LifecycleOutcome, LifecycleAction, LifecycleFields, SubsystemFailure,
