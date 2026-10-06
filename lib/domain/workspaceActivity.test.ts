@@ -23,6 +23,12 @@ describe("bounded Workspace activity snapshots", () => {
     expect(decodeThreadWorkspaceActivity(activity)).not.toBeNull();
   });
 
+  it("keeps the masked-secret note with the output snapshot it describes", () => {
+    const output: ThreadWorkspaceActivityEntry = { ...row(5), command: { preview: "echo 5", secretMasked: true, stdoutPreview: "[secret:MY_TOKEN]" } };
+    const closed: ThreadWorkspaceActivityEntry = { ...row(6, "closed"), id: "step:5", command: { preview: "…" } };
+    expect(mergeWorkspaceActivityEntry(output, closed).command).toMatchObject({ secretMasked: true, stdoutPreview: "[secret:MY_TOKEN]" });
+  });
+
   it("does not resurrect elided rows from late events or an older history response", () => {
     const current = mergeWorkspaceActivity(null, { entries: history() })!;
     const late = mergeWorkspaceActivity(current, { entries: [row(20), row(90), row(500)] });
