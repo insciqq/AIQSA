@@ -1,7 +1,11 @@
 import { databaseFailureCode, rememberDatabaseFailure } from "../observability/databaseFailure";
 import { logEvent } from "../observability";
-import { WorkspaceActivityText, workspaceSecretMatches } from "./activityText";
+import { WorkspaceActivityText, workspaceSecretMatches, type WorkspaceSecretMatch } from "./activityText";
 import { WorkspaceSecretOutputMask } from "./secretOutput";
+import { WORKSPACE_CODE_TOKEN_ENV, WORKSPACE_CODE_UNAVAILABLE_ENV } from "./codeMcp";
+import { createPrismaWorkspaceCodeGrantRepository, type WorkspaceCodeGrantIssue, type WorkspaceCodeInvocationKind,
+  type WorkspaceCodeRunIdentity } from "./codeMcpStore";
+import { workspaceCodeCallActivity, workspaceCodeCallSummaryLine, type WorkspaceCodeCallSummary } from "./codeMcpSummary";
 import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -163,6 +167,19 @@ export type WorkspaceCoordinatorRepository = Readonly<{
   unregisteredCommands(input: Readonly<{ runId: string }>): Promise<number>;
   attachments(binding: WorkspaceExecutionBinding): Promise<readonly WorkspaceAttachmentRecord[]>;
   personalSecrets(binding: WorkspaceExecutionBinding): Promise<readonly AcceptedWorkspaceSecret[]>;
+  /**
+   * MCP from guest code. Each execution initialization rotates the run's
+   * bearer (fencing the previous incarnation's invocations and receipts);
+   * every terminal path revokes it before guest authority retires.
+   */
+  issueCodeGrant?(binding: WorkspaceCodeRunIdentity): Promise<WorkspaceCodeGrantIssue>;
+  revokeCodeGrant?(input: Readonly<{ runId: string }>): Promise<void>;
+  /** Persisted before dispatch; only that command's environment carries the id. */
+  openCodeInvocation?(input: Readonly<{
+    kind: WorkspaceCodeInvocationKind; modelRunToolCallId: string; runId: string; sessionId: string;
+  }>): Promise<string | null>;
+  closeCodeInvocation?(input: Readonly<{ invocationId: string; runId: string }>): Promise<void>;
+  codeCallSummary?(input: Readonly<{ runId: string; toolCallId: string }>): Promise<WorkspaceCodeCallSummary | null>;
   saveBrowserSessions(input: WorkspaceBrowserSaveInput): Promise<WorkspaceBrowserSaveReport | null>;
   binding(input: Readonly<{ runId: string; userId: string }>): Promise<WorkspaceExecutionBinding | null>;
   /** Persist before guest I/O, including attempts with an ambiguous result. */
@@ -393,6 +410,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
   }
 
   return {
+    ...createPrismaWorkspaceCodeGrantRepository(prisma),
     saveBrowserSessions: (input) => saveWorkspaceBrowserSessions(prisma, input),
     async personalSecrets(binding) {
       const current = await loadBinding(binding.runId, binding.userId);
@@ -1240,6 +1258,24 @@ function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult, sec
   return result.errorCode ? retainWorkspaceResultCode(projected, result.errorCode) : projected;
 }
 
+/**
+ * One compact, content-free line for the model about the MCP calls the
+ * command's code made, and the same facts for activity. Never arguments,
+ * results or endpoints.
+ */
+function withCodeCallSummary(result: ToolExecutionResult, summary: WorkspaceCodeCallSummary | null): ToolExecutionResult {
+  if (!summary) return result;
+  return inheritWorkspaceResultCode(result, {
+    ...result,
+    content: [...result.content, { text: workspaceCodeCallSummaryLine(summary), type: "text" }],
+    rawPreview: { ...result.rawPreview, codeMcp: workspaceCodeCallActivity(summary) }
+  });
+}
+
+function codeCallSignature(summary: WorkspaceCodeCallSummary): string {
+  return `${summary.calls}:${summary.failed}:${summary.unknown}:${summary.refused}`;
+}
+
 export function createWorkspaceCoordinator(input: Readonly<{
   config: WorkspaceConfig;
   registry: WorkspaceExecutionRegistry;
@@ -1257,6 +1293,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
   const execOutputsByRun = new Map<string, Map<string, ExecOutputBuffer>>();
   const activityTextByRun = new Map<string, WorkspaceActivityText>();
   const outputMaskByRun = new Map<string, WorkspaceSecretOutputMask>();
+  // Exec sessions report their code calls on the first poll that changes them.
+  const reportedCodeCallsByRun = new Map<string, Map<string, string>>();
   const lifecycleOrdinal = new Map<string, number>();
   let recoveryCursor: WorkspaceExportRecoveryCursor | undefined;
   let recoveryScanBefore: Date | undefined;
@@ -1276,7 +1314,45 @@ export function createWorkspaceCoordinator(input: Readonly<{
     execOutputsByRun.delete(runId);
     activityTextByRun.delete(runId);
     outputMaskByRun.delete(runId);
+    reportedCodeCallsByRun.delete(runId);
     lifecycleOrdinal.delete(runId);
+  }
+
+  /**
+   * MCP from guest code: the run environment of this initialization (a fresh
+   * bearer with the relay origin, or why there is none). A failure grants
+   * nothing and leaves the Workspace usable; a stale operation still fails.
+   */
+  async function issueCodeGrant(binding: WorkspaceExecutionBinding): Promise<WorkspaceCodeGrantIssue | null> {
+    if (!input.repository.issueCodeGrant) return null;
+    try {
+      return await input.repository.issueCodeGrant(binding);
+    } catch (error) {
+      if (error instanceof WorkspaceRuntimeError) throw error;
+      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "prepare", outcome: "degraded",
+        code: "workspace_code_grant_unavailable", prisma_code: databaseFailureCode(error), action: "degrade" });
+      return { environment: { [WORKSPACE_CODE_UNAVAILABLE_ENV]: "gateway_unavailable" } };
+    }
+  }
+
+  async function revokeCodeGrant(runId: string): Promise<void> {
+    await input.repository.revokeCodeGrant?.({ runId }).catch((error: unknown) => {
+      logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "release", outcome: "failed",
+        code: "workspace_code_grant_unavailable", prisma_code: databaseFailureCode(error), action: "skip" });
+    });
+  }
+
+  /** Every code call of an accepted sandbox tool call; exec polls report only changes. */
+  async function codeCallSummary(runId: string, toolCallId: string | null, onlyChanges: boolean): Promise<WorkspaceCodeCallSummary | null> {
+    if (!toolCallId || !input.repository.codeCallSummary) return null;
+    const summary = await input.repository.codeCallSummary({ runId, toolCallId }).catch(() => null);
+    if (!summary) return null;
+    const reported = reportedCodeCallsByRun.get(runId) ?? new Map<string, string>();
+    reportedCodeCallsByRun.set(runId, reported);
+    const signature = codeCallSignature(summary);
+    if (onlyChanges && reported.get(toolCallId) === signature) return null;
+    reported.set(toolCallId, signature);
+    return summary;
   }
 
   function activityWindow(): Readonly<{ expiresAt: Date; lastActiveAt: Date }> {
@@ -1564,11 +1640,18 @@ export function createWorkspaceCoordinator(input: Readonly<{
         });
         try {
           const secrets = await input.repository.personalSecrets(binding);
-          const matches = workspaceSecretMatches(secrets);
+          // Only an execution initialization of the run itself mints guest-code
+          // MCP authority. It travels in the same run-bound managed environment
+          // (also for Project runs, which receive no personal secrets) and its
+          // exact value is masked like a delivered secret.
+          const code = purpose === "execution" ? await issueCodeGrant(binding) : null;
+          const matches: WorkspaceSecretMatch[] = [...workspaceSecretMatches(secrets),
+            ...(code?.token ? [{ name: WORKSPACE_CODE_TOKEN_ENV, value: code.token }] : [])];
           activityTextByRun.set(binding.runId, new WorkspaceActivityText(matches));
           outputMaskByRun.set(binding.runId, new WorkspaceSecretOutputMask(matches));
           await input.runtime.syncPersonalSecrets({
             secrets, modelRunId: binding.runId,
+            ...(code && Object.keys(code.environment).length > 0 ? { runEnvironment: code.environment } : {}),
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal
           });
         } catch (error) {
@@ -1930,6 +2013,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
       return workspace.enabled && workspaceToolNameFromNamespaced(name) !== null;
     },
     async settle({ onActivity, operation: expectedOperation, outcome, runId, userId, workspace, skipBrowserSave }) {
+      // Every terminal path ends guest-code MCP authority first, before any
+      // quiescence wait. A terminal run's bearer is refused by status anyway.
+      await revokeCodeGrant(runId);
       const receipt = async (closed: boolean, errorCode?: WorkspaceErrorCode) => {
         await onActivity?.(workspaceLifecycleActivity({ kind: "execution_status", runId,
           phase: closed ? "closed" : "unknown", ...(errorCode ? { errorCode } : {}) })).catch(() => undefined);
@@ -2083,6 +2169,22 @@ export function createWorkspaceCoordinator(input: Readonly<{
           timeout_ms: workspace.syncToolTimeoutSeconds * 1_000 });
         if (combined.aborted) observeAbort({ stage: "before_start", abort_source: "unknown", deadline_kind: "operation", timeout_ms: workspace.syncToolTimeoutSeconds * 1_000 });
         else combined.addEventListener("abort", onAbort, { once: true });
+        // Every dispatched command or exec session is one code invocation:
+        // only its environment carries the id, and its code's MCP calls are
+        // attributed to it. A synchronous command's invocation closes with it.
+        const codeKind: WorkspaceCodeInvocationKind | null = definition.originalName === "sandbox_exec_start" ? "session"
+          : definition.originalName === "sandbox_shell" || definition.originalName === "sandbox_exec" ? "command" : null;
+        let invocationId: string | null = null;
+        const openInvocation = async (active: WorkspaceExecutionBinding) => codeKind && input.repository.openCodeInvocation
+          ? await input.repository.openCodeInvocation({ kind: codeKind, modelRunToolCallId, runId: active.runId,
+            sessionId: active.sessionId }).catch(() => null)
+          : null;
+        const closeInvocation = async () => {
+          if (codeKind !== "command" || !invocationId) return;
+          const closing = invocationId;
+          invocationId = null;
+          await input.repository.closeCodeInvocation?.({ invocationId: closing, runId }).catch(() => undefined);
+        };
         try {
           if (definition.originalName === "sandbox_shell" || definition.originalName === "sandbox_exec") {
             const registered = await input.registry.register({
@@ -2093,9 +2195,11 @@ export function createWorkspaceCoordinator(input: Readonly<{
             }).catch(() => "conflict" as const);
             if (registered !== "registered") throw new WorkspaceRuntimeError("workspace_execution_cleanup_failed");
           }
+          invocationId = await openInvocation(binding);
           const dispatch = (active: WorkspaceExecutionBinding) =>
             input.runtime.callBoundTool({
               arguments: call.arguments,
+              ...(invocationId ? { invocationId } : {}),
               modelRunId: active.runId,
               modelRunToolCallId,
               originalName: definition.originalName,
@@ -2131,6 +2235,8 @@ export function createWorkspaceCoordinator(input: Readonly<{
               onActivity
             );
             binding = initializedBinding.binding;
+            // Recreation rotated the bearer and fenced the undispatched invocation.
+            invocationId = await openInvocation(binding);
             result = await dispatch(binding);
             initializedBinding = { binding, recreated: true };
           }
@@ -2154,7 +2260,12 @@ export function createWorkspaceCoordinator(input: Readonly<{
           const mask = outputMaskByRun.get(runId) ??
             new WorkspaceSecretOutputMask(workspaceSecretMatches(await input.repository.personalSecrets(binding)));
           const output = mask.result(result, input.config.toolOutputMaxBytes);
-          const settled = resultFromRuntime(call, output.result, output.masked);
+          // A returned command's code can no longer call MCP; then summarize.
+          await closeInvocation();
+          const settled = withCodeCallSummary(resultFromRuntime(call, output.result, output.masked),
+            await codeCallSummary(runId, codeKind ? modelRunToolCallId
+              : definition.originalName === "sandbox_exec_poll" ? execution?.modelRunToolCallId ?? null : null,
+            codeKind === null));
           // MCP close only disposes the observation handle. The durable cleanup
           // obligation survives until terminal process/VM proof.
           const projected = withActivity(
@@ -2193,11 +2304,13 @@ export function createWorkspaceCoordinator(input: Readonly<{
         } finally {
           clearTimeout(timer);
           combined.removeEventListener("abort", onAbort);
+          await closeInvocation();
         }
       });
     },
     async handoff(request) {
       request.signal?.throwIfAborted();
+      await revokeCodeGrant(request.runId);
       const binding = await input.repository.binding(request);
       if (!binding || !exactBinding(binding, request.workspace)) throw new WorkspaceRuntimeError("workspace_runtime_incompatible");
       const obligation = { runId: request.runId, sessionId: binding.sessionId };

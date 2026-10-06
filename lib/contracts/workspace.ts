@@ -339,7 +339,21 @@ export const WORKSPACE_ACTIVITY_NOTE_MAX_BYTES = 2 * 1_024;
 export const WORKSPACE_ACTIVITY_MAX_FILE_CHANGES = 64;
 export const WORKSPACE_ACTIVITY_MAX_PLAN_ITEMS = 50;
 
+/** Content-free: MCP calls made by the command's code. Never arguments, results or endpoints. */
+export type ThreadWorkspaceActivityCodeMcp = Readonly<{
+  calls: number;
+  /** Failed or with an unknown outcome. */
+  failed: number;
+  /** Refused because the run's code-call budget was exhausted. */
+  refused?: number;
+  tools: readonly Readonly<{ calls: number; failed: number; serverName?: string; toolName: string }>[];
+}>;
+
+export const WORKSPACE_ACTIVITY_CODE_MCP_MAX_TOOLS = 8;
+
 export type ThreadWorkspaceActivityCommand = Readonly<{
+  /** MCP calls made by this command's code, aggregated. */
+  codeMcp?: ThreadWorkspaceActivityCodeMcp;
   cwd?: string;
   exitCode?: number | null;
   originalByteCount?: number;
@@ -427,6 +441,7 @@ const ACTIVITY_ENTRY_KEYS = new Set([
   "updateId"
 ]);
 const ACTIVITY_COMMAND_KEYS = new Set([
+  "codeMcp",
   "cwd",
   "exitCode",
   "originalByteCount",
@@ -460,10 +475,32 @@ function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+export function decodeThreadWorkspaceActivityCodeMcp(value: unknown): ThreadWorkspaceActivityCodeMcp | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, new Set(["calls", "failed", "refused", "tools"]))) return null;
+  const calls = boundedCount(value.calls, 1_000_000);
+  const failed = boundedCount(value.failed, 1_000_000);
+  const refused = value.refused === undefined ? undefined : boundedCount(value.refused, 1_000_000);
+  if (calls === null || failed === null || failed > calls || refused === null ||
+    !Array.isArray(value.tools) || value.tools.length > WORKSPACE_ACTIVITY_CODE_MCP_MAX_TOOLS) return null;
+  const tools: { calls: number; failed: number; serverName?: string; toolName: string }[] = [];
+  for (const tool of value.tools) {
+    if (!isRecord(tool) || !hasOnlyKeys(tool, new Set(["calls", "failed", "serverName", "toolName"]))) return null;
+    const toolCalls = boundedCount(tool.calls, calls);
+    const toolFailed = boundedCount(tool.failed, 1_000_000);
+    const toolName = boundedText(tool.toolName, 160);
+    const serverName = tool.serverName === undefined ? undefined : boundedText(tool.serverName, 160);
+    if (toolCalls === null || toolFailed === null || toolFailed > toolCalls || !toolName || serverName === null) return null;
+    tools.push({ calls: toolCalls, failed: toolFailed, ...(serverName !== undefined ? { serverName } : {}), toolName });
+  }
+  return { calls, failed, ...(refused !== undefined ? { refused } : {}), tools };
+}
+
 function decodeActivityCommand(value: unknown): ThreadWorkspaceActivityCommand | null {
   if (!isRecord(value) || !hasOnlyKeys(value, ACTIVITY_COMMAND_KEYS)) return null;
   const preview = boundedText(value.preview, WORKSPACE_ACTIVITY_COMMAND_MAX_CHARS);
   if (!preview) return null;
+  const codeMcp = value.codeMcp === undefined ? undefined : decodeThreadWorkspaceActivityCodeMcp(value.codeMcp);
+  if (codeMcp === null) return null;
   const cwd = value.cwd === undefined ? undefined : boundedText(value.cwd, WORKSPACE_ACTIVITY_PATH_MAX_CHARS);
   if (value.cwd !== undefined && !cwd) return null;
   const stdoutPreview = value.stdoutPreview === undefined
@@ -496,6 +533,7 @@ function decodeActivityCommand(value: unknown): ThreadWorkspaceActivityCommand |
   if (value.previewTruncated !== undefined && typeof value.previewTruncated !== "boolean") return null;
   if (value.secretMasked !== undefined && typeof value.secretMasked !== "boolean") return null;
   return {
+    ...(codeMcp ? { codeMcp } : {}),
     ...(cwd ? { cwd } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(originalByteCount !== undefined ? { originalByteCount } : {}),

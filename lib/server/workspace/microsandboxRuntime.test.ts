@@ -617,6 +617,32 @@ describe("Microsandbox Workspace lifecycle", () => {
     expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toBeUndefined();
   });
 
+  it("adds the run's code bearer over saved env, and each command's own invocation id over requested env", async () => {
+    const value = fixture();
+    await value.runtime.ensureSession(ensureInput);
+    const run = { AIQSA_GATEWAY_URL: "http://host.microsandbox.internal:4311", AIQSA_RUN_TOKEN: "r".repeat(43) };
+    await value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: callInput.modelRunId, runEnvironment: run, secrets: [{
+      id: randomUUID(), versionId: randomUUID(), name: "Shadow", description: "Synthetic fixture",
+      value: { kind: "env", entries: [{ name: "AIQSA_RUN_TOKEN", value: "saved-value-must-not-win" }] }
+    }] });
+    expect(JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()))
+      .toMatchObject({ environment: run });
+    sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
+    const invocationId = "f".repeat(32);
+    for (const originalName of ["sandbox_shell", "sandbox_exec", "sandbox_exec_start"] as const) {
+      await value.runtime.callBoundTool({ ...callInput, invocationId, originalName,
+        arguments: { command: "env", env: { AIQSA_INVOCATION_ID: "spoofed" } } });
+      expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual({ ...run, AIQSA_INVOCATION_ID: invocationId });
+    }
+    // The id never enters another command or the shared environment file.
+    await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_shell", arguments: { command: "env" } });
+    expect(sdk.callTool.mock.calls.at(-1)![0].arguments.env).toEqual(run);
+    await expect(value.runtime.callBoundTool({ ...callInput, invocationId: "../escape", originalName: "sandbox_shell",
+      arguments: { command: "env" } })).rejects.toMatchObject({ code: "workspace_runtime_incompatible" });
+    await expect(value.runtime.syncPersonalSecrets({ ...sessionInput, modelRunId: "foreign", secrets: [],
+      runEnvironment: { ...run, AIQSA_GATEWAY_URL: "https://attacker.example" } })).rejects.toMatchObject({ code: "workspace_secrets_prepare_failed" });
+  });
+
   it("recovers managed env after receiver restart and fails preparation without dispatching a model command", async () => {
     const value = fixture();
     const environment = JSON.stringify({ RECOVERED_TOKEN: "synthetic-recovered" });

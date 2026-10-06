@@ -29,6 +29,16 @@ describe("bounded Workspace activity snapshots", () => {
     expect(mergeWorkspaceActivityEntry(output, closed).command).toMatchObject({ secretMasked: true, stdoutPreview: "[secret:MY_TOKEN]" });
   });
 
+  it("keeps the newest summary of a command's code MCP calls", () => {
+    const first = { calls: 1, failed: 0, tools: [{ calls: 1, failed: 0, toolName: "list_commits" }] };
+    const second = { calls: 3, failed: 1, tools: [{ calls: 3, failed: 1, toolName: "list_commits" }] };
+    const older: ThreadWorkspaceActivityEntry = { ...row(5), command: { codeMcp: first, preview: "python3 monitor.py" } };
+    const newer: ThreadWorkspaceActivityEntry = { ...row(6), id: "step:5", command: { codeMcp: second, preview: "…" } };
+    const closed: ThreadWorkspaceActivityEntry = { ...row(7, "closed"), id: "step:5", command: { preview: "…" } };
+    expect(mergeWorkspaceActivityEntry(older, newer).command?.codeMcp).toEqual(second);
+    expect(mergeWorkspaceActivityEntry(mergeWorkspaceActivityEntry(older, newer), closed).command?.codeMcp).toEqual(second);
+  });
+
   it("does not resurrect elided rows from late events or an older history response", () => {
     const current = mergeWorkspaceActivity(null, { entries: history() })!;
     const late = mergeWorkspaceActivity(current, { entries: [row(20), row(90), row(500)] });

@@ -13,6 +13,7 @@ import { runWithContext } from "../observability";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { usageAttributionsWithEstimatedCost } from "../runs/runFinalization";
 import { AGENT_RELAY_PROOF_HEADER, agentRelayProofKey, verifyAgentRelayProof } from "./relayProof";
+import { handleWorkspaceCodeMcpRequest } from "../workspace/codeMcpGateway";
 
 const refused = () => Response.json({ error: "agent_authorization_required" }, { status: 401 });
 
@@ -20,6 +21,7 @@ const refused = () => Response.json({ error: "agent_authorization_required" }, {
  * Works across app/worker processes. Requests never extend the executor's lease.
  * Only requests relayed by the Workspace runner carry a valid relay proof; any
  * other request is refused before its bearer is looked up, like a bad bearer.
+ * A bearer that is no Agent grant may be a Workspace code grant: MCP only.
  */
 export async function handleAgentGatewayRequest(request: Request, path: string): Promise<Response> {
   const auth = request.headers.get("authorization");
@@ -31,7 +33,12 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
     const tokenHash = agentTokenHash(token);
     const binding = await prisma.agentRunBinding.findUnique({ where: { tokenHash },
       include: { workspaceRun: { include: { modelRun: { select: { userId: true, normalizedRequest: true } } } } } });
-    if (!binding) throw new Error("denied");
+    if (!binding) {
+      // A Workspace code bearer reaches its run's MCP authority alone, never
+      // the model or Search endpoints, which therefore refuse it here.
+      if (request.method === "POST" && path === "mcp") return await handleWorkspaceCodeMcpRequest(request, tokenHash);
+      throw new Error("denied");
+    }
     const normalized = binding.workspaceRun.modelRun.normalizedRequest as unknown as NormalizedRunRequest;
     const configuration = binding.configuration as unknown as NormalizedRunAgent;
     if (!normalized?.agent || !validNormalizedAgent(configuration) ||

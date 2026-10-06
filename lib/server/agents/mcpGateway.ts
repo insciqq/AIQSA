@@ -36,7 +36,7 @@ function textResult(value: unknown, isError = false): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value) }], ...(isError ? { isError: true } : {}) };
 }
 
-function catalogFromSnapshot(snapshot?: McpRunPlanSnapshot): McpCapabilityCatalog {
+export function catalogFromSnapshot(snapshot?: McpRunPlanSnapshot): McpCapabilityCatalog {
   return { version: 1, servers: snapshot?.servers.map((server) => ({
     ...server, description: "", namespace: server.serverId,
     tools: snapshot.tools.filter((tool) => tool.serverId === server.serverId).map((tool) => ({
