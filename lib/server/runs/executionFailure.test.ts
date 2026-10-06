@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { executionFailure } from "./executionFailure";
-import { RunSettlementError } from "./settlementFailure";
+import { localSettlementError, RunSettlementError } from "./settlementFailure";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { mcpDispatchError } from "../mcp/dispatchStatus";
 
@@ -16,6 +16,14 @@ describe("safe execution failure projection", () => {
     expect(executionFailure(mcpDispatchError("mcp_tool_access_denied"))).toMatchObject({ code: "mcp_tool_access_denied", message: expect.stringContaining("access") });
     expect(executionFailure(mcpDispatchError("mcp_session_closed"))).toMatchObject({ code: "mcp_session_closed", message: expect.stringContaining("session") });
     expect(JSON.stringify(executionFailure(Object.assign(new Error("PRIVATE"), { code: "PRIVATE" })))).not.toContain("PRIVATE");
+  });
+  it.each([401, 402, 429, 503])("keeps tool results and settlement wrapping unchanged for a status-only HTTP %i failure", status => {
+    const error = Object.assign(new Error("PRIVATE"), { status });
+    expect(executionFailure(error)).toMatchObject({ code: "tool_call_failed" });
+    expect(localSettlementError("publication", error)).toBeInstanceOf(RunSettlementError);
+    const quota = Object.assign(new Error("PRIVATE"), { status, code: "provider_response_not_retryable", quotaExhausted: true });
+    expect(executionFailure(quota)).toMatchObject({ code: "provider_response_not_retryable" });
+    expect(localSettlementError("publication", quota)).toBe(quota);
   });
   it("identifies internal settlement separately from provider failure", () => {
     const value = executionFailure(new RunSettlementError("accounting", new Error("PRIVATE")));
