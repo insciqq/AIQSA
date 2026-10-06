@@ -67,7 +67,7 @@ Freeze search permissions, destinations and budgets at acceptance. Revalidate so
 
 Forget, edit, exclusion, pause and reset fence synchronously before cleanup; old jobs, vectors or unchanged evidence cannot resurrect content. Forget fences owned messages creating or independently reusing facts, not standing-only inclusion; overlapping/inexact spans never block it. Deletion remains retryable. Provider capability failure disables only its stage, preserving ordinary answers and deletion.
 
-Retained legacy rows remain excluded from new authority; nothing upgrades them to direct evidence. Identity migration does not rewrite accepted keys: activation requires its collision preflight, ambiguity disables legacy reuse, and accepted recovery retains exact recorded identity. Retired language-specific profiles cannot admit new calculations; compatibility uses owner-bound recorded mappings. See [identity cutover](../lib/server/memory/learning/identity/cutover.ts).
+Retained legacy rows remain excluded from new authority; nothing upgrades them to direct evidence. Identity migration does not rewrite accepted keys: ambiguity disables legacy reuse, and accepted recovery retains exact recorded identity. Retired language-specific profiles cannot admit new calculations; compatibility uses owner-bound recorded mappings. See [identity compatibility](../lib/server/memory/learning/identity/compatibility.ts).
 
 Retrieval cutover builds a compatible shadow generation, proves full coverage and required vectors, activates one pointer and retains exact rollback. It never replays semantic learning or tool side effects. History projection changes require valid checkpoint proof or bounded rebuilding, not relabeling old proof.
 

@@ -8,7 +8,6 @@ import {
   memoryRecordedLegacyIdentityKeys,
   registerMemoryIdentityCompatibility
 } from "./compatibility";
-import { createPrismaMemoryIdentityCutoverRepository } from "./cutover";
 
 describe("Memory identity compatibility ledger", () => {
   afterAll(async () => prisma.$disconnect());
@@ -56,7 +55,7 @@ describe("Memory identity compatibility ledger", () => {
     } finally { await prisma.user.deleteMany({ where: { id: userId } }); }
   });
 
-  it("detects a legacy collision using aggregate content-free evidence", async () => {
+  it("marks a recorded legacy key ambiguous once it maps to a second Unicode key", async () => {
     const userId = `memory-identity-${randomUUID()}`;
     await prisma.user.create({
       data: {
@@ -130,14 +129,6 @@ describe("Memory identity compatibility ledger", () => {
         await expect(prisma.$transaction((tx) => memoryRecordedLegacyIdentityKeys(tx, invalid)))
           .resolves.toEqual([]);
       }
-      const cutover = createPrismaMemoryIdentityCutoverRepository(prisma);
-      await expect(cutover.inventory(userId)).resolves.toMatchObject({
-        collidingLegacyFactKeys: 0,
-        legacyFactCount: 1,
-        mappedLegacyFactCount: 1,
-        readyForUnicodeWrites: true,
-        unmappedLegacyFactCount: 0
-      });
 
       await prisma.$transaction(async (tx) => {
         await registerMemoryIdentityCompatibility(tx, {
@@ -158,16 +149,6 @@ describe("Memory identity compatibility ledger", () => {
       });
       await expect(prisma.$transaction((tx) => memoryRecordedLegacyIdentityKeys(tx, lookup)))
         .resolves.toEqual([{ canonicalKey: legacyCanonicalKey, unambiguous: false }]);
-      const inventory = await cutover.inventory(userId);
-      expect(inventory).toMatchObject({
-        collidingLegacyFactKeys: 1,
-        readyForUnicodeWrites: false
-      });
-      expect(JSON.stringify(inventory)).not.toContain(userId);
-      expect(JSON.stringify(inventory)).not.toContain(legacyCanonicalKey);
-      expect(JSON.stringify(inventory)).not.toContain(firstUnicodeKey);
-      await expect(cutover.assertActivationReady(userId))
-        .rejects.toThrow("memory_identity_activation_not_ready");
     } finally {
       await prisma.user.deleteMany({ where: { id: userId } });
     }
