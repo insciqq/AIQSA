@@ -16,6 +16,7 @@ import type { SkillStoreMutationResult } from "../../contracts/skillsMcp";
 import { boundedTextLineDiff } from "../../domain/textLineDiff";
 import { renderSkillMarkdown, type SkillBundle } from "./bundle";
 import { lockSkillRevisionWrites, skillAccessWhere } from "./prismaRepository";
+import { listSkillVersions, restoreSkillRevisionInTransaction } from "./revisionRestore";
 import { commitStagedSkillRevision, stageSkillRevision } from "./revisionWriteCore";
 import { activeScheduledTasksUsingSkill } from "./skillScheduledTasks";
 
@@ -31,20 +32,35 @@ export const SKILL_SAVE_UNDO_CLIENT_ID = "aiqsa:chat-save-undo";
 const HOUR_MS = 3_600_000;
 const CONFLICT_CONTENT_BUDGET = 32 * 1_024;
 const DIFF_TOTAL_BUDGET = 32 * 1_024;
+/** Versions a chat restore result lists, newest first. */
+const CHAT_VERSIONS_LIMIT = 20;
 
 /**
  * Where a save goes. `frozen`: a Skill of the run's frozen catalog (by
  * alias), guarded by the revision the run staged and the model read; the
  * `version` form comes from an earlier save result or conflict of the run.
- * Restore-style targets extend this union.
+ * `restore`: make version `revision` of the owner's Skill current again as a
+ * new version, under the same guards; `revision` 0 only lists the versions.
  */
 export type SkillSaveTarget =
   | Readonly<{ kind: "new" }>
   | Readonly<{ kind: "frozen"; skillId: string; revisionId: string }>
-  | Readonly<{ kind: "version"; skillId: string; expectedVersion: number }>;
+  | Readonly<{ kind: "version"; skillId: string; expectedVersion: number }>
+  | Readonly<{ kind: "restore"; skillId: string; guard: Readonly<{ revisionId: string } | { expectedVersion: number }>; revision: number }>;
 
 export type SkillSaveRefusal = "skill_save_answer_limit" | "skill_save_rate_limited" | "skill_not_available" |
-  "skill_archived" | "skill_version_conflict";
+  "skill_archived" | "skill_version_conflict" | "skill_restore_not_own" | "skill_restore_revision_unknown" | "skill_restore_conflict";
+
+/** The owner's Skill versions as the model reads them to choose one to restore. */
+export type SkillSaveVersionList = Readonly<{
+  skillId: string;
+  name: string;
+  currentVersion: number;
+  versions: readonly Readonly<{ revision: number; createdAt: string; current: boolean; files: number; changeNote: string | null;
+    restoredFrom: number | null }>[];
+  /** Older versions exist beyond this list. */
+  more: boolean;
+}>;
 
 /** What the model needs to rebuild on the current version after a conflict. */
 export type SkillSaveConflict = Readonly<{
@@ -62,7 +78,9 @@ export type SkillSaveConflict = Readonly<{
 export type SkillSaveOutcome =
   | Readonly<{ kind: "saved"; card: SkillSaveCard; version: number; hasExecutables: boolean }>
   | Readonly<{ kind: "unchanged"; skillId: string; name: string; version: number }>
-  | Readonly<{ kind: "refused"; code: SkillSaveRefusal; conflict?: SkillSaveConflict }>;
+  /** A restore target with revision 0: the versions, nothing written. */
+  | Readonly<{ kind: "versions"; list: SkillSaveVersionList }>
+  | Readonly<{ kind: "refused"; code: SkillSaveRefusal; conflict?: SkillSaveConflict; versions?: SkillSaveVersionList }>;
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -83,18 +101,26 @@ const markdown = (revision: Pick<SkillSaveRevisionFiles, "name" | "description" 
   renderSkillMarkdown({ name: revision.name, description: revision.description, instructions: revision.instructions,
     frontmatterJson: revision.frontmatterJson });
 
-/** File list and bounded diffs of a save against the version it replaced (none for a new Skill). */
-export function skillSaveCardChanges(bundle: SkillBundle, previous: SkillSaveRevisionFiles | null): Pick<SkillSaveCard, "files" | "diffs"> {
-  const saved = new Map<string, { text: string | null; checksum: string; executable: boolean }>([
-    ["SKILL.md", { text: markdown({ ...bundle, frontmatterJson: bundle.frontmatterJson as Prisma.JsonValue }), checksum: "", executable: false }],
-    ...bundle.files.map((file) => [file.path, { text: file.textContent, checksum: file.checksum, executable: file.executable }] as const)
+/** What a card compares: a saved folder's bundle or a stored revision's content. */
+type SkillCardContent = Pick<SkillSaveRevisionFiles, "name" | "description" | "instructions"> & Readonly<{
+  frontmatterJson: unknown;
+  files: readonly Readonly<{ path: string; checksum: string; kind: string; executable: boolean; textContent: string | null }>[];
+}>;
+type CardSide = { text: string | null; checksum: string; executable: boolean; binary: boolean };
+
+function cardSides(content: SkillCardContent): Map<string, CardSide> {
+  const skillMarkdown = markdown({ ...content, frontmatterJson: content.frontmatterJson as Prisma.JsonValue });
+  return new Map<string, CardSide>([
+    ["SKILL.md", { text: skillMarkdown, checksum: digest(skillMarkdown), executable: false, binary: false }],
+    ...content.files.map((file) => [file.path, { text: file.kind === "text" ? file.textContent : null, checksum: file.checksum,
+      executable: file.executable, binary: file.kind !== "text" }] as const)
   ]);
-  saved.get("SKILL.md")!.checksum = digest(saved.get("SKILL.md")!.text!);
-  const before = new Map<string, { text: string | null; checksum: string; executable: boolean }>(previous ? [
-    ["SKILL.md", { text: markdown(previous), checksum: digest(markdown(previous)), executable: false }],
-    ...previous.files.map((file) => [file.path, { text: file.kind === "text" ? file.textContent : null, checksum: file.checksum,
-      executable: file.executable }] as const)
-  ] : []);
+}
+
+/** File list and bounded diffs of a save (or a restored version) against the version it replaced (none for a new Skill). */
+export function skillSaveCardChanges(next: SkillCardContent, previous: SkillCardContent | null): Pick<SkillSaveCard, "files" | "diffs"> {
+  const saved = cardSides(next);
+  const before = previous ? cardSides(previous) : new Map<string, CardSide>();
   const files: SkillSaveCardFile[] = [];
   const diffs: SkillSaveCardDiff[] = [];
   let diffBytes = 0;
@@ -104,7 +130,8 @@ export function skillSaveCardChanges(bundle: SkillBundle, previous: SkillSaveRev
     const next = saved.get(path), old = before.get(path);
     const change = !previous ? "added" : !old ? "added" : !next ? "removed" : old.checksum === next.checksum ? "unchanged" : "changed";
     const executable = (next ?? old)!.executable;
-    files.push({ path, change, executable, ...(next && old && next.executable !== old.executable ? { executableChanged: true as const } : {}) });
+    files.push({ path, change, executable, ...(next && old && next.executable !== old.executable ? { executableChanged: true as const } : {}),
+      ...((next ?? old)!.binary ? { binary: true as const } : {}) });
     if (change !== "changed" || old?.text == null || next?.text == null || diffs.length >= SKILL_SAVE_CARD_DIFFS_LIMIT) continue;
     const diff = boundedTextLineDiff(old.text, next.text, { maxLines: SKILL_SAVE_DIFF_LINES_LIMIT, maxLineLength: SKILL_SAVE_DIFF_LINE_MAX_LENGTH });
     if (!diff) continue;
@@ -145,7 +172,9 @@ function conflictDetails(input: Readonly<{ skillId: string; version: number; cur
  * save per answer and SKILL_SAVE_HOURLY_LIMIT per rolling hour, a new
  * personal Skill, a guarded new version of the owner's Skill (the published
  * version stays as it is), or a personal copy of another user's visible
- * Skill with its provenance. A refusal writes nothing.
+ * Skill with its provenance. A restore target (no bundle) makes an earlier
+ * version of the owner's Skill current again under the same limits. A
+ * refusal writes nothing.
  */
 export async function commitSkillSaveInTransaction(tx: Prisma.TransactionClient, input: Readonly<{
   userId: string;
@@ -153,12 +182,14 @@ export async function commitSkillSaveInTransaction(tx: Prisma.TransactionClient,
   /** The persisted tool call: the save's operation key. */
   operationKey: string;
   target: SkillSaveTarget;
-  bundle: SkillBundle;
+  /** The captured folder; null exactly for a restore target. */
+  bundle: SkillBundle | null;
   changeNote: string | null;
   now?: Date;
 }>): Promise<SkillSaveOutcome> {
   const { userId, bundle } = input;
-  if (bundle.files.some((file) => file.kind !== "text")) throw new Error("skill_save_binary_file");
+  if ((input.target.kind === "restore") !== (bundle === null)) throw new Error("skill_save_content_invalid");
+  if (bundle?.files.some((file) => file.kind !== "text")) throw new Error("skill_save_binary_file");
   await lockSkillRevisionWrites(tx, userId);
   if (await tx.skillStoreOperation.findUnique({ where: { ownerUserId_clientId_operationKey: {
     ownerUserId: userId, clientId: SKILL_SAVE_CLIENT_ID, operationKey: input.operationKey
@@ -175,6 +206,10 @@ export async function commitSkillSaveInTransaction(tx: Prisma.TransactionClient,
     ownerUserId: userId, clientId: SKILL_SAVE_CLIENT_ID, revisionId: { not: null }, createdAt: { gt: new Date(now.getTime() - HOUR_MS) }
   } });
   if (recent >= SKILL_SAVE_HOURLY_LIMIT) return { kind: "refused", code: "skill_save_rate_limited" };
+  if (input.target.kind === "restore") {
+    return commitSkillRestore(tx, { userId, operationKey: input.operationKey, target: input.target, changeNote: input.changeNote });
+  }
+  if (!bundle) throw new Error("skill_save_content_invalid");
 
   let own: { id: string; version: number; currentRevisionId: string; sharedRevisionId: string | null } | null = null;
   let copy: { skillId: string; revisionId: string; name: string } | null = null;
@@ -226,7 +261,8 @@ export async function commitSkillSaveInTransaction(tx: Prisma.TransactionClient,
     ownerUserId: userId, clientId: SKILL_SAVE_CLIENT_ID, operationKey: input.operationKey,
     requestDigest: digest(JSON.stringify([action, own?.id ?? null, bundle.bundleDigest])), action, status: "COMPLETED",
     skillId: staged.skillId, revisionId: staged.revisionId, expectedVersion: staged.expectedVersion,
-    expectedCurrentRevisionId: staged.expectedCurrentRevisionId, resultJson: receipt
+    expectedCurrentRevisionId: staged.expectedCurrentRevisionId,
+    resultJson: { ...receipt, ...(input.changeNote ? { changeNote: input.changeNote } : {}) }
   }, select: { id: true } });
   const tasks = await activeScheduledTasksUsingSkill(tx, { userId, skillId: staged.skillId });
   const card: SkillSaveCard = {
@@ -236,6 +272,74 @@ export async function commitSkillSaveInTransaction(tx: Prisma.TransactionClient,
     ...skillSaveCardChanges(bundle, previous), scheduledTasks: tasks.tasks, scheduledTasksTruncated: tasks.truncated
   };
   return { kind: "saved", card, version: committed.version, hasExecutables: bundle.hasExecutables };
+}
+
+/** The newest versions of the owner's Skill for the model, or null when it is not the owner's. */
+async function chatVersionList(tx: Prisma.TransactionClient, userId: string, skillId: string): Promise<SkillSaveVersionList | null> {
+  const page = await listSkillVersions(tx, { userId, skillId, limit: CHAT_VERSIONS_LIMIT });
+  const definition = page && await tx.skillDefinition.findFirst({ where: { id: skillId, ownerUserId: userId },
+    select: { currentRevision: { select: { name: true } } } });
+  if (!page || !definition?.currentRevision) return null;
+  return { skillId, name: definition.currentRevision.name, currentVersion: page.version, more: page.nextBefore !== null,
+    versions: page.versions.map((version) => ({ revision: version.revisionNumber, createdAt: version.createdAt, current: version.current,
+      files: version.fileCount, changeNote: version.changeNote, restoredFrom: version.restoredFrom })) };
+}
+
+/**
+ * A chat restore: version `revision` of the owner's Skill becomes current
+ * again as a new version through the shared restore, guarded like a folder
+ * save, with the same receipt (so the answer and hourly limits and Undo
+ * apply) and a card whose diff runs from the replaced version to the
+ * restored one. Another user's Skill is never restored.
+ */
+async function commitSkillRestore(tx: Prisma.TransactionClient, input: Readonly<{
+  userId: string;
+  operationKey: string;
+  target: Extract<SkillSaveTarget, { kind: "restore" }>;
+  changeNote: string | null;
+}>): Promise<SkillSaveOutcome> {
+  const { userId, target } = input;
+  const [definition] = await tx.$queryRaw<Array<{ ownerUserId: string; deletedAt: Date | null }>>`
+    SELECT "ownerUserId", "deletedAt" FROM "SkillDefinition" WHERE "id" = ${target.skillId}`;
+  if (!definition || definition.deletedAt) return { kind: "refused", code: "skill_not_available" };
+  if (definition.ownerUserId !== userId) {
+    // Only a Skill the user can see is named as someone else's; any other id looks missing.
+    const visible = await tx.skillDefinition.findFirst({ where: { id: target.skillId, deletedAt: null, ...skillAccessWhere(userId) },
+      select: { id: true } });
+    return { kind: "refused", code: visible ? "skill_restore_not_own" : "skill_not_available" };
+  }
+  const versions = () => chatVersionList(tx, userId, target.skillId).then((list) => list ?? undefined);
+  if (target.revision === 0) {
+    const list = await versions();
+    return list ? { kind: "versions", list } : { kind: "refused", code: "skill_not_available" };
+  }
+  const outcome = await restoreSkillRevisionInTransaction(tx, { userId, skillId: target.skillId, revision: { number: target.revision },
+    guard: "revisionId" in target.guard ? { expectedCurrentRevisionId: target.guard.revisionId } : { expectedVersion: target.guard.expectedVersion },
+    whenUnchanged: "skip" });
+  if (outcome.kind === "refused") {
+    return outcome.code === "skill_revision_not_found"
+      ? { kind: "refused", code: "skill_restore_revision_unknown", versions: await versions() }
+      : { kind: "refused", code: outcome.code };
+  }
+  if (outcome.kind === "conflict") return { kind: "refused", code: "skill_restore_conflict", versions: await versions() };
+  if (outcome.kind === "unchanged") return { kind: "unchanged", skillId: target.skillId, name: outcome.current.name, version: outcome.version };
+  const receipt: SkillStoreMutationResult = { outcome: "updated", skillId: target.skillId, version: outcome.version,
+    bundleDigest: outcome.bundleDigest, libraryPath: SKILL_LIBRARY_PATH };
+  const operation = await tx.skillStoreOperation.create({ data: {
+    ownerUserId: userId, clientId: SKILL_SAVE_CLIENT_ID, operationKey: input.operationKey,
+    requestDigest: digest(JSON.stringify(["restore", target.skillId, outcome.restored.id])), action: "update", status: "COMPLETED",
+    skillId: target.skillId, revisionId: outcome.revisionId, expectedVersion: outcome.expectedVersion,
+    expectedCurrentRevisionId: outcome.expectedCurrentRevisionId,
+    resultJson: { ...receipt, restoredRevision: outcome.restored.revisionNumber, ...(input.changeNote ? { changeNote: input.changeNote } : {}) }
+  }, select: { id: true } });
+  const tasks = await activeScheduledTasksUsingSkill(tx, { userId, skillId: target.skillId });
+  const card: SkillSaveCard = {
+    version: 1, saveId: operation.id, skillId: target.skillId, revisionId: outcome.revisionId, name: outcome.restored.name,
+    outcome: "restored", fromRevision: outcome.previous.revisionNumber, toRevision: outcome.revisionNumber,
+    restoredRevision: outcome.restored.revisionNumber, changeNote: input.changeNote, copiedFrom: null, published: outcome.published,
+    ...skillSaveCardChanges(outcome.restored, outcome.previous), scheduledTasks: tasks.tasks, scheduledTasksTruncated: tasks.truncated
+  };
+  return { kind: "saved", card, version: outcome.version, hasExecutables: outcome.restored.hasExecutables };
 }
 
 type SaveReceipt = Readonly<{ id: string; action: string; skillId: string; revisionId: string; previousRevisionId: string | null; version: number }>;
@@ -300,26 +404,27 @@ export function createSkillSaveUndoService(db: PrismaClient) {
         const { state, receipt } = await undoStatus(tx, input, true);
         if (state.state !== "available" || !receipt) return state;
         let result: SkillSaveUndoState;
+        let restored: { revisionId: string; from: number } | null = null;
         if (receipt.action === "create") {
           await tx.skillShareRequest.updateMany({ where: { skillId: receipt.skillId, state: "pending" }, data: { state: "withdrawn" } });
           await tx.skillDefinition.update({ where: { id: receipt.skillId }, data: { archivedAt: new Date(), version: { increment: 1 } } });
           result = { state: "undone", outcome: "archived", revision: null };
         } else {
-          const previous = await tx.skillRevision.findFirst({ where: { id: receipt.previousRevisionId!, skillId: receipt.skillId, bundleReady: true },
-            include: { files: { orderBy: { path: "asc" } } } });
-          if (!previous) return { state: "unavailable" } as const;
-          const staged = await stageSkillRevision(tx, { ownerUserId: input.userId,
-            existing: { id: receipt.skillId, version: receipt.version, currentRevisionId: receipt.revisionId },
-            content: { ...previous, files: previous.files.map((file) => ({ ...file })) } });
-          if (staged.uploads.length) throw new Error("skill_save_undo_object_missing");
-          if (!await commitStagedSkillRevision(tx, { ownerUserId: input.userId, staged, update: true })) return { state: "conflict" } as const;
-          result = { state: "undone", outcome: "restored", revision: staged.revisionNumber };
+          // The replaced content becomes current again through the shared restore, even when it equals a later version.
+          const outcome = await restoreSkillRevisionInTransaction(tx, { userId: input.userId, skillId: receipt.skillId,
+            revision: { id: receipt.previousRevisionId! }, guard: { expectedVersion: receipt.version, expectedCurrentRevisionId: receipt.revisionId },
+            whenUnchanged: "write" });
+          if (outcome.kind === "conflict" || (outcome.kind === "refused" && outcome.code === "skill_archived")) return { state: "conflict" } as const;
+          if (outcome.kind !== "restored") return { state: "unavailable" } as const;
+          restored = { revisionId: outcome.revisionId, from: outcome.restored.revisionNumber };
+          result = { state: "undone", outcome: "restored", revision: outcome.revisionNumber };
         }
         await tx.skillStoreOperation.create({ data: {
           ownerUserId: input.userId, clientId: SKILL_SAVE_UNDO_CLIENT_ID, operationKey: receipt.id,
           requestDigest: digest(JSON.stringify(["undo", receipt.id])), action: receipt.action === "create" ? "archive" : "restore",
-          status: "COMPLETED", skillId: receipt.skillId, expectedVersion: receipt.version,
-          expectedCurrentRevisionId: receipt.revisionId, resultJson: { outcome: result.outcome, revision: result.revision }
+          status: "COMPLETED", skillId: receipt.skillId, expectedVersion: receipt.version, expectedCurrentRevisionId: receipt.revisionId,
+          ...(restored ? { revisionId: restored.revisionId } : {}),
+          resultJson: { outcome: result.outcome, revision: result.revision, ...(restored ? { restoredRevision: restored.from } : {}) }
         } });
         return result;
       });

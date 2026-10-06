@@ -16,8 +16,12 @@ const CHANGE_LABELS = { added: "Added", changed: "Changed", removed: "Removed", 
 const CHANGE_TONES = { added: "ok", changed: "warn", removed: "danger", unchanged: "neutral" } as const;
 
 function outcomeLine(card: SkillSaveCard): string {
-  return card.outcome === "created" ? `Created v${card.toRevision}` : `v${card.fromRevision} → v${card.toRevision}`;
+  if (card.outcome === "created") return `Created v${card.toRevision}`;
+  const line = `v${card.fromRevision} → v${card.toRevision}`;
+  return card.outcome === "restored" ? `${line} (= v${card.restoredRevision})` : line;
 }
+
+const HEADINGS = { created: "Skill saved", updated: "Skill updated", restored: "Skill restored" } as const;
 
 function undoMessage(state: SkillSaveUndoState): string | null {
   switch (state.state) {
@@ -73,7 +77,8 @@ function FileRowV2({ card, diff, file }: Readonly<{ card: SkillSaveCard; diff?: 
         <code title={file.path}>{file.path}</code>
         {file.executable && file.change !== "removed" ? <UiV2Chip>{file.executableChanged ? "Now runs" : "Runs"}</UiV2Chip> : null}
         {!file.executable && file.executableChanged ? <UiV2Chip>No longer runs</UiV2Chip> : null}
-        {file.change === "removed" ? null : (
+        {file.binary ? <UiV2Chip>Binary</UiV2Chip> : null}
+        {file.change === "removed" || file.binary ? null : (
           <button type="button" className="v2-skill-save-file-view v2-focusable" aria-expanded={view?.state === "ready"}
             aria-label={`${view?.state === "ready" ? "Hide" : "View"} saved ${file.path}`} onClick={() => void toggle()}>
             {view?.state === "ready" ? "Hide file" : view?.state === "loading" ? "Opening…" : "View file"}
@@ -136,9 +141,12 @@ function SkillSaveCardV2({ card, live }: Readonly<{ card: SkillSaveCard; live: b
         <span className="v2-skill-save-card-tile" aria-hidden="true"><UiV2Icon name="wand" /></span>
         <div className="v2-skill-save-card-copy">
           <p className="v2-skill-save-card-heading" id={headingId}>
-            {card.outcome === "created" ? "Skill saved" : "Skill updated"} · {outcomeLine(card)}
+            {HEADINGS[card.outcome]} · {outcomeLine(card)}
           </p>
           <strong title={card.name}>{card.name}</strong>
+          {card.outcome === "restored" ? (
+            <small>The content of v{card.restoredRevision} is current again as v{card.toRevision}; every version stays in history.</small>
+          ) : null}
           {card.changeNote ? <small>{card.changeNote}</small> : null}
           {card.copiedFrom ? <small>Your own copy of “{card.copiedFrom}”; the original is unchanged.</small> : null}
           {card.published ? <small>Colleagues keep the published version until you share this Skill again.</small> : null}
@@ -159,7 +167,7 @@ function SkillSaveCardV2({ card, live }: Readonly<{ card: SkillSaveCard; live: b
       {unchanged > 0 ? <small className="v2-skill-save-unchanged">{unchanged} unchanged {unchanged === 1 ? "file" : "files"}</small> : null}
       <div className="v2-skill-save-card-actions">
         {canUndo ? (
-          <UiV2Button busy={busy} icon="history" type="button" aria-label={`Undo saving ${card.name}`} onClick={() => void runUndo()}>
+          <UiV2Button busy={busy} icon="history" type="button" aria-label={`Undo ${card.outcome === "restored" ? "restoring" : "saving"} ${card.name}`} onClick={() => void runUndo()}>
             Undo
           </UiV2Button>
         ) : null}
