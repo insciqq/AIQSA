@@ -11,6 +11,7 @@ import { adminRepository, resolveRequestAuth } from "@/lib/server/auth/defaultAu
 import { adminEmailService } from "@/lib/server/email/defaultEmail";
 import { mcpRepository } from "@/lib/server/mcp/defaultMcp";
 import { prisma } from "@/lib/server/prisma";
+import { usageLimitsRepository } from "@/lib/server/usageLimits/defaultRepository";
 
 export const runtime = "nodejs";
 
@@ -30,7 +31,8 @@ const service = createAdminAttentionService({
     search: (actingAdminUserId) => adminSearchService.list({ userId: actingAdminUserId }),
     systemRoles: () => adminSystemModelPolicyService.list(),
     skills: () => prisma.skillShareRequest.count({ where: { state: "pending", skill: { archivedAt: null, deletedAt: null } } }),
-    assistants: () => countReviewableAssistantListingRequests(prisma)
+    assistants: () => countReviewableAssistantListingRequests(prisma),
+    usageLimits: () => usageLimitsRepository.readAdminUsageLimits(new Date())
   }
 });
 

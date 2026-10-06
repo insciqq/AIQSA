@@ -914,6 +914,9 @@ model User {
   usageEvents                         UsageEvent[]
   workspacePolicyUpdates              WorkspacePolicy[]                  @relation("WorkspacePolicyUpdater")
   agentPolicyUpdates                  AgentPolicy[]                      @relation("AgentPolicyUpdater")
+  usageLimit                          UsageLimit?                        @relation("UsageLimitUser")
+  usageLimitUpdates                   UsageLimit[]                       @relation("UsageLimitUpdater")
+  usageLimitPolicyUpdates             UsageLimitPolicy[]                 @relation("UsageLimitPolicyUpdater")
   workspaceSecrets                    WorkspaceSecret[]
   workspaceSecretValues               WorkspaceSecretValue[]
   workspaceBrowserSequence            BigInt                             @default(0)
@@ -1289,6 +1292,7 @@ model Group {
   skillPublications             SkillPublication[]
   providerCredentialAssignments ProviderGroupCredentialAssignment[]
   projectGrants                 ProjectGrant[]
+  usageLimit                    UsageLimit?
   users                         UserGroup[]
 
   @@index([archivedAt])
@@ -3252,6 +3256,43 @@ model AgentPolicy {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   updatedBy       User?    @relation("AgentPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+}
+
+/// Installation usage limits: a pooled monthly cap for everyone plus per-user
+/// defaults, in USD micro-dollars and messages. Null means not set.
+model UsageLimitPolicy {
+  id                  String   @id
+  monthlyCapMicros    BigInt?
+  monthlyBudgetMicros BigInt?
+  messagesPerHour     Int?
+  messagesPerDay      Int?
+  version             Int      @default(1)
+  updatedByUserId     String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  updatedBy           User?    @relation("UsageLimitPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+}
+
+/// A group's per-member allowance or one user's override: exactly one target.
+/// Only a user override may be `exempt`; a row that sets nothing is deleted.
+model UsageLimit {
+  id                  String   @id @default(uuid())
+  groupId             String?  @unique
+  userId              String?  @unique
+  exempt              Boolean  @default(false)
+  monthlyBudgetMicros BigInt?
+  messagesPerHour     Int?
+  messagesPerDay      Int?
+  updatedByUserId     String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  group               Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user                User?    @relation("UsageLimitUser", fields: [userId], references: [id], onDelete: Cascade)
+  updatedBy           User?    @relation("UsageLimitUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([updatedByUserId])
 }
