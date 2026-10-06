@@ -6,7 +6,7 @@ import { ensureMemoryEmbeddingSetup, type MemoryEmbeddingSetupDependencies } fro
 function fixture() {
   const settings = {
     activeIndexGenerationId: "old-index" as string | null,
-    embeddingProviderModelId: null as string | null,
+    embeddingProviderModelId: null as string | null, embeddingSelectionResolved: false,
     memoryRevision: 7, settingsRevision: 0, useMemoryFacts: true
   };
   const dependencies = {
@@ -16,7 +16,8 @@ function fixture() {
     hasPendingRebuild: vi.fn(async () => false),
     hasStoppedRebuild: vi.fn(async () => false),
     select: vi.fn(async (_userId: string, modelId: string) => {
-      Object.assign(settings, { embeddingProviderModelId: modelId, memoryRevision: 8, settingsRevision: 1 });
+      Object.assign(settings, { embeddingProviderModelId: modelId, embeddingSelectionResolved: true,
+        memoryRevision: 8, settingsRevision: settings.settingsRevision + 1 });
       return { ...settings };
     }),
     rebuild: vi.fn(async () => {})
@@ -36,9 +37,18 @@ describe("personal Memory embedding setup", () => {
     expect(f.dependencies.rebuild).toHaveBeenCalledOnce();
   });
 
-  it.each([1, 9])("preserves previously edited or explicitly cleared settings (revision %s)", async revision => {
+  it.each([1, 11])("adopts the default after only unrelated settings revisions (revision %s)", async revision => {
+    // The 2026-09-11 default-on migration bumped every existing owner to 1.
     const f = fixture(); f.settings.settingsRevision = revision;
+    expect(await f.run()).toBe("queued");
+    expect(f.dependencies.select).toHaveBeenCalledWith("owner", "verified-model", expect.objectContaining({ settingsRevision: revision }));
+    expect(f.dependencies.rebuild).toHaveBeenCalledWith("owner", "verified-model", expect.objectContaining({ settingsRevision: revision + 1 }));
+  });
+
+  it.each([1, 9])("preserves an explicit clear or a selection a system path later cleared (revision %s)", async revision => {
+    const f = fixture(); Object.assign(f.settings, { embeddingSelectionResolved: true, settingsRevision: revision });
     expect(await f.run()).toBe("preserved");
+    expect(f.dependencies.readDefault).not.toHaveBeenCalled();
     expect(f.dependencies.select).not.toHaveBeenCalled();
     expect(f.dependencies.rebuild).not.toHaveBeenCalled();
   });

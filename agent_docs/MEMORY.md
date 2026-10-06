@@ -13,7 +13,7 @@ All Memory preferences default on; upgrades preserve choices and pauses. Indepen
 
 Recommendations require current capability/credential/budget evidence. Adoption preserves explicit choices and clears; unqualified bootstrap requires configuration. Small checks cannot establish parity.
 
-Verified Knowledge embeddings may bootstrap untouched Memory settings after owner admission; preserve edited selections and vector spaces. Later Knowledge changes never switch them.
+Verified Knowledge embeddings may bootstrap, after owner admission, a Memory embedding selection no settings patch has set or cleared; other settings revisions do not count. Preserve selections, clears and vector spaces. Later Knowledge changes never switch them.
 
 Personal Memory is user-global. Saved Memories remain directly manageable while Memory is paused; pausing stops new use and work without deleting retained data. Records of retired Dream synthesis are still forgotten while paused. Archive is organization only. Resume admits only messages after its server-owned cutoff, never automatic historical backfill. Temporary and Project chats create or receive no Memory context, sources, bindings, counters or jobs. Imported chats, with their continuations and branch copies, stay Excluded and cannot be resumed (operator decision 2026-10-04); a database check holds this against every writer. Legacy non-global and Project data is not silently broadened into Personal Memory. Public shares strip the entire private Memory surface.
 

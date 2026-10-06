@@ -10,6 +10,7 @@ import { probeCurrentMemoryEmbeddingPin } from "./handler";
 type Settings = Readonly<{
   activeIndexGenerationId: string | null;
   embeddingProviderModelId: string | null;
+  embeddingSelectionResolved: boolean;
   memoryRevision: number;
   settingsRevision: number;
   useMemoryFacts: boolean;
@@ -35,7 +36,8 @@ export type MemoryEmbeddingSetupOutcome =
 
 /** Initial installation defaults are not a live fallback. Once selected, the
  * owner's embedding space remains independent of later Knowledge changes.
- * A nonzero settings revision may include an explicit clear; never guess. */
+ * The default is adopted only while no settings patch, this bootstrap's own
+ * included, has set or cleared the selection; other revisions do not count. */
 export async function ensureMemoryEmbeddingSetup(
   dependencies: MemoryEmbeddingSetupDependencies,
   userId: string
@@ -46,7 +48,7 @@ export async function ensureMemoryEmbeddingSetup(
     if (await dependencies.hasPendingRebuild(userId)) return "pending";
     let modelId = settings.embeddingProviderModelId;
     if (!modelId) {
-      if (settings.settingsRevision !== 0) return "preserved";
+      if (settings.embeddingSelectionResolved) return "preserved";
       modelId = await dependencies.readDefault();
       if (!modelId) return "unavailable";
       // The normal repository revalidates this owner's exact entitlement,
@@ -137,7 +139,7 @@ export function createPrismaMemoryEmbeddingSetup(client: PrismaClient) {
         LEFT JOIN "MemoryIndexGeneration" AS active
           ON active."userId" = settings."userId" AND active."id" = settings."activeIndexGenerationId"
         WHERE settings."useMemoryFacts" = TRUE AND settings."userId" > ${afterUserId}
-          AND ((settings."embeddingProviderModelId" IS NULL AND settings."settingsRevision" = 0)
+          AND ((settings."embeddingProviderModelId" IS NULL AND NOT settings."embeddingSelectionResolved")
             OR (settings."embeddingProviderModelId" IS NOT NULL AND
               (active."id" IS NULL OR active."indexMode" <> 'HYBRID'::"MemoryIndexMode"
                 OR active."embeddingProviderModelId" IS DISTINCT FROM settings."embeddingProviderModelId")))
