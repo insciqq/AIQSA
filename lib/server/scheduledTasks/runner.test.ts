@@ -542,6 +542,7 @@ describe("scheduled task runner", () => {
     const pending: Array<() => void> = [];
     const runner = createScheduledTaskRunner({
       appBaseUrl: "https://aiqsa.example.test",
+      loadPinnedSkills: async () => [],
       loadCatalog: async () => ({ models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false,
         nativeWebSearch: false, openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
       modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }], searchPlan: { mode: "all_selected", optionIds: [] },
@@ -707,7 +708,7 @@ describe("scheduled task runner", () => {
     const send = vi.fn<ScheduledTaskSend>(async () => Response.json({ error: "active_run_in_progress" }, { status: 409 }));
     let catalogFails = true;
     const runner = createScheduledTaskRunner({
-      appBaseUrl: "https://aiqsa.example.test", kick,
+      appBaseUrl: "https://aiqsa.example.test", kick, loadPinnedSkills: async () => [],
       loadCatalog: async () => {
         if (catalogFails) throw new Error("catalog_unavailable");
         return { models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
