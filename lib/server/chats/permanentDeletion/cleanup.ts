@@ -444,8 +444,6 @@ async function auditCleanup(
         FROM "Attachment" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'shares', COUNT(*)::integer
         FROM "SharedChatSnapshot" WHERE "ownerUserId" = ${claim.userId} AND "chatId" = ${claim.targetId}
-      UNION ALL SELECT 'usage', COUNT(*)::integer
-        FROM "UsageEvent" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'active-scopes', COUNT(*)::integer
         FROM "MemoryScope" WHERE "userId" = ${claim.userId}
           AND "chatId" = ${claim.targetId}
@@ -649,18 +647,19 @@ async function applyAggregateDeletion(
       userId: claim.userId
     }
   });
-  await tx.usageEvent.deleteMany({
-    where: {
-      OR: [
-        { chatId: claim.targetId },
-        ...(ids.runIds.length > 0 ? [{ modelRunId: { in: [...ids.runIds] } }] : []),
-        ...(ids.executionBindingIds.length > 0
-          ? [{ memoryExecutionBindingId: { in: [...ids.executionBindingIds] } }]
-          : [])
-      ],
-      userId: claim.userId
-    }
-  });
+  // Content-free accounting outlives the chat. Memory receipts detach from
+  // their execution bindings (deleted with their owners below) exactly as a
+  // Memory purge does; chat/run receipts keep the opaque chatId and lose their
+  // run and attempt links through the existing SET NULL foreign keys.
+  if (ids.executionBindingIds.length > 0) {
+    await tx.usageEvent.updateMany({
+      data: { memoryExecutionBindingId: null, providerModelId: null },
+      where: {
+        memoryExecutionBindingId: { in: [...ids.executionBindingIds] },
+        userId: claim.userId
+      }
+    });
+  }
   if (ids.runIds.length > 0) {
     await tx.memoryOperationReceipt.deleteMany({
       where: { modelRunId: { in: [...ids.runIds] }, userId: claim.userId }
