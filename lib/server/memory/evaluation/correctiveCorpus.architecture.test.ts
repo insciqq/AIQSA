@@ -382,7 +382,7 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-relation-prompt-v1",
         "memory-fact-relation-schema-v1"
       ],
-      retrieval: "memory-personal-retrieval-v71",
+      retrieval: "memory-personal-retrieval-v72",
       temporal: "memory-temporal-resolution-v3"
     });
   });

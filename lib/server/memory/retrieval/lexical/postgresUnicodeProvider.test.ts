@@ -81,10 +81,10 @@ describe("Unicode PostgreSQL Memory lexical candidate provider", () => {
     expect(sql).not.toMatch(/trigramSearchText|transliterate_ru/u);
   });
 
-  it("applies selected history chats before bounded n-gram ranking", async () => {
+  it("applies selected history chats before ranking", async () => {
     const mocked = mockClient();
     const lane: PostgresUnicodeMemoryLexicalLane =
-      "HISTORY_RECALL_LEXICAL_NGRAM";
+      "HISTORY_RECALL_LEXICAL_UNICODE";
     const provider = new PostgresUnicodeMemoryLexicalCandidateProvider(
       mocked.client,
       lane
@@ -95,9 +95,9 @@ describe("Unicode PostgreSQL Memory lexical candidate provider", () => {
     }));
 
     const sql = mocked.queries.join("\n");
-    expect(sql).toContain("candidate_entries AS MATERIALIZED");
     expect(sql).toContain('FROM "MemoryRecallChunk" AS candidate_chunk');
-    expect(sql).toContain('<% entry."normalizedSearchText"');
+    expect(sql).toContain('entry."searchVectorSimple" @@ query_terms.query');
+    expect(sql).not.toContain("<%");
     expect(sql.indexOf('candidate_chunk."chatId" IN')).toBeLessThan(
       sql.indexOf("ranked_entry_matches AS MATERIALIZED")
     );

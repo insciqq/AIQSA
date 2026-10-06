@@ -39,20 +39,25 @@ describe("Memory retrieval lane scheduler", () => {
     const active = { current: 0, maximum: 0 };
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const lanes = MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER.slice(
-      0,
-      MEMORY_RETRIEVAL_MAX_PARALLEL_LANES
-    );
-    const pending = executeMemoryRetrievalLaneTasks(lanes.map((lane) => ({
-      async execute() {
-        active.current += 1;
-        active.maximum = Math.max(active.maximum, active.current);
-        await gate;
-        active.current -= 1;
-        return { candidates: [], lane };
-      },
-      lane
-    })));
+    // Baseline and enriched executions of the same lane share one wave.
+    const order = MEMORY_RETRIEVAL_EXECUTION_LANE_ORDER;
+    const pending = executeMemoryRetrievalLaneTasks(Array.from(
+      { length: MEMORY_RETRIEVAL_MAX_PARALLEL_LANES },
+      (_, index) => {
+        const lane = order[index % order.length]!;
+        return {
+          executionId: `TIER_${Math.floor(index / order.length)}:${lane}`,
+          async execute() {
+            active.current += 1;
+            active.maximum = Math.max(active.maximum, active.current);
+            await gate;
+            active.current -= 1;
+            return { candidates: [], lane };
+          },
+          lane
+        };
+      }
+    ));
 
     await vi.waitFor(() => expect(active.maximum)
       .toBe(MEMORY_RETRIEVAL_MAX_PARALLEL_LANES));
@@ -120,20 +125,19 @@ describe("Memory retrieval lane scheduler", () => {
     for (const lane of lanes) expect(allocation[lane]).toBeGreaterThan(0);
     expect(allocation).toEqual({
       FACT_EXACT: 6,
-      FACT_ENTITY: 8,
-      FACT_LEXICAL_UNICODE: 8,
+      FACT_ENTITY: 9,
+      FACT_LEXICAL_UNICODE: 9,
       FACT_RECENT: 3,
-      FACT_TEMPORAL_FILTERED: 8,
+      FACT_TEMPORAL_FILTERED: 9,
       FACT_TEMPORAL_UNRESTRICTED: 3,
-      FACT_LEXICAL_NGRAM: 5,
-      FACT_VECTOR: 8,
-      HISTORY_RECALL_EXACT: 8,
-      HISTORY_RECALL_LEXICAL_UNICODE: 20,
+      FACT_LEXICAL_NGRAM: 6,
+      FACT_VECTOR: 9,
+      HISTORY_RECALL_EXACT: 9,
+      HISTORY_RECALL_LEXICAL_UNICODE: 22,
       HISTORY_RECALL_RECENT: 8,
-      HISTORY_RECALL_TEMPORAL_FILTERED: 16,
-      HISTORY_RECALL_TEMPORAL_UNRESTRICTED: 5,
-      HISTORY_RECALL_LEXICAL_NGRAM: 14,
-      HISTORY_RECALL_VECTOR: 40
+      HISTORY_RECALL_TEMPORAL_FILTERED: 17,
+      HISTORY_RECALL_TEMPORAL_UNRESTRICTED: 6,
+      HISTORY_RECALL_VECTOR: 44
     });
     expect(Object.values(allocation).reduce((sum, value) => sum + (value ?? 0), 0))
       .toBe(MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES);

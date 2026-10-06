@@ -328,6 +328,5 @@ export function isShadowedMemoryLexicalLane(
   lane: MemoryRetrievalLane
 ): lane is PostgresUnicodeMemoryLexicalLane {
   return lane === "FACT_LEXICAL_UNICODE" || lane === "FACT_LEXICAL_NGRAM" ||
-    lane === "HISTORY_RECALL_LEXICAL_UNICODE" ||
-    lane === "HISTORY_RECALL_LEXICAL_NGRAM";
+    lane === "HISTORY_RECALL_LEXICAL_UNICODE";
 }

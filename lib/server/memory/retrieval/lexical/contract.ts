@@ -12,8 +12,7 @@ export const MEMORY_LEXICAL_PROVIDER_MAX_SOURCE_CHATS = 24;
 export const MEMORY_LEXICAL_CANDIDATE_PROVIDER_LANES = Object.freeze([
   "FACT_LEXICAL_UNICODE",
   "FACT_LEXICAL_NGRAM",
-  "HISTORY_RECALL_LEXICAL_UNICODE",
-  "HISTORY_RECALL_LEXICAL_NGRAM"
+  "HISTORY_RECALL_LEXICAL_UNICODE"
 ] as const satisfies readonly MemoryRetrievalLane[]);
 
 export type MemoryLexicalCandidateProviderLane =

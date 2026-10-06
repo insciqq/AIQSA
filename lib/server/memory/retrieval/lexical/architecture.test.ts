@@ -40,8 +40,7 @@ describe("Memory language-neutral lexical architecture", () => {
       lane.includes("LEXICAL"))).toEqual([
       "FACT_LEXICAL_UNICODE",
       "FACT_LEXICAL_NGRAM",
-      "HISTORY_RECALL_LEXICAL_UNICODE",
-      "HISTORY_RECALL_LEXICAL_NGRAM"
+      "HISTORY_RECALL_LEXICAL_UNICODE"
     ]);
     for (const query of [
       "mañana", "ћирилица", "Καλημέρα", "مرحبا עולם", "नमस्ते", "東京", "สวัสดี",
