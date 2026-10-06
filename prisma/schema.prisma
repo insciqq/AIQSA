@@ -6034,10 +6034,7 @@ model MemoryFactVersionRelation {
   @@index([userId, targetVersionId, kind])
 }
 
-/// Recovery-only staging for the single governed Dream synthesis call. The
-/// decoded provider output and opaque source bindings are cleared atomically
-/// after semantic apply; immutable pattern versions and relations then own the
-/// durable result.
+/// Retired Dream synthesis staging: emptied and unused since v0.3.6; the next release drops it.
 model MemorySynthesisExecution {
   id                   String    @id @default(uuid())
   userId               String

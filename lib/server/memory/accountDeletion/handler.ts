@@ -179,7 +179,6 @@ async function purgeReusableAndPrivateMemory(
   await purgeMemoryFeedbackAccount(tx, userId);
   await tx.memoryFactExtractionCandidateReceipt.deleteMany({ where: { userId } });
   await tx.memoryFactExtractionExecution.deleteMany({ where: { userId } });
-  await tx.memorySynthesisExecution.deleteMany({ where: { userId } });
   await tx.memoryMaintenanceExecution.deleteMany({ where: { userId } });
   await tx.memoryMaintenanceReview.deleteMany({ where: { userId } });
   await tx.memoryMaintenanceSuppression.deleteMany({ where: { userId } });

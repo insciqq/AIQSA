@@ -48,6 +48,7 @@ import { KNOWLEDGE_IMAGE_OBSERVATION_MIGRATION, knowledgeImageObservationFixture
 import { DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION, dropRetiredMemorySynthesisColumnsFixtureSql, dropRetiredMemorySynthesisColumnsProofSql } from "./drop-retired-memory-synthesis-columns-adoption";
 import { DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION, dropRetiredMcpActivationStorageFixtureSql, dropRetiredMcpActivationStorageProofSql } from "./drop-retired-mcp-activation-storage-adoption";
 import { DROP_RETIRED_MEMORY_DIGESTS_MIGRATION, dropRetiredMemoryDigestsFixtureSql, dropRetiredMemoryDigestsProofSql } from "./drop-retired-memory-digests-adoption";
+import { RETIRE_DREAM_SYNTHESIS_STAGING_MIGRATION, retireDreamSynthesisStagingFixtureSql, retireDreamSynthesisStagingProofSql } from "./retire-dream-synthesis-staging-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7714,6 +7715,9 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_DIGESTS_MIGRATION,
     dropRetiredMemoryDigestsFixtureSql, dropRetiredMemoryDigestsProofSql,
     dropRetiredMemoryDigestsProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_DREAM_SYNTHESIS_STAGING_MIGRATION,
+    retireDreamSynthesisStagingFixtureSql, retireDreamSynthesisStagingProofSql,
+    retireDreamSynthesisStagingProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

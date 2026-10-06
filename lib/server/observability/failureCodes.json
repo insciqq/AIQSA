@@ -632,7 +632,6 @@
   "memory_suppression_preflight_arguments_invalid",
   "memory_suppression_required_key_ids_invalid",
   "memory_suppression_shape_invalid",
-  "memory_synthesis_retired",
   "memory_synthesis_retired_forgotten",
   "memory_synthesis_retired_pinned",
   "memory_temporary_aggregate_changed",

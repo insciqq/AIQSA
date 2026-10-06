@@ -16,12 +16,13 @@ import { memorySafetyLiteFactClassification } from "../safetyLite";
 import { loadMemoryReusableFactVersionIds } from "../persistence/reusableFactAuthority";
 import { createPrismaMemoryMaintenanceHandler } from "./handler";
 import { scheduleOwnerMemoryMaintenance } from "./reconcile";
-import { createMemorySynthesizeJobDispatcher, reconcileRetiredMemorySynthesis } from "./retiredSynthesis";
+import { reconcileRetiredMemorySynthesis } from "./retiredSynthesis";
 
 const RETIRED_PIPELINE = "memory-synthesis-v2";
 const old = new Date(Date.now() - 2 * 60 * 60_000);
 const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
-const dispatcher = createMemorySynthesizeJobDispatcher(createPrismaMemoryMaintenanceHandler(prisma));
+// Maintenance is the only SYNTHESIZE_MEMORIES handler; retired jobs reach it.
+const maintenanceHandler = createPrismaMemoryMaintenanceHandler(prisma);
 
 type Ref = Readonly<{ factId: string; versionId: string }>;
 
@@ -97,17 +98,6 @@ async function succeededBinding(userId: string, jobId: string): Promise<string> 
   await prisma.usageEvent.create({ data: { memoryExecutionBindingId: id, modelId: "memory-retired-model",
     provider: "openai_compatible", providerModelId: "memory-retired-model", userId } });
   return id;
-}
-
-/** Staged provider output that was never applied still holds content. */
-async function stagedExecution(userId: string, jobId: string) {
-  const executionBindingId = await succeededBinding(userId, jobId);
-  return prisma.memorySynthesisExecution.create({ data: {
-    userId, memoryJobId: jobId, executionBindingId, inputHash: hashes.input, acceptedOutputHash: hashes.output,
-    sourceSetFingerprint: "e".repeat(64), sourceSnapshotHash: "f".repeat(64),
-    acceptedOutput: { patterns: [{ statement: "PRIVATE pending synthesized statement" }] },
-    sourceBindings: [{ ref: "S1", statement: "PRIVATE pending source" }]
-  } });
 }
 
 /** A synthesized PATTERN exactly as the retired repository wrote it: no
@@ -220,7 +210,7 @@ async function expectForgotten(ref: Ref): Promise<void> {
 afterAll(async () => { await prisma.$disconnect(); });
 
 describe("retired Dream synthesis", () => {
-  it("forgets patterns and combinations from any state, closes retired jobs and scrubs staged output", async () => {
+  it("forgets patterns and combinations from any state and leaves retired jobs to maintenance", async () => {
     const userId = await owner("all");
     try {
       const sources = await Promise.all([
@@ -243,19 +233,13 @@ describe("retired Dream synthesis", () => {
         sources: [s2, s3], statement: "Tests run before release. Notes are written on Fridays." });
       const pinned = await pattern(userId, { bindingId, pinned: true, reasonCode: "repeated_habit_pattern",
         sources: [s1, s2, s3], statement: "The user keeps a release routine." });
-      const queued = await retiredJob(userId, "QUEUED");
-      const retryable = await retiredJob(userId, "RETRYABLE_FAILED");
-      const waiting = await retiredJob(userId, "WAITING_FOR_CONFIGURATION");
       const claimed = await retiredJob(userId, "CLAIMED");
       const maintenance = await retiredJob(userId, "QUEUED", "memory-maintenance-v1");
-      const queuedExecution = await stagedExecution(userId, queued.id);
-      const claimedExecution = await stagedExecution(userId, claimed.id);
       const before = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
       const sourceEvidence = await prisma.memoryEvidence.count({ where: { userId } });
 
-      const now = new Date();
-      await expect(reconcileRetiredMemorySynthesis(prisma, now)).resolves.toEqual({
-        closedJobs: 3, forgottenFacts: 4, pinnedFacts: 1, scrubbedExecutions: 1
+      await expect(reconcileRetiredMemorySynthesis(prisma, new Date())).resolves.toEqual({
+        forgottenFacts: 4, pinnedFacts: 1
       });
 
       for (const ref of [generalization, retracted, overlap, episode]) await expectForgotten(ref);
@@ -282,46 +266,28 @@ describe("retired Dream synthesis", () => {
       }
       await expect(prisma.memoryEvidence.count({ where: { userId } })).resolves.toBe(sourceEvidence);
 
-      for (const job of [queued, retryable, waiting]) {
-        await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: job.id } })).resolves.toMatchObject({
-          errorCode: "memory_synthesis_retired", leaseToken: null, nextAttemptAt: null, state: "CANCELLED", completedAt: now
-        });
-      }
+      // The reconcile changes no job; a retired job the coordinator claims is
+      // cancelled content-free by maintenance preflight, before provider work.
       await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: maintenance.id } }))
         .resolves.toMatchObject({ errorCode: null, state: "QUEUED" });
-      const scrubbed = await prisma.memorySynthesisExecution.findUniqueOrThrow({ where: { id: queuedExecution.id } });
-      expect(scrubbed).toMatchObject({ acceptedOutput: null, sourceBindings: null });
-      expect(scrubbed.appliedAt!.getTime()).toBeGreaterThanOrEqual(scrubbed.createdAt.getTime());
-      // The job the coordinator had already claimed keeps its staged output
-      // until its lease settles; the dispatcher closes it content-free.
-      await expect(prisma.memorySynthesisExecution.findUniqueOrThrow({ where: { id: claimedExecution.id } }))
-        .resolves.toMatchObject({ appliedAt: null });
       await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: claimed.id } })).resolves.toMatchObject({ state: "CLAIMED" });
       const claim = claimOf(claimed);
-      const decision = await dispatcher.preflight(claim);
-      expect(decision).toEqual({ errorCode: "memory_synthesis_retired", status: "CANCELLED" });
+      const decision = await maintenanceHandler.preflight(claim);
+      expect(decision).toEqual({ errorCode: "memory_maintenance_job_invalid", status: "CANCELLED" });
       if (decision.status === "READY") throw new Error("retired_synthesis_job_admitted");
       await expect(coordinator.settleJobGate({ claim, decision, now: new Date() })).resolves.toBe(true);
       await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: claimed.id } }))
-        .resolves.toMatchObject({ errorCode: "memory_synthesis_retired", leaseToken: null, state: "CANCELLED" });
+        .resolves.toMatchObject({ errorCode: "memory_maintenance_job_invalid", leaseToken: null, state: "CANCELLED" });
 
-      // The next pass finishes the settled job's staged output and nothing else.
-      await expect(reconcileRetiredMemorySynthesis(prisma, new Date())).resolves.toEqual({
-        closedJobs: 0, forgottenFacts: 0, pinnedFacts: 0, scrubbedExecutions: 1
-      });
-      await expect(prisma.memorySynthesisExecution.findUniqueOrThrow({ where: { id: claimedExecution.id } }))
-        .resolves.toMatchObject({ acceptedOutput: null, sourceBindings: null });
+      // A repeated pass finds nothing and moves no state.
       const settled = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
       await expect(reconcileRetiredMemorySynthesis(prisma, new Date())).resolves.toEqual({
-        closedJobs: 0, forgottenFacts: 0, pinnedFacts: 0, scrubbedExecutions: 0
+        forgottenFacts: 0, pinnedFacts: 0
       });
       await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
         .resolves.toMatchObject({ memoryRevision: settled.memoryRevision, settingsRevision: settled.settingsRevision });
       await expect(prisma.memoryEvent.count({ where: { userId, operation: "FORGET" } })).resolves.toBe(4);
       await expect(prisma.memoryDeletionOutbox.count({ where: { userId, operation: "FORGET_PURGE" } })).resolves.toBe(4);
-      const jobCodes = await prisma.memoryJob.findMany({ where: { userId, kind: "SYNTHESIZE_MEMORIES", pipelineVersion: RETIRED_PIPELINE,
-        state: "CANCELLED" }, select: { errorCode: true } });
-      expect(jobCodes).toEqual(Array.from({ length: 4 }, () => ({ errorCode: "memory_synthesis_retired" })));
 
       // The ordinary FORGET_PURGE lifecycle finishes the derivatives.
       for (const deletion of deletions) await purge(deletion.id);
@@ -331,7 +297,8 @@ describe("retired Dream synthesis", () => {
       await expect(prisma.memoryFactVersion.count({ where: { userId, modality: "PATTERN", contentPurgedAt: null, NOT: { factId: pinned.factId } } }))
         .resolves.toBe(0);
 
-      // A previous-release worker may still write one during Compose replacement.
+      // A record found later, such as one of an owner active again, is
+      // forgotten by the next pass.
       const late = await pattern(userId, { bindingId, reasonCode: "repeated_habit_pattern", sources: [s2, s3, s4],
         statement: "The user writes things down." });
       await expect(reconcileRetiredMemorySynthesis(prisma, new Date())).resolves.toMatchObject({ forgottenFacts: 1, pinnedFacts: 1 });
@@ -398,12 +365,10 @@ describe("retired Dream synthesis", () => {
       const bindingId = await succeededBinding(userId, job.id);
       const derived = await pattern(userId, { bindingId, reasonCode: "repeated_habit_pattern", sources,
         statement: "The user exercises most days." });
-      const queued = await retiredJob(userId, "QUEUED");
       await prisma.user.update({ where: { id: userId }, data: { status: "disabled" } });
 
       for (let pass = 0; pass < 2; pass += 1) await reconcileRetiredMemorySynthesis(prisma, new Date());
       await expect(factState(derived)).resolves.toMatchObject({ fact: { state: "ACTIVE" }, version: { contentPurgedAt: null } });
-      await expect(prisma.memoryJob.findUniqueOrThrow({ where: { id: queued.id } })).resolves.toMatchObject({ state: "QUEUED" });
 
       await prisma.user.update({ where: { id: userId }, data: { status: "active" } });
       const current = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
@@ -431,7 +396,7 @@ describe("retired Dream synthesis", () => {
       const job = await prisma.memoryJob.findFirstOrThrow({ where: { userId, kind: "SYNTHESIZE_MEMORIES" } });
       expect(job).toMatchObject({ pipelineVersion: "memory-maintenance-v1", state: "QUEUED" });
       // Routed to maintenance past its settings gate; provider authority may wait.
-      const decision = await dispatcher.preflight(claimOf({ ...job, leaseToken: "lease", leaseExpiresAt: new Date(Date.now() + 60_000) }));
+      const decision = await maintenanceHandler.preflight(claimOf({ ...job, leaseToken: "lease", leaseExpiresAt: new Date(Date.now() + 60_000) }));
       expect(decision.status).not.toBe("CANCELLED");
 
       const current = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
