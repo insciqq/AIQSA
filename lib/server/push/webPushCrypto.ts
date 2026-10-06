@@ -40,11 +40,16 @@ export function isP256PublicKey(value: Buffer): boolean {
   }
 }
 
+/** ECDH drops leading zero bytes of the scalar (about one key in 256); P-256 scalars are 32 bytes. */
+export function padVapidPrivateKey(scalar: Buffer): Buffer {
+  return scalar.length >= 32 ? scalar : Buffer.concat([Buffer.alloc(32 - scalar.length), scalar]);
+}
+
 export function generateVapidKeyPair(): VapidKeyPair {
   const ecdh = createECDH(CURVE);
   ecdh.generateKeys();
   return {
-    privateKey: ecdh.getPrivateKey().toString("base64url"),
+    privateKey: padVapidPrivateKey(ecdh.getPrivateKey()).toString("base64url"),
     publicKey: ecdh.getPublicKey(null, "uncompressed").toString("base64url")
   };
 }

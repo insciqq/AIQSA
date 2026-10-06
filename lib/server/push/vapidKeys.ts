@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { decryptSecretEnvelope, encryptSecretEnvelope, type SecretEnvelopeContext } from "../secrets/envelope";
-import { decodeBase64Url, generateVapidKeyPair, type VapidKeyPair } from "./webPushCrypto";
+import { decodeBase64Url, generateVapidKeyPair, padVapidPrivateKey, type VapidKeyPair } from "./webPushCrypto";
 
 export const BROWSER_PUSH_VAPID_KEY_ID = "installation";
 const VAPID_PRIVATE_KEY_PURPOSE = "browser_push_vapid_private_key";
@@ -19,11 +19,12 @@ export function sealVapidPrivateKey(keys: VapidKeyPair, encryptionKey: Buffer): 
 
 export function openVapidKeyPair(row: Readonly<{ privateKeyEnvelope: string; publicKey: string }>, encryptionKey: Buffer): VapidKeyPair {
   const stored = decryptSecretEnvelope<StoredVapidPrivateKey>(row.privateKeyEnvelope, encryptionKey, context(row.publicKey));
-  if (stored?.version !== 1 || typeof stored.privateKey !== "string" || decodeBase64Url(stored.privateKey)?.length !== 32 ||
-    decodeBase64Url(row.publicKey)?.length !== 65) {
+  // Keys stored before generation padded the scalar may be shorter than 32 bytes.
+  const scalar = stored?.version === 1 && typeof stored.privateKey === "string" ? decodeBase64Url(stored.privateKey) : null;
+  if (!scalar || scalar.length < 1 || scalar.length > 32 || decodeBase64Url(row.publicKey)?.length !== 65) {
     throw new Error("browser_push_vapid_key_invalid");
   }
-  return { privateKey: stored.privateKey, publicKey: row.publicKey };
+  return { privateKey: padVapidPrivateKey(scalar).toString("base64url"), publicKey: row.publicKey };
 }
 
 /**
