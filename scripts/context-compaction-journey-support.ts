@@ -684,22 +684,24 @@ export type LedgerUsage = Readonly<{ cacheWriteInputTokens: number; cachedInputT
 
 const LEDGER_FIELDS = ["cacheWriteInputTokens", "cachedInputTokens", "inputTokens"] as const;
 
+/** The usage analytics read the ledger compares: the last seven UTC days. */
+export const LEDGER_USAGE_PATH = "/api/admin/usage?period=7d&tz=UTC";
+
 /**
- * The Admin usage ledger (`GET /api/admin`) totals for this user and model,
- * or null when the shape is unexpected. Rows are keyed by the run's provider
- * and model identity; either spelling counts. Unreported counts add zero.
+ * The Admin usage ledger totals for this model, or null when the shape is
+ * unexpected. The analytics break usage down by model across users, so the
+ * ledger is exact only while the smoke's synthetic account is the only one
+ * using the route model, as on its disposable stand. Rows are keyed by the
+ * canonical connection/model identity or the raw run spelling; either counts.
+ * Unreported counts add zero.
  */
 export function ledgerUsage(
-  dashboard: unknown,
-  userId: string,
+  analytics: unknown,
   keys: Readonly<{ modelIds: readonly string[]; providers: readonly string[] }>
 ): LedgerUsage | null {
-  if (!record(dashboard) || !record(dashboard.usage) || !Array.isArray(dashboard.usage.byUser)) return null;
+  if (!record(analytics) || !record(analytics.usage) || !Array.isArray(analytics.usage.byModel)) return null;
   const totals = { cacheWriteInputTokens: 0, cachedInputTokens: 0, inputTokens: 0 };
-  const user = dashboard.usage.byUser.find((entry) => record(entry) && entry.userId === userId);
-  if (!user) return totals;
-  if (!record(user) || !Array.isArray(user.providerModels)) return null;
-  for (const row of user.providerModels) {
+  for (const row of analytics.usage.byModel) {
     if (!record(row) || typeof row.provider !== "string" || typeof row.modelId !== "string") return null;
     if (!keys.providers.includes(row.provider) || !keys.modelIds.includes(row.modelId)) continue;
     for (const field of LEDGER_FIELDS) {
