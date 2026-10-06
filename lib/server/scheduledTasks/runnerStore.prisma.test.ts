@@ -71,8 +71,31 @@ async function runInput(userId: string, chatId: string, scheduledOccurrence?: Sc
   };
 }
 
+/** Content-free receipts of MCP calls the run's Workspace code made, as the code gateway leaves them. */
+async function codeReceipts(runId: string, chatId: string,
+  receipts: readonly Readonly<{ errorCode?: string; serverId: string; state: "complete" | "error" | "unknown" }>[]) {
+  const session = await prisma.workspaceSession.upsert({ where: { chatId }, update: {}, create: { chatId,
+    expiresAt: new Date(Date.now() + 600_000), imageRef: "aiqsa-workspace:0.1.32", internetEnabled: true, policyRevision: 1,
+    sandboxName: `code-${randomUUID()}` } });
+  await prisma.workspaceRunBinding.create({ data: { imageRef: session.imageRef, internetEnabled: true, mcpVersion: "0.6.16",
+    modelRunId: runId, outputDirectory: `/workspace/output/${runId}`, policyRevision: 1, runtimeVersion: "0.6.16",
+    toolCatalogHash: "a".repeat(64), toolDefinitions: [], workspaceSessionId: session.id } });
+  await prisma.workspaceCodeGrant.create({ data: { modelRunId: runId, workspaceSessionId: session.id } });
+  const call = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: runId, ordinal: 90,
+    providerCallId: `code-${randomUUID()}`, roundIndex: 0, state: "complete", toolName: "workspace__sandbox_shell" } });
+  const invocationId = randomUUID().replaceAll("-", "");
+  await prisma.workspaceCodeInvocation.create({ data: { closedAt: new Date(), id: invocationId, kind: "command",
+    modelRunId: runId, state: "closed", toolCallId: call.id } });
+  await prisma.workspaceCodeCall.createMany({ data: receipts.map((receipt, sequence) => ({ argumentHash: "c".repeat(64),
+    errorCode: receipt.errorCode ?? null, invocationId, modelRunId: runId, sequence, serverId: receipt.serverId,
+    settledAt: new Date(), state: receipt.state, toolName: `mcp_${receipt.serverId}_tool` })) });
+}
+
 afterEach(async () => {
   const ids = users.splice(0);
+  const chats = await prisma.chat.findMany({ where: { userId: { in: ids } }, select: { id: true } });
+  await prisma.modelRun.deleteMany({ where: { userId: { in: ids }, workspaceRunBinding: { isNot: null } } });
+  await prisma.workspaceSession.deleteMany({ where: { chatId: { in: chats.map((chat) => chat.id) } } });
   await prisma.scheduledTask.deleteMany({ where: { userId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
   // Memory-mode chats run the Memory source lifecycle, which may leave purge obligations.
@@ -397,6 +420,10 @@ describe("persisted scheduled task runner", () => {
     const next = await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: new Date(Date.now() + 1), taskId: created.id,
       trigger: "manual", userId } });
     expect([...(await runner.loadExecution(next.id))!.relevantMcpServerIds!].sort()).toEqual(["server-mail", "server-tracker"]);
+    // Servers the result's Workspace code called are relied on like servers its model called.
+    await codeReceipts(run.runId, chat.id, [{ serverId: "server-gitlab", state: "complete" }]);
+    expect([...(await runner.loadExecution(next.id))!.relevantMcpServerIds!].sort())
+      .toEqual(["server-gitlab", "server-mail", "server-tracker"]);
     // Tools off: no relevance is read. A previous result whose run is gone leaves nothing to judge by.
     await prisma.scheduledTask.update({ data: { toolsEnabled: false }, where: { id: created.id } });
     expect((await runner.loadExecution(next.id))!.relevantMcpServerIds).toBeNull();
@@ -529,6 +556,38 @@ describe("persisted monitoring checks", () => {
     const plain = await check(userId, chat.id);
     expect(await finish(plain, null, now)).toMatchObject({ reasonCode: null, state: "COMPLETED" });
     expect(await outcomeOf(plain.run.runId)).toBeNull();
+  });
+
+  it("settles a check whose code could not reach a source as could_not_check, never as a hidden no_update", async () => {
+    const userId = await owner();
+    await task(userId, null, { kind: "MONITORING", toolsEnabled: true });
+    const chat = await personalChat(userId);
+    const now = new Date();
+    expect(await finish(await check(userId, chat.id), "no_update", now)).toMatchObject({ reasonCode: "baseline" });
+    const withCatalog = async (runId: string) => {
+      const accepted = await prisma.modelRun.findUniqueOrThrow({ where: { id: runId } });
+      await prisma.modelRun.update({ where: { id: runId }, data: { normalizedRequest: { ...(accepted.normalizedRequest as object),
+        mcpDiscovery: { catalog: { servers: [{ description: "", namespace: "gitlab", revisionId: "revision", serverId: "server-gitlab",
+          serverName: "Synthetic GitLab", tools: [] }], version: 1 }, epochs: [], version: 2 } } } });
+    };
+    // GitLab is reached only through the Skill's code, which found it needing a new sign-in.
+    const blind = await check(userId, chat.id);
+    await withCatalog(blind.run.runId);
+    await codeReceipts(blind.run.runId, chat.id, [{ errorCode: "authorization_required", serverId: "server-gitlab", state: "error" }]);
+    expect(await finish(blind, "no_update", now)).toMatchObject({ reasonCode: "could_not_check", sourcesIncomplete: true,
+      state: "COMPLETED" });
+    expect(await occurrenceOf(blind.occurrence.id)).toMatchObject({ unseenAt: now, unavailableSources: [
+      { name: "Synthetic GitLab", reason: "mcp_reauthorization_required", relied: true, serverId: "server-gitlab" }] });
+    expect(await outcomeOf(blind.run.runId)).toBe("could_not_check");
+    // A transient refusal the code recovered from, or a tool's own error, is no missing source.
+    const recovered = await check(userId, chat.id);
+    await codeReceipts(recovered.run.runId, chat.id, [
+      { errorCode: "upstream_unavailable", serverId: "server-gitlab", state: "error" },
+      { serverId: "server-gitlab", state: "complete" },
+      { errorCode: "upstream_error", serverId: "server-wiki", state: "error" }
+    ]);
+    expect(await finish(recovered, "no_update", now)).toMatchObject({ reasonCode: "no_update", sourcesIncomplete: false });
+    expect((await occurrenceOf(recovered.occurrence.id)).unavailableSources).toBeNull();
   });
 
   it("pauses after three scheduled checks in a row that never reported", async () => {

@@ -16,7 +16,9 @@ import type { ScheduledUnavailableSource } from "../runs/runRepositoryContract";
  * counted only because there was no previous result is not carried, so an
  * unrelated unavailable server degrades at most a task's first result. The
  * fact is frozen at admission on the run's occurrence; the run itself still
- * answers, told which source is missing.
+ * answers, told which source is missing. Settlement adds the sources the
+ * run's Workspace code found unavailable; servers its code called count as
+ * relied on, like servers its model called.
  */
 
 const SOURCE_REASONS: readonly unknown[] = SCHEDULED_TASK_SOURCE_REASONS;
@@ -74,6 +76,30 @@ export function decodeStoredUnavailableSources(value: unknown): ScheduledUnavail
       serverId: entry.serverId
     }]
     : []);
+}
+
+/** One source the run's guest code found unavailable: refused before dispatch, with no successful call. */
+export type ScheduledCodeCallSourceFailure = Readonly<{ authorization: boolean; serverId: string; serverName: string | null }>;
+
+/**
+ * Settlement adds the sources the run's own code could not use to those its
+ * admission recorded: the run relied on them now, so a monitoring check that
+ * reached a source only through code becomes `could_not_check`, never a
+ * healthy `no_update`, and the incomplete-run streak counts it.
+ */
+export function withCodeCallUnavailableSources(
+  stored: unknown,
+  failures: readonly ScheduledCodeCallSourceFailure[]
+): ScheduledUnavailableSource[] {
+  const sources = decodeStoredUnavailableSources(stored);
+  const known = new Set(sources.map((source) => source.serverId));
+  for (const failure of failures) {
+    if (known.has(failure.serverId) || !ID.test(failure.serverId) || sources.length >= SCHEDULED_TASK_UNAVAILABLE_SOURCES_LIMIT) continue;
+    known.add(failure.serverId);
+    sources.push({ name: scheduledSourceName(failure.serverName ?? ""), relied: true, serverId: failure.serverId,
+      reason: failure.authorization ? "mcp_reauthorization_required" : "mcp_server_unavailable" });
+  }
+  return sources;
 }
 
 /** What the owner sees: names and reasons, never server identifiers. */
