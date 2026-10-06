@@ -1,0 +1,9 @@
+#!/opt/aiqsa-python/bin/python3 -I
+"""aiqsa-mcp: call the current AIQSA Workspace run's MCP tools. See `aiqsa-mcp --help`."""
+import sys
+
+sys.path.insert(0, "/opt/aiqsa-guest/python")
+
+from aiqsa.cli import main  # noqa: E402
+
+sys.exit(main())
