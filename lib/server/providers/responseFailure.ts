@@ -8,6 +8,12 @@ const blockedCodes = new Set([
   "organization_usage_limit_exceeded", "content_filter", "invalid_model", "model_not_found",
   "unsupported_model", "model_not_supported", "model_not_available", "unsupported", "not_supported"
 ]);
+// Reviewed account quota/balance identities among the blocked codes. Only the
+// body code qualifies, never message text.
+const quotaCodes = new Set([
+  "insufficient_quota", "credit_balance_exhausted", "organization_spend_limit_exceeded",
+  "project_spend_limit_exceeded", "organization_usage_limit_exceeded"
+]);
 
 const unsupportedMessage = /\b(?:does not support|do not support|not supported|unsupported)\b/iu;
 const capabilityMessage = /\b(?:inputs?|output formats?|response formats?|images?|vision|pdfs?|documents?|files?|json|schemas?|structured outputs?|tools?|function calling|response_format|input_image|input_file)\b|\b(?:this|the|requested) (?:request|feature|input|capability)\b/iu;
@@ -164,6 +170,7 @@ export function providerResponseFailure(
   const refusal = incomplete?.reason === "content_filter" || detail?.code === "content_filter" ||
     choiceRecord?.finish_reason === "content_filter" || typeof choiceMessage?.refusal === "string" && choiceMessage.refusal.length > 0;
   const capabilityFailureReason = refusal ? "refusal" : incomplete?.reason === "max_output_tokens" || choiceRecord?.finish_reason === "length" ? "budget_exhausted" : undefined;
+  const quotaExhausted = code === "provider_response_not_retryable" && typeof detail?.code === "string" && quotaCodes.has(detail.code);
   return Object.assign(new Error(message), code ? { code } : {}, contextLength ?? {}, unsupportedInput ? { unsupportedInput: true } : {},
-    capabilityFailureReason ? { capabilityFailureReason } : {});
+    capabilityFailureReason ? { capabilityFailureReason } : {}, quotaExhausted ? { quotaExhausted: true } : {});
 }
