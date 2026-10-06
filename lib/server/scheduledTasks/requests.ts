@@ -1,6 +1,7 @@
 import {
   SCHEDULED_TASK_CHAT_MODES,
   SCHEDULED_TASK_KINDS,
+  decodeScheduledTaskPinnedSkillIds,
   decodeScheduledTaskSchedule,
   isScheduledTaskModelIdentity,
   isScheduledTaskPrompt,
@@ -16,15 +17,18 @@ import { validScheduledTaskTimeZone, validateScheduledTaskSchedule } from "../..
 export type ScheduledTaskRequestFailure = {
   ok: false;
   code: "scheduled_task_invalid" | "scheduled_task_schedule_invalid" | "scheduled_task_time_zone_invalid" |
-    "scheduled_task_chat_mode_invalid";
+    "scheduled_task_chat_mode_invalid" | "scheduled_task_skills_need_tools";
 };
+
 export type ScheduledTaskRequestResult<T> = { ok: true; value: T } | ScheduledTaskRequestFailure;
 
 const DRAFT_KEYS = [
   "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "toolsEnabled",
   "workspaceEnabled", "memoryEnabled", "chatMode", "kind"
 ];
-const UPDATE_KEYS = [...DRAFT_KEYS, "expectedRevision", "status"];
+/** Draft fields a create body may leave out, with their default. */
+const OPTIONAL_DRAFT_KEYS = ["pinnedSkillIds"];
+const UPDATE_KEYS = [...DRAFT_KEYS, ...OPTIONAL_DRAFT_KEYS, "expectedRevision", "status"];
 const invalid: ScheduledTaskRequestFailure = { ok: false, code: "scheduled_task_invalid" };
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -40,14 +44,18 @@ function taskKind(value: unknown): value is ScheduledTaskKind {
 }
 
 /**
- * Create body: every editable field, nothing else. Shape and bounds fail as
- * `scheduled_task_invalid` before the schedule, then the zone, then a chat
- * mode the schedule or type does not allow are judged.
+ * Create body: every editable field, nothing else; `pinnedSkillIds` may be
+ * left out (none). Shape and bounds fail as `scheduled_task_invalid` before
+ * the schedule, then the zone, then a chat mode the schedule or type does not
+ * allow, then pins without tools are judged.
  */
 export function decodeScheduledTaskCreateRequest(value: unknown): ScheduledTaskRequestResult<ScheduledTaskDraft> {
-  if (!record(value) || Object.keys(value).length !== DRAFT_KEYS.length || !DRAFT_KEYS.every((key) => key in value)) {
+  if (!record(value) || !DRAFT_KEYS.every((key) => key in value) ||
+    Object.keys(value).some((key) => !DRAFT_KEYS.includes(key) && !OPTIONAL_DRAFT_KEYS.includes(key))) {
     return invalid;
   }
+  const pinnedSkillIds = value.pinnedSkillIds === undefined ? [] : decodeScheduledTaskPinnedSkillIds(value.pinnedSkillIds);
+  if (!pinnedSkillIds) return invalid;
   const title = normalizeScheduledTaskTitle(value.title);
   if (!title || !isScheduledTaskPrompt(value.prompt) || !isScheduledTaskModelIdentity(value.modelId) ||
     !isScheduledTaskModelIdentity(value.provider) || typeof value.searchEnabled !== "boolean" ||
@@ -59,13 +67,14 @@ export function decodeScheduledTaskCreateRequest(value: unknown): ScheduledTaskR
   if (!scheduledTaskChatModeAllowed({ kind: value.kind, schedule: schedule.schedule }, value.chatMode)) {
     return { ok: false, code: "scheduled_task_chat_mode_invalid" };
   }
+  if (pinnedSkillIds.length > 0 && !value.toolsEnabled) return { ok: false, code: "scheduled_task_skills_need_tools" };
   return {
     ok: true,
     value: {
       title, prompt: value.prompt, schedule: schedule.schedule, timeZone: schedule.timeZone, modelId: value.modelId,
       provider: value.provider, searchEnabled: value.searchEnabled, emailNotify: value.emailNotify,
       toolsEnabled: value.toolsEnabled, workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled,
-      chatMode: value.chatMode, kind: value.kind
+      pinnedSkillIds, chatMode: value.chatMode, kind: value.kind
     }
   };
 }
@@ -99,6 +108,11 @@ export function decodeScheduledTaskUpdateRequest(value: unknown): ScheduledTaskR
     const flag = value[key];
     if (typeof flag !== "boolean") return invalid;
     patch[key] = flag;
+  }
+  if ("pinnedSkillIds" in value) {
+    const pinnedSkillIds = decodeScheduledTaskPinnedSkillIds(value.pinnedSkillIds);
+    if (!pinnedSkillIds) return invalid;
+    patch.pinnedSkillIds = pinnedSkillIds;
   }
   if ("chatMode" in value) {
     if (!chatMode(value.chatMode)) return invalid;

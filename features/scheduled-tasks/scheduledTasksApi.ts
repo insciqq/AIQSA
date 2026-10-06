@@ -1,3 +1,4 @@
+import { fetchSkillPage } from "@/components/app-shell/skillLibraryStore";
 import {
   SCHEDULED_TASK_SEEN_RUNS_LIMIT,
   decodeScheduledTask,
@@ -84,6 +85,42 @@ export async function markScheduledTaskSeen(taskId: string, runIds: readonly str
     const body: ScheduledTaskSeenRequest = { runIds: unique.slice(start, start + SCHEDULED_TASK_SEEN_RUNS_LIMIT) };
     await request(`${taskPath(taskId)}/seen`, { method: "POST", json: body });
   }
+}
+
+/** A Skill the task editor offers to pin: one the owner can load now. */
+export type ScheduledTaskSkillOption = Readonly<{
+  id: string;
+  name: string;
+  hasExecutables: boolean;
+  owned: boolean;
+  ownerDisplayName: string;
+}>;
+
+/** Pages of the Skill library read for the picker; together they cover every Skill a run may offer. */
+const SKILL_OPTION_PAGES = 4;
+const SKILL_OPTION_PAGE_SIZE = 50;
+
+/**
+ * The owner's own and shared-to-them Skills a task may pin, by name: not
+ * archived and enabled for the owner, as the server's pin check requires.
+ */
+export async function listScheduledTaskSkillOptions(signal?: AbortSignal): Promise<ScheduledTaskSkillOption[]> {
+  const options = new Map<string, ScheduledTaskSkillOption>();
+  let cursor: string | undefined;
+  for (let page = 0; page < SKILL_OPTION_PAGES; page += 1) {
+    signal?.throwIfAborted();
+    const result = await fetchSkillPage({ ...(cursor ? { cursor } : {}), limit: SKILL_OPTION_PAGE_SIZE });
+    for (const skill of result.skills) {
+      if (skill.archived || skill.enabled === false) continue;
+      options.set(skill.id, {
+        hasExecutables: skill.hasExecutables === true, id: skill.id, name: skill.name, owned: skill.owned,
+        ownerDisplayName: skill.ownerDisplayName
+      });
+    }
+    if (!result.nextCursor) break;
+    cursor = result.nextCursor;
+  }
+  return [...options.values()].sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
 }
 
 /** Starts one manual run now; the server answers 409 `scheduled_task_running` while a run is pending. */

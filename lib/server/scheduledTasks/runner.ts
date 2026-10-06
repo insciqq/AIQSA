@@ -8,6 +8,7 @@ import type { ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract
 import { scheduledTaskSearchPlan, scheduledTaskSendBody, type ScheduledTaskSend, type ScheduledTaskSendTarget } from "./admission";
 import { resolveScheduledTaskModel, type ScheduledTaskRunCatalogLoader } from "./catalog";
 import { scheduledTaskResultEmail } from "./notifications";
+import type { ScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
 import {
   SCHEDULED_TASK_ADMISSION_LEASE_MS,
   SCHEDULED_TASK_LATENESS_MS,
@@ -29,6 +30,8 @@ export type ScheduledTaskRunnerDeps = Readonly<{
   /** Wakes the next tick, e.g. after a run frees its owner's slot. */
   kick?: () => void;
   loadCatalog: ScheduledTaskRunCatalogLoader;
+  /** The owner's current view of the task's pinned Skills, rechecked before every run. */
+  loadPinnedSkills: ScheduledTaskPinnedSkillLoader;
   newId?: () => string;
   now?: () => Date;
   /** Sets the title of a chat the run created, through the ordinary rename that fences title generation. */
@@ -225,10 +228,18 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     }
     const searchPlan = scheduledTaskSearchPlan({ catalog, model, searchEnabled: task.searchEnabled });
     if (!searchPlan) return settlePending(execution, pausingOutcome("search_unavailable"));
+    // Every pinned Skill must still be the owner's to load (not deleted,
+    // archived, disabled or unshared); the run never goes on in Auto without one.
+    if (task.pinnedSkillIds.length > 0 &&
+      (await deps.loadPinnedSkills(occurrence.userId, task.pinnedSkillIds)).some((skill) => !skill.available)) {
+      return settlePending(execution, pausingOutcome("skill_unavailable"));
+    }
     const { previousResult, target, title } = runTarget(execution, newId);
     const response = await deps.send({
       body: scheduledTaskSendBody({
-        admissionId: newId(), modelId: task.modelId, prompt: task.prompt, provider: task.provider, searchPlan, target,
+        admissionId: newId(), modelId: task.modelId, pinnedSkillIds: task.pinnedSkillIds, prompt: task.prompt,
+        provider: task.provider, searchPlan, target,
+
         timeZone: task.timeZone, toolCalling: model.capabilities.toolCalling, toolsEnabled: task.toolsEnabled,
         workspaceEnabled: task.workspaceEnabled
       }),

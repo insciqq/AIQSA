@@ -14,7 +14,12 @@ import {
   decodeScheduledTask,
   decodeScheduledTaskDetailResponse,
   decodeScheduledTaskListResponse,
+  decodeScheduledTaskPinnedSkillIds,
   decodeScheduledTaskSeenRequest,
+  SCHEDULED_TASK_MAX_PINNED_SKILLS,
+  scheduledTaskSkillNameProjection,
+  scheduledTaskSkillUnavailableReason,
+
   isScheduledTaskPrompt,
   isScheduledTaskRunIncomplete,
   normalizeScheduledTaskTitle,
@@ -31,7 +36,7 @@ const task: ScheduledTask = {
   id: "task-1", title: "Morning brief", prompt: "Summarize overnight news.",
   schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
   modelId: "model-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true, workspaceEnabled: false,
-  memoryEnabled: true, chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
+  memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null,
   nextRunAt: "2026-10-05T06:00:00.000Z",
   lastRun: { scheduledFor: "2026-10-02T06:00:00.000Z", state: "completed", reasonCode: null, finishedAt: "2026-10-02T06:01:10.000Z",
     unseen: true },
@@ -78,6 +83,46 @@ describe("scheduled task wire contract", () => {
     }
   });
 
+  it("decodes up to four pinned Skills, only with tools, and the owner's view of them", () => {
+    const pinnedSkills = [
+      { id: "skill-1", name: "gitlab-digest", available: true, hasExecutables: true },
+      { id: "skill-2", name: null, available: false, hasExecutables: false }
+    ];
+    const pinned = { ...task, pinnedSkillIds: ["skill-1", "skill-2"], pinnedSkills };
+    expect(decodeScheduledTask(pinned)).toEqual(pinned);
+    // A chat card or a model result carries the ids without the owner's view.
+    expect(decodeScheduledTask({ ...task, pinnedSkillIds: ["skill-1"] })).toEqual({ ...task, pinnedSkillIds: ["skill-1"] });
+    expect(decodeScheduledTaskPinnedSkillIds(["a", "b", "c", "d"])).toEqual(["a", "b", "c", "d"]);
+    expect(SCHEDULED_TASK_MAX_PINNED_SKILLS).toBe(4);
+    for (const ids of [["a", "b", "c", "d", "e"], ["a", "a"], [""], [" a"], ["x".repeat(65)], [1], "a", null]) {
+      expect(decodeScheduledTaskPinnedSkillIds(ids)).toBeNull();
+    }
+    for (const candidate of [
+      { ...task, pinnedSkillIds: undefined }, { ...task, pinnedSkillIds: ["a", "b", "c", "d", "e"] },
+      { ...task, toolsEnabled: false, pinnedSkillIds: ["skill-1"] },
+      { ...pinned, pinnedSkills: [pinnedSkills[1], pinnedSkills[0]] }, { ...pinned, pinnedSkills: [pinnedSkills[0]] },
+      { ...pinned, pinnedSkills: [{ ...pinnedSkills[0], name: null }, pinnedSkills[1]] },
+      { ...pinned, pinnedSkills: [{ ...pinnedSkills[0], ownerId: "user-2" }, pinnedSkills[1]] },
+      { ...pinned, pinnedSkills: [{ ...pinnedSkills[0], name: "x".repeat(65) }, pinnedSkills[1]] }
+    ]) {
+      expect(decodeScheduledTask(candidate)).toBeNull();
+    }
+    expect(scheduledTaskSkillNameProjection("  digest\u0007 ")).toBe("digest");
+    expect(scheduledTaskSkillNameProjection("x".repeat(70))).toBe("x".repeat(64));
+    expect(scheduledTaskSkillNameProjection(" \n ")).toBeNull();
+  });
+
+  it("names a lost pinned Skill only while the owner may still see it", () => {
+    const skill = (name: string | null, available = false) => ({ id: name ?? "gone", name, available, hasExecutables: false });
+    expect(scheduledTaskSkillUnavailableReason({ pinnedSkills: [skill("digest"), skill("report", true)] }))
+      .toBe("the pinned Skill “digest” is no longer available");
+    expect(scheduledTaskSkillUnavailableReason({ pinnedSkills: [skill("a"), skill("b"), skill("c")] }))
+      .toBe("the pinned Skills “a”, “b” and “c” are no longer available");
+    expect(scheduledTaskSkillUnavailableReason({ pinnedSkills: [skill(null)] })).toBe("a pinned Skill is no longer available");
+    expect(scheduledTaskSkillUnavailableReason({})).toBe("a pinned Skill is no longer available");
+    expect(scheduledTaskReasonMessage("skill_unavailable")).toBe("A pinned Skill is no longer available. Edit the task's Skills, then resume.");
+  });
+
   it("keeps hourly and monitoring tasks in one chat and lets other tasks start a chat per run", () => {
     expect(scheduledTaskChatModeAllowed({ kind: "standard", schedule: hourly }, "same")).toBe(true);
     expect(scheduledTaskChatModeAllowed({ kind: "standard", schedule: hourly }, "new")).toBe(false);
@@ -97,8 +142,9 @@ describe("scheduled task wire contract", () => {
     expect(decodeScheduledTaskListResponse({ ...list, limits: { maxActive: 10, maxTotal: 50 } })).toBeNull();
     const run = { id: "run-1", scheduledFor: "2026-10-02T06:00:00.000Z", trigger: "schedule", state: "skipped",
       reasonCode: "previous_running", startedAt: null, finishedAt: "2026-10-02T19:00:00.000Z", chatId: null, unseen: false,
-      unavailableSources: [] };
+      unavailableSources: [], skills: [] };
     const result = { ...run, id: "run-2", state: "completed", reasonCode: null, chatId: "chat-1", unseen: true,
+      skills: [{ name: "gitlab-digest", version: 3 }],
       unavailableSources: [{ name: "Почта", reason: "mcp_reauthorization_required" }, { name: "Tracker", reason: "mcp_server_unavailable" }] };
     expect(decodeScheduledTaskDetailResponse({ task, recentRuns: [result, run] })).toEqual({ task, recentRuns: [result, run] });
     for (const malformed of [{ ...run, trigger: "retry" }, { ...run, id: "" }, { ...run, unseen: "no" },
@@ -108,7 +154,10 @@ describe("scheduled task wire contract", () => {
       { ...run, unavailableSources: [{ name: "Tracker", reason: "mcp_server_unavailable", serverId: "server-1" }] },
       { ...run, unavailableSources: [{ name: " Tracker", reason: "mcp_server_unavailable" }] },
       { ...run, unavailableSources: [{ name: "x".repeat(121), reason: "mcp_server_unavailable" }] },
-      { ...run, unavailableSources: Array.from({ length: 65 }, () => ({ name: "Tracker", reason: "mcp_server_unavailable" })) }]) {
+      { ...run, unavailableSources: Array.from({ length: 65 }, () => ({ name: "Tracker", reason: "mcp_server_unavailable" })) },
+      { ...run, skills: undefined }, { ...run, skills: [{ name: "digest", version: 0 }] },
+      { ...run, skills: [{ name: "digest", version: 1, revisionId: "rev-1" }] },
+      { ...run, skills: Array.from({ length: 5 }, () => ({ name: "digest", version: 1 })) }]) {
       expect(decodeScheduledTaskDetailResponse({ task, recentRuns: [malformed] })).toBeNull();
     }
   });

@@ -5,6 +5,7 @@ import type { ScheduledTask, ScheduledTaskDraft } from "../../contracts/schedule
 import { textMessageContent } from "../../domain/content";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { prisma } from "../prisma";
+import { createPrismaScheduledTaskPinnedSkillLoader } from "../scheduledTasks/pinnedSkills";
 import { scheduledPromptUrlDigests } from "../scheduledTasks/promptUrls";
 import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns } from "../scheduledTasks/store";
 import { MANAGE_SCHEDULED_TASK_TOOL_NAME, scheduledTaskManagementResult } from "../tools/scheduledTaskManagement";
@@ -21,6 +22,7 @@ const deps = {
   kick: () => undefined,
   loadCatalog: async () => ({ models: [{ capabilities: { toolCalling: true }, modelId: "fake-qsa", provider: "fake",
     searchStrategyIds: [] }], searchStrategies: [] }),
+  loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prisma),
   now: () => new Date("2026-10-04T10:00:00.000Z"),
   workspacePolicy: { read: async () => ({ enabled: true }) }
 };
@@ -28,7 +30,7 @@ const store = createPrismaScheduledTaskStore(prisma);
 const draft = (overrides: Partial<ScheduledTaskDraft> = {}): ScheduledTaskDraft => ({
   title: "Synthetic report reminder", prompt: "Synthetic scheduled prompt", schedule: { kind: "weekly", time: "09:00",
     days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false,
-  emailNotify: false, toolsEnabled: false, workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard",
+  emailNotify: false, toolsEnabled: false, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard",
   ...overrides
 });
 const moveTo = (time: string) => (current: ScheduledTask) => ({ schedule: { ...current.schedule, time } });

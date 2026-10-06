@@ -37,7 +37,7 @@ function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
   return {
     id: "task-1", title: "Report reminder", prompt: "Remind me to send the weekly report.", ...scheduledTaskScheduleColumns(weekly),
     timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1", searchEnabled: false, emailNotify: false,
-    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "NEW", kind: "STANDARD", status: "ACTIVE",
+    toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "NEW", kind: "STANDARD", status: "ACTIVE",
     pauseReason: null, completionReason: null, nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: null, revision: 4,
     createdAt: new Date("2026-10-01T10:00:00.000Z"), updatedAt: new Date("2026-10-01T10:00:00.000Z"), promptUrlDigests: [], chat: null,
     ...overrides
@@ -130,8 +130,11 @@ function harness(overrides: Partial<FakeState> = {}) {
     kick: vi.fn(),
     loadCatalog: vi.fn(async () => ({ models: [{ capabilities: { toolCalling: true }, modelId: "deployment-1",
       provider: "connection-1", searchStrategyIds: [] }], searchStrategies: [] })),
+    loadPinnedSkills: vi.fn(async (_userId: string, ids: readonly string[]) =>
+      ids.map((id) => ({ available: true, hasExecutables: false, id, name: id }))),
     now: () => now,
     workspacePolicy: { read: vi.fn(async () => ({ enabled: true })) }
+
   };
   const manage = (input: Partial<ManagementInput> & Pick<ManagementInput, "action">) =>
     manageScheduledTaskForToolCall(prisma as unknown as PrismaClient, deps, {

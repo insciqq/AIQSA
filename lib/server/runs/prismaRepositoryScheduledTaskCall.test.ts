@@ -26,8 +26,8 @@ const body = {
 const created: ScheduledTask = {
   id: "task-1", title: "Check mail", prompt: body.prompt, schedule: { kind: "weekly", time: "09:00",
     days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow", modelId: "deployment-1", provider: "connection-1",
-  searchEnabled: false, emailNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, chatMode: "new",
-  kind: "standard", status: "active", pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null,
+  searchEnabled: false, emailNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [],
+  chatMode: "new", kind: "standard", status: "active", pauseReason: null, completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null,
   running: false, chatId: null, unseenResult: false, revision: 1, createdAt: now.toISOString(), updatedAt: now.toISOString()
 };
 const providerCall = { id: "provider-call-1", name: CREATE_SCHEDULED_TASK_TOOL_NAME };
@@ -98,8 +98,11 @@ function harness(overrides: Partial<FakeState> = {}) {
     kick,
     loadCatalog: vi.fn(async () => ({ models: [{ capabilities: { toolCalling: true }, modelId: "deployment-1",
       provider: "connection-1", searchStrategyIds: [] }], searchStrategies: [] })),
+    loadPinnedSkills: vi.fn(async (_userId: string, ids: readonly string[]) =>
+      ids.map((id) => ({ available: true, hasExecutables: false, id, name: id }))),
     now: () => now,
     workspacePolicy: { read: vi.fn(async () => ({ enabled: true })) }
+
   };
   const create = (input: Partial<Parameters<typeof createScheduledTaskForToolCall>[2]> = {}) =>
     createScheduledTaskForToolCall(prisma as unknown as PrismaClient, deps, {

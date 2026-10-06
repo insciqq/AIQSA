@@ -66,7 +66,7 @@ function task(source: ScheduledTaskCard): ScheduledTask {
     id: source.taskId, title: source.title, prompt: "Synthetic scheduled instructions.",
     schedule: source.schedule, timeZone: source.timeZone,
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: source.toolsEnabled,
-    workspaceEnabled: source.workspaceEnabled, memoryEnabled: true, chatMode: "same", kind: source.kind, status: source.status,
+    workspaceEnabled: source.workspaceEnabled, memoryEnabled: true, pinnedSkillIds: [], pinnedSkills: [], chatMode: "same", kind: source.kind, status: source.status,
     pauseReason: null,
     completionReason: null, nextRunAt: source.nextRunAt, lastRun: null, running: false,
     // A task created from chat gets its own chat on its first run, never the chat that created it.
