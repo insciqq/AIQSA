@@ -46,6 +46,8 @@ import {
   scheduledTaskTimeZoneOptions,
   timeZoneLabel
 } from "./scheduledTaskPresentation";
+import { ScheduledTaskSkillPicker } from "./ScheduledTaskSkillPicker";
+import type { ScheduledTaskSkillOption } from "./scheduledTasksApi";
 
 const field = "v2-scheduled-field w-full min-w-0 rounded-lg border border-trace bg-answer-paper px-3 py-2 text-sm text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-60";
 const PROMPT_COUNTER_FROM = SCHEDULED_TASK_PROMPT_MAX_LENGTH - 1_000;
@@ -82,6 +84,8 @@ export type ScheduledTaskSheetProps = Readonly<{
   workspace?: ScheduledTaskWorkspaceAvailability;
   /** Whether the owner's Memory lets runs read anything; the task keeps its own switch. */
   memory?: ScheduledTaskMemoryAvailability;
+  /** Reads the Skills the owner may pin; a stable function, the library by default. */
+  loadSkillOptions?: () => Promise<readonly ScheduledTaskSkillOption[]>;
 }>;
 
 function FieldError({ id, children, live = true }: Readonly<{ id: string; children: ReactNode; live?: boolean }>) {
@@ -117,8 +121,8 @@ function toggled(days: readonly ScheduledTaskWeekday[], day: ScheduledTaskWeekda
 
 /** Create and edit sheet: one form, a live next-run preview and the task's recent runs. */
 export function ScheduledTaskSheet({
-  busy, catalog, draft, emailAvailable, errors, initialDraft, memory = "unknown", notice, onChange, onClose, onOpenRunChat,
-  onRunsShown, onSubmit, original, recentRuns, viewerTimeZone, workspace = "unknown"
+  busy, catalog, draft, emailAvailable, errors, initialDraft, loadSkillOptions, memory = "unknown", notice, onChange, onClose,
+  onOpenRunChat, onRunsShown, onSubmit, original, recentRuns, viewerTimeZone, workspace = "unknown"
 }: ScheduledTaskSheetProps) {
   const formId = useId();
   const ids = {
@@ -493,6 +497,16 @@ export function ScheduledTaskSheet({
               />
               {errors.tools ? <FieldError id={`${ids.tools}-error`}>{errors.tools}</FieldError> : null}
             </div>
+            {draft.toolsEnabled || draft.pinnedSkills.length > 0 ? (
+              <ScheduledTaskSkillPicker
+                disabled={busy}
+                error={errors.skills}
+                {...(loadSkillOptions ? { loadOptions: loadSkillOptions } : {})}
+                pinned={draft.pinnedSkills}
+                workspaceEnabled={draft.workspaceEnabled}
+                onChange={(pinnedSkills) => onChange({ pinnedSkills })}
+              />
+            ) : null}
             <div className="v2-scheduled-toggle">
               <span className="v2-scheduled-toggle-copy">
                 <span id={ids.workspace} className="v2-scheduled-label">Workspace</span>
@@ -600,6 +614,8 @@ function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Read
                         {run.unseen ? <><span className="v2-scheduled-unread" aria-hidden="true" /><span className="sr-only">New result: </span></> : null}
                         {row.outcome}
                         {row.sources.map((source, index) => <span key={`${index}:${source}`} className="v2-scheduled-run-source">{source}</span>)}
+                        {row.skills ? <span className="v2-scheduled-run-source v2-scheduled-run-skills">{row.skills}</span> : null}
+
                       </span>
                       {chatId ? (
                         <button type="button" className="v2-scheduled-run-chat v2-focusable"

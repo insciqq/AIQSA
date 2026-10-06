@@ -44,14 +44,17 @@ export function scheduledTaskSearchPlan(input: Readonly<{
  * model with its catalog control defaults (no saved controls or params), its
  * Search plan, the task's time zone for the date and time baseline, and with
  * tools on the owner's MCP and Skills in Auto (never Load all, which fails a
- * whole unattended run when one server is not ready) and with Workspace on
- * the chat's Workspace. Knowledge and Agent stay off. A new chat is a
- * personal first send with Memory excluded, so daily prompts never feed
- * Memory learning.
+ * whole unattended run when one server is not ready) plus the task's pinned
+ * Skills as the composer pins them (`skillIds`), so admission binds each at
+ * its current version or refuses the run, and with Workspace on the chat's
+ * Workspace. Knowledge and Agent stay off. A new chat is a personal first
+ * send with Memory excluded, so daily prompts never feed Memory learning.
  */
 export function scheduledTaskSendBody(input: Readonly<{
   admissionId: string;
   modelId: string;
+  /** Only with tools on, as the task contract keeps them. */
+  pinnedSkillIds: readonly string[];
   prompt: string;
   provider: string;
   searchPlan: SearchPlan;
@@ -72,7 +75,9 @@ export function scheduledTaskSendBody(input: Readonly<{
     ...(input.target.kind === "new" ? { personalDraft: { folderId: null, memoryMode: "EXCLUDED" } } : {}),
     provider: input.provider,
     searchPlan: { mode: input.searchPlan.mode, optionIds: [...input.searchPlan.optionIds] },
+    ...(input.toolsEnabled && input.pinnedSkillIds.length > 0 ? { skillIds: [...input.pinnedSkillIds] } : {}),
     skills: { mode: tools },
+
     timeZone: input.timeZone,
     // Like the composer, a model without tool calling asks for no tools at all.
     ...(input.toolCalling ? {} : { tools: "none" }),

@@ -7162,6 +7162,11 @@ model ScheduledTask {
   /// Runs read the owner's Memory without ever adding to it. New tasks are
   /// created with it on; rows older than the switch stay off.
   memoryEnabled              Boolean                   @default(false)
+  /// Skill ids every run loads at their current revision besides the Auto
+  /// catalog: at most 4, unique, only with `toolsEnabled`. Plain identifiers,
+  /// rechecked against the owner's available Skills at save and every run; a
+  /// lost one pauses the task (`skill_unavailable`), never a foreign key.
+  pinnedSkillIds             String[]                  @default([])
   /// NEW starts a chat for every run; SAME continues the task's chat (always for HOURLY and MONITORING).
   chatMode                  ScheduledTaskChatMode     @default(NEW)
   /// MONITORING runs are checks that report through a built-in tool whether

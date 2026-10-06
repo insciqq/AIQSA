@@ -364,6 +364,10 @@ describe("send refusals", () => {
     expect(classifySendRefusal(409, "active_run_in_progress")).toEqual({ kind: "retry", reasonCode: "chat_busy" });
     expect(classifySendRefusal(409, "active_leaf_changed")).toEqual({ kind: "retry", reasonCode: "chat_busy" });
     expect(classifySendRefusal(404, "chat_not_found")).toEqual({ kind: "retry", reasonCode: null });
+    // A pinned Skill admission cannot resolve pauses; one whose version moved before acceptance retries.
+    expect(classifySendRefusal(404, "skill_not_available")).toEqual({ kind: "fail",
+      outcome: { pauseReason: "skill_unavailable", reasonCode: "skill_unavailable", state: "FAILED" } });
+    expect(classifySendRefusal(409, "skill_not_available")).toEqual({ kind: "retry", reasonCode: null });
     expect(classifySendRefusal(403, "model_not_available")).toEqual({ kind: "fail",
       outcome: { pauseReason: "model_unavailable", reasonCode: "model_unavailable", state: "FAILED" } });
     expect(classifySendRefusal(403, "search_strategy_not_available")).toMatchObject({ outcome: { pauseReason: "search_unavailable" } });

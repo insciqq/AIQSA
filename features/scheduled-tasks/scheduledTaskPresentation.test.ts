@@ -10,6 +10,7 @@ import {
   scheduledTaskForcedChatReason,
   scheduledTaskMemoryAvailability,
   scheduledTaskPreview,
+  scheduledTaskSkillsNeedingWorkspace,
   scheduledTaskStartingTools,
   scheduledTaskUpdateRequest,
   scheduledTaskWorkspaceAvailability,
@@ -88,7 +89,7 @@ describe("scheduled task presentation", () => {
   it("explains overlap skips in the run history", () => {
     const row = (reasonCode: string) => scheduledTaskRunRow({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z",
       trigger: "schedule", state: "skipped", reasonCode, startedAt: null, finishedAt: "2026-10-05T08:00:01.000Z",
-      chatId: null, unseen: false, unavailableSources: [] }, "Europe/London", now).outcome;
+      chatId: null, unseen: false, unavailableSources: [], skills: [] }, "Europe/London", now).outcome;
     expect(row("previous_running")).toBe("Skipped: the previous run was still in progress");
     expect(row("superseded")).toBe("Skipped: a newer scheduled time arrived before it could start");
   });
@@ -230,11 +231,60 @@ describe("scheduled task drafts", () => {
   });
 });
 
+describe("pinned Skills in the editor and history", () => {
+  const digest = { id: "skill-digest", name: "gitlab-digest", available: true, hasExecutables: true };
+  const style = { id: "skill-style", name: "House style", available: true, hasExecutables: false };
+
+  it("sends the pins on create and only changed pins on update, and needs tools for them", () => {
+    const pinned = scheduledTaskFixture({ toolsEnabled: true, pinnedSkillIds: [digest.id], pinnedSkills: [digest] });
+    const draft = scheduledTaskDraftFromTask(pinned, now);
+    expect(draft.pinnedSkills).toEqual([digest]);
+    expect(scheduledTaskCreateRequest(draft)).toMatchObject({ pinnedSkillIds: ["skill-digest"] });
+    expect(scheduledTaskUpdateRequest(draft, pinned)).toEqual({ expectedRevision: 1 });
+    const added = { ...draft, pinnedSkills: [digest, style] };
+    expect(sameScheduledTaskDraft(added, draft)).toBe(false);
+    expect(scheduledTaskUpdateRequest(added, pinned)).toEqual({ expectedRevision: 1, pinnedSkillIds: ["skill-digest", "skill-style"] });
+    expect(scheduledTaskUpdateRequest({ ...draft, pinnedSkills: [] }, pinned)).toEqual({ expectedRevision: 1, pinnedSkillIds: [] });
+    // Pins never outlive tools silently: the owner removes them or keeps tools on.
+    expect(validateScheduledTaskDraft({ ...draft, toolsEnabled: false }, scheduledTaskCatalogFixture(), pinned, now).skills)
+      .toBe("Pinned Skills need tools. Turn tools on or remove the pinned Skills.");
+    expect(validateScheduledTaskDraft(draft, scheduledTaskCatalogFixture(), pinned, now).skills).toBeUndefined();
+    // Scripts need Workspace; saving is still allowed.
+    expect(scheduledTaskSkillsNeedingWorkspace(draft)).toEqual([digest]);
+    expect(scheduledTaskSkillsNeedingWorkspace({ ...draft, workspaceEnabled: true })).toEqual([]);
+    // A task read without the owner's view names no pin.
+    const { pinnedSkills: _view, ...bare } = pinned;
+    expect(scheduledTaskDraftFromTask(bare, now).pinnedSkills).toEqual([
+      { id: "skill-digest", name: null, available: false, hasExecutables: false }
+    ]);
+  });
+
+  it("names a lost pinned Skill in the pause line while the owner may see it, and the versions a run used", () => {
+    const paused = (pinnedSkills: ScheduledTask["pinnedSkills"]) => scheduledTaskStatusLine(scheduledTaskFixture({
+      status: "paused", nextRunAt: null, pauseReason: "skill_unavailable", toolsEnabled: true,
+      pinnedSkillIds: (pinnedSkills ?? []).map((skill) => skill.id), pinnedSkills
+    }), now);
+    expect(paused([{ ...digest, available: false }, style])).toEqual({ tone: "attention",
+      text: "Paused: the pinned Skill “gitlab-digest” is no longer available. Edit the task's Skills, then resume." });
+    expect(paused([{ id: "skill-gone", name: null, available: false, hasExecutables: false }]).text)
+      .toBe("Paused: a pinned Skill is no longer available. Edit the task's Skills, then resume.");
+    const row = scheduledTaskRunRow({ id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z", trigger: "schedule", state: "completed",
+      reasonCode: null, startedAt: "2026-10-05T08:00:01.000Z", finishedAt: "2026-10-05T08:01:00.000Z", chatId: "chat-1", unseen: false,
+      unavailableSources: [], skills: [{ name: "gitlab-digest", version: 3 }, { name: "House style", version: 1 }] }, "Europe/London", now);
+    expect(row.skills).toBe("Skills: gitlab-digest v3, House style v1");
+    expect(scheduledTaskRunRow({ ...{ id: "run-2", scheduledFor: "2026-10-05T08:00:00.000Z", trigger: "schedule" as const,
+      state: "failed" as const, reasonCode: "skill_unavailable", startedAt: null, finishedAt: "2026-10-05T08:00:01.000Z",
+      chatId: null, unseen: false, unavailableSources: [], skills: [] } }, "Europe/London", now))
+      .toMatchObject({ outcome: "Failed: a pinned Skill was no longer available", skills: null });
+  });
+});
+
 describe("monitoring and tool copy", () => {
+
   const run = (overrides: Partial<ScheduledTaskRun>): ScheduledTaskRun => ({
     id: "run-1", scheduledFor: "2026-10-05T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
     startedAt: "2026-10-05T08:00:01.000Z", finishedAt: "2026-10-05T08:01:00.000Z", chatId: "chat-1", unseen: false,
-    unavailableSources: [], ...overrides
+    unavailableSources: [], skills: [], ...overrides
   });
 
   it("gives check outcomes their copy, keeps no-update rows quiet and lists unavailable sources in attention tone", () => {

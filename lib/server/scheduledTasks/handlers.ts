@@ -29,6 +29,8 @@ const STATUS: Record<ScheduledTaskErrorCode, number> = {
   scheduled_task_search_unavailable: 400,
   scheduled_task_tools_unavailable: 400,
   scheduled_task_workspace_unavailable: 400,
+  scheduled_task_skills_need_tools: 400,
+  scheduled_task_skill_unavailable: 400,
   scheduled_task_limit: 409,
   scheduled_task_hourly_limit: 409,
   scheduled_task_stale: 409,

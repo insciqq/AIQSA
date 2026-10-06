@@ -95,7 +95,9 @@ const FIELD_FOR_CODE: Readonly<Record<string, keyof ScheduledTaskFieldErrors>> =
   scheduled_task_model_cannot_report: "kind",
   scheduled_task_search_unavailable: "search",
   scheduled_task_tools_unavailable: "tools",
-  scheduled_task_workspace_unavailable: "workspace"
+  scheduled_task_workspace_unavailable: "workspace",
+  scheduled_task_skills_need_tools: "skills",
+  scheduled_task_skill_unavailable: "skills"
 };
 
 /**
