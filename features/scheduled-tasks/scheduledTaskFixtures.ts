@@ -16,6 +16,8 @@ export function scheduledTaskFixture(overrides: Partial<ScheduledTask> = {}): Sc
     toolsEnabled: false,
     workspaceEnabled: false,
     memoryEnabled: false,
+    pinnedSkillIds: [],
+    pinnedSkills: [],
     chatMode: "same",
     kind: "standard",
     status: "active",

@@ -40,7 +40,7 @@ function task(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     id: "task-1", title: "Check mail", prompt: "Remind me to check my mail.",
     schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }, timeZone: "Europe/Moscow",
     modelId: "deployment-1", provider: "connection-1", searchEnabled: true, emailNotify: false, toolsEnabled: true,
-    workspaceEnabled: false, memoryEnabled: true, chatMode: "new", kind: "standard", status: "active", pauseReason: null,
+    workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard", status: "active", pauseReason: null,
     completionReason: null, nextRunAt: "2026-10-05T06:00:00.000Z", lastRun: null, running: false, chatId: null, unseenResult: false,
     revision: 1,
     createdAt: "2026-10-04T10:00:00.000Z", updatedAt: "2026-10-04T10:00:00.000Z", ...overrides
@@ -56,7 +56,7 @@ describe("create_scheduled_task tool", () => {
   it("is a strict server-owned write offered only with the frozen marker, naming the run's zone", () => {
     const tool = createScheduledTaskTool("Europe/Moscow");
     expect(tool).toMatchObject({ capability: "session", name: "create_scheduled_task", strict: true, inputSchema: {
-      additionalProperties: false, required: ["title", "prompt", "kind", "chatMode", "schedule"],
+      additionalProperties: false, required: ["title", "prompt", "kind", "chatMode", "schedule", "skills"],
       properties: { schedule: { additionalProperties: false,
         required: ["kind", "time", "date", "days", "dayOfMonth", "everyHours", "until"] } }
     } });
@@ -75,7 +75,45 @@ describe("create_scheduled_task tool", () => {
     expect(readOnlyRunTool({ tools: [tool] })(CREATE_SCHEDULED_TASK_TOOL_NAME)).toBe(false);
   });
 
+  it("pins Skills only from the run's own catalog, by alias or name, and tells the model which it pinned", async () => {
+    const skills = { version: 2, mode: "auto", tools: "load_and_read",
+      pinned: [{ alias: "house-style", name: "House style", revisionId: "revision-1", skillId: "skill-style" }],
+      available: [{ alias: "gitlab-digest", name: "gitlab-digest", revisionId: "revision-2", skillId: "skill-digest", description: "Digest",
+        fileCount: 2, hasExecutables: true, loadedBefore: false }] };
+    const pinnedTask = task({ pinnedSkillIds: ["skill-digest", "skill-style"], pinnedSkills: [
+      { id: "skill-digest", name: "gitlab-digest", available: true, hasExecutables: true },
+      { id: "skill-style", name: "House style", available: true, hasExecutables: false }
+    ] });
+    const create = creator(pinnedTask);
+    const result = await executeCreateScheduledTask(call({ ...reminder, skills: ["gitlab-digest", "HOUSE STYLE", "gitlab-digest"] }),
+      context({ request: { ...request(), skills } }), create);
+    expect(create.mock.calls[0]![0].body).toMatchObject({ pinnedSkillIds: ["skill-digest", "skill-style"] });
+    expect(result.content[0]).toMatchObject({ value: { skills: [
+      { name: "gitlab-digest", available: true }, { name: "House style", available: true }
+    ] } });
+    expect(createScheduledTaskTool("UTC").description).toContain("pin it in skills");
+
+    // Nothing outside the run's catalog, never an id, and at most four.
+    const refusing = creator();
+    for (const references of [["skill-digest"], ["unknown-skill"], "gitlab-digest"]) {
+      const refused = await executeCreateScheduledTask(call({ ...reminder, skills: references }),
+        context({ request: { ...request(), skills } }), refusing);
+      expect(refused).toMatchObject({ status: "error", content: [{ value: { created: false, error: "scheduled_task_arguments_invalid" } }] });
+    }
+    const many = { ...skills, available: Array.from({ length: 5 }, (_, index) => ({ ...skills.available[0], alias: `skill-${index}`,
+      name: `Skill ${index}`, skillId: `skill-${index}` })) };
+    const tooMany = await executeCreateScheduledTask(call({ ...reminder, skills: many.available.map((skill) => skill.alias) }),
+      context({ request: { ...request(), skills: many } }), refusing);
+    expect(tooMany.content[0]).toMatchObject({ value: { message: expect.stringContaining("at most 4") } });
+    expect(refusing).not.toHaveBeenCalled();
+    // A null list pins nothing.
+    const none = creator();
+    await executeCreateScheduledTask(call({ ...reminder, skills: null }), context(), none);
+    expect(none.mock.calls[0]![0].body).toMatchObject({ pinnedSkillIds: [] });
+  });
+
   it("decodes only the exact frozen settings", () => {
+
     expect(isScheduledTaskToolSettings(settings)).toBe(true);
     expect(isScheduledTaskToolSettings({ ...settings, memoryEnabled: false })).toBe(true);
     // A run accepted before tasks had Memory froze no Memory switch.
@@ -100,8 +138,8 @@ describe("create_scheduled_task tool", () => {
     } });
     // Only the fields of the schedule's kind reach the owner contract.
     expect(Object.keys(create.mock.calls[0]![0].body as Record<string, Record<string, unknown>>).sort()).toEqual([
-      "chatMode", "emailNotify", "kind", "memoryEnabled", "modelId", "prompt", "provider", "schedule", "searchEnabled", "timeZone",
-      "title", "toolsEnabled", "workspaceEnabled"
+      "chatMode", "emailNotify", "kind", "memoryEnabled", "modelId", "pinnedSkillIds", "prompt", "provider", "schedule",
+      "searchEnabled", "timeZone", "title", "toolsEnabled", "workspaceEnabled"
     ]);
     expect(Object.keys((create.mock.calls[0]![0].body as { schedule: object }).schedule)).toEqual(["kind", "time", "days"]);
     // A run without the page reader authorized no links for the prompt it writes.

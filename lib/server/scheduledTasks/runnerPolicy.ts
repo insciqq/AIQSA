@@ -41,8 +41,8 @@ export type ScheduledTaskSettledState = "COMPLETED" | "FAILED" | "SKIPPED";
 /** Stable codes of automatic pauses. */
 export type ScheduledTaskPauseReason =
   | "account_inactive" | "model_cannot_report" | "model_unavailable" | "provider_unavailable" | "repeated_failures"
-  | "schedule_invalid" | "search_unavailable" | "source_unavailable" | "tools_unavailable" | "verdict_missing"
-  | "workspace_secret_limit" | "workspace_unavailable";
+  | "schedule_invalid" | "search_unavailable" | "skill_unavailable" | "source_unavailable" | "tools_unavailable"
+  | "verdict_missing" | "workspace_secret_limit" | "workspace_unavailable";
 
 export type ScheduledTaskOutcome = Readonly<{
   state: ScheduledTaskSettledState;
@@ -461,6 +461,7 @@ const PAUSE_CODES = new Map<string, ScheduledTaskPauseReason>([
   ["credential_revoked", "provider_unavailable"],
   ["mcp_plan_too_large", "tools_unavailable"],
   ["mcp_tool_calling_not_supported", "tools_unavailable"],
+  ["skill_not_available", "skill_unavailable"],
   ["skills_count_exceeded", "tools_unavailable"],
   ["workspace_disabled", "workspace_unavailable"],
   ["workspace_model_tools_required", "workspace_unavailable"],
@@ -479,13 +480,18 @@ export function pausingOutcome(reason: ScheduledTaskPauseReason): ScheduledTaskO
  * server errors retry within the window (no run exists, so nothing failed
  * yet); catalog, entitlement, account, tool and Workspace refusals that only
  * the owner or an administrator can lift fail and pause with human copy;
- * anything else fails with its stable code. The runner rechecks the owner
- * itself for an unauthenticated refusal.
+ * anything else fails with its stable code. A pinned Skill that admission
+ * could not resolve pauses (`skill_unavailable`), while one whose version
+ * changed between preparation and acceptance (the same code as a conflict)
+ * retries and binds the new version. The runner rechecks the owner itself for
+ * an unauthenticated refusal.
  */
 export function classifySendRefusal(status: number, errorCode: unknown): ScheduledTaskRefusal {
   const code = stableCode(errorCode);
   if (code && BUSY_CODES.has(code)) return { kind: "retry", reasonCode: "chat_busy" };
   if (code && TRANSIENT_CODES.has(code)) return { kind: "retry", reasonCode: null };
+  if (code === "skill_not_available" && status === 409) return { kind: "retry", reasonCode: null };
+
   const pause = code ? PAUSE_CODES.get(code) : undefined;
   if (pause) return { kind: "fail", outcome: pausingOutcome(pause) };
   if (status >= 500) return { kind: "retry", reasonCode: null };

@@ -9,6 +9,7 @@ import {
 import { sameScheduledTaskSchedule } from "../../domain/scheduledTaskSchedule";
 import { admitScheduledTaskModel, type ScheduledTaskDraftAdmissionDeps } from "../scheduledTasks/draftAdmission";
 import { planScheduledTaskUpdate } from "../scheduledTasks/mutations";
+import { loadScheduledTaskPinnedSkillMap } from "../scheduledTasks/pinnedSkills";
 import { scheduledPromptUrlDigests } from "../scheduledTasks/promptUrls";
 import { decodeScheduledTaskUpdateRequest } from "../scheduledTasks/requests";
 import { kickScheduledTaskRunner } from "../scheduledTasks/runnerKick";
@@ -68,11 +69,24 @@ function projected(row: ScheduledTaskRow): ScheduledTask {
   return toScheduledTask(row, { lastRun: null, running: false, unseen: false });
 }
 
+/** Tasks as the model reads them: their own fields with the pinned Skills the owner may see now. */
+async function projectedWithSkills(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  rows: readonly ScheduledTaskRow[]
+): Promise<ScheduledTask[]> {
+  const skills = await loadScheduledTaskPinnedSkillMap(tx, userId, rows.flatMap((row) => row.pinnedSkillIds));
+  return rows.map((row) => toScheduledTask(row, { lastRun: null, running: false, unseen: false }, skills));
+}
+
 /** Every editable field of the plan equals the task's. */
 function sameDraft(draft: ScheduledTaskDraft, task: ScheduledTask): boolean {
   return Object.entries(draft).every(([key, value]) => key === "schedule"
     ? sameScheduledTaskSchedule(draft.schedule, task.schedule)
-    : value === task[key as keyof ScheduledTask]);
+    : key === "pinnedSkillIds"
+      ? draft.pinnedSkillIds.length === task.pinnedSkillIds.length &&
+        draft.pinnedSkillIds.every((skillId, index) => skillId === task.pinnedSkillIds[index])
+      : value === task[key as keyof ScheduledTask]);
 }
 
 /**
@@ -218,13 +232,14 @@ async function manageOnce(
           orderBy: [{ createdAt: "desc" }, { id: "desc" }], select: scheduledTaskRowSelect, take: SCHEDULED_TASK_MAX_TOTAL,
           where: { userId: input.userId }
         });
-        return settle(input.result({ action: "list", tasks: rows.map(projected) }));
+        return settle(input.result({ action: "list", tasks: await projectedWithSkills(tx, input.userId, rows) }));
       }
       const row = await tx.scheduledTask.findFirst({ select: scheduledTaskRowSelect, where: { id: taskId, userId: input.userId } });
       if (!row) return refused("scheduled_task_not_found");
-      if (input.action === "get") return settle(input.result({ action: "get", task: projected(row) }));
+      const [task] = await projectedWithSkills(tx, input.userId, [row]);
+      if (input.action === "get") return settle(input.result({ action: "get", task: task! }));
       if (planned && row.revision !== planned.current.revision) return REPLAN;
-      if (mutation && planned?.unchanged) return settle(input.result({ action: mutation, changed: false, task: projected(row) }));
+      if (mutation && planned?.unchanged) return settle(input.result({ action: mutation, changed: false, task: task! }));
       // A change or a deletion proposal affects its task; one answer affects at most five.
       const answer = await answerCalls(tx, input);
       if (!answer.affected.has(taskId) && answer.affected.size >= SCHEDULED_TASK_MANAGED_PER_ANSWER) {
@@ -232,14 +247,15 @@ async function manageOnce(
       }
       if (!mutation || !planned) {
         return input.action === "propose_delete"
-          ? settle(input.result({ action: "propose_delete", task: projected(row) }))
+          ? settle(input.result({ action: "propose_delete", task: task! }))
           : refused("scheduled_task_call_unavailable");
       }
       // A new prompt replaces the whole instruction: only one written from the saved prompt keeps its content.
       if (planned.newPrompt && !answer.read.has(taskId)) return refused("scheduled_task_read_required");
-      const task = await updateScheduledTask(tx, input.userId, taskId, planned.write);
+      const updated = await updateScheduledTask(tx, input.userId, taskId, planned.write);
       changed = true;
-      return settle(input.result({ action: mutation, changed: true, task }));
+      return settle(input.result({ action: mutation, changed: true, task: updated }));
+
     });
   } catch (error) {
     if (error instanceof ScheduledTaskError) return error.code === "scheduled_task_stale" ? REPLAN : refused(error.code);

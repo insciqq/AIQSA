@@ -65,6 +65,8 @@ export type ScheduledTaskExecution = Readonly<{
     generation: number;
     kind: ScheduledTaskKind;
     memoryEnabled: boolean; modelId: string; prompt: string; provider: string; revision: number; searchEnabled: boolean;
+    /** Read with `revision`; empty unless tools are on. */
+    pinnedSkillIds: readonly string[];
     /** The prompt's page-reading snapshot, read with `revision`. */
     promptUrlDigests: readonly string[];
     status: ScheduledTaskStatusColumn; timeZone: string; title: string; toolsEnabled: boolean; workspaceEnabled: boolean;
@@ -420,7 +422,9 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
             select: {
               baselineAssistantMessageId: true, baselineGeneration: true, baselineRunId: true, baselineUserMessageId: true,
               chatMode: true, generation: true, kind: true, memoryEnabled: true, modelId: true, prompt: true,
-              promptUrlDigests: true, provider: true, revision: true, searchEnabled: true, status: true, timeZone: true,
+              pinnedSkillIds: true, promptUrlDigests: true, provider: true, revision: true, searchEnabled: true, status: true,
+              timeZone: true,
+
               title: true, toolsEnabled: true, workspaceEnabled: true,
               user: { select: { status: true } },
               chat: {

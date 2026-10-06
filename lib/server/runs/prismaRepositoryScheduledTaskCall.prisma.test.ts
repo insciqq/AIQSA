@@ -5,6 +5,7 @@ import { textMessageContent } from "../../domain/content";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 import { prisma } from "../prisma";
+import { createPrismaScheduledTaskPinnedSkillLoader } from "../scheduledTasks/pinnedSkills";
 import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns } from "../scheduledTasks/store";
 import { CREATE_SCHEDULED_TASK_TOOL_NAME, scheduledTaskCreatedResult } from "../tools/scheduledTaskCreation";
 import { appendRunOutputEvents } from "./prismaRepositoryToolLoop";
@@ -16,6 +17,7 @@ const deps = {
   kick: () => undefined,
   loadCatalog: async () => ({ models: [{ capabilities: { toolCalling: true }, modelId: "fake-qsa", provider: "fake",
     searchStrategyIds: [] }], searchStrategies: [] }),
+  loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prisma),
   now: () => new Date("2026-10-04T10:00:00.000Z"),
   workspacePolicy: { read: async () => ({ enabled: true }) }
 };

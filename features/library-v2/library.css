@@ -1865,6 +1865,18 @@ select.v2-scheduled-field { padding-right: 2rem; text-overflow: ellipsis; }
 .v2-scheduled-runs li[data-tone="attention"] .v2-scheduled-run-outcome { color: var(--v2-color-warn); }
 .v2-scheduled-runs li[data-tone="quiet"] .v2-scheduled-run-outcome { color: var(--v2-color-text3); }
 .v2-scheduled-run-source { display: block; }
+.v2-scheduled-run-skills { color: var(--v2-color-text3); }
+/* Pinned Skills: one wrapping row per Skill, the remove action at the end. */
+.v2-scheduled-skill-list { display: grid; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
+.v2-scheduled-skill { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; min-width: 0; padding: 0.375rem 0.5rem 0.375rem 0.75rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); font-size: 0.8125rem; line-height: 1.4; }
+.v2-scheduled-skill[data-unavailable] { border-color: var(--v2-color-warn); }
+.v2-scheduled-skill-name { flex: 1 1 8rem; min-width: 0; color: var(--v2-color-text); overflow-wrap: anywhere; }
+.v2-scheduled-skill[data-unavailable] .v2-scheduled-skill-name { color: var(--v2-color-text2); }
+.v2-scheduled-skill-badge { flex: none; padding: 0 0.375rem; border: 1px solid var(--v2-color-border2); border-radius: 999px; color: var(--v2-color-text2); font-family: var(--font-mono); font-size: 0.6875rem; line-height: 1.5; }
+.v2-scheduled-skill-state { flex: none; color: var(--v2-color-warn); font-size: 0.75rem; }
+.v2-scheduled-skill-remove { flex: none; margin-left: auto; padding: 0.125rem 0.25rem; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); background: transparent; font: inherit; font-size: 0.75rem; cursor: pointer; }
+.v2-scheduled-skill-remove:hover { text-decoration: underline; text-underline-offset: 0.125rem; }
+.v2-scheduled-skill-remove:disabled { color: var(--v2-color-text3); cursor: default; text-decoration: none; }
 .v2-scheduled-run-chat { padding: 0; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); background: transparent; font: inherit; white-space: nowrap; cursor: pointer; }
 .v2-scheduled-run-chat:hover { text-decoration: underline; text-underline-offset: 0.125rem; }
 .v2-scheduled-preview { flex: 1 1 14rem; min-width: 0; margin: 0; color: var(--v2-color-text2); font-size: 0.78125rem; line-height: 1.45; overflow-wrap: anywhere; }
@@ -1880,6 +1892,7 @@ select.v2-scheduled-field { padding-right: 2rem; text-overflow: ellipsis; }
 @media (pointer: coarse) {
   .v2-scheduled-field, .v2-scheduled-day, .v2-scheduled-option { min-height: 2.75rem; }
   .v2-scheduled-run-chat { min-width: 2.75rem; min-height: 2.75rem; }
+  .v2-scheduled-skill-remove { min-width: 2.75rem; min-height: 2.75rem; }
 }
 
 /* The quiet line above a task chat's composer, in the scheduled turn chip's type. */

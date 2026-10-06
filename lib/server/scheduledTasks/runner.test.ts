@@ -31,7 +31,7 @@ type Task = {
   baseline: ScheduledTaskBaseline | null; chatId: string | null; chatMode: ScheduledTaskChatMode; completionReason: string | null;
   consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number; emailNotify: boolean;
   generation: number; id: string; kind: ScheduledTaskKind; memoryEnabled: boolean; modelId: string; nextRunAt: Date | null;
-  pauseReason: string | null; prompt: string; promptUrlDigests: readonly string[]; provider: string;
+  pauseReason: string | null; pinnedSkillIds: readonly string[]; prompt: string; promptUrlDigests: readonly string[]; provider: string;
   /** What the store derives from the previous shown result (null: every server). */
   relevantMcpServerIds: readonly string[] | null;
   revision: number; schedule: ScheduledTaskSchedule; searchEnabled: boolean;
@@ -185,7 +185,8 @@ function harness() {
         ownerActive: !inactiveUsers.has(row.userId),
         relevantMcpServerIds: task.relevantMcpServerIds,
         task: { baseline: task.baseline, chatMode: task.chatMode, generation: task.generation, kind: task.kind,
-          memoryEnabled: task.memoryEnabled, modelId: task.modelId, prompt: task.prompt, promptUrlDigests: task.promptUrlDigests,
+          memoryEnabled: task.memoryEnabled, modelId: task.modelId, pinnedSkillIds: task.pinnedSkillIds, prompt: task.prompt,
+          promptUrlDigests: task.promptUrlDigests,
           provider: task.provider, revision: task.revision,
           searchEnabled: task.searchEnabled, status: task.status, timeZone: task.timeZone, title: task.title,
           toolsEnabled: task.toolsEnabled, workspaceEnabled: task.workspaceEnabled }
@@ -262,10 +263,15 @@ function harness() {
   };
 
   const kick = vi.fn();
+  /** Skills the owner may load now; any other pinned id is gone, archived, disabled or unshared. */
+  const availableSkills = new Set<string>();
   const runner = createScheduledTaskRunner({
     appBaseUrl: "https://aiqsa.example.test",
     kick,
     loadCatalog: async (userId) => catalogFor(userId),
+    loadPinnedSkills: async (_userId, skillIds) => skillIds.map((id) => ({
+      available: availableSkills.has(id), hasExecutables: false, id, name: availableSkills.has(id) ? id : null
+    })),
     newId: () => nextId("id"),
     now: () => clock,
     renameChat: async ({ chatId, title }) => { renamed.push({ chatId, title }); },
@@ -288,7 +294,7 @@ function harness() {
     const task: Task = {
       baseline: null, chatId: null, chatMode: "same", completionReason: null, consecutiveFailures: 0, consecutiveIncompleteRuns: 0,
       consecutiveMissingVerdicts: 0, emailNotify: false, generation: 1, id: nextId("task"), kind: "standard", memoryEnabled: false,
-      modelId: "model-a",
+      modelId: "model-a", pinnedSkillIds: [],
       nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null, prompt: "  Summarize the synthetic fixture  ",
       promptUrlDigests: [], provider: "connection-a", relevantMcpServerIds: null, revision: 1, schedule: { kind: "daily", time: "09:00" },
       searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow", title: "Synthetic brief", toolsEnabled: false,
@@ -311,8 +317,8 @@ function harness() {
     await runner.idle();
   }
   return {
-    addOccurrence, addTask, chats, emails, inactiveUsers, kick, occurrences, pushes, renamed, runs, sent, settled, stops, store, tasks,
-    tick,
+    addOccurrence, addTask, availableSkills, chats, emails, inactiveUsers, kick, occurrences, pushes, renamed, runs, sent, settled,
+    stops, store, tasks, tick,
     advance(ms: number) { clock = new Date(clock.getTime() + ms); },
     setCatalog(load: typeof catalogFor) { catalogFor = load; },
     setReply(next: typeof reply) { reply = next; },
@@ -801,7 +807,45 @@ describe("scheduled task runner with the owner's tools", () => {
     expect(plainSend.body).toMatchObject({ mcp: { mode: "off" }, skills: { mode: "off" }, workspace: { enabled: false } });
   });
 
+  it("sends the task's pinned Skills as the composer pins them and never runs without one", async () => {
+    const h = harness();
+    h.availableSkills.add("skill-digest");
+    h.availableSkills.add("skill-report");
+    const pinned = h.addTask({ pinnedSkillIds: ["skill-digest", "skill-report"], toolsEnabled: true });
+    const plain = h.addTask({ toolsEnabled: true, userId: "owner-2" });
+    await h.tick();
+    const [pinnedSend, plainSend] = [pinned, plain].map((task) => h.sent.find((send) => send.occurrence.taskId === task.id)!);
+    expect(pinnedSend.body).toMatchObject({ skillIds: ["skill-digest", "skill-report"], skills: { mode: "auto" } });
+    expect(plainSend.body).not.toHaveProperty("skillIds");
+
+    // A pinned Skill the owner lost (deleted, archived, disabled or unshared) pauses before any send.
+    const lost = harness();
+    lost.availableSkills.add("skill-digest");
+    const task = lost.addTask({ emailNotify: true, pinnedSkillIds: ["skill-digest", "skill-gone"], toolsEnabled: true });
+    await lost.tick();
+    expect(lost.sent).toHaveLength(0);
+    expect(lost.forTask(task)).toMatchObject([{ reasonCode: "skill_unavailable", state: "FAILED" }]);
+    expect(task).toMatchObject({ nextRunAt: null, pauseReason: "skill_unavailable", status: "PAUSED" });
+    expect(lost.emails[0]!.text).toContain("A pinned Skill is no longer available.");
+
+    // Lost between the check and admission: the handler's refusal pauses too; a version that changed meanwhile retries.
+    const raced = harness();
+    raced.availableSkills.add("skill-digest");
+    const racing = raced.addTask({ pinnedSkillIds: ["skill-digest"], toolsEnabled: true });
+    raced.setReply(() => ({ error: "skill_not_available", status: 404 }));
+    await raced.tick();
+    expect(racing).toMatchObject({ pauseReason: "skill_unavailable", status: "PAUSED" });
+    const moved = harness();
+    moved.availableSkills.add("skill-digest");
+    const moving = moved.addTask({ pinnedSkillIds: ["skill-digest"], toolsEnabled: true });
+    moved.setReply(() => ({ error: "skill_not_available", status: 409 }));
+    await moved.tick();
+    expect(moved.forTask(moving)).toMatchObject([{ reasonCode: null, runId: null, state: "PENDING" }]);
+    expect(moving).toMatchObject({ status: "ACTIVE" });
+  });
+
   it("passes the servers the previous result relied on to admission", async () => {
+
     const h = harness();
     const task = h.addTask({ relevantMcpServerIds: ["server-mail"], toolsEnabled: true });
     await h.tick();

@@ -29,7 +29,7 @@ function task(overrides: Partial<ScheduledTask>): ScheduledTask {
     id: "task", title: "Task", prompt: "Synthetic scheduled instructions.",
     schedule: { kind: "daily", time: "09:00" }, timeZone: "Europe/London",
     modelId: model.modelId, provider: model.provider, searchEnabled: false, emailNotify: false, toolsEnabled: false,
-    workspaceEnabled: false, memoryEnabled: false, chatMode: "same", kind: "standard", status: "active", pauseReason: null,
+    workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [], pinnedSkills: [], chatMode: "same", kind: "standard", status: "active", pauseReason: null,
     completionReason: null,
     nextRunAt: "2026-10-05T08:00:00.000Z", lastRun: null, running: false,
     chatId: null, unseenResult: false, revision: 1,
@@ -86,7 +86,7 @@ function checkRun(id: string, scheduledFor: string, reasonCode: ScheduledTaskChe
   const startedAt = new Date(Date.parse(scheduledFor) + 2_000).toISOString();
   const finishedAt = new Date(Date.parse(scheduledFor) + 90_000).toISOString();
   return { id, scheduledFor, trigger: "schedule", state: "completed", reasonCode, startedAt, finishedAt,
-    chatId: "scheduled-tickets-chat", unseen: false, unavailableSources: [], ...extra };
+    chatId: "scheduled-tickets-chat", unseen: false, unavailableSources: [], skills: [], ...extra };
 }
 
 const runsFixture: Readonly<Record<string, readonly ScheduledTaskRun[]>> = {
@@ -101,17 +101,17 @@ const runsFixture: Readonly<Record<string, readonly ScheduledTaskRun[]>> = {
   ],
   brief: [
     { id: "brief-run-3", scheduledFor: "2026-10-02T08:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
-      startedAt: "2026-10-02T08:00:03.000Z", finishedAt: "2026-10-02T08:01:10.000Z", chatId, unseen: true, unavailableSources: [] },
+      startedAt: "2026-10-02T08:00:03.000Z", finishedAt: "2026-10-02T08:01:10.000Z", chatId, unseen: true, unavailableSources: [], skills: [] },
     { id: "brief-run-2", scheduledFor: "2026-10-01T13:12:00.000Z", trigger: "manual", state: "failed", reasonCode: "chat_busy",
-      startedAt: "2026-10-01T13:12:00.000Z", finishedAt: "2026-10-01T13:42:00.000Z", chatId, unseen: false, unavailableSources: [] },
+      startedAt: "2026-10-01T13:12:00.000Z", finishedAt: "2026-10-01T13:42:00.000Z", chatId, unseen: false, unavailableSources: [], skills: [] },
     { id: "brief-run-1", scheduledFor: "2026-10-01T08:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "missed",
-      startedAt: null, finishedAt: "2026-10-01T20:00:00.000Z", chatId: null, unseen: false, unavailableSources: [] }
+      startedAt: null, finishedAt: "2026-10-01T20:00:00.000Z", chatId: null, unseen: false, unavailableSources: [], skills: [] }
   ],
   inbox: [
     { id: "inbox-run-2", scheduledFor: "2026-10-02T15:00:00.000Z", trigger: "schedule", state: "skipped", reasonCode: "previous_running",
-      startedAt: null, finishedAt: "2026-10-02T15:00:01.000Z", chatId: null, unseen: false, unavailableSources: [] },
+      startedAt: null, finishedAt: "2026-10-02T15:00:01.000Z", chatId: null, unseen: false, unavailableSources: [], skills: [] },
     { id: "inbox-run-1", scheduledFor: "2026-10-02T13:00:00.000Z", trigger: "schedule", state: "completed", reasonCode: null,
-      startedAt: "2026-10-02T13:00:02.000Z", finishedAt: "2026-10-02T15:10:00.000Z", chatId: "scheduled-inbox-chat", unseen: false, unavailableSources: [] }
+      startedAt: "2026-10-02T13:00:02.000Z", finishedAt: "2026-10-02T15:10:00.000Z", chatId: "scheduled-inbox-chat", unseen: false, unavailableSources: [], skills: [] }
   ]
 };
 

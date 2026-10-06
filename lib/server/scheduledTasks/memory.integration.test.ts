@@ -25,6 +25,7 @@ import { createPrismaRunRepository } from "../runs/prismaRepository";
 import type { CreateRunInput, ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
 import { createPrismaScheduledTaskOwnerLoader, createScheduledTaskSend } from "./admission";
 import { createPrismaScheduledTaskRunCatalogLoader } from "./catalog";
+import { createPrismaScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
 import { createScheduledTaskRunner } from "./runner";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
 import { scheduledTaskScheduleColumns } from "./store";
@@ -47,6 +48,7 @@ function runner() {
   return createScheduledTaskRunner({
     appBaseUrl: "http://localhost:3000",
     loadCatalog: createPrismaScheduledTaskRunCatalogLoader(prisma),
+    loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prisma),
     async renameChat(input) { await chats.updateChat(input); },
     send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps: deps }),
     stopRun: ({ code, message, runId, userId }) => stopModelRun(deps, { payload: { code, message }, runId, userId }),
