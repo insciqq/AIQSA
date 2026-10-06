@@ -1,3 +1,5 @@
+import { logEvent } from "../observability";
+
 export type UploadPermitGateSnapshot = {
   active: number;
   capacity: number;
@@ -21,7 +23,8 @@ export function createUploadPermitGate(capacity: number): UploadPermitGate {
       if (active >= capacity) {
         rejected = Math.min(Number.MAX_SAFE_INTEGER, rejected + 1);
         if (Number.isInteger(Math.log2(rejected))) {
-          console.warn(JSON.stringify({ active, capacity, event: "aiqsa_upload_busy", rejected }));
+          logEvent("service_operation", { subsystem: "attachments", stage: "claim", outcome: "blocked", action: "retry",
+            code: "upload_busy", count: rejected, claimed_count: active });
         }
         return null;
       }

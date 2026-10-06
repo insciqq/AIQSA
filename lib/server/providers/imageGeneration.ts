@@ -12,6 +12,8 @@ import { createProviderSafeFetch } from "./providerSafeFetch";
 import { resolveProviderCredentialSource, type ProviderCredentialSource } from "./providerCredentialSource";
 import { isProviderDeadlineExceededError, ProviderResponseTooLargeError, readBoundedResponseText, withTimeoutSignal } from "./network";
 import { imageFailureDiagnostic } from "./imageFailure";
+import { observeProviderDeadline, observeProviderFetch, observeProviderOperation } from "./providerObservability";
+import type { ProviderStreamSafetyIdentity } from "./streamSafetyObservability";
 
 export type ImageGenerationInput = { bytes: Uint8Array; mimeType: GeneratedImageMimeType };
 export type ImageGenerationRequest = {
@@ -95,12 +97,15 @@ export function createImageGenerationAdapter(input: {
   model: ProviderModelConfiguration;
   secret: ProviderCredentialSource;
   fetchFn?: typeof fetch;
+  /** Server-owned connection/model identity for content-free provider events. */
+  observationIdentity?: ProviderStreamSafetyIdentity;
 }): { generate(request: ImageGenerationRequest): Promise<ImageGenerationResult> } {
   const connection = normalizeProviderConnectionConfiguration(input.connection);
   const model = normalizeProviderModelConfiguration(input.model);
   if (model.modelClass !== "image" || !model.image) throw new ImageGenerationError("image_input_invalid");
   const imageConfiguration = model.image;
-  const fetchFn = input.fetchFn ?? createProviderSafeFetch({ configuration: connection, requestBodyMaxBytes: 96 * 1024 * 1024 });
+  const fetchFn = observeProviderFetch(input.fetchFn ?? createProviderSafeFetch({ configuration: connection, requestBodyMaxBytes: 96 * 1024 * 1024 }));
+  const identity = input.observationIdentity ?? { adapterKind: model.adapterKind };
   return {
     async generate(request) {
       if (typeof request.prompt !== "string" || !request.prompt.trim() || request.prompt.length > IMAGE_MAX_PROMPT_CHARACTERS ||
@@ -157,52 +162,58 @@ export function createImageGenerationAdapter(input: {
         body = JSON.stringify({ ...generationParameters, model: model.upstreamModelId, prompt: request.prompt, n: 1 });
         headers["content-type"] = "application/json";
       }
-      const timeout = withTimeoutSignal(request.signal, effectiveProviderResponseTimeoutMs(connection, model));
-      try {
-        timeout.signal.throwIfAborted();
-        if (connection.authenticationMode !== "none") {
-          const secret = await resolveProviderCredentialSource(input.secret, "image_provider_request_failed");
-          if (gemini) headers["x-goog-api-key"] = secret;
-          else headers.authorization = `Bearer ${secret}`;
-        }
-        // Never replay an ambiguous paid image request after a timeout or network error.
-        const response = await fetchFn(imageGenerationEndpoint(connection, model, images.length > 0), {
-          body, headers, method: "POST", redirect: "error", signal: timeout.signal
-        });
-        if (!response.ok) {
-          let rejected = "";
-          try { rejected = await readBoundedResponseText(response, { maxBytes: 32 * 1024, signal: timeout.signal }); }
-          catch (error) { if (!(error instanceof ProviderResponseTooLargeError)) throw error; }
-          throw new ImageGenerationError("image_provider_http_error", response.status, imageFailureDiagnostic(rejected, response.status));
-        }
-        const text = await readBoundedResponseText(response, { maxBytes: 36 * 1024 * 1024, signal: timeout.signal });
-        let parsed: unknown;
-        try { parsed = JSON.parse(text) as unknown; } catch { throw new ImageGenerationError("image_response_invalid"); }
-        if (!record(parsed)) throw new ImageGenerationError("image_response_invalid");
-        let encoded: unknown;
-        let mimeType: unknown;
-        if (gemini) {
-          if (parsed.status !== "completed" || !Array.isArray(parsed.steps) || parsed.steps.length > 1000) throw new ImageGenerationError("image_response_invalid");
-          const outputs = parsed.steps.flatMap((step: unknown) => record(step) && step.type === "model_output" && Array.isArray(step.content)
-            ? step.content.filter((part: unknown) => record(part) && part.type === "image" && part.thought !== true) : []);
-          if (outputs.length !== 1 || !record(outputs[0])) throw new ImageGenerationError("image_output_missing");
-          encoded = outputs[0].data;
-          mimeType = outputs[0].mime_type;
-        } else {
-          if (!Array.isArray(parsed.data) || parsed.data.length !== 1 || !record(parsed.data[0])) throw new ImageGenerationError("image_output_missing");
-          encoded = parsed.data[0].b64_json;
-          mimeType = parsed.data[0].media_type;
-        }
-        const bytes = imageBytes(encoded);
-        const metadata = await validateGeneratedImage(bytes, mimeType);
-        return { bytes, ...metadata, usage: responseUsage(parsed.usage, gemini) };
-      } catch (error) {
-        if (error instanceof ImageGenerationError) throw error;
-        if (request.signal?.aborted) throw new ImageGenerationError("image_request_cancelled");
-        if (isProviderDeadlineExceededError(error) || isProviderDeadlineExceededError(timeout.signal.reason)) throw new ImageGenerationError("image_request_timed_out");
-        if (error instanceof ProviderResponseTooLargeError) throw new ImageGenerationError("image_response_too_large");
-        throw new ImageGenerationError("image_provider_request_failed");
-      } finally { timeout.clear(); }
+      const timeoutMs = effectiveProviderResponseTimeoutMs(connection, model);
+      observeProviderDeadline({ ...identity, stage: "image", provider_timeout_ms: timeoutMs, effective_timeout_ms: timeoutMs });
+      // One provider_operation per paid request: identity, outcome, duration,
+      // HTTP status and the closed ImageGenerationError code, never the body.
+      return observeProviderOperation(identity, "image", async () => {
+        const timeout = withTimeoutSignal(request.signal, timeoutMs);
+        try {
+          timeout.signal.throwIfAborted();
+          if (connection.authenticationMode !== "none") {
+            const secret = await resolveProviderCredentialSource(input.secret, "image_provider_request_failed");
+            if (gemini) headers["x-goog-api-key"] = secret;
+            else headers.authorization = `Bearer ${secret}`;
+          }
+          // Never replay an ambiguous paid image request after a timeout or network error.
+          const response = await fetchFn(imageGenerationEndpoint(connection, model, images.length > 0), {
+            body, headers, method: "POST", redirect: "error", signal: timeout.signal
+          });
+          if (!response.ok) {
+            let rejected = "";
+            try { rejected = await readBoundedResponseText(response, { maxBytes: 32 * 1024, signal: timeout.signal }); }
+            catch (error) { if (!(error instanceof ProviderResponseTooLargeError)) throw error; }
+            throw new ImageGenerationError("image_provider_http_error", response.status, imageFailureDiagnostic(rejected, response.status));
+          }
+          const text = await readBoundedResponseText(response, { maxBytes: 36 * 1024 * 1024, signal: timeout.signal });
+          let parsed: unknown;
+          try { parsed = JSON.parse(text) as unknown; } catch { throw new ImageGenerationError("image_response_invalid"); }
+          if (!record(parsed)) throw new ImageGenerationError("image_response_invalid");
+          let encoded: unknown;
+          let mimeType: unknown;
+          if (gemini) {
+            if (parsed.status !== "completed" || !Array.isArray(parsed.steps) || parsed.steps.length > 1000) throw new ImageGenerationError("image_response_invalid");
+            const outputs = parsed.steps.flatMap((step: unknown) => record(step) && step.type === "model_output" && Array.isArray(step.content)
+              ? step.content.filter((part: unknown) => record(part) && part.type === "image" && part.thought !== true) : []);
+            if (outputs.length !== 1 || !record(outputs[0])) throw new ImageGenerationError("image_output_missing");
+            encoded = outputs[0].data;
+            mimeType = outputs[0].mime_type;
+          } else {
+            if (!Array.isArray(parsed.data) || parsed.data.length !== 1 || !record(parsed.data[0])) throw new ImageGenerationError("image_output_missing");
+            encoded = parsed.data[0].b64_json;
+            mimeType = parsed.data[0].media_type;
+          }
+          const bytes = imageBytes(encoded);
+          const metadata = await validateGeneratedImage(bytes, mimeType);
+          return { bytes, ...metadata, usage: responseUsage(parsed.usage, gemini) };
+        } catch (error) {
+          if (error instanceof ImageGenerationError) throw error;
+          if (request.signal?.aborted) throw new ImageGenerationError("image_request_cancelled");
+          if (isProviderDeadlineExceededError(error) || isProviderDeadlineExceededError(timeout.signal.reason)) throw new ImageGenerationError("image_request_timed_out");
+          if (error instanceof ProviderResponseTooLargeError) throw new ImageGenerationError("image_response_too_large");
+          throw new ImageGenerationError("image_provider_request_failed");
+        } finally { timeout.clear(); }
+      }, { timeoutMs, signal: request.signal });
     }
   };
 }

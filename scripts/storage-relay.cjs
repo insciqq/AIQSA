@@ -6,18 +6,23 @@
 // so master, volume, filer, gRPC and catalog listeners stay unreachable.
 
 const net = require("node:net");
+// The shared dependency-free writer gives relay lines the application's
+// timestamp, level, role and content-free field allowlist.
+const { logEvent, setProcessRole } = require("../lib/server/observability/runtime.cjs");
+
+setProcessRole("storage_relay");
 
 const socketPath = process.env.AIQSA_STORAGE_SOCKET ?? "";
 const port = Number(process.env.AIQSA_STORAGE_RELAY_PORT ?? "9000");
 const maxConnections = Number(process.env.AIQSA_STORAGE_RELAY_MAX_CONNECTIONS ?? "512");
 
-function log(event, fields = {}) {
-  process.stdout.write(`${JSON.stringify({ event, ...fields })}\n`);
+function lifecycle(fields) {
+  logEvent("runtime_lifecycle", { subsystem: "object_storage", ...fields });
 }
 
 if (!socketPath.startsWith("/") || !Number.isSafeInteger(port) || port < 1 || port > 65_535 ||
   !Number.isSafeInteger(maxConnections) || maxConnections < 1 || maxConnections > 65_536) {
-  log("storage_relay_configuration_invalid");
+  lifecycle({ stage: "startup", outcome: "failed", action: "stop", code: "storage_relay_configuration_invalid" });
   process.exit(64);
 }
 
@@ -37,11 +42,17 @@ const server = net.createServer({ allowHalfOpen: true, noDelay: true }, (client)
   upstream.pipe(client);
 });
 server.maxConnections = maxConnections;
+let listening = false;
 server.on("error", (error) => {
-  log("storage_relay_failed", { code: typeof error?.code === "string" ? error.code : "unknown" });
+  // A registered system error code (EADDRINUSE ...) or the relay's own code.
+  lifecycle({ stage: listening ? "process" : "startup", outcome: "failed", action: "stop",
+    code: typeof error?.code === "string" ? error.code : "storage_relay_failed" });
   process.exit(1);
 });
-server.listen({ host: "0.0.0.0", port }, () => log("storage_relay_listening", { port }));
+server.listen({ host: "0.0.0.0", port }, () => {
+  listening = true;
+  lifecycle({ stage: "startup", outcome: "completed" });
+});
 
 function stop() {
   server.close(() => process.exit(0));

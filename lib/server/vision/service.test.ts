@@ -12,6 +12,7 @@ import type { createAcceptedProviderRequestExecutor } from "../providerRuntime/a
 import type { createVisionAnalysisStore } from "./store";
 import { createConversationImageSource, type ConversationImageDescriptor } from "./conversationImages";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
+import { captureRunObservation } from "@/tests/support/runObservation";
 
 const plan: AvailableVisionAnalysisPlan = { version: 1, available: true, policyVersion: 3, reasoningEffort: null, verifiedVisionInput: true,
   authority: { connectionId: "connection", connectionVersion: 2, providerModelId: "vision", modelVersion: 1, credentialId: "key", credentialVersionId: "key-v1" },
@@ -147,6 +148,33 @@ describe("shared System Vision boundary", () => {
       expect(result.content[0]).toMatchObject({ value: { error: "vision_analysis_timeout", provider_outcome: "unknown" } });
       expect(f.store.settle.mock.calls[0]?.[3]).toBe(true);
     } finally { timeout.mockRestore(); }
+  });
+  it("reports one content-free outcome per analysis attempt with its stable code", async () => {
+    const observation = await captureRunObservation();
+    const identity = { adapterKind: "openai_responses_compatible", connectionId: "connection", providerFamily: "openai_compatible", providerModelId: "vision" };
+    const completed = fixture();
+    await completed.service.execute(completed.call, completed.context);
+    const failed = fixture(); failed.execute.mockRejectedValue(new Error("PRIVATE provider body"));
+    await failed.service.execute(failed.call, failed.context);
+    const timedOut = fixture(); const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+    try {
+      timedOut.execute.mockImplementation(async (_snapshot, _request, options) => { deadline.abort(); options!.signal!.throwIfAborted(); throw new Error("unreachable"); });
+      await timedOut.service.execute(timedOut.call, timedOut.context, new AbortController().signal);
+    } finally { timeout.mockRestore(); }
+    const unsettled = fixture(); unsettled.store.settle.mockRejectedValue(new Error("PRIVATE_DB_FAILURE"));
+    await expect(unsettled.service.execute(unsettled.call, unsettled.context)).rejects.toThrow();
+    const restored = fixture(); restored.store.restore.mockResolvedValue({ callId: "provider-call", name: "analyze_image", status: "complete", content: [] });
+    await restored.service.execute(restored.call, restored.context);
+
+    const outcomes = observation.records().filter((record) => record.event === "tool_execution" && record.tool_kind === "vision");
+    expect(outcomes).toEqual([
+      expect.objectContaining({ ...identity, stage: "execution", outcome: "completed", level: "info", duration_ms: expect.any(Number) }),
+      expect.objectContaining({ ...identity, outcome: "failed", level: "error", code: "vision_analysis_provider_failed" }),
+      expect.objectContaining({ ...identity, outcome: "failed", code: "vision_analysis_timeout", reason: "deadline" }),
+      expect.objectContaining({ ...identity, outcome: "failed", code: "vision_analysis_settlement_failed" })
+    ]);
+    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|Compare colors|same\.png|red; second/);
   });
   it("keeps the base bound without an effort and lets an earlier run deadline end the call as cancelled", async () => {
     const f = fixture(); const run = new AbortController();

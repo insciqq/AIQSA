@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import { createAdminAttentionHandler } from "./handlers";
 
 const attention = {
@@ -34,13 +35,16 @@ describe("admin attention handler", () => {
   });
 
   it("reports an aggregation failure as a stable code", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const observation = await captureRunObservation();
     const GET = createAdminAttentionHandler({
       resolveAuth: auth(),
-      service: { list: vi.fn().mockRejectedValue(new Error("boom")) }
+      service: { list: vi.fn().mockRejectedValue(new Error("PRIVATE boom")) }
     });
     const response = await GET(new Request("http://local.test"));
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toEqual({ error: "admin_attention_failed" });
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "service_operation", subsystem: "admin",
+      stage: "read", outcome: "failed", code: "admin_attention_failed" }));
+    expect(JSON.stringify(observation.records())).not.toContain("PRIVATE");
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import type { PrismaClient } from "@prisma/client";
 import type { AvailableVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import type { createAcceptedProviderRequestExecutor } from "../providerRuntime/acceptedRequestExecutor";
@@ -163,6 +164,23 @@ describe("Knowledge image observation", () => {
     expect(f.store.settle).toHaveBeenCalledOnce();
     // Not ambiguous: nothing was sent, so the failure is final rather than an unknown outcome.
     expect(f.store.settle.mock.calls[0]![3]).toBe(false);
+  });
+
+  it("reports each description attempt once with its stable code, never a settled reuse", async () => {
+    const observation = await captureRunObservation();
+    const f = fixture();
+    await f.observe(f.input);
+    await f.observe(f.input);
+    const failed = fixture();
+    failed.execute.mockRejectedValueOnce(new Error("PRIVATE provider body"));
+    await failed.observe(failed.input);
+    const outcomes = observation.records().filter((record) => record.event === "tool_execution" && record.tool_kind === "vision");
+    const identity = { adapterKind: "openai_responses_compatible", connectionId: "connection", providerFamily: "openai_compatible", providerModelId: "vision" };
+    expect(outcomes).toEqual([
+      expect.objectContaining({ ...identity, stage: "grounding", outcome: "completed", duration_ms: expect.any(Number) }),
+      expect.objectContaining({ ...identity, stage: "grounding", outcome: "failed", code: "vision_analysis_provider_failed" })
+    ]);
+    expect(JSON.stringify(observation.records())).not.toMatch(/PRIVATE|headline|poster/);
   });
 
   it("settles an empty or tool-calling response as a visible failure with its usage", async () => {
