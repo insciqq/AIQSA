@@ -92,8 +92,6 @@ import { materializeMemoryCandidateEntityIdentity } from "../entities/repository
 import { registerMemoryIdentityCompatibility } from "../identity/compatibility";
 import { createMemorySuppressionInTransaction } from "../../persistence/suppressions";
 import { MEMORY_IDENTITY_WRITE_PROFILE_ENV } from "../identity/config";
-import { createPrismaMemoryIdentityCutoverRepository } from
-  "../identity/cutover";
 import {
   decideMemoryFactRelation,
   MEMORY_FACT_RELATION_PIPELINE_VERSION
@@ -2840,11 +2838,6 @@ describe("Prisma Memory vNext source-message ingestion", () => {
     const userId = await createOwner("identity-default-unicode");
     const previousProfile = process.env[MEMORY_IDENTITY_WRITE_PROFILE_ENV];
     try {
-      await expect(createPrismaMemoryIdentityCutoverRepository(prisma)
-        .assertActivationReady(userId)).resolves.toMatchObject({
-          legacyFactCount: 0,
-          readyForUnicodeWrites: true
-        });
       const chat = await prisma.chat.create({
         data: { title: "Distinct topic identities", userId }
       });

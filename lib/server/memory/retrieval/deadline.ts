@@ -61,7 +61,6 @@ export type OptionalMemoryUtilityRole =
   | "CONTROL_SCREEN"
   | "QUERY_EMBED"
   | "QUERY_RESOLVE"
-  | "HISTORY_RELEVANCE"
   | "RERANK";
 
 /**
@@ -84,7 +83,7 @@ function optionalUtilityTimeoutCode(role: OptionalMemoryUtilityRole): string {
 }
 
 const optionalUtilityTimeoutCodes: ReadonlySet<string> = new Set(
-  (["CONTROL", "CONTROL_SCREEN", "QUERY_EMBED", "QUERY_RESOLVE", "HISTORY_RELEVANCE", "RERANK"] as const)
+  (["CONTROL", "CONTROL_SCREEN", "QUERY_EMBED", "QUERY_RESOLVE", "RERANK"] as const)
     .map(optionalUtilityTimeoutCode)
 );
 
@@ -130,12 +129,6 @@ const optionalUtilityBudget = Object.freeze({
   RERANK: {
     maximumMs: MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
     // Preserve time for authoritative rejoin and the synchronous packer.
-    reserveMs: MEMORY_REJOIN_RESERVE_MS
-  },
-  HISTORY_RELEVANCE: {
-    // This additional optional stage shares the existing reranker latency
-    // ceiling and must leave the authoritative rejoin/packing reserve intact.
-    maximumMs: MEMORY_RERANK_OPTIONAL_MAXIMUM_MS,
     reserveMs: MEMORY_REJOIN_RESERVE_MS
   }
 } satisfies Record<OptionalMemoryUtilityRole, Readonly<{

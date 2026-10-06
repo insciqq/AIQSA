@@ -367,7 +367,3 @@ export function createPrismaMemoryRetrievalCutoverRepository(
     }
   });
 }
-
-export type MemoryRetrievalCutoverRepository = ReturnType<
-  typeof createPrismaMemoryRetrievalCutoverRepository
->;

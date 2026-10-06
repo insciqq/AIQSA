@@ -1,5 +1,4 @@
 import { getAuthConfig } from "../../auth/config";
-import { resolveRequestAuth } from "../../auth/defaultAuth";
 import { createPrismaLoginRateLimiter } from "../../auth/prismaRateLimit";
 import { prisma } from "../../prisma";
 import { createPrismaMemoryMutationAuthorizationRepository } from "../persistence/authorizations";
@@ -7,7 +6,6 @@ import { createPrismaMemoryFactRepository } from "../persistence/facts";
 import { resolveMemoryExplicitEquivalentTarget } from "../persistence/explicitEquivalence";
 import { createPrismaMemoryScopeRepository } from "../persistence/scopes";
 import { loadMemorySuppressionKeyring } from "../suppressionKeyring";
-import type { ExplicitMemoryHandlerDeps } from "./handlers";
 import { createPrismaExplicitMemoryRepository } from "./repository";
 import {
   createExplicitMemoryService,
@@ -49,9 +47,3 @@ export const defaultMemoryMutationAuthorizationRateLimiter =
     prisma,
     windowMs: 60_000
   });
-
-export const defaultExplicitMemoryHandlerDeps: ExplicitMemoryHandlerDeps = {
-  mutationRateLimiter: defaultMemoryMutationAuthorizationRateLimiter,
-  resolveAuth: resolveRequestAuth,
-  service: defaultExplicitMemoryService
-};

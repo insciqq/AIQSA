@@ -1,7 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { MemoryRetrievalLane } from "../../../../domain/memory/retrieval";
 import {
-  MEMORY_LEXICAL_CANDIDATE_PROVIDER_LANES,
   isMemoryLexicalCandidateProviderLane,
   type MemoryLexicalCandidateProviderLane,
   type MemoryLexicalCandidateProvider,
@@ -15,9 +14,6 @@ import {
   postgresMemoryLexicalRequestedTerms,
   postgresMemoryLexicalSourcePredicate
 } from "./postgresShared";
-
-export const POSTGRES_UNICODE_MEMORY_LEXICAL_LANES =
-  MEMORY_LEXICAL_CANDIDATE_PROVIDER_LANES;
 
 export type PostgresUnicodeMemoryLexicalLane =
   MemoryLexicalCandidateProviderLane;

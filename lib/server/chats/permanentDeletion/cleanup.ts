@@ -410,12 +410,6 @@ async function releaseAggregateExecutionReferences(
         userId: claim.userId
       }
     });
-    await tx.memorySynthesisExecution.deleteMany({
-      where: {
-        executionBindingId: { in: executionBindingIds },
-        userId: claim.userId
-      }
-    });
   }
 
   await tx.memoryAuxiliarySemanticCall.deleteMany({

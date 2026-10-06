@@ -14,9 +14,7 @@ const guardCodes = new Set([
       .map(key => `${subsystem}_restore_provider_credentials_forbidden_${key}`)
   ]),
   "knowledge_source_backfill_arguments_invalid", "knowledge_source_backfill_stalled",
-  "knowledge_source_reconciliation_incomplete", "memory_identity_cutover_arguments_invalid",
-  "memory_identity_inventory_overflow", "memory_identity_inventory_unavailable",
-  "memory_identity_rebuild_limit_invalid", "memory_identity_activation_not_ready"
+  "knowledge_source_reconciliation_incomplete"
 ]);
 
 export function maintenanceFailureCode(error: unknown, fallback: string): string {

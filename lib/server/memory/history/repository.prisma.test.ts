@@ -4407,8 +4407,6 @@ describe("Memory lexical history index persistence", () => {
         where: { itemType: "TOOL_EVENT", toolEventId: initialEvent.id, userId }
       })).resolves.toBe(1);
       await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
-      await expect(prisma.memorySynthesisExecution.count({ where: { userId } }))
-        .resolves.toBe(0);
 
       async function assertToolCheckpointPipeline(pipelineVersion: string) {
         await prisma.$transaction(async (tx) => {

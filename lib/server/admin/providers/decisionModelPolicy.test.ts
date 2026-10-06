@@ -7,14 +7,14 @@ import { createAdminSystemModelPolicyService } from "./systemModelPolicyService"
 // Exercise adoption after consumer qualification, independently of which
 // consumers are enabled in a particular product release.
 vi.mock("../../../domain/decisionModels", async (original) => ({
-  ...await original<typeof import("../../../domain/decisionModels")>(), DEFAULT_DECISION_FEATURES: ["memoryRelevance"]
+  ...await original<typeof import("../../../domain/decisionModels")>(), DEFAULT_DECISION_FEATURES: ["knowledgeRelevance"]
 }));
 
 function fixture() {
   const policy = { version: 4, decisionConfiguredAt: null as Date | null, decisionProviderModelId: null as string | null };
   const update = vi.fn(async () => {});
   const tx = { $queryRaw: vi.fn(async () => [policy]), user: { findFirst: vi.fn(async () => ({ id: "admin" })) },
-    systemModelPolicy: { update, findUnique: vi.fn(async () => ({ decisionFeaturesJson: { memoryRelevance: false } })) } };
+    systemModelPolicy: { update, findUnique: vi.fn(async () => ({ decisionFeaturesJson: { skillSuggestions: false } })) } };
   const db = { $transaction: vi.fn(async (callback: (transaction: typeof tx) => Promise<void>) => callback(tx)) };
   const loadDecisionRole = vi.fn(async () => ({ configuration: jevModelConfiguration(),
     snapshot: { decisionVerification: { servedModelId: JEV_SERVED_MODEL_ID, provider: "TypeSafe" } } }));
@@ -36,7 +36,7 @@ describe("optional decision role policy", () => {
     const f = fixture();
     await f.service.update({ expectedVersion: 4, userId: "admin", decisionFeatures: { knowledgeRelevance: true } });
     expect(f.update).toHaveBeenCalledWith({ where: { id: "installation" }, data: {
-      decisionFeaturesJson: { memoryRelevance: false, knowledgeRelevance: true }, updatedByUserId: "admin", version: { increment: 1 }
+      decisionFeaturesJson: { skillSuggestions: false, knowledgeRelevance: true }, updatedByUserId: "admin", version: { increment: 1 }
     } });
     expect(f.loadDecisionRole).not.toHaveBeenCalled();
   });

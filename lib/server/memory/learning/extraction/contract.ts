@@ -593,8 +593,8 @@ export function memoryFactExtractionJobFingerprint(
   page: MemoryFactJobPage = MEMORY_FACT_FIRST_PAGE
 ): string {
   const identity = extractionJobIdentity(source, identityProfile, page);
-  // Page 0 keeps the established job identity, so admission and identity
-  // cutover still create exactly one first page per source message.
+  // Page 0 keeps the established job identity, so admission still creates
+  // exactly one first page per source message.
   if (page.ordinal === 0) {
     return `${MEMORY_FACT_EXTRACTION_JOB_PREFIX}${memorySha256(identity)}`;
   }
