@@ -13,7 +13,7 @@ describe("Workspace configuration", () => {
       cpus: 2,
       diskMiB: 10_240,
       idleTtlSeconds: 1_800,
-      imageRef: "aiqsa-workspace:0.1.31",
+      imageRef: "aiqsa-workspace:0.1.32",
       maxToolCalls: 320,
       maxToolRounds: 160,
       mcpVersion: WORKSPACE_MCP_VERSION,
@@ -27,6 +27,17 @@ describe("Workspace configuration", () => {
       toolOutputMaxBytes: 128 * 1_024,
       turnTimeoutSeconds: 1_800
     });
+  });
+
+  it("bounds the guest-code MCP budgets separately from the model's tool budgets", () => {
+    expect(getWorkspaceConfig({})).toMatchObject({ codeMcpMaxCalls: 200, codeMcpMaxConcurrent: 4, codeMcpMaxPerSecond: 10 });
+    expect(getWorkspaceConfig({ AIQSA_WORKSPACE_CODE_MCP_CONCURRENCY: "8", AIQSA_WORKSPACE_CODE_MCP_MAX_CALLS: "1000",
+      AIQSA_WORKSPACE_CODE_MCP_RATE_PER_SECOND: "50" })).toMatchObject({ codeMcpMaxCalls: 1_000, codeMcpMaxConcurrent: 8,
+      codeMcpMaxPerSecond: 50 });
+    for (const [name, value] of [["AIQSA_WORKSPACE_CODE_MCP_MAX_CALLS", "0"], ["AIQSA_WORKSPACE_CODE_MCP_MAX_CALLS", "5001"],
+      ["AIQSA_WORKSPACE_CODE_MCP_CONCURRENCY", "17"], ["AIQSA_WORKSPACE_CODE_MCP_RATE_PER_SECOND", "1.5"]]) {
+      expect(() => getWorkspaceConfig({ [name!]: value })).toThrow(WorkspaceConfigError);
+    }
   });
 
   it("accepts an authenticated private runner configuration", () => {

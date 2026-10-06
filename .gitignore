@@ -19,6 +19,7 @@ tsconfig.tsbuildinfo
 coverage/
 playwright-report/
 test-results/
+__pycache__/
 # Queued, parked, and completed task instances are local-only; directory contracts remain tracked.
 /agent_docs/tasks/queue/*
 !/agent_docs/tasks/queue/README.md
