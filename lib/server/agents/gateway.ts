@@ -12,12 +12,21 @@ import { withAgentLease } from "./lease";
 import { runWithContext } from "../observability";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { usageAttributionsWithEstimatedCost } from "../runs/runFinalization";
+import { AGENT_RELAY_PROOF_HEADER, agentRelayProofKey, verifyAgentRelayProof } from "./relayProof";
 
-/** Works across app/worker processes. Requests never extend the executor's lease. */
+const refused = () => Response.json({ error: "agent_authorization_required" }, { status: 401 });
+
+/**
+ * Works across app/worker processes. Requests never extend the executor's lease.
+ * Only requests relayed by the Workspace runner carry a valid relay proof; any
+ * other request is refused before its bearer is looked up, like a bad bearer.
+ */
 export async function handleAgentGatewayRequest(request: Request, path: string): Promise<Response> {
   const auth = request.headers.get("authorization");
   const token = auth?.match(/^Bearer ([a-zA-Z0-9_-]{43})$/u)?.[1];
-  if (!token || request.headers.has("origin")) return Response.json({ error: "agent_authorization_required" }, { status: 401 });
+  if (!token || request.headers.has("origin") || !verifyAgentRelayProof(
+    agentRelayProofKey(process.env.AIQSA_WORKSPACE_RUNNER_TOKEN), request.headers.get(AGENT_RELAY_PROOF_HEADER),
+    { bearer: token, method: request.method, path })) return refused();
   try {
     const tokenHash = agentTokenHash(token);
     const binding = await prisma.agentRunBinding.findUnique({ where: { tokenHash },
@@ -59,6 +68,6 @@ export async function handleAgentGatewayRequest(request: Request, path: string):
     }
     return new Response(null, { status: 405, headers: { allow: "POST" } });
   } catch {
-    return Response.json({ error: "agent_authorization_required" }, { status: 401 });
+    return refused();
   }
 }
