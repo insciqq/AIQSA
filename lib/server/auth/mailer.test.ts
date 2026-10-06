@@ -40,11 +40,17 @@ describe("auth mail dispatch adapter", () => {
     const failed = createDispatcherAuthMailer({
       send: async () => ({ code: "smtp_tls_failed", kind: "failed" })
     });
-    const result = await deliverAuthEmail(failed, email, "password_reset");
-    expect(result.kind).toBe("failed");
-    if (result.kind === "failed") {
-      expect(result.error.message).toBe("smtp_tls_failed");
-    }
+    await expect(deliverAuthEmail(failed, email, "password_reset")).resolves.toEqual({
+      code: "smtp_tls_failed", kind: "failed"
+    });
+
+    // A thrown transport error never crosses: no message, stack or recipient.
+    const thrown = createDispatcherAuthMailer({
+      send: async () => { throw new Error(`PRIVATE ${email.to}`); }
+    });
+    await expect(deliverAuthEmail(thrown, email, "verification")).resolves.toEqual({
+      code: "email_delivery_failed", kind: "failed"
+    });
   });
 
   it("keeps the in-memory double deterministic and value-only", async () => {

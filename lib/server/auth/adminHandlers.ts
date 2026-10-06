@@ -159,7 +159,7 @@ async function deliverInvitationEmail(input: {
     return "sent";
   }
   if (delivery.kind === "unavailable") return "unavailable";
-  console.error("invite_email_failed");
+  logEvent("service_operation", { subsystem: "email", stage: "dispatch", outcome: "failed", code: "invite_email_failed" });
   return "failed";
 }
 

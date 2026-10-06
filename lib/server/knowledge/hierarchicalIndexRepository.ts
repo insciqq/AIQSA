@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { logEvent } from "../observability";
 import { prisma } from "../prisma";
 import type { KnowledgeChunkPlanEntry } from "./chunking";
 import {
@@ -318,12 +319,10 @@ export async function buildAndPersistKnowledgeHierarchicalIndex(
       sourceVersionId: source.sourceVersionId
     });
     if (input.onExactIndexTruncated) input.onExactIndexTruncated(diagnostic);
-    else console.warn(JSON.stringify({
-      candidateCount: diagnostic.candidateCount,
-      retainedCount: diagnostic.retainedCount,
-      event: "knowledge_hierarchical_exact_index_truncated",
-      reasonCode: "exact_index_truncated"
-    }));
+    else logEvent("service_operation", {
+      subsystem: "knowledge", stage: "projection", outcome: "degraded", code: "knowledge_hierarchical_exact_index_truncated",
+      count: diagnostic.candidateCount, completed_count: diagnostic.retainedCount
+    });
   }
   return persistPlan(tx, { now: input.now, plan, sourceVersionId: source.sourceVersionId });
 }

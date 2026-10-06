@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import type { KnowledgeChunkPlanEntry } from "./chunking";
 import {
   buildAndPersistKnowledgeHierarchicalIndex,
@@ -63,7 +64,9 @@ describe("Knowledge hierarchical index persistence diagnostics", () => {
   });
 
   it("emits only bounded counts and artifact identity when exact entries are truncated", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const observation = await captureRunObservation();
+    const truncations = () => observation.records()
+      .filter((record) => record.code === "knowledge_hierarchical_exact_index_truncated");
     const createExactEntries = vi.fn(async (_input: { data: unknown[] }) => ({
       count: 10_000
     }));
@@ -110,22 +113,22 @@ describe("Knowledge hierarchical index persistence diagnostics", () => {
     expect(createExactEntries.mock.calls.every(([input]) =>
       input.data.length <= KNOWLEDGE_HIERARCHICAL_INDEX_WRITE_BATCH_SIZE)).toBe(true);
 
-    expect(warn).toHaveBeenCalledOnce();
-    const serialized = warn.mock.calls[0]![0];
-    expect(typeof serialized).toBe("string");
-    expect(JSON.parse(String(serialized))).toEqual({
-      candidateCount: expect.any(Number),
-      event: "knowledge_hierarchical_exact_index_truncated",
-      reasonCode: "exact_index_truncated",
-      retainedCount: 10_000
-    });
+    expect(truncations()).toEqual([expect.objectContaining({
+      count: expect.any(Number),
+      completed_count: 10_000,
+      event: "service_operation",
+      level: "warn",
+      outcome: "degraded",
+      stage: "projection",
+      subsystem: "knowledge"
+    })]);
+    const serialized = JSON.stringify(observation.records());
     expect(serialized).not.toContain("artifact-overflow");
     expect(serialized).not.toContain("version-overflow");
     expect(serialized).not.toContain("Private");
     expect(serialized).not.toContain("SAFE-");
     expect(serialized).not.toContain("private-tag");
 
-    warn.mockClear();
     const onExactIndexTruncated = vi.fn();
     await expect(buildAndPersistKnowledgeHierarchicalIndex(tx as never, {
       chunks: overflowChunks(),
@@ -141,8 +144,7 @@ describe("Knowledge hierarchical index persistence diagnostics", () => {
       sourceArtifactId: "artifact-overflow",
       sourceVersionId: "version-overflow"
     });
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
+    expect(truncations()).toHaveLength(1);
   });
 
   it("gives bounded bulk index writes an explicit transaction deadline", async () => {

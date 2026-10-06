@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import { getAuthConfig } from "./config";
 import { createMemoryAuthMailer } from "@/tests/support/authMailers";
 import { verifyPassword } from "./password";
@@ -400,7 +401,7 @@ describe("registration auth handlers", () => {
     ["unavailable", { kind: "unavailable" } as const],
     ["failed", { code: "smtp_tls_failed", kind: "failed" } as const]
   ])("keeps mailable and hidden registration responses identical when mail is %s", async (_label, delivery) => {
-    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const observation = await captureRunObservation();
     const mailer = {
       send: vi.fn(async () => delivery)
     };
@@ -436,9 +437,12 @@ describe("registration auth handlers", () => {
     expect(mailer.send).toHaveBeenCalledTimes(1);
     if (delivery.kind === "failed") {
       await vi.waitFor(() => {
-        expect(errorLog).toHaveBeenCalledWith("verification_email_failed", expect.any(Error));
+        expect(observation.records()).toContainEqual(expect.objectContaining({ event: "service_operation",
+          subsystem: "email", stage: "dispatch", outcome: "failed", code: "verification_email_failed" }));
       });
     }
+    // Neither the recipient, the link token nor the SMTP detail reaches the writer.
+    expect(JSON.stringify(observation.records())).not.toMatch(/@example\.com|smtp_tls_failed|token=/);
   });
 
   it("applies the common response floor without waiting for a slow mailer", async () => {

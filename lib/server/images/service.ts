@@ -152,6 +152,8 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       }
       if (!await service.authorize(plan)) throw new Error("image_provider_revoked");
       const adapter = createImageGenerationAdapter({ connection: snapshot.connection, model,
+        observationIdentity: { adapterKind: model.adapterKind, connectionId: snapshot.connectionId,
+          providerFamily: snapshot.providerFamily, providerModelId: snapshot.providerModelId },
         ...(options.fetchFn ? { fetchFn: options.fetchFn } : {}), secret: async () => {
           const credential = await prisma.providerCredentialVersion.findFirst({ where: {
             id: plan.authority.credentialVersionId, credentialId: plan.authority.credentialId, revokedAt: null

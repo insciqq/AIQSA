@@ -10,7 +10,7 @@ import { ProviderStreamSafetyError } from "./streamSafety";
 import observedFailureCodes from "../observability/failureCodes.json";
 type ObservedFailureCode = string;
 type FailureReason = "unknown" | "cancelled" | "deadline" | "network" | "http" | "safety_limit" | "policy" | "invalid_response";
-type ProviderStage = "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions";
+type ProviderStage = "answer" | "search" | "structured_output" | "cancel" | "refresh" | "retrieve" | "embedding" | "rerank" | "decisions" | "image";
 type ProviderStatus = "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
 type ProviderCause = "max_output_tokens" | "content_filter";
 type ProviderObservation = Readonly<{
