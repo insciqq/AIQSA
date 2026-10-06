@@ -11,6 +11,7 @@ import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnav
 import { AdminEmailSection } from "@/components/admin/email/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
 import { AdminGroupsSection } from "@/components/admin/groups/AdminGroupsSection";
+import { AdminUsageLimitsSection } from "@/components/admin/limits/AdminUsageLimitsSection";
 import { AdminMcpSection } from "@/components/admin/mcp/AdminMcpSection";
 import { AdminSkillsSection } from "@/components/admin/skills/AdminSkillsSection";
 import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
@@ -200,6 +201,8 @@ function AdminSectionContent({
       );
     case "access-rules":
       return <AdminSignupRulesSection controller={accessRules} groups={dashboard.groups} />;
+    case "limits":
+      return <AdminUsageLimitsSection reportNotice={reportNotice} />;
     case "groups":
       return (
         <AdminGroupsSection

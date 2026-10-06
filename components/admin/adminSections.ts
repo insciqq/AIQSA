@@ -12,6 +12,7 @@ import {
   Sparkles,
   SquareTerminal,
   Users,
+  Wallet,
   Wrench,
   type LucideIcon
 } from "lucide-react";
@@ -22,6 +23,7 @@ export type AdminSectionId =
   | "access-rules"
   | "email"
   | "groups"
+  | "limits"
   | "mcp"
   | "overview"
   | "providers"
@@ -58,6 +60,7 @@ export const adminSections = [
   { Icon: BookOpenText, group: "models", id: "retrieval", label: "Knowledge & Memory" },
   { Icon: Users, group: "people", id: "users", label: "Users" },
   { Icon: Layers, group: "people", id: "groups", label: "Groups" },
+  { Icon: Wallet, group: "people", id: "limits", label: "Budgets & limits" },
   { Icon: ShieldCheck, group: "people", id: "access-rules", label: "Sign-up rules" },
   { Icon: Megaphone, group: "people", id: "announcements", label: "Announcements" },
   { Icon: Wrench, group: "platform", id: "mcp", label: "MCP servers" },
