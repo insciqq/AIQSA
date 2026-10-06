@@ -59,7 +59,7 @@ async function ownerMessage(userId: string, taskId: string, chatId: string, text
   const response = await createSendMessageHandler({ ...sendDeps(),
     resolveAuth: scheduledTaskOwnerAuth(createPrismaScheduledTaskOwnerLoader(prisma), { taskId, userId }) })(
     new Request(`http://localhost/api/chats/${chatId}/messages`, { body: JSON.stringify(scheduledTaskSendBody({
-      admissionId: randomUUID(), modelId: providerTemplateIds.fakeModel, prompt: text, provider: providerTemplateIds.fakeConnection,
+      admissionId: randomUUID(), modelId: providerTemplateIds.fakeModel, pinnedSkillIds: [], prompt: text, provider: providerTemplateIds.fakeConnection,
       searchPlan: { mode: "all_selected", optionIds: [] }, target: { activeLeafMessageId: chat.activeLeafMessageId, chatId, kind: "existing" },
       timeZone: "Europe/Moscow", toolCalling: true, toolsEnabled: false, workspaceEnabled: false
     })), method: "POST" }), { params: { chatId } });

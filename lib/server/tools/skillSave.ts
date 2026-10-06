@@ -224,8 +224,9 @@ function textFile(bytes: Buffer): boolean {
 
 function captureRefusal(error: unknown): Refusal | null {
   // Workspace runtime and capture failures carry stable codes; matched by name to keep this module light.
-  const code = error instanceof Error && (error.name === "WorkspaceRuntimeError" || error.name === "WorkspaceCaptureError") &&
-    typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : null;
+  const raw = error instanceof Error && (error.name === "WorkspaceRuntimeError" || error.name === "WorkspaceCaptureError")
+    ? (error as Error & { code?: unknown }).code : undefined;
+  const code = typeof raw === "string" ? raw : null;
   if (code === "workspace_capture_source_busy" || code === "workspace_capture_busy") return "skill_save_workspace_busy";
   if (code === "workspace_output_limit_exceeded" || code === "workspace_capture_limit_exceeded") return "skill_save_limit_exceeded";
   return code ? "skill_save_workspace_unavailable" : null;

@@ -363,11 +363,11 @@ describe("persisted scheduled task runner", () => {
     const detail = await owners.detail(userId, created.id);
     expect(detail?.recentRuns[0]?.unavailableSources).toEqual([{ name: "Synthetic Mail", reason: "mcp_reauthorization_required" }]);
     // An owner edit (here resuming) ends the streak.
-    const { chatMode, emailNotify, kind, memoryEnabled, modelId, prompt, provider, revision, schedule, searchEnabled, timeZone, title,
-      toolsEnabled, workspaceEnabled } = detail!.task;
+    const { chatMode, emailNotify, kind, memoryEnabled, modelId, pinnedSkillIds, prompt, provider, revision, schedule, searchEnabled,
+      timeZone, title, toolsEnabled, workspaceEnabled } = detail!.task;
     await owners.update(userId, created.id, {
-      draft: { chatMode, emailNotify, kind, memoryEnabled, modelId, prompt, provider, schedule, searchEnabled, timeZone, title,
-        toolsEnabled, workspaceEnabled },
+      draft: { chatMode, emailNotify, kind, memoryEnabled, modelId, pinnedSkillIds, prompt, provider, schedule, searchEnabled, timeZone,
+        title, toolsEnabled, workspaceEnabled },
       expectedRevision: revision, nextRunAt: new Date(Date.now() + 3_600_000), promptUrls: "keep", status: "active"
     });
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))

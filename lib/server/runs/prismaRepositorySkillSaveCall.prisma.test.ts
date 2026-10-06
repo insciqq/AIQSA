@@ -88,7 +88,7 @@ describe("a chat answer's Skill save", () => {
     expect(await prisma.skillStoreOperation.count({ where: { ownerUserId: userId, clientId: SKILL_SAVE_CLIENT_ID } })).toBe(1);
     expect(await cardEvents(turn.runId)).toHaveLength(1);
     // A replayed settled call publishes its card again; the answer keeps it once.
-    const event = projectRunOutputArtifactEvent((outcomes.find((outcome) => outcome.kind === "saved") as { result: { artifacts: never[] } }).result.artifacts[0])!;
+    const event = projectRunOutputArtifactEvent((outcomes.find((outcome) => outcome.kind === "saved") as unknown as { result: { artifacts: never[] } }).result.artifacts[0])!;
     await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${turn.runId} FOR UPDATE`;
       await appendRunOutputEvents(tx, turn.runId, [event]);
