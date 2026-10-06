@@ -61,12 +61,13 @@ export function createPrismaWorkspaceCodeGrantRepository(prisma: PrismaClient) {
         SELECT ("normalizedRequest" -> 'agent') IS NOT NULL AND jsonb_typeof("normalizedRequest" -> 'agent') <> 'null' AS "agent",
           "normalizedRequest" -> 'workspace' AS "workspace",
           COALESCE((
-            SELECT bool_or(jsonb_typeof(server -> 'tools') = 'array' AND jsonb_array_length(server -> 'tools') > 0)
+            SELECT bool_or(CASE WHEN jsonb_typeof(server -> 'tools') = 'array'
+              THEN jsonb_array_length(server -> 'tools') > 0 ELSE false END)
             FROM jsonb_array_elements(CASE WHEN jsonb_typeof("normalizedRequest" #> '{mcpDiscovery,catalog,servers}') = 'array'
               THEN "normalizedRequest" #> '{mcpDiscovery,catalog,servers}' ELSE '[]'::jsonb END) AS server
           ), false) AS "catalogTools",
-          (jsonb_typeof("normalizedRequest" #> '{mcp,tools}') = 'array' AND
-            jsonb_array_length("normalizedRequest" #> '{mcp,tools}') > 0) IS TRUE AS "planTools"
+          CASE WHEN jsonb_typeof("normalizedRequest" #> '{mcp,tools}') = 'array'
+            THEN jsonb_array_length("normalizedRequest" #> '{mcp,tools}') > 0 ELSE false END AS "planTools"
         FROM "ModelRun"
         WHERE "id" = ${binding.runId} AND "userId" = ${binding.userId}
           AND "status" IN ('queued'::"ModelRunStatus", 'in_progress'::"ModelRunStatus", 'streaming'::"ModelRunStatus")
