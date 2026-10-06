@@ -304,12 +304,12 @@ describe("persisted independent System Model roles", () => {
       const initialVersion = await version();
       await service.updateMemory({ expectedVersion: initialVersion, providerModelId: memory, reasoningEffort: null, userId: adminId });
       const admitted = await resolveCurrentMemoryUtilityPolicy(db, adminId, { embeddingProviderModelId: null });
-      expect(admitted.targets.get("MEMORY_HISTORY_CLASSIFY")?.snapshot.providerModelId).toBe(memory);
+      expect(admitted.targets.get("MEMORY_STATEMENT_CLASSIFY")?.snapshot.providerModelId).toBe(memory);
       expect(await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(originalSystem);
       await service.update({ expectedVersion: originalSystem.version, chatTitleProviderModelId: titles,
         chatTitleReasoningEffort: null, userId: adminId });
       const afterSystemEdit = await resolveCurrentMemoryUtilityPolicy(db, adminId, { embeddingProviderModelId: null });
-      expect(afterSystemEdit.targets.get("MEMORY_HISTORY_CLASSIFY")).toEqual(admitted.targets.get("MEMORY_HISTORY_CLASSIFY"));
+      expect(afterSystemEdit.targets.get("MEMORY_STATEMENT_CLASSIFY")).toEqual(admitted.targets.get("MEMORY_STATEMENT_CLASSIFY"));
       await expect(service.updateMemory({ expectedVersion: initialVersion, providerModelId: null,
         reasoningEffort: null, userId: adminId })).rejects.toMatchObject({ code: "system_model_policy_stale" });
       await expect(service.updateMemory({ expectedVersion: await version(), providerModelId: titles,
@@ -318,7 +318,7 @@ describe("persisted independent System Model roles", () => {
       expect((await service.list()).memoryPolicy).toMatchObject({ model: null, assignmentSource: "operator" });
       await expect(service.updateMemory({ expectedVersion: await version(), providerModelId: memory,
         reasoningEffort: null, userId: adminId, assignmentSource: "BOOTSTRAP" })).rejects.toMatchObject({ code: "system_model_policy_stale" });
-      expect(admitted.targets.get("MEMORY_HISTORY_CLASSIFY")?.snapshot.providerModelId).toBe(memory);
+      expect(admitted.targets.get("MEMORY_STATEMENT_CLASSIFY")?.snapshot.providerModelId).toBe(memory);
       await service.updateMemory({ expectedVersion: await version(), providerModelId: memory, reasoningEffort: null, userId: adminId });
       await db.providerModel.update({ where: { id: memory }, data: { enabled: false } });
       expect(await createMemoryUtilityModelRoleResolver(db).resolve()).toMatchObject({ ok: false });

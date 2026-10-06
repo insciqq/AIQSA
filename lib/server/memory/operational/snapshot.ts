@@ -4,28 +4,17 @@ import { memoryAdmissibleEntityAliasPredicate } from
   "../learning/entities/authority";
 import { MEMORY_OUTPUT_DECODE_REASON_PATTERN } from "../execution/outputViolation";
 import { MEMORY_MAINTENANCE_POLICY_VERSION } from "../maintenance/policy";
-import {
-  MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS,
-  MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS
-} from "./counters";
 
-const SNAPSHOT_VERSION = "memory-operational-snapshot-v8";
+const SNAPSHOT_VERSION = "memory-operational-snapshot-v9";
 const codePattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/u;
 const rolePattern = /^[A-Z][A-Z0-9_]{0,63}$/u;
-const contextualFallbackCounterKeys = Object.values(
-  MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS
-);
-const contextualLanguageCounterKeys = [
-  ...Object.values(MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS.fallback),
-  ...Object.values(MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS.generated)
-];
 
 type CountRow = Readonly<Record<string, string>>;
 type GroupedCountRow = Readonly<{
   code: string;
   count: string;
-  family: "contextual_fallback" | "contextual_language" | "degradation" |
-    "maintenance_blocked" | "maintenance_unreviewable" | "observation_rejection";
+  family: "degradation" | "maintenance_blocked" | "maintenance_unreviewable" |
+    "observation_rejection";
 }>;
 type DistributionRow = Readonly<{
   p50Ms: number | null;
@@ -104,14 +93,6 @@ export type MemoryOperationalSnapshot = Readonly<{
     chunksBuilt: number;
     chunksReplaced: number;
     chunksReused: number;
-    contextualProviderRequests: number;
-    contextualRoundsFallback: number;
-    contextualRoundsGenerated: number;
-    contextualFallbackReasons: readonly MemoryOperationalCodeCount[];
-    contextualLanguageCounts: readonly MemoryOperationalCodeCount[];
-    digestFullRebuild: number;
-    digestIncremental: number;
-    digestNoop: number;
     messagesProjected: number;
     recallRoundLongCount: number;
     recallRoundMaxSegmentCount: number;
@@ -449,36 +430,6 @@ export async function loadMemoryOperationalSnapshot(
               AND "completedAt" < ${input.to}
           )::text AS "historyRoundSegmentsReused",
           (SELECT COALESCE(SUM(("operationalCounters" ->>
-              'contextualProviderRequests')::NUMERIC), 0)
-            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
-              AND "completedAt" < ${input.to}
-          )::text AS "contextualProviderRequests",
-          (SELECT COALESCE(SUM(("operationalCounters" ->>
-              'contextualRoundsFallback')::NUMERIC), 0)
-            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
-              AND "completedAt" < ${input.to}
-          )::text AS "contextualRoundsFallback",
-          (SELECT COALESCE(SUM(("operationalCounters" ->>
-              'contextualRoundsGenerated')::NUMERIC), 0)
-            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
-              AND "completedAt" < ${input.to}
-          )::text AS "contextualRoundsGenerated",
-          (SELECT COALESCE(SUM(("operationalCounters" ->>
-              'digestNoop')::NUMERIC), 0)
-            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
-              AND "completedAt" < ${input.to}
-          )::text AS "digestNoop",
-          (SELECT COALESCE(SUM(("operationalCounters" ->>
-              'digestIncremental')::NUMERIC), 0)
-            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
-              AND "completedAt" < ${input.to}
-          )::text AS "digestIncremental",
-          (SELECT COALESCE(SUM(("operationalCounters" ->>
-              'digestFullRebuild')::NUMERIC), 0)
-            FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
-              AND "completedAt" < ${input.to}
-          )::text AS "digestFullRebuild",
-          (SELECT COALESCE(SUM(("operationalCounters" ->>
               'embeddingBatchItems')::NUMERIC), 0)
             FROM "MemoryJob" WHERE "completedAt" >= ${input.from}
               AND "completedAt" < ${input.to}
@@ -524,22 +475,6 @@ export async function loadMemoryOperationalSnapshot(
           WHERE attempt."createdAt" >= ${input.from}
             AND attempt."createdAt" < ${input.to}
             AND attempt."degradationCode" IS NOT NULL
-          UNION ALL
-          SELECT 'contextual_fallback'::text AS family, entry.key AS code,
-            entry.value::numeric AS quantity
-          FROM "MemoryJob" job
-          CROSS JOIN LATERAL jsonb_each_text(job."operationalCounters") AS entry(key, value)
-          WHERE job."completedAt" >= ${input.from}
-            AND job."completedAt" < ${input.to}
-            AND entry.key IN (${Prisma.join(contextualFallbackCounterKeys)})
-          UNION ALL
-          SELECT 'contextual_language'::text AS family, entry.key AS code,
-            entry.value::numeric AS quantity
-          FROM "MemoryJob" job
-          CROSS JOIN LATERAL jsonb_each_text(job."operationalCounters") AS entry(key, value)
-          WHERE job."completedAt" >= ${input.from}
-            AND job."completedAt" < ${input.to}
-            AND entry.key IN (${Prisma.join(contextualLanguageCounterKeys)})
           UNION ALL
           SELECT CASE WHEN review."disposition" = 'BLOCKED' THEN 'maintenance_blocked'
               ELSE 'maintenance_unreviewable' END AS family,
@@ -705,14 +640,6 @@ export async function loadMemoryOperationalSnapshot(
       chunksBuilt: safeCount(counts.historyChunksBuilt),
       chunksReplaced: safeCount(counts.historyChunksReplaced),
       chunksReused: safeCount(counts.historyChunksReused),
-      contextualProviderRequests: safeCount(counts.contextualProviderRequests),
-      contextualRoundsFallback: safeCount(counts.contextualRoundsFallback),
-      contextualRoundsGenerated: safeCount(counts.contextualRoundsGenerated),
-      contextualFallbackReasons: codeCounts(groupedRows, "contextual_fallback"),
-      contextualLanguageCounts: codeCounts(groupedRows, "contextual_language"),
-      digestFullRebuild: safeCount(counts.digestFullRebuild),
-      digestIncremental: safeCount(counts.digestIncremental),
-      digestNoop: safeCount(counts.digestNoop),
       messagesProjected: safeCount(counts.historyMessagesProjected),
       recallRoundLongCount: safeCount(counts.recallRoundLongCount),
       recallRoundMaxSegmentCount: safeCount(counts.recallRoundMaxSegmentCount),

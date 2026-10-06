@@ -1,54 +1,6 @@
-import type { MemoryContextualFallbackReason } from "../history/rounds";
-
-export const MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS = Object.freeze({
-  DUPLICATE_STATEMENT: "contextualFallbackDuplicateStatement",
-  EMPTY_STATEMENTS: "contextualFallbackEmptyStatements",
-  HANDLE_MISMATCH: "contextualFallbackHandleMismatch",
-  GROUNDING_INVALID: "contextualFallbackGroundingInvalid",
-  NOT_ELIGIBLE: "contextualFallbackNotEligible",
-  PROVIDER_OUTPUT_INVALID: "contextualFallbackProviderOutputInvalid",
-  PROVIDER_OUTPUT_LIMIT: "contextualFallbackProviderOutputLimit",
-  PROVIDER_UNAVAILABLE: "contextualFallbackProviderUnavailable",
-  SAFETY_REDACTED_OR_REJECTED: "contextualFallbackSafetyRedactedOrRejected",
-  SEARCH_TEXT_BUDGET_EXCEEDED: "contextualFallbackSearchTextBudgetExceeded",
-  SOURCE_REF_INVALID: "contextualFallbackSourceRefInvalid",
-  SEMANTICALLY_UNSUPPORTED: "contextualFallbackSemanticallyUnsupported",
-  STATEMENT_COUNT_INVALID: "contextualFallbackStatementCountInvalid",
-  STATEMENT_TOO_LONG: "contextualFallbackStatementTooLong",
-  UNSUPPORTED_DATE: "contextualFallbackUnsupportedDate",
-  UNSUPPORTED_ENTITY: "contextualFallbackUnsupportedEntity",
-  UNSUPPORTED_NUMBER: "contextualFallbackUnsupportedNumber",
-  UNSUPPORTED_TOKEN: "contextualFallbackUnsupportedToken"
-} as const satisfies Readonly<Record<MemoryContextualFallbackReason, string>>);
-
-export const MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS = Object.freeze({
-  fallback: Object.freeze({
-    declared: "contextualFallbackDeclared",
-    mixed: "contextualFallbackMixed",
-    und: "contextualFallbackUnd"
-  }),
-  generated: Object.freeze({
-    declared: "contextualGeneratedDeclared",
-    mixed: "contextualGeneratedMixed",
-    und: "contextualGeneratedUnd"
-  })
-} as const);
-
-const contextualCounterKeys = Object.freeze([
-  ...Object.values(MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS),
-  ...Object.values(MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS.fallback),
-  ...Object.values(MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS.generated)
-] as const);
-
+/** Keys a current writer may record. The database check still accepts the
+ * retired digest and contextual-key counters of jobs settled earlier. */
 export const MEMORY_OPERATIONAL_COUNTER_KEYS = Object.freeze([
-  "digestFullRebuild",
-  "digestIncremental",
-  "digestNoop",
-  "digestSegmentsProcessed",
-  "digestSourceChunksProcessed",
-  "contextualProviderRequests",
-  "contextualRoundsFallback",
-  "contextualRoundsGenerated",
   "embeddingBatchItems",
   "embeddingFailedItems",
   "embeddingProviderRequests",
@@ -66,8 +18,7 @@ export const MEMORY_OPERATIONAL_COUNTER_KEYS = Object.freeze([
   "historyRoundSegmentsReused",
   "historyRoundsBuilt",
   "historyRoundsReplaced",
-  "historyRoundsReused",
-  ...contextualCounterKeys
+  "historyRoundsReused"
 ] as const);
 
 export type MemoryOperationalCounterKey =

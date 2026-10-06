@@ -4,11 +4,9 @@ import { MemoryJobFencedError } from "../coordinator/errors";
 import type { MemoryJobClaim } from "../coordinator/types";
 import { memorySha256 } from "../persistence/lexical";
 import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
-import type { MemoryHistorySafetyClassifier } from "./classifier";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
 import {
   EMPTY_MEMORY_HISTORY_WORK_COUNTERS,
-  MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryIndexJobFingerprint,
   memoryHistoryIndexResultHash,
@@ -16,22 +14,13 @@ import {
   type MemoryHistoryIndexSourceIdentity
 } from "./contract";
 import {
-  applyMemoryHistoryClassifications,
-  attachMemoryContextualKeys,
+  applyMemoryHistorySafetyLite,
   createMemoryHistoryIndexHandler
 } from "./handler";
-import { memoryQualificationLanguageBucket } from "./language";
-import {
-  MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
-  MemoryChatDigestError,
-  MemoryChatDigestOutputError
-} from "./digest";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
-  MEMORY_RECALL_ROUND_PROJECTION_VERSION,
-  memoryContextualGroundingHash,
-  memoryContextualRoundInputs
+  MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "./rounds";
 import type { MemoryHistoryIndexRepository } from "./repository";
 
@@ -107,7 +96,7 @@ function round(
   parentChunkId: string,
   ordinal: number
 ): MemoryHistoryIndexPlan["rounds"][number] {
-  const rawSafeText = `User: contextual history ${ordinal}\n\nAssistant: acknowledged`;
+  const rawSafeText = `User: round history ${ordinal}\n\nAssistant: acknowledged`;
   return {
     approxTokens: 8,
     branchGeneration: source.branchGeneration,
@@ -146,11 +135,13 @@ function round(
 
 function plan(
   chunks: MemoryHistoryIndexPlan["chunks"] = [],
-  rounds: MemoryHistoryIndexPlan["rounds"] = []
+  rounds: MemoryHistoryIndexPlan["rounds"] = [],
+  reusedChunkIds: readonly string[] = []
 ): MemoryHistoryIndexPlan {
   const suppressionIdentitySnapshot = "b".repeat(64);
   const checkpointMessages: MemoryHistoryIndexPlan["checkpointMessages"] = [];
-  const rebuiltChunkIds = chunks.map(({ id }) => id);
+  const reused = new Set(reusedChunkIds);
+  const rebuiltChunkIds = chunks.flatMap(({ id }) => reused.has(id) ? [] : [id]);
   const rebuiltRoundIds = rounds.map(({ id }) => id);
   const incremental = {
     commonPathMessageCount: 0,
@@ -168,6 +159,7 @@ function plan(
       incremental,
       rebuiltChunkIds,
       rebuiltRoundIds,
+      reusedChunkIds,
       reusedRoundIds: [],
       rounds,
       toolEvents: [],
@@ -178,14 +170,12 @@ function plan(
     classificationPolicyVersion: null,
     checkpointMessages,
     chunks,
-    digest: null,
-    digestPolicyVersion: null,
     incremental,
     preparedResultHash: resultHash,
     rebuiltChunkIds,
     rebuiltRoundIds,
     resultHash,
-    reusedChunkIds: [],
+    reusedChunkIds,
     reusedRoundIds: [],
     rounds,
     source,
@@ -193,15 +183,6 @@ function plan(
     timeZone: "UTC",
     toolEvents: [],
     work: EMPTY_MEMORY_HISTORY_WORK_COUNTERS
-  };
-}
-
-function classifier(): MemoryHistorySafetyClassifier {
-  return {
-    classify: vi.fn(async () => ({
-      decisions: [],
-      policyVersion: "memory-history-safety-policy-test"
-    }))
   };
 }
 
@@ -213,117 +194,65 @@ function context() {
   };
 }
 
-describe("Memory INDEX_HISTORY handler", () => {
-  it.each(["valid", "duplicate", "late_failure"] as const)(
-    "authorizes 37 results atomically across bounded batches: %s", async (scenario) => {
-      const currentClaim = claim();
-      const receipts = Array.from({ length: 37 }, () => ({
-        acceptedOutputHash: "a".repeat(64), bindingId: randomUUID()
-      }));
-      if (scenario === "duplicate") receipts[36] = receipts[0]!;
-      const steps: string[] = [];
-      const authorizeResults = vi.fn(async () => {
-        steps.push("authorize");
-        if (scenario === "late_failure" && steps.length === 2) throw new Error("invalid_result");
-      });
-      const handler = createMemoryHistoryIndexHandler({
-        authorizeResults,
-        clearResults: async () => { steps.push("clear"); },
-        digestGenerator: { generate: vi.fn(async () => ({
-          classificationRequired: false, digest: null, executions: receipts,
-          policyVersion: "test-policy", work: { digestSegmentsProcessed: 0, digestSourceChunksProcessed: 0 }
-        })) },
-        repository: {
-          prepare: vi.fn(async () => ({ plan: plan() })),
-          apply: async () => { steps.push("apply"); }
-        } as unknown as MemoryHistoryIndexRepository
-      });
-      const result = await handler.execute(currentClaim, context());
-      const settings = { ownerStatus: "active", userId: source.userId };
-      const tx = { $queryRaw: vi.fn(async () => [settings]) };
-      if (scenario === "valid") {
-        await result.apply!(tx as never, currentClaim);
-        expect(steps).toEqual(["authorize", "authorize", "apply", "clear"]);
-        expect(authorizeResults.mock.calls).toEqual([
-          [tx, { userId: source.userId }, source.userId, currentClaim.id, receipts.slice(0, 32)],
-          [tx, { userId: source.userId }, source.userId, currentClaim.id, receipts.slice(32)]
-        ]);
-      } else {
-        await expect(result.apply!(tx as never, currentClaim)).rejects.toThrow(
-          scenario === "duplicate" ? "memory_execution_input_invalid" : "invalid_result"
-        );
-        expect(steps).toEqual(scenario === "duplicate" ? [] : ["authorize", "authorize"]);
-      }
-    }
-  );
-
-  it("defers the digest on a partial page and never pays past its source bound", async () => {
-    const execute = async (currentPlan: MemoryHistoryIndexPlan) => {
-      const generate = vi.fn();
-      const handler = createMemoryHistoryIndexHandler({
-        classifier: classifier(),
-        digestGenerator: { generate },
-        repository: {
-          apply: vi.fn(),
-          prepare: vi.fn(async () => ({ plan: currentPlan }))
-        } as unknown as MemoryHistoryIndexRepository
-      });
-      const result = await handler.execute(claim(), context());
-      return { generate, result };
-    };
-    const cursor = [{
-      createdAt: "2026-08-10T10:00:00.000Z",
-      messageId: "user-1",
-      ordinal: 0,
-      sourceMessageUpdatedAt: "2026-08-10T10:00:00.000Z"
-    }];
-
-    const partial = await execute({ ...plan([chunk("chunk-0", 0)]), checkpointMessages: cursor });
-    expect(partial.generate).not.toHaveBeenCalled();
-    expect(partial.result.stage).toBe("lexical_ready:history_page_partial");
-
-    const truncated = await execute({
-      ...plan([chunk("chunk-0", 0)]),
-      checkpointMessages: cursor,
-      incremental: {
-        commonPathMessageCount: 0,
-        mode: "FULL_REBUILD",
-        rebuildFromMessageOrdinal: 0,
-        truncatedMessageIds: ["user-1"]
-      }
-    });
-    expect(truncated.generate).not.toHaveBeenCalled();
-    expect(truncated.result.stage).toBe("lexical_ready:history_message_truncated");
-
-    const oversized = await execute(plan(Array.from(
-      { length: MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS + 1 },
-      (_, ordinal) => chunk(`chunk-${ordinal}`, ordinal)
-    )));
-    expect(oversized.generate).not.toHaveBeenCalled();
-    expect(oversized.result.stage).toBe("lexical_ready:digest_source_limit");
+function handlerFor(currentPlan: MemoryHistoryIndexPlan, apply = vi.fn(async () => undefined)) {
+  return createMemoryHistoryIndexHandler({
+    repository: {
+      apply,
+      preflight: vi.fn(async () => ({ status: "READY" as const })),
+      prepare: vi.fn(async () => ({ plan: currentPlan }))
+    } as unknown as MemoryHistoryIndexRepository
   });
+}
 
-  it("suppresses secret chunks and canonicalizes legacy sensitive output", () => {
-    const current = plan([chunk("chunk-sensitive", 0), chunk("chunk-secret", 1)]);
-    const classified = applyMemoryHistoryClassifications(current, {
-      decisions: [
-        { chunkId: "chunk-sensitive", sensitivity: "SENSITIVE" },
-        { chunkId: "chunk-secret", sensitivity: "SECRET" }
-      ],
-      policyVersion: "memory-history-safety-policy-test"
-    });
+describe("Memory INDEX_HISTORY handler", () => {
+  it("publishes rebuilt chunks under Safety Lite and keeps a suppressed parent's rounds suppressed", () => {
+    const secret = {
+      ...chunk("chunk-secret", 0),
+      publicationState: "SUPPRESSED" as const,
+      redactionReasonCodes: ["semantic_secret"],
+      redactionState: "EXCLUDED" as const,
+      safetyClass: "SECRET_TAINTED" as const
+    };
+    const current = plan(
+      [secret, chunk("chunk-new", 1)],
+      [round("round-secret", secret.id, 0), round("round-new", "chunk-new", 1)],
+      [secret.id]
+    );
+
+    const classified = applyMemoryHistorySafetyLite(current);
 
     expect(classified.chunks).toMatchObject([
-      { id: "chunk-sensitive", publicationState: "ACTIVE", safetyClass: "NORMAL" },
+      { id: "chunk-secret", publicationState: "SUPPRESSED", safetyClass: "SECRET_TAINTED" },
+      { id: "chunk-new", publicationState: "ACTIVE", safetyClass: "NORMAL" }
+    ]);
+    expect(classified.rounds).toMatchObject([
       {
-        id: "chunk-secret",
+        id: "round-secret",
         publicationState: "SUPPRESSED",
+        redactionReasonCodes: ["semantic_secret"],
         redactionState: "EXCLUDED",
         safetyClass: "SECRET_TAINTED"
-      }
+      },
+      { id: "round-new", publicationState: "ACTIVE", safetyClass: "NORMAL" }
     ]);
+    expect(classified.classificationPolicyVersion).toBe(MEMORY_SAFETY_LITE_POLICY_VERSION);
     expect(classified.preparedResultHash).toBe(current.resultHash);
     expect(classified.resultHash).not.toBe(current.resultHash);
+  });
+
+  it("rejects a plan whose rebuilt chunks or round parents are missing", () => {
+    const current = plan([chunk("chunk-0", 0)]);
+    expect(() => applyMemoryHistorySafetyLite({
+      ...current,
+      rebuiltChunkIds: [...current.rebuiltChunkIds, "chunk-missing"]
+    })).toThrow(expect.objectContaining({
+      code: "memory_history_classification_invalid",
+      retryable: true
+    }));
+    expect(() => applyMemoryHistorySafetyLite({
+      ...current,
+      rounds: [round("round-orphan", "chunk-missing", 0)]
+    })).toThrow(expect.objectContaining({ code: "memory_history_classification_invalid" }));
   });
 
   it("rejects malformed jobs before repository access", async () => {
@@ -332,7 +261,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       preflight: vi.fn(),
       prepare: vi.fn()
     } as unknown as MemoryHistoryIndexRepository;
-    const handler = createMemoryHistoryIndexHandler({ classifier: classifier(), repository });
+    const handler = createMemoryHistoryIndexHandler({ repository });
 
     await expect(handler.preflight({
       ...claim(),
@@ -352,7 +281,7 @@ describe("Memory INDEX_HISTORY handler", () => {
       preflight,
       prepare: vi.fn()
     } as unknown as MemoryHistoryIndexRepository;
-    const handler = createMemoryHistoryIndexHandler({ classifier: classifier(), repository });
+    const handler = createMemoryHistoryIndexHandler({ repository });
 
     await expect(handler.preflight(current)).resolves.toEqual({ status: "READY" });
     expect(preflight).toHaveBeenCalledWith(current);
@@ -362,46 +291,31 @@ describe("Memory INDEX_HISTORY handler", () => {
     const currentClaim = claim();
     const currentPlan = plan();
     const apply = vi.fn(async () => undefined);
-    const authorizeResults = vi.fn(async () => undefined);
-    const classify = vi.fn();
-    const repository = {
-      apply,
-      preflight: vi.fn(async () => ({ status: "READY" as const })),
-      prepare: vi.fn(async () => ({ plan: currentPlan }))
-    } as unknown as MemoryHistoryIndexRepository;
-    const handler = createMemoryHistoryIndexHandler({
-      authorizeResults,
-      classifier: { classify },
-      repository
-    });
+    const handler = handlerFor(currentPlan, apply);
     const executionContext = context();
 
     const result = await handler.execute(currentClaim, executionContext);
 
     expect(result).toMatchObject({
       operationalCounters: {
-        digestFullRebuild: 0,
-        digestIncremental: 0,
-        digestNoop: 0,
         historyChunksBuilt: 0,
         historyChunksReplaced: 0,
         historyMessagesProjected: 0
       },
       stage: "lexical_ready"
     });
+    expect(Object.keys(result.operationalCounters ?? {})
+      .every((key) => key.startsWith("history"))).toBe(true);
     expect(result.acceptedResultHash).not.toBe(currentPlan.resultHash);
     expect(executionContext.setStage.mock.calls.map(([stage]) => stage)).toEqual([
       "source_snapshot",
       "safety_classification",
       "lexical_apply"
     ]);
-    expect(result.apply).toBeTypeOf("function");
     const tx = {
       $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
     };
     await result.apply?.(tx as never, currentClaim);
-    expect(classify).not.toHaveBeenCalled();
-    expect(authorizeResults).not.toHaveBeenCalled();
     expect(apply).toHaveBeenCalledWith(
       tx,
       currentClaim,
@@ -414,453 +328,43 @@ describe("Memory INDEX_HISTORY handler", () => {
     );
   });
 
-  it("retries active raw-fallback contextual keys and authorizes the output", async () => {
-    const currentClaim = claim();
-    const parent = chunk("chunk-round-parent", 0);
-    const projectedRound = round("round-1", parent.id, 0);
-    const rebuilt = plan([parent], [projectedRound]);
-    const currentPlan: MemoryHistoryIndexPlan = {
-      ...rebuilt,
-      rebuiltRoundIds: [],
-      reusedRoundIds: [projectedRound.id]
-    };
-    const apply = vi.fn(async () => undefined);
-    const authorizeResults = vi.fn(async () => undefined);
-    const output = {
-      languageCode: "en",
-      roundId: projectedRound.id,
-      statements: [{ sourceRoundIds: [projectedRound.id], text: "User contextual history 0" }]
-    };
-    const receipts = [{
-      acceptedOutputHash: "c".repeat(64), bindingId: "contextual-generation"
-    }, {
-      acceptedOutputHash: "d".repeat(64), bindingId: "contextual-grounding"
+  it("marks a partial page and a truncated message in the completion stage", async () => {
+    const cursor = [{
+      createdAt: "2026-08-10T10:00:00.000Z",
+      messageId: "user-1",
+      ordinal: 0,
+      sourceMessageUpdatedAt: "2026-08-10T10:00:00.000Z"
     }];
-    const contextualKeyGenerator = {
-      generate: vi.fn(async () => ({
-        executions: receipts,
-        fallbackRoundIds: [],
-        outputs: [{
-          ...output,
-          groundingHash: memoryContextualGroundingHash(
-            memoryContextualRoundInputs([projectedRound])[0]!, output,
-            MEMORY_CONTEXTUAL_KEY_POLICY_VERSION
-          )
-        }],
-        policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION as
-          typeof MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
-        providerRequests: 2
-      }))
-    };
-    const executionContext = context();
-    const handler = createMemoryHistoryIndexHandler({
-      authorizeResults,
-      contextualKeyGenerator,
-      repository: {
-        apply,
-        preflight: vi.fn(async () => ({ status: "READY" as const })),
-        prepare: vi.fn(async () => ({ plan: currentPlan }))
-      } as unknown as MemoryHistoryIndexRepository
-    });
+    const partial = await handlerFor({ ...plan([chunk("chunk-0", 0)]), checkpointMessages: cursor })
+      .execute(claim(), context());
+    expect(partial.stage).toBe("lexical_ready:history_page_partial");
 
-    const result = await handler.execute(currentClaim, executionContext);
-
-    expect(contextualKeyGenerator.generate).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ id: projectedRound.id })]),
-      [projectedRound.id],
-      expect.objectContaining({ jobId: currentClaim.id, userId: source.userId })
-    );
-    expect(executionContext.setStage.mock.calls.map(([stage]) => stage)).toEqual([
-      "source_snapshot",
-      "safety_classification",
-      "contextual_key_generation",
-      "lexical_apply"
-    ]);
-    expect(result.operationalCounters).toMatchObject({
-      contextualGeneratedDeclared: 1,
-      contextualProviderRequests: 2,
-      contextualRoundsFallback: 0,
-      contextualRoundsGenerated: 1,
-      historyRoundsBuilt: 0
-    });
-    await result.apply?.({
-      $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
-    } as never, currentClaim);
-    expect(authorizeResults).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      source.userId,
-      currentClaim.id,
-      receipts
-    );
-    expect(apply).toHaveBeenCalledWith(
-      expect.anything(),
-      currentClaim,
-      expect.objectContaining({
-        rounds: [expect.objectContaining({
-          contextualKeyState: "GENERATED",
-          contextualNarrativeText: "User contextual history 0",
-          id: projectedRound.id
-        })]
-      }),
-      new Date("2026-08-10T12:00:00.000Z")
-    );
-  });
-
-  it("records typed contextual fallback and content-free language counters", () => {
-    const parent = chunk("chunk-contextual-fallback", 0);
-    const projectedRound = round("round-contextual-fallback", parent.id, 0);
-    const attached = attachMemoryContextualKeys(
-      plan([parent], [projectedRound]),
-      {
-        executions: [],
-        fallbackDiagnostics: [{
-          reason: "SEMANTICALLY_UNSUPPORTED",
-          roundId: projectedRound.id
-        }],
-        fallbackRoundIds: [projectedRound.id],
-        outputs: [],
-        policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
-        providerRequests: 1
-      },
-      [projectedRound.id]
-    );
-
-    expect(attached.work).toMatchObject({
-      contextualFallbackReasonCounts: { SEMANTICALLY_UNSUPPORTED: 1 },
-      contextualLanguageCounts: { fallback: { declared: 1 }, generated: {} },
-      contextualRoundsFallback: 1,
-      contextualRoundsGenerated: 0
-    });
-    expect(memoryQualificationLanguageBucket("en-US")).toBe("declared");
-    expect(memoryQualificationLanguageBucket("ru")).toBe("declared");
-    expect(memoryQualificationLanguageBucket("es")).toBe("declared");
-    expect(memoryQualificationLanguageBucket("sr-Cyrl")).toBe("declared");
-    expect(memoryQualificationLanguageBucket("mixed")).toBe("mixed");
-    expect(memoryQualificationLanguageBucket("mul")).toBe("mixed");
-    expect(memoryQualificationLanguageBucket("und")).toBe("und");
-    expect(memoryQualificationLanguageBucket("not_a_language")).toBe("und");
-    expect(JSON.stringify(attached.work)).not.toContain(projectedRound.rawSafeText);
-  });
-
-  it("classifies only the rebuilt tail and safety-checks the bounded digest", async () => {
-    const currentClaim = claim();
-    const basePlan = plan([chunk("chunk-stable", 0), chunk("chunk-tail", 1)]);
-    const incremental = {
-      commonPathMessageCount: 4,
-      mode: "APPEND" as const,
-      rebuildFromMessageOrdinal: 2
-    };
-    const rawResultHash = memoryHistoryIndexResultHash(
-      source,
-      basePlan.chunks,
-      basePlan.suppressionIdentitySnapshot,
-      null,
-      basePlan.timeZone,
-      {
-        checkpointMessages: basePlan.checkpointMessages,
-        incremental,
-        rebuiltChunkIds: ["chunk-tail"],
-        reusedChunkIds: ["chunk-stable"],
-        work: basePlan.work
+    const truncated = await handlerFor({
+      ...plan([chunk("chunk-0", 0)]),
+      checkpointMessages: cursor,
+      incremental: {
+        commonPathMessageCount: 0,
+        mode: "FULL_REBUILD",
+        rebuildFromMessageOrdinal: 0,
+        truncatedMessageIds: ["user-1"]
       }
-    );
-    const currentPlan: MemoryHistoryIndexPlan = {
-      ...basePlan,
-      incremental,
-      preparedResultHash: rawResultHash,
-      rebuiltChunkIds: ["chunk-tail"],
-      resultHash: rawResultHash,
-      reusedChunkIds: ["chunk-stable"]
-    };
-    const digest = {
-      anchorChunkId: "chunk-tail",
-      contentHash: "d".repeat(64),
-      decisions: ["Use cedar deployment"],
-      id: "digest-1",
-      incrementalDepth: 0,
-      inputFingerprint: "e".repeat(64),
-      languageCode: "en",
-      occurredFrom: "2026-08-10T10:00:00.000Z",
-      occurredTo: "2026-08-10T10:01:00.000Z",
-      openLoops: ["Confirm rollout"],
-      redactionState: "NOT_NEEDED",
-      rebuildPolicyVersion: MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
-      safeDigestText: "Summary: Deployment options were compared.",
-      sourceChunkIds: ["chunk-stable", "chunk-tail"],
-      sourceFingerprint: "f".repeat(64),
-      sourceMessageIds: ["user-1", "assistant-1"],
-      summary: "Deployment options were compared.",
-      topics: ["Deployment"],
-      updateMode: "FULL_REBUILD"
-    } as const;
-    const classifier = { classify: vi.fn() };
-    const digestGenerator = {
-      generate: vi.fn(async () => ({
-        classificationRequired: true,
-        digest,
-        executions: [{
-          acceptedOutputHash: "c".repeat(64),
-          bindingId: "digest-generation"
-        }],
-        policyVersion: "memory-chat-digest-policy-test",
-        work: {
-          digestSegmentsProcessed: 1,
-          digestSourceChunksProcessed: 1
-        }
-      }))
-    };
-    const apply = vi.fn(async () => undefined);
-    const authorizeResults = vi.fn(async () => undefined);
-    const handler = createMemoryHistoryIndexHandler({
-      authorizeResults,
-      classifier,
-      digestGenerator,
-      repository: {
-        apply,
-        preflight: vi.fn(async () => ({ status: "READY" as const })),
-        prepare: vi.fn(async () => ({ plan: currentPlan }))
-      } as unknown as MemoryHistoryIndexRepository
-    });
-    const result = await handler.execute(currentClaim, context());
-
-    expect(result.operationalCounters).toMatchObject({
-      digestFullRebuild: 1,
-      digestIncremental: 0,
-      digestNoop: 0,
-      digestSegmentsProcessed: 1,
-      digestSourceChunksProcessed: 1
-    });
-
-    expect(classifier.classify).not.toHaveBeenCalled();
-    expect(digestGenerator.generate).toHaveBeenCalledWith(
-      source,
-      expect.arrayContaining([
-        expect.objectContaining({ id: "chunk-stable" }),
-        expect.objectContaining({ id: "chunk-tail" })
-      ]),
-      expect.objectContaining({
-        jobId: currentClaim.id,
-        timeZone: "UTC",
-        userId: source.userId
-      })
-    );
-    await result.apply?.({
-      $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
-    } as never, currentClaim);
-    expect(authorizeResults).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      source.userId,
-      currentClaim.id,
-      expect.arrayContaining([
-        expect.objectContaining({ bindingId: "digest-generation" })
-      ])
-    );
-    expect(apply).toHaveBeenCalledWith(
-      expect.anything(),
-      currentClaim,
-      expect.objectContaining({
-        digest,
-        digestPolicyVersion:
-          `memory-chat-digest-policy-test:${MEMORY_SAFETY_LITE_POLICY_VERSION}`,
-        rebuiltChunkIds: ["chunk-tail"],
-        reusedChunkIds: ["chunk-stable"]
-      }),
-      new Date("2026-08-10T12:00:00.000Z")
-    );
+    }).execute(claim(), context());
+    expect(truncated.stage).toBe("lexical_ready:history_message_truncated");
   });
 
-  it.each([
-    [new MemoryChatDigestOutputError("aggregate_limit"), "lexical_ready:digest_aggregate_limit"],
-    [new MemoryChatDigestOutputError("contract", "summary_length"), "lexical_ready:digest_contract_summary_length"]
-  ] as const)("commits safe chunks and preserves content-free digest failure detail (%#)", async (failure, expectedStage) => {
-    const currentClaim = claim();
-    const currentPlan = plan([chunk("chunk-safe", 0)]);
-    const apply = vi.fn(async () => undefined);
-    const authorizeResults = vi.fn(async () => undefined);
-    const classifier = { classify: vi.fn() };
+  it("hands a fence raised while staging the apply to the coordinator", async () => {
+    const fence = new MemoryJobFencedError("memory_history_job_invalid", {
+      errorCode: "memory_source_stale", status: "STALE"
+    });
+    const parent = chunk("chunk-fenced", 0);
+    const apply = vi.fn();
+    const handler = handlerFor(plan([parent], [round("round-fenced", parent.id, 0)]), apply);
     const executionContext = context();
-    const handler = createMemoryHistoryIndexHandler({
-      authorizeResults,
-      classifier,
-      digestGenerator: {
-        generate: vi.fn(async () => {
-          throw failure;
-        })
-      },
-      repository: {
-        apply,
-        preflight: vi.fn(async () => ({ status: "READY" as const })),
-        prepare: vi.fn(async () => ({ plan: currentPlan }))
-      } as unknown as MemoryHistoryIndexRepository
+    executionContext.setStage.mockImplementation(async (stage: string) => {
+      if (stage === "lexical_apply") throw fence;
     });
 
-    const result = await handler.execute(currentClaim, executionContext);
-
-    expect(result).toMatchObject({
-      operationalCounters: {
-        digestFullRebuild: 0,
-        digestIncremental: 0,
-        digestNoop: 0
-      },
-      stage: expectedStage
-    });
-    expect(classifier.classify).not.toHaveBeenCalled();
-    expect(executionContext.setStage.mock.calls.map(([stage]) => stage)).toEqual([
-      "source_snapshot",
-      "safety_classification",
-      "digest_generation",
-      "lexical_apply"
-    ]);
-    const tx = {
-      $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
-    };
-    await result.apply?.(tx as never, currentClaim);
-    expect(authorizeResults).not.toHaveBeenCalled();
-    expect(apply).toHaveBeenCalledWith(
-      tx,
-      currentClaim,
-      expect.objectContaining({
-        digest: null,
-        digestPolicyVersion:
-          `memory-chat-digest-output-degraded-v1:${failure.reason}`
-      }),
-      new Date("2026-08-10T12:00:00.000Z")
-    );
+    await expect(handler.execute(claim(), executionContext)).rejects.toBe(fence);
+    expect(apply).not.toHaveBeenCalled();
   });
-
-  it.each(["unavailable", "output_limit"] as const)("commits safe chunks when optional digest generation is %s", async (reason) => {
-    const currentClaim = claim();
-    const currentPlan = plan([chunk("chunk-safe", 0)]);
-    const apply = vi.fn(async () => undefined);
-    const handler = createMemoryHistoryIndexHandler({
-      classifier: {
-        classify: vi.fn(async () => ({
-          decisions: [{ chunkId: "chunk-safe", sensitivity: "NORMAL" as const }],
-          policyVersion: "memory-history-safety-policy-test"
-        }))
-      },
-      digestGenerator: {
-        generate: vi.fn(async () => {
-          throw new MemoryChatDigestError(`memory_chat_digest_${reason}`);
-        })
-      },
-      repository: {
-        apply,
-        preflight: vi.fn(async () => ({ status: "READY" as const })),
-        prepare: vi.fn(async () => ({ plan: currentPlan }))
-      } as unknown as MemoryHistoryIndexRepository
-    });
-
-    const result = await handler.execute(currentClaim, context());
-    expect(result).toMatchObject({
-      stage: `lexical_ready:digest_${reason}`
-    });
-    await result.apply?.({
-      $queryRaw: vi.fn(async () => [{ ownerStatus: "active", userId: source.userId }])
-    } as never, currentClaim);
-    expect(apply).toHaveBeenCalledWith(
-      expect.anything(),
-      currentClaim,
-      expect.objectContaining({
-        digest: null,
-        digestPolicyVersion:
-          `memory-chat-digest-output-degraded-v1:${reason}`
-      }),
-      new Date("2026-08-10T12:00:00.000Z")
-    );
-  });
-
-  it("does not invoke digest classification for a fingerprint no-op", async () => {
-    const currentClaim = claim();
-    const currentPlan = plan([chunk("chunk-stable", 0)]);
-    const classify = vi.fn(async () => ({
-      decisions: [{ chunkId: "chunk-stable", sensitivity: "NORMAL" as const }],
-      policyVersion: "memory-history-safety-policy-test"
-    }));
-    const digest = {
-      anchorChunkId: "chunk-stable",
-      contentHash: "d".repeat(64),
-      decisions: [],
-      id: "digest-noop",
-      incrementalDepth: 2,
-      inputFingerprint: "e".repeat(64),
-      languageCode: "en",
-      occurredFrom: "2026-08-10T10:00:00.000Z",
-      occurredTo: "2026-08-10T10:01:00.000Z",
-      openLoops: [],
-      redactionState: "NOT_NEEDED" as const,
-      rebuildPolicyVersion: MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
-      safeDigestText: "Summary: Existing safe digest.",
-      sourceChunkIds: ["chunk-stable"],
-      sourceFingerprint: "f".repeat(64),
-      sourceMessageIds: ["user-1", "assistant-1"],
-      summary: "Existing safe digest.",
-      topics: [],
-      updateMode: "UNCHANGED" as const
-    };
-    const handler = createMemoryHistoryIndexHandler({
-      classifier: { classify },
-      digestGenerator: {
-        generate: vi.fn(async () => ({
-          classificationRequired: false,
-          digest,
-          executions: [],
-          policyVersion: "prior-generator:prior-classifier",
-          work: {
-            digestSegmentsProcessed: 0,
-            digestSourceChunksProcessed: 0
-          }
-        }))
-      },
-      repository: {
-        apply: vi.fn(async () => undefined),
-        preflight: vi.fn(async () => ({ status: "READY" as const })),
-        prepare: vi.fn(async () => ({ plan: currentPlan }))
-      } as unknown as MemoryHistoryIndexRepository
-    });
-
-    const result = await handler.execute(currentClaim, context());
-
-    expect(classify).not.toHaveBeenCalled();
-    expect(result.operationalCounters).toMatchObject({
-      digestFullRebuild: 0,
-      digestIncremental: 0,
-      digestNoop: 1,
-      digestSegmentsProcessed: 0,
-      digestSourceChunksProcessed: 0
-    });
-  });
-});
-
-describe("Memory INDEX_HISTORY fences during classification", () => {
-  it.each(["contextual_key_generation", "digest_generation"] as const)(
-    "hands a fence raised during %s to the coordinator instead of degrading the source",
-    async (stage) => {
-      const fence = new MemoryJobFencedError("memory_history_job_invalid", {
-        errorCode: "memory_source_stale", status: "STALE"
-      });
-      const parent = chunk("chunk-fenced", 0);
-      const apply = vi.fn();
-      const handler = createMemoryHistoryIndexHandler({
-        ...(stage === "contextual_key_generation"
-          ? { contextualKeyGenerator: { generate: vi.fn(async () => { throw fence; }) } }
-          : {}),
-        digestGenerator: { generate: vi.fn(async () => { throw fence; }) },
-        repository: {
-          apply,
-          preflight: vi.fn(async () => ({ status: "READY" as const })),
-          prepare: vi.fn(async () => ({ plan: plan([parent], [round("round-fenced", parent.id, 0)]) }))
-        } as unknown as MemoryHistoryIndexRepository
-      });
-      const executionContext = context();
-
-      await expect(handler.execute(claim(), executionContext)).rejects.toBe(fence);
-      expect(fence).toMatchObject({ code: "memory_history_job_invalid", retryable: false,
-        decision: { errorCode: "memory_source_stale", status: "STALE" } });
-      expect(executionContext.setStage.mock.calls.at(-1)?.[0]).toBe(stage);
-      expect(apply).not.toHaveBeenCalled();
-    }
-  );
 });

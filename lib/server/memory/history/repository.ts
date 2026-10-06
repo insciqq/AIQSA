@@ -44,7 +44,6 @@ import {
   type MemoryRecallChunkPage
 } from "./chunking";
 import {
-  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   memoryHistoryChunkId,
   memoryHistoryIndexClaimIsValid,
@@ -1411,11 +1410,6 @@ async function prepareWith(
     chunksBuilt: projectedChunks.length,
     chunksReplaced: Math.max(0, previous.chunks.length - retained.length),
     chunksReused: retained.length,
-    contextualProviderRequests: 0,
-    contextualRoundsFallback: 0,
-    contextualRoundsGenerated: 0,
-    digestSegmentsProcessed: 0,
-    digestSourceChunksProcessed: 0,
     messageContentRowsLoaded: rows.length,
     messagesProjected: messages.length,
     modelRunRowsLoaded: runs.length,
@@ -1436,8 +1430,6 @@ async function prepareWith(
     timeZone,
     {
       checkpointMessages,
-      digest: null,
-      digestPolicyVersion: null,
       incremental: incrementalSnapshot,
       rebuiltChunkIds,
       rebuiltRoundIds,
@@ -1453,8 +1445,6 @@ async function prepareWith(
       classificationPolicyVersion: null,
       checkpointMessages,
       chunks,
-      digest: null,
-      digestPolicyVersion: null,
       incremental: incrementalSnapshot,
       preparedResultHash: resultHash,
       rebuiltChunkIds,
@@ -2051,32 +2041,7 @@ async function planAlreadyApplied(
         );
       })) return false;
   }
-  const activeDigest = await tx.chatMemoryDigest.findFirst({
-    where: { chatId: plan.source.chatId, state: "ACTIVE", userId: plan.source.userId }
-  });
-  if (plan.digest === null) return activeDigest === null;
-  if (!activeDigest || activeDigest.id !== plan.digest.id ||
-    activeDigest.contentHash !== plan.digest.contentHash ||
-    activeDigest.incrementalDepth !== plan.digest.incrementalDepth ||
-    activeDigest.inputFingerprint !== plan.digest.inputFingerprint ||
-    activeDigest.rebuildPolicyVersion !== plan.digest.rebuildPolicyVersion ||
-    activeDigest.safeDigestText !== plan.digest.safeDigestText ||
-    activeDigest.sourceFingerprint !== plan.digest.sourceFingerprint ||
-    activeDigest.sourceContentHash !== plan.source.sourceHash ||
-    activeDigest.activeLeafMessageId !== plan.source.activeLeafMessageId ||
-    activeDigest.updateMode !== plan.digest.updateMode) return false;
-  const [digestChunks, digestMessages] = await Promise.all([
-    tx.chatMemoryDigestChunk.findMany({
-      orderBy: { ordinal: "asc" }, where: { digestId: plan.digest.id }
-    }),
-    tx.chatMemoryDigestMessage.findMany({
-      orderBy: { ordinal: "asc" }, where: { digestId: plan.digest.id }
-    })
-  ]);
-  return digestChunks.map(({ chunkId }) => chunkId).join("\u0000") ===
-      plan.digest.sourceChunkIds.join("\u0000") &&
-    digestMessages.map(({ messageId }) => messageId).join("\u0000") ===
-      plan.digest.sourceMessageIds.join("\u0000");
+  return true;
 }
 
 async function persistChunk(
@@ -2641,135 +2606,6 @@ async function enqueueChunkEmbedding(
   });
 }
 
-async function persistDigest(
-  tx: MemoryTransaction,
-  plan: MemoryHistoryIndexPlan,
-  now: Date
-): Promise<void> {
-  const current = await tx.chatMemoryDigest.findMany({
-    select: { id: true },
-    where: {
-      chatId: plan.source.chatId,
-      state: "ACTIVE",
-      userId: plan.source.userId
-    }
-  });
-  const staleIds = current.flatMap(({ id }) =>
-    id === plan.digest?.id ? [] : [id]);
-  if (staleIds.length > 0) {
-    await tx.chatMemoryDigest.updateMany({
-      data: { invalidatedAt: now, state: "INVALIDATED" },
-      where: { id: { in: staleIds }, userId: plan.source.userId }
-    });
-  }
-  const digest = plan.digest;
-  if (!digest) return;
-  if (!plan.digestPolicyVersion) {
-    throw new MemoryCoordinatorError("memory_chat_digest_invalid", false);
-  }
-  const anchor = plan.chunks.find((chunk) => chunk.id === digest.anchorChunkId);
-  if (!anchor || anchor.publicationState !== "ACTIVE") {
-    throw new MemoryCoordinatorError("memory_chat_digest_invalid", false);
-  }
-  await tx.chatMemoryDigest.upsert({
-    create: {
-      activeLeafMessageId: plan.source.activeLeafMessageId,
-      anchorChunkId: digest.anchorChunkId,
-      branchGeneration: plan.source.branchGeneration,
-      chatId: plan.source.chatId,
-      contentHash: digest.contentHash,
-      decisions: [...digest.decisions],
-      id: digest.id,
-      incrementalDepth: digest.incrementalDepth,
-      inputFingerprint: digest.inputFingerprint,
-      languageCode: digest.languageCode,
-      normalizedSafeSearchText: normalizeMemorySearchText(digest.safeDigestText),
-      occurredFrom: new Date(digest.occurredFrom),
-      occurredTo: new Date(digest.occurredTo),
-      openLoops: [...digest.openLoops],
-      pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-      rebuildPolicyVersion: digest.rebuildPolicyVersion,
-      redactionState: digest.redactionState,
-      safeDigestText: digest.safeDigestText,
-      safetyClass: "NORMAL",
-      safetyPolicyVersion: plan.digestPolicyVersion,
-      sourceAssistantId: anchor.sourceAssistantId,
-      sourceContentHash: plan.source.sourceHash,
-      sourceFingerprint: digest.sourceFingerprint,
-      sourceFolderId: anchor.folderId,
-      sourceProjectionVersion: anchor.sourceProjectionVersion,
-      sourceRevisionAtCreation: plan.source.sourceRevision,
-      state: "ACTIVE",
-      summary: digest.summary,
-      topics: [...digest.topics],
-      updateMode: digest.updateMode,
-      userId: plan.source.userId
-    },
-    update: {
-      activeLeafMessageId: plan.source.activeLeafMessageId,
-      anchorChunkId: digest.anchorChunkId,
-      branchGeneration: plan.source.branchGeneration,
-      contentHash: digest.contentHash,
-      decisions: [...digest.decisions],
-      incrementalDepth: digest.incrementalDepth,
-      inputFingerprint: digest.inputFingerprint,
-      invalidatedAt: null,
-      languageCode: digest.languageCode,
-      normalizedSafeSearchText: normalizeMemorySearchText(digest.safeDigestText),
-      occurredFrom: new Date(digest.occurredFrom),
-      occurredTo: new Date(digest.occurredTo),
-      openLoops: [...digest.openLoops],
-      rebuildPolicyVersion: digest.rebuildPolicyVersion,
-      redactionState: digest.redactionState,
-      safeDigestText: digest.safeDigestText,
-      safetyClass: "NORMAL",
-      safetyPolicyVersion: plan.digestPolicyVersion,
-      sourceAssistantId: anchor.sourceAssistantId,
-      sourceContentHash: plan.source.sourceHash,
-      sourceFingerprint: digest.sourceFingerprint,
-      sourceFolderId: anchor.folderId,
-      sourceRevisionAtCreation: plan.source.sourceRevision,
-      state: "ACTIVE",
-      summary: digest.summary,
-      topics: [...digest.topics],
-      updateMode: digest.updateMode
-    },
-    where: { id: digest.id }
-  });
-  await Promise.all([
-    tx.chatMemoryDigestChunk.deleteMany({ where: { digestId: digest.id } }),
-    tx.chatMemoryDigestMessage.deleteMany({ where: { digestId: digest.id } })
-  ]);
-  await tx.chatMemoryDigestChunk.createMany({
-    data: digest.sourceChunkIds.map((chunkId, ordinal) => ({
-      chatId: plan.source.chatId,
-      chunkId,
-      digestId: digest.id,
-      ordinal,
-      userId: plan.source.userId
-    }))
-  });
-  const messageIdentities = new Map(plan.chunks.flatMap((chunk) =>
-    chunk.messageJoins.map((join) => [join.messageId, join] as const)));
-  await tx.chatMemoryDigestMessage.createMany({
-    data: digest.sourceMessageIds.map((messageId, ordinal) => {
-      const identity = messageIdentities.get(messageId);
-      if (!identity) {
-        throw new MemoryCoordinatorError("memory_chat_digest_invalid", false);
-      }
-      return {
-        chatId: plan.source.chatId,
-        digestId: digest.id,
-        messageId,
-        ordinal,
-        sourceMessageContentHash: identity.sourceMessageContentHash,
-        sourceMessageUpdatedAt: new Date(identity.sourceMessageUpdatedAt),
-        userId: plan.source.userId
-      };
-    })
-  });
-}
-
 async function applyPlan(
   tx: MemoryTransaction,
   claim: MemoryJobClaim,
@@ -2786,7 +2622,6 @@ async function applyPlan(
     plan.source.sourceHash !== claim.sourceHash ||
     plan.source.sourceRevision !== claim.sourceRevision ||
     plan.source.userId !== claim.userId ||
-    plan.digestPolicyVersion === null ||
     memoryHistoryIndexResultHash(
       plan.source,
       plan.chunks,
@@ -2795,8 +2630,6 @@ async function applyPlan(
       plan.timeZone,
       {
         checkpointMessages: plan.checkpointMessages,
-        digest: plan.digest,
-        digestPolicyVersion: plan.digestPolicyVersion,
         incremental: plan.incremental,
         rebuiltChunkIds: plan.rebuiltChunkIds,
         rebuiltRoundIds: plan.rebuiltRoundIds,
@@ -2900,10 +2733,6 @@ async function applyPlan(
       userId: claim.userId
     }
   });
-  const currentDigest = await tx.chatMemoryDigest.findFirst({
-    select: { contentHash: true, id: true },
-    where: { chatId: claim.chatId, state: "ACTIVE", userId: claim.userId }
-  });
   const currentVisible = currentChunks.flatMap((chunk) =>
     chunk.state === "ACTIVE" ? [chunk.id] : []).sort();
   const nextVisible = plan.chunks.flatMap((chunk) =>
@@ -2916,9 +2745,7 @@ async function applyPlan(
   const nextVisibleToolEvents = plan.toolEvents.map(({ id }) => id).sort();
   const visibilityChanged = currentVisible.join("\u0000") !== nextVisible.join("\u0000") ||
     currentVisibleRounds.join("\u0000") !== nextVisibleRounds.join("\u0000") ||
-    currentVisibleToolEvents.join("\u0000") !== nextVisibleToolEvents.join("\u0000") ||
-    (currentDigest?.id ?? null) !== (plan.digest?.id ?? null) ||
-    (currentDigest?.contentHash ?? null) !== (plan.digest?.contentHash ?? null);
+    currentVisibleToolEvents.join("\u0000") !== nextVisibleToolEvents.join("\u0000");
   let activeIndex: MemoryActiveIndex | null = null;
   if (visibilityChanged) {
     await advanceMemoryMutation(tx, settings, "CHUNK_VISIBILITY_CHANGE");
@@ -3157,7 +2984,6 @@ async function applyPlan(
     const entry = await persistToolEvent(tx, activeIndex!, plan, event);
     await enqueueChunkEmbedding(tx, settings, entry, plan.resultHash);
   }
-  await persistDigest(tx, plan, now);
   // READY states that the cursor proof is consistent; coverage is the cursor.
   // A partial page leaves lastIndexedMessageId before the active leaf, which
   // keeps the source out of retrieval authority, source projections and

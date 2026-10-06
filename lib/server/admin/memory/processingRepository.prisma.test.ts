@@ -106,7 +106,7 @@ describe("administrator Memory processing aggregates", () => {
     } finally { await f.cleanup(); }
   });
 
-  it("treats history output repaired by an in-job validation retry as complete", async () => {
+  it("never reports a failed earlier history call of a succeeded job", async () => {
     const f = await fixture();
     try {
       resolution.available = true;
@@ -126,14 +126,10 @@ describe("administrator Memory processing aggregates", () => {
       } });
       const history = async () => (await readAdminMemoryProcessing(prisma, f.now)).issues
         .filter(({ stage }) => stage === "HISTORY").map(({ reason }) => reason);
+      // History indexing no longer calls models; an earlier release's failed
+      // enrichment call left raw history complete.
       await binding(0, "FAILED", "a".repeat(64), "memory_classifier_output_invalid");
-      expect(await history()).toEqual(["HISTORY_INCOMPLETE"]);
-      await binding(1, "SUCCEEDED", "a".repeat(64));
-      expect(await history()).toEqual([]);
-      // A repair of one input never hides another input's failure.
-      await binding(2, "FAILED", "b".repeat(64), "memory_classifier_output_limit_exceeded");
-      expect(await history()).toEqual(["OUTPUT_LIMIT"]);
-      await binding(3, "SUCCEEDED", "b".repeat(64));
+      await binding(1, "FAILED", "b".repeat(64), "memory_classifier_output_limit_exceeded");
       expect(await history()).toEqual([]);
     } finally {
       await prisma.memoryExecutionBinding.deleteMany({ where: { userId: f.userId } });

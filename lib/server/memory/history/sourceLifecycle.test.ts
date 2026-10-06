@@ -162,7 +162,6 @@ function settlementTransaction() {
       updateMany: vi.fn(async () => ({ count: 1 })),
       upsert: vi.fn(async () => ({}))
     },
-    chatMemoryDigest: { findFirst: vi.fn(async () => null) },
     memoryJob: { create, findUnique: vi.fn(async () => null) }
   } as unknown as MemoryTransaction;
   return { create, tx };

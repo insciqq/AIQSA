@@ -103,6 +103,8 @@ describe("Memory operational PostgreSQL contracts", () => {
       await prisma.memoryJob.update({
         data: {
           completedAt,
+          // Retired digest and contextual-key counters of jobs settled before
+          // their removal stay valid durable values but are no longer reported.
           operationalCounters: {
             digestIncremental: 1,
             digestNoop: 2,
@@ -139,26 +141,6 @@ describe("Memory operational PostgreSQL contracts", () => {
         chunksBuilt: 3,
         chunksReplaced: 4,
         chunksReused: 5,
-        contextualProviderRequests: 1,
-        contextualFallbackReasons: [{
-          code: "contextualFallbackUnsupportedNumber",
-          count: 2
-        }],
-        contextualLanguageCounts: [{
-          code: "contextualFallbackDeclared",
-          count: 2
-        }, {
-          code: "contextualGeneratedDeclared",
-          count: 4
-        }, {
-          code: "contextualGeneratedMixed",
-          count: 6
-        }],
-        contextualRoundsFallback: 2,
-        contextualRoundsGenerated: 6,
-        digestFullRebuild: 0,
-        digestIncremental: 1,
-        digestNoop: 2,
         messagesProjected: 5,
         recallRoundLongCount: 0,
         recallRoundMaxSegmentCount: 0,
@@ -229,7 +211,7 @@ describe("Memory operational PostgreSQL contracts", () => {
       await review(active, { settled: false });
       await review(paused, { settled: false });
       const snapshot = await loadMemoryOperationalSnapshot(prisma, { from, to });
-      expect(snapshot.version).toBe("memory-operational-snapshot-v8");
+      expect(snapshot.version).toBe("memory-operational-snapshot-v9");
       expect(snapshot.maintenance).toEqual({
         blocked: before.maintenance.blocked + 2,
         blockedReasons: [{ code: "pending_relation", count: 1 }, { code: "source_changed", count: 1 }],

@@ -36,10 +36,6 @@ function memoryState(status: AdminMemoryStatus): Readonly<{ label: string; statu
   // Recent command/search outcomes are listed below but are not processing state.
   const issues = status.processing.issues.filter((issue) => !isAdminMemoryRecentActivityIssue(issue));
   if (issues.some((issue) => issue.severity === "bad")) return { label: "Processing blocked", status: "unavailable" };
-  if (issues.length > 0 && issues.every((issue) => issue.reason === "OUTPUT_LIMIT" || issue.reason === "HISTORY_INCOMPLETE")) {
-    return { label: issues.every((issue) => issue.autoHeal === "RETRYING")
-      ? "Recovering history" : "Limited history context", status: "reindexing" };
-  }
   if (issues.length > 0) return { label: "Processing delayed", status: "reindexing" };
   switch (status.index.readiness) {
     case "READY":

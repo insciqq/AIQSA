@@ -4,7 +4,6 @@ import { prisma } from "../../prisma";
 import { createPrismaMemoryEmbeddingHandler } from
   "../embedding/compositeHandler";
 import { createPrismaMemoryHistoryIndexHandler } from "../history/handler";
-import { autoHealIncompleteMemoryHistory } from "../history/autoHeal";
 import { ensureDefaultMemoryPurgeHandlerRegistered } from "../purge/defaultPurge";
 import { MemoryCoordinator, type MemoryCoordinatorStopResult } from "./coordinator";
 import {
@@ -66,7 +65,6 @@ type DefaultMemoryReconciliationWork = Readonly<{
   cutover?: () => Promise<unknown>;
   historyFenceRepair?: () => Promise<unknown>;
   historyBackfill?: () => Promise<unknown>;
-  historyAutoHeal?: () => Promise<unknown>;
   embeddingSweep?: () => Promise<unknown>;
   extractionHeal?: () => Promise<unknown>;
   reclassification?: () => Promise<unknown>;
@@ -89,7 +87,6 @@ const defaultMemoryReconciliationWork: DefaultMemoryReconciliationWork =
         getDefaultMemoryCoordinatorRuntime().policy.maxJobParallelPerUser
       )
     ),
-    historyAutoHeal: () => autoHealIncompleteMemoryHistory(prisma, { limit: 8, now: new Date() }),
     embeddingSweep: () => defaultMemoryEmbeddingSweep.reconcile(new Date()),
     extractionHeal: () => healFailedMemoryFactExtractions(prisma, { now: new Date() }),
     reclassification: () => reconcileMemoryFactReclassificationJobs(prisma),
@@ -120,7 +117,6 @@ export async function reconcileDefaultMemoryWork(
     // Released fence casualties are indexed by the same pass's backfill.
     work.historyFenceRepair,
     work.historyBackfill,
-    work.historyAutoHeal,
     // Bounded once per interval: vectors stranded without live batch work.
     work.embeddingSweep,
     // Bounded per pass and owner; each source holds one key per policy version.
