@@ -19,6 +19,7 @@ import {
 } from "./session";
 import { hashToken } from "./token";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "../http/requestBody";
+import { logEvent } from "../observability";
 import {
   waitForAuthResponseFloor
 } from "./responseFloor";
@@ -424,7 +425,7 @@ export function createRegisterHandler(deps: RegisterHandlerDeps) {
       )
         .then((delivery) => {
           if (delivery.kind === "failed") {
-            console.error("verification_email_failed", delivery.error);
+            logEvent("service_operation", { subsystem: "email", stage: "dispatch", outcome: "failed", code: "verification_email_failed" });
           }
         })
         .catch(() => undefined);

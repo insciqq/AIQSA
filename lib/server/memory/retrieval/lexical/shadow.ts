@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
+import { logEvent } from "../../../observability";
 import type {
   MemoryLaneCandidate,
   MemoryRetrievalLane
@@ -294,10 +295,61 @@ MemoryLexicalShadowRuntime {
   }
 }
 
+/** The candidate top-50 rank of the reference's first entry (0 when absent),
+ * recovered from its reciprocal-rank difference. */
+function firstReferenceRank(difference: number | null): number | undefined {
+  if (difference === null || !Number.isFinite(difference)) return undefined;
+  const reciprocal = difference + 1;
+  return reciprocal <= 0 ? 0 : Math.round(1 / reciprocal);
+}
+
+/** The operator's rollout comparison, one structured record per compared lane;
+ * counts and closed codes only, never entry identities or query terms. */
 export function defaultMemoryLexicalShadowSink(
   receipt: MemoryLexicalShadowReceipt
 ): void {
-  console.info(JSON.stringify(receipt));
+  const base = {
+    stage: receipt.stage,
+    outcome: receipt.failureCode === null ? "completed" as const : "failed" as const,
+    duration_ms: receipt.durationMs,
+    code: receipt.failureCode ?? undefined,
+    timed_out: receipt.timedOut
+  };
+  if (receipt.lanes.length === 0) {
+    logEvent("memory_lexical_shadow", base);
+    return;
+  }
+  for (const lane of receipt.lanes) {
+    const { comparison, openSearch, postgres } = lane;
+    logEvent("memory_lexical_shadow", {
+      ...base,
+      lane: lane.lane,
+      opensearch_duration_ms: openSearch.durationMs,
+      opensearch_code: openSearch.failureCode ?? undefined,
+      opensearch_timed_out: openSearch.timedOut,
+      opaque_id_present: openSearch.opaqueIdPresent,
+      raw_candidate_count: openSearch.rawCandidateCount,
+      canonical_accepted_count: openSearch.canonicalAcceptedCount,
+      rejected_authority_count: openSearch.rejectedAuthorityCount,
+      rejected_generation_count: openSearch.rejectedGenerationCount,
+      rejected_hash_count: openSearch.rejectedHashCount,
+      projection_caught_up: openSearch.projectionCaughtUp ?? undefined,
+      projection_event_lag: openSearch.projectionEventLag ?? undefined,
+      projection_revision_lag: openSearch.projectionRevisionLag ?? undefined,
+      projection_visible_age_ms: openSearch.projectionVisibleAgeMs ?? undefined,
+      folded_count: openSearch.matchModeCounts.FOLDED,
+      ngram_count: openSearch.matchModeCounts.NGRAM,
+      transliterated_count: openSearch.matchModeCounts.TRANSLITERATED,
+      unicode_count: openSearch.matchModeCounts.UNICODE,
+      postgres_raw_candidate_count: postgres.rawCandidateCount,
+      postgres_canonical_accepted_count: postgres.canonicalAcceptedCount,
+      reference_top10_count: comparison.referenceTop10Count,
+      candidate_top10_count: comparison.candidateTop10Count,
+      top10_intersection_count: comparison.top10IntersectionCount,
+      reference_top10_in_candidate_top50_count: comparison.referenceTop10InCandidateTop50Count,
+      first_reference_rank: firstReferenceRank(comparison.firstReferenceCandidateReciprocalRankDifference)
+    });
+  }
 }
 
 const defaultShadowRuntimes = new WeakMap<object, Map<string,

@@ -3,6 +3,8 @@ import type {
   AdminAttentionResponse
 } from "../../../contracts/adminAttention";
 import type { RequestAuthResolver } from "../../auth/requestAuth";
+import { logEvent } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { AdminAttentionService } from "./service";
 
 const PRIVATE_CACHE_CONTROL = "private, no-store, max-age=0";
@@ -26,8 +28,9 @@ export function createAdminAttentionHandler(input: Readonly<{
     }
     try {
       return json({ attention: await input.service.list(session.userId) });
-    } catch {
-      console.error("admin_attention_failed");
+    } catch (error) {
+      logEvent("service_operation", { subsystem: "admin", stage: "read", outcome: "failed",
+        code: "admin_attention_failed", prisma_code: databaseFailureCode(error) });
       return json({ error: "admin_attention_failed" }, 500);
     }
   };

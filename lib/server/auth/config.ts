@@ -1,4 +1,5 @@
 import { hashToken } from "./token";
+import { logEvent } from "../observability";
 import type { OAuthProviderId } from "../../auth/oauth";
 import { isTestAuthAllowedEnv } from "./csrf";
 import { getRuntimePeerSecret, isLoopbackHostname } from "./clientIdentity";
@@ -199,9 +200,11 @@ export function getAuthConfig(env: Record<string, string | undefined> = process.
     !warnedDevBootstrapToken
   ) {
     warnedDevBootstrapToken = true;
-    console.warn(
-      "AIQSA bootstrap recovery login is enabled with the known development bootstrap token hash outside test mode. Generate a unique AIQSA_BOOTSTRAP_AUTH_TOKEN or AIQSA_BOOTSTRAP_AUTH_TOKEN_SHA256 before exposing the app."
-    );
+    // Not development-only: a production installation can carry the known
+    // token too. The operator replaces AIQSA_BOOTSTRAP_AUTH_TOKEN(_SHA256).
+    logEvent("service_operation", {
+      subsystem: "configuration", stage: "validate", outcome: "degraded", code: "bootstrap_token_insecure"
+    });
   }
 
   return {
