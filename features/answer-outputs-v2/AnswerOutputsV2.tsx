@@ -58,6 +58,7 @@ import {
 } from "react";
 import { GeminiSearchSuggestionsV2 } from "./GeminiSearchSuggestionsV2";
 import { ScheduledTaskCardsV2 } from "./ScheduledTaskCardV2";
+import { SkillSaveCardsV2 } from "./SkillSaveCardV2";
 import { presentSearchSourcesV2 } from "./sourcePresentation";
 
 function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
@@ -546,12 +547,14 @@ export function AnswerOutputsV2({
   workspaceOutputStatus?: ThreadWorkspaceOutputStatus | null;
 }>) {
   const scheduledTasks = artifact?.scheduledTasks ?? [];
+  const skillSaves = artifact?.skillSaves ?? [];
   if (live) {
-    // A created or changed task already is so: its card does not wait for the answer.
+    // A created or changed task or a saved Skill already is so: its card does not wait for the answer.
     const drafts = artifact?.generatedFiles?.filter(file => file.checkpoint) ?? [];
-    return drafts.length || scheduledTasks.length ? <div className="v2-answer-outputs" data-testid="answer-outputs">
+    return drafts.length || scheduledTasks.length || skillSaves.length ? <div className="v2-answer-outputs" data-testid="answer-outputs">
       {drafts.length ? <GeneratedFilesV2 canSave={canSaveFiles} files={drafts} /> : null}
       <ScheduledTaskCardsV2 cards={scheduledTasks} live onEdit={onEditScheduledTask} />
+      <SkillSaveCardsV2 cards={skillSaves} live />
     </div> : null;
   }
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
@@ -569,7 +572,7 @@ export function AnswerOutputsV2({
 
   if ((!artifact || (
     !hasSuggestions && !hasKnowledgeState && !hasGeneratedFiles && !hasGeneratedImages && !hasGeneratedArtifacts &&
-    scheduledTasks.length === 0
+    scheduledTasks.length === 0 && skillSaves.length === 0
   )) && !outputStatusCopy) {
     return null;
   }
@@ -590,6 +593,7 @@ export function AnswerOutputsV2({
       {artifact?.generatedImages?.map((image) => <ChatImageV2 key={image.attachmentId} attachmentId={image.attachmentId} label="Generated image" width={image.width} height={image.height} canSave={canSaveFiles} onUseInArtifact={onUseImageInArtifact ? () => onUseImageInArtifact(image.attachmentId) : undefined} />)}
       {hasGeneratedArtifacts ? <GeneratedArtifactsV2 artifacts={artifact?.generatedArtifacts ?? []} onEditArtifact={onEditArtifact} onOpenArtifact={onOpenArtifact} /> : null}
       <ScheduledTaskCardsV2 cards={scheduledTasks} onEdit={onEditScheduledTask} />
+      <SkillSaveCardsV2 cards={skillSaves} />
       {hasGeneratedFiles ? (
         <GeneratedFilesV2 canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} />
       ) : null}

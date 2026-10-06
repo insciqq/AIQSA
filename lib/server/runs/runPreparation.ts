@@ -96,6 +96,7 @@ import { mcpToolIndexGuidance, mcpFindToolsTool } from "../mcp/discovery";
 import { sessionStatusTool } from "../tools/sessionStatus";
 import { monitoringCheckInstruction, monitoringVerdictTool } from "../tools/monitoringVerdict";
 import { isScheduledTaskToolSettings, scheduledTaskToolsForRequest } from "../tools/scheduledTaskCreation";
+import { skillSaveToolsForRequest } from "../tools/skillSave";
 import { admitScheduledTaskManagement, scheduledTaskManagementToolsForRequest } from "../tools/scheduledTaskManagement";
 import {
   FETCH_URL_LIMITS,
@@ -210,6 +211,8 @@ type RunPreparationRepository = Pick<
   RunRepository,
   /** Present where a run can create a scheduled task: admission offers the tool only then. */
   | "createScheduledTaskForCall"
+  /** Present where a run can save a Workspace folder as a Skill: admission offers `save_skill` only then. */
+  | "saveSkillForCall"
   /** Present where a run can manage scheduled tasks: admission offers that tool only then. */
   | "loadScheduledTaskManagement"
   | "manageScheduledTaskForCall"
@@ -2382,6 +2385,15 @@ async function prepareRunWith(
       }
     : undefined;
   const scheduledTaskTool = isScheduledTaskToolSettings(scheduledTaskSettings) ? scheduledTaskSettings : undefined;
+  // The owner's own interactive personal chat with Workspace on, or a personal
+  // Agent run, may save one Workspace folder per answer as a personal Skill
+  // (operator exception, 2026-10-07). Never an answer to a scheduled task's
+  // prompt, a temporary, Project, Assistant or Knowledge run: there the tool
+  // is absent, not refused late.
+  const skillSaveTool = !scheduledPromptAnswer && !project && !assistantRun && !knowledgeRequested &&
+    resolvedChatMode.mode !== "TEMPORARY" && workspaceAdmissionPlan !== undefined &&
+    typeof deps.repository.saveSkillForCall === "function" && (agentEnabled || (modelCapabilities.toolCalling === true &&
+      toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true));
   // One page reader for every tool-calling model, never an Agent run or a
   // Project with external tools off. Frozen here: the links user-authored text
   // on this branch authorizes (never a scheduled prompt's), or a scheduled
@@ -2447,6 +2459,7 @@ async function prepareRunWith(
     ...(monitoringCheck ? { monitoringVerdictTool: true as const } : {}),
     ...(scheduledTaskTool ? { scheduledTaskTool } : {}),
     ...(scheduledTaskManagementTool ? { scheduledTaskManagementTool } : {}),
+    ...(skillSaveTool ? { skillSaveTool: true as const } : {}),
     ...(fetchUrlPlan ? { fetchUrl: fetchUrlPlan } : {}),
     toolHistory,
     attachmentIds,
@@ -2538,6 +2551,7 @@ async function prepareRunWith(
     ...(baseNormalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
     ...scheduledTaskToolsForRequest(baseNormalizedRequest),
     ...scheduledTaskManagementToolsForRequest(baseNormalizedRequest),
+    ...(agent ? [] : skillSaveToolsForRequest(baseNormalizedRequest)),
     ...fetchUrlToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
         ...(memorySearch ? [memorySearchTool(memorySearch)] : []),

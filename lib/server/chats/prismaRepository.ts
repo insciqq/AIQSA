@@ -14,6 +14,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskCard
 } from "../../contracts/scheduledTasks";
+import { foldSkillSaveCards } from "../../contracts/skillSaves";
 import { isMonitoringVerdictCall } from "../tools/monitoringVerdict";
 import { scheduledTaskRowSelect, toScheduledTask } from "../scheduledTasks/store";
 import { projectGroundingDisplay } from "../runs/runOutputEvents";
@@ -1380,6 +1381,8 @@ export function summarizeMessageRunArtifacts(
       return decoded ? [decoded] : [];
     }));
   const scheduledTasks = answerScheduledTaskCards(artifactPayloads, currentScheduledTasks);
+  const skillSaves = foldSkillSaveCards(artifactPayloads.filter((payload) => artifactType(payload) === "skill_save")
+    .map(artifactInnerPayload));
 
   const knowledgeRuns = (run.knowledgeRuns ?? [])
     .filter((knowledgeRun) =>
@@ -1433,6 +1436,7 @@ export function summarizeMessageRunArtifacts(
     generatedFiles.length === 0 &&
     generatedArtifacts.length === 0 &&
     scheduledTasks.length === 0 &&
+    skillSaves.length === 0 &&
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
     knowledgeCitations.length === 0 &&
@@ -1464,6 +1468,7 @@ export function summarizeMessageRunArtifacts(
     reasoningText: reasoningTexts,
     ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks.length > 0 ? { scheduledTasks } : {}),
+    ...(skillSaves.length > 0 ? { skillSaves } : {}),
     sources,
     ...(sourceList.truncated ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== null ? { workDurationMs } : {})

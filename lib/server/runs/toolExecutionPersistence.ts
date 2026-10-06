@@ -27,6 +27,7 @@ const artifactTypes = new Set([
   "reasoning",
   "scheduled_task",
   "search",
+  "skill_save",
   "summary",
   "tool_call",
   "tool_result",

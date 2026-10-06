@@ -991,5 +991,37 @@
   .v2-scheduled-task-card-actions { margin-left: 3.25rem; }
 }
 
+.v2-skill-save-cards { margin-top: 0.375rem; }
+.v2-skill-save-cards > ul { display: grid; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+.v2-skill-save-card { display: grid; min-width: 0; gap: 0.5rem; padding: 0.75rem; border: 1px solid var(--v2-color-border2); border-radius: var(--v2-radius-m); color: var(--v2-color-text); }
+.v2-skill-save-card-top { display: flex; min-width: 0; align-items: flex-start; gap: 0.75rem; }
+.v2-skill-save-card-tile { display: grid; width: 2.5rem; height: 2.5rem; flex: 0 0 auto; place-items: center; border-radius: var(--v2-radius-m); color: var(--v2-color-accent); background: var(--v2-color-accent-dim); }
+.v2-skill-save-card[data-undo="undone"] .v2-skill-save-card-tile { color: var(--v2-color-text3); background: var(--v2-color-surface2); }
+.v2-skill-save-card-copy { display: grid; min-width: 0; flex: 1 1 auto; gap: 0.125rem; }
+.v2-skill-save-card-heading { margin: 0; color: var(--v2-color-text2); font-size: 0.75rem; font-weight: 500; }
+.v2-skill-save-card-copy strong { overflow: hidden; font-size: 0.875rem; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.v2-skill-save-card-copy small, .v2-skill-save-unchanged { color: var(--v2-color-text3); font-size: 0.75rem; overflow-wrap: anywhere; }
+.v2-skill-save-card-warning { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0; padding: 0.5rem 0.625rem; border-radius: var(--v2-radius-s); color: var(--v2-color-text); background: color-mix(in srgb, var(--v2-color-warn) 12%, transparent); font-size: 0.8125rem; line-height: 1.45; overflow-wrap: anywhere; }
+.v2-skill-save-card-warning > svg { flex: 0 0 auto; margin-top: 0.125rem; color: var(--v2-color-warn); }
+.v2-skill-save-files { display: grid; gap: 0.375rem; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.v2-skill-save-files > li { display: grid; min-width: 0; gap: 0.25rem; }
+.v2-skill-save-file-head { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
+.v2-skill-save-file-head code { min-width: 0; flex: 1 1 8rem; font: 0.75rem/1.5 var(--font-mono), monospace; overflow-wrap: anywhere; }
+.v2-skill-save-files > li[data-change="removed"] code { color: var(--v2-color-text3); text-decoration: line-through; }
+.v2-skill-save-file-view { padding: 0.125rem 0.375rem; border: 0; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); background: none; font-size: 0.75rem; cursor: pointer; }
+.v2-skill-save-file-view:hover { background: var(--v2-color-hover); }
+.v2-skill-save-changes > summary { width: max-content; max-width: 100%; color: var(--v2-color-text2); font-size: 0.75rem; cursor: pointer; }
+.v2-skill-save-diff, .v2-skill-save-file { max-height: 20rem; margin: 0.25rem 0 0; padding: 0.5rem; overflow: auto; border-radius: var(--v2-radius-s); background: var(--v2-color-code-bg); font: 0.6875rem/1.5 var(--font-mono), monospace; white-space: pre; user-select: text; }
+.v2-skill-save-diff > span { display: block; min-width: max-content; }
+.v2-skill-save-diff > span[data-kind="add"] { background: color-mix(in srgb, var(--v2-color-ok) 14%, transparent); }
+.v2-skill-save-diff > span[data-kind="del"] { background: color-mix(in srgb, var(--v2-color-danger) 14%, transparent); }
+.v2-skill-save-diff > span[data-kind="gap"] { color: var(--v2-color-text3); }
+.v2-skill-save-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.5rem; }
+.v2-skill-save-library { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.375rem 0.5rem; border-radius: var(--v2-radius-s); color: var(--v2-color-accent-text); font-size: 0.8125rem; text-decoration: none; }
+.v2-skill-save-library:hover { background: var(--v2-color-hover); }
+.v2-skill-save-status { margin: 0; font-size: 0.8125rem; overflow-wrap: anywhere; }
+.v2-skill-save-status:focus { outline: none; }
+.v2-skill-save-error { margin: 0; color: var(--v2-color-danger); font-size: 0.75rem; overflow-wrap: anywhere; }
+
 .v2-answer-skill-pin { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.25rem; }
 .v2-answer-skill-pin [role="alert"] { color: var(--v2-color-danger); overflow-wrap: anywhere; }
