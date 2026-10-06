@@ -4,8 +4,8 @@ import type { ErrorResponse } from "./http";
  * Control Center "Needs attention" list: the server aggregates every item that
  * needs an administrator decision or action from data it already serves
  * (dashboard, providers, Search, system roles, Knowledge operations, Memory
- * status, MCP servers, email health). Nothing is persisted; every item carries
- * human copy plus one jump target inside the Control Center.
+ * status, MCP servers, email health, usage limits). Nothing is persisted;
+ * every item carries human copy plus one jump target inside the Control Center.
  */
 export type AdminAttentionSeverity = "bad" | "neutral" | "warn";
 
@@ -27,6 +27,9 @@ export type AdminAttentionCode =
   | "skills_pending_approval"
   | "system_role_not_assigned"
   | "system_role_unavailable"
+  | "usage_budget_cap_near"
+  | "usage_budget_cap_reached"
+  | "usage_users_budget_reached"
   | "users_pending_approval"
   | "users_without_model_access";
 
@@ -34,6 +37,7 @@ export const adminAttentionSections = [
   "assistants",
   "email",
   "groups",
+  "limits",
   "mcp",
   "providers",
   "retrieval",
@@ -75,7 +79,8 @@ export const adminAttentionSources = [
   "providers",
   "search",
   "skills",
-  "system_roles"
+  "system_roles",
+  "usage_limits"
 ] as const;
 
 export type AdminAttentionSource = (typeof adminAttentionSources)[number];
@@ -113,6 +118,9 @@ const ATTENTION_CODES = new Set<AdminAttentionCode>([
   "skills_pending_approval",
   "system_role_not_assigned",
   "system_role_unavailable",
+  "usage_budget_cap_near",
+  "usage_budget_cap_reached",
+  "usage_users_budget_reached",
   "users_pending_approval",
   "users_without_model_access"
 ]);
@@ -126,6 +134,7 @@ export function adminAttentionItemSource(item: AdminAttentionItem): AdminAttenti
   if (item.code.startsWith("system_role_")) return "system_roles";
   if (item.code.startsWith("provider_")) return "providers";
   if (item.code.startsWith("users_")) return "dashboard";
+  if (item.code.startsWith("usage_")) return "usage_limits";
   if (item.code.startsWith("knowledge_")) return "knowledge";
   if (item.code.startsWith("mcp_")) return "mcp";
   if (item.code.startsWith("search_")) return "search";

@@ -32,6 +32,7 @@ const adminSections = [
   { id: "retrieval", label: "Knowledge & Memory" },
   { id: "users", label: "Users" },
   { id: "groups", label: "Groups" },
+  { id: "limits", label: "Budgets & limits" },
   { id: "access-rules", label: "Sign-up rules" },
   { id: "announcements", label: "Announcements" },
   { id: "mcp", label: "MCP servers" },
