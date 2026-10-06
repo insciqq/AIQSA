@@ -53,7 +53,6 @@
     "memory:search:retry-blocked": "tsx scripts/memory-search-worker.ts --retry-blocked",
     "memory:search:worker": "tsx scripts/memory-search-worker.ts",
     "workspace:runner": "tsx scripts/workspace-runner.ts",
-    "memory:semantic:cutover": "tsx scripts/memory-semantic-cutover.ts",
     "memory:restore:reconcile": "tsx scripts/memory-restore-reconcile.ts",
     "memory:suppression:preflight": "tsx scripts/memory-suppression-preflight.ts",
     "knowledge:sources:backfill": "prisma generate && tsx scripts/knowledge-source-backfill.ts",

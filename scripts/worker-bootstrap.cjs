@@ -11,7 +11,6 @@ const roles = new Map([
   ["workspace-runner.ts", "workspace_runner"],
   ["workspace-maintenance.ts", "maintenance"],
   ["memory-identity-cutover.ts", "maintenance"],
-  ["memory-semantic-cutover.ts", "maintenance"],
   ["memory-restore-reconcile.ts", "maintenance"],
   ["memory-suppression-preflight.ts", "maintenance"],
   ["knowledge-source-backfill.ts", "maintenance"],
