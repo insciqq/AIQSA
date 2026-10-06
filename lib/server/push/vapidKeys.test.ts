@@ -1,8 +1,8 @@
-import { randomBytes } from "node:crypto";
+import { createECDH, randomBytes } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { createPrismaVapidKeyStore, openVapidKeyPair, sealVapidPrivateKey } from "./vapidKeys";
-import { generateVapidKeyPair } from "./webPushCrypto";
+import { generateVapidKeyPair, vapidAuthorization } from "./webPushCrypto";
 
 const encryptionKey = randomBytes(32);
 
@@ -67,5 +67,22 @@ describe("VAPID key store", () => {
     await expect(load()).rejects.toThrow("secret_encryption_invalid_key");
     available = true;
     await expect(load()).resolves.toMatchObject({ publicKey: expect.any(String) });
+  });
+
+  it("generates and opens 32-byte scalars, padding keys stored before padding", () => {
+    // About one ECDH key in 256 has a leading zero byte that getPrivateKey() drops.
+    for (let index = 0; index < 512; index++) {
+      expect(Buffer.from(generateVapidKeyPair().privateKey, "base64url")).toHaveLength(32);
+    }
+    const ecdh = createECDH("prime256v1");
+    const scalar = Buffer.concat([Buffer.alloc(1), randomBytes(31)]);
+    ecdh.setPrivateKey(scalar);
+    const stored = { privateKey: scalar.subarray(1).toString("base64url"),
+      publicKey: ecdh.getPublicKey(null, "uncompressed").toString("base64url") };
+    const opened = openVapidKeyPair({ privateKeyEnvelope: sealVapidPrivateKey(stored, encryptionKey),
+      publicKey: stored.publicKey }, encryptionKey);
+    expect(opened).toEqual({ privateKey: scalar.toString("base64url"), publicKey: stored.publicKey });
+    expect(vapidAuthorization({ audience: "https://push.example", keys: opened, now: new Date(),
+      subject: "mailto:admin@example.com" })).toContain(`k=${stored.publicKey}`);
   });
 });
