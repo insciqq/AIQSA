@@ -935,6 +935,8 @@
   "session_secret",
   "shape_invalid",
   "skill_not_available",
+  "skill_save_failed",
+  "skill_save_undo_failed",
   "skill_tool_unavailable",
   "smtp_address_forbidden",
   "smtp_authentication_failed",

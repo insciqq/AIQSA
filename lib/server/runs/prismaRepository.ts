@@ -90,6 +90,7 @@ import { createPrismaFetchUrlOperations } from "./prismaRepositoryFetchUrl";
 import { recordScheduledMonitoringVerdict } from "../scheduledTasks/monitoringVerdict";
 import { createPrismaScheduledTaskCatalogLoader } from "../scheduledTasks/catalog";
 import { createPrismaWorkspacePolicyRepository } from "../workspace/policyRepository";
+import { saveSkillForToolCall } from "./prismaRepositorySkillSaveCall";
 import { createScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskCall";
 import { loadScheduledTaskManagementAdmission, manageScheduledTaskForToolCall } from "./prismaRepositoryScheduledTaskManagement";
 import { resolveChatAccess, resolveProjectAccess } from "../projects/access";
@@ -498,6 +499,7 @@ export function createPrismaRunRepository(
       recordScheduledMonitoringVerdict(prismaClient, input).catch(retainRunPrismaCode),
     createScheduledTaskForCall: (input) => createScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
       .catch(retainRunPrismaCode),
+    saveSkillForCall: (input) => saveSkillForToolCall(prismaClient, input).catch(retainRunPrismaCode),
     loadRunSearchSourceUrls: (input) => fetchUrlOperations.loadRunSearchSourceUrls(input).catch(retainRunPrismaCode),
     loadRunFetchUrlCalls: (input) => fetchUrlOperations.loadRunFetchUrlCalls(input).catch(retainRunPrismaCode),
     loadScheduledPromptMessageIds: (input) =>

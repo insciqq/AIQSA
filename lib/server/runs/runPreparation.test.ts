@@ -6011,6 +6011,88 @@ describe("scheduled task creation admission", () => {
   });
 });
 
+describe("Skill save admission", () => {
+  const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai", workspace: { enabled: true } });
+  function tooling(input: Readonly<{ saver?: boolean; toolCalling?: boolean }> = {}): RunPreparationDeps {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: input.toolCalling ?? true } });
+    return { ...harness.deps, workspace: contractWorkspace(),
+      repository: { ...harness.deps.repository, ...(input.saver === false ? {} : { saveSkillForCall: vi.fn() }) } };
+  }
+  const saveTool = (prepared: PreparedRun) => prepared.providerRequest.tools?.find((tool) => tool.name === "save_skill");
+
+  it("offers the owner's interactive personal chat with Workspace one save tool", async () => {
+    const prepared = preparedFrom(await prepareRun(tooling(), sendInput(toolBody)));
+    expect(prepared.normalizedRequest.skillSaveTool).toBe(true);
+    expect(saveTool(prepared)).toMatchObject({ capability: "session", strict: true });
+    expect(saveTool(prepared)?.description).toContain("only when the user's own message");
+    // The owner's own message regenerated keeps it.
+    const own = preparedFrom(await prepareRun(tooling(), regenerateInput(toolBody, {
+      userMessage: { content: textMessageContent("Save this as a Skill"), id: "stored-user-message", scheduledTaskPrompt: false }
+    })));
+    expect(own.normalizedRequest.skillSaveTool).toBe(true);
+  });
+
+  it("admits a personal Agent run, whose builtin gateway owns the tool", async () => {
+    vi.stubEnv("AIQSA_AGENT_GATEWAY_URL", "http://agent.invalid");
+    try {
+      const prepared = preparedFrom(await prepareRun({ ...tooling(), agentPolicy: { read: async () => ({ ...DEFAULT_AGENT_POLICY }) } },
+        sendInput(successBody({ agentEnabled: true, workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture" }))));
+      expect(prepared.normalizedRequest.agent).toBeDefined();
+      expect(prepared.normalizedRequest.skillSaveTool).toBe(true);
+      expect(saveTool(prepared)).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("is absent, not refused later, without Workspace and in scheduled, temporary, Project, Assistant and Knowledge runs", async () => {
+    const scheduled = sendInput(toolBody);
+    if (scheduled.source.kind !== "send") throw new Error("invalid send fixture");
+    const occurrence: RunPreparationInput = { ...scheduled, source: { ...scheduled.source, scheduledOccurrence: {
+      occurrenceId: "occurrence-1", previousResult: null, relevantMcpServerIds: null, taskGeneration: 1, taskId: "task-1",
+      taskRevision: 1
+    } } };
+    const deps = tooling();
+    const assistants: NonNullable<RunPreparationDeps["assistants"]> = {
+      async resolveForRun() {
+        return { ok: true as const, assistant: {
+          assistantId: "assistant-1", definitionVersion: 1, knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION,
+          identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
+            paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
+          mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
+          rows: assistantRowsFromLegacyFields({ knowledgeSelection: EMPTY_KNOWLEDGE_SELECTION, mcpServerIds: [],
+            providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
+          searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
+        } };
+      }
+    };
+    const cases: Array<readonly [string, RunPreparationDeps, RunPreparationInput]> = [
+      ["workspace off", deps, sendInput({ ...toolBody, workspace: { enabled: false } })],
+      ["assistant", { ...deps, assistants, repository: { ...deps.repository, loadAssistantRowContext: assistantRowContextLoader({
+        defaultModelId: "openai-tool-model", models: { "openai-tool-model": "openai" }
+      }) } }, sendInput({ assistantId: "assistant-1", content: textMessageContent("Save this as a Skill"), timeZone: "Europe/Berlin",
+        workspace: { enabled: true } })],
+      ["scheduled", deps, occurrence],
+      ["scheduled prompt regeneration", deps, regenerateInput(toolBody, {
+        userMessage: { content: textMessageContent("Save a Skill"), id: "stored-user-message", scheduledTaskPrompt: true }
+      })],
+      ["temporary", deps, sendInput(toolBody, { memoryMode: "TEMPORARY", messageCount: 2 })],
+      ["project", deps, sendInput(successBody({ modelId: "openai-tool-model", provider: "openai", tools: "auto" }),
+        { project: projectAdmission({ modelIds: ["openai-tool-model"] }) })],
+      ["knowledge", { ...deps, knowledgeAdmission: { async load(input) { return admittedKnowledge(input, "9"); } } },
+        sendInput({ ...toolBody, knowledgePlan: knowledgeSelection(["knowledge-base-1"]) })],
+      ["no tool calling", tooling({ toolCalling: false }), sendInput(toolBody)],
+      ["no saver", tooling({ saver: false }), sendInput(toolBody)]
+    ];
+    for (const [label, caseDeps, input] of cases) {
+      const result = await prepareRun(caseDeps, input);
+      if (!result.ok) throw new Error(`${label}: ${result.code}`);
+      expect(result.prepared.normalizedRequest.skillSaveTool, label).toBeUndefined();
+      expect(saveTool(result.prepared), label).toBeUndefined();
+    }
+  });
+});
+
 describe("page reader admission", () => {
   const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
   const say = (id: string, role: "assistant" | "user", text: string): ProviderConversationMessage =>
