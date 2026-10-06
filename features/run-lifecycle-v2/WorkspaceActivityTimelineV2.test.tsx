@@ -35,7 +35,7 @@ describe("WorkspaceActivityTimelineV2", () => {
             { count: 2, durationMs: 800, id: "prep", kind: "attachments_prepare", phase: "succeeded" },
             { file: { displayPath: "package.json" }, id: "read", kind: "file_read", phase: "succeeded" },
             {
-              command: { cwd: "project", exitCode: 0, preview: "npm install", stdoutPreview: "added 12 packages" },
+              command: { cwd: "project", exitCode: 0, preview: "npm install", secretMasked: true, stdoutPreview: "added 12 packages" },
               durationMs: 8_400,
               id: "install",
               kind: "command",
@@ -83,6 +83,8 @@ describe("WorkspaceActivityTimelineV2", () => {
     expect(install).toHaveTextContent("$ npm install");
     expect(install).toHaveTextContent("Working directory");
     expect(install).toHaveTextContent("added 12 packages");
+    expect(install).toHaveTextContent("Output contained a secret value; masked");
+    expect(failed).not.toHaveTextContent("secret value");
     expect(install).toHaveTextContent("Exit code 0 · 8.4 s");
     fireEvent.click(screen.getAllByRole("button", { name: "Copy command" })[0]!);
   });

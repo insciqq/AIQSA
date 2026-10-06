@@ -57,6 +57,21 @@ describe("workspace activity projection", () => {
     expect(file?.file?.displayPath).toBe("project/•••");
   });
 
+  it("carries the content-free masked-secret flag into a polled execution", () => {
+    const execOutputs = new Map<string, ExecOutputBuffer>();
+    projectWorkspaceActivity({ arguments: { command: "run" }, callId: "start", originalName: "sandbox_exec_start", runId: "run",
+      execOutputs, result: official({ execSessionId: "session" }) }, "settled");
+    const poll = (id: string, data: string, secretMasked: boolean) => projectWorkspaceActivity({
+      arguments: { execSessionId: "session" }, callId: id, executionStartCallId: "start", execOutputs,
+      originalName: "sandbox_exec_poll", runId: "run",
+      result: { ...official({ events: [{ event: { kind: "stdout", data } }], done: false }),
+        rawPreview: { truncated: false, ...(secretMasked ? { secretMasked: true } : {}) } }
+    }, "settled");
+    expect(poll("one", "plain\n", false)?.command?.secretMasked).toBeUndefined();
+    expect(poll("two", "[secret:MY_TOKEN]\n", true)?.command).toMatchObject({ secretMasked: true });
+    expect(poll("three", "later\n", false)?.command).toMatchObject({ secretMasked: true });
+  });
+
   it("projects commands with exit code, bounded output, and no raw identifiers", () => {
     const entry = projectWorkspaceActivity({
       arguments: { command: "npm test\necho ignored", cwd: "/workspace/project" },

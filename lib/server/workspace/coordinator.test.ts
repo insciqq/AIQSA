@@ -25,6 +25,9 @@ import type {
 import { WorkspaceRuntimeError } from "./runtime";
 import { namespacedWorkspaceToolName } from "./toolCatalog";
 import { sameOutputIdentities, type WorkspaceOutputCapture } from "./outputManifest";
+import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
+import { anthropicMessagesToolBridge, openAIResponsesToolBridge } from "../tools/bridges";
 
 const config = getWorkspaceConfig({
   AIQSA_TEST_MODE: "1",
@@ -668,6 +671,34 @@ describe("Workspace coordinator", () => {
     }));
     expect(vi.mocked(value.runtime.syncPersonalSecrets).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(value.runtime.callBoundTool).mock.invocationCallOrder[0]!);
     expect(value.runtime.callBoundTool).not.toHaveBeenCalledWith(expect.objectContaining({ secrets }));
+  });
+
+  it("masks delivered secret values before the result is persisted, sent to a provider or shown", async () => {
+    const value = fixture();
+    const token = "synthetic-token-0123456789";
+    vi.mocked(value.repository.personalSecrets).mockResolvedValue([{ id: "10000000-0000-4000-8000-000000000001",
+      versionId: "10000000-0000-4000-8000-000000000002", name: "Fixture", description: "",
+      value: { kind: "env", entries: [{ name: "MY_TOKEN", value: token }] } }]);
+    vi.mocked(value.runtime.callBoundTool).mockResolvedValueOnce({ content: [{ type: "text",
+      text: JSON.stringify({ ok: true, data: { stdout: `${token}\n`, stderr: "", exitCode: 0, success: true } }, null, 2) }],
+    exitCode: 0, status: "complete" });
+    const activity: ThreadWorkspaceActivityEntry[] = [];
+    const result = await value.coordinator.execute({
+      call: { arguments: { command: "echo $MY_TOKEN" }, id: "call_secret", name: value.shellToolName },
+      modelRunToolCallId: "call_secret", onActivity: async (entry) => { activity.push(entry); },
+      runId: value.runId, userId: "user_1", workspace: value.workspace
+    });
+    const persisted = JSON.stringify(snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes));
+    const provider = JSON.stringify([openAIResponsesToolBridge.appendToolResult({}, result),
+      anthropicMessagesToolBridge.appendToolResult({}, result)]);
+    for (const surface of [persisted, provider, JSON.stringify(result)]) {
+      expect(surface).toContain("[secret:MY_TOKEN]");
+      expect(surface).not.toContain(token);
+    }
+    expect(result.rawPreview).toMatchObject({ secretMasked: true });
+    const settled = (result.artifacts ?? []).map((event) => (event.data as { payload: ThreadWorkspaceActivityEntry }).payload);
+    expect(settled.at(-1)?.command).toMatchObject({ secretMasked: true, stdoutPreview: "[secret:MY_TOKEN]\n" });
+    expect(JSON.stringify([activity, settled])).not.toContain(token);
   });
 
   it("does not adopt a later operation generation during an old finalizer's settlement", async () => {

@@ -1,6 +1,7 @@
 import { databaseFailureCode, rememberDatabaseFailure } from "../observability/databaseFailure";
 import { logEvent } from "../observability";
-import { WorkspaceActivityText, workspaceActivitySecretValues } from "./activityText";
+import { WorkspaceActivityText, workspaceSecretMatches } from "./activityText";
+import { WorkspaceSecretOutputMask } from "./secretOutput";
 import { inheritWorkspaceResultCode, observeWorkspaceAbort, observeWorkspaceToolExecution, retainWorkspaceResultCode } from "./toolObservability";
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -1212,7 +1213,7 @@ function withActivity(
     : result);
 }
 
-function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): ToolExecutionResult {
+function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult, secretMasked = false): ToolExecutionResult {
   const content: ToolExecutionResult["content"] = [];
   for (const entry of result.content) {
     if (entry.type === "text" && typeof entry.text === "string") {
@@ -1230,6 +1231,8 @@ function resultFromRuntime(call: ModelToolCall, result: WorkspaceToolResult): To
       ...(result.originalByteCount === undefined
         ? {}
         : { originalByteCount: result.originalByteCount }),
+      // Content-free: tells activity that delivered secret values were masked.
+      ...(secretMasked ? { secretMasked: true } : {}),
       truncated: result.truncated === true
     },
     status: result.status
@@ -1253,6 +1256,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
   const inboxNamesByRun = new Map<string, Map<string, string>>();
   const execOutputsByRun = new Map<string, Map<string, ExecOutputBuffer>>();
   const activityTextByRun = new Map<string, WorkspaceActivityText>();
+  const outputMaskByRun = new Map<string, WorkspaceSecretOutputMask>();
   const lifecycleOrdinal = new Map<string, number>();
   let recoveryCursor: WorkspaceExportRecoveryCursor | undefined;
   let recoveryScanBefore: Date | undefined;
@@ -1271,6 +1275,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
     inboxNamesByRun.delete(runId);
     execOutputsByRun.delete(runId);
     activityTextByRun.delete(runId);
+    outputMaskByRun.delete(runId);
     lifecycleOrdinal.delete(runId);
   }
 
@@ -1559,7 +1564,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
         });
         try {
           const secrets = await input.repository.personalSecrets(binding);
-          activityTextByRun.set(binding.runId, new WorkspaceActivityText(workspaceActivitySecretValues(secrets)));
+          const matches = workspaceSecretMatches(secrets);
+          activityTextByRun.set(binding.runId, new WorkspaceActivityText(matches));
+          outputMaskByRun.set(binding.runId, new WorkspaceSecretOutputMask(matches));
           await input.runtime.syncPersonalSecrets({
             secrets, modelRunId: binding.runId,
             runtimeSandboxId: session.runtimeSandboxId, operation: ownedOperation(binding), sessionId: binding.sessionId, signal
@@ -2016,7 +2023,7 @@ export function createWorkspaceCoordinator(input: Readonly<{
           const entry = projectWorkspaceActivity({
             arguments: call.arguments,
             text: activityTextByRun.get(runId) ?? new WorkspaceActivityText(
-              workspaceActivitySecretValues(await input.repository.personalSecrets(initial))),
+              workspaceSecretMatches(await input.repository.personalSecrets(initial))),
             callId: modelRunToolCallId,
             originalName: "sandbox_exec",
             result: rejected,
@@ -2141,14 +2148,21 @@ export function createWorkspaceCoordinator(input: Readonly<{
               }, "settled"));
             }
           }
+          // The single normalization point for guest output: the persisted
+          // row, provider projection, observation and activity all derive from
+          // this masked result. Cache loss reloads the run's accepted revisions.
+          const mask = outputMaskByRun.get(runId) ??
+            new WorkspaceSecretOutputMask(workspaceSecretMatches(await input.repository.personalSecrets(binding)));
+          const output = mask.result(result, input.config.toolOutputMaxBytes);
+          const settled = resultFromRuntime(call, output.result, output.masked);
           // MCP close only disposes the observation handle. The durable cleanup
           // obligation survives until terminal process/VM proof.
           const projected = withActivity(
-            resultFromRuntime(call, result),
+            settled,
             projectWorkspaceActivity({
               ...projectionInput,
               durationMs: Date.now() - startedAt.getTime(),
-              result: resultFromRuntime(call, result)
+              result: settled
             }, "settled")
           );
           return initializedBinding.recreated

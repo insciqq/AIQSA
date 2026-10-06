@@ -8,7 +8,7 @@ import {
 function outputSnapshot(entry: ThreadWorkspaceActivityEntry) {
   const command = entry.command;
   return command && (command.stdoutPreview !== undefined || command.stderrPreview !== undefined ||
-    command.truncated !== undefined || command.originalByteCount !== undefined)
+    command.truncated !== undefined || command.originalByteCount !== undefined || command.secretMasked !== undefined)
     ? { command, sequence: command.outputSequence ?? entry.sequence } : undefined;
 }
 
@@ -54,6 +54,7 @@ export function mergeWorkspaceActivityEntry(
     ...(command.preview === "…" ? older.command?.previewTruncated !== undefined
       ? { previewTruncated: older.command.previewTruncated } : {}
       : command.previewTruncated !== undefined ? { previewTruncated: command.previewTruncated } : {}),
+    ...(output?.secretMasked !== undefined ? { secretMasked: output.secretMasked } : {}),
     ...(output?.stderrPreview !== undefined ? { stderrPreview: output.stderrPreview } : {}),
     ...(output?.stdoutPreview !== undefined ? { stdoutPreview: output.stdoutPreview } : {}),
     ...(output?.truncated !== undefined ? { truncated: output.truncated } : {})

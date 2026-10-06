@@ -192,6 +192,7 @@ function errorCodeFrom(result: ToolExecutionResult): WorkspaceErrorCode | undefi
 export type ExecOutputBuffer = {
   done: boolean;
   exitCode: number | null;
+  secretMasked?: boolean;
   stderr: string;
   stdout: string;
   streams?: { stderr: ReturnType<WorkspaceActivityText["stream"]>; stdout: ReturnType<WorkspaceActivityText["stream"]> };
@@ -224,7 +225,8 @@ export function applyExecPoll(buffer: ExecOutputBuffer, result: ToolExecutionRes
   const data = resultData(result);
   const payload = data && isRecord(data.data) ? data.data : null;
   if (!payload) return buffer;
-  const next = { ...buffer, streams: buffer.streams ?? { stderr: text.stream(), stdout: text.stream() } };
+  const next = { ...buffer, streams: buffer.streams ?? { stderr: text.stream(), stdout: text.stream() },
+    ...(result.rawPreview?.secretMasked === true ? { secretMasked: true } : {}) };
   const append = (stream: "stdout" | "stderr", value: string, done = false) => {
     const masked = next.streams[stream].push(value, done);
     if (utf8Bytes(next[stream]) + utf8Bytes(masked) > OUTPUT_BUFFER_MAX_BYTES) next.truncated = true;
@@ -300,6 +302,7 @@ function commandEntry(
     stdout: (input.text ?? plainText).text(payload && typeof payload.stdout === "string" ? payload.stdout : "")
   });
   const truncated = output.truncated || input.result.rawPreview?.truncated === true;
+  const secretMasked = input.result.rawPreview?.secretMasked === true;
   const errorCode = errorCodeFrom(input.result);
   const originalByteCount = input.result.rawPreview?.originalByteCount;
   return {
@@ -313,6 +316,7 @@ function commandEntry(
       ...preview,
       ...(output.stderrPreview ? { stderrPreview: output.stderrPreview } : {}),
       ...(output.stdoutPreview ? { stdoutPreview: output.stdoutPreview } : {}),
+      ...(secretMasked ? { secretMasked: true } : {}),
       ...(truncated ? { truncated: true } : {})
     },
     ...(errorCode ? { errorCode } : {}),
@@ -402,7 +406,8 @@ function projectActivity(
     // command evidence comes from poll; run-outcome folding handles Stop.
     const settled = buffer.done;
     input.execOutputs?.set(groupId, buffer);
-    if (!settled && buffer.stdout === previous.stdout && buffer.stderr === previous.stderr) {
+    if (!settled && buffer.stdout === previous.stdout && buffer.stderr === previous.stderr &&
+      buffer.secretMasked === previous.secretMasked) {
       // A poll that produced neither output nor completion is transport noise.
       return null;
     }
@@ -414,6 +419,7 @@ function projectActivity(
         preview: "…",
         ...(output.stderrPreview ? { stderrPreview: output.stderrPreview } : {}),
         ...(output.stdoutPreview ? { stdoutPreview: output.stdoutPreview } : {}),
+        ...(buffer.secretMasked ? { secretMasked: true } : {}),
         ...(output.truncated || buffer.truncated ? { truncated: true } : {})
       },
       groupId,
