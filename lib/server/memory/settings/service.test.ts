@@ -26,6 +26,7 @@ function settings(
     decayEnabled: false,
     decayPolicyVersion: null,
     embeddingProviderModelId: "embedding-1",
+    embeddingSelectionResolved: true,
     learnAutomatically: false,
     memoryConsentRevision: 2,
     memoryGeneration: 0,

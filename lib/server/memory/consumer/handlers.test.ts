@@ -68,7 +68,8 @@ describe("Memory consumer settings handlers", () => {
   const snapshot: MemorySettingsPersistenceSnapshot = {
     acceptedUtilityEgressAt: null, acceptedUtilityEgressFingerprint: null, acceptedUtilityPolicyVersion: null,
     activeIndexGenerationId: "generation-1", decayEnabled: false, decayPolicyVersion: null,
-    embeddingProviderModelId: null, learnAutomatically: true, memoryConsentRevision: 0, memoryGeneration: 2,
+    embeddingProviderModelId: null, embeddingSelectionResolved: false, learnAutomatically: true,
+    memoryConsentRevision: 0, memoryGeneration: 2,
     memoryRevision: 5, referenceChatHistory: true, sensitiveAutomaticPolicy: "EXPLICIT_ONLY", settingsRevision: 7,
     updatedAt: NOW, useMemoryFacts: true, userId: "user-1"
   };
