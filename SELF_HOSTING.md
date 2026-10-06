@@ -1,6 +1,6 @@
 # Self-hosting AIQSA
 
-This guide covers requirements, installation, updates, and backups for a single-host AIQSA installation. Start with the [Quick start](README.md#quick-start) for a first install; read this guide before your first update.
+This guide covers requirements, installation, updates, backups, health checks and logs for a single-host AIQSA installation. Start with the [Quick start](README.md#quick-start) for a first install; read this guide before your first update.
 
 ## Requirements
 
@@ -74,3 +74,15 @@ If `docker compose pull` reports `pull access denied for minio/mc`, the checkout
 `backup` is a cold copy: it stops the application and workers, dumps PostgreSQL, stops object storage, archives its volume, copies `.env` as `env`, verifies the copies and restarts exactly the services that were running, usually within minutes. It writes `postgres.dump`, `objects.tar.gz`, `env`, `manifest` and `SHA256SUMS` with private permissions. `env` holds the installation secrets, so keep backups private, and copy them to another host: a copy on the same disk does not survive the loss of the host. Schedules, retention and off-site copies are up to you. With external object storage (`AIQSA_S3_ENDPOINT`) only PostgreSQL and `.env` are copied; back up the bucket with its provider at the same time.
 
 `restore` needs a fresh checkout of the backup's release (`git checkout vX.Y.Z`) without `.env`, Compose containers or volumes. It verifies the checksums, restores into the new volumes from an isolated project without network access or published ports, runs the Memory and Knowledge deletion reconciliation, and only then starts the installation; search indexes are rebuilt from PostgreSQL afterwards. If reconciliation fails, nothing starts and the command prints how to discard the attempt. When Workspace is enabled and this host's `/dev/kvm` belongs to another group, the new `.env` gets this host's `AIQSA_KVM_GID`. `restore` refuses backups made with external object storage (`objects=external` in the manifest): restore those by hand.
+
+## Health and logs
+
+Control Center → Health shows recent provider failures, server errors and background work problems. This telemetry contains no message content and is kept for 30 days inside the instance's PostgreSQL; nothing is sent elsewhere. `./aiqsa.sh doctor` checks the host, `.env` and every container.
+
+```bash
+./aiqsa.sh logs                            # last 200 lines of every service
+./aiqsa.sh logs --errors --since 1h app    # AIQSA errors of the last hour
+./aiqsa.sh logs --warnings --follow        # stream warnings and errors
+```
+
+`logs` masks the `.env` secrets. `--errors` and `--warnings` keep only AIQSA's JSON lines at that level and hide the plain-text logs of PostgreSQL, OpenSearch, Tika, Docling and SeaweedFS; omit them to read those services. Container logs rotate by size (`AIQSA_LOG_MAX_FILES` × `AIQSA_LOG_MAX_SIZE` per container) and are lost when a container is recreated, for example by `up` or `upgrade`; copy anything you need to keep first.
