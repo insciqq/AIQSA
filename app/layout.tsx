@@ -6,6 +6,7 @@ import {
   resolveThemeColorScheme,
   resolveThemeId
 } from "@/components/app-shell/theme";
+import { ClientErrorReporter } from "@/components/errors/ClientErrorReporter";
 import "katex/dist/katex.min.css";
 import "../styles/tokens-v2.css";
 import "../components/ui-v2/primitives.css";
@@ -80,7 +81,10 @@ export default async function RootLayout({
       data-theme={themeId}
       suppressHydrationWarning
     >
-      <body>{children}</body>
+      <body>
+        <ClientErrorReporter />
+        {children}
+      </body>
     </html>
   );
 }
