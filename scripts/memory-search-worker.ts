@@ -16,6 +16,7 @@ import { OpenSearchTransportError } from
   "../lib/server/search/opensearch/coreTransport";
 import { createMemoryOpenSearchClient } from
   "../lib/server/search/opensearch/memoryClient";
+import { startTelemetryRecorder } from "../lib/server/telemetry/recorder";
 
 const allowedArguments = new Set([
   "--drain", "--integrity", "--once", "--rebuild", "--retry-blocked"
@@ -35,6 +36,9 @@ if ([rebuild, integrityOnly, retryBlocked].filter(Boolean).length > 1 ||
 }
 
 const prisma = new PrismaClient();
+// Only the long-running projection loop records telemetry.
+const telemetry = once || drain || rebuild || integrityOnly || retryBlocked
+  ? null : startTelemetryRecorder({ prisma });
 const store = createPrismaMemoryLexicalProjectionStore(prisma);
 const search = createMemoryOpenSearchClient();
 const configuration = memoryLexicalProjectionRuntimeConfigurationFromEnv();
@@ -161,5 +165,6 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
+    await telemetry?.stop();
     await prisma.$disconnect();
   });

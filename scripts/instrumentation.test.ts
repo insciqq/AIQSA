@@ -8,7 +8,8 @@ const startup = vi.hoisted(() => ({
   announce: vi.fn(), failed: vi.fn(), healthy: vi.fn(), hooks: vi.fn(),
   recovery: vi.fn(), attachments: vi.fn(), uploads: vi.fn(), knowledge: vi.fn(),
   activation: vi.fn(), mcp: vi.fn(), memory: vi.fn(), nativeRouting: vi.fn(), decisionModel: vi.fn(), costs: vi.fn(),
-  scheduledTasks: vi.fn(), push: vi.fn(), objectDeletion: vi.fn()
+  scheduledTasks: vi.fn(), push: vi.fn(), objectDeletion: vi.fn(),
+  telemetry: vi.fn()
 }));
 vi.mock("../lib/server/observability", () => ({ announceProcess: startup.announce, reportSubsystemFailure: startup.failed, reportSubsystemHealthy: startup.healthy }));
 vi.mock("../lib/server/observability/process.cjs", () => ({ installProcessFailureHooks: startup.hooks }));
@@ -18,6 +19,7 @@ vi.mock("../lib/server/push/defaultBrowserPush", () => ({ startDefaultBrowserPus
 vi.mock("../lib/server/uploads/defaultProcessing", () => ({ getDefaultAttachmentProcessingCoordinator: startup.attachments }));
 vi.mock("../lib/server/uploads/defaultWorkspaceUploads", () => ({ getWorkspaceUploadService: startup.uploads }));
 vi.mock("../lib/server/retention/defaultObjectDeletion", () => ({ startDefaultObjectDeletionWorker: startup.objectDeletion }));
+vi.mock("../lib/server/telemetry/defaultRecorder", () => ({ startDefaultTelemetryRecorder: startup.telemetry }));
 vi.mock("../lib/server/knowledge/defaultIngestion", () => ({ getDefaultKnowledgeIngestionCoordinator: startup.knowledge }));
 vi.mock("../lib/server/mcp/defaultActivation", () => ({ getDefaultMcpActivationCoordinator: startup.activation }));
 vi.mock("../lib/server/mcp/defaultRuntime", () => ({ getDefaultMcpRuntimeCoordinator: startup.mcp }));
@@ -82,6 +84,19 @@ describe("optional subsystem startup", () => {
     await register();
     expect(startup.uploads).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(startup.failed.mock.calls)).not.toContain("canary");
+  });
+
+  it("starts telemetry before announcing the process and keeps starting without it", async () => {
+    vi.stubEnv("NEXT_RUNTIME", "nodejs");
+    await register();
+    expect(startup.telemetry).toHaveBeenCalledOnce();
+    expect(startup.telemetry.mock.invocationCallOrder[0]).toBeLessThan(startup.announce.mock.invocationCallOrder[0]!);
+    expect(startup.healthy).toHaveBeenCalledWith("telemetry", "startup");
+    startup.telemetry.mockImplementationOnce(() => { throw new Error("private-telemetry-canary"); });
+    await expect(register()).resolves.toBeUndefined();
+    expect(startup.failed).toHaveBeenCalledExactlyOnceWith({ subsystem: "telemetry", stage: "startup", code: "telemetry_startup_failed", action: "degrade" });
+    expect(startup.recovery).toHaveBeenCalledTimes(2);
+    expect(startup.announce).toHaveBeenCalledTimes(2);
   });
 
   it("preserves mandatory scheduler failure and does not call optional systems afterward", async () => {
