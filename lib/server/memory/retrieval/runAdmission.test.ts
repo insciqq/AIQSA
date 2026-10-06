@@ -5496,7 +5496,7 @@ describe("Personal Memory v1 run admission", () => {
         temporalParserState: "NO_MATCH",
         uniqueEvidenceRootsAfterFusion: 0,
         uniqueEvidenceRootsBeforeFusion: 1,
-        version: "memory-retrieval-component-metrics-v20"
+        version: "memory-retrieval-component-metrics-v21"
       },
       plan: { applyResponsePreferences: true, filterSourceKinds: [] }
     });

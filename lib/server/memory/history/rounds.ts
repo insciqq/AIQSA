@@ -5,7 +5,6 @@ import {
 } from "../persistence/lexical";
 import {
   detectMemoryTextLanguage,
-  normalizeMemoryLanguageCode,
   type MemoryTextLanguage
 } from "./language";
 import type {
@@ -14,45 +13,17 @@ import type {
   MemorySafeSourceSnapshot
 } from "./sourceProjection";
 import type { MemoryRecallChunkMessageJoin } from "./chunking";
-import { projectMemoryHistorySafeText } from "./safety";
 import { memoryHistoryEvidenceRootHash } from "./evidenceRoot";
 
 export const MEMORY_RECALL_ROUND_PROJECTION_VERSION =
   "memory-recall-round-projection-v2";
+/** Search-key revision every current round and index generation carries. New
+ * rounds index their raw text (RAW_FALLBACK); GENERATED narratives exist only
+ * on rounds indexed before model enrichment of history was removed. */
 export const MEMORY_CONTEXTUAL_KEY_POLICY_VERSION =
   "memory-contextual-narrative-key-v4";
-export const MEMORY_CONTEXTUAL_KEY_MAX_PRIOR_GROUPS = 2;
 export const MEMORY_RECALL_ROUND_MAX_RAW_CHARACTERS = 200_000;
 export const MEMORY_RECALL_ROUND_MAX_SEARCH_CHARACTERS = 4_000;
-
-export const MEMORY_CONTEXTUAL_FALLBACK_REASONS = Object.freeze([
-  "NOT_ELIGIBLE",
-  "PROVIDER_UNAVAILABLE",
-  "PROVIDER_OUTPUT_LIMIT",
-  "PROVIDER_OUTPUT_INVALID",
-  "HANDLE_MISMATCH",
-  "EMPTY_STATEMENTS",
-  "STATEMENT_COUNT_INVALID",
-  "STATEMENT_TOO_LONG",
-  "SAFETY_REDACTED_OR_REJECTED",
-  "SOURCE_REF_INVALID",
-  "GROUNDING_INVALID",
-  "SEMANTICALLY_UNSUPPORTED",
-  "UNSUPPORTED_TOKEN",
-  "UNSUPPORTED_NUMBER",
-  "UNSUPPORTED_DATE",
-  "UNSUPPORTED_ENTITY",
-  "DUPLICATE_STATEMENT",
-  "SEARCH_TEXT_BUDGET_EXCEEDED"
-] as const);
-
-export type MemoryContextualFallbackReason =
-  (typeof MEMORY_CONTEXTUAL_FALLBACK_REASONS)[number];
-
-export type MemoryContextualFallbackDiagnostic = Readonly<{
-  reason: MemoryContextualFallbackReason;
-  roundId: string;
-}>;
 
 /**
  * Frozen Memory evidence is bounded in UTF-16 code units because the runtime
@@ -114,33 +85,6 @@ export type MemoryRecallRoundProjection = Readonly<{
   sourceRevision: number;
   supportingRoundIds: readonly string[];
   userId: string;
-}>;
-
-export type MemoryContextualRoundInput = Readonly<{
-  current: Readonly<{
-    id: string;
-    rawSafeText: string;
-  }>;
-  prior: readonly Readonly<{
-    id: string;
-    rawSafeText: string;
-  }>[];
-}>;
-
-export type MemoryContextualRoundOutput = Readonly<{
-  groundingHash?: string;
-  languageCode: MemoryTextLanguage;
-  roundId: string;
-  statements: readonly Readonly<{
-    sourceRoundIds: readonly string[];
-    text: string;
-  }>[];
-}>;
-
-type MemoryContextualKeyEligibleRound = Readonly<{
-  publicationState: "ACTIVE" | "SUPPRESSED";
-  redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
-  safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
 }>;
 
 type ParentChunk = Readonly<{
@@ -329,212 +273,4 @@ export function projectMemoryRecallRounds(
       userId: snapshot.userId
     };
   });
-}
-
-export function memoryContextualRoundInputs<
-  T extends Readonly<{ id: string; rawSafeText: string }>
->(
-  rounds: readonly T[]
-): readonly MemoryContextualRoundInput[] {
-  return rounds.map((round, index) => ({
-    current: { id: round.id, rawSafeText: round.rawSafeText },
-    prior: rounds.slice(
-      Math.max(0, index - MEMORY_CONTEXTUAL_KEY_MAX_PRIOR_GROUPS),
-      index
-    ).map((prior) => ({ id: prior.id, rawSafeText: prior.rawSafeText }))
-  }));
-}
-
-export function memoryContextualKeyEligibleRounds<
-  T extends MemoryContextualKeyEligibleRound
->(rounds: readonly T[]): readonly T[] {
-  return rounds.filter((round) =>
-    round.publicationState === "ACTIVE" &&
-    round.redactionState !== "EXCLUDED" &&
-    (round.safetyClass === "NORMAL" || round.safetyClass === "SENSITIVE"));
-}
-
-function normalizedStatementIdentity(value: string): string {
-  return value.normalize("NFKC").toLocaleLowerCase("und")
-    .replace(/\s+/gu, " ").trim();
-}
-
-function invalidStatementReasons(statement: string): readonly MemoryContextualFallbackReason[] {
-  const reasons = new Set<MemoryContextualFallbackReason>();
-  if (!statement.trim()) reasons.add("EMPTY_STATEMENTS");
-  if (statement.length > 512) reasons.add("STATEMENT_TOO_LONG");
-  if (statement.includes("\u0000")) reasons.add("PROVIDER_OUTPUT_INVALID");
-  const safety = projectMemoryHistorySafeText(statement);
-  if (!safety.eligible || safety.safeText !== statement.trim()) {
-    reasons.add("SAFETY_REDACTED_OR_REJECTED");
-  }
-  return Object.freeze([...reasons]);
-}
-
-/** A complete copied source retains its speaker and negation context. A
- * substring or a rearrangement still needs semantic review. */
-export function memoryContextualOutputIsVerbatim(
-  input: MemoryContextualRoundInput,
-  output: MemoryContextualRoundOutput
-): boolean {
-  const sources = new Map([input.current, ...input.prior].map((source) =>
-    [source.id, source.rawSafeText.trim()] as const));
-  return output.roundId === input.current.id && output.statements.length > 0 &&
-    output.statements.every((statement) => statement.sourceRoundIds.length === 1 &&
-      statement.text.trim() === sources.get(statement.sourceRoundIds[0]!));
-}
-
-/** This server-authored receipt binds accepted semantic support to the exact
- * proposal and source snapshot. Provider schemas cannot supply this field;
- * governed execution receipts retain the actual review decision. */
-export function memoryContextualGroundingHash(
-  input: MemoryContextualRoundInput,
-  output: MemoryContextualRoundOutput,
-  policyVersion: string
-): string {
-  return memorySha256({
-    domain: "aiqsa.memory.contextual-grounding",
-    input,
-    output: {
-      languageCode: output.languageCode,
-      roundId: output.roundId,
-      statements: output.statements
-    },
-    policyVersion
-  });
-}
-
-export function applyMemoryRecallRoundContextualKeysWithDiagnostics<
-  T extends Readonly<{
-    contextualKeyPolicyVersion: string;
-    contextualKeyState: "GENERATED" | "RAW_FALLBACK";
-    contextualNarrativeText: string;
-    contextualSearchHash: string;
-    contextualSearchText: string;
-    id: string;
-    languageCode: MemoryTextLanguage;
-    publicationState: "ACTIVE" | "SUPPRESSED";
-    rawSafeText: string;
-    redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
-    safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
-    supportingRoundIds: readonly string[];
-  }>
->(
-  rounds: readonly T[],
-  outputs: readonly MemoryContextualRoundOutput[],
-  policyVersion: string
-): Readonly<{
-  fallbackDiagnostics: readonly MemoryContextualFallbackDiagnostic[];
-  rounds: readonly T[];
-}> {
-  if (!policyVersion || policyVersion.length > 64 || /[^A-Za-z0-9._:-]/u.test(policyVersion)) {
-    throw new Error("memory_contextual_key_policy_invalid");
-  }
-  const eligibleRounds = memoryContextualKeyEligibleRounds(rounds);
-  const inputByRoundId = new Map(memoryContextualRoundInputs(eligibleRounds).map((input) =>
-    [input.current.id, input] as const));
-  const outputById = new Map(outputs.map((output) => [output.roundId, output]));
-  if (outputById.size !== outputs.length || outputs.some((output) =>
-    !rounds.some((round) => round.id === output.roundId))) {
-    throw new Error("memory_contextual_key_output_invalid");
-  }
-  const fallbackDiagnostics: MemoryContextualFallbackDiagnostic[] = [];
-  const projected = rounds.map((round) => {
-    const output = outputById.get(round.id);
-    const input = inputByRoundId.get(round.id);
-    if (!input) return round;
-    const sourceByRoundId = new Map([
-      ...input.prior.map((prior) => [prior.id, prior.rawSafeText] as const),
-      [input.current.id, input.current.rawSafeText] as const
-    ]);
-    const allowedRoundIds = new Set(sourceByRoundId.keys());
-    const reasons = new Set<MemoryContextualFallbackReason>();
-    // Missing output is a no-op here: the coordinator owns the explicit
-    // target set and assigns PROVIDER_OUTPUT_INVALID only to attempted rounds.
-    if (!output) return round;
-    const outputLanguageCode = normalizeMemoryLanguageCode(output.languageCode);
-    if (!outputLanguageCode) reasons.add("PROVIDER_OUTPUT_INVALID");
-    if (output.statements.length < 1 || output.statements.length > 5) {
-      reasons.add(output.statements.length === 0
-        ? "EMPTY_STATEMENTS"
-        : "STATEMENT_COUNT_INVALID");
-    }
-    const statementIdentities = output.statements.map((statement) =>
-      normalizedStatementIdentity(statement.text));
-    if (new Set(statementIdentities).size !== statementIdentities.length) {
-      reasons.add("DUPLICATE_STATEMENT");
-    }
-    let currentRoundCited = false;
-    for (const statement of output.statements) {
-      const citedIds = statement.sourceRoundIds;
-      if (citedIds.length < 1 || citedIds.length > 3 ||
-        new Set(citedIds).size !== citedIds.length ||
-        citedIds.some((id) => !allowedRoundIds.has(id))) {
-        reasons.add("SOURCE_REF_INVALID");
-        continue;
-      }
-      if (citedIds.includes(input.current.id)) currentRoundCited = true;
-      for (const reason of invalidStatementReasons(statement.text)) {
-        reasons.add(reason);
-      }
-    }
-    if (!currentRoundCited) reasons.add("SOURCE_REF_INVALID");
-    if (!memoryContextualOutputIsVerbatim(input, output) &&
-      output.groundingHash !== memoryContextualGroundingHash(input, output, policyVersion)) {
-      reasons.add("GROUNDING_INVALID");
-    }
-    if (reasons.size > 0) {
-      for (const reason of reasons) fallbackDiagnostics.push({ reason, roundId: round.id });
-      return round;
-    }
-    const narrative = output.statements.map((statement) => statement.text.trim()).join("\n");
-    const citedPriorIds = new Set(output.statements.flatMap((statement) =>
-      statement.sourceRoundIds.filter((id) => id !== input.current.id)));
-    const supportingRoundIds = input.prior.flatMap((prior) =>
-      citedPriorIds.has(prior.id) ? [prior.id] : []);
-    const contextualSearchText = boundedSearchText(
-      `Contextual narrative:\n${narrative}\n\nRaw round:\n${round.rawSafeText}`
-    );
-    return {
-      ...round,
-      contextualKeyPolicyVersion: policyVersion,
-      contextualKeyState: "GENERATED" as const,
-      contextualNarrativeText: narrative,
-      contextualSearchHash: memorySha256(contextualSearchText),
-      contextualSearchText,
-      languageCode: outputLanguageCode!,
-      supportingRoundIds: Object.freeze(supportingRoundIds)
-    } as T;
-  });
-  return Object.freeze({
-    fallbackDiagnostics: Object.freeze(fallbackDiagnostics),
-    rounds: Object.freeze(projected)
-  });
-}
-
-export function applyMemoryRecallRoundContextualKeys<
-  T extends Readonly<{
-    contextualKeyPolicyVersion: string;
-    contextualKeyState: "GENERATED" | "RAW_FALLBACK";
-    contextualNarrativeText: string;
-    contextualSearchHash: string;
-    contextualSearchText: string;
-    id: string;
-    languageCode: MemoryTextLanguage;
-    publicationState: "ACTIVE" | "SUPPRESSED";
-    rawSafeText: string;
-    redactionState: "EXCLUDED" | "NOT_NEEDED" | "REDACTED";
-    safetyClass: "HIGHLY_SENSITIVE" | "NORMAL" | "SECRET_TAINTED" | "SENSITIVE";
-    supportingRoundIds: readonly string[];
-  }>
->(
-  rounds: readonly T[],
-  outputs: readonly MemoryContextualRoundOutput[],
-  policyVersion: string
-): readonly T[] {
-  return applyMemoryRecallRoundContextualKeysWithDiagnostics(
-    rounds,
-    outputs,
-    policyVersion
-  ).rounds;
 }

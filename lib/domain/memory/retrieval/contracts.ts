@@ -269,7 +269,6 @@ export type MemoryCoreCandidate = Readonly<{
 }>;
 
 export const MEMORY_SAFE_PROJECTION_KINDS = [
-  "CHAT_DIGEST_SAFE_TEXT",
   "FACT_DISPLAY_TEXT",
   "RECALL_CHUNK_SAFE_PROJECTED_TEXT",
   "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
@@ -281,7 +280,6 @@ export type MemorySafeProjectionKind = (typeof MEMORY_SAFE_PROJECTION_KINDS)[num
 
 export type MemoryPackedEvidenceType =
   | "current_fact"
-  | "derived_session_synopsis"
   | "historical_fact"
   | "raw_chunk"
   | "raw_round"
@@ -296,7 +294,6 @@ export type MemoryPackedSourceAuthority =
   | "user_saved";
 
 export type MemoryPackedSpeakerScope =
-  | "derived"
   | "mixed_conversation"
   | "tool"
   | "user";
@@ -330,21 +327,12 @@ export type MemoryExpandedCandidate = Readonly<{
    * checks. These identifiers are never rendered into reader context.
    */
   sourceMessageIds?: readonly string[];
-  retrievalHint?: string | null;
   safeText: string;
   sourceChatId: string | null;
-  supportingEvidence?: readonly Readonly<{
-    itemId: string;
-    occurredFrom: Date;
-    occurredTo: Date;
-    safeText: string;
-    sourceChatId: string;
-  }>[];
   supportingItemId: string | null;
 }>;
 
 export type MemoryPackedItem = Readonly<{
-  derived: boolean;
   documentTime: string | null;
   eventTimeEnd: string | null;
   eventTimeStart: string | null;
@@ -359,7 +347,6 @@ export type MemoryPackedItem = Readonly<{
   observedAt: string | null;
   projectionKind: MemorySafeProjectionKind;
   rawSafeText: string;
-  retrievalHint?: string | null;
   retrievalReason: "exact" | "fused" | "profile" | "semantic_sort";
   section: "CORE" | "FACT" | "HISTORICAL_FACT" | "HISTORY" | "STANDING";
   sourceAuthority: MemoryPackedSourceAuthority;
@@ -367,12 +354,6 @@ export type MemoryPackedItem = Readonly<{
   sourceSessionHandle: string | null;
   speakerScope: MemoryPackedSpeakerScope;
   recordStatus: MemoryPackedStatus;
-  supportingEvidence?: readonly Readonly<{
-    documentTime: string;
-    itemId: string;
-    rawSafeText: string;
-    sourceSessionHandle: string;
-  }>[];
   supportingItemId: string | null;
   temporalPresentation?: MemoryPackedTemporalPresentation;
   temporalReason: "any" | "as_of" | "between" | "current" | "historical";

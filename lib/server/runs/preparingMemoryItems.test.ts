@@ -665,134 +665,81 @@ describe("preparing Memory item finalization", () => {
     expect(roleSql).toContain("FOR SHARE OF segment_message, round_message");
   });
 
-  it("rejoins an authorized overview, aggregation, or derived targeted digest", async () => {
-    const digestText = "Summary: Cedar was selected for the deployment.";
-    const digestMessageIds = Array.from(
-      { length: 4_000 },
-      (_, ordinal) => `source-message-${ordinal}`
-    );
-    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => [{
-      branchGeneration: 2,
-      chatId: "source-chat",
-      contentHash: "anchor-content-hash",
-      digestContentHash: "digest-content-hash",
-      digestId: "digest-1",
-      digestPipelineVersion: "memory-chat-digest-v5",
-      digestSafetyPolicyVersion: "memory-chat-digest-policy-v4",
-      digestText,
-      languageCode: "en",
-      redactionState: "NOT_NEEDED",
-      safeText: digestText,
-      safetyClass: "NORMAL",
-      sourceAssistantId: null,
-      sourceFolderId: null,
-      sourceRevision: 4,
-      state: "ACTIVE"
-    }]);
-    const tx = {
-      $queryRaw,
-      chatMemoryDigestMessage: {
-        findMany: vi.fn(async () => digestMessageIds.map((messageId) => ({
-          messageId
-        })))
-      }
-    } as unknown as Prisma.TransactionClient;
-
-    for (const contract of [{
-      featureSnapshot: {
-        aggregationRequested: false,
-        retrievalMode: "HISTORY_OVERVIEW"
-      },
-      laneRanks: undefined
-    }, {
-      featureSnapshot: {
-        aggregationRequested: true,
-        retrievalMode: "PAST_CHAT_SEARCH"
-      },
-      laneRanks: undefined
-    }, {
-      featureSnapshot: {
-        aggregationRequested: false,
-        derived: true,
-        evidenceType: "derived_session_synopsis",
-        retrievalMode: "PAST_CHAT_SEARCH",
-        retrievalReason: "fused",
-        sourceAuthority: "past_chat",
-        speakerScope: "derived"
-      },
-      laneRanks: { HISTORY_DIGEST_FTS_SIMPLE: 1 }
-    }, {
-      featureSnapshot: {
-        aggregationRequested: false,
-        derived: true,
-        evidenceType: "derived_session_synopsis",
-        retrievalMode: "PAST_CHAT_SEARCH",
-        retrievalReason: "semantic_sort",
-        sourceAuthority: "past_chat",
-        speakerScope: "derived"
-      },
-      laneRanks: { HISTORY_DIGEST_FTS_SIMPLE: 1 }
-    }]) {
-      const resolved = await resolvePreparingMemoryItem(
-        tx,
-        { ...authority, indexGenerationId: "generation-1" },
-        "Which milestones appeared across chats?",
-        {
-          exactItemId: "chunk-1",
-          exactSafeText: `[2026-08-13] ${digestText}`,
-          featureSnapshot: contract.featureSnapshot,
-          finalScore: 0.9,
-          itemType: "RECALL_CHUNK",
-          laneRanks: contract.laneRanks,
-          projectionKind: "CHAT_DIGEST_SAFE_TEXT",
-          recallChunkId: "chunk-1",
-          selectionReason: "history_recall_recent",
-          supportingItemId: "digest-1"
-        }
-      );
-      expect(resolved).toMatchObject({
+  it.each([
+    {
+      label: "digest",
+      input: {
         exactItemId: "chunk-1",
-        featureSnapshot: { supportingItemId: "digest-1" },
+        featureSnapshot: { aggregationRequested: false, retrievalMode: "HISTORY_OVERVIEW" },
+        itemType: "RECALL_CHUNK",
         projectionKind: "CHAT_DIGEST_SAFE_TEXT",
-        sourceSnapshot: { digestId: "digest-1", schemaVersion: 3 },
-        versionSnapshot: {
-          digestPipelineVersion: "memory-chat-digest-v5",
-          schemaVersion: 3
-        }
-      });
-      expect(resolved.sourceMessageIdsSnapshot).toEqual(digestMessageIds);
+        recallChunkId: "chunk-1",
+        supportingItemId: "digest-1"
+      }
+    },
+    {
+      label: "persisted digest",
+      input: {
+        exactItemId: "chunk-1",
+        featureSnapshot: { projectionKind: "CHAT_DIGEST_SAFE_TEXT", supportingItemId: "digest-1" },
+        itemType: "RECALL_CHUNK",
+        recallChunkId: "chunk-1"
+      }
+    },
+    {
+      label: "contextual hint",
+      input: {
+        exactItemId: "round-1",
+        featureSnapshot: {
+          contextualRetrievalHintHash: "a".repeat(64),
+          contextualSupportingEvidenceHashes: [],
+          contextualSupportingRoundIds: []
+        },
+        itemType: "RECALL_ROUND",
+        projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+        recallRoundId: "round-1",
+        supportingItemId: "parent-chunk-1"
+      }
+    },
+    {
+      label: "contextual support",
+      input: {
+        exactItemId: "round-1",
+        featureSnapshot: {
+          contextualRetrievalHintHash: null,
+          contextualSupportingEvidenceHashes: ["b".repeat(64)],
+          contextualSupportingRoundIds: ["c".repeat(64)]
+        },
+        itemType: "RECALL_ROUND",
+        projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+        recallRoundId: "round-1",
+        supportingItemId: "parent-chunk-1"
+      }
+    },
+    {
+      label: "malformed contextual support",
+      input: {
+        exactItemId: "round-1",
+        featureSnapshot: { contextualSupportingRoundIds: "malformed" },
+        itemType: "RECALL_ROUND",
+        projectionKind: "RECALL_ROUND_RAW_SAFE_TEXT",
+        recallRoundId: "round-1",
+        supportingItemId: "parent-chunk-1"
+      }
     }
-    const digestSql = $queryRaw.mock.calls[0]?.[0].strings.join("?") ?? "";
-    expect(digestSql).toContain('FROM "ChatMemoryDigestChunk" AS digest_anchor');
-    expect(digestSql).toContain('FROM "ChatMemoryDigestMessage" AS digest_source_message');
-    expect(digestSql).toContain('LEFT JOIN "ChatMemoryCheckpointMessage"');
-    expect(digestSql).toContain('source_chunk."chunkingVersion" <>');
-  });
-
-  it("rejects a digest in targeted past-chat retrieval", async () => {
-    const $queryRaw = vi.fn();
+  ])("drops a frozen $label element fail-closed as stale", async ({ input }) => {
+    const $queryRaw = vi.fn(async (_query: Prisma.Sql): Promise<unknown[]> => []);
     await expect(resolvePreparingMemoryItem(
       { $queryRaw } as unknown as Prisma.TransactionClient,
       { ...authority, indexGenerationId: "generation-1" },
       "Where did we discuss Cedar?",
       {
-        exactItemId: "chunk-1",
         exactSafeText: "Summary: Cedar was discussed.",
-        featureSnapshot: {
-          aggregationRequested: false,
-          retrievalMode: "PAST_CHAT_SEARCH"
-        },
         finalScore: 0.9,
-        itemType: "RECALL_CHUNK",
-        projectionKind: "CHAT_DIGEST_SAFE_TEXT",
-        recallChunkId: "chunk-1",
         selectionReason: "history_recall_recent",
-        supportingItemId: "digest-1"
-      }
-    )).rejects.toMatchObject({
-      code: "memory_attempt_item_digest_mode_invalid",
-      retryable: false
-    });
+        ...input
+      } as never
+    )).rejects.toMatchObject({ code: "memory_attempt_item_stale", retryable: true });
     expect($queryRaw).not.toHaveBeenCalled();
   });
 

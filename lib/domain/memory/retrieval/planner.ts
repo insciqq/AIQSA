@@ -16,7 +16,7 @@ import {
 } from "./temporal";
 import { normalizeMemoryLexicalProjection } from "./lexical";
 
-export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v20";
+export const MEMORY_RETRIEVAL_PLANNER_VERSION = "memory-retrieval-query-v21";
 /** Shared budget of one query projection, including its fragment separators. */
 export const MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS = 2_000;
 /** Joins non-adjacent fragments of a long turn; stable under NFKC and trim. */
@@ -269,6 +269,8 @@ function inferredMode(
   filters: MemoryRetrievalFilters,
   profileRequested: boolean
 ): MemoryRetrievalMode {
+  // Chat digests are retired: an overview request searches raw past chats.
+  if (input.mode === "HISTORY_OVERVIEW") return "PAST_CHAT_SEARCH";
   if (input.mode) return input.mode;
   if (profileRequested) return "CURRENT_PROFILE";
   const facts = filters.sourceKinds.includes("FACT") || filters.sourceKinds.includes("EVENT");
@@ -315,10 +317,8 @@ function validModeContract(
   if (mode === "HISTORICAL_MEMORY") {
     return facts && !history && temporalIntent !== "CURRENT";
   }
-  if (mode === "PAST_CHAT_SEARCH") {
-    return !facts && history && temporalIntent !== "HISTORICAL";
-  }
-  return mode === "HISTORY_OVERVIEW" && !facts && history && !recencyRequested;
+  return mode === "PAST_CHAT_SEARCH" && !facts && history &&
+    temporalIntent !== "HISTORICAL";
 }
 
 /**
@@ -393,8 +393,7 @@ export function planMemoryRetrieval(input: MemoryRetrievalPlannerInput): MemoryR
       profileRequested,
       input.recencyRequested === true
     ) ||
-    aggregationRequested && mode !== "PAST_CHAT_SEARCH" &&
-      mode !== "HISTORY_OVERVIEW"
+    aggregationRequested && mode !== "PAST_CHAT_SEARCH"
   ) throw new Error("memory_retrieval_plan_invalid");
   const semanticQueryVariants = semanticVariants(
     normalizedQuery,

@@ -10,11 +10,7 @@ import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRe
 import type { MemoryDeletionClaim } from "../coordinator/types";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "./chunking";
-import {
-  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
-} from "./contract";
-import { MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION } from "./digest";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "./contract";
 import {
   inspectMemoryHistoryPurge,
   MEMORY_HISTORY_SOURCE_TARGET_TYPE,
@@ -461,7 +457,7 @@ describe("Prisma Memory history purge", () => {
     }
   });
 
-  it("purges an invalidated tail and digest without deleting a stable v3 prefix", async () => {
+  it("purges an invalidated tail without deleting a stable v3 prefix", async () => {
     const suffix = randomUUID();
     const userId = `memory-history-tail-purge-${suffix}`;
     try {
@@ -581,39 +577,6 @@ describe("Prisma Memory history purge", () => {
           userId
         }
       });
-      const digestId = randomUUID();
-      await prisma.chatMemoryDigest.create({
-        data: {
-          activeLeafMessageId: message.id,
-          anchorChunkId: stableChunkId,
-          branchGeneration: 0,
-          chatId: chat.id,
-          contentHash: memorySha256("invalidated digest"),
-          id: digestId,
-          incrementalDepth: 0,
-          inputFingerprint: memorySha256({ digestId, input: "invalidated" }),
-          invalidatedAt: new Date(),
-          languageCode: "en",
-          normalizedSafeSearchText: "invalidated digest",
-          occurredFrom: message.createdAt,
-          occurredTo: message.createdAt,
-          pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-          rebuildPolicyVersion: MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
-          redactionState: "NOT_NEEDED",
-          safeDigestText: "Summary: Invalidated deployment digest.",
-          safetyClass: "NORMAL",
-          safetyPolicyVersion: "memory-chat-digest-policy-test",
-          sourceContentHash: memorySha256({ chatId: chat.id, revision: 1 }),
-          sourceFingerprint: memorySha256({ digestId, source: "invalidated" }),
-          sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-          sourceRevisionAtCreation: 1,
-          state: "INVALIDATED",
-          summary: "Invalidated deployment digest.",
-          updateMode: "FULL_REBUILD",
-          userId
-        }
-      });
-
       await prisma.$transaction((tx) => purgeMemoryHistorySelection(
         tx,
         userId,
@@ -625,9 +588,6 @@ describe("Prisma Memory history purge", () => {
       })).resolves.toMatchObject({ state: "ACTIVE" });
       await expect(prisma.memoryRecallChunk.findUnique({
         where: { id: invalidatedChunkId }
-      })).resolves.toBeNull();
-      await expect(prisma.chatMemoryDigest.findUnique({
-        where: { id: digestId }
       })).resolves.toBeNull();
     } finally {
       await prisma.user.deleteMany({ where: { id: userId } });

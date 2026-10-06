@@ -295,7 +295,6 @@ export async function preflightPrismaMemorySemanticSmoke(
     const systemTargets = [
       policy.targets.get("MEMORY_CONTROL"),
       policy.targets.get("MEMORY_STATEMENT_CLASSIFY"),
-      policy.targets.get("MEMORY_HISTORY_CLASSIFY"),
       policy.targets.get("MEMORY_FACT_EXTRACT"),
       policy.targets.get("MEMORY_CONSOLIDATE")
     ] as const;

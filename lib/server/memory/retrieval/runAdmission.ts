@@ -145,7 +145,7 @@ export const MEMORY_RUN_RETRIEVAL_ADMISSION_VERSION =
 export const MEMORY_STANDING_ADMISSION_VERSION = "memory-standing-admission-v1";
 export const MEMORY_STANDING_ADMISSION_TIMEOUT_MS = 4_000;
 export const MEMORY_RETRIEVAL_COMPONENT_METRICS_VERSION =
-  "memory-retrieval-component-metrics-v20";
+  "memory-retrieval-component-metrics-v21";
 const MEMORY_QUERY_EMBEDDING_DEADLINE_REASON =
   "memory_query_embedding_deadline_exceeded";
 
@@ -987,19 +987,11 @@ function attemptItems(
       featureSnapshot: {
         ...candidate.featureSnapshot,
         aggregationRequested: standingFact ? false : plan.aggregationRequested,
-        derived: packed.derived,
         documentTime: packed.documentTime,
         eventTimeEnd: packed.eventTimeEnd,
         eventTimeStart: packed.eventTimeStart,
         evidenceHandle: packed.evidenceHandle,
         evidenceType: packed.evidenceType,
-        contextualRetrievalHintHash: packed.retrievalHint
-          ? memorySha256(packed.retrievalHint)
-          : null,
-        contextualSupportingEvidenceHashes: (packed.supportingEvidence ?? []).map((support) =>
-          memorySha256(support.rawSafeText)),
-        contextualSupportingRoundIds: (packed.supportingEvidence ?? []).map((support) =>
-          support.itemId),
         finalScore: candidate.finalScore,
         lastConfirmedAt: packed.lastConfirmedAt,
         observedAt: packed.observedAt,
@@ -1182,11 +1174,9 @@ function queryVariantCounts(plan: MemoryRetrievalPlan): Readonly<Record<string, 
 function memoryRetrievalComponentEvidence(input: Readonly<{
   broadLexicalFallbackUsed: boolean;
   control: MemoryControlResult;
-  digestEvidence: NonNullable<MemoryLocalRetrievalResult["digestEvidence"]>;
   dynamicFused: readonly MemoryRankedCandidate[];
   enabledSourceKinds: readonly ("EVENT" | "FACT" | "HISTORY")[];
   laneResults: MemoryLocalRetrievalResult["laneResults"];
-  navigationExpanded: readonly MemoryExpandedCandidate[];
   pack: MemoryContextPack;
   plan: MemoryRetrievalPlan;
   plannerFallbackReason: string | null;
@@ -1236,9 +1226,6 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
   );
   const { utilityCallCounts, utilityFailureReasonCounts } =
     utilityExecutionMetricEvidence(input.utilityExecutions);
-  const digestHits = input.digestEvidence.navigationCandidateCount +
-    input.navigationExpanded.filter((candidate) =>
-      candidate.projectionKind === "CHAT_DIGEST_SAFE_TEXT").length;
   const rawChunkExpansions = input.rawExpanded.filter((candidate) =>
     candidate.itemType === "RECALL_CHUNK" &&
     candidate.projectionKind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT").length;
@@ -1292,18 +1279,9 @@ function memoryRetrievalComponentEvidence(input: Readonly<{
     candidatesRetainedAfterReranker: input.relevant.length,
     candidatesRetainedAfterRejoin: input.rejoinedRelevant.length,
     candidatesSentToReranker: input.relevanceInput.length,
-    digestHits,
-    digestChatHitWithoutRawAnchorCount: input.digestEvidence.digestOnlyChatCount,
-    digestNavigationCandidateCount: input.digestEvidence.navigationCandidateCount,
-    digestNavigationOnlyContextCount: input.pack.items.filter((item) =>
-      item.evidenceType === "derived_session_synopsis").length,
-    digestSelectedChatCount: input.digestEvidence.selectedChatCount,
     embeddingBatchSizeDistribution: utilityCallCounts.MEMORY_QUERY_EMBED
       ? { "1": utilityCallCounts.MEMORY_QUERY_EMBED }
       : {},
-    intraChatRawAnchorCount: input.digestEvidence.rawAnchorCount,
-    intraChatRawCandidateCount: input.digestEvidence.rawCandidateCount,
-    intraChatSecondStageQueryCount: input.digestEvidence.secondStageQueryCount,
     matchedSegmentMiddleHits: matchedSegmentHits("MIDDLE"),
     matchedSegmentPrefixHits: matchedSegmentHits("PREFIX"),
     matchedSegmentSuffixHits: matchedSegmentHits("SUFFIX"),
@@ -1665,14 +1643,6 @@ export type MemoryRelevanceCandidate = Readonly<{
   sensitivityClass: "NORMAL";
   speakerScope: "assistant" | "memory_record" | "mixed_conversation" | "tool" | "user";
   sourceKind: "EVENT" | "FACT" | "HISTORY" | "TOOL_OBSERVATION";
-  retrievalHint: string | null;
-  supportingEvidence: readonly Readonly<{
-    itemId: string;
-    occurredFrom: string;
-    occurredTo: string;
-    sourceChatId: string;
-    text: string;
-  }>[];
   temporalReason: "any" | "as_of" | "between" | "current" | "historical";
   text: string;
 }>;
@@ -1707,10 +1677,10 @@ function sourceDiversityOrder(
   );
 }
 
-/** Converts locally selected session-navigation candidates to authoritative raw
- * search hits. A digest navigation candidate keeps its exact raw anchor when
- * that anchor was retrieved; otherwise the source falls back to its strongest
- * fused hit. The parent-session rank and child-hit rank form a deterministic
+/** Converts locally selected session representatives to authoritative raw
+ * search hits. A representative keeps its exact raw hit when that hit was
+ * retrieved; otherwise the source falls back to its strongest fused hit. The
+ * parent-session rank and child-hit rank form a deterministic
  * best-first traversal: strong sessions may contribute deeper evidence before
  * the entire weak-session tail, while every child remains reachable and later
  * packing still applies soft source diversity. */
@@ -1943,14 +1913,6 @@ export function memoryRelevanceCandidates(
       sensitivityClass: "NORMAL" as const,
       speakerScope: relevanceSpeakerScope(sourceKind, projection.safeText),
       sourceKind,
-      retrievalHint: projection.retrievalHint ?? null,
-      supportingEvidence: Object.freeze((projection.supportingEvidence ?? []).map((support) => ({
-        itemId: support.itemId,
-        occurredFrom: support.occurredFrom.toISOString(),
-        occurredTo: support.occurredTo.toISOString(),
-        sourceChatId: support.sourceChatId,
-        text: support.safeText
-      }))),
       temporalReason: (options.temporalIntent ?? "CURRENT").toLocaleLowerCase("und") as
         MemoryRelevanceCandidate["temporalReason"],
       text: projection.safeText
@@ -2340,8 +2302,7 @@ function healthRelevantLexicalFailures(
       ? enabledSourceKinds.some((kind) => kind === "FACT" || kind === "EVENT")
       : enabledSourceKinds.includes("HISTORY"));
   const primarySparseLane = (lane: MemoryRetrievalLane) =>
-    lane === "FACT_ENTITY" || lane === "HISTORY_DIGEST_FTS_SIMPLE" ||
-    lane === "HISTORY_INTRA_CHAT_RAW" || lane.endsWith("_EXACT") ||
+    lane === "FACT_ENTITY" || lane.endsWith("_EXACT") ||
     lane.endsWith("_LEXICAL_UNICODE");
   const primarySparseSettled = (fallbackLane: MemoryRetrievalLane) => {
     const factFamily = fallbackLane === "FACT_LEXICAL_NGRAM";
@@ -2368,7 +2329,6 @@ function mergeSpeculativeRetrieval(
     dense.laneResults.some(({ lane }) => !vectorLane(lane))) return null;
   return Object.freeze({
     core: sparse.core,
-    ...(sparse.digestEvidence ? { digestEvidence: sparse.digestEvidence } : {}),
     laneResults: Object.freeze([...sparse.laneResults, ...dense.laneResults]),
     lexicalEvidence: sparse.lexicalEvidence ?? [],
     lexicalFailures: sparse.lexicalFailures,
@@ -3319,10 +3279,9 @@ export function createMemoryRunRetrievalService(
       let speculativeHybridUsed = false;
       try {
         const speculationUsable = broadPlannerFallback || plan === baselineReadPlan;
-        // The fast hedge intentionally omits broad digest navigation. It may
-        // replace the enriched plan only while dense original-query evidence
-        // is available; otherwise the existing bounded broad lexical plan is
-        // the authoritative fail-soft path.
+        // The fast hedge may replace the enriched plan only while dense
+        // original-query evidence is available; otherwise the existing bounded
+        // broad lexical plan is the authoritative fail-soft path.
         const broadLexicalFallbackRequired = broadPlannerFallback &&
           queryEmbedding?.status !== "READY";
         const [speculativeBaseline, speculativeDense] = speculationUsable
@@ -3927,21 +3886,12 @@ export function createMemoryRunRetrievalService(
         componentMetrics: memoryRetrievalComponentEvidence({
           broadLexicalFallbackUsed,
           control: controlEvidence,
-          digestEvidence: local.digestEvidence ?? {
-            digestOnlyChatCount: 0,
-            navigationCandidateCount: 0,
-            rawAnchorCount: 0,
-            rawCandidateCount: 0,
-            secondStageQueryCount: 0,
-            selectedChatCount: 0
-          },
           dynamicFused,
           enabledSourceKinds: [...new Set([
             ...(plans.baseline?.filters.sourceKinds ?? []),
             ...plan.filters.sourceKinds
           ])],
           laneResults: local.laneResults,
-          navigationExpanded,
           pack,
           plan,
           plannerFallbackReason,

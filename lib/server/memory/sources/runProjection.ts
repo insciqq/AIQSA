@@ -6,10 +6,7 @@ import {
   type MemoryClientRefService
 } from "../actions/clientRef";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
-import {
-  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
-} from "../history/contract";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
@@ -27,8 +24,6 @@ type MemoryRunSourceClient = Pick<
   PrismaClient,
   | "$queryRaw"
   | "chatMemoryCheckpointMessage"
-  | "chatMemoryDigest"
-  | "chatMemoryDigestMessage"
   | "chatMemoryCheckpoint"
   | "chat"
   | "memoryHistoryRun"
@@ -52,15 +47,6 @@ function boundedText(value: string, maximum: number): string {
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function digestIdFromFeatureSnapshot(value: unknown): string | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const feature = value as Record<string, unknown>;
-  return feature.projectionKind === "CHAT_DIGEST_SAFE_TEXT" &&
-    typeof feature.supportingItemId === "string" && feature.supportingItemId.length > 0
-    ? feature.supportingItemId
-    : null;
 }
 
 export async function loadMemoryRunSources(
@@ -119,10 +105,6 @@ export async function loadMemoryRunSources(
     : []);
   const sourceMessageIds = [...new Set(items.flatMap((item) =>
     item.sourceMessageIdsSnapshot))];
-  const digestIds = [...new Set(items.flatMap((item) => {
-    const digestId = digestIdFromFeatureSnapshot(item.featureSnapshot);
-    return digestId ? [digestId] : [];
-  }))];
   const [
     versions,
     chunks,
@@ -133,9 +115,7 @@ export async function loadMemoryRunSources(
     roundMessageJoins,
     sourceMessages,
     sourceSuppressions,
-    checkpointMessages,
-    digests,
-    digestMessages
+    checkpointMessages
   ] = await Promise.all([
     factVersionIds.length > 0
       ? client.memoryFactVersion.findMany({
@@ -284,39 +264,6 @@ export async function loadMemoryRunSources(
             userId: input.userId
           }
         })
-      : Promise.resolve([]),
-    digestIds.length > 0
-      ? client.chatMemoryDigest.findMany({
-          select: {
-            activeLeafMessageId: true,
-            anchorChunkId: true,
-            branchGeneration: true,
-            chatId: true,
-            contentHash: true,
-            id: true,
-            occurredTo: true,
-            pipelineVersion: true,
-            redactionState: true,
-            safetyClass: true,
-            sourceContentHash: true,
-            sourceProjectionVersion: true,
-            sourceRevisionAtCreation: true,
-            state: true
-          },
-          where: { id: { in: digestIds }, userId: input.userId }
-        })
-      : Promise.resolve([]),
-    digestIds.length > 0
-      ? client.chatMemoryDigestMessage.findMany({
-          orderBy: [{ digestId: "asc" }, { ordinal: "asc" }],
-          select: {
-            chatId: true,
-            digestId: true,
-            messageId: true,
-            sourceMessageUpdatedAt: true
-          },
-          where: { digestId: { in: digestIds }, userId: input.userId }
-        })
       : Promise.resolve([])
   ]);
   const versionById = new Map(versions.map((version) => [version.id, version]));
@@ -380,14 +327,6 @@ export async function loadMemoryRunSources(
   ]));
   const checkpointMessageKeys = new Set(checkpointMessages.map((message) =>
     `${message.chatId}\u0000${message.messageId}\u0000${message.sourceMessageUpdatedAt.toISOString()}`));
-  const digestById = new Map(digests.map((digest) => [digest.id, digest]));
-  const messagesByDigestId = new Map<string, typeof digestMessages>();
-  for (const message of digestMessages) {
-    messagesByDigestId.set(message.digestId, [
-      ...(messagesByDigestId.get(message.digestId) ?? []),
-      message
-    ]);
-  }
   const joinsByChunkId = new Map<string, typeof chunkMessageJoins>();
   for (const join of chunkMessageJoins) {
     joinsByChunkId.set(join.chunkId, [
@@ -495,20 +434,16 @@ export async function loadMemoryRunSources(
           };
     } else if (item.itemType === "RECALL_CHUNK" && item.recallChunkId &&
       item.sourceChatIdSnapshot) {
-      const digestId = digestIdFromFeatureSnapshot(item.featureSnapshot);
       const chunk = chunkById.get(item.recallChunkId);
       const chat = chatById.get(item.sourceChatIdSnapshot);
       const checkpoint = checkpointByChatId.get(item.sourceChatIdSnapshot);
       const chunkJoins = joinsByChunkId.get(item.recallChunkId) ?? [];
       const joinedMessageIds = chunkJoins.map((join) => join.messageId);
-      const digest = digestId ? digestById.get(digestId) : null;
-      const digestMessageRows = digestId ? messagesByDigestId.get(digestId) ?? [] : [];
-      const digestMessageIds = digestMessageRows.map((message) => message.messageId);
       const sourceSuppressed = sourceSuppressions.some((suppression) =>
         suppression.sourceChatId === item.sourceChatIdSnapshot &&
         suppression.sourceMessageId !== null &&
         item.sourceMessageIdsSnapshot.includes(suppression.sourceMessageId) &&
-        (digestId !== null || suppression.sourceBranchGeneration === null ||
+        (suppression.sourceBranchGeneration === null ||
           suppression.sourceBranchGeneration === chunk?.branchGeneration));
       const currentCheckpoint = Boolean(
         chat && checkpoint && chat.activeLeafMessageId !== null &&
@@ -541,35 +476,12 @@ export async function loadMemoryRunSources(
           ) && checkpointMessageKeys.has(
             `${chat.id}\u0000${join.messageId}\u0000${join.sourceMessageUpdatedAt.toISOString()}`
           )));
-      const digestAvailable = Boolean(
-        digestId && digest && chat && checkpoint &&
-        digest.id === digestId && digest.anchorChunkId === item.recallChunkId &&
-        digest.chatId === chat.id && digest.state === "ACTIVE" &&
-        digest.pipelineVersion === MEMORY_CHAT_DIGEST_PIPELINE_VERSION &&
-        digest.sourceProjectionVersion === MEMORY_HISTORY_SOURCE_PROJECTION_VERSION &&
-        digest.redactionState !== "EXCLUDED" &&
-        (digest.safetyClass === "NORMAL" || digest.safetyClass === "SENSITIVE") &&
-        digest.branchGeneration === checkpoint.branchGeneration &&
-        digest.sourceRevisionAtCreation === checkpoint.sourceRevision &&
-        digest.activeLeafMessageId === checkpoint.activeLeafMessageId &&
-        digest.sourceContentHash === checkpoint.sourceContentHash &&
-        digestMessageRows.length > 0 &&
-        sameStrings(digestMessageIds, item.sourceMessageIdsSnapshot) &&
-        digestMessageRows.every((message) => message.chatId === chat.id &&
-          messageUpdatedAtKeys.has(
-            `${chat.id}\u0000${message.messageId}\u0000${message.sourceMessageUpdatedAt.toISOString()}`
-          ) && checkpointMessageKeys.has(
-            `${chat.id}\u0000${message.messageId}\u0000${message.sourceMessageUpdatedAt.toISOString()}`
-          ))
-      );
-      const rawChunkAvailable = digestId === null &&
-        sameStrings(joinedMessageIds, item.sourceMessageIdsSnapshot);
       const available = currentCheckpoint && frozenChunk && currentChunkMap &&
-        !sourceSuppressed && (rawChunkAvailable || digestAvailable);
+        !sourceSuppressed && sameStrings(joinedMessageIds, item.sourceMessageIdsSnapshot);
       if (!chunk || !available || !item.includedText) continue;
       source = {
         actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
-        date: (digest?.occurredTo ?? chunk.occurredTo).toISOString(),
+        date: chunk.occurredTo.toISOString(),
         memoryRef: refs.mint(input.userId, {
           allowedOperations: ["EDIT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
           originatingRunId: runId,

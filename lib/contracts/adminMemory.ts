@@ -44,24 +44,22 @@ const processingStage = z.enum(["LEARNING", "HISTORY", "INDEXING", "MAINTENANCE"
 export const ADMIN_MEMORY_RECENT_ACTIVITY_STAGES = ["COMMAND", "SEARCH", "PREPARATION"] as const;
 const issueStage = z.enum([...processingStage.options, ...ADMIN_MEMORY_RECENT_ACTIVITY_STAGES]);
 const issueReasons = [
-  "MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED", "OUTPUT_LIMIT",
-  "HISTORY_INCOMPLETE", "RETRYING", "STALLED", "COMMAND_FAILED", "COMMAND_UNKNOWN", "SEARCH_DEGRADED", "SEARCH_FAILED",
+  "MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED",
+  "RETRYING", "STALLED", "COMMAND_FAILED", "COMMAND_UNKNOWN", "SEARCH_DEGRADED", "SEARCH_FAILED",
   "PREPARATION_SKIPPED", "PREPARATION_FAILED"
 ] as const;
-const autoHealStates = ["RETRYING", "EXHAUSTED", "UNAVAILABLE"] as const;
 export const adminMemoryProcessingIssueSchema = z.strictObject({
   stage: issueStage,
   reason: z.enum(issueReasons),
   severity: z.enum(["bad", "warn"]),
   count: safeInteger,
-  oldestAgeSeconds: safeInteger.nullable(),
-  autoHeal: z.enum(autoHealStates).optional()
+  oldestAgeSeconds: safeInteger.nullable()
 });
 
 export type AdminMemoryProcessingIssue = z.infer<typeof adminMemoryProcessingIssueSchema>;
 
 export function adminMemoryProcessingIssueKey(issue: AdminMemoryProcessingIssue): string {
-  return `${issue.stage}:${issue.reason}:${issue.autoHeal ?? "NONE"}`;
+  return `${issue.stage}:${issue.reason}`;
 }
 
 export const adminMemoryStatusSchema = z.strictObject({
@@ -73,7 +71,7 @@ export const adminMemoryStatusSchema = z.strictObject({
   processing: z.strictObject({
     enabled: z.boolean(),
     issues: z.array(adminMemoryProcessingIssueSchema)
-      .max(issueStage.options.length * issueReasons.length * (autoHealStates.length + 1))
+      .max(issueStage.options.length * issueReasons.length)
   }),
   configuredTargets: z.array(z.strictObject({
     model: safeLabel,
