@@ -129,6 +129,10 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "model_unavailable": return "the model was unavailable";
     case "search_unavailable": return "web search was unavailable with this model";
     case "provider_unavailable": return "the model's provider was unavailable";
+    case "provider_auth_rejected": return "the model provider rejected the configured key";
+    case "provider_quota_exhausted": return "the model provider account had no remaining quota or balance";
+    case "provider_rate_limited": return "the model provider was limiting requests";
+    case "provider_server_error": return "the model provider returned a server error";
     case "account_inactive": return "the account was not active";
     case "schedule_invalid": return "the schedule could not be calculated";
     case "paused": return "the task was paused";

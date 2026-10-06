@@ -293,7 +293,7 @@ export function providerHttpFailureMessage(value: unknown): string | null {
       return `The model provider reports that the account has no remaining quota or balance (${status}). Ask an administrator to check the provider account.`;
     case "provider_rate_limited":
       return `The model provider is limiting requests (${status}) and the retries did not succeed. Wait a minute before trying again.`;
-    case "provider_unavailable":
+    case "provider_server_error":
       return `The model provider returned a server error (${status}) and the retries did not succeed. Try again later.`;
     default:
       return null;
@@ -328,8 +328,8 @@ type ObservedFailure = Readonly<{
   cause?: ProviderCause;
 }>;
 
-const providerHttpFailureClasses = new Set<string>(["provider_auth_rejected", "provider_quota_exhausted", "provider_rate_limited", "provider_unavailable"]);
-type ProviderHttpFailureClass = "provider_auth_rejected" | "provider_quota_exhausted" | "provider_rate_limited" | "provider_unavailable";
+const providerHttpFailureClasses = new Set<string>(["provider_auth_rejected", "provider_quota_exhausted", "provider_rate_limited", "provider_server_error"]);
+type ProviderHttpFailureClass = "provider_auth_rejected" | "provider_quota_exhausted" | "provider_rate_limited" | "provider_server_error";
 
 export function isProviderHttpFailureClass(code: string): code is ProviderHttpFailureClass {
   return providerHttpFailureClasses.has(code);
@@ -347,7 +347,7 @@ function providerHttpFailureClass(code: ObservedFailureCode, status: number | un
   return status === 401 || status === 403 ? "provider_auth_rejected"
     : status === 402 ? "provider_quota_exhausted"
     : status === 429 ? "provider_rate_limited"
-    : status >= 500 && status <= 599 ? "provider_unavailable" : null;
+    : status >= 500 && status <= 599 ? "provider_server_error" : null;
 }
 
 /** The content-free failure identity. A provider HTTP failure without a more

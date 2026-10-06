@@ -3667,7 +3667,7 @@ describe("run execution", () => {
     [403, "provider_auth_rejected", "The model provider rejected the configured credentials (HTTP 403). Ask an administrator to check the provider key."],
     [402, "provider_quota_exhausted", "The model provider reports that the account has no remaining quota or balance (HTTP 402). Ask an administrator to check the provider account."],
     [429, "provider_rate_limited", "The model provider is limiting requests (HTTP 429) and the retries did not succeed. Wait a minute before trying again."],
-    [503, "provider_unavailable", "The model provider returned a server error (HTTP 503) and the retries did not succeed. Try again later."]
+    [503, "provider_server_error", "The model provider returned a server error (HTTP 503) and the retries did not succeed. Try again later."]
   ] as const)("persists the provider failure class of HTTP %i with its identity, never provider text", async (status, code, message) => {
     const observation = await captureRunObservation();
     const repository = createRepository();
