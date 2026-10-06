@@ -458,8 +458,6 @@
   "memory_coordinator_registry_incomplete",
   "memory_coordinator_startup_failed",
   "memory_counter_contract_invalid",
-  "memory_cutover_arguments_invalid",
-  "memory_cutover_inventory_unavailable",
   "memory_deletion_failed",
   "memory_deletion_handler_unavailable",
   "memory_deletion_result_invalid",

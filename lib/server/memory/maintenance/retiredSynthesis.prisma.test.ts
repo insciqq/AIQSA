@@ -7,7 +7,6 @@ import { createPrismaMemoryCoordinatorRepository } from "../coordinator/prismaRe
 import type { MemoryDeletionClaim, MemoryJobClaim } from "../coordinator/types";
 import { createPrismaExplicitMemoryRepository } from "../explicit/repository";
 import { MEMORY_FACT_EXTRACTION_PIPELINE_VERSION, MEMORY_FACT_SOURCE_PROJECTION_VERSION } from "../learning/extraction/contract";
-import { loadMemorySemanticCutoverInventory } from "../operational/cutover";
 import { ensureClassifiedSearchEntry } from "../persistence/factSearchEntry";
 import { memorySha256 } from "../persistence/lexical";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
@@ -342,7 +341,7 @@ describe("retired Dream synthesis", () => {
     }
   });
 
-  it("keeps derivatives out of every read, shows their sources as ordinary memories and leaves cutover clean", async () => {
+  it("keeps derivatives out of every read and shows their sources as ordinary memories", async () => {
     const userId = await owner("reads");
     const explicit = createPrismaExplicitMemoryRepository(prisma);
     const project = (versionId: string) => withLockedMemoryTransaction(prisma, userId,
@@ -360,7 +359,6 @@ describe("retired Dream synthesis", () => {
         .resolves.toBe(3);
       const job = await retiredJob(userId, "SUCCEEDED");
       const bindingId = await succeededBinding(userId, job.id);
-      const baseline = await loadMemorySemanticCutoverInventory(prisma);
       const [s1, s2, s3] = sources as [Ref, Ref, Ref];
       const combination = await pattern(userId, { bindingId, reasonCode: "combined_overlapping_facts", searchable: true,
         sources: [s1, s2], statement: "The user reviews the release checklist and runs the tests before each release." });
@@ -382,20 +380,10 @@ describe("retired Dream synthesis", () => {
       await expect(prisma.memorySearchEntry.count({ where: { factVersionId: combination.versionId } })).resolves.toBe(1);
       await project(combination.versionId);
       await expect(prisma.memorySearchEntry.count({ where: { factVersionId: combination.versionId } })).resolves.toBe(0);
-      // Still-active derivatives await the retired-synthesis reconcile, not a
-      // cutover disposition.
-      const live = await loadMemorySemanticCutoverInventory(prisma);
-      expect(live.unsupportedAutomaticPipelineVersions).toBe(baseline.unsupportedAutomaticPipelineVersions);
-      expect(live.activeCurrentMissingExactAuthority).toBe(baseline.activeCurrentMissingExactAuthority);
-      expect(live.total).toBe(baseline.total);
 
       await reconcileRetiredMemorySynthesis(prisma, new Date());
       for (const ref of [combination, generalization]) await expectForgotten(ref);
       await expect(listed()).resolves.toEqual(sourceFactIds);
-      const retired = await loadMemorySemanticCutoverInventory(prisma);
-      expect(retired.unsupportedAutomaticPipelineVersions).toBe(baseline.unsupportedAutomaticPipelineVersions);
-      expect(retired.activeCurrentMissingExactAuthority).toBe(baseline.activeCurrentMissingExactAuthority);
-      expect(retired.total).toBe(baseline.total);
     } finally {
       await cleanup(userId);
     }

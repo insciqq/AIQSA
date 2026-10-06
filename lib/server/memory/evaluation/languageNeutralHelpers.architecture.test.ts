@@ -10,8 +10,7 @@ const activeOwners = [
   "lib/server/memory/embedding/contract.ts",
   "lib/server/memory/history/language.ts",
   "lib/server/memory/history/rounds.ts",
-  "lib/server/memory/operational/counters.ts",
-  "lib/server/memory/operational/snapshot.ts"
+  "lib/server/memory/operational/counters.ts"
 ] as const;
 
 const reservedMetadataLabels = new Set(["mul", "und"]);
