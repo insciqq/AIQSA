@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { WorkspaceCoordinatorRepository } from "./coordinator";
 import type { WorkspaceSelectedFile } from "./outputManifest";
 import type { AcceptedWorkspaceSecret } from "./secrets/store";
@@ -33,7 +34,10 @@ export function createSkillSaveWorkspaceReader(deps: Readonly<{
   return {
     async read(input) {
       const consumer = { runId: input.runId, userId: input.userId, consumerKey: input.consumerKey };
-      const capture = await deps.captures.create({ ...consumer, requestKey: input.consumerKey, files: input.files, signal: input.signal });
+      // Each attempt reads the folder afresh: a recovered call saved nothing, and its
+      // earlier capture is already released.
+      const requestKey = `${input.consumerKey.slice(0, 90)}_${randomUUID().replaceAll("-", "")}`;
+      const capture = await deps.captures.create({ ...consumer, requestKey, files: input.files, signal: input.signal });
       const reference = { ...consumer, captureId: capture.id };
       try {
         const files: SkillSaveCapturedFile[] = [];
