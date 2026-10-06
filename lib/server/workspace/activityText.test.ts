@@ -4,7 +4,8 @@ import type { AcceptedWorkspaceSecret } from "./secrets/store";
 import {
   plainWorkspaceActivityText,
   workspaceActivitySecretValues,
-  WorkspaceActivityText
+  WorkspaceActivityText,
+  workspaceSecretMatches
 } from "./activityText";
 
 describe("Workspace activity text publication", () => {
@@ -80,6 +81,14 @@ describe("Workspace activity text publication", () => {
     const first = stream.push("🙂123456");
     expect(first).toBe("");
     expect(first + stream.push("终", true)).toBe("🙂123456终");
+  });
+
+  it("shows named values with the same placeholder as masked command output", () => {
+    const text = new WorkspaceActivityText([{ name: "MY_TOKEN", value: "private-token" }, "run-grant-token"]);
+    expect(text.text("echo private-token run-grant-token")).toBe("echo [secret:MY_TOKEN] •••");
+    expect(text.withValues(["another-value"]).text("private-token another-value")).toBe("[secret:MY_TOKEN] •••");
+    expect(workspaceSecretMatches([{ id: "fixture", versionId: "revision", name: "Deploy key", description: "",
+      value: { kind: "env", entries: [{ name: "API_TOKEN", value: "env-value" }] } }])).toEqual([{ name: "API_TOKEN", value: "env-value" }]);
   });
 
   it("collects accepted values without treating names and descriptions as credentials", () => {

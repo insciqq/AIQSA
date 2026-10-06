@@ -69,24 +69,31 @@ function fileText(base64: string): string | null {
   }
 }
 
-/** Exact accepted values only; this does not infer secrets from arbitrary prose. */
-export function workspaceActivitySecretValues(secrets: readonly AcceptedWorkspaceSecret[]): string[] {
-  const values: string[] = [];
+/** An exact delivered value and the name its placeholder shows; an unnamed value shows the bare redaction mark. */
+export type WorkspaceSecretMatch = Readonly<{ name?: string; value: string }>;
+
+/**
+ * Exact accepted values only; this does not infer secrets from arbitrary prose.
+ * An environment value is named by its variable, every other value by its secret.
+ */
+export function workspaceSecretMatches(secrets: readonly AcceptedWorkspaceSecret[]): WorkspaceSecretMatch[] {
+  const matches: WorkspaceSecretMatch[] = [];
   for (const secret of secrets) {
     const value = secret.value;
+    const named = (text: string) => ({ name: secret.name, value: text });
     switch (value.kind) {
-      case "env": values.push(...value.entries.map((entry) => entry.value)); break;
-      case "text": values.push(value.text); break;
-      case "ssh_key": values.push(value.privateKey, value.passphrase); break;
+      case "env": matches.push(...value.entries.map((entry) => ({ name: entry.name, value: entry.value }))); break;
+      case "text": matches.push(named(value.text)); break;
+      case "ssh_key": matches.push(named(value.privateKey), named(value.passphrase)); break;
       case "file": {
         const text = fileText(value.base64);
-        if (text !== null) values.push(text);
+        if (text !== null) matches.push(named(text));
         break;
       }
       case "browser_session": {
         const text = fileText(value.base64);
         if (text === null) break;
-        values.push(text);
+        matches.push(named(text));
         // These are validated Playwright storage states, with named value fields.
         // Do not treat every string in an arbitrary file as a credential.
         const state = JSON.parse(text) as {
@@ -94,18 +101,54 @@ export function workspaceActivitySecretValues(secrets: readonly AcceptedWorkspac
           origins?: { localStorage?: { value?: unknown }[] }[];
         };
         for (const entry of [...state.cookies ?? [], ...state.origins?.flatMap((origin) => origin.localStorage ?? []) ?? []]) {
-          if (typeof entry.value === "string") values.push(entry.value);
+          if (typeof entry.value === "string") matches.push(named(entry.value));
         }
         break;
       }
     }
   }
-  return values;
+  return matches;
+}
+
+export function workspaceActivitySecretValues(secrets: readonly AcceptedWorkspaceSecret[]): string[] {
+  return workspaceSecretMatches(secrets).map((match) => match.value);
+}
+
+/**
+ * `[secret:<NAME>]` with a display-safe name. A placeholder that would itself
+ * contain a masked value falls back to the bare `[secret]`.
+ */
+export function workspaceSecretPlaceholder(name: string | undefined, values: readonly string[] = []): string {
+  const safe = (name ?? "").replace(/[^\p{L}\p{N}_.-]+/gu, "_").replace(/^_+|_+$/gu, "").slice(0, 64);
+  const placeholder = safe ? `[secret:${safe}]` : "[secret]";
+  return values.some((value) => value.length >= WORKSPACE_ACTIVITY_SECRET_MIN_LENGTH && placeholder.includes(value))
+    ? "[secret]" : placeholder;
+}
+
+/** Exact values at or above the masking threshold, longest first, each with its replacement; the first name of a value wins. */
+export function workspaceSecretReplacements(
+  matches: readonly WorkspaceSecretMatch[],
+  unnamed = WORKSPACE_ACTIVITY_REDACTION
+): Readonly<{ replacement: string; value: string }>[] {
+  const eligible = matches.filter((match) => match.value.length >= WORKSPACE_ACTIVITY_SECRET_MIN_LENGTH);
+  const values = eligible.map((match) => match.value);
+  const seen = new Set<string>();
+  const result: { replacement: string; value: string }[] = [];
+  for (const match of eligible) {
+    if (seen.has(match.value)) continue;
+    seen.add(match.value);
+    result.push({ replacement: match.name === undefined ? unnamed : workspaceSecretPlaceholder(match.name, values), value: match.value });
+  }
+  return result.sort((left, right) => right.value.length - left.value.length);
 }
 
 /** Native literal matching avoids interpreting credentials as regular expressions. */
-function maskPrefix(value: string, boundary: number, secrets: readonly string[]): { text: string; rest: string } {
-  const positions = secrets.map((secret) => value.indexOf(secret));
+export function maskWorkspaceSecretPrefix(
+  value: string,
+  boundary: number,
+  secrets: readonly Readonly<{ replacement: string; value: string }>[]
+): { text: string; rest: string } {
+  const positions = secrets.map((secret) => value.indexOf(secret.value));
   let cursor = 0;
   let text = "";
   while (cursor < boundary) {
@@ -121,33 +164,35 @@ function maskPrefix(value: string, boundary: number, secrets: readonly string[])
       break;
     }
     const start = positions[selected]!;
-    text += value.slice(cursor, start) + WORKSPACE_ACTIVITY_REDACTION;
-    cursor = start + secrets[selected]!.length;
+    text += value.slice(cursor, start) + secrets[selected]!.replacement;
+    cursor = start + secrets[selected]!.value.length;
     for (let index = 0; index < secrets.length; index += 1) {
-      if (positions[index]! >= 0 && positions[index]! < cursor) positions[index] = value.indexOf(secrets[index]!, cursor);
+      if (positions[index]! >= 0 && positions[index]! < cursor) positions[index] = value.indexOf(secrets[index]!.value, cursor);
     }
   }
   return { text, rest: value.slice(cursor) };
 }
 
 export class WorkspaceActivityText {
-  private readonly secrets: readonly string[];
+  private readonly matches: readonly WorkspaceSecretMatch[];
+  private readonly secrets: readonly Readonly<{ replacement: string; value: string }>[];
   private readonly withheld: number;
 
-  constructor(values: readonly string[] = []) {
-    this.secrets = [...new Set(values.map(plainWorkspaceActivityText)
-      .filter((value) => value.length >= WORKSPACE_ACTIVITY_SECRET_MIN_LENGTH))]
-      .sort((left, right) => right.length - left.length);
-    this.withheld = this.secrets.reduce((maximum, value) => Math.max(maximum, value.length - 1), 0);
+  /** Named values render as `[secret:<NAME>]`, like masked command output; unnamed ones as the bare mark. */
+  constructor(values: readonly (string | WorkspaceSecretMatch)[] = []) {
+    this.matches = values.map((entry) => typeof entry === "string" ? { value: entry } : entry)
+      .map((entry) => ({ ...entry, value: plainWorkspaceActivityText(entry.value) }));
+    this.secrets = workspaceSecretReplacements(this.matches);
+    this.withheld = this.secrets.reduce((maximum, secret) => Math.max(maximum, secret.value.length - 1), 0);
   }
 
   text(value: string): string {
     const plain = plainWorkspaceActivityText(value);
-    return maskPrefix(plain, plain.length, this.secrets).text;
+    return maskWorkspaceSecretPrefix(plain, plain.length, this.secrets).text;
   }
 
-  withValues(values: readonly string[]): WorkspaceActivityText {
-    return new WorkspaceActivityText([...this.secrets, ...values]);
+  withValues(values: readonly (string | WorkspaceSecretMatch)[]): WorkspaceActivityText {
+    return new WorkspaceActivityText([...this.matches, ...values]);
   }
 
   /** Redact before the caller bounds its output buffer, including very long secrets. */
@@ -160,7 +205,7 @@ export class WorkspaceActivityText {
         if (closed) throw new Error("workspace_activity_stream_closed");
         pending += terminal.push(chunk);
         const boundary = done ? pending.length : Math.max(0, pending.length - this.withheld);
-        const projected = maskPrefix(pending, boundary, this.secrets);
+        const projected = maskWorkspaceSecretPrefix(pending, boundary, this.secrets);
         pending = projected.rest;
         closed = done;
         return projected.text;

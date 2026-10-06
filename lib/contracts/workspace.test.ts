@@ -146,6 +146,9 @@ describe("workspace activity contract", () => {
     expect(decodeThreadWorkspaceActivityEntry({ ...elided, failedCount: 4 })).toBeNull();
     expect(decodeThreadWorkspaceActivityEntry({ ...elided, throughSequence: -1 })).toBeNull();
     expect(decodeThreadWorkspaceActivity({ entries: [elided] })).toBeNull();
+    const command = { ...base, kind: "command", command: { preview: "echo", secretMasked: true } };
+    expect(decodeThreadWorkspaceActivityEntry(command)).toEqual(command);
+    expect(decodeThreadWorkspaceActivityEntry({ ...command, command: { preview: "echo", secretMasked: "MY_TOKEN" } })).toBeNull();
     expect(decodeThreadWorkspaceActivity({ entries: [elided], truncated: true })).not.toBeNull();
     expect(decodeThreadWorkspaceActivity({ entries: [elided, { ...elided, id: "other" }], truncated: true })).toBeNull();
     expect(decodeThreadWorkspaceActivity({ entries: Array.from({ length: 513 }, () => ({ ...base, kind: "workspace_start" })) })).toBeNull();
