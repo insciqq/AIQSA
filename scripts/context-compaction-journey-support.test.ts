@@ -338,20 +338,20 @@ describe("catalog readiness and debug evidence", () => {
 });
 
 describe("usage ledger", () => {
-  const dashboard = { usage: { byUser: [{ providerModels: [
+  const analytics = { usage: { byModel: [
     { cacheWriteInputTokens: 100, cachedInputTokens: 700, inputTokens: 1_200, modelId: "model-row", provider: "connection-row" },
     { cacheWriteInputTokens: null, cachedInputTokens: 0, inputTokens: 300, modelId: "gpt-5.5", provider: "openai_compatible" },
     { cacheWriteInputTokens: 5, cachedInputTokens: 5, inputTokens: 999, modelId: "other", provider: "connection-row" },
     { cacheWriteInputTokens: null, cachedInputTokens: null, inputTokens: null, modelId: "model-row", provider: "anthropic" }
-  ], userId: "u1" }] } };
+  ] } };
   const keys = { modelIds: ["model-row", "gpt-5.5"], providers: ["connection-row", "openai_compatible", "anthropic"] };
 
   it("sums the route model's prompt accounting and its cache components", () => {
-    expect(ledgerUsage(dashboard, "u1", keys)).toEqual({ cacheWriteInputTokens: 100, cachedInputTokens: 700, inputTokens: 1_500 });
-    expect(ledgerUsage(dashboard, "u2", keys)).toEqual({ cacheWriteInputTokens: 0, cachedInputTokens: 0, inputTokens: 0 });
-    expect(ledgerUsage({ usage: {} }, "u1", keys)).toBeNull();
-    expect(ledgerUsage({ usage: { byUser: [{ providerModels: [{ cachedInputTokens: -1, inputTokens: 1, modelId: "gpt-5.5",
-      provider: "openai_compatible" }], userId: "u1" }] } }, "u1", keys)).toBeNull();
+    expect(ledgerUsage(analytics, keys)).toEqual({ cacheWriteInputTokens: 100, cachedInputTokens: 700, inputTokens: 1_500 });
+    expect(ledgerUsage({ usage: { byModel: [] } }, keys)).toEqual({ cacheWriteInputTokens: 0, cachedInputTokens: 0, inputTokens: 0 });
+    expect(ledgerUsage({ usage: {} }, keys)).toBeNull();
+    expect(ledgerUsage({ usage: { byModel: [{ cachedInputTokens: -1, inputTokens: 1, modelId: "gpt-5.5",
+      provider: "openai_compatible" }] } }, keys)).toBeNull();
   });
 
   it("measures one turn as ledger growth, including a row the previous turn created", () => {

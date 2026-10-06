@@ -81,6 +81,7 @@ import {
   journeyReuseDecision,
   journeyRunParams,
   ledgerDelta,
+  LEDGER_USAGE_PATH,
   ledgerUsage,
   modelInConnection,
   readConnections,
@@ -601,7 +602,7 @@ async function main(): Promise<number> {
     stage = "chat";
     chatId = await createChat(api, memory);
     const ledgerKeys = { modelIds: [model.modelId, model.upstreamModelId!], providers: [model.provider, model.providerFamily!] };
-    const ledger = async () => ledgerUsage(await json(api, "evidence", "/api/admin"), api.userId, ledgerKeys);
+    const ledger = async () => ledgerUsage(await json(api, "evidence", LEDGER_USAGE_PATH), ledgerKeys);
     if (mode === "budget") {
       const { version: _version, ...limits } = await modelPolicy(api, "provider_setup");
       void _version;
