@@ -1,4 +1,6 @@
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
+import { logEvent } from "../observability";
+import { observedFailure } from "../providers/providerObservability";
 import { mergeTokenUsage, normalizeTokenUsage, type TokenUsageCompleteness } from "../../domain/usage";
 import type {
   ProviderStructuredOutputRequest
@@ -265,21 +267,15 @@ async function acceptedOperation(input: Readonly<{
       }).catch(() => undefined);
       throw error;
     }
-    const providerStatus = typeof error === "object" && error !== null &&
-      "status" in error && typeof error.status === "number" &&
-      Number.isSafeInteger(error.status)
-      ? error.status
-      : null;
-    const providerErrorName = error instanceof Error &&
-      /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(error.name)
-      ? error.name
-      : "UnknownError";
-    console.error(JSON.stringify({
-      event: "knowledge_answer_provider_operation_failed",
-      operation: input.operation,
-      providerErrorName,
-      providerStatus
-    }));
+    // The recorded failure degrades this operation; only the classified code,
+    // reason and HTTP status cross, never the error's name, message or body.
+    logEvent("tool_execution", {
+      ...observedFailure(error), tool_kind: "knowledge", stage: "request", operation_index: input.ordinal,
+      operation_stage: input.operation.includes("selector") ? "selector"
+        : input.operation.includes("supplement") ? "supplement"
+        : input.operation.includes("draft") ? "draft" : undefined,
+      outcome: "degraded", action: "degrade"
+    });
     execution = {
       output: Object.freeze({}),
       providerResponseId: null,

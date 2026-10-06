@@ -1,5 +1,7 @@
 import type { RequestAuthResolver } from "@/lib/server/auth/requestAuth";
 import { readJsonBodyOrNull, requestBodyErrorResponse } from "@/lib/server/http/requestBody";
+import { logEvent } from "@/lib/server/observability";
+import { databaseFailureCode } from "@/lib/server/observability/databaseFailure";
 import type { createWorkspacePolicyService } from "./policyService";
 import { WorkspacePolicyServiceError } from "./policyService";
 import type { createWorkspaceOverviewService } from "./overviewService";
@@ -23,7 +25,8 @@ function failure(error: unknown): Response {
   if (error instanceof WorkspacePolicyServiceError) {
     return Response.json({ error: error.code }, { status: 409 });
   }
-  console.error("workspace_policy_action_failed");
+  logEvent("service_operation", { subsystem: "workspace", stage: "process", outcome: "failed",
+    code: "workspace_policy_action_failed", prisma_code: databaseFailureCode(error) });
   return Response.json({ error: "workspace_policy_action_failed" }, { status: 500 });
 }
 

@@ -83,6 +83,7 @@ import {
 } from "./contract";
 import { MEMORY_SHADOW_CUTOVER_BLOCKING_JOB_KINDS } from "./wake";
 import { reconcileMemoryShadowGenerations } from "./lifecycle";
+import { logEvent } from "../../observability";
 import {
   advanceMemoryLexicalProjectionRevisionFence,
   initializeMemoryLexicalProjectionState
@@ -1748,13 +1749,21 @@ function sameEmbeddingPin(
     left.vectorSpaceFingerprint === right.vectorSpaceFingerprint;
 }
 
+/** Content-free reasons, registered in observability/failureCodes.json. */
+type MemoryShadowGenerationFailure = "memory_rebuild_source_generation_changed" |
+  "memory_rebuild_configuration_changed" | "memory_rebuild_child_failed" |
+  "memory_rebuild_embedding_configuration_changed";
+
 async function failShadowGeneration(
   tx: MemoryTransaction,
   userId: string,
   generationId: string,
-  reason: string
+  reason: MemoryShadowGenerationFailure
 ): Promise<void> {
-  console.error(reason);
+  // A changed source or configuration supersedes the shadow; only a failed
+  // child is a rebuild failure.
+  logEvent("service_operation", { subsystem: "memory", stage: "rebuild",
+    outcome: reason === "memory_rebuild_child_failed" ? "failed" : "stale", code: reason, generation_id: generationId });
   await tx.memoryIndexGeneration.updateMany({
     data: { state: "FAILED" },
     where: {

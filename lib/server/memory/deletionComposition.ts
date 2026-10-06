@@ -19,6 +19,7 @@ import {
 import type {
   PermanentChatDeletionCapability
 } from "../chats/permanentDeletion/service";
+import { logEvent } from "../observability";
 import { prisma } from "../prisma";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { workspaceRuntime } from "../workspace/defaultServices";
@@ -182,7 +183,7 @@ export function tryEnsureDefaultMemoryDeletionComposition(
   } catch {
     if (!defaultCompositionFailureLogged) {
       defaultCompositionFailureLogged = true;
-      console.error("memory_deletion_composition_failed");
+      logEvent("runtime_lifecycle", { subsystem: "memory", stage: "initialize", outcome: "failed", code: "memory_deletion_composition_failed" });
     }
     return false;
   }

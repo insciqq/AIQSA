@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
 import { createAnnouncementsHandlers } from "./handlers";
 import { AnnouncementRepositoryError, type AnnouncementsRepository } from "./repository";
 
@@ -91,12 +92,12 @@ describe("announcements operation boundary", () => {
 
   it("sanitizes unexpected errors in both the response and logs", async () => {
     const f = fixture(); f.repository.list.mockRejectedValueOnce(new Error("private SQL body"));
-    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    try {
-      const response = await f.handle(request(), "list");
-      expect(response.status).toBe(503);
-      expect(await response.json()).toEqual({ error: "announcements_unavailable" });
-      expect(log).toHaveBeenCalledWith("announcements_action_failed");
-    } finally { log.mockRestore(); }
+    const observation = await captureRunObservation();
+    const response = await f.handle(request(), "list");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "announcements_unavailable" });
+    expect(observation.records()).toContainEqual(expect.objectContaining({ event: "service_operation", subsystem: "admin",
+      stage: "read", outcome: "failed", code: "announcements_action_failed", prisma_code: "unknown" }));
+    expect(JSON.stringify(observation.records())).not.toContain("private SQL body");
   });
 });

@@ -1065,63 +1065,60 @@ describe("admin route handlers", () => {
     const omittedSend = vi.fn(async () => undefined);
     const unavailableSend = vi.fn(async () => ({ kind: "unavailable" as const }));
     const failedSend = vi.fn(async () => ({ code: "smtp_tls_failed" as const, kind: "failed" as const }));
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.mocked(logEvent).mockClear();
 
-    try {
-      const cases = [
-        {
-          expected: "not_requested",
-          mailer: { send: notRequestedSend },
-          sendEmail: false
-        },
-        {
-          expected: "not_requested",
-          mailer: { send: omittedSend },
-          sendEmail: undefined
-        },
-        {
-          expected: "unavailable",
-          mailer: { send: unavailableSend },
-          sendEmail: true
-        },
-        {
-          expected: "failed",
-          mailer: { send: failedSend },
-          sendEmail: true
-        }
-      ] as const;
-
-      for (const testCase of cases) {
-        const POST = createAdminActionHandler({
-          getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
-          mailer: testCase.mailer,
-          repository: createRepository(),
-          resolveAuth: admin.resolveAuth
-        });
-        const response = await POST(
-          jsonRequest({
-            action: "create_invite",
-            email: "friend@example.com",
-            sendEmail: testCase.sendEmail
-          })
-        );
-        const body = (await response.json()) as { emailDelivery: string; inviteUrl: string };
-
-        expect(response.status, testCase.expected).toBe(200);
-        expect(body.emailDelivery, testCase.expected).toBe(testCase.expected);
-        expect(body.inviteUrl, testCase.expected).toMatch(/^https:\/\/aiqsa\.local\/login\?invite=/);
+    const cases = [
+      {
+        expected: "not_requested",
+        mailer: { send: notRequestedSend },
+        sendEmail: false
+      },
+      {
+        expected: "not_requested",
+        mailer: { send: omittedSend },
+        sendEmail: undefined
+      },
+      {
+        expected: "unavailable",
+        mailer: { send: unavailableSend },
+        sendEmail: true
+      },
+      {
+        expected: "failed",
+        mailer: { send: failedSend },
+        sendEmail: true
       }
+    ] as const;
 
-      expect(notRequestedSend).not.toHaveBeenCalled();
-      expect(omittedSend).not.toHaveBeenCalled();
-      expect(unavailableSend).toHaveBeenCalledOnce();
-      expect(failedSend).toHaveBeenCalledOnce();
-      expect(consoleError).toHaveBeenCalledOnce();
-      expect(consoleError).toHaveBeenCalledWith("invite_email_failed");
-      expect(JSON.stringify(consoleError.mock.calls)).not.toContain("smtp_tls_failed");
-    } finally {
-      consoleError.mockRestore();
+    for (const testCase of cases) {
+      const POST = createAdminActionHandler({
+        getConfig: () => ({ appBaseUrl: "https://aiqsa.local" }),
+        mailer: testCase.mailer,
+        repository: createRepository(),
+        resolveAuth: admin.resolveAuth
+      });
+      const response = await POST(
+        jsonRequest({
+          action: "create_invite",
+          email: "friend@example.com",
+          sendEmail: testCase.sendEmail
+        })
+      );
+      const body = (await response.json()) as { emailDelivery: string; inviteUrl: string };
+
+      expect(response.status, testCase.expected).toBe(200);
+      expect(body.emailDelivery, testCase.expected).toBe(testCase.expected);
+      expect(body.inviteUrl, testCase.expected).toMatch(/^https:\/\/aiqsa\.local\/login\?invite=/);
     }
+
+    expect(notRequestedSend).not.toHaveBeenCalled();
+    expect(omittedSend).not.toHaveBeenCalled();
+    expect(unavailableSend).toHaveBeenCalledOnce();
+    expect(failedSend).toHaveBeenCalledOnce();
+    const failures = vi.mocked(logEvent).mock.calls.filter(([, fields]) => (fields as { code?: string }).code === "invite_email_failed");
+    expect(failures).toEqual([["service_operation", { subsystem: "email", stage: "dispatch", outcome: "failed",
+      code: "invite_email_failed" }]]);
+    expect(JSON.stringify(vi.mocked(logEvent).mock.calls)).not.toMatch(/smtp_tls_failed|friend@example\.com|invite=/);
   });
 
   it("rejects an invalid invite email-delivery flag before persistence or mail", async () => {
