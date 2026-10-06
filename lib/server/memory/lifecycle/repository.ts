@@ -1053,16 +1053,6 @@ async function applyAllReusableDeletionFence(
       userId: settings.userId
     }
   });
-  await tx.$executeRaw(Prisma.sql`
-    UPDATE "MemorySynthesisExecution"
-    SET
-      "acceptedOutput" = NULL,
-      "sourceBindings" = NULL,
-      "appliedAt" = GREATEST("createdAt", ${now})
-    WHERE "userId" = ${settings.userId}
-      AND "appliedAt" IS NULL
-  `);
-
   await tx.memoryIndexGeneration.updateMany({
     data: { state: "SUPERSEDED", supersededAt: now },
     where: {
