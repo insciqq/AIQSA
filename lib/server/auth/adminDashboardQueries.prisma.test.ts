@@ -6,7 +6,6 @@ import {
   listAdminDashboard,
   summarizeAdminNavigation
 } from "./adminDashboardQueries";
-import { loadAdminUsageQueryRows } from "./adminUsageQueries";
 
 async function withAdminQueryData<T>(
   run: (fixture: Readonly<{ domain: string; marker: string }>) => Promise<T>
@@ -794,7 +793,7 @@ describe("Prisma-backed admin dashboard queries", () => {
     });
   });
 
-  it("loads usage groupBy rows and attributes usage to every current membership without archived entitlements", async () => {
+  it("keeps every current membership while archived groups grant no entitlements", async () => {
     await withAdminQueryData(async ({ domain, marker }) => {
       const activeProvider = `${marker}-active-provider`;
       const archivedProvider = `${marker}-archived-provider`;
@@ -821,8 +820,8 @@ describe("Prisma-backed admin dashboard queries", () => {
       ]);
       const user = await prisma.user.create({
         data: {
-          displayName: "Usage Query User",
-          email: `usage@${domain}`,
+          displayName: "Membership Query User",
+          email: `membership@${domain}`,
           status: "active"
         }
       });
@@ -884,82 +883,14 @@ describe("Prisma-backed admin dashboard queries", () => {
           }
         ]
       });
-      await prisma.usageEvent.createMany({
-        data: [
-          {
-            cachedInputTokens: 3,
-            cacheWriteInputTokens: 2,
-            createdAt: new Date("2026-07-12T10:00:00.000Z"),
-            inputTokens: 10,
-            modelId: `${marker}-model-alpha`,
-            outputTokens: 20,
-            provider: activeProvider,
-            reasoningTokens: 5,
-            totalTokens: 30,
-            userId: user.id
-          },
-          {
-            cachedInputTokens: 4,
-            createdAt: new Date("2026-07-12T11:00:00.000Z"),
-            inputTokens: 7,
-            modelId: `${marker}-model-beta`,
-            outputTokens: 8,
-            provider: directProvider,
-            reasoningTokens: 1,
-            totalTokens: 15,
-            userId: user.id
-          }
-        ]
-      });
-
-      const usageRows = await loadAdminUsageQueryRows(prisma);
-      const userRow = usageRows.userRows.find((row) => row.userId === user.id);
-      const providerModelRows = usageRows.providerModelRows.filter((row) => row.userId === user.id);
-
-      expect(userRow).toEqual({
-        recordCount: 2,
-        knownCostRecordCount: 0,
-        incompleteUsageCount: 2,
-        _count: {
-          _all: 0
-        },
-        _max: {
-          createdAt: new Date("2026-07-12T11:00:00.000Z")
-        },
-        _sum: {
-          estimatedCostMicros: null,
-          cachedInputTokens: 7,
-          cacheWriteInputTokens: 2,
-          inputTokens: 17,
-          outputTokens: 28,
-          reasoningTokens: 6,
-          totalTokens: 45
-        },
-        userId: user.id
-      });
-      expect(providerModelRows).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            _count: { _all: 0 },
-            modelId: `${marker}-model-alpha`,
-            provider: activeProvider,
-            userId: user.id
-          }),
-          expect.objectContaining({
-            _count: { _all: 0 },
-            modelId: `${marker}-model-beta`,
-            provider: directProvider,
-            userId: user.id
-          })
-        ])
-      );
-
       const dashboard = await listAdminDashboard(prisma, {
         actingAdminUserId: user.id,
         now: new Date("2026-07-12T12:00:00.000Z")
       });
       const dashboardUser = dashboard.users.find((candidate) => candidate.id === user.id);
 
+      // Usage analytics live behind their own period-scoped endpoint.
+      expect(dashboard).not.toHaveProperty("usage");
       expect(dashboardUser?.effectiveEntitlements).toEqual({
         models: [
           {
@@ -977,55 +908,6 @@ describe("Prisma-backed admin dashboard queries", () => {
       expect(dashboardUser?.groups.map((group) => group.groupId).sort()).toEqual(
         [activeAlpha.id, activeBeta.id, archivedGroup.id].sort()
       );
-
-      const usageUser = dashboard.usage.byUser.find((candidate) => candidate.userId === user.id);
-      expect(usageUser).toMatchObject({
-        incompleteUsageCount: 2,
-        cachedInputTokens: 7,
-        cacheWriteInputTokens: 2,
-        inputTokens: 17,
-        lastUsedAt: "2026-07-12T11:00:00.000Z",
-        outputTokens: 28,
-        reasoningTokens: 6,
-        runCount: 0,
-        totalTokens: 45
-      });
-      expect(usageUser?.groups.map((group) => group.groupId).sort()).toEqual(
-        [activeAlpha.id, activeBeta.id, archivedGroup.id].sort()
-      );
-
-      const fixtureGroupUsage = dashboard.usage.byGroup.filter((group) =>
-        [activeAlpha.id, activeBeta.id, archivedGroup.id].includes(group.groupId)
-      );
-      expect(fixtureGroupUsage.map((group) => group.groupId)).toEqual([
-        activeAlpha.id,
-        activeBeta.id,
-        archivedGroup.id
-      ]);
-      expect(fixtureGroupUsage).toEqual([
-        expect.objectContaining({
-          contributingUsers: 1,
-          groupId: activeAlpha.id,
-          runCount: 0,
-          totalTokens: 45,
-          userCount: 1
-        }),
-        expect.objectContaining({
-          contributingUsers: 1,
-          groupId: activeBeta.id,
-          runCount: 0,
-          totalTokens: 45,
-          userCount: 1
-        }),
-        expect.objectContaining({
-          archivedAt: archivedAt.toISOString(),
-          contributingUsers: 1,
-          groupId: archivedGroup.id,
-          runCount: 0,
-          totalTokens: 45,
-          userCount: 1
-        })
-      ]);
     });
   });
 });

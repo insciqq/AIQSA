@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PrismaClient } from "@prisma/client";
 import { expect, test } from "@playwright/test";
-import type { AdminDashboard } from "../../lib/contracts/admin";
-import { formatEstimatedCostMicros } from "../../lib/domain/formatEstimatedCost";
+import { decodeAdminUsageAnalyticsResponse } from "../../lib/contracts/adminUsageAnalytics";
 
 const prisma = new PrismaClient();
 test.describe.configure({ mode: "serial" });
@@ -34,22 +33,22 @@ for (const viewport of [
         await context.addCookies([{ name: "aiqsa.theme", value: theme, url: testInfo.project.use.baseURL! }]);
         const auth = await page.request.post("/api/auth/token", { data: { token: "aiqsa-test-token" } });
         expect(auth.ok()).toBe(true);
-        const response = await page.request.get("/api/admin");
+        const response = await page.request.get("/api/admin/usage?period=30d&tz=UTC");
         expect(response.ok()).toBe(true);
-        const dashboard = await response.json() as AdminDashboard;
-        expect(dashboard.usage.byUser.find((row) => row.userId === userId)).toMatchObject({
+        const analytics = decodeAdminUsageAnalyticsResponse(await response.json());
+        expect(analytics).not.toBeNull();
+        expect(analytics!.usage.byUser.find((row) => row.userId === userId)).toMatchObject({
           estimatedCostMicros: 125_000, recordCount: 2, knownCostRecordCount: 1, runCount: 0, totalTokens: 150
         });
         await page.goto("/admin?section=usage");
         const usage = page.getByTestId("admin-section-usage");
-        const summary = usage.getByRole("region", { name: "Usage summary" });
+        const summary = usage.getByLabel("Usage summary");
         await expect(summary).toBeVisible();
-        await expect(summary.getByTestId("usage-total-cost")).toContainText(
-          formatEstimatedCostMicros(dashboard.usage.totals.estimatedCostMicros)
-        );
-        await summary.getByTestId("usage-total-cost").scrollIntoViewIfNeeded();
+        await expect(summary.getByTestId("usage-kpi-cost")).not.toHaveText("");
         await page.screenshot({ path: testInfo.outputPath("usage-cost-summary.png") });
 
+        const showAll = usage.getByRole("button", { name: /^Show all / });
+        if (await showAll.isVisible()) await showAll.click();
         const group = viewport.width >= 1024
           ? page.getByRole("region", { name: "Group usage table" }).getByRole("row").filter({ hasText: fixtureName })
           : page.getByTestId("admin-usage-groups-mobile").locator("article").filter({ hasText: fixtureName });
@@ -59,8 +58,8 @@ for (const viewport of [
         for (const [label, row] of [["group", group], ["user", user]] as const) {
           await row.scrollIntoViewIfNeeded();
           await expect(row).toBeVisible();
-          await expect(row.getByText("≈ $0.125", { exact: true })).toHaveCount(label === "user" ? 2 : 1);
-          await expect(row.getByText("cost known for 1 of 2 requests", { exact: true })).toHaveCount(label === "user" ? 2 : 1);
+          await expect(row.getByText("≈ $0.125", { exact: true })).toHaveCount(1);
+          await expect(row.getByText("cost known for 1 of 2 requests", { exact: true })).toHaveCount(1);
           await page.screenshot({ path: testInfo.outputPath(`usage-cost-${label}.png`) });
         }
         await expect.poll(() => page.evaluate(() => ({

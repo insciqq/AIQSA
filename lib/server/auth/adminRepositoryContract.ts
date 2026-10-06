@@ -17,12 +17,7 @@ export type {
   AdminDashboardNavigation,
   AdminDeletionBlockReason,
   AdminDeletionInfo,
-  AdminEntitlementSummary,
-  AdminUsageDashboard,
-  AdminUsageGroupRecord,
-  AdminUsageProviderModelRecord,
-  AdminUsageTokenTotals,
-  AdminUsageUserRecord
+  AdminEntitlementSummary
 } from "@/lib/contracts/admin";
 
 export type AdminGroupRecord = Omit<AdminGroupWire, "deletion"> & {

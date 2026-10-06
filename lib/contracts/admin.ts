@@ -94,48 +94,6 @@ export type AdminInviteRecord = {
 
 export type AdminInviteEmailDelivery = "failed" | "not_requested" | "sent" | "unavailable";
 
-export type AdminUsageTokenTotals = {
-  estimatedCostMicros: number | null;
-  recordCount: number;
-  knownCostRecordCount: number;
-  cachedInputTokens: number | null;
-  cacheWriteInputTokens: number | null;
-  inputTokens: number | null;
-  lastUsedAt: string | null;
-  outputTokens: number | null;
-  reasoningTokens: number | null;
-  runCount: number;
-  incompleteUsageCount: number;
-  totalTokens: number | null;
-};
-
-export type AdminUsageProviderModelRecord = AdminUsageTokenTotals & {
-  modelId: string;
-  provider: string;
-};
-
-export type AdminUsageUserRecord = AdminUsageTokenTotals & {
-  displayName: string;
-  email: string | null;
-  groups: AdminMembership[];
-  providerModels: AdminUsageProviderModelRecord[];
-  userId: string;
-};
-
-export type AdminUsageGroupRecord = AdminUsageTokenTotals & {
-  archivedAt: string | null;
-  contributingUsers: number;
-  groupId: string;
-  name: string;
-  userCount: number;
-};
-
-export type AdminUsageDashboard = {
-  byGroup: AdminUsageGroupRecord[];
-  byUser: AdminUsageUserRecord[];
-  totals: AdminUsageTokenTotals;
-};
-
 export type AdminCatalog = {
   models: {
     displayName: string;
@@ -171,7 +129,6 @@ export type AdminDashboard = {
   groups: AdminGroup[];
   invites: AdminInviteRecord[];
   navigation: AdminDashboardNavigation;
-  usage: AdminUsageDashboard;
   users: AdminUserRecord[];
 };
 
@@ -452,10 +409,6 @@ export function isAdminDashboard(value: unknown): value is AdminDashboard {
       isNonNegativeInteger(attention.openInvites) &&
       isNonNegativeInteger(attention.pendingUsers) &&
       typeof navigation.teamConfigured === "boolean" &&
-      isRecord(value.usage) &&
-      Array.isArray(value.usage.byGroup) &&
-      Array.isArray(value.usage.byUser) &&
-      "totals" in value.usage &&
       Array.isArray(value.users)
   );
 }
