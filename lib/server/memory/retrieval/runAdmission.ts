@@ -2273,16 +2273,11 @@ function healthRelevantLexicalFailures(
   const primarySparseLane = (lane: MemoryRetrievalLane) =>
     lane === "FACT_ENTITY" || lane.endsWith("_EXACT") ||
     lane.endsWith("_LEXICAL_UNICODE");
-  const primarySparseSettled = (fallbackLane: MemoryRetrievalLane) => {
-    const factFamily = fallbackLane === "FACT_LEXICAL_NGRAM";
-    return result.laneResults.some(({ lane }) =>
-      !failed.has(lane) && primarySparseLane(lane) &&
-      (factFamily ? lane.startsWith("FACT_") : lane.startsWith("HISTORY_")));
-  };
+  const primaryFactSparseSettled = () => result.laneResults.some(({ lane }) =>
+    !failed.has(lane) && primarySparseLane(lane) && lane.startsWith("FACT_"));
   return result.lexicalFailures.filter((lane) =>
     sourceFamilyEnabled(lane) &&
-    (!(lane === "FACT_LEXICAL_NGRAM" || lane === "HISTORY_RECALL_LEXICAL_NGRAM") ||
-      !primarySparseSettled(lane)));
+    (lane !== "FACT_LEXICAL_NGRAM" || !primaryFactSparseSettled()));
 }
 
 function mergeSpeculativeRetrieval(

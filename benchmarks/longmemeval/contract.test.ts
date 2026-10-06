@@ -651,7 +651,7 @@ describe("LongMemEval adapter contract", () => {
           backend: "POSTGRES",
           failureCode: "memory_opensearch_timeout",
           fallbackUsed: true,
-          lane: "HISTORY_RECALL_LEXICAL_NGRAM",
+          lane: "FACT_LEXICAL_NGRAM",
           projectionCaughtUp: false
         },
         {

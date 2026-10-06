@@ -2688,10 +2688,7 @@ function memorySemanticLexicalQueryTexts(plan: MemoryRetrievalPlan): readonly st
 function providerTermKind(
   lane: PostgresUnicodeMemoryLexicalLane
 ): MemorySemanticLexicalTermKind {
-  if (lane === "FACT_LEXICAL_NGRAM" || lane === "HISTORY_RECALL_LEXICAL_NGRAM") {
-    return "NGRAM";
-  }
-  return "UNICODE";
+  return lane === "FACT_LEXICAL_NGRAM" ? "NGRAM" : "UNICODE";
 }
 
 function memoryLexicalSearchRequest(
@@ -2736,8 +2733,7 @@ function memoryLexicalSearchRequest(
     admittedLimit > finalLimit) {
     throw new Error("memory_retrieval_lane_invalid");
   }
-  const ngram = lane === "FACT_LEXICAL_NGRAM" ||
-    lane === "HISTORY_RECALL_LEXICAL_NGRAM";
+  const ngram = lane === "FACT_LEXICAL_NGRAM";
   // Authority filters and source-diverse selection need headroom, but the
   // canonical PostgreSQL rejoin must not inherit the provider's maximum for
   // every semantic variant. Share one bounded overfetch pool across variants.
@@ -3041,12 +3037,7 @@ function localLexicalLanes(
       );
     }
     lanes.push("HISTORY_RECALL_EXACT");
-    if (lexical) {
-      lanes.push("HISTORY_RECALL_LEXICAL_UNICODE");
-      if (lexical.ngramTerms.length > 0) {
-        lanes.push("HISTORY_RECALL_LEXICAL_NGRAM");
-      }
-    }
+    if (lexical) lanes.push("HISTORY_RECALL_LEXICAL_UNICODE");
     if (plan.recencyRequested) lanes.push("HISTORY_RECALL_RECENT");
   }
   const priority = new Map<MemoryRetrievalLane, number>(
@@ -3131,12 +3122,10 @@ export function shouldRunMemoryNgramFallback(
   laneResults: readonly MemoryLaneResult[],
   completePrimaryLanes: ReadonlySet<MemoryRetrievalLane>
 ): boolean {
-  if (lane !== "FACT_LEXICAL_NGRAM" && lane !== "HISTORY_RECALL_LEXICAL_NGRAM") {
+  if (lane !== "FACT_LEXICAL_NGRAM") {
     throw new Error("memory_ngram_fallback_lane_invalid");
   }
-  const primaryLane = lane === "FACT_LEXICAL_NGRAM"
-    ? "FACT_LEXICAL_UNICODE"
-    : "HISTORY_RECALL_LEXICAL_UNICODE";
+  const primaryLane = "FACT_LEXICAL_UNICODE";
   const primary = laneResults.find((result) => result.lane === primaryLane);
   return !primary || primary.candidates.length === 0 ||
     !completePrimaryLanes.has(primaryLane);
@@ -3733,7 +3722,7 @@ function pushLexicalTasks(
         }
       }
     };
-    if (lane === "FACT_LEXICAL_NGRAM" || lane === "HISTORY_RECALL_LEXICAL_NGRAM") {
+    if (lane === "FACT_LEXICAL_NGRAM") {
       deferredTasks.push(task);
     } else {
       tasks.push(task);

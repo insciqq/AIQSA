@@ -283,35 +283,27 @@ function mockClient(
 }
 
 describe("local Memory retrieval repository", () => {
-  it("runs bounded lexical fallback unless a complete canonical variant matched", () => {
-    const exact = floorCandidate(
-      "exact-primary",
-      "HISTORY_RECALL_EXACT",
-      "HISTORY",
-      1
-    );
-    expect(shouldRunMemoryNgramFallback("HISTORY_RECALL_LEXICAL_NGRAM", [{
+  it("runs bounded fact lexical fallback unless a complete canonical variant matched", () => {
+    const exact = floorCandidate("exact-primary", "FACT_EXACT", "FACT", 1);
+    expect(shouldRunMemoryNgramFallback("FACT_LEXICAL_NGRAM", [{
       candidates: [exact],
-      lane: "HISTORY_RECALL_EXACT"
+      lane: "FACT_EXACT"
     }], new Set())).toBe(true);
-    const partial = floorCandidate(
-      "history-primary",
-      "HISTORY_RECALL_LEXICAL_UNICODE",
-      "HISTORY",
-      1
-    );
-    expect(shouldRunMemoryNgramFallback("HISTORY_RECALL_LEXICAL_NGRAM", [{
+    const partial = floorCandidate("fact-primary", "FACT_LEXICAL_UNICODE", "FACT", 1);
+    expect(shouldRunMemoryNgramFallback("FACT_LEXICAL_NGRAM", [{
       candidates: [partial],
-      lane: "HISTORY_RECALL_LEXICAL_UNICODE"
+      lane: "FACT_LEXICAL_UNICODE"
     }], new Set())).toBe(true);
-    expect(shouldRunMemoryNgramFallback("HISTORY_RECALL_LEXICAL_NGRAM", [{
+    expect(shouldRunMemoryNgramFallback("FACT_LEXICAL_NGRAM", [{
       candidates: [partial],
-      lane: "HISTORY_RECALL_LEXICAL_UNICODE"
-    }], new Set(["HISTORY_RECALL_LEXICAL_UNICODE"]))).toBe(false);
+      lane: "FACT_LEXICAL_UNICODE"
+    }], new Set(["FACT_LEXICAL_UNICODE"]))).toBe(false);
     expect(shouldRunMemoryNgramFallback("FACT_LEXICAL_NGRAM", [{
       candidates: [],
       lane: "FACT_LEXICAL_UNICODE"
     }], new Set(["FACT_LEXICAL_UNICODE"]))).toBe(true);
+    expect(() => shouldRunMemoryNgramFallback("HISTORY_RECALL_LEXICAL_UNICODE", [], new Set()))
+      .toThrow("memory_ngram_fallback_lane_invalid");
   });
 
   it("completes only a reranker-selected session with bounded authoritative rounds", async () => {
@@ -1070,7 +1062,7 @@ describe("local Memory retrieval repository", () => {
     expect(rejoinSql).toContain("AS bounded_source_map");
     expect(rejoinSql!.match(/FROM candidate_entries AS entry/gu)).toHaveLength(3);
     expect(rejoinSql).toContain('entry."indexGenerationId"');
-    expect(requests).toHaveLength(3);
+    expect(requests).toHaveLength(2);
     expect(preparations).toHaveLength(2);
     const scopedRequests = requests as MemoryLexicalSearchRequest[];
     const scopedPreparations = preparations as MemoryLexicalSearchRequest[];
@@ -1086,7 +1078,7 @@ describe("local Memory retrieval repository", () => {
     });
     expect(scopedRequests[0]).not.toHaveProperty("sourceChatIds");
     expect(scopedRequests.map(({ candidateLimitPerVariant }) =>
-      candidateLimitPerVariant)).toEqual([60, 160, 60]);
+      candidateLimitPerVariant)).toEqual([60, 60]);
     expect(scopedRequests.every((request) =>
       typeof request[memoryLexicalProjectionReadinessScope] === "object"
     )).toBe(true);
@@ -1834,12 +1826,14 @@ describe("local Memory retrieval repository", () => {
       userId: "user-1"
     });
 
+    // Past-chat search has one lexical lane: the history n-gram fallback
+    // never fit its read budget on real history and was removed.
     expect(result.laneResults.map(({ lane }) => lane)).toEqual([
       "HISTORY_RECALL_EXACT",
-      "HISTORY_RECALL_LEXICAL_UNICODE",
-      "HISTORY_RECALL_LEXICAL_NGRAM"
+      "HISTORY_RECALL_LEXICAL_UNICODE"
     ]);
-    expect(mocked.laneSql).toHaveLength(3);
+    expect(mocked.laneSql).toHaveLength(2);
+    expect(mocked.laneSql.join("\n")).not.toContain("<%");
     const sql = mocked.laneSql.join("\n");
     expect(sql).toContain('FROM "MemorySearchEntry" AS entry');
     expect(sql).toContain('entry."normalizedSearchText"');
@@ -1902,7 +1896,6 @@ describe("local Memory retrieval repository", () => {
     expect(result.laneResults.map(({ lane }) => lane)).toEqual([
       "HISTORY_RECALL_EXACT",
       "HISTORY_RECALL_LEXICAL_UNICODE",
-      "HISTORY_RECALL_LEXICAL_NGRAM",
       "HISTORY_RECALL_VECTOR"
     ]);
     expect(result.vectorState).toBe("READY");

@@ -5,7 +5,8 @@ import { estimateApproxTokens } from "../../../domain/contextBudget";
 import { createMemorySearchRetrieval } from "./retrieval";
 import type { MemorySearchSnapshot } from "./contract";
 import type { MemoryLocalRetrievalInput, MemoryLocalRetrievalResult, MemoryLocalRetrievalSnapshot } from "../retrieval/localRepository";
-import type { MemoryRunRerankResult } from "../retrieval/runUtilities";
+import type { MemoryRunQueryEmbeddingResult, MemoryRunRerankResult } from "../retrieval/runUtilities";
+import type { MemoryVectorProfile, MemoryVectorProfileResolution } from "../retrieval/vector";
 import { MEMORY_READ_BUDGET_ERROR_CODES, MemoryReadBudgetError } from "../retrieval/readBudget";
 
 function fixture(history = true) {
@@ -44,9 +45,10 @@ function fixture(history = true) {
         projectionKind: candidate.itemType === "FACT_VERSION" ? "FACT_DISPLAY_TEXT" as const : "RECALL_CHUNK_SAFE_PROJECTED_TEXT" as const,
         occurredFrom: now, occurredTo: now, sourceChatId: candidate.metadata.sourceChatId, supportingItemId: null })))
   };
-  const utilities = { embedQuery: vi.fn(async () => ({ status: "UNAVAILABLE" as const, reason: "unavailable" })),
+  const utilities = { embedQuery: vi.fn(async (): Promise<MemoryRunQueryEmbeddingResult> => ({ status: "UNAVAILABLE", reason: "unavailable" })),
     rerank: vi.fn(async (): Promise<MemoryRunRerankResult> => ({ status: "UNAVAILABLE", reason: "unavailable" })) };
-  const vectors = { resolveActiveProfile: vi.fn(async () => ({ status: "DEGRADED" as const, reason: "memory_vector_unavailable" as const })) };
+  const vectors = { resolveActiveProfile: vi.fn(async (): Promise<MemoryVectorProfileResolution> =>
+    ({ status: "DEGRADED", reason: "memory_vector_unavailable" })) };
   const accepted: MemorySearchSnapshot = { version: "memory-search-v1", maxCalls: 3, resultTokens: 6000,
     comparisonResultTokens: 12000, timeoutSeconds: 30, memoryGeneration: 1, referenceChatHistory: history, destinations: [] };
   const input = { userId: "user", chatId: "chat", assistantId: null, runId: "run", toolCallId: "call",
@@ -65,6 +67,31 @@ describe("native search retrieval composition", () => {
     expect(f.utilities.rerank).not.toHaveBeenCalled();
     expect(f.utilities.embedQuery).not.toHaveBeenCalled();
     expect(estimateApproxTokens(JSON.stringify(output.pack.text)) + 300).toBeLessThanOrEqual(6000);
+  });
+  it("does not limit a past-chat search whose history full-text and vector lanes both succeed", async () => {
+    const f = fixture();
+    f.input.accepted = { ...f.input.accepted, destinations: [{ role: "MEMORY_QUERY_EMBED", providerModelId: "embed",
+      destinationFingerprint: "a".repeat(64), executionTargetFingerprint: "b".repeat(64) }] };
+    const profile: MemoryVectorProfile = { configurationFingerprint: "c".repeat(64), connectionId: "connection",
+      dimension: 1_024, generationId: "index", minimumSimilarity: 0.5, providerModelId: "embed",
+      retrievalConfigFingerprint: "d".repeat(64), vectorSpaceFingerprint: "e".repeat(64) };
+    f.vectors.resolveActiveProfile.mockResolvedValue({ status: "READY", profile });
+    f.utilities.embedQuery.mockResolvedValue({ status: "READY", bindingId: "binding", profile, vector: [1, 0] });
+    const original = f.repository.retrieve.getMockImplementation()!;
+    f.repository.retrieve.mockImplementation(async input => {
+      const read = await original(input);
+      if (input.plan.mode !== "PAST_CHAT_SEARCH") return { ...read, vectorState: "READY" };
+      const lexical = read.laneResults[0]!;
+      return { ...read, vectorState: "READY", laneResults: [lexical,
+        { lane: "HISTORY_RECALL_VECTOR", candidates: lexical.candidates.map(value => ({ ...value, lane: "HISTORY_RECALL_VECTOR" as const })) }] };
+    });
+    const output = await f.retrieve(f.input);
+    expect(f.repository.retrieve).toHaveBeenCalledWith(expect.objectContaining({
+      plan: expect.objectContaining({ mode: "PAST_CHAT_SEARCH" }), vector: expect.objectContaining({ vector: [1, 0] }) }));
+    expect(output.limited).toBe(false);
+    expect(output.diagnosticEvidence).toMatchObject({ reasons: [], historyLexicalState: "READY",
+      historyVectorState: "READY", lexicalFailureCount: 0, lexicalFailureCodes: [] });
+    expect(output.pack.items.map(item => item.itemId)).toContain("past-round");
   });
   it("keeps facts searchable while history is off", async () => {
     const f = fixture(false);
