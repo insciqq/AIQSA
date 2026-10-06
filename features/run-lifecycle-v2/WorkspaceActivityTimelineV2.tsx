@@ -129,6 +129,7 @@ function CommandRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
           </div>
         ) : null}
         {streams.map(([name, text]) => text ? <OutputBlockV2 key={name} label={name} text={text} /> : null)}
+        {command.secretMasked ? <p className="v2-workspace-truncated" role="note">Output contained a secret value; masked</p> : null}
         {command.truncated ? <p className="v2-workspace-truncated" role="note">Output truncated</p> : null}
         {command.exitCode !== undefined && command.exitCode !== null ? (
           <p className="v2-workspace-exit">

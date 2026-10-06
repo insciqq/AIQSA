@@ -347,6 +347,8 @@ export type ThreadWorkspaceActivityCommand = Readonly<{
   outputSequence?: number;
   preview: string;
   previewTruncated?: boolean;
+  /** Content-free: the output contained a delivered secret value, masked by exact match. */
+  secretMasked?: boolean;
   stderrPreview?: string;
   stdoutPreview?: string;
   truncated?: boolean;
@@ -431,6 +433,7 @@ const ACTIVITY_COMMAND_KEYS = new Set([
   "outputSequence",
   "preview",
   "previewTruncated",
+  "secretMasked",
   "stderrPreview",
   "stdoutPreview",
   "truncated"
@@ -491,6 +494,7 @@ function decodeActivityCommand(value: unknown): ThreadWorkspaceActivityCommand |
   if (outputSequence === null) return null;
   if (value.truncated !== undefined && typeof value.truncated !== "boolean") return null;
   if (value.previewTruncated !== undefined && typeof value.previewTruncated !== "boolean") return null;
+  if (value.secretMasked !== undefined && typeof value.secretMasked !== "boolean") return null;
   return {
     ...(cwd ? { cwd } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
@@ -498,6 +502,7 @@ function decodeActivityCommand(value: unknown): ThreadWorkspaceActivityCommand |
     ...(outputSequence !== undefined ? { outputSequence } : {}),
     preview,
     ...(value.previewTruncated !== undefined ? { previewTruncated: value.previewTruncated } : {}),
+    ...(value.secretMasked !== undefined ? { secretMasked: value.secretMasked } : {}),
     ...(stderrPreview !== undefined ? { stderrPreview } : {}),
     ...(stdoutPreview !== undefined ? { stdoutPreview } : {}),
     ...(value.truncated !== undefined ? { truncated: value.truncated } : {})
