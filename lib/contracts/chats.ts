@@ -92,6 +92,7 @@ import {
   type ScheduledTaskCard,
   type ScheduledTaskCheckOutcome
 } from "./scheduledTasks";
+import { foldSkillSaveCards, type SkillSaveCard } from "./skillSaves";
 
 export const CHAT_HISTORY_PAGE_SIZE = 50;
 export const CHAT_HISTORY_CURSOR_MAX_LENGTH = 2_048;
@@ -252,6 +253,8 @@ export type ThreadArtifactSummary = {
   reasoningTruncated?: true;
   /** Scheduled tasks the answer created or managed; see `ScheduledTaskCard`. */
   scheduledTasks?: ScheduledTaskCard[];
+  /** Skills the answer's `save_skill` call saved; see `SkillSaveCard`. */
+  skillSaves?: SkillSaveCard[];
   sources: ThreadSearchSource[];
   /** Search results beyond THREAD_SEARCH_SOURCE_MAX_ITEMS were left out. */
   sourcesTruncated?: true;
@@ -1128,6 +1131,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   const workDurationMs = Number.isSafeInteger(value.workDurationMs) && (value.workDurationMs as number) >= 0
     ? value.workDurationMs as number
     : undefined;
+  const skillSaves = Array.isArray(value.skillSaves) ? foldSkillSaveCards(value.skillSaves) : undefined;
   const scheduledTasks = Array.isArray(value.scheduledTasks)
     ? decodeOptionalItems(value.scheduledTasks, decodeScheduledTaskCard, SCHEDULED_TASK_CARDS_LIMIT, (card) => card.taskId).items
     : undefined;
@@ -1149,6 +1153,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     reasoningText: reasoning.reasoningText,
     ...(reasoning.truncated || value.reasoningTruncated === true ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks?.length ? { scheduledTasks } : {}),
+    ...(skillSaves?.length ? { skillSaves } : {}),
     sources: sources.items,
     ...(sources.truncated || value.sourcesTruncated === true ? { sourcesTruncated: true as const } : {}),
     ...(workDurationMs !== undefined ? { workDurationMs } : {})

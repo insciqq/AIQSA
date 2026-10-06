@@ -98,6 +98,7 @@ export type ModelRunSseEvent =
           | "reasoning"
           | "scheduled_task"
           | "search"
+          | "skill_save"
           | "search_activity"
           | "memory_search_activity"
           | "summary"
