@@ -1347,7 +1347,6 @@ async function defectRegressionTarget(): Promise<MemorySemanticSmokeTarget> {
   const roles = [
     "MEMORY_CONTROL",
     "MEMORY_STATEMENT_CLASSIFY",
-    "MEMORY_HISTORY_CLASSIFY",
     "MEMORY_FACT_EXTRACT"
   ] as const;
   const targets = roles.map((role) => policy.targets.get(role));

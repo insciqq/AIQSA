@@ -82,7 +82,7 @@ it does not share state with the default development installation.
 The frozen reader-first qualifications run Memory lexical retrieval on OpenSearch-primary
 and keeps PostgreSQL fallback available, but any observed fallback, dirty
 projection, or non-OpenSearch candidate-provider lane fails that case before
-judging. Canonical exact/entity and deferred digest authority lanes remain
+judging. Canonical exact/entity authority lanes remain
 PostgreSQL and are reported separately from this cutover health. The
 benchmark overlay runs at most eight Memory jobs globally and four per
 benchmark user. The
@@ -113,8 +113,7 @@ It explicitly binds PostgreSQL 18 data to
 volume must be logically upgraded, never mounted into the PostgreSQL 18
 container. Restored prepared sources are promoted to the current cache
 fingerprint only after the runner verifies the exact transcript, query
-isolation, every active history projection version, and every successful
-history execution-binding version. Its hybrid generation is reused only when
+isolation and every active history projection version. Its hybrid generation is reused only when
 the active revision, every retrieval/chunk/contextual version, embedding
 deployment/document-vector-space identity, and every entry state match the
 current runtime contract. An exact historical execution snapshot may prove a
@@ -227,7 +226,7 @@ replay described above. The default remains `official`.
 Add `--debug-memory` only for an explicitly disposable diagnostic run. The
 runner then captures the secret-screened normalized pre-provider request, prepared
 Personal Memory context, selected items in order, source-session mapping,
-chat digests, per-session history checkpoint/job/chunk status, governed
+per-session history checkpoint/job/chunk status, governed
 history and retrieval executions, and answer binding before the benchmark
 user is deleted. Each `memory-debug-*.json` artifact receives a final recursive
 recognized-secret screen and is written under the ignored result directory

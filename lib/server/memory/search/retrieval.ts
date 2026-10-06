@@ -7,7 +7,6 @@ import { memoryRelevanceCandidates, applyMemoryRelevance, atomicMemoryRerankResu
 import type { PrismaClient } from "@prisma/client";
 import type { MemorySearchSnapshot } from "./contract";
 import type { MemoryPreparingItemInput } from "../../runs/preparingRun";
-import { memorySha256 } from "../persistence/lexical";
 import { abortableMemoryRead } from "../retrieval/deadline";
 import { estimateApproxTokens } from "../../../domain/contextBudget";
 import { memoryReadBudgetFailureCode } from "../retrieval/readBudget";
@@ -60,11 +59,8 @@ function itemsFor(pack: MemoryContextPack, ranked: readonly MemoryRankedCandidat
       finalScore: candidate.finalScore, laneRanks: candidate.laneRanks, projectionKind: item.projectionKind,
       supportingItemId: item.supportingItemId, selectionReason: candidate.selectionReason,
       featureSnapshot: { ...candidate.featureSnapshot, aggregationRequested: plan.aggregationRequested,
-        derived: item.derived, documentTime: item.documentTime, eventTimeEnd: item.eventTimeEnd,
+        documentTime: item.documentTime, eventTimeEnd: item.eventTimeEnd,
         eventTimeStart: item.eventTimeStart, evidenceHandle: item.evidenceHandle, evidenceType: item.evidenceType,
-        contextualRetrievalHintHash: item.retrievalHint ? memorySha256(item.retrievalHint) : null,
-        contextualSupportingEvidenceHashes: (item.supportingEvidence ?? []).map(value => memorySha256(value.rawSafeText)),
-        contextualSupportingRoundIds: (item.supportingEvidence ?? []).map(value => value.itemId),
         finalScore: candidate.finalScore, lastConfirmedAt: item.lastConfirmedAt, observedAt: item.observedAt,
         projectionKind: item.projectionKind, retrievalReason: item.retrievalReason,
         rrfScore: candidate.rrfScore, sourceAuthority: item.sourceAuthority, sourceSessionHandle: item.sourceSessionHandle,

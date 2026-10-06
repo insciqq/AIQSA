@@ -47,10 +47,7 @@ import {
   type MemorySuppressionKeyring
 } from "../suppressionKeyring";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
-import {
-  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
-} from "../history/contract";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "../history/sourceProjection";
 import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
@@ -66,8 +63,6 @@ type SourceActionClient = Pick<
   | "chat"
   | "chatMemoryCheckpoint"
   | "chatMemoryCheckpointMessage"
-  | "chatMemoryDigest"
-  | "chatMemoryDigestMessage"
   | "memoryHistoryRun"
   | "memoryFact"
   | "memoryFactVersion"
@@ -133,15 +128,6 @@ function operation(action: MemorySourceActionInput["action"]) {
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function digestIdFromFeatureSnapshot(value: unknown): string | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const feature = value as Record<string, unknown>;
-  return feature.projectionKind === "CHAT_DIGEST_SAFE_TEXT" &&
-    typeof feature.supportingItemId === "string" && feature.supportingItemId.length > 0
-    ? feature.supportingItemId
-    : null;
 }
 
 export function recallSourceSuppressionId(input: Readonly<{
@@ -425,23 +411,20 @@ export function createMemorySourceActionService(input: Readonly<{
           candidate.itemType === ref.target.itemType &&
           (candidate.sourceChatIdSnapshot === ref.target.sourceChatId ||
             (candidate.itemType === "FACT_VERSION" && ref.target.sourceChatId === null)) &&
-          (digestIdFromFeatureSnapshot(candidate.featureSnapshot) !== null ||
-            sameStrings(candidate.sourceMessageIdsSnapshot, ref.target.sourceMessageIds) ||
+          (sameStrings(candidate.sourceMessageIdsSnapshot, ref.target.sourceMessageIds) ||
             (candidate.itemType === "FACT_VERSION" && ref.target.sourceChatId === null &&
               ref.target.sourceMessageIds.length === 0)));
     const item = bindingItem
       ? { ...bindingItem, modelRunToolCallId: null }
       : searchItem ? { ...searchItem, id: null } : null;
     if (!binding && !item) throw new MemorySourceActionError("memory_not_found");
-    const digestId = item ? digestIdFromFeatureSnapshot(item.featureSnapshot) : null;
     if (item && (item.itemType !== ref.target.itemType ||
       item.factVersionId !== ref.target.factVersionId ||
       item.recallChunkId !== ref.target.recallChunkId ||
       item.recallRoundId !== ref.target.recallRoundId ||
       ((item.itemType !== "FACT_VERSION" || ref.target.sourceChatId !== null) &&
         (item.sourceChatIdSnapshot !== ref.target.sourceChatId ||
-          (digestId === null &&
-            !sameStrings(item.sourceMessageIdsSnapshot, ref.target.sourceMessageIds)))))) {
+          !sameStrings(item.sourceMessageIdsSnapshot, ref.target.sourceMessageIds))))) {
       throw new MemorySourceActionError("memory_not_found");
     }
 
@@ -777,9 +760,7 @@ export function createMemorySourceActionService(input: Readonly<{
       item.sourceRevisionSnapshot === null || ref.target.sourceMessageIds.length === 0) {
       throw new MemorySourceActionError("memory_not_found");
     }
-    const relevantMessageIds = digestId === null
-      ? [...ref.target.sourceMessageIds]
-      : [...item.sourceMessageIdsSnapshot];
+    const relevantMessageIds = [...ref.target.sourceMessageIds];
     const [
       chunk,
       chat,
@@ -787,9 +768,7 @@ export function createMemorySourceActionService(input: Readonly<{
       joins,
       messages,
       checkpointMessages,
-      sourceSuppressions,
-      digest,
-      digestMessages
+      sourceSuppressions
     ] = await Promise.all([
       input.client.memoryRecallChunk.findFirst({
         select: {
@@ -854,65 +833,24 @@ export function createMemorySourceActionService(input: Readonly<{
           userId
         }
       }),
-      digestId === null
-        ? input.client.memorySuppression.findMany({
-            select: { id: true, sourceMessageId: true },
-            where: {
-              AND: [
-                { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
-                {
-                  OR: [
-                    { sourceBranchGeneration: null },
-                    { sourceBranchGeneration: item.sourceBranchGenerationSnapshot }
-                  ]
-                }
-              ],
-              scope: "SOURCE_MESSAGE",
-              sourceChatId: ref.target.sourceChatId,
-              sourceMessageId: { in: relevantMessageIds },
-              userId
+      input.client.memorySuppression.findMany({
+        select: { id: true, sourceMessageId: true },
+        where: {
+          AND: [
+            { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+            {
+              OR: [
+                { sourceBranchGeneration: null },
+                { sourceBranchGeneration: item.sourceBranchGenerationSnapshot }
+              ]
             }
-          })
-        : input.client.memorySuppression.findMany({
-            select: { id: true, sourceMessageId: true },
-            where: {
-              OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-              scope: "SOURCE_MESSAGE",
-              sourceChatId: ref.target.sourceChatId,
-              sourceMessageId: { in: relevantMessageIds },
-              userId
-            }
-          }),
-      digestId === null
-        ? Promise.resolve(null)
-        : input.client.chatMemoryDigest.findFirst({
-            select: {
-              activeLeafMessageId: true,
-              anchorChunkId: true,
-              branchGeneration: true,
-              chatId: true,
-              id: true,
-              pipelineVersion: true,
-              redactionState: true,
-              safetyClass: true,
-              sourceContentHash: true,
-              sourceProjectionVersion: true,
-              sourceRevisionAtCreation: true,
-              state: true
-            },
-            where: { id: digestId, userId }
-          }),
-      digestId === null
-        ? Promise.resolve([])
-        : input.client.chatMemoryDigestMessage.findMany({
-            orderBy: { ordinal: "asc" },
-            select: {
-              chatId: true,
-              messageId: true,
-              sourceMessageUpdatedAt: true
-            },
-            where: { digestId, userId }
-          })
+          ],
+          scope: "SOURCE_MESSAGE",
+          sourceChatId: ref.target.sourceChatId,
+          sourceMessageId: { in: relevantMessageIds },
+          userId
+        }
+      })
     ]);
     const joinedMessageIds = joins.map((join) => join.messageId);
     const currentMessageUpdatedAt = new Map(messages.map((message) => [
@@ -923,7 +861,6 @@ export function createMemorySourceActionService(input: Readonly<{
       message.messageId,
       message.sourceMessageUpdatedAt.getTime()
     ]));
-    const digestMessageIds = digestMessages.map((message) => message.messageId);
     const exactForgetReplay = requestedOperation === "FORGET" && requestNonce !== undefined &&
       sourceSuppressions.every((suppression) =>
         suppression.sourceMessageId !== null &&
@@ -953,28 +890,9 @@ export function createMemorySourceActionService(input: Readonly<{
         currentMessageUpdatedAt.get(join.messageId) === join.sourceMessageUpdatedAt.getTime() &&
         checkpointMessageUpdatedAt.get(join.messageId) ===
           join.sourceMessageUpdatedAt.getTime()));
-    const rawChunkAvailable = digestId === null &&
+    const rawChunkAvailable =
       sameStrings(joinedMessageIds, item.sourceMessageIdsSnapshot) &&
       sameStrings(joinedMessageIds, ref.target.sourceMessageIds);
-    const digestAvailable = Boolean(digestId && digest && chat && checkpoint &&
-      digest.id === digestId && digest.anchorChunkId === ref.target.recallChunkId &&
-      digest.chatId === chat.id && digest.state === "ACTIVE" &&
-      digest.pipelineVersion === MEMORY_CHAT_DIGEST_PIPELINE_VERSION &&
-      digest.sourceProjectionVersion === MEMORY_HISTORY_SOURCE_PROJECTION_VERSION &&
-      digest.redactionState !== "EXCLUDED" &&
-      (digest.safetyClass === "NORMAL" || digest.safetyClass === "SENSITIVE") &&
-      digest.branchGeneration === checkpoint.branchGeneration &&
-      digest.sourceRevisionAtCreation === checkpoint.sourceRevision &&
-      digest.activeLeafMessageId === checkpoint.activeLeafMessageId &&
-      digest.sourceContentHash === checkpoint.sourceContentHash &&
-      sameStrings(joinedMessageIds, ref.target.sourceMessageIds) &&
-      digestMessages.length > 0 &&
-      sameStrings(digestMessageIds, item.sourceMessageIdsSnapshot) &&
-      digestMessages.every((message) => message.chatId === chat.id &&
-        currentMessageUpdatedAt.get(message.messageId) ===
-          message.sourceMessageUpdatedAt.getTime() &&
-        checkpointMessageUpdatedAt.get(message.messageId) ===
-          message.sourceMessageUpdatedAt.getTime()));
     if (!chunk || !chat || !checkpoint || !checkpointCurrent ||
       (sourceSuppressions.length > 0 && !exactForgetReplay) || chunk.chatId !== chat.id ||
       chunk.state !== "ACTIVE" ||
@@ -986,7 +904,7 @@ export function createMemorySourceActionService(input: Readonly<{
       chunk.contentHash !== item.sourceContentHashSnapshot ||
       chunk.sourceRevisionAtCreation !== item.sourceRevisionSnapshot ||
       chat.memoryMode !== "NORMAL" ||
-      !currentChunkMap || (!rawChunkAvailable && !digestAvailable)) {
+      !currentChunkMap || !rawChunkAvailable) {
       throw new MemorySourceActionError("memory_not_found");
     }
     return {

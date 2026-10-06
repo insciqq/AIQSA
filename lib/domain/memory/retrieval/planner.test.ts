@@ -438,13 +438,14 @@ describe("language-agnostic Memory retrieval planning", () => {
       mode: "PAST_CHAT_SEARCH",
       temporalIntent: "CURRENT"
     });
+    // Chat digests are retired: an overview request searches raw past chats.
     expect(planMemoryRetrieval({
       currentUserText: "history overview",
       filters: history,
       mode: "HISTORY_OVERVIEW",
       now,
       temporalIntent: "ANY"
-    }).mode).toBe("HISTORY_OVERVIEW");
+    }).mode).toBe("PAST_CHAT_SEARCH");
 
     for (const invalid of [
       { filters: history, mode: "TARGETED_CURRENT", temporalIntent: "CURRENT" },

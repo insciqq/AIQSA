@@ -177,7 +177,6 @@ async function purgeReusableAndPrivateMemory(
   const userId = claim.userId;
 
   await purgeMemoryFeedbackAccount(tx, userId);
-  await tx.memoryHistoryExecution.deleteMany({ where: { userId } });
   await tx.memoryFactExtractionCandidateReceipt.deleteMany({ where: { userId } });
   await tx.memoryFactExtractionExecution.deleteMany({ where: { userId } });
   await tx.memorySynthesisExecution.deleteMany({ where: { userId } });
@@ -203,9 +202,6 @@ async function purgeReusableAndPrivateMemory(
   await tx.memorySuppression.deleteMany({ where: { userId } });
   await tx.memoryPauseInterval.deleteMany({ where: { userId } });
   await tx.memorySourceBarrier.deleteMany({ where: { userId } });
-  await tx.chatMemoryDigestChunk.deleteMany({ where: { userId } });
-  await tx.chatMemoryDigestMessage.deleteMany({ where: { userId } });
-  await tx.chatMemoryDigest.deleteMany({ where: { userId } });
   await tx.memoryRecallRoundSegmentMessage.deleteMany({ where: { userId } });
   await tx.memoryRecallRoundSegment.deleteMany({ where: { userId } });
   await tx.memoryRecallRoundMessage.deleteMany({ where: { userId } });
@@ -337,9 +333,6 @@ export async function inspectAccountMemoryDeletionCanonicalResiduals(
       UNION ALL SELECT 'round-segments', COUNT(*)::integer FROM "MemoryRecallRoundSegment" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'round-segment-messages', COUNT(*)::integer FROM "MemoryRecallRoundSegmentMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'tool-events', COUNT(*)::integer FROM "MemoryToolEvent" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'digests', COUNT(*)::integer FROM "ChatMemoryDigest" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'digest-chunks', COUNT(*)::integer FROM "ChatMemoryDigestChunk" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'digest-messages', COUNT(*)::integer FROM "ChatMemoryDigestMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'candidates', COUNT(*)::integer FROM "MemoryCandidate" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'candidate-messages', COUNT(*)::integer FROM "MemoryCandidateMessage" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'candidate-decisions', COUNT(*)::integer FROM "MemoryCandidateDecision" WHERE "userId" = ${input.userId}
@@ -353,7 +346,6 @@ export async function inspectAccountMemoryDeletionCanonicalResiduals(
       UNION ALL SELECT 'maintenance-executions', COUNT(*)::integer FROM "MemoryMaintenanceExecution" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'maintenance-reviews', COUNT(*)::integer FROM "MemoryMaintenanceReview" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'maintenance-suppressions', COUNT(*)::integer FROM "MemoryMaintenanceSuppression" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'history-executions', COUNT(*)::integer FROM "MemoryHistoryExecution" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'auxiliary-semantic-calls', COUNT(*)::integer FROM "MemoryAuxiliarySemanticCall" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'evidence', COUNT(*)::integer FROM "MemoryEvidence" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'source-dependencies', COUNT(*)::integer FROM "MemoryFactVersionSourceDependency" WHERE "userId" = ${input.userId}

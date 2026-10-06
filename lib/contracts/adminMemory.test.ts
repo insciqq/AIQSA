@@ -77,20 +77,23 @@ describe("administrator Memory status contract", () => {
       issues: [{ ...issues[2], degradationCode: "memory_preparation_skipped" }] } } })).toBeNull();
   });
 
-  it("bounds the issue list by every distinct stage, reason and healing combination", () => {
+  it("bounds the issue list by every distinct stage and reason combination", () => {
     const memory = response().memory;
     const stages = ["LEARNING", "HISTORY", "INDEXING", "MAINTENANCE", "DELETION", ...ADMIN_MEMORY_RECENT_ACTIVITY_STAGES];
     const reasons = ["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED", "PROCESSING_FAILED",
-      "OUTPUT_LIMIT", "HISTORY_INCOMPLETE", "RETRYING", "STALLED", "COMMAND_FAILED", "COMMAND_UNKNOWN",
+      "RETRYING", "STALLED", "COMMAND_FAILED", "COMMAND_UNKNOWN",
       "SEARCH_DEGRADED", "SEARCH_FAILED", "PREPARATION_SKIPPED", "PREPARATION_FAILED"];
-    const issues = stages.flatMap((stage) => reasons.flatMap((reason) =>
-      [undefined, "RETRYING", "EXHAUSTED", "UNAVAILABLE"].map((autoHeal) => ({
-        stage, reason, severity: "warn", count: 1, oldestAgeSeconds: 1, ...(autoHeal ? { autoHeal } : {})
-      }))));
+    const issues = stages.flatMap((stage) => reasons.map((reason) => ({
+      stage, reason, severity: "warn", count: 1, oldestAgeSeconds: 1
+    })));
     expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true, issues } } }))
       .not.toBeNull();
     expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true,
       issues: [...issues, { ...issues[0], stage: "OTHER" }] } } })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true,
+      issues: [{ ...issues[0], reason: "HISTORY_INCOMPLETE" }] } } })).toBeNull();
+    expect(decodeAdminMemoryStatusResponse({ memory: { ...memory, processing: { enabled: true,
+      issues: [{ ...issues[0], autoHeal: "RETRYING" }] } } })).toBeNull();
   });
 
   it("reports maintenance under its own stage and has no retired synthesis stage", () => {
@@ -165,14 +168,14 @@ describe("administrator Memory status contract", () => {
     } })).toBeNull();
   });
 
-  it("accepts distinct causes and healing states in one stage, but rejects duplicate issues", () => {
+  it("accepts distinct causes in one stage, but rejects duplicate issues", () => {
     const issue = { stage: "HISTORY", reason: "PROCESSING_FAILED", severity: "bad", count: 1, oldestAgeSeconds: 120 };
-    const incomplete = { ...issue, reason: "HISTORY_INCOMPLETE", severity: "warn", autoHeal: "UNAVAILABLE" };
+    const retrying = { ...issue, reason: "RETRYING", severity: "warn" };
     const decode = (issues: unknown[]) => decodeAdminMemoryStatusResponse({ memory: {
       ...response().memory, processing: { enabled: true, issues }
     } });
-    expect(decode([issue, incomplete, { ...incomplete, autoHeal: "RETRYING" }])).not.toBeNull();
+    expect(decode([issue, retrying])).not.toBeNull();
     expect(decode([issue, { ...issue, count: 2 }])).toBeNull();
-    expect(decode([incomplete, { ...incomplete, oldestAgeSeconds: 60 }])).toBeNull();
+    expect(decode([retrying, { ...retrying, oldestAgeSeconds: 60 }])).toBeNull();
   });
 });

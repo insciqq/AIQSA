@@ -119,22 +119,21 @@ describe("Memory retrieval lane scheduler", () => {
     const allocation = allocateMemoryRetrievalLaneLimits(lanes);
     for (const lane of lanes) expect(allocation[lane]).toBeGreaterThan(0);
     expect(allocation).toEqual({
-      FACT_EXACT: 5,
-      FACT_ENTITY: 7,
-      FACT_LEXICAL_UNICODE: 7,
-      FACT_RECENT: 2,
-      FACT_TEMPORAL_FILTERED: 7,
+      FACT_EXACT: 6,
+      FACT_ENTITY: 8,
+      FACT_LEXICAL_UNICODE: 8,
+      FACT_RECENT: 3,
+      FACT_TEMPORAL_FILTERED: 8,
       FACT_TEMPORAL_UNRESTRICTED: 3,
       FACT_LEXICAL_NGRAM: 5,
-      FACT_VECTOR: 7,
-      HISTORY_DIGEST_FTS_SIMPLE: 18,
-      HISTORY_RECALL_EXACT: 7,
-      HISTORY_RECALL_LEXICAL_UNICODE: 18,
-      HISTORY_RECALL_RECENT: 7,
-      HISTORY_RECALL_TEMPORAL_FILTERED: 14,
+      FACT_VECTOR: 8,
+      HISTORY_RECALL_EXACT: 8,
+      HISTORY_RECALL_LEXICAL_UNICODE: 20,
+      HISTORY_RECALL_RECENT: 8,
+      HISTORY_RECALL_TEMPORAL_FILTERED: 16,
       HISTORY_RECALL_TEMPORAL_UNRESTRICTED: 5,
-      HISTORY_RECALL_LEXICAL_NGRAM: 12,
-      HISTORY_RECALL_VECTOR: 36
+      HISTORY_RECALL_LEXICAL_NGRAM: 14,
+      HISTORY_RECALL_VECTOR: 40
     });
     expect(Object.values(allocation).reduce((sum, value) => sum + (value ?? 0), 0))
       .toBe(MEMORY_RETRIEVAL_MAX_PRE_FUSION_CANDIDATES);
@@ -150,27 +149,23 @@ describe("Memory retrieval lane scheduler", () => {
   it("gives aggregation history lanes a larger bounded ceiling", () => {
     const targetedHistory = [
       "HISTORY_RECALL_EXACT",
-      "HISTORY_DIGEST_FTS_SIMPLE",
       "HISTORY_RECALL_LEXICAL_UNICODE",
       "HISTORY_RECALL_RECENT",
       "HISTORY_RECALL_VECTOR"
     ] as const;
     expect(allocateMemoryRetrievalLaneLimits(targetedHistory)).toEqual({
       HISTORY_RECALL_EXACT: 12,
-      HISTORY_DIGEST_FTS_SIMPLE: 30,
       HISTORY_RECALL_LEXICAL_UNICODE: 30,
       HISTORY_RECALL_RECENT: 12,
       HISTORY_RECALL_VECTOR: 60
     });
     const aggregationHistoryLanes = [
       "HISTORY_RECALL_EXACT",
-      "HISTORY_DIGEST_FTS_SIMPLE",
       "HISTORY_RECALL_LEXICAL_UNICODE",
       "HISTORY_RECALL_VECTOR"
     ] as const;
     expect(allocateMemoryRetrievalLaneLimits(aggregationHistoryLanes, true)).toEqual({
       HISTORY_RECALL_EXACT: 8,
-      HISTORY_DIGEST_FTS_SIMPLE: 30,
       HISTORY_RECALL_LEXICAL_UNICODE: 40,
       HISTORY_RECALL_VECTOR: 120
     });

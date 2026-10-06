@@ -4,7 +4,6 @@ import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { prisma } from "../../prisma";
 import { MemoryPersistenceError } from "../persistence/errors";
 import { withLockedMemoryTransaction } from "../persistence/transaction";
-import { memoryHistoryAutoHealProtectedSql } from "./autoHeal";
 import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "./contract";
 
 /** Content-free repair constant, registered in observability/failureCodes.json. */
@@ -15,14 +14,13 @@ export const MEMORY_HISTORY_FENCE_REPAIR_BATCH_SIZE = 8;
 // code only when its re-run gate still accepts the claim.
 const FENCED_HISTORY_FAILURE_CODE = "memory_history_job_invalid";
 
-/** Uses `job`. A chat with an ambiguous or unaccounted dispatch stays
- * protected exactly as for automatic history repair. */
+/** Uses `job`. History indexing never dispatches a model call, so an earlier
+ * ambiguous call of the chat cannot be bought again by the revived job. */
 function repairableFenceCasualtySql(): Prisma.Sql {
   return Prisma.sql`job.kind = 'INDEX_HISTORY'::"MemoryJobKind"
     AND job.state = 'TERMINAL_FAILED'::"MemoryJobState"
     AND job."errorCode" = ${FENCED_HISTORY_FAILURE_CODE}
-    AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
-    AND NOT ${memoryHistoryAutoHealProtectedSql()}`;
+    AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}`;
 }
 
 /**
@@ -30,8 +28,8 @@ function repairableFenceCasualtySql(): Prisma.Sql {
  * a row otherwise blocks backfill of its unchanged source forever. The flip to
  * STALE keeps the failure evidence and grants nothing: backfill re-proves the
  * current source and settings, then revives an unchanged source at the current
- * generation (recovery-only when it holds bindings) or enqueues a fresh job,
- * and indexing re-applies suppressions and pauses. The worker owns this repair
+ * generation or enqueues a fresh job, and indexing re-applies suppressions and
+ * pauses. The worker owns this repair
  * because previous-release writers may still add rows during replacement; the
  * predicate stops matching once none remain.
  */

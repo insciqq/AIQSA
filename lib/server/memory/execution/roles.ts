@@ -17,11 +17,13 @@ export const MEMORY_EXECUTION_ROLES = [
 
 export type MemoryExecutionRole = (typeof MEMORY_EXECUTION_ROLES)[number];
 
-// Kept in the stored-role vocabulary so immutable v12 snapshots remain
-// decodable. Retired roles never receive a current policy destination, so
-// admission cannot create or resume their provider work.
+// Kept in the stored-role vocabulary so immutable snapshots, bindings and
+// usage of past calls remain decodable. Retired roles never receive a current
+// policy destination, so admission cannot create or resume their provider
+// work. History indexing no longer calls models (MEMORY_HISTORY_CLASSIFY).
 export const MEMORY_RETIRED_EXECUTION_ROLES = [
   "MEMORY_AGGREGATE",
+  "MEMORY_HISTORY_CLASSIFY",
   "MEMORY_QUERY_RESOLVE"
 ] as const satisfies readonly MemoryExecutionRole[];
 

@@ -2,7 +2,6 @@ import { maxOutputTokensFromParams } from "../../../domain/providerParams";
 import { calculateContextBudgetLimits, estimateApproxTokens } from "../../../domain/contextBudget";
 import type { ProviderExecutionSnapshot } from "../../providers/runtimeFactory";
 import { STRUCTURED_OUTPUT_LIMITS, type ProviderStructuredOutputRequest } from "../../providers/structuredOutput";
-import { memoryHistoryOutputRequest } from "./historyOutputBudget";
 import type { MemorySecretFreeExecutionSnapshot } from "./snapshot";
 import { admittedOutputAllowance, structuredOutputInput } from "../../providers/modelOutputAllowance";
 
@@ -31,8 +30,10 @@ export function memoryStructuredOutputRequest(
   snapshot: MemorySecretFreeExecutionSnapshot,
   request: ProviderStructuredOutputRequest
 ): ProviderStructuredOutputRequest {
-  // Accepted work keeps its original output policy across upgrades/restarts.
-  if (snapshot.version === 2) return memoryHistoryOutputRequest(snapshot, request);
+  // Accepted work keeps its original output policy across upgrades/restarts:
+  // version 2 sent the request unchanged. Its only budgeted role, retired
+  // history classification, is never dispatched again.
+  if (snapshot.version === 2) return request;
   const model = snapshot.providerExecutionSnapshot.model;
   const saved = model.defaultParams.reasoning;
   const settings = typeof saved === "object" && saved !== null && !Array.isArray(saved)

@@ -3,15 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MEMORY_RETRIEVAL_PIPELINE_VERSION } from
   "../../../domain/memory/retrieval/config";
-import {
-  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
-} from "../history/contract";
-import {
-  MEMORY_CHAT_DIGEST_POLICY_VERSION,
-  MEMORY_CHAT_DIGEST_PROMPT_VERSION,
-  MEMORY_CHAT_DIGEST_SCHEMA_VERSION
-} from "../history/digest";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_ENTITY_RESOLUTION_VERSION } from
   "../learning/entities/normalization";
 import {
@@ -258,19 +250,14 @@ const corpus: readonly CorrectiveScenario[] = Object.freeze([
         path: "history/repository.prisma.test.ts"
       },
       {
-        anchor: "[E08] retains early and late digest coverage while dropping edited content",
-        kind: "runtime",
-        path: "history/digest.test.ts"
-      },
-      {
         anchor: "[E08] bounds edit and branch divergence to one maximum chunk plus overlap",
         kind: "runtime",
         path: "history/incremental.test.ts"
       },
       {
-        anchor: "[E08] reuses an unchanged digest with zero provider executions",
+        anchor: "[E08] indexes history with zero provider executions",
         kind: "provider_budget",
-        path: "history/digest.test.ts"
+        path: "history/repository.prisma.test.ts"
       },
       {
         anchor: "ChatMemoryCheckpointMessage_user_chat_ordinal_key",
@@ -284,7 +271,7 @@ const corpus: readonly CorrectiveScenario[] = Object.freeze([
       }
     ],
     id: "E08",
-    providerCallBudget: { unchangedDigest: 0 }
+    providerCallBudget: { historyIndex: 0 }
   }
 ]);
 
@@ -358,12 +345,6 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         MEMORY_SEMANTIC_ADJUDICATION_PROMPT_VERSION,
         MEMORY_SEMANTIC_ADJUDICATION_SCHEMA_VERSION
       ],
-      digest: [
-        MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-        MEMORY_CHAT_DIGEST_POLICY_VERSION,
-        MEMORY_CHAT_DIGEST_PROMPT_VERSION,
-        MEMORY_CHAT_DIGEST_SCHEMA_VERSION
-      ],
       entity: [MEMORY_ENTITY_RESOLUTION_VERSION, MEMORY_ENTITY_SLOT_IDENTITY_VERSION],
       extraction: [
         MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
@@ -387,12 +368,6 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-semantic-adjudication-prompt-v21",
         "memory-semantic-adjudication-schema-v3"
       ],
-      digest: [
-        "memory-chat-digest-v5",
-        "memory-chat-digest-policy-v5",
-        "memory-chat-digest-prompt-v7",
-        "memory-chat-digest-schema-v2"
-      ],
       entity: ["memory-entity-resolution-v3", "slot-v3"],
       extraction: [
         "memory-fact-extraction-vnext-v8",
@@ -407,7 +382,7 @@ describe("Memory corrective E01-E08 corpus inventory", () => {
         "memory-fact-relation-prompt-v1",
         "memory-fact-relation-schema-v1"
       ],
-      retrieval: "memory-personal-retrieval-v70",
+      retrieval: "memory-personal-retrieval-v71",
       temporal: "memory-temporal-resolution-v3"
     });
   });

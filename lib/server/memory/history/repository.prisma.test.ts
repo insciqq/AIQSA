@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memory";
 import { textMessageContent } from "../../../domain/content";
 import {
@@ -29,12 +29,6 @@ import {
   createMemoryHistoryIndexHandler,
   createPrismaMemoryHistoryIndexHandler
 } from "./handler";
-import type { MemoryHistorySafetyClassifier } from "./classifier";
-import {
-  decodeMemoryChatDigest,
-  materializeMemoryChatDigest,
-  type MemoryChatDigestGenerator
-} from "./digest";
 import {
   MEMORY_LEXICAL_CHUNKING_VERSION,
   MEMORY_LEXICAL_ANALYSIS_PROFILE,
@@ -61,7 +55,6 @@ import {
   type MemoryHistoryIndexPageLimits
 } from "./incremental";
 import {
-  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
   MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
   MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION,
   memoryHistoryIndexJobFingerprint
@@ -248,29 +241,9 @@ function executionContext(now: Date) {
   };
 }
 
-const normalHistoryClassifier: MemoryHistorySafetyClassifier = {
-  classify: async (chunks) => ({
-    decisions: chunks.map((chunk) => ({
-      chunkId: chunk.id,
-      sensitivity: "NORMAL" as const
-    })),
-    policyVersion: "memory-history-safety-policy-test"
-  })
-};
-
-async function processHistoryJob(
-  userId: string,
-  options: Readonly<{
-    classifier?: MemoryHistorySafetyClassifier;
-    digestGenerator?: MemoryChatDigestGenerator;
-  }> = {}
-) {
+async function processHistoryJob(userId: string) {
   const claim = await claimHistoryJob(userId);
-  const handler = createPrismaMemoryHistoryIndexHandler(
-    prisma,
-    options.classifier ?? normalHistoryClassifier,
-    options.digestGenerator ? { digestGenerator: options.digestGenerator } : {}
-  );
+  const handler = createPrismaMemoryHistoryIndexHandler(prisma);
   await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
   const now = new Date();
   const result = await handler.execute(claim, executionContext(now));
@@ -333,43 +306,6 @@ async function processRebuildJob(userId: string, jobId: string): Promise<void> {
     stage: result.stage ?? null
   })).resolves.toBe(true);
 }
-
-const deterministicDigestGenerator: MemoryChatDigestGenerator = Object.freeze({
-  async generate(source, chunks, options) {
-    if (chunks.length === 0) {
-      return {
-        classificationRequired: false,
-        digest: null,
-        executions: [],
-        policyVersion: "memory-chat-digest-policy-test",
-        work: {
-          digestSegmentsProcessed: 0,
-          digestSourceChunksProcessed: 0
-        }
-      };
-    }
-    return {
-      classificationRequired: true,
-      digest: materializeMemoryChatDigest({
-        chunks,
-        content: decodeMemoryChatDigest({
-          decisions: ["Keep the selected deployment approach."],
-          open_loops: ["Confirm the rollout date."],
-          summary: "The chat selected a deployment approach.",
-          topics: ["Deployment"]
-        }),
-        source,
-        timeZone: options.timeZone
-      }),
-      executions: [],
-      policyVersion: "memory-chat-digest-policy-test",
-      work: {
-        digestSegmentsProcessed: 1,
-        digestSourceChunksProcessed: chunks.length
-      }
-    };
-  }
-});
 
 async function seedHistoryBackfill(userId: string) {
   return withLockedMemoryTransaction(prisma, userId, (tx, settings) =>
@@ -700,7 +636,7 @@ describe("Memory lexical history index persistence", () => {
   });
 
   it.each(["memory-history-index-v1", "memory-history-incremental-v8"])(
-    "reindexes a legacy READY checkpoint %s locally despite a legacy classifier result", async (previousPipeline) => {
+    "reindexes a legacy READY checkpoint %s locally", async (previousPipeline) => {
     const userId = await createOwner("memory-history-checkpoint-upgrade");
     try {
       const chat = await prisma.chat.create({
@@ -753,16 +689,7 @@ describe("Memory lexical history index persistence", () => {
       });
       const claim = await claimHistoryJob(userId);
       expect(claim.pipelineVersion).toBe(MEMORY_HISTORY_INDEX_PIPELINE_VERSION);
-      const secretClassifier: MemoryHistorySafetyClassifier = {
-        classify: async (chunks) => ({
-          decisions: chunks.map((chunk) => ({
-            chunkId: chunk.id,
-            sensitivity: "SECRET" as const
-          })),
-          policyVersion: "memory-history-safety-policy-upgrade-test"
-        })
-      };
-      const handler = createPrismaMemoryHistoryIndexHandler(prisma, secretClassifier);
+      const handler = createPrismaMemoryHistoryIndexHandler(prisma);
       const now = new Date();
       const result = await handler.execute(claim, executionContext(now));
       const coordinator = createPrismaMemoryCoordinatorRepository(prisma);
@@ -1289,6 +1216,8 @@ describe("Memory lexical history index persistence", () => {
         indexGenerationId: generation.id,
         recallChunkId: chunks[0]?.id
       });
+      // [E08] indexes history with zero provider executions
+      await expect(prisma.memoryExecutionBinding.count({ where: { userId } })).resolves.toBe(0);
       expect(settingsAfter.activeIndexGenerationId).toBe(generation.id);
       expect(settingsAfter.memoryRevision).toBe(settingsBefore.memoryRevision + 1);
       if (!checkpoint.lastSucceededAt) {
@@ -1439,11 +1368,7 @@ describe("Memory lexical history index persistence", () => {
           status: "complete"
         }
       });
-      const initialClassify = vi.fn(normalHistoryClassifier.classify);
-      await processHistoryJob(userId, {
-        classifier: { classify: initialClassify }
-      });
-      expect(initialClassify).not.toHaveBeenCalled();
+      await processHistoryJob(userId);
       const initialChunks = await prisma.memoryRecallChunk.findMany({
         orderBy: { chunkOrdinal: "asc" },
         where: { chatId: chat.id, state: "ACTIVE", userId }
@@ -1474,12 +1399,8 @@ describe("Memory lexical history index persistence", () => {
           status: "complete"
         }
       });
-      const appendClassify = vi.fn(normalHistoryClassifier.classify);
-      await processHistoryJob(userId, {
-        classifier: { classify: appendClassify }
-      });
+      await processHistoryJob(userId);
 
-      expect(appendClassify).not.toHaveBeenCalled();
       const currentChunks = await prisma.memoryRecallChunk.findMany({
         orderBy: { chunkOrdinal: "asc" },
         where: { chatId: chat.id, state: "ACTIVE", userId }
@@ -1862,7 +1783,7 @@ describe("Memory lexical history index persistence", () => {
           }
         });
         const claim = await claimHistoryJob(userId);
-        const handler = createPrismaMemoryHistoryIndexHandler(prisma, normalHistoryClassifier);
+        const handler = createPrismaMemoryHistoryIndexHandler(prisma);
         const now = new Date();
         const result = await handler.execute(claim, executionContext(now));
         const readArtifacts = () => Promise.all([
@@ -2308,11 +2229,6 @@ describe("Memory lexical history index persistence", () => {
         chunksBuilt: 1,
         chunksReplaced: 0,
         chunksReused: 1,
-        contextualProviderRequests: 0,
-        contextualRoundsFallback: 0,
-        contextualRoundsGenerated: 0,
-        digestSegmentsProcessed: 0,
-        digestSourceChunksProcessed: 0,
         messageContentRowsLoaded: 6,
         messagesProjected: 6,
         modelRunRowsLoaded: 3,
@@ -2751,150 +2667,6 @@ describe("Memory lexical history index persistence", () => {
     }
   }, 120_000);
 
-  it("persists one retry-idempotent source-bound digest and replaces it after append", async () => {
-    const userId = await createOwner("memory-history-digest");
-    try {
-      const chat = await prisma.chat.create({
-        data: { title: "Digest history", userId }
-      });
-      const first = await createTurn({
-        assistantText: "Cedar was selected for deployment.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-13T10:00:00.000Z"),
-        parentMessageId: null,
-        userId,
-        userText: "Compare the cedar and birch deployment options."
-      });
-      await mutateSource(userId, chat.id, {
-        mutations: ["NORMAL_APPEND"],
-        patch: { activeLeafMessageId: first.assistantMessage.id }
-      });
-      await mutateSource(userId, chat.id, {
-        mutations: ["TERMINAL_SETTLEMENT"],
-        terminalSettlement: {
-          assistantMessageId: first.assistantMessage.id,
-          runId: first.run.id,
-          status: "complete"
-        }
-      });
-      const processed = await processHistoryJob(userId, {
-        digestGenerator: deterministicDigestGenerator
-      });
-      const digest = await prisma.chatMemoryDigest.findFirstOrThrow({
-        where: { chatId: chat.id, state: "ACTIVE", userId }
-      });
-      expect(digest).toMatchObject({
-        activeLeafMessageId: first.assistantMessage.id,
-        pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-        redactionState: "NOT_NEEDED",
-        safetyClass: "NORMAL",
-        safeDigestText: expect.stringContaining("Summary:"),
-        sourceFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
-        updateMode: "FULL_REBUILD"
-      });
-      const incompleteDigestId = randomUUID();
-      await expect(prisma.chatMemoryDigest.create({
-        data: {
-          activeLeafMessageId: digest.activeLeafMessageId,
-          anchorChunkId: digest.anchorChunkId,
-          branchGeneration: digest.branchGeneration,
-          chatId: digest.chatId,
-          contentHash: digest.contentHash,
-          decisions: digest.decisions,
-          id: incompleteDigestId,
-          languageCode: digest.languageCode,
-          normalizedSafeSearchText: digest.normalizedSafeSearchText,
-          occurredFrom: digest.occurredFrom,
-          occurredTo: digest.occurredTo,
-          openLoops: digest.openLoops,
-          pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-          redactionState: digest.redactionState,
-          safeDigestText: digest.safeDigestText,
-          safetyClass: digest.safetyClass,
-          safetyPolicyVersion: digest.safetyPolicyVersion,
-          sourceAssistantId: digest.sourceAssistantId,
-          sourceContentHash: digest.sourceContentHash,
-          sourceFolderId: digest.sourceFolderId,
-          sourceProjectionVersion: digest.sourceProjectionVersion,
-          sourceRevisionAtCreation: digest.sourceRevisionAtCreation,
-          state: "INVALIDATED",
-          summary: digest.summary,
-          topics: digest.topics,
-          userId
-        }
-      })).rejects.toThrow("ChatMemoryDigest_incremental_metadata_check");
-      await expect(prisma.chatMemoryDigest.count({
-        where: { id: incompleteDigestId }
-      })).resolves.toBe(0);
-      await expect(prisma.chatMemoryDigestChunk.count({
-        where: { digestId: digest.id, userId }
-      })).resolves.toBe(1);
-      await expect(prisma.chatMemoryDigestMessage.count({
-        where: { digestId: digest.id, userId }
-      })).resolves.toBe(2);
-      const firstDigestMessage = await prisma.chatMemoryDigestMessage.findFirstOrThrow({
-        orderBy: { ordinal: "asc" },
-        where: { digestId: digest.id, userId }
-      });
-      await expect(prisma.$transaction((tx) =>
-        tx.chatMemoryDigestMessage.delete({
-          where: {
-            digestId_messageId: {
-              digestId: digest.id,
-              messageId: firstDigestMessage.messageId
-            }
-          }
-        }))).rejects.toThrow();
-
-      await prisma.$transaction(async (tx) => {
-        await processed.result.apply?.(tx, processed.claim);
-      });
-      await expect(prisma.chatMemoryDigest.count({
-        where: { chatId: chat.id, state: "ACTIVE", userId }
-      })).resolves.toBe(1);
-
-      const appended = await createTurn({
-        assistantText: "The rollout date remains open.",
-        chatId: chat.id,
-        createdAt: new Date("2026-08-13T10:05:00.000Z"),
-        parentMessageId: first.assistantMessage.id,
-        userId,
-        userText: "We still need to confirm the rollout date."
-      });
-      await mutateSource(userId, chat.id, {
-        mutations: ["NORMAL_APPEND"],
-        patch: { activeLeafMessageId: appended.assistantMessage.id }
-      });
-      await expect(prisma.chatMemoryDigest.findUniqueOrThrow({
-        where: { id: digest.id }
-      })).resolves.toMatchObject({ state: "INVALIDATED" });
-      await mutateSource(userId, chat.id, {
-        mutations: ["TERMINAL_SETTLEMENT"],
-        terminalSettlement: {
-          assistantMessageId: appended.assistantMessage.id,
-          runId: appended.run.id,
-          status: "complete"
-        }
-      });
-      await processHistoryJob(userId, {
-        digestGenerator: deterministicDigestGenerator
-      });
-      const current = await prisma.chatMemoryDigest.findFirstOrThrow({
-        where: { chatId: chat.id, state: "ACTIVE", userId }
-      });
-      expect(current.id).not.toBe(digest.id);
-      expect(current.activeLeafMessageId).toBe(appended.assistantMessage.id);
-      await expect(prisma.chatMemoryDigest.count({
-        where: { chatId: chat.id, state: "ACTIVE", userId }
-      })).resolves.toBe(1);
-      await expect(prisma.chatMemoryDigestMessage.count({
-        where: { digestId: current.id, userId }
-      })).resolves.toBe(4);
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
   it("indexes chunks and rounds with exact stateful round rejoin", async () => {
     const userId = await createOwner("memory-history-chunks");
     try {
@@ -3129,7 +2901,7 @@ describe("Memory lexical history index persistence", () => {
     }
   });
 
-  it("carries cited contextual evidence and falls back to raw when a dependency drifts", async () => {
+  it("expands a legacy generated round as raw evidence and drops a frozen hint element", async () => {
     const userId = await createOwner("memory-history-contextual-dependencies");
     try {
       const chat = await prisma.chat.create({
@@ -3189,12 +2961,13 @@ describe("Memory lexical history index persistence", () => {
       const currentSegment = await prisma.memoryRecallRoundSegment.findFirstOrThrow({
         where: { roundId: current.id, state: "ACTIVE", userId }
       });
-      const retrievalHint = "Maria chose the window seat.";
+      // Rows of an earlier release that generated contextual keys.
+      const legacyNarrative = "Maria chose the window seat.";
       await prisma.$transaction([
         prisma.memoryRecallRound.update({
           data: {
             contextualKeyState: "GENERATED",
-            contextualNarrativeText: retrievalHint,
+            contextualNarrativeText: legacyNarrative,
             supportingRoundIds: [prior.id]
           },
           where: { id: current.id }
@@ -3202,7 +2975,7 @@ describe("Memory lexical history index persistence", () => {
         prisma.memoryRecallRoundSegment.update({
           data: {
             contextualKeyState: "GENERATED",
-            contextualNarrativeText: retrievalHint,
+            contextualNarrativeText: legacyNarrative,
             supportingRoundIds: [prior.id]
           },
           where: { id: currentSegment.id }
@@ -3231,14 +3004,10 @@ describe("Memory lexical history index persistence", () => {
       const [expanded] = await repository.expand(retrieved.snapshot, plan, [selected!]);
       expect(expanded).toMatchObject({
         itemId: current.id,
-        retrievalHint,
-        safeText: currentSegment.rawSafeText,
-        supportingEvidence: [{
-          itemId: prior.id,
-          safeText: prior.rawSafeText,
-          sourceChatId: chat.id
-        }]
+        safeText: currentSegment.rawSafeText
       });
+      expect(expanded).not.toHaveProperty("retrievalHint");
+      expect(expanded).not.toHaveProperty("supportingEvidence");
       const [rerankCandidate] = memoryRelevanceCandidates(
         [selected!],
         [expanded!],
@@ -3246,38 +3015,36 @@ describe("Memory lexical history index persistence", () => {
       );
       const rerankDocument = memoryDedicatedRerankDocument(rerankCandidate!);
       expect(rerankDocument).toContain(
-        `[retrieval_hint derived=true authority=none]\n${retrievalHint}`
-      );
-      expect(rerankDocument).toContain(
         `[authoritative_evidence]\n${currentSegment.rawSafeText}`
       );
-      expect(rerankDocument).toContain(
-        `[supporting_authoritative_evidence]\n` +
-          `[support_1 raw_excerpt=true ` +
-          `date_from=${prior.occurredFrom.toISOString()} ` +
-          `date_to=${prior.occurredTo.toISOString()}]\n${prior.rawSafeText}`
-      );
+      expect(rerankDocument).toContain("[supporting_authoritative_evidence]\nnone");
+      expect(rerankDocument).not.toContain(legacyNarrative);
       const pack = packMemoryPersonalContext({
         expanded: [expanded!],
         plan,
         ranked: [selected!]
       });
-      expect(pack.text).toContain('"retrieval_hint":{"authority":"none","derived":true');
-      expect(pack.text).toContain('"supporting_authoritative_evidence"');
-      expect(pack.text).toContain("Maria reserved the cedar table.");
+      expect(pack.text).toContain("She chose the window seat.");
+      expect(pack.text).not.toContain(legacyNarrative);
+      expect(pack.text).not.toContain("Maria reserved the cedar table.");
 
       const settings = await prisma.userMemorySettings.findUniqueOrThrow({
         where: { userId }
       });
-      const preparingInput = {
+      const authority = {
+        assistantId: null,
+        chatId: chat.id,
+        folderId: null,
+        indexGenerationId: settings.activeIndexGenerationId,
+        userId
+      };
+      const rawInput = {
         exactItemId: current.id,
         exactSafeText: currentSegment.rawSafeText,
         featureSnapshot: {
-          contextualRetrievalHintHash: memorySha256(retrievalHint),
-          contextualSupportingEvidenceHashes: [
-            memorySha256(expanded!.supportingEvidence![0]!.safeText)
-          ],
-          contextualSupportingRoundIds: [prior.id]
+          contextualRetrievalHintHash: null,
+          contextualSupportingEvidenceHashes: [],
+          contextualSupportingRoundIds: []
         },
         finalScore: selected!.finalScore,
         itemType: "RECALL_ROUND" as const,
@@ -3289,48 +3056,19 @@ describe("Memory lexical history index persistence", () => {
         supportingItemId: current.parentChunkId
       };
       await expect(prisma.$transaction((tx) => resolvePreparingMemoryItem(
-        tx,
-        {
-          assistantId: null,
-          chatId: chat.id,
-          folderId: null,
-          indexGenerationId: settings.activeIndexGenerationId,
-          userId
-        },
-        null,
-        preparingInput
+        tx, authority, null, rawInput
       ))).resolves.toMatchObject({ recallRoundSegmentId: currentSegment.id });
-
-      const invalidatedAt = new Date("2026-08-10T09:01:00.000Z");
-      await prisma.$transaction([
-        prisma.memoryRecallRoundSegment.updateMany({
-          data: { invalidatedAt, state: "INVALIDATED" },
-          where: { roundId: prior.id, userId }
-        }),
-        prisma.memoryRecallRound.update({
-          data: { invalidatedAt, state: "INVALIDATED" },
-          where: { id: prior.id }
-        })
-      ]);
-      const [rawOnly] = await repository.expand(retrieved.snapshot, plan, [selected!]);
-      expect(rawOnly).toMatchObject({
-        itemId: current.id,
-        retrievalHint: null,
-        safeText: currentSegment.rawSafeText,
-        supportingEvidence: []
-      });
+      // An element frozen with a retired hint can no longer be revalidated.
       await expect(prisma.$transaction((tx) => resolvePreparingMemoryItem(
-        tx,
-        {
-          assistantId: null,
-          chatId: chat.id,
-          folderId: null,
-          indexGenerationId: settings.activeIndexGenerationId,
-          userId
-        },
-        null,
-        preparingInput
-      ))).rejects.toMatchObject({ code: "memory_attempt_item_stale" });
+        tx, authority, null, {
+          ...rawInput,
+          featureSnapshot: {
+            contextualRetrievalHintHash: memorySha256(legacyNarrative),
+            contextualSupportingEvidenceHashes: [memorySha256(prior.rawSafeText)],
+            contextualSupportingRoundIds: [prior.id]
+          }
+        }
+      ))).rejects.toMatchObject({ code: "memory_attempt_item_stale", retryable: true });
     } finally {
       await cleanupOwner(userId);
     }
@@ -3828,7 +3566,7 @@ describe("Memory lexical history index persistence", () => {
         }
       });
       const claim = await claimHistoryJob(userId);
-      const handler = createPrismaMemoryHistoryIndexHandler(prisma, normalHistoryClassifier);
+      const handler = createPrismaMemoryHistoryIndexHandler(prisma);
       const result = await handler.execute(claim, executionContext(new Date()));
 
       await mutateSource(userId, chat.id, {
@@ -4552,7 +4290,7 @@ describe("Memory lexical history index persistence", () => {
       expect(prepared.plan.work).toMatchObject({
         chunksBuilt: 0, messagesProjected: 0, roundsBuilt: 0, toolEventsBuilt: 1
       });
-      const handler = createPrismaMemoryHistoryIndexHandler(prisma, normalHistoryClassifier);
+      const handler = createPrismaMemoryHistoryIndexHandler(prisma);
       const now = new Date();
       const result = await handler.execute(claim, executionContext(now));
       await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({

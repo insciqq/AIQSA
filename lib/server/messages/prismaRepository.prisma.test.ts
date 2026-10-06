@@ -9,7 +9,6 @@ import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { createPrismaMemoryCoordinatorRepository } from "../memory/coordinator/prismaRepository";
 import type { MemoryJobClaim } from "../memory/coordinator/types";
 import { seedMemoryHistoryBackfill } from "../memory/history/backfill";
-import type { MemoryHistorySafetyClassifier } from "../memory/history/classifier";
 import { createPrismaMemoryHistoryIndexHandler } from "../memory/history/handler";
 import { withLockedMemoryTransaction } from "../memory/persistence/transaction";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
@@ -216,13 +215,6 @@ function seedHistoryBackfill(userId: string) {
     seedMemoryHistoryBackfill(tx, settings));
 }
 
-const normalHistoryClassifier: MemoryHistorySafetyClassifier = {
-  classify: async (chunks) => ({
-    decisions: chunks.map((chunk) => ({ chunkId: chunk.id, sensitivity: "NORMAL" as const })),
-    policyVersion: "message-branch-history-policy-test"
-  })
-};
-
 /** Runs the queued history job of one chat and returns its indexed message ids. */
 async function indexChatHistory(userId: string, chatId: string): Promise<string[]> {
   const job = await prisma.memoryJob.findFirstOrThrow({
@@ -255,7 +247,7 @@ async function indexChatHistory(userId: string, chatId: string): Promise<string[
     targetFactVersionId: claimed.targetFactVersionId,
     userId: claimed.userId
   };
-  const handler = createPrismaMemoryHistoryIndexHandler(prisma, normalHistoryClassifier);
+  const handler = createPrismaMemoryHistoryIndexHandler(prisma);
   await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
   const now = new Date();
   const result = await handler.execute(claim, {

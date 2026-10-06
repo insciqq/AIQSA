@@ -261,7 +261,7 @@ describe("Independent Memory utility assignment", () => {
 
   it("uses Memory's model and reasoning while preserving the existing reranker destination", async () => {
     const policy = await resolve();
-    expect(policy.targets.get("MEMORY_HISTORY_CLASSIFY")).toMatchObject({
+    expect(policy.targets.get("MEMORY_STATEMENT_CLASSIFY")).toMatchObject({
       policyRevision: 7,
       snapshot: { providerModelId: "memory-model", model: { defaultParams: { reasoning: { effort: "low" } } } }
     });
@@ -294,7 +294,7 @@ describe("Independent Memory utility assignment", () => {
 
   it("does not activate Memory generation when only the System model is assigned", async () => {
     const policy = await resolve(false);
-    expect(policy.targets.has("MEMORY_HISTORY_CLASSIFY")).toBe(false);
+    expect(policy.targets.has("MEMORY_STATEMENT_CLASSIFY")).toBe(false);
     expect(policy.targets.has("MEMORY_FACT_EXTRACT")).toBe(false);
     expect(policy.targets.has("MEMORY_RERANK")).toBe(true);
   });
@@ -303,12 +303,12 @@ describe("Independent Memory utility assignment", () => {
     const first = await resolve();
     const systemChanged = await resolve(true, 21);
     const memoryChanged = await resolve(true, 21, 8);
-    expect(first.targets.get("MEMORY_HISTORY_CLASSIFY")).toEqual(
-      systemChanged.targets.get("MEMORY_HISTORY_CLASSIFY")
+    expect(first.targets.get("MEMORY_STATEMENT_CLASSIFY")).toEqual(
+      systemChanged.targets.get("MEMORY_STATEMENT_CLASSIFY")
     );
-    expect(memoryChanged.targets.get("MEMORY_HISTORY_CLASSIFY")?.executionTargetFingerprint)
-      .not.toBe(first.targets.get("MEMORY_HISTORY_CLASSIFY")?.executionTargetFingerprint);
-    expect(first.targets.get("MEMORY_HISTORY_CLASSIFY")?.policyRevision).toBe(7);
+    expect(memoryChanged.targets.get("MEMORY_STATEMENT_CLASSIFY")?.executionTargetFingerprint)
+      .not.toBe(first.targets.get("MEMORY_STATEMENT_CLASSIFY")?.executionTargetFingerprint);
+    expect(first.targets.get("MEMORY_STATEMENT_CLASSIFY")?.policyRevision).toBe(7);
     expect(systemChanged.targets.get("MEMORY_RERANK")).toEqual(memoryChanged.targets.get("MEMORY_RERANK"));
   });
 });

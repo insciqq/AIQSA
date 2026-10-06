@@ -178,8 +178,8 @@ function projectMemoryHistoryWindowedText(
 }
 
 /**
- * Single bounded pass for derived or already bounded texts (statements,
- * digests, tool scalars, chunk text). A longer text is OVERSIZE: not scanned
+ * Single bounded pass for derived or already bounded texts (tool scalars,
+ * chunk text). A longer text is OVERSIZE: not scanned
  * and not classified. Whole message texts use the windowed source projection.
  */
 export function projectMemoryHistorySafeText(value: string): MemorySafeTextProjection {

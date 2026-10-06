@@ -17,7 +17,6 @@ import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
 } from "./rounds";
-import { currentMemoryJobsSql } from "../coordinator/currentJobs";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from "./sourceProjection";
 import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../../contracts/runs";
 
@@ -39,7 +38,6 @@ type HistoryPurgeSelection =
 type HistoryTargetIds = Readonly<{
   candidateIds: readonly string[];
   chunkIds: readonly string[];
-  digestIds: readonly string[];
   roundIds: readonly string[];
   toolEventIds: readonly string[];
 }>;
@@ -157,24 +155,9 @@ async function targetIds(
         )
       ORDER BY tool_event."id"
     `);
-    const digests = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT DISTINCT digest."id"
-      FROM "ChatMemoryDigest" AS digest
-      LEFT JOIN "ChatMemoryDigestMessage" AS source_map
-        ON source_map."userId" = digest."userId"
-        AND source_map."digestId" = digest."id"
-      LEFT JOIN "Message" AS message
-        ON message."chatId" = source_map."chatId"
-        AND message."id" = source_map."messageId"
-      WHERE digest."userId" = ${userId}
-        AND (digest."createdAt" <= ${barrier.createdAt}
-          OR message."createdAt" <= ${barrier.sourceCreatedAtCutoff})
-      ORDER BY digest."id"
-    `);
     return {
       candidateIds: [],
       chunkIds: chunks.map(({ id }) => id),
-      digestIds: digests.map(({ id }) => id),
       roundIds: rounds.map(({ id }) => id),
       toolEventIds: toolEvents.map(({ id }) => id)
     };
@@ -304,21 +287,6 @@ async function targetIds(
       ORDER BY candidate."id"
       FOR UPDATE OF candidate
     `);
-    const digests = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      SELECT digest."id"
-      FROM "ChatMemoryDigest" AS digest
-      LEFT JOIN "Chat" AS chat
-        ON chat."userId" = digest."userId" AND chat."id" = digest."chatId"
-      WHERE digest."userId" = ${userId}
-        AND digest."chatId" = ${selection.chatId}
-        AND (digest."state" <> 'ACTIVE'::"MemoryHistoryItemState"
-          OR chat."id" IS NULL
-          OR chat."memoryMode" <> 'NORMAL'::"MemoryChatMode"
-          OR chat."memoryBranchGeneration" <> digest."branchGeneration"
-          OR chat."memorySourceRevision" <> digest."sourceRevisionAtCreation"
-          OR chat."activeLeafMessageId" IS DISTINCT FROM digest."activeLeafMessageId")
-      ORDER BY digest."id"
-    `);
     // A valid older projection stays until bounded history backfill replaces
     // it. Current reads exclude it; deleting it here would erase the rebuild
     // signal before the unchanged chat is selected by the backfill scheduler.
@@ -368,7 +336,6 @@ async function targetIds(
     return {
       candidateIds: candidates.map(({ id }) => id),
       chunkIds: chunks.map(({ id }) => id),
-      digestIds: digests.map(({ id }) => id),
       roundIds: rounds.map(({ id }) => id),
       toolEventIds: toolEvents.map(({ id }) => id)
     };
@@ -446,23 +413,6 @@ async function targetIds(
       AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
     ORDER BY candidate."id"
   `);
-  const digests = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT DISTINCT digest."id"
-    FROM "ChatMemoryDigest" AS digest
-    INNER JOIN "ChatMemoryDigestMessage" AS source_map
-      ON source_map."userId" = digest."userId"
-      AND source_map."digestId" = digest."id"
-    INNER JOIN "MemorySuppression" AS suppression
-      ON suppression."userId" = source_map."userId"
-      AND (suppression."scope" = 'ALL'::"MemorySuppressionScope" OR (
-        suppression."scope" = 'SOURCE_MESSAGE'::"MemorySuppressionScope"
-        AND suppression."sourceChatId" = source_map."chatId"
-        AND suppression."sourceMessageId" = source_map."messageId"
-      ))
-    WHERE digest."userId" = ${userId}
-      AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
-    ORDER BY digest."id"
-  `);
   const toolEvents = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT DISTINCT tool_event."id"
     FROM "MemoryToolEvent" AS tool_event
@@ -484,7 +434,6 @@ async function targetIds(
   return {
     candidateIds: candidates.map(({ id }) => id),
     chunkIds: chunks.map(({ id }) => id),
-    digestIds: digests.map(({ id }) => id),
     roundIds: rounds.map(({ id }) => id),
     toolEventIds: toolEvents.map(({ id }) => id)
   };
@@ -700,45 +649,12 @@ async function receiptSelectionPredicates(
   };
 }
 
-async function executionPurgePredicate(
+async function historyReceiptDerivativeCount(
   tx: MemoryTransaction,
   userId: string,
   selection: HistoryPurgeSelection
-): Promise<Prisma.Sql> {
-  if (selection.kind === "SOURCE") {
-    return Prisma.sql`job."chatId" = ${selection.chatId}
-      AND NOT EXISTS (SELECT 1 FROM current_jobs current WHERE current.id = job.id)`;
-  }
-  if (selection.kind === "CLEAR" || selection.kind === "ALL_REUSABLE") {
-    const barrier = await tx.memorySourceBarrier.findFirst({
-      select: { createdAt: true, sourceCreatedAtCutoff: true },
-      where: { id: selection.barrierId, userId,
-        kind: selection.kind === "CLEAR" ? "HISTORY_INDEX" : "ALL_REUSABLE" }
-    });
-    if (!barrier) throw new MemoryCoordinatorError("memory_deletion_target_invalid", true);
-    return Prisma.sql`(job."createdAt" <= ${barrier.createdAt}
-      OR EXISTS (SELECT 1 FROM "Message" message WHERE message."chatId" = job."chatId"
-        AND message."createdAt" <= ${barrier.sourceCreatedAtCutoff}))`;
-  }
-  return Prisma.sql`EXISTS (SELECT 1 FROM "MemorySuppression" suppression
-    WHERE suppression."userId" = job."userId"
-      AND (suppression."expiresAt" IS NULL OR suppression."expiresAt" > CURRENT_TIMESTAMP)
-      AND (suppression.scope = 'ALL' OR suppression."sourceChatId" = job."chatId"))`;
-}
-
-async function historyReceiptDerivativeCounts(
-  tx: MemoryTransaction,
-  userId: string,
-  selection: HistoryPurgeSelection
-): Promise<Readonly<{ historyRuns: number; executionResults: number }>> {
+): Promise<number> {
   const predicates = await receiptSelectionPredicates(tx, userId, selection);
-  const executionPredicate = await executionPurgePredicate(tx, userId, selection);
-  const executionRows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
-    WITH ${currentMemoryJobsSql(new Date())}
-    SELECT COUNT(*)::integer AS count FROM "MemoryHistoryExecution" execution
-    JOIN "MemoryJob" job ON job."userId" = execution."userId" AND job.id = execution."memoryJobId"
-    WHERE execution."userId" = ${userId} AND execution."clearedAt" IS NULL AND ${executionPredicate}
-  `);
   const historyRows = await tx.$queryRaw<Array<{ count: number }>>(Prisma.sql`
     SELECT COUNT(DISTINCT history."id")::integer AS "count"
     FROM "MemoryHistoryRun" AS history
@@ -753,12 +669,10 @@ async function historyReceiptDerivativeCounts(
       )
   `);
   const historyRuns = historyRows[0]?.count ?? -1;
-  const executionResults = executionRows[0]?.count ?? -1;
-  if (!Number.isSafeInteger(historyRuns) || historyRuns < 0 ||
-    !Number.isSafeInteger(executionResults) || executionResults < 0) {
+  if (!Number.isSafeInteger(historyRuns) || historyRuns < 0) {
     throw new MemoryCoordinatorError("memory_purge_incomplete", true);
   }
-  return { historyRuns, executionResults };
+  return historyRuns;
 }
 
 export async function purgeMemoryHistoryReceiptDerivatives(
@@ -767,15 +681,6 @@ export async function purgeMemoryHistoryReceiptDerivatives(
   selection: HistoryPurgeSelection
 ): Promise<void> {
   const predicates = await receiptSelectionPredicates(tx, userId, selection);
-  const executionPredicate = await executionPurgePredicate(tx, userId, selection);
-  await tx.$executeRaw(Prisma.sql`
-    WITH ${currentMemoryJobsSql(new Date())}
-    UPDATE "MemoryHistoryExecution" execution SET "acceptedOutput" = NULL,
-      "clearedAt" = GREATEST(CURRENT_TIMESTAMP, execution."createdAt")
-    FROM "MemoryJob" job
-    WHERE job."userId" = execution."userId" AND job.id = execution."memoryJobId"
-      AND execution."userId" = ${userId} AND execution."clearedAt" IS NULL AND ${executionPredicate}
-  `);
   await scrubMemoryHistoryReceipts(tx, userId, predicates);
 }
 
@@ -960,8 +865,7 @@ export async function purgeMemoryHistorySelection(
   while (true) {
     const ids = await targetIds(tx, userId, selection);
     if (ids.candidateIds.length === 0 && ids.chunkIds.length === 0 &&
-      ids.digestIds.length === 0 && ids.roundIds.length === 0 &&
-      ids.toolEventIds.length === 0) break;
+      ids.roundIds.length === 0 && ids.toolEventIds.length === 0) break;
     await settleAttemptItems(tx, userId, ids);
     await detachFrozenMemoryRoundTargets(tx, userId, ids.roundIds);
     await tx.memorySearchEntry.deleteMany({
@@ -974,17 +878,6 @@ export async function purgeMemoryHistorySelection(
         userId
       }
     });
-    if (ids.digestIds.length > 0) {
-      await tx.chatMemoryDigestChunk.deleteMany({
-        where: { digestId: { in: [...ids.digestIds] }, userId }
-      });
-      await tx.chatMemoryDigestMessage.deleteMany({
-        where: { digestId: { in: [...ids.digestIds] }, userId }
-      });
-      await tx.chatMemoryDigest.deleteMany({
-        where: { id: { in: [...ids.digestIds] }, userId }
-      });
-    }
     if (ids.roundIds.length > 0) {
       await tx.memoryRecallRoundMessage.deleteMany({
         where: { roundId: { in: [...ids.roundIds] }, userId }
@@ -1024,14 +917,14 @@ export async function inspectMemoryHistoryPurge(
   selection: HistoryPurgeSelection
 ): Promise<MemoryHistoryPurgeProgress> {
   const ids = await targetIds(tx, userId, selection);
-  const receiptDerivatives = await historyReceiptDerivativeCounts(tx, userId, selection);
+  const receiptCount = await historyReceiptDerivativeCount(tx, userId, selection);
   const feedbackCount = selection.kind === "CLEAR" || selection.kind === "ALL_REUSABLE"
     ? await inspectMemoryFeedbackHistoryClear(tx, userId, ids)
     : selection.kind === "SOURCE"
       ? await inspectMemoryFeedbackInvalidSource(tx, userId, selection.chatId, ids)
       : await inspectMemoryFeedbackHistoryClear(tx, userId, ids);
   const historyItemCount = ids.candidateIds.length + ids.chunkIds.length +
-    ids.digestIds.length + ids.roundIds.length + ids.toolEventIds.length;
+    ids.roundIds.length + ids.toolEventIds.length;
   let referenceCount = 0;
   let searchCount = 0;
   if (historyItemCount > 0) {
@@ -1061,7 +954,7 @@ export async function inspectMemoryHistoryPurge(
   const completedUnits = Number(historyItemCount === 0) +
     Number(referenceCount === 0) +
     Number(searchCount === 0) +
-    Number(receiptDerivatives.historyRuns === 0 && receiptDerivatives.executionResults === 0) +
+    Number(receiptCount === 0) +
     Number(feedbackCount === 0);
   return { complete: completedUnits === 5, completedUnits, totalUnits: 5 };
 }

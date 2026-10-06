@@ -134,7 +134,6 @@ function policy(
   for (const role of [
     "MEMORY_CONTROL",
     "MEMORY_STATEMENT_CLASSIFY",
-    "MEMORY_HISTORY_CLASSIFY",
     "MEMORY_FACT_EXTRACT",
     "MEMORY_CONSOLIDATE",
     "MEMORY_RERANK",
@@ -220,11 +219,6 @@ describe("Memory capability projection", () => {
     expect(derive({ omitted: ["MEMORY_CONTROL"] })).toMatchObject({
       automaticLearningAvailable: true,
       naturalLanguageActionsAvailable: false,
-      pastChatIndexingAvailable: true,
-      retrievalAvailable: true
-    });
-    expect(derive({ omitted: ["MEMORY_HISTORY_CLASSIFY"] })).toMatchObject({
-      automaticLearningAvailable: true,
       pastChatIndexingAvailable: true,
       retrievalAvailable: true
     });
