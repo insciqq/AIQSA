@@ -175,7 +175,7 @@ describe("provider diagnostics", () => {
       body: { error: { code: "insufficient_quota", type: "insufficient_quota", message: "You exceeded your current quota PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
     { name: "OpenAI rate limit", send: openai, status: 429, code: "provider_rate_limited", message: rateMessage,
       body: { error: { code: "rate_limit_exceeded", type: "requests", message: "Rate limit reached PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
-    { name: "OpenAI outage", send: openai, status: 503, code: "provider_unavailable", message: unavailableMessage(503),
+    { name: "OpenAI outage", send: openai, status: 503, code: "provider_server_error", message: unavailableMessage(503),
       body: { error: { message: "The server is overloaded PRIVATE_PROVIDER_MESSAGE_CANARY", type: "server_error" } } },
     { name: "OpenRouter credits", send: openrouter, status: 402, code: "provider_quota_exhausted", message: quotaMessage(402),
       body: { error: { code: 402, message: "Insufficient credits PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
@@ -183,13 +183,13 @@ describe("provider diagnostics", () => {
       body: { error: { code: 401, message: "User not found. PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
     { name: "Anthropic rejected key", send: anthropic, status: 401, code: "provider_auth_rejected", message: authMessage(401),
       body: { type: "error", error: { type: "authentication_error", message: "invalid x-api-key PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
-    { name: "Anthropic overload", send: anthropic, status: 529, code: "provider_unavailable", message: unavailableMessage(529),
+    { name: "Anthropic overload", send: anthropic, status: 529, code: "provider_server_error", message: unavailableMessage(529),
       body: { type: "error", error: { type: "overloaded_error", message: "Overloaded PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
     { name: "DeepSeek balance", send: deepseek, status: 402, code: "provider_quota_exhausted", message: quotaMessage(402),
       body: { error: { message: "Insufficient Balance PRIVATE_PROVIDER_MESSAGE_CANARY", type: "unknown_error" } } },
     { name: "Gemini permission", send: gemini, status: 403, code: "provider_auth_rejected", message: authMessage(403),
       body: { error: { code: 403, status: "PERMISSION_DENIED", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
-    { name: "Gemini outage", send: gemini, status: 500, code: "provider_unavailable", message: unavailableMessage(500),
+    { name: "Gemini outage", send: gemini, status: 500, code: "provider_server_error", message: unavailableMessage(500),
       body: { error: { code: 500, status: "INTERNAL", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } } }
   ])("classifies a real-shaped $name response by its status, never its body text", async ({ send, status, code, message, body }) => {
     const records = capture();

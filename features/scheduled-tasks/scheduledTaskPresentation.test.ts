@@ -21,6 +21,7 @@ import {
   scheduledTaskFailureMessage,
   scheduledTaskLastRunLine,
   scheduledTaskResultNotice,
+  scheduledTaskRunReasonText,
   scheduledTaskRunRow,
   scheduledTaskScheduleText,
   scheduledTaskStatusLine,
@@ -107,6 +108,14 @@ describe("scheduled task presentation", () => {
     expect(paused("account_inactive")).toBe("Paused: the account was not active. Resume to continue.");
     expect(paused("schedule_invalid")).toBe("Paused: its schedule can no longer be calculated. Edit the schedule.");
     expect(paused("repeated_failures")).toBe("Paused: the last three runs failed. Resume to try again.");
+  });
+
+  it("names a failed run's provider HTTP failure class apart from the provider pause reason", () => {
+    const reasons = ["provider_auth_rejected", "provider_quota_exhausted", "provider_rate_limited", "provider_server_error"]
+      .map((code) => scheduledTaskRunReasonText("failed", code));
+    expect(new Set(reasons).size).toBe(reasons.length);
+    expect(reasons).not.toContain(scheduledTaskRunReasonText("failed", "provider_unavailable"));
+    expect(reasons).not.toContain(scheduledTaskRunReasonText("failed", "something_new"));
   });
 
   it("maps the run conflict and unknown failures to copy", () => {

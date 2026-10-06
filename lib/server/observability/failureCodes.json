@@ -827,6 +827,7 @@
   "provider_round_outcome_unknown",
   "provider_routing_role_incompatible",
   "provider_routing_role_unverified",
+  "provider_server_error",
   "provider_sources_unavailable",
   "provider_stream_deadline_exceeded",
   "provider_stream_event_too_large",

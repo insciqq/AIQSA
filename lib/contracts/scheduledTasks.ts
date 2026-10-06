@@ -587,6 +587,10 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "model_unavailable": return "The model is no longer available. Choose another model and resume.";
     case "search_unavailable": return "Web search is no longer available with this model. Turn it off or choose another model and resume.";
     case "provider_unavailable": return "The model's provider is unavailable right now. Check the model and resume.";
+    case "provider_auth_rejected": return "The model provider rejected the configured key. Ask an administrator to check it.";
+    case "provider_quota_exhausted": return "The model provider account has no remaining quota or balance. Ask an administrator to check it.";
+    case "provider_rate_limited": return "The model provider was limiting requests.";
+    case "provider_server_error": return "The model provider returned a server error.";
     case "tools_unavailable":
       return "The task's tools can no longer be used with this model. Turn tools off, choose another model, or switch some Skills or MCP tools off, then resume.";
     case "workspace_unavailable":
