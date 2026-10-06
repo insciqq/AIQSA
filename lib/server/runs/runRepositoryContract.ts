@@ -1000,7 +1000,8 @@ export type RunRepository = {
     runId: string;
     userId: string;
     target: import("../skills/skillSave").SkillSaveTarget;
-    bundle: import("../skills/bundle").SkillBundle;
+    /** Null exactly for a restore target. */
+    bundle: import("../skills/bundle").SkillBundle | null;
     changeNote: string | null;
     result(card: import("../../contracts/skillSaves").SkillSaveCard, version: number): import("../tools/types").ToolExecutionResult;
   }>): Promise<import("../tools/skillSave").SkillSaveCommitOutcome>;
