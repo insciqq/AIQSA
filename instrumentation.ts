@@ -9,6 +9,15 @@ export async function register(): Promise<void> {
     const { announceProcess, reportSubsystemFailure, reportSubsystemHealthy } = await import(
       "./lib/server/observability"
     );
+    try {
+      const { startDefaultTelemetryRecorder } = await import("./lib/server/telemetry/defaultRecorder");
+      startDefaultTelemetryRecorder();
+      reportSubsystemHealthy("telemetry", "startup");
+    } catch {
+      // Telemetry is operator diagnostics only: stdout logging and every
+      // product path continue without it.
+      reportSubsystemFailure({ subsystem: "telemetry", stage: "startup", code: "telemetry_startup_failed", action: "degrade" });
+    }
     announceProcess({ attachments: "starting", memory: "unknown", knowledge: "starting", mcp: "starting", workspace: "unknown", email: "unknown" });
     const { startNativeRoutingAdoption } = await import("./lib/server/bootstrap/nativeRoutingAdoption");
     startNativeRoutingAdoption();
