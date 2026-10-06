@@ -189,8 +189,11 @@ class CodeClientTests(unittest.TestCase):
         client = code_client(self.gateway)
         self.assertEqual(client.call("GitLab/list_commits").json()["commits"], ["a", "b"])
         self.assertEqual(client.call("gitlab/LIST_COMMITS").text, "2 commits")
+        self.assertEqual(client.call("GitLab.list_commits").text, "2 commits")  # as the summary line shows it
         with self.assertRaises(errors.ToolUnavailable):
             client.call("list_commits")  # GitLab and Wiki both have it
+        with self.assertRaises(errors.ToolUnavailable):
+            client.call("Nowhere.list_commits")
         with self.assertRaises(errors.ToolUnavailable):
             client.call("Nowhere/list_commits")
         with self.assertRaises(errors.ToolUnavailable):

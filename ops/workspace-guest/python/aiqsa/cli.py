@@ -73,7 +73,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
     listing = commands.add_parser("list", help="List the run's MCP tools.")
     listing.add_argument("--json", action="store_true", help="Print the tools as a JSON array.")
-    calling = commands.add_parser("call", help="Call one tool by exact name or <server>/<tool>.")
+    calling = commands.add_parser("call", help="Call one tool by exact name, <server>/<tool> or <server>.<tool>.")
     calling.add_argument("name")
     source = calling.add_mutually_exclusive_group()
     source.add_argument("--json", dest="arguments", metavar="ARGS", help="Arguments as a JSON object.")

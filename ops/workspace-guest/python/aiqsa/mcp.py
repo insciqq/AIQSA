@@ -11,7 +11,8 @@ content-free receipts.
     result = aiqsa.mcp.call("GitLab/list_commits", {"project": "group/app"})
     print(result.json())
 
-Names are exact tool names from ``list_tools()``, or ``"<server>/<tool>"``.
+Names are exact tool names from ``list_tools()``, ``"<server>/<tool>"``, or
+``"<server>.<tool>"`` as the run's summary line shows them.
 Errors are typed (see ``aiqsa.errors``); ``OutcomeUnknown`` and
 ``ResultUnsupported`` mean a call may have run: never repeat a write
 because of them.
@@ -176,7 +177,7 @@ class Client:
         return list(self._list())
 
     def call(self, name: str, arguments: Optional[Mapping[str, Any]] = None, *, timeout: Optional[float] = None) -> ToolResult:
-        """Call one tool by exact name or ``"<server>/<tool>"``; raises a typed error on failure."""
+        """Call one tool by exact name, ``"<server>/<tool>"`` or ``"<server>.<tool>"``; raises a typed error on failure."""
         if not isinstance(name, str) or not name:
             raise ToolUnavailable("A tool name is required.")
         if arguments is not None and not isinstance(arguments, Mapping):
@@ -210,7 +211,7 @@ class Client:
         return self._tools
 
     def _resolve(self, name: str) -> str:
-        """Exact names pass; ``server/tool`` or a unique tool name is looked up once."""
+        """Exact names pass; ``server/tool``, ``server.tool`` or a unique tool name is looked up once."""
         if "/" not in name and name.startswith("mcp_"):
             return name
         tools = self._list()
@@ -223,6 +224,10 @@ class Client:
                        and tool.tool.casefold() == tool_name.strip().casefold()]
         else:
             matches = [tool for tool in tools if tool.tool.casefold() == wanted]
+            if not matches and "." in name:
+                # The form the run's summary line shows: "<server>.<tool>".
+                matches = [tool for tool in tools if tool.server is not None
+                           and f"{tool.server}.{tool.tool}".casefold() == wanted]
         if len(matches) == 1:
             return matches[0].name
         if len(matches) > 1:
