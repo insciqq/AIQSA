@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { runWithContext } from "../observability";
 import {
   observedFailure,
+  observedFailureWithoutHttpClass,
   observeProviderFetch,
   observeProviderOperation,
   observeProviderStream,
@@ -11,6 +12,7 @@ import {
 } from "./providerObservability";
 import { createFetchGeminiInteractionsClient, GeminiHttpError } from "./geminiInteractionsTransport";
 import { createFetchOpenAIResponsesClient } from "./openaiResponsesTransport";
+import { createFetchOpenAIChatCompletionClient } from "./openaiCompatibleChatTransport";
 import { createFetchDeepSeekResponsesClient } from "./deepSeekResponsesTransport";
 import { createFetchAnthropicMessagesClient } from "./anthropicMessages";
 import { executeWithProviderRetry } from "./providerRetry";
@@ -150,6 +152,97 @@ describe("provider diagnostics", () => {
     const lookalike = Object.assign(new Error("PRIVATE_MESSAGE_CANARY"), { code: "invalid_request", httpStatus: 400 });
     expect(observedFailure(lookalike)).toEqual({ code: "unknown", httpStatus: 400, reason: "http" });
     expect(providerHttpFailureMessage(lookalike)).toBeNull();
+  });
+
+  const authMessage = (status: number) => `The model provider rejected the configured credentials (HTTP ${status}). Ask an administrator to check the provider key.`;
+  const quotaMessage = (status: number) => `The model provider reports that the account has no remaining quota or balance (HTTP ${status}). Ask an administrator to check the provider account.`;
+  const rateMessage = "The model provider is limiting requests (HTTP 429) and the retries did not succeed. Wait a minute before trying again.";
+  const unavailableMessage = (status: number) => `The model provider returned a server error (HTTP ${status}) and the retries did not succeed. Try again later.`;
+  const openai = (fetchFn: typeof fetch) => () => createFetchOpenAIResponsesClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn }).create({});
+  const openrouter = (fetchFn: typeof fetch) => () => createFetchOpenAIChatCompletionClient({ bodyMissingError: "missing",
+    endpoint: "https://openrouter.test/api/v1/chat/completions", fetchFn, headers: { authorization: "Bearer PRIVATE_KEY_CANARY" },
+    invalidJsonError: "invalid", notObjectError: "not_object", providerName: "OpenRouter" }).createChatCompletion({});
+  const anthropic = (fetchFn: typeof fetch) => () => createFetchAnthropicMessagesClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn }).createMessage({});
+  const deepseek = (fetchFn: typeof fetch) => () => createFetchDeepSeekResponsesClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn }).create({});
+  const gemini = (fetchFn: typeof fetch) => () => createFetchGeminiInteractionsClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn }).createInteraction({});
+
+  it.each([
+    { name: "OpenAI rejected key", send: openai, status: 401, code: "provider_auth_rejected", message: authMessage(401),
+      body: { error: { code: "invalid_api_key", type: "invalid_request_error", message: "Incorrect API key provided: PRIVATE_KEY_CANARY" } } },
+    { name: "OpenAI forbidden project", send: openai, status: 403, code: "provider_auth_rejected", message: authMessage(403),
+      body: { error: { code: "unsupported_country_region_territory", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
+    { name: "OpenAI exhausted quota", send: openai, status: 429, code: "provider_quota_exhausted", message: quotaMessage(429),
+      body: { error: { code: "insufficient_quota", type: "insufficient_quota", message: "You exceeded your current quota PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
+    { name: "OpenAI rate limit", send: openai, status: 429, code: "provider_rate_limited", message: rateMessage,
+      body: { error: { code: "rate_limit_exceeded", type: "requests", message: "Rate limit reached PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
+    { name: "OpenAI outage", send: openai, status: 503, code: "provider_unavailable", message: unavailableMessage(503),
+      body: { error: { message: "The server is overloaded PRIVATE_PROVIDER_MESSAGE_CANARY", type: "server_error" } } },
+    { name: "OpenRouter credits", send: openrouter, status: 402, code: "provider_quota_exhausted", message: quotaMessage(402),
+      body: { error: { code: 402, message: "Insufficient credits PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
+    { name: "OpenRouter rejected key", send: openrouter, status: 401, code: "provider_auth_rejected", message: authMessage(401),
+      body: { error: { code: 401, message: "User not found. PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
+    { name: "Anthropic rejected key", send: anthropic, status: 401, code: "provider_auth_rejected", message: authMessage(401),
+      body: { type: "error", error: { type: "authentication_error", message: "invalid x-api-key PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
+    { name: "Anthropic overload", send: anthropic, status: 529, code: "provider_unavailable", message: unavailableMessage(529),
+      body: { type: "error", error: { type: "overloaded_error", message: "Overloaded PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
+    { name: "DeepSeek balance", send: deepseek, status: 402, code: "provider_quota_exhausted", message: quotaMessage(402),
+      body: { error: { message: "Insufficient Balance PRIVATE_PROVIDER_MESSAGE_CANARY", type: "unknown_error" } } },
+    { name: "Gemini permission", send: gemini, status: 403, code: "provider_auth_rejected", message: authMessage(403),
+      body: { error: { code: 403, status: "PERMISSION_DENIED", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } } },
+    { name: "Gemini outage", send: gemini, status: 500, code: "provider_unavailable", message: unavailableMessage(500),
+      body: { error: { code: 500, status: "INTERNAL", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } } }
+  ])("classifies a real-shaped $name response by its status, never its body text", async ({ send, status, code, message, body }) => {
+    const records = capture();
+    const fetchFn = observeProviderFetch(async () => Response.json(body, { status }));
+    const error = await observeProviderOperation(identity, "answer", send(fetchFn)).catch((failure: unknown) => failure);
+    expect(observedFailure(error)).toMatchObject({ code, httpStatus: status, reason: "http" });
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed",
+      code, httpStatus: status, reason: "http", connectionId: identity.connectionId, providerModelId: identity.providerModelId }));
+    expect(providerHttpFailureMessage(error)).toBe(message);
+    expect(JSON.stringify([records(), providerHttpFailureMessage(error)])).not.toContain("PRIVATE_");
+  });
+
+  it("names an exhausted rate limit only after the unchanged retry policy gave up", async () => {
+    const records = capture();
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ error: { code: "rate_limit_exceeded", message: "PRIVATE_PROVIDER_MESSAGE_CANARY" } },
+      { status: 429, headers: { "retry-after": "0" } }));
+    const client = createFetchOpenAIResponsesClient({ apiKey: "PRIVATE_KEY_CANARY", fetchFn: observeProviderFetch(fetchFn),
+      initialRequestRetry: { maxAttempts: 3, sleep: async () => undefined } });
+    const error = await observeProviderOperation(identity, "answer", () => client.create({})).catch((failure: unknown) => failure);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(records().filter((entry) => entry.event === "provider_retry")).toMatchObject([
+      { attempt: 1, action: "retry", code: "provider_rate_limited", httpStatus: 429 },
+      { attempt: 2, action: "retry", code: "provider_rate_limited", httpStatus: 429 },
+      { attempt: 3, action: "stop", code: "provider_rate_limited", httpStatus: 429 }
+    ]);
+    expect(records()).toContainEqual(expect.objectContaining({ event: "provider_operation", outcome: "failed", code: "provider_rate_limited", httpStatus: 429 }));
+    expect(providerHttpFailureMessage(error)).toBe(rateMessage);
+  });
+
+  it("keeps more specific codes ahead of the HTTP status class", () => {
+    const withStatus = (status: number, fields: Record<string, unknown> = {}) => Object.assign(new Error("PRIVATE_MESSAGE_CANARY"), { status, ...fields });
+    // Context length, refusal, reviewed Gemini identities, unknown outcome and deadlines keep their codes.
+    expect(observedFailure(withStatus(429, { code: "provider_context_length_exceeded" })).code).toBe("provider_context_length_exceeded");
+    expect(observedFailure(withStatus(403, { code: "provider_response_not_retryable", capabilityFailureReason: "refusal" })).code).toBe("provider_refused");
+    expect(observedFailure(new GeminiHttpError(429, "invalid_request")).code).toBe("provider_http_invalid_request");
+    expect(observedFailure(withStatus(503, { code: "provider_request_outcome_unknown" })).code).toBe("provider_request_outcome_unknown");
+    expect(observedFailure(new ProviderRequestTimeoutError(25)).code).toBe("provider_request_timed_out");
+    expect(observedFailure(withStatus(503), AbortSignal.abort()).code).toBe("model_run_cancelled");
+    // A generic body rejection keeps its code unless it is a reviewed quota identity or HTTP 402.
+    expect(observedFailure(withStatus(500, { code: "provider_response_not_retryable" }))).toEqual({
+      code: "provider_response_not_retryable", httpStatus: 500, reason: "http" });
+    expect(observedFailure(withStatus(400, { code: "provider_response_not_retryable", quotaExhausted: true })).code).toBe("provider_quota_exhausted");
+    expect(observedFailure(withStatus(402, { code: "provider_response_not_retryable" })).code).toBe("provider_quota_exhausted");
+    // Without a status there is no class; other statuses stay unclassified.
+    expect(observedFailure({ code: "provider_response_not_retryable", quotaExhausted: true })).toEqual({
+      code: "provider_response_not_retryable", reason: "policy" });
+    expect(observedFailure(withStatus(404)).code).toBe("unknown");
+    expect(observedFailure(withStatus(408)).code).toBe("unknown");
+    // The pre-class identity stays available for consumers whose decisions branch on it.
+    expect(observedFailureWithoutHttpClass(withStatus(401))).toEqual({ code: "unknown", httpStatus: 401, reason: "http" });
+    expect(observedFailureWithoutHttpClass(withStatus(429, { code: "provider_response_not_retryable", quotaExhausted: true })).code)
+      .toBe("provider_response_not_retryable");
+    expect(providerHttpFailureMessage(withStatus(404))).toBeNull();
   });
 
   it("explains a typed invalid request across native transports without provider prose", () => {

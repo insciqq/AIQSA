@@ -6,7 +6,7 @@ import {
   type ProviderStreamSafetyReport
 } from "../providers/streamSafety";
 import { bindContext, logEvent, runWithContext, type ToolKind } from "../observability";
-import { observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
+import { isProviderHttpFailureClass, observedFailure, providerHttpFailureMessage } from "../providers/providerObservability";
 import { isRunPersistenceFailureCode, runSettlementFailure } from "./settlementFailure";
 
 export type ToolLoopObservation = Readonly<{
@@ -31,6 +31,8 @@ export type ToolLoopIssue = Readonly<{
   retryable?: boolean;
   streamSafetyReport?: ProviderStreamSafetyReport;
   toolName?: string;
+  /** The status of a provider HTTP failure class, for content-free run logs. */
+  httpStatus?: number;
 }>;
 
 export type ToolLoopToolResult<Value> =
@@ -608,8 +610,11 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
         ? null
         : providerStreamSafetyReport(providerRound.error);
       const settlement = runSettlementFailure(providerRound.error);
-      const observedCode = observedFailure(providerRound.error).code;
+      const observed = observedFailure(providerRound.error);
+      const observedCode = observed.code;
       const providerErrorCode = observedCode === "unknown" ? null : observedCode;
+      const httpClassStatus = !signalFailure && !settlement && providerErrorCode && isProviderHttpFailureClass(providerErrorCode)
+        ? observed.httpStatus : undefined;
       return failed(progress, {
         code: signalFailure
           ? "tool_loop_signal_failed"
@@ -620,7 +625,8 @@ export async function continueToolLoop<Continuation, ToolValue, FinalValue>(
           errorMessage(providerRound.error, `Provider round ${round} failed.`),
         round,
         stage: signalFailure ? "signal" : settlement || providerErrorCode && isRunPersistenceFailureCode(providerErrorCode) ? "persistence" : "provider",
-        ...(streamSafetyReport ? { streamSafetyReport } : {})
+        ...(streamSafetyReport ? { streamSafetyReport } : {}),
+        ...(httpClassStatus !== undefined ? { httpStatus: httpClassStatus } : {})
       });
     }
 
