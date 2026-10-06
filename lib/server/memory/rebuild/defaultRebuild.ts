@@ -1,10 +1,8 @@
-import { resolveRequestAuth } from "../../auth/defaultAuth";
 import { prisma } from "../../prisma";
 import { kickDefaultMemoryCoordinator } from "../coordinator/defaultCoordinator";
 import { probeCurrentMemoryEmbeddingPin } from "../embedding/handler";
 import { MEMORY_ITEM_EMBEDDING_VERSIONS } from "../embedding/contract";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
-import type { MemoryRebuildHandlerDeps } from "./handlers";
 import { createPrismaMemoryRebuildRepository } from "./repository";
 import { createMemoryRebuildService } from "./service";
 
@@ -20,8 +18,3 @@ export const defaultMemoryRebuildService = createMemoryRebuildService({
   ),
   repository
 });
-
-export const defaultMemoryRebuildHandlerDeps: MemoryRebuildHandlerDeps = {
-  resolveAuth: resolveRequestAuth,
-  service: defaultMemoryRebuildService
-};

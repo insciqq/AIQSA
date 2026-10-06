@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { maintenanceFailureCode } from "./maintenance-observability";
 import { serializeEvent } from "../lib/server/observability/runtime.cjs";
 
-const fixture = vi.hoisted(() => ({ disconnect: vi.fn(), backfill: vi.fn(), cutover: vi.fn(), count: vi.fn() }));
+const fixture = vi.hoisted(() => ({ disconnect: vi.fn(), backfill: vi.fn(), count: vi.fn() }));
 vi.mock("./worker-bootstrap.cjs", () => ({}));
 vi.mock("../lib/server/prisma", () => ({ prisma: {
   $disconnect: fixture.disconnect,
@@ -18,9 +18,6 @@ vi.mock("../lib/server/knowledge/searchProjection", () => ({ resetKnowledgeSearc
 vi.mock("../lib/server/knowledge/sourcePersistence", () => ({
   backfillV1KnowledgeSources: fixture.backfill, materializeKnowledgeBackfillSnapshots: vi.fn(), reconcileKnowledgeSourcePersistence: vi.fn()
 }));
-vi.mock("../lib/server/memory/learning/identity/cutover", () => ({
-  createPrismaMemoryIdentityCutoverRepository: () => ({ assertActivationReady: fixture.cutover })
-}));
 
 const originalArgv = process.argv;
 const originalExit = process.exitCode;
@@ -32,7 +29,6 @@ beforeEach(() => {
   fixture.disconnect.mockResolvedValue(undefined);
   fixture.count.mockResolvedValue(1);
   fixture.backfill.mockResolvedValue({ processedDocuments: 0, remainingDocuments: 1, skippedProfilelessCandidates: 0 });
-  fixture.cutover.mockRejectedValue(new Error("memory_identity_activation_not_ready"));
   for (const key of ["ANTHROPIC_API_KEY", "CUSTOM_OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
     "OPENAI_API_KEY", "OPENROUTER_API_KEY", "_DEV_CUSTOM_OPENAI_API_KEY", "AIQSA_RESTORE_RECONCILIATION", "AIQSA_RESTORE_NETWORK_ISOLATED"]) vi.stubEnv(key, "");
   vi.spyOn(process.stdout, "write").mockImplementation(line => { lines.push(String(line)); return true; });
@@ -73,16 +69,8 @@ describe("maintenance guard diagnostics", () => {
       ? "knowledge_source_backfill_arguments_invalid" : "knowledge_source_backfill_stalled" });
   });
 
-  it.each(["arguments", "preflight"])("reports identity cutover %s failure", async kind => {
-    if (kind === "preflight") process.argv.push("--operation=preflight", "--user-id=synthetic-user");
-    await import("./memory-identity-cutover");
-    await vi.waitFor(() => expect(fixture.disconnect).toHaveBeenCalledOnce());
-    expect(JSON.parse(lines.at(-1)!)).toMatchObject({ code: kind === "arguments"
-      ? "memory_identity_cutover_arguments_invalid" : "memory_identity_activation_not_ready" });
-  });
-
   it("rejects arbitrary exception text and getters while serializing all reviewed guard codes", () => {
-    const fallback = "memory_identity_cutover_failed";
+    const fallback = "memory_restore_reconciliation_failed";
     const getter = vi.fn(() => { throw new Error("PRIVATE_GETTER"); });
     const error = Object.defineProperty(new Error(), "message", { get: getter });
     expect(maintenanceFailureCode(error, fallback)).toBe(fallback);

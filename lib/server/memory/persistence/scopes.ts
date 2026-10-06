@@ -140,18 +140,6 @@ export async function ensureGlobalMemoryScope(
   return activeScope(created);
 }
 
-export async function ensureActiveMemoryScope(
-  tx: MemoryTransaction,
-  settings: LockedMemorySettings,
-  selection: MemoryScopeSelection
-): Promise<ActiveMemoryScope> {
-  if (selection.type === "GLOBAL_USER") {
-    return ensureGlobalMemoryScope(tx, settings);
-  }
-  const target = await requireAvailableTarget(tx, settings.userId, selection, false);
-  return ensureActiveTargetMemoryScope(tx, settings, selection, target);
-}
-
 async function ensureActiveTargetMemoryScope(
   tx: MemoryTransaction,
   settings: LockedMemorySettings,

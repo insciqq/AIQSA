@@ -36,10 +36,7 @@ import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/reposit
 import { createPrismaMemoryMaintenanceHandler } from "../maintenance/handler";
 import { reconcileMemoryMaintenanceWork } from "../maintenance/reconcile";
 import { MEMORY_MAINTENANCE_VERSIONS } from "../maintenance/policy";
-import {
-  createMemorySynthesizeJobDispatcher,
-  reconcileRetiredMemorySynthesis
-} from "../maintenance/retiredSynthesis";
+import { reconcileRetiredMemorySynthesis } from "../maintenance/retiredSynthesis";
 import {
   reconcileMemoryHistoryBackfills,
   resolveMemoryHistoryBackfillWindow
@@ -157,10 +154,9 @@ const defaultMemoryRebuildHandler = createPrismaMemoryRebuildHandler(prisma);
 const defaultMemoryReclassificationHandler =
   createPrismaMemoryReclassificationHandler(prisma);
 const defaultMemoryRelationHandler = createPrismaMemoryRelationHandler(prisma);
-// Maintenance is the only SYNTHESIZE_MEMORIES pipeline; retired Dream jobs close.
-const defaultMemorySynthesizeHandler = createMemorySynthesizeJobDispatcher(
-  createPrismaMemoryMaintenanceHandler(prisma)
-);
+// Maintenance is the only SYNTHESIZE_MEMORIES pipeline; its preflight cancels
+// a retired Dream job.
+const defaultMemorySynthesizeHandler = createPrismaMemoryMaintenanceHandler(prisma);
 
 function getDefaultMemoryCoordinatorRuntime(): Readonly<{
   policy: MemoryCoordinatorPolicy;

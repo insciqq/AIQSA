@@ -1,10 +1,11 @@
-export const DECISION_FEATURES = ["memoryRelevance", "memoryControlScreen", "knowledgeRelevance", "skillSuggestions", "skillCatalogRelevance"] as const;
+export const DECISION_FEATURES = ["memoryControlScreen", "knowledgeRelevance", "skillSuggestions", "skillCatalogRelevance"] as const;
 export type DecisionFeature = typeof DECISION_FEATURES[number];
 export type DecisionFeatureOverrides = Partial<Record<DecisionFeature, boolean>>;
 
-/** Retired features: MCP tool discovery became local search. Stored or
- * submitted overrides for them are dropped, never a reason to reject the rest. */
-const RETIRED_DECISION_FEATURES: ReadonlySet<string> = new Set(["toolDiscovery"]);
+/** Retired features: MCP tool discovery became local search, and recalled
+ * Memory history is no longer screened per passage. Stored or submitted
+ * overrides for them are dropped, never a reason to reject the rest. */
+const RETIRED_DECISION_FEATURES: ReadonlySet<string> = new Set(["memoryRelevance", "toolDiscovery"]);
 
 export function decodeDecisionFeatureOverrides(value: unknown): DecisionFeatureOverrides | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;

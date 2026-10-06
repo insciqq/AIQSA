@@ -1,7 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { logEvent } from "../../observability";
-import { MemoryCoordinatorError } from "../coordinator/errors";
-import type { MemoryJobDescriptor, MemoryJobHandler } from "../coordinator/types";
 import { enqueueMemoryDeletion } from "../persistence/deletion";
 import { MemoryPersistenceError } from "../persistence/errors";
 import {
@@ -11,16 +9,15 @@ import {
   type MemoryTransaction
 } from "../persistence/transaction";
 import { memoryPurgeTargetType } from "../purge/contract";
-import { MEMORY_MAINTENANCE_PIPELINE_VERSION } from "./policy";
 
 // Dream synthesis is retired. Background maintenance is now the only
 // SYNTHESIZE_MEMORIES pipeline; the job kind and the MEMORY_SYNTHESIZE role
-// are shared with it and stay. Every derivative synthesis wrote (patterns and
+// are shared with it and stay, and its handler cancels any other pipeline's
+// job at preflight. Every derivative synthesis wrote (patterns and
 // combinations, both PATTERN modality) is forgotten through the ordinary
-// FORGET_PURGE lifecycle; its tables remain retired shapes.
+// FORGET_PURGE lifecycle.
 
 /** Content-free codes; all are registered in observability/failureCodes.json. */
-export const MEMORY_SYNTHESIS_RETIRED_CODE = "memory_synthesis_retired";
 const MEMORY_SYNTHESIS_RETIRED_FORGOTTEN_CODE = "memory_synthesis_retired_forgotten";
 const MEMORY_SYNTHESIS_RETIRED_PINNED_CODE = "memory_synthesis_retired_pinned";
 const MEMORY_SYNTHESIS_RETIRED_REASON_CODE = "synthesis_retired";
@@ -31,30 +28,9 @@ const MEMORY_RETIRED_SYNTHESIS_MAX_OWNERS = 24;
 const MEMORY_RETIRED_SYNTHESIS_MAX_FACTS = 64;
 
 export type MemoryRetiredSynthesisResult = Readonly<{
-  closedJobs: number;
   forgottenFacts: number;
   pinnedFacts: number;
-  scrubbedExecutions: number;
 }>;
-
-/** Every SYNTHESIZE_MEMORIES job outside the maintenance pipeline belongs to
- * retired Dream synthesis. It closes without content, before any provider
- * work; the coordinator claims queued jobs before this reconcile step runs. */
-export function createMemorySynthesizeJobDispatcher(maintenance: MemoryJobHandler): MemoryJobHandler {
-  if (maintenance.kind !== "SYNTHESIZE_MEMORIES") throw new Error("memory_maintenance_handler_invalid");
-  const isMaintenance = (job: MemoryJobDescriptor) => job.pipelineVersion === MEMORY_MAINTENANCE_PIPELINE_VERSION;
-  return Object.freeze({
-    kind: "SYNTHESIZE_MEMORIES" as const,
-    async preflight(job) {
-      if (isMaintenance(job)) return maintenance.preflight(job);
-      return { status: "CANCELLED" as const, errorCode: MEMORY_SYNTHESIS_RETIRED_CODE };
-    },
-    async execute(job, context) {
-      if (!isMaintenance(job)) throw new MemoryCoordinatorError(MEMORY_SYNTHESIS_RETIRED_CODE, false);
-      return maintenance.execute(job, context);
-    }
-  });
-}
 
 /** A synthesized version that still holds content. EXPLICIT patterns are
  * impossible (synthesis shape CHECK); the filter keeps the selector exact. */
@@ -66,37 +42,6 @@ function retiredPatternVersionSql(): Prisma.Sql {
       AND version."sourceMode" = 'AUTOMATIC'::"MemoryFactSourceMode"
       AND version."contentPurgedAt" IS NULL
   `;
-}
-
-async function closeRetiredJobs(client: PrismaClient, now: Date): Promise<number> {
-  return client.$executeRaw(Prisma.sql`
-    UPDATE "MemoryJob" AS job
-    SET "completedAt" = ${now}, "errorCode" = ${MEMORY_SYNTHESIS_RETIRED_CODE}, "errorMessage" = NULL,
-      "leaseExpiresAt" = NULL, "leaseToken" = NULL, "nextAttemptAt" = NULL,
-      "state" = 'CANCELLED'::"MemoryJobState", "updatedAt" = ${now}
-    WHERE job."kind" = 'SYNTHESIZE_MEMORIES'::"MemoryJobKind"
-      AND job."pipelineVersion" <> ${MEMORY_MAINTENANCE_PIPELINE_VERSION}
-      AND job."state" IN ('QUEUED'::"MemoryJobState", 'RETRYABLE_FAILED'::"MemoryJobState",
-        'WAITING_FOR_CONFIGURATION'::"MemoryJobState", 'WAITING_FOR_EGRESS_CONSENT'::"MemoryJobState")
-      AND EXISTS (SELECT 1 FROM "User" AS owner_user
-        WHERE owner_user."id" = job."userId" AND owner_user."status" = 'active'::"UserStatus")
-  `);
-}
-
-/** Pending staged output keeps content until applied. Its guard only lets
- * output change together with `appliedAt`, so both move in one statement. A
- * job still held under a live lease (a previous-release worker during Compose
- * replacement) is left to its writer and scrubbed by a later pass. */
-async function scrubRetiredExecutions(client: PrismaClient, now: Date): Promise<number> {
-  return client.$executeRaw(Prisma.sql`
-    UPDATE "MemorySynthesisExecution" AS execution
-    SET "acceptedOutput" = NULL, "sourceBindings" = NULL,
-      "appliedAt" = GREATEST(execution."createdAt", ${now})
-    WHERE execution."appliedAt" IS NULL
-      AND NOT EXISTS (SELECT 1 FROM "MemoryJob" AS job
-        WHERE job."userId" = execution."userId" AND job."id" = execution."memoryJobId"
-          AND job."state" = 'CLAIMED'::"MemoryJobState" AND job."leaseExpiresAt" > ${now})
-  `);
 }
 
 /** Only active owners: `lockMemorySettings` rejects any other owner, which
@@ -197,9 +142,8 @@ function ownerUnavailable(error: unknown): boolean {
   return error instanceof MemoryPersistenceError && error.code === "memory_owner_unavailable";
 }
 
-/** Idempotent coordinator step, repeated every pass while rows remain. It also
- * catches records a previous-release worker writes during Compose replacement.
- * Each part runs even when another fails; the first failure is rethrown. */
+/** Idempotent coordinator step, repeated every pass while rows remain. Each
+ * owner runs even when another fails; the first failure is rethrown. */
 export async function reconcileRetiredMemorySynthesis(
   client: PrismaClient,
   now: Date
@@ -214,8 +158,6 @@ export async function reconcileRetiredMemorySynthesis(
       return fallback;
     }
   };
-  const closedJobs = await attempt(() => closeRetiredJobs(client, now), 0);
-  const scrubbedExecutions = await attempt(() => scrubRetiredExecutions(client, now), 0);
   let forgottenFacts = 0;
   let pinnedFacts = 0;
   for (const userId of await attempt(() => retiredOwners(client), [])) {
@@ -228,10 +170,6 @@ export async function reconcileRetiredMemorySynthesis(
     forgottenFacts += result.forgottenFacts;
     pinnedFacts += result.pinnedFacts;
   }
-  if (closedJobs > 0) {
-    logEvent("runtime_lifecycle", { subsystem: "memory", stage: "reconcile", outcome: "cancelled",
-      code: MEMORY_SYNTHESIS_RETIRED_CODE, count: closedJobs });
-  }
   if (forgottenFacts > 0) {
     logEvent("runtime_lifecycle", { subsystem: "memory", stage: "cleanup", outcome: "completed",
       code: MEMORY_SYNTHESIS_RETIRED_FORGOTTEN_CODE, count: forgottenFacts });
@@ -241,5 +179,5 @@ export async function reconcileRetiredMemorySynthesis(
       code: MEMORY_SYNTHESIS_RETIRED_PINNED_CODE, count: pinnedFacts });
   }
   if (failures.length > 0) throw failures[0];
-  return Object.freeze({ closedJobs, forgottenFacts, pinnedFacts, scrubbedExecutions });
+  return Object.freeze({ forgottenFacts, pinnedFacts });
 }

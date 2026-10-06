@@ -10,8 +10,6 @@ import {
   readPrismaMemoryDeletionStatus
 } from "./repository";
 import { createMemoryLifecycleService } from "./service";
-import { resolveRequestAuth } from "../../auth/defaultAuth";
-import type { MemoryLifecycleHandlerDeps } from "./handlers";
 
 function configuredMutationRepository(): MemoryLifecycleMutationRepository {
   const configured = loadMemorySuppressionKeyring();
@@ -49,8 +47,3 @@ export const defaultMemoryLifecycleService = createMemoryLifecycleService({
   mutationRepository,
   readRepository: createPrismaExplicitMemoryRepository(prisma)
 });
-
-export const defaultMemoryLifecycleHandlerDeps: MemoryLifecycleHandlerDeps = {
-  resolveAuth: resolveRequestAuth,
-  service: defaultMemoryLifecycleService
-};

@@ -72,8 +72,6 @@ import {
 import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
 import { createDecisionModelRoleResolver } from "../../providerRuntime/decisionModelRole";
 import { createAcceptedDecisionRuntime } from "../../providerRuntime/decisionRuntime";
-import { createMemoryHistoryRelevanceService, type MemoryHistoryRelevanceInput } from "./historyRelevanceRuntime";
-import type { MemoryHistoryRelevanceResult } from "./historyRelevancePolicy";
 import {
   createMemoryControlScreenService,
   type MemoryControlScreenInput
@@ -85,7 +83,6 @@ export const MEMORY_REMOTE_RERANK_PIPELINE_VERSION =
   "memory-multilingual-relevance-v31";
 export const MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION =
   "memory-dedicated-rerank-route-v1";
-export const MEMORY_QUERY_EMBEDDING_MAX_ATTEMPTS = 1;
 // Remote embedding engines commonly reserve a 30-second request window. The
 // enclosing optional-role signal remains authoritative and clamps this window
 // to the installation's remaining admission budget, so this cannot extend the
@@ -289,7 +286,6 @@ type QueryEmbeddingBaseInput = Readonly<{
 
 export type MemoryRunUtilityService = Readonly<{
   controlScreen?(input: MemoryControlScreenInput): Promise<MemoryControlScreenResult>;
-  historyRelevance?(input: MemoryHistoryRelevanceInput): Promise<MemoryHistoryRelevanceResult>;
   embedQuery(input: QueryEmbeddingBaseInput & Readonly<{
     profile: MemoryVectorProfile;
     purpose?: "ACTION_TARGET" | "RETRIEVAL";
@@ -2021,8 +2017,5 @@ export function createPrismaMemoryRunUtilityService(
   return Object.freeze({ ...utilities, controlScreen: createMemoryControlScreenService({
     execution, runtime: decisionRuntime,
     resolveRole: () => decisionRoleResolver.resolve("memoryControlScreen")
-  }), historyRelevance: createMemoryHistoryRelevanceService({
-    execution, runtime: decisionRuntime,
-    resolveRole: () => decisionRoleResolver.resolve("memoryRelevance")
   }) });
 }
