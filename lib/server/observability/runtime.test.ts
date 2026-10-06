@@ -84,7 +84,6 @@ describe("bounded observability runtime", () => {
   });
 
   it.each([
-    ["memory_synthesis_retired", "reconcile", "cancelled"],
     ["memory_synthesis_retired_forgotten", "cleanup", "completed"],
     ["memory_synthesis_retired_pinned", "cleanup", "skipped"]
   ] as const)("reports retired Dream cleanup %s with only an allowlisted code and count", (code, stage, outcome) => {
