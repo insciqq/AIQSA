@@ -31,6 +31,7 @@ export type MemorySettingsPersistenceSnapshot = Readonly<{
   decayEnabled: boolean;
   decayPolicyVersion: string | null;
   embeddingProviderModelId: string | null;
+  embeddingSelectionResolved: boolean;
   learnAutomatically: boolean;
   memoryConsentRevision: number;
   memoryGeneration: number;
@@ -51,6 +52,7 @@ const settingsSelect = {
   decayEnabled: true,
   decayPolicyVersion: true,
   embeddingProviderModelId: true,
+  embeddingSelectionResolved: true,
   learnAutomatically: true,
   memoryConsentRevision: true,
   memoryGeneration: true,
@@ -346,6 +348,10 @@ export function createPrismaMemorySettingsRepository(
         }
         if (owns(patch, "embeddingDeploymentId")) {
           data.embeddingProviderModelId = patch.embeddingDeploymentId;
+          // Setting or clearing the selection, even to its current value,
+          // decides it for good: the Knowledge-default bootstrap never runs
+          // again for this owner.
+          data.embeddingSelectionResolved = true;
         }
         if (owns(patch, "learnAutomatically")) data.learnAutomatically = patch.learnAutomatically;
         if (owns(patch, "referenceChatHistory")) {

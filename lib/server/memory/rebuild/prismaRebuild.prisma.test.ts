@@ -1538,7 +1538,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
     }
   });
 
-  it("embedding setup adopts once under races, admits one rebuild, and preserves clears, pauses and entitlement", async () => {
+  it("embedding setup adopts once under races, admits one rebuild, and preserves resolved selections, pauses and entitlement", async () => {
     const userId = await createOwner("embedding-setup");
     const deniedId = await createOwner("embedding-denied");
     const pausedId = await createOwner("embedding-paused");
@@ -1573,6 +1573,7 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       expect(await setup.ensure(userId)).toBe("pending");
       const selected = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
       expect(selected.embeddingProviderModelId).toBe(provider.modelId);
+      expect(selected.embeddingSelectionResolved).toBe(true);
       expect(selected.settingsRevision).toBe(1);
       expect(await prisma.memoryJob.count({ where: { userId, kind: "REBUILD_INDEX" } })).toBe(1);
       expect(await prisma.memoryIndexGeneration.findMany({ where: { userId }, select: { state: true, indexMode: true } }))
@@ -1580,16 +1581,47 @@ describe("Prisma Memory shadow rebuild and history clear", () => {
       expect(await setup.ensure(deniedId)).toBe("unavailable");
       expect(await setup.ensure(pausedId)).toBe("disabled");
       expect(await prisma.memoryJob.count({ where: { userId: { in: [deniedId, pausedId] } } })).toBe(0);
+      // Revisions from other preferences, like the 2026-09-11 default-on bump,
+      // leave the embedding selection open.
+      const discoveredBefore = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: discoveredId } });
+      await createPrismaMemorySettingsRepository(prisma).patch(discoveredId, {
+        decayEnabled: false, expectedMemoryRevision: discoveredBefore.memoryRevision,
+        expectedSettingsRevision: discoveredBefore.settingsRevision
+      });
+      expect(await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: discoveredId } }))
+        .toMatchObject({ embeddingProviderModelId: null, embeddingSelectionResolved: false, settingsRevision: 1 });
       await prisma.accessGrant.create({ data: { userId: discoveredId, providerModelId: provider.modelId, enabled: true } });
       await setup.reconcile();
-      expect((await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: discoveredId } })).embeddingProviderModelId).toBe(provider.modelId);
+      expect(await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: discoveredId } }))
+        .toMatchObject({ embeddingProviderModelId: provider.modelId, embeddingSelectionResolved: true, settingsRevision: 2 });
       expect(await prisma.memoryJob.count({ where: { userId: discoveredId, kind: "REBUILD_INDEX" } })).toBe(1);
+      // A clear outside settings patches (the account-deletion fence) keeps
+      // the selection resolved, so the default is never adopted again.
+      const clearedAt = new Date();
+      await prisma.memoryJob.updateMany({
+        data: { completedAt: clearedAt, errorCode: "memory_account_deletion", errorMessage: null, leaseExpiresAt: null,
+          leaseToken: null, nextAttemptAt: null, state: "CANCELLED", updatedAt: clearedAt },
+        where: { kind: "REBUILD_INDEX", state: { in: ["QUEUED", "RETRYABLE_FAILED", "WAITING_FOR_CONFIGURATION",
+          "WAITING_FOR_EGRESS_CONSENT"] }, userId: discoveredId }
+      });
+      await prisma.memoryIndexGeneration.updateMany({
+        data: { state: "CANCELLED" }, where: { state: { in: ["BUILDING", "CATCHING_UP", "READY"] }, userId: discoveredId }
+      });
+      await prisma.userMemorySettings.update({ data: { embeddingProviderModelId: null }, where: { userId: discoveredId } });
+      await setup.reconcile();
+      expect(await setup.ensure(discoveredId)).toBe("preserved");
+      expect(await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: discoveredId } }))
+        .toMatchObject({ embeddingProviderModelId: null, embeddingSelectionResolved: true });
+      expect(await prisma.memoryJob.count({
+        where: { kind: "REBUILD_INDEX", state: { not: "CANCELLED" }, userId: discoveredId }
+      })).toBe(0);
       await createPrismaMemorySettingsRepository(prisma).patch(userId, {
         embeddingDeploymentId: null, expectedMemoryRevision: selected.memoryRevision,
         expectedSettingsRevision: selected.settingsRevision
       });
       expect(await setup.ensure(userId)).toBe("preserved");
-      expect((await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } })).embeddingProviderModelId).toBeNull();
+      expect(await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
+        .toMatchObject({ embeddingProviderModelId: null, embeddingSelectionResolved: true });
       expect(await prisma.memoryIndexGeneration.count({ where: { userId, state: "CANCELLED", indexMode: "HYBRID" } })).toBe(1);
     } finally {
       await prisma.knowledgeIndexProfile.update({ where: { id: "installation" }, data: { activeRevisionId: profile.activeRevisionId } });

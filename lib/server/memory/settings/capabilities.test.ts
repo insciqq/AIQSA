@@ -33,6 +33,7 @@ function settings(
     decayEnabled: false,
     decayPolicyVersion: null,
     embeddingProviderModelId: "embedding-model",
+    embeddingSelectionResolved: true,
     learnAutomatically: true,
     memoryConsentRevision: 1,
     memoryGeneration: 1,
