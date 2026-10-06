@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
 import { expect, test, type Page } from "@playwright/test";
 import { decodeAdminUsageAnalyticsResponse } from "../../lib/contracts/adminUsageAnalytics";
 import { textMessageContent } from "../../lib/domain/content";
@@ -50,7 +50,7 @@ async function seed(): Promise<void> {
     const chatId = randomUUID();
     await prisma.chat.create({ data: { id: chatId, title: "Synthetic usage", userId: person.id } });
     let parent: string | null = null;
-    const usage: Parameters<typeof prisma.usageEvent.createMany>[0]["data"] = [];
+    const usage: Prisma.UsageEventCreateManyInput[] = [];
     for (let day = 59; day >= 0; day -= 1) {
       const runs = Math.max(0, Math.round(person.intensity * (0.4 + next()) * (day < 30 ? 1.25 : 1) - (day % 7 >= 5 ? 3 : 0)));
       for (let index = 0; index < runs; index += 1) {
