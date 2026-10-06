@@ -5072,6 +5072,7 @@ model UsageEvent {
   @@unique([knowledgeIndexGenerationId, knowledgeDocumentVersionId, knowledgeBatchIndex])
   @@index([chatId])
   @@index([modelRunId])
+  @@index([createdAt])
   @@index([userId, createdAt])
   @@index([provider, modelId])
   @@index([projectId, createdAt])
