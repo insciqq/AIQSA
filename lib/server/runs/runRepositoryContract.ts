@@ -986,6 +986,25 @@ export type RunRepository = {
     userId: string;
   }>): Promise<ScheduledTaskCallCreation>;
   /**
+   * Saves the Skill a run's `save_skill` call asked for through the shared
+   * Skill revision write core (`commitSkillSaveInTransaction`) and, when it
+   * saved, settles the call with `result(card, version)` and appends that
+   * result's card in the same transaction. A recovered call therefore finds
+   * it settled or finds nothing saved; the call must be running and the run
+   * active, personal and unscheduled. Refusals write nothing and leave the
+   * call for the caller to settle.
+   */
+  saveSkillForCall?(input: Readonly<{
+    /** The persisted `ModelRunToolCall` id: the save's operation key. */
+    callId: string;
+    runId: string;
+    userId: string;
+    target: import("../skills/skillSave").SkillSaveTarget;
+    bundle: import("../skills/bundle").SkillBundle;
+    changeNote: string | null;
+    result(card: import("../../contracts/skillSaves").SkillSaveCard, version: number): import("../tools/types").ToolExecutionResult;
+  }>): Promise<import("../tools/skillSave").SkillSaveCommitOutcome>;
+  /**
    * `fetch_url` provenance: the source and citation URLs the run's own Search
    * persisted so far (its Search executions and its hosted Search output
    * events), unnormalized, bounded. Another run's Search never counts.

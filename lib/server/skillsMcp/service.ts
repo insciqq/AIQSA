@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { SkillStoreDetail, SkillStoreDownload, SkillStoreEntry, SkillStoreMutationResult } from "../../contracts/skillsMcp";
 import { SKILL_FILE_MAX_BYTES } from "../../contracts/skills";
@@ -6,6 +6,7 @@ import { skillAlias } from "../../domain/skillBundlePaths";
 import { writeZip } from "../artifacts/zip";
 import { createSkillBundle, renderSkillMarkdown, type SkillBundle } from "../skills/bundle";
 import { deleteOwnedSkillInTransaction, lockSkillRevisionWrites } from "../skills/prismaRepository";
+import { commitStagedSkillRevision, stageSkillRevision } from "../skills/revisionWriteCore";
 import type { StorageAdapter } from "../uploads/storage";
 
 export type SkillsStoreAuthority = {
@@ -135,25 +136,11 @@ export function createSkillsStoreService(db: PrismaClient, storage: StorageAdapt
         }
       }
       // Creation is always a new personal definition; a name match grants no update authority.
-      const definition = existing ?? await tx.skillDefinition.create({ data: { ownerUserId: authority.userId } });
-      const latest = await tx.skillRevision.aggregate({ where: { skillId: definition.id }, _max: { revisionNumber: true } });
-      const revision = await tx.skillRevision.create({ data: {
-        skillId: definition.id, authorUserId: authority.userId, revisionNumber: (latest._max.revisionNumber ?? 0) + 1,
-        schemaVersion: 2, name: bundle.name, description: bundle.description, instructions: bundle.instructions,
-        frontmatterJson: bundle.frontmatterJson ?? Prisma.DbNull, bundleDigest: bundle.bundleDigest,
-        fileCount: bundle.fileCount, bundleByteSize: bundle.bundleByteSize, hasExecutables: bundle.hasExecutables, bundleReady: false
-      } });
-      const files = bundle.files.map((file) => ({ revisionId: revision.id, skillId: definition.id,
-        path: file.path, byteSize: file.byteSize, checksum: file.checksum, kind: file.kind,
-        executable: file.executable, textContent: file.textContent,
-        storageKey: file.kind === "binary" ? `skills/${definition.id}/${revision.id}/${randomUUID()}` : null }));
-      if (files.length) await tx.skillRevisionFile.createMany({ data: files });
-      const binaries = files.filter((file): file is typeof file & { storageKey: string } => file.storageKey !== null);
-      if (binaries.length) await tx.attachmentDeletionJob.createMany({ data: binaries.map((file) => ({ storageKey: file.storageKey })) });
+      const revision = await stageSkillRevision(tx, { ownerUserId: authority.userId, existing, content: bundle });
       return tx.skillStoreOperation.create({ data: {
         ownerUserId: authority.userId, clientId: authority.clientId, operationKey: input.operationKey, requestDigest,
-        action: input.action, skillId: definition.id, revisionId: revision.id,
-        expectedVersion: definition.version, expectedCurrentRevisionId: definition.currentRevisionId
+        action: input.action, skillId: revision.skillId, revisionId: revision.revisionId,
+        expectedVersion: revision.expectedVersion, expectedCurrentRevisionId: revision.expectedCurrentRevisionId
       } });
     });
     if (staged.status === "COMPLETED") return staged.resultJson as SkillStoreMutationResult;
@@ -170,18 +157,13 @@ export function createSkillsStoreService(db: PrismaClient, storage: StorageAdapt
       await lockSkillRevisionWrites(tx, authority.userId);
       const operation = await tx.skillStoreOperation.findUniqueOrThrow({ where });
       if (operation.status === "COMPLETED") return operation.resultJson as SkillStoreMutationResult;
-      const rows = await tx.$queryRaw<Array<{ version: number; currentRevisionId: string | null; deletedAt: Date | null; archivedAt: Date | null }>>`
-        SELECT "version", "currentRevisionId", "deletedAt", "archivedAt" FROM "SkillDefinition"
-        WHERE "id" = ${staged.skillId!} AND "ownerUserId" = ${authority.userId} FOR UPDATE`;
-      const current = rows[0];
-      if (!current || current.deletedAt || current.archivedAt || current.version !== staged.expectedVersion ||
-        current.currentRevisionId !== staged.expectedCurrentRevisionId) throw new SkillsStoreError("skill_version_conflict");
-      await tx.skillRevision.update({ where: { id: staged.revisionId! }, data: { bundleReady: true } });
-      const definition = await tx.skillDefinition.update({ where: { id: staged.skillId! }, data: {
-        currentRevisionId: staged.revisionId, ...(input.action === "update" ? { version: { increment: 1 } } : {})
+      const definition = await commitStagedSkillRevision(tx, { ownerUserId: authority.userId, update: input.action === "update", staged: {
+        skillId: staged.skillId!, revisionId: staged.revisionId!, expectedVersion: staged.expectedVersion!,
+        expectedCurrentRevisionId: staged.expectedCurrentRevisionId
       } });
+      if (!definition) throw new SkillsStoreError("skill_version_conflict");
       const result: SkillStoreMutationResult = {
-        outcome: input.action === "create" ? "created" : "updated", skillId: definition.id, version: definition.version, bundleDigest: bundle.bundleDigest, libraryPath: "/?library=skills"
+        outcome: input.action === "create" ? "created" : "updated", skillId: staged.skillId!, version: definition.version, bundleDigest: bundle.bundleDigest, libraryPath: "/?library=skills"
       };
       await tx.skillStoreOperation.update({ where, data: { status: "COMPLETED", resultJson: result } });
       return result;

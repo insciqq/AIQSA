@@ -345,6 +345,11 @@ export function describeToolCallV2(
       if (phase === "cancelled") return `Skill file reading stopped${name ? ` · ${name}` : ""}`;
       return `${running ? "Reading" : "Read"} ${path ?? "Skill file"}${name ? ` · ${name}` : ""}`;
     }
+    if (call.toolName === "save_skill") {
+      if (phase === "failed") return "Skill was not saved";
+      if (phase === "cancelled") return "Saving Skill stopped";
+      return running ? "Saving Skill" : "Saved Skill";
+    }
     const label = name ? `skill “${name}”` : "Skill";
     if (phase === "failed") return `Could not load ${label}`;
     if (phase === "cancelled") return `Loading ${label} stopped`;

@@ -6,6 +6,7 @@ import { READ_ARTIFACT_TOOL_NAME } from "../tools/artifact";
 import { FETCH_URL_TOOL_NAME } from "../tools/fetchUrlPlan";
 import { CREATE_SCHEDULED_TASK_TOOL_NAME } from "../tools/scheduledTaskCreation";
 import { MANAGE_SCHEDULED_TASK_TOOL_NAME } from "../tools/scheduledTaskManagement";
+import { SAVE_SKILL_TOOL_NAME } from "../tools/skillSave";
 import type { RunTool } from "../tools/types";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 
@@ -14,12 +15,12 @@ const READ_ONLY_CAPABILITIES = new Set<RunTool["capability"]>(["knowledge", "ses
 /** A page read (`fetch_url`) is a GET of a page the user or Search supplied; it changes no AIQSA state. */
 const READ_ONLY_NAMES = new Set([ANALYZE_IMAGE_TOOL_NAME, FETCH_URL_TOOL_NAME, MCP_FIND_TOOLS_NAME, MEMORY_SEARCH_TOOL_NAME,
   READ_ARTIFACT_TOOL_NAME, VIEW_WORKSPACE_IMAGE]);
-/** Server-owned (`session`) tools that write: a created or managed scheduled task. */
-const WRITING_NAMES = new Set([CREATE_SCHEDULED_TASK_TOOL_NAME, MANAGE_SCHEDULED_TASK_TOOL_NAME]);
+/** Server-owned (`session`) tools that write: a created or managed scheduled task, a saved Skill. */
+const WRITING_NAMES = new Set([CREATE_SCHEDULED_TASK_TOOL_NAME, MANAGE_SCHEDULED_TASK_TOOL_NAME, SAVE_SKILL_TOOL_NAME]);
 
 /**
  * Whether a call of this run's tool is proven read-only. Workspace commands,
- * artifact and image writes, checkpoints, scheduled task tools and MCP
+ * artifact and image writes, checkpoints, scheduled task tools, Skill saves and MCP
  * tools without the server's `readOnlyHint` may change state and are never
  * treated as read-only.
  */

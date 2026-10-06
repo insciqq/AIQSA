@@ -177,6 +177,8 @@ import {
   isScheduledTaskCreateCall,
   scheduledTaskToolsForRequest
 } from "../tools/scheduledTaskCreation";
+import { executeSaveSkill, isSkillSaveCall, runSkillSaveCommitter, skillSaveToolsForRequest } from "../tools/skillSave";
+import { defaultSkillSaveWorkspaceReader } from "../workspace/skillSaveCapture";
 import {
   executeManageScheduledTask,
   isScheduledTaskManageCall,
@@ -317,6 +319,7 @@ export type RunExecutionRepository = Pick<
   | "recordMonitoringVerdict"
   | "createScheduledTaskForCall"
   | "manageScheduledTaskForCall"
+  | "saveSkillForCall"
   | "loadRunFetchUrlCalls"
   | "loadRunSearchSourceUrls"
   | "recordRunUsageEvents"
@@ -2231,6 +2234,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
           ...(normalizedRequest.monitoringVerdictTool ? [monitoringVerdictTool] : []),
           ...scheduledTaskToolsForRequest(normalizedRequest),
           ...scheduledTaskManagementToolsForRequest(normalizedRequest),
+          ...skillSaveToolsForRequest(normalizedRequest),
           ...fetchUrlToolsForRequest(normalizedRequest),
           ...knowledgeTools,
           ...(searchPlanRouter?.tools ?? []),
@@ -2249,10 +2253,11 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
         const isMonitoringCall = (name: string) => isMonitoringVerdictCall(normalizedRequest, name);
         const recordVerdict = input.repository.recordMonitoringVerdict?.bind(input.repository);
         // Only a run admitted with the frozen markers creates or manages
-        // scheduled tasks; the repository fences the run's scheduled origin
-        // and its call again.
+        // scheduled tasks or saves a Skill; the repository fences the run's
+        // scheduled origin and its call again. Each settles with its write.
+        const isSkillSave = (name: string) => isSkillSaveCall(normalizedRequest, name);
         const isScheduledTaskCall = (name: string) => isScheduledTaskCreateCall(normalizedRequest, name) ||
-          isScheduledTaskManageCall(normalizedRequest, name);
+          isScheduledTaskManageCall(normalizedRequest, name) || isSkillSave(name);
         const createScheduledTask = input.repository.createScheduledTaskForCall?.bind(input.repository);
         const manageScheduledTask = input.repository.manageScheduledTaskForCall?.bind(input.repository);
         // The page reader decides provenance from the run's frozen authority,
@@ -2530,7 +2535,10 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
                 // settlement or nothing applied, so running it again never
                 // applies twice. A refusal applied nothing and settles here.
                 const owner = { persistedToolCallId: persisted.id, request: normalizedRequest, runId, userId: input.userId };
-                const result = isScheduledTaskManageCall(normalizedRequest, call.name)
+                const result = isSkillSave(call.name)
+                  ? await executeSaveSkill(call, owner, { reader: defaultSkillSaveWorkspaceReader, signal: context.signal,
+                    commit: runSkillSaveCommitter(input.repository, { callId: persisted.id, runId, userId: input.userId }) })
+                  : isScheduledTaskManageCall(normalizedRequest, call.name)
                   ? await executeManageScheduledTask(call, owner, manageScheduledTask)
                   : await executeCreateScheduledTask(call, owner, createScheduledTask);
                 const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
@@ -3319,7 +3327,7 @@ function createBoundRunExecutionResponse(input: RunExecutionInput): Response {
             for (const call of calls) {
               const route = resolveMcpRunTool(activeMcpSnapshot, call.name);
               const registeredTool = tools.find((tool) => tool.name === call.name);
-              const builtInServer = isVisionCall(call.name) ? "System Vision" : isViewImageCall(call.name) || isCheckpointCall(call.name) ? "Workspace" : isArtifactCall(call.name) ? "Artifacts" : isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : isMonitoringCall(call.name) ? "Monitoring" : isScheduledTaskCall(call.name) ? "Scheduled tasks" : isFetchCall(call.name) ? "Web" : call.name === "find_tools"
+              const builtInServer = isVisionCall(call.name) ? "System Vision" : isViewImageCall(call.name) || isCheckpointCall(call.name) ? "Workspace" : isArtifactCall(call.name) ? "Artifacts" : isImageCall(call.name) ? "Images" : isSessionCall(call.name) ? "Chat context" : isMonitoringCall(call.name) ? "Monitoring" : isSkillSave(call.name) ? "Skills" : isScheduledTaskCall(call.name) ? "Scheduled tasks" : isFetchCall(call.name) ? "Web" : call.name === "find_tools"
                 ? "Auto tools"
                 : isKnowledgeCall(call.name)
                   ? "Knowledge"

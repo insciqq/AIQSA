@@ -178,6 +178,21 @@ export async function appendRunOutputEvents(
       }
       updates.set(key, event);
     }
+    // A Skill save's card is kept once: its settlement appends it and a
+    // replay of the settled call publishes the same save again.
+    if (event.type === "artifact" && event.data.artifactType === "skill_save") {
+      const key = `skill_save:${event.data.payload.saveId}`;
+      if (updates.has(key) || await tx.modelRunEvent.findFirst({ select: { sequence: true }, where: {
+        modelRunId: runId, eventType: "artifact", AND: [
+          { payload: { path: ["artifactType"], equals: "skill_save" } },
+          { payload: { path: ["payload", "saveId"], equals: event.data.payload.saveId } }
+        ]
+      } })) {
+        published.push(event);
+        continue;
+      }
+      updates.set(key, event);
+    }
     if (event.type === "grounding_display") {
       if (lastGrounding && canonicalJson(lastGrounding as ToolLoopJsonValue) ===
         canonicalJson(event.data)) {
@@ -664,6 +679,7 @@ const normalizedRequestKeys = new Set([
   "scheduledTaskManagementTool",
   "searchPlan",
   "sessionStatusTool",
+  "skillSaveTool",
   "toolCallReader",
   "toolHistory",
   "toolObservationVersion",
@@ -1070,6 +1086,7 @@ function decodeProviderDispatchRecoveryRequest(
     (value.scheduledTaskManagementTool !== undefined && (value.scheduledTaskTool === undefined ||
       !isScheduledTaskManagementSettings(value.scheduledTaskManagementTool))) ||
     (value.fetchUrl !== undefined && !isFetchUrlPlan(value.fetchUrl)) ||
+    (value.skillSaveTool !== undefined && (value.skillSaveTool !== true || !value.workspace)) ||
     (value.toolCallReader !== undefined && value.toolCallReader !== true) ||
     (value.toolHistory !== undefined && !decodeToolHistorySnapshot(value.toolHistory)) ||
     (value.toolObservationVersion !== undefined && value.toolObservationVersion !== 0 && value.toolObservationVersion !== 1) ||

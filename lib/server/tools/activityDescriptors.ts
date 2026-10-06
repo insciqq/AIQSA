@@ -103,6 +103,7 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
   if (normalizedRequest.scheduledTaskManagementTool) {
     descriptors.set("manage_scheduled_task", { origin: "session", serverName: "Scheduled tasks", toolName: "manage_scheduled_task" });
   }
+  if (normalizedRequest.skillSaveTool) descriptors.set("save_skill", { origin: "skill", serverName: "Skills", toolName: "save_skill" });
   if (normalizedRequest.fetchUrl) descriptors.set("fetch_url", { origin: "web_fetch", serverName: "Web", toolName: "fetch_url" });
   // The chat form of System Vision; Workspace analysis keeps its existing activity.
   if (normalizedRequest.visionAnalysis && normalizedRequest.workspace === undefined) {
