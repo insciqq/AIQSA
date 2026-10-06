@@ -1,77 +1,39 @@
 import { Prisma } from "@prisma/client";
 import { MEMORY_COORDINATOR_JOB_KINDS } from "./registry";
-import {
-  MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
-  MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE
-} from "../history/contract";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 
 export const MEMORY_RECOVERY_BATCH_SIZE = 8;
 export const MEMORY_RECOVERY_INTERVAL_MS = 60_000;
 export const MEMORY_RECOVERY_DELAYS_MS = Object.freeze([5 * 60_000, 30 * 60_000, 6 * 60 * 60_000]);
 
-/** A history classification of `job` left RUNNING without settlement evidence:
- * no accepted output, provider response or usage receipt. Uses `job` (a
- * current_jobs or "MemoryJob" row) and `execution`. */
-function memoryHistoryUnsettledClassificationSql(): Prisma.Sql {
-  return Prisma.sql`job.kind = 'INDEX_HISTORY'::"MemoryJobKind"
-    AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
-    AND execution."ownerType" = 'JOB' AND execution."logicalRole" = 'MEMORY_HISTORY_CLASSIFY'
-    AND execution.state = 'RUNNING' AND execution."completedAt" IS NULL
-    AND execution."acceptedOutputHash" IS NULL AND execution."providerResponseId" IS NULL
-    AND NOT EXISTS (SELECT 1 FROM "UsageEvent" usage
-      WHERE usage."userId" = execution."userId" AND usage."memoryExecutionBindingId" = execution.id)`;
-}
-
-/** Such a classification left by an attempt that lost its job. The job failed
- * terminally, as an earlier release's recovery guard did with such a call, so
- * no live attempt owns it. Its recovery settles it as an unknown outcome and
- * never dispatches it again. Uses `job` and `execution`. */
-function memoryHistoryOrphanedExecutionSql(): Prisma.Sql {
-  return Prisma.sql`COALESCE((job.state = 'TERMINAL_FAILED'::"MemoryJobState"
-    AND job."errorCode" = 'memory_history_execution_protected'
-    AND ${memoryHistoryUnsettledClassificationSql()}
-  ), FALSE)`;
-}
-
-/** Such an orphan once its job's recovery settled it: an unknown outcome with
- * its unavailable usage receipt. History recovery never dispatches when a job
- * holds bindings, so it cannot buy this call again; automatic history repair
- * still treats the chat as ambiguous. Uses `job` and `execution`. */
-function memoryHistoryRecoveredUncertainExecutionSql(): Prisma.Sql {
+/** A model call that history indexing made before it stopped calling models,
+ * left unsettled by an attempt of an earlier release: RUNNING without any
+ * settlement evidence (accepted output, provider response or usage receipt),
+ * or PENDING and never started. Current indexing never dispatches, so once its
+ * job has settled, released its lease and its first recovery delay passed, no
+ * attempt can own the call; recovery settles it once and never sends it.
+ * Uses "MemoryJob" `job` and `execution`. */
+export function memoryHistoryOrphanedExecutionSql(now: Date): Prisma.Sql {
   return Prisma.sql`COALESCE((job.kind = 'INDEX_HISTORY'::"MemoryJobKind"
-    AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
+    AND job.state IN ('SUCCEEDED', 'TERMINAL_FAILED', 'STALE', 'CANCELLED')
+    AND job."leaseToken" IS NULL
+    AND COALESCE(job."completedAt", job."updatedAt") <=
+      ${new Date(now.getTime() - MEMORY_RECOVERY_DELAYS_MS[0])}
     AND execution."ownerType" = 'JOB' AND execution."logicalRole" = 'MEMORY_HISTORY_CLASSIFY'
-    AND execution.state = 'OUTCOME_UNKNOWN'
-    AND execution."errorCode" = ${MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE}
-    AND execution."acceptedOutputHash" IS NULL
-    AND EXISTS (SELECT 1 FROM "UsageEvent" usage
+    AND execution."completedAt" IS NULL
+    AND execution."acceptedOutputHash" IS NULL AND execution."providerResponseId" IS NULL
+    AND (execution.state = 'RUNNING'
+      OR (execution.state = 'PENDING' AND execution."startedAt" IS NULL))
+    AND NOT EXISTS (SELECT 1 FROM "UsageEvent" usage
       WHERE usage."userId" = execution."userId" AND usage."memoryExecutionBindingId" = execution.id)
-  ), FALSE)`;
-}
-
-/** An unsettled classification of a job that ended before any recovery settled
- * it, once its chat has moved past the job's source. A chat's branch generation
- * and source revision only advance, its leaf moves only with them, and a job is
- * revived only for its exact source: the job is never current again and nothing
- * else will settle the call. A terminal job holds no lease; after its recovery
- * delay, the provider call of an attempt that lost it has long ended. Uses
- * "MemoryJob" `job` and `execution`. */
-export function memoryHistoryObsoleteOrphanSql(now: Date): Prisma.Sql {
-  return Prisma.sql`COALESCE((job.state IN ('TERMINAL_FAILED', 'STALE', 'CANCELLED')
-    AND job."leaseToken" IS NULL AND (${memoryRecoveryDueAtSql()}) <= ${now}
-    AND ${memoryHistoryUnsettledClassificationSql()}
-    AND NOT EXISTS (SELECT 1 FROM "Chat" chat
-      WHERE chat.id = job."chatId" AND chat."userId" = job."userId"
-        AND chat."memoryBranchGeneration" = job."branchGeneration"
-        AND chat."memorySourceRevision" = job."sourceRevision"
-        AND chat."activeLeafMessageId" = job."activeLeafMessageId")
   ), FALSE)`;
 }
 
 /** Only failures with known safe recovery, including pre-dispatch history
  * chunking and the legacy history apply failure repaired by the current writer.
- * Unknown/model-output failures do not grant another paid execution.
- * These predicates use current_jobs job. */
+ * Unknown/model-output failures do not grant another paid execution; a history
+ * job never makes one, so its failures on retired model calls rebuild raw
+ * history locally. These predicates use current_jobs job. */
 export function memoryRecoverableFailureSql(): Prisma.Sql {
   // A terminal command released its place in the owner's sequence. Reviving
   // it after successors ran would reorder user mutations. Its bounded retry
@@ -87,22 +49,11 @@ export function memoryRecoverableFailureSql(): Prisma.Sql {
         'memory_job_commit_database_p2002', 'memory_execution_policy_drift'))
     OR (job.kind = 'INDEX_HISTORY'::"MemoryJobKind" AND job."workStage" = 'lexical_apply'
       AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
-      AND job."errorCode" = 'memory_execution_input_invalid'
-      AND (SELECT COUNT(*) FROM "MemoryExecutionBinding" execution
-        WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id
-          AND execution."ownerType" = 'JOB' AND execution."logicalRole" = 'MEMORY_HISTORY_CLASSIFY'
-          AND execution.state = 'SUCCEEDED' AND execution."acceptedOutputHash" IS NOT NULL) > 32)
+      AND job."errorCode" = 'memory_execution_input_invalid')
     OR (job.kind = 'INDEX_HISTORY'::"MemoryJobKind" AND job."workStage" = 'source_snapshot'
       AND job."pipelineVersion" = ${MEMORY_HISTORY_INDEX_PIPELINE_VERSION}
-      AND job."errorCode" = 'memory_history_chunk_limit_exceeded'
-      AND NOT EXISTS (SELECT 1 FROM "MemoryExecutionBinding" execution
-        WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id))
-    -- Failed before dispatch by the guard of its next attempt. Any other
-    -- protected binding still keeps the job protected below.
-    OR (job.kind = 'INDEX_HISTORY'::"MemoryJobKind" AND job."workStage" = 'source_snapshot'
-      AND EXISTS (SELECT 1 FROM "MemoryExecutionBinding" execution
-        WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id
-          AND ${memoryHistoryOrphanedExecutionSql()}))
+      AND job."errorCode" IN ('memory_history_chunk_limit_exceeded',
+        'memory_history_execution_protected'))
   ), FALSE))`;
 }
 
@@ -114,24 +65,14 @@ export function memoryRecoveryDueAtSql(): Prisma.Sql {
   END::double precision * INTERVAL '1 millisecond'`;
 }
 
-/** History recovery only reuses exact retained outputs or local raw history.
- * All other bound work and any ambiguous dispatch remain protected, except a
- * history job's own orphaned call, which its recovery settles as unknown. */
+/** Bound work and any ambiguous dispatch remain protected. History recovery
+ * rebuilds local raw history only and never dispatches, so its retired model
+ * calls protect nothing. */
 export function memoryRecoveryProtectedSql(): Prisma.Sql {
-  return Prisma.sql`EXISTS (
+  return Prisma.sql`(job.kind <> 'INDEX_HISTORY' AND EXISTS (
     SELECT 1 FROM "MemoryExecutionBinding" AS execution
     WHERE execution."userId" = job."userId" AND execution."memoryJobId" = job.id
-      AND NOT ${memoryHistoryOrphanedExecutionSql()}
-      AND NOT ${memoryHistoryRecoveredUncertainExecutionSql()}
-      AND (job.kind <> 'INDEX_HISTORY' OR execution."ownerType" <> 'JOB'
-        OR execution."logicalRole" <> 'MEMORY_HISTORY_CLASSIFY'
-        OR execution.state IN ('RUNNING', 'OUTCOME_UNKNOWN')
-        OR (execution.state = 'PENDING' AND execution."startedAt" IS NOT NULL)
-        OR (execution.state <> 'PENDING' AND NOT EXISTS (
-          SELECT 1 FROM "UsageEvent" usage
-          WHERE usage."userId" = execution."userId" AND usage."memoryExecutionBindingId" = execution.id
-        )))
-  )`;
+  ))`;
 }
 
 export function memoryTerminalRecoveryEligibleSql(now: Date): Prisma.Sql {

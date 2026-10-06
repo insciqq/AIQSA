@@ -3,39 +3,23 @@ import { canonicalMemoryTimeZone } from "../../../domain/memory/temporal/calenda
 import { memorySha256 } from "../persistence/lexical";
 import type { MemorySourceSnapshot } from "../sourceState";
 import type { MemoryRecallChunkProjection } from "./chunking";
-import type {
-  MemoryContextualFallbackReason,
-  MemoryRecallRoundProjection
-} from "./rounds";
-import type { MemoryQualificationLanguageBucket } from "./language";
+import type { MemoryRecallRoundProjection } from "./rounds";
 import type { MemoryToolEventProjection } from "./toolEvents";
 
 export const MEMORY_HISTORY_INDEX_PIPELINE_VERSION = "memory-history-incremental-v10";
-/** Binding errorCode of a classification whose dispatching attempt was lost;
- * recovery settled it as an unknown outcome with unavailable usage. */
+/** Binding errorCode of a retired history model call whose dispatching attempt
+ * was lost; recovery settled it as an unknown outcome with unavailable usage. */
 export const MEMORY_HISTORY_RECOVERED_UNCERTAIN_CODE = "memory_history_recovered_uncertain";
 export const MEMORY_HISTORY_REBUILD_REQUIRED_CHECKPOINT_VERSION =
   "memory-history-rebuild-required-v5";
-export const MEMORY_CHAT_DIGEST_PIPELINE_VERSION = "memory-chat-digest-v5";
 export const MEMORY_HISTORY_INDEX_JOB_PREFIX = "index-history:";
-const HISTORY_AUTO_HEAL_PREFIX = "heal-history:";
-/** v3 repairs run with in-call validation retries, so chats exhausted under v2
- * get a fresh bounded cycle. Only the current version admits new repairs and
- * counts attempts. */
-export const MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION = "v3";
-/** A repair admitted before an upgrade keeps a valid claim until it settles;
- * its attempts never count toward the current version's budget. */
-const MEMORY_HISTORY_AUTO_HEAL_CLAIMABLE_POLICY_VERSIONS: ReadonlySet<string> =
-  new Set(["v2", MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION]);
-export const MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS = Object.freeze([60_000, 5 * 60_000, 15 * 60_000]);
 /** A settled turn's history job is claimable only after its chat has stayed
  * quiet this long. The next turn of an active chat usually lands seconds later
  * and nearly always within two minutes; it makes the job non-current, so the
- * claim gate settles it STALE before any paid stage binds and only the newest
- * source is indexed. Recovery, repair, backfill and deletion keep their timing. */
+ * claim gate settles it STALE before it indexes or embeds anything and only the
+ * newest source is indexed. Recovery, repair, backfill and deletion keep their
+ * timing. */
 export const MEMORY_HISTORY_QUIET_WINDOW_MS = 120_000;
-export const MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS = 512;
-export const MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES = 8_192;
 
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 
@@ -86,44 +70,10 @@ export type MemoryHistoryCheckpointMessage = Readonly<{
   sourceMessageUpdatedAt: string;
 }>;
 
-export type MemoryHistoryDigestPlan = Readonly<{
-  anchorChunkId: string;
-  contentHash: string;
-  decisions: readonly string[];
-  id: string;
-  incrementalDepth: number;
-  inputFingerprint: string;
-  languageCode: string;
-  occurredFrom: string;
-  occurredTo: string;
-  openLoops: readonly string[];
-  redactionState: "NOT_NEEDED" | "REDACTED";
-  safeDigestText: string;
-  rebuildPolicyVersion: string;
-  sourceChunkIds: readonly string[];
-  sourceFingerprint: string;
-  sourceMessageIds: readonly string[];
-  summary: string;
-  topics: readonly string[];
-  updateMode: "FULL_REBUILD" | "INCREMENTAL" | "REBOUND" | "UNCHANGED";
-}>;
-
 export type MemoryHistoryWorkCounters = Readonly<{
   chunksBuilt: number;
   chunksReplaced: number;
   chunksReused: number;
-  contextualProviderRequests: number;
-  contextualRoundsFallback: number;
-  contextualRoundsGenerated: number;
-  contextualFallbackReasonCounts?: Readonly<
-    Partial<Record<MemoryContextualFallbackReason, number>>
-  >;
-  contextualLanguageCounts?: Readonly<{
-    fallback?: Readonly<Partial<Record<MemoryQualificationLanguageBucket, number>>>;
-    generated?: Readonly<Partial<Record<MemoryQualificationLanguageBucket, number>>>;
-  }>;
-  digestSegmentsProcessed: number;
-  digestSourceChunksProcessed: number;
   messageContentRowsLoaded: number;
   messagesProjected: number;
   modelRunRowsLoaded: number;
@@ -142,11 +92,6 @@ export const EMPTY_MEMORY_HISTORY_WORK_COUNTERS: MemoryHistoryWorkCounters =
     chunksBuilt: 0,
     chunksReplaced: 0,
     chunksReused: 0,
-    contextualProviderRequests: 0,
-    contextualRoundsFallback: 0,
-    contextualRoundsGenerated: 0,
-    digestSegmentsProcessed: 0,
-    digestSourceChunksProcessed: 0,
     messageContentRowsLoaded: 0,
     messagesProjected: 0,
     modelRunRowsLoaded: 0,
@@ -164,8 +109,6 @@ export type MemoryHistoryIndexPlan = Readonly<{
   classificationPolicyVersion: string | null;
   checkpointMessages: readonly MemoryHistoryCheckpointMessage[];
   chunks: readonly MemoryHistoryPreparedChunk[];
-  digest: MemoryHistoryDigestPlan | null;
-  digestPolicyVersion: string | null;
   incremental: Readonly<{
     commonPathMessageCount: number;
     mode: "APPEND" | "DIVERGENCE" | "FULL_REBUILD" | "UNCHANGED";
@@ -237,28 +180,6 @@ export function memoryHistoryIndexJobFingerprint(source: FingerprintSource): str
   })}`;
 }
 
-/** Each bounded repair owns new work; ordinary indexing keeps its stable key. */
-export function memoryHistoryAutoHealJobFingerprint(
-  source: FingerprintSource,
-  attempt: number,
-  utilityPolicyVersion?: number
-): string {
-  if (!Number.isSafeInteger(attempt) || attempt < 1 || attempt > MEMORY_HISTORY_AUTO_HEAL_DELAYS_MS.length) {
-    throw new Error("memory_history_auto_heal_attempt_invalid");
-  }
-  if (utilityPolicyVersion !== undefined && (!validCounter(utilityPolicyVersion) || utilityPolicyVersion < 1)) {
-    throw new Error("memory_history_auto_heal_policy_invalid");
-  }
-  // Accepted legacy attempts remain valid. A repaired generator or a deliberate
-  // Memory role change admits a separate bounded cycle without rewriting them.
-  return autoHealJobFingerprint(source, attempt, utilityPolicyVersion === undefined ? ""
-    : `${MEMORY_HISTORY_AUTO_HEAL_POLICY_VERSION}:${utilityPolicyVersion}:`);
-}
-
-function autoHealJobFingerprint(source: FingerprintSource, attempt: number, policy: string): string {
-  return `${HISTORY_AUTO_HEAL_PREFIX}${memoryHistoryIndexJobFingerprint(source).slice(MEMORY_HISTORY_INDEX_JOB_PREFIX.length)}:${policy}${attempt}`;
-}
-
 export function memoryHistoryIndexClaimIsValid(
   job: MemoryJobDescriptor
 ): job is MemoryJobDescriptor & MemoryHistoryIndexSourceIdentity {
@@ -287,14 +208,7 @@ export function memoryHistoryIndexClaimIsValid(
     sourceHash: job.sourceHash,
     userId: job.userId
   };
-  const expected = memoryHistoryIndexJobFingerprint(source);
-  if (job.idempotencyFingerprint === expected) return true;
-  const match = /^heal-history:[a-f0-9]{64}:([1-3])$/u.exec(job.idempotencyFingerprint);
-  if (match) return job.idempotencyFingerprint === memoryHistoryAutoHealJobFingerprint(source, Number(match[1]));
-  const versioned = /^heal-history:[a-f0-9]{64}:(v[1-9][0-9]*):([1-9][0-9]{0,9}):([1-3])$/u.exec(job.idempotencyFingerprint);
-  return Boolean(versioned && MEMORY_HISTORY_AUTO_HEAL_CLAIMABLE_POLICY_VERSIONS.has(versioned[1]!) &&
-    validCounter(Number(versioned[2])) && job.idempotencyFingerprint ===
-    autoHealJobFingerprint(source, Number(versioned[3]), `${versioned[1]}:${Number(versioned[2])}:`));
+  return job.idempotencyFingerprint === memoryHistoryIndexJobFingerprint(source);
 }
 
 export function memoryHistoryChunkId(
@@ -311,23 +225,6 @@ export function memoryHistoryChunkId(
   });
 }
 
-export function memoryHistoryDigestId(
-  source: MemoryHistoryIndexSourceIdentity,
-  contentHash: string
-): string {
-  return memorySha256({
-    activeLeafMessageId: source.activeLeafMessageId,
-    branchGeneration: source.branchGeneration,
-    chatId: source.chatId,
-    contentHash,
-    domain: "aiqsa.memory.chat-digest",
-    pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-    sourceHash: source.sourceHash,
-    sourceRevision: source.sourceRevision,
-    userId: source.userId
-  });
-}
-
 export function memoryHistoryIndexResultHash(
   source: MemoryHistoryIndexSourceIdentity,
   chunks: readonly MemoryHistoryPreparedChunk[],
@@ -336,8 +233,6 @@ export function memoryHistoryIndexResultHash(
   timeZone: string,
   options: Readonly<{
     checkpointMessages?: readonly MemoryHistoryCheckpointMessage[];
-    digest?: MemoryHistoryDigestPlan | null;
-    digestPolicyVersion?: string | null;
     incremental?: MemoryHistoryIndexPlan["incremental"];
     rebuiltChunkIds?: readonly string[];
     rebuiltRoundIds?: readonly string[];
@@ -366,8 +261,6 @@ export function memoryHistoryIndexResultHash(
     })),
     classificationPolicyVersion,
     checkpointMessages: options.checkpointMessages ?? [],
-    digest: options.digest ?? null,
-    digestPolicyVersion: options.digestPolicyVersion ?? null,
     incremental: options.incremental ?? null,
     pipelineVersion: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
     rebuiltChunkIds: options.rebuiltChunkIds ?? [],

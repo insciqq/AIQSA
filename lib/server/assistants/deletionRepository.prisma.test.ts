@@ -5,12 +5,6 @@ import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createPrismaMemoryCoordinatorRepository } from "../memory/coordinator/prismaRepository";
 import type { MemoryJobClaim } from "../memory/coordinator/types";
-import type { MemoryHistorySafetyClassifier } from "../memory/history/classifier";
-import {
-  decodeMemoryChatDigest,
-  materializeMemoryChatDigest,
-  type MemoryChatDigestGenerator
-} from "../memory/history/digest";
 import { createPrismaMemoryHistoryIndexHandler } from "../memory/history/handler";
 import { createPrismaMemoryFactRepository } from "../memory/persistence/facts";
 import { memorySha256 } from "../memory/persistence/lexical";
@@ -63,44 +57,6 @@ async function mutateMemorySource(
   });
 }
 
-const normalHistoryClassifier: MemoryHistorySafetyClassifier = {
-  classify: async (chunks) => ({
-    decisions: chunks.map((chunk) => ({ chunkId: chunk.id, sensitivity: "NORMAL" as const })),
-    policyVersion: "memory-history-safety-policy-test"
-  })
-};
-
-const deterministicDigestGenerator: MemoryChatDigestGenerator = Object.freeze({
-  async generate(source, chunks, options) {
-    if (chunks.length === 0) {
-      return {
-        classificationRequired: false,
-        digest: null,
-        executions: [],
-        policyVersion: "memory-chat-digest-policy-test",
-        work: { digestSegmentsProcessed: 0, digestSourceChunksProcessed: 0 }
-      };
-    }
-    return {
-      classificationRequired: true,
-      digest: materializeMemoryChatDigest({
-        chunks,
-        content: decodeMemoryChatDigest({
-          decisions: ["Keep the selected deployment approach."],
-          open_loops: ["Confirm the rollout date."],
-          summary: "The chat selected a deployment approach.",
-          topics: ["Deployment"]
-        }),
-        source,
-        timeZone: options.timeZone
-      }),
-      executions: [],
-      policyVersion: "memory-chat-digest-policy-test",
-      work: { digestSegmentsProcessed: 1, digestSourceChunksProcessed: chunks.length }
-    };
-  }
-});
-
 /** Claims and commits the newest history job the way the coordinator does. */
 async function indexMemoryHistory(userId: string): Promise<void> {
   const job = await prisma.memoryJob.findFirstOrThrow({
@@ -134,9 +90,7 @@ async function indexMemoryHistory(userId: string): Promise<void> {
     targetFactVersionId: claimed.targetFactVersionId,
     userId: claimed.userId
   };
-  const handler = createPrismaMemoryHistoryIndexHandler(prisma, normalHistoryClassifier, {
-    digestGenerator: deterministicDigestGenerator
-  });
+  const handler = createPrismaMemoryHistoryIndexHandler(prisma);
   await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
   const now = new Date();
   const result = await handler.execute(claim, {
@@ -477,7 +431,7 @@ describe("Prisma Assistant deletion", () => {
       assistantId = assistant.id;
 
       // One settled turn answered by the owned Assistant. Indexing attributes
-      // its chunk, round and digest to the Assistant that answered.
+      // its chunk and round to the Assistant that answered.
       const chat = await prisma.chat.create({ data: { assistantId, title: "Assistant history", userId } });
       const askedAt = new Date("2026-08-13T10:00:00.000Z");
       const answeredAt = new Date(askedAt.getTime() + 1_000);
@@ -532,11 +486,10 @@ describe("Prisma Assistant deletion", () => {
 
       const historyRows = async () => ({
         chunks: await prisma.memoryRecallChunk.findMany({ orderBy: { id: "asc" }, where: { chatId: chat.id, userId } }),
-        digests: await prisma.chatMemoryDigest.findMany({ orderBy: { id: "asc" }, where: { chatId: chat.id, userId } }),
         rounds: await prisma.memoryRecallRound.findMany({ orderBy: { id: "asc" }, where: { chatId: chat.id, userId } })
       });
       const before = await historyRows();
-      for (const rows of [before.chunks, before.digests, before.rounds]) {
+      for (const rows of [before.chunks, before.rounds]) {
         expect(rows.length).toBeGreaterThan(0);
         for (const row of rows) expect(row).toMatchObject({ sourceAssistantId: assistantId, state: "ACTIVE", userId });
       }
@@ -550,7 +503,6 @@ describe("Prisma Assistant deletion", () => {
         rows.map((row) => ({ ...row, sourceAssistantId: null }));
       await expect(historyRows()).resolves.toEqual({
         chunks: detached(before.chunks),
-        digests: detached(before.digests),
         rounds: detached(before.rounds)
       });
       await expect(prisma.chat.findUniqueOrThrow({

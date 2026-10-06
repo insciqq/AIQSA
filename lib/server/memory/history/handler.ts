@@ -1,72 +1,20 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 import { prisma } from "../../prisma";
 import { logEvent } from "../../observability";
 import { MemoryCoordinatorError } from "../coordinator/errors";
 import type {
-  MemoryJobClaim,
   MemoryJobExecutionResult,
   MemoryJobHandler
 } from "../coordinator/types";
 import { memorySha256 } from "../persistence/lexical";
-import {
-  MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS,
-  MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS,
-  type MemoryOperationalCounters
-} from "../operational/counters";
-import {
-  authorizeMemoryExecutionResultsForCommit,
-  MEMORY_EXECUTION_COMMIT_BATCH_SIZE,
-  memoryExecutionFailure,
-  type MemoryExecutionAuthorityDependencies,
-  type MemoryStructuredOutputProvider
-} from "../execution";
-import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
-import {
-  clearMemoryHistoryExecutionResults,
-  prepareMemoryHistoryExecutionRecovery
-} from "./execution";
-import {
-  lockMemorySettings,
-  type LockedMemorySettings
-} from "../persistence/transaction";
-import {
-  type MemoryHistoryClassificationResult,
-  type MemoryHistorySafetyClassifier
-} from "./classifier";
+import type { MemoryOperationalCounters } from "../operational/counters";
 import { MEMORY_SAFETY_LITE_POLICY_VERSION } from "../safetyLite";
 import {
-  MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS,
-  MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES,
   memoryHistoryIndexClaimIsValid,
   memoryHistoryIndexPlanIsPartial,
   memoryHistoryIndexResultHash,
   type MemoryHistoryIndexPlan
 } from "./contract";
-import {
-  createPrismaMemoryChatDigestGenerator,
-  MemoryChatDigestError,
-  MemoryChatDigestOutputError,
-  selectMemoryChatDigestSourceChunks,
-  type MemoryChatDigestContractViolation,
-  type MemoryChatDigestGenerationResult,
-  type MemoryChatDigestGenerator
-} from "./digest";
-import {
-  createPrismaMemoryContextualKeyGenerator,
-  type MemoryContextualKeyGenerationResult,
-  type MemoryContextualKeyGenerator
-} from "./contextualKeys";
-import {
-  memoryQualificationLanguageBucket,
-  type MemoryQualificationLanguageBucket
-} from "./language";
-import {
-  applyMemoryRecallRoundContextualKeysWithDiagnostics,
-  MEMORY_CONTEXTUAL_FALLBACK_REASONS,
-  MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
-  type MemoryContextualFallbackDiagnostic,
-  type MemoryContextualFallbackReason
-} from "./rounds";
 import {
   createPrismaMemoryHistoryIndexRepository,
   MEMORY_HISTORY_MESSAGE_TRUNCATED_CODE,
@@ -74,132 +22,23 @@ import {
 } from "./repository";
 
 export type MemoryHistoryIndexHandlerDependencies = Readonly<{
-  /** Runs under the claim's live lease before this attempt dispatches. */
-  prepareRecovery?: (claim: MemoryJobClaim) => Promise<boolean>;
-  clearResults?: (tx: Prisma.TransactionClient, userId: string, jobId: string, now: Date) => Promise<void>;
-  authorizeResults?: (
-    tx: Prisma.TransactionClient,
-    settings: LockedMemorySettings,
-    userId: string,
-    jobId: string,
-    results: readonly Readonly<{
-      acceptedOutputHash: string;
-      bindingId: string;
-    }>[]
-  ) => Promise<void>;
-  classifier?: MemoryHistorySafetyClassifier;
-  contextualKeyGenerator?: MemoryContextualKeyGenerator;
-  digestGenerator?: MemoryChatDigestGenerator;
   repository: MemoryHistoryIndexRepository;
 }>;
 
-const MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION =
-  "memory-chat-digest-output-degraded-v1";
-// A partial index page has no whole-chat digest. The final page builds one
-// for the complete source instead of paying for a rebuild on every page.
-const MEMORY_CHAT_DIGEST_DEFERRED_POLICY_VERSION =
-  "memory-chat-digest-deferred-partial-page-v1";
-
-function digestSourceExceedsLimit(plan: MemoryHistoryIndexPlan): boolean {
-  const eligible = selectMemoryChatDigestSourceChunks(plan.chunks);
-  return eligible.length > MEMORY_CHAT_DIGEST_MAX_SOURCE_CHUNKS ||
-    new Set(eligible.flatMap((chunk) =>
-      chunk.messageJoins.map(({ messageId }) => messageId))).size >
-      MEMORY_CHAT_DIGEST_MAX_SOURCE_MESSAGES;
-}
-
-function degradedMemoryChatDigest(
-  reason: "aggregate_limit" | "contract" | "invalid" | "safety_rejected" |
-    "source_limit" | "unavailable" | "output_limit",
-  violation?: MemoryChatDigestContractViolation
-): Readonly<{
-  generated: MemoryChatDigestGenerationResult;
-  stage: string;
-}> {
-  return {
-    generated: {
-      classificationRequired: false,
-      digest: null,
-      executions: [],
-      policyVersion:
-        `${MEMORY_CHAT_DIGEST_OUTPUT_DEGRADED_POLICY_VERSION}:${reason}`,
-      work: {
-        digestSegmentsProcessed: 0,
-        digestSourceChunksProcessed: 0
-      }
-    },
-    stage: `lexical_ready:digest_${reason}${violation ? `_${violation}` : ""}`
-  };
-}
-
-function classifyMemoryHistoryLite(
-  chunks: readonly Readonly<{ id: string }>[],
-  expectedIds: readonly string[]
-): MemoryHistoryClassificationResult {
-  const expected = new Set(expectedIds);
-  const selected = chunks.filter((chunk) => expected.has(chunk.id));
-  if (selected.length !== expected.size) {
-    throw new MemoryCoordinatorError("memory_history_classification_invalid", true);
-  }
-  return {
-    decisions: selected.map((chunk) => ({
-      chunkId: chunk.id,
-      sensitivity: "NORMAL" as const
-    })),
-    executions: [],
-    policyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION
-  };
-}
-
-export function applyMemoryHistoryClassifications(
-  plan: MemoryHistoryIndexPlan,
-  classification: MemoryHistoryClassificationResult
+/** History indexing makes no model calls. Safety Lite already redacted every
+ * recognized secret span when the plan was projected, so every rebuilt chunk
+ * publishes as NORMAL; a round follows its parent chunk, which keeps a
+ * SUPPRESSED state recorded by an earlier classifier. */
+export function applyMemoryHistorySafetyLite(
+  plan: MemoryHistoryIndexPlan
 ): MemoryHistoryIndexPlan {
   const rebuilt = new Set(plan.rebuiltChunkIds);
-  if (
-    !classification.policyVersion ||
-    classification.policyVersion.length > 256 ||
-    classification.decisions.length !== rebuilt.size
-  ) {
+  if (plan.chunks.filter((chunk) => rebuilt.has(chunk.id)).length !== rebuilt.size) {
     throw new MemoryCoordinatorError("memory_history_classification_invalid", true);
   }
-  const decisions = new Map(classification.decisions.map((decision) =>
-    [decision.chunkId, decision.sensitivity] as const));
-  if (
-    decisions.size !== classification.decisions.length ||
-    plan.chunks.some((chunk) => rebuilt.has(chunk.id) && !decisions.has(chunk.id)) ||
-    classification.decisions.some((decision) => !rebuilt.has(decision.chunkId))
-  ) {
-    throw new MemoryCoordinatorError("memory_history_classification_invalid", true);
-  }
-  const chunks = plan.chunks.map((chunk) => {
-    if (!rebuilt.has(chunk.id)) return chunk;
-    const sensitivity = decisions.get(chunk.id);
-    if (sensitivity === "SECRET" || sensitivity === "UNCERTAIN") {
-      return {
-        ...chunk,
-        publicationState: "SUPPRESSED" as const,
-        redactionReasonCodes: [
-          ...new Set([
-            ...chunk.redactionReasonCodes,
-            sensitivity === "SECRET"
-              ? "semantic_secret"
-              : "semantic_safety_uncertain"
-          ])
-        ].sort(),
-        redactionState: "EXCLUDED" as const,
-        safetyClass: "SECRET_TAINTED" as const
-      };
-    }
-    if (sensitivity !== "NORMAL" && sensitivity !== "SENSITIVE") {
-      throw new MemoryCoordinatorError("memory_history_classification_invalid", true);
-    }
-    return {
-      ...chunk,
-      publicationState: "ACTIVE" as const,
-      safetyClass: "NORMAL" as const
-    };
-  });
+  const chunks = plan.chunks.map((chunk) => rebuilt.has(chunk.id)
+    ? { ...chunk, publicationState: "ACTIVE" as const, safetyClass: "NORMAL" as const }
+    : chunk);
   const chunksById = new Map(chunks.map((chunk) => [chunk.id, chunk] as const));
   const rounds = plan.rounds.map((round) => {
     const parent = chunksById.get(round.parentChunkId);
@@ -222,7 +61,7 @@ export function applyMemoryHistoryClassifications(
   });
   return {
     ...plan,
-    classificationPolicyVersion: classification.policyVersion,
+    classificationPolicyVersion: MEMORY_SAFETY_LITE_POLICY_VERSION,
     chunks,
     rounds,
     preparedResultHash: plan.resultHash,
@@ -230,12 +69,10 @@ export function applyMemoryHistoryClassifications(
       plan.source,
       chunks,
       plan.suppressionIdentitySnapshot,
-      classification.policyVersion,
+      MEMORY_SAFETY_LITE_POLICY_VERSION,
       plan.timeZone,
       {
         checkpointMessages: plan.checkpointMessages,
-        digest: null,
-        digestPolicyVersion: null,
         incremental: plan.incremental,
         rebuiltChunkIds: plan.rebuiltChunkIds,
         rebuiltRoundIds: plan.rebuiltRoundIds,
@@ -244,173 +81,6 @@ export function applyMemoryHistoryClassifications(
         rounds,
         toolEvents: plan.toolEvents,
         work: plan.work
-      }
-    )
-  };
-}
-
-export function attachMemoryContextualKeys(
-  plan: MemoryHistoryIndexPlan,
-  generated: MemoryContextualKeyGenerationResult,
-  targetRoundIds: readonly string[]
-): MemoryHistoryIndexPlan {
-  const targets = new Set(targetRoundIds);
-  const fallback = new Set(generated.fallbackRoundIds);
-  const validReasons = new Set<string>(MEMORY_CONTEXTUAL_FALLBACK_REASONS);
-  if (
-    generated.policyVersion !== MEMORY_CONTEXTUAL_KEY_POLICY_VERSION ||
-    targets.size !== targetRoundIds.length ||
-    generated.providerRequests < 0 ||
-    !Number.isSafeInteger(generated.providerRequests) ||
-    generated.outputs.some((output) => !targets.has(output.roundId)) ||
-    generated.fallbackRoundIds.some((id) => !targets.has(id)) ||
-    generated.fallbackDiagnostics?.some((diagnostic) =>
-      !targets.has(diagnostic.roundId) || !validReasons.has(diagnostic.reason))
-  ) {
-    throw new MemoryCoordinatorError("memory_contextual_key_invalid", true);
-  }
-  const applied = applyMemoryRecallRoundContextualKeysWithDiagnostics(
-    plan.rounds,
-    generated.outputs,
-    generated.policyVersion
-  );
-  const rounds = applied.rounds;
-  const generatedIds = new Set(rounds.flatMap((round) =>
-    targets.has(round.id) && round.contextualKeyState === "GENERATED"
-      ? [round.id]
-      : []));
-  const fallbackDiagnostics: MemoryContextualFallbackDiagnostic[] = [
-    ...(generated.fallbackDiagnostics ?? generated.fallbackRoundIds.map((roundId) => ({
-      reason: "PROVIDER_UNAVAILABLE" as const,
-      roundId
-    }))),
-    ...applied.fallbackDiagnostics.filter((diagnostic) =>
-      !fallback.has(diagnostic.roundId))
-  ];
-  for (const roundId of targetRoundIds) {
-    if (generatedIds.has(roundId) || fallbackDiagnostics.some((diagnostic) =>
-      diagnostic.roundId === roundId)) continue;
-    fallbackDiagnostics.push({ reason: "PROVIDER_OUTPUT_INVALID", roundId });
-  }
-  const uniqueDiagnostics = [...new Map(fallbackDiagnostics.map((diagnostic) => [
-    `${diagnostic.roundId}\u0000${diagnostic.reason}`,
-    diagnostic
-  ])).values()];
-  const contextualFallbackReasonCounts: Partial<
-    Record<MemoryContextualFallbackReason, number>
-  > = {};
-  for (const diagnostic of uniqueDiagnostics) {
-    contextualFallbackReasonCounts[diagnostic.reason] =
-      (contextualFallbackReasonCounts[diagnostic.reason] ?? 0) + 1;
-  }
-  const languageCounts: {
-    fallback: Partial<Record<MemoryQualificationLanguageBucket, number>>;
-    generated: Partial<Record<MemoryQualificationLanguageBucket, number>>;
-  } = { fallback: {}, generated: {} };
-  const roundById = new Map(rounds.map((round) => [round.id, round]));
-  const outputByRoundId = new Map(generated.outputs.map((output) =>
-    [output.roundId, output] as const));
-  for (const roundId of targetRoundIds) {
-    const round = roundById.get(roundId);
-    if (!round) continue;
-    const bucket = memoryQualificationLanguageBucket(
-      outputByRoundId.get(roundId)?.languageCode ?? round.languageCode
-    );
-    const state = generatedIds.has(roundId) ? "generated" : "fallback";
-    languageCounts[state][bucket] = (languageCounts[state][bucket] ?? 0) + 1;
-  }
-  const work = {
-    ...plan.work,
-    contextualFallbackReasonCounts: Object.freeze(contextualFallbackReasonCounts),
-    contextualLanguageCounts: Object.freeze({
-      fallback: Object.freeze(languageCounts.fallback),
-      generated: Object.freeze(languageCounts.generated)
-    }),
-    contextualProviderRequests: generated.providerRequests,
-    contextualRoundsFallback: targetRoundIds.filter((id) =>
-      fallback.has(id) || !generatedIds.has(id)).length,
-    contextualRoundsGenerated: generatedIds.size
-  };
-  return {
-    ...plan,
-    rounds,
-    work,
-    resultHash: memoryHistoryIndexResultHash(
-      plan.source,
-      plan.chunks,
-      plan.suppressionIdentitySnapshot,
-      plan.classificationPolicyVersion,
-      plan.timeZone,
-      {
-        checkpointMessages: plan.checkpointMessages,
-        digest: plan.digest,
-        digestPolicyVersion: plan.digestPolicyVersion,
-        incremental: plan.incremental,
-        rebuiltChunkIds: plan.rebuiltChunkIds,
-        rebuiltRoundIds: plan.rebuiltRoundIds,
-        reusedChunkIds: plan.reusedChunkIds,
-        reusedRoundIds: plan.reusedRoundIds,
-        rounds,
-        toolEvents: plan.toolEvents,
-        work
-      }
-    )
-  };
-}
-
-function attachMemoryChatDigest(
-  plan: MemoryHistoryIndexPlan,
-  generated: Awaited<ReturnType<MemoryChatDigestGenerator["generate"]>>,
-  safety: MemoryHistoryClassificationResult | null
-): MemoryHistoryIndexPlan {
-  if (!generated.policyVersion || generated.policyVersion.length > 256) {
-    throw new MemoryCoordinatorError("memory_chat_digest_invalid", true);
-  }
-  let digest = generated.digest;
-  let digestPolicyVersion = generated.policyVersion;
-  const work = {
-    ...plan.work,
-    digestSegmentsProcessed: generated.work.digestSegmentsProcessed,
-    digestSourceChunksProcessed: generated.work.digestSourceChunksProcessed
-  };
-  if (digest) {
-    if (generated.classificationRequired) {
-      if (!safety || safety.decisions.length !== 1 ||
-        safety.decisions[0]?.chunkId !== digest.id) {
-        throw new MemoryCoordinatorError("memory_chat_digest_invalid", true);
-      }
-      digestPolicyVersion = `${generated.policyVersion}:${safety.policyVersion}`;
-      if (safety.decisions[0].sensitivity === "SECRET" ||
-        safety.decisions[0].sensitivity === "UNCERTAIN") digest = null;
-    } else if (safety !== null) {
-      throw new MemoryCoordinatorError("memory_chat_digest_invalid", true);
-    }
-  } else if (safety !== null) {
-    throw new MemoryCoordinatorError("memory_chat_digest_invalid", true);
-  }
-  return {
-    ...plan,
-    digest,
-    digestPolicyVersion,
-    work,
-    resultHash: memoryHistoryIndexResultHash(
-      plan.source,
-      plan.chunks,
-      plan.suppressionIdentitySnapshot,
-      plan.classificationPolicyVersion,
-      plan.timeZone,
-      {
-        checkpointMessages: plan.checkpointMessages,
-        digest,
-        digestPolicyVersion,
-        incremental: plan.incremental,
-        rebuiltChunkIds: plan.rebuiltChunkIds,
-        rebuiltRoundIds: plan.rebuiltRoundIds,
-        reusedChunkIds: plan.reusedChunkIds,
-        reusedRoundIds: plan.reusedRoundIds,
-        rounds: plan.rounds,
-        toolEvents: plan.toolEvents,
-        work
       }
     )
   };
@@ -432,39 +102,7 @@ function staleExecutionResult(
 function historyOperationalCounters(
   plan: MemoryHistoryIndexPlan
 ): MemoryOperationalCounters {
-  const digestNoop = plan.digest && plan.work.digestSegmentsProcessed === 0
-    ? 1
-    : 0;
-  const contextualCounters: Record<string, number> = {};
-  for (const [reason, count] of Object.entries(
-    plan.work.contextualFallbackReasonCounts ?? {}
-  )) {
-    if (count === undefined) continue;
-    const key = MEMORY_CONTEXTUAL_FALLBACK_COUNTER_KEYS[
-      reason as MemoryContextualFallbackReason
-    ];
-    if (key) contextualCounters[key] = count;
-  }
-  for (const state of ["fallback", "generated"] as const) {
-    for (const [language, count] of Object.entries(
-      plan.work.contextualLanguageCounts?.[state] ?? {}
-    )) {
-      if (count === undefined) continue;
-      const key = MEMORY_CONTEXTUAL_LANGUAGE_COUNTER_KEYS[state][
-        language as MemoryQualificationLanguageBucket
-      ];
-      if (key) contextualCounters[key] = count;
-    }
-  }
   return Object.freeze({
-    digestFullRebuild: plan.digest?.updateMode === "FULL_REBUILD" ? 1 : 0,
-    digestIncremental: plan.digest?.updateMode === "INCREMENTAL" ? 1 : 0,
-    digestNoop,
-    digestSegmentsProcessed: plan.work.digestSegmentsProcessed,
-    digestSourceChunksProcessed: plan.work.digestSourceChunksProcessed,
-    contextualProviderRequests: plan.work.contextualProviderRequests,
-    contextualRoundsFallback: plan.work.contextualRoundsFallback,
-    contextualRoundsGenerated: plan.work.contextualRoundsGenerated,
     historyChunksBuilt: plan.work.chunksBuilt,
     historyChunksReplaced: plan.work.chunksReplaced,
     historyChunksReused: plan.work.chunksReused,
@@ -477,9 +115,8 @@ function historyOperationalCounters(
     historyRoundSegmentsReused: plan.work.roundSegmentsReused,
     historyRoundsBuilt: plan.work.roundsBuilt,
     historyRoundsReplaced: plan.work.roundsReplaced,
-    historyRoundsReused: plan.work.roundsReused,
-    ...contextualCounters
-  }) as MemoryOperationalCounters;
+    historyRoundsReused: plan.work.roundsReused
+  });
 }
 
 export function createMemoryHistoryIndexHandler(
@@ -508,186 +145,32 @@ export function createMemoryHistoryIndexHandler(
         return staleExecutionResult(claim.id, prepared.decision.errorCode);
       }
       if (context.signal.aborted) throw context.signal.reason;
-      const recoveryOnly = await dependencies.prepareRecovery?.(claim) ?? false;
       await context.setStage("safety_classification");
-      let plan: MemoryHistoryIndexPlan;
-      let completionStage = "lexical_ready";
       try {
-        const classification = classifyMemoryHistoryLite(
-          prepared.plan.chunks,
-          prepared.plan.rebuiltChunkIds
-        );
-        plan = applyMemoryHistoryClassifications(prepared.plan, classification);
-        let executionResults = [...(classification.executions ?? [])];
-        const contextualTargets = plan.rounds.flatMap((round) =>
-          round.publicationState === "ACTIVE" &&
-          round.contextualKeyState === "RAW_FALLBACK"
-            ? [round.id]
-            : []);
-        if (dependencies.contextualKeyGenerator && contextualTargets.length > 0) {
-          await context.setStage("contextual_key_generation");
-          let generated: MemoryContextualKeyGenerationResult;
-          try {
-            generated = await dependencies.contextualKeyGenerator.generate(
-              plan.rounds,
-              contextualTargets,
-              {
-                jobId: claim.id,
-                recoveryOnly,
-                signal: context.signal,
-                userId: claim.userId
-              }
-            );
-          } catch (error) {
-            if (context.signal.aborted) throw context.signal.reason;
-            if (error instanceof MemoryCoordinatorError) throw error;
-            generated = {
-              executions: [],
-              fallbackDiagnostics: contextualTargets.map((roundId) => ({
-                reason: "PROVIDER_UNAVAILABLE" as const,
-                roundId
-              })),
-              fallbackRoundIds: contextualTargets,
-              outputs: [],
-              policyVersion: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
-              providerRequests: 0
-            };
-            completionStage = "lexical_ready:contextual_unavailable";
-          }
-          executionResults.push(...generated.executions);
-          plan = attachMemoryContextualKeys(plan, generated, contextualTargets);
-        }
-        const partial = memoryHistoryIndexPlanIsPartial(plan);
-        if (partial) {
-          plan = attachMemoryChatDigest(plan, {
-            classificationRequired: false,
-            digest: null,
-            executions: [],
-            policyVersion: MEMORY_CHAT_DIGEST_DEFERRED_POLICY_VERSION,
-            work: {
-              digestSegmentsProcessed: 0,
-              digestSourceChunksProcessed: 0
-            }
-          }, null);
-        } else if (dependencies.digestGenerator && digestSourceExceedsLimit(plan)) {
-          // The digest cannot materialize beyond its own source bound; decide
-          // before any provider dispatch rather than after paying for it.
-          const degraded = degradedMemoryChatDigest("source_limit");
-          completionStage = degraded.stage;
-          plan = attachMemoryChatDigest(plan, degraded.generated, null);
-        } else if (dependencies.digestGenerator) {
-          await context.setStage("digest_generation");
-          let generated: MemoryChatDigestGenerationResult;
-          try {
-            generated = await dependencies.digestGenerator.generate(
-              plan.source,
-              plan.chunks,
-              {
-                jobId: claim.id,
-                recoveryOnly,
-                signal: context.signal,
-                timeZone: plan.timeZone,
-                userId: claim.userId
-              }
-            );
-          } catch (error) {
-            if (context.signal.aborted) throw context.signal.reason;
-            const reason = error instanceof MemoryChatDigestOutputError
-              ? error.reason
-              : error instanceof MemoryChatDigestError
-                ? error.code === "memory_chat_digest_unavailable"
-                  ? "unavailable"
-                  : error.code === "memory_chat_digest_output_limit" ? "output_limit" : "invalid"
-                : null;
-            if (!reason) throw error;
-            const violation = error instanceof MemoryChatDigestOutputError ? error.violation : undefined;
-            logEvent("service_operation", { subsystem: "memory", stage: "validate", outcome: "degraded",
-              job_id: claim.id, code: `memory_chat_digest_${reason}${violation ? `_${violation}` : ""}`, action: "degrade" });
-            const degraded = degradedMemoryChatDigest(reason, violation);
-            generated = degraded.generated;
-            completionStage = degraded.stage;
-          }
-          executionResults.push(...generated.executions);
-          if (generated.digest) {
-            const digestSafety = generated.classificationRequired
-              ? classifyMemoryHistoryLite(
-                  [{ id: generated.digest.id }],
-                  [generated.digest.id]
-                )
-              : null;
-            if (digestSafety) executionResults.push(...(digestSafety.executions ?? []));
-            plan = attachMemoryChatDigest(plan, generated, digestSafety);
-          } else {
-            plan = attachMemoryChatDigest(plan, generated, null);
-          }
-        } else {
-          plan = attachMemoryChatDigest(plan, {
-            classificationRequired: false,
-            digest: null,
-            executions: [],
-            policyVersion: "memory-chat-digest-disabled",
-            work: {
-              digestSegmentsProcessed: 0,
-              digestSourceChunksProcessed: 0
-            }
-          }, null);
-        }
+        const plan = applyMemoryHistorySafetyLite(prepared.plan);
         await context.setStage("lexical_apply");
-        if (recoveryOnly &&
-          (plan.work.contextualRoundsFallback > 0 || (!plan.digest && !partial))) {
-          completionStage = "lexical_ready:recovery_raw_fallback";
-        }
         const truncated = (plan.incremental.truncatedMessageIds?.length ?? 0) > 0;
         if (truncated) {
           logEvent("service_operation", { subsystem: "memory", stage: "validate", outcome: "degraded",
             job_id: claim.id, code: MEMORY_HISTORY_MESSAGE_TRUNCATED_CODE, action: "degrade",
             count: plan.incremental.truncatedMessageIds?.length ?? 0 });
         }
-        if (completionStage === "lexical_ready") {
-          completionStage = truncated
-            ? "lexical_ready:history_message_truncated"
-            : partial
-              ? "lexical_ready:history_page_partial"
-              : completionStage;
-        }
         return {
           acceptedResultHash: plan.resultHash,
           apply: async (tx, acceptedClaim) => {
-            if (executionResults.length > 0) {
-              if (new Set(executionResults.map(({ bindingId }) => bindingId)).size !== executionResults.length) {
-                return memoryExecutionFailure("memory_execution_input_invalid");
-              }
-              if (!dependencies.authorizeResults) {
-                throw new Error("memory_history_classification_authority_missing");
-              }
-              const settings = await lockMemorySettings(
-                tx,
-                acceptedClaim.userId,
-                true
-              );
-              // Authorize every result before publication, on the same locked
-              // transaction. A failed batch rolls back the entire apply; no
-              // provider work or partial history commit occurs between batches.
-              for (let offset = 0; offset < executionResults.length; offset += MEMORY_EXECUTION_COMMIT_BATCH_SIZE) {
-                await dependencies.authorizeResults(
-                  tx,
-                  settings,
-                  acceptedClaim.userId,
-                  acceptedClaim.id,
-                  executionResults.slice(offset, offset + MEMORY_EXECUTION_COMMIT_BATCH_SIZE)
-                );
-              }
-            }
             await dependencies.repository.apply(
               tx,
               acceptedClaim,
               plan,
               context.now()
             );
-            await dependencies.clearResults?.(tx, acceptedClaim.userId, acceptedClaim.id, context.now());
           },
           operationalCounters: historyOperationalCounters(plan),
-          stage: completionStage
+          stage: truncated
+            ? "lexical_ready:history_message_truncated"
+            : memoryHistoryIndexPlanIsPartial(plan)
+              ? "lexical_ready:history_page_partial"
+              : "lexical_ready"
         };
       } catch (error) {
         if (context.signal.aborted) throw context.signal.reason;
@@ -702,62 +185,9 @@ export function createMemoryHistoryIndexHandler(
 }
 
 export function createPrismaMemoryHistoryIndexHandler(
-  client: PrismaClient = prisma,
-  _classifier?: MemoryHistorySafetyClassifier,
-  options: Readonly<{
-    authority?: MemoryExecutionAuthorityDependencies;
-    contextualKeyGenerator?: MemoryContextualKeyGenerator;
-    digestGenerator?: MemoryChatDigestGenerator;
-    structuredProvider?: MemoryStructuredOutputProvider;
-  }> = {}
+  client: PrismaClient = prisma
 ): MemoryJobHandler {
-  const authority = options.authority ?? defaultMemoryExecutionAuthority;
-  const governed = _classifier === undefined;
   return createMemoryHistoryIndexHandler({
-    ...(governed ? {
-      prepareRecovery: (claim: MemoryJobClaim) =>
-        prepareMemoryHistoryExecutionRecovery(client, authority, claim),
-      clearResults: clearMemoryHistoryExecutionResults,
-      authorizeResults: async (
-        tx: Prisma.TransactionClient,
-        settings: LockedMemorySettings,
-        userId: string,
-        jobId: string,
-        results: readonly Readonly<{
-          acceptedOutputHash: string;
-          bindingId: string;
-        }>[]
-      ) => {
-        await authorizeMemoryExecutionResultsForCommit(
-          authority,
-          tx,
-          settings,
-          userId,
-          { memoryJobId: jobId, role: "MEMORY_HISTORY_CLASSIFY" },
-          results
-        );
-      },
-    } : {}),
-    ...(options.digestGenerator
-      ? { digestGenerator: options.digestGenerator }
-      : governed
-        ? {
-            digestGenerator: createPrismaMemoryChatDigestGenerator(client, {
-              authority,
-              provider: options.structuredProvider
-            })
-          }
-        : {}),
-    ...(options.contextualKeyGenerator
-      ? { contextualKeyGenerator: options.contextualKeyGenerator }
-      : governed
-        ? {
-            contextualKeyGenerator: createPrismaMemoryContextualKeyGenerator(
-              client,
-              { authority, provider: options.structuredProvider }
-            )
-          }
-        : {}),
     repository: createPrismaMemoryHistoryIndexRepository(client)
   });
 }

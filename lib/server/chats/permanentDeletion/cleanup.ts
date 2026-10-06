@@ -404,9 +404,6 @@ async function releaseAggregateExecutionReferences(
       data: { executionId: null },
       where: { executionId: { in: executionBindingIds }, userId: claim.userId }
     });
-    await tx.memoryHistoryExecution.deleteMany({
-      where: { executionBindingId: { in: executionBindingIds }, userId: claim.userId }
-    });
     await tx.memoryFactExtractionExecution.deleteMany({
       where: {
         executionBindingId: { in: executionBindingIds },
@@ -466,12 +463,6 @@ async function auditCleanup(
         FROM "MemoryRecallChunk" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'rounds', COUNT(*)::integer
         FROM "MemoryRecallRound" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
-      UNION ALL SELECT 'digests', COUNT(*)::integer
-        FROM "ChatMemoryDigest" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
-      UNION ALL SELECT 'digest-chunks', COUNT(*)::integer
-        FROM "ChatMemoryDigestChunk" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
-      UNION ALL SELECT 'digest-messages', COUNT(*)::integer
-        FROM "ChatMemoryDigestMessage" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'candidates', COUNT(*)::integer
         FROM "MemoryCandidate" WHERE "userId" = ${claim.userId} AND "chatId" = ${claim.targetId}
       UNION ALL SELECT 'evidence', COUNT(*)::integer
@@ -629,15 +620,6 @@ async function applyAggregateDeletion(
     });
   }
   await releaseAggregateExecutionReferences(tx, claim, ids);
-  await tx.chatMemoryDigestChunk.deleteMany({
-    where: { chatId: claim.targetId, userId: claim.userId }
-  });
-  await tx.chatMemoryDigestMessage.deleteMany({
-    where: { chatId: claim.targetId, userId: claim.userId }
-  });
-  await tx.chatMemoryDigest.deleteMany({
-    where: { chatId: claim.targetId, userId: claim.userId }
-  });
   if (ids.roundIds.length > 0) {
     await tx.memoryRecallRoundMessage.deleteMany({
       where: { roundId: { in: [...ids.roundIds] }, userId: claim.userId }

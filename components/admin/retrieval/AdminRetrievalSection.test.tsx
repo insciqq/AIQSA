@@ -94,26 +94,26 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("AdminRetrievalSection", () => {
   it("shows mixed history causes separately and updates each issue on refresh", async () => {
-    const incomplete = { stage: "HISTORY", reason: "HISTORY_INCOMPLETE", severity: "warn",
-      autoHeal: "UNAVAILABLE", count: 1, oldestAgeSeconds: 1800 } as const;
+    const retrying = { stage: "HISTORY", reason: "RETRYING", severity: "warn",
+      count: 1, oldestAgeSeconds: 1800 } as const;
     server({ memory: memoryStatus({ processing: { enabled: true, issues: [
-      { stage: "HISTORY", reason: "PROCESSING_FAILED", severity: "bad", count: 1, oldestAgeSeconds: 300 }, incomplete
+      { stage: "HISTORY", reason: "PROCESSING_FAILED", severity: "bad", count: 1, oldestAgeSeconds: 300 }, retrying
     ] } }) });
     renderSection();
     await screen.findByText("Memory history processing failed");
-    expect(screen.getByText("Memory history enrichment is incomplete")).toBeInTheDocument();
+    expect(screen.getByText("Memory history processing needs attention")).toBeInTheDocument();
     const memory = screen.getByTestId("admin-retrieval-memory");
     expect(memory).toHaveTextContent("1 affected job; oldest 5m");
     expect(memory).toHaveTextContent("1 affected job; oldest 30m");
     expect(memory).not.toHaveTextContent("2 affected jobs");
     expect(within(memory).getAllByRole("link", { name: "Open Memory" })).toHaveLength(2);
-    server({ memory: memoryStatus({ processing: { enabled: true, issues: [{ ...incomplete, autoHeal: "RETRYING" }] } }) });
+    server({ memory: memoryStatus({ processing: { enabled: true, issues: [retrying] } }) });
     fireEvent.click(screen.getByRole("button", { name: "Refresh Memory status" }));
-    await screen.findByText("Memory history is recovering automatically");
-    expect(screen.queryByText("Memory history processing failed")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Memory history processing failed")).not.toBeInTheDocument());
+    expect(screen.getByText("Memory history processing needs attention")).toBeInTheDocument();
     server({ memory: memoryStatus() });
     fireEvent.click(screen.getByRole("button", { name: "Refresh Memory status" }));
-    await waitFor(() => expect(screen.queryByText("Memory history is recovering automatically")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Memory history processing needs attention")).not.toBeInTheDocument());
     expect(screen.getByTestId("memory-state")).toHaveTextContent("Working");
   });
 
@@ -203,22 +203,6 @@ describe("AdminRetrievalSection", () => {
     expect(memory).toHaveTextContent("Memory search degraded recently");
     expect(memory).toHaveTextContent("1 search; oldest 10m");
     expect(memory).not.toHaveTextContent(/Processing blocked|Processing delayed/u);
-  });
-  it.each(["RETRYING", "EXHAUSTED"] as const)("shows history auto-heal %s without a repair button or UI-triggered work", async (autoHeal) => {
-    const calls = server({ memory: memoryStatus({ queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
-      recovery: memoryRecoveryStatusFixture(), processing: { enabled: true, issues: [{
-        stage: "HISTORY", reason: "OUTPUT_LIMIT", severity: "warn", count: 1, oldestAgeSeconds: 60, autoHeal
-      }] } }) });
-    renderSection();
-    await waitFor(() => expect(screen.getByTestId("memory-state")).toHaveTextContent(autoHeal === "RETRYING" ? "Recovering history" : "Limited history context"));
-    const memory = screen.getByTestId("admin-retrieval-memory");
-    expect(memory).toHaveTextContent("History text remains searchable");
-    expect(within(memory).queryByRole("button", { name: "Retry eligible work" })).not.toBeInTheDocument();
-    expect(memory).toHaveTextContent(autoHeal === "RETRYING" ? "No action is needed" : "Auto-heal could not restore processing after 3 attempts");
-    if (autoHeal === "EXHAUSTED") expect(within(memory).getByRole("link", { name: "Open Defaults & roles" }))
-      .toHaveAttribute("href", "/admin?section=roles&resource=memory");
-    expect(calls.filter(({ method }) => method === "POST")).toEqual([]);
-    expect(within(memory).queryByRole("button", { name: /regenerate|repair/i })).not.toBeInTheDocument();
   });
   it("shows one processing line, alerts and metrics, and links assignments to Defaults & roles", async () => {
     server({ knowledge: adminKnowledgeSettingsFixture({ operations: adminKnowledgeOperationsFixture({

@@ -90,7 +90,6 @@ async function invalidateAffectedHistory(
   now: Date
 ): Promise<Readonly<{
   chunks: number;
-  digest: number;
   rounds: number;
   toolEvents: number;
 }>> {
@@ -226,27 +225,8 @@ async function invalidateAffectedHistory(
           )
         ORDER BY tool_event."id"
       `;
-  const activeDigest = await tx.chatMemoryDigest.findFirst({
-    select: { id: true },
-    where: {
-      chatId: event.snapshot.id,
-      state: "ACTIVE",
-      userId: event.snapshot.userId
-    }
-  });
-  if (activeDigest) {
-    await tx.chatMemoryDigest.update({
-      data: { invalidatedAt: now, state: "INVALIDATED" },
-      where: { id: activeDigest.id }
-    });
-  }
   if (chunks.length === 0 && rounds.length === 0 && toolEvents.length === 0) {
-    return {
-      chunks: 0,
-      digest: Number(activeDigest !== null),
-      rounds: 0,
-      toolEvents: 0
-    };
+    return { chunks: 0, rounds: 0, toolEvents: 0 };
   }
 
   await tx.memorySearchEntry.deleteMany({
@@ -297,7 +277,6 @@ async function invalidateAffectedHistory(
   });
   return {
     chunks: chunks.length,
-    digest: Number(activeDigest !== null),
     rounds: rounds.length,
     toolEvents: toolEvents.length
   };
@@ -500,8 +479,8 @@ export async function applyMemoryHistorySourceMutation(
     if (!retainsVisibleHistoryWhilePaused(settings, event)) {
       const now = new Date();
       const invalidated = await invalidateAffectedHistory(tx, event, now);
-      if (invalidated.chunks > 0 || invalidated.digest > 0 ||
-        invalidated.rounds > 0 || invalidated.toolEvents > 0) {
+      if (invalidated.chunks > 0 || invalidated.rounds > 0 ||
+        invalidated.toolEvents > 0) {
         await settleVisibleMutationCounter(tx, settings, event);
         if (!permanentDelete && (
           invalidated.chunks > 0 || invalidated.rounds > 0 ||

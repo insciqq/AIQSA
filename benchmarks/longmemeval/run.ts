@@ -65,18 +65,8 @@ import { probeCurrentMemoryEmbeddingPin } from
   "../../lib/server/memory/embedding/handler";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from
   "../../lib/server/memory/history/chunking";
-import { MEMORY_HISTORY_CLASSIFICATION_VERSIONS } from
-  "../../lib/server/memory/history/classifier";
-import {
-  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
-} from "../../lib/server/memory/history/contract";
-import { MEMORY_CONTEXTUAL_KEY_VERSIONS } from
-  "../../lib/server/memory/history/contextualKeys";
-import {
-  MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
-  MEMORY_CHAT_DIGEST_VERSIONS
-} from "../../lib/server/memory/history/digest";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from
+  "../../lib/server/memory/history/contract";
 import {
   MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
   MEMORY_RECALL_ROUND_PROJECTION_VERSION
@@ -1626,12 +1616,7 @@ function preparedCaseSourceFingerprint(input: Readonly<{
     },
     datasetSha256: LONGMEMEVAL_S_SHA256,
     historyContract: {
-      chatDigest: MEMORY_CHAT_DIGEST_VERSIONS,
-      chatDigestPipeline: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-      chatDigestRebuildPolicy: MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
       chunking: MEMORY_HISTORY_CHUNKING_VERSION,
-      classification: MEMORY_HISTORY_CLASSIFICATION_VERSIONS,
-      contextualKey: MEMORY_CONTEXTUAL_KEY_VERSIONS,
       contextualKeyPolicy: MEMORY_CONTEXTUAL_KEY_POLICY_VERSION,
       historyPipeline: MEMORY_HISTORY_INDEX_PIPELINE_VERSION,
       importVersion: LONGMEMEVAL_PREPARED_CASE_IMPORT_VERSION,
@@ -1974,9 +1959,7 @@ async function assertPreparedHistoryContractCompatibility(
     incompatibleChunk,
     incompatibleRound,
     incompatibleSegment,
-    incompatibleToolEvent,
-    incompatibleDigest,
-    executionBindings
+    incompatibleToolEvent
   ] = await Promise.all([
     prisma.chatMemoryCheckpoint.findFirst({
       select: { id: true },
@@ -2046,56 +2029,10 @@ async function assertPreparedHistoryContractCompatibility(
         state: "ACTIVE",
         userId
       }
-    }),
-    prisma.chatMemoryDigest.findFirst({
-      select: { id: true },
-      where: {
-        OR: [
-          { pipelineVersion: { not: MEMORY_CHAT_DIGEST_PIPELINE_VERSION } },
-          {
-            sourceProjectionVersion: {
-              not: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION
-            }
-          },
-          { rebuildPolicyVersion: null },
-          {
-            rebuildPolicyVersion: {
-              not: MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION
-            }
-          }
-        ],
-        state: "ACTIVE",
-        userId
-      }
-    }),
-    prisma.memoryExecutionBinding.findMany({
-      select: {
-        pipelineVersion: true,
-        policyVersion: true,
-        promptVersion: true,
-        schemaVersion: true
-      },
-      where: {
-        logicalRole: "MEMORY_HISTORY_CLASSIFY",
-        state: "SUCCEEDED",
-        userId
-      }
     })
   ]);
-  const executionVersions = [
-    MEMORY_HISTORY_CLASSIFICATION_VERSIONS,
-    MEMORY_CONTEXTUAL_KEY_VERSIONS,
-    MEMORY_CHAT_DIGEST_VERSIONS
-  ];
-  const incompatibleBinding = executionBindings.some((binding) =>
-    !executionVersions.some((versions) =>
-      binding.pipelineVersion === versions.pipelineVersion &&
-      binding.policyVersion === versions.policyVersion &&
-      binding.promptVersion === versions.promptVersion &&
-      binding.schemaVersion === versions.schemaVersion));
   if (incompatibleCheckpoint || incompatibleChunk || incompatibleRound ||
-    incompatibleSegment || incompatibleToolEvent || incompatibleDigest ||
-    incompatibleBinding) {
+    incompatibleSegment || incompatibleToolEvent) {
     throw new Error("longmemeval_prepared_case_history_contract_incompatible");
   }
 }
@@ -2943,7 +2880,6 @@ async function writeMemoryDebugArtifact(
     attempt,
     attemptItems,
     memoryItems,
-    digests,
     historyCheckpoints,
     historyJobs,
     historyChunks,
@@ -3007,26 +2943,6 @@ async function writeMemoryDebugArtifact(
         bindingId: input.locator.memoryBindingId,
         userId: input.userId
       }
-    }),
-    prisma.chatMemoryDigest.findMany({
-      orderBy: [{ occurredFrom: "asc" }, { id: "asc" }],
-      select: {
-        chatId: true,
-        decisions: true,
-        occurredFrom: true,
-        occurredTo: true,
-        openLoops: true,
-        pipelineVersion: true,
-        rebuildPolicyVersion: true,
-        redactionState: true,
-        safeDigestText: true,
-        safetyClass: true,
-        state: true,
-        summary: true,
-        topics: true,
-        updateMode: true
-      },
-      where: { userId: input.userId }
     }),
     prisma.chatMemoryCheckpoint.findMany({
       orderBy: [{ chatId: "asc" }, { id: "asc" }],
@@ -3150,10 +3066,6 @@ async function writeMemoryDebugArtifact(
       ...attempt,
       items: attemptItems.map(withSession)
     },
-    chatDigests: digests.map((digest) => ({
-      ...digest,
-      sourceSession: debugSessionReference(digest.chatId, input.chatIds, input.entry)
-    })),
     finalAnswer: input.hypothesis,
     finalMemoryItems: memoryItems.map(withSession),
     historyCheckpoints: historyCheckpoints.map((checkpoint) => ({
