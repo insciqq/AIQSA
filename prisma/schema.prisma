@@ -5798,6 +5798,79 @@ model MemoryToolEvent {
   @@index([modelRunId, modelRunToolCallId])
 }
 
+// Retired and unused: never read or write it; the next release drops it.
+model ChatMemoryDigest {
+  id                       String                   @id
+  userId                   String
+  chatId                   String
+  anchorChunkId            String
+  sourceFolderId           String?
+  sourceAssistantId        String?
+  branchGeneration         Int
+  sourceRevisionAtCreation Int
+  activeLeafMessageId      String
+  sourceContentHash        String                   @db.VarChar(128)
+  contentHash              String                   @db.VarChar(128)
+  summary                  String                   @db.VarChar(2000)
+  topics                   String[]                 @default([])
+  decisions                String[]                 @default([])
+  openLoops                String[]                 @default([])
+  safeDigestText           String
+  normalizedSafeSearchText String
+  languageCode             String                   @db.VarChar(35)
+  occurredFrom             DateTime
+  occurredTo               DateTime
+  safetyClass              MemoryDerivedSafetyClass
+  redactionState           MemoryRedactionState
+  state                    MemoryHistoryItemState   @default(ACTIVE)
+  pipelineVersion          String                   @db.VarChar(64)
+  sourceFingerprint        String?                  @db.VarChar(64)
+  inputFingerprint         String?                  @db.VarChar(64)
+  rebuildPolicyVersion     String?                  @db.VarChar(64)
+  updateMode               String?                  @db.VarChar(32)
+  incrementalDepth         Int                      @default(0)
+  sourceProjectionVersion  String                   @db.VarChar(64)
+  safetyPolicyVersion      String                   @db.VarChar(256)
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @default(now()) @updatedAt
+  invalidatedAt            DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, chatId, id])
+  @@index([userId, chatId, state, updatedAt])
+  @@index([userId, occurredTo, id])
+  @@index([userId, sourceFolderId, state])
+  @@index([userId, sourceAssistantId, state])
+}
+
+// Retired and unused: never read or write it; the next release drops it.
+model ChatMemoryDigestChunk {
+  userId   String
+  chatId   String
+  digestId String
+  chunkId  String
+  ordinal  Int
+
+  @@id([digestId, chunkId])
+  @@unique([digestId, ordinal])
+  @@index([userId, chatId, chunkId])
+}
+
+// Retired and unused: never read or write it; the next release drops it.
+model ChatMemoryDigestMessage {
+  userId                   String
+  chatId                   String
+  digestId                 String
+  messageId                String
+  ordinal                  Int
+  sourceMessageContentHash String   @db.VarChar(128)
+  sourceMessageUpdatedAt   DateTime
+
+  @@id([digestId, messageId])
+  @@unique([digestId, ordinal])
+  @@index([userId, chatId, messageId])
+}
+
 model MemoryCandidate {
   id                         String                  @id
   userId                     String
@@ -6114,6 +6187,26 @@ model MemoryMaintenanceSuppression {
   @@unique([userId, id])
   @@unique([userId, memoryReviewId, sourceMessageId, sourceMessageContentHash, sourceStartOffset, sourceEndOffset], map: "MemoryMaintenanceSuppression_span_key")
   @@index([userId, sourceMessageId])
+}
+
+// Retired and unused: never read or write it; the next release drops it.
+model MemoryHistoryExecution {
+  id                 String    @id @default(uuid())
+  userId             String
+  memoryJobId        String
+  executionBindingId String
+  inputHash          String    @db.VarChar(128)
+  acceptedOutputHash String    @db.VarChar(128)
+  acceptedOutput     Json?
+  recoverableUntil   DateTime
+  createdAt          DateTime  @default(now())
+  clearedAt          DateTime?
+
+  @@unique([userId, id])
+  @@unique([userId, executionBindingId])
+  @@index([userId, memoryJobId, inputHash])
+  @@index([userId, clearedAt, recoverableUntil])
+  @@index([clearedAt, recoverableUntil, id])
 }
 
 /// Recovery-only staging for one strict automatic-fact extraction result.
