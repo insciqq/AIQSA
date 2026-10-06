@@ -19,7 +19,7 @@ const digestBranch = ` OR EXISTS (
 
 // Replica mode skips guards and foreign keys: these rows exercise only the
 // cleanup and the guards' event set, never their source checks.
-const digestRows = (digestId: string, userId: string, chatId: string) => `
+export const digestRows = (digestId: string, userId: string, chatId: string) => `
 INSERT INTO "ChatMemoryDigest" (id, "userId", "chatId", "anchorChunkId", "branchGeneration",
   "sourceRevisionAtCreation", "activeLeafMessageId", "sourceContentHash", "contentHash", summary,
   "safeDigestText", "normalizedSafeSearchText", "languageCode", "occurredFrom", "occurredTo",
