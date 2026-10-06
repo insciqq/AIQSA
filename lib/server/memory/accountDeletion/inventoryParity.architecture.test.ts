@@ -6,13 +6,20 @@ function source(path: string): string {
   return readFileSync(resolve(process.cwd(), path), "utf8");
 }
 
+// Retired and unused since v0.3.6 and dropped by the next release; rows an
+// upgrade-overlap writer may still insert go with their chat or user cascade.
+const RETIRED_MEMORY_MODELS = new Set([
+  "ChatMemoryDigest", "ChatMemoryDigestChunk", "ChatMemoryDigestMessage", "MemoryHistoryExecution"
+]);
+
 function accountOwnedMemoryModels(schema: string): readonly string[] {
   return [...schema.matchAll(/^model\s+(\w+)\s+\{([\s\S]*?)^\}/gmu)]
     .flatMap((match) => {
       const name = match[1]!;
       const body = match[2]!;
       return /^(?:\s{2})userId\s+String(?:\s|$)/mu.test(body) &&
-        /^(?:Memory|ChatMemory|ModelRunMemory)/u.test(name)
+        /^(?:Memory|ChatMemory|ModelRunMemory)/u.test(name) &&
+        !RETIRED_MEMORY_MODELS.has(name)
         ? [name]
         : [];
     })
