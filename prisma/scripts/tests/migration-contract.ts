@@ -48,6 +48,7 @@ import { PUBLISHED_IMAGE_MODELS_MIGRATION, publishedImageModelsFixtureSql, publi
 import { KNOWLEDGE_IMAGE_OBSERVATION_MIGRATION, knowledgeImageObservationFixtureSql, knowledgeImageObservationProofSql } from "./knowledge-image-observation-adoption";
 import { DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION, dropRetiredMemorySynthesisColumnsFixtureSql, dropRetiredMemorySynthesisColumnsProofSql } from "./drop-retired-memory-synthesis-columns-adoption";
 import { DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION, dropRetiredMcpActivationStorageFixtureSql, dropRetiredMcpActivationStorageProofSql } from "./drop-retired-mcp-activation-storage-adoption";
+import { DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION, dropRetiredMemoryDigestSynthesisStorageFixtureSql, dropRetiredMemoryDigestSynthesisStorageProofSql } from "./drop-retired-memory-digest-synthesis-storage-adoption";
 import { RETIRE_MEMORY_DIGESTS_MIGRATION, retireMemoryDigestsFixtureSql, retireMemoryDigestsProofSql } from "./retire-memory-digests-adoption";
 import { RETIRE_DREAM_SYNTHESIS_STAGING_MIGRATION, retireDreamSynthesisStagingFixtureSql, retireDreamSynthesisStagingProofSql } from "./retire-dream-synthesis-staging-adoption";
 import assert from "node:assert/strict";
@@ -71,7 +72,7 @@ import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-
 const BASELINE = "20260815000000_baseline";
 const BASELINE_SHA256 = "71c210d018bf2c56c4003a0a74f5c84dfdea939336c889b04b786444461f5b33";
 const EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256 =
-  "65d339f4ab403bf58ec2757218645312f571a17d71325f9777f843dda4ae0095";
+  "eebf5019d8a511bb484b076020d9207d4a49aaf2e1af39ab4f9d31e3afc2f3a2";
 const APPEND_ONLY_PROBE = "20990101000000_append_only_contract_probe";
 const KNOWLEDGE_PROFILE_MIGRATION = "20260818023000_knowledge_index_profile";
 const KNOWLEDGE_SOURCES_MIGRATION = "20260818043000_knowledge_sources_v2";
@@ -7574,8 +7575,10 @@ function main(
     skillsSharingFixtureSql, skillsSharingProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, SKILLS_PROGRESSIVE_MIGRATION,
     skillsProgressiveFixtureSql, skillsProgressiveProofSql);
+  // Its proof reads the retired digest assistant key the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, ASSISTANTS_V2_MIGRATION,
-    assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql);
+    assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql, undefined,
+    DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, SKILL_IMPORT_SOURCE_MIGRATION,
     skillImportSourceFixtureSql, skillImportSourceProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, PERPLEXITY_LEGACY_REASONING_MIGRATION,
@@ -7714,11 +7717,16 @@ function main(
     dropRetiredMcpActivationStorageProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_IMPORT_SOURCE_MIGRATION,
     chatImportSourceFixtureSql, chatImportSourceProofSql);
+  // Both proofs read the retired storage the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_MEMORY_DIGESTS_MIGRATION,
-    retireMemoryDigestsFixtureSql, retireMemoryDigestsProofSql, retireMemoryDigestsProofSql);
+    retireMemoryDigestsFixtureSql, retireMemoryDigestsProofSql, retireMemoryDigestsProofSql,
+    DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, RETIRE_DREAM_SYNTHESIS_STAGING_MIGRATION,
     retireDreamSynthesisStagingFixtureSql, retireDreamSynthesisStagingProofSql,
-    retireDreamSynthesisStagingProofSql);
+    retireDreamSynthesisStagingProofSql, DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION);
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION,
+    dropRetiredMemoryDigestSynthesisStorageFixtureSql, dropRetiredMemoryDigestSynthesisStorageProofSql,
+    dropRetiredMemoryDigestSynthesisStorageProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
