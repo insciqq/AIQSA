@@ -19,7 +19,13 @@ import {
   type ScheduledTaskSettledState,
   type ScheduledTaskStatusColumn
 } from "./runnerPolicy";
-import { occurrenceCheckSourcesMissing, occurrenceSourcesIncomplete, unavailableSourcesWire } from "./sourceHealth";
+import {
+  occurrenceCheckSourcesMissing,
+  occurrenceSourcesIncomplete,
+  unavailableSourcesWire,
+  withCodeCallUnavailableSources,
+  type ScheduledCodeCallSourceFailure
+} from "./sourceHealth";
 import {
   pruneScheduledTaskOccurrences,
   scheduledTaskChatModeFromColumn,
@@ -234,6 +240,45 @@ async function applySettlement(
   };
 }
 
+/**
+ * Sources the run's Workspace code could not use (refused before dispatch as
+ * unauthorized or unavailable, with no successful call) join the sources its
+ * admission recorded, on the occurrence itself, before settlement decides
+ * health, the check outcome and the incomplete streak.
+ */
+async function withCodeCallSourceHealth(tx: Prisma.TransactionClient, locked: Locked): Promise<Locked> {
+  const runId = locked.occurrence.runId;
+  if (!runId) return locked;
+  const failures = await tx.$queryRaw<ScheduledCodeCallSourceFailure[]>(Prisma.sql`
+    SELECT code_call."serverId",
+      bool_or(code_call."errorCode" = 'authorization_required') AS "authorization",
+      (SELECT server ->> 'serverName'
+        FROM "ModelRun" AS run
+        CROSS JOIN LATERAL jsonb_array_elements(CASE
+          WHEN jsonb_typeof(run."normalizedRequest" #> '{mcpDiscovery,catalog,servers}') = 'array'
+            THEN run."normalizedRequest" #> '{mcpDiscovery,catalog,servers}'
+          WHEN jsonb_typeof(run."normalizedRequest" #> '{mcp,servers}') = 'array'
+            THEN run."normalizedRequest" #> '{mcp,servers}'
+          ELSE '[]'::jsonb END) AS server
+        WHERE run."id" = ${runId} AND server ->> 'serverId' = code_call."serverId"
+        LIMIT 1) AS "serverName"
+    FROM "WorkspaceCodeCall" AS code_call
+    WHERE code_call."modelRunId" = ${runId}
+    GROUP BY code_call."serverId"
+    HAVING bool_or(code_call."state" = 'error'
+        AND code_call."errorCode" IN ('authorization_required', 'upstream_unavailable', 'tool_unavailable'))
+      AND NOT bool_or(code_call."state" = 'complete')
+    ORDER BY code_call."serverId"
+  `);
+  if (failures.length === 0) return locked;
+  const unavailableSources = withCodeCallUnavailableSources(locked.occurrence.unavailableSources, failures);
+  await tx.$executeRaw(Prisma.sql`
+    UPDATE "ScheduledTaskOccurrence" SET "unavailableSources" = ${JSON.stringify(unavailableSources)}::jsonb
+    WHERE "id" = ${locked.occurrence.id}
+  `);
+  return { ...locked, occurrence: { ...locked.occurrence, unavailableSources: unavailableSources as unknown as Prisma.JsonValue } };
+}
+
 async function settleEach(
   rows: readonly { id: string }[],
   settle: (id: string) => Promise<ScheduledTaskSettlement | null>
@@ -267,15 +312,16 @@ async function skipQuietly(
 export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): ScheduledTaskRunnerStore {
   function settleLinked(occurrenceId: string, now: Date) {
     return prisma.$transaction(async (tx) => {
-      const locked = await lockForSettlement(tx, occurrenceId);
-      if (!locked || locked.occurrence.state !== "RUNNING") return null;
-      const run = locked.occurrence.runId
+      const observed = await lockForSettlement(tx, occurrenceId);
+      if (!observed || observed.occurrence.state !== "RUNNING") return null;
+      const run = observed.occurrence.runId
         ? await tx.modelRun.findUnique({
-          select: { assistantMessageId: true, errorPayload: true, status: true }, where: { id: locked.occurrence.runId }
+          select: { assistantMessageId: true, errorPayload: true, status: true }, where: { id: observed.occurrence.runId }
         })
         : null;
       const outcome = linkedRunOutcome(run);
       if (!outcome) return null;
+      const locked = await withCodeCallSourceHealth(tx, observed);
       // A completed monitoring check settles with its outcome as the reason.
       const check = outcome.state === "COMPLETED" ? monitoringSettlementOf(locked) : null;
       return applySettlement(tx, locked, check ? { reasonCode: check.outcome, state: "COMPLETED" } : outcome, now,
@@ -522,9 +568,10 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
 /**
  * The personal MCP servers the task relies on, judged by its previous shown
  * result: those whose tools that run called (its accepted plan names each
- * loaded tool's server) and those it relied on but already missed, so a
- * server stays relevant while it keeps the task's results incomplete. Null
- * when that run is gone (its chat was deleted): nothing to judge by.
+ * loaded tool's server, and code receipts name theirs) and those it relied on
+ * but already missed, so a server stays relevant while it keeps the task's
+ * results incomplete. Null when that run is gone (its chat was deleted):
+ * nothing to judge by.
  */
 async function previousResultMcpServerIds(
   prisma: PrismaClient,
@@ -548,6 +595,12 @@ async function previousResultMcpServerIds(
         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(occurrence."unavailableSources", '[]'::jsonb)) AS source
         WHERE occurrence."runId" = ${input.runId} AND occurrence."userId" = ${input.userId}
           AND source ->> 'serverId' IS NOT NULL AND source -> 'relied' = 'true'::jsonb
+        UNION
+        SELECT code_call."serverId"
+        FROM "WorkspaceCodeCall" AS code_call
+        JOIN "ModelRun" AS run ON run."id" = code_call."modelRunId"
+        WHERE code_call."modelRunId" = ${input.runId} AND run."userId" = ${input.userId}
+          AND code_call."state" <> 'dispatching'
       ) AS "serverIds"
   `);
   return row?.found ? row.serverIds : null;
