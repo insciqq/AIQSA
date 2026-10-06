@@ -4,6 +4,9 @@ export const DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION =
 
 const retiredColumns = ["synthesisEnabled", "synthesisEnabledAt", "synthesisPolicyVersion", "lastSynthesisAt"]
   .map((column) => `'${column}'`).join(", ");
+// Later maintenance policy migrations legitimately restart every owner's scan.
+const maintenanceScanColumns = ["maintenanceCursor", "maintenanceScannedAt"]
+  .map((column) => `'${column}'`).join(", ");
 
 // Rows as the previous release leaves them: database defaults (synthesis on,
 // never run), a run synthesis beside changed live settings, and the off shape a
@@ -26,7 +29,7 @@ UPDATE "UserMemorySettings" SET "synthesisEnabled" = false, "synthesisEnabledAt"
   "learnAutomatically" = false, "decayEnabled" = false, "decayPolicyVersion" = NULL
 WHERE "userId" = 'memory-synthesis-drop-off';
 CREATE TABLE "MemorySynthesisDropAdoptionFixture" AS
-SELECT "userId", to_jsonb(settings) - ARRAY[${retiredColumns}] AS snapshot
+SELECT "userId", to_jsonb(settings) - ARRAY[${retiredColumns}, ${maintenanceScanColumns}] AS snapshot
 FROM "UserMemorySettings" AS settings WHERE "userId" LIKE 'memory-synthesis-drop-%';
 `;
 
