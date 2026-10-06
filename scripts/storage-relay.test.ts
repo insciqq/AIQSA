@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const relay = fileURLToPath(new URL("./storage-relay.cjs", import.meta.url));
 // Only the relay's own variables: no inherited application secrets.
-const baseEnv = { PATH: process.env.PATH ?? "" };
+function relayEnv(extra: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+  return { NODE_ENV: "test", PATH: process.env.PATH ?? "", ...extra };
+}
 const held: Server[] = [];
 afterEach(async () => {
   await Promise.all(held.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
@@ -29,7 +31,7 @@ async function heldPort(): Promise<number> {
 
 describe("storage relay logging", () => {
   it("writes its configuration refusal through the shared structured writer", () => {
-    const result = spawnSync(process.execPath, [relay], { encoding: "utf8", env: { ...baseEnv, AIQSA_STORAGE_SOCKET: "relative.sock" } });
+    const result = spawnSync(process.execPath, [relay], { encoding: "utf8", env: relayEnv({ AIQSA_STORAGE_SOCKET: "relative.sock" }) });
     expect(result.status).toBe(64);
     expect(records(result.stdout)).toEqual([expect.objectContaining({
       event: "runtime_lifecycle", level: "error", role: "storage_relay", subsystem: "object_storage", stage: "startup",
@@ -42,7 +44,7 @@ describe("storage relay logging", () => {
   it("reports a listener failure by its system code without the socket path", async () => {
     const port = await heldPort();
     const result = spawnSync(process.execPath, [relay], { encoding: "utf8", timeout: 10_000,
-      env: { ...baseEnv, AIQSA_STORAGE_SOCKET: "/run/private-socket/s3.sock", AIQSA_STORAGE_RELAY_PORT: String(port) } });
+      env: relayEnv({ AIQSA_STORAGE_SOCKET: "/run/private-socket/s3.sock", AIQSA_STORAGE_RELAY_PORT: String(port) }) });
     expect(result.status).toBe(1);
     expect(records(result.stdout)).toEqual([expect.objectContaining({
       event: "runtime_lifecycle", level: "error", role: "storage_relay", stage: "startup", outcome: "failed", code: "EADDRINUSE"
@@ -54,7 +56,7 @@ describe("storage relay logging", () => {
     const port = await heldPort();
     await new Promise<void>((resolve) => held.pop()!.close(() => resolve()));
     const child = spawn(process.execPath, [relay], { stdio: ["ignore", "pipe", "inherit"],
-      env: { ...baseEnv, AIQSA_STORAGE_SOCKET: "/run/private-socket/s3.sock", AIQSA_STORAGE_RELAY_PORT: String(port) } });
+      env: relayEnv({ AIQSA_STORAGE_SOCKET: "/run/private-socket/s3.sock", AIQSA_STORAGE_RELAY_PORT: String(port) }) });
     let stdout = "";
     child.stdout.setEncoding("utf8");
     const ready = new Promise<void>((resolve) => child.stdout.on("data", (chunk: string) => {
