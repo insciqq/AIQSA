@@ -89,6 +89,25 @@ describe("SkillSaveCardsV2", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("the Skill is archived"));
   });
 
+  it("shows a restore as v4 → v5 (= v3) with binary files, the task warning and Undo", async () => {
+    const restored: SkillSaveCard = { ...card, revisionId: "rev-5", outcome: "restored", fromRevision: 4, toRevision: 5, restoredRevision: 3,
+      changeNote: null, files: [{ path: "SKILL.md", change: "changed", executable: false },
+        { path: "model.bin", change: "changed", executable: false, binary: true }] };
+    respond({ [`GET ${UNDO}`]: { state: "available" }, [`POST ${UNDO}`]: { state: "undone", outcome: "restored", revision: 6 } });
+    render(<SkillSaveCardsV2 cards={[restored]} />);
+    const item = screen.getByTestId("skill-save-card");
+    expect(item).toHaveAttribute("data-outcome", "restored");
+    expect(item).toHaveTextContent("Skill restored · v4 → v5 (= v3)");
+    expect(item).toHaveTextContent("The content of v3 is current again as v5; every version stays in history.");
+    expect(within(item).getByRole("note")).toHaveTextContent("Their next run uses this version.");
+    const files = within(item).getByRole("list", { name: "Files of gitlab-digest" });
+    expect(within(files).getAllByRole("listitem")[1]).toHaveTextContent("Binary");
+    // A binary has no text view.
+    expect(within(files).queryByRole("button", { name: "View saved model.bin" })).toBeNull();
+    fireEvent.click(await within(item).findByRole("button", { name: "Undo restoring gitlab-digest" }));
+    await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent("previous content is current again as v6"));
+  });
+
   it("keeps Undo after a failed read, reports a failed Undo and never reads while the answer runs", async () => {
     const fetchMock = respond({ [`GET ${UNDO}`]: new Response("{}", { status: 503 }),
       [`POST ${UNDO}`]: new Response(JSON.stringify({ error: "skill_operation_failed" }), { status: 503 }) });
