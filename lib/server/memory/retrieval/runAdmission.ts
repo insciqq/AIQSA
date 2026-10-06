@@ -87,20 +87,12 @@ import {
 } from "./localRepository";
 import {
   createPrismaMemoryRunUtilityService,
-  memoryDedicatedRerankDocument,
   MEMORY_RERANK_MAX_ATTEMPTS,
   type MemoryRunQueryEmbeddingResult,
   type MemoryRunRerankDecision,
   type MemoryRunRerankResult,
   type MemoryRunUtilityService
 } from "./runUtilities";
-import {
-  MEMORY_HISTORY_RELEVANCE_VERSION,
-  memoryHistoryRelevanceTarget,
-  rejectedMemoryHistoryHandles,
-  type MemoryHistoryRelevanceResult
-} from "./historyRelevancePolicy";
-import { emptyMemoryHistoryRelevanceDiagnostics } from "./historyRelevanceRuntime";
 import {
   MEMORY_CONTROL_SCREEN_VERSION,
   type MemoryControlScreenResult
@@ -287,7 +279,7 @@ type UtilityEvidence = Readonly<{
   providerRequestRoutes?: readonly (string | null)[];
   reason: string | null;
   role: "MEMORY_CONTROL" | "MEMORY_QUERY_EMBED" | "MEMORY_QUERY_RESOLVE" |
-    "MEMORY_RERANK" | "MEMORY_HISTORY_RELEVANCE" | "MEMORY_CONTROL_SCREEN";
+    "MEMORY_RERANK" | "MEMORY_CONTROL_SCREEN";
   state: "READY" | "SKIPPED" | "UNAVAILABLE";
 }>;
 
@@ -296,7 +288,6 @@ type MemoryPreparationStage =
   | "controlMs"
   | "controlScreenMs"
   | "deterministicAggregationMs"
-  | "historyRelevanceMs"
   | "localRetrievalMs"
   | "packerMs"
   | "queryEmbeddingMs"
@@ -323,7 +314,6 @@ function createMemoryPreparationTimings(clock: () => number): MemoryPreparationT
     controlMs: 0,
     controlScreenMs: 0,
     deterministicAggregationMs: 0,
-    historyRelevanceMs: 0,
     localRetrievalMs: 0,
     packerMs: 0,
     queryEmbeddingMs: 0,
@@ -393,7 +383,6 @@ function withMemoryPreparationEvidence(
   result: MemoryPreparingAttemptResult,
   timings: MemoryPreparationTimings,
   queryResolverExecution: MemoryQueryResolverExecution | null = null,
-  historyRelevance: Readonly<{ result: MemoryHistoryRelevanceResult; removedCount: number }> | null = null,
   admissionBudget: MemoryAdmissionBudgetEvidence | null = null,
   controlScreen: MemoryControlScreenResult | null = null
 ): MemoryPreparingAttemptResult {
@@ -451,25 +440,6 @@ function withMemoryPreparationEvidence(
       utilityExecutions
     };
   }
-  if (historyRelevance) {
-    const { result: decision, removedCount } = historyRelevance;
-    const utilityExecutions = [
-      ...(Array.isArray(budget.utilityExecutions) ? budget.utilityExecutions : []),
-      { externalCall: decision.diagnostics.externalCallCount > 0,
-        externalCallCount: decision.diagnostics.externalCallCount,
-        reason: decision.reason, role: "MEMORY_HISTORY_RELEVANCE", state: decision.status }
-    ];
-    budget = {
-      ...budget,
-      historyRelevance: { ...decision.diagnostics, reason: decision.reason, removedCount,
-        state: decision.status, version: MEMORY_HISTORY_RELEVANCE_VERSION },
-      utilityExecutions,
-      utilityEgressMode: budget.utilityEgressMode === "CONSENTED_EXTERNAL" || decision.diagnostics.bindingCount > 0
-        ? "CONSENTED_EXTERNAL" : "LOCAL_ONLY",
-      ...(typeof budget.componentMetrics === "object" && budget.componentMetrics !== null && !Array.isArray(budget.componentMetrics)
-        ? { componentMetrics: { ...budget.componentMetrics, ...utilityExecutionMetricEvidence(utilityExecutions) } } : {})
-    };
-  }
   if (controlScreen) {
     const utilityExecutions = [
       ...(Array.isArray(budget.utilityExecutions) ? budget.utilityExecutions : []),
@@ -506,7 +476,6 @@ function withMemoryPreparationEvidence(
       aggregationProviderCalls: budgetUtilityCallCount(budget, "MEMORY_AGGREGATE"),
       controlProviderCalls: budgetUtilityCallCount(budget, "MEMORY_CONTROL"),
       controlScreenProviderCalls: budgetUtilityCallCount(budget, "MEMORY_CONTROL_SCREEN"),
-      historyRelevanceProviderCalls: budgetUtilityCallCount(budget, "MEMORY_HISTORY_RELEVANCE"),
       memoryPrepareLatencyBucket: memoryPreparationLatencyBucket(latency.memoryPrepareMs),
       queryEmbeddingProviderCalls: budgetUtilityCallCount(budget, "MEMORY_QUERY_EMBED"),
       queryResolverProviderCalls: budgetUtilityCallCount(budget, "MEMORY_QUERY_RESOLVE"),
@@ -2580,9 +2549,6 @@ export function createMemoryRunRetrievalService(
       const queryResolverState: { execution: MemoryQueryResolverExecution | null } = {
         execution: null
       };
-      const historyRelevanceState: {
-        execution: Readonly<{ result: MemoryHistoryRelevanceResult; removedCount: number }> | null
-      } = { execution: null };
       const controlScreenState: { execution: MemoryControlScreenResult | null } = {
         execution: null
       };
@@ -3624,43 +3590,14 @@ export function createMemoryRunRetrievalService(
       // Rejoin only individually ranked excerpts. Linked evidence was collected
       // before the reranker, so neither a session score nor a later expansion
       // can introduce another item into the frozen reader pack.
-      let rejoinCandidates = relevant;
-      if (options.utilities?.historyRelevance) {
-        const retainedKeys = new Set(relevant.map(candidate => `${candidate.itemType}:${candidate.itemId}`));
-        const targets = relevanceInput.filter(entry =>
-          retainedKeys.has(`${entry.candidate.itemType}:${entry.candidate.itemId}`) && memoryHistoryRelevanceTarget(entry));
-        const passages = targets.map(entry => ({ handle: entry.handle, text: memoryDedicatedRerankDocument(entry) }));
-        if (passages.length > 0) {
-          const unavailable = (reason: string): MemoryHistoryRelevanceResult => ({
-            status: "UNAVAILABLE", reason, scores: [], diagnostics: emptyMemoryHistoryRelevanceDiagnostics(passages.length)
-          });
-          let decision = await timings.measure("historyRelevanceMs", () => runOptionalMemoryUtility(
-              deadline, "HISTORY_RELEVANCE", utilitySignal => options.utilities!.historyRelevance!({
-                attemptId: input.attemptId, userId: input.userId, query: plan.originalSanitizedQuery,
-                passages, signal: utilitySignal
-              })
-          ).catch((error: unknown) => unavailable(isMemoryDeadlineExhaustion(error)
-            ? "memory_history_relevance_deadline_exceeded"
-            : "memory_history_relevance_unavailable")));
-          input.signal?.throwIfAborted();
-          const rejected = rejectedMemoryHistoryHandles(passages, decision);
-          if (decision.status === "READY" && rejected === null) {
-            decision = { ...decision, status: "UNAVAILABLE", reason: "decision_response_invalid", scores: [] };
-          }
-          const rejectedKeys = new Set(targets.filter(entry => rejected?.has(entry.handle))
-            .map(entry => `${entry.candidate.itemType}:${entry.candidate.itemId}`));
-          rejoinCandidates = relevant.filter(candidate => !rejectedKeys.has(`${candidate.itemType}:${candidate.itemId}`));
-          historyRelevanceState.execution = { result: decision, removedCount: relevant.length - rejoinCandidates.length };
-        }
-      }
       let rejoined: readonly MemoryExpandedCandidate[] = [];
-      if (rejoinCandidates.length > 0) {
+      if (relevant.length > 0) {
         try {
           rejoined = await timings.measure("rejoinMs", () => runBoundedMemoryRead(
             deadline,
             MEMORY_LOCAL_RETRIEVAL_OPTIONAL_MAXIMUM_MS,
             (rejoinSignal) => abortableRead(expandWithSourceFamilyPlans({
-              candidates: rejoinCandidates,
+              candidates: relevant,
               plans,
               repository,
               snapshot: local.snapshot
@@ -3684,7 +3621,7 @@ export function createMemoryRunRetrievalService(
         `${candidate.itemType}:${candidate.itemId}`,
         candidate
       ]));
-      const queryMatchedRelevant = rejoinCandidates.filter((candidate) =>
+      const queryMatchedRelevant = relevant.filter((candidate) =>
         rejoinedByKey.has(`${candidate.itemType}:${candidate.itemId}`));
       const sessionCompletionCandidateKeys = new Set(sessionCompletion.candidates.map(
         (candidate) => `${candidate.itemType}:${candidate.itemId}`));
@@ -4022,8 +3959,7 @@ export function createMemoryRunRetrievalService(
           }
         : result;
       return withMemoryPreparationEvidence(answerResult, timings, queryResolverState.execution,
-        historyRelevanceState.execution, admissionBudgetState.evidence,
-        controlScreenState.execution);
+        admissionBudgetState.evidence, controlScreenState.execution);
     }
   });
 }

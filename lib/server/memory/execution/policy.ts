@@ -91,7 +91,6 @@ export type MemoryUtilityPolicyDependencies = Readonly<{
   resolveRerankerRole?: () => Promise<RerankerModelRoleResolution>;
   resolveSystemRole?: () => Promise<SystemModelRoleResolution>;
   resolveMemoryRole?: () => Promise<SystemModelRoleResolution>;
-  resolveDecisionRole?: () => Promise<DecisionModelRoleResolution>;
   resolveScreenDecisionRole?: () => Promise<DecisionModelRoleResolution>;
 }>;
 
@@ -249,7 +248,7 @@ export async function resolveCurrentMemoryUtilityPolicy(
   settings: Pick<LockedMemorySettings, "embeddingProviderModelId">,
   dependencies: MemoryUtilityPolicyDependencies = {}
 ): Promise<ResolvedMemoryUtilityPolicy> {
-  const [memoryResolution, systemResolution, rerankerResolution, decisionResolution,
+  const [memoryResolution, systemResolution, rerankerResolution,
     screenDecisionResolution] = await Promise.all([
     dependencies.resolveMemoryRole?.() ??
       createMemoryUtilityModelRoleResolver(db).resolve(),
@@ -257,11 +256,8 @@ export async function resolveCurrentMemoryUtilityPolicy(
       createSystemModelRoleResolver(db).resolve(),
     dependencies.resolveRerankerRole?.() ??
       createRerankerModelRoleResolver(db).resolve(),
-    dependencies.resolveDecisionRole?.() ?? createDecisionModelRoleResolver(db).resolve("memoryRelevance"),
-    dependencies.resolveScreenDecisionRole?.() ?? (dependencies.resolveDecisionRole
-      ? Promise.resolve({ ok: false as const, code: "decision_feature_disabled" as const,
-          selectedProviderModelId: null })
-      : createDecisionModelRoleResolver(db).resolve("memoryControlScreen"))
+    dependencies.resolveScreenDecisionRole?.() ??
+      createDecisionModelRoleResolver(db).resolve("memoryControlScreen")
   ]);
   let embedding: EmbeddingProviderAdmissionRole | null = null;
   let embeddingUnavailable = false;
@@ -281,9 +277,8 @@ export async function resolveCurrentMemoryUtilityPolicy(
   const targets = new Map<MemoryExecutionRole, ResolvedMemoryExecutionTarget>();
   let rerankerTargets: readonly ResolvedMemoryExecutionTarget[] = Object.freeze([]);
   const destinations: MemoryPolicyDestination[] = MEMORY_EXECUTABLE_ROLES.map((role) => {
-    if (role === "MEMORY_HISTORY_RELEVANCE" || role === "MEMORY_CONTROL_SCREEN") {
-      const resolution = role === "MEMORY_CONTROL_SCREEN"
-        ? screenDecisionResolution : decisionResolution;
+    if (role === "MEMORY_CONTROL_SCREEN") {
+      const resolution = screenDecisionResolution;
       const target = resolution.ok
         ? targetFor(role, resolution.role, resolution.policyVersion) : null;
       if (target) {

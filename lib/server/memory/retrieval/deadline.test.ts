@@ -101,8 +101,7 @@ describe("Memory retrieval deadline", () => {
     ["QUERY_RESOLVE", 6_000, 6_000 - MEMORY_QUERY_RESOLVER_SETTLEMENT_RESERVE_MS],
     ["CONTROL", 10_000, 10_000 - MEMORY_CONTROL_READ_RESERVE_MS],
     ["QUERY_EMBED", 120_000, MEMORY_QUERY_EMBEDDING_OPTIONAL_MAXIMUM_MS],
-    ["RERANK", 120_000, MEMORY_RERANK_OPTIONAL_MAXIMUM_MS],
-    ["HISTORY_RELEVANCE", 120_000, MEMORY_RERANK_OPTIONAL_MAXIMUM_MS]
+    ["RERANK", 120_000, MEMORY_RERANK_OPTIONAL_MAXIMUM_MS]
   ] as const)("times %s out after its derived budget inside %i ms", async (role, admissionDeadlineMs, expectedMs) => {
     const startedAt = Date.now();
     const deadline = createMemoryRetrievalDeadline(undefined, { admissionDeadlineMs });

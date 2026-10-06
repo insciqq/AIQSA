@@ -144,16 +144,14 @@ describe("persisted independent System Model roles", () => {
       expect(await service.adoptDecisionModel({ userId: adminId, expectedVersion: before.version, providerModelId: id })).toBe(true);
       const roles = createDecisionModelRoleResolver(db);
       expect((await roles.resolve("knowledgeRelevance")).ok).toBe(true);
-      expect((await roles.resolve("memoryRelevance")).ok).toBe(true);
       expect((await roles.resolve("skillSuggestions")).ok).toBe(true);
       let current = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       await service.update({ userId: adminId, expectedVersion: current.version,
-        decisionFeatures: { knowledgeRelevance: false, skillSuggestions: false } });
+        decisionFeatures: { knowledgeRelevance: false } });
       current = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       expect(await service.adoptDecisionModel({ userId: adminId, expectedVersion: current.version, providerModelId: id })).toBe(false);
       expect(await roles.resolve("knowledgeRelevance")).toMatchObject({ ok: false, code: "decision_feature_disabled" });
-      expect(await roles.resolve("skillSuggestions")).toMatchObject({ ok: false, code: "decision_feature_disabled" });
-      expect((await roles.resolve("memoryRelevance")).ok).toBe(true);
+      expect((await roles.resolve("skillSuggestions")).ok).toBe(true);
       expect((await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).providerModelId)
         .toBe(before.providerModelId);
     });
@@ -166,19 +164,19 @@ describe("persisted independent System Model roles", () => {
       const memory = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       const service = createAdminSystemModelPolicyService(db);
       await service.update({ expectedVersion: before.version, userId: adminId,
-        decisionProviderModelId: id, decisionFeatures: { memoryRelevance: true, knowledgeRelevance: false } });
-      const admitted = await createDecisionModelRoleResolver(db).resolve("memoryRelevance");
+        decisionProviderModelId: id, decisionFeatures: { skillSuggestions: true, knowledgeRelevance: false } });
+      const admitted = await createDecisionModelRoleResolver(db).resolve("skillSuggestions");
       expect(admitted.ok).toBe(true);
       expect((await service.list()).policy.decisionModel).toMatchObject({ id, available: true });
       const saved = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       expect(saved).toMatchObject({ providerModelId: before.providerModelId, rerankerProviderModelId: before.rerankerProviderModelId,
-        decisionConfiguredAt: expect.any(Date), decisionFeaturesJson: { memoryRelevance: true, knowledgeRelevance: false } });
+        decisionConfiguredAt: expect.any(Date), decisionFeaturesJson: { skillSuggestions: true, knowledgeRelevance: false } });
       expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(memory);
       await expect(service.update({ expectedVersion: before.version, userId: adminId, decisionProviderModelId: null }))
         .rejects.toMatchObject({ code: "system_model_policy_stale" });
       if (!admitted.ok) throw new Error("decision_fixture_admission_failed");
       await db.providerCredentialVersion.update({ where: { id: admitted.role.authority.credentialVersionId }, data: { revokedAt: new Date() } });
-      expect(await createDecisionModelRoleResolver(db).resolve("memoryRelevance")).toMatchObject({ ok: false, code: "decision_model_unavailable" });
+      expect(await createDecisionModelRoleResolver(db).resolve("skillSuggestions")).toMatchObject({ ok: false, code: "decision_model_unavailable" });
       expect((await service.list()).policy.decisionModel).toMatchObject({ id, available: false });
       await service.update({ expectedVersion: saved.version, userId: adminId, decisionProviderModelId: null });
       expect(await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toMatchObject({

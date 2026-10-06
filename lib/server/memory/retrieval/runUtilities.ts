@@ -72,8 +72,6 @@ import {
 import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
 import { createDecisionModelRoleResolver } from "../../providerRuntime/decisionModelRole";
 import { createAcceptedDecisionRuntime } from "../../providerRuntime/decisionRuntime";
-import { createMemoryHistoryRelevanceService, type MemoryHistoryRelevanceInput } from "./historyRelevanceRuntime";
-import type { MemoryHistoryRelevanceResult } from "./historyRelevancePolicy";
 import {
   createMemoryControlScreenService,
   type MemoryControlScreenInput
@@ -289,7 +287,6 @@ type QueryEmbeddingBaseInput = Readonly<{
 
 export type MemoryRunUtilityService = Readonly<{
   controlScreen?(input: MemoryControlScreenInput): Promise<MemoryControlScreenResult>;
-  historyRelevance?(input: MemoryHistoryRelevanceInput): Promise<MemoryHistoryRelevanceResult>;
   embedQuery(input: QueryEmbeddingBaseInput & Readonly<{
     profile: MemoryVectorProfile;
     purpose?: "ACTION_TARGET" | "RETRIEVAL";
@@ -2021,8 +2018,5 @@ export function createPrismaMemoryRunUtilityService(
   return Object.freeze({ ...utilities, controlScreen: createMemoryControlScreenService({
     execution, runtime: decisionRuntime,
     resolveRole: () => decisionRoleResolver.resolve("memoryControlScreen")
-  }), historyRelevance: createMemoryHistoryRelevanceService({
-    execution, runtime: decisionRuntime,
-    resolveRole: () => decisionRoleResolver.resolve("memoryRelevance")
   }) });
 }

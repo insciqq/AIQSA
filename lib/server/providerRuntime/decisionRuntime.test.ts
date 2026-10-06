@@ -109,30 +109,30 @@ describe("optional Decisions model role", () => {
     const db = { systemModelPolicy: { findUnique: vi.fn(async () => policy) } };
     const loadRole = vi.fn(async () => { throw new ProviderAdmissionError("model_not_available"); });
     const role = createDecisionModelRoleResolver(db as never, { loadRole });
-    for (const feature of ["memoryRelevance", "knowledgeRelevance", "skillSuggestions"] as const) {
+    for (const feature of ["knowledgeRelevance", "skillSuggestions"] as const) {
       expect(await role.resolve(feature)).toMatchObject({ code: "decision_model_unavailable" });
       policy.decisionFeaturesJson[feature] = false;
       expect(await role.resolve(feature)).toMatchObject({ code: "decision_feature_disabled" });
     }
-    expect(loadRole).toHaveBeenCalledTimes(3);
+    expect(loadRole).toHaveBeenCalledTimes(2);
   });
 
   it.each([null, { decisionProviderModelId: null, decisionFeaturesJson: {}, version: 1 },
-    { decisionProviderModelId: "decision", decisionFeaturesJson: { memoryRelevance: false }, version: 2 }])
+    { decisionProviderModelId: "decision", decisionFeaturesJson: { knowledgeRelevance: false }, version: 2 }])
   ("does no admission work when absent or explicitly disabled (%#)", async (policy) => {
     const loadRole = vi.fn();
     const db = { systemModelPolicy: { findUnique: vi.fn(async () => policy) } };
-    expect((await createDecisionModelRoleResolver(db as never, { loadRole }).resolve("memoryRelevance")).ok).toBe(false);
+    expect((await createDecisionModelRoleResolver(db as never, { loadRole }).resolve("knowledgeRelevance")).ok).toBe(false);
     expect(loadRole).not.toHaveBeenCalled();
   });
 
   it("resolves only the selected role and preserves unexpected database failures", async () => {
-    const db = { systemModelPolicy: { findUnique: vi.fn(async () => ({ decisionProviderModelId: "chosen", decisionFeaturesJson: { memoryRelevance: true }, version: 3 })) } };
+    const db = { systemModelPolicy: { findUnique: vi.fn(async () => ({ decisionProviderModelId: "chosen", decisionFeaturesJson: { knowledgeRelevance: true }, version: 3 })) } };
     const loadRole = vi.fn(async () => { throw new ProviderAdmissionError("model_not_available"); });
     const role = createDecisionModelRoleResolver(db as never, { loadRole });
-    expect(await role.resolve("memoryRelevance")).toEqual({ ok: false, code: "decision_model_unavailable", selectedProviderModelId: "chosen" });
+    expect(await role.resolve("knowledgeRelevance")).toEqual({ ok: false, code: "decision_model_unavailable", selectedProviderModelId: "chosen" });
     expect(loadRole).toHaveBeenCalledExactlyOnceWith(db, { providerModelId: "chosen" });
     const failure = new Error("synthetic database error"); loadRole.mockRejectedValue(failure);
-    await expect(role.resolve("memoryRelevance")).rejects.toBe(failure);
+    await expect(role.resolve("knowledgeRelevance")).rejects.toBe(failure);
   });
 });
