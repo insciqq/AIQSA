@@ -146,7 +146,7 @@ describe("a chat answer's Skill save", () => {
       .toMatchObject({ kind: "not_saved", outcome: { code: "skill_not_available" } });
   });
 
-  it("refuses scheduled runs and the hourly limit, and warns about active tasks that use the Skill", async () => {
+  it("refuses scheduled runs and the hourly limit, and warns about active tasks that pin or used the Skill", async () => {
     const userId = await owner();
     const task = await prisma.scheduledTask.create({ data: { userId, title: "Morning digest", prompt: "Synthetic", scheduleKind: "DAILY",
       timeOfDayMinutes: 540, timeZone: "UTC", modelId: "fake-qsa", provider: "fake", toolsEnabled: true } });
@@ -156,9 +156,11 @@ describe("a chat answer's Skill save", () => {
     const created = saved(await turn.save(turn.callIds[0]!, { kind: "new" }, bundle("One.")));
     await prisma.modelRunSkillBinding.create({ data: { modelRunId: scheduled.runId, skillId: created.skillId, revisionId: created.revisionId,
       alias: "digest" } });
+    const pinned = await prisma.scheduledTask.create({ data: { userId, title: "Pinned digest", prompt: "Synthetic", scheduleKind: "DAILY",
+      timeOfDayMinutes: 600, timeZone: "UTC", modelId: "fake-qsa", provider: "fake", toolsEnabled: true, pinnedSkillIds: [created.skillId] } });
     const next = await answer(userId);
     const updated = saved(await next.save(next.callIds[0]!, { kind: "version", skillId: created.skillId, expectedVersion: 1 }, bundle("Two.")));
-    expect(updated.scheduledTasks).toEqual([{ taskId: task.id, title: "Morning digest" }]);
+    expect(updated.scheduledTasks).toEqual([{ taskId: task.id, title: "Morning digest" }, { taskId: pinned.id, title: "Pinned digest" }]);
     await prisma.skillStoreOperation.createMany({ data: Array.from({ length: 18 }, () => ({ ownerUserId: userId, clientId: SKILL_SAVE_CLIENT_ID,
       operationKey: randomUUID(), requestDigest: "0".repeat(64), action: "create", status: "COMPLETED", revisionId: created.revisionId })) });
     const limited = await answer(userId);
