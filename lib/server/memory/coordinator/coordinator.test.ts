@@ -772,7 +772,8 @@ describe("Memory coordinator worker liveness", () => {
       settings: {
         acceptedUtilityEgressAt: null, acceptedUtilityEgressFingerprint: null, acceptedUtilityPolicyVersion: null,
         activeIndexGenerationId: null, decayEnabled: false, decayPolicyVersion: null,
-        embeddingProviderModelId: null, learnAutomatically: true, memoryConsentRevision: 0,
+        embeddingProviderModelId: null, embeddingSelectionResolved: false, learnAutomatically: true,
+        memoryConsentRevision: 0,
         memoryGeneration: 0, memoryRevision: 0, referenceChatHistory: true,
         sensitiveAutomaticPolicy: "EXPLICIT_ONLY", settingsRevision: 0,
         updatedAt: NOW, useMemoryFacts: true, userId: "user-1"

@@ -5497,6 +5497,7 @@ model UserMemorySettings {
   memoryRevision                   Int                            @default(0)
   activeIndexGenerationId          String?
   embeddingProviderModelId         String?
+  embeddingSelectionResolved       Boolean                        @default(false)
   sensitiveAutomaticPolicy         MemorySensitiveAutomaticPolicy @default(EXPLICIT_ONLY)
   memoryConsentRevision            Int                            @default(0)
   settingsRevision                 Int                            @default(0)
