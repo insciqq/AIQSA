@@ -3124,8 +3124,8 @@ type MemoryRetrievalLaneTask =
 
 /** Transliteration/n-gram recovery is a bounded lexical fallback. It is
  * suppressed only when the corresponding Unicode/folded provider produced a
- * complete variant that survived canonical rejoin. Independent exact, dense,
- * digest, or partial lexical candidates cannot prove lexical query coverage. */
+ * complete variant that survived canonical rejoin. Independent exact, dense
+ * or partial lexical candidates cannot prove lexical query coverage. */
 export function shouldRunMemoryNgramFallback(
   lane: MemoryRetrievalLane,
   laneResults: readonly MemoryLaneResult[],
