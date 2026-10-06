@@ -245,7 +245,7 @@ describe("bounded request bodies", () => {
 
 describe("upload permit gate", () => {
   it("rejects immediately at capacity and releases idempotently", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const gate = createUploadPermitGate(1);
     const release = gate.tryAcquire();
 
@@ -256,11 +256,11 @@ describe("upload permit gate", () => {
     release?.();
     expect(gate.snapshot().active).toBe(0);
     expect(gate.tryAcquire()).toBeTypeOf("function");
-    warn.mockRestore();
+    write.mockRestore();
   });
 
   it("counts every rejection while bounding structured warnings", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const gate = createUploadPermitGate(1);
     const release = gate.tryAcquire();
 
@@ -269,9 +269,13 @@ describe("upload permit gate", () => {
     }
 
     expect(gate.snapshot().rejected).toBe(5);
-    expect(warn).toHaveBeenCalledTimes(3);
-    expect(warn.mock.calls.map(([entry]) => JSON.parse(String(entry)).rejected)).toEqual([1, 2, 4]);
+    const warnings = write.mock.calls.map(([chunk]) => String(chunk))
+      .filter((line) => line.includes("\"upload_busy\""))
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(warnings.map((record) => record.count)).toEqual([1, 2, 4]);
+    expect(warnings.every((record) => record.event === "service_operation" && record.level === "warn" &&
+      record.subsystem === "attachments" && record.claimed_count === 1)).toBe(true);
     release?.();
-    warn.mockRestore();
+    write.mockRestore();
   });
 });
