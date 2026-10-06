@@ -11,6 +11,7 @@ import { createSendMessageHandler, stopModelRun } from "../runs/handlers";
 import type { CreateRunInput } from "../runs/runRepositoryContract";
 import { createPrismaScheduledTaskOwnerLoader, createScheduledTaskSend, scheduledTaskOwnerAuth, scheduledTaskSendBody } from "./admission";
 import { createPrismaScheduledTaskRunCatalogLoader } from "./catalog";
+import { createPrismaScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
 import { planScheduledTaskUpdate } from "./mutations";
 import { createScheduledTaskRunner } from "./runner";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
@@ -24,6 +25,7 @@ function runner(deps: ReturnType<typeof sendDeps> = sendDeps()) {
   return createScheduledTaskRunner({
     appBaseUrl: "http://localhost:3000",
     loadCatalog: createPrismaScheduledTaskRunCatalogLoader(prisma),
+    loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prisma),
     async renameChat(input) { await chats.updateChat(input); },
     // The ordinary send admission, with the fake provider of the disposable stand.
     send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps: deps }),

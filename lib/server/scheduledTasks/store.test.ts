@@ -24,7 +24,7 @@ function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
     ...scheduledTaskScheduleColumns({ kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }),
     id: "task-1", title: "Morning brief", prompt: "Synthetic prompt", timeZone: "Europe/Moscow", modelId: "model-1",
     provider: "connection-1", searchEnabled: false, emailNotify: true, toolsEnabled: true, workspaceEnabled: false,
-    memoryEnabled: true, chatMode: "NEW",
+    memoryEnabled: true, pinnedSkillIds: [], chatMode: "NEW",
     kind: "STANDARD", status: "ACTIVE", pauseReason: null, completionReason: null,
     nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: "chat-1", revision: 4,
     createdAt: new Date("2026-10-01T00:00:00.000Z"), updatedAt: new Date("2026-10-02T06:01:00.000Z"),

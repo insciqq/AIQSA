@@ -6,6 +6,7 @@ import {
   isScheduledTaskRunIncomplete,
   scheduledTaskErrorMessage,
   scheduledTaskReasonMessage,
+  scheduledTaskSkillUnavailableReason,
   scheduledTaskSourceMessage,
   type ScheduledTask,
   type ScheduledTaskCheckOutcome,
@@ -81,9 +82,14 @@ export function scheduledTaskScheduleText(schedule: ScheduledTaskSchedule, timeZ
 
 type PauseCopy = Readonly<{ reason: string; hint: string }>;
 
-/** Why a task paused itself and how to recover. */
-export function scheduledTaskPauseCopy(reasonCode: string): PauseCopy {
+/**
+ * Why a task paused itself and how to recover. A lost pinned Skill is named
+ * when the task's projection still lets the owner see it.
+ */
+export function scheduledTaskPauseCopy(reasonCode: string, task?: Pick<ScheduledTask, "pinnedSkills">): PauseCopy {
   switch (reasonCode) {
+    case "skill_unavailable":
+      return { reason: scheduledTaskSkillUnavailableReason(task ?? {}), hint: "Edit the task's Skills, then resume." };
     case "model_unavailable":
       return { reason: "the model is no longer available", hint: "Edit to choose another model." };
     case "search_unavailable":
@@ -140,6 +146,7 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "workspace_unavailable": return "Workspace could not be used for this task";
     case "workspace_secret_limit": return "the saved Workspace secrets exceed the limit";
     case "source_unavailable": return "a source the task uses was unavailable";
+    case "skill_unavailable": return "a pinned Skill was no longer available";
     case "model_cannot_report": return "the model cannot report monitoring results";
     case "run_deadline": return `it was stopped after running for ${SCHEDULED_TASK_RUN_DEADLINE_MINUTES} minutes`;
     case "provider_error":
@@ -164,7 +171,7 @@ export function scheduledTaskStatusLine(task: ScheduledTask, now: Date = new Dat
   }
   if (task.status === "paused") {
     if (!task.pauseReason) return { text: "Paused", tone: "neutral" };
-    const copy = scheduledTaskPauseCopy(task.pauseReason);
+    const copy = scheduledTaskPauseCopy(task.pauseReason, task);
     return { text: `Paused: ${copy.reason}. ${copy.hint}`, tone: "attention" };
   }
   return task.nextRunAt
@@ -244,6 +251,8 @@ export type ScheduledTaskRunRow = Readonly<{
   outcome: string;
   /** One line per source the run could not reach. */
   sources: readonly string[];
+  /** The pinned Skills the run loaded with the version each used, or null without any. */
+  skills: string | null;
   time: string;
   /** `quiet`: a monitoring check with no update, history only. */
   tone: "neutral" | "attention" | "live" | "quiet";
@@ -263,6 +272,9 @@ export function scheduledTaskRunRow(run: ScheduledTaskRun, timeZone: string, now
   return {
     outcome: check ? clause(check) : outcomeText(run.state, run.reasonCode),
     sources: run.unavailableSources.map(scheduledTaskSourceMessage),
+    skills: run.skills.length > 0
+      ? `Skills: ${run.skills.map((skill) => `${skill.name} v${skill.version}`).join(", ")}` : null,
+
     time: formatScheduledInstant(run.startedAt ?? run.scheduledFor, timeZone, now),
     tone: runTone(run),
     trigger: run.trigger === "manual" ? "Run now" : "Scheduled"

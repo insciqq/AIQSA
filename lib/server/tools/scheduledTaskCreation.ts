@@ -14,6 +14,7 @@ import { databaseFailureCode } from "../observability/databaseFailure";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { RunRepository, ScheduledTaskCallRefusal } from "../runs/runRepositoryContract";
 import { isFetchUrlPlan } from "./fetchUrlPlan";
+import { resolveScheduledTaskSkillReferences, SCHEDULED_TASK_SKILLS_SCHEMA, scheduledTaskModelSkills } from "./scheduledTaskSkills";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
 
 /**
@@ -35,11 +36,13 @@ type ScheduledTaskToolRequest = Readonly<{
   fetchUrl?: unknown;
   prompt: Readonly<{ baseline?: Readonly<{ timeZone: string; timeZoneSource: "client" | "utc_fallback" }> }>;
   scheduledTaskTool?: ScheduledTaskToolSettings;
+  /** The run's frozen Skill manifest: the only Skills a created task may pin. */
+  skills?: unknown;
 }>;
 export type ScheduledTaskCallCreator = NonNullable<RunRepository["createScheduledTaskForCall"]>;
 
 const SETTINGS_KEYS = ["modelId", "provider", "searchEnabled", "toolsEnabled", "workspaceEnabled", "memoryEnabled"];
-const ARGUMENT_KEYS = ["title", "prompt", "kind", "chatMode", "schedule"];
+const ARGUMENT_KEYS = ["title", "prompt", "kind", "chatMode", "schedule", "skills"];
 const SCHEDULE_FIELDS = {
   once: ["date"], daily: [], weekly: ["days"], monthly: ["dayOfMonth"], hourly: ["everyHours", "until", "days"]
 } as const satisfies Record<string, readonly string[]>;
@@ -82,8 +85,9 @@ export function createScheduledTaskTool(timeZone: string): RunTool {
       "once it happened); \"standard\" for reminders and reports.",
       "prompt: a standalone instruction that works without this conversation, in the user's language; for monitoring",
       `say what counts as news. Times are 24-hour HH:MM in the user's time zone ${timeZone}; set unused schedule`,
-      "fields to null. chatMode: null unless the user asks. Confirm briefly what was created; if it fails, explain",
-      "why and do not retry the same arguments."
+      "fields to null. chatMode: null unless the user asks. When the task runs one of this chat's skills, pin it in",
+      "skills so every run loads it. Confirm briefly what was created; if it fails, explain why and do not retry the",
+      "same arguments."
     ].join(" "),
     inputSchema: {
       additionalProperties: false,
@@ -115,7 +119,8 @@ export function createScheduledTaskTool(timeZone: string): RunTool {
           },
           required: ["kind", "time", ...OPTIONAL_SCHEDULE_FIELDS],
           type: "object"
-        }
+        },
+        skills: SCHEDULED_TASK_SKILLS_SCHEMA
       },
       required: ARGUMENT_KEYS,
       type: "object"
@@ -135,7 +140,9 @@ export function isScheduledTaskCreateCall(request: Readonly<{ scheduledTaskTool?
   return request.scheduledTaskTool !== undefined && toolName === CREATE_SCHEDULED_TASK_TOOL_NAME;
 }
 
-type ToolArguments = Readonly<{ chatMode: unknown; kind: unknown; prompt: unknown; schedule: Record<string, unknown>; title: unknown }>;
+type ToolArguments = Readonly<{
+  chatMode: unknown; kind: unknown; prompt: unknown; schedule: Record<string, unknown>; skills: unknown; title: unknown;
+}>;
 
 /**
  * The model's flat schedule as the owner contract's shape for its kind: only
@@ -166,7 +173,8 @@ function decodeArguments(value: Record<string, unknown>): ToolArguments | string
   }
   const schedule = contractSchedule(value.schedule);
   if (typeof schedule === "string") return schedule;
-  return { chatMode: value.chatMode ?? null, kind: value.kind, prompt: value.prompt, schedule, title: value.title };
+  return { chatMode: value.chatMode ?? null, kind: value.kind, prompt: value.prompt, schedule, skills: value.skills ?? [],
+    title: value.title };
 }
 
 /** Where runs answer when the model leaves it open: one chat when the task requires it, else the editor's default. */
@@ -203,6 +211,7 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
       tools: task.toolsEnabled,
       workspace: task.workspaceEnabled,
       memory: task.memoryEnabled,
+      skills: scheduledTaskModelSkills(task),
       note: "The answer shows this task with Edit and Delete; the user manages tasks in Studio > Scheduled."
     } }],
     name: call.name,
@@ -227,6 +236,8 @@ function refusalText(code: ScheduledTaskCallRefusal | "scheduled_task_arguments_
     case "scheduled_task_limit":
     case "scheduled_task_hourly_limit":
       return `${scheduledTaskErrorMessage(code)} The user can pause or delete tasks in Studio > Scheduled.`;
+    case "scheduled_task_skills_need_tools":
+      return "This chat has tools off, so its task cannot pin Skills: create it with skills [] or ask the user to turn tools on.";
     default: return scheduledTaskErrorMessage(code);
   }
 }
@@ -261,6 +272,8 @@ export async function executeCreateScheduledTask(
   if (hasInvalidProviderToolArguments(call.arguments)) return refused(call, "scheduled_task_arguments_invalid", "they are not a JSON object.");
   const decoded = decodeArguments(call.arguments);
   if (typeof decoded === "string") return refused(call, "scheduled_task_arguments_invalid", decoded);
+  const skills = resolveScheduledTaskSkillReferences(context.request, decoded.skills);
+  if (!skills.ok) return refused(call, "scheduled_task_arguments_invalid", skills.message);
   const zone = runTimeZone(context.request);
   try {
     const outcome = await create({
@@ -268,8 +281,9 @@ export async function executeCreateScheduledTask(
         title: decoded.title, prompt: decoded.prompt, schedule: decoded.schedule, timeZone: zone.timeZone,
         modelId: settings.modelId, provider: settings.provider, searchEnabled: settings.searchEnabled, emailNotify: false,
         toolsEnabled: settings.toolsEnabled, workspaceEnabled: settings.workspaceEnabled,
-        memoryEnabled: settings.memoryEnabled === true,
+        memoryEnabled: settings.memoryEnabled === true, pinnedSkillIds: skills.skillIds,
         chatMode: decoded.chatMode ?? defaultChatMode(decoded), kind: decoded.kind
+
       },
       callId: context.persistedToolCallId,
       result: (task) => scheduledTaskCreatedResult(call, task, zone.fallback),

@@ -9,6 +9,7 @@ import { stopModelRun } from "../runs/handlers";
 import { RunRecoveryScheduler } from "../runs/recoveryScheduler";
 import { createPrismaScheduledTaskOwnerLoader, createScheduledTaskSend } from "./admission";
 import { createPrismaScheduledTaskRunCatalogLoader } from "./catalog";
+import { createPrismaScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
 import { createScheduledTaskRunner } from "./runner";
 import { registerScheduledTaskRunnerKick } from "./runnerKick";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
@@ -27,7 +28,9 @@ export function getDefaultScheduledTaskRunner(): RunRecoveryScheduler {
       background: (work) => runInBackground(work),
       kick,
       loadCatalog: createPrismaScheduledTaskRunCatalogLoader(prisma),
-      async renameChat(input) { await chats.updateChat(input); },
+      loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prisma),
+      async renameChat
+(input) { await chats.updateChat(input); },
       send: createScheduledTaskSend({ loadOwner: createPrismaScheduledTaskOwnerLoader(prisma), sendDeps }),
       sendEmail: (message) => emailDispatcher.send(message),
       sendPush: (occurrenceId) => getDefaultBrowserPush().sender.notifyOccurrence(occurrenceId),
