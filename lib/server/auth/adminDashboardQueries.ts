@@ -17,8 +17,6 @@ import {
   serializeAdminRule
 } from "./adminRepositorySerializers";
 import { serializeAdminMemberships } from "./adminSerializationPrimitives";
-import { serializeAdminUsageDashboard } from "./adminUsageAggregation";
-import { loadAdminUsageQueryRows } from "./adminUsageQueries";
 import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "./fullAccessGroup";
 
 // Rows of a personal server can name only its owner (database fence), so the
@@ -158,7 +156,6 @@ export async function listAdminDashboard(
     invites,
     catalog,
     grants,
-    usageRows,
     mcpServer,
     smtpConfiguration,
     memoryOwnedCounts,
@@ -234,7 +231,6 @@ export async function listAdminDashboard(
         userId: true
       }
     }),
-    loadAdminUsageQueryRows(prisma),
     prisma.mcpServer.findFirst({
       select: { id: true },
       where: { archivedAt: null, ownerUserId: null }
@@ -271,12 +267,6 @@ export async function listAdminDashboard(
     row._count._all
   ]));
   const groupNamesById = new Map(groups.map((group) => [group.id, { name: group.name }]));
-  const usage = serializeAdminUsageDashboard({
-    groups,
-    providerModelRows: usageRows.providerModelRows,
-    userRows: usageRows.userRows,
-    users
-  });
   const serializedAccessRules = accessRules.map((rule) => serializeAdminRule(rule, groupNamesById));
   const searchIds = [...new Set(grants.flatMap((grant) => grant.searchStrategy ? [grant.searchStrategy] : []))];
   const searchNames = new Map((searchIds.length ? await prisma.searchOption.findMany({
@@ -363,7 +353,6 @@ export async function listAdminDashboard(
     groups: serializedGroups,
     invites: serializedInvites,
     navigation,
-    usage,
     users: serializedUsers
   };
 }

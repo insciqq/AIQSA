@@ -11,7 +11,6 @@ import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { normalizeTokenUsage } from "../../domain/usage";
 import { providerTemplateIds } from "../../domain/providerTemplates";
-import { loadAdminUsageQueryRows } from "../auth/adminUsageQueries";
 import { mcpRuntimeFingerprint, mcpSharedRuntimeFingerprint } from "../mcp/access";
 import {
   encryptMcpEnvelope,
@@ -3798,11 +3797,11 @@ describe("Prisma-backed run repository", () => {
       const chat = await createPrismaChatRepository(prisma).getChat({ chatId: active.chatId, userId });
       expect(chat?.usageStats).toMatchObject({ totalTokens: 0, incompleteRecordCount: 2, recordCount: 3,
         knownCostRecordCount: 0, estimatedCostMicros: null });
-      const aggregate = await loadAdminUsageQueryRows(prisma);
-      expect(aggregate.userRows.find((row) => row.userId === userId)).toMatchObject({
-        _count: { _all: 1 }, incompleteUsageCount: 2,
-        _sum: { inputTokens: 7, outputTokens: 0, totalTokens: 0, reasoningTokens: null }
+      const userUsage = await prisma.usageEvent.findMany({
+        select: { modelRunId: true, usageCompleteness: true }, where: { userId }
       });
+      expect(new Set(userUsage.map((row) => row.modelRunId))).toEqual(new Set([active.runId]));
+      expect(userUsage.filter((row) => row.usageCompleteness !== "COMPLETE")).toHaveLength(2);
     });
   });
 
@@ -3886,7 +3885,7 @@ describe("Prisma-backed run repository", () => {
         })
       ).resolves.toBe(true);
 
-      const [run, chat, usageEvents, adminUsage] = await Promise.all([
+      const [run, chat, usageEvents] = await Promise.all([
         prisma.modelRun.findUniqueOrThrow({
           select: {
             estimatedCostMicros: true,
@@ -3917,8 +3916,7 @@ describe("Prisma-backed run repository", () => {
             totalTokens: true
           },
           where: { modelRunId: active.runId }
-        }),
-        loadAdminUsageQueryRows(prisma)
+        })
       ]);
 
       expect(run).toEqual({
@@ -3952,24 +3950,12 @@ describe("Prisma-backed run repository", () => {
           totalTokens: 5
         }
       ]);
-      expect(adminUsage.userRows.find((row) => row.userId === userId)?._count._all).toBe(1);
-      expect(
-        adminUsage.providerModelRows
-          .filter((row) => row.userId === userId)
-          .map((row) => row._count._all)
-      ).toEqual([1, 1]);
-
       await prisma.modelRun.delete({ where: { id: active.runId } });
-      const detachedUsage = await loadAdminUsageQueryRows(prisma);
-      expect(detachedUsage.userRows.find((row) => row.userId === userId)).toMatchObject({
-        _count: { _all: 0 },
-        _sum: { totalTokens: 8 }
+      const detachedUsage = await prisma.usageEvent.findMany({
+        select: { modelRunId: true, totalTokens: true }, where: { userId }
       });
-      expect(
-        detachedUsage.providerModelRows
-          .filter((row) => row.userId === userId)
-          .map((row) => row._count._all)
-      ).toEqual([0, 0]);
+      expect(detachedUsage.map((row) => row.modelRunId)).toEqual([null, null]);
+      expect(detachedUsage.reduce((sum, row) => sum + (row.totalTokens ?? 0), 0)).toBe(8);
     });
   });
 
