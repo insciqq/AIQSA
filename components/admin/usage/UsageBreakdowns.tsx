@@ -87,7 +87,7 @@ function BreakdownRow({
 }
 
 function tokensLine(row: AdminUsageAmounts): string {
-  return `${formatCount(row.totalTokens)} tokens`;
+  return row.recordCount === 0 ? "no usage in this period" : `${formatCount(row.totalTokens)} tokens`;
 }
 
 export function UsageByModel({ usage }: Readonly<{ usage: AdminUsageAnalytics }>) {

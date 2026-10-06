@@ -96,6 +96,15 @@ async function signIn(page: Page, theme: "dark" | "light", baseURL: string): Pro
 }
 
 async function expectNoPageOverflow(page: Page): Promise<void> {
+  const overflowing = await page.evaluate(() => {
+    const limit = document.documentElement.clientWidth + 0.5;
+    return [...document.querySelectorAll<HTMLElement>("body *")]
+      .filter((element) => element.getBoundingClientRect().right > limit)
+      .slice(0, 12)
+      .map((element) => `${element.tagName.toLowerCase()}${element.dataset.testid ? `[${element.dataset.testid}]` : ""}` +
+        ` .${String(element.className).slice(0, 80)} right=${Math.round(element.getBoundingClientRect().right)}`);
+  });
+  expect(overflowing, "elements beyond the viewport's right edge").toEqual([]);
   await expect.poll(() => page.evaluate(() => ({
     body: document.body.scrollWidth <= document.body.clientWidth,
     document: document.documentElement.scrollWidth <= document.documentElement.clientWidth
@@ -162,11 +171,11 @@ for (const viewport of [
       await byModel.scrollIntoViewIfNeeded();
       await page.screenshot({ path: testInfo.outputPath("04-breakdowns.png") });
 
-      const users = section.getByText("Mira Petrova").first();
+      const users = section.getByText("Mira Petrova").locator("visible=true").first();
       await users.scrollIntoViewIfNeeded();
       await page.screenshot({ path: testInfo.outputPath("05-users.png") });
 
-      const groupsHeading = section.getByText(groups[0]!.name).last();
+      const groupsHeading = section.getByText(groups[0]!.name).locator("visible=true").last();
       await groupsHeading.scrollIntoViewIfNeeded();
       await page.screenshot({ path: testInfo.outputPath("06-groups.png") });
       await expectNoPageOverflow(page);
