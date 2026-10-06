@@ -11,6 +11,7 @@ import { RUN_FOLLOWUPS_MIGRATION, runFollowupsFixtureSql, runFollowupsProofSql }
 import { NATIVE_ROUTING_MIGRATION, nativeRoutingFixtureSql, nativeRoutingProofSql, nativeRoutingRepeatProofSql } from "./openrouter-native-routing-adoption";
 import { CHAT_TITLE_SETUP_MIGRATION, chatTitleSetupFixtureSql, chatTitleSetupProofSql } from "./chat-title-setup-adoption";
 import { MEMORY_DEFAULTS_MIGRATION, memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql } from "./memory-defaults-adoption";
+import { MEMORY_EMBEDDING_SELECTION_BACKFILL_MIGRATION, memoryEmbeddingSelectionFixtureSql, memoryEmbeddingSelectionProofSql } from "./memory-embedding-selection-adoption";
 import { WORKSPACE_USER_DEFAULT_MIGRATION, workspaceUserDefaultFixtureSql, workspaceUserDefaultProofSql, workspaceUserDefaultRepeatProofSql } from "./workspace-user-default-adoption";
 import { CHAT_TITLE_CREDENTIAL_MIGRATION, chatTitleCredentialAdoptionFixtureSql, chatTitleCredentialAdoptionProofSql } from "./chat-title-credential-adoption";
 import { CHAT_TITLE_ROLE_MIGRATION, chatTitleRoleAdoptionFixtureSql, chatTitleRoleAdoptionProofSql, chatTitleRoleClearProofSql } from "./system-model-roles-adoption";
@@ -7663,6 +7664,9 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_DEFAULTS_MIGRATION,
     memoryDefaultsAdoptionFixtureSql, memoryDefaultsAdoptionProofSql, memoryDefaultsRepeatProofSql,
     DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION);
+  // Its revision bump must not resolve an embedding selection nobody made.
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_EMBEDDING_SELECTION_BACKFILL_MIGRATION,
+    memoryEmbeddingSelectionFixtureSql, memoryEmbeddingSelectionProofSql, memoryEmbeddingSelectionProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_USER_DEFAULT_MIGRATION,
     workspaceUserDefaultFixtureSql, workspaceUserDefaultProofSql, workspaceUserDefaultRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_CREDENTIAL_MIGRATION,
