@@ -606,9 +606,11 @@ describe("Prisma Workspace operation admission", () => {
     await prisma.workspaceSession.update({ data: { state: "READY" }, where: { id: value.session.id } });
     const admitted = await admitPreparingRunWithClient(prisma, await value.plan());
     for (const ordinal of [0, 1]) {
+      // Claiming a call stamps startedAt; it keeps the call an unregistered
+      // obligation after cancelRun closes it with an unknown outcome.
       const call = await prisma.modelRunToolCall.create({ data: {
         arguments: {}, modelRunId: admitted.runId, ordinal, providerCallId: `restore_${ordinal}`, roundIndex: 1,
-        state: "running", toolName: namespacedWorkspaceToolName("sandbox_exec_start"), workspaceRunBindingId: admitted.runId
+        startedAt: new Date(), state: "running", toolName: namespacedWorkspaceToolName("sandbox_exec_start"), workspaceRunBindingId: admitted.runId
       } });
       if (ordinal === 0) await prisma.workspaceExecution.create({ data: {
         modelRunId: admitted.runId, modelRunToolCallId: call.id, runtimeExecSessionId: "restored_execution", workspaceSessionId: value.session.id
