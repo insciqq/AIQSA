@@ -309,14 +309,6 @@ export type MemoryRunUtilityService = Readonly<{
       sensitivityClass: "NORMAL";
       speakerScope: MemoryUtilitySpeakerScope;
       sourceKind: MemoryUtilitySourceKind;
-      retrievalHint?: string | null;
-      supportingEvidence?: readonly Readonly<{
-        itemId: string;
-        occurredFrom: string;
-        occurredTo: string;
-        sourceChatId: string;
-        text: string;
-      }>[];
       temporalReason: "any" | "as_of" | "between" | "current" | "historical";
       text: string;
     }>[];
@@ -513,17 +505,10 @@ function rerankProviderInput(
 ): MemoryRerankUtilityProviderInput {
   return {
     aggregationRequested: input.aggregationRequested === true,
-    candidates: candidates.map((candidate) => {
-      const {
-        retrievalHint: _retrievalHint,
-        supportingEvidence: _supportingEvidence,
-        ...providerCandidate
-      } = candidate;
-      return {
-        ...providerCandidate,
-        text: memoryDedicatedRerankDocument(candidate)
-      };
-    }),
+    candidates: candidates.map((candidate) => ({
+      ...candidate,
+      text: memoryDedicatedRerankDocument(candidate)
+    })),
     profileRequested: input.profileRequested,
     query: input.query,
     retrievalMode: input.retrievalMode,
@@ -567,44 +552,11 @@ type QueryEmbeddingInput = Parameters<MemoryRunUtilityService["embedQuery"]>[0];
 function safeRerankCandidate(candidate: RerankCandidate): RerankCandidate | null {
   const raw = sanitizeMemoryUtilityText(candidate.text);
   if (!raw.eligible || !raw.safeText) return null;
-  const rawOnly = {
-    ...candidate,
-    retrievalHint: null,
-    supportingEvidence: Object.freeze([]),
-    text: raw.safeText
-  };
-  if (candidate.retrievalHint === null || candidate.retrievalHint === undefined) {
-    return rawOnly;
-  }
-  const hint = sanitizeMemoryUtilityText(candidate.retrievalHint);
-  const supports = candidate.supportingEvidence ?? [];
-  if (!hint.eligible || !hint.safeText || hint.safeText.length > 1_000 ||
-    supports.length > 2) return rawOnly;
-  const safeSupports = supports.flatMap((support) => {
-    const safe = sanitizeMemoryUtilityText(support.text);
-    const validIdentity = (value: string) => value.length > 0 &&
-      value.length <= 256 && !/[\u0000-\u0020\u007f]/u.test(value);
-    const occurredFrom = Date.parse(support.occurredFrom);
-    const occurredTo = Date.parse(support.occurredTo);
-    return safe.eligible && safe.safeText && safe.safeText.length <= 4_000 &&
-      validIdentity(support.itemId) && validIdentity(support.sourceChatId) &&
-      Number.isFinite(occurredFrom) && Number.isFinite(occurredTo) &&
-      occurredTo >= occurredFrom
-      ? [{ ...support, text: safe.safeText }]
-      : [];
-  });
-  if (safeSupports.length !== supports.length ||
-    new Set(safeSupports.map(({ itemId }) => itemId)).size !== safeSupports.length) {
-    return rawOnly;
-  }
-  return {
-    ...candidate,
-    retrievalHint: hint.safeText,
-    supportingEvidence: Object.freeze(safeSupports),
-    text: raw.safeText
-  };
+  return { ...candidate, text: raw.safeText };
 }
 
+/** The calibrated relevance floor was measured on this exact sectioned layout;
+ * history evidence is raw only, so its supporting section stays "none". */
 export function memoryDedicatedRerankDocument(candidate: RerankCandidate): string {
   const safe = sanitizeMemoryUtilityText(candidate.text);
   if (!safe.eligible || !safe.safeText) {
@@ -612,67 +564,16 @@ export function memoryDedicatedRerankDocument(candidate: RerankCandidate): strin
   }
   const occurredFrom = candidate.occurredFrom ?? "unknown";
   const occurredTo = candidate.occurredTo ?? "open";
-  const retrievalHint = candidate.retrievalHint === null ||
-    candidate.retrievalHint === undefined
-    ? null
-    : sanitizeMemoryUtilityText(candidate.retrievalHint);
-  if (retrievalHint && (!retrievalHint.eligible || !retrievalHint.safeText ||
-    retrievalHint.safeText.length > 1_000)) {
-    throw new Error("memory_reranker_document_secret_only");
-  }
-  const supportingEvidence = retrievalHint
-    ? (candidate.supportingEvidence ?? []).map((support, index) => {
-        const supportText = sanitizeMemoryUtilityText(support.text);
-        if (!supportText.eligible || !supportText.safeText) {
-          throw new Error("memory_reranker_document_secret_only");
-        }
-        return {
-          header: `[support_${index + 1} raw_excerpt=true ` +
-            `date_from=${support.occurredFrom} date_to=${support.occurredTo}]`,
-          text: supportText.safeText
-        };
-      })
-    : [];
-  if (supportingEvidence.length > 2) {
-    throw new Error("memory_reranker_document_invalid");
-  }
-  const render = (supportTexts: readonly string[]) => [
+  const document = [
     `[date_from=${occurredFrom} date_to=${occurredTo}]`,
     `[source=${candidate.sourceKind.toLocaleLowerCase("und")} ` +
       `speaker=${candidate.speakerScope} state=${candidate.current ? "current" : "historical"} ` +
       `lifecycle=${candidate.lifecycleState?.toLocaleLowerCase("und") ?? "not_applicable"}]`,
-    ...(retrievalHint?.safeText
-      ? ["[retrieval_hint derived=true authority=none]", retrievalHint.safeText]
-      : []),
     "[authoritative_evidence]",
     safe.safeText,
     "[supporting_authoritative_evidence]",
-    supportingEvidence.length > 0
-      ? supportingEvidence.map((support, index) =>
-          `${support.header}\n${supportTexts[index] ?? ""}`).join("\n")
-      : "none"
+    "none"
   ].join("\n");
-  if (supportingEvidence.length === 0) {
-    const document = render([]);
-    if (document.length > MAX_RERANK_DOCUMENT_CHARACTERS) {
-      throw new Error("memory_reranker_document_invalid");
-    }
-    return document;
-  }
-  const emptySupportDocument = render(supportingEvidence.map(() => ""));
-  let remaining = MAX_RERANK_DOCUMENT_CHARACTERS - emptySupportDocument.length;
-  if (remaining < supportingEvidence.length) {
-    throw new Error("memory_reranker_document_invalid");
-  }
-  const supportTexts = supportingEvidence.map((support, index) => {
-    const allocation = Math.floor(remaining / (supportingEvidence.length - index));
-    let text = support.text.slice(0, allocation);
-    const last = text.charCodeAt(text.length - 1);
-    if (last >= 0xD800 && last <= 0xDBFF) text = text.slice(0, -1);
-    remaining -= text.length;
-    return text;
-  });
-  const document = render(supportTexts);
   if (document.length > MAX_RERANK_DOCUMENT_CHARACTERS) {
     throw new Error("memory_reranker_document_invalid");
   }

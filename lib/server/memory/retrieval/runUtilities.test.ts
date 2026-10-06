@@ -971,27 +971,16 @@ describe("Memory run utility execution", () => {
     );
   });
 
-  it("renders contextual hints as authority-none with cited raw support", () => {
+  it("renders raw history evidence with an empty supporting section", () => {
     const [base] = dedicatedCandidates(1);
     const document = memoryDedicatedRerankDocument({
       ...base!,
-      retrievalHint: "Мария выбрала стол у окна.",
-      supportingEvidence: [{
-        itemId: "prior-round",
-        occurredFrom: "2026-01-01T00:00:00.000Z",
-        occurredTo: "2026-01-01T00:01:00.000Z",
-        sourceChatId: "source-chat",
-        text: "User: Мария забронировала стол."
-      }],
       text: "User: Она выбрала стол у окна."
     });
 
-    expect(document).toContain("[retrieval_hint derived=true authority=none]");
     expect(document).toContain("[authoritative_evidence]\nUser: Она выбрала стол у окна.");
-    expect(document).toContain("[supporting_authoritative_evidence]");
-    expect(document).toContain("User: Мария забронировала стол.");
-    expect(document.indexOf("[retrieval_hint"))
-      .toBeLessThan(document.indexOf("[authoritative_evidence]"));
+    expect(document.endsWith("[supporting_authoritative_evidence]\nnone")).toBe(true);
+    expect(document).not.toContain("retrieval_hint");
   });
 
   it("labels settled tool outcomes as lower-authority tool observations", () => {
@@ -1012,27 +1001,16 @@ describe("Memory run utility execution", () => {
     );
   });
 
-  it("bounds maximum contextual evidence to the dedicated document limit", () => {
+  it("bounds maximum raw evidence to the dedicated document limit", () => {
     const [base] = dedicatedCandidates(1);
     const document = memoryDedicatedRerankDocument({
       ...base!,
-      retrievalHint: "h".repeat(1_000),
-      supportingEvidence: [0, 1].map((index) => ({
-        itemId: `prior-round-${index}`,
-        occurredFrom: "2026-01-01T00:00:00.000Z",
-        occurredTo: "2026-01-01T00:01:00.000Z",
-        sourceChatId: "source-chat",
-        text: String(index).repeat(4_000)
-      })),
       text: "r".repeat(4_000)
     });
 
     expect(document.length).toBeLessThanOrEqual(MAX_RERANK_DOCUMENT_CHARACTERS);
     expect(document).toContain("[authoritative_evidence]\n" + "r".repeat(4_000));
-    expect(document).toContain("[support_1 raw_excerpt=true");
-    expect(document).toContain("[support_2 raw_excerpt=true");
   });
-
 
   it("reranks the full broad history pool in nine governed batches", async () => {
     const bind = vi.fn(async (_userId: string, input: { ordinal: number }) => ({

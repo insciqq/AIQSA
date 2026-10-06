@@ -15,11 +15,7 @@ import {
 } from "../../../domain/memory/retrieval";
 import { prisma } from "../../prisma";
 import { MEMORY_HISTORY_CHUNKING_VERSION } from "../history/chunking";
-import {
-  MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-  MEMORY_HISTORY_INDEX_PIPELINE_VERSION
-} from "../history/contract";
-import { MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION } from "../history/digest";
+import { MEMORY_HISTORY_INDEX_PIPELINE_VERSION } from "../history/contract";
 import { MEMORY_HISTORY_SOURCE_PROJECTION_VERSION } from
   "../history/sourceProjection";
 import {
@@ -786,8 +782,7 @@ async function createChunk(input: Readonly<{
   return chunkId;
 }
 
-async function createDigestHistoryChat(input: Readonly<{
-  digestText: string;
+async function createIndexedHistoryChat(input: Readonly<{
   generationId: string;
   occurredAt: Date;
   safeChunkText: string;
@@ -796,8 +791,6 @@ async function createDigestHistoryChat(input: Readonly<{
 }>): Promise<Readonly<{
   chatId: string;
   chunkId: string;
-  digestId: string;
-  digestText: string;
   safeChunkText: string;
 }>> {
   const source = await createChatWithLeaf({
@@ -827,76 +820,9 @@ async function createDigestHistoryChat(input: Readonly<{
     suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
     userId: input.userId
   });
-  const message = await prisma.message.findUniqueOrThrow({
-    select: { content: true, updatedAt: true },
-    where: { id: source.messageId }
-  });
-  const digestId = randomUUID();
-  await prisma.$transaction(async (tx) => {
-    await tx.chatMemoryDigest.create({
-      data: {
-        activeLeafMessageId: source.messageId,
-        anchorChunkId: chunkId,
-        branchGeneration: 0,
-        chatId: source.chatId,
-        contentHash: memorySha256({ digestText: input.digestText, version: 1 }),
-        decisions: [`Decision from ${input.title}`],
-        id: digestId,
-        languageCode: "en",
-        normalizedSafeSearchText: normalizeMemorySearchText(input.digestText),
-        occurredFrom: input.occurredAt,
-        occurredTo: new Date(input.occurredAt.getTime() + 5 * 60_000),
-        openLoops: [`Open loop from ${input.title}`],
-        incrementalDepth: 0,
-        inputFingerprint: memorySha256({
-          digestId,
-          mode: "FULL_REBUILD"
-        }),
-        pipelineVersion: MEMORY_CHAT_DIGEST_PIPELINE_VERSION,
-        rebuildPolicyVersion: MEMORY_CHAT_DIGEST_REBUILD_POLICY_VERSION,
-        redactionState: "NOT_NEEDED",
-        safeDigestText: input.digestText,
-        safetyClass: "NORMAL",
-        safetyPolicyVersion: "memory-chat-digest-policy-test",
-        sourceContentHash: sourceHash,
-        sourceFingerprint: memorySha256({ chunkId }),
-        sourceProjectionVersion: MEMORY_HISTORY_SOURCE_PROJECTION_VERSION,
-        sourceRevisionAtCreation: 1,
-        state: "ACTIVE",
-        summary: input.digestText,
-        topics: ["Deployment"],
-        updateMode: "FULL_REBUILD",
-        userId: input.userId
-      }
-    });
-    await tx.chatMemoryDigestChunk.create({
-      data: {
-        chatId: source.chatId,
-        chunkId,
-        digestId,
-        ordinal: 0,
-        userId: input.userId
-      }
-    });
-    await tx.chatMemoryDigestMessage.create({
-      data: {
-        chatId: source.chatId,
-        digestId,
-        messageId: source.messageId,
-        ordinal: 0,
-        sourceMessageContentHash: memorySha256(
-          textFromContentBlocks(message.content as { blocks?: unknown[] })
-        ),
-        sourceMessageUpdatedAt: message.updatedAt,
-        userId: input.userId
-      }
-    });
-  });
   return {
     chatId: source.chatId,
     chunkId,
-    digestId,
-    digestText: input.digestText,
     safeChunkText: input.safeChunkText
   };
 }
@@ -1913,368 +1839,6 @@ describe("local Memory retrieval on PostgreSQL", () => {
     expect(ranked.every(({ itemType }) => itemType === "FACT_VERSION")).toBe(true);
   });
 
-  it("uses digests for overview while targeted search returns authoritative raw chunks", async () => {
-    const userId = await createOwner("memory-history-overview");
-    try {
-      const generationId = await activateLexicalGeneration(userId);
-      const current = await createChatWithLeaf({
-        sourceRevision: 0,
-        title: "Current overview request",
-        userId,
-        userText: "Summarize our deployment discussions."
-      });
-      const histories = [
-        await createDigestHistoryChat({
-          digestText: "Summary: Sequoiaonly marks the cedar deployment chat, which selected a blue-green rollout.",
-          generationId,
-          occurredAt: new Date("2026-07-10T09:00:00.000Z"),
-          safeChunkText: "User:\nThe cedar deployment needs a blue-green rollout.",
-          title: "Cedar deployment",
-          userId
-        }),
-        await createDigestHistoryChat({
-          digestText: "Summary: The birch deployment chat left the launch date open.",
-          generationId,
-          occurredAt: new Date("2026-07-11T09:00:00.000Z"),
-          safeChunkText: "User:\nThe birch deployment launch date remains open.",
-          title: "Birch deployment",
-          userId
-        }),
-        await createDigestHistoryChat({
-          digestText: "Summary: The maple deployment chat assigned the rollback owner.",
-          generationId,
-          occurredAt: new Date("2026-07-12T09:00:00.000Z"),
-          safeChunkText: "User:\nThe maple deployment rollback owner is assigned.",
-          title: "Maple deployment",
-          userId
-        })
-      ];
-      const extraCedarChunkId = await createChunk({
-        chatId: histories[0]!.chatId,
-        chunkOrdinal: 1,
-        generationId,
-        messageId: await prisma.chat.findUniqueOrThrow({
-          select: { activeLeafMessageId: true },
-          where: { id: histories[0]!.chatId }
-        }).then(({ activeLeafMessageId }) => activeLeafMessageId!),
-        occurredAt: new Date("2026-07-10T09:01:00.000Z"),
-        safeText: "User:\nAn ancillary note about an unrelated request.",
-        sourceRevisionAtCreation: 1,
-        suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
-        userId
-      });
-      const relevantCedarChunkId = await createChunk({
-        chatId: histories[0]!.chatId,
-        chunkOrdinal: 2,
-        generationId,
-        messageId: await prisma.chat.findUniqueOrThrow({
-          select: { activeLeafMessageId: true },
-          where: { id: histories[0]!.chatId }
-        }).then(({ activeLeafMessageId }) => activeLeafMessageId!),
-        occurredAt: new Date("2026-07-10T08:59:00.000Z"),
-        safeText: "User:\nThe pastry schedule belongs to the selected source conversation.",
-        sourceRevisionAtCreation: 1,
-        suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
-        userId
-      });
-      const secondRelevantCedarChunkId = await createChunk({
-        chatId: histories[0]!.chatId,
-        chunkOrdinal: 3,
-        generationId,
-        messageId: await prisma.chat.findUniqueOrThrow({
-          select: { activeLeafMessageId: true },
-          where: { id: histories[0]!.chatId }
-        }).then(({ activeLeafMessageId }) => activeLeafMessageId!),
-        occurredAt: new Date("2026-07-10T08:58:00.000Z"),
-        safeText: "User:\nThe pastry checklist has the second query-aware detail.",
-        sourceRevisionAtCreation: 1,
-        suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
-        userId
-      });
-      const rawOnlySource = await createChatWithLeaf({
-        createdAt: new Date("2026-07-13T09:00:00.000Z"),
-        title: "Oak deployment without digest",
-        userId,
-        userText: "The oak deployment selected a canary rollout."
-      });
-      const rawOnlySourceHash = memorySha256({
-        chatId: rawOnlySource.chatId,
-        messageId: rawOnlySource.messageId,
-        version: 1
-      });
-      await createCheckpoint({
-        chatId: rawOnlySource.chatId,
-        messageId: rawOnlySource.messageId,
-        sourceHash: rawOnlySourceHash,
-        userId
-      });
-      const rawOnlyChunkId = await createChunk({
-        chatId: rawOnlySource.chatId,
-        generationId,
-        messageId: rawOnlySource.messageId,
-        occurredAt: new Date("2026-07-13T09:00:00.000Z"),
-        safeText: "User:\nThe oak deployment selected a canary rollout.",
-        sourceRevisionAtCreation: 1,
-        suppressionSnapshot: memorySha256({ barriers: [], suppressions: [] }),
-        userId
-      });
-      const repository = createPrismaLocalMemoryRetrievalRepository(prisma);
-      const overviewPlan = planMemoryRetrieval({
-        currentUserText: "Give me an overview of our deployment chats.",
-        filters: { sourceKinds: ["HISTORY"] },
-        mode: "HISTORY_OVERVIEW",
-        now: fixtureNow,
-        temporalIntent: "ANY"
-      });
-      const overview = await repository.retrieve({
-        assistantId: null,
-        chatId: current.chatId,
-        now: fixtureNow,
-        plan: overviewPlan,
-        userId
-      });
-      expect(overview.laneResults.map(({ lane }) => lane)).toEqual([
-        "HISTORY_RECALL_LEXICAL_UNICODE",
-        "HISTORY_RECALL_RECENT"
-      ]);
-      const overviewRanked = fuseMemoryRetrievalCandidates(
-        overviewPlan,
-        overview.laneResults,
-        fixtureNow
-      );
-      expect(new Set(overviewRanked.map(({ itemId }) => itemId))).toEqual(
-        new Set(histories.map(({ chunkId }) => chunkId))
-      );
-      const overviewExpanded = await repository.expand(
-        overview.snapshot,
-        overviewPlan,
-        overviewRanked
-      );
-      expect(overviewExpanded).toHaveLength(3);
-      expect(overviewExpanded.every(({ projectionKind }) =>
-        projectionKind === "CHAT_DIGEST_SAFE_TEXT")).toBe(true);
-      expect(new Set(overviewExpanded.map(({ supportingItemId }) => supportingItemId)))
-        .toEqual(new Set(histories.map(({ digestId }) => digestId)));
-      const overviewPack = packMemoryPersonalContext({
-        expanded: overviewExpanded,
-        plan: overviewPlan,
-        ranked: overviewRanked
-      });
-      expect(overviewPack.items).toHaveLength(3);
-      expect(new Set(overviewPack.items.map(({ sourceChatId }) => sourceChatId)))
-        .toEqual(new Set(histories.map(({ chatId }) => chatId)));
-      for (const history of histories) {
-        expect(overviewPack.text).toContain(history.digestText);
-      }
-
-      const targetedPlan = planMemoryRetrieval({
-        currentUserText: "deployment",
-        filters: { sourceKinds: ["HISTORY"] },
-        mode: "PAST_CHAT_SEARCH",
-        now: fixtureNow,
-        temporalIntent: "ANY"
-      });
-      const targeted = await repository.retrieve({
-        assistantId: null,
-        chatId: current.chatId,
-        now: fixtureNow,
-        plan: targetedPlan,
-        userId
-      });
-      expect(targeted.laneResults.map(({ lane }) => lane)).toEqual([
-        "HISTORY_RECALL_EXACT",
-        "HISTORY_DIGEST_FTS_SIMPLE",
-        "HISTORY_INTRA_CHAT_RAW",
-        "HISTORY_RECALL_LEXICAL_UNICODE",
-        "HISTORY_RECALL_LEXICAL_NGRAM"
-      ]);
-      const targetedRanked = fuseMemoryRetrievalCandidates(
-        targetedPlan,
-        targeted.laneResults,
-        fixtureNow
-      );
-      const targetedExpanded = await repository.expand(
-        targeted.snapshot,
-        targetedPlan,
-        targetedRanked
-      );
-      expect(new Set(targetedExpanded.map(({ itemId }) => itemId))).toEqual(
-        new Set([...histories.map(({ chunkId }) => chunkId), rawOnlyChunkId])
-      );
-      expect(targetedExpanded.every(({ projectionKind, supportingItemId }) =>
-        projectionKind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
-        supportingItemId === null)).toBe(true);
-      for (const history of histories) {
-        expect(targetedExpanded.map(({ safeText }) => safeText)).not.toContain(
-          history.digestText
-        );
-      }
-
-      const balancedVariantPlan = planMemoryRetrieval({
-        aggregationRequested: true,
-        currentUserText: "sequoiaonly",
-        filters: { sourceKinds: ["HISTORY"] },
-        mode: "PAST_CHAT_SEARCH",
-        now: fixtureNow,
-        semanticRewrite: "maple rollback owner",
-        temporalIntent: "ANY"
-      });
-      const balancedVariantResult = await repository.retrieve({
-        assistantId: null,
-        chatId: current.chatId,
-        now: fixtureNow,
-        plan: balancedVariantPlan,
-        userId
-      });
-      expect(balancedVariantResult.digestEvidence).toMatchObject({
-        navigationCandidateCount: 2,
-        secondStageQueryCount: 1,
-        selectedChatCount: 2
-      });
-      expect(balancedVariantResult.laneResults.find(({ lane }) =>
-        lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates
-        .map(({ metadata }) => metadata.sourceChatId)).toEqual([
-        histories[0]!.chatId
-      ]);
-      expect(balancedVariantResult.laneResults.find(({ lane }) =>
-        lane === "HISTORY_INTRA_CHAT_RAW")?.candidates
-        .map(({ metadata }) => metadata.sourceChatId)).toContain(
-        histories[2]!.chatId
-      );
-
-      const sourceLocalPlan = planMemoryRetrieval({
-        aggregationRequested: true,
-        currentUserText: "sequoiaonly pastry",
-        filters: { sourceKinds: ["HISTORY"] },
-        mode: "PAST_CHAT_SEARCH",
-        now: fixtureNow,
-        temporalIntent: "ANY"
-      });
-      const sourceLocal = await repository.retrieve({
-        assistantId: null,
-        chatId: current.chatId,
-        now: fixtureNow,
-        plan: sourceLocalPlan,
-        userId
-      });
-      expect(sourceLocal.laneResults.find(({ lane }) =>
-        lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates).toEqual([]);
-      expect(sourceLocal.laneResults.find(({ lane }) =>
-        lane === "HISTORY_INTRA_CHAT_RAW")?.candidates).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ itemId: relevantCedarChunkId }),
-          expect.objectContaining({ itemId: secondRelevantCedarChunkId })
-        ])
-      );
-      expect(sourceLocal.digestEvidence).toMatchObject({
-        digestOnlyChatCount: 0,
-        rawAnchorCount: 2,
-        secondStageQueryCount: 1,
-        selectedChatCount: 1
-      });
-
-      const digestOnlyPlan = planMemoryRetrieval({
-        currentUserText: "sequoiaonly",
-        filters: { sourceKinds: ["HISTORY"] },
-        mode: "PAST_CHAT_SEARCH",
-        now: fixtureNow,
-        temporalIntent: "ANY"
-      });
-      const digestOnly = await repository.retrieve({
-        assistantId: null,
-        chatId: current.chatId,
-        now: fixtureNow,
-        plan: digestOnlyPlan,
-        userId
-      });
-      expect(digestOnly.laneResults.find(({ lane }) =>
-        lane === "HISTORY_DIGEST_FTS_SIMPLE")?.candidates.map(({ itemId }) => itemId))
-        .toEqual([histories[0]!.chunkId]);
-      expect(digestOnly.laneResults.flatMap(({ candidates }) =>
-        candidates.map(({ itemId }) => itemId))).not.toContain(extraCedarChunkId);
-      expect(digestOnly.laneResults.flatMap(({ candidates }) =>
-        candidates.map(({ itemId }) => itemId))).not.toContain(relevantCedarChunkId);
-      expect(digestOnly.laneResults.flatMap(({ candidates }) =>
-        candidates.map(({ itemId }) => itemId))).not.toContain(secondRelevantCedarChunkId);
-      const digestOnlyRanked = fuseMemoryRetrievalCandidates(
-        digestOnlyPlan,
-        digestOnly.laneResults,
-        fixtureNow
-      );
-      expect(digestOnlyRanked).toMatchObject([{
-        itemId: histories[0]!.chunkId,
-        laneRanks: { HISTORY_DIGEST_FTS_SIMPLE: 1 }
-      }]);
-      const digestOnlyExpanded = await repository.expand(
-        digestOnly.snapshot,
-        digestOnlyPlan,
-        digestOnlyRanked
-      );
-      expect(digestOnlyExpanded).toEqual([expect.objectContaining({
-        itemId: histories[0]!.chunkId,
-        projectionKind: "CHAT_DIGEST_SAFE_TEXT",
-        safeText: histories[0]!.digestText,
-        supportingItemId: histories[0]!.digestId
-      })]);
-
-      const aggregationPlan = planMemoryRetrieval({
-        aggregationRequested: true,
-        currentUserText: "Which deployment decisions appeared across chats?",
-        filters: { sourceKinds: ["HISTORY"] },
-        mode: "PAST_CHAT_SEARCH",
-        now: fixtureNow,
-        temporalIntent: "ANY"
-      });
-      const aggregation = await repository.retrieve({
-        assistantId: null,
-        chatId: current.chatId,
-        now: fixtureNow,
-        plan: aggregationPlan,
-        userId
-      });
-      expect(aggregation.laneResults.map(({ lane }) => lane)).toEqual([
-        "HISTORY_RECALL_EXACT",
-        "HISTORY_DIGEST_FTS_SIMPLE",
-        "HISTORY_INTRA_CHAT_RAW",
-        "HISTORY_RECALL_LEXICAL_UNICODE",
-        "HISTORY_RECALL_LEXICAL_NGRAM"
-      ]);
-      const aggregationRanked = fuseMemoryRetrievalCandidates(
-        aggregationPlan,
-        aggregation.laneResults,
-        fixtureNow
-      );
-      const aggregationSessions = await repository.projectAggregationSessions(
-        aggregation.snapshot,
-        aggregationPlan,
-        aggregationRanked
-      );
-      expect(aggregationSessions).toHaveLength(4);
-      expect(aggregationSessions).toContainEqual(expect.objectContaining({
-        itemId: rawOnlyChunkId,
-        selectionReason: expect.stringContaining("aggregation_session_raw_fallback")
-      }));
-      const aggregationRaw = await repository.expand(
-        aggregation.snapshot,
-        aggregationPlan,
-        aggregationSessions
-      );
-      expect(aggregationRaw).toHaveLength(4);
-      expect(aggregationRaw.every(({ projectionKind, supportingItemId }) =>
-        projectionKind === "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
-        supportingItemId === null)).toBe(true);
-      expect(new Set(aggregationRaw.map(({ safeText }) => safeText))).toEqual(
-        new Set([
-          ...histories.map(({ safeChunkText }) => safeChunkText),
-          "User:\nThe oak deployment selected a canary rollout."
-        ])
-      );
-    } finally {
-      await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
-      await prisma.user.deleteMany({ where: { id: userId } });
-    }
-  });
-
   it("merges owner-scoped filtered and unrestricted temporal recall through rejoin", async () => {
     const userId = await createOwner("memory-temporal-owner");
     const foreignUserId = await createOwner("memory-temporal-foreign");
@@ -2287,24 +1851,21 @@ describe("local Memory retrieval on PostgreSQL", () => {
         userId,
         userText: "2026-08-09"
       });
-      const inside = await createDigestHistoryChat({
-        digestText: "Summary: The cedar rehearsal completed successfully.",
+      const inside = await createIndexedHistoryChat({
         generationId,
         occurredAt: new Date("2026-08-09T09:00:00.000Z"),
         safeChunkText: "User:\nThe cedar rehearsal completed successfully.",
         title: "Cedar temporal hit",
         userId
       });
-      const outside = await createDigestHistoryChat({
-        digestText: "Summary: The birch rehearsal established the fallback procedure.",
+      const outside = await createIndexedHistoryChat({
         generationId,
         occurredAt: new Date("2026-06-01T09:00:00.000Z"),
         safeChunkText: "User:\nThe birch rehearsal established the fallback procedure.",
         title: "Birch temporal fallback",
         userId
       });
-      const foreign = await createDigestHistoryChat({
-        digestText: "Summary: Foreign temporal evidence must remain isolated.",
+      const foreign = await createIndexedHistoryChat({
         generationId: foreignGenerationId,
         occurredAt: new Date("2026-08-09T10:00:00.000Z"),
         safeChunkText: "User:\nForeign temporal evidence must remain isolated.",

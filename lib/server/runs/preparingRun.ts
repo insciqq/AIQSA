@@ -523,7 +523,6 @@ export function validateMemoryPreparingAttemptResult(
       throw new MemoryPreparingRunConflictError("memory_attempt_item_duplicate", false);
     }
     if (item.projectionKind !== undefined &&
-      item.projectionKind !== "CHAT_DIGEST_SAFE_TEXT" &&
       item.projectionKind !== "FACT_DISPLAY_TEXT" &&
       item.projectionKind !== "RECALL_CHUNK_SAFE_PROJECTED_TEXT" &&
       item.projectionKind !== "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT" &&

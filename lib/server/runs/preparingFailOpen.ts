@@ -70,8 +70,6 @@ const FAIL_OPEN_MEMORY_CODES = [
   "memory_admission_settings_changed",
   "memory_assistant_grant_required",
   "memory_attempt_item_chunk_projection_invalid",
-  "memory_attempt_item_contextual_dependency_invalid",
-  "memory_attempt_item_digest_mode_invalid",
   "memory_attempt_item_duplicate",
   "memory_attempt_item_fact_authority_invalid",
   "memory_attempt_item_fact_projection_invalid",

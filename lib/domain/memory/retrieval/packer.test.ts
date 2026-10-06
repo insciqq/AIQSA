@@ -377,7 +377,7 @@ describe("Personal Memory context pack", () => {
     ]);
     expect(pack.text).toContain("EVIDENCE_ITEMS_JSONL");
     expect(pack.text).not.toContain("chat-source");
-    expect(pack.packerVersion).toBe("memory-context-packer-v47");
+    expect(pack.packerVersion).toBe("memory-context-packer-v48");
   });
 
   it("packs standing facts first, once, without consuming dynamic fact capacity", () => {
@@ -892,137 +892,6 @@ describe("Personal Memory context pack", () => {
     expect(unexpectedSegment.omissionCounts.preparing_projection_contract).toBe(1);
   });
 
-  it("marks a digest-only targeted hit as a non-exact derived session synopsis", () => {
-    const candidate: MemoryRankedCandidate = {
-      ...ranked("digest-anchor", true),
-      laneRanks: { HISTORY_DIGEST_FTS_SIMPLE: 1 },
-      selectionReason: "history_digest_fts_simple+semantic_sort.score_only"
-    };
-    const digestText = "Summary: Cedar was discussed during the rollout chat.";
-    const pack = packMemoryPersonalContext({
-      expanded: [{
-        ...expansion("digest-anchor", true, digestText),
-        projectionKind: "CHAT_DIGEST_SAFE_TEXT",
-        supportingItemId: "digest-1"
-      }],
-      plan: pastChatPlan,
-      ranked: [candidate]
-    });
-
-    expect(pack.items).toMatchObject([{
-      derived: true,
-      evidenceType: "derived_session_synopsis",
-      projectionKind: "CHAT_DIGEST_SAFE_TEXT",
-      speakerScope: "derived"
-    }]);
-    expect(renderedEvidence(pack)).toMatchObject([{
-      derived: true,
-      evidence_type: "derived_session_synopsis",
-      speaker_scope: "derived"
-    }]);
-    expect(pack.text).toContain(
-      "never exact evidence for numbers, names, dates, or quotes"
-    );
-  });
-
-  it("packs a contextual hint as non-authoritative beside exact cited raw evidence", () => {
-    const base = ranked("round-context", true);
-    const candidate: MemoryRankedCandidate = {
-      ...base,
-      itemType: "RECALL_ROUND",
-      matchedSegmentId: "segment-context",
-      matchedSegmentPosition: "MIDDLE",
-      metadata: {
-        ...base.metadata,
-        evidenceRootHash: "b".repeat(64),
-        parentChunkId: "parent-context"
-      }
-    };
-    const currentRaw = "User: Она выбрала стол у окна.";
-    const priorRaw = "User: Мария забронировала стол.";
-    const pack = packMemoryPersonalContext({
-      expanded: [{
-        ...expansion("round-context", true, currentRaw),
-        itemType: "RECALL_ROUND",
-        projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT",
-        retrievalHint: "Мария выбрала стол у окна.",
-        supportingEvidence: [{
-          itemId: "e".repeat(64),
-          occurredFrom: new Date("2026-08-12T10:00:00.000Z"),
-          occurredTo: new Date("2026-08-12T10:01:00.000Z"),
-          safeText: priorRaw,
-          sourceChatId: "chat-source"
-        }],
-        supportingItemId: "parent-context"
-      }],
-      plan: pastChatPlan,
-      ranked: [candidate]
-    });
-
-    expect(pack.items[0]).toMatchObject({
-      exactSafeText: currentRaw,
-      retrievalHint: "Мария выбрала стол у окна.",
-      supportingEvidence: [{ itemId: "e".repeat(64), rawSafeText: priorRaw }]
-    });
-    expect(renderedEvidence(pack)).toMatchObject([{
-      raw_safe_evidence: currentRaw,
-      retrieval_hint: {
-        authority: "none",
-        derived: true,
-        text: "Мария выбрала стол у окна."
-      },
-      supporting_authoritative_evidence: [{ raw_safe_evidence: priorRaw }]
-    }]);
-    expect(pack.text).not.toContain("e".repeat(64));
-    expect(pack.text).toContain("raw authoritative evidence wins");
-  });
-
-  it("renders a cited prior round only once across contextual items", () => {
-    const contextualCandidate = (id: string, evidenceRootHash: string) => {
-      const base = ranked(id, true);
-      return {
-        ...base,
-        itemType: "RECALL_ROUND" as const,
-        matchedSegmentId: `segment-${id}`,
-        matchedSegmentPosition: "MIDDLE" as const,
-        metadata: {
-          ...base.metadata,
-          evidenceRootHash,
-          parentChunkId: `parent-${id}`
-        }
-      };
-    };
-    const candidates = [
-      contextualCandidate("round-context-a", "c".repeat(64)),
-      contextualCandidate("round-context-b", "d".repeat(64))
-    ];
-    const priorRaw = "User: Мария забронировала стол.";
-    const expanded = candidates.map((candidate, index) => ({
-      ...expansion(candidate.itemId, true, `User: Current ${index}.`),
-      itemType: "RECALL_ROUND" as const,
-      projectionKind: "RECALL_ROUND_SEGMENT_RAW_SAFE_TEXT" as const,
-      retrievalHint: `Context ${index}`,
-      supportingEvidence: [{
-        itemId: "e".repeat(64),
-        occurredFrom: new Date("2026-08-12T10:00:00.000Z"),
-        occurredTo: new Date("2026-08-12T10:01:00.000Z"),
-        safeText: priorRaw,
-        sourceChatId: "chat-source"
-      }],
-      supportingItemId: candidate.metadata.parentChunkId
-    }));
-
-    const pack = packMemoryPersonalContext({
-      expanded,
-      plan: pastChatPlan,
-      ranked: candidates
-    });
-
-    expect(renderedEvidence(pack).flatMap((item) =>
-      item.supporting_authoritative_evidence as unknown[])).toHaveLength(1);
-    expect(pack.text?.split(priorRaw)).toHaveLength(2);
-  });
-
   it("labels MEDIUM facts as non-authoritative supporting observations", () => {
     const supporting = ranked("supporting");
     const pack = packMemoryPersonalContext({
@@ -1247,7 +1116,8 @@ describe("Personal Memory context pack", () => {
 
   it("enforces the cumulative core payload allowance and keeps metadata in the count", () => {
     const pack = packMemoryPersonalContext({
-      core: Array.from({ length: 4 }, (_, index) => core(`core-${index}`, "Кратко 🌒")),
+      core: Array.from({ length: 4 }, (_, index) => core(`core-${index}`,
+        "Отвечай кратко и по существу, без длинных вступлений, повторов и лишних оговорок 🌒")),
       expanded: [], plan, ranked: []
     });
     const payloads = renderedEvidence(pack).map((evidence) => JSON.stringify(evidence));
@@ -1522,7 +1392,7 @@ describe("Personal Memory context pack", () => {
     expect(pack.hardCapTokens).toBe(32_000);
   });
 
-  it("serializes explicit dates, currentness, authority, and derived state", () => {
+  it("serializes explicit dates, currentness and authority", () => {
     const base = ranked("dated-fact");
     const candidate: MemoryRankedCandidate = {
       ...base,
@@ -1548,7 +1418,6 @@ describe("Personal Memory context pack", () => {
     });
 
     expect(renderedEvidence(pack)).toMatchObject([{
-      derived: false,
       document_time: "2026-02-03T10:00:00.000Z",
       event_time: {
         end: "2026-02-03T12:00:00.000Z",
