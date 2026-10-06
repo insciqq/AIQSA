@@ -47,6 +47,7 @@ import { PUBLISHED_IMAGE_MODELS_MIGRATION, publishedImageModelsFixtureSql, publi
 import { KNOWLEDGE_IMAGE_OBSERVATION_MIGRATION, knowledgeImageObservationFixtureSql, knowledgeImageObservationProofSql } from "./knowledge-image-observation-adoption";
 import { DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION, dropRetiredMemorySynthesisColumnsFixtureSql, dropRetiredMemorySynthesisColumnsProofSql } from "./drop-retired-memory-synthesis-columns-adoption";
 import { DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION, dropRetiredMcpActivationStorageFixtureSql, dropRetiredMcpActivationStorageProofSql } from "./drop-retired-mcp-activation-storage-adoption";
+import { DROP_RETIRED_MEMORY_DIGESTS_MIGRATION, dropRetiredMemoryDigestsFixtureSql, dropRetiredMemoryDigestsProofSql } from "./drop-retired-memory-digests-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -7571,8 +7572,10 @@ function main(
     skillsSharingFixtureSql, skillsSharingProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, SKILLS_PROGRESSIVE_MIGRATION,
     skillsProgressiveFixtureSql, skillsProgressiveProofSql);
+  // Its proof reads the digest foreign key the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, ASSISTANTS_V2_MIGRATION,
-    assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql);
+    assistantsV2AdoptionFixtureSql, assistantsV2AdoptionProofSql, undefined,
+    DROP_RETIRED_MEMORY_DIGESTS_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, SKILL_IMPORT_SOURCE_MIGRATION,
     skillImportSourceFixtureSql, skillImportSourceProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, PERPLEXITY_LEGACY_REASONING_MIGRATION,
@@ -7708,6 +7711,9 @@ function main(
     dropRetiredMcpActivationStorageProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_IMPORT_SOURCE_MIGRATION,
     chatImportSourceFixtureSql, chatImportSourceProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_DIGESTS_MIGRATION,
+    dropRetiredMemoryDigestsFixtureSql, dropRetiredMemoryDigestsProofSql,
+    dropRetiredMemoryDigestsProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
