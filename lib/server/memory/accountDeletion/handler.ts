@@ -341,7 +341,6 @@ export async function inspectAccountMemoryDeletionCanonicalResiduals(
       UNION ALL SELECT 'version-relations', COUNT(*)::integer FROM "MemoryFactVersionRelation" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'fact-extraction-executions', COUNT(*)::integer FROM "MemoryFactExtractionExecution" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'fact-extraction-candidate-receipts', COUNT(*)::integer FROM "MemoryFactExtractionCandidateReceipt" WHERE "userId" = ${input.userId}
-      UNION ALL SELECT 'synthesis-executions', COUNT(*)::integer FROM "MemorySynthesisExecution" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'maintenance-executions', COUNT(*)::integer FROM "MemoryMaintenanceExecution" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'maintenance-reviews', COUNT(*)::integer FROM "MemoryMaintenanceReview" WHERE "userId" = ${input.userId}
       UNION ALL SELECT 'maintenance-suppressions', COUNT(*)::integer FROM "MemoryMaintenanceSuppression" WHERE "userId" = ${input.userId}
