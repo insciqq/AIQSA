@@ -37,14 +37,14 @@ describe("administrator system model policy handlers", () => {
     const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session()) as never, service: service as never });
     const response = await handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
       method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: 4,
-        decisionProviderModelId, decisionFeatures: { memoryRelevance: false } })
+        decisionProviderModelId, decisionFeatures: { knowledgeRelevance: false } })
     }));
     expect(response.status).toBe(200);
     expect(service.update).toHaveBeenCalledExactlyOnceWith({ expectedVersion: 4, decisionProviderModelId,
-      decisionFeatures: { memoryRelevance: false }, userId: "user-1" });
+      decisionFeatures: { knowledgeRelevance: false }, userId: "user-1" });
   });
 
-  it.each([{ decisionFeatures: { unsupportedFeature: true } }, { decisionFeatures: { memoryRelevance: "false" } },
+  it.each([{ decisionFeatures: { unsupportedFeature: true } }, { decisionFeatures: { knowledgeRelevance: "false" } },
     { decisionFeatures: [] }, { decisionProviderModelId: 42 }, { decisionBootstrap: true }])(
     "rejects malformed or authority-bearing Decisions fields (%j)", async (fields) => {
       const service = { list: vi.fn(), update: vi.fn() };

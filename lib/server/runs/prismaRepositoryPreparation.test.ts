@@ -19,10 +19,8 @@ import {
   MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
   MEMORY_RERANK_MAX_ATTEMPTS
 } from "../memory/retrieval/runUtilities";
-import { MEMORY_HISTORY_RELEVANCE_VERSION } from "../memory/retrieval/historyRelevancePolicy";
 import { MEMORY_CONTROL_SCREEN_VERSION } from "../memory/actions/controlScreenPolicy";
 import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
-import { MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES, MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES } from "../../domain/memory/retrieval/config";
 
 const settingsSnapshot = Object.freeze({
   acceptedUtilityEgressFingerprint: null,
@@ -272,17 +270,9 @@ describe("Memory retrieval execution sequence", () => {
     expect(validMemoryRetrievalExecutionSequence([{ ...screen,
       pipelineVersion: "unqualified" }])).toBe(false);
   });
-  it("admits governed per-passage decisions without relaxing other role positions", () => {
-    const history = (ordinal: number) => ({ logicalRole: "MEMORY_HISTORY_RELEVANCE", ordinal, pipelineVersion: MEMORY_HISTORY_RELEVANCE_VERSION });
-    expect(validMemoryRetrievalExecutionSequence([history(1), history(2)])).toBe(true);
-    // A cancelled concurrent batch can have a gap where another bind failed.
-    expect(validMemoryRetrievalExecutionSequence([history(2), history(4)])).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([history(1), history(1)])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([history(0)])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([{ ...history(1), pipelineVersion: "unqualified" }])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([history(MEMORY_RETRIEVAL_MAX_TARGETED_HISTORY_CANDIDATES + 1)])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([history(MEMORY_RETRIEVAL_MAX_AGGREGATION_HISTORY_CANDIDATES)], false, true)).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([history(1), { logicalRole: "MEMORY_RERANK", ordinal: 4 }])).toBe(false);
+  it("rejects bindings of the retired per-passage history relevance role", () => {
+    expect(validMemoryRetrievalExecutionSequence([{ logicalRole: "MEMORY_HISTORY_RELEVANCE", ordinal: 1,
+      pipelineVersion: "memory-history-relevance-v1" }])).toBe(false);
   });
   it("declares a cancelled resolver that missed the attachment boundary", () => {
     const budget = {
