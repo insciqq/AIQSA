@@ -28,6 +28,8 @@ export type SkillSaveCardFile = Readonly<{
   executable: boolean;
   /** Set when the executable flag differs from the previous version. */
   executableChanged?: true;
+  /** A binary file (only a restored version holds them): no diff and no text view. */
+  binary?: true;
 }>;
 export type SkillSaveDiffLine = Readonly<{ kind: "context" | "add" | "del" | "gap"; text: string }>;
 export type SkillSaveCardDiff = Readonly<{ path: string; lines: readonly SkillSaveDiffLine[]; truncated: boolean }>;
@@ -36,7 +38,9 @@ export type SkillSaveCardTask = Readonly<{ taskId: string; title: string }>;
 /**
  * One save as its call left it. `fromRevision`/`toRevision` are the Skill's
  * revision numbers (`v3 → v4`); `saveId` names the save's receipt for Undo;
- * `revisionId` is the saved immutable revision the full-file view reads.
+ * `revisionId` is the saved immutable revision the full-file view reads. A
+ * `restored` save made an earlier version current again as a new one
+ * (`v4 → v5 (= v3)`, `restoredRevision` 3).
  */
 export type SkillSaveCard = Readonly<{
   version: 1;
@@ -44,9 +48,11 @@ export type SkillSaveCard = Readonly<{
   skillId: string;
   revisionId: string;
   name: string;
-  outcome: "created" | "updated";
+  outcome: "created" | "updated" | "restored";
   fromRevision: number | null;
   toRevision: number;
+  /** Set only for `restored`: the version whose content is current again. */
+  restoredRevision?: number;
   changeNote: string | null;
   /** Name of another user's Skill this personal copy was made from. */
   copiedFrom: string | null;
@@ -81,11 +87,12 @@ const CARD_KEYS = ["version", "saveId", "skillId", "revisionId", "name", "outcom
   "copiedFrom", "published", "files", "diffs", "scheduledTasks", "scheduledTasksTruncated"] as const;
 
 function decodeFile(value: unknown): SkillSaveCardFile | null {
-  if (!record(value) || !only(value, ["path", "change", "executable", "executableChanged"]) || !text(value.path, 1_024) ||
+  if (!record(value) || !only(value, ["path", "change", "executable", "executableChanged", "binary"]) || !text(value.path, 1_024) ||
     !value.path || !CHANGES.includes(value.change) || typeof value.executable !== "boolean" ||
-    (value.executableChanged !== undefined && value.executableChanged !== true)) return null;
+    (value.executableChanged !== undefined && value.executableChanged !== true) ||
+    (value.binary !== undefined && value.binary !== true)) return null;
   return { path: value.path, change: value.change as SkillSaveFileChange, executable: value.executable,
-    ...(value.executableChanged ? { executableChanged: true as const } : {}) };
+    ...(value.executableChanged ? { executableChanged: true as const } : {}), ...(value.binary ? { binary: true as const } : {}) };
 }
 
 function decodeDiff(value: unknown): SkillSaveCardDiff | null {
@@ -112,11 +119,12 @@ function decodeList<T>(value: unknown, decode: (item: unknown) => T | null, maxi
 }
 
 export function decodeSkillSaveCard(value: unknown): SkillSaveCard | null {
-  if (!record(value) || !CARD_KEYS.every((key) => key in value) || !only(value, CARD_KEYS) || value.version !== 1 ||
-    !id(value.saveId) || !id(value.skillId) || !id(value.revisionId) || !text(value.name, 256) || !value.name ||
-    (value.outcome !== "created" && value.outcome !== "updated") ||
+  if (!record(value) || !CARD_KEYS.every((key) => key in value) || !only(value, [...CARD_KEYS, "restoredRevision"]) ||
+    value.version !== 1 || !id(value.saveId) || !id(value.skillId) || !id(value.revisionId) || !text(value.name, 256) || !value.name ||
+    (value.outcome !== "created" && value.outcome !== "updated" && value.outcome !== "restored") ||
     !(value.fromRevision === null || positive(value.fromRevision)) || !positive(value.toRevision) ||
     (value.outcome === "created") !== (value.fromRevision === null) ||
+    (value.outcome === "restored" ? !positive(value.restoredRevision) : value.restoredRevision !== undefined) ||
     !(value.changeNote === null || text(value.changeNote, SKILL_SAVE_CHANGE_NOTE_MAX_LENGTH)) ||
     !(value.copiedFrom === null || text(value.copiedFrom, 256)) || typeof value.published !== "boolean" ||
     typeof value.scheduledTasksTruncated !== "boolean") return null;
@@ -128,7 +136,8 @@ export function decodeSkillSaveCard(value: unknown): SkillSaveCard | null {
   if (!files || !diffs || !scheduledTasks) return null;
   return {
     version: 1, saveId: value.saveId, skillId: value.skillId, revisionId: value.revisionId, name: value.name,
-    outcome: value.outcome, fromRevision: value.fromRevision, toRevision: value.toRevision, changeNote: value.changeNote,
+    outcome: value.outcome, fromRevision: value.fromRevision, toRevision: value.toRevision,
+    ...(value.outcome === "restored" ? { restoredRevision: value.restoredRevision as number } : {}), changeNote: value.changeNote,
     copiedFrom: value.copiedFrom, published: value.published, files, diffs, scheduledTasks,
     scheduledTasksTruncated: value.scheduledTasksTruncated
   };
