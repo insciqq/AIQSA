@@ -7,6 +7,10 @@ import { handleAgentGatewayRequest } from "./gateway";
 
 const database = vi.hoisted(() => ({ agentRunBinding: { findUnique: vi.fn(async (_query: unknown) => null) } }));
 vi.mock("../prisma", () => ({ prisma: database }));
+// An unknown code bearer is refused by the code gateway exactly like an unknown Agent bearer.
+const codeGateway = vi.hoisted(() => ({ handleWorkspaceCodeMcpRequest: vi.fn(async (_request: Request, _tokenHash: string) =>
+  Response.json({ error: "agent_authorization_required" }, { status: 401 })) }));
+vi.mock("../workspace/codeMcpGateway", () => codeGateway);
 
 const runnerToken = "synthetic-runner-token-".padEnd(48, "0");
 const bearer = "b".repeat(43);
@@ -32,6 +36,7 @@ async function expectRefusedBeforeLookup(request: Request, path = "v1/responses"
 beforeEach(() => {
   vi.stubEnv("AIQSA_WORKSPACE_RUNNER_TOKEN", runnerToken);
   database.agentRunBinding.findUnique.mockClear();
+  codeGateway.handleWorkspaceCodeMcpRequest.mockClear();
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -67,6 +72,26 @@ describe("Agent gateway ingress", () => {
     }
     await expectRefusedBeforeLookup(gatewayRequest("v1/responses",
       { [AGENT_RELAY_PROOF_HEADER]: relayProof(), origin: "https://public.example" }));
+  });
+
+  it("serves a bearer that is no Agent grant only as a Workspace code bearer on MCP, never model or Search", async () => {
+    for (const path of ["v1/responses", "v1/alpha/search"]) {
+      const response = await handleAgentGatewayRequest(gatewayRequest(path, { [AGENT_RELAY_PROOF_HEADER]: relayProof({ path }) }), path);
+      expect(response.status).toBe(401);
+    }
+    expect(codeGateway.handleWorkspaceCodeMcpRequest).not.toHaveBeenCalled();
+    codeGateway.handleWorkspaceCodeMcpRequest.mockResolvedValueOnce(Response.json({ ok: true }));
+    const request = gatewayRequest("mcp", { [AGENT_RELAY_PROOF_HEADER]: relayProof({ path: "mcp" }) });
+    const response = await handleAgentGatewayRequest(request, "mcp");
+    expect(response.status).toBe(200);
+    expect(codeGateway.handleWorkspaceCodeMcpRequest).toHaveBeenCalledWith(request, agentTokenHash(bearer));
+    // Code bearers pass the same relay proof and Origin refusal first.
+    codeGateway.handleWorkspaceCodeMcpRequest.mockClear();
+    database.agentRunBinding.findUnique.mockClear();
+    await expectRefusedBeforeLookup(gatewayRequest("mcp"), "mcp");
+    await expectRefusedBeforeLookup(gatewayRequest("mcp", { [AGENT_RELAY_PROOF_HEADER]: relayProof({ path: "mcp" }),
+      origin: "https://public.example" }), "mcp");
+    expect(codeGateway.handleWorkspaceCodeMcpRequest).not.toHaveBeenCalled();
   });
 
   it("refuses every request when the app has no runner token", async () => {

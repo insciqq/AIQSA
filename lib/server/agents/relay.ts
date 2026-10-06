@@ -4,14 +4,16 @@ import { pipeline } from "node:stream/promises";
 import { AGENT_REQUEST_MAX_BYTES } from "./config";
 import { getMcpRequestMaxBytes, mcpRequestSizeFailure } from "../mcp/responseLimits";
 import { AGENT_RELAY_PROOF_HEADER, agentRelayProofKey, signAgentRelayProof } from "./relayProof";
+import { isWorkspaceCodeInvocationId, WORKSPACE_CODE_INVOCATION_HEADER } from "../workspace/codeMcp";
 
 export const AGENT_GATEWAY_PORT = 4311;
 export const AGENT_GATEWAY_ORIGIN = `http://host.microsandbox.internal:${AGENT_GATEWAY_PORT}`;
 
 /**
  * Runner-side relay, the guests' only route to the app gateway. It forwards
- * fresh headers plus its own relay proof, never a guest-supplied header; no
- * arbitrary target, cookie, or control API.
+ * fresh headers plus its own relay proof; of the guest's headers only the
+ * bearer and exactly formatted MCP protocol version and code invocation id
+ * pass. No arbitrary target, cookie, or control API.
  */
 export function createAgentRelay(appOrigin: string, runnerToken: string, fetchFn: typeof fetch = fetch) {
   const origin = new URL(appOrigin);
@@ -48,6 +50,10 @@ export function createAgentRelay(appOrigin: string, runnerToken: string, fetchFn
         accept: path === "/v1/responses" ? "text/event-stream" : "application/json, text/event-stream" });
       const protocol = request.headers["mcp-protocol-version"];
       if (typeof protocol === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(protocol)) headers.set("mcp-protocol-version", protocol);
+      // Guest code names its command's invocation. Only the bearer authorizes;
+      // the id attributes receipts within that run, so the proof omits it.
+      const invocation = request.headers[WORKSPACE_CODE_INVOCATION_HEADER];
+      if (path === "/mcp" && isWorkspaceCodeInvocationId(invocation)) headers.set(WORKSPACE_CODE_INVOCATION_HEADER, invocation);
       // Signed only now, after the guest's body is buffered, so a slow upload never ages the proof.
       headers.set(AGENT_RELAY_PROOF_HEADER, signAgentRelayProof(proofKey, { bearer, method: "POST", path: path.slice(1) }));
       const upstream = await fetchFn(`${origin.origin}/api/internal/agent${path}`, {

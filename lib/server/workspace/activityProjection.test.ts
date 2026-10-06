@@ -72,6 +72,27 @@ describe("workspace activity projection", () => {
     expect(poll("three", "later\n", false)?.command).toMatchObject({ secretMasked: true });
   });
 
+  it("shows the content-free summary of a command's code MCP calls", () => {
+    const codeMcp = { calls: 2, failed: 0, tools: [{ calls: 2, failed: 0, serverName: "GitLab", toolName: "list_commits" }] };
+    const command = projectWorkspaceActivity({ arguments: { command: "python3 report.py" }, callId: "code", originalName: "sandbox_shell",
+      runId: "run", result: { ...official({ exitCode: 0, stdout: "done\n" }), rawPreview: { codeMcp, truncated: false } } }, "settled");
+    expect(command?.command?.codeMcp).toEqual(codeMcp);
+    // Malformed facts never reach the browser.
+    const malformed = projectWorkspaceActivity({ arguments: { command: "python3 report.py" }, callId: "bad", originalName: "sandbox_shell",
+      runId: "run", result: { ...official({ exitCode: 0 }), rawPreview: { codeMcp: { calls: "all" } } } }, "settled");
+    expect(malformed?.command?.codeMcp).toBeUndefined();
+    // An exec session reports calls even on a poll without new output.
+    const execOutputs = new Map<string, ExecOutputBuffer>();
+    projectWorkspaceActivity({ arguments: { command: "python3 monitor.py" }, callId: "start", originalName: "sandbox_exec_start",
+      runId: "run", execOutputs, result: official({ execSessionId: "session" }) }, "settled");
+    const poll = (id: string, rawPreview: Record<string, unknown>) => projectWorkspaceActivity({ arguments: { execSessionId: "session" },
+      callId: id, executionStartCallId: "start", execOutputs, originalName: "sandbox_exec_poll", runId: "run",
+      result: { ...official({ events: [], done: false }), rawPreview } }, "settled");
+    expect(poll("quiet", { truncated: false })).toBeNull();
+    expect(poll("calls", { codeMcp, truncated: false })?.command?.codeMcp).toEqual(codeMcp);
+    expect(poll("quiet_again", { truncated: false })).toBeNull();
+  });
+
   it("projects commands with exit code, bounded output, and no raw identifiers", () => {
     const entry = projectWorkspaceActivity({
       arguments: { command: "npm test\necho ignored", cwd: "/workspace/project" },

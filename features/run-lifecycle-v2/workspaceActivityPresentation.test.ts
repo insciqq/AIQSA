@@ -5,10 +5,21 @@ import {
   presentWorkspaceActivityV2,
   visibleWorkspaceActivityV2,
   workspaceActivityLabelV2,
+  workspaceCodeMcpCopyV2,
   workspaceLiveLabelV2,
   workspaceOutputStatusCopyV2,
   workspaceProcessLabelV2
 } from "./workspaceActivityPresentation";
+
+describe("code MCP activity copy", () => {
+  it("names tools and counts, unlisted calls, failures and budget refusals", () => {
+    expect(workspaceCodeMcpCopyV2({ calls: 12, failed: 2, refused: 3, tools: [
+      { calls: 10, failed: 2, toolName: "list_commits" }] })).toBe(
+      "MCP calls from code: 12 · list_commits ×10 (2 failed), 2 more · 2 failed · 3 refused, call budget used up");
+    expect(workspaceCodeMcpCopyV2({ calls: 0, failed: 0, refused: 1, tools: [] }))
+      .toBe("MCP calls from code: 0 · 1 refused, call budget used up");
+  });
+});
 
 const command = (id: string, phase: ThreadWorkspaceActivityEntry["phase"], preview = "npm test"): ThreadWorkspaceActivityEntry =>
   ({ command: { preview }, id, kind: "command", phase });

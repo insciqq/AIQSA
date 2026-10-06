@@ -2223,3 +2223,177 @@ describe("Workspace coordinator bounded attachment acquisition", () => {
     expect(pool.stats).toMatchObject({ open: 0, opened: 0, waiting: 0 });
   });
 });
+
+describe("Workspace coordinator guest-code MCP", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const token = "Synthetic_code_token_0123456789abcdefghijkl";
+  const invocation = "b".repeat(32);
+  const gateway = "http://host.microsandbox.internal:4311";
+  type CodeRepository = Required<Pick<WorkspaceCoordinatorRepository,
+    "closeCodeInvocation" | "codeCallSummary" | "issueCodeGrant" | "openCodeInvocation" | "revokeCodeGrant">>;
+
+  function withCode(value: ReturnType<typeof fixture>,
+    issue: Awaited<ReturnType<CodeRepository["issueCodeGrant"]>> = { environment: { AIQSA_GATEWAY_URL: gateway, AIQSA_RUN_TOKEN: token }, token }) {
+    const code = {
+      closeCodeInvocation: vi.fn<CodeRepository["closeCodeInvocation"]>(async () => undefined),
+      codeCallSummary: vi.fn<CodeRepository["codeCallSummary"]>(async () => null),
+      issueCodeGrant: vi.fn<CodeRepository["issueCodeGrant"]>(async () => issue),
+      openCodeInvocation: vi.fn<CodeRepository["openCodeInvocation"]>(async () => invocation),
+      revokeCodeGrant: vi.fn<CodeRepository["revokeCodeGrant"]>(async () => undefined)
+    };
+    Object.assign(value.repository, code);
+    return code;
+  }
+
+  const shell = (value: ReturnType<typeof fixture>, id: string, onActivity?: (entry: ThreadWorkspaceActivityEntry) => Promise<void>) =>
+    value.coordinator.execute({ call: { arguments: { command: "python3 report.py" }, id, name: value.shellToolName },
+      modelRunToolCallId: id, ...(onActivity ? { onActivity } : {}), runId: value.runId, userId: "user_1", workspace: value.workspace });
+
+  it("delivers a fresh run bearer through the run-bound environment and masks it in output", async () => {
+    const value = fixture();
+    const code = withCode(value);
+    vi.mocked(value.runtime.callBoundTool).mockResolvedValueOnce({ content: [{ type: "text",
+      text: JSON.stringify({ ok: true, data: { stdout: `AIQSA_RUN_TOKEN=${token}\n`, stderr: "", exitCode: 0, success: true } }, null, 2) }],
+    exitCode: 0, status: "complete" });
+    const activity: ThreadWorkspaceActivityEntry[] = [];
+    const result = await shell(value, "call_env", async (entry) => { activity.push(entry); });
+    expect(code.issueCodeGrant).toHaveBeenCalledOnce();
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      runEnvironment: { AIQSA_GATEWAY_URL: gateway, AIQSA_RUN_TOKEN: token } }));
+    for (const surface of [JSON.stringify(snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes)),
+      JSON.stringify(result), JSON.stringify(activity)]) {
+      expect(surface).not.toContain(token);
+    }
+    expect(JSON.stringify(result)).toContain("[secret:AIQSA_RUN_TOKEN]");
+  });
+
+  it("gives every dispatched command its own invocation and closes it when the command returns", async () => {
+    const value = fixture();
+    const code = withCode(value);
+    await shell(value, "call_one");
+    expect(code.openCodeInvocation).toHaveBeenCalledWith({ kind: "command", modelRunToolCallId: "call_one",
+      runId: value.runId, sessionId: value.workspace.sessionId });
+    expect(value.runtime.callBoundTool).toHaveBeenCalledWith(expect.objectContaining({ invocationId: invocation }));
+    expect(code.closeCodeInvocation).toHaveBeenCalledWith({ invocationId: invocation, runId: value.runId });
+    // A failing command closes its invocation too.
+    vi.mocked(value.runtime.callBoundTool).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_tool_outcome_unknown"));
+    await expect(shell(value, "call_two")).rejects.toMatchObject({ code: "workspace_tool_outcome_unknown" });
+    expect(code.closeCodeInvocation).toHaveBeenCalledTimes(2);
+    // File tools run no code: no invocation.
+    await value.coordinator.execute({ call: { arguments: { path: "/workspace/project/a.txt" }, id: "call_read",
+      name: namespacedWorkspaceToolName("sandbox_fs_read") }, modelRunToolCallId: "call_read", runId: value.runId,
+    userId: "user_1", workspace: value.workspace });
+    expect(code.openCodeInvocation).toHaveBeenCalledTimes(2);
+    expect(code.issueCodeGrant).toHaveBeenCalledOnce();
+  });
+
+  it("opens a fresh invocation when a lost guest is recreated before dispatch", async () => {
+    const value = fixture();
+    const code = withCode(value);
+    code.openCodeInvocation.mockResolvedValueOnce("c".repeat(32)).mockResolvedValueOnce("d".repeat(32));
+    vi.mocked(value.runtime.callBoundTool)
+      .mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_session_lost_before_dispatch"))
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "ok" }], status: "complete" });
+    await shell(value, "call_recreated");
+    // Recreation rotates the bearer (fencing the undispatched invocation); the command runs with a new one.
+    expect(code.issueCodeGrant).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(value.runtime.callBoundTool).mock.calls.map(([input]) => input.invocationId))
+      .toEqual(["c".repeat(32), "d".repeat(32)]);
+    expect(code.closeCodeInvocation).toHaveBeenCalledWith({ invocationId: "d".repeat(32), runId: value.runId });
+  });
+
+  it("appends one compact, content-free line about the command's code calls and shows it in activity", async () => {
+    const value = fixture();
+    const code = withCode(value);
+    code.codeCallSummary.mockResolvedValueOnce({ calls: 37, failed: 1, refused: 0, unknown: 0, tools: [
+      { calls: 35, errorCodes: [], failed: 0, label: { serverName: "GitLab", toolName: "list_commits" }, unknown: 0 },
+      { calls: 2, errorCodes: ["upstream_unavailable"], failed: 1, label: { serverName: "GitLab", toolName: "get_job_log" }, unknown: 0 }
+    ] });
+    const activity: ThreadWorkspaceActivityEntry[] = [];
+    const result = await shell(value, "call_summary", async (entry) => { activity.push(entry); });
+    expect(code.codeCallSummary).toHaveBeenCalledWith({ runId: value.runId, toolCallId: "call_summary" });
+    expect(result.content.at(-1)).toEqual({ type: "text",
+      text: "code made 37 MCP calls: GitLab.list_commits ×35, GitLab.get_job_log ×2 (1 failed: upstream_unavailable)" });
+    const settled = (result.artifacts ?? []).map((event) => (event.data as { payload: ThreadWorkspaceActivityEntry }).payload).at(-1);
+    expect(settled?.command?.codeMcp).toEqual({ calls: 37, failed: 1, tools: [
+      { calls: 35, failed: 0, serverName: "GitLab", toolName: "list_commits" },
+      { calls: 2, failed: 1, serverName: "GitLab", toolName: "get_job_log" }
+    ] });
+    // Without code calls the result is unchanged.
+    const plain = await shell(value, "call_plain");
+    expect(plain.content).toEqual([{ type: "text", text: "ok" }]);
+  });
+
+  it("keeps an exec session's invocation open and reports its calls on polls that change them", async () => {
+    const value = fixture();
+    const code = withCode(value);
+    vi.mocked(value.runtime.callBoundTool).mockResolvedValueOnce({ content: [{ text: JSON.stringify({ data: { execSessionId: "exec_code" }, ok: true }),
+      type: "text" }], execSessionId: "exec_code", status: "complete" });
+    await value.coordinator.execute({ call: { arguments: { command: "python3 monitor.py" }, id: "start",
+      name: namespacedWorkspaceToolName("sandbox_exec_start") }, modelRunToolCallId: "start", runId: value.runId,
+    userId: "user_1", workspace: value.workspace });
+    expect(code.openCodeInvocation).toHaveBeenCalledWith(expect.objectContaining({ kind: "session", modelRunToolCallId: "start" }));
+    expect(code.closeCodeInvocation).not.toHaveBeenCalled();
+    code.codeCallSummary.mockResolvedValue({ calls: 2, failed: 0, refused: 0, unknown: 0, tools: [
+      { calls: 2, errorCodes: [], failed: 0, label: { serverName: "GitLab", toolName: "list_commits" }, unknown: 0 }] });
+    const poll = (id: string) => value.coordinator.execute({ call: { arguments: { execSessionId: "exec_code" }, id,
+      name: namespacedWorkspaceToolName("sandbox_exec_poll") }, modelRunToolCallId: id, runId: value.runId, userId: "user_1",
+    workspace: value.workspace });
+    expect((await poll("poll_1")).content.at(-1)).toEqual({ type: "text", text: "code made 2 MCP calls: GitLab.list_commits ×2" });
+    expect(code.codeCallSummary).toHaveBeenLastCalledWith({ runId: value.runId, toolCallId: "start" });
+    expect((await poll("poll_2")).content).toEqual([{ type: "text", text: "ok" }]);
+  });
+
+  it("revokes guest-code authority first on every terminal path", async () => {
+    for (const outcome of ["completed", "cancelled", "failed", "timed_out"] as const) {
+      const value = fixture();
+      const code = withCode(value);
+      await shell(value, "call");
+      await value.coordinator.settle({ outcome, runId: value.runId, userId: "user_1", workspace: value.workspace });
+      expect(code.revokeCodeGrant).toHaveBeenCalledWith({ runId: value.runId });
+    }
+    // Answer completion hands off after the last guest command.
+    const value = fixture();
+    const code = withCode(value);
+    await shell(value, "call");
+    await value.coordinator.handoff({ runId: value.runId, userId: "user_1", workspace: value.workspace });
+    expect(code.revokeCodeGrant).toHaveBeenCalledWith({ runId: value.runId });
+    expect(code.revokeCodeGrant.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(value.runtime.collectOutputs).mock.invocationCallOrder[0]!);
+    // A revocation failure never blocks settlement.
+    const failing = fixture();
+    withCode(failing).revokeCodeGrant.mockRejectedValue(new Error("database unavailable"));
+    await expect(failing.coordinator.settle({ outcome: "failed", runId: failing.runId, userId: "user_1" }))
+      .resolves.toMatchObject({ quiesced: true });
+  });
+
+  it("tells code why it has no MCP authority, also when the grant cannot be issued", async () => {
+    const value = fixture();
+    withCode(value, { environment: { AIQSA_MCP_UNAVAILABLE: "internet_off" } });
+    await shell(value, "call");
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      runEnvironment: { AIQSA_MCP_UNAVAILABLE: "internet_off" } }));
+    const failing = fixture();
+    withCode(failing).issueCodeGrant.mockRejectedValue(new Error("database unavailable"));
+    await expect(shell(failing, "call")).resolves.toMatchObject({ status: "complete" });
+    expect(failing.runtime.syncPersonalSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      runEnvironment: { AIQSA_MCP_UNAVAILABLE: "gateway_unavailable" } }));
+    // A stale operation still fails initialization.
+    const stale = fixture();
+    withCode(stale).issueCodeGrant.mockRejectedValue(new WorkspaceRuntimeError("workspace_operation_stale"));
+    await expect(shell(stale, "call")).rejects.toMatchObject({ code: "workspace_operation_stale" });
+  });
+
+  it("never mints guest-code authority while exporting outputs", async () => {
+    const value = fixture();
+    value.setUntouchedSession("STOPPED");
+    value.unregisteredCommands.count = 1;
+    const code = withCode(value);
+    const restarted = createWorkspaceCoordinator({ ...value, repository: value.repository, runtime: value.runtime });
+    await expect(restarted.finalize({ runId: value.runId, userId: "user_1" })).resolves.toMatchObject({ status: "complete" });
+    expect(value.runtime.syncPersonalSecrets).toHaveBeenCalled();
+    expect(value.runtime.syncPersonalSecrets).not.toHaveBeenCalledWith(expect.objectContaining({ runEnvironment: expect.anything() }));
+    expect(code.issueCodeGrant).not.toHaveBeenCalled();
+  });
+});

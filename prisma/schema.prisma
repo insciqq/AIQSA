@@ -4098,6 +4098,7 @@ model ModelRunToolCall {
   memoryToolEgressReceipts   MemoryToolEgressReceipt[]
   workspaceExecution         WorkspaceExecution?
   skillBindings              ModelRunSkillBinding[]
+  codeInvocations            WorkspaceCodeInvocation[]
 
   @@unique([modelRunId, roundIndex, providerCallId])
   @@unique([modelRunId, roundIndex, ordinal])
@@ -4685,6 +4686,7 @@ model WorkspaceRunBinding {
   secrets              WorkspaceRunSecret[]
   selectedCaptures     WorkspaceSelectedCapture[]
   checkpoints          WorkspaceOutputCheckpoint[]
+  codeGrant            WorkspaceCodeGrant?
 
   @@unique([modelRunId, workspaceSessionId])
   @@index([workspaceSessionId, createdAt])
@@ -4830,6 +4832,78 @@ model AgentMcpTool {
   binding    AgentRunBinding @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict, map: "AgentMcpTool_binding_fkey")
 
   @@id([modelRunId, toolId])
+}
+
+/// Run-scoped bearer with which guest code of one non-Agent Workspace run
+/// reaches exactly that run's frozen MCP authority through the runner relay.
+/// Only its hash is stored. Every guest initialization rotates it, every
+/// terminal path revokes it, and it never authorizes model or Search calls.
+model WorkspaceCodeGrant {
+  modelRunId         String              @id
+  workspaceSessionId String
+  tokenHash          String?             @unique @db.Char(64)
+  issuedAt           DateTime?
+  revokedAt          DateTime?
+  /// Admitted code calls: the next receipt's sequence and the run's budget count.
+  callCount          Int                 @default(0)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  binding            WorkspaceRunBinding @relation(fields: [modelRunId, workspaceSessionId], references: [modelRunId, workspaceSessionId], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceCodeGrant_binding_fkey")
+  invocations        WorkspaceCodeInvocation[]
+  calls              WorkspaceCodeCall[]
+
+  @@unique([modelRunId, workspaceSessionId])
+}
+
+/// One dispatch of an accepted sandbox command (`command`) or exec session
+/// (`session`). Only that command's environment carries the id; the gateway
+/// accepts code calls of open invocations alone.
+model WorkspaceCodeInvocation {
+  id           String              @id @db.Char(32)
+  modelRunId   String
+  toolCallId   String
+  kind         String              @db.VarChar(16)
+  /// `open`, `closed`, or `unknown` once its command's outcome was lost.
+  state        String              @default("open") @db.VarChar(16)
+  /// Calls refused because the run's code-call budget was exhausted.
+  refusedCalls Int                 @default(0)
+  createdAt    DateTime            @default(now())
+  closedAt     DateTime?
+  grant        WorkspaceCodeGrant  @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceCodeInvocation_grant_fkey")
+  toolCall     ModelRunToolCall    @relation(fields: [modelRunId, toolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceCodeInvocation_toolCall_fkey")
+  calls        WorkspaceCodeCall[]
+
+  @@unique([modelRunId, id])
+  @@index([modelRunId, toolCallId])
+  @@index([modelRunId, state])
+}
+
+/// Content-free receipt of one MCP call made by guest code: persisted before
+/// dispatch, settled after. Never arguments or results: guest code is never
+/// replayed, so nothing would consume them. An unsettled receipt becomes
+/// `unknown` and is never retried.
+model WorkspaceCodeCall {
+  id           String                  @id @default(uuid())
+  modelRunId   String
+  invocationId String                  @db.Char(32)
+  sequence     Int
+  serverId     String                  @db.VarChar(128)
+  toolName     String                  @db.VarChar(128)
+  argumentHash String                  @db.Char(64)
+  /// `dispatching`, `complete`, `error` or `unknown`.
+  state        String                  @default("dispatching") @db.VarChar(16)
+  errorCode    String?                 @db.VarChar(64)
+  resultBytes  Int?
+  durationMs   Int?
+  createdAt    DateTime                @default(now())
+  settledAt    DateTime?
+  grant        WorkspaceCodeGrant      @relation(fields: [modelRunId], references: [modelRunId], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceCodeCall_grant_fkey")
+  invocation   WorkspaceCodeInvocation @relation(fields: [modelRunId, invocationId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict, map: "WorkspaceCodeCall_invocation_fkey")
+
+  @@unique([modelRunId, sequence])
+  @@index([modelRunId, state])
+  @@index([modelRunId, createdAt])
+  @@index([invocationId])
 }
 
 model WorkspaceSecret {

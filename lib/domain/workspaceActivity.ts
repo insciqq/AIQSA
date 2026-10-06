@@ -45,7 +45,10 @@ export function mergeWorkspaceActivityEntry(
   const output = source?.command;
   const cwd = command.cwd ?? older.command?.cwd;
   const exitCode = command.exitCode === undefined ? older.command?.exitCode : command.exitCode;
+  // Cumulative per command: the newest observation is complete.
+  const codeMcp = command.codeMcp ?? older.command?.codeMcp;
   const mergedCommand: ThreadWorkspaceActivityCommand = {
+    ...(codeMcp ? { codeMcp } : {}),
     ...(cwd ? { cwd } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(output?.originalByteCount !== undefined ? { originalByteCount: output.originalByteCount } : {}),

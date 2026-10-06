@@ -149,6 +149,16 @@ describe("workspace activity contract", () => {
     const command = { ...base, kind: "command", command: { preview: "echo", secretMasked: true } };
     expect(decodeThreadWorkspaceActivityEntry(command)).toEqual(command);
     expect(decodeThreadWorkspaceActivityEntry({ ...command, command: { preview: "echo", secretMasked: "MY_TOKEN" } })).toBeNull();
+    const codeMcp = { calls: 3, failed: 1, refused: 2, tools: [{ calls: 3, failed: 1, serverName: "GitLab", toolName: "list_commits" }] };
+    const coded = { ...base, kind: "command", command: { codeMcp, preview: "python3 report.py" } };
+    expect(decodeThreadWorkspaceActivityEntry(coded)).toEqual(coded);
+    for (const invalid of [
+      { ...codeMcp, failed: 4 }, { ...codeMcp, arguments: {} }, { ...codeMcp, tools: [{ ...codeMcp.tools[0], result: "x" }] },
+      { ...codeMcp, tools: Array.from({ length: 9 }, () => ({ calls: 0, failed: 0, toolName: "t" })) },
+      { ...codeMcp, tools: [{ calls: 4, failed: 0, toolName: "t" }] }, { ...codeMcp, tools: [{ calls: 1, failed: 0, toolName: "t\u0000" }] }
+    ]) {
+      expect(decodeThreadWorkspaceActivityEntry({ ...coded, command: { codeMcp: invalid, preview: "python3 report.py" } })).toBeNull();
+    }
     expect(decodeThreadWorkspaceActivity({ entries: [elided], truncated: true })).not.toBeNull();
     expect(decodeThreadWorkspaceActivity({ entries: [elided, { ...elided, id: "other" }], truncated: true })).toBeNull();
     expect(decodeThreadWorkspaceActivity({ entries: Array.from({ length: 513 }, () => ({ ...base, kind: "workspace_start" })) })).toBeNull();
