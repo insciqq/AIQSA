@@ -1,4 +1,3 @@
-import { resolveRequestAuth } from "../../auth/defaultAuth";
 import { prisma } from "../../prisma";
 import { resolveCurrentMemoryUtilityPolicy } from "../execution/policy";
 import { kickDefaultMemoryCoordinator } from "../coordinator/defaultCoordinator";
@@ -8,7 +7,6 @@ import {
   tryEnsureDefaultMemoryDeletionComposition
 } from "../deletionComposition";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
-import type { MemorySettingsHandlerDeps } from "./handlers";
 import {
   createMemorySettingsService,
   DEFAULT_MEMORY_SETTINGS_CAPABILITIES
@@ -49,8 +47,3 @@ export const defaultMemorySettingsService = createMemorySettingsService({
   resolveCurrentUtilityPolicy: (userId, settings) =>
     resolveCurrentMemoryUtilityPolicy(prisma, userId, settings)
 });
-
-export const defaultMemorySettingsHandlerDeps: MemorySettingsHandlerDeps = {
-  resolveAuth: resolveRequestAuth,
-  service: defaultMemorySettingsService
-};
