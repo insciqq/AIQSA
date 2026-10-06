@@ -53,6 +53,7 @@ export type EventFields = {
   "http.request_completed": RouteFields & Readonly<{ status?: number; duration_ms?: number; headers_ms?: number; stream?: boolean; outcome: "completed" | "closed" }>;
   "http.request_failed": RouteFields & Readonly<{ stage: "listener" | "next_request"; error_category: "unexpected" }>;
   "http.route_resolver_unavailable": Readonly<{ reason: "missing" | "invalid" | "unsupported" }>;
+  "client.error": Readonly<{ kind: "render" | "error" | "unhandled_rejection" | "chunk_load"; routePath?: string; route_source: "manifest" | "unknown" }>;
   "process.failure": EmergencyFailure;
   "process.started": Readonly<{
     node_version: string; attachments?: SubsystemState; memory?: SubsystemState; knowledge?: SubsystemState;
