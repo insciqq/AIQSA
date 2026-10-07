@@ -46,6 +46,7 @@ import {
   subtractTokenUsage,
   sumTokenUsage
 } from "../../domain/usage";
+import type { RunUsageAttributionPurpose } from "../../domain/usagePurpose";
 import type { AiqsaMcpToolCallResult } from "../mcp/clientSession";
 import type {
   McpDiscoveryState,
@@ -771,6 +772,7 @@ async function recoveredUsageAttributions(
       operationCount: 1,
       modelId: control.modelId,
       provider: control.provider,
+      purpose: "chat_answer",
       usage: usage ?? normalizeTokenUsage({})
     }
   ]);
@@ -784,10 +786,11 @@ function groupedUsageAttributions(
     operationCount: number | null;
     modelId: string;
     provider: string;
+    purpose: RunUsageAttributionPurpose;
     usages: ModelRunUsage[];
   }>();
   for (const attribution of attributions) {
-    const key = `${attribution.provider}\u0000${attribution.modelId}\u0000${attribution.providerModelId ?? ""}`;
+    const key = `${attribution.purpose}\u0000${attribution.provider}\u0000${attribution.modelId}\u0000${attribution.providerModelId ?? ""}`;
     const existing = grouped.get(key);
     if (existing) {
       existing.usages.push(attribution.usage);
@@ -799,6 +802,7 @@ function groupedUsageAttributions(
       operationCount: attribution.operationCount ?? null,
       modelId: attribution.modelId,
       provider: attribution.provider,
+      purpose: attribution.purpose,
       usages: [attribution.usage]
     });
   }
@@ -807,6 +811,7 @@ function groupedUsageAttributions(
     operationCount: entry.operationCount,
     modelId: entry.modelId,
     provider: entry.provider,
+    purpose: entry.purpose,
     usage: sumTokenUsage(entry.usages)
   }));
 }
@@ -875,9 +880,11 @@ function usageAttributionsWithoutAnswerRounds(
   if (grouped.some((attribution) => !hasValidUsageEvidence(attribution.usage))) return null;
   if (answerRoundUsage.length === 0) return grouped;
 
-  const answerKey = `${answer.provider}\u0000${answer.modelId}`;
-  const answerAttribution = grouped.find((attribution) =>
-    `${attribution.provider}\u0000${attribution.modelId}` === answerKey);
+  // Saved rounds are the answer model's own answer usage; a Search or
+  // Knowledge attribution of the same model is never part of them.
+  const isAnswer = (attribution: RunUsageAttribution) => attribution.purpose === "chat_answer" &&
+    attribution.provider === answer.provider && attribution.modelId === answer.modelId;
+  const answerAttribution = grouped.find(isAnswer);
   const remainderCount = answerAttribution?.operationCount == null ? null
     : answerAttribution.operationCount - answerRoundUsage.length;
   if (remainderCount !== null && remainderCount < 0) return null;
@@ -889,10 +896,10 @@ function usageAttributionsWithoutAnswerRounds(
   if (!remainder) return null;
 
   return [
-    ...grouped.filter((attribution) =>
-      `${attribution.provider}\u0000${attribution.modelId}` !== answerKey),
+    ...grouped.filter((attribution) => !isAnswer(attribution)),
     ...(remainderCount !== 0 && (remainderCount !== null || hasTokenUsage(remainder))
-      ? [{ operationCount: remainderCount, modelId: answer.modelId, provider: answer.provider, usage: remainder }]
+      ? [{ operationCount: remainderCount, modelId: answer.modelId, provider: answer.provider, purpose: "chat_answer" as const,
+          usage: remainder }]
       : [])
   ];
 }
@@ -1459,6 +1466,7 @@ async function recordRecoveredSearchResult(input: Readonly<{
       input.context.usageAttributions.push({
         modelId: execution.modelId,
         provider: execution.provider,
+        purpose: "web_search",
         usage: execution.usage
       });
     }
@@ -2425,6 +2433,7 @@ async function recoverCheckpointedToolLoop(
         operationCount: 1,
         modelId: run.modelId,
         provider: run.provider,
+        purpose: "chat_answer" as const,
         usage: entry.usage
       }))
     ];
@@ -2944,7 +2953,8 @@ async function recoverCheckpointedToolLoop(
         dispatch: attempt => write({ attempt }),
         async settle(attempt, usage, summary) {
           // A call refused before dispatch reported nothing and counts no operation.
-          if (usage) context.usageAttributions.push({ modelId: request.modelId, operationCount: 1, provider: request.provider, usage });
+          if (usage) context.usageAttributions.push({ modelId: request.modelId, operationCount: 1, provider: request.provider,
+            purpose: "chat_answer", usage });
           await write({ attempt, ...(summary ? { summary } : {}) });
         }
       };
@@ -2955,7 +2965,7 @@ async function recoverCheckpointedToolLoop(
       // invented usage, durably with the receipt so a later pass cannot count
       // it again. A claim that was never sent accounts nothing.
       if (settledSummaryClaim.state === "unknown") {
-        usageAttributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider,
+        usageAttributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider, purpose: "chat_answer",
           usage: normalizeTokenUsage({ completeness: "unavailable" }) });
       }
       await persistCumulativeUsage(undefined, {
@@ -4857,7 +4867,7 @@ async function recoverKnowledgeAnswerGrounding(
         const attributions = await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
           ...persisted,
           ...[...observedOperationUsage.values()].map((usage) => ({
-            operationCount: 1, modelId: input.control.modelId, provider: input.control.provider, usage
+            operationCount: 1, modelId: input.control.modelId, provider: input.control.provider, purpose: "chat_answer" as const, usage
           }))
         ]));
         await deps.repository.recordRunUsageEvents({ chatId: input.control.chatId, runId: input.runId,
@@ -4891,6 +4901,7 @@ async function recoverKnowledgeAnswerGrounding(
     ...operationResult.operations.map((operation) => ({
       modelId: latest.modelId,
       provider: latest.provider,
+      purpose: "chat_answer" as const,
       usage: operation.usage
     }))
   ]);
@@ -4947,13 +4958,15 @@ async function accountLostExecutorCheckpoint(deps: RunRecoveryDeps, runId: strin
     runId,
     usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
       ...attributions,
-      ...answerRounds.map((entry) => ({ modelId: run.modelId, operationCount: 1, provider: run.provider, usage: entry.usage }))
+      ...answerRounds.map((entry) => ({ modelId: run.modelId, operationCount: 1, provider: run.provider,
+        purpose: "chat_answer" as const, usage: entry.usage }))
     ])),
     userId
   });
   if (summary.settled && checkpoint.contextCompaction) {
     if (summary.settled.state === "unknown") {
-      attributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider, usage: unknownUsage });
+      attributions.push({ modelId: run.modelId, operationCount: 1, provider: run.provider, purpose: "chat_answer",
+        usage: unknownUsage });
     }
     if (!(await record({ contextSummaryReceipt: { attempt: summary.settled,
       compaction: checkpoint.contextCompaction, roundIndex: checkpoint.roundIndex } }))) return;
@@ -4998,7 +5011,7 @@ async function failRetiredContextPolicyRun(
     runId,
     usageAttributions: await usageAttributionsWithEstimatedCost(deps.repository, groupedUsageAttributions([
       ...persisted.map(({ recordedAt: _recordedAt, ...attribution }) => attribution),
-      { modelId: control.modelId, operationCount: 1, provider: control.provider,
+      { modelId: control.modelId, operationCount: 1, provider: control.provider, purpose: "chat_answer",
         usage: normalizeTokenUsage({ completeness: "unavailable" }) }
     ])),
     userId

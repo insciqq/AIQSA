@@ -433,9 +433,10 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       select: { resultChecksum: true, resultText: true, state: true },
       where: { id: reservation.attemptId }
     })).resolves.toEqual({ resultChecksum: null, resultText: null, state: "settled" });
-    await expect(prisma.usageEvent.count({
+    await expect(prisma.usageEvent.findMany({
+      select: { purpose: true },
       where: { knowledgePdfProcessingAttemptId: reservation.attemptId }
-    })).resolves.toBe(1);
+    })).resolves.toEqual([{ purpose: "knowledge_indexing" }]);
     await expect(prisma.knowledgePdfProcessingAttempt.findUniqueOrThrow({
       select: { state: true },
       where: { id: uncertain.attemptId }
@@ -535,7 +536,8 @@ describe("Prisma Knowledge Source ingestion claims", () => {
         knowledgeDocumentVersionId: true,
         knowledgeIndexGenerationId: true,
         modelId: true,
-        providerModelId: true
+        providerModelId: true,
+        purpose: true
       },
       where: { modelId: "embedding-upstream", userId: fixture.ownerUserId }
     })).resolves.toEqual({
@@ -544,7 +546,8 @@ describe("Prisma Knowledge Source ingestion claims", () => {
       knowledgeDocumentVersionId: null,
       knowledgeIndexGenerationId: null,
       modelId: "embedding-upstream",
-      providerModelId: null
+      providerModelId: null,
+      purpose: "knowledge_indexing"
     });
     await expect(restartedRepository.activateSourceVersion({
       ...embeddingWork,

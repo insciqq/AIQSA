@@ -172,7 +172,8 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
       // publication failure, access loss or a stale claim cannot lose it.
       // Nothing is estimated from pixels.
       const micros = generated.usage.costUsd === null ? null : Math.round(generated.usage.costUsd * 1_000_000);
-      await prisma.usageEvent.create({ data: { imageGeneration: true, imageToolCallId: toolCallId, modelRunId: runId, userId, chatId: request.chatId,
+      await prisma.usageEvent.create({ data: { imageGeneration: true, imageToolCallId: toolCallId, purpose: "image_generation",
+        modelRunId: runId, userId, chatId: request.chatId,
         projectId: access.project?.projectId, provider: snapshot.providerFamily,
         providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId,
         inputTokens: generated.usage.inputTokens, outputTokens: generated.usage.outputTokens, totalTokens: generated.usage.totalTokens,

@@ -78,30 +78,33 @@ async function createFixture(marker: string) {
 
   await prisma.usageEvent.create({ data: { // Run row: local 2003-10-26 00:30 summer time.
     chatId: u1Chat, createdAt: new Date("2003-10-25T22:30:00.000Z"), estimatedCostMicros: 100, inputTokens: 10,
-    modelId, modelRunId: chatRun, outputTokens: 5, provider: connectionId, totalTokens: 15, usageCompleteness: "COMPLETE", userId: u1.id
+    modelId, modelRunId: chatRun, outputTokens: 5, provider: connectionId, purpose: "chat_answer", totalTokens: 15,
+    usageCompleteness: "COMPLETE", userId: u1.id
   } });
   await prisma.usageEvent.create({ data: { // Image row: local 2003-10-26 23:30 winter time, the same 25-hour day.
     chatId: u1Chat, createdAt: new Date("2003-10-26T22:30:00.000Z"), estimatedCostMicros: 2_000, imageGeneration: true,
-    imageToolCallId: toolCall.id, modelId: upstream, modelRunId: chatRun, provider: family, providerModelId: modelId, userId: u1.id
+    imageToolCallId: toolCall.id, modelId: upstream, modelRunId: chatRun, provider: family, providerModelId: modelId,
+    purpose: "image_generation", userId: u1.id
   } });
   await prisma.usageEvent.create({ data: { // Scheduled run row with unknown cost: local 2003-10-27 01:30.
     createdAt: new Date("2003-10-27T00:30:00.000Z"), inputTokens: 30, modelId, modelRunId: scheduledRun, outputTokens: 10,
-    provider: connectionId, totalTokens: 40, usageCompleteness: "COMPLETE", userId: u2.id
+    provider: connectionId, purpose: "chat_answer", totalTokens: 40, usageCompleteness: "COMPLETE", userId: u2.id
   } });
   await prisma.usageEvent.create({ data: { // Background row under an uncatalogued model: local 2003-10-22 02:00.
     createdAt: new Date("2003-10-22T00:00:00.000Z"), estimatedCostMicros: 5, inputTokens: 7, modelId: "raw-model",
-    provider: `${marker}-raw`, totalTokens: 7, usageCompleteness: "PARTIAL", userId: u2.id
+    provider: `${marker}-raw`, purpose: "knowledge_indexing", totalTokens: 7, usageCompleteness: "PARTIAL", userId: u2.id
   } });
   await prisma.usageEvent.create({ data: { // Chat-summary shape: family plus the ProviderModel id.
     chatId: randomUUID(), createdAt: new Date("2003-10-28T09:00:00.000Z"), estimatedCostMicros: 1, inputTokens: 2, modelId,
-    outputTokens: 1, provider: family, totalTokens: 3, usageCompleteness: "COMPLETE", userId: u2.id
+    outputTokens: 1, provider: family, purpose: "chat_summary", totalTokens: 3, usageCompleteness: "COMPLETE", userId: u2.id
   } });
   await prisma.usageEvent.create({ data: { // Previous window only.
     chatId: u1Chat, createdAt: new Date("2003-10-18T10:00:00.000Z"), estimatedCostMicros: 50, inputTokens: 20, modelId,
-    provider: connectionId, totalTokens: 20, usageCompleteness: "PARTIAL", userId: u1.id
+    provider: connectionId, purpose: "chat_answer", totalTokens: 20, usageCompleteness: "PARTIAL", userId: u1.id
   } });
   await prisma.usageEvent.create({ data: { // Between the previous window's end and the current start: in neither.
-    createdAt: new Date("2003-10-21T21:59:00.000Z"), estimatedCostMicros: 900, modelId, provider: connectionId, userId: u1.id
+    createdAt: new Date("2003-10-21T21:59:00.000Z"), estimatedCostMicros: 900, modelId, provider: connectionId, purpose: "other",
+    userId: u1.id
   } });
   return { archived, connectionId, marker, modelId, team, u1, u2 };
 }

@@ -356,6 +356,7 @@ async function createSucceededBinding(input: Readonly<{
         modelId: "memory-decision-model-v1",
         provider: "openai_compatible",
         providerModelId: "memory-decision-model-v1",
+        purpose: "memory_processing",
         userId: input.userId
       }
     });

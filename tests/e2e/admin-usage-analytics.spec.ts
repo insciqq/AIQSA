@@ -78,13 +78,13 @@ async function seed(): Promise<void> {
         const cost = Math.round(((inputTokens - cachedInputTokens) * model.inputPrice + cachedInputTokens * model.inputPrice * 0.1 +
           outputTokens * model.outputPrice));
         usage.push({ cachedInputTokens, chatId, createdAt, estimatedCostMicros: cost, inputTokens, modelId: model.modelId,
-          modelRunId: runId, outputTokens, provider: model.provider, totalTokens: inputTokens + outputTokens,
+          modelRunId: runId, outputTokens, provider: model.provider, purpose: "chat_answer", totalTokens: inputTokens + outputTokens,
           usageCompleteness: "COMPLETE", userId: person.id });
       }
       if (day % 2 === 0) {
         const inputTokens = Math.round(2_000 + next() * 20_000);
         usage.push({ createdAt: new Date(now - day * DAY_MS - 3 * 60 * 60 * 1000), inputTokens, modelId: "text-embedding-3-small",
-          provider: "openai", totalTokens: inputTokens, usageCompleteness: "PARTIAL", userId: person.id });
+          provider: "openai", purpose: "knowledge_indexing", totalTokens: inputTokens, usageCompleteness: "PARTIAL", userId: person.id });
       }
     }
     // One statement per table: a message's parent is an earlier row of the same insert.

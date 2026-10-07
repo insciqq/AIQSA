@@ -32,7 +32,7 @@ describe("historical catalog accounting adoption", () => {
         connectionId, providerModelId: modelId, credentialSource: "default", executionSnapshot: {} } });
       // Ordinary answer receipts identify their model by provider/modelId; the
       // accepted run binding separately retains its exact deployment identity.
-      await prisma.usageEvent.create({ data: { id: answerUsageId, userId, chatId, modelRunId: runIds[0],
+      await prisma.usageEvent.create({ data: { id: answerUsageId, userId, chatId, modelRunId: runIds[0], purpose: "chat_answer",
         provider: connectionId, modelId, ...counts, usageCompleteness: "COMPLETE" } });
       await prisma.chatTitleGeneration.create({ data: { runId: runIds[0]!, chatId, userId, expectedTitle: "Synthetic pricing",
         titleRevision: 0, questionText: "Synthetic question", answerText: "Synthetic answer",
@@ -41,14 +41,15 @@ describe("historical catalog accounting adoption", () => {
       // The title guard admits only the installation's own adoption state, so this
       // synthetic state's update is rejected by a real trigger.
       await prisma.usageEvent.create({ data: { id: titleUsageId, userId, chatId, modelRunId: runIds[0], chatTitleGeneration: true,
-        chatTitleGenerationId: runIds[0], provider: connectionId, modelId, providerModelId: modelId, ...counts, usageCompleteness: "COMPLETE" } });
-      await prisma.usageEvent.create({ data: { id: chatUsageId, userId, chatId, provider: connectionId, modelId, ...counts,
+        chatTitleGenerationId: runIds[0], purpose: "chat_title", provider: connectionId, modelId, providerModelId: modelId, ...counts,
         usageCompleteness: "COMPLETE" } });
-      await prisma.usageEvent.create({ data: { id: pricedUsageId, userId, chatId, provider: connectionId, modelId, ...counts,
-        usageCompleteness: "COMPLETE", estimatedCostMicros: 7 } });
+      await prisma.usageEvent.create({ data: { id: chatUsageId, userId, chatId, purpose: "chat_answer", provider: connectionId, modelId,
+        ...counts, usageCompleteness: "COMPLETE" } });
+      await prisma.usageEvent.create({ data: { id: pricedUsageId, userId, chatId, purpose: "chat_answer", provider: connectionId, modelId,
+        ...counts, usageCompleteness: "COMPLETE", estimatedCostMicros: 7 } });
       // Chat-summary receipts store the exact ProviderModel id in modelId.
-      await prisma.usageEvent.create({ data: { id: summaryUsageId, userId, chatId, provider: "openai", modelId, ...counts,
-        usageCompleteness: "COMPLETE" } });
+      await prisma.usageEvent.create({ data: { id: summaryUsageId, userId, chatId, purpose: "chat_summary", provider: "openai", modelId,
+        ...counts, usageCompleteness: "COMPLETE" } });
       // The cutoff leads the database clock so default receipt timestamps stay inside it.
       await prisma.catalogCostBackfill.create({ data: { id, cutoffAt: new Date(Date.now() + 60_000), prices: [{ id: modelId, provider: connectionId, modelId,
         inputTokenPriceUsdPerMillion: 2, cachedInputTokenPriceUsdPerMillion: 0.2,

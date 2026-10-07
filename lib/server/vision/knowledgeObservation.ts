@@ -98,7 +98,7 @@ export function createKnowledgeImageObservationStore(prisma: PrismaClient) {
           !await authorizeVisionPlan(tx, destination)) throw new VisionAnalysisError("vision_model_unavailable");
         await tx.knowledgeImageObservation.create({ data: { modelRunId: c.runId, providerBindingKey: destination.bindingKey,
           requestHash: c.requestHash, images } });
-        await tx.usageEvent.create({ data: { visionAnalysis: true, knowledgeImageObservationRunId: c.runId,
+        await tx.usageEvent.create({ data: { visionAnalysis: true, knowledgeImageObservationRunId: c.runId, purpose: "knowledge_indexing",
           userId: c.userId, chatId: c.chatId, modelRunId: c.runId, projectId: authority.projectId,
           provider: destination.snapshot.providerFamily, providerModelId: destination.authority.providerModelId,
           modelId: destination.snapshot.model.upstreamModelId } });

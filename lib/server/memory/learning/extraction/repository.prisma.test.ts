@@ -1127,6 +1127,7 @@ async function createSucceededBinding(
       modelId: "memory-vnext-test-model",
       provider: "openai_compatible",
       providerModelId: "memory-vnext-test-model",
+      purpose: "memory_processing",
       userId
     }
   });
@@ -1538,6 +1539,7 @@ async function budgetExecution(userId: string) {
         outputTokens: result.usage.outputTokens,
         provider: "openai_compatible",
         providerModelId: authority.providerModelId,
+        purpose: "memory_processing",
         reasoningTokens: result.usage.reasoningTokens,
         totalTokens: result.usage.totalTokens,
         usageCompleteness: result.usage.completeness,

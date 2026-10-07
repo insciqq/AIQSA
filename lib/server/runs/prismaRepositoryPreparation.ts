@@ -22,6 +22,7 @@ import {
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
+import { memoryRoleUsagePurpose } from "../../domain/usagePurpose";
 import { titleFromMessageContent } from "../chats/titlePolicy";
 import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
 import {
@@ -3868,6 +3869,7 @@ async function settlePreparingAttemptExecutions(
           outputTokens: open ? null : binding.outputTokens,
           provider: provider.providerFamily,
           providerModelId: provider.providerModelId,
+          purpose: memoryRoleUsagePurpose(binding.logicalRole),
           reasoningTokens: open ? null : binding.reasoningTokens,
           totalTokens: open ? null : binding.totalTokens,
           userId: input.userId
