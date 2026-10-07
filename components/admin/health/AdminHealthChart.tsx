@@ -201,25 +201,28 @@ export function AdminHealthChart({
             : ""}
         </p>
       </div>
-      <table className="sr-only">
-        <caption>Errors by {interval === "hour" ? "hour" : "day"} and area</caption>
-        <thead>
-          <tr>
-            <th scope="col">{interval === "hour" ? "Hour" : "Day"}</th>
-            {adminHealthCategories.map((category) => <th key={category} scope="col">{healthCategoryLabels[category]}</th>)}
-            <th scope="col">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {series.map((bucket) => (
-            <tr key={bucket.start}>
-              <th scope="row">{healthBucketLabel(bucket.start, interval, true)}</th>
-              {adminHealthCategories.map((category) => <td key={category}>{bucket.counts[category]}</td>)}
-              <td>{bucket.total}</td>
+      {/* A table ignores the 1px box of sr-only and widens the page; its wrapper clips it. */}
+      <div className="sr-only">
+        <table>
+          <caption>Errors by {interval === "hour" ? "hour" : "day"} and area</caption>
+          <thead>
+            <tr>
+              <th scope="col">{interval === "hour" ? "Hour" : "Day"}</th>
+              {adminHealthCategories.map((category) => <th key={category} scope="col">{healthCategoryLabels[category]}</th>)}
+              <th scope="col">Total</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {series.map((bucket) => (
+              <tr key={bucket.start}>
+                <th scope="row">{healthBucketLabel(bucket.start, interval, true)}</th>
+                {adminHealthCategories.map((category) => <td key={category}>{bucket.counts[category]}</td>)}
+                <td>{bucket.total}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </figure>
   );
 }
