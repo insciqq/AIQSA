@@ -21,7 +21,6 @@ import {
 } from "@/components/app-shell/memoryUiCopy";
 import {
   UiV2Button,
-  UiV2Chip,
   UiV2Icon,
   UiV2IconButton,
   UiV2MenuActions,
@@ -750,102 +749,5 @@ export function GeneratedFilesV2({ files, canSave = false, onUseFile, useDisable
         })}
       </ul>
     </section>
-  );
-}
-
-const PREVIEW_LIMIT = 4_096;
-
-function boundedPreview(value: unknown): { text: string; truncated: boolean } {
-  try {
-    const serialized = JSON.stringify(value, null, 2) ?? "Unavailable";
-    return serialized.length <= PREVIEW_LIMIT
-      ? { text: serialized, truncated: false }
-      : { text: `${serialized.slice(0, PREVIEW_LIMIT)}\n…`, truncated: true };
-  } catch {
-    return { text: "Preview unavailable", truncated: false };
-  }
-}
-
-export type ToolApprovalStatusV2 =
-  | "allowed"
-  | "allowing"
-  | "error"
-  | "pending"
-  | "rejected"
-  | "rejecting";
-
-export function ToolApprovalCardV2({
-  error,
-  onAllow,
-  onReject,
-  redactedArgumentsPreview,
-  serverName,
-  status,
-  toolName
-}: Readonly<{
-  error?: string | null;
-  onAllow(): void;
-  onReject(): void;
-  redactedArgumentsPreview: unknown;
-  serverName: string;
-  status: ToolApprovalStatusV2;
-  toolName: string;
-}>) {
-  const preview = useMemo(
-    () => boundedPreview(redactedArgumentsPreview),
-    [redactedArgumentsPreview]
-  );
-  const pending = status === "pending" ||
-    status === "allowing" ||
-    status === "rejecting" ||
-    status === "error";
-
-  return (
-    <aside className="v2-tool-approval" aria-label={`Approval required for ${serverName} ${toolName}`}>
-      <div className="v2-tool-approval-heading">
-        <UiV2Icon name="lock" />
-        <span>
-          <small>Tool approval required</small>
-          <strong>{serverName} · {toolName}</strong>
-        </span>
-        <UiV2Chip tone={
-          status === "error"
-            ? "danger"
-            : status === "allowed"
-              ? "ok"
-              : status === "rejected"
-                ? "warn"
-                : "neutral"
-        }>
-          {status}
-        </UiV2Chip>
-      </div>
-      <p>Review the bounded, redacted preview before this server receives the request.</p>
-      <details>
-        <summary>Review arguments</summary>
-        <pre>{preview.text}</pre>
-        {preview.truncated ? <small>Preview truncated at the presentation boundary.</small> : null}
-      </details>
-      {error ? <p className="v2-answer-output-error" role="alert">{error}</p> : null}
-      {pending ? (
-        <div className="v2-tool-approval-actions">
-          <UiV2Button
-            busy={status === "rejecting"}
-            disabled={status === "allowing"}
-            onClick={onReject}
-          >
-            Reject
-          </UiV2Button>
-          <UiV2Button
-            busy={status === "allowing"}
-            disabled={status === "rejecting"}
-            onClick={onAllow}
-            tone="primary"
-          >
-            Allow once
-          </UiV2Button>
-        </div>
-      ) : null}
-    </aside>
   );
 }

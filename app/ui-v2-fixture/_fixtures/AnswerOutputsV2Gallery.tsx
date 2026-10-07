@@ -16,11 +16,7 @@ import {
 } from "@/features/conversation-v2/ConversationV2";
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { useState } from "react";
-import {
-  AnswerOutputsV2,
-  ToolApprovalCardV2,
-  type ToolApprovalStatusV2
-} from "@/features/answer-outputs-v2/AnswerOutputsV2";
+import { AnswerOutputsV2 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import {
   KnowledgeCitationControl,
@@ -28,7 +24,6 @@ import {
 } from "@/features/citations-v2/KnowledgeCitationViewer";
 
 export type AnswerOutputsGalleryState =
-  | "approval"
   | "citation-assistant"
   | "citation-personal"
   | "citation-project"
@@ -184,23 +179,8 @@ const memoryToolActivity: ThreadToolActivity = {
   ]
 };
 
-function ApprovalOutput() {
-  const [status, setStatus] = useState<ToolApprovalStatusV2>("pending");
-  return (
-    <ToolApprovalCardV2
-      onAllow={() => setStatus("allowed")}
-      onReject={() => setStatus("rejected")}
-      redactedArgumentsPreview={{ path: "[private path redacted]", query: "retrieval policy" }}
-      serverName="Research vault"
-      status={status}
-      toolName="lookup_document"
-    />
-  );
-}
-
 function artifactFor(state: AnswerOutputsGalleryState): ThreadArtifactSummary | null {
   switch (state) {
-    case "approval":
     case "empty":
       return null;
     case "reasoning":
@@ -285,12 +265,7 @@ export function AnswerOutputsV2Gallery({
                     onMore: () => undefined,
                     onRegenerate: () => undefined
                   }}
-                  actionsSlot={(
-                    <>
-                      {state === "approval" ? <ApprovalOutput /> : null}
-                      <AnswerOutputsV2 artifact={artifact} />
-                    </>
-                  )}
+                  actionsSlot={<AnswerOutputsV2 artifact={artifact} />}
                   anchorId={message.id}
                   artifact={artifact}
                   content={message.content}
