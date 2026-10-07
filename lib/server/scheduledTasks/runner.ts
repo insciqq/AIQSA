@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { scheduledTaskRunChatTitle } from "../../domain/scheduledTaskSchedule";
 import type { SmtpProductMessage } from "../email/definitions";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { observedFailureCode } from "../providers/providerObservability";
-import type { ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
+import type { ScheduledOccurrenceAdmission, ScheduledResultCopy } from "../runs/runRepositoryContract";
 import { scheduledTaskSearchPlan, scheduledTaskSendBody, type ScheduledTaskSend, type ScheduledTaskSendTarget } from "./admission";
 import { resolveScheduledTaskModel, type ScheduledTaskRunCatalogLoader } from "./catalog";
+import { planScheduledTaskChat } from "./chatRotation";
+import { SCHEDULED_TASK_HISTORY_SWEEP_INTERVAL_MS, type ScheduledTaskHistoryRetention } from "./historyRetention";
 import { scheduledTaskResultEmail } from "./notifications";
 import type { ScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
 import {
@@ -15,6 +16,7 @@ import {
   SCHEDULED_TASK_MAX_EXECUTING,
   SCHEDULED_TASK_MAX_EXECUTING_PER_USER,
   SCHEDULED_TASK_RUN_DEADLINE_CODE,
+  SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE,
   classifySendRefusal,
   pausingOutcome,
   settlementNotifiesOwner,
@@ -22,11 +24,17 @@ import {
   type ScheduledTaskPauseReason
 } from "./runnerPolicy";
 import type { ScheduledTaskExecution, ScheduledTaskRunnerStore, ScheduledTaskSettlement } from "./runnerStore";
+import type { ScheduledWorkspaceCarryover } from "./workspaceCarryover";
 
 export type ScheduledTaskRunnerDeps = Readonly<{
   appBaseUrl: string;
   /** Detaches an execution from the tick; defaults to a plain promise. */
   background?: (work: () => Promise<void>) => Promise<void>;
+  /**
+   * Captures the `/workspace/project` of the chat a rotation leaves into a
+   * seed for the new chat; without it a Workspace task's rotation waits.
+   */
+  carryWorkspace?: ScheduledWorkspaceCarryover;
   /** Wakes the next tick, e.g. after a run frees its owner's slot. */
   kick?: () => void;
   loadCatalog: ScheduledTaskRunCatalogLoader;
@@ -34,8 +42,8 @@ export type ScheduledTaskRunnerDeps = Readonly<{
   loadPinnedSkills: ScheduledTaskPinnedSkillLoader;
   newId?: () => string;
   now?: () => Date;
-  /** Sets the title of a chat the run created, through the ordinary rename that fences title generation. */
-  renameChat: (input: Readonly<{ chatId: string; title: string; userId: string }>) => Promise<void>;
+  /** One bounded sweep of the tasks' history retention, run at most every quarter hour. */
+  retainHistory?: ScheduledTaskHistoryRetention;
   send: ScheduledTaskSend;
   sendEmail?: (message: SmtpProductMessage) => Promise<unknown>;
   /** Queues the occurrence's browser push; the sender claims it at most once and never blocks the tick. */
@@ -73,7 +81,8 @@ const EMAIL_QUEUE_LIMIT = 200;
 function log(fields: Readonly<{
   action?: "fail" | "retry" | "skip";
   code?: string; count?: number; job_id?: string; outcome: "started" | "completed" | "failed" | "skipped" | "waiting";
-  prisma_code?: string; run_id?: string; stage: "claim" | "dispatch" | "fail" | "settle" | "retry" | "release";
+  prisma_code?: string; run_id?: string;
+  stage: "claim" | "cleanup" | "continuation" | "dispatch" | "fail" | "settle" | "retry" | "release";
 }>): void {
   logEvent("job_attempt", { subsystem: "scheduled_tasks", ...fields });
 }
@@ -101,36 +110,50 @@ async function drain(body: ReadableStream<Uint8Array> | null): Promise<void> {
   }
 }
 
-/**
- * Where an occurrence posts: in same-chat mode the task's usable chat, with
- * the previous shown result of the current generation as the only earlier
- * turn the model sees (admission keeps it only while it lies on that chat's
- * path); otherwise a new chat, titled after the task (and the run's local date
- * in new-chat mode), whose context is the prompt alone.
- */
-function runTarget(execution: ScheduledTaskExecution, newChatId: () => string): Readonly<{
+type RunPlacement = Readonly<{
+  chatPeriod: string | null;
+  newChat?: Readonly<{ title: string }>;
   previousResult: ScheduledOccurrenceAdmission["previousResult"];
+  previousResultCopy?: ScheduledResultCopy;
+  /** The monthly rotation this run starts, from the task's current chat. */
+  rotation?: Readonly<{ fromChatId: string }>;
   target: ScheduledTaskSendTarget;
-  title: string | null;
-}> {
-  const { chat, occurrence, task } = execution;
-  if (task.chatMode === "same" && chat) {
+}>;
+
+/**
+ * Where an occurrence posts (`planScheduledTaskChat`): in same-chat mode the
+ * task's usable chat of the run's month, with the previous shown result of
+ * the current generation as the only earlier turn the model sees (admission
+ * keeps it only while it lies on that chat's path), or else the result its
+ * rotation carried into that chat; at the first run of a later month a new
+ * chat for that month that carries the previous shown result over; otherwise
+ * a new chat, titled after the task (with the run's local date in new-chat
+ * mode), whose context is the prompt alone. A new chat gets its title and
+ * the task as its origin when its run is created.
+ */
+function runTarget(execution: ScheduledTaskExecution, newChatId: () => string): RunPlacement {
+  const { carriedResult, chat, occurrence, task } = execution;
+  const plan = planScheduledTaskChat({
+    chat, chatMode: task.chatMode, chatPeriod: task.chatPeriod, scheduledFor: occurrence.scheduledFor, timeZone: task.timeZone,
+    title: task.title
+  });
+  if (plan.kind === "continue") {
     const baseline = task.baseline?.generation === task.generation ? task.baseline : null;
     return {
+      chatPeriod: plan.period,
       previousResult: baseline && { assistantMessageId: baseline.assistantMessageId, userMessageId: baseline.userMessageId },
-      target: { activeLeafMessageId: chat.activeLeafMessageId, chatId: chat.id, kind: "existing" },
-      title: null
+      // Until the rotated chat has its own shown result, the copy carried into it stands in.
+      ...(!baseline && carriedResult ? { previousResultCopy: carriedResult } : {}),
+      target: { activeLeafMessageId: chat?.activeLeafMessageId ?? null, chatId: plan.chatId, kind: "existing" }
     };
   }
-  let title = task.title;
-  if (task.chatMode === "new") {
-    try {
-      title = scheduledTaskRunChatTitle(task.title, occurrence.scheduledFor, task.timeZone);
-    } catch {
-      // A zone that no longer resolves keeps the plain task title.
-    }
-  }
-  return { previousResult: null, target: { chatId: newChatId(), kind: "new" }, title };
+  return {
+    chatPeriod: plan.period,
+    newChat: { title: plan.title },
+    previousResult: null,
+    ...(plan.kind === "rotate" ? { rotation: { fromChatId: plan.fromChatId } } : {}),
+    target: { chatId: newChatId(), kind: "new" }
+  };
 }
 
 /**
@@ -148,6 +171,9 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
   const stopping = new Map<string, Promise<void>>();
   const emailQueue: string[] = [];
   let emailing: Promise<void> | null = null;
+  /** The history sweep in progress, and when the last one started. */
+  let sweeping: Promise<void> | null = null;
+  let sweptAt: number | null = null;
 
   async function sendResultEmail(occurrenceId: string, sendEmail: NonNullable<ScheduledTaskRunnerDeps["sendEmail"]>): Promise<void> {
     try {
@@ -234,7 +260,36 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       (await deps.loadPinnedSkills(occurrence.userId, task.pinnedSkillIds)).some((skill) => !skill.available)) {
       return settlePending(execution, pausingOutcome("skill_unavailable"));
     }
-    const { previousResult, target, title } = runTarget(execution, newId);
+    const placement = runTarget(execution, newId);
+    const { previousResult, rotation, target } = placement;
+    let previousResultCopy = placement.previousResultCopy;
+    let seedId: string | null = null;
+    if (rotation) {
+      // The month's first run carries the previous shown result as a frozen
+      // copy (never the old chat's ids) and, with Workspace on, the old chat's
+      // project files, captured now: nothing runs in the new chat without them.
+      const baseline = task.baseline?.generation === task.generation ? task.baseline : null;
+      previousResultCopy = baseline ? await deps.store.loadRotationCopy({
+        baseline, chatId: rotation.fromChatId, userId: occurrence.userId
+      }) ?? undefined : undefined;
+      if (task.workspaceEnabled) {
+        const carried = deps.carryWorkspace
+          ? await deps.carryWorkspace({ sourceChatId: rotation.fromChatId, taskId: occurrence.taskId, userId: occurrence.userId })
+          : { kind: "retry" as const };
+        if (carried.kind === "failed") {
+          log({ action: "fail", code: SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE, job_id: occurrence.id, outcome: "failed",
+            stage: "continuation" });
+          return settlePending(execution, { reasonCode: SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE, state: "FAILED" });
+        }
+        if (carried.kind === "busy" || carried.kind === "retry") {
+          const reasonCode = carried.kind === "busy" ? "chat_busy" as const : SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE;
+          log({ code: reasonCode, job_id: occurrence.id, outcome: "waiting", stage: "retry" });
+          await deps.store.retryLater(occurrence.id, reasonCode);
+          return "retry";
+        }
+        seedId = carried.kind === "ready" ? carried.seedId : null;
+      }
+    }
     const response = await deps.send({
       body: scheduledTaskSendBody({
         admissionId: newId(), modelId: task.modelId, pinnedSkillIds: task.pinnedSkillIds, prompt: task.prompt,
@@ -245,12 +300,17 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       }),
       chatId: target.chatId,
       // The revision read above fences preparation against a pause or edit made
-      // meanwhile, so the task kind it carries is the one the link accepts.
+      // meanwhile, so the task kind it carries is the one the link accepts; the
+      // chat epoch fences it against another run that moved the task's chat.
       occurrence: {
-        occurrenceId: occurrence.id, previousResult, relevantMcpServerIds: execution.relevantMcpServerIds,
+        chatPeriod: placement.chatPeriod, occurrenceId: occurrence.id, previousResult,
+        relevantMcpServerIds: execution.relevantMcpServerIds, taskChatEpoch: task.chatEpoch,
         taskGeneration: task.generation, taskId: occurrence.taskId, taskRevision: task.revision,
         // Read with the revision above, so the link fence keeps the snapshot current.
         promptUrlDigests: task.promptUrlDigests,
+        ...(placement.newChat ? { newChat: placement.newChat } : {}),
+        ...(rotation ? { rotation: { fromChatId: rotation.fromChatId, seedId } } : {}),
+        ...(previousResultCopy ? { previousResultCopy } : {}),
         ...(task.kind === "monitoring" ? { monitoring: true as const } : {}),
         ...(task.memoryEnabled ? { memory: true as const } : {})
       },
@@ -260,9 +320,11 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     const current = await deps.store.readOccurrence(occurrence.id);
     if (current?.state === "RUNNING" && current.runId) {
       log({ job_id: occurrence.id, outcome: "completed", run_id: current.runId, stage: "dispatch" });
-      if (title !== null) {
-        await deps.renameChat({ chatId: target.chatId, title, userId: occurrence.userId }).catch(() =>
-          log({ action: "skip", code: "chat_title_unavailable", job_id: occurrence.id, outcome: "failed", stage: "dispatch" }));
+      if (rotation) {
+        // Best effort after the move: the old chat leaves the list unless the owner keeps it there.
+        await deps.store.archiveRotatedChat({ chatId: rotation.fromChatId, taskId: occurrence.taskId, userId: occurrence.userId })
+          .catch((error: unknown) => log({ action: "skip", code: "scheduled_task_chat_archive_skipped", job_id: occurrence.id,
+            outcome: "failed", prisma_code: databaseFailureCode(error), stage: "dispatch" }));
       }
       await drain(response.body);
       const settled = await deps.store.settleLinked(occurrence.id, clock());
@@ -330,6 +392,24 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
     }
   }
 
+  /**
+   * Starts one bounded sweep of the tasks' history retention outside the
+   * tick, at most every quarter hour; a failed sweep waits for the next.
+   */
+  function sweepHistory(now: Date): void {
+    const retain = deps.retainHistory;
+    if (!retain || sweeping || (sweptAt !== null && now.getTime() - sweptAt < SCHEDULED_TASK_HISTORY_SWEEP_INTERVAL_MS)) return;
+    sweptAt = now.getTime();
+    sweeping = background(async () => {
+      try {
+        await retain(now);
+      } catch (error) {
+        log({ action: "retry", code: "scheduled_task_history_retention_failed", outcome: "failed",
+          prisma_code: databaseFailureCode(error), stage: "cleanup" });
+      }
+    }).catch(() => undefined).finally(() => { sweeping = null; });
+  }
+
   async function dispatch(now: Date): Promise<void> {
     const { executing, pending } = await deps.store.loadDispatch(now, BATCH * 2);
     const perUser = new Map(executing);
@@ -358,11 +438,16 @@ export function createScheduledTaskRunner(deps: ScheduledTaskRunnerDeps) {
       if (claim.claimed > 0) log({ count: claim.claimed, outcome: "completed", stage: "claim" });
       await notify(claim.settlements);
       await dispatch(now);
+      sweepHistory(now);
     },
-    /** Resolves when the executions and deadline stops started so far and the queued emails have settled (tests and shutdown). */
+    /**
+     * Resolves when the executions, deadline stops and history sweep started
+     * so far and the queued emails have settled (tests and shutdown).
+     */
     async idle(): Promise<void> {
-      while (inFlight.size > 0 || stopping.size > 0 || emailing) {
-        await Promise.allSettled([...inFlight.values(), ...stopping.values(), ...(emailing ? [emailing] : [])]);
+      while (inFlight.size > 0 || stopping.size > 0 || emailing || sweeping) {
+        await Promise.allSettled([...inFlight.values(), ...stopping.values(), ...(emailing ? [emailing] : []),
+          ...(sweeping ? [sweeping] : [])]);
       }
     }
   };

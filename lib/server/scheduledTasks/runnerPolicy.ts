@@ -276,19 +276,22 @@ const NOT_A_BASELINE: ReadonlySet<string> = new Set(["could_not_check", "no_upda
 
 /**
  * The baseline a settlement leaves: a completed shown result accepted under
- * the task's current generation; anything else, including a result of an
- * older generation, a monitoring check with no update and one whose sources
- * were unavailable, keeps the stored one.
+ * the task's current generation and chat epoch; anything else, including a
+ * result of an older generation, a late result of a chat the task has moved
+ * on from (a monthly rotation), a monitoring check with no update and one
+ * whose sources were unavailable, keeps the stored one. An occurrence linked
+ * before epochs counts as epoch 0.
  */
 export function settlementBaseline(input: Readonly<{
   assistantMessageId: string | null;
-  occurrence: Readonly<{ runId: string | null; taskGeneration: number | null; userMessageId: string | null }>;
+  occurrence: Readonly<{ chatEpoch?: number | null; runId: string | null; taskGeneration: number | null; userMessageId: string | null }>;
   outcome: Readonly<{ reasonCode: string | null; state: ScheduledTaskSettledState }>;
+  taskChatEpoch?: number;
   taskGeneration: number;
 }>): ScheduledTaskBaseline | null {
   const { occurrence } = input;
   return input.outcome.state === "COMPLETED" && !NOT_A_BASELINE.has(input.outcome.reasonCode ?? "") &&
-    occurrence.taskGeneration === input.taskGeneration &&
+    occurrence.taskGeneration === input.taskGeneration && (occurrence.chatEpoch ?? 0) === (input.taskChatEpoch ?? 0) &&
     occurrence.runId !== null && occurrence.userMessageId !== null && input.assistantMessageId !== null
     ? { assistantMessageId: input.assistantMessageId, generation: input.taskGeneration, runId: occurrence.runId,
       userMessageId: occurrence.userMessageId }
@@ -300,20 +303,26 @@ export function settlementBaseline(input: Readonly<{
  * and occurrence; null for any other run. Only a run that a monitoring task
  * accepted under its current generation is a check (a changed prompt or type
  * bumps the generation, so the kind is still the admitted one); a result of an
- * older generation stays an ordinary shown result. No baseline of the current
- * generation means a first check; the revision the run was accepted under
- * proves that no owner transition happened since.
+ * older generation stays an ordinary shown result. Neither a baseline nor a
+ * result carried into a rotated chat of the current generation means a first
+ * check; the revision the run was accepted under proves that no owner
+ * transition happened since.
  */
 export function completedRunCheck(input: Readonly<{
   /** A relevant source was unavailable during the check (source health of scheduled runs). */
   healthIncomplete: boolean;
   occurrence: Readonly<{ taskGeneration: number | null; taskRevision: number | null; verdict: string | null }>;
-  task: Readonly<{ baselineGeneration: number | null; generation: number; kind: ScheduledTaskKind; revision: number }>;
+  task: Readonly<{
+    baselineGeneration: number | null;
+    /** The generation of the result carried into the task's current chat, if any. */
+    carriedGeneration?: number | null;
+    generation: number; kind: ScheduledTaskKind; revision: number;
+  }>;
 }>): MonitoringCheckSettlement | null {
   const { occurrence, task } = input;
   if (task.kind !== "monitoring" || occurrence.taskGeneration !== task.generation) return null;
   return monitoringCheckSettlement({
-    firstCheck: task.baselineGeneration !== task.generation,
+    firstCheck: task.baselineGeneration !== task.generation && task.carriedGeneration !== task.generation,
     healthIncomplete: input.healthIncomplete,
     ownerUnchanged: occurrence.taskRevision === task.revision,
     verdict: isMonitoringVerdict(occurrence.verdict) ? occurrence.verdict : null
@@ -342,13 +351,14 @@ export function planOccurrenceSettlement(input: Readonly<{
   check: MonitoringCheckSettlement | null;
   observedRevision?: number;
   occurrence: Readonly<{
-    runId: string | null; taskGeneration: number | null; trigger: ScheduledTaskRunTrigger; userMessageId: string | null;
+    chatEpoch?: number | null; runId: string | null; taskGeneration: number | null; trigger: ScheduledTaskRunTrigger;
+    userMessageId: string | null;
   }>;
   outcome: ScheduledTaskOutcome;
   sourcesIncomplete: boolean;
   task: Readonly<{
-    consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number; generation: number;
-    revision: number; status: ScheduledTaskStatusColumn;
+    chatEpoch?: number; consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number;
+    generation: number; revision: number; status: ScheduledTaskStatusColumn;
   }>;
 }>): ScheduledTaskSettlementPlan {
   const { check, occurrence, outcome, task } = input;
@@ -359,7 +369,8 @@ export function planOccurrenceSettlement(input: Readonly<{
   const taskPaused = plan.pauseReason !== null;
   return {
     ...plan,
-    baseline: settlementBaseline({ assistantMessageId: input.assistantMessageId, occurrence, outcome, taskGeneration: task.generation }),
+    baseline: settlementBaseline({ assistantMessageId: input.assistantMessageId, occurrence, outcome,
+      ...(task.chatEpoch !== undefined ? { taskChatEpoch: task.chatEpoch } : {}), taskGeneration: task.generation }),
     goalCompletes: check?.completesTask === true && !taskPaused,
     notifies: settlementNotifiesOwner({ reasonCode: outcome.reasonCode, sourceAlert: plan.sourceAlert, state: outcome.state, taskPaused })
   };
@@ -397,6 +408,13 @@ export function planClaimOverlap(input: Readonly<{
   };
 }
 
+/**
+ * The occurrence reason of a monthly rotation whose Workspace files could not
+ * be carried into the new chat: retried within the window, then a failure
+ * that counts toward the failure pause; never an empty project.
+ */
+export const SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE = "workspace_carryover_unavailable";
+
 /** A pending occurrence that may no longer be admitted, or null. */
 export function expiredPendingOutcome(
   occurrence: Readonly<{ scheduledFor: Date; startedAt: Date | null; reasonCode: string | null }>,
@@ -406,9 +424,10 @@ export function expiredPendingOutcome(
     return { reasonCode: "missed", state: "SKIPPED" };
   }
   if (occurrence.startedAt && now.getTime() - occurrence.startedAt.getTime() > SCHEDULED_TASK_RETRY_WINDOW_MS) {
-    return occurrence.reasonCode === "chat_busy"
-      ? { reasonCode: "chat_busy", state: "SKIPPED" }
-      : { reasonCode: "admission_failed", state: "FAILED" };
+    return occurrence.reasonCode === "chat_busy" ? { reasonCode: "chat_busy", state: "SKIPPED" }
+      : occurrence.reasonCode === SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE
+        ? { reasonCode: SCHEDULED_TASK_WORKSPACE_CARRYOVER_CODE, state: "FAILED" }
+        : { reasonCode: "admission_failed", state: "FAILED" };
   }
   return null;
 }

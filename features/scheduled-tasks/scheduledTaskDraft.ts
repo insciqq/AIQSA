@@ -2,6 +2,7 @@ import type { Catalog, CatalogModel } from "@/lib/contracts/catalog";
 import type { MemoryConsumerSettingsResponse } from "@/lib/contracts/memoryConsumer";
 import type { WorkspaceUnavailableReason } from "@/lib/contracts/workspace";
 import {
+  SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS,
   SCHEDULED_TASK_EVERY_HOURS,
   SCHEDULED_TASK_ONCE_MIN_LEAD_MS,
   SCHEDULED_TASK_PROMPT_MAX_LENGTH,
@@ -15,6 +16,7 @@ import {
   type ScheduledTaskChatMode,
   type ScheduledTaskDraft,
   type ScheduledTaskEveryHours,
+  type ScheduledTaskHistoryRetentionDays,
   type ScheduledTaskKind,
   type ScheduledTaskPinnedSkill,
   type ScheduledTaskSchedule,
@@ -121,6 +123,8 @@ export type ScheduledTaskEditorDraft = Readonly<{
   /** The owner's choice for other schedules; hourly and monitoring tasks always continue in one chat. */
   chatMode: ScheduledTaskChatMode;
   kind: ScheduledTaskKind;
+  /** How long old task chats are kept; a new task keeps 90 days, null keeps them forever. */
+  historyRetentionDays: ScheduledTaskHistoryRetentionDays;
 }>;
 
 export type ScheduledTaskFieldErrors = Partial<Record<
@@ -206,6 +210,7 @@ export function blankScheduledTaskDraft(
     pinnedSkills: [],
     chatMode: "new",
     kind: "standard",
+    historyRetentionDays: SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS,
     ...preset
   };
 }
@@ -244,7 +249,8 @@ export function scheduledTaskDraftFromTask(task: ScheduledTask, now: Date = new 
     pinnedSkills: task.pinnedSkills ??
       task.pinnedSkillIds.map((id) => ({ available: false, hasExecutables: false, id, name: null })),
     chatMode: task.chatMode,
-    kind: task.kind
+    kind: task.kind,
+    historyRetentionDays: task.historyRetentionDays
   };
 }
 
@@ -420,7 +426,8 @@ export function scheduledTaskCreateRequest(draft: ScheduledTaskEditorDraft): Sch
     memoryEnabled: draft.memoryEnabled,
     pinnedSkillIds: draft.pinnedSkills.map((skill) => skill.id),
     chatMode: scheduledTaskDraftChatMode(draft),
-    kind: draft.kind
+    kind: draft.kind,
+    historyRetentionDays: draft.historyRetentionDays
   } : null;
 }
 
@@ -454,6 +461,7 @@ export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, orig
   if (!sameIds(next.pinnedSkillIds, original.pinnedSkillIds)) patch.pinnedSkillIds = next.pinnedSkillIds;
   if (next.chatMode !== original.chatMode) patch.chatMode = next.chatMode;
   if (next.kind !== original.kind) patch.kind = next.kind;
+  if (next.historyRetentionDays !== original.historyRetentionDays) patch.historyRetentionDays = next.historyRetentionDays;
   return patch;
 }
 
@@ -465,6 +473,7 @@ export function sameScheduledTaskDraft(left: ScheduledTaskEditorDraft, right: Sc
     left.everyHours === right.everyHours && left.hourlyWindow === right.hourlyWindow && left.until === right.until &&
     left.toolsEnabled === right.toolsEnabled && left.workspaceEnabled === right.workspaceEnabled &&
     left.memoryEnabled === right.memoryEnabled && left.kind === right.kind &&
+    left.historyRetentionDays === right.historyRetentionDays &&
     sameIds(left.pinnedSkills.map((skill) => skill.id), right.pinnedSkills.map((skill) => skill.id)) &&
 
     scheduledTaskWeekdayMask(left.days) === scheduledTaskWeekdayMask(right.days) &&

@@ -10,6 +10,7 @@ import {
   scheduledTaskSourceMessage,
   type ScheduledTask,
   type ScheduledTaskCheckOutcome,
+  type ScheduledTaskHistoryRetentionDays,
   type ScheduledTaskRun,
   type ScheduledTaskSchedule,
   type ScheduledTaskWeekday
@@ -45,8 +46,20 @@ export function formatScheduledInstant(value: string | Date, timeZone: string, n
   if (Number.isNaN(date.getTime())) return "an unknown time";
   const zone = validScheduledTaskTimeZone(timeZone) ?? "UTC";
   const parts = instantParts(date, zone);
+  return `${dayLabel(parts, zone, now)}, ${parts.hour}:${parts.minute}`;
+}
+
+function dayLabel(parts: Record<string, string>, zone: string, now: Date): string {
   const year = parts.year !== instantParts(now, zone).year ? ` ${parts.year}` : "";
-  return `${parts.weekday} ${Number(parts.day)} ${MONTH_LABELS[Number(parts.month) - 1] ?? parts.month}${year}, ${parts.hour}:${parts.minute}`;
+  return `${parts.weekday} ${Number(parts.day)} ${MONTH_LABELS[Number(parts.month) - 1] ?? parts.month}${year}`;
+}
+
+/** "Tue 6 Oct" in the task's zone, with the year only when it is not the current one. */
+export function formatScheduledDay(value: string | Date, timeZone: string, now: Date = new Date()): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "an unknown day";
+  const zone = validScheduledTaskTimeZone(timeZone) ?? "UTC";
+  return dayLabel(instantParts(date, zone), zone, now);
 }
 
 /** The browser's IANA zone, or UTC when the runtime reports none it can resolve. */
@@ -147,6 +160,8 @@ export function scheduledTaskRunReasonText(state: "failed" | "skipped", reasonCo
     case "workspace_secret_limit": return "the saved Workspace secrets exceed the limit";
     case "source_unavailable": return "a source the task uses was unavailable";
     case "skill_unavailable": return "a pinned Skill was no longer available";
+    case "workspace_carryover_unavailable":
+      return "the Workspace files of the previous chat could not be carried over; open the task's chat to check them";
     case "model_cannot_report": return "the model cannot report monitoring results";
     case "run_deadline": return `it was stopped after running for ${SCHEDULED_TASK_RUN_DEADLINE_MINUTES} minutes`;
     case "provider_error":
@@ -286,6 +301,40 @@ export const SCHEDULED_TASK_CHAT_MODE_LABELS: Readonly<Record<ScheduledTask["cha
   new: "Each run starts a new chat",
   same: "Continue in this task's chat"
 };
+
+/** The history choices the editor offers, shortest first; null keeps old chats forever. */
+export const SCHEDULED_TASK_HISTORY_OPTIONS: readonly Readonly<{ label: string; value: ScheduledTaskHistoryRetentionDays }>[] = [
+  { label: "30 days", value: 30 },
+  { label: "90 days", value: 90 },
+  { label: "1 year", value: 365 },
+  { label: "Forever", value: null }
+];
+
+/** What the history retention never deletes, for the card and the editor. */
+export const SCHEDULED_TASK_HISTORY_KEPT_TEXT =
+  "The current chat is kept, and so is any chat you wrote in, pinned, put in a folder, shared, renamed or restored.";
+
+function historyLabel(days: ScheduledTaskHistoryRetentionDays): string {
+  return SCHEDULED_TASK_HISTORY_OPTIONS.find((option) => option.value === days)?.label ?? "Forever";
+}
+
+/**
+ * The card's history line: how long old chats of the task are kept, when the
+ * next one goes as things stand, and how many went (a count only).
+ */
+export function scheduledTaskHistoryLine(task: Pick<ScheduledTask, "historyDeletedChats" | "historyNextDeletionAt" |
+  "historyRetentionDays" | "timeZone">, now: Date = new Date()): string {
+  const parts = [task.historyRetentionDays === null ? "History: kept forever" : `History: ${historyLabel(task.historyRetentionDays)}`];
+  if (task.historyRetentionDays !== null && task.historyNextDeletionAt) {
+    const due = new Date(task.historyNextDeletionAt);
+    parts.push(due.getTime() <= now.getTime() ? "next cleanup soon"
+      : `next cleanup ${formatScheduledDay(due, task.timeZone, now)}`);
+  }
+  if (task.historyDeletedChats > 0) {
+    parts.push(`${task.historyDeletedChats} old ${task.historyDeletedChats === 1 ? "chat" : "chats"} deleted`);
+  }
+  return parts.join(" · ");
+}
 
 /** Copy for API failures, including codes the shared contract does not name. */
 export function scheduledTaskFailureMessage(code: string | null): string {

@@ -35,6 +35,18 @@ export const SCHEDULED_TASK_MAX_PINNED_SKILLS = 4;
 export const SCHEDULED_TASK_SKILL_ID_MAX_LENGTH = 64;
 /** Code points of a pinned Skill's name as a task projects it, the Skill name bound. */
 export const SCHEDULED_TASK_SKILL_NAME_MAX_LENGTH = 64;
+/**
+ * Days a chat the task created is kept after its last run once it is no longer
+ * the task's chat; `null` keeps such chats forever.
+ */
+export const SCHEDULED_TASK_HISTORY_RETENTION_DAYS = [30, 90, 365] as const;
+export type ScheduledTaskHistoryRetentionDays = (typeof SCHEDULED_TASK_HISTORY_RETENTION_DAYS)[number] | null;
+/** What a new task keeps; tasks saved before the choice existed keep everything. */
+export const SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS = 90 satisfies ScheduledTaskHistoryRetentionDays;
+
+export function isScheduledTaskHistoryRetentionDays(value: unknown): value is ScheduledTaskHistoryRetentionDays {
+  return value === null || (SCHEDULED_TASK_HISTORY_RETENTION_DAYS as readonly unknown[]).includes(value);
+}
 
 export const SCHEDULED_TASK_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 export type ScheduledTaskWeekday = (typeof SCHEDULED_TASK_WEEKDAYS)[number];
@@ -60,7 +72,9 @@ export type ScheduledTaskSchedule =
 
 /**
  * `new`: every run, Run now included, starts its own Memory-excluded chat.
- * `same`: runs continue in the task's chat. Hourly and monitoring tasks are always `same`.
+ * `same`: runs continue in the task's chat, which starts anew with the first
+ * run of each calendar month in the task's zone. Hourly and monitoring tasks
+ * are always `same`.
  */
 export type ScheduledTaskChatMode = "new" | "same";
 export const SCHEDULED_TASK_CHAT_MODES = ["new", "same"] as const satisfies readonly ScheduledTaskChatMode[];
@@ -154,6 +168,16 @@ export type ScheduledTask = {
   pinnedSkills?: ScheduledTaskPinnedSkill[];
   chatMode: ScheduledTaskChatMode;
   kind: ScheduledTaskKind;
+  /** See `ScheduledTaskDraft.historyRetentionDays`. */
+  historyRetentionDays: ScheduledTaskHistoryRetentionDays;
+  /** Old chats of this task its history retention deleted; a count only. */
+  historyDeletedChats: number;
+  /**
+   * When the history retention deletes the next old chat of this task as
+   * things stand (the owner can still keep it); null when none is due.
+   * Projections without the task's history (cards, tool results) say null.
+   */
+  historyNextDeletionAt: string | null;
   status: ScheduledTaskStatus;
   /** Stable code of an automatic pause; null for owner pauses and other states. */
   pauseReason: string | null;
@@ -305,6 +329,14 @@ export type ScheduledTaskDraft = {
   chatMode: ScheduledTaskChatMode;
   /** `monitoring` requires a model that can call tools. */
   kind: ScheduledTaskKind;
+  /**
+   * How long the task's old chats are kept after their last run: 30, 90 or
+   * 365 days, or null for forever. Only chats the task's runs created count,
+   * never its current chat, and a chat the owner wrote in, pinned, put in a
+   * folder, shared, renamed or restored from the archive is always kept.
+   * Optional in a create body: new tasks keep 90 days.
+   */
+  historyRetentionDays: ScheduledTaskHistoryRetentionDays;
 };
 export type ScheduledTaskCreateRequest = ScheduledTaskDraft;
 
@@ -331,7 +363,8 @@ export function scheduledTaskToolDefaults(defaults: Readonly<{ mcpMode?: ChatDef
  * has no previous result. Turning tools or Workspace on, like an active
  * result, rechecks them against the model; changed pinned Skills and those of
  * an active result are rechecked against the owner's available Skills. Pins
- * never outlive tools: turning tools off needs `pinnedSkillIds: []`.
+ * never outlive tools: turning tools off needs `pinnedSkillIds: []`. A longer
+ * or forever history retention keeps chats that were not yet deleted.
  */
 export type ScheduledTaskUpdateRequest = Partial<ScheduledTaskDraft> & {
   expectedRevision: number;
@@ -495,8 +528,9 @@ export function scheduledTaskChatModeAllowed(
 
 const TASK_KEYS = [
   "id", "title", "prompt", "schedule", "timeZone", "modelId", "provider", "searchEnabled", "emailNotify", "toolsEnabled",
-  "workspaceEnabled", "memoryEnabled", "pinnedSkillIds", "chatMode", "kind", "status", "pauseReason", "completionReason",
-  "nextRunAt", "lastRun", "running", "chatId", "unseenResult", "revision", "createdAt", "updatedAt"
+  "workspaceEnabled", "memoryEnabled", "pinnedSkillIds", "chatMode", "kind", "historyRetentionDays", "historyDeletedChats",
+  "historyNextDeletionAt", "status", "pauseReason", "completionReason", "nextRunAt", "lastRun", "running", "chatId",
+  "unseenResult", "revision", "createdAt", "updatedAt"
 ] as const;
 const STATUSES: readonly unknown[] = ["active", "paused", "completed"] satisfies ScheduledTaskStatus[];
 const CHAT_MODES: readonly unknown[] = SCHEDULED_TASK_CHAT_MODES;
@@ -554,6 +588,8 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     typeof value.workspaceEnabled !== "boolean" || typeof value.memoryEnabled !== "boolean" ||
     !CHAT_MODES.includes(value.chatMode) || !KINDS.includes(value.kind) ||
     !scheduledTaskChatModeAllowed({ kind: value.kind as ScheduledTaskKind, schedule }, value.chatMode as ScheduledTaskChatMode) ||
+    !isScheduledTaskHistoryRetentionDays(value.historyRetentionDays) || !count(value.historyDeletedChats, 0) ||
+    !nullable(value.historyNextDeletionAt, instant) ||
     !STATUSES.includes(value.status) || !nullable(value.pauseReason, code) ||
     !nullable(value.completionReason, code) || (value.status !== "completed" && value.completionReason !== null) ||
     !nullable(value.nextRunAt, instant) || (value.status !== "active" && value.nextRunAt !== null) ||
@@ -566,7 +602,9 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     searchEnabled: value.searchEnabled, emailNotify: value.emailNotify, toolsEnabled: value.toolsEnabled,
     workspaceEnabled: value.workspaceEnabled, memoryEnabled: value.memoryEnabled, pinnedSkillIds,
     ...(skills ? { pinnedSkills: skills } : {}), chatMode: value.chatMode as ScheduledTaskChatMode,
-    kind: value.kind as ScheduledTaskKind, status: value.status as ScheduledTaskStatus, pauseReason: value.pauseReason,
+    kind: value.kind as ScheduledTaskKind, historyRetentionDays: value.historyRetentionDays,
+    historyDeletedChats: value.historyDeletedChats, historyNextDeletionAt: value.historyNextDeletionAt,
+    status: value.status as ScheduledTaskStatus, pauseReason: value.pauseReason,
     completionReason: value.completionReason, nextRunAt: value.nextRunAt,
     lastRun: run && {
       scheduledFor: run.scheduledFor, state: run.state, reasonCode: run.reasonCode, finishedAt: run.finishedAt, unseen: run.unseen
@@ -694,6 +732,9 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "workspace_unavailable":
       return "Workspace can no longer be used for this task. Turn Workspace off or choose a model with tool support, then resume.";
     case "workspace_secret_limit": return "Your saved Workspace secrets exceed the limit. Remove some in Settings or turn Workspace off, then resume.";
+    case "workspace_carryover_unavailable":
+      return "The Workspace files of the task's previous chat could not be carried into its new chat, so nothing ran. " +
+        "Open the task's chat to check its Workspace; the next run tries again.";
     case "skill_unavailable": return "A pinned Skill is no longer available. Edit the task's Skills, then resume.";
     case "source_unavailable":
       return `Paused after ${SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD} runs in a row could not reach a source the task uses. Reconnect it and resume.`;

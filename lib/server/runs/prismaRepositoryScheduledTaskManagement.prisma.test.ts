@@ -31,7 +31,7 @@ const draft = (overrides: Partial<ScheduledTaskDraft> = {}): ScheduledTaskDraft 
   title: "Synthetic report reminder", prompt: "Synthetic scheduled prompt", schedule: { kind: "weekly", time: "09:00",
     days: ["mon", "wed", "fri"] }, timeZone: "Europe/Moscow", modelId: "fake-qsa", provider: "fake", searchEnabled: false,
   emailNotify: false, toolsEnabled: false, workspaceEnabled: false, memoryEnabled: true, pinnedSkillIds: [], chatMode: "new", kind: "standard",
-  ...overrides
+  historyRetentionDays: 90, ...overrides
 });
 const moveTo = (time: string) => (current: ScheduledTask) => ({ schedule: { ...current.schedule, time } });
 

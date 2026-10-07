@@ -13,12 +13,14 @@ import {
   SCHEDULED_TASK_MAX_PINNED_SKILLS,
   SCHEDULED_TASK_MAX_TOTAL,
   SCHEDULED_TASK_RECENT_RUNS_LIMIT,
+  isScheduledTaskHistoryRetentionDays,
   type ScheduledTask,
   type ScheduledTaskChatMode,
   type ScheduledTaskDetailResponse,
   type ScheduledTaskDraft,
   type ScheduledTaskErrorCode,
   type ScheduledTaskEveryHours,
+  type ScheduledTaskHistoryRetentionDays,
   type ScheduledTaskKind,
   type ScheduledTaskLastRun,
   type ScheduledTaskListResponse,
@@ -37,6 +39,7 @@ import {
   scheduledTaskWeekdaysFromMask
 } from "../../domain/scheduledTaskSchedule";
 import { SMTP_CONTROL_ID } from "../email/repository";
+import { loadScheduledTaskHistoryNextDeletions } from "./historyRetention";
 import { loadScheduledTaskPinnedSkillMap, loadScheduledTaskRunSkills, scheduledTaskPinnedSkillsFrom } from "./pinnedSkills";
 import { scheduledPromptLinksPending, type ScheduledPromptUrlDigests } from "./promptUrls";
 import { SCHEDULED_TASK_OCCURRENCE_RETENTION } from "./runnerPolicy";
@@ -60,7 +63,13 @@ export type ScheduledTaskScheduleColumns = {
   everyHours: number | null;
   untilMinutes: number | null;
 };
-export type ScheduledTaskActivity = { lastRun: ScheduledTaskLastRun | null; running: boolean; unseen: boolean };
+export type ScheduledTaskActivity = {
+  lastRun: ScheduledTaskLastRun | null;
+  running: boolean;
+  unseen: boolean;
+  /** When the task's history retention deletes its next old chat; absent for projections without history. */
+  historyNextDeletionAt?: string | null;
+};
 export type ScheduledTaskUpdateWrite = Readonly<{
   expectedRevision: number;
   draft: ScheduledTaskDraft;
@@ -92,7 +101,10 @@ export interface ScheduledTaskStore {
    * active limits.
    */
   update(userId: string, taskId: string, write: ScheduledTaskUpdateWrite): Promise<ScheduledTask>;
-  /** The chats and any accepted run stay; occurrences go with the task. */
+  /**
+   * The chats and any accepted run stay, as ordinary chats no retention
+   * deletes; occurrences and a carried result go with the task.
+   */
   delete(userId: string, taskId: string): Promise<boolean>;
   /**
    * Marks the named settled results of the task seen; others, including one
@@ -123,8 +135,9 @@ export const scheduledTaskRowSelect = {
   id: true, title: true, prompt: true, scheduleKind: true, timeOfDayMinutes: true, daysOfWeekMask: true, dayOfMonth: true,
   onceLocalDate: true, everyHours: true, untilMinutes: true, timeZone: true, modelId: true, provider: true,
   searchEnabled: true, emailNotify: true, toolsEnabled: true, workspaceEnabled: true, memoryEnabled: true, pinnedSkillIds: true,
-  chatMode: true, kind: true, status: true, pauseReason: true, completionReason: true, nextRunAt: true, chatId: true,
-  revision: true, createdAt: true, updatedAt: true, promptUrlDigests: true, chat: { select: { permanentDeletionAt: true } }
+  chatMode: true, kind: true, historyRetentionDays: true, historyDeletedChats: true, status: true, pauseReason: true,
+  completionReason: true, nextRunAt: true, chatId: true, revision: true, createdAt: true, updatedAt: true, promptUrlDigests: true,
+  chat: { select: { permanentDeletionAt: true } }
 } satisfies Prisma.ScheduledTaskSelect;
 export type ScheduledTaskRow = Prisma.ScheduledTaskGetPayload<{ select: typeof scheduledTaskRowSelect }>;
 
@@ -170,6 +183,11 @@ export function scheduledTaskKindFromColumn(column: TaskKindColumn): ScheduledTa
   return TASK_KIND_WIRE[column];
 }
 
+/** The database check keeps the column to the offered choices. */
+function historyRetentionDaysWire(value: number | null): ScheduledTaskHistoryRetentionDays {
+  return isScheduledTaskHistoryRetentionDays(value) ? value : null;
+}
+
 /** A chat that permanent deletion has fenced is no longer offered. */
 function usableChatId(chatId: string | null, chat: { permanentDeletionAt: Date | null } | null): string | null {
   return chatId !== null && chat?.permanentDeletionAt === null ? chatId : null;
@@ -191,7 +209,9 @@ export function toScheduledTask(
     toolsEnabled: row.toolsEnabled, workspaceEnabled: row.workspaceEnabled, memoryEnabled: row.memoryEnabled,
     pinnedSkillIds: [...row.pinnedSkillIds],
     ...(skills ? { pinnedSkills: scheduledTaskPinnedSkillsFrom(skills, row.pinnedSkillIds) } : {}),
-    chatMode: CHAT_MODE_WIRE[row.chatMode], kind: TASK_KIND_WIRE[row.kind], status: STATUS_WIRE[row.status],
+    chatMode: CHAT_MODE_WIRE[row.chatMode], kind: TASK_KIND_WIRE[row.kind],
+    historyRetentionDays: historyRetentionDaysWire(row.historyRetentionDays), historyDeletedChats: row.historyDeletedChats,
+    historyNextDeletionAt: activity.historyNextDeletionAt ?? null, status: STATUS_WIRE[row.status],
     pauseReason: row.pauseReason, completionReason: row.completionReason,
     nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRun: activity.lastRun, running: activity.running,
     chatId: usableChatId(row.chatId, row.chat), unseenResult: activity.unseen,
@@ -227,14 +247,17 @@ type SettledRow = {
 
 /**
  * Per task of the owner: the newest settled occurrence with its own unread
- * flag, whether one is pending or running, and whether any result is unread.
+ * flag, whether one is pending or running, whether any result is unread and
+ * when its history retention deletes the next old chat.
  */
 export async function loadScheduledTaskActivity(
   client: ScheduledTaskClient,
   userId: string,
-  taskIds: readonly string[]
+  taskIds: readonly string[],
+  now: Date = new Date()
 ): Promise<Map<string, ScheduledTaskActivity>> {
-  const activity = new Map<string, ScheduledTaskActivity>(taskIds.map((taskId) => [taskId, { lastRun: null, running: false, unseen: false }]));
+  const activity = new Map<string, ScheduledTaskActivity>(taskIds.map((taskId) => [taskId,
+    { historyNextDeletionAt: null, lastRun: null, running: false, unseen: false }]));
   if (taskIds.length === 0) return activity;
   const settled = await client.$queryRaw<SettledRow[]>`
     SELECT task_row."id" AS "taskId", latest."scheduledFor", latest."state"::text AS "state", latest."reasonCode", latest."finishedAt",
@@ -270,6 +293,9 @@ export async function loadScheduledTaskActivity(
   }
   for (const row of open) activity.set(row.taskId, { ...activity.get(row.taskId)!, running: true });
   for (const row of unseen) activity.set(row.taskId, { ...activity.get(row.taskId)!, unseen: true });
+  for (const [taskId, dueAt] of await loadScheduledTaskHistoryNextDeletions(client, userId, taskIds, now)) {
+    activity.set(taskId, { ...activity.get(taskId)!, historyNextDeletionAt: dueAt.toISOString() });
+  }
   return activity;
 }
 
@@ -286,7 +312,8 @@ function draftColumns(draft: ScheduledTaskDraft) {
     title: draft.title, prompt: draft.prompt, ...scheduledTaskScheduleColumns(draft.schedule), timeZone: draft.timeZone,
     modelId: draft.modelId, provider: draft.provider, searchEnabled: draft.searchEnabled, emailNotify: draft.emailNotify,
     toolsEnabled: draft.toolsEnabled, workspaceEnabled: draft.workspaceEnabled, memoryEnabled: draft.memoryEnabled,
-    pinnedSkillIds: [...draft.pinnedSkillIds], chatMode: CHAT_MODE_COLUMN[draft.chatMode], kind: TASK_KIND_COLUMN[draft.kind]
+    pinnedSkillIds: [...draft.pinnedSkillIds], chatMode: CHAT_MODE_COLUMN[draft.chatMode], kind: TASK_KIND_COLUMN[draft.kind],
+    historyRetentionDays: draft.historyRetentionDays
   };
 }
 
@@ -409,6 +436,8 @@ export async function updateScheduledTask(
     where: { id: taskId, revision: write.expectedRevision, userId }
   });
   if (updated.count !== 1) throw new ScheduledTaskError("scheduled_task_stale");
+  // A result carried into a rotated chat belongs to the old question as well.
+  if (newGeneration) await tx.scheduledTaskCarryover.deleteMany({ where: { taskId, userId } });
   const row = await tx.scheduledTask.findUniqueOrThrow({ select: scheduledTaskRowSelect, where: { userId_id: { id: taskId, userId } } });
   return project(tx, userId, row);
 }

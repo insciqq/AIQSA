@@ -24,7 +24,7 @@ const draft: ScheduledTaskDraft = {
   title: "Synthetic digest", prompt: "Run the synthetic digest", schedule: { kind: "daily", time: "09:00" },
   timeZone: "Europe/Moscow", modelId: providerTemplateIds.fakeModel, provider: providerTemplateIds.fakeConnection, searchEnabled: false,
   emailNotify: false, toolsEnabled: true, workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [], chatMode: "same",
-  kind: "standard"
+  kind: "standard", historyRetentionDays: 90
 };
 
 async function user(prefix: string): Promise<string> {

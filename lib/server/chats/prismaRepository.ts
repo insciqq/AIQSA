@@ -1749,6 +1749,8 @@ export function createPrismaChatRepository(
           mutations: ["CHAT_ARCHIVE_OR_RESTORE"],
           patch: { archived }
         });
+        // The owner's restore keeps the chat from a scheduled task's history retention.
+        if (!archived) await tx.chat.update({ data: { ownerKeptAt: new Date() }, where: { id: chatId } });
         const updated = await tx.chat.findUniqueOrThrow({
           select: { updatedAt: true },
           where: { id: chatId }
@@ -2719,7 +2721,8 @@ export function createPrismaChatRepository(
                   : {}),
                 ...(defaultSearchPlan !== undefined ? { defaultSearchPlan: defaultSearchPlan === null ? Prisma.DbNull : { mode: defaultSearchPlan.mode, optionIds: [...defaultSearchPlan.optionIds] } } : {}),
                 ...(pinned !== undefined ? { pinned } : {}),
-                ...(title ? { title: title.trim(), titleRevision: { increment: 1 } } : {}),
+                // The owner's rename also keeps the chat from a scheduled task's history retention.
+                ...(title ? { ownerKeptAt: new Date(), title: title.trim(), titleRevision: { increment: 1 } } : {}),
                 ...(workspaceEnabled === undefined ? {} : { workspaceEnabled })
               },
               select: chatSummarySelect,

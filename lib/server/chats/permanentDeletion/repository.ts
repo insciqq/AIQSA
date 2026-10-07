@@ -154,6 +154,8 @@ export function createPrismaPermanentChatDeletionRepository(
         ) {
           return { kind: "stale" as const };
         }
+        // Under the chat lock, before any change: the caller's own condition.
+        if (input.condition && !(await input.condition(tx))) return { kind: "stale" as const };
 
         const activeRunCount = await tx.modelRun.count({
           where: {

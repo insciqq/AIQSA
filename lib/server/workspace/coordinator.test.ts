@@ -497,6 +497,59 @@ describe("Workspace coordinator", () => {
     expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
   });
 
+  it.each(["restore", "unsupported"])("never lets a scheduled run go on with an empty carried project (%s fails)", async (failure) => {
+    const value = fixture();
+    Object.assign(value.repository, { claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token",
+      storageKey: "user_1/input", byteSize: 11, checksum: createHash("sha256").update("input bytes").digest("hex"), required: true })),
+      settleContinuationSeed: vi.fn(async () => true) });
+    value.runtime.restoreProjectArchive = failure === "unsupported" ? undefined
+      : vi.fn(async () => { throw new WorkspaceRuntimeError("workspace_archive_invalid"); });
+    const running = vi.spyOn(value.repository, "markSessionRunning");
+    await expect(value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace }))
+      .rejects.toMatchObject({ code: "workspace_carryover_unavailable" });
+    // The claim is released with its archive kept for the next run; nothing settles it failed.
+    expect(value.repository.settleContinuationSeed).toHaveBeenCalledOnce();
+    expect(value.repository.settleContinuationSeed).toHaveBeenCalledWith({ id: "seed", status: "TRANSFERRED", token: "token" });
+    expect(running).not.toHaveBeenCalled();
+    expect(value.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
+  it("restores a scheduled run's carried files before its first request and leaves other runs alone", async () => {
+    const value = fixture();
+    const pendingCarryover = vi.fn(async () => false);
+    Object.assign(value.repository, { pendingCarryover, claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token",
+      storageKey: "user_1/input", byteSize: 11, checksum: createHash("sha256").update("input bytes").digest("hex"), required: true })),
+      settleContinuationSeed: vi.fn(async () => true) });
+    value.runtime.restoreProjectArchive = vi.fn(async () => undefined);
+    const prepare = () => value.coordinator.prepareCarryover!({ runId: value.runId, userId: "user_1", workspace: value.workspace });
+    await prepare();
+    expect(value.runtime.ensureSession).not.toHaveBeenCalled();
+    expect(value.runtime.restoreProjectArchive).not.toHaveBeenCalled();
+    pendingCarryover.mockResolvedValue(true);
+    await prepare();
+    expect(pendingCarryover).toHaveBeenLastCalledWith({ chatId: "chat_1", runId: value.runId });
+    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledOnce();
+    expect(value.repository.settleContinuationSeed).toHaveBeenCalledWith(expect.objectContaining({ status: "RESTORED" }));
+    // The first command reuses the started Workspace: nothing is restored twice.
+    await value.coordinator.execute({ call: { arguments: { command: "true" }, id: "call", name: value.shellToolName },
+      modelRunToolCallId: "call", runId: value.runId, userId: "user_1", workspace: value.workspace });
+    expect(value.runtime.restoreProjectArchive).toHaveBeenCalledOnce();
+    expect(value.runtime.callBoundTool).toHaveBeenCalledOnce();
+  });
+
+  it("reports a carried project whose Workspace cannot start as unavailable, and nothing else", async () => {
+    const value = fixture();
+    const pendingCarryover = vi.fn(async () => true);
+    Object.assign(value.repository, { pendingCarryover });
+    vi.mocked(value.runtime.ensureSession).mockRejectedValueOnce(new WorkspaceRuntimeError("workspace_runtime_unavailable"));
+    const prepare = () => value.coordinator.prepareCarryover!({ runId: value.runId, userId: "user_1", workspace: value.workspace });
+    await expect(prepare()).rejects.toMatchObject({ code: "workspace_carryover_unavailable" });
+    // Without a carried project a failing lookup keeps its own error.
+    pendingCarryover.mockRejectedValueOnce(new Error("database_unavailable"));
+    await expect(prepare()).rejects.toThrow("database_unavailable");
+  });
+
   it.each(["cleanup", "settlement"])("fails closed when restore %s cannot be proven", async (failure) => {
     const value = fixture();
     Object.assign(value.repository, { claimContinuationSeed: vi.fn(async () => ({ id: "seed", token: "token", storageKey: "user_1/input", byteSize: 11, checksum: "a".repeat(64) })),

@@ -5736,6 +5736,31 @@ describe("scheduled task sends", () => {
     expect(f.loadToolHistory).not.toHaveBeenCalled();
   });
 
+  it("sees a result carried into a rotated chat as the task prompt and the copied answer, never the old chat's ids", async () => {
+    const f = scheduledDeps();
+    const copy = { answer: "Carried answer", reliedServerIds: [], sourceAssistantMessageId: "old-answer", sourceChatId: "old-chat" };
+    const carried = (previousResult: Readonly<{ assistantMessageId: string; userMessageId: string }> | null): RunPreparationInput => {
+      const input = scheduledInput(previousResult);
+      if (input.source.kind !== "send" || !input.source.scheduledOccurrence) throw new Error("invalid scheduled fixture");
+      return { ...input, source: { ...input.source, scheduledOccurrence: { ...input.source.scheduledOccurrence,
+        previousResultCopy: copy, taskChatEpoch: 2 } } };
+    };
+    const prepared = preparedFrom(await prepareRun(f.deps, carried(null)));
+    const messages = prepared.normalizedRequest.context!.messages;
+    expect(messages.map((message) => [message.id, message.role])).toEqual([["scheduled-carryover:task-1:2:prompt", "user"],
+      ["scheduled-carryover:task-1:2:answer", "assistant"], ["current-user-message", "user"]]);
+    // The prompt of the same generation is the task's current one.
+    expect(messages[0]!.content).toEqual(messages[2]!.content);
+    expect(messages[1]!.content).toEqual(textMessageContent("Carried answer"));
+    // A copy brings no tool history from another chat.
+    expect(prepared.normalizedRequest.toolHistory).toEqual({ version: 1, turns: [] });
+    expect(f.loadToolHistory).not.toHaveBeenCalled();
+    // The rotated chat's own previous result on the path wins over the copy.
+    const own = preparedFrom(await prepareRun(f.deps, carried({ assistantMessageId: "result-answer", userMessageId: "result-user" })));
+    expect(own.normalizedRequest.context!.messages.map((message) => message.id))
+      .toEqual(["result-user", "result-answer", "current-user-message"]);
+  });
+
   it("admits no standing Memory or Memory search without the task's Memory, even in a chat the owner switched to Memory", async () => {
     const f = scheduledDeps();
     const admit = vi.fn(async () => null);
@@ -5880,6 +5905,17 @@ describe("monitoring check admission", () => {
       expect(offered(prepared)).toBe(false);
       expect(prepared.normalizedRequest.prompt.system ?? "").not.toContain("monitoring check");
     }
+  });
+
+  it("compares a check with the result carried into a rotated chat", async () => {
+    const h = harness();
+    const input = scheduled();
+    if (input.source.kind !== "send" || !input.source.scheduledOccurrence) throw new Error("invalid scheduled fixture");
+    const check = preparedFrom(await prepareRun(h.deps, { ...input, source: { ...input.source, scheduledOccurrence: {
+      ...input.source.scheduledOccurrence, previousResultCopy: { answer: "Version 1.0 is current", reliedServerIds: [],
+        sourceAssistantMessageId: "old-answer", sourceChatId: "old-chat" }, taskChatEpoch: 1 } } }));
+    expect(check.normalizedRequest.prompt.system).toContain("last result the user was shown");
+    expect(check.normalizedRequest.prompt.system).not.toContain("On this first check");
   });
 
   it("tells a first check that no result was shown yet", async () => {
