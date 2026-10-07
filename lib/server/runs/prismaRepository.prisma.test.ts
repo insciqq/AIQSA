@@ -2722,18 +2722,21 @@ describe("Prisma-backed run repository", () => {
         inputTokenPriceUsdPerMillion: 11,
         modelId,
         outputTokenPriceUsdPerMillion: 12,
-        provider
+        provider,
+        webSearchPriceUsdPerThousand: 14
       }
     });
 
     try {
       const repository = createPrismaRunRepository(prisma);
 
+      // Run attributions also price the web searches answers and Search engines report.
       await expect(repository.loadModelPricing(provider, modelId)).resolves.toEqual({
         inputTokenPriceUsdPerMillion: 11,
         cachedInputTokenPriceUsdPerMillion: null,
         cacheWriteInputTokenPriceUsdPerMillion: null,
-        outputTokenPriceUsdPerMillion: 12
+        outputTokenPriceUsdPerMillion: 12,
+        webSearchPriceUsdPerThousand: 14
       });
 
       await prisma.providerModel.create({
@@ -3868,6 +3871,31 @@ describe("Prisma-backed run repository", () => {
       });
       expect(new Set(userUsage.map((row) => row.modelRunId))).toEqual(new Set([active.runId]));
       expect(userUsage.filter((row) => row.usageCompleteness !== "COMPLETE")).toHaveLength(2);
+    });
+  });
+
+  it("keeps the web searches a run attribution paid for through its rewrite and read-back", async () => {
+    await withRunUser(async ({ userId }) => {
+      const repository = createPrismaRunRepository(prisma);
+      const active = await createActiveRun(repository, userId, "Search fees");
+      const usageAttributions = [
+        { modelId: "answer", provider: "anthropic", operationCount: 1, purpose: "chat_answer" as const, estimatedCostMicros: 23_000,
+          usage: normalizeTokenUsage({ inputTokens: 1_000, outputTokens: 100, webSearchCount: 2 }) },
+        { modelId: "sonar", provider: "openrouter", operationCount: 1, purpose: "web_search" as const, estimatedCostMicros: 14_200,
+          usage: normalizeTokenUsage({ inputTokens: 11, outputTokens: 5 }) }
+      ];
+      const input = { chatId: active.chatId, runId: active.runId, usageAttributions, userId };
+      // Rewriting the run's rows again keeps the same count, never a doubled one.
+      expect(await repository.recordRunUsageEvents(input)).toBe(true);
+      expect(await repository.recordRunUsageEvents(input)).toBe(true);
+      const receipts = await repository.loadRunUsageAttributions({ runId: active.runId, userId });
+      expect(receipts.find((row) => row.modelId === "answer")).toMatchObject({ estimatedCostMicros: 23_000, usage: { webSearchCount: 2 } });
+      const search = receipts.find((row) => row.modelId === "sonar");
+      expect(search).toMatchObject({ estimatedCostMicros: 14_200 });
+      expect(search?.usage).not.toHaveProperty("webSearchCount");
+      expect(await prisma.usageEvent.findMany({ select: { modelId: true, webSearchCount: true },
+        where: { modelRunId: active.runId }, orderBy: { modelId: "asc" } }))
+        .toEqual([{ modelId: "answer", webSearchCount: 2 }, { modelId: "sonar", webSearchCount: null }]);
     });
   });
 

@@ -90,10 +90,26 @@ describe("AdminProviderModelSheet", () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
     expect(actions.actions.saveModelMetadata).toHaveBeenCalledWith(connection.id, model.id, expect.objectContaining({
       pricing: { mode: "manual", prices: { inputTokenPriceUsdPerMillion: "0.25", cachedInputTokenPriceUsdPerMillion: "0.025",
-        cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "2" } }
+        cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "2", webSearchPriceUsdPerThousand: null } }
     }));
     expect(actions.actions.saveModel).not.toHaveBeenCalled();
     expect(actions.actions.renameModel).not.toHaveBeenCalled();
+  });
+
+  it("saves an answer model's per-search price as metadata and explains its unit", async () => {
+    const connection = workingConnection(); const model = connection.models[0]!;
+    const actions = controller(); const onSaved = vi.fn();
+    render(<AdminProviderModelSheet connection={connection} model={model} controller={actions} discovery={discovery()} onClose={vi.fn()} onSaved={onSaved} open />);
+    const prices = within(screen.getByRole("group", { name: "Prices" }));
+    expect(prices.getByText("US dollars per 1M tokens; Web search per 1,000 searches")).toBeVisible();
+    const search = prices.getByLabelText("Web search", { exact: true });
+    expect(search).toHaveAccessibleDescription(/Web search is added for each search the provider reports/);
+    fireEvent.change(search, { target: { value: "10.00" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+    expect(actions.actions.saveModelMetadata).toHaveBeenCalledWith(connection.id, model.id, expect.objectContaining({
+      pricing: { mode: "manual", prices: { ...model.pricing.prices, webSearchPriceUsdPerThousand: "10" } }
+    }));
   });
 
   it.each(["-1", "bad", "1e3", "0.000000001", "10000000000"])("keeps invalid price %s with its field error and focus", value => {
@@ -132,9 +148,10 @@ describe("AdminProviderModelSheet", () => {
       model.modelClass = modelClass; model.draftConfig = { ...model.draftConfig, modelClass };
       render(<AdminProviderModelSheet connection={connection} model={model} controller={controller()} discovery={discovery()} onClose={vi.fn()} onSaved={vi.fn()} open />);
       const prices = within(screen.getByRole("group", { name: "Prices" }));
-      for (const label of ["Input", "Cached input", "Cache write", "Output"]) {
+      for (const label of ["Input", "Cached input", "Cache write", "Output", "Web search"]) {
         expect(prices.queryAllByLabelText(label, { exact: true })).toHaveLength((labels as readonly string[]).includes(label) ? 1 : 0);
       }
+      expect(prices.getByText("US dollars per 1M tokens", { exact: true })).toBeVisible();
       expect(prices.getByLabelText("Input", { exact: true })).toHaveAccessibleDescription(/^Used only when the provider reports no cost for a request\./);
     });
 
@@ -148,7 +165,7 @@ describe("AdminProviderModelSheet", () => {
     await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
     expect(actions.actions.saveModelMetadata).toHaveBeenCalledWith(connection.id, model.id, expect.objectContaining({
       pricing: { mode: "manual", prices: { inputTokenPriceUsdPerMillion: "0.13", cachedInputTokenPriceUsdPerMillion: null,
-        cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null } } }));
+        cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null, webSearchPriceUsdPerThousand: null } } }));
     view.unmount();
     const catalog = { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "0.13" };
     model.pricing = { source: "admin", prices: { ...model.pricing.prices, inputTokenPriceUsdPerMillion: "0.2" }, catalogPrices: catalog };

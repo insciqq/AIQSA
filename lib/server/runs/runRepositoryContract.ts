@@ -516,11 +516,12 @@ export type RunUsageAttribution = {
   providerModelId?: string;
   /** Retained contribution count for subtracting saved answer rounds during recovery. */
   operationCount?: number | null;
-  /** The row's cost. Knowledge retrieval calls settle it per call
-   * (`settlesRunUsageCostPerCall`): a provider-reported cost, or the cost an
-   * earlier write of the row recorded, is kept by every rewrite, and an absent
-   * cost is priced from the deployment when the row is written. Answer and
-   * Search usage is always priced from token prices when written. */
+  /** The row's cost. Knowledge retrieval and Search engine calls settle it per
+   * call (`settlesRunUsageCostPerCall`): a provider-reported cost, or the cost
+   * an earlier write of the row recorded, is kept by every rewrite, and an
+   * absent cost is priced when the row is written (from the deployment, or
+   * from the engine's token prices and per-search fee). Answer usage is always
+   * priced from token prices, plus the per-search fee, when written. */
   estimatedCostMicros?: number | null;
   modelId: string;
   provider: string;

@@ -27,7 +27,7 @@ DO $$ BEGIN
         'inputTokenPriceUsdPerMillion', NULLIF((original.snapshot ->> 'inputTokenPriceMicros')::numeric, 0),
         'cachedInputTokenPriceUsdPerMillion', NULL, 'cacheWriteInputTokenPriceUsdPerMillion', NULL,
         'outputTokenPriceUsdPerMillion', NULLIF((original.snapshot ->> 'outputTokenPriceMicros')::numeric, 0),
-        'priceSource', 'catalog') <> to_jsonb(model)) THEN
+        'webSearchPriceUsdPerThousand', NULL, 'priceSource', 'catalog') <> to_jsonb(model)) THEN
     RAISE EXCEPTION 'decision_upgrade_changed_provider_models';
   END IF;
   IF (SELECT column_default FROM information_schema.columns WHERE table_schema = 'public'

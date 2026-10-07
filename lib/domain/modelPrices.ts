@@ -69,17 +69,35 @@ const tariffs: ReadonlyArray<readonly [AdminProviderModelClass, Readonly<Record<
   ["answer", { openai, anthropic, gemini, deepseek, openrouter }],
   ["embedding", { openai: openaiEmbeddings }]
 ];
-const catalog = new Map<string, Readonly<{ modelClass: AdminProviderModelClass; tariff: Tariff }>>(tariffs.flatMap(([modelClass, providers]) =>
-  Object.entries(providers).flatMap(([provider, models]) =>
-    Object.entries(models).map(([modelId, tariff]) => [`${provider}:${modelId}`, { modelClass, tariff }] as const))));
+
+// Web search fees in USD per 1,000 searches, checked 2026-10-07, for every answer
+// tariff of the family; free monthly allowances are not modeled.
+// OpenAI: "Web search (all models) $10.00 / 1k calls"; only `search` actions are billed.
+//   https://developers.openai.com/api/docs/pricing
+//   https://developers.openai.com/api/docs/guides/tools-web-search
+// Anthropic: "$10 per 1,000 searches". https://platform.claude.com/docs/en/about-claude/pricing
+// Gemini 3.x (every Gemini tariff above): "5,000 free search requests per month ...,
+//   then $14 per 1,000 requests", charged per search query.
+//   https://ai.google.dev/gemini-api/docs/pricing
+//   https://ai.google.dev/gemini-api/docs/google-search
+// DeepSeek publishes no search fee (https://api-docs.deepseek.com/quick_start/pricing/);
+// OpenRouter reports each call's cost.
+const webSearchFees: Readonly<Record<string, number>> = { openai: 10, anthropic: 10, gemini: 14 };
+
+const catalog = new Map<string, Readonly<{ modelClass: AdminProviderModelClass; tariff: Tariff; webSearch: number | null }>>(
+  tariffs.flatMap(([modelClass, providers]) => Object.entries(providers).flatMap(([provider, models]) =>
+    Object.entries(models).map(([modelId, tariff]) => [`${provider}:${modelId}`, {
+      modelClass, tariff, webSearch: modelClass === "answer" ? webSearchFees[provider] ?? null : null
+    }] as const))));
 
 /** Keyed by `<family>:<upstream model>`; codex-lb rows resolve to the `openai:` tariff. */
 export const catalogModelPrices: Readonly<Record<string, ModelTokenPricing>> = Object.fromEntries(
-  [...catalog].map(([key, { tariff: [input, read, write, output] }]) => [key, {
+  [...catalog].map(([key, { tariff: [input, read, write, output], webSearch }]) => [key, {
     inputTokenPriceUsdPerMillion: input,
     cachedInputTokenPriceUsdPerMillion: read,
     cacheWriteInputTokenPriceUsdPerMillion: write,
-    outputTokenPriceUsdPerMillion: output
+    outputTokenPriceUsdPerMillion: output,
+    webSearchPriceUsdPerThousand: webSearch
   }])
 );
 
@@ -91,6 +109,7 @@ export function catalogModelPriceClass(key: string): AdminProviderModelClass | n
 export function catalogModelTokenPricing(templateKey: string): ModelTokenPricing {
   return catalogModelPrices[templateKey] ?? {
     inputTokenPriceUsdPerMillion: null, cachedInputTokenPriceUsdPerMillion: null,
-    cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null
+    cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null,
+    webSearchPriceUsdPerThousand: null
   };
 }

@@ -37,7 +37,8 @@ import { observedFailure } from "../providers/providerObservability";
 
 export {
   searchExecutionPreviewCount,
-  searchExecutionsFromToolResult
+  searchExecutionsFromToolResult,
+  searchUsageAttribution
 } from "./toolResult";
 export type { SearchExecutionEvidence } from "./toolResult";
 
@@ -300,6 +301,7 @@ async function consumeProviderSearch(
   signal?: AbortSignal,
   timeoutMs?: number
 ): Promise<{
+  costUsd: number | null;
   findings: string;
   sourceAttribution: "available" | "provider_unavailable";
   sources: SearchSource[];
@@ -307,6 +309,7 @@ async function consumeProviderSearch(
 }> {
   if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
   const result = await runtime.searchAdapter.search(request, { signal, timeoutMs });
+  const costUsd = result.costUsd ?? null;
   const sourceAttribution = result.sourceAttribution ?? "available";
   const sources = boundedEngineSearchSources(result.sources, searchExecutionConfiguration(option).maxResults);
   const providerSourcesUnavailable =
@@ -320,6 +323,7 @@ async function consumeProviderSearch(
     throw new ProviderSearchExecutionError({
       artifacts: result.artifacts,
       code: "search_sources_invalid",
+      costUsd,
       usage: result.usage
     });
   }
@@ -330,10 +334,12 @@ async function consumeProviderSearch(
     throw new ProviderSearchExecutionError({
       artifacts: result.artifacts,
       code: "search_findings_invalid",
+      costUsd,
       usage: result.usage
     });
   }
   return {
+    costUsd,
     findings,
     sourceAttribution,
     sources,
@@ -343,11 +349,13 @@ async function consumeProviderSearch(
 
 function failedSearchExecution(input: Readonly<{
   call: ModelToolCall;
+  costUsd?: number | null;
   failure: SearchFailureEvidence;
   option: NormalizedSearchPlanOption;
   usage?: ModelRunUsage;
 }>): SearchExecutionResult {
   return {
+    ...(input.costUsd != null ? { costUsd: input.costUsd } : {}),
     displayName: searchDisplayName(input.option),
     failure: input.failure,
     invocationId: `${input.call.id}:${input.option.optionId}`.slice(0, 500),
@@ -437,7 +445,7 @@ async function executeOne(input: Readonly<{
     // that engine's settled evidence for fan-out accounting. A local deadline,
     // however, invalidates a result that arrived after the Search-owned timer.
     if (abortCode === "search_timeout") {
-      throw new ProviderSearchExecutionError({ artifacts: [], code: abortCode, usage: result.usage });
+      throw new ProviderSearchExecutionError({ artifacts: [], code: abortCode, costUsd: result.costUsd, usage: result.usage });
     }
     logEvent("tool_execution", {
       tool_kind: "search", stage: "execution", engine_index: input.engineIndex,
@@ -448,6 +456,7 @@ async function executeOne(input: Readonly<{
       count: result.sources.length
     });
     return {
+      ...(result.costUsd !== null ? { costUsd: result.costUsd } : {}),
       displayName: searchDisplayName(input.option),
       findings: result.findings,
       invocationId,
@@ -492,6 +501,7 @@ async function executeOne(input: Readonly<{
     });
     return failedSearchExecution({
       call: input.call,
+      costUsd: providerFailure?.costUsd ?? null,
       failure,
       option: input.option,
       usage: normalizeTokenUsage({ ...providerFailure?.usage, completeness: "partial" })
@@ -532,6 +542,7 @@ function oversizedSearchExecution(execution: SearchExecutionEvidence, engineInde
     code: "search_result_too_large", action: "degrade"
   });
   return {
+    ...(execution.costUsd !== undefined ? { costUsd: execution.costUsd } : {}),
     displayName: execution.displayName,
     failure: { code: "search_result_too_large" },
     invocationId: execution.invocationId,

@@ -2837,6 +2837,8 @@ model ProviderModel {
   cachedInputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
   cacheWriteInputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
   outputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
+  /// USD per 1,000 web searches the provider reports, charged on top of tokens; answer models only.
+  webSearchPriceUsdPerThousand Decimal? @db.Decimal(18, 8)
   priceSource ModelPriceSource @default(catalog)
   supportsVision              Boolean                         @default(false)
   supportsPdf                 Boolean                         @default(false)
@@ -5266,6 +5268,8 @@ model UsageEvent {
   reasoningTokens                 Int?
   totalTokens                     Int?
   usageCompleteness               TokenUsageCompleteness             @default(UNAVAILABLE)
+  /// Provider-reported billed web searches this row covers; null when none were reported.
+  webSearchCount                  Int?
   estimatedCostMicros             Int?
   createdAt                       DateTime                       @default(now())
   knowledgeBase                   KnowledgeBase?                 @relation("KnowledgeUsageBase", fields: [knowledgeBaseId], references: [id], onDelete: Restrict)

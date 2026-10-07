@@ -15,7 +15,8 @@ const prices = { ...EMPTY_ADMIN_MODEL_PRICES, inputTokenPriceUsdPerMillion: "0.2
 const manual: AdminModelPriceChange = { mode: "manual", prices };
 const CODEX = { apiRoot: "https://codex.example.test/backend-api/codex" };
 const GENERIC = { apiRoot: "https://llm.example.test/v1" };
-const OPENAI_PRICES = { inputTokenPriceUsdPerMillion: "2", cachedInputTokenPriceUsdPerMillion: "0.2", cacheWriteInputTokenPriceUsdPerMillion: "2.5", outputTokenPriceUsdPerMillion: "10" };
+const OPENAI_PRICES = { inputTokenPriceUsdPerMillion: "2", cachedInputTokenPriceUsdPerMillion: "0.2", cacheWriteInputTokenPriceUsdPerMillion: "2.5",
+  outputTokenPriceUsdPerMillion: "10", webSearchPriceUsdPerThousand: "10" };
 function harness(options: { count?: number; exists?: boolean; modelClass?: string; templateKey?: string | null; role?: string;
   family?: string; endpoint?: object; upstreamModelId?: string } = {}) {
   const model = fixtureModel({ id: "model", connectionId: "provider", displayName: "Original", enabled: false });
@@ -103,7 +104,8 @@ describe("admin model price metadata boundary", () => {
   });
   it.each([
     ["embedding", "outputTokenPriceUsdPerMillion"], ["reranker", "cachedInputTokenPriceUsdPerMillion"],
-    ["decision", "cacheWriteInputTokenPriceUsdPerMillion"], ["image", "cachedInputTokenPriceUsdPerMillion"]
+    ["decision", "cacheWriteInputTokenPriceUsdPerMillion"], ["image", "cachedInputTokenPriceUsdPerMillion"],
+    ["embedding", "webSearchPriceUsdPerThousand"], ["image", "webSearchPriceUsdPerThousand"]
   ])("refuses a %s price on %s, a field its class is never costed with", async (modelClass, field) => {
     const f = harness({ modelClass });
     const pricing = { mode: "manual", prices: { ...EMPTY_ADMIN_MODEL_PRICES, inputTokenPriceUsdPerMillion: "1", [field]: "0" } };
@@ -131,7 +133,7 @@ describe("admin model price metadata boundary", () => {
   it("restores exact known templates and rejects the Jev decision template and custom/unknown rows", async () => {
     const catalog = harness({ templateKey: "openai:gpt-6-sol" });
     expect(await (await catalog.patch({ ...catalog.body, pricing: { mode: "restore_catalog" } })).json()).toMatchObject({ receipt: {
-      pricing: { source: "catalog", prices: { inputTokenPriceUsdPerMillion: "2", cachedInputTokenPriceUsdPerMillion: "0.2", cacheWriteInputTokenPriceUsdPerMillion: "2.5", outputTokenPriceUsdPerMillion: "10" } }
+      pricing: { source: "catalog", prices: OPENAI_PRICES }
     } });
     // Jev cost is provider-reported; its template carries no token price to restore.
     const decision = harness({ modelClass: "decision", templateKey: "openrouter:typesafe/jev-1.13" });
@@ -148,15 +150,17 @@ describe("admin model price metadata boundary", () => {
     const row = { modelClass: "answer", modelId: "custom", templateKey: null };
     const result = projectAdminModelPricing({ ...row, priceSource: "admin",
       inputTokenPriceUsdPerMillion: new Prisma.Decimal(max), cachedInputTokenPriceUsdPerMillion: new Prisma.Decimal(min),
-      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: new Prisma.Decimal(0) }, connection);
-    expect(result.prices).toEqual({ ...prices, inputTokenPriceUsdPerMillion: max, cachedInputTokenPriceUsdPerMillion: min, outputTokenPriceUsdPerMillion: "0" });
+      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: new Prisma.Decimal(0),
+      webSearchPriceUsdPerThousand: new Prisma.Decimal("10.5") }, connection);
+    expect(result.prices).toEqual({ ...prices, inputTokenPriceUsdPerMillion: max, cachedInputTokenPriceUsdPerMillion: min, outputTokenPriceUsdPerMillion: "0",
+      webSearchPriceUsdPerThousand: "10.5" });
     expect(resolveAdminModelPricingChange(row, connection, { mode: "manual", prices: { ...prices, inputTokenPriceUsdPerMillion: "0000.25000000" } })?.prices.inputTokenPriceUsdPerMillion).toBe("0.25");
   });
   it("projects no catalog prices for a Jev decision row", () => {
     const connection = { family: "openrouter", activeConfig: {}, draftConfig: {} };
     const jev = { modelClass: "decision", modelId: "typesafe/jev-1.13", templateKey: "openrouter:typesafe/jev-1.13" };
     expect(projectAdminModelPricing({ ...jev, priceSource: "catalog", inputTokenPriceUsdPerMillion: null, cachedInputTokenPriceUsdPerMillion: null,
-      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null }, connection).catalogPrices).toBeNull();
+      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null, webSearchPriceUsdPerThousand: null }, connection).catalogPrices).toBeNull();
     expect(initialAdminModelPricing(jev, connection)).toBeNull();
   });
   it("persists optional prices in the create and guarded configuration write, with exact receipts", async () => {
@@ -237,7 +241,29 @@ function migratedTariffs() {
   return tariffs;
 }
 
+const WEB_SEARCH_PRICE_LIST = /web_search_prices\(template, price\) AS \(VALUES\n([\s\S]*?)\n\)/u;
+
+/** Per-search prices of every web search price migration, folded in migration order. */
+function migratedWebSearchPrices() {
+  const prices = new Map<string, number>();
+  for (const name of readdirSync(MIGRATIONS, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort()) {
+    const list = WEB_SEARCH_PRICE_LIST.exec(readFileSync(`${MIGRATIONS}/${name}/migration.sql`, "utf8"))?.[1];
+    for (const row of list?.split("\n") ?? []) {
+      const [, key, price] = /^ {2}\('([^']+)', ([0-9.]+)\),?$/u.exec(row) ?? [];
+      expect(key, `unparsed web search price row in ${name}: ${row}`).toBeDefined();
+      prices.set(key!, Number(price));
+    }
+  }
+  return prices;
+}
+
 describe("catalog tariffs written by price migrations", () => {
+  it("adopt exactly the catalog's per-search prices", () => {
+    const migrated = migratedWebSearchPrices();
+    expect(migrated.size).toBeGreaterThan(0);
+    expect(Object.fromEntries(migrated)).toEqual(Object.fromEntries(Object.entries(catalogModelPrices)
+      .flatMap(([key, price]) => price.webSearchPriceUsdPerThousand == null ? [] : [[key, price.webSearchPriceUsdPerThousand]])));
+  });
   it("equal the TypeScript tariff map", () => {
     const migrated = migratedTariffs();
     expect(migrated.size).toBeGreaterThan(0);
@@ -280,7 +306,7 @@ describe("stored catalog identity", () => {
     const catalog = { ...EMPTY_ADMIN_MODEL_PRICES, inputTokenPriceUsdPerMillion: "0.13" };
     expect(initialAdminModelPricing(embedding, openai)).toEqual({ prices: catalog, source: "catalog", catalogPrices: catalog });
     expect(projectAdminModelPricing({ ...embedding, priceSource: "admin", inputTokenPriceUsdPerMillion: null, cachedInputTokenPriceUsdPerMillion: null,
-      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null }, openai)).toEqual({
+      cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null, webSearchPriceUsdPerThousand: null }, openai)).toEqual({
       prices: EMPTY_ADMIN_MODEL_PRICES, source: "admin", catalogPrices: catalog });
     expect(initialAdminModelPricing(row("qwen/qwen3-embedding-8b", "embedding"), { ...openai, family: "openrouter" })).toBeNull();
     const f = harness({ modelClass: "embedding", upstreamModelId: "text-embedding-3-large" });
@@ -290,9 +316,14 @@ describe("stored catalog identity", () => {
   });
   it("carries the current second-connection tariff including the cached-input price", () => {
     expect(initialAdminModelPricing(row("google/gemini-3.5-flash"), { family: "openrouter", activeConfig: {}, draftConfig: {} })?.prices).toEqual({
-      inputTokenPriceUsdPerMillion: "1.5", cachedInputTokenPriceUsdPerMillion: "0.15", cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "9" });
+      inputTokenPriceUsdPerMillion: "1.5", cachedInputTokenPriceUsdPerMillion: "0.15", cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: "9",
+      // OpenRouter reports each call's cost, so its rows carry no search fee.
+      webSearchPriceUsdPerThousand: null });
+    expect(initialAdminModelPricing(row("gemini-3.5-flash"), { family: "gemini", activeConfig: {}, draftConfig: {} })?.prices)
+      .toMatchObject({ inputTokenPriceUsdPerMillion: "1.5", webSearchPriceUsdPerThousand: "14" });
   });
-  it.each([["20260930130000_model_token_prices", "answer"], ["20261008140000_embedding_model_prices", "embedding"]])(
+  it.each([["20260930130000_model_token_prices", "answer"], ["20261008140000_embedding_model_prices", "embedding"],
+    ["20261008170000_web_search_prices", "answer"]])(
     "matches the Quick Setup families and the model class that %s adopts", (migration, modelClass) => {
       const sql = readFileSync(`${MIGRATIONS}/${migration}/migration.sql`, "utf8");
       const families = /WHEN connection\.family IN \(([^)]*)\)/u.exec(sql)?.[1]?.split(",").map(family => family.trim().replaceAll("'", ""));

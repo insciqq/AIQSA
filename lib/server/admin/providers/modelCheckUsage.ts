@@ -3,7 +3,7 @@ import type { AdminProviderModelClass } from "../../../contracts/adminProviders"
 import { usageCostMicros, type ModelTokenPricing, type TokenUsage } from "../../../domain/usage";
 import { logEvent } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
-import { modelTokenPricing, modelTokenPricingSelect } from "../../providers/modelTokenPricing";
+import { modelSearchPricing, modelSearchPricingSelect } from "../../providers/modelTokenPricing";
 import { storedTokenUsage } from "../../usage";
 
 /** What one answered provider call of a model check reported. */
@@ -35,23 +35,25 @@ export type ModelCheckUsageRecorder = Readonly<{
 
 const NO_PRICES: ModelTokenPricing = {
   inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null,
-  cachedInputTokenPriceUsdPerMillion: null, cacheWriteInputTokenPriceUsdPerMillion: null
+  cachedInputTokenPriceUsdPerMillion: null, cacheWriteInputTokenPriceUsdPerMillion: null,
+  webSearchPriceUsdPerThousand: null
 };
 
 /**
  * One `model_check` usage row per call, charged to the administrator. Cost
  * follows the shared rule: the provider-reported cost, else the checked row's
- * stored prices of its class; an unsaved draft has no prices.
+ * stored prices of its class, including an answer model's per-search price for
+ * the web searches a hosted Search check reports; an unsaved draft has no prices.
  */
 export function createPrismaModelCheckUsageWriter(prisma: Pick<PrismaClient, "providerModel" | "usageEvent">): ModelCheckUsageWriter {
   return async (record) => {
     const model = await prisma.providerModel.findUnique({ where: { id: record.providerModelId },
-      select: { id: true, ...modelTokenPricingSelect } });
+      select: { id: true, ...modelSearchPricingSelect } });
     await prisma.usageEvent.create({ data: {
       userId: record.userId, purpose: "model_check", provider: record.provider, modelId: record.modelId,
       providerModelId: model?.id ?? null, ...storedTokenUsage(record.usage),
       estimatedCostMicros: usageCostMicros({ reportedCostUsd: record.reportedCostUsd, usage: record.usage,
-        pricing: model ? modelTokenPricing(model) : NO_PRICES, modelClass: record.modelClass })
+        pricing: model ? modelSearchPricing(model) : NO_PRICES, modelClass: record.modelClass })
     } });
   };
 }

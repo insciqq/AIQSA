@@ -92,6 +92,7 @@ import {
   SearchToolCancelledError,
   searchExecutionPreviewCount,
   searchExecutionsFromToolResult,
+  searchUsageAttribution,
   type SearchExecutionEvidence
 } from "../search/toolExecutor";
 import {
@@ -1425,14 +1426,8 @@ async function recordRecoveredSearchResult(input: Readonly<{
     );
   }
   for (const execution of executions) {
-    if (input.includeUsage && execution.modelId) {
-      input.context.usageAttributions.push({
-        modelId: execution.modelId,
-        provider: execution.provider,
-        purpose: "web_search",
-        usage: execution.usage
-      });
-    }
+    // A reported engine cost settles the call, as in the live run.
+    if (input.includeUsage && execution.modelId) input.context.usageAttributions.push(searchUsageAttribution(execution));
     await persistRecoveredPlanSearchExecution({
       execution,
       modelRunId: input.context.run.id,

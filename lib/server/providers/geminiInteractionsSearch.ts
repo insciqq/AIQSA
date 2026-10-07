@@ -4,7 +4,7 @@ import {
   adminSearchExecutionLimits
 } from "../../contracts/adminSearch";
 import {
-  extractGeminiInteractionsUsage,
+  extractGeminiInteractionUsage,
   normalizeGeminiInteractionsSearchResponse
 } from "./geminiInteractionsResponse";
 import type { GeminiInteractionsClient } from "./geminiInteractionsTransport";
@@ -148,7 +148,7 @@ export function createGeminiInteractionsSearchAdapter(
           ...(typeof searchOptions.timeoutMs === "number"
             ? { timeoutMs: searchOptions.timeoutMs }
             : {})
-        }), usage: (value) => extractGeminiInteractionsUsage(value.usage)
+        }), usage: extractGeminiInteractionUsage
       });
       try {
         const normalized = normalizeGeminiInteractionsSearchResponse(response, {
@@ -168,7 +168,7 @@ export function createGeminiInteractionsSearchAdapter(
           artifacts: [],
           code: safeFailureCode(error),
           ...(providerStatus ? { providerStatus } : {}),
-          usage: extractGeminiInteractionsUsage(response.usage)
+          usage: extractGeminiInteractionUsage(response)
         });
       }
     }
